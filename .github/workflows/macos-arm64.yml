@@ -22,7 +22,7 @@ jobs:
           -DCOOP_BUILD_HOOKSHOT=ON
           -DCOOP_BUILD_TESTS=ON
       - name: Build
-        run: cmake --build build --target hookshot_coop coop_server coop_tests --parallel 3
+        run: cmake --build build --parallel 3
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Verify Apple Silicon outputs
