@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// CoopClipboard (hookshot/src/coop_clipboard_posix.h), the module's Linux clipboard, with stand-in
-// wl-copy / wl-paste / xclip / xsel scripts on PATH that keep the text in a file. It is the one Linux reader:
+// CoopClipboard (hookshot/src/coop_clipboard_posix.h), the module's POSIX clipboard, with stand-in
+// desktop clipboard tools on PATH that keep the text in a file. It is the one POSIX reader:
 // CoopFiles::ReadClipboard (the answer paste, the Join paste) is this.
 #include <doctest/doctest.h>
 
@@ -63,6 +63,8 @@ struct Desktop {
         // (the copy tools also list their own open descriptors, to see that none of the game's came along)
         Script(dir / "wl-copy", "cat > '" + clip + "'\nls /proc/$$/fd > '" + fds + "'\n");
         Script(dir / "wl-paste", "[ \"$1\" = -n ] || exit 3\ncat '" + clip + "'\necho\n");
+        Script(dir / "pbcopy", "cat > '" + clip + "'\n");
+        Script(dir / "pbpaste", "cat '" + clip + "'\n");
         Script(dir / "xclip",
                "[ \"$1 $2\" = '-selection clipboard' ] || exit 3\n"
                "if [ \"$3\" = -i ]; then cat > '" + clip + "'; ls /proc/$$/fd > '" + fds + "'; "
@@ -95,6 +97,7 @@ struct Desktop {
 
 }  // namespace
 
+#ifndef __APPLE__
 TEST_CASE("Linux clipboard: Wayland's wl-copy and wl-paste") {
     Desktop d("wayland-0", "");
     CHECK(CoopClipboard::Copy("ABCD-EFGH-1234"));
@@ -181,6 +184,39 @@ TEST_CASE("Linux clipboard: the clipboard's text never reaches a shell") {
     CHECK(CoopClipboard::Paste() == evil.substr(0, evil.size() - 1));
     CHECK_FALSE(fs::exists(marker));
 }
+#else
+TEST_CASE("macOS clipboard: pbcopy and pbpaste") {
+    Desktop d("", "");
+    CHECK(CoopClipboard::Copy("ABCD-EFGH-1234"));
+    CHECK(d.Clip() == "ABCD-EFGH-1234");
+    CHECK(CoopClipboard::Paste() == "ABCD-EFGH-1234");
+}
+
+TEST_CASE("macOS clipboard: no native tools means no clipboard") {
+    Desktop d("", "");
+    d.Remove("pbcopy");
+    d.Remove("pbpaste");
+    CHECK_FALSE(CoopClipboard::Copy("x"));
+    CHECK_FALSE(CoopClipboard::Paste().has_value());
+}
+
+TEST_CASE("macOS clipboard: a long paste is cut at 4096 bytes") {
+    Desktop d("", "");
+    REQUIRE(CoopClipboard::Copy(std::string(10000, 'a')));
+    CHECK(CoopClipboard::Paste().value_or("").size() == 4096);
+}
+
+TEST_CASE("macOS clipboard: clipboard text never reaches a shell") {
+    Desktop d("", "");
+    const fs::path marker = d.dir / "ran";
+    const std::string evil = "$(touch '" + marker.string() + "')`touch '" + marker.string() + "'`; touch '" +
+                             marker.string() + "' #\n";
+    REQUIRE(CoopClipboard::Copy(evil));
+    CHECK(d.Clip() == evil);
+    CHECK(CoopClipboard::Paste() == evil.substr(0, evil.size() - 1));
+    CHECK_FALSE(fs::exists(marker));
+}
+#endif
 
 TEST_CASE("Linux clipboard: a paste on SDL's thread takes SDL's text first, then a tool's, then SDL's empty one") {
     int asked = 0;
@@ -202,7 +238,7 @@ TEST_CASE("Linux clipboard: a paste on SDL's thread takes SDL's text first, then
     CHECK(asked == 4);
 }
 
-TEST_CASE("Linux clipboard: without the game's SDL, SDL's thread pastes through the tools as before") {
+TEST_CASE("POSIX clipboard: without the game's SDL, SDL's thread pastes through the tools as before") {
     CHECK(CoopClipboard::GameSdl("SDL_GetClipboardText") == nullptr);   // (the tests load no SDL)
     Desktop d("wayland-7", "");
     CHECK(CoopClipboard::Copy("ABCD-EFGH-5678"));
@@ -211,7 +247,12 @@ TEST_CASE("Linux clipboard: without the game's SDL, SDL's thread pastes through 
     {
         const CoopClipboard::OnSdlThread nested;
     }
+#ifdef __APPLE__
+    d.Remove("pbpaste");
+#else
     d.Remove("wl-paste");
     d.Remove("xclip");
+#endif
     CHECK_FALSE(CoopClipboard::Paste().has_value());   // (said in the tab: "no clipboard tool ... press Ctrl+V")
 }
+

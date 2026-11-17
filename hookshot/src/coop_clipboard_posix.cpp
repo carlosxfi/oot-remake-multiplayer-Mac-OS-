@@ -18,15 +18,19 @@
 namespace CoopClipboard {
 namespace {
 
-// The first tool this desktop has, at most 2 s (`timeout`, when there is one). %s: the tool to look
-// for and its command, for Wayland, then xclip's and xsel's commands. 127: none. Fixed strings only:
-// no clipboard text is ever put in them.
+// The native clipboard tool for this desktop. Fixed strings only: no clipboard text is ever put in them.
+#ifdef __APPLE__
+constexpr const char* kPickTool =
+    "if command -v %s >/dev/null 2>&1; then exec %s; else exit 127; fi";
+#else
+// The first Linux tool, at most 2 s (`timeout`, when there is one): Wayland, xclip, then xsel.
 constexpr const char* kPickTool =
     "t=; command -v timeout >/dev/null 2>&1 && t='timeout 2'; "
     "if [ -n \"$WAYLAND_DISPLAY\" ] && command -v %s >/dev/null 2>&1; then exec $t %s; "
     "elif [ -n \"$DISPLAY\" ] && command -v xclip >/dev/null 2>&1; then exec $t %s; "
     "elif [ -n \"$DISPLAY\" ] && command -v xsel >/dev/null 2>&1; then exec $t %s; "
     "else exit 127; fi";
+#endif
 
 thread_local bool t_sdl_thread = false;   // (OnSdlThread)
 
@@ -60,12 +64,20 @@ Ran Run(bool copy, const std::string& input, std::string* out) {
         }
     }
     char cmd[1024];
+#ifdef __APPLE__
+    if (copy) {
+        std::snprintf(cmd, sizeof cmd, kPickTool, "pbcopy", "pbcopy");
+    } else {
+        std::snprintf(cmd, sizeof cmd, kPickTool, "pbpaste", "pbpaste");
+    }
+#else
     if (copy) {
         std::snprintf(cmd, sizeof cmd, kPickTool, "wl-copy", "wl-copy", "xclip -selection clipboard -i", "xsel -b -i");
     } else {
         std::snprintf(cmd, sizeof cmd, kPickTool, "wl-paste", "wl-paste -n", "xclip -selection clipboard -o",
                       "xsel -b -o");
     }
+#endif
     // (close-on-exec: a process another thread starts meanwhile must not hold the pipe's write end, or
     // the read below would wait for that process; our child gets it as its standard output by dup2)
     int pipe_fd[2] = {-1, -1};
@@ -181,10 +193,20 @@ void* GameSdl(const char* name) {
     static std::atomic<void*> lib{nullptr};
     void* h = lib.load(std::memory_order_acquire);
     if (h == nullptr) {
+#ifdef __APPLE__
+        for (const char* candidate : {"libSDL3.dylib", "SDL3.framework/SDL3", "libSDL2.dylib",
+                                      "SDL2.framework/SDL2"}) {
+            h = dlopen(candidate, RTLD_NOW | RTLD_NOLOAD);
+            if (h != nullptr) {
+                break;
+            }
+        }
+#else
         h = dlopen("libSDL3.so.0", RTLD_NOW | RTLD_NOLOAD);
         if (h == nullptr) {
             h = dlopen("libSDL2-2.0.so.0", RTLD_NOW | RTLD_NOLOAD);
         }
+#endif
         if (h == nullptr) {
             return nullptr;
         }
@@ -230,3 +252,4 @@ std::optional<std::string> Paste() {
 }
 
 }  // namespace CoopClipboard
+

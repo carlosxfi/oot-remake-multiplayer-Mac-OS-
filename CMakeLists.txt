@@ -7,8 +7,9 @@ option(COOP_BUILD_PROGRAMS "Build the server and tools/coop_test" ON)
 option(COOP_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer (GCC or Clang)" OFF)
 option(COOP_TSAN "Build with ThreadSanitizer (GCC or Clang; not with COOP_SANITIZE)" OFF)
 # The Hookshot module builds lichii/hook as the emulator does: on Windows, with MSVC (the
-# emulator's own compiler for that code). Its tests run everywhere (tests/hookshot).
-if(WIN32 AND MSVC)
+# emulator's own compiler for that code). The native Longshot module is also built on macOS.
+# Its tests run everywhere (tests/hookshot).
+if((WIN32 AND MSVC) OR APPLE)
   set(_coop_hookshot_default ON)
 else()
   set(_coop_hookshot_default OFF)
@@ -88,3 +89,4 @@ if(COOP_BUILD_TESTS)
   include(cmake/doctest.cmake)
   add_subdirectory(tests)
 endif()
+

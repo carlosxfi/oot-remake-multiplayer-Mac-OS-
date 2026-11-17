@@ -1,0 +1,34 @@
+name: macOS arm64
+
+on:
+  push:
+    branches: [macos-coop-v0.11.2]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Module, server, and tests
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCOOP_BUILD_HOOKSHOT=ON
+          -DCOOP_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --target hookshot_coop coop_server coop_tests --parallel 3
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Verify Apple Silicon outputs
+        run: |
+          module=$(find build -type f -name 'hookshot_coop.so' | head -n1)
+          server=$(find build -type f -name 'coop_server' -perm -u+x | head -n1)
+          test -n "$module" && test -n "$server"
+          file "$module" "$server" | tee macos-artifacts.txt
+          grep -q 'arm64' macos-artifacts.txt

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The desktop's clipboard on Linux (the invite and answer codes in the Multiplayer tab and the title menu),
-// through the desktop's own tools: wl-copy / wl-paste on Wayland, xclip or xsel on X11; and, for a paste on the
+// The desktop's clipboard on Linux and macOS (the invite and answer codes in the Multiplayer tab and title menu),
+// through the desktop's own tools: pbcopy/pbpaste on macOS, wl-copy/wl-paste on Wayland, xclip or xsel on X11;
+// and, for a paste on the
 // game window's own thread (a Ctrl+V), through the game's SDL, which needs none of them (Steam Deck Game Mode
 // has no tool: there SDL's clipboard is the one, else the codes are typed with Steam's keyboard). This is the module's
-// one Linux clipboard: CoopFiles::ReadClipboard / SetClipboardText (coop_pause_files.cpp) call it; Windows has
+// one POSIX clipboard: CoopFiles::ReadClipboard / SetClipboardText (coop_pause_files.cpp) call it; Windows has
 // its own there, and this file is not built on Windows.
 //
 // The clipboard's text never reaches a shell: the shell runs fixed command strings, the copied text goes to
@@ -20,15 +21,15 @@ namespace CoopClipboard {
 bool Copy(const std::string& text);
 
 // The clipboard's text: at most 4096 bytes (at most 64 KiB is read from the tool, what was read stands),
-// trailing line ends dropped. The tool is Wayland's (with $WAYLAND_DISPLAY), else xclip, else xsel (with
-// $DISPLAY), each at most 2 s (`timeout`, when there is one). A tool that is there is believed even when it
+// trailing line ends dropped. The tool is pbpaste on macOS; on Linux it is Wayland's (with $WAYLAND_DISPLAY),
+// else xclip, else xsel (with $DISPLAY), each at most 2 s (`timeout`, when there is one). A tool that is there is believed even when it
 // fails or is stopped: an empty clipboard makes wl-paste and xclip exit 1, and that is "" (empty). Nothing
 // (std::nullopt) only when this desktop has none of the tools (or the tool could not be started).
 std::optional<std::string> Paste();
 
 // (on SDL's thread, OnSdlThread: SDL's clipboard first, PickPaste)
 
-// A function of the game's SDL by name (SDL3's library, else SDL2's, as the game loaded it: Longshot loads it
+// A function of the game's SDL by name (SDL3's library/framework, else SDL2's, as the game loaded it: Longshot loads it
 // RTLD_LOCAL, so dlsym(RTLD_DEFAULT) never finds it); nullptr without SDL or without that function.
 void* GameSdl(const char* name);
 
@@ -53,3 +54,4 @@ std::optional<std::string> PickPaste(const std::optional<std::string>& sdl,
                                      const std::function<std::optional<std::string>()>& tools);
 
 }  // namespace CoopClipboard
+
