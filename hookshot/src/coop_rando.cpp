@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -628,7 +629,8 @@ std::string OotrrKey(const fs::path& ootrr) {
     if (ec) return {};
     const auto when = fs::last_write_time(ootrr, ec);
     if (ec) return {};
-    return std::to_string(size) + "-" + std::to_string(when.time_since_epoch().count());
+    const auto stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(when.time_since_epoch()).count();
+    return std::to_string(size) + "-" + std::to_string(stamp);
 }
 
 std::string ChatSafe(std::string line, std::size_t max_chars) {
@@ -1402,3 +1404,4 @@ void Rando::Build(const Plan& plan, const Want& want) {
 }
 
 }  // namespace CoopRando
+
