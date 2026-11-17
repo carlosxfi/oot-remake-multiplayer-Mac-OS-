@@ -1,4 +1,4 @@
 runtime=Longshot
-repo=https://git.magicbean.dev/MagicBeanDev/Longshot
-commit=53f96d780588832401eadfc27c9cb41b2c2ae25c
-tag=v3.0.0-rc.4
+repo=https://github.com/carlosxfi/Hookshot-arm64
+commit=0b7b6e256f9732a54ce2d94e859fcc89cda52358
+tag=macos-transient-shader-retry
