@@ -1014,6 +1014,12 @@ TEST_CASE("loopback: the test delay holds packets each way and keeps their order
   clock.step();
   clock.enet();
   a.pump();
+  // Make the test independent of ENet's platform-specific flush timing: the
+  // delayed chat must be in the server's input queue before the disconnect.
+  enet_host_flush(a.host);
+  clock.enet();
+  server.service(0);
+  REQUIRE(server.held_packets() >= 1);
   enet_peer_disconnect(a.peer, 0);
   REQUIRE(pump_until(server, {&a, &b}, [&] { return b.find<PlayerLeft>() != nullptr; }, &clock));
   std::size_t chat_at = 0;
@@ -1069,3 +1075,4 @@ TEST_CASE("loopback: with test jitter every reliable line still arrives in order
   const std::vector<std::string> got = lines();
   for (int i = 0; i < kLines; ++i) CHECK(got[static_cast<std::size_t>(i)] == "line " + std::to_string(i));
 }
+
