@@ -107,3 +107,45 @@ player samples received by the observer. A lone send count proves no delivery.
 Without `COOP_NXNATIVE_LOOPBACK=1` the network build starts no relay or clients.
 `sh nxnative/probe/build.sh` restores the original offline-only build.
 The network build has not yet been checked inside the Mac game.
+
+## Join a Windows host over LAN
+
+The Windows game and this branch must use the same co-op protocol and game
+build. The bridge uses the shared protocol constant, not an independently
+chosen version. This first cross-platform check sends player samples,
+status and equipment, and receives player samples into presence. It does not
+apply incoming progress, warp the player, create puppets, or draw name tags.
+
+On Windows, load a test save, choose Host, and open Same network. Keep that
+game running as progress host. Note its local IPv4 address, UDP port and room
+password. Enter those on the Mac; do not put the password in Git or logs.
+
+On the Mac, quit the game, rebuild, and use the interactive join helper:
+
+```sh
+sh nxnative/network/build.sh
+sh nxnative/network/join.sh "/path/to/game.app"
+```
+
+The helper prompts for the host address, port (default 27510), an ASCII
+nickname of at most 16 characters (default MacLink), and the room password
+with echo disabled. It passes them only to this launch. The loopback check
+is disabled for this mode. No router port forwarding is needed on the same
+LAN; Windows must allow the host game's UDP traffic on the private network.
+
+The build runs an additional remote-client check with a local relay and an
+independent host client: configuration validation, encrypted sample delivery
+in both directions, changed coordinates, and a refused wrong password.
+These checks must pass before trying the Mac against Windows.
+
+Watch the usual Mac log. Look for `LAN state=connected`, a nonzero `self`,
+`peers=1` (one Windows player), increasing `sent` and `received`, and
+`failures=0`. `remote player ... position` should follow the Windows Link.
+A refused join logs its reason; check the protocol/game version and the room
+password. A client still connecting suggests checking the local address,
+port, Windows private-network firewall permission, or Wi-Fi client isolation.
+
+The Mac refuses progress-host takeover and stops if it is selected, because
+its shared-progress implementation is not ready. Keep Windows hosting during
+the check. Mac-side puppet display and shared progress are separate work.
+The LAN mode and its new test still need to run on the Mac.

@@ -23,13 +23,15 @@ add_library(nxnative_shared STATIC
   "${repo}/coop/protocol/src/traffic_crypto.cpp"
   "${repo}/coop/net/src/client.cpp"
   "${repo}/coop/net/src/clock.cpp"
+  "${repo}/coop/presence/src/presence.cpp"
 )
 target_include_directories(nxnative_shared PUBLIC
-  "${repo}/coop/host/include" "${repo}/coop/protocol/include" "${repo}/coop/net/include")
+  "${repo}/coop/host/include" "${repo}/coop/protocol/include" "${repo}/coop/net/include"
+  "${repo}/coop/presence/include")
 target_link_libraries(nxnative_shared PUBLIC enet monocypher Threads::Threads)
 
 add_library(nxnative_loopback STATIC
-  loopback.cpp
+  loopback.cpp remote_peer.cpp
   "${repo}/server/enet_server.cpp" "${repo}/server/session.cpp"
   "${repo}/server/world.cpp" "${repo}/server/test_delay.cpp")
 target_include_directories(nxnative_loopback PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -71,3 +73,14 @@ if(APPLE)
       "$<TARGET_FILE:nxnative_dylib_load_check>")
   set_tests_properties(nxnative_dylib_load_check PROPERTIES TIMEOUT 10)
 endif()
+
+add_executable(nxnative_remote_check remote_peer_test.cpp)
+target_include_directories(nxnative_remote_check PRIVATE "${repo}/server")
+target_link_libraries(nxnative_remote_check PRIVATE nxnative_loopback)
+if(MSVC)
+  target_compile_options(nxnative_remote_check PRIVATE /UNDEBUG)
+else()
+  target_compile_options(nxnative_remote_check PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+endif()
+add_test(NAME nxnative_remote_check COMMAND nxnative_remote_check)
+set_tests_properties(nxnative_remote_check PROPERTIES TIMEOUT 20)

@@ -7,12 +7,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+#include <utility>
 #include "module_detection.hpp"
 #include "local_memory.hpp"
 #include "coop/host/player_reader.hpp"
 #include "coop/host/sampler.hpp"
 #ifdef COOP_NXNATIVE_NETWORK
 #include "loopback.hpp"
+#include "remote_peer.hpp"
 #endif
 
 #ifdef __APPLE__
@@ -153,9 +155,35 @@ void probe() {
 #ifdef COOP_NXNATIVE_NETWORK
   coop_nxnative::Loopback loopback;
   const char* enable_loopback = std::getenv("COOP_NXNATIVE_LOOPBACK");
-  const bool network_on = enable_loopback && std::strcmp(enable_loopback, "1") == 0 && loopback.start();
-  if (enable_loopback)
+  const bool want_loopback = enable_loopback && std::strcmp(enable_loopback, "1") == 0;
+  const char* remote_host = std::getenv("COOP_NXNATIVE_HOST");
+  const bool want_remote = remote_host && *remote_host;
+  const bool network_on = !want_remote && want_loopback && loopback.start();
+  std::unique_ptr<coop_nxnative::RemotePeer> remote;
+  std::uint64_t next_remote_report = 0;
+  if (want_remote && want_loopback) {
+    std::fprintf(stderr, "[coop-nxnative] choose either LAN joining or loopback, not both\n");
+  } else if (want_remote) {
+    const auto env = [](const char* key, const char* fallback) {
+      const char* value = std::getenv(key);
+      return value && *value ? value : fallback;
+    };
+    auto config = coop_nxnative::remote_config(remote_host, env("COOP_NXNATIVE_PORT", "27510"),
+        env("COOP_NXNATIVE_NICKNAME", "MacLink"), env("COOP_NXNATIVE_PASSWORD", ""));
+    if (config) {
+      remote = std::make_unique<coop_nxnative::RemotePeer>(std::move(*config));
+      if (remote->start())
+        std::fprintf(stderr, "[coop-nxnative] LAN client started (player state only)\n");
+      else {
+        std::fprintf(stderr, "[coop-nxnative] LAN client could not start\n");
+        remote.reset();
+      }
+    } else {
+      std::fprintf(stderr, "[coop-nxnative] invalid LAN settings: need IPv4, port, ASCII name and password\n");
+    }
+  } else if (want_loopback) {
     std::fprintf(stderr, "[coop-nxnative] encrypted loopback check %s\n", network_on ? "started" : "not started");
+  }
 #endif
   while (running.load(std::memory_order_relaxed)) {
     if (base == 0) {
@@ -172,6 +200,7 @@ void probe() {
     const auto reading = reader.read();
 #ifdef COOP_NXNATIVE_NETWORK
     if (network_on) loopback.tick(reading);
+    if (remote) remote->tick(reading);
 #endif
     // Diagnostic clock only. A connected client must use its synchronized
     // server clock here. Polling is not a game-frame callback yet.
@@ -181,6 +210,23 @@ void probe() {
     packets += outgoing.size();
     for (const auto& packet : outgoing) bytes += packet.bytes.size();
 
+#ifdef COOP_NXNATIVE_NETWORK
+    if (remote && now >= next_remote_report) {
+      const auto stats = remote->stats();
+      const auto state = coop::net::to_string(stats.state);
+      std::fprintf(stderr, "[coop-nxnative] LAN state=%.*s self=%u peers=%zu sent=%llu received=%llu failures=%llu %s\n",
+          static_cast<int>(state.size()), state.data(), static_cast<unsigned>(stats.self), stats.peers,
+          static_cast<unsigned long long>(stats.sent), static_cast<unsigned long long>(stats.received_samples),
+          static_cast<unsigned long long>(stats.send_failures), stats.detail.c_str());
+      if (stats.last_received && stats.last_received->position) {
+        const auto& p = *stats.last_received->position;
+        std::fprintf(stderr, "[coop-nxnative] remote player %u position %.3f %.3f %.3f scene=%s\n",
+            static_cast<unsigned>(stats.last_received->player_number), p[0], p[1], p[2],
+            stats.last_received->scene ? stats.last_received->scene->c_str() : "?");
+      }
+      next_remote_report = now + 1'000'000;
+    }
+#endif
     if (reading) {
       if (!was_valid || now >= next_report) {
         const char* age = !reading->age ? "unknown" :
