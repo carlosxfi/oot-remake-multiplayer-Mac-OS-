@@ -38,27 +38,6 @@ std::uint64_t configured_main_base() {
   return parsed;
 }
 
-std::uint64_t discover_main_base() {
-#ifdef __APPLE__
-  // nxnative's loader exposes g_mod. The first profile module is main. Only
-  // the stable prefix of module_t is needed here, keeping this probe separate
-  // from nxnative's private headers.
-  struct ModulePrefix {
-    char name[16];
-    std::uint8_t* base;
-    std::size_t size;
-  };
-  void* symbol = dlsym(RTLD_DEFAULT, "g_mod");
-  if (symbol == nullptr) return 0;
-  auto* modules = *static_cast<ModulePrefix**>(symbol);
-  if (modules == nullptr || std::strncmp(modules[0].name, "main", sizeof(modules[0].name)) != 0)
-    return 0;
-  return reinterpret_cast<std::uint64_t>(modules[0].base);
-#else
-  return 0;
-#endif
-}
-
 template <typename T>
 bool read_at(std::uint64_t address, T& value) {
 #ifdef __APPLE__
@@ -72,6 +51,63 @@ bool read_at(std::uint64_t address, T& value) {
   (void)value;
   return false;
 #endif
+}
+
+bool valid_main_base(std::uint64_t base) {
+  std::uint32_t mod0 = 0;
+  char magic[4]{};
+  return base != 0 && read_at(base + 4, mod0) && mod0 < 0x1000000 &&
+         read_at(base + mod0, magic) && std::memcmp(magic, "MOD0", sizeof(magic)) == 0;
+}
+
+std::uint64_t discover_main_base_from_symbols() {
+#ifdef __APPLE__
+  // Some dmhost builds export the loader table. Only module_t's stable prefix
+  // is needed, keeping this probe separate from nxnative's private headers.
+  struct ModulePrefix {
+    char name[16];
+    std::uint8_t* base;
+    std::size_t size;
+  };
+  void* symbol = dlsym(RTLD_DEFAULT, "g_mod");
+  if (symbol == nullptr) return 0;
+  auto* modules = *static_cast<ModulePrefix**>(symbol);
+  if (modules == nullptr || std::strncmp(modules[0].name, "main", sizeof(modules[0].name)) != 0)
+    return 0;
+  const auto base = reinterpret_cast<std::uint64_t>(modules[0].base);
+  return valid_main_base(base) ? base : 0;
+#else
+  return 0;
+#endif
+}
+
+std::uint64_t discover_main_base_from_log() {
+  char path[1024]{};
+  if (const char* configured = std::getenv("COOP_NXNATIVE_LOG"); configured && *configured)
+    std::snprintf(path, sizeof(path), "%s", configured);
+  else if (const char* home = std::getenv("HOME"); home && *home)
+    std::snprintf(path, sizeof(path), "%s/Library/Logs/nxnative/0400486024DEC000.log", home);
+  else
+    return 0;
+
+  FILE* file = std::fopen(path, "r");
+  if (file == nullptr) return 0;
+  std::uint64_t found = 0;
+  char line[2048]{};
+  while (std::fgets(line, sizeof(line), file) != nullptr) {
+    const char* marker = std::strstr(line, "main: base ");
+    unsigned long long candidate = 0;
+    if (marker != nullptr && std::sscanf(marker, "main: base %llx", &candidate) == 1 &&
+        valid_main_base(static_cast<std::uint64_t>(candidate)))
+      found = static_cast<std::uint64_t>(candidate);
+  }
+  std::fclose(file);
+  return found;
+}
+
+std::uint64_t discover_main_base() {
+  const std::uint64_t symbol_base = discover_main_base_from_symbols();
+  return symbol_base != 0 ? symbol_base : discover_main_base_from_log();
 }
 
 void probe() {
