@@ -37,7 +37,8 @@ target_include_directories(nxnative_loopback PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(nxnative_loopback PUBLIC nxnative_shared)
 
 if(APPLE)
-  add_library(coop_nxnative_probe MODULE "${repo}/nxnative/probe/link_position_probe.cpp")
+  # DYLD_INSERT_LIBRARIES requires MH_DYLIB; MODULE emits MH_BUNDLE on macOS.
+  add_library(coop_nxnative_probe SHARED "${repo}/nxnative/probe/link_position_probe.cpp")
   target_compile_definitions(coop_nxnative_probe PRIVATE COOP_NXNATIVE_NETWORK=1)
   target_link_libraries(coop_nxnative_probe PRIVATE nxnative_loopback)
   # The existing run.sh injects this path for both build variants.
@@ -57,3 +58,16 @@ else()
 endif()
 add_test(NAME nxnative_network_check COMMAND nxnative_network_check)
 set_tests_properties(nxnative_network_check PROPERTIES TIMEOUT 15)
+
+# Exercise dyld itself, not just the static libraries used by the network test.
+# Use our own executable: protected system programs may strip DYLD variables.
+if(APPLE)
+  add_executable(nxnative_dylib_load_check "${repo}/nxnative/probe/module_detection_test.cpp")
+  target_compile_options(nxnative_dylib_load_check PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+  add_dependencies(nxnative_dylib_load_check coop_nxnative_probe)
+  add_test(NAME nxnative_dylib_load_check
+    COMMAND "${CMAKE_COMMAND}" -E env
+      "DYLD_INSERT_LIBRARIES=$<TARGET_FILE:coop_nxnative_probe>"
+      "$<TARGET_FILE:nxnative_dylib_load_check>")
+  set_tests_properties(nxnative_dylib_load_check PROPERTIES TIMEOUT 10)
+endif()
