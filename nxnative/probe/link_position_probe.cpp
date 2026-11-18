@@ -11,6 +11,9 @@
 #include "local_memory.hpp"
 #include "coop/host/player_reader.hpp"
 #include "coop/host/sampler.hpp"
+#ifdef COOP_NXNATIVE_NETWORK
+#include "loopback.hpp"
+#endif
 
 #ifdef __APPLE__
 #include <dlfcn.h>
@@ -146,7 +149,14 @@ void probe() {
   coop::host::PlayerReader reader(memory);
   coop::host::Sampler sampler;
   std::uint64_t packets = 0, bytes = 0, next_report = 0;
-  std::fprintf(stderr, "[coop-nxnative] shared local sampler ready (read-only; no network)\n");
+  std::fprintf(stderr, "[coop-nxnative] shared local sampler ready (read-only)\n");
+#ifdef COOP_NXNATIVE_NETWORK
+  coop_nxnative::Loopback loopback;
+  const char* enable_loopback = std::getenv("COOP_NXNATIVE_LOOPBACK");
+  const bool network_on = enable_loopback && std::strcmp(enable_loopback, "1") == 0 && loopback.start();
+  if (enable_loopback)
+    std::fprintf(stderr, "[coop-nxnative] encrypted loopback check %s\n", network_on ? "started" : "not started");
+#endif
   while (running.load(std::memory_order_relaxed)) {
     if (base == 0) {
       base = discover_main_base();
@@ -160,6 +170,9 @@ void probe() {
     }
     memory.set_main_base(base);
     const auto reading = reader.read();
+#ifdef COOP_NXNATIVE_NETWORK
+    if (network_on) loopback.tick(reading);
+#endif
     // Diagnostic clock only. A connected client must use its synchronized
     // server clock here. Polling is not a game-frame callback yet.
     const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
@@ -180,6 +193,21 @@ void probe() {
             reading->equipment ? "ok" : "?", static_cast<unsigned>(sampler.next_sequence()),
             static_cast<unsigned long long>(packets), static_cast<unsigned long long>(bytes));
         next_report = now + 1'000'000;
+#ifdef COOP_NXNATIVE_NETWORK
+        if (network_on) {
+          const auto stats = loopback.stats();
+          std::fprintf(stderr, "[coop-nxnative] loopback game=%s observer=%s encrypted=%zu "
+              "sent=%llu received=%llu failures=%llu\n",
+              stats.game_connected ? "connected" : "waiting", stats.observer_connected ? "connected" : "waiting",
+              stats.encrypted_connections, static_cast<unsigned long long>(stats.sent),
+              static_cast<unsigned long long>(stats.received_samples), static_cast<unsigned long long>(stats.send_failures));
+          if (stats.last_received && stats.last_received->position) {
+            const auto& p = *stats.last_received->position;
+            std::fprintf(stderr, "[coop-nxnative] observer received Link position %.3f %.3f %.3f scene=%s\n",
+                p[0], p[1], p[2], stats.last_received->scene ? stats.last_received->scene->c_str() : "?");
+          }
+        }
+#endif
       }
       announced_wait = false;
     } else if (!announced_wait || was_valid) {

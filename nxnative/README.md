@@ -2,8 +2,9 @@
 
 This folder brings the co-op library into nxnative in stages. The Mac dylib
 now uses the shared `coop::host::PlayerReader` and `Sampler` through a
-read-only `GameMemory` adapter. It builds encoded player messages locally;
-it does not connect to a server or apply another player's state yet.
+read-only `GameMemory` adapter. The default build encodes messages locally.
+An optional network build can test the encrypted relay with a local observer.
+Neither build applies another player's state to the game yet.
 
 ## Position probe
 
@@ -62,9 +63,10 @@ or security settings for this test.
 ## After the proof
 
 The raw position proof ran on the user's Mac: coordinates changed with Link.
-The shared reader/sampler still needs its in-game check: walk, turn, open
-equipment, and enter another scene; check the corresponding fields and counts
-in the log. These checks do not establish multiplayer or puppet rendering.
+The shared reader/sampler also ran: it reported the scene, rotation, animation
+and equipment, with samples increasing while Link moved. Scene transitions
+and equipment changes still need more playtesting. These checks do not
+establish multiplayer or puppet rendering.
 
 Sampling currently polls about every 16 ms on its own thread. It is not
 synchronized with a game frame, and can miss brief equipment requests or read
@@ -73,3 +75,35 @@ Before sending them, integrate `coop_net::Client` and its synchronized server
 clock, plus `coop_presence` for received players. A later bridge needs frame
 callbacks, writes, game calls, input, and overlay operations for puppets and
 shared progress.
+
+## Encrypted loopback check
+
+This opt-in build starts the existing co-op ENet relay on `127.0.0.1` at a
+free port, plus a game client and an observer client. Each start uses a fresh
+random join password that is never logged. Both clients complete the existing
+encrypted handshake. The game client uses its synchronized server clock for
+the shared sampler, and the observer checks the relayed player samples.
+The relay is bound only to loopback and does not join an existing room.
+It does not spawn puppets or apply incoming flags to the save.
+
+Quit the game. Install CMake if missing (`brew install cmake`), then run:
+
+```sh
+sh nxnative/network/build.sh
+COOP_NXNATIVE_LOOPBACK=1 sh nxnative/probe/run.sh "/path/to/game.app"
+```
+
+The first network build fetches the repository's existing pinned ENet and
+Monocypher dependencies. The build also runs a portable automated check:
+two clients join the real encrypted relay, an observer receives synthetic
+player samples, and movement reaches that observer. No game is needed.
+
+After loading a save, use the same log watcher as above. Look for
+`loopback game=connected observer=connected encrypted=2`, increasing
+`received` and `failures=0`, plus `observer received Link position` following
+the live player. `sent` counts accepted outgoing messages; `received` counts
+player samples received by the observer. A lone send count proves no delivery.
+
+Without `COOP_NXNATIVE_LOOPBACK=1` the network build starts no relay or clients.
+`sh nxnative/probe/build.sh` restores the original offline-only build.
+The network build has not yet been checked inside the Mac game.
