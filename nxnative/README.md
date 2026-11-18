@@ -22,8 +22,8 @@ The terminal should first print `position probe loaded`, then `waiting for a
 valid player state`. Load a save. A successful proof prints Link's age and
 position twice a second.
 
-The probe defaults to main at `0x7100000000`, the base used by the current
-co-op address map. Override it only when nxnative reports another base:
+The probe discovers nxnative's ASLR-selected `main` base from its loader table.
+The override is only for diagnosing a loader whose symbols are unavailable:
 
 ```sh
 COOP_NXNATIVE_MAIN_BASE=0x... nxnative/probe/run.sh "/path/to/game.app"
