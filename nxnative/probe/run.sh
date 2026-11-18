@@ -27,5 +27,7 @@ if [ ! -x "$exe" ]; then
 fi
 
 echo "Starting nxnative with the co-op position probe."
-echo "Look for [coop-nxnative] lines in this terminal."
+echo "After Play, nxnative writes [coop-nxnative] lines to its game log."
+echo "In another Terminal:"
+echo '  tail -f "$HOME/Library/Logs/nxnative/0400486024DEC000.log" | grep --line-buffered "\[coop-nxnative\]"'
 DYLD_INSERT_LIBRARIES="$library" exec "$exe"

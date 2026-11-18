@@ -8,20 +8,18 @@
 #include <cstring>
 #include <thread>
 #include "module_detection.hpp"
+#include "local_memory.hpp"
+#include "coop/host/player_reader.hpp"
+#include "coop/host/sampler.hpp"
 
 #ifdef __APPLE__
 #include <dlfcn.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#include <mach-o/dyld.h>
 #endif
 
 namespace {
-
-constexpr std::uint64_t kGameUiModulePtr = 0x4e7cfa8ULL;
-constexpr std::uint64_t kGameUiPoseFlags = 0x58aULL;
-constexpr std::uint64_t kGameUiPosition = 0x590ULL;
-constexpr std::uint64_t kGameUiIsChild = 0x5c0ULL;
-constexpr std::uint16_t kPoseValid = 1;
 
 std::atomic<bool> running{true};
 
@@ -39,19 +37,24 @@ std::uint64_t configured_main_base() {
   return parsed;
 }
 
-template <typename T>
-bool read_at(std::uint64_t address, T& value) {
+bool copy_local(std::uint64_t address, std::span<std::uint8_t> out, void*) {
 #ifdef __APPLE__
   mach_vm_size_t copied = 0;
   const kern_return_t result = mach_vm_read_overwrite(
-      mach_task_self(), static_cast<mach_vm_address_t>(address), sizeof(value),
-      reinterpret_cast<mach_vm_address_t>(&value), &copied);
-  return result == KERN_SUCCESS && copied == sizeof(value);
+      mach_task_self(), static_cast<mach_vm_address_t>(address), out.size(),
+      reinterpret_cast<mach_vm_address_t>(out.data()), &copied);
+  return result == KERN_SUCCESS && copied == out.size();
 #else
   (void)address;
-  (void)value;
+  (void)out;
   return false;
 #endif
+}
+
+template <typename T>
+bool read_at(std::uint64_t address, T& value) {
+  coop_nxnative::LocalMemory memory(0, copy_local);
+  return memory.read(address, {reinterpret_cast<std::uint8_t*>(&value), sizeof(value)});
 }
 
 [[maybe_unused]] bool valid_main_base(std::uint64_t base, std::uint64_t size) {
@@ -139,6 +142,11 @@ void probe() {
 
   bool announced_wait = false;
   bool was_valid = false;
+  coop_nxnative::LocalMemory memory(base, copy_local);
+  coop::host::PlayerReader reader(memory);
+  coop::host::Sampler sampler;
+  std::uint64_t packets = 0, bytes = 0, next_report = 0;
+  std::fprintf(stderr, "[coop-nxnative] shared local sampler ready (read-only; no network)\n");
   while (running.load(std::memory_order_relaxed)) {
     if (base == 0) {
       base = discover_main_base();
@@ -150,32 +158,52 @@ void probe() {
         continue;
       }
     }
-    std::uint64_t game_ui = 0;
-    std::uint16_t flags = 0;
-    float position[3]{};
-    std::uint8_t child = 0;
-    const bool readable = read_at(base + kGameUiModulePtr, game_ui) && game_ui != 0 &&
-                          read_at(game_ui + kGameUiPoseFlags, flags);
-    const bool valid = readable && (flags & kPoseValid) != 0 &&
-                       read_at(game_ui + kGameUiPosition, position) &&
-                       read_at(game_ui + kGameUiIsChild, child);
+    memory.set_main_base(base);
+    const auto reading = reader.read();
+    // Diagnostic clock only. A connected client must use its synchronized
+    // server clock here. Polling is not a game-frame callback yet.
+    const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    const auto outgoing = sampler.frame(reading, now);
+    packets += outgoing.size();
+    for (const auto& packet : outgoing) bytes += packet.bytes.size();
 
-    if (valid) {
-      std::fprintf(stderr, "[coop-nxnative] Link %s position %.3f %.3f %.3f\n",
-                   child ? "child" : "adult", position[0], position[1], position[2]);
+    if (reading) {
+      if (!was_valid || now >= next_report) {
+        const char* age = !reading->age ? "unknown" :
+            (*reading->age == coop::protocol::Age::child ? "child" : "adult");
+        std::fprintf(stderr, "[coop-nxnative] Link %s position %.3f %.3f %.3f scene=%s "
+            "rotation=%s animation=%s equipment=%s samples=%u packets=%llu bytes=%llu\n",
+            age, reading->position[0], reading->position[1], reading->position[2],
+            reading->scene ? reading->scene->c_str() : "?", reading->rotation ? "ok" : "?",
+            reading->animation ? reading->animation->name.c_str() : "?",
+            reading->equipment ? "ok" : "?", static_cast<unsigned>(sampler.next_sequence()),
+            static_cast<unsigned long long>(packets), static_cast<unsigned long long>(bytes));
+        next_report = now + 1'000'000;
+      }
       announced_wait = false;
     } else if (!announced_wait || was_valid) {
       std::fprintf(stderr, "[coop-nxnative] waiting for a valid player state\n");
       announced_wait = true;
     }
-    was_valid = valid;
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    was_valid = reading.has_value();
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
   }
 }
 
 }  // namespace
 
 __attribute__((constructor)) static void coop_nxnative_start() {
+#ifdef __APPLE__
+  // The launcher spawns dmhost and redirects stderr into the nxnative log.
+  // The launcher has no guest memory. Its inherited DYLD_INSERT_LIBRARIES
+  // loads us again in the child, which is the process we need to sample.
+  char path[4096]{};
+  std::uint32_t size = sizeof(path);
+  if (_NSGetExecutablePath(path, &size) != 0) return;
+  const char* name = std::strrchr(path, '/');
+  if (std::strcmp(name ? name + 1 : path, "dmhost") != 0) return;
+#endif
   std::thread(probe).detach();
 }
 
