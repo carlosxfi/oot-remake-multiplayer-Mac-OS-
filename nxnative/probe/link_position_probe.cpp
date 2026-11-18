@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+#include "module_detection.hpp"
 
 #ifdef __APPLE__
 #include <dlfcn.h>
@@ -53,11 +54,11 @@ bool read_at(std::uint64_t address, T& value) {
 #endif
 }
 
-bool valid_main_base(std::uint64_t base) {
+[[maybe_unused]] bool valid_main_base(std::uint64_t base, std::uint64_t size) {
   std::uint32_t mod0 = 0;
-  char magic[4]{};
-  return base != 0 && read_at(base + 4, mod0) && mod0 < 0x1000000 &&
-         read_at(base + mod0, magic) && std::memcmp(magic, "MOD0", sizeof(magic)) == 0;
+  return coop_nxnative::inspect_module({base, size},
+      [](std::uint64_t address, auto& value) { return read_at(address, value); }, mod0)
+      == coop_nxnative::ModuleStatus::valid;
 }
 
 std::uint64_t discover_main_base_from_symbols() {
@@ -71,11 +72,13 @@ std::uint64_t discover_main_base_from_symbols() {
   };
   void* symbol = dlsym(RTLD_DEFAULT, "g_mod");
   if (symbol == nullptr) return 0;
-  auto* modules = *static_cast<ModulePrefix**>(symbol);
-  if (modules == nullptr || std::strncmp(modules[0].name, "main", sizeof(modules[0].name)) != 0)
+  std::uint64_t modules = 0;
+  ModulePrefix module{};
+  if (!read_at(reinterpret_cast<std::uint64_t>(symbol), modules) || modules == 0 ||
+      !read_at(modules, module) || std::strncmp(module.name, "main", sizeof(module.name)) != 0)
     return 0;
-  const auto base = reinterpret_cast<std::uint64_t>(modules[0].base);
-  return valid_main_base(base) ? base : 0;
+  const auto base = reinterpret_cast<std::uint64_t>(module.base);
+  return valid_main_base(base, module.size) ? base : 0;
 #else
   return 0;
 #endif
@@ -91,15 +94,34 @@ std::uint64_t discover_main_base_from_log() {
     return 0;
 
   FILE* file = std::fopen(path, "r");
-  if (file == nullptr) return 0;
+  static bool reported_open_error = false;
+  if (file == nullptr) {
+    if (!reported_open_error)
+      std::fprintf(stderr, "[coop-nxnative] cannot open module log: %s (%s)\n", path, std::strerror(errno));
+    reported_open_error = true;
+    return 0;
+  }
+  reported_open_error = false;
   std::uint64_t found = 0;
   char line[2048]{};
   while (std::fgets(line, sizeof(line), file) != nullptr) {
-    const char* marker = std::strstr(line, "main: base ");
-    unsigned long long candidate = 0;
-    if (marker != nullptr && std::sscanf(marker, "main: base %llx", &candidate) == 1 &&
-        valid_main_base(static_cast<std::uint64_t>(candidate)))
-      found = static_cast<std::uint64_t>(candidate);
+    coop_nxnative::MainModule module;
+    if (!coop_nxnative::parse_main_module(line, module)) continue;
+    std::uint32_t mod0 = 0;
+    const auto status = coop_nxnative::inspect_module(module,
+        [](std::uint64_t address, auto& value) { return read_at(address, value); }, mod0);
+    if (status == coop_nxnative::ModuleStatus::valid) {
+      found = module.base;
+    } else {
+      static std::uint64_t last_base = 0;
+      static auto last_status = coop_nxnative::ModuleStatus::valid;
+      if (module.base != last_base || status != last_status)
+        std::fprintf(stderr, "[coop-nxnative] log main 0x%llx size 0x%llx MOD0 offset 0x%x: %s\n",
+            static_cast<unsigned long long>(module.base), static_cast<unsigned long long>(module.size),
+            static_cast<unsigned>(mod0), coop_nxnative::status_text(status));
+      last_base = module.base;
+      last_status = status;
+    }
   }
   std::fclose(file);
   return found;

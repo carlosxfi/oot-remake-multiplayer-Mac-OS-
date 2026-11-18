@@ -22,11 +22,26 @@ The terminal should first print `position probe loaded`, then `waiting for a
 valid player state`. Load a save. A successful proof prints Link's age and
 position twice a second.
 
-The probe discovers nxnative's ASLR-selected `main` base from its loader table.
-The override is only for diagnosing a loader whose symbols are unavailable:
+The probe discovers nxnative's ASLR-selected `main` base from its loader table
+when exported, or from the current game's nxnative log otherwise. It checks
+that the candidate has a readable MOD0 header inside the loader's reported
+module size. MOD0 offsets beyond 16 MB are supported. Rejected candidates
+print the offset and reason, so an old log or unreadable mapping is visible.
+The default log is `~/Library/Logs/nxnative/0400486024DEC000.log`;
+`COOP_NXNATIVE_LOG=/path/to/current.log` overrides it.
+
+The base override is only for diagnosing discovery problems. An address from
+a previous launch may belong to a different mapping after restarting:
 
 ```sh
 COOP_NXNATIVE_MAIN_BASE=0x... nxnative/probe/run.sh "/path/to/game.app"
+```
+
+The portable detector regression checks need only a C++20 compiler:
+
+```sh
+c++ -std=c++20 -Wall -Wextra -Werror nxnative/probe/module_detection_test.cpp -o /tmp/coop-module-check
+/tmp/coop-module-check
 ```
 
 If macOS reports that the inserted library is blocked, run the executable from
