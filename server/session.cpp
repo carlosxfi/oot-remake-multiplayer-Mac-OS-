@@ -189,6 +189,10 @@ void Session::received(ConnectionId id, std::uint8_t channel,
     }
     return;
   }
+  if (c.state == State::held) {
+    ++stats_.before_welcome;  // not a player until the host lets it in
+    return;
+  }
   if (std::holds_alternative<JoinProof>(message)) {
     ++stats_.stray_proof;  // a joined player's: never relayed
     return;
@@ -307,7 +311,7 @@ void Session::note_wrong_password(std::optional<std::uint32_t> address, std::uin
 }
 
 void Session::admit(ConnectionId id, Connection& c, const Hello& hello,
-                    std::uint64_t now_us, const std::optional<PlayerKey>& player_key) {
+                    std::uint64_t now_us, const std::optional<PlayerKey>& player_key, bool approved) {
   std::string expected = config_.game_build_id;
   if (expected.empty()) {
     expected = player_count() == 0 ? hello.game_build_id : session_game_build_;
@@ -358,6 +362,20 @@ void Session::admit(ConnectionId id, Connection& c, const Hello& hello,
   if (player_count() >= max_players()) {
     refuse(id, c, RefuseReason::server_full, now_us);
     return;
+  }
+  // Host approval (docs/protocol.md "Host approval"): the host is asked
+  // first. Never for the first player in (it hosts: there is nobody to ask),
+  // a rejoin that showed its token (preferred is set: that player was let in
+  // already), or a player key the host said to remember while no player in
+  // has that key too (a copied kit).
+  if (config_.approve_joins && !approved && preferred == 0 && host_) {
+    if (!player_key || key_in_use(player_key) ||
+        !remembered_ids_.contains(lobby_id(hello.nickname, player_key, std::nullopt, 0))) {
+      hold(id, c, hello, player_key, now_us);
+      return;
+    }
+    ++stats_.joins_remembered;
+    log(hello.nickname + " joins without asking the host: the host said to remember this player");
   }
   // A game coming back to a restarted server (protocol 10): its old number
   // when free, so the numbers (colours, objects' owners) do not swap with
@@ -447,7 +465,114 @@ void Session::admit(ConnectionId id, Connection& c, const Hello& hello,
     send_to_others(id, kChannelSession, LobbyMutes{c.number, flags});
   }
   send_snapshot(id);
-  log("player " + std::to_string(c.number) + " joined: " + c.nickname);
+  // G2: the dungeon bosses the group beat this session (after the snapshot: the joiner's flags first).
+  for (const auto& [room, beaten] : boss_beaten_) {
+    send(id, kChannelSession, beaten);
+  }
+  log("player " + std::to_string(c.number) + " joined: " + c.nickname + " (client: " + client_label(hello.build_id) + ")");
+}
+
+bool Session::key_in_use(const std::optional<PlayerKey>& key) const {
+  return key && std::any_of(connections_.begin(), connections_.end(), [&](const auto& e) {
+           return e.second.state == State::joined && !e.second.parent && e.second.player_key == key;
+         });
+}
+
+std::uint16_t Session::knock_wait_s() const {
+  const std::uint64_t s = (config_.approve_wait_us + 999'999) / 1'000'000;
+  return static_cast<std::uint16_t>(std::clamp<std::uint64_t>(s, 1, kMaxKnockWaitSeconds));
+}
+
+// The joiner waits, not a player yet (nothing is relayed to it, and it is not
+// counted), with its connection already encrypted; the host is asked.
+void Session::hold(ConnectionId id, Connection& c, const Hello& hello,
+                   const std::optional<PlayerKey>& player_key, std::uint64_t now_us) {
+  const auto held = static_cast<std::size_t>(std::count_if(
+      connections_.begin(), connections_.end(), [](const auto& e) { return e.second.state == State::held; }));
+  if (config_.max_held_joins != 0 && held >= config_.max_held_joins) {
+    refuse(id, c, RefuseReason::server_full, now_us,
+           std::to_string(held) + " players wait for the host's answer already");
+    return;
+  }
+  c.state = State::held;
+  c.pending_hello = hello;
+  c.player_key = player_key;
+  c.knock = next_knock_++;
+  if (next_knock_ == 0) next_knock_ = 1;  // (0 is never a knock)
+  c.held_at = now_us;
+  const bool known = player_key && !key_in_use(player_key) &&
+                     allowed_ids_.contains(lobby_id(hello.nickname, player_key, std::nullopt, 0));
+  send(*host_, kChannelSession,
+       JoinKnock{c.knock, knock_wait_s(), known ? join_knock::known : std::uint8_t{0}, hello.nickname});
+  // The joiner learns it waits, and for how long (its game waits that long for WELCOME).
+  send(id, kChannelSession, JoinKnock{c.knock, knock_wait_s(), 0, hello.nickname});
+  ++stats_.joins_held;
+  log(hello.nickname + " asks to join: waiting for the host's answer (knock " + std::to_string(c.knock) +
+      (known ? ", let in before" : "") + ")");
+}
+
+void Session::on_join_allow(ConnectionId id, const JoinAllow& a, std::uint64_t now_us) {
+  if (!host_ || *host_ != id) {
+    ++stats_.join_answers_stray;  // only the host answers
+    return;
+  }
+  const auto it = std::find_if(connections_.begin(), connections_.end(), [&](const auto& e) {
+    return e.second.state == State::held && e.second.knock == a.knock;
+  });
+  if (it == connections_.end()) {
+    ++stats_.join_answers_stray;  // over already: the joiner left, or the time ran out
+    return;
+  }
+  const ConnectionId joiner = it->first;
+  Connection& c = it->second;
+  const Hello hello = *c.pending_hello;
+  c.pending_hello.reset();
+  const std::optional<PlayerKey> key = c.player_key;
+  // Only a key is remembered: a name is easy to take.
+  const std::string who = lobby_id(hello.nickname, key, std::nullopt, 0);
+  if (!a.allow) {
+    ++stats_.joins_denied;
+    // Turned away without asking until the session ends, as a ban (by name without a key).
+    if (a.remember) banned_ids_.insert(who);
+    refuse(joiner, c, RefuseReason::not_let_in, now_us,
+           "the host did not let " + hello.nickname + " in" + (a.remember ? " (and keeps them out)" : ""));
+    return;
+  }
+  ++stats_.joins_allowed;
+  if (key) {
+    allowed_ids_.insert(who);
+    if (a.remember) remembered_ids_.insert(who);
+  }
+  log("the host lets " + hello.nickname + " in" +
+      (a.remember && key ? " (and they join without asking from now on)" : ""));
+  c.state = State::awaiting_hello;  // admit() moves it on to joined or closing
+  admit(joiner, c, hello, now_us, key, /*approved=*/true);
+}
+
+// Tells the host a knock it was asked about is over (wait 0).
+void Session::knock_over(const Connection& c) {
+  if (!host_ || !c.pending_hello) return;
+  send(*host_, kChannelSession, JoinKnock{c.knock, 0, 0, c.pending_hello->nickname});
+}
+
+void Session::refuse_held(std::uint64_t now_us, const std::string& why) {
+  for (auto& [id, c] : connections_) {
+    if (c.state != State::held) continue;
+    ++stats_.joins_unanswered;
+    refuse(id, c, RefuseReason::not_let_in, now_us, why);
+  }
+}
+
+// Crossplay (docs/crossplay.md): the client a player runs, as its HELLO names it (build_id: this kit's module, another
+// launcher's build of the same module, a test tool). Only for the log, so a desync between two clients can be told
+// apart; nothing is decided by it. Printable ASCII only, at most 48 characters (it comes from another player's game).
+std::string Session::client_label(const std::string& build_id) {
+  std::string out;
+  for (const char ch : build_id) {
+    if (out.size() >= 48) break;
+    if (ch >= 0x20 && ch <= 0x7e) out.push_back(ch);
+  }
+  return out.empty() ? std::string("unnamed") : out;
 }
 
 void Session::on_player_message(ConnectionId id, Connection& c, std::uint8_t channel,
@@ -564,17 +689,22 @@ void Session::on_player_message(ConnectionId id, Connection& c, std::uint8_t cha
     on_grass_cut(id, c, *cut, now_us);
     return;
   }
-  if (std::holds_alternative<DungeonEvent>(message)) {
-    // deku-dungeon-2: relayed to the others in the sender's scene, never kept.
+  if (std::holds_alternative<DungeonEvent>(message) || std::holds_alternative<SwitchState>(message)) {
+    // deku-dungeon-2, room-objects: relayed to the others in the sender's scene, never kept.
     set_sender(message, c.number);
-    const auto& e = std::get<DungeonEvent>(message);
-    if (e.scene != c.scene) return;  // late, from the scene it left
-    send_to_scene(e.scene, id, channel, message);
+    const std::string& scene = std::holds_alternative<DungeonEvent>(message) ? std::get<DungeonEvent>(message).scene
+                                                                             : std::get<SwitchState>(message).scene;
+    if (scene != c.scene) return;  // late, from the scene it left
+    send_to_scene(scene, id, channel, message);
     ++stats_.relayed;
     return;
   }
   if (const auto* lobby = std::get_if<LobbyAction>(&message)) {
     on_lobby(id, *lobby, now_us);
+    return;
+  }
+  if (const auto* answer = std::get_if<JoinAllow>(&message)) {
+    on_join_allow(id, *answer, now_us);
     return;
   }
   // The Lobby: the host muted this player's chat or voice; nothing relayed.
@@ -628,6 +758,19 @@ void Session::on_player_message(ConnectionId id, Connection& c, std::uint8_t cha
     on_status(c, st->flags, now_us);
   }
   if (sender_of(message)) set_sender(message, c.number);
+  // G2 (player report #241): a proven boss death, the same rule as the games' (CoopBossBeaten::ProvenDeath): a game
+  // took the boss's death event itself (BOSS_SCENE outro_start). Never BOSS_ROOM defeated, which a game also sends
+  // on a guess. Kept, by boss and scene, for players who join later (told after the flag snapshot as that player's
+  // outro_end, which a joiner's cutscene rules ignore); each game keeps only a boss's own dungeon scene.
+  if (const auto* death = std::get_if<BossScene>(&message);
+      death != nullptr && death->kind == BossSceneKind::outro_start) {
+    BossScene kept = *death;  // the sender's number is set above
+    kept.kind = BossSceneKind::outro_end;
+    if (boss_beaten_.size() < 64 && boss_beaten_.emplace(std::pair{death->boss, death->scene}, kept).second) {
+      log("boss " + std::to_string(death->boss) + " died in " + death->scene + " (player " + std::to_string(c.number) +
+          "'s game took its death): kept for players who join");
+    }
+  }
   if (std::holds_alternative<PlayerSample>(message) || std::holds_alternative<PlayerPose>(message)) {
     send_streamed(id, c, channel, message, now_us);
   } else {
@@ -664,8 +807,25 @@ Difficulty Session::difficulty() const {
   d.set_by = difficulty_set_by_;
   d.auto_scale = difficulty_.auto_scale;
   d.preset = difficulty_.auto_scale ? DifficultyPreset::normal : difficulty_.preset;
-  d.values = difficulty_in_force(difficulty_, player_count());
+  d.values = ngplus_difficulty(difficulty_in_force(difficulty_, player_count()), ngplus_);
   return d;
+}
+
+// (Navi) New Game+: the host's level, told to everyone in the session at once.
+void Session::set_ngplus(std::uint8_t level) {
+  if (level > kMaxNgPlus) level = kMaxNgPlus;
+  if (level == ngplus_) return;
+  ngplus_ = level;
+  const Difficulty now = difficulty();
+  log("New Game+ " + std::to_string(level) + ": life " + std::to_string(now.values.hp_pct) + "%, damage " +
+      std::to_string(now.values.damage_pct) + "%, bosses life " + std::to_string(now.values.boss_hp_pct) + "%");
+  if (now.values == difficulty_told_) return;
+  difficulty_told_ = now.values;
+  std::vector<std::uint8_t> bytes;
+  if (encode(Message{now}, bytes) != Error::none) return;
+  for (const auto& [id, c] : connections_) {
+    if (c.state == State::joined) actions_.push_back(SendAction{id, kChannelSession, bytes});
+  }
 }
 
 // The host chooses the difficulty for everyone. Anyone else's is ignored
@@ -911,6 +1071,7 @@ void Session::on_host_reset() {
         " boss heart container claim(s) forgotten (those bosses fight again)");
   }
   boss_hearts_.clear();
+  boss_beaten_.clear();  // G2: as the claims, those bosses are alive again in the save
 }
 
 // A host's table, merged in part by part. A flag the server lacks is kept and
@@ -1326,16 +1487,43 @@ void Session::on_object_message(ConnectionId id, Connection& c, std::uint8_t cha
 // not move it.
 void Session::on_damage(ConnectionId id, Connection& c, Damage& d, std::uint64_t now_us) {
   auto it = objects_.find(d.id);
-  if (it == objects_.end() || !it->second.owner || *it->second.owner == id) {
+  if (it == objects_.end()) {
     ++stats_.damage_dropped;
     return;
   }
   Object& o = it->second;
   d.player_number = c.number;
+  if (!o.owner) {
+    // The owner hold has not chosen its owner yet: the hit was real in the
+    // hitter's game, so it waits for the owner (end_owner_hold).
+    if (o.held && d.amount > 0 && o.held_hits.size() < kHeldHitsMax) {
+      o.held_hits.emplace_back(id, d);
+      ++stats_.damage_held;
+    } else {
+      ++stats_.damage_dropped;
+    }
+    return;
+  }
+  if (*o.owner == id) {
+    // Sent while the hitter's was a copy (the epoch it knew is older), here
+    // after it became the owner: the life the hand-over gave it cannot have
+    // this hit in it. Back to its own game, which takes it off that life.
+    const auto behind = static_cast<std::uint16_t>(o.epoch - d.epoch);
+    if (behind != 0 && behind < 0x8000 && d.amount > 0) {
+      send(id, kChannelOwnership, d);
+      ++stats_.relayed;
+      ++stats_.damage_returned;
+      mark_fight(o, now_us);
+    } else {
+      ++stats_.damage_dropped;
+    }
+    return;
+  }
   send(*o.owner, kChannelOwnership, d);
   ++stats_.relayed;
   ++stats_.damage_relayed;
   mark_fight(o, now_us);
+  if (o.ask) o.ask->hits += d.amount;
   if (o.hit_at == 0 || now_us - o.hit_at > config_.hit_window_us) {
     o.hit_base.reset();
     if (o.last_state && o.last_state->life) o.hit_base = o.last_state->life->life;
@@ -1582,7 +1770,7 @@ void Session::drop_presence(ConnectionId id, std::uint8_t number, const ObjectId
     // A made enemy goes on with a player who has its copy. A projectile, or
     // an enemy nobody else has, is gone on every screen.
     std::optional<ConnectionId> next;
-    if (!o.projectile) next = best_other(o, id, false, now_us);
+    if (!o.projectile) next = next_owner(o, id, now_us);
     if (next) {
       change_owner(oid, o, next, number, now_us);
       return;
@@ -1598,7 +1786,18 @@ void Session::drop_presence(ConnectionId id, std::uint8_t number, const ObjectId
     forget(it);  // nobody has it loaded: forgotten
     return;
   }
-  if (o.owner == id) change_owner(oid, o, best_other(o, id, false, now_us), number, now_us);
+  if (o.owner == id) change_owner(oid, o, next_owner(o, id, now_us), number, now_us);
+}
+
+// Report 138: the owner let go of it (its game unloaded it, or it left). A
+// player who can play takes it before a loading, paused, dead or downed one,
+// which run_ownership would only hand on again a moment later (the 4-player
+// log: Lizalfos owner 1, 3, 2 within a fraction of a second, each change
+// turning the enemy to another Link). A busy one only when nobody else has it.
+std::optional<ConnectionId> Session::next_owner(const Object& o, ConnectionId except,
+                                                std::uint64_t now_us) const {
+  if (auto fit = best_other(o, except, true, now_us)) return fit;
+  return best_other(o, except, false, now_us);
 }
 
 bool Session::has_loaded(ConnectionId id, const Object& o) const {
@@ -1667,8 +1866,25 @@ bool Session::owner_hit_lately(const Object& o, std::uint64_t now_us) const {
 }
 
 bool Session::hands_back_soon(const Object& o, ConnectionId to, std::uint64_t now_us) {
-  const bool soon = config_.handover_back_us != 0 && o.previous_owner == to && o.changed_at != 0 &&
-                    now_us - o.changed_at < config_.handover_back_us;
+  if (config_.handover_back_us == 0) return false;
+  const auto lately = [&](std::uint64_t at) {
+    return at != 0 && now_us >= at && now_us - at < config_.handover_back_us;
+  };
+  // Report 37, for every player who held it (report 138): not back to one
+  // who gave it up lately.
+  const auto gave = o.gave_up.find(to);
+  bool soon = gave != o.gave_up.end() && lately(gave->second);
+  // Report 138 (row 71's sticky target): an enemy's AI chases only its
+  // owner's Link, so each change turns it to another player. One that changed
+  // lately and still stands by its owner stays its owner's; a chase, the near
+  // rule or a hit from a third player waits. An owner far from it, or with no
+  // known place, is no target: it goes on as before.
+  if (!soon && o.owner && lately(o.changed_at)) {
+    if (auto oc = connections_.find(*o.owner); oc != connections_.end()) {
+      const auto d = distance_to(oc->second, o, now_us);
+      soon = d && *d <= config_.handover_chase_m;
+    }
+  }
   if (soon) ++stats_.handover_back_held;
   return soon;
 }
@@ -1706,6 +1922,7 @@ void Session::finish_handover(const ObjectId& oid, Object& o, const ObjectState*
                               std::uint64_t now_us) {
   if (!o.ask || !o.owner) return;
   const ConnectionId to = o.ask->to;
+  const std::int64_t hits_after_ask = o.ask->hits;
   o.ask.reset();
   // The player it was for left, changed scene or unloaded it meanwhile: the
   // owner keeps it.
@@ -1722,11 +1939,20 @@ void Session::finish_handover(const ObjectId& oid, Object& o, const ObjectState*
       if (!s.animation) s.animation = old.animation;
       if (!s.life) s.life = old.life;
     }
+    // The answer's life is the owner's with every DAMAGE it had when it read
+    // the ask (its pending replays included). What was passed on after the
+    // ask it read later, and as a copy: taken off here, or the new owner
+    // would get that life back.
+    if (answer->life && s.life && hits_after_ask > 0) {
+      s.life->life = static_cast<std::int32_t>(
+          std::max<std::int64_t>(0, std::int64_t{s.life->life} - hits_after_ask));
+    }
     o.last_state = std::move(s);
   }
   // A hit passed on to the old owner just before: its answer may have been
-  // read before the game took the life off. The new owner must not get the
-  // life back.
+  // read before the game took the life off (an older game answers with the
+  // life as read; no answer at all leaves the last sample). The new owner
+  // must not get the life back.
   if (o.last_state && o.last_state->life && o.hit_base && o.hit_at != 0 &&
       now_us - o.hit_at <= config_.hit_window_us) {
     const std::int64_t cap = std::max<std::int64_t>(0, std::int64_t{*o.hit_base} - o.hit_sum);
@@ -1742,6 +1968,8 @@ void Session::finish_handover(const ObjectId& oid, Object& o, const ObjectState*
 void Session::change_owner(const ObjectId& oid, Object& o, std::optional<ConnectionId> next,
                            std::uint8_t old_owner, std::uint64_t now_us) {
   o.previous_owner = o.owner;
+  if (o.owner) o.gave_up[*o.owner] = stamp(now_us);
+  if (next) o.gave_up.erase(*next);
   o.owner = next;
   o.last_owner = old_owner;
   ++o.epoch;
@@ -2384,7 +2612,14 @@ void Session::remove_player(ConnectionId id, LeaveReason reason, std::uint64_t n
   const ConnectionId game = it->second.parent.value_or(id);
   Connection c = std::move(it->second);
   connections_.erase(it);
+  if (c.state == State::held) {
+    // Host approval: it stopped waiting; the host's question is over.
+    knock_over(c);
+    log(c.pending_hello->nickname + " stopped waiting for the host's answer (knock " + std::to_string(c.knock) + ")");
+    return;
+  }
   if (c.state != State::joined) return;
+  const bool was_host = host_ == id;
   // A local player's own game knows it left (it asked, or it left itself).
   send_to_others(game, kChannelSession, PlayerLeft{c.number, reason});
   // After PLAYER_LEFT, so the others learn the owner left before the new
@@ -2409,12 +2644,15 @@ void Session::remove_player(ConnectionId id, LeaveReason reason, std::uint64_t n
     lobby_mutes_.clear();
     banned_ids_.clear();
     banned_addresses_.clear();
+    allowed_ids_.clear();
+    remembered_ids_.clear();
     flags_.clear();
     objects_.clear();
     grass_.clear();
     world_.clear();
     dead_.clear();
     boss_hearts_.clear();  // as the flags: a new group (a new save) has its own containers
+    boss_beaten_.clear();
   } else if (host_ == id) {
     // The remaining player with the lowest number takes over. Everyone is
     // told on the progress channel, so the new host learns it hosts before
@@ -2430,6 +2668,8 @@ void Session::remove_player(ConnectionId id, LeaveReason reason, std::uint64_t n
     send_to_others(id, kChannelProgress, Host{number});
     log("player " + std::to_string(number) + " hosts now");
   }
+  // Host approval: the host who was asked left, so nobody answers them.
+  if (was_host) refuse_held(now_us, "the host left before answering");
   if (player_count() > 0) tell_difficulty_change(id);
 }
 
@@ -2446,10 +2686,13 @@ void Session::tick(std::uint64_t now_us) {
   }
   std::vector<ConnectionId> late_hello;  // not a player: dropped without PLAYER_LEFT
   std::vector<ConnectionId> silent;
+  std::vector<ConnectionId> unanswered;  // held, and the host did not answer in time
   for (auto& [id, c] : connections_) {
     if ((c.state == State::awaiting_hello || c.state == State::awaiting_proof) &&
         now_us - c.connected_at >= config_.hello_timeout_us) {
       late_hello.push_back(id);
+    } else if (c.state == State::held) {
+      if (now_us - c.held_at >= config_.approve_wait_us) unanswered.push_back(id);
     } else if (c.state == State::closing &&
                now_us - c.refused_at >= config_.refused_grace_us) {
       late_hello.push_back(id);  // refused, but the transport never closed it
@@ -2466,6 +2709,14 @@ void Session::tick(std::uint64_t now_us) {
   for (ConnectionId id : late_hello) {
     actions_.push_back(DisconnectAction{id});
     remove_player(id, LeaveReason::timed_out, now_us);
+  }
+  for (ConnectionId id : unanswered) {
+    Connection& c = connections_.at(id);
+    knock_over(c);
+    ++stats_.joins_unanswered;
+    refuse(id, c, RefuseReason::not_let_in, now_us,
+           "the host did not answer " + c.pending_hello->nickname + " in " +
+               std::to_string(config_.approve_wait_us / 1'000'000) + " s");
   }
   for (ConnectionId id : silent) {
     auto it = connections_.find(id);
@@ -2507,6 +2758,13 @@ void Session::end_owner_hold(std::uint64_t now_us) {
     o.owner = best;
     ++stats_.owners_held;
     announce_owner(oid, o);
+    // The hits that waited for it. The owner's own are in its life already.
+    for (auto& [from, hit] : std::exchange(o.held_hits, {})) {
+      if (from == *best) continue;
+      send(*best, kChannelOwnership, hit);
+      ++stats_.relayed;
+      ++stats_.damage_relayed;
+    }
   }
   for (const ObjectId& oid : gone) {
     if (auto it = objects_.find(oid); it != objects_.end()) forget(it);

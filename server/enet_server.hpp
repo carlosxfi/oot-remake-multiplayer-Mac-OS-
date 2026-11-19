@@ -61,6 +61,7 @@ class EnetServer {
   void service(std::uint32_t timeout_ms);
 
   const Session& session() const { return session_; }
+  Session& session() { return session_; }  // (Navi: New Game+, HostService::set_ngplus)
 
   // Bytes ENet had counted for players' lost fragments and we took off again
   // (coop/net/enet_waiting.hpp): above 0 means the line loses packets.

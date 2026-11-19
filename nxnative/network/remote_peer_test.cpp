@@ -7,8 +7,43 @@
 #include <thread>
 
 #include "enet_server.hpp"
+#include "coop/protocol/codec.hpp"
 
 namespace {
+template <typename T>
+void roundtrip(const T& original) {
+  const auto bytes = coop::protocol::encode(original);
+  assert(bytes);
+  coop::protocol::Message decoded;
+  assert(coop::protocol::decode(*bytes, decoded) == coop::protocol::Error::none);
+  const auto* actual = std::get_if<T>(&decoded);
+  assert(actual && *actual == original);
+}
+
+void check_protocol() {
+  namespace protocol = coop::protocol;
+  static_assert(protocol::kProtocolVersion == 14);
+  roundtrip(protocol::JoinKnock{1, 60, 0, "Mac-test"});
+  roundtrip(protocol::JoinAllow{1, true, false});
+  protocol::Damage damage;
+  damage.id.value = 1;
+  damage.amount = 1;
+  roundtrip(damage);
+  damage.hit_at = protocol::Vec3{1, 2, 3};
+  roundtrip(damage);
+  protocol::HitRecord record{};  // synthetic data, no game content
+  record[5] = 42;
+  damage.hit_record = record;
+  roundtrip(damage);
+  damage.hit_at.reset();
+  roundtrip(damage);
+  protocol::ObjectSample object;
+  object.id.value = 1;
+  object.state.time = {1000, 1};
+  object.state.hit = protocol::ObjectHit{1, record};
+  roundtrip(object);
+}
+
 template <typename Step, typename Done>
 bool wait_for(Step step, Done done, unsigned milliseconds = 5000) {
   const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);
@@ -22,8 +57,14 @@ bool wait_for(Step step, Done done, unsigned milliseconds = 5000) {
 }  // namespace
 
 int main() {
+  check_protocol();
   using coop_nxnative::remote_config;
-  assert(remote_config("127.0.0.1", "27510", "MacLink", "synthetic-password"));
+  const auto compatible = remote_config("127.0.0.1", "27510", "MacLink", "synthetic-password");
+  assert(compatible && compatible->hello.protocol_version == 14);
+  auto legacy = compatible->hello;
+  legacy.protocol_version = 12;
+  assert(coop::protocol::check_hello(legacy, legacy.game_build_id) ==
+         coop::protocol::RefuseReason::wrong_protocol_version);
   assert(!remote_config("127.0.0.1:27510", "27510", "MacLink", "synthetic-password"));
   assert(!remote_config("localhost", "27510", "MacLink", "synthetic-password"));
   assert(!remote_config("256.0.0.1", "27510", "MacLink", "synthetic-password"));
@@ -40,6 +81,7 @@ int main() {
     options.port = 0;
     options.session.join_password = "synthetic-password";
     options.session.game_build_id = "e0f3ccfaf50065ae";
+    options.session.approve_joins = true;
     coop::server::EnetServer server(options);
     assert(server.start());
     const auto port = std::to_string(server.port());
@@ -61,6 +103,7 @@ int main() {
     reading.scene = "SyntheticScene";
     reading.age = coop::protocol::Age::child;
     std::optional<coop::protocol::PlayerSample> received_by_windows;
+    std::optional<std::uint32_t> pending_knock;
     std::uint32_t sequence = 0;
     auto next_send = std::chrono::steady_clock::now();
     const auto step = [&] {
@@ -79,10 +122,18 @@ int main() {
         if (event->kind == coop::net::EventKind::message) {
           if (const auto* sample = std::get_if<coop::protocol::PlayerSample>(&event->message))
             received_by_windows = *sample;
+          if (const auto* knock = std::get_if<coop::protocol::JoinKnock>(&event->message);
+              knock && knock->wait_s != 0)
+            pending_knock = knock->knock;
         }
       }
       mac.tick(reading);
     };
+    assert(wait_for(step, [&] {
+      return pending_knock && mac.stats().detail == "waiting for Windows host approval";
+    }));
+    assert(mac.stats().state != coop::net::State::connected && mac.stats().sent == 0);
+    assert(windows.send(coop::protocol::JoinAllow{*pending_knock, true, false}));
     assert(wait_for(step, [&] {
       return received_by_windows && mac.stats().received_samples > 0;
     }));
@@ -109,3 +160,4 @@ int main() {
   enet_deinitialize();
   std::cout << "Remote peer configuration, two-way encrypted samples and refusal checks passed.\n";
 }
+

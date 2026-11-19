@@ -58,6 +58,10 @@ constexpr std::size_t kMaxPacketBytes = 4 + 0xffff + proto::kSealOverheadBytes;
 constexpr std::uint64_t kPongBurst = 4;
 constexpr std::uint64_t kPongIntervalUs = 125'000;
 
+// Held for the host's answer (JOIN_KNOCK): the server turns us away itself
+// when its time is up; we wait this much longer for that REFUSED.
+constexpr std::uint64_t kKnockMarginUs = 5'000'000;
+
 // Time passed since `then`; 0 when an injected clock stepped back.
 constexpr std::uint64_t elapsed(std::uint64_t now, std::uint64_t then) {
   return now >= then ? now - then : 0;
@@ -126,6 +130,7 @@ std::string_view to_string(EventKind kind) {
     case EventKind::join_timed_out: return "join timed out";
     case EventKind::host_changed: return "host changed";
     case EventKind::player_equip: return "player equip";
+    case EventKind::waiting_for_host: return "waiting for host";
   }
   return "unknown";
 }
@@ -146,6 +151,9 @@ std::string_view refuse_reason_text(proto::RefuseReason reason) {
     case proto::RefuseReason::banned:
       return "the host banned you from this game: you cannot join it again until the host "
              "stops hosting";
+    case proto::RefuseReason::not_let_in:
+      return "the host did not let you in (they said no, did not answer in time, or left): "
+             "ask them, then join again";
     case proto::RefuseReason::not_encrypted:
       return "the server did not ask for the join password, so the game did not join it "
              "unencrypted (every session has a password and is encrypted): the host's server "
@@ -215,6 +223,7 @@ void Client::stop() {
 
 void Client::begin_attempt() {
   attempt_started_us_ = now_us();
+  held_until_us_ = 0;
   cipher_.reset();
   key_pair_.reset();
   hello_packet_.clear();
@@ -374,7 +383,9 @@ void Client::service(std::uint32_t wait_ms) {
   switch (state_) {
     case State::connecting:
     case State::handshaking:
-      if (elapsed(now, attempt_started_us_) >= ms_to_us(config_.handshake_timeout_ms)) {
+      // Held for the host's answer: the server's own time limit counts.
+      if (elapsed(now, attempt_started_us_) >= ms_to_us(config_.handshake_timeout_ms) &&
+          now >= held_until_us_) {
         end_attempt(DropReason::handshake_timeout);
       }
       break;
@@ -475,6 +486,20 @@ void Client::on_receive(const std::uint8_t* data, std::size_t size,
         // (someone on the path may have taken the key out).
         refuse_unencrypted();
       }
+    } else if (const auto* knock = std::get_if<proto::JoinKnock>(&message)) {
+      // Host approval (protocol 13): the password was right and the server
+      // holds us until the host lets us in; wait as long as it says. Only on
+      // a keyed connection (it came sealed, after our proof).
+      if (cipher_ == nullptr || knock->wait_s == 0) {
+        ++rejected_;
+        return;
+      }
+      held_until_us_ = now_us() + static_cast<std::uint64_t>(knock->wait_s) * 1'000'000u + kKnockMarginUs;
+      Event event;
+      event.kind = EventKind::waiting_for_host;
+      event.message = message;
+      event.channel = channel;
+      push(std::move(event));
     } else if (const auto* refused = std::get_if<proto::Refused>(&message)) {
       if (peer_ != nullptr) {
         enet_peer_disconnect_now(peer_, 0);

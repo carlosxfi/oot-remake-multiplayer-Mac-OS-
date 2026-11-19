@@ -112,7 +112,9 @@ The network build has not yet been checked inside the Mac game.
 
 The Windows game and this branch must use the same co-op protocol and game
 build. The bridge uses the shared protocol constant, not an independently
-chosen version. This first cross-platform check sends player samples,
+chosen version. The shared protocol, codec, network client and local test
+relay now follow protocol 14, including the host-approval handshake and
+hit-record message layouts. This first cross-platform check sends player samples,
 status and equipment, and receives player samples into presence. It does not
 apply incoming progress, warp the player, create puppets, or draw name tags.
 
@@ -145,7 +147,16 @@ A refused join logs its reason; check the protocol/game version and the room
 password. A client still connecting suggests checking the local address,
 port, Windows private-network firewall permission, or Wi-Fi client isolation.
 
+When the Windows host requires approval, the Mac log says
+`waiting for Windows host approval`. Accept that player's request on Windows.
+The Mac waits for the server's approval window instead of timing out at the
+normal handshake deadline. The remote-client check covers this wait, verifies
+that no player state is sent before approval, then checks two-way delivery.
+It also checks that a legacy protocol HELLO is refused and that the new
+host-approval and hit-record messages encode and decode correctly.
+
 The Mac refuses progress-host takeover and stops if it is selected, because
 its shared-progress implementation is not ready. Keep Windows hosting during
 the check. Mac-side puppet display and shared progress are separate work.
 The LAN mode and its new test still need to run on the Mac.
+

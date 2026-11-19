@@ -70,6 +70,8 @@ struct RemotePeer::Impl {
         presence.on_welcome(event->welcome);
         totals.last_received.reset();
         totals.detail = "welcomed";
+      } else if (event->kind == Kind::waiting_for_host) {
+        totals.detail = "waiting for Windows host approval";
       } else if (event->kind == Kind::disconnected || event->kind == Kind::connect_failed) {
         presence.clear();
         totals.last_received.reset();
@@ -130,3 +132,4 @@ RemoteStats RemotePeer::stats() const {
 }
 
 }  // namespace coop_nxnative
+

@@ -24,6 +24,9 @@
 // - the retry delay goes back to the first one only after a connection that
 //   lasted stable_after_ms, so a server that welcomes and drops at once is
 //   retried ever more slowly;
+// - a server that holds the join for the host's answer (JOIN_KNOCK, protocol
+//   13) is waited for as long as it says, plus 5 s, instead of
+//   handshake_timeout_ms; the server ends the wait itself (REFUSED);
 // - the client retries for as long as it runs; the host decides when to give
 //   up (failed_attempts(), then stop()).
 // The event queue grows only by what one service() handles, so a host that
@@ -216,6 +219,11 @@ enum class EventKind : std::uint8_t {
   // PLAYER_EQUIP from `player`: `equipment` is what that player now wears,
   // the fields the message left out kept from before (also in players()).
   player_equip,
+  // Host approval (protocol 13): the server holds our join until the host
+  // lets us in; `message` is its JOIN_KNOCK (our name, `wait_s` seconds). The
+  // attempt waits that long (and a little more) for WELCOME or REFUSED. A
+  // host gets the others' JOIN_KNOCKs as plain `message` events.
+  waiting_for_host,
 };
 
 std::string_view to_string(EventKind kind);
@@ -484,6 +492,8 @@ class Client {
   std::uint32_t address_host_ = 0;  // ENet's form, network byte order
 
   std::uint64_t attempt_started_us_ = 0;
+  // Held for the host's answer (JOIN_KNOCK): the attempt waits until then; 0: not held.
+  std::uint64_t held_until_us_ = 0;
   std::uint64_t hello_sent_us_ = 0;
   // This attempt has answered its JOIN_CHALLENGE: a second one is refused.
   bool challenge_answered_ = false;
