@@ -18,22 +18,8 @@ port=${port:-27510}
 printf 'Nickname [MacLink]: '
 IFS= read -r nickname
 nickname=${nickname:-MacLink}
-terminal_state=
-restore_echo() {
-  if [ -n "$terminal_state" ]; then stty "$terminal_state"; fi
-}
-trap 'restore_echo' EXIT
-trap 'exit 130' INT
-trap 'exit 143' HUP TERM
-printf 'Room password (hidden): '
-if [ -t 0 ]; then
-  terminal_state=$(stty -g)
-  stty -echo
-fi
+printf 'Room password (visible): '
 IFS= read -r password
-restore_echo
-terminal_state=
-printf '\n'
 if [ -z "$host" ] || [ -z "$password" ]; then
   echo 'The host address and room password are required.' >&2
   exit 2

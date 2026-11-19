@@ -130,8 +130,9 @@ sh nxnative/network/join.sh "/path/to/game.app"
 ```
 
 The helper prompts for the host address, port (default 27510), an ASCII
-nickname of at most 16 characters (default MacLink), and the room password
-with echo disabled. It passes them only to this launch. The loopback check
+nickname of at most 16 characters (default MacLink), and the room password.
+The password stays visible so it can be checked before joining. The helper
+passes it only to this launch. The loopback check
 is disabled for this mode. No router port forwarding is needed on the same
 LAN; Windows must allow the host game's UDP traffic on the private network.
 
