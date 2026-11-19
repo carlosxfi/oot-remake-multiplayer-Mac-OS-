@@ -8,6 +8,7 @@
 #include <cstring>
 #include <thread>
 #include <utility>
+#include "calc_bridge.hpp"
 #include "module_detection.hpp"
 #include "local_memory.hpp"
 #include "coop/host/player_reader.hpp"
@@ -22,11 +23,68 @@
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #include <mach-o/dyld.h>
+#include <libkern/OSCacheControl.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 namespace {
 
 std::atomic<bool> running{true};
+std::atomic<std::uint64_t> calc_frames{0};
+
+template <typename T>
+bool read_at(std::uint64_t address, T& value);
+
+extern "C" __attribute__((visibility("default"))) void coop_nxnative_calc_frame() {
+  calc_frames.fetch_add(1, std::memory_order_relaxed);
+}
+
+#ifdef __APPLE__
+bool write_code(std::uint64_t address, std::span<const std::uint8_t> bytes) {
+  const auto page_size = static_cast<std::uint64_t>(getpagesize());
+  const auto page = address & ~(page_size - 1);
+  const auto end = (address + bytes.size() + page_size - 1) & ~(page_size - 1);
+  mach_vm_address_t alias = 0;
+  vm_prot_t current = 0, maximum = 0;
+  const auto task = mach_task_self();
+  kern_return_t result = mach_vm_remap(task, &alias, end - page, 0,
+      VM_FLAGS_ANYWHERE, task, page, FALSE, &current, &maximum, VM_INHERIT_NONE);
+  if (result != KERN_SUCCESS) return false;
+  result = mach_vm_protect(task, alias, end - page, FALSE, VM_PROT_READ | VM_PROT_WRITE);
+  if (result == KERN_SUCCESS) {
+    std::memcpy(reinterpret_cast<void*>(alias + address - page), bytes.data(), bytes.size());
+    sys_icache_invalidate(reinterpret_cast<void*>(address), bytes.size());
+  }
+  mach_vm_deallocate(task, alias, end - page);
+  return result == KERN_SUCCESS;
+}
+
+bool install_calc_bridge(std::uint64_t base) {
+  std::uint32_t original = 0;
+  if (!read_at(base + coop_nxnative::kCalcHookOffset, original) ||
+      original != coop_nxnative::kOriginalCalcCall) {
+    std::fprintf(stderr, "[coop-nxnative] calc bridge refused: game hook bytes do not match build 1.1.1\n");
+    return false;
+  }
+  const auto cave = coop_nxnative::make_calc_cave(
+      reinterpret_cast<std::uint64_t>(&coop_nxnative_calc_frame));
+  const auto hook = coop_nxnative::arm64_branch(
+      coop_nxnative::kCalcHookOffset, coop_nxnative::kCalcCaveOffset, true);
+  if (!hook || !write_code(base + coop_nxnative::kCalcCaveOffset, cave)) {
+    std::fprintf(stderr, "[coop-nxnative] calc bridge refused: could not install its code cave\n");
+    return false;
+  }
+  const std::span<const std::uint8_t> hook_bytes(
+      reinterpret_cast<const std::uint8_t*>(&*hook), sizeof(*hook));
+  if (!write_code(base + coop_nxnative::kCalcHookOffset, hook_bytes)) {
+    std::fprintf(stderr, "[coop-nxnative] calc bridge refused: could not install its frame hook\n");
+    return false;
+  }
+  std::fprintf(stderr, "[coop-nxnative] calc-thread bridge installed (no game writes or guest calls yet)\n");
+  return true;
+}
+#endif
 
 std::uint64_t configured_main_base() {
   const char* value = std::getenv("COOP_NXNATIVE_MAIN_BASE");
@@ -151,6 +209,7 @@ void probe() {
   coop::host::PlayerReader reader(memory);
   coop::host::Sampler sampler;
   std::uint64_t packets = 0, bytes = 0, next_report = 0;
+  bool calc_bridge_installed = false;
   std::fprintf(stderr, "[coop-nxnative] shared local sampler ready (read-only)\n");
 #ifdef COOP_NXNATIVE_NETWORK
   coop_nxnative::Loopback loopback;
@@ -197,6 +256,9 @@ void probe() {
       }
     }
     memory.set_main_base(base);
+#ifdef __APPLE__
+    if (!calc_bridge_installed) calc_bridge_installed = install_calc_bridge(base);
+#endif
     const auto reading = reader.read();
 #ifdef COOP_NXNATIVE_NETWORK
     if (network_on) loopback.tick(reading);
@@ -218,6 +280,9 @@ void probe() {
           static_cast<int>(state.size()), state.data(), static_cast<unsigned>(stats.self), stats.peers,
           static_cast<unsigned long long>(stats.sent), static_cast<unsigned long long>(stats.received_samples),
           static_cast<unsigned long long>(stats.send_failures), stats.detail.c_str());
+      if (calc_bridge_installed)
+        std::fprintf(stderr, "[coop-nxnative] calc-thread bridge frames=%llu\n",
+            static_cast<unsigned long long>(calc_frames.load(std::memory_order_relaxed)));
       if (stats.last_received && stats.last_received->position) {
         const auto& p = *stats.last_received->position;
         std::fprintf(stderr, "[coop-nxnative] remote player %u position %.3f %.3f %.3f scene=%s\n",
@@ -284,3 +349,4 @@ __attribute__((constructor)) static void coop_nxnative_start() {
 __attribute__((destructor)) static void coop_nxnative_stop() {
   running.store(false, std::memory_order_relaxed);
 }
+

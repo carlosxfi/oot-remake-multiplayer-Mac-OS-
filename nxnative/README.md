@@ -156,8 +156,16 @@ that no player state is sent before approval, then checks two-way delivery.
 It also checks that a legacy protocol HELLO is refused and that the new
 host-approval and hit-record messages encode and decode correctly.
 
+The injected bridge also installs a build-checked, no-op calc-thread hook at
+the co-op game's existing frame point. Its `calc-thread bridge frames` count
+must increase while gameplay runs. This proves the next puppet stage can make
+game calls from the correct guest thread; this diagnostic stage still makes no
+guest calls and writes no player or save state. The hook refuses to install if
+the original instruction does not exactly match game build 1.1.1.
+
 The Mac refuses progress-host takeover and stops if it is selected, because
 its shared-progress implementation is not ready. Keep Windows hosting during
 the check. Mac-side puppet display and shared progress are separate work.
 The LAN mode and its new test still need to run on the Mac.
+
 
