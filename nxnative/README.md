@@ -113,8 +113,8 @@ The network build has not yet been checked inside the Mac game.
 The Windows game and this branch must use the same co-op protocol and game
 build. The bridge uses the shared protocol constant, not an independently
 chosen version. The shared protocol, codec, network client and local test
-relay now follow protocol 14, including the host-approval handshake and
-hit-record message layouts. This first cross-platform check sends player samples,
+relay now follow protocol 15, including the host-approval handshake, platform
+updates and hit-record message layouts. This first cross-platform check sends player samples,
 status and equipment, and receives player samples into presence. It does not
 apply incoming progress, warp the player, create puppets, or draw name tags.
 
