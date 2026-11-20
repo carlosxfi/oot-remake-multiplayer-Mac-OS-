@@ -51,15 +51,17 @@ class PlayerReader {
   explicit PlayerReader(GameMemory& memory, DrawnState* drawn_state = nullptr)
       : memory_(memory), drawn_memo_(drawn_state != nullptr ? *drawn_state : own_drawn_) {}
 
+  enum class PositionOrder { game_ui_first, actor_first };
+
   // This frame's reading, or nothing when the player cannot be read.
-  std::optional<PlayerReading> read();
+  std::optional<PlayerReading> read(PositionOrder order = PositionOrder::game_ui_first);
   // Split screen: read this Player actor (another local player's Link)
   // instead of the one the game's lookup finds; its place is the actor's own,
   // never the GameUI copy (that one is the first Link's). 0: the lookup again.
   void set_actor(std::uint64_t actor) { actor_ = actor; }
 
   // The parts, for tests and for the emulator's debug overlay.
-  std::optional<Vec3> read_position();      // GameUI copy, else the actor's
+  std::optional<Vec3> read_position(PositionOrder order = PositionOrder::game_ui_first);
   std::optional<Quat> read_rotation();      // from the actor's matrix
   std::optional<protocol::Age> read_age();
   std::optional<std::string> read_scene();

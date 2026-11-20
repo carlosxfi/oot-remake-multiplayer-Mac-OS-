@@ -209,7 +209,10 @@ void probe() {
   coop::host::PlayerReader reader(memory);
   coop::host::Sampler sampler;
   std::uint64_t packets = 0, bytes = 0, next_report = 0;
+#ifdef __APPLE__
   bool calc_bridge_installed = false;
+  std::uint64_t next_calc_attempt = 0, next_calc_report = 0;
+#endif
   std::fprintf(stderr, "[coop-nxnative] shared local sampler ready (read-only)\n");
 #ifdef COOP_NXNATIVE_NETWORK
   coop_nxnative::Loopback loopback;
@@ -256,18 +259,27 @@ void probe() {
       }
     }
     memory.set_main_base(base);
+    const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
 #ifdef __APPLE__
-    if (!calc_bridge_installed) calc_bridge_installed = install_calc_bridge(base);
+    if (!calc_bridge_installed && now >= next_calc_attempt) {
+      calc_bridge_installed = install_calc_bridge(base);
+      next_calc_attempt = now + 5'000'000;
+    }
+    if (calc_bridge_installed && now >= next_calc_report) {
+      std::fprintf(stderr, "[coop-nxnative] calc-thread bridge frames=%llu\n",
+          static_cast<unsigned long long>(calc_frames.load(std::memory_order_relaxed)));
+      next_calc_report = now + 1'000'000;
+    }
 #endif
-    const auto reading = reader.read();
+    // A valid GameUI copy may still hold old coordinates. Prefer Link's actor
+    // for the Mac probe and use GameUI when the actor position is unavailable.
+    const auto reading = reader.read(coop::host::PlayerReader::PositionOrder::actor_first);
 #ifdef COOP_NXNATIVE_NETWORK
     if (network_on) loopback.tick(reading);
     if (remote) remote->tick(reading);
 #endif
-    // Diagnostic clock only. A connected client must use its synchronized
-    // server clock here. Polling is not a game-frame callback yet.
-    const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count());
+    // The diagnostic sampler is independent of the LAN client's server clock.
     const auto outgoing = sampler.frame(reading, now);
     packets += outgoing.size();
     for (const auto& packet : outgoing) bytes += packet.bytes.size();
@@ -280,9 +292,6 @@ void probe() {
           static_cast<int>(state.size()), state.data(), static_cast<unsigned>(stats.self), stats.peers,
           static_cast<unsigned long long>(stats.sent), static_cast<unsigned long long>(stats.received_samples),
           static_cast<unsigned long long>(stats.send_failures), stats.detail.c_str());
-      if (calc_bridge_installed)
-        std::fprintf(stderr, "[coop-nxnative] calc-thread bridge frames=%llu\n",
-            static_cast<unsigned long long>(calc_frames.load(std::memory_order_relaxed)));
       if (stats.last_received && stats.last_received->position) {
         const auto& p = *stats.last_received->position;
         std::fprintf(stderr, "[coop-nxnative] remote player %u position %.3f %.3f %.3f scene=%s\n",

@@ -75,7 +75,15 @@ std::optional<std::uint64_t> PlayerReader::find_player_actor() {
   return std::nullopt;
 }
 
-std::optional<Vec3> PlayerReader::read_position() {
+std::optional<Vec3> PlayerReader::read_position(PositionOrder order) {
+  const auto actor_position = [&]() -> std::optional<Vec3> {
+    if (const auto actor = find_player_actor())
+      return read_vec3(memory_, *actor + addr::kActorPosition);
+    return std::nullopt;
+  };
+  if (order == PositionOrder::actor_first) {
+    if (auto position = actor_position()) return position;
+  }
   // The GameUI copy, while its valid bit is set (the first Link's: not for set_actor's).
   if (const auto ui = actor_ == 0 ? game_ui() : std::nullopt) {
     const auto flags = read_u16(memory_, *ui + addr::kGameUiPoseFlags);
@@ -83,11 +91,7 @@ std::optional<Vec3> PlayerReader::read_position() {
       if (auto p = read_vec3(memory_, *ui + addr::kGameUiPosition)) return p;
     }
   }
-  // Otherwise the actor itself.
-  if (const auto actor = find_player_actor()) {
-    return read_vec3(memory_, *actor + addr::kActorPosition);
-  }
-  return std::nullopt;
+  return order == PositionOrder::game_ui_first ? actor_position() : std::nullopt;
 }
 
 std::optional<Quat> PlayerReader::read_rotation() {
@@ -340,8 +344,8 @@ std::optional<std::string> PlayerReader::read_link_name(std::uint64_t link_offse
   return std::nullopt;  // longer than a name can be
 }
 
-std::optional<PlayerReading> PlayerReader::read() {
-  const auto position = read_position();
+std::optional<PlayerReading> PlayerReader::read(PositionOrder order) {
+  const auto position = read_position(order);
   if (!position) return std::nullopt;
   PlayerReading reading;
   reading.position = *position;

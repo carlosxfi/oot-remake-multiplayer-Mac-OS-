@@ -102,5 +102,35 @@ int main() {
   assert(reader.read());
   outgoing = sampler.frame(reader.read(), 1'500'000);
   assert(!outgoing.empty() && !sampler.last_sample()->velocity);
+  // A valid GameUI copy can remain stationary while the actor moves.
+  using PositionOrder = coop::host::PlayerReader::PositionOrder;
+  constexpr std::uint64_t scene = ui + 0x10000, table = scene + 0x10000,
+      array = table + 0x10000, manager = array + 0x10000, link = manager + 0x10000,
+      holder = link + 0x10000, actor = holder + 0x10000;
+  fake.put(base + addr::kSceneModulePtr, scene);
+  fake.put(scene + addr::kSceneTable, table);
+  fake.put(table + addr::kTableCount, addr::kMinTableCount);
+  fake.put(table + addr::kTableArray, array);
+  fake.put(array + addr::kPlayerManagerSlot, manager);
+  fake.put(manager + addr::kManagerMustBeSet, link);
+  fake.put(manager + addr::kManagerLinkFirst, link);
+  fake.put(link + addr::kLinkId, std::uint32_t{1});
+  fake.put(link + addr::kLinkHolder, holder);
+  fake.put(holder + addr::kHolderId, std::uint32_t{1});
+  fake.put(holder + addr::kHolderActor, actor);
+  fake.put(actor + addr::kActorState, addr::kActorStatePresent);
+  fake.put(actor + addr::kActorPosition, initial);
+  coop::host::Sampler actor_sampler;
+  assert(!actor_sampler.frame(reader.read(PositionOrder::actor_first), 2'000'000).empty());
+  moved = {4.0f, 5.0f, 6.0f};
+  fake.put(actor + addr::kActorPosition, moved);
+  assert(reader.read_position() == initial);
+  outgoing = actor_sampler.frame(reader.read(PositionOrder::actor_first), 2'020'000);
+  assert(outgoing.size() == 1);
+  assert(protocol::decode(outgoing.front().bytes, decoded) == protocol::Error::none);
+  sample = std::get_if<protocol::PlayerSample>(&decoded);
+  assert(sample && sample->position == moved);
+  fake.put(holder + addr::kHolderId, std::uint32_t{2});
+  assert(reader.read_position(PositionOrder::actor_first) == initial);
   std::cout << "Local memory, player reader and sampler checks passed.\n";
 }
