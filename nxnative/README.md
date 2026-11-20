@@ -157,7 +157,7 @@ It also checks that a legacy protocol HELLO is refused and that the new
 host-approval and hit-record messages encode and decode correctly.
 
 The injected bridge also installs a build-checked, no-op calc-thread hook at
-the co-op game's existing frame point. Its `calc-thread bridge frames` count
+the recurring co-op frame call in `moduleCalc_`. Its `calc-thread bridge frames` count
 must increase while gameplay runs. This proves the next puppet stage can make
 game calls from the correct guest thread; this diagnostic stage still makes no
 guest calls and writes no player or save state. The hook refuses to install if

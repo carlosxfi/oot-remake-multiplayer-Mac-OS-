@@ -8,10 +8,11 @@
 namespace coop_nxnative {
 
 // Ocarina of Time 1.1.1, main build e0f3ccfaf50065ae.
-inline constexpr std::uint64_t kCalcHookOffset = 0x6e6dd8;
+// Use the recurring moduleCalc_ call identified by CoopSvc and Hookshot.
+inline constexpr std::uint64_t kCalcHookOffset = 0x6e70f8;
 inline constexpr std::uint64_t kCalcCaveOffset = 0x3c46280;
 inline constexpr std::uint64_t kFrameStepOffset = 0x3b4e300;
-inline constexpr std::uint32_t kOriginalCalcCall = 0x94d19d4a;
+inline constexpr std::uint32_t kOriginalCalcCall = 0x94d19c82;
 
 inline std::optional<std::uint32_t> arm64_branch(std::uint64_t pc,
                                                  std::uint64_t target,

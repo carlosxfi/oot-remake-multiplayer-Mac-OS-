@@ -6,7 +6,10 @@
 
 int main() {
   using namespace coop_nxnative;
-  assert(arm64_branch(kCalcHookOffset, kCalcCaveOffset, true) == 0x94d57d2au);
+  // The rare call can fire once during startup and miss ordinary gameplay.
+  assert(kCalcHookOffset == 0x6e70f8);
+  assert(arm64_branch(kCalcHookOffset, kFrameStepOffset, true) == kOriginalCalcCall);
+  assert(arm64_branch(kCalcHookOffset, kCalcCaveOffset, true) == 0x94d57c62u);
   assert(!arm64_branch(0, 3, true));
   assert(!arm64_branch(0, 1ull << 27, true));
 
