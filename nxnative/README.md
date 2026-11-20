@@ -113,8 +113,8 @@ The network build has not yet been checked inside the Mac game.
 The Windows game and this branch must use the same co-op protocol and game
 build. The bridge uses the shared protocol constant, not an independently
 chosen version. The shared protocol, codec, network client and local test
-relay now follow protocol 14, including the host-approval handshake and
-hit-record message layouts. This first cross-platform check sends player samples,
+relay now follow protocol 15, including the host-approval handshake, platform
+updates and hit-record message layouts. This first cross-platform check sends player samples,
 status and equipment, and receives player samples into presence. It does not
 apply incoming progress, warp the player, create puppets, or draw name tags.
 
@@ -157,11 +157,17 @@ It also checks that a legacy protocol HELLO is refused and that the new
 host-approval and hit-record messages encode and decode correctly.
 
 The injected bridge also installs a build-checked, no-op calc-thread hook at
-the co-op game's existing frame point. Its `calc-thread bridge frames` count
+the recurring co-op frame call in `moduleCalc_`. Its `calc-thread bridge frames` count
 must increase while gameplay runs. This proves the next puppet stage can make
 game calls from the correct guest thread; this diagnostic stage still makes no
 guest calls and writes no player or save state. The hook refuses to install if
 the original instruction does not exactly match game build 1.1.1.
+
+The position probe prefers a valid position from the live Link actor and falls
+back to the GameUI copy. Move Link and compare the local `Link ... position`
+line with `calc-thread bridge frames`. Frame counts are logged in offline and
+LAN modes. A growing count with fixed coordinates points toward the position
+reader. A fixed count calls for checking the hook while the game is running.
 
 The Mac refuses progress-host takeover and stops if it is selected, because
 its shared-progress implementation is not ready. Keep Windows hosting during

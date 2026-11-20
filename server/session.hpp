@@ -230,6 +230,21 @@ struct SessionConfig {
   float boss_near_m = 15.0f;
   float boss_near_margin_m = 4.0f;
   std::uint64_t boss_near_hold_us = 0;
+  // Row 149 (King Dodongo rolling forever): a boss (a group's root) whose
+  // owner's samples keep one animation, one action verb and one life this
+  // long is stuck in that move. Its owner's game re-chooses after about 25 s
+  // (CoopBossNative::Table::kStallSteps); if it still holds the move, the
+  // fight lock is freed and not renewed by its samples until the move
+  // changes, so the rules out of a fight (a copy chasing its Link, the near
+  // player) can hand it to a game whose AI then chooses from its own body.
+  // A hit that takes life is a change. 0: off.
+  std::uint64_t boss_stall_us = 40'000'000;
+  // Row 149: a group member first listed this recently takes its root's owner
+  // at once when the group link comes (no hand-over ask): a boss's part made
+  // in every game (King Dodongo's roll centre, made anew for each roll) was
+  // first owned by whichever game listed it first, and ran in the boss
+  // owner's game as that game's copy until the ask was answered. 0: off.
+  std::uint64_t part_fresh_us = 3'000'000;
   // An owner paused or dead this long (or loading at all) loses its objects
   // to another player who has them, fight or not.
   std::uint64_t owner_paused_us = 6'000'000;
@@ -407,7 +422,9 @@ struct Stats {
   std::uint64_t damage_relayed = 0;     // DAMAGE passed on to an owner
   std::uint64_t boss_to_hitter = 0;     // a boss asked over to the player who hurt it (issue 150)
   std::uint64_t boss_to_near = 0;       // a boss asked over to the player near it (issue 150)
-  std::uint64_t boss_to_ready = 0;      // a boss asked from a game that has not played its intro to one that has
+  std::uint64_t boss_to_ready = 0;       // a boss asked from a game that has not played its intro to one that has
+  std::uint64_t boss_stalled = 0;       // row 149: a boss held one move boss_stall_us: its fight lock freed
+  std::uint64_t parts_to_root = 0;      // row 149: a fresh group member given its root's owner at the link
   std::uint64_t damage_dropped = 0;     // DAMAGE with no owner, or from it
   // DAMAGE that crossed a hand-over to its own sender (sent as a copy, here
   // after the sender became the owner): given back to it, so its game takes
@@ -426,6 +443,19 @@ struct Stats {
   std::uint64_t object_table_full = 0;  // objects turned away: max_objects
   std::uint64_t handover_asked = 0;       // HANDOVER_ASK sent to an owner
   std::uint64_t handover_unanswered = 0;  // moved with the last relayed sample
+  std::uint64_t bomb_takes = 0;           // BOMB_TAKE asked of the owner
+  std::uint64_t bomb_refused = 0;         // BOMB_TAKE answered with BOMB_ANSWER
+  std::uint64_t bomb_handed_on = 0;       // a bomb whose owner left went on
+  std::uint64_t lifts_relayed = 0;        // LIFT_ASK / LIFT_ANSWER / LIFT_PLACE passed to the player named
+  std::uint64_t lifts_dropped = 0;        // to nobody, to the sender, or from a game not sharing
+  std::uint64_t lifts_not_sharing = 0;    // LIFT_ASK answered not_sharing by the server
+  std::uint64_t lifts_unplaced = 0;       // LIFT_ASK answered too_far: the lifter's place not known there
+  std::uint64_t lifts_not_young = 0;      // LIFT_ASK answered not_young / LIFT_PLACE dropped: not a child Link
+  std::uint64_t pvp_strikes_relayed = 0;  // PVP_STRIKE passed on to its victim
+  std::uint64_t pvp_strikes_dropped = 0;  // PvP off, not native, other scene, no fresh place, not its object
+  std::uint64_t pvp_strikes_flood = 0;    // past kPvpStrikesPerSecond from one attacker
+  std::uint64_t pvp_results_relayed = 0;  // PVP_RESULT passed on to the victim's scene
+  std::uint64_t pvp_results_dropped = 0;  // no strike in flight with that attacker and seq
   std::uint64_t handover_chased = 0;      // asked because a copy chased its player
   std::uint64_t handover_back_held = 0;    // not handed back so soon (handover_back_us)
   std::uint64_t fish_to_lure = 0;         // a fish asked over to the nearest lure (issue 151)
@@ -568,6 +598,28 @@ class Session {
     // Where its Link is, from PLAYER_SAMPLE; forgotten at a scene change.
     std::optional<protocol::Vec3> position;
     std::uint64_t position_at = 0;
+    // Its Link's age, from the last PLAYER_SAMPLE that had one (kept over scene changes); unset: not known.
+    // Only a child is ever lifted (on_lift).
+    std::optional<protocol::Age> age;
+    // BOMB_SHARE (native puppets phase 2): its game takes part in the bomb
+    // hand-over. Off until it says so.
+    bool bomb_share = false;
+    // LIFT_SHARE (native puppets phase 3): its game takes part in player
+    // lifts. Off until it says so.
+    bool lift_share = false;
+    // PVP_NATIVE (native puppets phase 4): its game runs PvP on real
+    // bodies. Off until it says so.
+    bool pvp_native = false;
+    // As an attacker: when its last PVP_STRIKEs came (the last second).
+    std::deque<std::uint64_t> pvp_strike_times;
+    // As a victim: strikes relayed to it and not answered yet. A PVP_RESULT
+    // is relayed only for one of these, once.
+    struct PvpPending {
+      std::uint8_t attacker = 0;
+      std::uint32_t seq = 0;
+      std::uint64_t at_us = 0;
+    };
+    std::deque<PvpPending> pvp_pending;
     // As a receiver: how many samples and poses of each sender it was due
     // (interest counts every n-th), and its share of the pose upload cap.
     std::array<std::uint32_t, protocol::kMaxPlayers + 1> samples_due{};
@@ -643,6 +695,9 @@ class Session {
       // keeps the order, so the owner's answer was read before any of it:
       // finish_handover takes exactly this much off the answer's life.
       std::int64_t hits = 0;
+      // A BOMB_TAKE (native puppets phase 2): no answer means the owner's
+      // game keeps the bomb (BOMB_ANSWER kept), not a move.
+      bool bomb = false;
     };
     std::optional<Ask> ask;
     // DAMAGE that came while the owner hold had not chosen its owner yet
@@ -654,6 +709,12 @@ class Session {
     std::uint64_t hit_at = 0;
     std::uint64_t owner_hit_at = 0;  // the owner's own hit (its samples' life fell); 0: none
     std::uint64_t orphan_since = 0;  // a made enemy its owner stopped listing
+    std::uint64_t first_at = 0;      // when it was first listed or spawned (part_fresh_us)
+    // Row 149 (boss_stall_us): the owner's move in its samples (animation,
+    // action verb, life), since when, and whether its fight lock is freed.
+    std::string hold_key;
+    std::uint64_t hold_since = 0;
+    bool stalled = false;
   };
   using Objects = std::map<protocol::ObjectId, Object>;
 
@@ -730,7 +791,10 @@ class Session {
   void on_boss_heart(ConnectionId id, Connection& c, const protocol::BossHeart& m);
   // A player who can be given an object: not loading, paused, dead or downed.
   static bool busy(const Connection& c);
-  void on_object_group(ConnectionId id, Connection& c, const protocol::ObjectGroup& g);
+  void on_object_group(ConnectionId id, Connection& c, const protocol::ObjectGroup& g,
+                       std::uint64_t now_us);
+  // Row 149 (boss_stall_us): a boss root's owner sample, for the stall check.
+  void note_hold(Object& o, const protocol::ObjectState& sample, std::uint64_t now_us);
   void on_fish_lure(Connection& c, const protocol::FishLure& m, std::uint64_t now_us);
   // Proximity voice: to the others in the speaker's scene within voice_range_m.
   void on_voice(ConnectionId id, const Connection& c, protocol::VoiceFrame& m, std::uint64_t now_us);
@@ -785,6 +849,25 @@ class Session {
   // The owner answered (or never did: answer null) and the object moves.
   void finish_handover(const protocol::ObjectId& oid, Object& o,
                        const protocol::ObjectState* answer, std::uint64_t now_us);
+  // Native puppets phase 2 (docs/native-puppets.md, docs/protocol.md "Bomb
+  // hand-over").
+  void on_bomb_take(ConnectionId id, Connection& c, const protocol::BombTake& m,
+                    std::uint64_t now_us);
+  // Native puppets phase 3 (docs/protocol.md "Player lift"): LIFT_ASK,
+  // LIFT_ANSWER and LIFT_PLACE to the one player each names.
+  void on_lift(ConnectionId id, Connection& c, protocol::Message& message,
+               std::uint64_t now_us);
+  // Native puppets phase 4 (docs/protocol.md "PvP on real bodies"):
+  // PVP_STRIKE to its victim, PVP_RESULT to the victim's scene.
+  void on_pvp_strike(ConnectionId id, Connection& c, protocol::Message& message,
+                     std::uint64_t now_us);
+  void on_pvp_result(ConnectionId id, Connection& c, protocol::Message& message,
+                     std::uint64_t now_us);
+  void refuse_bomb(ConnectionId to, const protocol::ObjectId& oid, const Object* o,
+                   protocol::BombRefusal why);
+  // A made bomb whose owner lets go of it (left, changed scene): the
+  // sharing game in its scene that goes on with it, if any.
+  std::optional<ConnectionId> bomb_heir(const Object& o, ConnectionId except) const;
   // Gives the object to `next` (or nobody) with epoch + 1: HANDOVER_STATE to
   // the new owner, then OBJECT_OWNER to the scene.
   void change_owner(const protocol::ObjectId& oid, Object& o, std::optional<ConnectionId> next,
@@ -804,6 +887,10 @@ class Session {
   // not known or the player's is stale.
   std::optional<double> distance_to(const Connection& c, const Object& o,
                                     std::uint64_t now_us) const;
+  // The player's Link is known in `scene` (non-empty): its scene is that
+  // one and its PLAYER_SAMPLE position is fresh.
+  bool place_known_in(const Connection& c, const std::string& scene,
+                      std::uint64_t now_us) const;
   bool unfit_owner(const Connection& c, std::uint64_t now_us) const;
   void mark_fight(Object& o, std::uint64_t now_us);
   bool in_fight(const Object& o, std::uint64_t now_us) const;
