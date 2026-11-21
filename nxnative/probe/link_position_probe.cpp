@@ -49,6 +49,9 @@ std::atomic<unsigned> calc_remote_targets{0};
 enum class GameCallCheck { pending, passed, failed };
 std::atomic<GameCallCheck> game_call_check{GameCallCheck::pending};
 std::atomic<std::uint64_t> spawn_test_base{0};
+std::atomic<hos_coop_frame_fn> shared_frame{nullptr};
+HosCoopApi shared_api{};
+thread_local bool in_shared_frame = false;
 std::uint64_t remote_scene_generation = 0;
 bool remote_local_scene_valid = false;
 std::array<char, 64> remote_actor_name{};
@@ -62,6 +65,16 @@ bool read_at(std::uint64_t address, T& value);
 
 extern "C" __attribute__((visibility("default"))) void coop_nxnative_calc_frame() {
   calc_frames.fetch_add(1, std::memory_order_relaxed);
+#if defined(__APPLE__) && defined(COOP_NXNATIVE_NETWORK)
+  if (const auto frame = shared_frame.load(std::memory_order_acquire)) {
+    if (!in_shared_frame) {
+      in_shared_frame = true;
+      frame(&shared_api, HOS_COOP_SITE_FRAME);
+      in_shared_frame = false;
+    }
+    return;
+  }
+#endif
 #ifdef COOP_NXNATIVE_NETWORK
   // Networking publishes on the sampler thread. Never wait for it in the game.
   unsigned target_count = 0;
@@ -201,6 +214,63 @@ bool read_at(std::uint64_t address, T& value) {
 }
 
 #if defined(__APPLE__) && defined(COOP_NXNATIVE_NETWORK)
+// The first adapter exposes guest memory and calc-thread calls. Input,
+// renderer, and atomic guest operations are left unavailable in this test.
+bool start_shared_module(const char* path, std::uint64_t base) {
+  const char* game_dir = std::getenv("COOP_NXNATIVE_SHARED_DIR");
+  if (!game_dir || !*game_dir) {
+    std::fprintf(stderr, "[coop-nxnative] shared module refused: missing state directory\n");
+    return false;
+  }
+  void* module = dlopen(path, RTLD_LOCAL | RTLD_NOW);
+  if (!module) {
+    std::fprintf(stderr, "[coop-nxnative] shared module open failed: %s\n", dlerror());
+    return false;
+  }
+  const auto start = reinterpret_cast<hos_coop_start_fn>(dlsym(module, "hos_coop_start"));
+  const auto frame = reinterpret_cast<hos_coop_frame_fn>(dlsym(module, "hos_coop_frame"));
+  if (!start || !frame) {
+    std::fprintf(stderr, "[coop-nxnative] shared module refused: missing co-op exports\n");
+    dlclose(module);
+    return false;
+  }
+  shared_api.version = HOS_COOP_API_VERSION;
+  shared_api.size = offsetof(HosCoopApi, pad_buttons);
+  shared_api.main_base = base;
+  shared_api.main_build_id = "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348";
+  shared_api.game_dir = game_dir;
+  shared_api.read = [](std::uint64_t address, void* out, std::size_t size) -> int {
+    return address && out && size && address + size > address &&
+        copy_local(address, {static_cast<std::uint8_t*>(out), size}, nullptr);
+  };
+  shared_api.write = [](std::uint64_t address, const void* bytes, std::size_t size) -> int {
+    return address && bytes && size && address + size > address && size <= UINT32_MAX &&
+        mach_vm_write(mach_task_self(), address, reinterpret_cast<vm_offset_t>(bytes),
+                      static_cast<mach_msg_type_number_t>(size)) == KERN_SUCCESS;
+  };
+  shared_api.cas32 = [](std::uint64_t, std::uint32_t, std::uint32_t, std::uint32_t*) -> int {
+    return 0;
+  };
+  shared_api.call = [](void* ctx, const HosCoopCall* call, std::uint64_t* result) -> int {
+    if (!in_shared_frame || ctx != &shared_api || !call || !result || (call->function & 3) ||
+        call->function < shared_api.main_base ||
+        call->function - shared_api.main_base >= coop_nxnative::kCalcCaveOffset) return 0;
+    *result = coop_nxnative::coop_nxnative_invoke_game_call(call);
+    return 1;
+  };
+  shared_api.log = [](const char* line) {
+    std::fprintf(stderr, "[coop-nxnative shared] %s\n", line);
+  };
+  // Keep the module and its globals alive for the lifetime of the game.
+  if (!start(&shared_api)) {
+    std::fprintf(stderr, "[coop-nxnative] shared module start refused\n");
+    return false;
+  }
+  shared_frame.store(frame, std::memory_order_release);
+  std::fprintf(stderr, "[coop-nxnative] shared module active on calc thread\n");
+  return true;
+}
+
 template <typename T>
 bool write_value(std::uint64_t address, const T& value) {
   return mach_vm_write(mach_task_self(), address, reinterpret_cast<vm_offset_t>(&value),
@@ -512,6 +582,10 @@ std::vector<std::string> available_tunic_actors() {
 void probe() {
 #if defined(__APPLE__) && defined(COOP_NXNATIVE_NETWORK)
   const auto tunic_actors = available_tunic_actors();
+  const char* shared_path = std::getenv("COOP_NXNATIVE_SHARED_MODULE");
+  const bool want_shared = shared_path && *shared_path;
+#elif defined(COOP_NXNATIVE_NETWORK)
+  constexpr bool want_shared = false;
 #endif
   std::uint64_t base = configured_main_base();
   std::fprintf(stderr, "[coop-nxnative] position probe loaded; %s\n",
@@ -533,8 +607,8 @@ void probe() {
   const char* enable_loopback = std::getenv("COOP_NXNATIVE_LOOPBACK");
   const bool want_loopback = enable_loopback && std::strcmp(enable_loopback, "1") == 0;
   const char* remote_host = std::getenv("COOP_NXNATIVE_HOST");
-  const bool want_remote = remote_host && *remote_host;
-  const bool network_on = !want_remote && want_loopback && loopback.start();
+  const bool want_remote = !want_shared && remote_host && *remote_host;
+  const bool network_on = !want_shared && !want_remote && want_loopback && loopback.start();
   std::unique_ptr<coop_nxnative::RemotePeer> remote;
   std::uint64_t next_remote_report = 0;
   if (want_remote && want_loopback) {
@@ -582,8 +656,12 @@ void probe() {
         const bool guarded = install_puppet_guard(base);
 #ifdef COOP_NXNATIVE_NETWORK
         const char* spawn_test = std::getenv("COOP_NXNATIVE_SPAWN_TEST");
-        if (guarded && spawn_test && std::strcmp(spawn_test, "1") == 0)
+        if (want_shared) {
+          if (guarded) start_shared_module(shared_path, base);
+          else std::fprintf(stderr, "[coop-nxnative] shared module skipped: puppet guard unavailable\n");
+        } else if (guarded && spawn_test && std::strcmp(spawn_test, "1") == 0) {
           spawn_test_base.store(base, std::memory_order_release);
+        }
 #else
         (void)guarded;
 #endif

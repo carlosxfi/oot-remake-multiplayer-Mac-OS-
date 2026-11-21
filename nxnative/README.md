@@ -273,3 +273,19 @@ co-op color and the same nearest-preset selection as the Windows client.
 If the selected variant is missing, it uses the plain actor. The log line
 `puppet spawn test requesting` shows the selected actor. Color is selected
 when making the actor, so relaunch after changing the remote player's color.
+
+## Shared v0.11.7 lifecycle test
+
+Build the shared module and probe, then start the opt-in shared client with
+a previously generated puppet overlay and a disposable save:
+
+```sh
+sh nxnative/network/build-shared.sh
+COOP_NXNATIVE_SHARED_MODULE="$PWD/nxnative/network/build/shared-core/hookshot/hookshot_coop.dylib" \
+  sh nxnative/network/join.sh "/path/to/game.app" "$HOME/Projects/oot-coop-puppet-colors/romfs"
+```
+
+Look for `shared module active on calc thread`, then the shared module's
+connection and actor logs. Walk out of and back into the same scene, then
+reconnect. This test uses the calc-thread callback. Present, input, and UI
+hooks, atomic guest writes, and save handoff still need Mac integration.

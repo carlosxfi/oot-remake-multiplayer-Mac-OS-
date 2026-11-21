@@ -39,6 +39,26 @@ if [ -z "$host" ] || [ -z "$password" ]; then
   echo 'The host address and room password are required.' >&2
   exit 2
 fi
+if [ -n "${COOP_NXNATIVE_SHARED_MODULE:-}" ]; then
+  if [ "$#" -ne 2 ] || [ ! -f "$COOP_NXNATIVE_SHARED_MODULE" ]; then
+    echo 'Shared lifecycle mode needs the built module and the puppet overlay.' >&2
+    exit 2
+  fi
+  if [ ! -f "$overlay/../coop_puppet.json" ]; then
+    echo 'Shared lifecycle mode needs coop_puppet.json beside the romfs folder.' >&2
+    exit 2
+  fi
+  state=$(mktemp -d "${TMPDIR:-/tmp}/oot-coop-nxnative.XXXXXX")
+  trap 'rm -rf "$state"' EXIT
+  pack="$state/mods/contents/0400486024DEC000/coop-puppet"
+  mkdir -p "$pack"
+  cp "$overlay/../coop_puppet.json" "$pack/"
+  export COOP_NXNATIVE_SHARED_DIR="$state"
+  export LICHII_COOP_SERVER="$host" LICHII_COOP_PORT="$port"
+  export LICHII_COOP_NAME="$nickname" LICHII_COOP_PASSWORD="$password"
+  export LICHII_COOP_PUPPET=1 LICHII_COOP_HOST_SAVE=0 HOS_COOP_MODS_CODE=0 HOS_COOP_NULL_READS=0
+fi
+
 COOP_NXNATIVE_HOST="$host" COOP_NXNATIVE_PORT="$port" \
 COOP_NXNATIVE_NICKNAME="$nickname" COOP_NXNATIVE_PASSWORD="$password" \
 COOP_NXNATIVE_LOOPBACK=0 sh "$here/../probe/run.sh" "$1"
