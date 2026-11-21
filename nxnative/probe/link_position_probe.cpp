@@ -231,6 +231,7 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
   static std::uint64_t scene = 0, block = 0, slot = 0, actor = 0, vtable = 0;
   static coop_nxnative::RemoteMotion motion = coop_nxnative::RemoteMotion::unknown;
   static unsigned anim_buffer = 0;
+  static std::int32_t next_partial_slot = 0;
   static std::uint8_t player = 0;
   static coop::protocol::Age age{};
   const auto now = Clock::now();
@@ -358,11 +359,31 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
     }
 
     using coop_nxnative::RemoteMotion;
-    if (target.motion == RemoteMotion::unknown || target.motion == motion) return;
+    const bool new_motion = target.motion != RemoteMotion::unknown && target.motion != motion;
+    if (!new_motion && next_partial_slot == 0) return;
     std::uint64_t controller = actor;
     for (const auto offset : {0x270, 0x40, 0x18, 0x18}) {
       if (!read_at(controller + offset, controller) || !controller) return;
     }
+
+    // The main command moves the legs. Copy it to the partial slots, like
+    // CoopPuppet::Director does, so the upper body also leaves its bind pose.
+    if (next_partial_slot != 0) {
+      constexpr std::int32_t max_slots = 8;
+      std::int32_t count = 0;
+      if (!read_at(controller + 0x18, count)) return;
+      if (next_partial_slot < std::min(count, max_slots)) {
+        const GameCall sync{base + 0x3abec10,
+                            {actor, 0, static_cast<std::uint64_t>(next_partial_slot)}};
+        coop_nxnative_invoke_game_call(&sync);
+        ++next_partial_slot;
+        return;
+      }
+      std::fprintf(stderr, "[coop-nxnative] puppet spawn test synced %d partial animation slots\n",
+                   next_partial_slot - 1);
+      next_partial_slot = 0;
+    }
+    if (!new_motion) return;
 
     // The game may retain the previous animation name pointer across calls.
     const auto text = block + 0x240 + 0x50 * anim_buffer;
@@ -382,6 +403,7 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
     coop_nxnative_invoke_game_call(&play);
     anim_buffer ^= 1;
     motion = target.motion;
+    next_partial_slot = 1;
     std::fprintf(stderr, "[coop-nxnative] puppet spawn test requested animation %s\n", name);
   }
 }
