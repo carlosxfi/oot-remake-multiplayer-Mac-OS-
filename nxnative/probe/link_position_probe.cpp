@@ -18,6 +18,9 @@
 #include <mutex>
 #include "loopback.hpp"
 #include "remote_peer.hpp"
+#ifdef __APPLE__
+#include "game_call.hpp"
+#endif
 #endif
 
 #ifdef __APPLE__
@@ -38,6 +41,10 @@ std::atomic<std::uint64_t> calc_frames{0};
 std::mutex remote_targets_mutex;
 coop_nxnative::RemoteTargets remote_targets{};
 std::atomic<unsigned> calc_remote_targets{0};
+#ifdef __APPLE__
+enum class GameCallCheck { pending, passed, failed };
+std::atomic<GameCallCheck> game_call_check{GameCallCheck::pending};
+#endif
 #endif
 
 template <typename T>
@@ -47,11 +54,20 @@ extern "C" __attribute__((visibility("default"))) void coop_nxnative_calc_frame(
   calc_frames.fetch_add(1, std::memory_order_relaxed);
 #ifdef COOP_NXNATIVE_NETWORK
   // Networking publishes on the sampler thread. Never wait for it in the game.
-  const std::unique_lock lock(remote_targets_mutex, std::try_to_lock);
-  if (lock.owns_lock())
-    calc_remote_targets.store(static_cast<unsigned>(std::count_if(
-        remote_targets.begin(), remote_targets.end(),
-        [](const auto& target) { return target.player != 0; })), std::memory_order_relaxed);
+  unsigned target_count = 0;
+  {
+    const std::unique_lock lock(remote_targets_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return;
+    target_count = static_cast<unsigned>(std::count_if(remote_targets.begin(), remote_targets.end(),
+        [](const auto& target) { return target.player != 0; }));
+  }
+  calc_remote_targets.store(target_count, std::memory_order_relaxed);
+#ifdef __APPLE__
+  if (target_count > 0 && game_call_check.load(std::memory_order_relaxed) == GameCallCheck::pending) {
+    game_call_check.store(coop_nxnative::check_game_call() ? GameCallCheck::passed : GameCallCheck::failed,
+                          std::memory_order_relaxed);
+  }
+#endif
 #endif
 }
 
@@ -315,6 +331,12 @@ void probe() {
           static_cast<unsigned long long>(stats.send_failures), stats.detail.c_str());
       std::fprintf(stderr, "[coop-nxnative] calc-thread remote targets=%u\n",
           calc_remote_targets.load(std::memory_order_relaxed));
+#ifdef __APPLE__
+      const auto call_check = game_call_check.load(std::memory_order_relaxed);
+      std::fprintf(stderr, "[coop-nxnative] calc-thread actor call check=%s\n",
+          call_check == GameCallCheck::passed ? "passed" :
+          call_check == GameCallCheck::failed ? "failed" : "waiting for target");
+#endif
       if (stats.last_received && stats.last_received->position) {
         const auto& p = *stats.last_received->position;
         std::fprintf(stderr, "[coop-nxnative] remote player %u position %.3f %.3f %.3f scene=%s\n",

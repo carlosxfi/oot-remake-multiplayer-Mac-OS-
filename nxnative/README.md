@@ -185,3 +185,10 @@ after the remote game's samples go stale.
 
 The callback currently counts eligible poses. Actor creation still needs
 nxnative game calls and the equivalent of Hookshot's Link puppet guard.
+
+The network dylib runs a one-time ARM64 call check on the calc thread when
+a same-scene target arrives. Look for `calc-thread actor call check=passed`.
+The check uses a synthetic function in the dylib to verify the eight integer
+register arguments, four stack arguments, float argument, and integer return.
+Creating a Link actor still requires loading the co-op actor packs in nxnative
+and adapting the Link puppet guard.
