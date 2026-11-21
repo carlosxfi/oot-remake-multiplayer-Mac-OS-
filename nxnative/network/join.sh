@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
-if [ "$#" -ne 1 ]; then
-  echo "usage: $0 /path/to/game.app" >&2
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  echo "usage: $0 /path/to/game.app [/path/to/puppet-mod/romfs]" >&2
   exit 2
 fi
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -10,6 +10,21 @@ if [ ! -f "$library" ] || ! grep -aq 'nxnative-lan-probe' "$library"; then
   echo 'Build the LAN client first: sh nxnative/network/build.sh' >&2
   exit 2
 fi
+if [ "$#" -eq 2 ]; then
+  if [ ! -s "$2/Pack/Actor/CoopPuppet_Child.pack.zs" ] ||
+     [ ! -s "$2/Pack/Actor/CoopPuppet_Adult.pack.zs" ]; then
+    echo 'The overlay must contain both built co-op Link actor packs under Pack/Actor.' >&2
+    exit 2
+  fi
+  overlay=$(CDPATH= cd -- "$2" && pwd)
+  if [ -n "${DM_ROMFS_OVERLAY:-}" ] && [ "$DM_ROMFS_OVERLAY" != "$overlay" ]; then
+    echo 'DM_ROMFS_OVERLAY already points to a different mod folder.' >&2
+    exit 2
+  fi
+  export DM_ROMFS_OVERLAY="$overlay"
+  export COOP_NXNATIVE_PUPPET_PREFLIGHT=1
+fi
+
 printf 'Windows host IPv4 address (Same network screen): '
 IFS= read -r host
 printf 'Port [27510]: '

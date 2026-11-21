@@ -192,3 +192,26 @@ The check uses a synthetic function in the dylib to verify the eight integer
 register arguments, four stack arguments, float argument, and integer return.
 Creating a Link actor still requires loading the co-op actor packs in nxnative
 and adapting the Link puppet guard.
+
+## Actor pack and guard preflight
+
+An existing generated co-op mod can be passed to the LAN launcher by giving
+its `romfs` directory as the second argument. Keep the whole generated
+overlay together, including its resource size table. If you already have a
+supported extracted RomFS folder or a .nup locally, the existing builder can
+generate a local mod folder:
+
+```sh
+python3 -m tools.puppet_pack.build --romfs "/path/to/local/source" \
+  --mod-dir "$HOME/Projects/oot-coop-puppet" --no-hud --tunics none --look-slots 0
+sh nxnative/network/join.sh "/path/to/game.app" "$HOME/Projects/oot-coop-puppet/romfs"
+```
+
+The launcher checks for both Link packs and gives the directory to nxnative
+through `DM_ROMFS_OVERLAY`. This start also enables the component-chain guard.
+Look for `puppet guard installed (component chain)` in the Mac log. If the
+expected instructions differ, the probe logs a refusal and skips the guard.
+
+This check does not create actors. Hookshot's Windows patch also handles other
+near-null reads during creation and updates. The component-chain guard only
+covers the known hair-component path.

@@ -1,4 +1,5 @@
 #include "calc_bridge.hpp"
+#include "puppet_guard.hpp"
 
 #include <cassert>
 #include <cstdint>
@@ -21,4 +22,16 @@ int main() {
   std::memcpy(&stored_callback, cave.data() + 40, sizeof(stored_callback));
   assert(tail == 0x17fc2017u);
   assert(stored_callback == callback);
+
+  assert(kPuppetGuardCave == kCalcCaveOffset + cave.size());
+  const auto guard = make_puppet_guard();
+  for (unsigned i = 0; i < 3; ++i) {
+    const auto branch = guard[2 * i];
+    assert((branch & 0xff00001fu) == 0xb4000008u);  // cbz x8
+    assert(2 * i + ((branch >> 5) & 0x7ffffu) == 7);
+    assert(guard[2 * i + 1] == kPuppetGuardOriginal[i + 1]);
+  }
+  assert(guard[6] == arm64_branch(kPuppetGuardCave + 24, kPuppetGuardSite + 12, false));
+  assert(guard[7] == arm64_branch(kPuppetGuardCave + 28, kPuppetGuardSkip, false));
+  assert(arm64_branch(kPuppetGuardSite, kPuppetGuardCave, false));
 }

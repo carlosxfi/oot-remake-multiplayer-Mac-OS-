@@ -9,6 +9,7 @@
 #include <thread>
 #include <utility>
 #include "calc_bridge.hpp"
+#include "puppet_guard.hpp"
 #include "module_detection.hpp"
 #include "local_memory.hpp"
 #include "coop/host/player_reader.hpp"
@@ -89,6 +90,27 @@ bool write_code(std::uint64_t address, std::span<const std::uint8_t> bytes) {
   }
   mach_vm_deallocate(task, alias, end - page);
   return result == KERN_SUCCESS;
+}
+
+void install_puppet_guard(std::uint64_t base) {
+  using namespace coop_nxnative;
+  std::array<std::uint32_t, kPuppetGuardOriginal.size()> original{};
+  if (!read_at(base + kPuppetGuardSite - 4, original) || original != kPuppetGuardOriginal) {
+    std::fprintf(stderr, "[coop-nxnative] puppet guard refused: instruction mismatch\n");
+    return;
+  }
+
+  const auto cave = make_puppet_guard();
+  const auto hook = arm64_branch(kPuppetGuardSite, kPuppetGuardCave, false).value();
+  const auto code = [](const auto& value) {
+    return std::span(reinterpret_cast<const std::uint8_t*>(&value), sizeof(value));
+  };
+  if (!write_code(base + kPuppetGuardCave, code(cave)) ||
+      !write_code(base + kPuppetGuardSite, code(hook))) {
+    std::fprintf(stderr, "[coop-nxnative] puppet guard refused: could not install patch\n");
+    return;
+  }
+  std::fprintf(stderr, "[coop-nxnative] puppet guard installed (component chain)\n");
 }
 
 bool install_calc_bridge(std::uint64_t base) {
@@ -295,6 +317,8 @@ void probe() {
 #ifdef __APPLE__
     if (!calc_bridge_installed && now >= next_calc_attempt) {
       calc_bridge_installed = install_calc_bridge(base);
+      if (calc_bridge_installed && std::getenv("COOP_NXNATIVE_PUPPET_PREFLIGHT"))
+        install_puppet_guard(base);
       next_calc_attempt = now + 5'000'000;
     }
     if (calc_bridge_installed && now >= next_calc_report) {
