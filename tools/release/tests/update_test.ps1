@@ -98,14 +98,27 @@ try {
         $old = & { param($f, $l) . $f; Select-KitRelease $l } $v0112 @((Rel 'v0.11.2' $false $both), (Rel 'v0.11.3' $false $sq))
         Check ($old.Tag -eq 'v0.11.3' -and $old.Zip -eq 'dl/oot-coop-v0.11.3.zip' -and $old.Sum -eq 'dl/oot-coop-v0.11.3.zip.sha256') 'the v0.11.2 updater finds v0.11.3 by oot-coop-v0.11.3.zip'
         $old = & { param($f, $l) . $f; Select-KitRelease $l } $v0112 @((Rel 'v0.11.3' $false @('Squadala-v0.11.3-windows.zip', 'Squadala-v0.11.3-windows.zip.sha256')))
-        Check ($null -eq $old) 'the v0.11.2 updater cannot see a release with only the Squadala- zip (why the old name must go up too)'
+        Check ($null -eq $old) 'the v0.11.2 updater cannot see a release with only the Squadala- zip (so it takes v0.11.3 first)'
     } else { Check $false "the v0.11.2 Select-KitRelease fixture is missing ($v0112)" }
-    # make_kit_hookshot.ps1 writes both names (the whole path, with a real kit: old_kit_update_test.ps1).
+    # From v0.11.4 a release has only the Squadala- names: the updaters up to v0.11.2 skip it and take v0.11.3 (the last
+    # release with oot-coop-<tag>.zip), whose updater then takes v0.11.4; this one takes v0.11.4 straight.
+    $r4 = @('Squadala-v0.11.4-windows.zip', 'Squadala-v0.11.4-windows.zip.sha256', 'Squadala-v0.11.4-linux.zip', 'Squadala-v0.11.4-linux.zip.sha256', 'Update.bat')
+    $pick = Select-KitRelease @((Rel 'v0.11.3' $false $sq), (Rel 'v0.11.4' $false $r4))
+    Check ($pick.Tag -eq 'v0.11.4' -and $pick.Zip -eq 'dl/Squadala-v0.11.4-windows.zip') 'v0.11.4 (Squadala- names only) is taken by this updater (the v0.11.3 one has the same Get-KitReleaseZip)'
+    if (Test-Path -LiteralPath $v0112) {
+        $old = & { param($f, $l) . $f; Select-KitRelease $l } $v0112 @((Rel 'v0.11.3' $false $sq), (Rel 'v0.11.4' $false $r4))
+        Check ($old.Tag -eq 'v0.11.3' -and $old.Zip -eq 'dl/oot-coop-v0.11.3.zip') 'the v0.11.2 updater skips v0.11.4 (no oot-coop- zip) and takes v0.11.3'
+    }
+    if (Test-Path -LiteralPath $v0101) {
+        $old = & { param($f, $l) . $f; Select-KitRelease $l } $v0101 @((Rel 'v0.11.3' $false $sq), (Rel 'v0.11.4' $false $r4))
+        Check ($old.Tag -eq 'v0.11.3' -and $old.Zip -eq 'dl/oot-coop-v0.11.3.zip') 'the v0.10.1 updater skips v0.11.4 and takes v0.11.3'
+    }
+    # make_kit_hookshot.ps1 writes only the Squadala- names, and the kit has one start file (the whole path, with a real
+    # kit: old_kit_update_test.ps1).
     $mk = [System.IO.File]::ReadAllText((Join-Path $release 'make_kit_hookshot.ps1'))
     Check ($mk.Contains('$name = if ($Release) { "Squadala-$Release" }') -and $mk.Contains('$zip = Join-Path $OutRoot "$name-windows.zip"') -and
-           $mk.Contains("`$oldName = (`$name -replace '^Squadala-', 'oot-coop-') + '.zip'") -and
-           $mk.Contains('"$hash  $name-windows.zip`n"') -and $mk.Contains('"$hash  $oldName`n"')) 'make_kit_hookshot.ps1 writes Squadala-<tag>-windows.zip and oot-coop-<tag>.zip, each with its .sha256'
-    Check ($mk.Contains("'Start Squadala.bat', 'Start OoT Co-op.bat'")) 'make_kit_hookshot.ps1: the kit has Start Squadala.bat and its old name'
+           $mk.Contains('"$hash  $name-windows.zip`n"') -and -not $mk.Contains('oldName')) 'make_kit_hookshot.ps1 writes Squadala-<tag>-windows.zip with its .sha256, no oot-coop-<tag>.zip'
+    Check ($mk.Contains("`$KitTop = @('Start Squadala.bat', 'README.txt',") -and -not (Test-Path -LiteralPath (Join-Path $release 'kit\Start OoT Co-op.bat'))) 'make_kit_hookshot.ps1: the kit has one start file, Start Squadala.bat'
 
     # --- The player's files
     foreach ($p in 'emulator\user\config\coop.ini', 'emulator\user\keys\prod.keys', 'emulator\user\load\0400486024DEC000\coop-puppet\x',
@@ -764,10 +777,160 @@ try {
         Check ((Read-File "$hk2\hookshot\game\save\slot_00\progress.sav") -eq 'my save' -and (Test-Path "$(Split-Path -Parent $hk2)\beside-the-kit.txt") -and
             (Test-Path "$hk2\Start OoT Co-op.bat") -and -not (Test-Path "$hk2\previous")) "VERSION.txt '(release $bad)': nothing deleted, nothing kept under that name"
     }
+    # 8a. One start file (v0.11.4): "Start OoT Co-op.bat" (the name up to v0.11.3) goes, and every shortcut, Start menu
+    # entry, taskbar pin and Steam entry that started it starts "Start Squadala.bat"; Revert.bat back to v0.11.3 or
+    # v0.11.2 brings that version's files back, and the links follow the start file the kit has then.
+    $one = Join-Path $tmp 'one-start'
+    function New-SqKit([string]$Dir, [string]$Ver, [bool]$OldBat, [bool]$NewBat) {
+        Write-File "$Dir\VERSION.txt" "kit: Squadala-$Ver (release $Ver)`r`nkind: hookshot`r`n"
+        if ($OldBat) { Write-File "$Dir\Start OoT Co-op.bat" "old name of $Ver" }
+        if ($NewBat) { Write-File "$Dir\Start Squadala.bat" "start of $Ver" }
+        Write-File "$Dir\scripts\start.ps1" "start $Ver"
+        Write-File "$Dir\hookshot\PIN" "runtime=Longshot`r`ncommit=$('c' * 40)`r`n"
+        Write-File "$Dir\hookshot\TOOLS.txt" "release=v3.0.0-rc.5`r`nsource_commit=$('c' * 40)`r`n"
+        Write-File "$Dir\hookshot\patches\0001-coop.patch" 'patch'
+        Write-File "$Dir\hookshot\hookshot_coop.dll" "module $Ver"
+        $files = @(Get-KitFiles $Dir)
+        Write-File "$Dir\MANIFEST.txt" ("# Files`r`nMANIFEST.txt`r`n" + (($files | ForEach-Object { "$_`r`n" }) -join ''))
+    }
+    $oneAssets = Join-Path $one 'assets'
+    New-Item -ItemType Directory -Force -Path $oneAssets | Out-Null
+    $src = Join-Path $one 'src'
+    New-SqKit "$src\Squadala-v0.11.4" 'v0.11.4' $false $true
+    Copy-Item -LiteralPath $updater -Destination "$src\Squadala-v0.11.4\scripts\update.ps1" -Force
+    $z = Join-Path $oneAssets 'Squadala-v0.11.4-windows.zip'
+    & "$env:SystemRoot\System32\tar.exe" -a -c -f $z -C $src 'Squadala-v0.11.4'
+    if ($LASTEXITCODE -ne 0) { throw 'tar failed' }
+    [System.IO.File]::WriteAllText("$z.sha256", "$((Get-FileHash -LiteralPath $z -Algorithm SHA256).Hash.ToLowerInvariant())  Squadala-v0.11.4-windows.zip`n")
+    # (the release as it goes up from v0.11.4: no oot-coop-* asset)
+    $r0114 = @{ tag_name = 'v0.11.4'; draft = $false; html_url = 'local'; assets = @(
+        @{ name = 'Squadala-v0.11.4-windows.zip'; browser_download_url = $z; size = (Get-Item $z).Length },
+        @{ name = 'Squadala-v0.11.4-windows.zip.sha256'; browser_download_url = "$z.sha256"; size = 80 },
+        @{ name = 'Update.bat'; browser_download_url = "$z.sha256"; size = 80 }) }
+    $l4 = Join-Path $one 'list.json'; [System.IO.File]::WriteAllText($l4, (ConvertTo-Json -Depth 5 @($r0114)))
+    # The player's places: a desktop, a Start menu with a folder, a taskbar pin, and a Steam with two users.
+    $places = @("$one\desktop", "$one\startmenu", "$one\pinned")
+    foreach ($p in $places) { New-Item -ItemType Directory -Force -Path $p | Out-Null }
+    New-Item -ItemType Directory -Force -Path "$one\startmenu\Squadala" | Out-Null
+    $steam = Join-Path $one 'steam'
+    function New-Link([string]$Path, [string]$Target) { $l = $sh.CreateShortcut($Path); $l.TargetPath = $Target; $l.Save() }
+    function Get-Link([string]$Path) { $sh.CreateShortcut($Path).TargetPath }
+    function New-SteamList([string]$User, [string]$Target) {
+        $f = Join-Path $steam "userdata\$User\config\shortcuts.vdf"
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $f) | Out-Null
+        # (binary fields around the text: NUL and other bytes must come through as they are)
+        $b = [byte[]](@(0, 0x73, 0x68, 0x6F, 0x72, 0x74, 0x63, 0x75, 0x74, 0x73, 0, 0, 0x30, 0, 1, 0x45, 0x78, 0x65, 0) +
+            [System.Text.Encoding]::UTF8.GetBytes("`"$Target`"") + @(0, 2, 0xFF, 0xFE, 0x80, 0) +
+            [System.Text.Encoding]::UTF8.GetBytes('Squadala') + @(0, 8, 8))
+        [System.IO.File]::WriteAllBytes($f, $b)
+        return $f
+    }
+    $env:OOT_COOP_SHORTCUT_DIRS = $places -join ';'
+    $env:OOT_COOP_STEAM_DIR = $steam
+    try {
+        foreach ($from in 'v0.11.3', 'v0.11.2') {
+            $k = Join-Path $one "kit-$from"
+            # v0.11.3: both files (the old one a call of the new); v0.11.2: only the old one.
+            New-SqKit $k $from $true ($from -eq 'v0.11.3')
+            Write-File "$k\hookshot\game\save\slot_00\progress.sav" 'my save'
+            Write-File "$k\coop-options.ini" "auto_update = ask`r`nmine = 1`r`n"
+            Write-File "$k\Revert.bat" ([System.IO.File]::ReadAllText((Join-Path $release 'kit\Revert.bat')))
+            Copy-Item -LiteralPath $updater -Destination "$k\scripts\update.ps1" -Force
+            & (Join-Path $release 'make_update_bat.ps1') -Out "$k\Update.bat"
+            $other = Join-Path $one "other-$from"; New-SqKit $other 'v0.11.3' $true $true
+            New-Link "$one\desktop\Play Squadala.lnk" "$k\Start OoT Co-op.bat"
+            New-Link "$one\startmenu\Squadala\My co-op.lnk" "$k\Start OoT Co-op.bat"
+            New-Link "$one\pinned\Squadala.lnk" "$k\Start OoT Co-op.bat"
+            New-Link "$one\desktop\Other kit.lnk" "$other\Start OoT Co-op.bat"
+            $vdf = New-SteamList '111' "$k\Start OoT Co-op.bat"
+            $vdfOther = New-SteamList '222' "$other\Start OoT Co-op.bat"
+            $otherBytes = [System.IO.File]::ReadAllBytes($vdfOther)
+            $out = & $ps -NoProfile -ExecutionPolicy Bypass -File $updater -Kit $k -Yes -Api $l4 2>&1
+            $text = $out -join ' '
+            Check ($LASTEXITCODE -eq 0 -and (Get-KitVersion $k) -eq 'v0.11.4') "one start file, $from -> v0.11.4: updated [$(($out | Select-Object -Last 3) -join ' / ')]"
+            Check (-not (Test-Path "$k\Start OoT Co-op.bat") -and (Read-File "$k\Start Squadala.bat") -eq 'start of v0.11.4') "one start file, ${from}: Start OoT Co-op.bat is gone, Start Squadala.bat is v0.11.4's"
+            Check ((Read-File "$k\hookshot\game\save\slot_00\progress.sav") -eq 'my save' -and (Read-File "$k\coop-options.ini") -match 'mine = 1') "one start file, ${from}: saves and coop-options.ini kept"
+            Check ((Read-File "$k\previous\$from\Start OoT Co-op.bat") -eq "old name of $from") "one start file, ${from}: the old file is kept in previous\$from"
+            $new = "$k\Start Squadala.bat"
+            Check ((Get-Link "$one\desktop\Play Squadala.lnk") -ieq $new -and (Get-Link "$one\startmenu\Squadala\My co-op.lnk") -ieq $new -and
+                (Get-Link "$one\pinned\Squadala.lnk") -ieq $new) "one start file, ${from}: the desktop, Start menu and taskbar shortcuts start Start Squadala.bat"
+            Check ((Get-Link "$one\desktop\Other kit.lnk") -ieq "$other\Start OoT Co-op.bat") "one start file, ${from}: another kit's shortcut is left alone"
+            $vb = [System.IO.File]::ReadAllBytes($vdf)
+            $vt = [System.Text.Encoding]::GetEncoding(28591).GetString($vb)
+            Check ($vt.Contains("`"$new`"") -and -not $vt.Contains('Start OoT Co-op.bat') -and $vb[0] -eq 0 -and $vb[-1] -eq 8 -and $vt.Contains([string][char]0xFF + [char]0xFE + [char]0x80)) "one start file, ${from}: the Steam entry starts Start Squadala.bat, its other bytes as they were"
+            Check ((Test-Path "$vdf.before-squadala") -and ([System.IO.File]::ReadAllBytes($vdfOther).Length -eq $otherBytes.Length) -and
+                -not (Test-Path "$vdfOther.before-squadala")) "one start file, ${from}: Steam's list kept as it was beside it; another kit's Steam entry untouched"
+            Check ($text -match 'now starts "Start Squadala\.bat"' -and $text -match 'Steam entry') "one start file, ${from}: says which shortcuts moved [$text]"
+            # Revert.bat: back to that version's own files; the links follow its start file.
+            $out = cmd.exe /c "$k\Revert.bat -Api $l4 <NUL" 2>&1
+            $text = $out -join ' '
+            Check ((Get-KitVersion $k) -eq $from -and (Read-File "$k\Start OoT Co-op.bat") -eq "old name of $from") "one start file, Revert.bat back to ${from}: its Start OoT Co-op.bat is back [$(($out | Select-Object -Last 3) -join ' / ')]"
+            Check ((Read-File "$k\hookshot\game\save\slot_00\progress.sav") -eq 'my save') "one start file, Revert.bat back to ${from}: the save kept"
+            if ($from -eq 'v0.11.3') {
+                Check ((Read-File "$k\Start Squadala.bat") -eq 'start of v0.11.3' -and (Get-Link "$one\desktop\Play Squadala.lnk") -ieq $new) 'one start file, back to v0.11.3: both start files, the shortcuts start Start Squadala.bat'
+                & $ps -NoProfile -ExecutionPolicy Bypass -File $updater -Kit $k -Tidy | Out-Null
+                Check (Test-Path "$k\Start OoT Co-op.bat") 'one start file, back to v0.11.3: the start (-Tidy) keeps the old name its MANIFEST.txt lists'
+            } else {
+                $back = "$k\Start OoT Co-op.bat"
+                Check (-not (Test-Path "$k\Start Squadala.bat") -and (Get-Link "$one\desktop\Play Squadala.lnk") -ieq $back -and (Get-Link "$one\pinned\Squadala.lnk") -ieq $back -and
+                    [System.Text.Encoding]::GetEncoding(28591).GetString([System.IO.File]::ReadAllBytes($vdf)).Contains("`"$back`"")) "one start file, back to v0.11.2: Start Squadala.bat went, the shortcuts and Steam start Start OoT Co-op.bat again [$text]"
+            }
+            Remove-Item -LiteralPath "$one\desktop\*", "$one\pinned\*", "$one\startmenu\Squadala\*" -Force
+        }
+        # An updater up to v0.11.3 installs v0.11.4: it removes Start OoT Co-op.bat by its MANIFEST.txt and moves only
+        # "Play Squadala" on the desktop. The new kit's first start (play.ps1 -NoUpdate: update.ps1 -Tidy) moves the rest.
+        $k = Join-Path $one 'kit-by-old-updater'
+        New-SqKit $k 'v0.11.4' $false $true
+        Copy-Item -LiteralPath $updater -Destination "$k\scripts\update.ps1" -Force
+        New-Link "$one\startmenu\Squadala\My co-op.lnk" "$k\Start OoT Co-op.bat"
+        $vdf = New-SteamList '333' "$k\Start OoT Co-op.bat"
+        $out = & $ps -NoProfile -ExecutionPolicy Bypass -File "$k\scripts\update.ps1" -Kit $k -Tidy 2>&1
+        Check ($LASTEXITCODE -eq 0 -and (Get-Link "$one\startmenu\Squadala\My co-op.lnk") -ieq "$k\Start Squadala.bat" -and
+            [System.Text.Encoding]::GetEncoding(28591).GetString([System.IO.File]::ReadAllBytes($vdf)).Contains("`"$k\Start Squadala.bat`"")) "one start file: -Tidy after an older updater moves the Start menu and Steam entries [$($out -join ' ')]"
+        # A v0.11.4 kit that still has the old file (copied in by hand, or an install that never removed it): the start
+        # moves its links and removes it; -Status (every start) does the same, silently.
+        Write-File "$k\Start OoT Co-op.bat" 'old name'
+        New-Link "$one\desktop\Play Squadala.lnk" "$k\Start OoT Co-op.bat"
+        $st = & $ps -NoProfile -ExecutionPolicy Bypass -File "$k\scripts\update.ps1" -Kit $k -Status -Api $l4 2>&1
+        Check (-not (Test-Path "$k\Start OoT Co-op.bat") -and (Get-Link "$one\desktop\Play Squadala.lnk") -ieq "$k\Start Squadala.bat" -and ($st -join '') -notmatch 'shortcut') "one start file: -Status removes a stray Start OoT Co-op.bat after moving its link, and prints only its status [$($st -join ' ')]"
+        # play.ps1 with -NoUpdate runs -Tidy (the start right after an older updater).
+        $play = [System.IO.File]::ReadAllText((Join-Path $release 'kit\scripts\play.ps1'))
+        Check ($play -match 'if \(\$NoUpdate -and \(Test-Path \$updater\)\) \{[\s\S]{0,400}-Tidy') 'one start file: play.ps1 -NoUpdate runs update.ps1 -Tidy'
+    } finally {
+        Remove-Item env:OOT_COOP_SHORTCUT_DIRS, env:OOT_COOP_STEAM_DIR -ErrorAction SilentlyContinue
+    }
+
     # 8. The game: same pin and patches, other patches, another commit.
     Check ((Get-KitGameChange $rk $rk) -eq 'same') 'game change: the same kit -> same'
     Check ((Get-KitGameChange "$rv\src-v0.11.1\oot-coop-v0.11.1" "$rv\src-v0.11.2\oot-coop-v0.11.2") -eq 'patches') 'game change: other patches -> patches'
-    Check ((Get-KitGameChange "$rv\src-v0.11.1\oot-coop-v0.11.1" "$rv\src-v0.10.1\oot-coop-v0.10.1") -eq 'pin') 'game change: another Longshot commit -> pin'
+    Check ((Get-KitGameChange "$rv\src-v0.11.1\oot-coop-v0.11.1" "$rv\src-v0.10.1\oot-coop-v0.10.1") -eq 'pin') 'game change: another Longshot commit-> pin'
+
+    # 9. Update.bat repairs the game's co-op parts (player report 2026-11-19, Velvet: Update.bat "worked", the game's
+    # tools\ootrr stayed broken, the randomizer did not work): after an update and when the kit is the newest already,
+    # it runs the kit's OWN scripts\hookshot-build.ps1 -Repair (a stub here records the call).
+    $gk = Join-Path $tmp 'repair-kit'
+    New-HsKit $gk 'v0.11.2' $c1 'patch 0.11.2'
+    $stub = "param([switch]`$Repair)`r`n[System.IO.File]::WriteAllText((Join-Path (Split-Path -Parent `$PSScriptRoot) 'repaired.txt'), ""repair=`$Repair"")`r`nWrite-Host 'repair stub ran'`r`nexit `$(if (Test-Path (Join-Path (Split-Path -Parent `$PSScriptRoot) 'fail.txt')) { 2 } else { 0 })`r`n"
+    Write-File "$gk\scripts\hookshot-build.ps1" $stub
+    Check ((Invoke-KitGameRepair $gk) -eq 0 -and (Read-File "$gk\repaired.txt") -eq 'repair=True') 'repair: the kit''s own hookshot-build.ps1 -Repair runs'
+    Write-File "$gk\fail.txt" 'x'
+    Check ((Invoke-KitGameRepair $gk) -eq 2) 'repair: its failure is passed on (and said), never thrown'
+    Remove-Item -LiteralPath "$gk\fail.txt", "$gk\repaired.txt"
+    Write-File "$gk\scripts\hookshot-build.ps1" "param([switch]`$PackOnly)`r`n[System.IO.File]::WriteAllText((Join-Path (Split-Path -Parent `$PSScriptRoot) 'repaired.txt'), 'old')`r`n"
+    Check ((Invoke-KitGameRepair $gk) -eq 0 -and -not (Test-Path "$gk\repaired.txt")) 'repair: an older kit''s hookshot-build.ps1 (no -Repair) is not run'
+    $ek = Join-Path $tmp 'repair-emu'
+    New-Item -ItemType Directory -Force -Path "$ek\emulator" | Out-Null
+    Check ((Invoke-KitGameRepair $ek) -eq 0) 'repair: a kit with no Longshot game has nothing to repair'
+    # Whole Update.bat runs: the kit is the newest already -> still repaired; -Check, -Status and -Launch never repair.
+    Write-File "$gk\scripts\hookshot-build.ps1" $stub
+    $out = & $ps -NoProfile -ExecutionPolicy Bypass -File $updater -Kit $gk -Yes -Api $l2 2>&1
+    Check ($LASTEXITCODE -eq 0 -and ($out -join ' ') -match 'newest version' -and ($out -join ' ') -match 'repair stub ran' -and
+           (Read-File "$gk\repaired.txt") -eq 'repair=True') "repair: Update.bat on the newest kit still repairs the game [$(($out | Select-Object -Last 3) -join ' / ')]"
+    Remove-Item -LiteralPath "$gk\repaired.txt"
+    foreach ($flag in '-Check', '-Status') {
+        $out = & $ps -NoProfile -ExecutionPolicy Bypass -File $updater -Kit $gk $flag -Api $l2 2>&1
+        Check (-not (Test-Path "$gk\repaired.txt")) "repair: $flag does not repair"
+    }
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

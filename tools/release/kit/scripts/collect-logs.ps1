@@ -85,10 +85,40 @@ if ($hsExe) {
         $gameLogs += $logs.Count
         $picked += $logs | ForEach-Object { @($_.File.FullName, $(if ($_.Sub) { "$to\$($_.Sub)\$($_.File.Name)" } else { "$to\$($_.File.Name)" })) }
         # (last-build.txt: OOTRR's output when a randomizer seed failed; masked like every text file)
-        foreach ($f in 'coop.ini', 'mods\contents\0400486024DEC000\coop-puppet\coop_puppet.json', 'mods\oot-remake-randomizer\last-build.txt') {
+        # (tools\ootrr-setup.txt: how the kit's last OOTRR setup went; tools\ootrr\coop-ootrr.txt: the OOTRR in place)
+        foreach ($f in 'coop.ini', 'mods\contents\0400486024DEC000\coop-puppet\coop_puppet.json', 'mods\oot-remake-randomizer\last-build.txt',
+                'tools\ootrr-setup.txt', 'tools\ootrr\coop-ootrr.txt') {
             $p = Join-Path $hsDir $f
             if (Test-Path -LiteralPath $p) { $picked += @($p, "$to\$(Split-Path -Leaf $p)") }
         }
+    }
+}
+# Split screen with Nucleus Co-op (tools\nucleus\OoTCoop.js): each player's game runs from its own instance folder in
+# Nucleus's folder and keeps its log and coop.ini there. The handler lists them in nucleus-players\instances.txt beside
+# the game ("<player>=<folder>"); without that file (an older handler) Nucleus's usual C:\Nucleus\content\OoTCoopLongshot.
+# Nothing is added when Nucleus is not used.
+$nucInst = @()
+foreach ($hsExe2 in $hsExes) {
+    foreach ($d in (Get-KitHookshotLogDirs $hsExe2)) {
+        $list = Join-Path $d 'nucleus-players\instances.txt'
+        if (Test-Path -LiteralPath $list) {
+            $nucInst += @(Get-Content -LiteralPath $list -ErrorAction SilentlyContinue | Where-Object { $_ -match '^\d+=(.+)$' } | ForEach-Object { $Matches[1].Trim() })
+        }
+    }
+}
+if (-not $nucInst) { $nucInst = @(Get-ChildItem 'C:\Nucleus\content\OoTCoopLongshot' -Directory -Filter 'Instance*' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) }
+foreach ($inst in @($nucInst | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Unique)) {
+    $to = "nucleus\$(Split-Path -Leaf $inst)"
+    $logs = @(Get-KitHookshotLogFiles $inst)
+    # (an instance made by an older handler has logs\ linked to the game's own: that log is the kit's, zipped above)
+    $logsDir = Join-Path $inst 'logs'
+    if ((Test-Path -LiteralPath $logsDir) -and ((Get-Item -LiteralPath $logsDir -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        $logs = @($logs | Where-Object { $_.Sub -ne 'logs' })
+    }
+    $gameLogs += $logs.Count
+    $picked += $logs | ForEach-Object { @($_.File.FullName, $(if ($_.Sub) { "$to\$($_.Sub)\$($_.File.Name)" } else { "$to\$($_.File.Name)" })) }
+    foreach ($f in 'coop.ini', 'coop-options.ini') {
+        $picked += @((Join-Path $inst $f), "$to\$f")
     }
 }
 $logHelp = @()
@@ -188,5 +218,6 @@ if (-not $env:CI) { try { Start-Process explorer.exe "/select,`"$zip`"" } catch 
 Write-Host 'IP addresses, MAC addresses, passwords, your Windows user name and PC name are masked in it.'
 if ($logHelp) { Write-Host ''; foreach ($l in $logHelp) { Write-Host (Protect-LogText $l $mask) -ForegroundColor Yellow } }
 Write-Host ''
-Write-Host 'Send it privately (a Discord DM to the maintainer). Do not attach it to a public issue.'
+Write-Host 'To report it: on the Squadala! Discord (https://discord.gg/GwtRKAqng5) type /bugreport, say what happened'
+Write-Host 'and attach this zip. Do not attach it to a public issue.'
 Write-Host "Send this zip: $zip" -ForegroundColor Green

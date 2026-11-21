@@ -81,6 +81,7 @@ class LentKeyStore final : public FlagStore {
   std::optional<protocol::FlagEntry> read(FlagKey key) override;
   bool write(const protocol::FlagEntry& entry) override;
   bool write_exact(const protocol::FlagEntry& entry) override;
+  bool write_load_back(const protocol::FlagEntry& entry) override;
   bool is_count(FlagKey key) override { return inner_.is_count(key); }
   bool is_max(FlagKey key) override { return inner_.is_max(key); }
   bool holds(FlagKey key) override { return inner_.holds(key); }

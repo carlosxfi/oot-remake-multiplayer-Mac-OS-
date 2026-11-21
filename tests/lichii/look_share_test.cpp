@@ -189,6 +189,53 @@ TEST_CASE("look items: a puppet wears its painted copy of the items the pack has
     CHECK(CoopPuppet::LookItemName("Armor_Adult_Zora", 1) == "Armor_Adult_Zora_Look1");
 }
 
+TEST_CASE("blade copies: every puppet with no ready Look copy wears its own number's sword copy") {
+    // held-piece: the blade is a switch of the sword's model resource, shared by every actor of one
+    // name. A 5th or later player (no Look slot left), a player whose copy is not painted yet, a
+    // Longshot without patch 0020 and the emulator (no slots at all) wear <sword>_Blade<number>.
+    const auto blades = CoopPuppet::PackLookItems(
+        R"({"look_items": null, "blade_items": {"copies": 16, "actors": ["Weapon_Sword_Kokiri", "Weapon_Sword_Giant"], "files": []}})",
+        "blade_items");
+    CHECK(blades.copies == 16);
+    CHECK(blades.actors == std::vector<std::string>{"Weapon_Sword_Kokiri", "Weapon_Sword_Giant"});
+    CHECK(CoopPuppet::PackLookItems(R"({"look_items": null, "blade_items": null})", "blade_items").copies == 0);
+    CHECK(CoopPuppet::PackLookItems(R"({"blade_items": {"copies": 16, "actors": ["A"]}})").copies == 0);  // not look_items
+    CHECK(CoopPuppet::BladeItemName("Weapon_Sword_Kokiri", 5) == "Weapon_Sword_Kokiri_Blade5");
+
+    CoopPuppet::PlannerSettings settings;
+    settings.look_items = {"Weapon_Shield_Hylian", "Weapon_Sword_Kokiri"};
+    settings.look_copies = 8;
+    settings.blade_items = blades.actors;
+    settings.blade_copies = 16;
+    CoopPuppet::Planner p(settings);
+    std::vector<CoopPuppet::Remote> remotes(4);
+    const std::uint8_t numbers[] = {2, 6, 16, 9};
+    for (std::size_t i = 0; i < remotes.size(); ++i) {
+        remotes[i].number = numbers[i];
+        remotes[i].scene = "Kokiri";
+        remotes[i].gear[0] = "Weapon_Sword_Kokiri";
+        remotes[i].gear[1] = "Weapon_Shield_Hylian";
+    }
+    remotes[0].look_copy = 1;                       // painted Look copy: that one, for every piece
+    remotes[3].gear[0] = "Weapon_Sword_Giant";      // no Look copy listed here: the blade copy
+    const auto in = p.Plan(0x8000000, std::string("Kokiri"), CoopPuppet::Vec3{0, 0, 0}, false, remotes, 1000);
+    REQUIRE(in.targets.size() == 4);
+    CHECK(in.targets[0].gear[0] == std::string("Weapon_Sword_Kokiri_Look1"));
+    CHECK(in.targets[0].gear[1] == std::string("Weapon_Shield_Hylian_Look1"));
+    CHECK(in.targets[1].gear[0] == std::string("Weapon_Sword_Kokiri_Blade6"));   // a 5th+ player: no slot
+    CHECK(in.targets[1].gear[1] == std::string("Weapon_Shield_Hylian"));         // no blade: the game's
+    CHECK(in.targets[2].gear[0] == std::string("Weapon_Sword_Kokiri_Blade16"));
+    CHECK(in.targets[3].gear[0] == std::string("Weapon_Sword_Giant_Blade9"));
+
+    // A pack with fewer numbers than the player's: the game's own sword, as before.
+    CoopPuppet::Gear gear;
+    gear[0] = "Weapon_Sword_Kokiri";
+    CoopPuppet::DressInBlades(gear, 9, settings.blade_items, 8);
+    CHECK(gear[0] == std::string("Weapon_Sword_Kokiri"));
+    CoopPuppet::DressInBlades(gear, 0, settings.blade_items, 16);   // the debug puppet
+    CHECK(gear[0] == std::string("Weapon_Sword_Kokiri"));
+}
+
 TEST_CASE("look share: a new room forgets the last room's looks, a reconnect keeps them") {
     CoopLookShare::Share s;
     CHECK_FALSE(s.OnEvent(Kind(EventKind::welcomed)));   // nothing to forget
@@ -234,4 +281,233 @@ TEST_CASE("look share: a look with no gear set at start goes out, and the other 
     CHECK(theirs.SlotOf(2) == 1u);
     ours.OnEvent(Kind(EventKind::player_joined, 3));
     CHECK(ours.TakeSend());                    // and again for a late joiner
+}
+
+// Character Select (github.com/snaildev99/OoT-Character-Select): the picked character with the look.
+TEST_CASE("look share: our picked character goes out as a part of its own, with or without colours") {
+    CoopLookShare::Share s;
+    s.SetCharacter(0);
+    CHECK_FALSE(s.TakeSend());                 // Link, and no look chosen: nothing sent, as before
+    s.SetCharacter(9);
+    auto sent = s.TakeSend();
+    REQUIRE(sent);                             // a character alone sends a look
+    CHECK(sent->parts == CoopLookShare::Parts{{CoopLookShare::kCharacterPart, CoopLookShare::kCharacterMark | 9u}});
+    CHECK_FALSE(s.TakeSend());                 // once
+    s.SetCharacter(9);
+    CHECK_FALSE(s.TakeSend());                 // the same number again is no change
+    s.Set({{3, 0xE0C030}});
+    sent = s.TakeSend();
+    REQUIRE(sent);                             // the colours first, the character last
+    CHECK(sent->parts == CoopLookShare::Parts{{3, 0xE0C030}, {CoopLookShare::kCharacterPart, CoopLookShare::kCharacterMark | 9u}});
+    s.OnEvent(Kind(EventKind::player_joined, 3));
+    CHECK(s.TakeSend());                       // a newcomer gets it
+    s.SetCharacter(0);
+    sent = s.TakeSend();
+    REQUIRE(sent);                             // back to Link: the look without the part
+    CHECK(sent->parts == CoopLookShare::Parts{{3, 0xE0C030}});
+    CoopLookShare::Share alone;
+    alone.SetCharacter(4);
+    CHECK(alone.TakeSend());
+    alone.SetCharacter(0);
+    sent = alone.TakeSend();
+    REQUIRE(sent);                             // with no colours ever chosen too: an empty look says Link again
+    CHECK(sent->parts.empty());
+    alone.OnEvent(Kind(EventKind::welcomed));
+    CHECK(alone.TakeSend());                   // and a new session hears it
+    alone.SetCharacter(60000);
+    CHECK_FALSE(alone.TakeSend());             // a number that is no character counts as Link: no change
+}
+
+TEST_CASE("look share: a player's character is kept apart from the colours of their look") {
+    CoopLookShare::Share s;
+    s.EnableSlots(true);
+    CHECK(s.CharacterOf(2) == 0);
+    const LookPart nine{CoopLookShare::kCharacterPart, CoopLookShare::kCharacterMark | 9u};
+    CHECK(s.OnEvent(Look(2, {{11, 0xFF0000}, nine})));
+    CHECK(s.CharacterOf(2) == 9);
+    CHECK(s.Of(2) == CoopLookShare::Parts{{11, 0xFF0000}});   // what paints a look never sees the part
+    CHECK(s.SlotOf(2) == 1);
+    CHECK_FALSE(s.OnEvent(Look(2, {{11, 0xFF0000}, nine})));  // the same again
+    CHECK(s.OnEvent(Look(2, {{11, 0xFF0000}, {CoopLookShare::kCharacterPart, CoopLookShare::kCharacterMark | 15u}})));
+    CHECK(s.CharacterOf(2) == 15);                            // another pick is a change
+    CHECK(s.OnEvent(Look(2, {{11, 0xFF0000}})));              // no part: Link again
+    CHECK(s.CharacterOf(2) == 0);
+    // A part 63 that is not ours (no mark, or a number out of range) is no character, and no colour either.
+    CHECK_FALSE(s.OnEvent(Look(2, {{11, 0xFF0000}, {CoopLookShare::kCharacterPart, 0x000009}})));
+    CHECK(s.CharacterOf(2) == 0);
+    CHECK(s.Of(2) == CoopLookShare::Parts{{11, 0xFF0000}});
+    CHECK_FALSE(s.OnEvent(Look(2, {{11, 0xFF0000}, {CoopLookShare::kCharacterPart, CoopLookShare::kCharacterMark | 0xFFFFu}})));
+    CHECK(s.CharacterOf(2) == 0);
+    CHECK(s.OnEvent(Look(3, {nine})));
+    CHECK(s.CharacterOf(3) == 9);
+    s.OnEvent(Kind(EventKind::player_left, 3));
+    CHECK(s.CharacterOf(3) == 0);                             // gone with the player
+    CHECK(s.OnEvent(Look(2, {nine})));
+    s.OnEvent(Kind(EventKind::welcomed));
+    CHECK(s.CharacterOf(2) == 0);                             // and with the session
+}
+
+TEST_CASE("look share: a new pick of character alone paints no copy again") {
+    // Review of #299 (7): only the character changed, the colours did not: the slot's copy stays painted.
+    CoopLookShare::Share s;
+    s.EnableSlots(true);
+    const LookPart nine{CoopLookShare::kCharacterPart, CoopLookShare::kCharacterMark | 9u};
+    const LookPart ten{CoopLookShare::kCharacterPart, CoopLookShare::kCharacterMark | 10u};
+    s.OnEvent(Look(2, {{11, 0xFF0000}, nine}));
+    auto jobs = s.Jobs(0);
+    REQUIRE(jobs.size() == 1);
+    CHECK(jobs[0].parts == CoopLookShare::Parts{{11, 0xFF0000}});
+    s.Done(jobs[0], 0);
+    CHECK(s.OnEvent(Look(2, {{11, 0xFF0000}, ten})));   // a change (the puppet's actor)...
+    CHECK(s.Jobs(CoopLookShare::kCopyDwellMs * 2).empty());   // ...but no repaint
+    s.OnEvent(Look(3, {nine}));                          // a character and no colours: its copy once, as any look
+    jobs = s.Jobs(CoopLookShare::kCopyDwellMs * 2);
+    REQUIRE(jobs.size() == 1);
+    CHECK(jobs[0].parts.empty());
+    s.Done(jobs[0], 0);
+    s.OnEvent(Look(3, {ten}));
+    CHECK(s.Jobs(CoopLookShare::kCopyDwellMs * 4).empty());
+}
+
+TEST_CASE("look share: a guest on the host's save sends its own pick, not the host's") {
+    // Review of #299 (5): the host's save carries the host's pick.
+    CoopLookShare::OwnPick p;
+    CHECK(p.Update(0, false, 0) == 0);
+    CHECK(p.Update(12, false, 0) == 12);       // our own save: what we picked
+    CHECK(p.TakeOwnChange() == std::optional<std::uint64_t>(12));
+    CHECK_FALSE(p.TakeOwnChange());            // once
+    CHECK(p.Update(30, true, 1) == 12);        // the host's save loads with the host's 30: ours goes out
+    CHECK(p.Update(30, true, 1) == 12);
+    CHECK_FALSE(p.TakeOwnChange());            // the host's pick is never kept as ours
+    CHECK(p.Update(44, true, 1) == 44);        // the guest picks on the host's save: that one
+    CHECK(p.Update(30, true, 1) == 30);        // even back to the host's number: it is the guest's pick now
+    CHECK(p.Update(30, true, 2) == 12);        // a new load of the host's save: its number is the host's again
+    CHECK(p.Update(0, true, 3) == 12);         // a host as Link: still ours
+    CHECK(p.Update(0, false, 3) == 0);         // back on our own save (as Link): that
+    CoopLookShare::OwnPick seeded;
+    seeded.Seed(7);                            // kept from the last start (coop-character.txt)
+    CHECK_FALSE(seeded.TakeOwnChange());
+    CHECK(seeded.Update(30, true, 0) == 7);    // a guest that joined before playing its own save
+    CoopLookShare::OwnPick fresh;
+    CHECK(fresh.Update(30, true, 0) == 0);     // nothing known: Link, never the host's
+    // The Customize options are in the save too: they go with the pick (OwnPick::Of), the guest's own until it
+    // changes either on the host's save (review of 07de2fe2, MUST 1).
+    using CoopLookShare::OwnPick;
+    CHECK(OwnPick::CharacterIn(OwnPick::Of(9, 0x123456)) == 9);
+    CHECK(OwnPick::CustomIn(OwnPick::Of(9, 0x123456)) == 0x123456u);
+    CHECK(OwnPick::CustomIn(OwnPick::Of(9, 0xFF123456u)) == 0x123456u);
+    OwnPick g;
+    CHECK(g.Update(OwnPick::Of(9, 0x000011), false, 0) == OwnPick::Of(9, 0x000011));
+    CHECK(g.Update(OwnPick::Of(30, 0x222222), true, 1) == OwnPick::Of(9, 0x000011));   // the host's pick and options
+    // The options are unsaved (0 after a load): one changed on the host's save is no pick of the guest's own.
+    CHECK(g.Update(OwnPick::Of(30, 0x222223), true, 1) == OwnPick::Of(9, 0x000011));
+    CHECK(g.Update(OwnPick::Of(44, 0x222223), true, 1) == OwnPick::Of(44, 0x222223));  // a pick: it and its options
+    CHECK(g.Update(OwnPick::Of(44, 0x000005), true, 1) == OwnPick::Of(44, 0x000005));  // then each option change
+    CHECK(g.Update(OwnPick::Of(30, 0x222222), true, 2) == OwnPick::Of(9, 0x000011));   // a new load: ours again
+    CHECK(g.TakeOwnChange() == std::optional<std::uint64_t>(OwnPick::Of(9, 0x000011)));
+}
+
+TEST_CASE("look share: a character's Customize options ride along as a part of their own") {
+    CoopLookShare::Share s;
+    s.SetCustom(0x123456);
+    CHECK_FALSE(s.TakeSend());                 // Link: nothing of it is sent
+    s.SetCharacter(9);
+    auto sent = s.TakeSend();
+    REQUIRE(sent);
+    const LookPart nine{CoopLookShare::kCharacterPart, CoopLookShare::kCharacterMark | 9u};
+    CHECK(sent->parts == CoopLookShare::Parts{nine, {CoopLookShare::kCustomPart, 0x123456}});
+    s.SetCustom(0x123456);
+    CHECK_FALSE(s.TakeSend());                 // the same again is no change
+    s.SetCustom(0x000001);
+    sent = s.TakeSend();
+    REQUIRE(sent);                             // a changed option sends the look again
+    CHECK(sent->parts == CoopLookShare::Parts{nine, {CoopLookShare::kCustomPart, 0x000001}});
+    s.SetCustom(0);
+    sent = s.TakeSend();
+    REQUIRE(sent);                             // none set: the part is left out
+    CHECK(sent->parts == CoopLookShare::Parts{nine});
+
+    CoopLookShare::Share r;
+    r.EnableSlots(true);
+    CHECK(r.CustomOf(2) == 0);
+    CHECK(r.OnEvent(Look(2, {{11, 0xFF0000}, nine, {CoopLookShare::kCustomPart, 0x654321}})));
+    CHECK(r.CustomOf(2) == 0x654321);
+    CHECK(r.CharacterOf(2) == 9);
+    CHECK(r.Of(2) == CoopLookShare::Parts{{11, 0xFF0000}});   // no painter sees either part
+    CHECK_FALSE(r.OnEvent(Look(2, {{11, 0xFF0000}, nine, {CoopLookShare::kCustomPart, 0x654321}})));
+    CHECK(r.OnEvent(Look(2, {{11, 0xFF0000}, nine, {CoopLookShare::kCustomPart, 0x654320}})));   // an option changed
+    CHECK(r.CustomOf(2) == 0x654320);
+    CHECK(r.OnEvent(Look(2, {{11, 0xFF0000}, {CoopLookShare::kCustomPart, 0x654320}})));         // Link: the options go with the character
+    CHECK(r.CustomOf(2) == 0);
+    CHECK(r.OnEvent(Look(2, {nine, {CoopLookShare::kCustomPart, 0x000002}})));
+    r.OnEvent(Kind(EventKind::player_left, 2));
+    CHECK(r.CustomOf(2) == 0);
+}
+
+TEST_CASE("character puppets: the mod's colour routine is read from the pack's manifest") {
+    using CoopPuppet::PackCharacterColours;
+    const auto c = PackCharacterColours(
+        R"({"characters": {"mod": "x", "colours": {"offset": 48340992, "head": "fd7bbfa9e0030034aB2c40b96b1d0051"}}, "x": 1})");
+    REQUIRE(c);
+    CHECK(c->first == 48340992u);
+    CHECK(c->second == std::array<std::uint8_t, 16>{0xfd, 0x7b, 0xbf, 0xa9, 0xe0, 0x03, 0x00, 0x34,
+                                                    0xab, 0x2c, 0x40, 0xb9, 0x6b, 0x1d, 0x00, 0x51});
+    CHECK_FALSE(PackCharacterColours(R"({"characters": {"mod": "x", "colours": null}})"));
+    CHECK_FALSE(PackCharacterColours(R"({"characters": null})"));
+    CHECK_FALSE(PackCharacterColours(R"({"colours": {"offset": 0, "head": "fd7bbfa9e0030034ab2c40b96b1d0051"}})"));
+    CHECK_FALSE(PackCharacterColours(R"({"colours": {"offset": 5, "head": "fd7bbfa9e0030034ab2c40b96b1d00"}})"));
+    CHECK_FALSE(PackCharacterColours(R"({"colours": {"offset": 5, "head": "zz7bbfa9e0030034ab2c40b96b1d0051"}})"));
+    CHECK_FALSE(PackCharacterColours(R"({"colours": {"offset": 99999999999, "head": "fd7bbfa9e0030034ab2c40b96b1d0051"}})"));
+    CHECK_FALSE(PackCharacterColours(R"({"colours": {"head": "fd7bbfa9e0030034ab2c40b96b1d0051"}, "offset": 5})"));
+}
+
+TEST_CASE("character puppets: the pack's are read from its manifest, and a player who picked one is shown as it") {
+    using namespace CoopPuppet;
+    CHECK(CharacterActor(true, 7) == "CoopPuppet_Adult_C007");
+    CHECK(CharacterActor(false, 0) == "CoopPuppet_Child_C000");
+    CHECK(CharacterActor(false, 113) == "CoopPuppet_Child_C113");
+    CHECK(CharacterActor(true, 1000).empty());
+    CHECK(IsCharacterActor("CoopPuppet_Adult_C007"));
+    CHECK(IsCharacterActor("CoopPuppet_ChildQuiet_C113"));
+    CHECK(IsCharacterActor("CoopPuppet_Adult_C007_Pvp"));
+    CHECK_FALSE(IsCharacterActor("CoopPuppet_Adult_Cyan"));
+    CHECK_FALSE(IsCharacterActor("CoopPuppet_Adult"));
+    CHECK_FALSE(IsCharacterActor("CoopPuppet_Adult_C07"));
+    CHECK_FALSE(IsCharacterActor("CoopPuppet_Adult_C0077"));
+    CHECK_FALSE(IsCharacterActor("CoopTunic_Adult_C007"));
+    // As build.py writes it: the mod's stored number 9 is file 5 (a gap: not 9 - 2), 4 is file 2.
+    const std::string manifest =
+        R"({"actors": [{"actor": "CoopPuppet_Child", "character": null}, {"actor": "CoopPuppet_Adult_Cyan", "tunic": "cyan"},)"
+        R"( {"actor": "CoopPuppet_Adult_C005", "character": 5, "model": "Player_Adult_C005"},)"
+        R"( {"actor": "CoopPuppet_Child_C005", "character": 5}, {"actor": "CoopPuppet_Adult_C002", "character": 2},)"
+        R"( {"actor": "CoopPuppet_Adult_C005"}], "characters": {"mod": "OoT Character Select",)"
+        R"( "numbers": {"2": 4, "5": 9}, "variants": {"2": ["Adult"], "5": ["Child", "Adult"]}}, "test_tunic": null})";
+    const auto actors = PackCharacterActors(manifest);
+    CHECK(actors == std::vector<std::string>{"CoopPuppet_Adult_C002", "CoopPuppet_Adult_C005", "CoopPuppet_Child_C005"});
+    CHECK(PackCharacterActors(R"({"actors": [{"actor": "CoopPuppet_Adult_Cyan"}]})").empty());
+    const auto files = PackCharacterNumbers(manifest);
+    CHECK(files == std::map<std::uint16_t, std::uint16_t>{{4, 2}, {9, 5}});
+    CHECK(PackCharacterNumbers(R"({"actors": [], "characters": null, "numbers": {"1": 3}})").empty());
+    CHECK(PackCharacterNumbers(R"({"actors": []})").empty());
+    CHECK(PackCharacterNumbers(R"({"characters": {"mod": "x", "numbers": {}}})").empty());
+
+    PlannerSettings settings;
+    settings.character_actors = actors;
+    settings.character_files = files;
+    Planner p(settings);
+    CHECK(p.ActorFor(true, 0xFF3030u, 9) == "CoopPuppet_Adult_C005");    // the pack's file, before the colour
+    CHECK(p.ActorFor(false, std::nullopt, 9) == "CoopPuppet_Child_C005");
+    CHECK(p.ActorFor(true, 0xFF3030u, 4) == "CoopPuppet_Adult_C002");
+    CHECK(p.ActorFor(false, 0xFF3030u, 4) == "CoopPuppet_Child_Red");    // no child model of it
+    CHECK(p.ActorFor(true, 0xFF3030u, 0) == "CoopPuppet_Adult_Red");     // Link: the colour, as before
+    CHECK(p.ActorFor(true, 0xFF3030u, 7) == "CoopPuppet_Adult_Red");     // 7 - 2 = 5 is no rule: 7 is not listed
+    CHECK(p.ActorFor(true, 0xFF3030u, 12) == "CoopPuppet_Adult_Red");    // a number this viewer's mod has not
+    CHECK(p.ActorFor(true, 0xFF3030u) == "CoopPuppet_Adult_Red");
+    p.SetFailedTunics({"CoopPuppet_Adult_C005"});
+    CHECK(p.ActorFor(true, 0xFF3030u, 9) == "CoopPuppet_Adult_Red");     // one the game refused: the colour
+    PlannerSettings none;
+    CHECK(Planner(none).ActorFor(true, 0xFF3030u, 9) == "CoopPuppet_Adult_Red");   // a pack without them
+    PlannerSettings no_map;
+    no_map.character_actors = actors;
+    CHECK(Planner(no_map).ActorFor(true, 0xFF3030u, 9) == "CoopPuppet_Adult_Red");   // puppets but no map: none
 }

@@ -86,13 +86,17 @@ CoopPuppet::PlannerSettings Settings(const EnvFn& env, const std::function<bool(
 
 #ifdef LICHII_COOP
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 
 #include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "coop_pvp_native.h"
+#include "coop_pvp_native_game.h"
 
 namespace CoopPuppetConfig {
 namespace {
@@ -163,6 +167,48 @@ std::vector<std::string> PackQuiet() {
     return {};
 }
 
+// The character puppets of every manifest (the Character Select mod's characters, tools/puppet_pack).
+std::vector<std::string> PackCharacters() {
+    std::vector<std::string> out;
+    for (const auto& text : PackManifests()) {
+        for (auto& name : CoopPuppet::PackCharacterActors(text)) {
+            out.push_back(std::move(name));
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+// The mod's stored character numbers -> the pack's model files, from every manifest (PackCharacterNumbers).
+std::map<std::uint16_t, std::uint16_t> PackCharacterFiles() {
+    std::map<std::uint16_t, std::uint16_t> out;
+    for (const auto& text : PackManifests()) {
+        out.merge(CoopPuppet::PackCharacterNumbers(text));
+    }
+    return out;
+}
+
+// A manifest of a pack built with perception.
+bool PackPerceived() {
+    for (const auto& text : PackManifests()) {
+        if (CoopPuppet::PackPerception(text)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The first manifest with blade copies.
+CoopPuppet::LookItems PackBlades() {
+    for (const auto& text : PackManifests()) {
+        if (auto items = CoopPuppet::PackLookItems(text, "blade_items"); items.copies > 0) {
+            return items;
+        }
+    }
+    return {};
+}
+
 // The first manifest with item copies.
 CoopPuppet::LookItems PackLook() {
     for (const auto& text : PackManifests()) {
@@ -177,9 +223,52 @@ CoopPuppet::LookItems PackLook() {
 
 bool HasPack() { return !PackManifests().empty(); }
 
-void Configure() {
+// A manifest of a pack built with --puppet-pvp (native puppets phase 4).
+bool PackPvp() {
+    for (const auto& text : PackManifests()) {
+        if (CoopPvpNative::PackHasPvp(text)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void Configure(bool perceived_safe) {
+    CoopPvpNativeGame::SetPackPvp(PackPvp());
     std::vector<std::string> lines;
     auto settings = Settings(Env, PackGreenPuppets, &lines, PackTunicPuppets, PackLook);
+    settings.null_reads_zero = perceived_safe;
+    if (const auto v = Env("LICHII_COOP_BLADE_COPIES"); v != "0" && v != "off") {
+        auto blades = PackBlades();
+        settings.blade_items = std::move(blades.actors);
+        settings.blade_copies = settings.blade_items.empty() ? 0 : blades.copies;
+        lines.push_back(settings.blade_copies > 0
+                            ? "coop: the puppet pack has blade copies of " + std::to_string(settings.blade_items.size()) +
+                                  " swords for " + std::to_string(settings.blade_copies) +
+                                  " player numbers: every puppet's blade is its own"
+                            : std::string("coop: the puppet pack has no blade copies (make it again): a puppet without "
+                                          "gear colours shows its sword's blade only while yours is out"));
+    }
+    if (!perceived_safe) {
+        lines.push_back("coop: null-pointer reads cannot give 0 here: other players' Hookshot and Longshot stay off "
+                        "their puppets (issue 232)");
+    }
+    // Character Select: a player's picked character on their puppet. LICHII_COOP_CHARACTERS=0: off.
+    if (const auto v = Env("LICHII_COOP_CHARACTERS"); v != "0" && v != "off") {
+        settings.character_actors = PackCharacters();
+        settings.character_files = PackCharacterFiles();
+        for (const auto& text : PackManifests()) {
+            if (const auto colours = CoopPuppet::PackCharacterColours(text)) {
+                settings.character_apply = colours->first;
+                settings.character_apply_head = colours->second;
+            }
+        }
+        if (!settings.character_actors.empty()) {
+            lines.push_back("coop: the puppet pack has " + std::to_string(settings.character_actors.size()) +
+                            " puppets for the Character Select mod's characters: a player who picked one is shown "
+                            "as that character");
+        }
+    }
     if (settings.actor.empty() && !settings.native_player) {
         settings.quiet_scenes = PackQuiet();
         if (!settings.quiet_scenes.empty()) {
@@ -188,6 +277,12 @@ void Configure() {
                 names += (names.empty() ? "" : ", ") + s;
             }
             lines.push_back("coop: puppets are seen by enemies; quiet puppets (no guard sees them) in " + names);
+        }
+        settings.perceived = PackPerceived();  // row 177: a hit's attacker may be the hitter's puppet
+        if (!perceived_safe && PackPerceived()) {
+            settings.quiet_everywhere = true;
+            lines.push_back("coop: null-pointer reads cannot give 0 here (HOS_COOP_NULL_READS=0, or the guest's first "
+                            "MB is not free): quiet puppets everywhere, enemies see only their own Link");
         }
     }
     for (const auto& line : lines) {

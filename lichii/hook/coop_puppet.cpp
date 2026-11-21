@@ -6,6 +6,8 @@
 #include "coop_local_game.h"
 #include "coop_look_share.h"
 #include "coop_pose.h"
+#include "coop_lift_player.h"
+#include "coop_pvp_native.h"
 #include "coop_puppet_own.h"
 #include "coop_show_delay.h"
 
@@ -25,7 +27,33 @@
 #include "coop/presence/presence.hpp"
 
 namespace CoopPuppet {
+
 namespace {
+// Native puppets phase 3 (coop_lift_player.h, WatchGamePlaces): off unless the lift switch is on.
+std::atomic<bool> g_watch_places{false};
+std::atomic<std::uint8_t> g_game_holds{0};
+struct KeptPlace {
+    Vec3 drawn{};
+    bool drawn_known = false;
+    std::optional<Vec3> game;
+    std::uint64_t at_ms = 0;
+};
+std::mutex g_places_mutex;
+std::map<std::uint8_t, KeptPlace> g_places;
+} // namespace
+// The head show call's cell (#91) between the gear pointers and the Ocarina notes' cells.
+static_assert(block::kHeadOwnerEu >= block::kGearPtr + 8 * kGearCount);
+static_assert(block::kHeadOwnerEu + 8 <= CoopPuppetSound::block::kHandle);
+namespace {
+// The head show call (#91, addr::kShowHeadArmor). LICHII_COOP_MASK_SHOW=0
+// leaves it out (a mask is then worn and not drawn, as before 0.11.6).
+bool ShowHeadArmor() {
+    static const bool on = [] {
+        const char* v = std::getenv("LICHII_COOP_MASK_SHOW");
+        return v == nullptr || std::string_view(v) != "0";
+    }();
+    return on;
+}
 
 // The puppet plays the other player's Ocarina notes (issue 152) on the game's own
 // "Ocarina" SLink user, the one the game emits its own notes on (coop_puppet_sound.h,
@@ -39,22 +67,18 @@ bool OcarinaSoundOn() {
     return on;
 }
 
-// Whether a piece the game crashed on is worn on a puppet anyway (issue 232).
-// Off by default: a GearIsUnsafe piece stays off. LICHII_COOP_PUPPET_HOOKSHOT=1
-// puts them back, for a test that checks whether a later build can take them.
-bool WearsUnsafe() {
-    static const bool on = [] {
+// LICHII_COOP_PUPPET_HOOKSHOT (issue 232): "1" wears a GearIsUnsafe piece on
+// a puppet whatever the null page, "0" leaves it off; unset (the default) it
+// follows Director::SetNullReadsZero.
+std::optional<bool> UnsafeSwitch() {
+    static const std::optional<bool> on = []() -> std::optional<bool> {
         const char* v = std::getenv("LICHII_COOP_PUPPET_HOOKSHOT");
-        return v != nullptr && v[0] != '\0' && std::string_view(v) != "0";
+        if (v == nullptr || v[0] == '\0') {
+            return std::nullopt;
+        }
+        return std::string_view(v) != "0";
     }();
     return on;
-}
-
-// A piece `Equip` leaves off the puppet: nothing is made for it, and the piece
-// its slot may still hold is neither put away nor re-worn: that slot is not
-// ours to change while the player wears one of these.
-bool GearLeftOff(const std::string& name) {
-    return GearIsUnsafe(name) && !WearsUnsafe();
 }
 
 template <typename T>
@@ -166,6 +190,19 @@ std::vector<Director::SlotView> Director::Slots() const {
     return out;
 }
 
+std::vector<Director::DressView> Director::DressTargets() const {
+    std::vector<DressView> out;
+    for (const auto& s : slots_) {
+        if (s.phase != Phase::live || s.actor == 0 || s.block == 0) continue;
+        const Target* t = Wanted(s.number);
+        const bool character = IsCharacterActor(s.actor_name);
+        out.push_back({s.number, s.actor, s.block + block::kDress,
+                       t != nullptr && character ? static_cast<std::uint32_t>(t->custom & 0xFFFFFFu) : 0u, character,
+                       character && character_apply_ != 0 && character_apply_state_ == 1, s.actor_name});
+    }
+    return out;
+}
+
 const Target* Director::Wanted(std::uint8_t number) const {
     for (const auto& t : input_.targets) {
         if (t.number == number) {
@@ -254,7 +291,10 @@ void Director::PoseFrame(Guest& guest, std::uint64_t now_ms) {
     }
     std::vector<std::pair<std::uint8_t, std::uint64_t>> puppets;
     for (const auto& slot : slots_) {
-        if (slot.phase == Phase::live && slot.actor != 0 && !slot.native) {
+        // A Character Select character's puppet takes no pose: copied onto one, the sender's pose left it
+        // stiff (seen 2026-11-18: Sheik stiff with the copy, moving with the animation commands), so it plays
+        // the player's animation commands on its own model, as a puppet without a pose does.
+        if (slot.phase == Phase::live && slot.actor != 0 && !slot.native && !IsCharacterActor(slot.actor_name)) {
             puppets.emplace_back(slot.number, slot.actor);
         }
     }
@@ -269,6 +309,11 @@ void Director::NewFrame(Guest& guest, std::uint64_t now_ms) {
         pending_ = Pending::none;  // not made: asked again this frame
     }
     first_slot_ = slots_.empty() ? 0 : (first_slot_ + 1) % slots_.size();
+    if (pending_ == Pending::dress && ++dress_not_made_ >= kDressNotMade && character_apply_state_ == 1) {
+        character_apply_state_ = 2;
+        Say("characters: the Character Select mod's colour routine at main+" + Hex(character_apply_) +
+            " could not be called (not a game function of this build): co-op dresses the puppets itself");
+    }
     if (pending_ != Pending::none) {
         // The cave did not make the call (its own limit): undo the phase.
         Slot& slot = SlotFor(pending_slot_);
@@ -289,6 +334,8 @@ void Director::NewFrame(Guest& guest, std::uint64_t now_ms) {
             slot.sound.pending = CoopPuppetSound::State::Step::none;
         } else if (pending_ == Pending::link_sound) {
             CoopLinkSound::Dropped(slot.link_sound);
+        } else if (pending_ == Pending::flame) {
+            CoopPuppetFlame::Dropped(slot.flame);
         }
         pending_ = Pending::none;
     }
@@ -305,6 +352,9 @@ void Director::NewFrame(Guest& guest, std::uint64_t now_ms) {
                 for (auto& s : t.sounds) {
                     if (OcarinaSoundOn() && s.name.starts_with("Ocarina_")) {
                         continue;  // the OCARINA_NOTE path plays the notes: not twice
+                    }
+                    if (CoopLinkSound::OwnOnly(s.name)) {
+                        continue;  // the sender's own (its low-health beep): an older sender sends it (row 163)
                     }
                     slot.link_sound.heard.Push(std::move(s.name), s.at_ms);
                 }
@@ -326,8 +376,12 @@ void Director::NewFrame(Guest& guest, std::uint64_t now_ms) {
         }
     }
     std::uint32_t live = 0;  // LiveMask(): rebuilt each frame
+    std::array<std::uint64_t, coop::protocol::kMaxPlayers + 1> pvp_actors{};  // LivePvpActor(): the same
+    std::array<std::uint64_t, coop::protocol::kMaxPlayers + 1> seen_actors{};  // LiveSeenActor(): the same
     if (input_.main_base == 0) {
         live_mask_.store(0, std::memory_order_relaxed);
+        for (auto& a : live_pvp_actor_) a.store(0, std::memory_order_relaxed);
+        for (auto& a : live_seen_actor_) a.store(0, std::memory_order_relaxed);
         return;
     }
     for (auto& slot : slots_) {
@@ -441,6 +495,13 @@ void Director::NewFrame(Guest& guest, std::uint64_t now_ms) {
                 if (t->show != Show::hide && slot.number < 32) {
                     live |= 1u << slot.number;
                 }
+                if (t->show != Show::hide && slot.number < seen_actors.size() &&
+                    SeenPuppetActor(slot.actor_name, perceived_.load())) {
+                    seen_actors[slot.number] = slot.actor;  // row 177: LiveSeenActor
+                }
+                if (slot.number < pvp_actors.size() && CoopPvpNative::IsPvpActor(slot.actor_name)) {
+                    pvp_actors[slot.number] = slot.actor;  // phase 4: LivePvpActor (shown or held, any show)
+                }
                 // Issue 194 (coop_snap.h): a held puppet (their cutscene) follows their
                 // place with its frame frozen, so it is not left behind and does not jump
                 // when the cutscene ends; any jump is eased, a snap is logged.
@@ -498,6 +559,8 @@ void Director::NewFrame(Guest& guest, std::uint64_t now_ms) {
         }
     }
     live_mask_.store(live, std::memory_order_relaxed);
+    for (std::size_t n = 0; n < pvp_actors.size(); ++n) live_pvp_actor_[n].store(pvp_actors[n], std::memory_order_relaxed);
+    for (std::size_t n = 0; n < seen_actors.size(); ++n) live_seen_actor_[n].store(seen_actors[n], std::memory_order_relaxed);
     Status(guest, now_ms);
 }
 
@@ -558,7 +621,9 @@ void Director::Finish(Guest& guest, std::uint64_t result, std::uint64_t now_ms) 
         if (slot.refused < kRefusedFast) {
             slot.retry_ms = now_ms + kRefusedRetryMs;
             if (slot.refused == 1) {
-                Say(who + ": create refused; trying again each second");
+                Say(who + ": create refused (most often the game does not know " + slot.actor_name +
+                    ": no row in the actor table it reads, e.g. a mod with its own RSDB/ActorInfo, or an older "
+                    "puppet pack); trying again each second");
             }
         } else {
             slot.retry_ms = now_ms + kRefusedSlowMs;
@@ -629,6 +694,10 @@ void Director::Finish(Guest& guest, std::uint64_t result, std::uint64_t now_ms) 
         }
         Say(who + " wears " + kGearNames[slot.equip_index] + " '" + slot.equip_name +
             "' (returned " + Hex(result & 0xff) + ")");
+        if (slot.equip_index == kGearHead) {
+            slot.head_show = (result & 0xff) != 0 && ShowHeadArmor();   // then shown (#91)
+            slot.head_hair_back = false;   // (the show call moves the hair for the new piece)
+        }
         break;
     case Pending::unequip: {
         const std::size_t i = slot.equip_index;
@@ -637,6 +706,11 @@ void Director::Finish(Guest& guest, std::uint64_t result, std::uint64_t now_ms) 
                 Hex(result & 0xff) + ")");
             slot.worn[i].clear();
             slot.off_since_ms[i] = 0;
+            if (i == kGearHead) {
+                slot.head_show = false;
+                slot.head_hair_back = slot.head_shown;   // the hair as without a mask (#91)
+                slot.head_shown = false;
+            }
         } else {
             // Refused: the next Equip makes the puppet again without it.
             Say(who + " takes off " + kGearNames[i] + " '" + slot.worn[i] +
@@ -701,15 +775,53 @@ void Director::Finish(Guest& guest, std::uint64_t result, std::uint64_t now_ms) 
     case Pending::sound:
         CoopPuppetSound::Finish(slot.sound, result, who, [this](const std::string& line) { Say(line); });
         break;
+    case Pending::flame:
+        CoopPuppetFlame::Finish(slot.flame, result, who, [this](const std::string& line) { Say(line); });
+        break;
+    case Pending::dress:
+        dress_not_made_ = 0;
+        slot.dressed = slot.dress_asked;
+        slot.dress_ms = now_ms;
+        break;
     case Pending::link_sound:
         CoopLinkSound::Finish(slot.link_sound, result, guest, slot.block, who,
                               [this](const std::string& line) { Say(line); }, anim_);
+        break;
+    case Pending::head_show:
+        slot.head_show = false;
+        slot.head_shown = true;
+        Say(who + " shows head '" + slot.worn[kGearHead] + "' (the game's own show call, " +
+            Hex(addr::kShowHeadArmor) + ")");
+        break;
+    case Pending::head_hair:
+        slot.head_hair_back = false;
+        Say(who + ": hair put back after the head piece (the game's own take-off, " +
+            Hex(addr::kHeadArmorHairBack) + ")");
         break;
     case Pending::own_state:  // taken above
     case Pending::none:
         break;
     }
     pending_ = Pending::none;
+}
+
+// Phase 4: player `number`'s copy is lifted by our Link (GameHolds), or its player lifts or carries something
+// (a bomb, a pot, another player: its main animation has "lift" or "carry", as phase 3 reads our own): its
+// actor is not re-made for a PvP mode change now.
+static bool CopyBusy(std::uint8_t number, const Target& t) {
+    if (GameHolds() == number) return true;
+    // Its player holds something, or is carried (lift-young: the carried pose on every copy of it).
+    return t.anim && (CoopLiftPlayer::OurLinkLifts(std::string_view(t.anim->name)) ||
+                      t.anim->name == CoopLiftPlayer::kCarriedPose);
+}
+
+// The live copy keeps its actor: the wanted one differs only by the _Pvp copy and the copy is busy.
+template <class Slot>
+static bool PvpHold(const Slot& slot, const Target* t, const std::string& scene) {
+    return t != nullptr && scene == slot.scene && !slot.remake &&
+           CoopPvpNative::OnlyPvpDiffers(t->actor, slot.actor_name) &&
+           !CoopPvpNative::RemakeNow(CoopPvpNative::CopyActor::plain, CoopPvpNative::CopyActor::pvp,
+                                     CopyBusy(slot.number, *t));
 }
 
 std::optional<Call> Director::Next(Slot& slot, Guest& guest, std::uint64_t now_ms) {
@@ -788,8 +900,10 @@ std::optional<Call> Director::Next(Slot& slot, Guest& guest, std::uint64_t now_m
                 return std::nullopt;  // maybe a hiccup: keep it a moment
             }
         }
-        if (t == nullptr || t->actor != slot.actor_name || input_.scene != slot.scene ||
-            slot.remake) {
+        // Phase 4: a copy lifted by our Link or holding something keeps its plain or _Pvp actor until that
+        // ends; the re-make would drop what it carries (CoopPvpNative::RemakeNow).
+        if (!PvpHold(slot, t, input_.scene) && (t == nullptr || t->actor != slot.actor_name ||
+                                                 input_.scene != slot.scene || slot.remake)) {
             slot.missing_ms = 0;
             Call c;
             c.function = input_.main_base + addr::kRequestDelete;
@@ -835,18 +949,34 @@ std::optional<Call> Director::Next(Slot& slot, Guest& guest, std::uint64_t now_m
                 }
             }
         }
+        if (auto c = Dress(slot, *t, guest, now_ms)) {
+            return c;
+        }
         if (auto c = Equip(slot, *t, guest, now_ms)) {
             return c;
         }
         if (auto c = Hold(slot, *t, guest, now_ms)) {
             return c;
         }
-        if (matrix_call_ && t->show != Show::hold) {
+        // Issue 248: their lit stick's flame, the game's own effect on the puppet's piece
+        // (a picture only; coop_puppet_flame.h). Only for a player who sent lit bits.
+        if (t->lit || slot.flame.on || slot.flame.next != CoopPuppetFlame::State::Step::none) {
+            if (auto c = CoopPuppetFlame::Next(slot.flame, t->lit.value_or(0), t->drawn.value_or(0),
+                                               t->show != Show::hide, guest, input_.main_base, slot.actor,
+                                               slot.block, "P" + std::to_string(slot.number),
+                                               [this](const std::string& line) { Say(line); })) {
+                pending_ = Pending::flame;
+                return c;
+            }
+        }
+        if (matrix_call_ && t->show != Show::hold &&
+            !(g_watch_places.load(std::memory_order_relaxed) && slot.number != 0 &&
+              g_game_holds.load(std::memory_order_relaxed) == slot.number)) {
             if (auto c = Move(slot, guest)) {
                 return c;
             }
         }
-        if (pose_copy_ && CoopPose::Drives(slot.number, now_ms) &&
+        if (pose_copy_ && !IsCharacterActor(slot.actor_name) && CoopPose::Drives(slot.number, now_ms) &&
             CoopPose::Writes(slot.number, now_ms)) {
             // The pose copy moves it. puppet-anim (#36/#41): what the slot last played is
             // forgotten, so when the copy stops (poses stop, or come for another skeleton)
@@ -952,6 +1082,12 @@ std::optional<Call> Director::Create(Slot& slot, const Target& target, Guest& gu
     slot.remake = false;
     slot.off_since_ms = {};
     slot.unequip_refused = {};
+    slot.head_show = false;
+    slot.head_shown = false;
+    slot.head_hair_back = false;
+    slot.dressed.reset();   // (a new actor's model has its own colours)
+    slot.dress_ms = 0;
+    CoopPuppetFlame::Forget(slot.flame);  // its pieces go with the old actor
     pending_ = Pending::create;
     return c;
 }
@@ -1091,6 +1227,51 @@ std::string SlotsText(Guest& guest, std::uint64_t actor, std::optional<std::uint
 }
 }  // namespace
 
+bool Director::LeftOff(const std::string& name) const {
+    return GearIsUnsafe(name) && !UnsafeSwitch().value_or(null_reads_zero_.load());
+}
+
+// Character Select: the mod's colour routine for a character's puppet (its player's Customize options), once
+// per change and every kDressAgainMs while any is set; only once its first 16 bytes are the pack's.
+std::optional<Call> Director::Dress(Slot& slot, const Target& target, Guest& guest, std::uint64_t now_ms) {
+    if (character_apply_ == 0 || character_apply_state_ == 2 || !IsCharacterActor(slot.actor_name)) {
+        return std::nullopt;
+    }
+    const std::uint64_t word = target.custom;
+    const bool plain = (word & 0xFFFFFFu) == 0;
+    if (word == 0 || (plain && !slot.dressed)) {
+        return std::nullopt;   // nothing set and nothing ever put on: the model's own
+    }
+    if (slot.dressed && *slot.dressed == word && (plain || now_ms - slot.dress_ms < kDressAgainMs)) {
+        return std::nullopt;
+    }
+    if (character_apply_state_ == 0) {
+        std::array<std::uint8_t, 16> there{};
+        const bool same = guest.Read(input_.main_base + character_apply_, there.data(), there.size()) &&
+                          there == character_apply_head_;
+        character_apply_state_ = same ? 1 : 2;
+        Say(same ? "characters: the Character Select mod's colour routine is at main+" + Hex(character_apply_) +
+                       ": a player's Customize options show on their puppet"
+                 : "characters: the Character Select mod's colour routine is not at main+" + Hex(character_apply_) +
+                       " (another build of the mod than the pack was made with, or its code is not in the game): "
+                       "no Customize options on puppets");
+        if (!same) {
+            return std::nullopt;
+        }
+    }
+    if (!slot.dressed || *slot.dressed != word) {
+        Say("P" + std::to_string(slot.number) + " " + slot.actor_name + ": Customize options " +
+            Hex(word & 0xFFFFFFu) + " of character " + std::to_string(word >> 32));
+    }
+    Call c;
+    c.function = input_.main_base + character_apply_;
+    c.x[0] = slot.actor;
+    c.x[1] = word;
+    slot.dress_asked = word;
+    pending_ = Pending::dress;
+    return c;
+}
+
 // One equip call for a live puppet whose player's gear differs from what it
 // wears, or none. An empty name (nothing in that slot): a carried piece (the
 // held item, the tool slots) is only put away, as its player's is; a worn one
@@ -1130,12 +1311,38 @@ std::optional<Call> Director::Equip(Slot& slot, const Target& target, Guest& gue
     if (target.show == Show::show && now_ms >= slot.rewear_ms) {
         LeftBehind(slot, guest, now_ms);
     }
+    // A head piece worn is shown, a head piece taken off gives the hair back,
+    // with the game's own calls (#91, addr::kShowHeadArmor).
+    if (slot.head_show && slot.worn[kGearHead].empty()) {
+        slot.head_show = false;
+    }
+    if (slot.head_show || slot.head_hair_back) {
+        std::uint64_t parts = 0;
+        std::uint64_t eu = 0;
+        if (ReadValue(guest, slot.actor + addr::kActorParts, parts) && parts != 0 &&
+            ReadValue(guest, parts + addr::kPartsEquipmentUser, eu) && eu != 0) {
+            Call c;
+            if (slot.head_show) {
+                if (!WriteValue(guest, slot.block + block::kHeadOwnerEu, eu)) {
+                    return std::nullopt;
+                }
+                c.function = input_.main_base + addr::kShowHeadArmor;
+                c.x[0] = slot.block + block::kHeadOwnerEu - addr::kShowHeadArmorEu;
+                pending_ = Pending::head_show;
+            } else {
+                c.function = input_.main_base + addr::kHeadArmorHairBack;
+                c.x[0] = eu;
+                pending_ = Pending::head_hair;
+            }
+            return c;
+        }
+    }
     for (std::size_t i = 0; i < target.gear.size(); ++i) {
         const auto& want = target.gear[i];
-        if (want && !want->empty() && GearLeftOff(*want)) {
+        if (want && !want->empty() && LeftOff(*want)) {
             // Issue 232: the game crashed with this piece on a puppet (the
-            // Hookshot, in the held slot). It stays off; its player's own Link
-            // still shows it.
+            // Hookshot, in the held slot) where null reads cannot give 0. It stays
+            // off there; its player's own Link still shows it.
             //
             // The piece that was in this slot before it was worn stays where
             // the game put it: the slingshot in slot 3 outlived a switch to the
@@ -1145,8 +1352,8 @@ std::optional<Call> Director::Equip(Slot& slot, const Target& target, Guest& gue
             // is known to take a held piece away.
             if (slot.worn[i] != *want) {
                 Say("P" + std::to_string(slot.number) + " " + kGearNames[i] + " '" + *want +
-                    "' stays off the puppet: the game crashed with it worn here (issue 232; "
-                    "LICHII_COOP_PUPPET_HOOKSHOT=1 wears it again)");
+                    "' stays off the puppet: null reads cannot give 0 here, and the game "
+                    "crashed with it worn so (issue 232; LICHII_COOP_PUPPET_HOOKSHOT=1 wears it)");
                 const bool had_piece = !slot.worn[i].empty();
                 const std::string was = slot.worn[i];
                 slot.worn[i] = *want;  // (kept as theirs, so the slot is not asked again)
@@ -1160,7 +1367,7 @@ std::optional<Call> Director::Equip(Slot& slot, const Target& target, Guest& gue
             continue;
         }
         if (want && want->empty() && !slot.worn[i].empty() && !GearIsCarried(i) &&
-            !GearLeftOff(slot.worn[i])) {
+            !LeftOff(slot.worn[i])) {
             // Empty for a moment (a load) is not taken off: kTakeOffMs first.
             if (slot.off_since_ms[i] == 0) {
                 slot.off_since_ms[i] = std::max<std::uint64_t>(now_ms, 1);
@@ -1241,7 +1448,7 @@ void Director::LeftBehind(Slot& slot, Guest& guest, std::uint64_t now_ms) {
     }
     for (std::size_t i = 0; i < kGearSlots.size(); ++i) {
         const int s = kGearSlots[i];
-        if (s < 0 || slot.worn[i].empty() || GearLeftOff(slot.worn[i])) {
+        if (s < 0 || slot.worn[i].empty() || LeftOff(slot.worn[i])) {
             continue;  // (a piece left off the puppet, issue 232: its slot is not ours)
         }
         if (GearIsCarried(i) && (slot.in_hand & (1u << s)) == 0) {
@@ -1317,7 +1524,7 @@ std::optional<Call> Director::Hold(Slot& slot, const Target& target, Guest& gues
     std::uint64_t check_eu = 0;
     for (std::size_t i = 0; i < kGearSlots.size(); ++i) {
         const int s = kGearSlots[i];
-        if (s < 0 || slot.worn[i].empty() || GearLeftOff(slot.worn[i])) {
+        if (s < 0 || slot.worn[i].empty() || LeftOff(slot.worn[i])) {
             continue;  // (a piece left off the puppet, issue 232: its slot is not ours)
         }
         const auto bit = static_cast<std::uint8_t>(1u << s);
@@ -1621,6 +1828,13 @@ std::optional<Call> Director::Animate(Slot& slot, const Target& target, Guest& g
     }
     if (target.anim_serial != slot.anim_serial) {
         slot.anim_serial = target.anim_serial;
+        // A still frame on a playing pose is not followed (FrameFollowed): the copy plays on, no snap back.
+        const bool followed = FrameFollowed(slot.sample_name, slot.sample_frame, anim);
+        slot.sample_name = anim.name;
+        slot.sample_frame = anim.frame;
+        if (!followed) {
+            return std::nullopt;
+        }
         const auto now = Frame(guest, controller);
         if (std::isfinite(anim.frame) &&
             (!now || std::fabs(*now - anim.frame) > kFrameSlack)) {
@@ -1682,6 +1896,29 @@ void Director::DrawAt(Slot& slot, Guest& guest, const Target& target, std::uint6
     const bool held = target.show == Show::hold;
     Vec3 at{};
     std::optional<Vec3> read;
+    if (g_watch_places.load(std::memory_order_relaxed) && slot.number != 0) {
+        // Native puppets phase 3: where the game had the copy before this write; left to the game while our
+        // Link holds it (SetGameHolds): no place, turn or setter call of ours then.
+        Vec3 game{};
+        std::optional<Vec3> game_read;
+        if (!slot.meter_skip && ReadValue(guest, slot.actor + addr::kActorPosition, game)) {
+            game_read = game;
+        }
+        const bool left = g_game_holds.load(std::memory_order_relaxed) == slot.number;
+        {
+            std::lock_guard lock(g_places_mutex);
+            KeptPlace& k = g_places[slot.number];
+            k.game = game_read;
+            k.at_ms = now_ms;
+        }
+        if (left) {
+            slot.meter.Reset();
+            slot.follow.Reset();
+            slot.raw_follow.Reset();
+            slot.turner.Reset();
+            return;
+        }
+    }
     if (slot.meter_skip) {
         slot.meter_skip = false;  // still the parked spot: start again from the next frame
         slot.meter.Reset();
@@ -1765,6 +2002,12 @@ void Director::DrawAt(Slot& slot, Guest& guest, const Target& target, std::uint6
         Say(who + buf);
     }
     Pose(slot, guest, drawn, &rotation, now_ms);
+    if (g_watch_places.load(std::memory_order_relaxed) && slot.number != 0) {
+        std::lock_guard lock(g_places_mutex);
+        KeptPlace& k = g_places[slot.number];
+        k.drawn = drawn;
+        k.drawn_known = true;
+    }
 }
 
 // The puppet's pose: +0x31c/+0x328 and the engine's pending transform
@@ -2026,9 +2269,9 @@ Input Planner::Plan(std::uint64_t main_base, const std::optional<std::string>& s
             continue;
         }
         const std::optional<std::string_view> theirs =
-            r.scene ? std::optional<std::string_view>(*r.scene) : std::nullopt;
+            coop::host::view_of(r.scene);
         const std::optional<std::string_view> anim =
-            r.anim ? std::optional<std::string_view>(r.anim->name) : std::nullopt;
+            coop::host::name_of(r.anim);
         Show show = Show::show;
         const char* why = "";
         switch (coop::host::visibility(in.scene, local_event, theirs, r.status, anim)) {
@@ -2057,7 +2300,13 @@ Input Planner::Plan(std::uint64_t main_base, const std::optional<std::string>& s
         Target t;
         t.number = r.number;
         t.color = r.color ? r.color : coop::protocol::slot_color(r.number);
-        t.actor = ActorFor(r.adult, t.color);
+        t.actor = ActorFor(r.adult, t.color, r.character);
+        if (r.number >= 1 && r.number < 32 && (PvpCopies() & (1u << r.number)) != 0) {
+            t.actor = CoopPvpNative::PvpActor(t.actor);  // PvP on real bodies (phase 4)
+        }
+        if (r.character != 0 && IsCharacterActor(t.actor)) {
+            t.custom = (static_cast<std::uint64_t>(r.character) << 32) | (r.custom & 0xFFFFFFu);
+        }
         t.position = r.position;
         t.velocity = r.velocity;
         if (r.rotation) {
@@ -2072,7 +2321,9 @@ Input Planner::Plan(std::uint64_t main_base, const std::optional<std::string>& s
         if (r.look_copy && *r.look_copy >= 1 && *r.look_copy <= settings_.look_copies) {
             DressInLook(t.gear, *r.look_copy, settings_.look_items);
         }
+        DressInBlades(t.gear, r.number, settings_.blade_items, settings_.blade_copies);
         t.drawn = r.drawn;
+        t.lit = r.lit;
         t.ocarina = r.ocarina;
         if (show != Show::hide && CoopLinkSound::InHearing(position, r.position)) {
             t.sounds = r.sounds;  // too far, or out of sight: not heard
@@ -2127,6 +2378,31 @@ std::vector<std::string> PackQuietScenes(std::string_view manifest) {
     return out;
 }
 
+bool SeenPuppetActor(std::string_view actor, bool perceived) {
+    return perceived && actor.starts_with("CoopPuppet_") && actor.find("Quiet") == std::string_view::npos;
+}
+
+bool PackPerception(std::string_view manifest) {
+    // "perception": true, as build.py writes it (json.dumps) at the top level, AFTER "actors": every actor entry
+    // has its own "perception" too (null, or its emitter {"param", "size"}), so the first key is an actor's and never
+    // the pack's (until row 177's review every pack read as without perception). The pack's is the last key whose
+    // value is a bool.
+    bool on = false;
+    for (auto at = manifest.find("\"perception\""); at != std::string_view::npos;
+         at = manifest.find("\"perception\"", at + 12)) {
+        const auto v = manifest.find_first_not_of(" \t\r\n:", at + 12);
+        if (v == std::string_view::npos) {
+            break;
+        }
+        if (manifest.substr(v, 4) == "true") {
+            on = true;
+        } else if (manifest.substr(v, 5) == "false") {
+            on = false;
+        }
+    }
+    return on;
+}
+
 std::string QuietActor(std::string_view actor) {
     for (const std::string_view plain : {std::string_view("CoopPuppet_Child"), std::string_view("CoopPuppet_Adult")}) {
         if (actor.substr(0, plain.size()) == plain &&
@@ -2149,15 +2425,32 @@ void DressInLook(Gear& gear, std::size_t copy, const std::vector<std::string>& i
     }
 }
 
-LookItems PackLookItems(std::string_view manifest) {
+std::string BladeItemName(std::string_view item, std::size_t number) {
+    return std::string(item) + "_Blade" + std::to_string(number);
+}
+
+void DressInBlades(Gear& gear, std::size_t number, const std::vector<std::string>& items, std::size_t copies) {
+    if (number < 1 || number > copies) {
+        return;
+    }
+    for (auto& piece : gear) {
+        if (piece && std::find(items.begin(), items.end(), *piece) != items.end()) {
+            piece = BladeItemName(*piece, number);
+        }
+    }
+}
+
+LookItems PackLookItems(std::string_view manifest, std::string_view key) {
     // "look_items": {"slots": N, "copies": 2N, "actors": ["...", ...], "files": [...]}, as
-    // build.py writes it (json.dumps); null for a pack without them.
+    // build.py writes it (json.dumps); null for a pack without them. "blade_items" the same,
+    // without "slots".
     LookItems out;
-    const auto at = manifest.find("\"look_items\"");
+    const std::string quoted = "\"" + std::string(key) + "\"";
+    const auto at = manifest.find(quoted);
     if (at == std::string_view::npos) {
         return out;
     }
-    const auto open = manifest.find_first_not_of(" \t\r\n:", at + 12);
+    const auto open = manifest.find_first_not_of(" \t\r\n:", at + quoted.size());
     if (open == std::string_view::npos || manifest[open] != '{') {
         return out;   // null: none
     }
@@ -2201,6 +2494,146 @@ LookItems PackLookItems(std::string_view manifest) {
     return out;
 }
 
+std::string CharacterActor(bool adult, std::uint16_t file) {
+    if (file > 999) {
+        return {};
+    }
+    std::string name = adult ? "CoopPuppet_Adult_C" : "CoopPuppet_Child_C";
+    name += static_cast<char>('0' + file / 100);
+    name += static_cast<char>('0' + file / 10 % 10);
+    name += static_cast<char>('0' + file % 10);
+    return name;
+}
+
+std::map<std::uint16_t, std::uint16_t> PackCharacterNumbers(std::string_view manifest) {
+    // "characters": {"mod": "...", "numbers": {"<file>": <number>, ...}, "variants": {...}}, as build.py writes it
+    // (json.dumps); null for a pack without them.
+    std::map<std::uint16_t, std::uint16_t> out;
+    const auto at = manifest.find("\"characters\"");
+    if (at == std::string_view::npos) {
+        return out;
+    }
+    const auto open = manifest.find_first_not_of(" \t\r\n:", at + 12);
+    if (open == std::string_view::npos || manifest[open] != '{') {
+        return out;   // null: none
+    }
+    const auto key = manifest.find("\"numbers\"", open);
+    const auto lb = key == std::string_view::npos ? key : manifest.find('{', key);
+    const auto rb = lb == std::string_view::npos ? lb : manifest.find('}', lb);
+    if (rb == std::string_view::npos || manifest.substr(open, key - open).find('}') != std::string_view::npos) {
+        return out;
+    }
+    std::string_view body = manifest.substr(lb + 1, rb - lb - 1);
+    const auto number = [](std::string_view& text, unsigned& value) {
+        const auto i = text.find_first_of("0123456789");
+        if (i == std::string_view::npos) {
+            return false;
+        }
+        text.remove_prefix(i);
+        value = 0;
+        while (!text.empty() && text.front() >= '0' && text.front() <= '9') {
+            value = value * 10 + static_cast<unsigned>(text.front() - '0');
+            text.remove_prefix(1);
+            if (value > 0xFFFF) {
+                return false;
+            }
+        }
+        return true;
+    };
+    unsigned file = 0;
+    unsigned stored = 0;
+    while (number(body, file) && number(body, stored)) {
+        if (file <= 999 && stored != 0) {
+            out[static_cast<std::uint16_t>(stored)] = static_cast<std::uint16_t>(file);
+        }
+    }
+    return out;
+}
+
+bool IsCharacterActor(std::string_view actor) {
+    for (const std::string_view head : {std::string_view("CoopPuppet_Child"), std::string_view("CoopPuppet_Adult")}) {
+        if (actor.substr(0, head.size()) != head) {
+            continue;
+        }
+        std::string_view rest = actor.substr(head.size());
+        if (rest.substr(0, 5) == "Quiet") {
+            rest.remove_prefix(5);
+        }
+        // (its `_Pvp` copy, CoopPvpNative::PvpActor, is the same character)
+        if (rest.size() > 4 && rest.substr(rest.size() - 4) == "_Pvp") {
+            rest.remove_suffix(4);
+        }
+        return rest.size() == 5 && rest[0] == '_' && rest[1] == 'C' && rest[2] >= '0' && rest[2] <= '9' &&
+               rest[3] >= '0' && rest[3] <= '9' && rest[4] >= '0' && rest[4] <= '9';
+    }
+    return false;
+}
+
+std::vector<std::string> PackCharacterActors(std::string_view manifest) {
+    std::vector<std::string> out;
+    constexpr std::string_view kHead = "\"CoopPuppet_";
+    for (std::size_t at = manifest.find(kHead); at != std::string_view::npos; at = manifest.find(kHead, at + 1)) {
+        const std::size_t end = manifest.find('"', at + 1);
+        if (end == std::string_view::npos) {
+            break;
+        }
+        const std::string_view name = manifest.substr(at + 1, end - at - 1);
+        if (IsCharacterActor(name)) {
+            out.emplace_back(name);
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+std::optional<std::pair<std::uint64_t, std::array<std::uint8_t, 16>>> PackCharacterColours(
+    std::string_view manifest) {
+    const std::size_t at = manifest.find("\"colours\"");
+    if (at == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const std::size_t end = manifest.find('}', at);
+    const std::string_view body = manifest.substr(at, end == std::string_view::npos ? end : end - at);
+    std::size_t o = body.find("\"offset\"");
+    std::size_t h = body.find("\"head\"");
+    if (o == std::string_view::npos || h == std::string_view::npos) {
+        return std::nullopt;
+    }
+    o = body.find(':', o);
+    std::uint64_t offset = 0;
+    bool digits = false;
+    for (o = o == std::string_view::npos ? body.size() : o + 1; o < body.size(); ++o) {
+        if (body[o] >= '0' && body[o] <= '9') {
+            offset = offset * 10 + static_cast<std::uint64_t>(body[o] - '0');
+            digits = true;
+            if (offset > 0xFFFFFFFFull) {
+                return std::nullopt;
+            }
+        } else if (digits || (body[o] != ' ' && body[o] != '\n' && body[o] != '\r' && body[o] != '\t')) {
+            break;
+        }
+    }
+    h = body.find(':', h);
+    h = h == std::string_view::npos ? h : body.find('"', h);
+    std::array<std::uint8_t, 16> head{};
+    if (!digits || offset == 0 || h == std::string_view::npos || h + 33 >= body.size() || body[h + 33] != '"') {
+        return std::nullopt;
+    }
+    for (std::size_t i = 0; i < 32; ++i) {
+        const char ch = body[h + 1 + i];
+        const int v = ch >= '0' && ch <= '9'   ? ch - '0'
+                      : ch >= 'a' && ch <= 'f' ? ch - 'a' + 10
+                      : ch >= 'A' && ch <= 'F' ? ch - 'A' + 10
+                                               : -1;
+        if (v < 0) {
+            return std::nullopt;
+        }
+        head[i / 2] = static_cast<std::uint8_t>(head[i / 2] << 4 | v);
+    }
+    return std::make_pair(offset, head);
+}
+
 bool PackHasGreenPuppets(std::string_view manifest) {
     return manifest.find("\"CoopPuppet_Child_Green\"") != std::string_view::npos &&
            manifest.find("\"CoopPuppet_Adult_Green\"") != std::string_view::npos;
@@ -2211,7 +2644,7 @@ bool PackHasTunicPuppets(std::string_view manifest) {
            manifest.find("\"CoopPuppet_Adult_") != std::string_view::npos;
 }
 
-std::string Planner::ActorFor(bool adult, std::optional<std::uint32_t> color) const {
+std::string Planner::ActorFor(bool adult, std::optional<std::uint32_t> color, std::uint16_t character) const {
     if (!settings_.actor.empty()) {
         return settings_.actor;
     }
@@ -2219,13 +2652,28 @@ std::string Planner::ActorFor(bool adult, std::optional<std::uint32_t> color) co
         return CoopNativePlayer::ActorFor(adult);
     }
     // Issue 150: in a scene with stealth guards, the quiet copy (PlannerSettings::quiet_scenes).
-    const bool quiet = std::find(settings_.quiet_scenes.begin(), settings_.quiet_scenes.end(), scene_) !=
-                       settings_.quiet_scenes.end();
+    // Everywhere when the runtime cannot make a perceived puppet safe (PlannerSettings::quiet_everywhere).
+    const bool quiet = settings_.quiet_everywhere ||
+                       std::find(settings_.quiet_scenes.begin(), settings_.quiet_scenes.end(), scene_) !=
+                           settings_.quiet_scenes.end();
     const auto named = [quiet](std::string name) { return quiet ? QuietActor(name) : name; };
     const std::string plain = adult ? "CoopPuppet_Adult" : "CoopPuppet_Child";
     const auto works = [this](const std::string& name) {
         return std::find(failed_tunics_.begin(), failed_tunics_.end(), name) == failed_tunics_.end();
     };
+    // The character they picked in the Character Select mod, when this pack has its puppet (and it did not
+    // fail, as a colour's): before the colours, since the character's own model has its own clothes.
+    // The number is the sender's pick, the mod's id of the character; this pack's own map gives its file.
+    const auto file = settings_.character_files.find(character);
+    const std::string picked =
+        file == settings_.character_files.end() ? std::string{} : CharacterActor(adult, file->second);
+    if (!picked.empty()) {
+        std::string name = named(picked);
+        if (std::binary_search(settings_.character_actors.begin(), settings_.character_actors.end(), name) &&
+            works(name)) {
+            return name;
+        }
+    }
     if (settings_.tunics && color) {
         const std::string_view tunic = CoopColors::TunicOf(*color);
         if (!tunic.empty()) {
@@ -2273,6 +2721,7 @@ std::array<CoopFollow::Delayed<Received>, kNumbers> g_anims;  // by player numbe
 std::array<std::uint32_t, kNumbers> g_anim_serials{};         // the same; guarded
 std::array<Gear, kNumbers> g_gear;                         // the same; guarded
 std::array<std::optional<std::uint8_t>, kNumbers> g_drawn;  // the same; guarded
+std::array<std::optional<std::uint8_t>, kNumbers> g_lit;    // the same; guarded (issue 248)
 std::array<std::optional<std::uint32_t>, kNumbers> g_color; // the same; guarded
 std::optional<std::uint32_t> g_own_color;                    // ours; guarded
 std::array<CoopPuppetSound::Wanted, kNumbers> g_ocarina;  // the same; guarded (issue 152)
@@ -2310,6 +2759,7 @@ void OnEvent(const coop::net::Event& event) {
         g_anims = {};
         g_gear = {};
         g_drawn = {};
+        g_lit = {};
         g_color = {};
         g_ocarina = {};
         g_sounds = {};
@@ -2318,6 +2768,7 @@ void OnEvent(const coop::net::Event& event) {
         g_anims[event.player].Clear();
         g_gear[event.player] = {};
         g_drawn[event.player].reset();
+        g_lit[event.player].reset();
         g_color[event.player].reset();
         g_ocarina[event.player] = {};
         g_sounds[event.player].clear();
@@ -2329,10 +2780,12 @@ void OnEvent(const coop::net::Event& event) {
                          e.held.value_or("?") + "', slots 0 '" + e.weapon_slot.value_or("?") +
                          "' 1 '" + e.sub_weapon.value_or("?") + "' 2 '" +
                          e.third_weapon.value_or("?") + "' 5 '" + e.tool.value_or("?") + "' 6 '" +
-                         e.sub_tool.value_or("?") + "', hand '" + e.hand.value_or("?") + "'");
+                         e.sub_tool.value_or("?") + "', hand '" + e.hand.value_or("?") + "'" +
+                         (e.lit ? ", lit " + std::to_string(*e.lit) : std::string()));
         std::lock_guard lock(g_anim_mutex);
         g_gear[event.player] = GearOf(e);
         g_drawn[event.player] = e.drawn;
+        g_lit[event.player] = e.lit;
         g_color[event.player] = e.color;
     } else if (const auto* note = std::get_if<coop::protocol::OcarinaNote>(&event.message);
                event.kind == EventKind::message && note != nullptr) {
@@ -2379,6 +2832,9 @@ void Configure(PlannerSettings settings, bool verbose, Director::Log log) {
     std::call_once(g_once, [&] {
         g_director = std::make_unique<Director>(std::move(log), verbose, settings.debug_anim);
         g_director->SetPoseCopy(true);
+        g_director->SetCharacterApply(settings.character_apply, settings.character_apply_head);
+        g_director->SetNullReadsZero(settings.null_reads_zero);
+        g_director->SetPerceived(settings.perceived && !settings.quiet_everywhere);
         // docs/puppet.md, "Colour". LICHII_COOP_PUPPET_TINT: 0 to 1, or off.
         // The model tint darkens the whole Link (reports puppet-colors-2): off
         // unless asked for; the colour is the tunic (PlannerSettings::tunics).
@@ -2394,8 +2850,58 @@ Director& TheDirector() {
     return *g_director;
 }
 
+void WatchGamePlaces(bool on) {
+    g_watch_places.store(on);
+    if (!on) {
+        g_game_holds.store(0);
+        std::lock_guard lock(g_places_mutex);
+        g_places.clear();
+    }
+}
+
+void SetGameHolds(std::uint8_t number) {
+    g_game_holds.store(g_watch_places.load() ? number : 0);
+}
+
+std::uint8_t GameHolds() {
+    return g_game_holds.load();
+}
+
+namespace {
+std::atomic<std::uint32_t> g_pvp_copies{0};
+}  // namespace
+
+void SetPvpCopies(std::uint32_t mask) {
+    g_pvp_copies.store(mask, std::memory_order_relaxed);
+}
+
+std::uint32_t PvpCopies() {
+    return g_pvp_copies.load(std::memory_order_relaxed);
+}
+
+std::vector<GamePlace> GamePlaces() {
+    std::vector<GamePlace> out;
+    if (!g_watch_places.load()) {
+        return out;
+    }
+    const std::uint64_t now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                              std::chrono::steady_clock::now().time_since_epoch())
+                                                              .count());
+    std::lock_guard lock(g_places_mutex);
+    for (const auto& [number, k] : g_places) {
+        if (k.drawn_known && now - k.at_ms <= 250) {
+            out.push_back(GamePlace{number, k.drawn, k.game});
+        }
+    }
+    return out;
+}
+
 std::uint32_t LivePuppets() {
     return g_configured && g_director ? g_director->LiveMask() : 0;
+}
+
+std::vector<Director::DressView> DressTargets() {
+    return g_configured && g_director ? g_director->DressTargets() : std::vector<Director::DressView>{};
 }
 
 std::vector<Remote> Collect(coop::host::Session* session, std::uint64_t server_now_us) {
@@ -2425,6 +2931,7 @@ std::vector<Remote> Collect(coop::host::Session* session, std::uint64_t server_n
                     r.scene = player->scene();
                     r.status = player->flags();
                     r.adult = player->age() == coop::protocol::Age::adult;
+                    r.young = player->age() == coop::protocol::Age::child;
                 }
                 remotes.push_back(std::move(r));
             }
@@ -2440,11 +2947,14 @@ std::vector<Remote> Collect(coop::host::Session* session, std::uint64_t server_n
             if (r.number < g_gear.size()) {
                 r.gear = g_gear[r.number];
                 r.drawn = g_drawn[r.number];
+                r.lit = g_lit[r.number];
                 r.color = g_color[r.number];
                 r.ocarina = g_ocarina[r.number];
                 r.sounds = std::exchange(g_sounds[r.number], {});
             }
             r.look_copy = CoopLookShare::CopyOf(r.number);
+            r.character = CoopLookShare::CharacterOf(r.number);
+            r.custom = CoopLookShare::CustomOf(r.number);
         }
     }
     return remotes;

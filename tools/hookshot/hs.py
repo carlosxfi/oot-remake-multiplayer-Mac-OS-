@@ -66,6 +66,12 @@ CACHE_DIR = "cache"
 # prepares in a separate process that does not write longshot_pipelines.bin.built (on NVIDIA that process's pipeline
 # cache does not answer the game's), so each new game folder's first start builds every noted pipeline (35269, about
 # 18 min; six at once took 9+ min per load in wave 1). One pair warmed, these files go to the others and the cache.
+# LIMIT (Windows + NVIDIA, Longshot rc.7, big-run-fix-a 2026-11-17): the copies do not warm the other folders there. Every
+# longshot.exe shares the driver's one shader cache (%LOCALAPPDATA%\NVIDIA\GLCache) and only the first game running is
+# served by it; a game started beside it logs "the driver's shader cache has 0 of 48 noted pipelines asked", drops
+# longshot_pipelines.bin.built and compiles every pipeline again at each start (~440 s), copied files or not
+# (__GL_SHADER_DISK_CACHE_PATH is ignored there). The harness's renderer wait follows that compile's progress instead
+# (tools/autotest/hookshot.py wait_renderer).
 WARM_FILES = re.compile(r"^(longshot_pipelines\.bin(\.built|\.predicted)?|longshot_(pipeline_states|computes|prepared)\.bin"
                         r"|longshot_programs\.(bin|idx)|mkw_vk_pipelines(_play_\d+)?\.bin"
                         r"|longshot_(compute_variants|module_ids)\.bin|longshot_vk_pipelines(_play_\d+)?\.bin"
@@ -129,8 +135,8 @@ def pin_dir(stamp_text):
     """The shared folder of a pin: tools/ (Hookshot's tools and patched source), work/ (its build files and object
     cache) and game/ (THE game folder of the pin, built again in place). Every build of that pin, whatever the patches,
     goes through it: Hookshot's own lift key and object cache decide what is done again. The game folder must stay the
-    same path: the lift key hashes it (make_game.py: OOT_DUMP, OOT_ROMFS), and it keeps .longshot_exefs and the prepared
-    shaders. Not a cache entry (cache_prune leaves it); the cache gets a copy of the game folder."""
+    same path: it keeps .longshot_exefs and the prepared shaders (and before Longshot rc.6 the lift key hashed it, make_game.py:
+    OOT_DUMP, OOT_ROMFS; rc.6 keys the contents only). Not a cache entry (cache_prune leaves it); the cache gets a copy of the game folder."""
     return os.path.join(cache_root(), "pins", pin_of(stamp_text))
 
 
@@ -186,10 +192,47 @@ def find_exe(folder):
     return None
 
 
-def copy_tree(src, dst, skip_top=PER_PLAYER, dry=False, say=print, runtime_too=False, in_cache=False):
+SHARED_TOP = {"romfs"}   # (the game files, ~26 GB: never written by the game or by us; hard links, as lanes.py's)
+
+
+def same_file(a, b):
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+NTFS_MAX_LINKS = 1023
+LINKS_REFUSED = set()   # ((source drive, destination drive)): a link was refused there in this run (link_or_copy)
+
+
+def can_link(a, b):
+    """Whether a hard link to the file of stat a could replace the file of stat b: the same drive, a below the file
+    system's limit of names (NTFS: 1023), and no link refused between those drives in this run"""
+    return a.st_dev == b.st_dev and a.st_nlink < NTFS_MAX_LINKS and (a.st_dev, b.st_dev) not in LINKS_REFUSED
+
+
+def link_or_copy(s, d):
+    """d becomes a hard link to s (no new disk space); its own copy where a link can't be made (another drive, FAT).
+    An old d is unlinked first, never written into: it may be shared with other folders. Returns True for a link."""
+    if os.path.lexists(d):
+        os.unlink(d)
+    try:
+        os.link(s, d)
+        return True
+    except OSError:
+        shutil.copy2(s, d)
+        LINKS_REFUSED.add((os.stat(s).st_dev, os.stat(d).st_dev))   # (the rest of this run keeps its copies as they are)
+        return False
+
+
+def copy_tree(src, dst, skip_top=PER_PLAYER, dry=False, say=print, runtime_too=False, in_cache=False, share=False):
     """Copies src into dst: new or changed files (size or mtime) only, links recreated as links (never followed),
     the top-level names in skip_top left alone on both sides; dst's runtime caches (at the top, or in the top's
-    cache folder: in_cache) kept unless runtime_too. Returns (files copied, links made)."""
+    cache folder: in_cache) kept unless runtime_too. Returns (files copied, links made).
+    A top-level folder in SHARED_TOP (romfs: the game files) is hard-linked file by file, not copied (share): every
+    game folder made from one (a pin, the cache's entries, the test pairs) shares one copy of its ~26 GB. Copied in
+    full to every one of them, they filled the disk (longshot-rc6-a's offline run 2: no space left for the next pin)."""
     copied = links = 0
     for name in sorted(os.listdir(src)):
         if name.lower() in skip_top:
@@ -207,18 +250,26 @@ def copy_tree(src, dst, skip_top=PER_PLAYER, dry=False, say=print, runtime_too=F
             if not dry:
                 os.makedirs(d, exist_ok=True)
             c, n = copy_tree(s, d, set(), dry, say, runtime_too,
-                             in_cache=skip_top is PER_PLAYER and name.lower() == CACHE_DIR)
+                             in_cache=skip_top is PER_PLAYER and name.lower() == CACHE_DIR,
+                             share=share or (skip_top is PER_PLAYER and name.lower() in SHARED_TOP))
             copied, links = copied + c, links + n
         else:
             if os.path.isfile(d) and not is_link(d):
                 if (skip_top is PER_PLAYER or in_cache) and RUNTIME_CACHE.match(name) and not runtime_too:
                     continue
+                if share and same_file(s, d):
+                    continue   # (already the same file)
                 a, b = os.stat(s), os.stat(d)
-                if a.st_size == b.st_size and int(a.st_mtime) == int(b.st_mtime):
+                # (a separate copy of the same file: left as it is unless a link can take its place, so a cache on
+                # another drive, a FAT disk or a file at NTFS's 1023 links is not copied again on every run)
+                if a.st_size == b.st_size and int(a.st_mtime) == int(b.st_mtime) and not (share and can_link(a, b)):
                     continue
             copied += 1
             if not dry:
                 os.makedirs(dst, exist_ok=True)
+                if share:
+                    link_or_copy(s, d)
+                    continue
                 if os.path.isfile(d) and os.stat(d).st_nlink > 1:
                     os.unlink(d)   # a hard link shared with another folder (a test lane): never written into
                 shutil.copy2(s, d)
@@ -705,7 +756,25 @@ def build_script_args(script):
             text = f.read()
     except OSError:
         return set()
-    return {a for a in ("Tools", "Work") if re.search(r"\[string\]\$%s\b" % a, text)}
+    return {a for a in ("Tools", "Work", "RomfsFrom") if re.search(r"\[string\]\$%s\b" % a, text)}
+
+
+def romfs_source(out, root=None):
+    """For a pin's game folder with no game files of its own yet: the newest other pin's game folder that unpacked its
+    own (romfs/ and Longshot's .longshot_romfs stamp), for Longshot's --romfs-from (rc.6, #360): it hard-links that
+    folder's files when its stamp is this .nup's and they are on one drive, else reads the .nup as before. None when
+    out has its own, or there is no other."""
+    if os.path.isfile(os.path.join(out, ".longshot_romfs")):
+        return None
+    pins = os.path.join(root or cache_root(), "pins")
+    found = []
+    for name in os.listdir(pins) if os.path.isdir(pins) else ():
+        game = os.path.join(pins, name, "game")
+        stamp_file = os.path.join(game, ".longshot_romfs")
+        if same_file(game, out) or not (os.path.isdir(os.path.join(game, "romfs")) and os.path.isfile(stamp_file)):
+            continue
+        found.append((os.path.getmtime(stamp_file), game))
+    return max(found)[1] if found else None
 
 
 def build(pairs, build_dir, kit=None, game=None, jobs=0, keep=3, repo=REPO, dry=False, say=print, root=None,
@@ -733,7 +802,8 @@ def build(pairs, build_dir, kit=None, game=None, jobs=0, keep=3, repo=REPO, dry=
                 raise Fail("cache miss for %s: pass --kit <a made kit> --game <your .nup/.xci> to build the game once,"
                            " or `cache store --from <a game folder built from this stamp>`" % k)
             script = os.path.join(kit, "scripts", "hookshot-build.ps1")
-            shared = pin_dir(st) if build_script_args(script) >= {"Tools", "Work"} else None
+            takes = build_script_args(script)
+            shared = pin_dir(st) if takes >= {"Tools", "Work"} else None
             # (the pin's one game folder, built again in place and kept; an old kit: a new folder, removed after)
             out = os.path.join(shared, "game") if shared else os.path.join(cache_root(), k + ".build")
             cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Out", out]
@@ -743,6 +813,11 @@ def build(pairs, build_dir, kit=None, game=None, jobs=0, keep=3, repo=REPO, dry=
                 cmd += ["-Game", game]
             if shared:
                 cmd += ["-Tools", os.path.join(shared, "tools"), "-Work", os.path.join(shared, "work")]
+                # (a new pin: the game files hard-linked from an older pin's, not the .nup's ~26 GB again)
+                other = romfs_source(out) if "RomfsFrom" in takes and game and game.lower().endswith(".nup") else None
+                if other:
+                    cmd += ["-RomfsFrom", other]
+                    say("cache: the new pin's game files come from %s (hard links where the drive allows)" % other)
                 say("cache: miss; building the pin's game folder %s again in place (only what changed since its last"
                     " build)" % out)
             else:

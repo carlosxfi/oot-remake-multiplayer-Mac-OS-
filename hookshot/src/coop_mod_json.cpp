@@ -7,7 +7,45 @@
 #include <cstdint>
 #include <cstdio>
 
+#ifdef __APPLE__
+#include <cerrno>
+#include <stdlib.h>
+#include <xlocale.h>
+#endif
+
 namespace CoopModJson {
+
+std::optional<double> ParseNumber(std::string_view text) {
+    if (text.empty()) {
+        return std::nullopt;
+    }
+#ifdef __APPLE__
+    // Older Apple libc++ has no floating-point from_chars. Use the C locale
+    // explicitly so the decimal separator stays a dot.
+    if (text.front() == '+' || text.find_first_not_of("0123456789.eE+-") != std::string_view::npos) {
+        return std::nullopt;
+    }
+    static const locale_t decimal_locale = newlocale(LC_NUMERIC_MASK, "C", nullptr);
+    if (!decimal_locale) {
+        return std::nullopt;
+    }
+    const std::string terminated(text);
+    char* end = nullptr;
+    errno = 0;
+    const double number = strtod_l(terminated.c_str(), &end, decimal_locale);
+    if (end != terminated.c_str() + terminated.size() || (errno == ERANGE && number == 0)) {
+        return std::nullopt;
+    }
+#else
+    double number = 0;
+    const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), number);
+    if (ec != std::errc() || end != text.data() + text.size()) {
+        return std::nullopt;
+    }
+#endif
+    return std::isfinite(number) ? std::optional{number} : std::nullopt;
+}
+
 
 const Value* Value::Get(std::string_view key) const {
     if (kind != Kind::Object) {
@@ -357,13 +395,12 @@ private:
                 return Say("a number needs digits in its exponent");
             }
         }
-        double number = 0;
-        const auto [end, ec] = std::from_chars(text_.data() + start, text_.data() + i, number);
-        if (ec != std::errc() || end != text_.data() + i || !std::isfinite(number)) {
+        const auto number = ParseNumber(text_.substr(start, i - start));
+        if (!number) {
             return Say("a number out of range");
         }
         at_ = i;
-        out = Value::Of(number);
+        out = Value::Of(*number);
         return true;
     }
 

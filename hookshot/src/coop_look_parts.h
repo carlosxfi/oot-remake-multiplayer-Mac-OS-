@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -48,8 +49,34 @@ std::string Name(const CoopLook::Look& look);
 bool AnyGear(const CoopLook::Look& look);
 
 // The gear texels painted in `look` (same textures, same sizes); a texture
-// with no part set, or not in the table, as it is.
+// with no part set, or not in the table, as it is. A metalness texture
+// (UseMetal) has the blocks under each painted metal part set to 0.
 CoopLookTunic::Texels Painted(const CoopLookTunic::Texels& gear, const CoopLook::Look& look);
+
+// The metal parts (#202). The swords, the Hylian and Mirror Shields and the
+// gauntlets have a metalness texture (`Mt_..._Mtl`, BC4) beside their colour
+// one; the game draws a metal texel's colour as what it reflects, with no
+// diffuse light, so a metal part painted only in its colour texture shows
+// much darker than the colour picked. The pack lists, for each such texture
+// and part, the byte offsets of its BC4 blocks under that part, every mip
+// level (tools/puppet_pack/look_metal.py, coop_look/metal.bin; gear.bin
+// holds the textures' own texels). Painted sets those blocks to 0 (no metal)
+// when the part has a colour, so the part looks painted; with no colour the
+// texture stays the game's own.
+struct MetalBlocks {
+    std::string texture;   // "Mt_Weapon_Shield_Hylian_Mtl"
+    CoopLook::Part part;
+    std::vector<std::uint32_t> offsets;   // of 8-byte BC4 blocks in its texels
+};
+using Metal = std::vector<MetalBlocks>;
+// metal.bin's bytes; nothing (and `why`) when they are not one.
+std::optional<Metal> ParseMetal(const std::vector<std::uint8_t>& file, std::string* why = nullptr);
+// The table Painted uses from now on (nothing: no metal is painted down).
+void UseMetal(std::shared_ptr<const Metal> metal);
+// The blocks of `texels` (the texture `name`) under the parts `look` paints, set to 0.
+// Returns how many blocks it set.
+std::size_t PaintMetal(const Metal& metal, const std::string& name, std::vector<std::uint8_t>& texels,
+                       const CoopLook::Look& look);
 
 // The puppets' gear (docs/puppet.md, "Gear colours on the puppets"): the
 // pack's item copies name textures of their own, "Mt_..." as "C<copy>_..."

@@ -213,7 +213,7 @@ function Read-KitOptions([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return $values }
     foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
         $t = $line.Trim()
-        if (-not $t -or $t.StartsWith('#') -or $t.StartsWith(';') -or $t -match '^(auto_update|verify_signature|server_allow|server_bind|server_port|server_password|max_players|public_address_lookup|upnp|invite|stun_servers|relay|relay_key|pvp)\s*=') { continue }
+        if (-not $t -or $t.StartsWith('#') -or $t.StartsWith(';') -or $t -match '^(auto_update|verify_signature|server_allow|server_bind|server_port|server_password|max_players|public_address_lookup|upnp|invite|stun_servers|relay|relay_key|relay_room|approve_joins|pvp|character_select)\s*=') { continue }
         if ($t -match '^color\s*=\s*(.*?)\s*$') {
             $c = $Matches[1] -replace '\s+[#;].*$', ''  # a comment after it: 'color = blue  # mine'
             if (-not $c) { continue }  # none chosen: the player number's colour
@@ -274,11 +274,30 @@ function Read-KitHostSession([string]$Kit, $Servers) {
 # checks them): an ordered table with Allow and Bind, '' when not set. Password is the join
 # password (server_password): $null when no line without a '#' sets it, or the line is empty
 # (every session has a password: Host.bat then makes a new random one). Upnp (on unless upnp = no), Invite (on unless invite =
-# no), Stun (stun_servers), Relay (relay = address[:port]) and RelayKey (relay_key) are the
-# router forward, the invite code and the relay (docs/play-online.md). Pvp: $true
-# only for 'pvp = on' (or yes, 1, true); anything else, or no line, is off.
+# no), Stun (stun_servers), Relay (relay = address[:port]), RelayKey (relay_key) and RelayRoom (relay_room, a
+# room name on the relay) are the router forward, the invite code and the relay (docs/play-online.md). ApproveJoins:
+# $true for 'approve_joins = on': each new player waits for the host's /allow or /deny (issue 261). Pvp: $true
+# only for 'pvp = on' (or yes, 1, true); anything else, or no line, is off. Relay: the project's own
+# ($script:KitDefaultRelay, as the game's CoopTitleMenu::kDefaultRelay) without a relay line, or with an empty one: it is
+# never removed. SameNetworkOpen: players on this network join without the password, unless 'same_network_password =
+# on' (docs/protocol.md, "Same network").
+$script:KitDefaultRelay = '159.54.182.85:27530'
+# A public game (coop-options.ini public_game = on, the in-game Host page's Game row): anyone with the room name joins
+# with no password (coop_server --public; the traffic is still encrypted). Its join password is made from the room,
+# as the game's coop::protocol::public_join_password: the tag and the room in lower case.
+function Get-KitPublicPassword([string]$Room) { return 'squadala-public-game:' + $Room.ToLowerInvariant() }
+# The public game's room, in lower case as the relay keeps it (normalize_room): $Override (OOT_COOP_PUBLIC_ROOM, the
+# host's own game is told the room Host.bat picked) when it is a room name, else relay_room when it is one, else a
+# ready one ('forest-4821'), as the game's CoopTitleMenu::Options::RandomRoomName offers. A bad override is skipped.
+function Get-KitPublicRoom($Access, [string]$Override = '') {
+    foreach ($room in "$Override".Trim(), "$($Access.RelayRoom)".Trim()) {
+        if ($room -match '^[A-Za-z0-9_-]{3,24}$') { return $room.ToLowerInvariant() }
+    }
+    $words = 'forest', 'lake', 'field', 'river', 'valley', 'meadow', 'canyon', 'grove', 'cliff', 'marsh', 'harbor', 'summit'
+    return '{0}-{1}' -f ($words | Get-Random), (Get-Random -Minimum 1000 -Maximum 10000)
+}
 function Read-KitServerAccess([string]$Path) {
-    $access = [ordered]@{ Allow = ''; Bind = ''; Password = $null; Upnp = $true; Invite = $true; Stun = ''; Relay = ''; RelayKey = ''; Pvp = $false }
+    $access = [ordered]@{ Allow = ''; Bind = ''; Password = $null; Upnp = $true; Invite = $true; Stun = ''; Relay = $script:KitDefaultRelay; RelayKey = ''; RelayRoom = ''; ApproveJoins = $false; Pvp = $false; SameNetworkOpen = $true; PublicGame = $false }
     if (-not (Test-Path -LiteralPath $Path)) { return $access }
     foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
         if ($line -match '^\s*server_allow\s*=\s*(.*?)\s*$') { $access.Allow = $Matches[1] }
@@ -287,9 +306,13 @@ function Read-KitServerAccess([string]$Path) {
         elseif ($line -match '^\s*upnp\s*=\s*(.*?)\s*$') { $access.Upnp = $Matches[1] -notmatch '^(no|off|false|0)$' }
         elseif ($line -match '^\s*invite\s*=\s*(.*?)\s*$') { $access.Invite = $Matches[1] -notmatch '^(no|off|false|0)$' }
         elseif ($line -match '^\s*stun_servers\s*=\s*(.*?)\s*$') { $access.Stun = $Matches[1] }
-        elseif ($line -match '^\s*relay\s*=\s*(.*?)\s*$') { $access.Relay = $Matches[1] }
+        elseif ($line -match '^\s*relay\s*=\s*(.*?)\s*$') { $access.Relay = $(if ($Matches[1]) { $Matches[1] } else { $script:KitDefaultRelay }) }
+        elseif ($line -match '^\s*same_network_password\s*=\s*(.*?)\s*$') { $access.SameNetworkOpen = $Matches[1] -notmatch '^(on|yes|1|true)$' }
         elseif ($line -match '^\s*relay_key\s*=\s*(.*?)\s*$') { $access.RelayKey = $Matches[1] }
+        elseif ($line -match '^\s*relay_room\s*=\s*(.*?)\s*$') { $access.RelayRoom = $Matches[1] }
+        elseif ($line -match '^\s*approve_joins\s*=\s*(.*?)\s*$') { $access.ApproveJoins = $Matches[1] -match '^(on|yes|1|true)$' }
         elseif ($line -match '^\s*pvp\s*=\s*(.*?)\s*$') { $access.Pvp = $Matches[1] -match '^(on|yes|1|true)$' }
+        elseif ($line -match '^\s*public_game\s*=\s*(.*?)\s*$') { $access.PublicGame = $Matches[1] -match '^(on|yes|1|true)$' }
     }
     return $access
 }
@@ -767,9 +790,11 @@ function Test-KitOtherKitGame([string]$Kit, [string]$Game) {
 
 # A built game another kit on this PC has, made from the same release, pin and patches as $Kit wants
 # ($Stamp: Get-KitHookshotStamp), so a second kit (unzipped twice or copied) copies it instead of a 10 to 45
-# minute build. $Others: the other kit folders (kits.txt and the kit game-folder.txt names). Returns the game
-# folder, or ''.
-function Find-KitHookshotGameToCopy([string]$Kit, [string]$Stamp, [string[]]$Others) {
+# minute build. $Others: the other kit folders (kits.txt and the kit game-folder.txt names). $Dlss: this kit's NVIDIA
+# DLSS choice (hookshot\dlss.txt); only a game with DLSS as chosen is taken (Test-KitHookshotDlss), so a kit never
+# gets NVIDIA's files without its own opt-in, nor a game without them that it would build again at once. Returns the
+# game folder, or ''.
+function Find-KitHookshotGameToCopy([string]$Kit, [string]$Stamp, [string[]]$Others, [bool]$Dlss = $false) {
     if (-not $Stamp) { return '' }
     $mine = [System.IO.Path]::GetFullPath($Kit).TrimEnd('\')
     foreach ($o in @($Others | Where-Object { $_ } | Sort-Object -Unique)) {
@@ -778,6 +803,7 @@ function Find-KitHookshotGameToCopy([string]$Kit, [string]$Stamp, [string[]]$Oth
         $g = Join-Path $of 'hookshot\game'
         if (-not (Get-KitHookshotExe $g)) { continue }
         $s = Join-Path $g 'coop-built-from.txt'
+        if ((Test-KitHookshotDlss $g) -ne $Dlss) { continue }
         if ((Test-Path -LiteralPath $s) -and [System.IO.File]::ReadAllText($s) -eq $Stamp) { return $g }
     }
     return ''
@@ -785,8 +811,8 @@ function Find-KitHookshotGameToCopy([string]$Kit, [string]$Stamp, [string[]]$Oth
 
 # A built game in the co-op game cache on this PC made from $Stamp (Get-KitHookshotStamp): <cache>\<key>\game, where
 # <cache> is OOT_COOP_HS_CACHE or %LOCALAPPDATA%\oot-coop\hs-cache (tools/hookshot/hs.py fills it; it keeps the last 3
-# builds). Its game folders hold nothing of a player's. Returns the game folder, or ''.
-function Find-KitHookshotCachedGame([string]$Stamp, [string]$Root = '') {
+# builds). Its game folders hold nothing of a player's. $Dlss: as Find-KitHookshotGameToCopy's. Returns the game folder, or ''.
+function Find-KitHookshotCachedGame([string]$Stamp, [string]$Root = '', [bool]$Dlss = $false) {
     if (-not $Stamp) { return '' }
     if (-not $Root) {
         $Root = if ($env:OOT_COOP_HS_CACHE) { $env:OOT_COOP_HS_CACHE } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'oot-coop\hs-cache' } else { '' }
@@ -799,9 +825,27 @@ function Find-KitHookshotCachedGame([string]$Stamp, [string]$Root = '') {
         $s = Join-Path $d.FullName 'stamp.txt'
         $g = Join-Path $d.FullName 'game'
         if (-not (Test-Path -LiteralPath $s -PathType Leaf) -or -not (Get-KitHookshotExe $g)) { continue }
+        if ((Test-KitHookshotDlss $g) -ne $Dlss) { continue }
         if ((& $norm ([System.IO.File]::ReadAllText($s))) -eq $want) { return $g }
     }
     return ''
+}
+
+# A game folder built with NVIDIA DLSS (#234): make_game.py's place_ngx_runtime puts DLSS's runtime in its ngx folder
+# when the build had NVIDIA's SDK, and removes it when a build had none.
+function Test-KitHookshotDlss([string]$Game) {
+    return [bool]($Game -and (Test-Path -LiteralPath (Join-Path $Game 'ngx\nvngx_dlss.dll')))
+}
+
+# NVIDIA's DLSS license, as the pinned Longshot's own tools\scripts\ngx_sdk.py names it (LICENSE_URL at its COMMIT), so a
+# pin that moves NVIDIA's commit moves the link too. Without those tools: the license in NVIDIA's repository.
+function Get-KitNgxLicenseUrl([string]$Tools) {
+    $py = if ($Tools) { Join-Path $Tools 'scripts\ngx_sdk.py' } else { '' }
+    if ($py -and (Test-Path -LiteralPath $py)) {
+        $m = Select-String -LiteralPath $py -Pattern '^COMMIT\s*=\s*"([0-9a-f]{40})"' | Select-Object -First 1
+        if ($m) { return "https://github.com/NVIDIA/DLSS/blob/$($m.Matches[0].Groups[1].Value)/LICENSE.txt" }
+    }
+    return 'https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt'
 }
 
 # longshot.exe of a game folder (a builder's game folder has it in bin\), or $null.
@@ -862,8 +906,62 @@ function Get-KitHookshotLogFiles([string]$Dir) {
     }
 }
 
-# The stamp the kit's hookshot-build.ps1 writes to the game's coop-built-from.txt: release, pin, patches.
-function Get-KitHookshotStamp([string]$Kit) {
+# The mods' code patches the game in $Game would be built with (patches 0034/0035: <game>\mods\...\exefs\*.ips and
+# *.pchtxt, folders starting with '-', '_' or '.' left out, up to four deep), as one more stamp line:
+# "`nexefs=<mod path>/exefs/<file>:<sha256>,...;list=<sha256 of coop-mods.list's rows for those mods>" (the Mods
+# tab's switches and order decide which go in; Get-KitCodeModsListHash), or '' when no mod has one: a game without code mods keeps the stamp it had.
+function Get-KitExefsStampLine([string]$Game) {
+    $mods = Join-Path $Game 'mods'
+    if (-not $Game -or -not (Test-Path -LiteralPath $mods -PathType Container)) { return '' }
+    $root = ([System.IO.Path]::GetFullPath($mods)).TrimEnd('\') + '\'
+    $rows = @()
+    $codeMods = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($f in @(Get-ChildItem -LiteralPath $mods -Recurse -Depth 5 -File -Include '*.ips', '*.pchtxt' -ErrorAction SilentlyContinue)) {
+        $rel = $f.FullName.Substring($root.Length) -replace '\\', '/'
+        $parts = @($rel -split '/')
+        if ($parts.Count -lt 3 -or $parts[-2] -ine 'exefs') { continue }
+        if (@($parts[0..($parts.Count - 3)] | Where-Object { $_ -match '^[-_.]' }).Count) { continue }
+        $rows += "${rel}:$((Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant())"
+        [void]$codeMods.Add((ConvertTo-KitModFold ($parts[0..($parts.Count - 3)] -join '/')))
+    }
+    if (-not $rows.Count) { return '' }
+    return "`nexefs=$((@($rows | Sort-Object -CaseSensitive) -join ','));list=$(Get-KitCodeModsListHash (Join-Path $mods 'coop-mods.list') $codeMods)"
+}
+
+# A mod's name as patch 0011's host/mods.c (hos_coop_mods.h) compares them: ASCII letters without case, '\' as '/'.
+function ConvertTo-KitModFold([string]$Name) {
+    $chars = $Name.Replace('\', '/').ToCharArray()
+    for ($i = 0; $i -lt $chars.Length; $i++) {
+        if ([int]$chars[$i] -ge 65 -and [int]$chars[$i] -le 90) { $chars[$i] = [char]([int]$chars[$i] + 32) }
+    }
+    return [string]::new($chars)
+}
+
+# The SHA-256 of the Mods tab's rows (coop-mods.list) that name a mod with code patches ($CodeMods: folded names), as
+# "on|off <folded name>" in the list's order, each name's first row only (as the game reads it), or 'none' (no list, not "coop-mods 1", or no
+# such row). Switching or moving a mod without code patches leaves it alone: the game is not built again for it.
+function Get-KitCodeModsListHash([string]$List, $CodeMods) {
+    if (-not (Test-Path -LiteralPath $List -PathType Leaf)) { return 'none' }
+    $lines = @(([System.IO.File]::ReadAllText($List, [System.Text.UTF8Encoding]::new($false))) -split "`n")
+    if ($lines[0].TrimEnd("`r") -cne 'coop-mods 1') { return 'none' }
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $kept = @()
+    foreach ($line in @($lines | Select-Object -Skip 1)) {
+        $line = $line.TrimEnd("`r")
+        if (-not ($line -cmatch '^(on|off) (.+)$')) { continue }
+        $fold = ConvertTo-KitModFold $Matches[2]
+        if (-not $seen.Add($fold)) { continue }
+        if ($CodeMods.Contains($fold)) { $kept += "$($Matches[1]) $fold" }
+    }
+    if (-not $kept.Count) { return 'none' }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes(($kept -join "`n"))) } finally { $sha.Dispose() }
+    return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+# The stamp the kit's hookshot-build.ps1 writes to the game's coop-built-from.txt: release, pin, patches, and the
+# mods' code patches when there are any (Get-KitExefsStampLine; $Game: the kit's game, Get-KitHookshotGame).
+function Get-KitHookshotStamp([string]$Kit, [string]$Game = '') {
     $hs = Join-Path $Kit 'hookshot'
     $keys = @{}
     foreach ($f in 'PIN', 'TOOLS.txt') {
@@ -874,7 +972,8 @@ function Get-KitHookshotStamp([string]$Kit) {
     if (-not $keys.release -or -not $keys.commit) { return '' }
     $patches = @(Get-ChildItem -LiteralPath (Join-Path $hs 'patches') -Filter '*.patch' -File -ErrorAction SilentlyContinue | Sort-Object Name)
     $hash = (($patches | ForEach-Object { (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }) -join ',')
-    return "release=$($keys.release)`ncommit=$($keys.commit)`npatches=$hash"
+    if (-not $Game) { $Game = Get-KitHookshotGame $Kit }
+    return "release=$($keys.release)`ncommit=$($keys.commit)`npatches=$hash$(Get-KitExefsStampLine $Game)"
 }
 
 # What the kit's Hookshot game needs before it starts:
@@ -885,6 +984,8 @@ function Get-KitHookshotStamp([string]$Kit) {
 #             or found with Build-Hookshot-Coop.bat -Out <its new folder>
 #   'pin'     the kit moved to another Hookshot release or pin (a full game build, about 15 minutes)
 #   'patches' the co-op patches changed (the game built again, only what changed: a few minutes)
+#   'mods'    a mod's code patches changed: put in, changed, removed, or switched or moved on the Mods tab (the game
+#             built again with them: patches 0034/0035, Get-KitExefsStampLine)
 #   'module'  the co-op module changed, or the puppet pack is missing or stale (co-op and the pack put in
 #             again: seconds to a minute; without a pack the other players cannot be shown), or the kit's
 #             randomizer (hookshot\OOTRR.txt) is not in the game yet
@@ -910,6 +1011,8 @@ function Get-KitHookshotNeed([string]$Kit) {
     if ($have -ne $want) {
         $base = { param($s) (@($s -split "`n") | Where-Object { $_ -match '^(release|commit)=' }) -join "`n" }
         if ((& $base $have) -ne (& $base $want)) { return 'pin' }
+        $codeless = { param($s) (@($s -split "`n") | Where-Object { $_ -notmatch '^exefs=' }) -join "`n" }
+        if ((& $codeless $have) -eq (& $codeless $want)) { return 'mods' }   # (only the mods' code patches: Get-KitExefsStampLine)
         return 'patches'
     }
     $exeDir = Split-Path -Parent $exe
@@ -993,6 +1096,410 @@ function Test-KitOotrrStale([string]$Kit, [string]$ExeDir) {
     return $have -ne "$($keys.release) $($keys.windows_sha256)"
 }
 
+# Where the last OOTRR setup said how it went, beside the game's tools\ootrr: 'ok <release>' or 'failed <release>: <why>'
+# (one line). The co-op module shows the failure in the game's chat when it finds no ootrr.exe (coop_rando.cpp
+# OotrrMissingText), and collect-logs.cmd sends it, so a player who never saw the start window's line still learns why.
+$KitOotrrStatusFile = 'tools\ootrr-setup.txt'
+
+function Write-KitOotrrStatus([string]$ExeDir, [string]$Text) {
+    try {
+        New-Item -ItemType Directory -Force -Path (Join-Path $ExeDir 'tools') | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $ExeDir $KitOotrrStatusFile), "$Text`r`n")
+    } catch { }
+}
+
+# '' when ootrr.exe starts and ends by itself (its 'shuffle 1 1' prints one number in well under a second and touches
+# no file); else why not. An antivirus that blocks or quarantines the program makes the start fail (or the file
+# vanish a moment after it was written), which an existence check alone never sees: Velvet's 0.11.5 kit (2026-11-19)
+# had a tools\ootrr without ootrr.exe on every start. -Wait: how long to look again for an antivirus's late removal.
+function Test-KitOotrrRuns([string]$Exe, [int]$WaitMs = 1500) {
+    if (-not (Test-Path -LiteralPath $Exe)) { return 'ootrr.exe is not there after unpacking' }
+    try {
+        $p = Start-Process -FilePath $Exe -ArgumentList 'shuffle', '1', '1' -WindowStyle Hidden -PassThru -ErrorAction Stop
+        $null = $p.Handle   # (Windows PowerShell 5.1: without the handle taken now, ExitCode reads empty after the wait)
+        if (-not $p.WaitForExit(30000)) { try { $p.Kill() } catch { }; return 'ootrr.exe did not finish a 1-second test in 30 s' }
+        # (review-0116-j N1: a program that starts but fails, e.g. a damaged or half-written exe, is not swapped in either)
+        if ($p.ExitCode -ne 0) { return "ootrr.exe failed a 1-second test (exit $($p.ExitCode))" }
+    } catch {
+        return "Windows did not let ootrr.exe run ($($_.Exception.Message.Trim()))"
+    }
+    if ($WaitMs -gt 0) { Start-Sleep -Milliseconds $WaitMs }
+    if (-not (Test-Path -LiteralPath $Exe)) { return 'ootrr.exe was removed right after it was unpacked (an antivirus took it)' }
+    return ''
+}
+
+# The randomizer the kit pins (hookshot\OOTRR.txt) into <ExeDir>\tools\ootrr, all or nothing: the zip is downloaded
+# (or taken from $Downloads when its SHA-256 is the pinned one), unpacked into tools\ootrr.new, tried
+# (Test-KitOotrrRuns), and only then swapped for the old folder. A failure at any step leaves the OOTRR that was
+# there as it was (the old way deleted tools\ootrr first, so any later failure left the game with none, every start)
+# and writes why into tools\ootrr-setup.txt. A folder a stopped swap left (tools\ootrr.old, no tools\ootrr) is put
+# back first. Never touches saves, seeds or other mods. Returns @{ Ok; Why; Release; Had; Lines }:
+#   Ok  $true when the pinned OOTRR is in place (already, or now); Why '' or why not ('offline': no internet, no try)
+#   Had the release that was there before ('' for none); Lines what to show.
+function Install-KitOotrr([string]$Kit, [string]$ExeDir, [string]$Downloads = '') {
+    $r = @{ Ok = $false; Why = ''; Release = ''; Had = ''; Lines = @() }
+    $pin = Join-Path $Kit 'hookshot\OOTRR.txt'
+    if (-not (Test-Path -LiteralPath $pin)) { $r.Ok = $true; return $r }   # (a kit without OOTRR brings none)
+    $op = @{}
+    foreach ($line in @(Get-Content -LiteralPath $pin -ErrorAction SilentlyContinue)) {
+        if ($line -match '^\s*([A-Za-z0-9_]+)\s*=\s*(.+?)\s*$') { $op[$Matches[1]] = $Matches[2] }
+    }
+    $r.Release = "$($op.release)"
+    if (-not ($op.release -and $op.url -and $op.windows -match '^[A-Za-z0-9._-]+$' -and $op.windows_sha256 -match '^[0-9a-fA-F]{64}$')) {
+        $r.Why = 'hookshot\OOTRR.txt is incomplete'
+        $r.Lines += 'hookshot\OOTRR.txt is incomplete: the randomizer is left out.'
+        return $r
+    }
+    $sha = $op.windows_sha256.ToLowerInvariant()
+    $want = "$($op.release) $sha"
+    $tools = Join-Path $ExeDir 'tools'
+    $dir = Join-Path $tools 'ootrr'
+    $new = Join-Path $tools 'ootrr.new'
+    $old = Join-Path $tools 'ootrr.old'
+    $stamp = Join-Path $dir 'coop-ootrr.txt'
+    # (a swap stopped between its two moves: the old folder goes back first)
+    if (-not (Test-Path -LiteralPath $dir) -and (Test-Path -LiteralPath (Join-Path $old 'ootrr.exe'))) {
+        try { [System.IO.Directory]::Move($old, $dir) } catch { }
+    }
+    $have = if (Test-Path -LiteralPath $stamp) { "$(Get-Content -LiteralPath $stamp -TotalCount 1)".Trim() } else { '' }
+    $r.Had = if ($have) { ($have -split ' ')[0] } else { '' }
+    if ($have -eq $want -and (Test-Path -LiteralPath (Join-Path $dir 'ootrr.exe'))) {
+        $r.Ok = $true
+        $r.Lines += "randomizer: OOTRR $($op.release) -> $dir (there already)"
+        Write-KitOotrrStatus $ExeDir "ok $($op.release)"
+        return $r
+    }
+    if (-not $Downloads) { $Downloads = Join-Path $Kit 'hookshot\downloads' }
+    $zip = Join-Path $Downloads $op.windows
+    $why = ''
+    try {
+        New-Item -ItemType Directory -Force -Path $Downloads | Out-Null
+        if (-not ((Test-Path -LiteralPath $zip) -and (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant() -eq $sha)) {
+            if (($env:OOT_COOP_OFFLINE -eq '1' -or $op.url -match '^https?://') -and (Test-KitOffline)) {
+                $why = 'offline'
+            } else {
+                # (kit-mirror: retries and curl.exe too; optional, so two tries, not four)
+                $why = Get-KitDownload @("$($op.url)/$($op.windows)") $zip $sha @() 2
+                if ($why) { $why = "the download failed ($why)" }
+            }
+        }
+        if (-not $why) {
+            if (Test-Path -LiteralPath $new) { Remove-Item -LiteralPath $new -Recurse -Force -ErrorAction Stop }
+            New-Item -ItemType Directory -Force -Path $new | Out-Null
+            # (the zip holds one folder, OOTRR-<version>-windows-x64\: ootrr.exe, LICENSE, NOTICE, README.md)
+            & "$env:SystemRoot\System32\tar.exe" -x -f $zip -C $new --strip-components=1 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { $why = "unpacking $($op.windows) failed (tar $LASTEXITCODE)" }
+            else { $why = Test-KitOotrrRuns (Join-Path $new 'ootrr.exe') }
+        }
+        if (-not $why) {
+            [System.IO.File]::WriteAllText((Join-Path $new 'coop-ootrr.txt'), "$want`n")
+            if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction Stop }
+            # (Directory.Move: one rename or nothing. Move-Item falls back to moving file by file when one file is held,
+            # and a failure half way splits the folder in two: seen in the kit test with the old LICENSE held open)
+            if (Test-Path -LiteralPath $dir) { [System.IO.Directory]::Move($dir, $old) }
+            try { [System.IO.Directory]::Move($new, $dir) }
+            catch {
+                if ((Test-Path -LiteralPath $old) -and -not (Test-Path -LiteralPath $dir)) { try { [System.IO.Directory]::Move($old, $dir) } catch { } }
+                throw
+            }
+            Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        # (a file held open: the game or its ootrr.exe still running from this folder)
+        $msg = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message }
+        $why = "it could not be put in place ($("$msg".Trim())): close the game and start again"
+    }
+    if (Test-Path -LiteralPath $new) { Remove-Item -LiteralPath $new -Recurse -Force -ErrorAction SilentlyContinue }
+    $r.Why = $why
+    $kept = if (Test-Path -LiteralPath (Join-Path $dir 'ootrr.exe')) { " The OOTRR that was there ($(if ($r.Had) { $r.Had } else { 'unknown release' })) is kept." } else { '' }
+    if ($why -eq 'offline') {
+        $r.Lines += "offline: the randomizer (OOTRR $($op.release)) is set up at the next start with internet.$kept"
+        Write-KitOotrrStatus $ExeDir "failed $($op.release): this PC had no internet at the last start"
+    } elseif ($why) {
+        $r.Lines += "The randomizer (OOTRR $($op.release)) was not set up: $why.$kept Co-op and the game work without it; start again (or run Update.bat) to retry."
+        if ($why -match 'antivirus|did not let') {
+            $r.Lines += "  Windows Security: Virus & threat protection > Protection history: restore/allow ootrr.exe, or add $tools as an exclusion; then start again."
+        }
+        Write-KitOotrrStatus $ExeDir "failed $($op.release): $why"
+    } else {
+        $r.Ok = $true
+        $r.Lines += "randomizer: OOTRR $($op.release) -> $dir"
+        Write-KitOotrrStatus $ExeDir "ok $($op.release)"
+    }
+    return $r
+}
+
+# --- OoT Character Select (snaildev99), fetched on the player's PC (hookshot\CHARACTER-SELECT.txt) ----------------
+# The kit carries none of the mod's files: Snail is its author and distributor, and its release holds the game's
+# characters rebuilt from the game's own files (Nintendo's). At a start the kit asks once (Invoke-KitCharacterSelectStep);
+# on yes it downloads his release zip and his characters.json from his GitHub pages, checks each SHA-256 the pin names,
+# unpacks the mod's one folder into the game's mods folder and stamps it (coop-charsel.txt). It is on: a mod the Mods
+# tab's list does not name is on, and the list is never written here, so a player's Off in the tab stays (also over
+# Update.bat, which leaves the game folder alone). Its code patch (exefs) is built into the game by our patches
+# 0034/0035: the folder's .ips changes the game's stamp (Get-KitExefsStampLine), so the start's next check asks for
+# that build ('mods'), and the puppet pack is made again with the characters (Get-PuppetPackHint).
+
+# The first line of a small file, trimmed ('' when it cannot be read). File.ReadAllLines closes the file at once:
+# Get-Content -TotalCount can leave it open for a while, and Windows then refuses to move its folder (CI, f0509dfc).
+function Read-KitFirstLine([string]$Path) {
+    try { $l = @([System.IO.File]::ReadAllLines($Path)); if ($l.Count) { return "$($l[0])".Trim() } } catch { }
+    return ''
+}
+
+# The pin's keys, or $null when the kit has no pin (a kit without Character Select) or it is incomplete.
+function Get-KitCharacterSelectPin([string]$Kit) {
+    $pin = Join-Path $Kit 'hookshot\CHARACTER-SELECT.txt'
+    if (-not (Test-Path -LiteralPath $pin)) { return $null }
+    $op = @{}
+    foreach ($line in @(Get-Content -LiteralPath $pin -ErrorAction SilentlyContinue)) {
+        if ($line -match '^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$') { $op[$Matches[1]] = $Matches[2] }
+    }
+    if (-not ($op.release -match '^[A-Za-z0-9._-]+$' -and $op.url -match '^https://' -and $op.zip -match '^[A-Za-z0-9._-]+$' -and
+              $op.zip_sha256 -match '^[0-9a-fA-F]{64}$' -and $op.zip_folder -and $op.zip_folder -notmatch '\.\.' -and
+              $op.folder -match '^[A-Za-z0-9][^\\/:*?"<>|]*$' -and
+              $op.overlay_url -match '^https://' -and $op.overlay_sha256 -match '^[0-9a-fA-F]{64}$')) { return $null }
+    if ($op.ips_url -and ($op.ips_url -notmatch '^https://' -or $op.ips_sha256 -notmatch '^[0-9a-fA-F]{64}$')) { $op.ips_url = '' }
+    return $op
+}
+
+# What the stamp of an install from this pin reads: release and the three SHA-256 (no newer .ips: '-').
+function Get-KitCharacterSelectWant($Op) {
+    $ips = if ($Op.ips_url) { $Op.ips_sha256.ToLowerInvariant() } else { '-' }
+    return "$($Op.release) $($Op.zip_sha256.ToLowerInvariant()) $($Op.overlay_sha256.ToLowerInvariant()) $ips"
+}
+
+# The player's answer: coop-options.ini 'character_select = yes|no|ask' wins (ask: the question again); else the answer
+# kept in hookshot\character-select-answer.txt (written at the question; no kit file has that name, so Update.bat keeps it;
+# not character-select.txt: Windows names ignore case, and that is the pin CHARACTER-SELECT.txt);
+# else 'ask'.
+function Get-KitCharacterSelectChoice([string]$Kit) {
+    foreach ($line in @(Get-Content -LiteralPath (Join-Path $Kit 'coop-options.ini') -ErrorAction SilentlyContinue)) {
+        if ($line -match '^\s*character_select\s*=\s*(yes|no|ask)\s*([#;].*)?$') {
+            $v = $Matches[1].ToLowerInvariant()
+            if ($v -eq 'ask') { Remove-Item -LiteralPath (Join-Path $Kit 'hookshot\character-select-answer.txt') -Force -ErrorAction SilentlyContinue }
+            return $v
+        }
+    }
+    $kept = Join-Path $Kit 'hookshot\character-select-answer.txt'
+    if (Test-Path -LiteralPath $kept) {
+        $v = (Read-KitFirstLine $kept).ToLowerInvariant()
+        if ($v -eq 'yes' -or $v -eq 'no') { return $v }
+    }
+    return 'ask'
+}
+
+function Set-KitCharacterSelectChoice([string]$Kit, [string]$Value) {
+    try { [System.IO.File]::WriteAllText((Join-Path $Kit 'hookshot\character-select-answer.txt'), "$Value`n") } catch { }
+}
+
+# The question at a start (owner, 0.11.8): Enter, Y or no key in $Seconds is yes; N is no. No console (input
+# redirected: a scripted or unattended start) is yes. $ReadKey: tests (a scriptblock giving a key object or $null).
+function Read-KitCharacterSelectAnswer([int]$Seconds = 15, [scriptblock]$ReadKey = $null) {
+    $q = 'Install the playable NPC mod (Character Select by Snail)? [Y/n]'
+    Write-Host ''
+    Write-Host 'Character Select by Snail (snaildev99) lets you play as the game''s other characters (Saria, Sheik, Darunia and over a hundred more).'
+    Write-Host '  It is Snail''s mod: the kit downloads it from his own GitHub page (about 1 GB, once), puts it in the game''s mods folder'
+    Write-Host '  and switches it on (the Mods tab switches it off). The Legend of Zelda: Ocarina of Time and its characters belong to Nintendo.'
+    $redirected = $true
+    try { $redirected = [Console]::IsInputRedirected } catch { }
+    if ($redirected -and -not $ReadKey) { Write-Host "$q y (no console: yes)"; return $true }
+    if (-not $ReadKey) { try { while ([Console]::KeyAvailable) { [void][Console]::ReadKey($true) } } catch { } }
+    $end = (Get-Date).AddSeconds($Seconds)
+    $left = -1
+    while ((Get-Date) -lt $end) {
+        $now = [int][Math]::Ceiling(($end - (Get-Date)).TotalSeconds)
+        if ($now -ne $left) { $left = $now; Write-Host -NoNewline "`r$q (yes in $left s)  " }
+        $key = if ($ReadKey) { & $ReadKey } elseif ([Console]::KeyAvailable) { [Console]::ReadKey($true) } else { $null }
+        if ($key) {
+            if ("$($key.Key)" -eq 'N') { Write-Host 'n'; return $false }
+            if ("$($key.Key)" -eq 'Y' -or "$($key.Key)" -eq 'Enter') { Write-Host 'y'; return $true }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    Write-Host 'y'
+    return $true
+}
+
+# Puts the mod in (or leaves it): @{ Ok; Changed (the folder was put in or replaced); Why; Lines }. $ModsDir: the
+# game's mods folder (<game>\mods, beside longshot.exe). A Character Select folder the player put in by hand (no
+# stamp) is never touched. A failure (offline, a download or SHA-256 mismatch, too little disk) is said in one line
+# and leaves what was there: the game starts as it is.
+function Install-KitCharacterSelect([string]$Kit, [string]$ModsDir, [string]$Downloads = '') {
+    $r = @{ Ok = $false; Changed = $false; Why = ''; Lines = @() }
+    $op = Get-KitCharacterSelectPin $Kit
+    if (-not $op) { $r.Ok = $true; return $r }
+    $dir = Join-Path $ModsDir $op.folder
+    $stamp = Join-Path $dir 'coop-charsel.txt'
+    $want = Get-KitCharacterSelectWant $op
+    if ((Test-Path -LiteralPath $dir) -and -not (Test-Path -LiteralPath $stamp)) {
+        $r.Ok = $true
+        $r.Lines += "Character Select: your own copy in $dir is used as it is."
+        return $r
+    }
+    $have = if (Test-Path -LiteralPath $stamp) { (Read-KitFirstLine $stamp) } else { '' }
+    if ($have -eq $want -and (Test-Path -LiteralPath (Join-Path $dir 'romfs'))) {
+        $r.Ok = $true
+        $r.Lines += "Character Select $($op.release) -> $dir (there already)"
+        return $r
+    }
+    if (-not $Downloads) { $Downloads = Join-Path $Kit 'hookshot\downloads' }
+    $zip = Join-Path $Downloads $op.zip
+    $json = Join-Path $Downloads 'charsel-characters.json'
+    $ips = Join-Path $Downloads 'charsel-code.ips'
+    $new = Join-Path $ModsDir "_$($op.folder).new"   # ('_' first: the game and the build skip such a folder)
+    $why = ''
+    try {
+        New-Item -ItemType Directory -Force -Path $Downloads, $ModsDir | Out-Null
+        $zipOk = (Test-Path -LiteralPath $zip) -and (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -eq $op.zip_sha256.ToUpperInvariant()
+        # (a 1 GB zip and 1.1 GB unpacked; the swap keeps the old folder until the new one is in place)
+        $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($ModsDir))
+        $free = try { (New-Object System.IO.DriveInfo $root).AvailableFreeSpace } catch { [long]::MaxValue }
+        if ($free -lt $(if ($zipOk) { 2GB } else { 3GB })) { $why = "too little disk space (about 3 GB free needed on $root)" }
+        elseif (-not $zipOk -and (Test-KitOffline)) { $why = 'offline' }
+        if (-not $why) { $why = Get-KitDownload @("$($op.url)/$($op.zip)") $zip $op.zip_sha256 @() 2; if ($why) { $why = "the download of Snail's release failed ($why)" } }
+        if (-not $why) { $why = Get-KitDownload @($op.overlay_url) $json $op.overlay_sha256 @() 2; if ($why) { $why = "the download of characters.json failed ($why)" } }
+        if (-not $why -and $op.ips_url) { $why = Get-KitDownload @($op.ips_url) $ips $op.ips_sha256 @() 2; if ($why) { $why = "the download of the newer code patch failed ($why)" } }
+        if (-not $why) {
+            if (Test-Path -LiteralPath $new) { Remove-Item -LiteralPath $new -Recurse -Force -ErrorAction Stop }
+            New-Item -ItemType Directory -Force -Path $new | Out-Null
+            # (the zip: <release>/mods/OoT Character Select/{romfs,exefs}, INSTALL.txt, SHA256SUMS.txt, patch-listings)
+            $depth = @($op.zip_folder -split '/').Count
+            & "$env:SystemRoot\System32\tar.exe" -x -f $zip -C $new "--strip-components=$depth" "$($op.zip_folder)" 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { $why = "unpacking $($op.zip) failed (tar $LASTEXITCODE)" }
+            elseif (-not (Test-Path -LiteralPath (Join-Path $new 'romfs'))) { $why = "$($op.zip) has no $($op.zip_folder)/romfs" }
+        }
+        if (-not $why) {
+            Copy-Item -LiteralPath $json -Destination (Join-Path $new 'characters.json') -Force
+            if ($op.ips_url) {
+                $code = @(Get-ChildItem -LiteralPath (Join-Path $new 'exefs') -Filter '*.ips' -File -ErrorAction SilentlyContinue)
+                if ($code.Count -eq 1) { Copy-Item -LiteralPath $ips -Destination $code[0].FullName -Force }
+                else { $why = "the release has $($code.Count) code patches, not one: the newer one has no place" }
+            }
+        }
+        if (-not $why) {
+            [System.IO.File]::WriteAllText((Join-Path $new 'coop-charsel.txt'), "$want`n")
+            [System.IO.File]::WriteAllText((Join-Path $new 'CREDITS-coop.txt'), ((@(
+                "OoT Character Select $($op.release) by snaildev99 (Snail): https://github.com/snaildev99/OoT-Character-Select",
+                'Downloaded by the Squadala co-op kit from his own release page onto this PC; the kit carries none of its files.',
+                'Its code is under the MIT licence (Copyright (c) 2026 snaildev99; LICENSE.txt here when it could be fetched).',
+                'The Legend of Zelda: Ocarina of Time and its characters belong to Nintendo.',
+                'Switch it off in the game''s Mods tab, or set character_select = no in coop-options.ini to take it out.') -join "`r`n") + "`r`n"))
+            $lic = Join-Path $Downloads 'charsel-LICENSE.txt'
+            try { Invoke-KitFetch "https://raw.githubusercontent.com/snaildev99/OoT-Character-Select/$($op.release)/LICENSE" $lic 'web'; Copy-Item -LiteralPath $lic -Destination (Join-Path $new 'LICENSE.txt') -Force } catch { }
+            # (what was there is kept until the game is built with the new one: Undo-/Confirm-KitCharacterSelect)
+            Save-KitCharacterSelectPrevious $ModsDir $op.folder
+            try { [System.IO.Directory]::Move($new, $dir) }
+            catch { [void](Undo-KitCharacterSelect $Kit $ModsDir); throw }
+            Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue   # (1 GB on disk; a new pin downloads its own)
+            $r.Changed = $true
+        }
+    } catch {
+        $msg = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message }
+        $why = "it could not be put in place ($("$msg".Trim())): close the game and start again"
+    }
+    if (Test-Path -LiteralPath $new) { Remove-Item -LiteralPath $new -Recurse -Force -ErrorAction SilentlyContinue }
+    $r.Why = $why
+    if ($why -eq 'offline') { $r.Lines += 'offline: Character Select is downloaded at the next start with internet; the game starts without it.' }
+    elseif ($why) { $r.Lines += "Character Select was not installed: $why. The game and co-op work without it; start again to retry (character_select = no in coop-options.ini stops it)." }
+    else { $r.Ok = $true; $r.Lines += "Character Select $($op.release) by Snail -> $dir (on; the Mods tab switches it off)" }
+    return $r
+}
+
+# Takes out the copy the kit put in (its stamp), for character_select = no. A copy of the player's own is left. The
+# copy is kept aside until the game is built without it (Undo-/Confirm-KitCharacterSelect).
+function Remove-KitCharacterSelect([string]$Kit, [string]$ModsDir) {
+    $op = Get-KitCharacterSelectPin $Kit
+    if (-not $op) { return $false }
+    $dir = Join-Path $ModsDir $op.folder
+    if (-not (Test-Path -LiteralPath (Join-Path $dir 'coop-charsel.txt'))) { return $false }
+    try { Save-KitCharacterSelectPrevious $ModsDir $op.folder; return $true }
+    catch { Write-Host "Character Select could not be taken out ($($_.Exception.Message.Trim())): close the game and start again." -ForegroundColor Yellow; return $false }
+}
+
+# Before the kit changes mods\<folder>: what the game was last built with is kept as mods\_<folder>.prev (the folder)
+# or mods\_<folder>.none (nothing was there), both skipped by the game and the build ('_'). Kept once: a change before
+# the last one was confirmed (a start that stopped in its build) keeps the older state, the one the game has. The
+# current folder is moved there or, when an older state is kept already, removed.
+function Save-KitCharacterSelectPrevious([string]$ModsDir, [string]$Folder) {
+    $dir = Join-Path $ModsDir $Folder
+    $prev = Join-Path $ModsDir "_$Folder.prev"
+    $none = Join-Path $ModsDir "_$Folder.none"
+    if (-not (Test-Path -LiteralPath $prev) -and -not (Test-Path -LiteralPath $none)) {
+        if (Test-Path -LiteralPath $dir) { [System.IO.Directory]::Move($dir, $prev) }
+        else { [System.IO.File]::WriteAllText($none, "no $Folder before the kit's change`n") }
+    } elseif (Test-Path -LiteralPath $dir) {
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction Stop
+    }
+}
+
+# The game could not be built with the change (the build failed or was declined: review-geno-0118): the mods folder
+# goes back to what the game was built with, so the game starts as it was. $true when something was put back. The
+# player's answer stays: the next start tries again.
+function Undo-KitCharacterSelect([string]$Kit, [string]$ModsDir) {
+    $op = Get-KitCharacterSelectPin $Kit
+    if (-not $op) { return $false }
+    $dir = Join-Path $ModsDir $op.folder
+    $prev = Join-Path $ModsDir "_$($op.folder).prev"
+    $none = Join-Path $ModsDir "_$($op.folder).none"
+    if (-not (Test-Path -LiteralPath $prev) -and -not (Test-Path -LiteralPath $none)) { return $false }
+    if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction Stop }
+    if (Test-Path -LiteralPath $prev) { [System.IO.Directory]::Move($prev, $dir) }
+    Remove-Item -LiteralPath $none -Force -ErrorAction SilentlyContinue
+    return $true
+}
+
+# The game was built (or needed no build) with the change: the kept state goes.
+function Confirm-KitCharacterSelect([string]$Kit, [string]$ModsDir) {
+    $op = Get-KitCharacterSelectPin $Kit
+    if (-not $op) { return }
+    Remove-Item -LiteralPath (Join-Path $ModsDir "_$($op.folder).prev") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $ModsDir "_$($op.folder).none") -Force -ErrorAction SilentlyContinue
+}
+
+# The Character Select mod the pack tool would find for the pack at $Manifest, as the pack records it
+# ("<mod folder>|<colours offset>|<colours head>", or "<mod folder>|" without colours): '' when there is none, $null when
+# the pack is not in a mods\contents\<title>\<pack> folder (nothing to compare). Mirrors find_characters: the folders
+# beside the pack's title folder and the mods folder, a characters.json of format 1 for "OoT Character Select", and
+# a romfs\Model folder (the models it counts).
+function Get-KitCharacterSelectSeen([string]$Manifest) {
+    $pack = Split-Path -Parent $Manifest
+    $title = Split-Path -Parent $pack
+    $contents = Split-Path -Parent $title
+    if (-not $contents -or (Split-Path -Leaf $contents) -ine 'contents') { return $null }
+    foreach ($root in $title, (Split-Path -Parent $contents)) {
+        foreach ($d in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+            if ($d.Name -match '^[-_.]') { continue }
+            $file = Join-Path $d.FullName 'characters.json'
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path $d.FullName 'romfs\Model'))) { continue }
+            try { $doc = [System.IO.File]::ReadAllText($file) | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+            if ($doc.mod -ne 'OoT Character Select' -or $doc.format -ne 1) { continue }
+            $c = $doc.puppet_colours
+            return "$($d.Name)|$(if ($c) { "$($c.offset)|$("$($c.head)".ToLowerInvariant())" })"
+        }
+    }
+    return ''
+}
+
+# The start's step (play.ps1, before Get-KitHookshotNeed): asks once, then installs, keeps or takes out. $true when the
+# mods folder changed (the game build and the pack then follow from their stamps). $GameDir: longshot.exe's folder.
+function Invoke-KitCharacterSelectStep([string]$Kit, [string]$GameDir, [int]$Seconds = 15) {
+    if (-not (Get-KitCharacterSelectPin $Kit)) { return $false }
+    $mods = Join-Path $GameDir 'mods'
+    $choice = Get-KitCharacterSelectChoice $Kit
+    if ($choice -eq 'ask') {
+        $choice = if (Read-KitCharacterSelectAnswer $Seconds) { 'yes' } else { 'no' }
+        Set-KitCharacterSelectChoice $Kit $choice
+        if ($choice -eq 'no') { Write-Host '  Not installed. To get it later: character_select = yes in coop-options.ini.' }
+    }
+    if ($choice -eq 'no') {
+        if (Remove-KitCharacterSelect $Kit $mods) { Write-Host 'Character Select: taken out (character_select = no in coop-options.ini).'; return $true }
+        return $false
+    }
+    $r = Install-KitCharacterSelect $Kit $mods
+    foreach ($l in $r.Lines) { Write-Host $l -ForegroundColor $(if ($r.Ok -or $r.Why -eq 'offline') { 'Gray' } else { 'Yellow' }) }
+    return $r.Changed
+}
+
 # The resource size tables (romfs\System\Resource\*.rsizetable.zs) of the mods the game loads besides the randomizer's
 # seeds: every folder under mods\ (any depth: the puppet pack is in mods\contents\<title>\coop-puppet) but seeds
 # (randomizer-*), the randomizer's control folder and folders whose name starts with '-' or '_' (Longshot skips them).
@@ -1022,15 +1529,19 @@ function Get-KitOtherSizeTables([string]$ModsDir) {
 # old one's for the same seed word, and the old release's seed files do not build with the new one (OOTRR 0.6.0:
 # "Seeds made with older versions will not build"). So every built seed (mods\randomizer-*\coop-seed.txt) and its
 # seed file go: the game makes each one again with the new OOTRR at its next start (about a minute), so every player
-# of the same kit plays the same world. Run while the game is closed (the module step). The lines to show.
+# of the same kit plays the same world. Only seeds the game built (coop-rando.txt): a seed folder put in by hand (built
+# with another OOTRR, or made on OOTRR's page, and copied to every player) is the player's, kept as it is. Run while the
+# game is closed (the module step). The lines to show.
 function Remove-KitRandoSeeds([string]$ExeDir, [string]$Release) {
     $lines = @()
     $mods = Join-Path $ExeDir 'mods'
     $control = Join-Path $mods 'oot-remake-randomizer'
     foreach ($d in @(Get-ChildItem -LiteralPath $mods -Directory -Filter 'randomizer-*' -ErrorAction SilentlyContinue)) {
         if (-not (Test-Path -LiteralPath (Join-Path $d.FullName 'coop-seed.txt'))) { continue }
+        if (-not (Test-Path -LiteralPath (Join-Path $d.FullName 'coop-rando.txt'))) { continue }   # (put in by hand)
         Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath (Join-Path $control "$($d.Name).ootrr") -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path $control "$($d.Name).spoiler.txt") -Force -ErrorAction SilentlyContinue
         if (Test-Path -LiteralPath $d.FullName) { $lines += "randomizer: seed $($d.Name) could not be removed for OOTRR $Release" }
         else { $lines += "randomizer: seed $($d.Name) removed for OOTRR $Release`: the game makes it again at its next start (another world: start a new save)" }
     }
@@ -1039,6 +1550,8 @@ function Remove-KitRandoSeeds([string]$ExeDir, [string]$Release) {
 
 # Built randomizer seeds (mods\randomizer-*\coop-seed.txt) whose size table is older than another mod's (a puppet
 # pack made again): the game aborts while it loads with such a seed on, so they are built again (Update-KitRandoSeeds).
+# Only seeds the game built (coop-rando.txt, its seed file kept): one put in by hand cannot be built again here, and
+# the size-table merge (Invoke-KitSizeTableMerge) gives it the pack's entries instead.
 function Get-KitStaleRandoSeeds([string]$ExeDir) {
     $mods = Join-Path $ExeDir 'mods'
     $others = @(Get-KitOtherSizeTables $mods)
@@ -1047,6 +1560,7 @@ function Get-KitStaleRandoSeeds([string]$ExeDir) {
     $stale = @()
     foreach ($d in @(Get-ChildItem -LiteralPath $mods -Directory -Filter 'randomizer-*' -ErrorAction SilentlyContinue)) {
         if (-not (Test-Path -LiteralPath (Join-Path $d.FullName 'coop-seed.txt'))) { continue }
+        if (-not (Test-Path -LiteralPath (Join-Path $d.FullName 'coop-rando.txt'))) { continue }   # (put in by hand)
         $own = @(Get-ChildItem -LiteralPath (Join-Path $d.FullName 'romfs\System\Resource') -File -Filter '*.rsizetable.zs' -ErrorAction SilentlyContinue)
         # (no table of its own: the seed's build time, coop-seed.txt, so it is not built again at every start)
         $built = if ($own) { ($own | Measure-Object -Property LastWriteTimeUtc -Minimum).Minimum } else { (Get-Item -LiteralPath (Join-Path $d.FullName 'coop-seed.txt')).LastWriteTimeUtc }
@@ -1059,11 +1573,12 @@ function Get-KitStaleRandoSeeds([string]$ExeDir) {
 # the seed file the game kept (mods\oot-remake-randomizer\<seed folder>.ootrr): host and guest seeds alike. A seed
 # that cannot be built again is removed (the game builds it at its next start and asks for a restart), never left to
 # abort the game. The lines to show.
-function Update-KitRandoSeeds([string]$ExeDir) {
+function Update-KitRandoSeeds([string]$ExeDir, [string]$Ootrr = '') {
     $lines = @()
     $mods = Join-Path $ExeDir 'mods'
     $control = Join-Path $mods 'oot-remake-randomizer'
-    $ootrr = Join-Path $ExeDir 'tools\ootrr\ootrr.exe'
+    # (-Ootrr: another OOTRR program, for the kit tests; the game's own by default)
+    $ootrr = if ($Ootrr) { $Ootrr } else { Join-Path $ExeDir 'tools\ootrr\ootrr.exe' }
     $romfs = @((Join-Path $ExeDir 'romfs'), (Join-Path (Split-Path -Parent $ExeDir) 'romfs')) | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'System') } | Select-Object -First 1
     foreach ($name in @(Get-KitStaleRandoSeeds $ExeDir)) {
         $seedDir = Join-Path $mods $name
@@ -1086,8 +1601,12 @@ function Update-KitRandoSeeds([string]$ExeDir) {
             $ErrorActionPreference = 'Stop'
             $built = Join-Path $stage $name
             if ($code -eq 0 -and (Test-Path -LiteralPath (Join-Path $built 'coop-seed.txt'))) {
-                $preset = Join-Path $seedDir 'coop-rando.txt'
-                if (Test-Path -LiteralPath $preset) { Copy-Item -LiteralPath $preset -Destination (Join-Path $built 'coop-rando.txt') }
+                # The game's own files in the seed, which OOTRR's build does not write: the preset, and the spoiler
+                # log and settings string the players share (the same seed file, so the same seed).
+                foreach ($keep in @('coop-rando.txt', 'spoiler.txt', 'settings.txt')) {
+                    $from = Join-Path $seedDir $keep
+                    if (Test-Path -LiteralPath $from) { Copy-Item -LiteralPath $from -Destination (Join-Path $built $keep) }
+                }
                 Remove-Item -LiteralPath $seedDir -Recurse -Force
                 Move-Item -LiteralPath $built -Destination $seedDir
                 $ok = $true
@@ -1135,6 +1654,7 @@ function Get-KitHookshotNeedText([string]$Need, [string]$Game = '', [bool]$HsOnl
         'moved' { "The co-op Hookshot game this kit built is not in $Game any more (moved or deleted). Moved it? Answer n, then run Build-Hookshot-Coop.bat -Out ""<its new folder>"" (seconds). Otherwise it is built again (about 20 to 40 minutes)." }
         'pin' { 'Your co-op game was built for another game version than this kit uses: it is built again (about 15 minutes; the PC stays usable).' }
         'patches' { 'This update changes the co-op game a little: updating it (a few minutes).' }
+        'mods' { 'A mod''s code patches changed (a mod with an exefs folder put in, changed or taken out, or switched on the Mods tab): the co-op game is built again with them (a few minutes).' }
         'module' { 'Putting the updated co-op and the puppet pack into the co-op game (seconds to a minute).' }
         'quarantine' { Get-KitHookshotQuarantineText }
         default { '' }
@@ -1231,6 +1751,16 @@ function Get-PuppetPackHint([string]$Manifest, [string]$ToolDir) {
         $gaps = @(Get-KitPuppetPackGaps $Manifest $json)
         if ($gaps) {
             return "Puppet pack: incomplete ($($gaps[0]) is missing$(if ($gaps.Count -gt 1) { " and $($gaps.Count - 1) more" })). $script:KitPackRemake"
+        }
+        # The Character Select mod put in, replaced or taken out since the pack was made (Install-KitCharacterSelect):
+        # the pack's character puppets follow the mod's characters.json (tools/puppet_pack find_characters).
+        $cs = Get-KitCharacterSelectSeen $Manifest
+        if ($null -ne $cs) {
+            $packed = $json.characters
+            $packedKey = if ($packed) { "$($packed.mod)|$(if ($packed.colours) { "$($packed.colours.offset)|$($packed.colours.head)" })" } else { '' }
+            if ($packedKey -ne $cs) {
+                return "Puppet pack: made $(if ($cs) { 'without the Character Select characters now in mods' } else { 'with a Character Select mod that is not in mods any more' }). $script:KitPackRemake"
+            }
         }
         $tool = Get-PuppetToolHash $ToolDir
         if ($tool -and $json.tool_sha256 -and $json.tool_sha256 -ne $tool) {
@@ -1453,8 +1983,19 @@ function Get-KitDownloadFailText([string]$File, [string]$Why, [string]$TestUrl, 
         'or a firewall. Test: open this in your browser:'
         "  $TestUrl"
         'If the browser downloads it but this script cannot, the antivirus or a proxy blocks PowerShell. Start again: what was'
-        'downloaded is kept. Still stuck: scripts\collect-logs.cmd, and send its zip.'
+        'downloaded is kept. Still stuck: scripts\collect-logs.cmd, and attach its zip to /bugreport on the Discord.'
     ) -join "`n"
+}
+
+# The kit's puppet pack command, one place for every caller (hookshot-build.ps1's pack step, make-puppet-pack.cmd, the
+# test kits' jobs): python's arguments for tools\puppet_pack\build.py from the game file $From into the pack folder $Mod.
+# --title-rows / --pause-tab: the title's Host, Join and Co-op Settings rows and the pause menu's Multiplayer tab. They
+# make the pack replace three files the game reads at boot (each language's Mals archive, the Title and Common layout
+# archives), larger than the game's, with their sizes in the pack's size table; merge_tables.py (every start) takes
+# them out of play when the size table the game reads cannot hold them (another mod's table wins), as that crashed the
+# game at boot in 0.11.5's test (the old pack left in mods\contents as coop-puppet.old-b26; its table won).
+function Get-KitPackArgs([string]$Tool, [string]$From, [string]$Mod) {
+    return @('-I', '-B', $Tool, '--romfs', $From, '--mod-dir', $Mod, '--title-rows', '--pause-tab')
 }
 
 # #48: Longshot serves ONE resource size table, the winning mod's. A seed made on OOTRR's website (its folder put into
@@ -1474,6 +2015,22 @@ function Invoke-KitSizeTableMerge([string]$Kit, [string]$ExeDir) {
     $before = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try { $out = @(& $python @pyArgs 2>&1 | ForEach-Object { "$_" }) } catch { $out = @("Size tables: not merged ($($_.Exception.Message)).") }
+    $ErrorActionPreference = $before
+    return $out
+}
+
+# The Discord status (docs/setup.md, "Discord"): Squadala!'s Discord application and this kit's release in the game's
+# longshot_options.ini (discord_app_id=, discord_details=, discord_state=), scripts\discord_status.py. A line the player
+# changed stays theirs; the Insert menu's "Discord status" row turns it off. Never stops the start. The lines it says.
+function Invoke-KitDiscordStatus([string]$Kit, [string]$ExeDir) {
+    $python = Join-Path $Kit 'hookshot\tools\python\python.exe'
+    $tool = Join-Path $Kit 'scripts\discord_status.py'
+    if (-not (Test-Path -LiteralPath $tool) -or -not (Test-Path -LiteralPath $python)) { return @() }
+    $before = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = @(& $python -I -B $tool --options (Join-Path $ExeDir 'longshot_options.ini') --version-file (Join-Path $Kit 'VERSION.txt') 2>&1 | ForEach-Object { "$_" })
+    } catch { $out = @("Discord status: not set ($($_.Exception.Message)).") }
     $ErrorActionPreference = $before
     return $out
 }

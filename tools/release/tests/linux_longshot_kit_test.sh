@@ -57,18 +57,28 @@ a = sys.argv[1:]
 env = "LONGSHOT_TOOLS=%s VK_PREBUILT=%s EMSDK=%s OOT=%s" % (os.environ.get("LONGSHOT_TOOLS", "-"), os.environ.get("LONGSHOT_VK_PREBUILT", "-"),
                                                        os.environ.get("EMSDK", "-"), ",".join(k for k in os.environ if k.startswith("OOT_COOP")) or "-")
 with open(os.environ["FAKE_LOG"], "a") as f:
-    f.write("make_game %s | %s | patched=%s\n" % (" ".join(a), env, os.path.exists("host/coop_test.c")))
+    f.write("make_game %s | %s | patched=%s ngx=%s\n" % (" ".join(a), env, os.path.exists("host/coop_test.c"), os.environ.get("LONGSHOT_NGX_SDK", "-")))
 game = a[a.index("--nup") + 1] if "--nup" in a else ""
 if "--check" in a:
     print("@@stage check Checking")
     print("@@check %s" % ("bad wrong version" if "bad" in game else "ok"))
     sys.exit(1 if "bad" in game else 0)
+if os.environ.get("FAKE_BUILD_FAIL"):   # (a build that stops: Character Select's undo)
+    print("@@error the build stopped (test)")
+    sys.exit(2)
 out = a[a.index("--out") + 1]
 os.makedirs(out, exist_ok=True)
 for n in ("longshot", "image.bin", "longshot_vk.so"):
     with open(os.path.join(out, n), "w") as f:
         f.write("#!/bin/sh\necho started \"$OOT_COOP_KIT\" \"$LONGSHOT_NO_UPDATE_CHECK\" \"$(pwd)\" >> \"$FAKE_LOG\"\n" if n == "longshot" else n)
 os.chmod(os.path.join(out, "longshot"), 0o755)
+# (as place_ngx_runtime: DLSS's runtime in <out>/ngx with the SDK, gone again without it)
+ngx = os.path.join(out, "ngx", "libnvidia-ngx-dlss.so.310.1.0")
+if os.environ.get("LONGSHOT_NGX_SDK") and "--fetch-ngx-sdk" in a and "--accept-nvidia-license" in a:
+    os.makedirs(os.path.dirname(ngx), exist_ok=True)
+    open(ngx, "w").close()
+elif os.path.exists(ngx):
+    os.remove(ngx)
 print("@@stage build Building")
 print("built")
 EOF
@@ -94,7 +104,8 @@ sha=$(sha256sum "$appimage" | cut -d' ' -f1)
 
 kit="$tmp/OoT Coop kit"   # (a space in the path, as players' folders have)
 mkdir -p "$kit/scripts" "$kit/data/longshot/patches" "$kit/data/server" "$kit/data/tools/puppet_pack"
-cp "$src/start-squadala.sh" "$src/start-oot-coop.sh" "$src/README.txt" "$src/revert.sh" "$kit/"
+cp "$src/start-squadala.sh" "$src/README.txt" "$src/revert.sh" "$kit/"
+check "the kit has one start file (no start-oot-coop.sh from v0.11.4 on)" [ ! -e "$src/start-oot-coop.sh" ]
 cp "$src"/scripts/*.sh "$release/kit/scripts/apply_patch.py" "$kit/scripts/"
 cp "$release/kit/coop.ini.template" "$kit/scripts/"
 cp "$release/kit/coop-options.ini" "$kit/data/coop-options.ini"
@@ -148,12 +159,35 @@ check 'build: stages shown, @@ lines for the launcher left out' bash -c 'grep -q
 check 'build: the module is put beside the game' [ "$(cat "$D/game/hookshot_coop.so" 2>/dev/null)" = module ]
 check 'build: coop.ini beside the game, empty server and name left as comments, port 27510' \
     bash -c 'grep -q "^# server =$" "$1" && grep -q "^# name =$" "$1" && grep -q "^port = 27510$" "$1"' _ "$D/game/coop.ini"
-check 'build: the puppet pack goes in data/game/mods/contents/<title>/coop-puppet' bash -c '[ -f "$1/game/mods/contents/0400486024DEC000/coop-puppet/coop_puppet.json" ] && grep -q "puppet_pack --romfs .*nup --mod-dir .* --title-rows" "$2"' _ "$D" "$log"
+check 'build: the puppet pack goes in data/game/mods/contents/<title>/coop-puppet, with the title rows and the pause tab (--title-rows --pause-tab)' bash -c '[ -f "$1/game/mods/contents/0400486024DEC000/coop-puppet/coop_puppet.json" ] && grep -q "puppet_pack --romfs .*nup --mod-dir " "$2" && grep -q -- "--mod-dir .* --title-rows --pause-tab" "$2"' _ "$D" "$log"
 check 'build: the game file is remembered' has "$D/game-files.txt" "Downloads/OoT [04004860224DEC000].nup"
 
 : >"$log"
 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build2.txt" 2>&1; export CODE=$?
 check 'build: a second start builds nothing' bash -c '[ $CODE -eq 0 ] && grep -q "built already" "$1" && ! grep -q "^make_game" "$2" && grep -q "puppet pack: built already" "$1"' _ "$tmp/build2.txt" "$log"
+
+# NVIDIA DLSS (#234): --dlss asks for NVIDIA's license once (a terminal only), data/dlss.txt keeps the answer, the game is
+# built again with the SDK; --no-dlss takes it back. The game's stamp stays the release, pin and patches.
+: >"$log"
+bash "$kit/scripts/build.sh" --dlss </dev/null >"$tmp/dlss1.txt" 2>&1; export CODE=$?
+check 'dlss: --dlss without a terminal asks nothing, builds nothing, says how' \
+    bash -c '[ $CODE -ne 0 ] && grep -q "from a terminal" "$1" && [ ! -f "$2/dlss.txt" ] && ! grep -q "^make_game" "$3"' _ "$tmp/dlss1.txt" "$D" "$log"
+stamp_before=$(cat "$D/game/coop-built-from.txt")
+printf 'nvidia-license=accepted\n' >"$D/dlss.txt"
+bash "$kit/scripts/build.sh" </dev/null >"$tmp/dlss2.txt" 2>&1; export CODE=$?
+check 'dlss: license accepted (data/dlss.txt): the game is built again with the SDK in data/work/ngx-sdk' \
+    bash -c '[ $CODE -eq 0 ] && grep "^make_game" "$1" | grep -v -- --check | grep -q -- "--fetch-ngx-sdk --accept-nvidia-license .*ngx=$2/work/ngx-sdk" && compgen -G "$2/game/ngx/libnvidia-ngx-dlss.so.*" >/dev/null' _ "$log" "$D"
+check 'dlss: the game stamp is still the release, pin and patches' [ "$(cat "$D/game/coop-built-from.txt")" = "$stamp_before" ]
+: >"$log"
+bash "$kit/scripts/build.sh" </dev/null >"$tmp/dlss3.txt" 2>&1; export CODE=$?
+check 'dlss: the next start builds nothing' bash -c '[ $CODE -eq 0 ] && grep -q "built already" "$1" && ! grep -q "^make_game" "$2"' _ "$tmp/dlss3.txt" "$log"
+: >"$log"
+bash "$kit/scripts/build.sh" --no-dlss </dev/null >"$tmp/dlss4.txt" 2>&1; export CODE=$?
+check 'dlss: --no-dlss forgets the license, builds again without the SDK, NVIDIA'"'"'s runtime gone' \
+    bash -c '[ $CODE -eq 0 ] && [ ! -f "$2/dlss.txt" ] && grep "^make_game" "$1" | grep -v -- --check | grep -q "ngx=-$" && ! grep -q -- --fetch-ngx-sdk "$1" && ! compgen -G "$2/game/ngx/libnvidia-ngx-dlss.so.*" >/dev/null' _ "$log" "$D"
+: >"$log"
+bash "$kit/scripts/build.sh" </dev/null >"$tmp/dlss5.txt" 2>&1; export CODE=$?
+check 'dlss: off, the next start builds nothing' bash -c '[ $CODE -eq 0 ] && grep -q "built already" "$1" && ! grep -q "^make_game" "$2"' _ "$tmp/dlss5.txt" "$log"
 
 # pack-retry: the pack is made again on a start whenever it is missing, incomplete or from another tool, and the
 # game file is looked for when it moved; a pack tool error is said and the start goes on.
@@ -194,6 +228,49 @@ cp "$tmp/build.py.good" "$D/tools/puppet_pack/build.py"
 bash "$kit/scripts/build.sh" </dev/null >"$tmp/pack5.txt" 2>&1; export CODE=$?
 check 'pack: the tool fixed: the next start makes the pack' bash -c '[ $CODE -eq 0 ] && grep -q "^puppet_pack" "$2" && [ -f "$3/.coop-stamp" ]' _ "$tmp/pack5.txt" "$log" "$P"
 
+# OoT Character Select by Snail (data/longshot/CHARACTER-SELECT.txt): fetched from his release onto the PC, never
+# carried. Offline with his zip and characters.json already in data/builder/charsel (their SHA-256 match): no network.
+# No terminal: the question's answer is yes.
+mkdir -p "$tmp/cs-rel/CS-v1/mods/OoT Character Select/romfs/Model" "$tmp/cs-rel/CS-v1/mods/OoT Character Select/exefs" "$D/builder/charsel"
+printf 'model' >"$tmp/cs-rel/CS-v1/mods/OoT Character Select/romfs/Model/Player_Child_C000.Player_Child.bfres.zs"
+printf 'ips' >"$tmp/cs-rel/CS-v1/mods/OoT Character Select/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips"
+printf 'install' >"$tmp/cs-rel/CS-v1/INSTALL.txt"
+(cd "$tmp/cs-rel" && "$py" -c 'import os, zipfile
+with zipfile.ZipFile("CS-v1.zip", "w") as z:
+    for r, _, fs in os.walk("CS-v1"):
+        for f in fs: z.write(os.path.join(r, f))')
+cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
+printf '{"format": 1, "mod": "OoT Character Select", "characters": []}' >"$D/builder/charsel/characters.json"
+cs_zsha=$(sha256sum "$D/builder/charsel/CS-v1.zip" | cut -d' ' -f1) cs_osha=$(sha256sum "$D/builder/charsel/characters.json" | cut -d' ' -f1)
+printf 'release=v1\nurl=https://example.invalid/cs\nzip=CS-v1.zip\nzip_sha256=%s\nzip_folder=CS-v1/mods/OoT Character Select\nfolder=OoT Character Select\noverlay_url=https://example.invalid/characters.json\noverlay_sha256=%s\nips_url=\nips_sha256=\n' \
+    "$cs_zsha" "$cs_osha" >"$kit/data/longshot/CHARACTER-SELECT.txt"
+rm -f "$D/character-select-answer.txt"
+CS="$D/game/mods/OoT Character Select"
+# review-geno-0118: the game build after the install fails -> the mods folder goes back to what the game was built
+# with, one line says so, and the start goes on with the game as it was (not stopped).
+stamp_was=$(cat "$D/game/coop-built-from.txt")
+FAKE_BUILD_FAIL=1 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs0.txt" 2>&1; export CODE=$?
+check 'Character Select: a failed game build after the install takes it back out and the start goes on with the game as it was'     bash -c '[ $CODE -eq 0 ] && grep -q "no terminal: yes" "$1" && grep -q "taken back out for now" "$1" && [ ! -e "$2" ] && [ ! -e "$3/game/mods/_OoT Character Select.none" ] && [ ! -e "$3/game/mods/_OoT Character Select.prev" ] &&
+        [ "$(cat "$3/game/coop-built-from.txt")" = "$4" ]' _ "$tmp/build-cs0.txt" "$CS" "$D" "$stamp_was"
+cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs1.txt" 2>&1; export CODE=$?
+check 'Character Select: his folder alone in data/game/mods with characters.json, stamped, credited, the answer kept' \
+    bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && [ -f "$2/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips" ] &&
+        [ -f "$2/characters.json" ] && [ ! -e "$2/INSTALL.txt" ] && grep -q "^v1 " "$2/coop-charsel.txt" && grep -q "belong to Nintendo" "$2/CREDITS-coop.txt" &&
+        grep -qx yes "$3/character-select-answer.txt" && [ ! -e "$3/builder/charsel/CS-v1.zip" ] && [ ! -e "$3/game/mods/coop-mods.list" ]' _ "$tmp/build-cs1.txt" "$CS" "$D"
+check 'Character Select: its code patch is in the game stamp (the build takes it in: patches 0034/0035)' grep -q 'exefs=OoT Character Select/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips:' "$D/game/coop-built-from.txt"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs2.txt" 2>&1
+check 'Character Select: a built game confirms the change (no kept state left)' bash -c '[ ! -e "$1/_OoT Character Select.none" ] && [ ! -e "$1/_OoT Character Select.prev" ]' _ "$D/game/mods"
+check 'Character Select: there already -> not asked again, nothing done' bash -c 'grep -q "Character Select v1 -> .*(there already)" "$1" && ! grep -q "Install the playable NPC mod" "$1"' _ "$tmp/build-cs2.txt"
+printf 'character_select = no\n' >>"$D/coop-options.ini"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs3.txt" 2>&1; export CODE=$?
+check 'Character Select: character_select = no takes the kit'"'"'s copy out and the game is built without its code' \
+    bash -c '[ $CODE -eq 0 ] && grep -q "taken out" "$1" && [ ! -e "$2" ] && ! grep -q "exefs=" "$3/game/coop-built-from.txt"' _ "$tmp/build-cs3.txt" "$CS" "$D"
+sed -i '/^character_select = no$/d' "$D/coop-options.ini"
+rm -f "$kit/data/longshot/CHARACTER-SELECT.txt" "$D/character-select-answer.txt"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs4.txt" 2>&1; export CODE=$?
+check 'Character Select: a kit without CHARACTER-SELECT.txt asks nothing and fetches nothing' bash -c '[ $CODE -eq 0 ] && ! grep -q "Character Select" "$1"' _ "$tmp/build-cs4.txt"
+
 # The randomizer the kit brings (data/longshot/OOTRR.txt): fetched and unpacked into data/game/tools/ootrr.
 mkdir -p "$tmp/ootrr-rel/ootrr-0.5.0-linux-x86_64"
 printf '#!/bin/sh\necho ootrr\n' >"$tmp/ootrr-rel/ootrr-0.5.0-linux-x86_64/ootrr"
@@ -218,17 +295,39 @@ OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-o4.txt" 
 check 'build offline: the OOTRR tarball already here (its SHA-256 matched) is put in, no download' \
     bash -c '[ $CODE -eq 0 ] && [ -x "$1/game/tools/ootrr/ootrr" ] && ! grep -q downloading "$2"' _ "$D" "$tmp/build-o4.txt"
 # Another OOTRR release (0.5.0 -> 0.6.0): the built seeds and their seed files go (the game makes them again with
-# it); another mod and a folder with no coop-seed.txt stay. The same release again removes nothing.
-mkdir -p "$D/game/mods/randomizer-EF" "$D/game/mods/randomizer-half" "$D/game/mods/oot-remake-randomizer" "$D/game/mods/hd/romfs"
-echo EF >"$D/game/mods/randomizer-EF/coop-seed.txt"
+# it); another mod, a folder with no coop-seed.txt and a seed put in by hand (no coop-rando.txt) stay. The same
+# release again removes nothing.
+mkdir -p "$D/game/mods/randomizer-EF" "$D/game/mods/randomizer-half" "$D/game/mods/oot-remake-randomizer" "$D/game/mods/hd/romfs" "$D/game/mods/randomizer-IJ"
+echo EF >"$D/game/mods/randomizer-EF/coop-seed.txt" && echo default >"$D/game/mods/randomizer-EF/coop-rando.txt"
+echo IJ >"$D/game/mods/randomizer-IJ/coop-seed.txt"
 echo '{}' >"$D/game/mods/oot-remake-randomizer/randomizer-EF.ootrr"
+echo chests >"$D/game/mods/oot-remake-randomizer/randomizer-EF.spoiler.txt"
 printf 'release=v0.6.0\nurl=https://example.invalid/ootrr\nlinux=OOTRR-test-linux.tar.gz\nlinux_sha256=%s\n' "$o_sha" >"$kit/data/longshot/OOTRR.txt"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-o6.txt" 2>&1; export CODE=$?
 check 'build: another OOTRR release removes the built seeds (the game makes them again), keeps the rest' \
-    bash -c '[ $CODE -eq 0 ] && grep -q "seed randomizer-EF removed for OOTRR v0.6.0" "$1" && [ ! -e "$2/game/mods/randomizer-EF" ] && [ ! -e "$2/game/mods/oot-remake-randomizer/randomizer-EF.ootrr" ] && [ -d "$2/game/mods/randomizer-half" ] && [ -d "$2/game/mods/hd/romfs" ]' _ "$tmp/build-o6.txt" "$D"
+    bash -c '[ $CODE -eq 0 ] && grep -q "seed randomizer-EF removed for OOTRR v0.6.0" "$1" && [ ! -e "$2/game/mods/randomizer-EF" ] && [ ! -e "$2/game/mods/oot-remake-randomizer/randomizer-EF.ootrr" ] && [ ! -e "$2/game/mods/oot-remake-randomizer/randomizer-EF.spoiler.txt" ] && [ -d "$2/game/mods/randomizer-half" ] && [ -d "$2/game/mods/hd/romfs" ] && [ -f "$2/game/mods/randomizer-IJ/coop-seed.txt" ]' _ "$tmp/build-o6.txt" "$D"
+rm -rf "$D/game/mods/randomizer-IJ"
 mkdir -p "$D/game/mods/randomizer-GH" && echo GH >"$D/game/mods/randomizer-GH/coop-seed.txt"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-o7.txt" 2>&1
 check 'build: the same OOTRR release again keeps the seeds' bash -c '[ -f "$1/game/mods/randomizer-GH/coop-seed.txt" ] && ! grep -q "removed for OOTRR" "$2"' _ "$D" "$tmp/build-o7.txt"
+check 'build: a set-up OOTRR says ok in data/game/tools/ootrr-setup.txt' grep -qx 'ok v0.6.0' "$D/game/tools/ootrr-setup.txt"
+# A new OOTRR release that does not run here (player report 2026-11-19: the old way deleted tools/ootrr first, so any
+# failure after it left the game with none): unpacked beside the old one and tried; the old OOTRR, its stamp and the
+# seeds stay, nothing half-made is left, and ootrr-setup.txt says why (the game's chat shows it).
+mkdir -p "$tmp/ootrr-bad/ootrr-0.7.0-linux-x86_64"
+printf '#!/bin/sh\nexit 3\n' >"$tmp/ootrr-bad/ootrr-0.7.0-linux-x86_64/ootrr"
+tar -czf "$D/builder/OOTRR-bad-linux.tar.gz" -C "$tmp/ootrr-bad" ootrr-0.7.0-linux-x86_64
+b_sha=$(sha256sum "$D/builder/OOTRR-bad-linux.tar.gz" | cut -d' ' -f1)
+printf 'release=v0.7.0\nurl=https://example.invalid/ootrr\nlinux=OOTRR-bad-linux.tar.gz\nlinux_sha256=%s\n' "$b_sha" >"$kit/data/longshot/OOTRR.txt"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-o8.txt" 2>&1; export CODE=$?
+check 'build: an OOTRR that does not run keeps the old one and its seeds, says why, leaves nothing half-made' \
+    bash -c '[ $CODE -eq 0 ] && grep -q "did not run here" "$1" && [ -x "$2/game/tools/ootrr/ootrr" ] && grep -q "^v0.6.0 " "$2/game/tools/ootrr/coop-ootrr.txt" && [ -f "$2/game/mods/randomizer-GH/coop-seed.txt" ] && [ ! -e "$2/game/tools/ootrr.new" ] && [ ! -e "$2/game/tools/ootrr.old" ] && grep -q "^failed v0.7.0: ootrr did not run here" "$2/game/tools/ootrr-setup.txt"' _ "$tmp/build-o8.txt" "$D"
+# A swap stopped between its two moves (tools/ootrr.old, no tools/ootrr): the old folder goes back first.
+mv "$D/game/tools/ootrr" "$D/game/tools/ootrr.old"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-o9.txt" 2>&1
+check 'build: a stopped OOTRR swap is put back' bash -c '[ -x "$1/game/tools/ootrr/ootrr" ] && [ ! -e "$1/game/tools/ootrr.old" ]' _ "$D"
+rm -f "$D/builder/OOTRR-bad-linux.tar.gz"
+printf 'release=v0.6.0\nurl=https://example.invalid/ootrr\nlinux=OOTRR-test-linux.tar.gz\nlinux_sha256=%s\n' "$o_sha" >"$kit/data/longshot/OOTRR.txt"
 rm -rf "$D/game/mods/randomizer-GH" "$D/game/mods/randomizer-half" "$D/game/mods/hd"
 rm -rf "$D/game/tools/ootrr" "$D/builder/OOTRR-test-linux.tar.gz"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-o5.txt" 2>&1; export CODE=$?
@@ -250,18 +349,25 @@ mkdir -p "$4/$5/romfs/System/Resource" && echo new >"$4/$5/romfs/System/Resource
 EOF
 chmod +x "$G/tools/ootrr/ootrr"
 for s in AB CD; do echo old >"$G/mods/randomizer-$s/$R/T.rsizetable.zs"; echo "$s" >"$G/mods/randomizer-$s/coop-seed.txt"; done
-echo default >"$G/mods/randomizer-AB/coop-rando.txt"
+echo default >"$G/mods/randomizer-AB/coop-rando.txt" && echo default >"$G/mods/randomizer-CD/coop-rando.txt"
+# (a seed put in by hand, older than the pack too: not the kit's to build again or remove; merge_tables.py merges it)
+mkdir -p "$G/mods/randomizer-KL/$R" && echo hand >"$G/mods/randomizer-KL/$R/T.rsizetable.zs" && echo KL >"$G/mods/randomizer-KL/coop-seed.txt"
+echo chests >"$G/mods/randomizer-AB/spoiler.txt" && echo OOTRR1-XZLA >"$G/mods/randomizer-AB/settings.txt"
 echo seed >"$G/mods/oot-remake-randomizer/randomizer-AB.ootrr"   # (none kept for CD: it cannot be built again)
 echo off >"$G/mods/_off/$R/T.rsizetable.zs"
-touch -d '1 hour ago' "$G/mods/randomizer-AB/$R/T.rsizetable.zs" "$G/mods/randomizer-CD/$R/T.rsizetable.zs"
+touch -d '1 hour ago' "$G/mods/randomizer-AB/$R/T.rsizetable.zs" "$G/mods/randomizer-CD/$R/T.rsizetable.zs" "$G/mods/randomizer-KL/$R/T.rsizetable.zs"
 echo pack >"$G/mods/contents/0400486024DEC000/coop-puppet/$R/T.rsizetable.zs"
 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-r1.txt" 2>&1; export CODE=$?
-check 'build: a seed older than the puppet pack is built again beside the pack'"'"'s size table (no off folder'"'"'s), its preset kept' \
+check 'build: a seed older than the puppet pack is built again beside the pack'"'"'s size table (no off folder'"'"'s), its preset, spoiler.txt and settings.txt kept' \
     bash -c '[ $CODE -eq 0 ] && grep -q "seed randomizer-AB built again" "$1" && [ "$(cat "$2/mods/randomizer-AB/romfs/System/Resource/T.rsizetable.zs")" = new ] &&
         grep -qx pack "$2/mods/oot-remake-randomizer/staged.txt" && ! grep -q off "$2/mods/oot-remake-randomizer/staged.txt" &&
-        [ -f "$2/mods/randomizer-AB/coop-rando.txt" ] && [ ! -e "$2/mods/oot-remake-randomizer/_seed-build" ]' _ "$tmp/build-r1.txt" "$G"
+        [ -f "$2/mods/randomizer-AB/coop-rando.txt" ] &&
+        [ "$(cat "$2/mods/randomizer-AB/spoiler.txt")" = chests ] && [ "$(cat "$2/mods/randomizer-AB/settings.txt")" = OOTRR1-XZLA ] && [ ! -e "$2/mods/oot-remake-randomizer/_seed-build" ]' _ "$tmp/build-r1.txt" "$G"
 check 'build: a seed older than the pack that cannot be built again (no seed file kept) is removed, said once' \
     bash -c 'grep -q "seed randomizer-CD removed" "$1" && [ ! -e "$2/mods/randomizer-CD" ]' _ "$tmp/build-r1.txt" "$G"
+check 'build: a hand-put seed older than the pack stays as it is' \
+    bash -c '[ "$(cat "$2/mods/randomizer-KL/romfs/System/Resource/T.rsizetable.zs")" = hand ] && ! grep -q "randomizer-KL" "$1"' _ "$tmp/build-r1.txt" "$G"
+rm -rf "$G/mods/randomizer-KL"
 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-r2.txt" 2>&1
 check 'build: the next start leaves the rebuilt seed alone' bash -c '! grep -q "randomizer: seed" "$1"' _ "$tmp/build-r2.txt"
 rm -rf "$G/tools/ootrr" "$G/romfs" "$G/mods/randomizer-AB" "$G/mods/oot-remake-randomizer" "$G/mods/_off"
@@ -329,16 +435,24 @@ if [[ $(uname -s) == Linux ]]; then
     bash "$kit/start-squadala.sh" --help </dev/null >"$tmp/start3.txt" 2>&1
     check 'start --help lists the options' has "$tmp/start3.txt" '--no-update'
     check 'start --help lists --pack' has "$tmp/start3.txt" '--pack'
-    # start-oot-coop.sh, the start file's name up to v0.11.2 (menu entries, Steam shortcuts): the same start, by sh or bash
-    sh "$kit/start-oot-coop.sh" --help </dev/null >"$tmp/start3old.txt" 2>&1
-    check 'start-oot-coop.sh (old name) starts the same: --help' cmp -s "$tmp/start3.txt" "$tmp/start3old.txt"
-    bash "$kit/start-oot-coop.sh" --nope </dev/null >/dev/null 2>&1; export CODE=$?
-    check 'start-oot-coop.sh (old name): its exit code goes through' [ $CODE -ne 0 ]
-    # A menu entry made by a kit up to v0.11.2 (Exec= start-oot-coop.sh) is made again for start-squadala.sh.
+    # A menu entry made by a kit up to v0.11.3 (Exec= start-oot-coop.sh, Name=OoT Co-op), another on the desktop and a
+    # Steam entry: the start (update.sh --tidy) points them at start-squadala.sh, which the kit has alone now.
     printf '[Desktop Entry]\nName=OoT Co-op\nExec=bash "%s/start-oot-coop.sh"\n' "$kit" >"$XDG_DATA_HOME/applications/oot-coop.desktop"
+    mkdir -p "$HOME/Desktop" && printf '[Desktop Entry]\nExec=bash "%s/start-oot-coop.sh"\nPath=%s\n' "$kit" "$kit" >"$HOME/Desktop/coop.desktop"
+    printf '[Desktop Entry]\nExec=bash "/elsewhere/start-oot-coop.sh"\n' >"$HOME/Desktop/other.desktop"
+    mkdir -p "$tmp/steam/userdata/7/config"
+    { printf '\0shortcuts\0\0000\0\001Exe\0"%s/start-oot-coop.sh"\0\002\377\376\0' "$kit"; printf '\001Exe\0"/elsewhere/start-oot-coop.sh"\0\010\010'; } >"$tmp/steam/userdata/7/config/shortcuts.vdf"
+    vsize=$(wc -c <"$tmp/steam/userdata/7/config/shortcuts.vdf")
     : >"$log"
-    bash "$kit/start-squadala.sh" --no-update </dev/null >/dev/null 2>&1
-    check 'start: an old menu entry (start-oot-coop.sh) now runs start-squadala.sh' grep -qF "Exec=bash \"$kit/start-squadala.sh\"" "$XDG_DATA_HOME/applications/oot-coop.desktop"
+    OOT_COOP_STEAM_DIR=$tmp/steam bash "$kit/start-squadala.sh" --no-update </dev/null >"$tmp/start4.txt" 2>&1
+    check 'start: an old menu entry (start-oot-coop.sh) now runs start-squadala.sh, named Squadala' bash -c \
+        'grep -qF "Exec=bash \"$2/start-squadala.sh\"" "$1" && grep -qx "Name=Squadala" "$1"' _ "$XDG_DATA_HOME/applications/oot-coop.desktop" "$kit"
+    check 'start: a desktop entry for this kit runs start-squadala.sh; another one is left alone' bash -c \
+        'grep -qF "$2/start-squadala.sh" "$1/coop.desktop" && grep -qF "/elsewhere/start-oot-coop.sh" "$1/other.desktop"' _ "$HOME/Desktop" "$kit"
+    check 'start: the Steam entry runs start-squadala.sh, its other bytes and another entry as they were' bash -c \
+        'LC_ALL=C grep -qaF "\"$2/start-squadala.sh\"" "$1" && ! LC_ALL=C grep -qaF "$2/start-oot-coop.sh" "$1" && LC_ALL=C grep -qaF "/elsewhere/start-oot-coop.sh" "$1" &&
+         [ "$(wc -c <"$1")" -eq "$3" ] && [ -f "$1.before-squadala" ]' _ "$tmp/steam/userdata/7/config/shortcuts.vdf" "$kit" "$vsize"
+    check 'start: it says which entries moved' bash -c 'grep -q "now starts start-squadala.sh" "$1"' _ "$tmp/start4.txt"
     : >"$log"
     bash "$kit/start-squadala.sh" --pack </dev/null >"$tmp/start5.txt" 2>&1; export CODE=$?
     check 'start --pack: the pack made again even when current, the game not started' bash -c '[ $CODE -eq 0 ] && grep -q "^puppet_pack" "$1" && ! grep -q "^started" "$1" && grep -q "the puppet pack is made" "$2"' _ "$log" "$tmp/start5.txt"
@@ -355,7 +469,7 @@ fi
 # --- update.sh -------------------------------------------------------------------------------
 new=$tmp/rel/Squadala-v0.1.0-beta3-linux
 mkdir -p "$new"
-cp -a "$kit/start-squadala.sh" "$kit/start-oot-coop.sh" "$kit/README.txt" "$kit/revert.sh" "$kit/scripts" "$new/"
+cp -a "$kit/start-squadala.sh" "$kit/README.txt" "$kit/revert.sh" "$kit/scripts" "$new/"
 mkdir -p "$new/data/longshot/patches" "$new/data/server"
 cp -a "$kit/data/longshot/." "$new/data/longshot/"
 printf 'module v12\n' >"$new/data/longshot/hookshot_coop.so"
@@ -384,7 +498,14 @@ cat >"$tmp/rel/releases.json" <<EOF
   {"browser_download_url": "$tmp/rel/Squadala-v0.1.0-beta3-linux.zip.sha256"},
   {"browser_download_url": "$tmp/rel/oot-coop-v0.1.0-beta3.zip"}]}]
 EOF
+# This kit as v0.11.3 had it: start-oot-coop.sh (a one-line call of start-squadala.sh) in it and in its MANIFEST.txt,
+# and a menu entry that starts it; the update to the new layout removes it and moves the entry.
+printf '#!/bin/sh\nhere=$(cd "$(dirname "$0")" && pwd)\nexec sh "$here/start-squadala.sh" "$@"\n' >"$kit/start-oot-coop.sh"
+printf '[Desktop Entry]\nExec=bash "%s/start-oot-coop.sh"\n' "$kit" >"$XDG_DATA_HOME/applications/kit-old.desktop"
 (cd "$kit" && { echo MANIFEST.txt; find . -path ./data/game -prune -o -path ./data/builder -prune -o -path ./data/work -prune -o -path ./data/logs -prune -o -type f ! -name MANIFEST.txt -print | sed 's|^\./||'; } | sort >MANIFEST.txt)
+bash "$kit/scripts/update.sh" --tidy >/dev/null 2>&1
+check 'update --tidy: a v0.11.3 kit keeps start-oot-coop.sh (its MANIFEST.txt lists it) and its entry' bash -c \
+    '[ -f "$1/start-oot-coop.sh" ] && grep -qF "$1/start-oot-coop.sh" "$2"' _ "$kit" "$XDG_DATA_HOME/applications/kit-old.desktop"
 printf 'my save\n' >"$D/game/save.bin"
 sed -i 's/^auto_update = ask$/auto_update = yes/' "$D/coop-options.ini"
 export OOT_COOP_UPDATE_API=$tmp/rel/releases.json
@@ -398,6 +519,9 @@ check 'update: the old files are in backup-v0.1.0-beta2/' [ -f "$kit/backup-v0.1
 check 'update: the start file keeps working after a zip without exec bits' bash -n "$kit/start-squadala.sh"
 check 'update: of the same release under both names, the Squadala- zip is taken' bash -c '! grep -qi "damaged\|does not match" "$1"' _ "$tmp/update.txt"
 check 'update --status after it: nothing newer' [ -z "$(bash "$kit/scripts/update.sh" --status)" ]
+check 'update: one start file, start-oot-coop.sh is gone (kept in previous/)' bash -c \
+    '[ ! -e "$1/start-oot-coop.sh" ] && [ -f "$1/start-squadala.sh" ] && [ -f "$1/previous/v0.1.0-beta2/start-oot-coop.sh" ]' _ "$kit"
+check 'update: the menu entry that started start-oot-coop.sh starts start-squadala.sh' grep -qF "$kit/start-squadala.sh" "$XDG_DATA_HOME/applications/kit-old.desktop"
 # revert-b: the version replaced is kept in previous/, revert.sh puts it back, the start does not update straight back.
 P=$kit/previous/v0.1.0-beta2
 check 'update: the version it replaced is kept in previous/v0.1.0-beta2' bash -c '[ "$(cat "$1/data/longshot/hookshot_coop.so")" = module ] && grep -q beta2 "$1/VERSION.txt" && [ -f "$1/start-squadala.sh" ]' _ "$P"
@@ -405,6 +529,7 @@ check "update: nothing of the player's in it (game, saves, coop-options.ini)" ba
 check 'update: it says how to go back' grep -q 'bash revert.sh goes back to v0.1.0-beta2' "$tmp/update.txt"
 bash "$kit/revert.sh" --yes </dev/null >"$tmp/revert.txt" 2>&1
 check 'revert.sh: back on beta2' bash -c 'grep -q beta2 "$1/VERSION.txt" && [ "$(cat "$1/data/longshot/hookshot_coop.so")" = module ]' _ "$kit"
+check 'revert.sh: its start-oot-coop.sh is back (that version had it)' bash -c 'grep -q "start-squadala.sh" "$1/start-oot-coop.sh"' _ "$kit"
 check 'revert.sh: says every player needs the same version, tell your friends' bash -c 'grep -q "SAME version" "$1" && grep -q "Tell your friends" "$1"' _ "$tmp/revert.txt"
 check 'revert.sh: saves and settings kept' bash -c '[ "$(cat "$1/game/save.bin")" = "my save" ] && grep -q "^auto_update = yes$" "$1/coop-options.ini"' _ "$D"
 check 'revert.sh: stay on beta2, left beta3' bash -c 'grep -qx "stay=v0.1.0-beta2" "$1" && grep -qx "left=v0.1.0-beta3" "$1"' _ "$kit/stay-on-version.txt"
@@ -442,6 +567,20 @@ printf 'kit: oot-coop-v0.1.0-beta1-linux (release v0.1.0-beta1)\n' >"$kit/backup
 printf 'MANIFEST.txt\nVERSION.txt\nstart-squadala.sh\nscripts/start.sh\n' >"$kit/backup-v0.1.0-beta1/MANIFEST.txt"
 check 'revert.sh: nothing kept (a partial backup does not count) -> says --version' bash -c 'bash "$1/revert.sh" --yes </dev/null | grep -q -- "--version" && grep -q beta2 "$1/VERSION.txt"' _ "$kit"
 rm -rf "$kit"/backup-*
+# (a v0.11.2 to v0.11.4 kit's MANIFEST.txt names MANIFEST.txt.tmp, its build's temp file, which never shipped: that kit
+# still counts as whole, so revert.sh finds it)
+# (on a copy: the revert replaces the kit's files and must not touch the kit the later cases use)
+lk=$tmp/legacy-kit
+rm -rf "$lk"
+cp -a "$kit" "$lk"
+rm -rf "$lk"/backup-* "$lk/previous"
+mkdir -p "$lk/backup-v0.1.0-beta1"
+cp "$lk/start-squadala.sh" "$lk/backup-v0.1.0-beta1/"
+printf 'kit: oot-coop-v0.1.0-beta1-linux (release v0.1.0-beta1)\n' >"$lk/backup-v0.1.0-beta1/VERSION.txt"
+printf '# Files of x\nMANIFEST.txt\nMANIFEST.txt.tmp\nVERSION.txt\nstart-squadala.sh\n' >"$lk/backup-v0.1.0-beta1/MANIFEST.txt"
+bash "$lk/revert.sh" --yes </dev/null >"$tmp/revert-legacy.txt" 2>&1
+check 'revert.sh: a kept kit whose MANIFEST.txt lists MANIFEST.txt.tmp (v0.11.2 to v0.11.4) is gone back to' bash -c 'grep -q beta1 "$1/VERSION.txt" && ! grep -q "keeps no older" "$2"' _ "$lk" "$tmp/revert-legacy.txt"
+rm -rf "$lk"
 # A damaged or hand-edited VERSION.txt never names a folder: the update goes on, nothing outside previous/ is removed.
 printf 'beside the kit\n' >"$tmp/beside-the-kit.txt"
 for bad in .. ../..; do
@@ -452,20 +591,37 @@ for bad in .. ../..; do
     check "VERSION.txt '(release $bad)': nothing kept under that name" bash -c '[ ! -e "$1/previous" ] || [ -z "$(ls -A "$1/previous")" ]' _ "$kit"
 done
 
-# A v0.11.2 kit (its own update.sh, lib.sh and start-oot-coop.sh: tests/fixtures/linux-longshot-v0.11.2) updates to a
-# release of the new layout. That updater takes only oot-coop-<tag>-linux.zip and wants start-oot-coop.sh in the new kit.
+# A v0.11.2 kit (its own update.sh, lib.sh and start-oot-coop.sh: tests/fixtures/linux-longshot-v0.11.2). That updater
+# takes only oot-coop-<tag>-linux.zip and wants start-oot-coop.sh in the new kit: a release from v0.11.4 on (Squadala-
+# names only) is not seen at all, so it updates to v0.11.3 (the last one with the old name, a kit with both start
+# files: modelled here as beta3), whose update.sh then takes the newer one.
 old="$tmp/old kit 0.11.2"
 rm -rf "$old" && cp -a "$kit" "$old" && rm -rf "$old/previous" "$old"/backup-* "$old/start-squadala.sh" "$old/stay-on-version.txt"
 fix=$release/tests/fixtures/linux-longshot-v0.11.2
 cp "$fix/scripts/update.sh" "$fix/scripts/lib.sh" "$old/scripts/" && cp "$fix/start-oot-coop.sh" "$old/"
 printf 'kit: oot-coop-v0.1.0-beta2-linux (release v0.1.0-beta2)\n' >"$old/VERSION.txt"
 (cd "$old" && { echo MANIFEST.txt; find . -path ./data/game -prune -o -path ./data/builder -prune -o -path ./data/work -prune -o -path ./data/logs -prune -o -type f ! -name MANIFEST.txt -print | sed 's|^\./||'; } | sort >MANIFEST.txt)
-cat >"$tmp/rel/releases-old.json" <<EOF
+cat >"$tmp/rel/releases-new-only.json" <<EOF
 [{"tag_name": "v0.1.0-beta3", "assets": [
   {"browser_download_url": "$tmp/rel/Squadala-v0.1.0-beta3-linux.zip"},
-  {"browser_download_url": "$tmp/rel/Squadala-v0.1.0-beta3-linux.zip.sha256"},
-  {"browser_download_url": "$tmp/rel/old-name/oot-coop-v0.1.0-beta3-linux.zip"},
-  {"browser_download_url": "$tmp/rel/old-name/oot-coop-v0.1.0-beta3-linux.zip.sha256"}]}]
+  {"browser_download_url": "$tmp/rel/Squadala-v0.1.0-beta3-linux.zip.sha256"}]}]
+EOF
+check 'v0.11.2 updater: a release with only the Squadala- names is not seen' \
+    [ -z "$(OOT_COOP_UPDATE_API=$tmp/rel/releases-new-only.json bash "$old/scripts/update.sh" --status)" ]
+# The v0.11.3 layout under the old name: the new kit plus start-oot-coop.sh, a one-line call of start-squadala.sh.
+v3=$tmp/rel/v3/Squadala-v0.1.0-beta3-linux
+mkdir -p "$(dirname "$v3")" && cp -a "$new" "$v3"
+printf '#!/bin/sh\nhere=$(cd "$(dirname "$0")" && pwd)\nexec sh "$here/start-squadala.sh" "$@"\n' >"$v3/start-oot-coop.sh"
+(cd "$v3" && { echo MANIFEST.txt; find . -type f ! -name MANIFEST.txt | sed 's|^\./||'; } | sort >MANIFEST.txt)
+(cd "$tmp/rel/v3" && "$py" -c 'import os, sys, zipfile
+z = zipfile.ZipFile(sys.argv[1], "w")
+for d, _, fs in os.walk(sys.argv[2]):
+    for f in fs: z.write(os.path.join(d, f))
+z.close()' oot-coop-v0.1.0-beta3-linux.zip Squadala-v0.1.0-beta3-linux && sha256sum oot-coop-v0.1.0-beta3-linux.zip >oot-coop-v0.1.0-beta3-linux.zip.sha256)
+cat >"$tmp/rel/releases-old.json" <<EOF
+[{"tag_name": "v0.1.0-beta3", "assets": [
+  {"browser_download_url": "$tmp/rel/v3/oot-coop-v0.1.0-beta3-linux.zip"},
+  {"browser_download_url": "$tmp/rel/v3/oot-coop-v0.1.0-beta3-linux.zip.sha256"}]}]
 EOF
 export OOT_COOP_UPDATE_API=$tmp/rel/releases-old.json
 check 'v0.11.2 updater: sees the new release (its oot-coop- name)' [ "$(bash "$old/scripts/update.sh" --status)" = 'newer v0.1.0-beta3' ]
@@ -484,28 +640,48 @@ unset OOT_COOP_UPDATE_API
 printf 'coop: joined 192.168.1.20\npassword = hunter2\n' >"$D/game/longshot_log.txt"
 mkdir -p "$D/game/mods/oot-remake-randomizer" && printf 'error: seed failed at 192.168.1.20\n' >"$D/game/mods/oot-remake-randomizer/last-build.txt"
 bash "$kit/scripts/collect-logs.sh" >"$tmp/logs.txt" 2>&1
-out=$(ls "$kit"/coop-logs-*.tar.gz 2>/dev/null | head -n1)
-check 'collect-logs: a .tar.gz beside start-squadala.sh' [ -n "$out" ]
+out=$(ls "$kit"/coop-logs-*.zip 2>/dev/null | head -n1)
+check 'collect-logs: a .zip beside start-squadala.sh (the /bugreport bot takes a .zip only)' [ -n "$out" ]
 if [[ -n $out ]]; then
-    mkdir -p "$tmp/logs" && tar -xzf "$out" -C "$tmp/logs"
+    mkdir -p "$tmp/logs" && python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$out" "$tmp/logs"
     check 'collect-logs: the game log is in, its password and LAN address masked' bash -c 'grep -q "<lan-1>" "$1" && grep -q "(removed)" "$1" && ! grep -q hunter2 "$1"' _ "$tmp/logs/game/longshot_log.txt"
     check 'collect-logs: OOTRR'"'"'s last-build.txt is in, masked' bash -c 'grep -q "<lan-1>" "$1" && grep -q "seed failed" "$1"' _ "$tmp/logs/game/last-build.txt"
 fi
 check 'collect-logs: the last line names the file to send' bash -c '[ "$(tail -n1 "$1")" = "Send this file: $2" ]' _ "$tmp/logs.txt" "$out"
+check 'collect-logs: it says to attach it to /bugreport on the Discord, no DM' bash -c 'grep -q "type /bugreport" "$1" && grep -q "discord.gg/GwtRKAqng5" "$1" && ! grep -qw "DM" "$1"' _ "$tmp/logs.txt"
 check 'collect-logs: with the game log in, no help about finding it' bash -c '! grep -q "not in this file" "$1"' _ "$tmp/logs.txt"
 # No game log: where to find it and how to add it; one copied into data/logs goes in.
-rm -f "$D/game/longshot_log.txt" "$kit"/coop-logs-*.tar.gz
+rm -f "$D/game/longshot_log.txt" "$kit"/coop-logs-*.zip
 bash "$kit/scripts/collect-logs.sh" >"$tmp/logs2.txt" 2>&1
 check 'collect-logs, no game log: says so and how to add it' bash -c 'grep -q "longshot_log.txt) is not in this file" "$1" && grep -q "Copy longshot_log.txt into" "$1"' _ "$tmp/logs2.txt"
-rm -f "$kit"/coop-logs-*.tar.gz
+rm -f "$kit"/coop-logs-*.zip
 printf 'coop: module loaded\n' >"$D/logs/longshot_log.txt"
 bash "$kit/scripts/collect-logs.sh" >"$tmp/logs3.txt" 2>&1
-out=$(ls "$kit"/coop-logs-*.tar.gz 2>/dev/null | head -n1)
-check 'collect-logs: a log copied into data/logs goes in' bash -c 'tar -tzf "$1" | grep -q "game/copied/longshot_log.txt" && ! grep -q "not in this file" "$2"' _ "$out" "$tmp/logs3.txt"
+out=$(ls "$kit"/coop-logs-*.zip 2>/dev/null | head -n1)
+check 'collect-logs: a log copied into data/logs goes in' bash -c 'python3 -c "import sys, zipfile; print(*zipfile.ZipFile(sys.argv[1]).namelist(), sep=chr(10))" "$1" | grep -qx "game/copied/longshot_log.txt" && ! grep -q "not in this file" "$2"' _ "$out" "$tmp/logs3.txt"
 rm -f "$D/logs/longshot_log.txt"
 
+# --- The real make_kit_linux.sh: its MANIFEST.txt lists only files that are in the kit (Linux only: ELF stand-ins) ---
+if [[ $(uname -s) == Linux ]]; then
+    mk=$tmp/mk
+    mkdir -p "$mk/build/_deps/enet-src" "$mk/build/_deps/fmt-src"
+    echo MIT >"$mk/build/_deps/enet-src/LICENSE"
+    echo MIT >"$mk/build/_deps/fmt-src/LICENSE"
+    so=$(ls /lib/x86_64-linux-gnu/libc.so.6 /usr/lib/x86_64-linux-gnu/libm.so.6 2>/dev/null | head -n1)
+    cp "$so" "$mk/hookshot_coop.so"
+    cp "$(command -v ls)" "$mk/coop_server"
+    bash "$release/make_kit_linux.sh" --module "$mk/hookshot_coop.so" --server "$mk/coop_server" --licenses "$mk/build"         --release v0.0.0-test --out "$mk/out" --no-zip >"$tmp/mk.txt" 2>&1 || tail -n5 "$tmp/mk.txt"
+    mkit=$mk/out/Squadala-v0.0.0-test-linux
+    check 'make_kit_linux.sh: a kit was built' [ -f "$mkit/MANIFEST.txt" ]
+    check 'make_kit_linux.sh: MANIFEST.txt names no MANIFEST.txt.tmp' bash -c '! grep -q "MANIFEST.txt.tmp" "$1/MANIFEST.txt"' _ "$mkit"
+    check 'make_kit_linux.sh: MANIFEST.txt lists MANIFEST.txt once and every file it names is in the kit' bash -c         '[ "$(grep -cx MANIFEST.txt "$1/MANIFEST.txt")" = 1 ] && ! grep -v "^#" "$1/MANIFEST.txt" | while IFS= read -r f; do [ -f "$1/$f" ] || echo "$f"; done | grep -q .' _ "$mkit"
+    check 'make_kit_linux.sh: no temp file left in the kit' bash -c '[ -z "$(find "$1" -name "*.tmp")" ]' _ "$mkit"
+else
+    echo "skip make_kit_linux.sh cases (not Linux)"
+fi
+
 # --- The scripts parse ---------------------------------------------------------------------
-for f in "$src/start-squadala.sh" "$src/start-oot-coop.sh" "$src"/scripts/*.sh "$release/make_kit_linux.sh"; do
+for f in "$src/start-squadala.sh" "$src"/scripts/*.sh "$release/make_kit_linux.sh"; do
     check "bash -n ${f#"$repo"/}" bash -n "$f"
 done
 

@@ -43,10 +43,10 @@ std::span<const Flag> Flags();
 // (where they stand, Navi) or a one-way ride, and stay out.
 std::span<const Flag> LiveFlags();
 
-// A saved Bool with no name in GameDataList: the game makes it for one placed
-// switch (OperateGameDataAllocAutogenGameData in the room's logic graph) and
+// A saved Bool with no name in GameDataList: the game makes it for one
+// placement (OperateGameDataAllocAutogenGameData in the room's logic graph) and
 // the room reads it at load and live. Flags() cannot list it (it is found by
-// name), so it is listed here by hash, as seen set in a game.
+// name), so it is listed here by hash (tools/puppet_pack/autogen_flags.py).
 struct AutogenFlag {
     std::uint32_t hash;
     const char* dungeon;

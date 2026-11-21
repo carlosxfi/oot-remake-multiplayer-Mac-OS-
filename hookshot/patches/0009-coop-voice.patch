@@ -1,4 +1,4 @@
-From 7120ebfcaca4c75bf66381fee1e60ba3918b3fd7 Mon Sep 17 00:00:00 2001
+From 35ef36982961c388243c98b614815c9ea0303488 Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Thu, 12 Nov 2026 13:32:10 -0900
 Subject: [PATCH] Co-op voice: the module's voices in the game's final mix
@@ -21,17 +21,17 @@ sources do (silence while it is unplugged: no other microphone stands in).
 
 HOS_COOP_VOICE=0 keeps the module unattached. Linux: not yet.
 ---
- host/coop_voice.c     | 120 +++++++++++++++++++++++++++++++++++
- host/hos_coop_voice.h |  58 +++++++++++++++++
+ host/coop_voice.c     | 120 ++++++++++++++++++++++++++++++++++
+ host/hos_coop_voice.h |  58 ++++++++++++++++
  host/nn_audio.c       |  12 ++++
- host/nn_audio_in.c    | 143 +++++++++++++++++++++++++++++++++++++++---
- 4 files changed, 325 insertions(+), 8 deletions(-)
+ host/nn_audio_in.c    | 149 +++++++++++++++++++++++++++++++++++++++---
+ 4 files changed, 330 insertions(+), 9 deletions(-)
  create mode 100644 host/coop_voice.c
  create mode 100644 host/hos_coop_voice.h
 
 diff --git a/host/coop_voice.c b/host/coop_voice.c
 new file mode 100644
-index 00000000..c2c88e80
+index 0000000..c2c88e8
 --- /dev/null
 +++ b/host/coop_voice.c
 @@ -0,0 +1,120 @@
@@ -157,7 +157,7 @@ index 00000000..c2c88e80
 +}
 diff --git a/host/hos_coop_voice.h b/host/hos_coop_voice.h
 new file mode 100644
-index 00000000..6873d47c
+index 0000000..6873d47
 --- /dev/null
 +++ b/host/hos_coop_voice.h
 @@ -0,0 +1,58 @@
@@ -220,10 +220,10 @@ index 00000000..6873d47c
 +
 +#endif
 diff --git a/host/nn_audio.c b/host/nn_audio.c
-index 74269e23..ee9c4048 100644
+index fddf22a..819452f 100644
 --- a/host/nn_audio.c
 +++ b/host/nn_audio.c
-@@ -620,6 +620,18 @@ static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the de
+@@ -628,6 +628,18 @@ static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the de
      float out[6][FRAME];
      memset(out, 0, sizeof out);
      if (sink_mix >= 0 && mixes[sink_mix].used) {
@@ -243,18 +243,18 @@ index 74269e23..ee9c4048 100644
          Mix *f = &mixes[sink_mix];
          const float g = f->volume;
 diff --git a/host/nn_audio_in.c b/host/nn_audio_in.c
-index afd07b14..bcd1cbfd 100644
+index 8d981f7..cc7bfce 100644
 --- a/host/nn_audio_in.c
 +++ b/host/nn_audio_in.c
-@@ -55,6 +55,7 @@ typedef struct {
-     int64_t retry_ns, retry_wait;   /* (the wanted microphone not open: when to try again, and the wait after that) */
-     int64_t silence_from_ns, silence_made;   /* (silence: counted from here, frames of it made) */
+@@ -58,6 +58,7 @@ typedef struct {
      int failures;                /* (in a row, since it last gave sound: logged at the first) */
+     int input_peak, output_peak; /* normalized permille, a short peak-hold window */
+     int64_t level_ns, level_window_ns, clip_until;
 +    int own;                     /* (patch 0009) the co-op voice's own microphone: follows voice_name, not the menu */
  } Source;
  
  typedef struct {
-@@ -78,6 +79,8 @@ static long sel_gen = 1;     /* the menu's choice (hos_mic_select), under list_l
+@@ -84,6 +85,8 @@ static long sel_gen = 1;     /* the menu's choice (hos_mic_select), under list_l
  static int sel_mode = 1;     /* (before the menu says: the system's default) */
  static char sel_name[128];
  static int sel_index = -1;
@@ -263,7 +263,7 @@ index afd07b14..bcd1cbfd 100644
  static int log_on = -1;
  
  /* ---- the devices, for the menu (gpu/vk/vk_api.h: MkwVkHost mic_count, mic_name) ---- */
-@@ -136,10 +139,22 @@ static int same_name(const char *name, const char *want) {
+@@ -184,10 +187,22 @@ static int same_name(const char *name, const char *want) {
  }
  /* the SDL id of the wanted microphone in a list: the one it was chosen or last opened as while a device of its name has that
     id, else the first of its name */
@@ -287,7 +287,20 @@ index afd07b14..bcd1cbfd 100644
              if (src->want_id && ids[i] == src->want_id) return *id = ids[i], 1;
              if (first < 0) first = i;
          }
-@@ -176,7 +191,8 @@ static void missed(Source *src, int64_t now, const char *why) {
+@@ -202,7 +217,11 @@ static int find_device(const Source *src, uint32_t *id) {
+     const int n = hos_sdl_mic_list(ids, names, MAX_DEVICES);
+     return pick(ids, names, n, src, id);
+ }
+-static const char *wanted(const Source *src) { return src->mode == 2 ? src->want : "the default microphone"; }
++/* (patch 0009: the co-op voice's own source by a fixed name: the device's name only in the co-op voice's own log line,
++   which Longshot's crash report leaves out, patch 0027) */
++static const char *wanted(const Source *src) {
++    return src->own ? "the co-op voice's microphone" : src->mode == 2 ? src->want : "the default microphone";
++}
+ static void close_mic(Source *src, int64_t now) {
+     if (src->mic) {
+         hos_sdl_mic_close(src->mic);
+@@ -226,7 +245,8 @@ static void missed(Source *src, int64_t now, const char *why) {
  }
  static void stand_in(Source *src, int64_t now) {   /* (the default, while the wanted one cannot be had) */
      if (src->standin) return;
@@ -297,7 +310,7 @@ index afd07b14..bcd1cbfd 100644
      if (standin) use(src, standin, 1, now);
      else close_mic(src, now);
  }
-@@ -210,13 +226,16 @@ static void connect(Source *src) {
+@@ -260,13 +280,16 @@ static void connect(Source *src) {
      missed(src, now, found ? "did not open" : "is not plugged in");
      if (src->failures == 1 && found) hos_log("audio in: (%s)", hos_sdl_error());
  }
@@ -318,7 +331,7 @@ index afd07b14..bcd1cbfd 100644
      const uint32_t want_id = listed ? dev_ids[sel_index] : 0;
      ReleaseSRWLockShared(&list_lock);
      if (gen == src->gen) return;
-@@ -225,7 +244,7 @@ static void choose(Source *src) {
+@@ -275,7 +298,7 @@ static void choose(Source *src) {
      src->gen = gen;
      if (same) {
          if (strlen(want) > strlen(src->want)) snprintf(src->want, sizeof src->want, "%s", want);
@@ -327,16 +340,16 @@ index afd07b14..bcd1cbfd 100644
          return;
      }
      src->mode = mode, src->want_id = want_id;
-@@ -306,7 +325,7 @@ static void attach(InStream *s) {   /* (the source of its format, made when ther
+@@ -359,7 +382,7 @@ static void attach(InStream *s) {   /* (the source of its format, made when ther
      int free_at = -1;
-     for (int i = 0; i < MAX_STREAMS; i++) {
+     for (int i = 0; i < MAX_STREAMS + 1; i++) {
          const Source *src = &sources[i];
 -        if (src->used && src->format == s->format && src->channels == s->channels && src->rate == s->rate) {
 +        if (src->used && !src->own && src->format == s->format && src->channels == s->channels && src->rate == s->rate) {
-             s->source = i, sources[i].users++;
-             return;
-         }
-@@ -506,3 +525,111 @@ HLE(_ZN2nn5audio18GetInputStreamGainEPKNS0_15InputStreamTypeE) {
+             /* Drain test-only capture before the first guest joins: old test notes are never delivered later. */
+             if (s != &test_stream && testing && test_stream.source == i && src->users == 1) {
+                 choose(&sources[i]);
+@@ -603,3 +626,111 @@ HLE(_ZN2nn5audio18GetInputStreamGainEPKNS0_15InputStreamTypeE) {
      c->vreg[0][0] = c->vreg[0][1] = 0;
      memcpy(&c->vreg[0][0], &one, 4);
  }
@@ -353,8 +366,8 @@ index afd07b14..bcd1cbfd 100644
 +    const int named = voice_name[0] != 0;
 +    ReleaseSRWLockShared(&list_lock);
 +    int i = 0;
-+    while (named && i < MAX_STREAMS && sources[i].used) i++;   /* (as many sources as streams, and this one has none) */
-+    if (!named || i == MAX_STREAMS) {
++    while (named && i < MAX_STREAMS + 1 && sources[i].used) i++;   /* (any free source: the streams' and the microphone test's) */
++    if (!named || i == MAX_STREAMS + 1) {
 +        attach(s);
 +        return;
 +    }
@@ -446,5 +459,5 @@ index afd07b14..bcd1cbfd 100644
 +        voice_attach(s);
 +    }
 +    ReleaseSRWLockExclusive(&lock);
-+    hos_log("audio in: co-op voice microphone: %s", named ? name : "the game's (the Insert menu's)");
++    hos_log("coop voice: microphone: %s", named ? name : "the game's (the Insert menu's)");
 +}

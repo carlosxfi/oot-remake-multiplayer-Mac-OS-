@@ -17,10 +17,23 @@ pack's entries in by hand, e.g. a skins mod), needs no merge: it is left as it i
 also the only way a winner under `contents/` other than the pack (a title's own mod folder, never rewritten here)
 keeps the puppets on.
 
-Our own seeds (`randomizer-*`) are left alone when they win: the module builds a seed beside every other table
-already (coop_rando StageSizeTables). When the puppet pack wins (a mod the Mods list does not name that sorts under
+Our own seeds (`randomizer-*` with `coop-rando.txt`, built by the game) are left alone when they win: the module
+builds a seed beside every other table already (coop_rando StageSizeTables). When the puppet pack wins (a mod the Mods list does not name that sorts under
 `contents/` by name, e.g. "bestbuddy"), the other mods' entries go into the pack's table, our seeds' not: without
 them a file that mod made larger has no size the game accepts and the game aborts at the start (player report 101).
+A seed folder put in by hand (no `coop-rando.txt`: built with another OOTRR, or made on OOTRR's page) is a mod like
+any other here: merged when it wins, its entries taken when the pack wins.
+
+The puppet pack's rows in RSDB tables (player report 144/145, merge_rows): before the size tables, each RSDB table the
+pack ships (ActorInfo, GameActorInfo) is merged the same way into the copy of the mod that wins it, our seeds too, and
+the size the merged file needs goes into the size table the game reads (fit).
+
+The pack's menu archives where another mod ships the same file and wins it (merge_members: the Character Select mod's
+Mals and Common layout archives): the pack's changed members go into that mod's copy, the same way, after the rows.
+
+The pack's menu files (build.py --title-rows / --pause-tab: larger copies of files the game reads at boot), last
+(guard_menus): kept out of the pack's romfs, in `<pack>/_coop-menus`, while the table the game reads lacks their sizes;
+else the language archive fails to load and the game crashes at boot.
 
     python -I merge_tables.py --mods <game>/mods [--romfs <game>/romfs] [--undo]
 
@@ -34,9 +47,9 @@ import sys
 
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from puppet_pack import rstb, zs  # noqa: E402
+    from puppet_pack import byml, rstb, sarc, zs  # noqa: E402
 else:
-    from . import rstb, zs
+    from . import byml, rstb, sarc, zs
 
 LIST_FILE = "coop-mods.list"
 KEEP_DIR = "_coop-size-table"
@@ -49,6 +62,15 @@ CONTROL = "oot-remake-randomizer"
 PACK_DIR = "contents/0400486024DEC000/coop-puppet"   # (the module's kPackFolder)
 PACK = PACK_DIR.lower()   # (folded)
 MAX_DEPTH = 4   # mods/contents/<title>/coop-puppet is at depth 3
+RSDB = ("romfs", "RSDB")
+RSDB_TAIL = ".rstbl.byml.zs"
+ROWS_KEEP = "_coop-rows"
+ROWS_HEAD = "coop-rows 1"
+ROWS_MARK = "coop-rows.txt"   # (the module's kRowsFile)
+MENU_KEEP = "_coop-menus"     # the pack's menu files while the table the game reads cannot hold them (guard_menus)
+MENU_KEYS = ("title_menu", "pause_menu")   # (coop_puppet.json: the files build.py's menu steps wrote)
+MEMBERS_KEEP = "_coop-archives"   # a mod's own copies of archives the pack's members were merged into (merge_members)
+MEMBERS_HEAD = "coop-members 1"
 
 
 class MergeError(Exception):
@@ -126,9 +148,15 @@ def tables_of(path):
         return []
 
 
-def is_ours(name):
+SEED_MARK = "coop-rando.txt"  # in a seed the game built (coop_rando kPresetFile): a hand-put seed has none
+
+
+def is_ours(name, path):
+    """The randomizer's control folder, or a seed the game built (beside every other table already)."""
     top = fold(name).split("/", 1)[0]
-    return top.startswith("randomizer-") or top == CONTROL
+    if top == CONTROL:
+        return True
+    return top.startswith("randomizer-") and "/" not in fold(name) and os.path.isfile(os.path.join(path, SEED_MARK))
 
 
 def fnv64_bytes(data):
@@ -181,9 +209,10 @@ def write_mark(root, win_path, fname, rule="merged"):
     return mark
 
 
-def stamp_text(root, out_path, inputs, out_line=None):
+def stamp_text(root, out_path, inputs, out_line=None, fit=None):
     lines = [STAMP_HEAD, "out " + (out_line or file_line(root, out_path))]
     lines += sorted("in " + file_line(root, p) for p in inputs)
+    lines += [f"fit {k} {n}" for k, n in sorted((fit or {}).items())]
     return "\n".join(lines) + "\n"
 
 
@@ -209,16 +238,23 @@ class Codec:
             self._dicts = zs.Dicts.from_romfs(self.romfs)
         return self._dicts
 
-    def load(self, raw):
+    def unpack(self, raw):
+        """The file's bytes, decompressed when it is a zstd frame."""
         if raw[:4] != zs.ZSTD_MAGIC:
-            return rstb.Rstb.loads(raw)
+            return raw
         if zs.frame_dict_id(raw) == 0:
             z = zs._zstd()
-            return rstb.Rstb.loads(z.ZstdDecompressor().decompressobj().decompress(raw))
-        return rstb.Rstb.loads(self.dicts().decompress(raw))
+            return z.ZstdDecompressor().decompressobj().decompress(raw)
+        return self.dicts().decompress(raw)
+
+    def load(self, raw):
+        return rstb.Rstb.loads(self.unpack(raw))
 
     def save(self, table, like_raw):
-        data = table.dumps()
+        return self.pack(table.dumps(), like_raw)
+
+    def pack(self, data, like_raw):
+        """data compressed as like_raw is: the same dictionary, or none, or not at all."""
         if like_raw[:4] != zs.ZSTD_MAGIC:
             return data
         did = zs.frame_dict_id(like_raw)
@@ -255,8 +291,304 @@ def write_atomic(path, data):
     os.replace(tmp, path)
 
 
-def merge_mods(root, romfs, say=print):
-    """Merges the winning table of each table name. Returns the number of tables it could not merge."""
+def rsdb_tables_of(path):
+    d = os.path.join(path, *RSDB)
+    try:
+        return sorted(f for f in os.listdir(d) if f.endswith(RSDB_TAIL) and len(f) > len(RSDB_TAIL)
+                      and os.path.isfile(os.path.join(d, f)))
+    except OSError:
+        return []
+
+
+def size_key(fname):
+    """The size table's path of an RSDB table file: RSDB/<name> without .zs."""
+    return "RSDB/" + fname[:-3]
+
+
+def rows_of(data):
+    rows = byml.loads(data)
+    if not isinstance(rows, list) or not all(isinstance(r, dict) and "__RowId" in r for r in rows):
+        raise MergeError("not a table of rows with __RowId")
+    return rows
+
+
+def merge_rows(root, romfs, say=print):
+    """Player report 144/145: the puppet pack adds rows to RSDB tables (ActorInfo, GameActorInfo: CoopPuppet_*,
+    CoopShot_*, ...). Longshot serves each RSDB file from the mod indexed last, like the size table, so a mod that
+    ships its own copy of such a table (an OOTRR seed made with settings that change actors: ActorInfo,
+    GameActorInfo, PouchActorInfo, built from the game's table) hides the pack's rows, and the game refuses every
+    puppet create. For each RSDB table the pack ships, the copy of the mod that wins (our seeds too: OOTRR builds
+    them from the game's tables, not the pack's) gets every row of the pack's copy that it lacks, by __RowId (its
+    own rows stay: the seed's changes win). Its own copy is kept in `<mod>/_coop-rows/` with `<table>.txt`
+    (`coop-rows 1` / `out <the file written>` / `in <the pack's copy>` / `fit <size path> <size>`), so the next start
+    merges again only when one of them changed, from the kept copy. `<mod>/coop-rows.txt` tells the module (coop_rando
+    RowsMergedByKit) the table it serves holds the pack's rows: `coop-rows 1`, then per table `table <file name>
+    <FNV-1a 64 of that table> <FNV-1a 64 of the pack's copy>`.
+
+    Returns (tables not merged, {size path: the size the merged file needs}): merge_mods raises those entries in the
+    size table the game serves, as the pack did for its own copy."""
+    order = load_order(root)
+    pack_path = next((p for n, p in order if fold(n) == PACK), None)
+    if pack_path is None:
+        return 0, {}   # (no puppet pack on: nothing of ours to carry)
+    codec = Codec(romfs)
+    failed, fit, marks = 0, {}, {}
+    for fname in rsdb_tables_of(pack_path):
+        having = [(n, p) for n, p in order if fname in rsdb_tables_of(p)]
+        win_name, win_path = having[-1]
+        if fold(win_name) == PACK:
+            continue
+        if fold(win_name).startswith("contents/"):  # (a title's own mod: never rewritten here)
+            say(f"Actor tables: the game reads {win_name}'s RSDB/{fname}, without the puppet pack's rows: the other "
+                "players can't be shown with it on. Turn it off.")
+            failed += 1
+            continue
+        try:
+            line, need = merge_rows_one(root, codec, fname, win_name, win_path, pack_path, say)
+        except (OSError, ValueError, KeyError, IndexError, MergeError) as e:
+            say(f"Actor tables: {win_name}'s RSDB/{fname} could not be merged with the puppet pack's rows ({e}): the "
+                "other players can't be shown with it on.")
+            failed += 1
+            marks.setdefault(win_path, [])
+            continue
+        marks.setdefault(win_path, []).append(line)
+        if need:
+            fit[size_key(fname)] = max(fit.get(size_key(fname), 0), need)
+    for win_path, lines in marks.items():
+        mark = os.path.join(win_path, ROWS_MARK)
+        if lines:
+            write_atomic(mark, ("\n".join([ROWS_HEAD] + lines) + "\n").encode("utf-8"))
+        elif os.path.isfile(mark):
+            os.remove(mark)  # (an old mark must not keep the puppets on)
+    return failed, fit
+
+
+def rows_stamp(root, table_path, pack_table, out_line=None):
+    return f"{ROWS_HEAD}\nout {out_line or file_line(root, table_path)}\nin {file_line(root, pack_table)}\n"
+
+
+def merge_rows_one(root, codec, fname, win_name, win_path, pack_path, say):
+    """Merges one table. Returns (the mark's line, the size the written file needs or 0)."""
+    table_path = os.path.join(win_path, *RSDB, fname)
+    pack_table = os.path.join(pack_path, *RSDB, fname)
+    keep = os.path.join(win_path, ROWS_KEEP)
+    orig_path = os.path.join(keep, fname)
+    stamp_path = orig_path + ".txt"
+    old = read_text(stamp_path)
+    head = rows_stamp(root, table_path, pack_table)
+    if old is not None and old.startswith(head):
+        need = next((int(l.split()[2]) for l in old.split("\n") if l.startswith("fit ") and len(l.split()) == 3), 0)
+        say(f"Actor tables: {win_name}'s RSDB/{fname} has the puppet pack's rows already (merged at an earlier start).")
+        return f"table {fname} {fnv64(table_path)[0]} {fnv64(pack_table)[0]}", need
+    ours = old is not None and old.split("\n")[1:2] == ["out " + file_line(root, table_path)] \
+        and os.path.isfile(orig_path)
+    if not ours:  # (the mod's own table: a new seed put there, or the first start with it)
+        os.makedirs(keep, exist_ok=True)
+        shutil.copyfile(table_path, orig_path + ".tmp")
+        os.replace(orig_path + ".tmp", orig_path)
+    with open(orig_path, "rb") as f:
+        orig_raw = f.read()
+    with open(pack_table, "rb") as f:
+        pack_raw = f.read()
+    orig_data, pack_data = codec.unpack(orig_raw), codec.unpack(pack_raw)
+    rows = rows_of(orig_data)
+    have = {r["__RowId"] for r in rows}
+    added = [r for r in rows_of(pack_data) if r["__RowId"] not in have]
+    if added:
+        by_id = {r["__RowId"]: r for r in rows + added}
+        new_data = byml.dumps([by_id[k] for k in sorted(by_id, key=lambda s: s.encode("utf-8"))])
+        data = codec.pack(new_data, orig_raw)
+    else:
+        new_data, data = orig_data, orig_raw
+    # The size the game needs for it: as the pack sized its own copy (build.py: the game's entry plus the bytes it
+    # grew, plus a margin), plus the bytes this one is longer than the pack's; and as the mod sized its own.
+    need = 0
+    key = size_key(fname)
+    for mod_path, length in ((pack_path, len(pack_data)), (win_path, len(orig_data))):
+        for t in tables_of(mod_path):
+            try:
+                entry = load_table(codec, mod_path, t).get(key)
+            except (OSError, ValueError, MergeError):
+                entry = None
+            if entry is not None:
+                need = max(need, entry + max(0, len(new_data) - length))
+    rel = os.path.relpath(table_path, root).replace(os.sep, "/")
+    stamp = rows_stamp(root, table_path, pack_table, f"{rel} {len(data)} {fnv64_bytes(data)}")
+    if need:
+        stamp += f"fit {key} {need}\n"
+    # The stamp before the table, as merge_one: stopped in between, the original is never a merged table.
+    write_atomic(stamp_path, stamp.encode("utf-8"))
+    write_atomic(table_path, data)
+    say(f"Actor tables: the game reads {win_name}'s RSDB/{fname}; merged in the puppet pack's rows ({len(added)} "
+        f"added). Its own copy is kept in {win_name}/{ROWS_KEEP} (merge_tables.py --undo puts it back).")
+    return f"table {fname} {fnv64_bytes(data)} {fnv64_bytes(pack_raw)}", need
+
+
+def _members(data):
+    """{name: [bytes, ...]} of a SARC (a name more than once kept in order), and its entries in order."""
+    entries = sarc.read_entries(data)
+    out = {}
+    for n, d in entries:
+        out.setdefault(n, []).append(bytes(d))
+    return out, entries
+
+
+def merge_members(root, romfs, say=print):
+    """The pack's menu archives (build.py --title-rows / --pause-tab: each language's Mals archive, the Title and Common
+    layout archives) where another mod ships the same file and wins it (the Character Select mod: Mals/USen, Mals/EUen,
+    UI/Layout2Archive/Common, for its own page, picker and header). Longshot serves the winner's whole file, so the
+    pack's members (its texts, MenuOverlay_00, PlusMenu_00) were lost. The winner's copy gets every member the pack
+    changed from the game's own archive (romfs) where the winner left that member as the game has it; a member both
+    changed stays the winner's and is named (a decision for the two mods: the pause header). Its own copy is kept in
+    `<mod>/_coop-archives/<path>` with `<path>.txt` (`coop-members 1` / `out <the file written>` / `in <the pack's
+    copy>` / `fit <size path> <size>`), so the next start merges again only when one of them changed, from the kept
+    copy; --undo puts it back. Needs the game's romfs (to tell which member changed); without it nothing is merged.
+
+    Returns (archives not merged, {size path: the size the merged file needs})."""
+    order = load_order(root)
+    pack_path = next((p for n, p in order if fold(n) == PACK), None)
+    if pack_path is None:
+        return 0, {}
+    files = [rel for rel in menu_files(pack_path) if os.path.isfile(os.path.join(pack_path, "romfs", *rel.split("/")))]
+    codec = Codec(romfs)
+    failed, fit = 0, {}
+    for rel in files:
+        having = [(n, p) for n, p in order if os.path.isfile(os.path.join(p, "romfs", *rel.split("/")))]
+        win_name, win_path = having[-1]
+        if fold(win_name) == PACK:
+            continue
+        if fold(win_name).startswith("contents/"):  # (a title's own mod: never rewritten here)
+            say(f"Menus: the game reads {win_name}'s {rel}, not the puppet pack's: the co-op menus' text and panes "
+                "are missing with it on.")
+            failed += 1
+            continue
+        game = os.path.join(romfs, *rel.split("/")) if romfs else ""
+        if not os.path.isfile(game):
+            say(f"Menus: {win_name} ships {rel} too and wins it; not merged without the game's own copy (--romfs): "
+                "the co-op menus' text and panes are missing with it on.")
+            failed += 1
+            continue
+        try:
+            need = merge_members_one(root, codec, rel, win_name, win_path, pack_path, game, say)
+        except (OSError, ValueError, KeyError, IndexError, MergeError, sarc.SarcError) as e:
+            say(f"Menus: {win_name}'s {rel} could not be merged with the puppet pack's ({e}): the co-op menus' text "
+                "and panes are missing with it on.")
+            failed += 1
+            continue
+        if need:
+            k = rel[:-3] if rel.endswith(".zs") else rel
+            fit[k] = max(fit.get(k, 0), need)
+    return failed, fit
+
+
+def merge_members_one(root, codec, rel, win_name, win_path, pack_path, game, say):
+    """Merges one archive. Returns the size the written file needs, or 0."""
+    path = os.path.join(win_path, "romfs", *rel.split("/"))
+    pack_file = os.path.join(pack_path, "romfs", *rel.split("/"))
+    keep = os.path.join(win_path, MEMBERS_KEEP)
+    orig_path = os.path.join(keep, *rel.split("/"))
+    stamp_path = orig_path + ".txt"
+    old = read_text(stamp_path)
+    head = f"{MEMBERS_HEAD}\nout {file_line(root, path)}\nin {file_line(root, pack_file)}\n"
+    if old is not None and old.startswith(head):
+        say(f"Menus: {win_name}'s {rel} has the puppet pack's members already (merged at an earlier start).")
+        return next((int(l.split()[2]) for l in old.split("\n") if l.startswith("fit ") and len(l.split()) == 3), 0)
+    ours = old is not None and old.split("\n")[1:2] == ["out " + file_line(root, path)] and os.path.isfile(orig_path)
+    if not ours:  # (the mod's own archive: the first start with it, or a new copy of the mod)
+        os.makedirs(os.path.dirname(orig_path), exist_ok=True)
+        shutil.copyfile(path, orig_path + ".tmp")
+        os.replace(orig_path + ".tmp", orig_path)
+    with open(orig_path, "rb") as f:
+        orig_raw = f.read()
+    with open(pack_file, "rb") as f:
+        pack_raw = f.read()
+    with open(game, "rb") as f:
+        game_raw = f.read()
+    win_data, pack_data, game_data = codec.unpack(orig_raw), codec.unpack(pack_raw), codec.unpack(game_raw)
+    theirs, entries = _members(win_data)
+    packs, _ = _members(pack_data)
+    games, _ = _members(game_data)
+    take, both = {}, []
+    for name, datas in packs.items():
+        if datas == games.get(name) or datas == theirs.get(name):
+            continue   # (the pack left it as the game has it, or the mod has the same)
+        if theirs.get(name, games.get(name)) == games.get(name):
+            take[name] = datas   # (the mod left it as the game has it, or has none: the pack's)
+        else:
+            both.append(name)    # (both changed it: the mod's stays)
+    if take:
+        out, done = [], set()
+        for n, d in entries:
+            if n in take:
+                if n not in done:
+                    out.extend((n, x) for x in take[n])
+                    done.add(n)
+            else:
+                out.append((n, d))
+        out.extend((n, x) for n in sorted(take) if n not in done for x in take[n])
+        new_data = sarc.write(out, data_align=16)
+        data = codec.pack(new_data, orig_raw)
+    else:
+        new_data, data = win_data, orig_raw
+    # The size the game needs for it: each table's entry for the copy it sized, plus what this one is longer.
+    key = rel[:-3] if rel.endswith(".zs") else rel
+    need = 0
+    for mod_path, length in ((pack_path, len(pack_data)), (win_path, len(win_data))):
+        for t in tables_of(mod_path):
+            try:
+                entry = load_table(codec, mod_path, t).get(key)
+            except (OSError, ValueError, MergeError):
+                entry = None
+            if entry is not None:
+                need = max(need, entry + max(0, len(new_data) - length))
+    rel_out = os.path.relpath(path, root).replace(os.sep, "/")
+    stamp = f"{MEMBERS_HEAD}\nout {rel_out} {len(data)} {fnv64_bytes(data)}\nin {file_line(root, pack_file)}\n"
+    if need:
+        stamp += f"fit {key} {need}\n"
+    write_atomic(stamp_path, stamp.encode("utf-8"))   # (the stamp first, as merge_rows_one)
+    write_atomic(path, data)
+    say(f"Menus: the game reads {win_name}'s {rel}; merged in the puppet pack's members ({len(take)}: "
+        f"{', '.join(sorted(take)) or 'none'}). Its own copy is kept in {win_name}/{MEMBERS_KEEP}."
+        + (f" Both changed {', '.join(sorted(both))}: {win_name}'s kept (the co-op part of it is missing)."
+           if both else ""))
+    return need
+
+
+def fit_ok(table, fit):
+    return all((table.get(k) or 0) >= n for k, n in fit.items())
+
+
+def apply_fit(table, fit):
+    """Raises the entries in fit (never lowers one). How many it raised."""
+    raised = 0
+    for k, n in sorted(fit.items()):
+        if (table.get(k) or 0) < n:
+            if table.get(k) is None:
+                table.add_new(k, n)
+            else:
+                table.set(k, n)
+            raised += 1
+    return raised
+
+
+def fit_in_place(codec, win_name, win_path, fname, fit, say):
+    """The size table the game reads, left as it is otherwise (one of our seeds, or the pack's alone), with the merged
+    RSDB tables' entries raised. Raises only, so a second start finds nothing to do."""
+    path = os.path.join(win_path, *RESOURCE, fname)
+    with open(path, "rb") as f:
+        raw = f.read()
+    table = codec.load(raw)
+    if apply_fit(table, fit):
+        write_atomic(path, codec.save(table, raw))
+        shown = "the puppet pack" if fold(win_name) == PACK else win_name
+        say(f"Size tables: the game reads {shown}'s; raised the entries of the merged actor tables "
+            f"({', '.join(sorted(fit))}).")
+
+
+def merge_mods(root, romfs, say=print, fit=None):
+    """Merges the winning table of each table name. Returns the number of tables it could not merge.
+    `fit` (merge_rows): RSDB entries the table the game reads must hold at least."""
+    fit = fit or {}
     order = [(n, p, tables_of(p)) for n, p in load_order(root)]
     codec = Codec(romfs)
     failed = 0
@@ -268,22 +600,38 @@ def merge_mods(root, romfs, say=print):
             # list does not name it): that mod's entries go into the pack's table, else a file it made larger has no
             # size the game accepts and the game aborts at the start (player report 101). Our seeds are left out:
             # each is built beside every other table, and the pack's table changing makes them be built again.
-            others = [(n, p) for n, p in having[:-1] if not is_ours(n)]
-            if not others:
-                continue  # (the pack's table alone, or with our seeds only)
+            others = [(n, p) for n, p in having[:-1] if not is_ours(n, p)]
+            if not others:  # (the pack's table alone, or with our seeds only)
+                if fit:
+                    try:
+                        fit_in_place(codec, win_name, win_path, fname, fit, say)
+                    except (OSError, ValueError, MergeError) as e:
+                        say(f"Size tables: the puppet pack's could not take the merged actor tables' sizes ({e}).")
+                        failed += 1
+                continue
             pack_in, title_mod = [], False
         else:
-            if len(having) < 2 or is_ours(win_name):
-                continue  # (one table, or one of our seeds)
+            title_mod = fold(win_name).startswith("contents/")
+            if len(having) < 2 or is_ours(win_name, win_path):  # (one table, or our seed: left as it is but the fit)
+                if fit and not title_mod:
+                    try:
+                        fit_in_place(codec, win_name, win_path, fname, fit, say)
+                    except (OSError, ValueError, MergeError) as e:
+                        say(f"Size tables: {win_name}'s could not take the merged actor tables' sizes ({e}): the "
+                            "other players can't be shown with it on.")
+                        failed += 1
+                continue
             others = having[:-1]
             pack_in = [p for n, p in others if fold(n) == PACK]
-            title_mod = fold(win_name).startswith("contents/")
             if title_mod and not pack_in:
                 continue  # (a title's own mod, nothing of the puppets' under it: left alone as ever)
         try:
             merged_before = os.path.isfile(os.path.join(win_path, KEEP_DIR, STAMP))
             if pack_in and (title_mod or (len(others) == 1 and not merged_before)):
-                missing = missing_pack_entries(load_table(codec, win_path, fname), load_table(codec, pack_in[0], fname))
+                own = load_table(codec, win_path, fname)
+                missing = missing_pack_entries(own, load_table(codec, pack_in[0], fname))
+                if not fit_ok(own, fit):
+                    missing += 1  # (the merged actor tables need larger entries: merged, never 'contains')
                 if missing == 0:
                     write_mark(root, win_path, fname, "contains")
                     say(f"Size tables: the game reads {win_name}'s, which holds every puppet pack entry already "
@@ -296,12 +644,111 @@ def merge_mods(root, romfs, say=print):
                         "pack's entries into it, or turn it off.")
                     failed += 1
                     continue
-            failed += merge_one(root, codec, fname, win_name, win_path, others, say)
+            failed += merge_one(root, codec, fname, win_name, win_path, others, say, fit)
         except (OSError, ValueError, MergeError) as e:
             remove_mark(win_path)  # (an old mark must not keep the puppets on)
             say(f"Size tables: {win_name} could not be merged ({e}): the other players can't be shown with it on.")
             failed += 1
     return failed
+
+
+def menu_files(pack_path):
+    """The pack's files that replace files the game reads at boot (build.py --title-rows / --pause-tab: each language's
+    Mals archive, the Title and Common layout archives), from its coop_puppet.json: [romfs path], [] when none."""
+    import json
+    try:
+        with open(os.path.join(pack_path, "coop_puppet.json"), "rb") as f:
+            m = json.loads(f.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return []
+    out = []
+    for key in MENU_KEYS:
+        for rel in m.get(key) or []:
+            if isinstance(rel, str) and rel and rel not in out:
+                out.append(rel)
+    return out
+
+
+def _menu_short(codec, order, pack_path, files):
+    """(the mod whose size table the game reads, how many of the menu files it holds smaller than the pack's own table
+    does), or (None, 0) when the game reads the pack's own table or one that holds every menu file's size."""
+    for fname in tables_of(pack_path):
+        having = [(n, p) for n, p in order if fname in tables_of(p)]
+        win_name, win_path = having[-1]
+        if fold(win_name) == PACK:
+            continue
+        theirs, ours = load_table(codec, win_path, fname), load_table(codec, pack_path, fname)
+        short = 0
+        for rel in files:
+            key = rel[:-3] if rel.endswith(".zs") else rel
+            need = ours.get(key)
+            if need is not None and (theirs.get(key) or -1) < need:
+                short += 1
+        if short:
+            return win_name, short
+    return None, 0
+
+
+def guard_menus(root, romfs, say=print):
+    """The menu files only where the game can load them. They are larger than the game's own (more labels, more panes),
+    so the size table the game reads must hold the pack's sizes for them: the game loads a file larger than its entry
+    as a failed resource, and the language archive failing at boot crashed the game (0xc0000005 reading guest 0x8 in
+    sead::MainThread after 'prompts: switch icons': a copy of an older pack left in mods/contents as
+    coop-puppet.old-b26 sorted after the pack, so its table won). When another mod's table wins and lacks them (a
+    title's own mod under contents/, never rewritten here; a merge that failed), the menu files go to
+    <pack>/_coop-menus (beside its romfs: the game never reads them there) and the game keeps its own menus (the module
+    keeps the title rows and the pause tab off without their panes). They go back at the first start the table holds
+    them again; a pack made since (its files in romfs again) drops the kept copies. Returns 1 when it could not move
+    a file, else 0."""
+    order = load_order(root)
+    pack_path = next((p for n, p in order if fold(n) == PACK), None)
+    if pack_path is None:
+        return 0
+    files = menu_files(pack_path)
+    if not files:
+        return 0
+    keep = os.path.join(pack_path, MENU_KEEP)
+    try:
+        win_name, short = _menu_short(Codec(romfs), order, pack_path, files)
+    except (OSError, ValueError, MergeError) as e:
+        win_name, short = f"a mod's (it could not be read: {e})", len(files)
+    try:
+        if short:
+            moved = 0
+            for rel in files:
+                src = os.path.join(pack_path, "romfs", *rel.split("/"))
+                if os.path.isfile(src):
+                    dst = os.path.join(keep, *rel.split("/"))
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    os.replace(src, dst)
+                    moved += 1
+            if moved or os.path.isdir(keep):
+                say(f"Menus: the game reads {win_name}'s size table, which lacks the sizes of {short} of the puppet "
+                    "pack's menu files: the title's co-op rows and the pause menu's Multiplayer tab are off this start "
+                    "(the game's own menus; co-op still works from the Minus menu). Turn that mod off, or merge the "
+                    "pack's entries into its table, and they come back.")
+            return 0
+        back = 0
+        for rel in files:
+            src = os.path.join(keep, *rel.split("/"))
+            dst = os.path.join(pack_path, "romfs", *rel.split("/"))
+            if not os.path.isfile(src):
+                continue
+            if os.path.isfile(dst):  # (a pack made since: its own file is the one)
+                os.remove(src)
+                continue
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            os.replace(src, dst)
+            back += 1
+        if os.path.isdir(keep):
+            shutil.rmtree(keep, ignore_errors=True)
+        if back:
+            say(f"Menus: the size table the game reads holds the puppet pack's menu files again: the title's co-op "
+                f"rows and the pause menu's Multiplayer tab are back ({back} files).")
+        return 0
+    except OSError as e:
+        say(f"Menus: the puppet pack's menu files could not be moved ({e}).")
+        return 1
 
 
 def load_table(codec, mod_path, fname):
@@ -316,14 +763,14 @@ def remove_mark(win_path):
         pass
 
 
-def merge_one(root, codec, fname, win_name, win_path, others, say):
+def merge_one(root, codec, fname, win_name, win_path, others, say, fit=None):
     table_path = os.path.join(win_path, *RESOURCE, fname)
     keep = os.path.join(win_path, KEEP_DIR)
     orig_path = os.path.join(keep, fname)
     stamp_path = os.path.join(keep, STAMP)
     inputs = [os.path.join(p, *RESOURCE, fname) for _, p in others]
     old = read_text(stamp_path)
-    if old is not None and old == stamp_text(root, table_path, inputs):
+    if old is not None and old == stamp_text(root, table_path, inputs, fit=fit):
         write_mark(root, win_path, fname)
         say(f"Size tables: {win_name} has the other mods' entries already (merged at an earlier start).")
         return 0
@@ -341,12 +788,13 @@ def merge_one(root, codec, fname, win_name, win_path, others, say):
         with open(p, "rb") as f:
             loaded.append(codec.load(f.read()))
     added, raised = merge(table, loaded)
+    raised += apply_fit(table, fit or {})
     data = codec.save(table, orig_raw) if (added or raised) else orig_raw
     # The stamp names the table about to be written BEFORE it is written: stopped in between, the next start sees the
     # table is not that one (still the original) and keeps it as the original, never a merged table as the original.
     rel = os.path.relpath(table_path, root).replace(os.sep, "/")
     write_atomic(stamp_path, stamp_text(root, table_path, inputs,
-                                        f"{rel} {len(data)} {fnv64_bytes(data)}").encode("utf-8"))
+                                        f"{rel} {len(data)} {fnv64_bytes(data)}", fit).encode("utf-8"))
     write_atomic(table_path, data)
     write_mark(root, win_path, fname)
     names = ", ".join("the puppet pack" if fold(n) == PACK else n for n, _ in others)
@@ -362,6 +810,41 @@ def undo(root, say=print):
     keeps its own table (the kept one is the old seed's). The kept folder and the mark go either way."""
     n = 0
     for name, path in find_mods(root).items():
+        members_keep = os.path.join(path, MEMBERS_KEEP)
+        if os.path.isdir(members_keep):   # (merge_members: each archive back where the merge wrote it)
+            back = []
+            for dirpath, _, fnames in os.walk(members_keep):
+                for f in fnames:
+                    if f.endswith(".txt"):
+                        continue
+                    kept = os.path.join(dirpath, f)
+                    rel = os.path.relpath(kept, members_keep).replace(os.sep, "/")
+                    stamp = read_text(kept + ".txt")
+                    out = next((l[4:] for l in (stamp or "").split("\n") if l.startswith("out ")), None)
+                    target = os.path.join(path, "romfs", *rel.split("/"))
+                    if out and os.path.isfile(target) and out == file_line(root, target):
+                        shutil.copyfile(kept, target)
+                        back.append(rel)
+            shutil.rmtree(members_keep)
+            say(f"Menus: {name}'s own {', '.join(sorted(back))} back." if back else
+                f"Menus: {name} has other archives than the merged ones now: left as they are.")
+            n += 1
+        rows_keep = os.path.join(path, ROWS_KEEP)
+        if os.path.isdir(rows_keep):
+            back = []
+            for f in sorted(os.listdir(rows_keep)):
+                stamp = read_text(os.path.join(rows_keep, f + ".txt")) if f.endswith(RSDB_TAIL) else None
+                out = next((l[4:] for l in (stamp or "").split("\n") if l.startswith("out ")), None)
+                table = os.path.join(path, *RSDB, f)
+                if out and os.path.isfile(table) and out == file_line(root, table):
+                    shutil.copyfile(os.path.join(rows_keep, f), table)
+                    back.append(f)
+            shutil.rmtree(rows_keep)
+            if os.path.isfile(os.path.join(path, ROWS_MARK)):
+                os.remove(os.path.join(path, ROWS_MARK))
+            say(f"Actor tables: {name}'s own {', '.join(back)} back." if back else
+                f"Actor tables: {name} has other tables than the merged ones now (a new seed?): left as they are.")
+            n += 1
         keep = os.path.join(path, KEEP_DIR)
         stamp = read_text(os.path.join(keep, STAMP))
         if stamp is None:
@@ -394,7 +877,14 @@ def main(argv=None):
         undo(a.mods)
         return 0
     try:
-        return 1 if merge_mods(a.mods, a.romfs) else 0
+        rows_failed, fit = merge_rows(a.mods, a.romfs)
+        members_failed, members_fit = merge_members(a.mods, a.romfs)
+        for k, n in members_fit.items():
+            fit[k] = max(fit.get(k, 0), n)
+        failed = merge_mods(a.mods, a.romfs, fit=fit) + members_failed
+        # Last, on the tables as the game will read them: the pack's menu files only where they can load.
+        menus_failed = guard_menus(a.mods, a.romfs)
+        return 1 if (failed or rows_failed or menus_failed) else 0
     except SystemExit:  # (zs._zstd: no zstandard package)
         print("Size tables: not merged (this Python has no zstandard package): with a mod that has its own size "
               "table, the other players can't be shown.")

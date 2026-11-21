@@ -89,7 +89,7 @@ kit_read_options() {
         t=${t#"${t%%[![:space:]]*}"}
         t=${t%"${t##*[![:space:]]}"}
         [[ -z $t || $t == '#'* || $t == ';'* ]] && continue
-        [[ $t =~ ^(auto_update|verify_signature|server_allow|server_bind|server_password|public_address_lookup|upnp|invite|stun_servers|relay|relay_key|pvp)[[:space:]]*= ]] && continue
+        [[ $t =~ ^(auto_update|verify_signature|server_allow|server_bind|server_password|public_address_lookup|upnp|invite|stun_servers|relay|relay_key|relay_room|approve_joins|pvp)[[:space:]]*= ]] && continue
         if [[ $t =~ ^((LICHII_COOP|EDEN_NX2)_[A-Z0-9_]+)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
             printf '%s=%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
         else

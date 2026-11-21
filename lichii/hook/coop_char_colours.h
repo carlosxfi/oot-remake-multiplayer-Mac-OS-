@@ -1,0 +1,169 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Character Select's Customize options (hair, eye and clothing colours) on a puppet, done by co-op itself with the
+// game's own model calls (docs/puppet.md, "Customize colours on puppets"). No emulator or Hookshot code here: the
+// runtime gives the calls and the reads (Game).
+//
+// What the mod's options are, in the game (read from the mod's MIT source, OoT Character Select v0.2.1
+// mods/customize.py; nothing of its code patch is used):
+// - Hair: the shader parameters ns_param_color0 and ns_param_color1 of the hair materials (and of Mt_Eyebrow), set
+//   through the model unit's own virtual functions (+0xd0 material by name, +0xe0 parameter by name, +0x158 set four
+//   floats), and the material's palette entry (the textures behind its samplers' own) put in its first place with the
+//   engine's own routine (kSetTexture).
+// - Eyes: ns_param_color2 of Mt_Eye_Inner.
+// - Clothes: every material whose palette is 7, 8 or 10 long (Clothing Color 1, 2, 3) gets its colour's entry.
+// - An option at 0 is the model's own: with put_back the file's own values are set again.
+// Why co-op does it (the root cause it fixes): the mod's code dresses every player-like actor with the VIEWER's own
+// six options each frame, and its routine for another player's options was never released, so a puppet showed the
+// viewer's colours or none of its player's.
+#pragma once
+
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <climits>
+#include <cstddef>
+#include <functional>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace CoopCharColours {
+
+// Main offsets (game build e0f3ccfa..., the one the mod and the kit's game are for).
+inline constexpr std::uint64_t kSetTexture = 0x34A5910;   // (material object, place, &{view, descriptor slot})
+inline constexpr std::uint64_t kModelTypeGot = 0x4CB9D58; // what a player model component's +0xf8 is
+// The actor and its model's units.
+inline constexpr std::uint64_t kActorComponents = 0x270;  // [actor + 0x270] + 8: the model component
+inline constexpr std::uint64_t kUnitMaterialCount = 0xc8, kUnitMaterialByName = 0xd0, kUnitParamByName = 0xe0,
+                               kUnitSetFloats = 0x158;     // the unit's virtual functions
+inline constexpr std::uint64_t kMatSamplers = 0xA2, kMatTextures = 0xA3, kMatViews = 0x18, kMatSlots = 0x98;
+inline constexpr std::uint64_t kObjViews = 0x50;
+
+inline constexpr std::array<const char*, 8> kHairNames = {"Mt_Hairs",    "Mt_HairLong", "Mt_Hair_Front",
+                                                          "Mt_Hair1",    "Mt_Hair3",    "Mt_Ponytail",
+                                                          "Mt_BodyHair", "Mt_Eyebrow"};
+inline constexpr const char* kEyeName = "Mt_Eye_Inner";
+inline constexpr std::array<const char*, 3> kParamNames = {"ns_param_color0", "ns_param_color1", "ns_param_color2"};
+inline constexpr std::size_t kNames = kHairNames.size() + 1;   // the hair's, then the eye's
+inline constexpr std::uint8_t kHairs = 9, kEyes = 7, kCloths = 7;
+
+// The six options of CoopLookShare::kCustomFlags, one nibble each from bit 0.
+struct Options {
+    std::uint8_t hair = 0, eyes = 0, gear = 0;
+    std::array<std::uint8_t, 3> clothes{};
+    static Options Of(std::uint32_t custom);
+    bool Colours() const { return hair != 0 || eyes != 0 || clothes[0] != 0 || clothes[1] != 0 || clothes[2] != 0; }
+};
+
+// The colours as the mod sets them (linear, as the game's own hair has them), 0..1. Nothing for 0 or out of range.
+std::optional<std::array<float, 3>> HairColour(std::uint8_t option, int which);   // which: colour 0 or 1
+std::optional<std::array<float, 3>> BrowColour(std::uint8_t option);
+// `iris_shift`: what the character's iris texture adds to the hue, in 255ths (0 for the common iris).
+std::optional<std::array<float, 3>> EyeColour(std::uint8_t option, int iris_shift);
+
+// The place of a material's texture list an option puts first: the palette entry (option + samplers - 1, the
+// palette being behind the samplers' own), or 0 (the material's own) for option 0 or one the palette lacks.
+std::uint8_t PalettePlace(std::uint8_t samplers, std::uint8_t textures, std::uint8_t option);
+// Which clothing colour a material's palette is for, by its length: 0, 1 or 2, or -1 (none, or the hair's).
+int ClothRow(std::uint8_t samplers, std::uint8_t textures);
+
+// The game, as the dresser sees it.
+struct Game {
+    std::uint64_t main_base = 0;
+    std::function<bool(std::uint64_t address, void* out, std::size_t size)> read;
+    std::function<bool(std::uint64_t address, const void* in, std::size_t size)> write;
+    // A game function's call with x0-x7: its x0, or nothing when it could not be made.
+    std::function<std::optional<std::uint64_t>(std::uint64_t function, const std::array<std::uint64_t, 8>& x)> call;
+};
+
+// Guest memory the dresser keeps its names and arguments in (a puppet's block, coop_puppet.h block::kDress).
+inline constexpr std::uint64_t kCellBytes = 0x100;
+inline constexpr std::uint64_t kCellNames = 0x00;   // kNames + 3 names of 16 bytes (to 0xc0)
+inline constexpr std::uint64_t kCellName = 0xc0;    // {char*} for a by-name call
+inline constexpr std::uint64_t kCellFloats = 0xd0;  // four floats
+inline constexpr std::uint64_t kCellTexture = 0xe0; // {view, slot}
+
+// One puppet's dressing state (the calc thread's).
+struct State {
+    std::uint64_t actor = 0;
+    std::uint64_t cell = 0;          // kCellBytes of guest memory; 0: none, nothing is done
+    bool names_written = false;
+    struct Unit {
+        std::uint64_t unit = 0;
+        std::array<std::int16_t, kNames> material{};         // -1 none
+        std::array<std::array<std::int16_t, 3>, kNames> param{};
+        std::uint64_t materials = 0;   // the unit's material count (+0xc8) when they were looked up
+        bool looked_up = false;
+    };
+    std::vector<Unit> units;
+};
+
+struct Result {
+    std::size_t calls = 0;
+    bool failed = false;   // a call could not be made (the frame stops there)
+    bool cut = false;      // the call budget ran out: not all done (the rest next frame)
+    std::size_t units = 0; // model units found (0: the model is not there yet)
+};
+
+// Puts `custom`'s colours on the actor's model. put_back: an option at 0 sets the file's own values again (after
+// another hand changed them: the mod's own per-frame code with the viewer's options). `iris_shift` as EyeColour.
+// At most `max_calls` calls are made (Result::cut when it stopped there).
+Result Dress(const Game& game, State& state, std::uint32_t custom, bool put_back, int iris_shift = 0,
+             std::size_t max_calls = SIZE_MAX);
+
+// Which puppets are dressed when, each frame (the calc thread).
+// - The mod's own per-frame code puts the VIEWER's options (the six Ints of this game) on every player-like actor,
+//   so while any of them is a colour every live puppet is dressed every frame, with put_back: a character's puppet
+//   in its player's options, a Link puppet (custom 0) in its model's own colours.
+// - Otherwise a puppet is dressed when its options change or its actor is new, and again every kAgainMs while it
+//   has any (a model not loaded at the first try), with put_back once it was ever dressed.
+// - A puppet the mod's own released routine dresses (Director::Dress, verified) is left to it.
+struct Target {
+    std::uint64_t actor = 0;
+    std::uint64_t cell = 0;
+    std::uint32_t custom = 0;
+    bool mods_routine = false;
+    int iris_shift = 0;
+    // What the puppet is (a hash of its actor's pack name): a puppet made again as another actor at the same
+    // address, or in the same block, starts anew (its old model's material numbers are not this one's).
+    std::uint64_t model = 0;
+};
+
+class Wardrobe {
+public:
+    static constexpr std::uint64_t kAgainMs = 3000;
+    static constexpr std::size_t kCallsPerFrame = 600;
+    // The six Ints of this game (CoopLookShare::kCustomFlags' nibbles): what the mod's code puts on every model.
+    // Any thread.
+    void SetViewer(std::uint32_t custom) { viewer_.store(custom & 0xFFFFFFu, std::memory_order_relaxed); }
+    std::uint32_t Viewer() const { return viewer_.load(std::memory_order_relaxed); }
+    // One frame; returns the calls made. `say`: a line for the log (a puppet's first dressing, a failure).
+    std::size_t Frame(const Game& game, const std::vector<Target>& targets, std::uint64_t now_ms,
+                      const std::function<void(const std::string&)>& say);
+
+private:
+    struct Kept {
+        State state;
+        std::optional<std::uint32_t> dressed;   // the options last put on (nothing: never)
+        bool ever = false;                      // a colour was ever put on this actor
+        std::uint64_t at_ms = 0;
+        std::uint64_t model = 0;
+        std::uint64_t retry_ms = 0;            // after a failed call: not before then (kAgainMs)
+        bool said_failed = false;              // a failure is said once per puppet
+        bool seen = false;
+    };
+    std::vector<Kept> kept_;
+    std::size_t first_ = 0;                    // the target dressed first: one further each frame (the budget)
+    std::atomic<std::uint32_t> viewer_{0};
+};
+
+// The character this game shows for its own player (the save's CharacterMenu_SelectedCharacter, 0: Link), as
+// coop_hook reads it twice a second. Any thread.
+void SetShownCharacter(std::uint16_t number);
+std::uint16_t ShownCharacter();
+
+// The one wardrobe of the game (the runtime's frame and coop_hook's reading of the six Ints).
+Wardrobe& TheWardrobe();
+
+}  // namespace CoopCharColours

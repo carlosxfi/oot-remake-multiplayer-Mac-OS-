@@ -6,6 +6,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <fstream>
+#include <iterator>
+#include <optional>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -21,9 +24,14 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <sys/stat.h>
 #endif
 
+#include "coop/protocol/join_password.hpp"
+#include "coop/protocol/official_mark.hpp"
 #include "coop/protocol/messages.hpp"
+#include "console_out.hpp"
 #include "enet_server.hpp"
 #include "host_service.hpp"
 #include "join_helper.hpp"
@@ -56,10 +64,17 @@ BOOL WINAPI on_console_event(DWORD event) {
 }
 #endif
 
-void say(const std::string& text) {
-  std::printf("coop_server: %s\n", text.c_str());
-  std::fflush(stdout);
+// #239: the service loop never waits for the console (console_out.hpp): a selection in the server's window
+// (QuickEdit, Edit > Mark), the Pause key or a paused pipe used to stop the whole server.
+coop::server::ConsoleOut& console() {
+  static coop::server::ConsoleOut out([](const std::string& line) {
+    std::printf("%s\n", line.c_str());
+    std::fflush(stdout);
+  });
+  return out;
 }
+
+void say(const std::string& text) { console().push("coop_server: " + text); }
 
 // The STUN servers from the command line, or the free public ones.
 std::vector<coop::server::nat::Addr> stun_servers(const coop::server::CommandLine& line) {
@@ -108,6 +123,32 @@ class TypedLines {
   std::mutex mutex_;
   std::deque<std::string> queue_;
 };
+
+// The official game's key file (--official-key-file): 64 hex digits. Never printed. On POSIX a file group or others
+// can read is refused (chmod 600), as ssh does with its keys.
+std::optional<coop::protocol::OfficialSeed> read_official_key(const std::string& path, std::string& why) {
+#ifndef _WIN32
+  struct stat st {};
+  if (::stat(path.c_str(), &st) != 0) {
+    why = "cannot read " + path;
+    return std::nullopt;
+  }
+  if ((st.st_mode & 077) != 0) {
+    why = path + " can be read by other users: chmod 600 it";
+    return std::nullopt;
+  }
+#endif
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    why = "cannot read " + path;
+    return std::nullopt;
+  }
+  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  auto seed = coop::protocol::official_seed_from_text(text);
+  std::fill(text.begin(), text.end(), '\0');
+  if (!seed) why = path + " is not a key file (64 hex digits)";
+  return seed;
+}
 
 // coop_server --join: Join.bat's helper for an invite code (join_helper.hpp).
 int run_join(const coop::server::CommandLine& line) {
@@ -243,6 +284,8 @@ int main(int argc, char** argv) {
   // --relay-via (every relayed guest is 127.0.0.1, so --allow cannot tell
   // them apart). Only the relay itself (--relay) needs none: it forwards
   // sealed bytes it cannot read.
+  // A public game's password is its room's (HostServiceConfig::public_game).
+  if (line->public_game) line->password = coop::protocol::public_join_password(line->relay_room);
   if (!line->relay && line->password.empty()) {
     std::fprintf(stderr,
                  "coop_server: a join password is needed: every session has one, and it also "
@@ -307,6 +350,9 @@ int main(int argc, char** argv) {
     config.session.join_password = line->password;
     config.session.pvp = line->pvp;
     config.session.dbno.on = line->dbno;
+    config.session.approve_joins = line->approve_joins;
+    config.session.dedicated = line->dedicated;
+    config.session.same_network_open = line->same_network_open;
     if (line->owner_hold_ms) config.session.owner_hold_us = std::uint64_t{*line->owner_hold_ms} * 1000;
     config.upnp = line->upnp;
     config.invite = line->invite;
@@ -314,6 +360,31 @@ int main(int argc, char** argv) {
     config.test_delay = line->test_delay;
     config.relay_via = line->relay_via;
     config.relay_key = line->relay_key;
+    config.relay_room = line->relay_room;
+    config.relay_list = line->relay_list;
+    config.public_game = line->public_game;
+    if (!line->official_key_file.empty()) {
+      std::string why;
+      config.official_key = read_official_key(line->official_key_file, why);
+      if (!config.official_key) {
+        std::fprintf(stderr, "coop_server: --official-key-file: %s\n", why.c_str());
+        return 2;
+      }
+      std::string relay_host;
+      std::uint16_t relay_port = 0;
+      if (!coop::server::relay::parse_relay_address(line->official_relay, relay_host, relay_port)) {
+        std::fprintf(stderr, "coop_server: --official-relay: '%s' is not a relay address\n", line->official_relay.c_str());
+        return 2;
+      }
+      config.official_relay = coop::protocol::official_relay_name(relay_host, relay_port);
+      say("official key: proofs name the relay " + config.official_relay);
+      const auto pub = coop::protocol::official_public_key(*config.official_key);
+      say(pub == coop::protocol::kOfficialPublicKey
+              ? "official key: the listing is signed (kits show the official public game)"
+              : "official key: NOT the kits' built-in key: the listing is signed, but no kit shows it as official");
+    }
+    std::vector<std::string> bans = read_ban_file(line->bans_file);
+    config.session.kept_bans = bans;
     config.log = say;
     HostService host(config);
     std::string why;
@@ -325,7 +396,8 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "coop_server: cannot listen on port %u\n", static_cast<unsigned>(line->port));
       exit_code = 1;
     } else {
-      if (line->invite) TypedLines::get().start();
+      if (line->invite || line->dedicated) TypedLines::get().start();
+      if (line->dedicated) say("dedicated: type /players, /kick N, /ban N, /unban KEYID, /mute N voice|chat");
       auto started = std::chrono::steady_clock::now();
       while (!g_stop) {
         host.service(5);
@@ -333,6 +405,20 @@ int main(int argc, char** argv) {
           for (const std::string& typed : TypedLines::get().take()) {
             if (typed.find_first_not_of(" \t\r") == std::string::npos) continue;
             host.add_answer(typed);
+          }
+        }
+        if (line->dedicated) {
+          for (const std::string& typed : TypedLines::get().take()) {
+            const auto at = typed.find_first_not_of(" \t\r");
+            if (at == std::string::npos || typed[at] != '/') continue;
+            say(host.admin(typed.substr(at)));
+          }
+        }
+        if (!line->bans_file.empty() && host.session() != nullptr) {   // (a ban made or lifted: kept for next time)
+          std::vector<std::string> now = host.session()->key_bans();
+          if (now != bans) {
+            write_ban_file(line->bans_file, now);
+            bans = std::move(now);
           }
         }
         if (line->run_for_ms &&

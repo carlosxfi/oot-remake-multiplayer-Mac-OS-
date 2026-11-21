@@ -1,4 +1,4 @@
-From 4ce44c11f57bad7d4eadba36dfbcf6d691dcc2cd Mon Sep 17 00:00:00 2001
+From d72ced21ae526afca9f50c1ade7376329a9a25b5 Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Thu, 12 Nov 2026 18:34:41 -0900
 Subject: [PATCH] Co-op host save: the account save's folder and a re-mount,
@@ -17,10 +17,10 @@ module, or with a host, the game's own save folder is used as before.
  1 file changed, 30 insertions(+)
 
 diff --git a/host/nn_fs.c b/host/nn_fs.c
-index f9f759c0..13396d4c 100644
+index ad7bb22..8b0758a 100644
 --- a/host/nn_fs.c
 +++ b/host/nn_fs.c
-@@ -257,6 +257,7 @@ int hos_fs_save_root(char *out, size_t cap) {
+@@ -285,6 +285,7 @@ int hos_fs_save_root(char *out, size_t cap) {
      return have;
  }
  
@@ -28,7 +28,7 @@ index f9f759c0..13396d4c 100644
  static int user_mount(const char *name, const char *sub) {
      char root[HOS_FS_PATH];
      snprintf(root, sizeof root, "%s\\%s", hos_user_dir, sub);
-@@ -266,11 +267,40 @@ static int user_mount(const char *name, const char *sub) {
+@@ -294,11 +295,40 @@ static int user_mount(const char *name, const char *sub) {
      if (ok && !strncmp(sub, "save\\", 5)) {
          AcquireSRWLockExclusive(&mount_lock);
          snprintf(save_root, sizeof save_root, "%s", root);

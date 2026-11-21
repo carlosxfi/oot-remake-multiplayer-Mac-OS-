@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Packs what is needed to see what went wrong into coop-logs-<time>.tar.gz beside start-squadala.sh:
+# Packs what is needed to see what went wrong into coop-logs-<time>.zip beside start-squadala.sh:
 # the game's longshot_log.txt files, coop.ini, the kit's logs (start, build, game output),
 # VERSION.txt, coop-options.ini, the puppet pack's manifest and a short note about this PC.
-# bash start-squadala.sh --logs runs it. Send that file back.
+# bash start-squadala.sh --logs runs it. The player attaches that zip to /bugreport on the Squadala! Discord
+# (the bot takes a .zip only, so a .zip it is; a .tar.gz only when this PC has no way to write a zip).
 set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 stamp=$(date +%Y%m%d-%H%M%S)
 host=$(hostname 2>/dev/null || uname -n)
-out=$KIT/coop-logs-$stamp.tar.gz  # no PC name: it is masked inside too
+out=$KIT/coop-logs-$stamp.zip  # no PC name: it is masked inside too
 stage=$(mktemp -d "${TMPDIR:-/tmp}/coop-logs-XXXXXX")
 # Says at once that it runs, then one line per file (issue #67: a big game log takes a while to mask).
 echo 'Collecting your logs (this can take a few minutes)...'
@@ -126,15 +127,36 @@ FNR == 1 { if (outfile != "") close(outfile); outfile = FILENAME ".masked" }
 }'
 echo 'Masking addresses and names in the copies, then packing them...'
 find "$stage" -type f ! -path '*/crash_dumps/*' | while IFS= read -r f; do
-    { awk -v user="$(id -un 2>/dev/null)" -v pc="$host" "$mask_awk" "$f" && mv -f "$f.masked" "$f"; } || rm -f "$f" "$f.masked"   # never an unmasked file in the tarball
+    { awk -v user="$(id -un 2>/dev/null)" -v pc="$host" "$mask_awk" "$f" && mv -f "$f.masked" "$f"; } || rm -f "$f" "$f.masked"   # never an unmasked file in the zip
 done
-tar -czf "$out" -C "$stage" .
+# A zip: python3 (the system's, else the one the first start set up), else zip, else bsdtar. None of them: a .tar.gz.
+py=$(command -v python3 || true)
+[[ -n $py ]] || py=$DATA/builder/image/usr/python/bin/python3
+if [[ -x $py ]]; then
+    "$py" - "$out" "$stage" <<'ZIP'
+import os, sys, zipfile
+out, root = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for d, dirs, files in os.walk(root):
+        dirs.sort()
+        for f in sorted(files):
+            p = os.path.join(d, f)
+            z.write(p, os.path.relpath(p, root))
+ZIP
+elif command -v zip >/dev/null 2>&1; then
+    (cd "$stage" && zip -qr "$out" .)
+elif command -v bsdtar >/dev/null 2>&1; then
+    bsdtar -a -cf "$out" -C "$stage" .
+else
+    out=${out%.zip}.tar.gz
+    tar -czf "$out" -C "$stage" .
+fi
 rm -rf "$stage"
 echo "Wrote $out ($((found + 1)) files, $game_logs of them game logs)."
 echo 'IP addresses, MAC addresses, passwords, the invite code, your user name and PC name are masked in it.'
 if ((game_logs == 0)); then
     echo
-    # (as in the tarball: the user name masked)
+    # (as in the zip: the user name masked)
     u=$(id -un 2>/dev/null)
     {
         echo "The game's log (longshot_log.txt) is not in this file: none in $GAME or $GAME/logs."
@@ -147,5 +169,7 @@ if ((game_logs == 0)); then
     } | sed -e "s#/home/$u/#/home/<user>/#g"
 fi
 echo
-echo 'Send it privately (a Discord DM to the maintainer). Do not attach it to a public issue.'
+echo 'To report it: on the Squadala! Discord (https://discord.gg/GwtRKAqng5) type /bugreport, say what happened'
+echo 'and attach this file. Do not attach it to a public issue.'
+[[ $out == *.zip ]] || echo 'The bot takes a .zip only: zip this file first (no python3, zip or bsdtar here to do it).'
 echo "Send this file: $out"

@@ -116,6 +116,8 @@ CoopDraw::Scene DrawScene();
 // "Names on map"; LICHII_COOP_MAP, LICHII_COOP_MAP_NAMES at start): count
 // from the next present. Any thread.
 void SetMapOptions(bool players, bool names);
+// The player list's size from Co-op settings (CoopHudLayout::ParseListSize: auto, full, compact, off), at once.
+void SetHudSize(const std::string& size);
 
 // hos_coop_draw2: the scene drawn, in the game look when the HUD pack's font
 // and heart pictures load through the table's calls (the first call loads
@@ -166,6 +168,19 @@ inline bool AllowLinkPuppets(const std::string& env, bool guard_in_exe) {
 // Refused while not allowed: other players then show as their Navi only.
 inline bool RefuseCreate(const std::string& actor, bool allow) {
     return !allow && actor.rfind("CoopPuppet_", 0) == 0;
+}
+
+// Refused because the null page could not be armed (coop_null_page.h Arm
+// false: the guest's first MB is not where it should be, or could not be
+// committed). Every held piece reads the wearer's Player component through
+// the game's item update (f_82deee60, guest 0x7d8: the host crash of player
+// report 131 when a guest joined holding the slingshot), the worn gear and
+// the puppet's own update read its other missing components: with null reads
+// faulting no Link puppet is safe, so none is made and other players show as
+// their Navi. HOS_COOP_NULL_READS=0 is the test switch that wants the faults
+// (as shipped): puppets are still made there.
+inline bool RefuseUnarmed(const std::string& actor, bool armed, const std::string& null_reads_env) {
+    return !armed && null_reads_env != "0" && actor.rfind("CoopPuppet_", 0) == 0;
 }
 
 }  // namespace CoopHookshot

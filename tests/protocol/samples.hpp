@@ -189,6 +189,12 @@ inline std::vector<Message> every_message() {
   all.push_back(LobbyMutes{1, 0});
   all.push_back(LobbyResult{LobbyActionKind::ban, 4, LobbyResultCode::done});
   all.push_back(LobbyResult{LobbyActionKind::mute_voice, 1, LobbyResultCode::not_host});
+  // Host approval (protocol 13).
+  all.push_back(Refused{RefuseReason::not_let_in});
+  all.push_back(JoinKnock{7, 60, join_knock::known, "Riley"});
+  all.push_back(JoinKnock{0xFFFF'FFFFu, 0, 0, "Big Goron"});
+  all.push_back(JoinAllow{7, true, true});
+  all.push_back(JoinAllow{1, false, false});
   // Split screen (protocol 11, "Local players").
   all.push_back(LocalJoin{2, "Mido"});
   all.push_back(LocalJoined{1, 5, RefuseReason::server_full});

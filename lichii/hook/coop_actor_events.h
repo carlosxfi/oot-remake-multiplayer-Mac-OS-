@@ -30,6 +30,13 @@ enum class Kind : std::uint32_t {
 inline constexpr std::uint32_t kOwn = 1;      // asked inside one of the module's own game calls (a copy, a remove)
 inline constexpr std::uint32_t kStopped = 2;  // Create: the module had the game refuse it (a copy enemy's own shot)
 
+// Whether a create or delete the game asks for is the module's own (kOwn: a copy, a remove; never stopped): asked
+// inside one of the module's game calls, unless that call runs a copy's own game code (CoopPuppet::Call::copy_game:
+// issue 189, the owner's shoot action put into a copy makes the copy's own shot, which the owner's copy doubles).
+inline bool Ours(bool in_call, bool copy_game) {
+    return in_call && !copy_game;
+}
+
 struct Event {
     Kind kind = Kind::None;
     std::uint32_t flags = 0;
@@ -157,7 +164,9 @@ public:
     static constexpr std::size_t kSlots = 256;
     static constexpr std::size_t kProbes = 16;
 
-    bool Give(std::uint64_t component, std::int32_t amount) noexcept {
+    // `judged`: the life its owner's game says this copy has (CoopObjects' Lower), not a hit for our game to judge:
+    // a step that takes it to a death goes past the component's own life stops (PassStops).
+    bool Give(std::uint64_t component, std::int32_t amount, bool judged = false) noexcept {
         if (component == 0 || amount == 0) {
             return false;
         }
@@ -170,6 +179,9 @@ public:
                 key = component;
             }
             if (key == component) {
+                if (judged) {
+                    s.judged.store(true, std::memory_order_release);
+                }
                 s.add.fetch_add(amount, std::memory_order_acq_rel);
                 return true;
             }
@@ -177,12 +189,21 @@ public:
         return false;
     }
     // What the step adds this frame (0 for a component never given any).
-    std::int32_t Take(std::uint64_t component) noexcept {
+    // judged (when given): whether any of it was a judged give.
+    std::int32_t Take(std::uint64_t component, bool* judged = nullptr) noexcept {
+        if (judged != nullptr) {
+            *judged = false;  // (nothing given: nothing judged)
+        }
         Slot* s = Find(component);
         if (s == nullptr || s->add.load(std::memory_order_relaxed) == 0) {
             return 0;
         }
-        return s->add.exchange(0, std::memory_order_acq_rel);
+        const std::int32_t add = s->add.exchange(0, std::memory_order_acq_rel);
+        const bool was = s->judged.exchange(false, std::memory_order_acq_rel);
+        if (judged != nullptr) {
+            *judged = was && add != 0;
+        }
+        return add;
     }
     // Given and not yet taken (for the Objects step's fallback and logs).
     std::int32_t Pending(std::uint64_t component) noexcept {
@@ -192,6 +213,7 @@ public:
     void Clear() noexcept {
         for (auto& s : slots_) {
             s.add.store(0, std::memory_order_relaxed);
+            s.judged.store(false, std::memory_order_relaxed);
             s.key.store(0, std::memory_order_release);
         }
     }
@@ -200,6 +222,7 @@ private:
     struct Slot {
         std::atomic<std::uint64_t> key{0};
         std::atomic<std::int32_t> add{0};
+        std::atomic<bool> judged{false};
     };
     static std::size_t Hash(std::uint64_t c) noexcept {
         return static_cast<std::size_t>(((c >> 4) * 0x9e3779b97f4a7c15ull) >> 56);
@@ -235,9 +258,109 @@ inline std::atomic<bool>& LifeStepSeen() {
     return seen;
 }
 
+// Set once the step's life stop test has called the module (LIFE_STOPS, the
+// hook is in this Hookshot build): a copy's own stops no longer hold its
+// owner's death back.
+inline std::atomic<bool>& LifeStopsSeen() {
+    static std::atomic<bool> seen{false};
+    return seen;
+}
+// Steps that went past their component's own life stops (for the log).
+inline std::atomic<std::uint64_t>& StopsPassed() {
+    static std::atomic<std::uint64_t> passed{0};
+    return passed;
+}
+// Set once the step's revive check has called the module (LIFE_REVIVE, the
+// hook is in this Hookshot build).
+inline std::atomic<bool>& LifeReviveSeen() {
+    static std::atomic<bool> seen{false};
+    return seen;
+}
+// Deaths whose step skipped the actor's own revive (for the log).
+inline std::atomic<std::uint64_t>& RevivesSkipped() {
+    static std::atomic<std::uint64_t> skipped{0};
+    return skipped;
+}
+// Later steps of such a death whose revive check was skipped again (for the log; KeptDeaths).
+inline std::atomic<std::uint64_t>& RevivesKeptSkipped() {
+    static std::atomic<std::uint64_t> skipped{0};
+    return skipped;
+}
+
+// boss-die-0116 (the test kill left Gohma in 'Die' at life 1, LANE2 2026-11-19 06:47 UTC: 'past its revive 1'):
+// the game's Life step asks the revive check (main+0x49d6b0) on EVERY step that ends at life 0 (the `b.le` at
+// main+0x49dd14), not only on the one that took the life. So a death whose revive LIFE_REVIVE skipped was revived to
+// 1 by its next frame's step (Gohma's callback answers 1 outside her chance time): the skip held one frame. The
+// components whose death we kept past their revive are kept here; their later steps at 0 skip it too, until a step
+// reads that component alive again (a heal, or a new actor's Life component at the same address: every actor starts
+// with a life above 0). Any thread (the steps run on the game's workers). The newest kSlots deaths are kept (a ring: a
+// new one takes the oldest's slot; a dead copy is deleted and never read alive, so its slot is never freed that way),
+// and the table is cleared at a scene load and a new game process (no Life component of the scene before is left).
+class KeptDeaths {
+public:
+    static constexpr std::size_t kSlots = 16;
+    void Keep(std::uint64_t component) noexcept {
+        if (component == 0 || Kept(component)) {
+            return;
+        }
+        slots_[next_.fetch_add(1, std::memory_order_relaxed) % kSlots].store(component, std::memory_order_release);
+    }
+    bool Kept(std::uint64_t component) const noexcept {
+        if (component == 0) {
+            return false;
+        }
+        for (const auto& slot : slots_) {
+            if (slot.load(std::memory_order_acquire) == component) {
+                return true;
+            }
+        }
+        return false;
+    }
+    // A step read this component with a life above 0.
+    void Alive(std::uint64_t component) noexcept {
+        if (component == 0) {
+            return;
+        }
+        for (auto& slot : slots_) {
+            std::uint64_t was = component;
+            slot.compare_exchange_strong(was, 0, std::memory_order_acq_rel);
+        }
+    }
+
+    // A scene load or a new game process: none of the components kept is there any more.
+    void Clear() noexcept {
+        for (auto& slot : slots_) {
+            slot.store(0, std::memory_order_release);
+        }
+    }
+
+private:
+    std::array<std::atomic<std::uint64_t>, kSlots> slots_{};
+    std::atomic<std::size_t> next_{0};  // the slot the next kept death takes (the oldest)
+};
+inline KeptDeaths& TheKeptDeaths() {
+    static KeptDeaths kept;
+    return kept;
+}
+
+// LIFE_REVIVE's answer: skip the revive for the step whose stops it passed (`passed`: an owner's death on its copy, a
+// test kill on our own; that death is kept from then on) and for every later step of a death kept so.
+inline bool SkipRevive(KeptDeaths& kept, std::uint64_t component, bool passed) noexcept {
+    if (component == 0) {
+        return false;
+    }
+    if (passed) {
+        kept.Keep(component);
+        return true;
+    }
+    return kept.Kept(component);
+}
+
 // One Life step through the module: the damage the game dealt this frame
 // (pushed as a Damage event when not 0) and the sum the step then takes.
-inline std::int32_t Step(Ring& ring, LifeTable& table, std::uint64_t component, std::int32_t sum) noexcept {
+// judged: whether the given part was a judged give (LifeTable::Give).
+inline std::int32_t Step(Ring& ring, LifeTable& table, std::uint64_t component, std::int32_t sum,
+                         bool* judged = nullptr) noexcept {
     if (sum != 0) {
         Event e;
         e.kind = Kind::Damage;
@@ -245,7 +368,23 @@ inline std::int32_t Step(Ring& ring, LifeTable& table, std::uint64_t component, 
         e.b = static_cast<std::uint32_t>(sum);
         ring.Push(e);
     }
-    return sum + table.Take(component);
+    return sum + table.Take(component, judged);
+}
+
+// Review-boss-0114 risk 2 (Gohma's copy held at life 1): the game's Life step
+// (main+0x49d8c0) cuts a frame's sum at each of the component's life stops
+// (the list at Life+0x60, count +0x70, that its actor's own code keeps: an
+// absolute life, or a share of the maximum), so life stays at the stop and
+// the crossing is recorded (Life+0x1be8). A copy's stops are its own game's
+// state of a fight its owner runs: Gohma's copy kept her stop at 1 while the
+// owner's had none, and the owner's death (21) left the copy at 1 for good.
+// So a step that takes a component to its death (sum >= life) goes past its
+// own stops when that death is its owner's: a judged give (the owner's life
+// for a copy), or a copy boss whose death has begun or whose owner's died
+// (CoopBossNative::Table::Finishes). A hit our game judges (our own enemy,
+// another player's hit on it) keeps every stop.
+constexpr bool PassStops(std::int32_t sum, std::int32_t life, bool judged, bool finishing) noexcept {
+    return life > 0 && sum >= life && (judged || finishing);
 }
 
 } // namespace CoopActorEvents

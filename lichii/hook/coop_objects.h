@@ -42,6 +42,14 @@ void Share(Core::System& system, coop::host::Session* session,
 // component's max to it (on by default; LICHII_COOP_HEARTS_TO_LINK=0 turns
 // that off).
 void SetMaxLife(std::optional<std::int32_t> quarters);
+// Rows 136/137 and 181: while MaxLife is held lower (FlagWatcher::held_lower: the host's save load, or a second
+// pickup of a boss's one heart container put back), the walk lowers our Link's own Life component to it (and his
+// life to that max), so the game stops writing the higher max back. Nothing: no hold (the usual case, and always
+// with co-op idle).
+void SetMaxLifeLowerTo(std::optional<std::int32_t> quarters);
+// Our Link's hearts filled to his maximum once, on his next read (another player took the boss's heart
+// container, whose pickup fills them: CoopBossScenes::Actions::refill). Any thread.
+void AskRefill();
 
 // Our own Link's hearts as the object walk last read them from his Life
 // component, in quarter hearts (4 = one heart): now and the most. Nothing
@@ -66,11 +74,30 @@ std::optional<std::uint64_t> OurLinkActor();
 // the write only).
 void HurtOurLink(std::int32_t quarters, const std::array<float, 3>& at,
                  const std::array<float, 3>& from);
+// The kind words of a PvP strike (coop::protocol::kPvpKindWords; checked in coop_objects.cpp).
+inline constexpr std::size_t kPvpKindWords = 11;
+// Native puppets phase 4, path B (coop_pvp_native_game.cpp): as HurtOurLink, with the strike's kind words in
+// the game's hit (its reaction and effects), and NEVER the life write: a hit the game does not take within 0.4 s
+// stays not taken (docs/native-puppets.md 5.5). `quarters` 0: a no-life kind, the game's hit only. Any thread.
+void HurtOurLinkNative(std::int32_t quarters, const std::array<float, 3>& at, const std::array<float, 3>& from,
+                       const std::array<std::uint32_t, kPvpKindWords>& kind);
+// Phase 4, every other screen (PVP_RESULT): the landed kind replayed on our `_Pvp` copy `actor` of the victim
+// (CoopPuppet::Director::LivePvpActor), as protocol 14 replays a hit on an enemy copy: its invincible Life shows
+// flash, sparks and sound, nothing is taken. Any thread.
+void ReplayOnCopy(std::uint64_t actor, std::int32_t amount, const std::array<float, 3>& at,
+                  const std::array<std::uint32_t, kPvpKindWords>& kind);
+// Native puppets phase 3 (coop_lift_player.h; LICHII_COOP_LIFT_PLAYER=1): another player's Link holds ours.
+// Our Link is put at `at` by the next walk, the way copies are moved: its place written, then the game's own
+// physics-aware setter (kSetMatrix, vtable slot 0x218) on it. A place older than 200 ms is not used. Any thread.
+void PlaceOurLink(const std::array<float, 3>& at);
 
-// Emulator thread, each frame: whether our own Link is in an event (a talk, a
-// cutscene). While it is, shared changes to actors near it wait (coop_guard.h,
-// issue 144).
-void SetLocalEvent(bool in_event);
+// Emulator thread, each frame (G1, coop/host/event_owner.hpp): whether an event
+// runs in our game (`in_event`: the actors it binds here act for it and their
+// shared changes wait, whoever's event it is) and whether our own Link is in it
+// (`ours`: a talk, a cutscene of ours; shared changes to actors near our Link
+// wait, coop_guard.h, issue 144, and our event claims its actors). Another
+// player's event replayed here is in_event without ours.
+void SetLocalEvent(bool in_event, bool ours);
 
 // Network thread, from the session's on_event: takes the object messages.
 void OnEvent(const coop::net::Event& event);
@@ -89,6 +116,8 @@ unsigned TakeChestsOpenedTwice();
 // alive in the last walk of LICHII_COOP_OBJECTS (BossAlive); nothing when
 // no walk ran in the last 1.5 s, or its life is not read. Any thread.
 std::optional<bool> LastBossAlive(std::span<const std::string_view> bodies);
+// The same walk: whether LastBossAlive's false is a body read at life 0 (BossReadDead); false when unread.
+bool LastBossReadDead(std::span<const std::string_view> bodies);
 // The same walk: whether the boss has lost life (BossHurt).
 std::optional<bool> LastBossHurt(std::span<const std::string_view> bodies);
 // The same walk: whether the boss is still in its pre-battle phase (BossPreBattle).
@@ -98,6 +127,9 @@ std::optional<bool> LastBossOurs(std::span<const std::string_view> bodies);
 // The boss bodies our game is not ready to own (its intro not played here);
 // empty when none. Any thread; used by the next share.
 void SetUnreadyBosses(std::vector<std::string> bodies);
+// The boss bodies whose death has begun in some game (player report #105): a refused hit is given to their Life
+// step after the wait (Sync::SetDying). Any thread; used by the next share.
+void SetDyingBosses(std::vector<std::string> bodies);
 // Small keys to give back to our game (the SmallKeyNum flag of the dungeon,
 // once each): a door's lock this game opened after another player already
 // had, or at the same moment with the higher player number (docs/dungeon.md,
@@ -118,6 +150,20 @@ void ForgetKeptBreaks();
 // name to our Link takes a hit of its whole life from our Link in the next
 // walk of LICHII_COOP_OBJECTS (logs "coop: test kill ..."). Any thread.
 void QueueTestKill(std::string name);
+// Test only ("place PLATFORM UP", #196): the place of the moving platform (a PlatformSync driver) of that name
+// nearest our Link at the last walk; nothing when none is here.
+std::optional<std::array<float, 3>> TestPlatformPlace(const std::string& name);
+// Test only ("hit NAME N"): as QueueTestKill, a hit of `amount` through the game's own Life step.
+void QueueTestHit(std::string name, std::int32_t amount);
+// Test only ("aim X Y Z", row 173): our next arrow (nocked within 10 s) is put on its way into the world point the
+// first frame it flies (the mover's AimStep); logs "coop: test aim ...".
+void QueueTestAim(float x, float y, float z);
+// Test only ("stun NAME"): our copy of the nearest boss of that name says its owner a stun (Sync::TestStun).
+void QueueTestStun(std::string name);
+// Test only ("drop NAME METRES", row 178): the nearest boss of that name that our game owns is put `metres` straight
+// down at the next placing (the set-matrix call the copies are placed with), so the fall guard and the copies' fall
+// line run in a game. A copy (or none here) is not moved. Logs "coop: test drop ...". Any thread.
+void QueueTestDrop(std::string name, float metres);
 
 // Present thread: the actors of the shared things this game owns now (for
 // coop_drops: a drop beside one of them is its owner's to decide).

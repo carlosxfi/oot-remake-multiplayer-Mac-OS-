@@ -94,6 +94,12 @@ std::optional<std::uint32_t> OwnTunic(const std::optional<std::uint32_t>& chosen
     return coop::protocol::slot_color(number);
 }
 
+bool NucleusWrote(std::string_view coop_ini) {
+    if (coop_ini.substr(0, 3) == "\xef\xbb\xbf") coop_ini.remove_prefix(3);   // (a BOM)
+    const std::string_view first = coop_ini.substr(0, coop_ini.find_first_of("\r\n"));
+    return first.substr(0, 38) == "# Written by the Nucleus Co-op handler";
+}
+
 std::string PackStartTunic(const std::optional<std::vector<std::uint8_t>>& tile, const FileFn& self_tile,
                            const std::string& hint) {
     if (!tile) {

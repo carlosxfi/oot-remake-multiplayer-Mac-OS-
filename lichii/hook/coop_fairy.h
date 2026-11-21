@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "coop_puppet.h"
+#include "coop_caller_orders.h"
 #include "coop_rooms.h"
 
 namespace coop::host {
@@ -59,7 +60,7 @@ struct Settings {
 };
 
 // The svc cave's order for the fairy director (puppets first, CoopSpawn 10).
-inline constexpr int kCallerOrder = 20;
+inline constexpr int kCallerOrder = CoopCallerOrders::kFairy;
 
 // Turns the puppets' targets into fairy targets. The present thread only.
 class Follower {

@@ -39,6 +39,7 @@ constexpr const char* kTestPassword = "test-pass";
 ServerOptions server_options() {
   ServerOptions options;
   options.port = 0;  // any free port
+  options.bind = 0x7F000001u;  // 127.0.0.1 only: a test listens on no other address
   options.session.join_password = kTestPassword;
   return options;
 }
@@ -933,6 +934,47 @@ TEST_CASE("host service: a wrong password is refused") {
   CHECK(service.status().players == 0);
 }
 
+TEST_CASE("host service: the host changes the join password, new joins need it, players already in stay in") {
+  EnetLife enet;
+  std::vector<std::string> log;
+  HostService service(service_config(&log));
+  std::string why;
+  CHECK_FALSE(service.set_join_password("before-start", why));   // (not hosting yet)
+  CHECK(why == "not hosting");
+  REQUIRE(service.start(why));
+  Client in;
+  in.connect(service.port());
+  REQUIRE(pump_service(service, {&in}, [&] { return in.connected; }));
+  in.send(hello_from("Link"), kChannelSession);
+  REQUIRE(pump_service(service, {&in}, [&] { return in.find<Welcome>() != nullptr; }));
+
+  CHECK_FALSE(service.set_join_password("has a space", why));
+  CHECK(why.find("space") != std::string::npos);
+  CHECK_FALSE(service.set_join_password("", why));
+  CHECK_FALSE(service.set_join_password(std::string(200, 'x'), why));
+  REQUIRE(service.set_join_password("NEW-pass-42", why));
+  REQUIRE(service.session() != nullptr);
+  CHECK(service.session()->join_password() == "NEW-pass-42");
+  CHECK(said(log, "the join password changed: players who join from now on need the new one"));
+  for (const auto& line : log) CHECK(line.find("NEW-pass-42") == std::string::npos);   // (never in the log)
+
+  Client old_pass;   // (the old password: refused now)
+  old_pass.connect(service.port());
+  REQUIRE(pump_service(service, {&in, &old_pass}, [&] { return old_pass.connected; }));
+  old_pass.send(hello_from("Saria"), kChannelSession);
+  pump_service(service, {&in, &old_pass}, [&] { return old_pass.find<Refused>() != nullptr || old_pass.disconnected; });
+  CHECK(old_pass.find<Welcome>() == nullptr);
+
+  Client fresh;   // (the new one: let in)
+  fresh.password = "NEW-pass-42";
+  fresh.connect(service.port());
+  REQUIRE(pump_service(service, {&in, &fresh}, [&] { return fresh.connected; }));
+  fresh.send(hello_from("Mido"), kChannelSession);
+  REQUIRE(pump_service(service, {&in, &fresh}, [&] { return fresh.find<Welcome>() != nullptr; }));
+  CHECK_FALSE(in.disconnected);   // (the player who was in stays in)
+  CHECK(service.status().players == 2);
+}
+
 TEST_CASE("host service: 16 real clients join over ENet, a 17th is told the server is full") {
   EnetLife enet;
   HostServiceConfig config = service_config(nullptr);
@@ -1014,6 +1056,11 @@ TEST_CASE("loopback: the test delay holds packets each way and keeps their order
   clock.step();
   clock.enet();
   a.pump();
+  // Queue the chat at the server before disconnecting, regardless of ENet's flush timing.
+  enet_host_flush(a.host);
+  clock.enet();
+  server.service(0);
+  REQUIRE(server.held_packets() >= 1);
   enet_peer_disconnect(a.peer, 0);
   REQUIRE(pump_until(server, {&a, &b}, [&] { return b.find<PlayerLeft>() != nullptr; }, &clock));
   std::size_t chat_at = 0;
@@ -1068,4 +1115,84 @@ TEST_CASE("loopback: with test jitter every reliable line still arrives in order
   REQUIRE(pump_until(server, {&a, &b}, [&] { return lines().size() == kLines; }, &clock));
   const std::vector<std::string> got = lines();
   for (int i = 0; i < kLines; ++i) CHECK(got[static_cast<std::size_t>(i)] == "line " + std::to_string(i));
+}
+
+TEST_CASE("loopback: with host approval a joiner waits, sealed, until the host lets it in or says no") {
+  EnetLife enet;
+  ServerOptions options = server_options();
+  options.session.approve_joins = true;
+  EnetServer server(options);
+  REQUIRE(server.start());
+
+  Client host;
+  host.connect(server.port());
+  REQUIRE(pump_until(server, {&host}, [&] { return host.connected; }));
+  host.send(hello_from("Link"), kChannelSession);
+  REQUIRE(pump_until(server, {&host}, [&] { return host.find<Welcome>() != nullptr; }));
+
+  // A joiner with the password is held; both ends hear of the knock, encrypted.
+  Client riley;
+  riley.connect(server.port());
+  REQUIRE(pump_until(server, {&host, &riley}, [&] { return riley.connected; }));
+  riley.send(hello_from("Riley"), kChannelSession);
+  REQUIRE(pump_until(server, {&host, &riley}, [&] {
+    return riley.find<JoinKnock>() != nullptr && host.find<JoinKnock>() != nullptr;
+  }));
+  CHECK(riley.cipher != nullptr);
+  CHECK(riley.find<Welcome>() == nullptr);
+  const JoinKnock asked = *host.find<JoinKnock>();
+  CHECK(asked.nickname == "Riley");
+  CHECK(riley.find<JoinKnock>()->knock == asked.knock);
+  CHECK(server.session().player_count() == 1);
+  host.send(JoinAllow{asked.knock, true, false}, kChannelSession);
+  REQUIRE(pump_until(server, {&host, &riley}, [&] {
+    return riley.find<Welcome>() != nullptr && host.find<PlayerJoined>() != nullptr;
+  }));
+  CHECK(riley.find<Welcome>()->player_number == 2);
+
+  // Another one is turned away: REFUSED not_let_in, and the server closes it.
+  Client mido;
+  mido.connect(server.port());
+  REQUIRE(pump_until(server, {&host, &riley, &mido}, [&] { return mido.connected; }));
+  mido.send(hello_from("Mido"), kChannelSession);
+  const JoinKnock* second = nullptr;
+  REQUIRE(pump_until(server, {&host, &riley, &mido}, [&] {
+    second = nullptr;
+    for (const Received& r : host.inbox) {
+      if (const auto* k = std::get_if<JoinKnock>(&r.message); k && k->nickname == "Mido") second = k;
+    }
+    return second != nullptr;
+  }));
+  host.send(JoinAllow{second->knock, false, false}, kChannelSession);
+  REQUIRE(pump_until(server, {&host, &riley, &mido}, [&] { return mido.disconnected; }));
+  REQUIRE(mido.find<Refused>() != nullptr);
+  CHECK(mido.find<Refused>()->reason == RefuseReason::not_let_in);
+  CHECK(server.session().player_count() == 2);
+  CHECK(server.session().stats().joins_denied == 1);
+}
+
+TEST_CASE("host service: with approve_joins it says so at the start, holds a joiner, and stop says the counts") {
+  EnetLife enet;
+  std::vector<std::string> log;
+  HostServiceConfig config = service_config(&log);
+  config.session.approve_joins = true;
+  HostService service(config);
+  std::string why;
+  REQUIRE(service.start(why));
+  CHECK(said(log, "each new player waits until the host lets them in (/allow or /deny)"));
+
+  Client host;
+  host.connect(service.port());
+  REQUIRE(pump_service(service, {&host}, [&] { return host.connected; }));
+  host.send(hello_from("Link"), kChannelSession);
+  REQUIRE(pump_service(service, {&host}, [&] { return host.find<Welcome>() != nullptr; }));
+  Client riley;
+  riley.connect(service.port());
+  REQUIRE(pump_service(service, {&host, &riley}, [&] { return riley.connected; }));
+  riley.send(hello_from("Riley"), kChannelSession);
+  REQUIRE(pump_service(service, {&host, &riley}, [&] { return host.find<JoinKnock>() != nullptr; }));
+  CHECK(service.status().players == 1);  // a held joiner is not a player
+
+  service.stop();
+  CHECK(said(log, "host approval: asked 1, let in 0, turned away 0, no answer 0, in without asking 0"));
 }

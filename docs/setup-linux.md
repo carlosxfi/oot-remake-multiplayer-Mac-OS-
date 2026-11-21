@@ -5,7 +5,7 @@ Linux build: the game is compiled on your PC from your own copy of it, with co-o
 
 **Experimental, untested:** this kit has not yet been run on a real Linux PC or a Steam Deck. CI builds it and
 checks that the module loads, but no one has built the game with it or played on it yet, and Linux and Windows players
-playing together (same server, same version) is not yet proven. Please report what happens (`bash scripts/collect-logs.sh`).
+playing together (same server, same version) is not yet proven. Please report what happens: `/bugreport` on the [Squadala! Discord](https://discord.gg/GwtRKAqng5), with the zip from `bash start-squadala.sh --logs`.
 
 ## What you need
 
@@ -23,9 +23,9 @@ playing together (same server, same version) is not yet proven. Please report wh
 3. The first time it asks for your game: drag your `.nup` into the terminal and press Enter. (It finds it by itself
    when it is in Downloads, Desktop, Documents or your home folder.) Then it builds the game, once.
 4. The game starts. **Host** or **Join** in the game's menu (the Multiplayer tab). Host gives you an invite code for
-   your friends (it is also put on your clipboard); Join takes a friend's code.
+   your friends (it is also put on your clipboard); Join takes a room name or an address and the password.
 
-After the first build, `bash start-squadala.sh` starts the game in seconds, and the kit adds an **OoT Co-op** entry to
+After the first build, `bash start-squadala.sh` starts the game in seconds, and the kit adds a **Squadala** entry to
 your applications menu. Each start checks for a new co-op version and offers it; every player needs the same one.
 
 ## Steam Deck
@@ -36,14 +36,17 @@ your applications menu. Each start checks for a new co-op version and offers it;
 3. Right-click the folder's empty space > **Open Terminal Here** (Konsole), type `bash start-squadala.sh`, give it your
    `.nup`, and let it build (plug the Deck in; it takes about an hour).
 4. When the game has started once, close it. In Steam (still in Desktop Mode): **Games > Add a Non-Steam Game to My
-   Library**, tick **OoT Co-op**, **Add Selected Programs**.
-5. Back in **Game Mode**, start OoT Co-op from your library. The controls are the Deck's own (Steam Input gives the
+   Library**, tick **Squadala**, **Add Selected Programs**.
+5. Back in **Game Mode**, start Squadala from your library. The controls are the Deck's own (Steam Input gives the
    game a standard controller). **Steam + X** opens the on-screen keyboard for the chat box (T on a keyboard) and for
    typing an invite code in the Join page. Game Mode has no clipboard tool: the invite code is shown in the
    Multiplayer tab to read out or type.
 
 Updates: the first start after a new version asks in the terminal; in Game Mode there is no terminal, so start it
-once from Desktop Mode (step 3) when a friend has a newer version.
+once from Desktop Mode (step 3) when a friend has a newer version. A kit older than 0.11.3 (started with
+`start-oot-coop.sh`) updates in two steps: to 0.11.3 first, then to the newest on the next start. From 0.11.4 the kit has
+one start file, `start-squadala.sh`: the update moves your menu entry and Steam entry over to it (if Steam was open,
+restart it once).
 
 ## If something goes wrong
 
@@ -59,8 +62,20 @@ The terminal says what happened and what to do. Common ones:
 | "Missing on this PC: curl" | Install it (`sudo apt install curl`, `sudo dnf install curl`, `sudo pacman -S curl`). |
 | The download or build stopped | Start again: it goes on from where it stopped. |
 
-For a bug report: `bash start-squadala.sh --logs` writes `coop-logs-<time>.tar.gz` beside it (passwords, codes,
-addresses and your user name are masked). Send that file.
+For a bug report: `bash start-squadala.sh --logs` writes `coop-logs-<time>.zip` beside it (passwords, codes,
+addresses and your user name are masked). On the [Squadala! Discord](https://discord.gg/GwtRKAqng5) type `/bugreport`, say what happened and
+attach that zip (never to a public issue). A PC with no `python3`, `zip` or `bsdtar` gets a `.tar.gz` instead: zip it first,
+the bot takes a `.zip` only.
+
+## Discord status
+
+As on Windows ([setup.md, "Discord status"](setup.md#discord-status)): with Discord running (also the Flatpak or Snap one), it shows **Playing Squadala!**; the game's Insert menu row **Discord status** turns it off. The kit writes its lines into `data/game/longshot_options.ini`.
+
+## NVIDIA DLSS
+
+A normal build offers AMD FSR 3.1 and the game's own upscaler: Longshot has **NVIDIA DLSS** and **DLAA** only in a game built with NVIDIA's DLSS SDK, which is under NVIDIA's own license and never in the kit. With an NVIDIA RTX card, run `bash start-squadala.sh --dlss` from a terminal once: it asks whether you accept NVIDIA's license (**y**), downloads the SDK into `data/work/ngx-sdk` and builds the game again with it. Then in the game: **Graphics → Upscaler: NVIDIA DLSS**.
+
+The kit remembers it (`data/dlss.txt`), so the builds after an update keep DLSS; `--no-dlss` builds the game again without it. NVIDIA's Linux driver loads DLSS only from a folder whose whole path is plain ASCII: keep the kit in a folder such as `~/OoT-Coop`. A game built with DLSS holds NVIDIA's files (`data/game/ngx/`): never share it.
 
 ## Going back to an older version
 
@@ -77,7 +92,6 @@ addresses and your user name are masked). Send that file.
 | Path | What |
 |---|---|
 | `start-squadala.sh` | The one file you start. |
-| `start-oot-coop.sh` | Its old name (up to v0.11.2), kept for old menu entries and Steam shortcuts: it starts `start-squadala.sh`. |
 | `README.txt` | The short version of this page. |
 | `revert.sh` | Back to the version before the last update (above); `previous/` holds the versions kept for it. |
 | `scripts/` | The kit's scripts (start, build, update, logs). |

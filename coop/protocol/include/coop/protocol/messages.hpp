@@ -23,7 +23,18 @@ namespace coop::protocol {
 // 2: OBJECT_SPAWN of a placed id; 3: TIME_OF_DAY; 4: the messages
 // (types 28 to 39) and the server sending HANDOVER_ASK; 9: the join password
 // (JOIN_CHALLENGE, JOIN_PROOF, REFUSED bad_password).
-inline constexpr std::uint16_t kProtocolVersion = 12;  // 12: DAMAGE's hit place (boss-intro, 0.11)
+// 12: DAMAGE's hit place (boss-intro, 0.11); 13: the host's approval of
+// joiners (JOIN_KNOCK, JOIN_ALLOW, REFUSED not_let_in; issue 261).
+// 14: the hit that happened (HitRecord) in DAMAGE and in the owner's samples (component 21), so every
+// game's enemy takes the real hit through its own damage step (0.11.5, every hit shows on every screen).
+// 15: PLATFORM_CLOCK keys in a mover's GroundControl node (regions 0xfffe / 0xfffd, #196, 0.11.6): a protocol 14
+// reader refuses them as bad_value and drops the whole message, so a 0.11.5 game must be refused at HELLO.
+inline constexpr std::uint16_t kProtocolVersion = 15;
+// A public game (anyone joins without typing a password) lists itself on the relay's room list with this bit
+// on top of kProtocolVersion; the relay repeats the version as given. A listing without it is a private game
+// (or an older kit's): the joiner asks for the host's password and never tries the public one on it.
+inline constexpr std::uint16_t kPublicListingBit = 0x8000;
+constexpr std::uint16_t public_listing_version() { return kPublicListingBit | kProtocolVersion; }
 inline constexpr std::uint16_t kDefaultPort = 27510;
 inline constexpr std::uint8_t kMaxPlayers = 16;  // protocol 11; 4 before
 
@@ -36,6 +47,44 @@ inline constexpr std::size_t kComponentHeaderSize = 4;
 // A string may also never be longer than 4 bytes per character, must be valid
 // UTF-8 and holds no control characters (U+0000-U+001F, U+007F-U+009F).
 inline constexpr std::size_t kMaxBuildIdChars = 64;
+
+// A client's name for HELLO's build_id (docs/crossplay.md) cut to kMaxBuildIdChars characters, so a long version text
+// (a long `git describe`, a launcher's own version) never keeps the HELLO from being encoded and the player from
+// joining. Cut at a character's start, never inside a UTF-8 sequence.
+inline std::string clamp_build_id(std::string_view id) {
+  std::size_t chars = 0;
+  for (std::size_t i = 0; i < id.size(); ++i) {
+    if ((static_cast<unsigned char>(id[i]) & 0xC0) != 0x80 && chars++ == kMaxBuildIdChars) {
+      return std::string(id.substr(0, i));
+    }
+  }
+  return std::string(id);
+}
+// The co-op release a HELLO's build_id names (docs/crossplay.md): its first word that is a version, "v0.11.7" or
+// "0.11.7" (at least two numbers with dots), without a `git describe` tail ("-86-gab12cd34", "-dirty"); "" when it names
+// none (a launcher's own name, a commit alone, a test tool). Two games of different releases are not let play together.
+inline std::string coop_release(std::string_view id) {
+  std::size_t at = 0;
+  while (at < id.size()) {
+    const std::size_t end = (std::min)(id.find(' ', at), id.size());   // (parenthesised: windows.h's min macro)
+    std::string_view word = id.substr(at, end - at);
+    at = end + 1;
+    if (word.starts_with('v') || word.starts_with('V')) word.remove_prefix(1);
+    word = word.substr(0, word.find('-'));
+    std::size_t dots = 0;
+    bool ok = !word.empty() && word.front() != '.' && word.back() != '.';
+    for (std::size_t i = 0; ok && i < word.size(); ++i) {
+      if (word[i] == '.') {
+        ok = word[i - 1] != '.';
+        ++dots;
+      } else {
+        ok = word[i] >= '0' && word[i] <= '9';
+      }
+    }
+    if (ok && dots >= 1) return "v" + std::string(word);
+  }
+  return {};
+}
 inline constexpr std::size_t kMaxGameBuildIdChars = 32;
 inline constexpr std::size_t kMaxGameVersionChars = 16;
 inline constexpr std::size_t kMaxNicknameChars = 16;
@@ -119,6 +168,7 @@ enum class MessageType : std::uint16_t {
   fish_lure = 320,  // 320 to 324: the fishing pond (docs/protocol.md, "Fishing")
   rejoin_token = 345,  // 345 to 349: rejoin after a crash or drop (docs/protocol.md, "Rejoin")
   rejoin_claim = 346,
+  switch_state = 356,  // room-objects: a room switch's own state (docs/protocol.md, "Switch states")
   dungeon_event = 355,  // 355 to 359: a room gimmick's event started (docs/protocol.md, "Gimmick events")
   player_ride = 385,  // 385 to 389: riding Epona (docs/protocol.md, "Riding")
   platform_clock = 400,  // 400 to 404: moving platforms' clocks (docs/protocol.md, "Moving platforms")
@@ -126,6 +176,7 @@ enum class MessageType : std::uint16_t {
   dbno_mode = 470,  // 470 to 479: down but not out (docs/protocol.md, "Down but not out")
   dbno_state = 471,
   dbno_revive = 472,
+  dbno_threat = 473,
   difficulty = 480,  // 480 to 489: difficulty (docs/protocol.md, "Difficulty")
   voice_frame = 420,  // 420 to 424: proximity voice chat (docs/protocol.md, "Voice")
   mod_list = 490,  // 490 to 499: mods (docs/protocol.md, "Mods")
@@ -142,6 +193,19 @@ enum class MessageType : std::uint16_t {
   link_sound = 500,  // 500 to 509: the other Links' sounds (docs/protocol.md, "Link sounds")
   boss_scene = 520,  // 520 to 524: boss intro and death cutscenes (docs/protocol.md, "Boss cutscenes")
   boss_heart = 521,
+  boss_alive = 522,
+  join_knock = 525,  // 525 to 529: the host lets joiners in (docs/protocol.md, "Host approval")
+  join_allow = 526,
+  bomb_take = 530,  // 530 to 534: a bomb changes hands (docs/protocol.md, "Bomb hand-over")
+  bomb_answer = 531,
+  bomb_share = 532,
+  lift_ask = 535,  // 535 to 539: one player lifts another (docs/protocol.md, "Player lift")
+  lift_answer = 536,
+  lift_place = 537,
+  lift_share = 538,
+  pvp_strike = 540,  // 540 to 544: PvP on real bodies (docs/protocol.md, "PvP on real bodies")
+  pvp_result = 541,
+  pvp_native = 542,
 };
 
 // PLAYER_SAMPLE component ids.
@@ -179,6 +243,10 @@ enum class EquipComponent : std::uint16_t {
   // The player's colour (coop-options.ini `color`): 3 bytes, red, green,
   // blue. Others tint that player's puppet with it (docs/puppet.md, "Colour").
   color = 16,
+  // Bit i set: the piece in equipment slot i burns (a lit Deku stick), as
+  // the owner's game shows it. Others play the piece's own flame effect on
+  // their puppet's piece, as a picture only (docs/puppet.md, "A lit Deku stick").
+  lit = 17,
 };
 
 // Longest equipped actor name: the game keeps each in a String64 flag.
@@ -241,6 +309,12 @@ enum class RefuseReason : std::uint8_t {
   // The host banned this player for the rest of the session: as kicked, and
   // a HELLO with that name or from that address is refused with this.
   banned = 8,
+  // Protocol 13, host approval (docs/protocol.md "Host approval"): the host
+  // did not let this player in (it said no, did not answer in time, or left).
+  not_let_in = 9,
+  // The game runs another co-op release than the host's (coop_release of the HELLO's build_id against the session's
+  // first player's; a build that names none is let in). Older games show it as an unknown reason.
+  wrong_coop_version = 10,
   // Never sent: the game's own refusal of a server that did not encrypt
   // although the game has a join password (docs/protocol.md "Encrypted
   // traffic"), so nobody on the path can stand in for a no-password server.
@@ -326,6 +400,9 @@ inline constexpr std::uint8_t loading = 1u << 1;
 inline constexpr std::uint8_t in_cutscene = 1u << 2;
 inline constexpr std::uint8_t in_menu = 1u << 3;
 inline constexpr std::uint8_t dead = 1u << 4;
+// Not really here: a player who cannot fight or be fought now (PvP never hits them, and with the
+// puppets perceived no enemy picks their puppet: coop_pvp.cpp Guarded, coop_dbno_body.h UnseenWhy).
+inline constexpr std::uint8_t away = paused | loading | in_cutscene | in_menu | dead;
 }  // namespace status
 
 struct PlayerStatus {
@@ -666,6 +743,9 @@ struct Equipment {
   // The player's colour, 0xRRGGBB. Unset: the player chose none (a receiver
   // uses its slot's colour, coop::protocol::slot_color).
   std::optional<std::uint32_t> color;
+  // Bit i set: the piece in slot i burns (its ELink user plays Chemical_Fire,
+  // the flame the game's chemistry starts on a lit Deku stick). 0 when none.
+  std::optional<std::uint8_t> lit;
   bool operator==(const Equipment&) const = default;
 };
 
@@ -693,6 +773,7 @@ inline Equipment merge_equipment(const Equipment& before, const Equipment& now) 
   keep(e.tool, before.tool);
   keep(e.sub_tool, before.sub_tool);
   keep(e.color, before.color);
+  keep(e.lit, before.lit);
   return e;
 }
 
@@ -758,6 +839,7 @@ enum class ObjectComponent : std::uint16_t {
   state = 18,
   slots = 19,  // protocol 10, issue 150: a boss's other AS slots (below)
   bsa = 20,    // native boss sync: a boss's brain and action verbs (BossBsa below)
+  hit = 21,    // protocol 14: the hit the owner's game took (ObjectHit below)
 };
 
 struct ObjectLife {
@@ -770,6 +852,11 @@ namespace object_state {
 inline constexpr std::uint8_t in_fight = 1u << 0;
 inline constexpr std::uint8_t held = 1u << 1;
 inline constexpr std::uint8_t asleep = 1u << 2;
+// S2 (event-owner-0116): its owner's own Link's event binds it (a talk, a
+// cutscene the owner's game plays with it). A copy of an actor with its own
+// game logic (an Enemy_: a Deku Scrub) then keeps that logic; only the
+// event's result reaches it (its flags). An older build ignores the bit.
+inline constexpr std::uint8_t in_event = 1u << 3;
 }  // namespace object_state
 
 // Issue 150 (protocol 10): one more AS slot of the owner's actor than slot 0
@@ -827,6 +914,22 @@ struct BossBsa {
   bool operator==(const BossBsa&) const = default;
 };
 
+// Protocol 14 (every hit shows on every screen): the incoming hit an enemy's Life component took, as the
+// game's own damage step read it (Life +0x240..+0x2d8, 38 words: attacker, hit id, present, attack kind and
+// its parameters, the hit's place at +0x27c, the attacker's place at +0x2a0). The sender zeroes the attacker
+// pointer (words 0 and 1); the receiver puts its own attacker, a fresh hit id and its present flag in, so its
+// game judges the same hit (weapon, element, place) through its own damage step. Passed on unread otherwise.
+inline constexpr std::size_t kHitRecordWords = 38;
+using HitRecord = std::array<std::uint32_t, kHitRecordWords>;
+
+// Component 21: the newest hit the owner's game took on this object, sent in its samples for a short
+// while after (they may be lost); seq is the owner's own hit count for it, from 1, so each is replayed once.
+struct ObjectHit {
+  std::uint32_t seq = 0;
+  HitRecord record{};
+  bool operator==(const ObjectHit&) const = default;
+};
+
 // The components of OBJECT_SAMPLE, OBJECT_SPAWN and HANDOVER_STATE. time is
 // always sent; the others when the sender has them. Floats must be finite.
 struct ObjectState {
@@ -840,6 +943,7 @@ struct ObjectState {
   std::optional<std::uint8_t> state;  // object_state bits
   std::optional<std::vector<SlotAnimation>> slots;  // issue 150: bosses only
   std::optional<BossBsa> bsa;                       // native boss sync: bosses only
+  std::optional<ObjectHit> hit;                     // protocol 14: the owner's newest hit taken
   bool operator==(const ObjectState&) const = default;
 };
 
@@ -954,6 +1058,9 @@ enum class DamageCause : std::uint8_t {
   hookshot = 10,
   hammer = 11,
   magic = 12,
+  // The hitter's copy of an enemy whose life cannot be read died in its game (its own death
+  // animation as it left): no life drop to send, so the kill itself goes (amount 1).
+  killed = 13,
 };
 
 // DAMAGE: life lost on a copy, for the owner to take off. Amount 0 or more.
@@ -968,6 +1075,10 @@ struct Damage {
   // point is a headshot check against her Eyelid_Down bone, so the owner's replay lands there, not at her feet.
   // Optional, after position on the wire (protocol 12).
   std::optional<Vec3> hit_at{};
+  // Protocol 14: the hit as the hitter's game took it on its copy (its newest in this DAMAGE), so the owner's
+  // game takes the same hit (bomb, arrow, fire, hammer ...) instead of a stand-in sword hit. Optional, after
+  // hit_at (or after position when there is no hit_at) on the wire.
+  std::optional<HitRecord> hit_record{};
   bool operator==(const Damage&) const = default;
 };
 
@@ -1296,7 +1407,8 @@ struct DropAsk {
 // boss. `in_room` is sent on entering and every 2 s while there, so a game
 // in the same dungeon (one that joined or respawned too) moves its player in;
 // the intro's start and end let the others leave the intro together; `left`
-// and `defeated` end the pull. Relayed to everyone else.
+// and `defeated` end the pull. Relayed to everyone else. `defeated` is no
+// proof of a death (also sent on a guess): G2 takes BOSS_SCENE's outro.
 enum class BossState : std::uint8_t {
   in_room = 1,
   intro_start = 2,
@@ -1396,6 +1508,12 @@ inline constexpr std::size_t kMaxEventNameChars = 96;
 // sender's scene, never kept.
 inline constexpr std::size_t kMaxPlatformTicks = 16;
 inline constexpr std::uint64_t kPlatformAsFrameRegion = 0xffff;  // key region: the AS slot 0 frame
+// #196: key regions of a mover's GroundControl node (lichii/hook/coop_platforms.h, GroundNode): the wave
+// controller's and the rotate controller's, offset kPlatformNodeFrom .. kPlatformNodeTo in the node.
+inline constexpr std::uint64_t kPlatformWaveNodeRegion = 0xfffe;
+inline constexpr std::uint64_t kPlatformRotateNodeRegion = 0xfffd;
+inline constexpr std::uint64_t kPlatformNodeFrom = 0xc0;
+inline constexpr std::uint64_t kPlatformNodeTo = 0x140;
 inline constexpr std::uint64_t kPlatformActorBytes = 0x600;
 inline constexpr std::uint64_t kPlatformComponentBytes = 0x200;
 inline constexpr std::uint64_t kPlatformComponents = 0x300 / 8;  // table entries
@@ -1406,7 +1524,8 @@ struct PlatformTick {
   std::uint64_t hash = 0;  // the driver's placement hash
   // Where the word is: region << 32 | byte offset (a multiple of 4).
   // Region 0 the actor (offset under 0x600), 2 + n the component in table
-  // entry n (under 0x200), kPlatformAsFrameRegion the AS slot 0 frame (offset 0).
+  // entry n (under 0x200), kPlatformAsFrameRegion the AS slot 0 frame (offset 0), kPlatformWaveNodeRegion /
+  // kPlatformRotateNodeRegion a word of the mover's GroundControl node (kPlatformNodeFrom .. kPlatformNodeTo).
   std::uint64_t key = 0;
   float value = 0.0f;
   float rate = 0.0f;   // per second, not 0
@@ -1455,6 +1574,23 @@ struct DungeonEvent {
   bool operator==(const DungeonEvent&) const = default;
 };
 
+// SWITCH_STATE (room-objects; docs/protocol.md, "Switch states"): one of the sender's room switches (a timed step, eye
+// or hit switch whose output a room object reads) turned an output plug on or off by its own player's press. A game in
+// the same scene holds the same plug on its own switch while the sender's is on, so its own timers, gates and movers
+// run (lichii/hook/coop_switch_share.h). Reliable, relayed to the sender's scene, never kept; sent again every 2 s
+// while on, so a player who comes in late gets it.
+inline constexpr std::size_t kMaxSwitchNameChars = 64;
+
+struct SwitchState {
+  std::uint8_t player_number = kPlayerSelf;
+  std::string scene;
+  std::string name;        // the switch's actor name, 1 to kMaxSwitchNameChars
+  Vec3 place{};            // its placement (the romfs's), finite
+  std::uint32_t plug = 0;  // Murmur3 of the output plug's name (OnState, OffState, FirstOn, ...), not 0
+  bool on = false;
+  bool operator==(const SwitchState&) const = default;
+};
+
 // Down but not out (protocol 11; docs/protocol.md, "Down but not out"): a
 // player whose hearts run out is downed, not dead, and a teammate can revive
 // them. On unless the host turns it off.
@@ -1476,7 +1612,7 @@ struct DbnoMode {
   std::uint8_t set_by = 0;         // 0 the server, 1 to kMaxPlayers a player
   bool on = true;
   std::uint8_t bleed_s = 45;       // kDbnoMinBleedS to kDbnoMaxBleedS
-  std::uint8_t revive_tenths = 30; // kDbnoMinReviveTenths to kDbnoMaxReviveTenths
+  std::uint8_t revive_tenths = 50; // kDbnoMinReviveTenths to kDbnoMaxReviveTenths
   std::uint8_t revive_life = 12;   // kDbnoMinReviveLife to kDbnoMaxReviveLife
   bool operator==(const DbnoMode&) const = default;
 };
@@ -1485,7 +1621,10 @@ struct DbnoMode {
 enum class DbnoState : std::uint8_t {
   up = 0,
   downed = 1,  // crawling, bleeding out, can be revived
-  out = 2,     // bled out, or nobody was left standing: the game's own death runs
+  out = 2,     // nobody was left standing: the game's own death (Game Over) runs
+  // Not revived in time: watches a player still up until no enemy is near
+  // the players still up, then comes back beside the one watched.
+  spectating = 3,
 };
 
 // Most bleed-out time a DBNO_STATE may carry, tenths of a second.
@@ -1511,6 +1650,17 @@ struct DbnoRevive {
   std::uint8_t target = 0;                   // 1 to kMaxPlayers, not the reviver
   bool holding = false;
   bool operator==(const DbnoRevive&) const = default;
+};
+
+// DBNO_THREAT: whether an enemy is near the sender's Link, as the sender's
+// own game sees its enemies. Sent by a player who is up, when it changes and
+// again every few seconds; relayed to everyone else. A spectating player
+// comes back when every player still up says "none near" (or the one it
+// watches does, when the others are elsewhere).
+struct DbnoThreat {
+  std::uint8_t player_number = kPlayerSelf;
+  bool enemy_near = false;
+  bool operator==(const DbnoThreat&) const = default;
 };
 
 // BOSS_SCENE (boss-cutscenes, docs/dungeons-boss.md "Boss cutscenes"): the
@@ -1549,6 +1699,21 @@ struct BossHeart {
   bool given = false;                        // false: a claim (client); true: the server's answer
   std::int32_t max_life = 0;                 // 1 to kMaxBossHeartLife
   bool operator==(const BossHeart&) const = default;
+};
+
+// BOSS_ALIVE (row 159): the host's save load said which bosses it holds alive. The host sends it once after
+// its FLAG_RESET, on the same channel (so it comes after it), when its game reads the bosses' quests again. Bit
+// N of `known` is boss index N (CoopBossBeaten::Sets(): 0 to 7 the dungeon bosses, 8 Ganondorf, 9 Ganon) whose
+// quest the host read; bit N of `alive` (a subset of `known`): that quest is before the boss's death in the
+// host's save. A guest rewinds a boss whose quest the host does not set for it (each game's own) and that its
+// own game holds just beaten. The server takes it from the host only. Older games drop the unknown type.
+inline constexpr std::uint16_t kBossAliveMask = 0x03ff;  // ten bosses
+
+struct BossAlive {
+  std::uint8_t player_number = kPlayerSelf;  // the host
+  std::uint16_t known = 0;                   // within kBossAliveMask
+  std::uint16_t alive = 0;                   // within known
+  bool operator==(const BossAlive&) const = default;
 };
 
 // VOICE_FRAME (protocol 11, branch proximity-voip): 20 ms of the sender's
@@ -1669,6 +1834,214 @@ struct LobbyResult {
   bool operator==(const LobbyResult&) const = default;
 };
 
+// Host approval (protocol 13, docs/protocol.md "Host approval"): with the
+// host's setting on, the server holds a joiner who gave the right join
+// password until the host lets it in or says no, or its time runs out (60 s
+// by default). A JOIN_KNOCK's wait is at most this.
+inline constexpr std::uint16_t kMaxKnockWaitSeconds = 600;
+
+// JOIN_KNOCK flag bits. Unknown bits are kept.
+namespace join_knock {
+// The host let this player key in before in this session.
+inline constexpr std::uint8_t known = 1u << 0;
+}  // namespace join_knock
+
+// JOIN_KNOCK, server only. To the host: `nickname` asks to join; answer with
+// JOIN_ALLOW and `knock` within `wait_s` seconds. To the held joiner itself
+// (before WELCOME, its own name): its join waits for the host for up to
+// `wait_s` seconds. `wait_s` 0, to the host only: that knock is over (the
+// joiner left, or the time ran out).
+struct JoinKnock {
+  std::uint32_t knock = 1;          // not 0
+  std::uint16_t wait_s = 60;        // 0 to kMaxKnockWaitSeconds
+  std::uint8_t flags = 0;           // join_knock bits
+  std::string nickname;             // 1 to kMaxNicknameChars, as HELLO's
+  bool operator==(const JoinKnock&) const = default;
+};
+
+// JOIN_ALLOW, the host to the server: its answer to the knock `knock`.
+// remember: allowed, that player key gets in without asking from now on;
+// not allowed, it is turned away without asking (as a ban). Both until the
+// session ends.
+struct JoinAllow {
+  std::uint32_t knock = 1;  // not 0
+  bool allow = false;
+  bool remember = false;
+  bool operator==(const JoinAllow&) const = default;
+};
+
+// Native puppets phase 2 (docs/native-puppets.md, "Lift a bomb, and stash
+// it"; docs/protocol.md, "Bomb hand-over"). BOMB_TAKE (client only): our Link
+// lifted the copy of another player's made bomb; give it to us. The server
+// asks its owner (HANDOVER_ASK); a yes reaches us as HANDOVER_STATE (the fuse
+// left in it), a no as BOMB_ANSWER.
+struct BombTake {
+  ObjectId id;
+  std::uint16_t epoch = 0;  // the owner's epoch as we last had it
+  bool operator==(const BombTake&) const = default;
+};
+
+// BOMB_ANSWER (server only): why a BOMB_TAKE was refused. Sent only to the
+// asker.
+enum class BombRefusal : std::uint8_t {
+  busy = 1,        // another player's take (or a hand-over) is in flight
+  not_a_bomb = 2,  // unknown, not a made Item_Bomb, another scene, or ours already
+  stale = 3,       // the epoch is not the owner's now
+  kept = 4,        // the owner did not answer (its game keeps the bomb)
+};
+inline constexpr std::uint8_t kBombRefusalMax = 4;
+// BOMB_SHARE (client only): our game takes part in the bomb hand-over (its
+// switch is on). Sent after WELCOME and every few seconds; the server asks an
+// owner for its bomb, and hands on a bomb whose owner left, only with games
+// that said so.
+struct BombShare {
+  bool on = true;
+  bool operator==(const BombShare&) const = default;
+};
+
+struct BombAnswer {
+  ObjectId id;
+  std::uint16_t epoch = 0;  // the owner's epoch now
+  BombRefusal refusal = BombRefusal::busy;
+  bool operator==(const BombAnswer&) const = default;
+};
+
+// Native puppets phase 3 (docs/native-puppets.md, "Lifting another player";
+// docs/protocol.md, "Player lift"). The lifted player's game decides; the
+// server only passes each message to the one player it names, and only
+// between games that sent LIFT_SHARE.
+//
+// LIFT_ASK: our Link lifted `lifted`'s copy (the game's own lift). To the
+// lifted player only; it answers with LIFT_ANSWER.
+struct LiftAsk {
+  std::uint8_t player_number = kPlayerSelf;  // the lifter
+  std::uint8_t lifted = 0;                   // 1 to 4, not the lifter
+  bool operator==(const LiftAsk&) const = default;
+};
+
+// Why a lift was refused or ended (LIFT_ANSWER).
+enum class LiftRefusal : std::uint8_t {
+  none = 0,         // taken: the lifter's game drives our place from now on
+  busy = 1,         // already lifted, or lifting someone ourselves
+  event = 2,        // our Link is in an event (a talk, a cutscene), a load or a menu
+  down = 3,         // dead, or down but not out
+  not_sharing = 4,  // (the server) the lifted game did not say LIFT_SHARE
+  freed = 5,        // (after a yes) the lifted game took its place back
+  too_far = 6,      // the lifter's Link is not near ours
+  // Owner rule: only a young (child) Link can be lifted. Our Link is adult (or its age not known); after a yes,
+  // our Link grew up while lifted (freed the same way). The server says it too, from the last PLAYER_SAMPLE age.
+  not_young = 7,
+};
+inline constexpr std::uint8_t kLiftRefusalMax = 7;
+
+// LIFT_ANSWER: the lifted game's word on a LIFT_ASK (refusal none = yes), or
+// `freed` when a lift it took ends on its side. To the lifter only.
+// `player_number` is the lifted player (the server writes it, or names the
+// asked player in its own not_sharing answer).
+struct LiftAnswer {
+  std::uint8_t player_number = kPlayerSelf;  // the lifted
+  std::uint8_t lifter = 0;                   // 1 to 4, not the lifted
+  LiftRefusal refusal = LiftRefusal::none;
+  bool operator==(const LiftAnswer&) const = default;
+};
+
+// Where the lifter's game has the lifted player (LIFT_PLACE's phase).
+enum class LiftPhase : std::uint8_t {
+  held = 1,    // in the lifter's hands
+  flying = 2,  // thrown (or set down), not at rest yet
+  landed = 3,  // at rest: the lifted game owns its place again (a lift's last place)
+};
+inline constexpr std::uint8_t kLiftPhaseMax = 3;
+
+// LIFT_PLACE: the lifted player's place as the lifter's game shows it, each
+// frame of a taken lift; to the lifted player only.
+struct LiftPlace {
+  std::uint8_t player_number = kPlayerSelf;  // the lifter
+  std::uint8_t lifted = 0;                   // 1 to 4, not the lifter
+  LiftPhase phase = LiftPhase::held;
+  Vec3 position{};
+  bool operator==(const LiftPlace&) const = default;
+};
+
+// LIFT_SHARE (client only): our game takes part in player lifts (its switch
+// is on). Sent after WELCOME and every few seconds, as BOMB_SHARE.
+struct LiftShare {
+  bool on = true;
+  bool operator==(const LiftShare&) const = default;
+};
+
+// PvP on real bodies (native puppets phase 4; docs/native-puppets.md section 5,
+// docs/protocol.md "PvP on real bodies"). Sent only by games with
+// LICHII_COOP_PVP_NATIVE=1 (off by default). The victim's game decides.
+//
+// The words of a hit's kind as the game keeps them in its incoming hit record
+// (Life +0x250 up to +0x27c, CoopHitReplay::kRecKind..kRecKindEnd): plain
+// values, never pointers.
+inline constexpr std::size_t kPvpKindWords = 11;
+using PvpKind = std::array<std::uint32_t, kPvpKindWords>;
+
+// What dealt a strike (PVP_STRIKE's source).
+enum class PvpSource : std::uint8_t {
+  sword = 1,  // a sword, a stick, the hammer, the body
+  shot = 2,   // an arrow, a seed, the hookshot, the boomerang, a nut
+  blast = 3,  // a bomb's or bombchu's blast, Din's Fire
+  other = 4,
+};
+inline constexpr std::uint8_t kPvpSourceMax = 4;
+
+// PVP_STRIKE: the sender's game took a hit of its own Link (or of a shot or
+// blast it made) on `victim`'s copy, by the game's own collision. To the
+// victim only, and only while PvP is on between two PVP_NATIVE games.
+struct PvpStrike {
+  std::uint8_t player_number = kPlayerSelf;  // the attacker
+  std::uint8_t victim = 0;                   // 1 to 16, not the attacker
+  std::uint32_t seq = 0;                     // the attacker's own count
+  std::uint64_t seen_us = 0;                 // server time of the victim's sample the copy showed
+  PvpKind kind{};
+  std::int32_t amount = 0;                   // quarter hearts the attacker's game counted (compared, never used)
+  PvpSource source = PvpSource::sword;
+  ObjectId object{};  // a shot or blast: the attacker's made object; else all zero
+  Vec3 at{};      // where the hit landed
+  Vec3 copy_at{}; // where the attacker's game showed the victim
+  Vec3 from{};    // where the attacker stood
+  bool operator==(const PvpStrike&) const = default;
+};
+
+// The victim's word on a strike (PVP_RESULT's result).
+enum class PvpOutcome : std::uint8_t {
+  taken = 0,
+  guarded = 1,
+  guard_broken = 2,
+  invincible = 3,     // the game's invincible frames refused it
+  late = 4,           // seen_us too old
+  out_of_reach = 5,   // not where the victim was at seen_us
+  kept_off = 6,       // an event, a menu, a load, another scene, down or dead
+};
+inline constexpr std::uint8_t kPvpOutcomeMax = 6;
+
+// PVP_RESULT: the victim's game's word on one strike. To every game in the
+// victim's scene: the attacker plays a guard's recoil, the others replay the
+// kind on their copy of the victim.
+struct PvpResult {
+  std::uint8_t player_number = kPlayerSelf;  // the victim
+  std::uint8_t attacker = 0;                 // 1 to 16, not the victim
+  std::uint32_t seq = 0;                     // the strike's
+  PvpOutcome outcome = PvpOutcome::taken;
+  std::int32_t amount = 0;                   // taken, 0 to kMaxPvpLife
+  std::int32_t life = 0;                     // left, 0 to kMaxPvpLife
+  PvpKind kind{};
+  Vec3 at{};
+  bool operator==(const PvpResult&) const = default;
+};
+
+// PVP_NATIVE: the sender's game runs PvP on real bodies. Sent after WELCOME
+// and every few seconds; relayed to everyone.
+struct PvpNative {
+  std::uint8_t player_number = kPlayerSelf;
+  bool on = true;
+  bool operator==(const PvpNative&) const = default;
+};
+
 // Split screen (docs/protocol.md, "Local players"): the extra players of one
 // game, seats 1 to kMaxLocalSeats (seat 0 is the connection's own player).
 inline constexpr std::uint8_t kMaxLocalSeats = 3;
@@ -1724,10 +2097,12 @@ using Message = std::variant<Hello, Welcome, Refused, PlayerJoined, PlayerLeft,
                              JoinChallenge, JoinProof, SaveAsk, SavePart, PlayerLife,
                              PvpMode, PvpHit, PvpHurt, FishLure, RejoinToken, RejoinClaim, DungeonEvent, PlayerRide,
                              OcarinaNote, PlatformClock, PlatformCounter,
-                             DbnoMode, DbnoStatus, DbnoRevive, Difficulty, VoiceFrame,
+                             DbnoMode, DbnoStatus, DbnoRevive, DbnoThreat, Difficulty, VoiceFrame,
                              ModList, ModSettings, LobbyAction, LobbyMutes, LobbyResult,
                              LocalJoin, LocalJoined, LocalLeave, LocalSample, LocalMessage, LinkSound,
-                             BossScene, BossHeart, PlayerLook>;
+                             BossScene, BossHeart, PlayerLook, SwitchState, JoinKnock, JoinAllow,
+                             BombTake, BombAnswer, BombShare, LiftAsk, LiftAnswer, LiftPlace,
+                             LiftShare, PvpStrike, PvpResult, PvpNative, BossAlive>;
 
 MessageType type_of(const Message& message);
 

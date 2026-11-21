@@ -16,13 +16,17 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from puppet_pack import build, byml, dumpcheck, dungeon_rooms, map_captures, nup, rstb, sarc, zs  # noqa: E402
+from puppet_pack import asb_carry, build, byml, dumpcheck, dungeon_rooms, map_captures, nup, place_rooms, rstb, sarc, zs  # noqa: E402
 
 # The co-op HUD's tests run with these (CI runs this file).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_hud import *  # noqa: E402,F401,F403
 from test_self_tunic import *  # noqa: E402,F401,F403
 from test_merge_tables import *  # noqa: E402,F401,F403
+from test_eye_switches import *  # noqa: E402,F401,F403
+from test_room_graph import *  # noqa: E402,F401,F403
+from test_shared_anchors import *  # noqa: E402,F401,F403
+from test_look_metal import *  # noqa: E402,F401,F403
 
 try:
     import zstandard
@@ -78,6 +82,47 @@ def murmur3(text, seed=0):
     h = (h * 0xC2B2AE35) & m
     return h ^ (h >> 16)
 
+def with_body(members):
+    """fake_player_pack's members with a player body shaped like the game's (docs/native-puppets.md): a
+    physics param, a ControllerSet with a $parent, a character controller, shapes, a ragdoll, sensors."""
+    ph, cs, cc = "Component/Physics/", "Phive/ControllerSetParam/", "Phive/CharacterControllerParam/"
+    out = dict(members)
+    out[ph + "P.engine__component__PhysicsParam.bgyml"] = byml.dumps(
+        {"ControllerSetPath": "Work/Phive/ControllerSetParam/PC.phive__ControllerSetParam.gyml"})
+    out[cs + "PBase.phive__ControllerSetParam.bgyml"] = byml.dumps({
+        "InitializerName": "Character",
+        "ShapeNamePathAry": [{"FilePath": "Work/Phive/ShapeParam/P.phive__ShapeParam.gyml", "Name": "Player_cct"}],
+        "MatterRigidBodyNamePathAry": [{"FilePath": "Work/Phive/CharacterMatterRigidBodyParam/P.phive__"
+                                        "CharacterMatterRigidBodyParam.gyml", "Name": "MainMatterRigidBody"}],
+        "CColEntityNamePathAry": [{"FilePath": "Work/Phive/ContactCollectionEntityParam/Block.phive__"
+                                   "ContactCollectionEntityParam.gyml", "Name": "Contact_0_cct"},
+                                  {"FilePath": "Work/Phive/ContactCollectionEntityParam/Ragdoll.phive__"
+                                   "ContactCollectionEntityParam.gyml", "Name": "RagdollBody"}],
+        "ControllerSensorNamePathAry": [{"FilePath": "Work/Phive/RigidBodyControllerSensorParam/Tgt.phive__"
+                                         "RigidBodyControllerSensorParam.gyml", "Name": "Tgt"}],
+        "RagdollStructure": [{"FilePath": "Work/Phive/Ragdoll/Structure/P.phive__RagdollStructureParam.gyml",
+                              "Name": "Default"}],
+        "PathCharacterController": "Work/Phive/CharacterControllerParam/PBase.phive__CharacterControllerParam.gyml",
+        "Cloth": [{"FilePath": "", "Name": "Default"}],
+    })
+    out[cs + "PC.phive__ControllerSetParam.bgyml"] = byml.dumps({
+        "$parent": "Work/Phive/ControllerSetParam/PBase.phive__ControllerSetParam.gyml",
+        "PathCharacterController": "Work/Phive/CharacterControllerParam/PC.phive__CharacterControllerParam.gyml"})
+    out[cc + "PBase.phive__CharacterControllerParam.bgyml"] = byml.dumps(
+        {"GravityScale": 1.0, "UserContactCollectionName": "Contact_0_cct"})
+    out[cc + "PC.phive__CharacterControllerParam.bgyml"] = byml.dumps(
+        {"$parent": "Work/Phive/CharacterControllerParam/PBase.phive__CharacterControllerParam.gyml",
+         "UpdateComponentParam": {"Rotate": 1}})
+    for path in ("Phive/ShapeParam/P.phive__ShapeParam.bgyml",
+                 "Phive/CharacterMatterRigidBodyParam/P.phive__CharacterMatterRigidBodyParam.bgyml",
+                 "Phive/ContactCollectionEntityParam/Block.phive__ContactCollectionEntityParam.bgyml",
+                 "Phive/ContactCollectionEntityParam/Ragdoll.phive__ContactCollectionEntityParam.bgyml",
+                 "Phive/RigidBodyControllerSensorParam/Tgt.phive__RigidBodyControllerSensorParam.bgyml",
+                 "Phive/Ragdoll/Structure/P.phive__RagdollStructureParam.bgyml"):
+        out[path] = byml.dumps({"X": 1})
+    return out
+
+
 class BymlTest(unittest.TestCase):
     def test_round_trip_keeps_types(self):
         doc = sample_doc()
@@ -119,7 +164,13 @@ class BymlTest(unittest.TestCase):
 
     def test_rejects_bad_magic(self):
         with self.assertRaises(byml.BymlError):
-            byml.loads(b"BY\x00\x07" + b"\0" * 12)
+            byml.loads(b"XY\x00\x07" + b"\0" * 12)
+
+    def test_reads_big_endian(self):
+        # "BY": big-endian, as GameData/GameDataList (boss_beaten reads it). Root: an array of one int, -2.
+        data = b"BY\x00\x07" + struct.pack(">III", 0, 0, 0x10) + bytes([0xC0, 0, 0, 1, 0xD1, 0, 0, 0])
+        data += struct.pack(">i", -2)
+        self.assertEqual(byml.loads(data), [-2])
 
 
 class SarcTest(unittest.TestCase):
@@ -168,6 +219,26 @@ class RstbTest(unittest.TestCase):
         data = rstb.Rstb(by_crc={1: 2}).dumps()
         with self.assertRaises(rstb.RstbError):
             rstb.Rstb.loads(data[:-1])
+
+
+def fake_asb(strings=("Root", "Eaten", "Eaten_F", "Eaten_B", "Wait"), refs=("Eaten_F", "Eaten_B"), version=0x41B):
+    """An AS root shaped as the game's (asb_carry): header, a body whose u32 fields name pool strings (each of
+    `refs` once, plus a command name), then the string pool as the last section (offset word 14, size word 23)."""
+    pool = b""
+    offs = {}
+    for name in strings:
+        offs[name] = len(pool)
+        pool += name.encode() + b"\0"
+    body = bytearray(0x40)
+    struct.pack_into("<I", body, 0x00, offs["Eaten"])
+    for i, r in enumerate(refs):
+        struct.pack_into("<I", body, 0x10 + 4 * i, offs[r])
+    head = bytearray(0x80)
+    head[:4] = b"ASB "
+    struct.pack_into("<I", head, 4, version)
+    struct.pack_into("<I", head, asb_carry.POOL_AT, 0x80 + len(body))
+    struct.pack_into("<I", head, asb_carry.POOL_SIZE_AT, len(pool))
+    return bytes(head + body + pool)
 
 
 def fake_player_pack(variant):
@@ -250,6 +321,82 @@ def fake_player_pack(variant):
         "Component/Blackboard/BlackboardInfo/P.engine__component__BlackboardInfo.bgyml": byml.dumps({"T": []}),
     }
     return files
+
+
+PVP_REFS = {
+    "SensorHitRef": "?Component/SensorHitParam/Player.game__component__SensorHitParam.bgyml",
+    "LifeRef": "?Component/LifeParam/Player.game__component__LifeParam.bgyml",
+    "ReactionRef": "?Component/Reaction/Player.engine__component__ReactionParam.bgyml",
+    "TargetRef": "?Component/TargetParam/Player.game__component__TargetParam.bgyml",
+}
+PVP_ATTACK = "GameBalance/AttackParam/Player.game__gamebalance__AttackParam.bgyml"
+PVP_DAMAGE = "GameParameter/DamageParameters/Player.game__DamageParameters.bgyml"
+
+
+def with_pvp(members, variant="Child"):
+    """with_body's members with what `--puppet-pvp` cuts, shaped like the game's (docs/native-puppets.md 5.1):
+    the player's sensors (Tgt, Atk, ForArea and their bodies), SensorHit/Life/Reaction/Target params and
+    AttackParam rows."""
+    out = with_body(members)
+    cs = "Phive/ControllerSetParam/PBase.phive__ControllerSetParam.bgyml"
+    doc = byml.loads(out[cs])
+    rc = "Work/Phive/ContactCollectionSensorParam/"
+    rb = "Work/Phive/RigidBodySensorParam/"
+    doc["CColSensorNamePathAry"] = [
+        {"FilePath": rc + "PlayerReceipt.phive__ContactCollectionSensorParam.gyml", "Name": "Tgt"},
+        {"FilePath": rc + "PlayerAttackReceipt.phive__ContactCollectionSensorParam.gyml", "Name": "Atk"},
+        {"FilePath": rc + "PlayerReceipt.phive__ContactCollectionSensorParam.gyml", "Name": "ForArea"}]
+    doc["RigidBodySensorNamePathAry"] = [
+        {"FilePath": rb + "Player_Tgt_Body.phive__RigidBodySensorParam.gyml", "Name": "Body_Tgt"},
+        {"FilePath": rb + "Player_Atk_AtkPlayerBody.phive__RigidBodySensorParam.gyml", "Name": "Body"}]
+    doc["ControllerSensorNamePathAry"].append(
+        {"FilePath": "Work/Phive/RigidBodyControllerSensorParam/Atk.phive__RigidBodyControllerSensorParam.gyml",
+         "Name": "Atk"})
+    doc["AliasSensorList"] = [{"AliasSensor": "Tgt", "ControllerName": "Tgt", "RigidBodyName": "Body_Tgt"}]
+    out[cs] = byml.dumps(doc)
+    for path in ("Phive/ContactCollectionSensorParam/PlayerReceipt.phive__ContactCollectionSensorParam.bgyml",
+                 "Phive/ContactCollectionSensorParam/PlayerAttackReceipt.phive__ContactCollectionSensorParam.bgyml",
+                 "Phive/RigidBodySensorParam/Player_Tgt_Body.phive__RigidBodySensorParam.bgyml",
+                 "Phive/RigidBodySensorParam/Player_Atk_AtkPlayerBody.phive__RigidBodySensorParam.bgyml",
+                 "Phive/RigidBodyControllerSensorParam/Atk.phive__RigidBodyControllerSensorParam.bgyml",
+                 PVP_ATTACK, PVP_DAMAGE):
+        out[path] = byml.dumps({"X": 1})
+    ap = f"Actor/Player_{variant}.engine__actor__ActorParam.bgyml"
+    actor = byml.loads(out[ap])
+    actor["Components"].update(PVP_REFS)
+    out[ap] = byml.dumps(actor)
+    out[PVP_REFS["SensorHitRef"][1:]] = byml.dumps({"TgHitInfoBufferSize": 8, "IsThroughSameAffiliation": False})
+    out[PVP_REFS["LifeRef"][1:]] = byml.dumps({"DamageParam": "Work/" + PVP_DAMAGE[:-len(".bgyml")] + ".gyml"})
+    out[PVP_REFS["ReactionRef"][1:]] = byml.dumps({"R": 1})
+    out[PVP_REFS["TargetRef"][1:]] = byml.dumps({"T": 1})
+    return out
+
+
+def fake_attention_pack():
+    """ATTENTION_SOURCE's pack: EnemyCommon's LockOn and AutoAim client params, LockOn with an in-pack $parent."""
+    d, x = "Attention/ClientParam/", ".game__attention__ClientParam.bgyml"
+    return {
+        f"{d}EnemyCommon_LockOn{x}": byml.dumps({"$parent": f"Work/{d}Base.game__attention__ClientParam.gyml",
+                                                 "AttentionType": byml.UInt(3016662870), "ClientName": "LockOn"}),
+        f"{d}Base{x}": byml.dumps({"PriorityType": 1, "ClientName": "Base"}),
+        f"{d}EnemyCommon_AutoAim{x}": byml.dumps({"ClientName": "AutoAim"}),
+        "Component/AttentionSenderParam/EnemyCommon.game__component__AttentionSenderParam.bgyml": byml.dumps(
+            {"ClientList": [f"Work/{d}EnemyCommon_LockOn.game__attention__ClientParam.gyml"]}),
+    }
+
+
+def fake_ruto_pack():
+    """Npc_Zora_Ruto_Child_001's ActorParam and her LiftableParam with an in-pack $parent (her values as the romfs
+    has them; the game's file has no $parent, the test's base checks the merge)."""
+    lift = "Component/LiftableParam/NpcZoraRutoChild.game__component__LiftableParam.bgyml"
+    base = "Component/LiftableParam/LiftableBase.game__component__LiftableParam.bgyml"
+    return {
+        build.actor_param_path("Npc_Zora_Ruto_Child_001"): byml.dumps(
+            {"Components": {"LiftableRef": "?" + lift, "ASRef": "?AS/Npc_Zora_ZU_Ruto_Child.bgyml"}}),
+        lift: byml.dumps({"$parent": "Work/" + base[:-len(".bgyml")] + ".gyml", "LiftGrade": byml.UInt(3069107721),
+                          "LiftableType": byml.UInt(3056776872), "WeightForCalcThrowPower": 19.0}),
+        base: byml.dumps({"LiftGrade": 1, "KeepSensorHitToParent": True}),
+    }
 
 
 def fake_perception_pack():
@@ -421,6 +568,323 @@ class BuildPackTest(unittest.TestCase):
         # Never the player's own physics or emitter.
         self.assertNotIn("Component/Physics/P.engine__component__PhysicsParam.bgyml", names)
         self.assertNotIn("Component/PerceptionEmitterParam/Player.game__component__PerceptionEmitterParam.bgyml", names)
+
+    def test_pack_body(self):
+        # Native puppets phase 1 (--puppet-body): Link's own body, character controller in Free, no sensors.
+        members = with_body(fake_player_pack("Child"))
+        pack, ap, names, _ = build.build_pack(members, "Child", body=True)
+        out = sarc.read(pack)
+        phys, cs_path, cct_path = build.body_paths("CoopPuppet_Child")
+        self.assertEqual(byml.loads(ap)["Components"]["PhysicsRef"], "?" + phys)
+        self.assertEqual(byml.loads(out[phys]),
+                         {"ControllerSetPath": "Work/Phive/ControllerSetParam/CoopPuppet_Child.phive__ControllerSetParam.gyml"})
+        cs = byml.loads(out[cs_path])
+        self.assertNotIn("$parent", cs)
+        self.assertEqual(sorted(cs), sorted(build.BODY_KEYS + ("Cloth", "PathCharacterController")))
+        self.assertEqual([e["Name"] for e in cs["CColEntityNamePathAry"]], ["Contact_0_cct"])
+        self.assertEqual(cs["PathCharacterController"],
+                         "Work/Phive/CharacterControllerParam/CoopPuppet_Child.phive__CharacterControllerParam.gyml")
+        cct = byml.loads(out[cct_path])  # the player's, $parent merged, child wins, in Free
+        self.assertEqual(cct, {"GravityScale": 1.0, "UserContactCollectionName": "Contact_0_cct",
+                               "UpdateComponentParam": {"Rotate": 1}, "DefaultMoveState": "Free"})
+        for p in ("Phive/ShapeParam/P.phive__ShapeParam.bgyml",
+                  "Phive/CharacterMatterRigidBodyParam/P.phive__CharacterMatterRigidBodyParam.bgyml",
+                  "Phive/ContactCollectionEntityParam/Block.phive__ContactCollectionEntityParam.bgyml"):
+            self.assertIn(p, names)
+        # Never the sensors, the ragdoll or the player's own physics files.
+        for p in ("Phive/RigidBodyControllerSensorParam/Tgt.phive__RigidBodyControllerSensorParam.bgyml",
+                  "Phive/Ragdoll/Structure/P.phive__RagdollStructureParam.bgyml",
+                  "Phive/ContactCollectionEntityParam/Ragdoll.phive__ContactCollectionEntityParam.bgyml",
+                  "Component/Physics/P.engine__component__PhysicsParam.bgyml",
+                  "Phive/ControllerSetParam/PC.phive__ControllerSetParam.bgyml"):
+            self.assertNotIn(p, names)
+
+    def test_body_character_controller_default_preset(self):
+        # crash-0116-b: the player's "Player" preset builds PlayerRagdoll, which needs the ragdoll the body
+        # leaves out (null write at guest 0x70). The body's controller runs the default preset, as NPCs do.
+        player = {"PresetTypeName": "Player", "GravityScale": 1.0, "DefaultMoveState": "OnGround",
+                  "MoveStateParam": {"PlayerOnGround": {"$type": "phive__CharacterMoveStateOnGroundParam"}},
+                  "UpdateComponentParam": {"InteractWithRagdoll": {"Settings": {}}, "Rotate": {"A": 1},
+                                           "BounceSuppressor": {}, "FloatWaterExtension": {},
+                                           "ForceFieldExtension": {}, "GroundEdgeUnstucker": {}}}
+        self.assertEqual(build.body_character_controller(player),
+                         {"GravityScale": 1.0, "DefaultMoveState": "Free", "UpdateComponentParam": {"Rotate": {"A": 1}}})
+        self.assertEqual(player["PresetTypeName"], "Player")  # the source is not changed
+        # Player_Child's own: only InteractWithRagdoll and PlayerOnGround, so both maps go.
+        child = {"PresetTypeName": "Player", "UpdateComponentParam": {"InteractWithRagdoll": {}},
+                 "MoveStateParam": {"PlayerOnGround": {}}, "UserContactCollectionName": "Contact_0_cct"}
+        self.assertEqual(build.body_character_controller(child),
+                         {"UserContactCollectionName": "Contact_0_cct", "DefaultMoveState": "Free"})
+        # An NPC-like controller keeps what the default preset has.
+        npc = {"MoveStateParam": {"OnGround": {"X": 1}}, "UpdateComponentParam": {"FloatWater": {}, "Rotate": {}}}
+        self.assertEqual(build.body_character_controller(npc), dict(npc, DefaultMoveState="Free"))
+        for name in ("PlayerRagdoll", "InteractWithRagdoll", "PlayerOnGround"):
+            self.assertNotIn(name, build.BODY_UPDATE_COMPONENTS + build.BODY_MOVE_STATES)
+
+    def test_pack_body_player_preset_dropped(self):
+        # Every body (child and adult; the _Pvp copy's goes through the same puppet_body) drops the Player preset.
+        for variant in ("Child", "Adult"):
+            members = with_body(fake_player_pack(variant))
+            cct_paths = [p for p in members if p.startswith(build.CHARACTER_DIR)]
+            for p in cct_paths:
+                doc = byml.loads(members[p])
+                doc["PresetTypeName"] = "Player"
+                doc["UpdateComponentParam"] = dict(doc.get("UpdateComponentParam") or {}, InteractWithRagdoll={})
+                members[p] = byml.dumps(doc)
+            pack, _, _, _ = build.build_pack(members, variant, body=True)
+            cct = byml.loads(sarc.read(pack)[build.body_paths("CoopPuppet_" + variant)[2]])
+            self.assertNotIn("PresetTypeName", cct)
+            self.assertNotIn("InteractWithRagdoll", cct.get("UpdateComponentParam") or {})
+            self.assertEqual(cct["DefaultMoveState"], "Free")
+
+    def test_pack_body_wins_over_perception(self):
+        members = with_body(fake_player_pack("Child"))
+        seen_by = build.perception_members(fake_perception_pack())
+        _, ap, _, _ = build.build_pack(members, "Child", perception=seen_by, body=True)
+        comps = byml.loads(ap)["Components"]
+        self.assertEqual(comps["PhysicsRef"], "?" + build.body_paths("CoopPuppet_Child")[0])
+        self.assertIn("PerceptionEmitterRef", comps)
+
+    def test_pack_body_off_by_default(self):
+        members = with_body(fake_player_pack("Child"))
+        self.assertEqual(build.build_pack(members, "Child"), build.build_pack(members, "Child", body=False))
+        _, ap, names, _ = build.build_pack(members, "Child")
+        self.assertNotIn("PhysicsRef", byml.loads(ap)["Components"])
+        self.assertFalse([n for n in names if n.startswith("Phive/")])
+
+    def test_pack_liftable(self):
+        # Native puppets phase 3 (--puppet-liftable), owner rule: only a young Link is liftable, carried as Ruto.
+        # Ruto's LiftableRef, $parent merged, as the child puppet's own; the adult puppet gets none.
+        self.assertEqual(build.LIFTABLE_SOURCE, "Npc_Zora_Ruto_Child_001")
+        self.assertEqual(build.LIFTABLE_VARIANTS, ("Child",))
+        lift = build.liftable_param(fake_ruto_pack())
+        self.assertEqual(lift[0], "Component/LiftableParam/NpcZoraRutoChild.game__component__LiftableParam.bgyml")
+        self.assertEqual(lift[1], {"LiftGrade": byml.UInt(3069107721), "LiftableType": byml.UInt(3056776872),
+                                   "WeightForCalcThrowPower": 19.0, "KeepSensorHitToParent": True})
+        members = fake_player_pack("Child")
+        pack, ap, names, _ = build.build_pack(members, "Child", liftable=lift)
+        own = "Component/LiftableParam/CoopPuppet_Child.game__component__LiftableParam.bgyml"
+        self.assertEqual(build.liftable_path("CoopPuppet_Child", lift[0]), own)
+        self.assertEqual(byml.loads(ap)["Components"]["LiftableRef"], "?" + own)
+        self.assertEqual(byml.loads(sarc.read(pack)[own]), lift[1])
+        self.assertNotIn(lift[0], names)  # never Ruto's own file
+        # Off (the default): the pack as before.
+        self.assertEqual(build.build_pack(members, "Child"), build.build_pack(members, "Child", liftable=None))
+        self.assertNotIn("LiftableRef", byml.loads(build.build_pack(members, "Child")[1])["Components"])
+        # An adult puppet is never liftable: on or off, its pack is the same, with no LiftableRef.
+        adult = fake_player_pack("Adult")
+        self.assertEqual(build.build_pack(adult, "Adult", liftable=lift), build.build_pack(adult, "Adult"))
+        self.assertNotIn("LiftableRef", byml.loads(build.build_pack(adult, "Adult", liftable=lift)[1])["Components"])
+        # A source pack without the param: none.
+        self.assertIsNone(build.liftable_param(
+            {build.actor_param_path("Npc_Zora_Ruto_Child_001"): byml.dumps({"Components": {}})}))
+        self.assertIsNone(build.liftable_param({}))
+
+    def test_pack_pvp(self):
+        # Native puppets phase 4 (--puppet-pvp): the _Pvp copy's pieces, cut from the player's and EnemyCommon's.
+        clients = build.attention_clients(fake_attention_pack())
+        self.assertEqual(clients["LockOn"], {"PriorityType": 1, "ClientName": "LockOn",
+                                             "AttentionType": byml.UInt(3016662870)})
+        members = with_pvp(fake_player_pack("Child"))
+        actor = build.pvp_name("CoopPuppet_Child")
+        self.assertEqual(actor, "CoopPuppet_Child_Pvp")
+        pack, ap, names, _ = build.build_pack(members, "Child", actor=actor, pvp=clients)
+        out = sarc.read(pack)
+        comps = byml.loads(ap)["Components"]
+        for k, ref in PVP_REFS.items():
+            self.assertEqual(comps[k], ref)
+            self.assertIn(ref[1:], names)
+        self.assertIn(PVP_DAMAGE, names)  # what the Life param names comes along
+        self.assertIn(PVP_ATTACK, names)  # option i: the player's AttackParam rows
+        sender, client_paths = build.attention_paths(actor)
+        self.assertEqual(comps["AttentionSenderRef"], "?" + sender)
+        self.assertEqual(byml.loads(out[sender]), {"ClientList": [
+            "Work/Attention/ClientParam/CoopPuppet_Child_Pvp_LockOn.game__attention__ClientParam.gyml",
+            "Work/Attention/ClientParam/CoopPuppet_Child_Pvp_AutoAim.game__attention__ClientParam.gyml"]})
+        self.assertEqual(byml.loads(out[client_paths["LockOn"]]), clients["LockOn"])
+        self.assertNotIn("Attention/ClientParam/EnemyCommon_LockOn.game__attention__ClientParam.bgyml", names)
+        # Its body: the Tgt sensor only, never the Atk receipt, ForArea or the attack body.
+        cs = byml.loads(out[build.body_paths(actor)[1]])
+        self.assertEqual([e["Name"] for e in cs["CColSensorNamePathAry"]], ["Tgt"])
+        self.assertEqual([e["Name"] for e in cs["ControllerSensorNamePathAry"]], ["Tgt"])
+        self.assertEqual([e["Name"] for e in cs["RigidBodySensorNamePathAry"]], ["Body_Tgt"])
+        self.assertEqual([e["AliasSensor"] for e in cs["AliasSensorList"]], ["Tgt"])
+        self.assertIn("Phive/RigidBodySensorParam/Player_Tgt_Body.phive__RigidBodySensorParam.bgyml", names)
+        for p in ("Phive/ContactCollectionSensorParam/PlayerAttackReceipt.phive__ContactCollectionSensorParam.bgyml",
+                  "Phive/RigidBodySensorParam/Player_Atk_AtkPlayerBody.phive__RigidBodySensorParam.bgyml",
+                  "Phive/RigidBodyControllerSensorParam/Atk.phive__RigidBodyControllerSensorParam.bgyml"):
+            self.assertNotIn(p, names)
+        # Never on the copy (5.1).
+        for k in ("PlayerRef", "ActorNameRef", "PlayerCameraTargetRef", "DeathRef", "ConditionRef", "ChemicalRef"):
+            self.assertNotIn(k, comps)
+
+    def test_pack_pvp_off_is_byte_for_byte(self):
+        members = with_pvp(fake_player_pack("Child"))
+        plain = build.build_pack(members, "Child")
+        self.assertEqual(plain, build.build_pack(members, "Child", pvp=None))
+        comps = byml.loads(plain[1])["Components"]
+        for k in tuple(PVP_REFS) + ("AttentionSenderRef", "PhysicsRef"):
+            self.assertNotIn(k, comps)
+        self.assertFalse([n for n in plain[2] if n.startswith(("Phive/", "GameBalance/", "Attention/"))])
+        # --puppet-body alone: still no sensor.
+        _, _, names, _ = build.build_pack(members, "Child", body=True)
+        self.assertFalse([n for n in names if "Sensor" in n])
+
+    def test_pack_pvp_checks(self):
+        clients = build.attention_clients(fake_attention_pack())
+        self.assertIsNone(build.attention_clients({}))
+        no_life = with_pvp(fake_player_pack("Child"))
+        del no_life[PVP_REFS["LifeRef"][1:]]
+        with self.assertRaises(build.BuildError):
+            build.build_pack(no_life, "Child", actor="CoopPuppet_Child_Pvp", pvp=clients)
+        no_tgt = with_body(fake_player_pack("Child"))  # a ControllerSet with no Tgt receipt
+        with self.assertRaises(build.BuildError):
+            build.build_pack(no_tgt, "Child", actor="CoopPuppet_Child_Pvp", pvp=clients)
+
+    def test_carry_as(self):
+        # Ruto's carried pose on the young copies: the copy's own AS root names Ruto's clip for Eaten's two clips.
+        raw = fake_asb()
+        out = asb_carry.carry_as(raw)
+        self.assertIsNotNone(out)
+        changed = [i for i in range(len(raw)) if raw[i] != out[i]]
+        allowed = set(range(asb_carry.POOL_SIZE_AT, asb_carry.POOL_SIZE_AT + 4)) | set(range(0x90, 0x98))
+        self.assertTrue(set(changed) <= allowed)  # only the pool size and the two clip fields; nothing moves
+        new = asb_carry.string_offset(out, "Act_LiftRest_Wait")
+        self.assertEqual(new, struct.unpack_from("<I", raw, asb_carry.POOL_SIZE_AT)[0])  # at the old pool's end
+        self.assertEqual(struct.unpack_from("<I", out, asb_carry.POOL_SIZE_AT)[0], len(out) - 0x80 - 0x40)
+        self.assertEqual(struct.unpack_from("<II", out, 0x80 + 0x10), (new, new))
+        # The command name and every other string are where they were.
+        self.assertEqual(asb_carry.string_offset(out, "Eaten"), asb_carry.string_offset(raw, "Eaten"))
+        self.assertEqual(struct.unpack_from("<I", out, 0x80)[0], asb_carry.string_offset(raw, "Eaten"))
+        # Anything not as expected: None (the copy keeps the game's Eaten).
+        self.assertIsNone(asb_carry.carry_as(fake_asb(version=0x417)))
+        self.assertIsNone(asb_carry.carry_as(raw + b"\0"))  # the pool is not the last section
+        self.assertIsNone(asb_carry.carry_as(fake_asb(strings=("Root", "Eaten", "Eaten_F", "Wait"), refs=("Eaten_F",))))
+        self.assertIsNone(asb_carry.carry_as(fake_asb(refs=("Eaten_F", "Eaten_B", "Eaten_F"))))  # named twice
+        self.assertIsNone(asb_carry.carry_as(b"not an AS"))
+        # "Eaten_F" inside "XEaten_F" is no match: whole strings only.
+        self.assertIsNone(asb_carry.string_offset(fake_asb(strings=("Root", "Eaten", "XEaten_F", "Eaten_B", "Eaten_F")),
+                                                  "Eaten_Q"))
+        # Ruto's clip already in the pool: reused, nothing appended.
+        have = fake_asb(strings=("Root", "Eaten", "Eaten_F", "Eaten_B", "Act_LiftRest_Wait"))
+        self.assertEqual(len(asb_carry.carry_as(have)), len(have))
+
+    def test_pack_liftable_carry(self):
+        # With the carry AS made, the young puppet's ASRef is the carry root and its AnimationParam adds Ruto's
+        # animations, retargeted (as the game's own child Epona); adult and skin puppets keep theirs.
+        lift = build.liftable_param(fake_ruto_pack())
+        members = fake_player_pack("Child")
+        pack, ap, names, _ = build.build_pack(members, "Child", liftable=lift, carry=True)
+        comps = byml.loads(ap)["Components"]
+        self.assertEqual(comps["ASRef"], "?" + asb_carry.CARRY_AS)
+        own = asb_carry.carry_animation_path("CoopPuppet_Child")
+        self.assertEqual(comps["AnimationRef"], "?" + own)
+        anim = byml.loads(sarc.read(pack)[own])
+        self.assertIn({"IsRetarget": True, "ModelProjectName": asb_carry.RUTO_ANIMATION}, anim["AnimationResources"])
+        self.assertEqual(anim["A"], [])  # the player's own fields kept
+        # The player's own AnimationParam file is not changed.
+        src = "Component/AnimationParam/P.engine__component__AnimationParam.bgyml"
+        self.assertEqual(byml.loads(sarc.read(pack)[src]), {"A": []})
+        # No carry (the AS could not be made): as before, Link's own Eaten.
+        _, plain_ap, _, _ = build.build_pack(members, "Child", liftable=lift)
+        self.assertNotEqual(byml.loads(plain_ap)["Components"]["ASRef"], "?" + asb_carry.CARRY_AS)
+        # A skin's own AS wins (its clips are retargeted on its own skeleton): no carry there.
+        _, skin_ap, _, _ = build.build_pack(members, "Child", liftable=lift, carry=True, as_ref="AS/CoopSkin_X_Child.root.asb")
+        self.assertEqual(byml.loads(skin_ap)["Components"]["ASRef"], "?AS/CoopSkin_X_Child.root.asb")
+        # Adult: never.
+        adult = fake_player_pack("Adult")
+        self.assertEqual(build.build_pack(adult, "Adult", liftable=lift, carry=True), build.build_pack(adult, "Adult"))
+        # Carry without liftable does nothing.
+        self.assertEqual(build.build_pack(members, "Child", carry=True), build.build_pack(members, "Child"))
+
+    def test_pack_carry_and_pvp_together(self):
+        # Lift-young (carry) and PvP on real bodies on one copy: the young _Pvp copy gets Ruto's LiftableRef and
+        # carried pose AND the PvP pieces; the adult _Pvp copy gets the PvP pieces and is never liftable.
+        lift = build.liftable_param(fake_ruto_pack())
+        clients = build.attention_clients(fake_attention_pack())
+        young = with_pvp(fake_player_pack("Child"), "Child")
+        actor = build.pvp_name("CoopPuppet_Child")
+        pack, ap, names, _ = build.build_pack(young, "Child", actor=actor, liftable=lift, carry=True, pvp=clients)
+        out = sarc.read(pack)
+        comps = byml.loads(ap)["Components"]
+        own = build.liftable_path(actor, lift[0])
+        self.assertEqual(comps["LiftableRef"], "?" + own)
+        self.assertIn(own, names)
+        self.assertEqual(comps["ASRef"], "?" + asb_carry.CARRY_AS)
+        self.assertEqual(comps["AnimationRef"], "?" + asb_carry.carry_animation_path(actor))
+        for k, ref in PVP_REFS.items():
+            self.assertEqual(comps[k], ref)
+        self.assertEqual(comps["AttentionSenderRef"], "?" + build.attention_paths(actor)[0])
+        self.assertIn(PVP_ATTACK, names)
+        cs = byml.loads(out[build.body_paths(actor)[1]])
+        self.assertEqual([e["Name"] for e in cs["CColSensorNamePathAry"]], ["Tgt"])
+        # Each side's own pieces are the same as with that switch alone.
+        _, pvp_only, _, _ = build.build_pack(young, "Child", actor=actor, pvp=clients)
+        _, lift_only, _, _ = build.build_pack(young, "Child", actor=actor, liftable=lift, carry=True)
+        pvp_only, lift_only = byml.loads(pvp_only)["Components"], byml.loads(lift_only)["Components"]
+        for k in (*PVP_REFS, "AttentionSenderRef", "PhysicsRef"):
+            self.assertEqual(comps[k], pvp_only[k], k)
+        for k in ("LiftableRef", "ASRef", "AnimationRef"):
+            self.assertEqual(comps[k], lift_only[k], k)
+        # Adult: the PvP pieces, no lift or carry (byte for byte the PvP-only copy).
+        adult = with_pvp(fake_player_pack("Adult"), "Adult")
+        a_actor = build.pvp_name("CoopPuppet_Adult")
+        both = build.build_pack(adult, "Adult", actor=a_actor, liftable=lift, carry=True, pvp=clients)
+        self.assertEqual(both, build.build_pack(adult, "Adult", actor=a_actor, pvp=clients))
+        a_comps = byml.loads(both[1])["Components"]
+        self.assertNotIn("LiftableRef", a_comps)
+        self.assertNotEqual(a_comps.get("ASRef"), "?" + asb_carry.CARRY_AS)
+        for k, ref in PVP_REFS.items():
+            self.assertEqual(a_comps[k], ref)
+
+    def test_puppet_body_checks(self):
+        pc = {"PhysicsRef": "?Component/Physics/P.engine__component__PhysicsParam.bgyml"}
+        with self.assertRaises(build.BuildError):  # the made-up pack's physics has no ControllerSet
+            build.puppet_body(fake_player_pack("Child"), pc, "CoopPuppet_Child")
+        with self.assertRaises(build.BuildError):
+            build.puppet_body(with_body(fake_player_pack("Child")), {}, "CoopPuppet_Child")
+        members = with_body(fake_player_pack("Child"))
+        cc = "Phive/CharacterControllerParam/PBase.phive__CharacterControllerParam.bgyml"
+        members[cc] = byml.dumps({"UserContactCollectionName": "Nothing"})
+        with self.assertRaises(build.BuildError):
+            build.puppet_body(members, pc, "CoopPuppet_Child")
+        members = with_body(fake_player_pack("Child"))
+        del members["Phive/CharacterControllerParam/PBase.phive__CharacterControllerParam.bgyml"]
+        del members["Phive/CharacterControllerParam/PC.phive__CharacterControllerParam.bgyml"]
+        with self.assertRaises(build.BuildError):
+            build.puppet_body(members, pc, "CoopPuppet_Child")
+
+    def test_merged_files_get_the_whole_chains_entry(self):
+        # crash-0116-a: the game parses a param in a heap of its size-table entry, sized for that one file. A file
+        # we merge from a `$parent` chain gets the sum of the chain's entries (with the top file's alone the child
+        # body's character controller, Player_Child's merged with Player's, crashed GeneralFormatAsync_).
+        members = with_body(fake_player_pack("Child"))
+        cs, cc = "Phive/ControllerSetParam/", "Phive/CharacterControllerParam/"
+        pc_cs, base_cs = cs + "PC.phive__ControllerSetParam.bgyml", cs + "PBase.phive__ControllerSetParam.bgyml"
+        pc_cc, base_cc = cc + "PC.phive__CharacterControllerParam.bgyml", cc + "PBase.phive__CharacterControllerParam.bgyml"
+        self.assertEqual(build.chain_paths(members, pc_cs), [pc_cs, base_cs])
+        self.assertEqual(build.chain_paths(members, base_cs), [base_cs])
+        self.assertEqual(build.chain_paths(members, "Not/In.pack.bgyml"), ["Not/In.pack.bgyml"])
+        # The game's entries of the cut-down real files (romfs 1.0.x): Player_Child 6,536 + Player 9,504.
+        t = rstb.Rstb(by_name={pc_cc: 6536, base_cc: 9504, pc_cs: 27008, base_cs: 34160})
+        self.assertEqual(build.chain_entry(t, build.chain_paths(members, pc_cc), b"x" * 1184), 6536 + 9504)
+        self.assertEqual(build.chain_entry(t, build.chain_paths(members, pc_cs), b"x" * 5764), 27008 + 34160)
+        # A file without entries, or longer than its chain's room, gets its own bytes and the margin.
+        self.assertEqual(build.chain_entry(t, ["Not/In.pack.bgyml"], b"x" * 10), 10 + build.PACK_SIZE_MARGIN)
+        self.assertEqual(build.chain_entry(rstb.Rstb(by_name={base_cs: 5}), [base_cs], b"x" * 10),
+                         10 + build.PACK_SIZE_MARGIN)
+        # Every body file of the puppet merges the chain chain_paths names (its source in puppet_body).
+        pc = {"PhysicsRef": "?Component/Physics/P.engine__component__PhysicsParam.bgyml"}
+        srcs = {path: src for path, (_, src) in build.puppet_body(members, pc, "CoopPuppet_Child").items()}
+        self.assertEqual(srcs[build.body_paths("CoopPuppet_Child")[1]], pc_cs)
+        self.assertEqual(srcs[build.body_paths("CoopPuppet_Child")[2]], pc_cc)
+        # Ruto's liftable param and EnemyCommon's LockOn client merge an in-pack $parent too.
+        ruto = fake_ruto_pack()
+        lift = build.liftable_param(ruto)[0]
+        self.assertEqual(len(build.chain_paths(ruto, lift)), 2)
+        amos = fake_attention_pack()
+        self.assertEqual(len(build.chain_paths(amos, build._client_src("LockOn"))), 2)
+        self.assertEqual(len(build.chain_paths(amos, build._client_src("AutoAim"))), 1)
 
     def test_pack_no_perception(self):
         _, ap, _, _ = build.build_pack(fake_player_pack("Child"), "Child")
@@ -842,13 +1306,14 @@ class TunicExtraTest(unittest.TestCase):
         self.assertIsNone(look_live.gear(lambda name: None, said.append))
 
     def test_gear_names_match_the_module(self):
-        """The module's table (hookshot/src/coop_look_parts.cpp) names the same textures."""
+        """The module's table (hookshot/src/coop_look_parts.cpp) names the same colour textures; the
+        metalness ones after them come with metal.bin (look_metal)."""
         import re
-        from puppet_pack import look_live
+        from puppet_pack import look_live, look_metal
         src = os.path.join(os.path.dirname(__file__), "..", "..", "..", "hookshot", "src", "coop_look_parts.cpp")
         with open(src, encoding="utf-8") as f:
             names = re.findall(r'\{"(Mt_[A-Za-z0-9_.]+)", Format::', f.read())
-        self.assertEqual(tuple(names), look_live.GEAR)
+        self.assertEqual(tuple(names) + look_metal.TEXTURES, look_live.GEAR)
 
     def test_body_boots(self):
         """Each tunic colour's body model names boots of its own, as the module names and marks them
@@ -1186,6 +1651,180 @@ class FullBuildTest(unittest.TestCase):
         m = build.build(self.romfs, os.path.join(self.dir, "mod0"), log=lambda *_: None, tunics=("red",), look_slots=0)
         self.assertIsNone(m["look_items"])
 
+    def test_blade_copies(self):
+        # held-piece: every player item with the game's weapon component (WeaponRef, through its
+        # $parents) gets one copy per player number, `<item>_Blade<n>`, on a model project copy of
+        # its own per number (the game's bytes and textures), read from the romfs; a shield (no
+        # WeaponRef), an enemy's weapon (PerimeterAnalyserRef) and a `_Base` get none.
+        from puppet_pack import look_items, zs
+        plain = zstandard.ZstdCompressor()
+        item = "Weapon_Sword_Kokiri"
+        d = zs.Dicts.from_romfs(self.romfs)
+        ai = byml.loads(d.decompress(build.read(os.path.join(self.romfs, "RSDB/ActorInfo.Product.999.rstbl.byml.zs"))))
+
+        def add(name, project, comps, parent=None):
+            info = f"Component/ModelInfo/{name}.engine__component__ModelInfo.bgyml"
+            ap = {"Components": dict(comps, ModelInfoRef="?" + info)}
+            members = {info: byml.dumps({"FmdbName": project, "ModelProjectName": project})}
+            if parent:
+                ap["$parent"] = "Work/Actor/Weapon_Sword_Base.engine__actor__ActorParam.gyml"
+                members["Actor/Weapon_Sword_Base.engine__actor__ActorParam.bgyml"] = byml.dumps(
+                    {"Components": {"WeaponRef": "?Component/WeaponParam/W.bgyml"}})
+            members[f"Actor/{name}.engine__actor__ActorParam.bgyml"] = byml.dumps(ap)
+            self.write(f"Pack/Actor/{name}.pack.zs", plain.compress(sarc.write(members)))
+            ai.append({"__RowId": name, "ActorName": name, "FmdbName": project, "ModelProjectName": project,
+                       "InstanceHeapSize": 1000})
+
+        add(item, item, {}, parent=True)                                   # WeaponRef from its parent
+        add("Weapon_Sword_KokiriTwin", item, {"WeaponRef": "?W"})          # the same model project
+        add("Weapon_Shield_Wood", "Weapon_Shield_Wood", {"ShieldRef": "?S"})
+        add("Weapon_PoeLamp", item, {"WeaponRef": "?W", "PerimeterAnalyserRef": "?P"})
+        add("Weapon_Sword_Base", item, {"WeaponRef": "?W"})
+        model = b"FRES" + bytes(12) + b"\x1b\x00Mt_Weapon_Sword_Kokiri_Alb\x00" + f"{item}\x00".encode()
+        raw = plain.compress(model)
+        self.write(f"Model/{item}.{item}.bfres.zs", raw)
+        self.write("RSDB/ActorInfo.Product.999.rstbl.byml.zs", plain.compress(byml.dumps(ai)))
+        self.write("RSDB/GameActorInfo.Product.999.rstbl.byml.zs",
+                   plain.compress(byml.dumps([{"__RowId": r["__RowId"]} for r in ai])))
+        mod = os.path.join(self.dir, "modb")
+        said = []
+        m = build.build(self.romfs, mod, log=said.append, tunics=(), look_slots=0, blade_copies=3)
+        out = os.path.join(mod, "romfs")
+        self.assertIsNone(m["look_items"])
+        self.assertEqual(m["blade_items"]["copies"], 3, said)
+        self.assertEqual(m["blade_items"]["actors"], [item, "Weapon_Sword_KokiriTwin"])
+        rows = {r["__RowId"]: r for r in byml.loads(d.decompress(build.read(
+            os.path.join(out, "RSDB/ActorInfo.Product.999.rstbl.byml.zs"))))}
+        t = rstb.Rstb.loads(d.decompress(build.read(os.path.join(
+            out, "System/Resource/ResourceSizeTable.Product.999.Test.rsizetable.zs"))))
+        model_copies = [f for f in m["blade_items"]["files"] if f.startswith("Model/")]
+        self.assertEqual(len(model_copies), 3)   # once per project and number, not per item
+        for n in (1, 2, 3):
+            project = look_items.blade_name(item, n)
+            for name in (item, "Weapon_Sword_KokiriTwin"):
+                actor = look_items.blade_name(name, n)
+                self.assertEqual(rows[actor]["ModelProjectName"], project)
+                self.assertEqual(rows[actor]["FmdbName"], item)
+                files = sarc.read(d.decompress(build.read(os.path.join(out, f"Pack/Actor/{actor}.pack.zs"))))
+                comps = byml.loads(files[f"Actor/{actor}.engine__actor__ActorParam.bgyml"])["Components"]
+                self.assertEqual(byml.loads(files[comps["ModelInfoRef"][1:]]),
+                                 {"FmdbName": item, "ModelProjectName": project})
+            actor = look_items.blade_name(item, n)
+            # The model under the copy's project, byte for byte the game's: the game's textures.
+            self.assertEqual(build.read(os.path.join(out, f"Model/{actor}.{item}.bfres.zs")), raw)
+            for f in (f"Pack/Actor/{actor}.pack", f"Model/{actor}.{item}.bfres"):
+                self.assertGreater(t.get(f) or 0, 0, f)
+        self.assertFalse(os.path.exists(os.path.join(out, f"Pack/Actor/{item}_Blade4.pack.zs")))
+        self.assertEqual(look_items.BLADE_COPIES, 16)   # the protocol's kMaxPlayers
+        for none in ("Weapon_Shield_Wood", "Weapon_PoeLamp", "Weapon_Sword_Base"):
+            self.assertFalse(os.path.exists(os.path.join(out, f"Pack/Actor/{none}_Blade1.pack.zs")), none)
+        m = build.build(self.romfs, os.path.join(self.dir, "modb0"), log=lambda *_: None, tunics=(), blade_copies=0)
+        self.assertIsNone(m["blade_items"])
+
+    def test_look_copy_keeps_the_whole_model_info(self):
+        # held-piece: a copy's ModelInfo is the item's own with only the model project renamed,
+        # its `$parent`s merged in (the Giant's Knife names its model only through one), so the
+        # Biggoron's colour anims and the Giant's broken SubModel stay on the copies.
+        from puppet_pack import look_items
+        mi = "Component/ModelInfo/{}.engine__component__ModelInfo.bgyml"
+        item = "Weapon_Sword_Giant"
+        members = {
+            f"Actor/{item}.engine__actor__ActorParam.bgyml": byml.dumps(
+                {"Components": {"ModelInfoRef": "?" + mi.format(item + "_With_SubModel")}}),
+            mi.format(item + "_With_SubModel"): byml.dumps({
+                "$parent": "Work/" + mi.format(item)[:-len(".bgyml")] + ".gyml",
+                "IsExclusiveControl": True,
+                "ModelVariationAnims": [{"Fmab": "A.fmab", "Frame": 1.0}, {"Fmab": "B.fmab", "Frame": 1.0}],
+                "SubModels": [{"FmdbName": "Weapon_Sword_BrokenBiggoron", "ModelProjectName": "Weapon_Sword_Biggoron",
+                               "SearchModelKey": "Broken"},
+                              {"FmdbName": "Other", "ModelProjectName": "Other"}],
+            }),
+            mi.format(item): byml.dumps({
+                "DebugModelScale": {"X": 1.0, "Y": 1.0, "Z": 1.0},
+                "FmdbName": "Weapon_Sword_Biggoron", "ModelProjectName": "Weapon_Sword_Biggoron",
+                "ModelVariationAnims": [{"Fmab": "A.fmab", "Frame": 1.0}],
+            }),
+        }
+        self.assertEqual(look_items.model_info(members, item)[:2], ("Weapon_Sword_Biggoron", "Weapon_Sword_Biggoron"))
+        pack, ap, info = look_items.copy_pack(members, item, 2)
+        got = byml.loads(info)
+        self.assertNotIn("$parent", got)
+        self.assertEqual(got["FmdbName"], "Weapon_Sword_Biggoron")
+        self.assertEqual(got["ModelProjectName"], f"{item}_Look2")
+        self.assertEqual(got["DebugModelScale"], {"X": 1.0, "Y": 1.0, "Z": 1.0})
+        self.assertTrue(got["IsExclusiveControl"])
+        self.assertEqual([a["Fmab"] for a in got["ModelVariationAnims"]], ["A.fmab", "B.fmab"])   # the child's list
+        self.assertEqual(got["SubModels"][0]["ModelProjectName"], f"{item}_Look2")
+        self.assertEqual(got["SubModels"][0]["FmdbName"], "Weapon_Sword_BrokenBiggoron")
+        self.assertEqual(got["SubModels"][1]["ModelProjectName"], "Other")   # not the item's project: kept
+        self.assertEqual(sarc.read(pack)[look_items.model_info_path(f"{item}_Look2")], info)
+        # Its size-table entry is made from both files (crash-0116-a: build.chain_entry).
+        self.assertEqual(look_items.model_info_chain(members, item),
+                         [mi.format(item + "_With_SubModel"), mi.format(item)])
+        self.assertIn(item, look_items.ITEMS)
+        self.assertIn("Weapon_Sword_BrokenGiant", look_items.ITEMS)
+        # A $parent that is not in the pack, or that loops, is said, not guessed.
+        broken = dict(members)
+        del broken[mi.format(item)]
+        with self.assertRaises(look_items.TunicError):
+            look_items.model_info(broken, item)
+        looped = dict(members)
+        looped[mi.format(item)] = byml.dumps({"$parent": "Work/" + mi.format(item + "_With_SubModel")[:-6] + ".gyml"})
+        with self.assertRaises(look_items.TunicError):
+            look_items.model_info(looped, item)
+
+    def test_look_copy_retargets_its_animations(self):
+        # Row 184: a copy names a model project of its own, so the item's animation project plays on it
+        # only retargeted (as the game's child Epona plays the adult's clips). The copy gets its own
+        # AnimationParam with IsRetarget on every resource; the item's own file stays as it was.
+        from puppet_pack import look_items
+        ap = "Actor/{}.engine__actor__ActorParam.bgyml"
+        mi = "Component/ModelInfo/{}.engine__component__ModelInfo.bgyml"
+        an = "Component/AnimationParam/{}.engine__component__AnimationParam.bgyml"
+        item = "Weapon_Shield_Hylian"
+        game_anim = byml.dumps({"AnimationResources": [{"ModelProjectName": "Weapon_Shield_Hylian_Animation"},
+                                                       {"IsRetarget": True, "ModelProjectName": "Other"}]})
+        members = {
+            ap.format(item): byml.dumps({"Components": {"ModelInfoRef": "?" + mi.format(item),
+                                                        "AnimationRef": "?" + an.format(item),
+                                                        "ASRef": "?AS/Weapon_Shield_Hylian.root.asb"}}),
+            mi.format(item): byml.dumps({"FmdbName": item, "ModelProjectName": item}),
+            an.format(item): game_anim,
+        }
+        actor = look_items.actor_name(item, 1)
+        pack, ap_bytes, _ = look_items.copy_pack(members, item, 1)
+        files = sarc.read(pack)
+        comps = byml.loads(ap_bytes)["Components"]
+        self.assertEqual(comps["AnimationRef"], "?" + an.format(actor))
+        self.assertEqual(comps["ASRef"], "?AS/Weapon_Shield_Hylian.root.asb")   # its AS and AI stay the game's
+        got = byml.loads(files[an.format(actor)])
+        self.assertEqual(got["AnimationResources"],
+                         [{"IsRetarget": True, "ModelProjectName": "Weapon_Shield_Hylian_Animation"},
+                          {"IsRetarget": True, "ModelProjectName": "Other"}])
+        self.assertEqual(files[an.format(item)], game_anim)   # the item's own, untouched
+        self.assertEqual(look_items.item_animation_param(members, item)[0], an.format(item))
+        # A blade copy (copy_pack_as with a shared project) gets the same.
+        pack2, ap2, _ = look_items.copy_pack_as(members, item, "Weapon_Shield_Hylian_Blade1", "P_Blade1")
+        self.assertEqual(byml.loads(ap2)["Components"]["AnimationRef"],
+                         "?" + an.format("Weapon_Shield_Hylian_Blade1"))
+        self.assertIn(an.format("Weapon_Shield_Hylian_Blade1"), sarc.read(pack2))
+        # The swords' AnimationParam has no resources: nothing to retarget, the copy keeps the game's ref.
+        sword = "Weapon_Sword_Kokiri"
+        common = an.format("EquipItemCommon")
+        swords = {
+            ap.format(sword): byml.dumps({"Components": {"ModelInfoRef": "?" + mi.format(sword),
+                                                         "AnimationRef": "?" + common}}),
+            mi.format(sword): byml.dumps({"FmdbName": sword, "ModelProjectName": sword}),
+            common: byml.dumps({}),
+        }
+        self.assertIsNone(look_items.copy_animation_param(swords, sword, look_items.actor_name(sword, 1)))
+        _, sap, _ = look_items.copy_pack(swords, sword, 1)
+        self.assertEqual(byml.loads(sap)["Components"]["AnimationRef"], "?" + common)
+        # No AnimationRef at all (the gauntlets): None, no file.
+        bare = {ap.format(sword): byml.dumps({"Components": {"ModelInfoRef": "?" + mi.format(sword)}}),
+                mi.format(sword): swords[mi.format(sword)]}
+        self.assertIsNone(look_items.copy_animation_param(bare, sword, look_items.actor_name(sword, 1)))
+
     def test_build_from_nup_has_the_gear(self):
         # The 0.11.0 kit made its pack from the player's .nup, which took out only dumpcheck's files:
         # coop_look/gear.bin had the boots alone (your own sword, shields and gauntlets kept the
@@ -1455,7 +2094,7 @@ class FullBuildTest(unittest.TestCase):
                             for i, a in enumerate(actors)], "FilePath": "x"})))
 
     def test_build_quiet_puppets_for_guard_scenes(self):
-        # Issue 150 (review-boss-sync must-fix): with perception (off by default for 0.11) each puppet has a
+        # Issue 150 (review-boss-sync must-fix): with perception (on by default) each puppet has a
         # quiet copy (no perception) and the scenes with a stealth guard are listed for it.
         self.add_perception_and_guards()
         d = zs.Dicts.from_romfs(self.romfs)
@@ -1489,12 +2128,99 @@ class FullBuildTest(unittest.TestCase):
         self.add_perception_and_guards()
         m = build.build(self.romfs, os.path.join(self.dir, "mod_loud"), log=lambda *_: None, perception=False)
         self.assertFalse(m["perception"])
-        # Off by default for 0.11 (a puppet with a gear copy and the slingshot crashed the game with it).
+        # On by default since the lane proof (perception-on-a): the default pack is the perceived one with quiet copies.
         d = build.build(self.romfs, os.path.join(self.dir, "mod_default"), log=lambda *_: None, look_slots=0)
-        self.assertFalse(d["perception"])
-        self.assertEqual(d["quiet_scenes"], [])
+        self.assertTrue(d["perception"])
+        self.assertEqual(d["quiet_scenes"], ["Castle"])
         self.assertEqual(m["quiet_scenes"], [])
         self.assertFalse([a for a in m["actors"] if a["quiet"] or a["perception"]])
+
+    def test_build_body(self):
+        # --puppet-body: every puppet (and its quiet copy) has its body files, each with a size-table entry.
+        zsdic = sarc.read(zstandard.ZstdDecompressor().decompressobj().decompress(self.dicts_raw))
+        pack_dict = zstandard.ZstdCompressionDict(zsdic["pack.zsdic"])
+        for v in ("Child", "Adult"):
+            self.write(f"Pack/Actor/Player_{v}.pack.zs", zstandard.ZstdCompressor(dict_data=pack_dict).compress(
+                sarc.write(with_body(fake_player_pack(v)))))
+        self.add_perception_and_guards()
+        m = build.build(self.romfs, os.path.join(self.dir, "mod_body"), log=lambda *_: None, look_slots=0, body=True)
+        self.assertTrue(m["body"])
+        self.assertTrue(m["actors"])
+        for a in m["actors"]:
+            self.assertEqual(sorted(a["body"]), sorted(build.body_paths(a["actor"])), a["actor"])
+            self.assertTrue(all(size >= build.PACK_SIZE_MARGIN for size in a["body"].values()))
+        d = build.build(self.romfs, os.path.join(self.dir, "mod_nobody"), log=lambda *_: None, look_slots=0)
+        self.assertFalse(d["body"])
+        self.assertFalse([a for a in d["actors"] if a["body"]])
+
+    def test_build_pvp(self):
+        # --puppet-pvp: every puppet (and its quiet copy) has a _Pvp twin, each of its files in the size table.
+        zsdic = sarc.read(zstandard.ZstdDecompressor().decompressobj().decompress(self.dicts_raw))
+        z = zstandard.ZstdCompressor(dict_data=zstandard.ZstdCompressionDict(zsdic["pack.zsdic"]))
+        for v in ("Child", "Adult"):
+            self.write(f"Pack/Actor/Player_{v}.pack.zs", z.compress(sarc.write(with_pvp(fake_player_pack(v), v))))
+        self.add_perception_and_guards()
+        with self.assertRaises(build.BuildError):  # no ATTENTION_SOURCE pack
+            build.build(self.romfs, os.path.join(self.dir, "mod_nopvp_src"), log=lambda *_: None, look_slots=0,
+                        pvp=True)
+        self.write(f"Pack/Actor/{build.ATTENTION_SOURCE}.pack.zs", z.compress(sarc.write(fake_attention_pack())))
+        m = build.build(self.romfs, os.path.join(self.dir, "mod_pvp"), log=lambda *_: None, look_slots=0, pvp=True)
+        self.assertTrue(m["pvp"])
+        names = [a["actor"] for a in m["actors"]]
+        plain = [n for n in names if not n.endswith(build.PVP_SUFFIX)]
+        self.assertTrue(plain)
+        self.assertEqual(sorted(build.pvp_name(n) for n in plain), sorted(set(names) - set(plain)))
+        for a in m["actors"]:
+            if a["actor"].endswith(build.PVP_SUFFIX):
+                sender, clients = build.attention_paths(a["actor"])
+                self.assertEqual(sorted(a["pvp"]), sorted([sender, *clients.values()]), a["actor"])
+                self.assertTrue(all(size >= build.PACK_SIZE_MARGIN for size in a["pvp"].values()))
+                self.assertEqual(sorted(a["body"]), sorted(build.body_paths(a["actor"])))
+            else:
+                self.assertNotIn("pvp", a)
+                self.assertIsNone(a["body"])  # the plain puppet has no body without --puppet-body
+        off = build.build(self.romfs, os.path.join(self.dir, "mod_pvp_off"), log=lambda *_: None, look_slots=0)
+        self.assertNotIn("pvp", off)
+        self.assertEqual([a["actor"] for a in off["actors"]], plain)
+        on_plain = {a["actor"]: a for a in m["actors"] if a["actor"] in plain}
+        for a in off["actors"]:  # the plain puppets as before
+            self.assertEqual(a["pack_bytes"], on_plain[a["actor"]]["pack_bytes"], a["actor"])
+            self.assertEqual(build.read(os.path.join(self.dir, "mod_pvp_off", "romfs", a["pack"])),
+                             build.read(os.path.join(self.dir, "mod_pvp", "romfs", a["pack"])), a["actor"])
+
+    def test_build_liftable_and_pvp_together(self):
+        # --puppet-liftable and --puppet-pvp in one pack: every young puppet and its _Pvp twin are liftable with the
+        # carried pose; the adult ones never; every _Pvp twin has its PvP files.
+        zsdic = sarc.read(zstandard.ZstdDecompressor().decompressobj().decompress(self.dicts_raw))
+        z = zstandard.ZstdCompressor(dict_data=zstandard.ZstdCompressionDict(zsdic["pack.zsdic"]))
+        for v in ("Child", "Adult"):
+            self.write(f"Pack/Actor/Player_{v}.pack.zs", z.compress(sarc.write(with_pvp(fake_player_pack(v), v))))
+        self.add_perception_and_guards()
+        self.write(f"Pack/Actor/{build.ATTENTION_SOURCE}.pack.zs", z.compress(sarc.write(fake_attention_pack())))
+        self.write(f"Pack/Actor/{build.LIFTABLE_SOURCE}.pack.zs", z.compress(sarc.write(fake_ruto_pack())))
+        zd = zstandard.ZstdCompressor(dict_data=zstandard.ZstdCompressionDict(zsdic[build.CARRY_AS_DICT]))
+        self.write(f"AS/Player_{asb_carry.CARRY_VARIANTS[0]}.root.asb.zs", zd.compress(fake_asb()))
+        m = build.build(self.romfs, os.path.join(self.dir, "mod_lift_pvp"), log=lambda *_: None, look_slots=0,
+                        liftable=True, pvp=True)
+        self.assertTrue(m["pvp"])
+        twins = [a for a in m["actors"] if a["actor"].endswith(build.PVP_SUFFIX)]
+        self.assertTrue([a for a in twins if a["from"] == "Player_Child"])
+        self.assertTrue([a for a in twins if a["from"] == "Player_Adult"])
+        for a in m["actors"]:
+            if a["from"] == "Player_Child" and not a["skin"]:
+                self.assertEqual(a["liftable"]["carry"]["as"], asb_carry.CARRY_AS, a["actor"])
+                pack = sarc.read(build.zs.Dicts.from_romfs(self.romfs).decompress(
+                    build.read(os.path.join(self.dir, "mod_lift_pvp", "romfs", a["pack"]))))
+                comps = byml.loads(pack[build.actor_param_path(a["actor"])])["Components"]
+                self.assertEqual(comps["LiftableRef"], "?" + a["liftable"]["param"], a["actor"])
+                self.assertEqual(comps["ASRef"], "?" + asb_carry.CARRY_AS, a["actor"])
+            elif a["from"] == "Player_Adult":
+                self.assertNotIn("liftable", a, a["actor"])
+            if a in twins:
+                sender, clients = build.attention_paths(a["actor"])
+                self.assertEqual(sorted(a["pvp"]), sorted([sender, *clients.values()]), a["actor"])
+            else:
+                self.assertNotIn("pvp", a)
 
     def test_quiet_name(self):
         self.assertEqual(build.quiet_name("CoopPuppet_Child"), "CoopPuppet_ChildQuiet")
@@ -1810,6 +2536,618 @@ class FullBuildTest(unittest.TestCase):
         self.assertEqual([line for line in text.splitlines() if not line.startswith("#")], ["Dun 4 1.00 2.00 3.00"])
         manifest = json.loads(build.read(os.path.join(mod, "coop_puppet.json")))
         self.assertEqual(manifest["rooms"], {"scenes": 1, "rooms": 1, "placements": 1})
+
+    def make_model_mod(self, name="model_mod", exefs=False, change=True):
+        """A made-up character model mod (skin.py): the adult player pointed at a model of its own,
+        the child left as the game's, an AS root replaced in place, new files and an in-place one."""
+        from puppet_pack import zs
+        d = zs.Dicts.from_romfs(self.romfs)
+        plain = zstandard.ZstdCompressor()
+        root = os.path.join(self.dir, name)
+        romfs = os.path.join(root, "romfs")
+
+        def put(rel, data):
+            path = os.path.join(romfs, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(data)
+        pack_dict = zstandard.ZstdCompressionDict(d.by_name["pack.zsdic"].as_bytes())
+        adult = fake_player_pack("Adult")
+        if change:
+            ap_path = "Actor/Player_Adult.engine__actor__ActorParam.bgyml"
+            doc = byml.loads(adult[ap_path])
+            doc["Components"]["ModelInfoRef"] = "?Component/ModelInfo/Player_Mod_Adult.engine__component__ModelInfo.bgyml"
+            doc["Components"]["AnimationRef"] = "?Component/AnimationParam/Player_Mod_Adult.engine__component__AnimationParam.bgyml"
+            adult[ap_path] = byml.dumps(doc)
+            adult["Component/ModelInfo/Player_Mod_Adult.engine__component__ModelInfo.bgyml"] = byml.dumps(
+                {"FmdbName": "Player_Mod_Adult", "ModelProjectName": "Npc_Mod_Adult"})
+            adult["Component/AnimationParam/Player_Mod_Adult.engine__component__AnimationParam.bgyml"] = byml.dumps(
+                {"AnimationResources": [{"IsRetarget": True, "ModelProjectName": "Mod__Adult_01_Animation",
+                                         "RetargetModel": "Skeleton"}]})
+        for v, files in (("Adult", adult), ("Child", fake_player_pack("Child"))):
+            put(f"Pack/Actor/Player_{v}.pack.zs", zstandard.ZstdCompressor(dict_data=pack_dict).compress(sarc.write(files)))
+        put("AS/Player_Adult.root.asb.zs", plain.compress(b"ASB mod root"))
+        put("Model/Npc_Mod_Adult.Player_Mod_Adult.bfres.zs", plain.compress(b"FRES mod model"))
+        put("Model/Mod__Adult_01_Animation.Skeleton.bfres.zs", plain.compress(b"FRES mod anim"))
+        put("Model/Player_Adult.Player_Adult.bfres.zs", plain.compress(b"FRES replaced in place"))
+        put("Mals/USen.Product.110.sarc.zs", plain.compress(b"text"))
+        # Gear: a Goron tunic made for the mod's body (its own model), and a sword it ships unchanged.
+        goron = "Armor_Adult_Goron"
+        g_info = "Component/ModelInfo/Armor_Goron.engine__component__ModelInfo.bgyml"
+        put(f"Pack/Actor/{goron}.pack.zs", plain.compress(sarc.write({
+            f"Actor/{goron}.engine__actor__ActorParam.bgyml": byml.dumps(
+                {"Components": {"ModelInfoRef": "?" + g_info, "ArmorRef": "?Component/ArmorParam/G.bgyml"}}),
+            g_info: byml.dumps({"FmdbName": "Player_Mod_Adult_Goron", "ModelProjectName": "Npc_Mod_Adult"}),
+            "Component/ArmorParam/G.bgyml": byml.dumps({"A": 1})})))
+        put("Model/Npc_Mod_Adult.Player_Mod_Adult_Goron.bfres.zs", plain.compress(b"FRES mod goron"))
+        sword = "Weapon_Sword_Kokiri"
+        s_info = "Component/ModelInfo/Sword.engine__component__ModelInfo.bgyml"
+        put(f"Pack/Actor/{sword}.pack.zs", plain.compress(sarc.write({
+            f"Actor/{sword}.engine__actor__ActorParam.bgyml": byml.dumps({"Components": {"ModelInfoRef": "?" + s_info}}),
+            s_info: byml.dumps({"FmdbName": sword, "ModelProjectName": sword})})))
+        ai = byml.loads(d.decompress(build.read(os.path.join(self.romfs, "RSDB/ActorInfo.Product.999.rstbl.byml.zs"))))
+        if not any(r["__RowId"] == goron for r in ai):
+            ai.append({"__RowId": goron, "ActorName": goron, "FmdbName": "Armor_Adult_Goron",
+                       "ModelProjectName": "Armor_Adult_Goron", "InstanceHeapSize": 1000})
+            ai.append({"__RowId": sword, "FmdbName": sword, "ModelProjectName": sword})
+            self.write("RSDB/ActorInfo.Product.999.rstbl.byml.zs", plain.compress(byml.dumps(ai)))
+            gai = [{"__RowId": r["__RowId"]} for r in ai]
+            self.write("RSDB/GameActorInfo.Product.999.rstbl.byml.zs", plain.compress(byml.dumps(gai)))
+        t = rstb.Rstb()
+        t.set("Model/Npc_Mod_Adult.Player_Mod_Adult.bfres", 777777)
+        t.set("AS/Player_Adult.root.asb", 3000000)
+        put("System/Resource/ResourceSizeTable.Product.999.Test.rsizetable.zs", plain.compress(t.dumps()))
+        if exefs:
+            os.makedirs(os.path.join(root, "exefs"))
+        # The game's own table knows the model the mod replaces in place.
+        tpath = os.path.join(self.romfs, "System/Resource/ResourceSizeTable.Product.999.Test.rsizetable.zs")
+        game = rstb.Rstb.loads(d.decompress(build.read(tpath)))
+        game.set("Model/Player_Adult.Player_Adult.bfres", 50000)
+        game.set("AS/Player_Adult.root.asb", 2000000)
+        self.write("System/Resource/ResourceSizeTable.Product.999.Test.rsizetable.zs", plain.compress(game.dumps()))
+        return root
+
+    def test_build_skin_effects_only_on_request(self):
+        """A mod's own copy of a game effect (a recoloured sword glow) reaches every sword with that
+        effect, so a skin takes it only with skin_effects (--skin-effects), as it is, with a size entry and
+        in the skin's hash."""
+        mod_src = self.make_model_mod()
+        plain = zstandard.ZstdCompressor()
+        rel = "Effect/Weapon_Sword_Master.Test.vsetb.byml.zs"
+        data = b"VFXB red glow" + bytes(51)
+        self.write(rel, plain.compress(b"VFXB game glow" + bytes(50)))
+        path = os.path.join(mod_src, "romfs", *rel.split("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(plain.compress(data))
+        d = zs.Dicts.from_romfs(self.romfs)
+        plain_mod = os.path.join(self.dir, "mod_no_effects")
+        [off] = build.build(self.romfs, plain_mod, log=lambda _l: None, skins=[("Mod", mod_src)], look_slots=0)["skins"]
+        self.assertNotIn(rel, off["files"])
+        self.assertFalse(os.path.exists(os.path.join(plain_mod, "romfs", *rel.split("/"))))
+        fx_mod = os.path.join(self.dir, "mod_effects")
+        [on] = build.build(self.romfs, fx_mod, log=lambda _l: None, skins=[("Mod", mod_src)], look_slots=0,
+                           skin_effects=True)["skins"]
+        self.assertIn(rel, on["files"])
+        self.assertEqual(d.decompress(build.read(os.path.join(fx_mod, "romfs", *rel.split("/")))), data)
+        self.assertNotEqual(on["sha256"], off["sha256"])
+        t = rstb.Rstb.loads(d.decompress(build.read(os.path.join(
+            fx_mod, "romfs", "System/Resource/ResourceSizeTable.Product.999.Test.rsizetable.zs"))))
+        self.assertGreaterEqual(t.get(rel[:-3]) or 0, len(data))
+
+    def test_build_skin_effects_new_replaced_and_other_version(self):
+        """With --skin-effects: a replaced game effect file is taken once; a mod's new effect file is a
+        new file (taken once, not again as an effect: one entry in files, one size entry); a link table
+        made for another game version is skipped with a line, never taken as a new file."""
+        mod_src = self.make_model_mod()
+        plain = zstandard.ZstdCompressor()
+        replaced = "Effect/Weapon_Sword_Master.Test.vsetb.byml.zs"
+        new = "Effect/Mod_Own_Glow.Test.vsetb.byml.zs"
+        table = "ELink2/elink2.Product.999.belnk.zs"
+        other = "ELink2/elink2.Product.998.belnk.zs"
+        self.write(replaced, plain.compress(b"VFXB game glow" + bytes(50)))
+        self.write(table, plain.compress(b"ELNK game table" + bytes(49)))
+        for rel, body in ((replaced, b"VFXB red"), (new, b"VFXB own"), (table, b"ELNK mod"), (other, b"ELNK old")):
+            path = os.path.join(mod_src, "romfs", *rel.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(plain.compress(body + bytes(56)))
+        said = []
+        mod = os.path.join(self.dir, "mod_effects_kinds")
+        [entry] = build.build(self.romfs, mod, log=said.append, skins=[("Mod", mod_src)], look_slots=0,
+                              skin_effects=True)["skins"]
+        for rel in (replaced, new, table):
+            self.assertEqual(entry["files"].count(rel), 1, rel)
+            self.assertTrue(os.path.exists(os.path.join(mod, "romfs", *rel.split("/"))), rel)
+        self.assertNotIn(other, entry["files"])
+        self.assertFalse(os.path.exists(os.path.join(mod, "romfs", *other.split("/"))))
+        self.assertTrue(any(other in line and "left out" in line for line in said), said)
+        # Without the switch the new effect resource still comes (a new file), the game's copies do not.
+        [off] = build.build(self.romfs, os.path.join(self.dir, "mod_effects_off"), log=lambda _l: None,
+                            skins=[("Mod", mod_src)], look_slots=0)["skins"]
+        self.assertEqual([f for f in off["files"] if f.startswith(("Effect/", "ELink2/"))], [new])
+
+    def make_recolour_sword(self, mod_src, game_model=True):
+        """The game's Master Sword on its own model, the dark sword's model in the game (or not),
+        and the mod's sword pack naming the dark model with no model file of its own."""
+        plain = zstandard.ZstdCompressor()
+        sword, dark = "Weapon_Sword_Master", "Weapon_Sword_Master_Dark"
+        info = "Component/ModelInfo/Master.engine__component__ModelInfo.bgyml"
+
+        def sword_pack(model):
+            return plain.compress(sarc.write({
+                f"Actor/{sword}.engine__actor__ActorParam.bgyml": byml.dumps({"Components": {"ModelInfoRef": "?" + info}}),
+                info: byml.dumps({"FmdbName": model, "ModelProjectName": model})}))
+        self.write(f"Pack/Actor/{sword}.pack.zs", sword_pack(sword))
+        if game_model:
+            self.write(f"Model/{dark}.{dark}.bfres.zs", plain.compress(b"FRES game dark sword"))
+        d = zs.Dicts.from_romfs(self.romfs)
+        ai = byml.loads(d.decompress(build.read(os.path.join(self.romfs, "RSDB/ActorInfo.Product.999.rstbl.byml.zs"))))
+        ai.append({"__RowId": sword, "ActorName": sword, "FmdbName": sword, "ModelProjectName": sword})
+        self.write("RSDB/ActorInfo.Product.999.rstbl.byml.zs", plain.compress(byml.dumps(ai)))
+        self.write("RSDB/GameActorInfo.Product.999.rstbl.byml.zs",
+                   plain.compress(byml.dumps([{"__RowId": r["__RowId"]} for r in ai])))
+        with open(os.path.join(mod_src, "romfs", "Pack", "Actor", f"{sword}.pack.zs"), "wb") as f:
+            f.write(sword_pack(dark))
+        return sword, dark, info
+
+    def test_build_skin_gear_on_a_model_the_game_has(self):
+        """A mod that points an item at another model the game already has (a recolour mod: the Master
+        Sword on the dark sword's model) brings no model file of its own; the skin still gets a copy of
+        the item naming the game's model, the game's item stays the game's, and the wearer's own Link
+        is not given the mod's item pack (it would replace the game's item for every Link there)."""
+        mod_src = self.make_model_mod()
+        sword, dark, info = self.make_recolour_sword(mod_src)
+        mod = os.path.join(self.dir, "mod_skin_gear")
+        m = build.build(self.romfs, mod, log=lambda _l: None, skins=[("Mod", mod_src)], look_slots=0)
+        d = zs.Dicts.from_romfs(self.romfs)
+        out = os.path.join(mod, "romfs")
+        [entry] = m["skins"]
+        self.assertEqual(entry["gear"], {"Armor_Adult_Goron": "Armor_Adult_Goron_Skin_Mod",
+                                         sword: f"{sword}_Skin_Mod"})
+        g = sarc.read(d.decompress(build.read(os.path.join(out, f"Pack/Actor/{sword}_Skin_Mod.pack.zs"))))
+        self.assertEqual(byml.loads(g[f"Component/ModelInfo/{sword}_Skin_Mod.engine__component__ModelInfo.bgyml"]),
+                         {"FmdbName": dark, "ModelProjectName": dark})
+        self.assertFalse(os.path.exists(os.path.join(out, f"Model/{dark}.{dark}.bfres.zs")))  # the game's model
+        self.assertFalse(os.path.exists(os.path.join(out, f"Pack/Actor/{sword}.pack.zs")))   # the game's item stays
+        self.assertEqual(list(entry["self_files"]), ["Pack/Actor/Player_Adult.pack.zs"])     # the player pack only
+        self.assertFalse(os.path.exists(os.path.join(mod, f"coop_skin_self/Mod/{sword}.pack.zs")))
+        # A model neither the mod nor the game has: still no copy (the Kokiri sword of make_model_mod).
+        self.assertNotIn("Weapon_Sword_Kokiri", entry["gear"])
+
+    def test_build_skin_gear_asks_the_game_not_the_folder(self):
+        """From a .nup the romfs folder holds only some of the game's files: the game is asked through
+        game_has and game_read (the reader), not the folder. And an item whose model is nowhere is
+        left out with a line."""
+        mod_src = self.make_model_mod()
+        sword, dark, _info = self.make_recolour_sword(mod_src, game_model=False)  # not in the folder
+        said = []
+        mod = os.path.join(self.dir, "mod_skin_reader")
+
+        def has(path):
+            return path == f"Model/{dark}.{dark}.bfres.zs" or os.path.isfile(os.path.join(self.romfs, path))
+        m = build.build(self.romfs, mod, log=said.append, skins=[("Mod", mod_src)], look_slots=0,
+                        game_has=has, game_read=lambda path: build.read(os.path.join(self.romfs, path)))
+        self.assertIn(sword, m["skins"][0]["gear"])
+        # The folder alone (no reader): the model is nowhere, so the sword is left out, said in the log.
+        said = []
+        m = build.build(self.romfs, os.path.join(self.dir, "mod_skin_folder"), log=said.append,
+                        skins=[("Mod", mod_src)], look_slots=0)
+        self.assertNotIn(sword, m["skins"][0]["gear"])
+        self.assertTrue(any(f"{sword} left out" in line and dark in line for line in said), said)
+
+    def test_build_skin(self):
+        from puppet_pack import skin
+        mod_src = self.make_model_mod()
+        mod = os.path.join(self.dir, "mod_skin")
+        said = []
+        m = build.build(self.romfs, mod, log=said.append, skins=[("Mod", mod_src)], look_slots=0)
+        d = zs.Dicts.from_romfs(self.romfs)
+        out = os.path.join(mod, "romfs")
+        [entry] = m["skins"]
+        # Only the age the mod changes; the child is the game's own, left out.
+        self.assertEqual(entry["variants"], ["Adult"])
+        self.assertEqual(entry["models"], {"Adult": "Npc_Mod_Adult"})
+        self.assertEqual(entry["actors"], {"Adult": "CoopPuppet_Adult_Skin_Mod"})
+        self.assertEqual(entry["as"], {"Adult": "AS/CoopSkin_Mod_Adult.root.asb"})
+        self.assertEqual(len(entry["sha256"]), 64)
+        self.assertTrue(any("skin Mod: Adult" in line and "Child unchanged" in line for line in said))
+        # The mod's new files come along; what it replaces in place and its text do not.
+        self.assertEqual(sorted(entry["files"]), ["AS/CoopSkin_Mod_Adult.root.asb.zs",
+                                                  "Model/Mod__Adult_01_Animation.Skeleton.bfres.zs",
+                                                  "Model/Npc_Mod_Adult.Player_Mod_Adult.bfres.zs",
+                                                  "Model/Npc_Mod_Adult.Player_Mod_Adult_Goron.bfres.zs",
+                                                  "Pack/Actor/Armor_Adult_Goron_Skin_Mod.pack.zs"])
+        # Gear: only the piece with a model of the mod's own, as a copy of its own; the game's stays.
+        self.assertEqual(entry["gear"], {"Armor_Adult_Goron": "Armor_Adult_Goron_Skin_Mod"})
+        self.assertFalse(os.path.exists(os.path.join(out, "Pack/Actor/Armor_Adult_Goron.pack.zs")))
+        g = sarc.read(d.decompress(build.read(os.path.join(out, "Pack/Actor/Armor_Adult_Goron_Skin_Mod.pack.zs"))))
+        g_comps = byml.loads(g["Actor/Armor_Adult_Goron_Skin_Mod.engine__actor__ActorParam.bgyml"])["Components"]
+        g_info = "Component/ModelInfo/Armor_Adult_Goron_Skin_Mod.engine__component__ModelInfo.bgyml"
+        self.assertEqual(g_comps["ModelInfoRef"], "?" + g_info)
+        self.assertEqual(byml.loads(g[g_info]), {"FmdbName": "Player_Mod_Adult_Goron", "ModelProjectName": "Npc_Mod_Adult"})
+        self.assertIn("Component/ArmorParam/G.bgyml", g)
+        self.assertFalse(os.path.exists(os.path.join(out, "Model/Player_Adult.Player_Adult.bfres.zs")))
+        self.assertFalse(os.path.exists(os.path.join(out, "AS/Player_Adult.root.asb.zs")))
+        self.assertFalse(os.path.exists(os.path.join(out, "Mals")))
+        self.assertEqual(d.decompress(build.read(os.path.join(out, "AS/CoopSkin_Mod_Adult.root.asb.zs"))), b"ASB mod root")
+        # The skin puppet: the mod's model and animations, its own AS copy.
+        files = sarc.read(d.decompress(build.read(os.path.join(out, "Pack/Actor/CoopPuppet_Adult_Skin_Mod.pack.zs"))))
+        comps = byml.loads(files["Actor/CoopPuppet_Adult_Skin_Mod.engine__actor__ActorParam.bgyml"])["Components"]
+        self.assertEqual(comps["ASRef"], "?AS/CoopSkin_Mod_Adult.root.asb")
+        self.assertEqual(comps["ModelInfoRef"], "?Component/ModelInfo/Player_Mod_Adult.engine__component__ModelInfo.bgyml")
+        self.assertIn("Component/AnimationParam/Player_Mod_Adult.engine__component__AnimationParam.bgyml", files)
+        # The plain puppet keeps the game's AS and model.
+        plain = sarc.read(d.decompress(build.read(os.path.join(out, "Pack/Actor/CoopPuppet_Adult.pack.zs"))))
+        pc = byml.loads(plain["Actor/CoopPuppet_Adult.engine__actor__ActorParam.bgyml"])["Components"]
+        self.assertEqual(pc["ASRef"], "?AS/Player_Adult.root.asb")
+        self.assertEqual(pc["ModelInfoRef"], "?Component/ModelInfo/Adult.engine__component__ModelInfo.bgyml")
+        # ActorInfo: the skin's row names the mod's model and adds its animations.
+        rows = {r["__RowId"]: r for r in byml.loads(d.decompress(build.read(
+            os.path.join(out, "RSDB/ActorInfo.Product.999.rstbl.byml.zs"))))}
+        row = rows["CoopPuppet_Adult_Skin_Mod"]
+        self.assertEqual(row["ModelProjectName"], "Npc_Mod_Adult")
+        self.assertEqual(row["FmdbName"], "Player_Mod_Adult")
+        self.assertIn({"ModelProjectName": "Mod__Adult_01_Animation"}, row["AnimationResources"])
+        self.assertNotIn("ActorName", row)
+        self.assertNotIn("CoopPuppet_Child_Skin_Mod", rows)
+        self.assertEqual(rows["CoopPuppet_Adult"]["FmdbName"], "Player_Adult")
+        g_row = rows["Armor_Adult_Goron_Skin_Mod"]
+        self.assertEqual((g_row["ActorName"], g_row["ModelProjectName"], g_row["FmdbName"], g_row["InstanceHeapSize"]),
+                         ("Armor_Adult_Goron_Skin_Mod", "Npc_Mod_Adult", "Player_Mod_Adult_Goron", 1000))
+        self.assertEqual(rows["Armor_Adult_Goron"]["ModelProjectName"], "Armor_Adult_Goron")
+        self.assertNotIn("Weapon_Sword_Kokiri_Skin_Mod", rows)
+        # Size table: the mod's own entries, the bigger AS entry for the copy.
+        t = rstb.Rstb.loads(d.decompress(build.read(os.path.join(
+            out, "System/Resource/ResourceSizeTable.Product.999.Test.rsizetable.zs"))))
+        self.assertEqual(t.get("Model/Npc_Mod_Adult.Player_Mod_Adult.bfres"), 777777)
+        self.assertEqual(t.get("AS/CoopSkin_Mod_Adult.root.asb"), 3000000)
+        self.assertEqual(t.get("AS/Player_Adult.root.asb"), 2000000)  # the game's own stays
+        self.assertGreater(t.get("Model/Mod__Adult_01_Animation.Skeleton.bfres") or 0, 0)  # no mod entry: from the file
+        self.assertGreater(t.get("Pack/Actor/CoopPuppet_Adult_Skin_Mod.pack") or 0, 0)
+        # Your own Link in the skin: the mod's player pack beside the pack (not in romfs/), its AS on the copy.
+        self.assertEqual(entry["self_files"], {"Pack/Actor/Player_Adult.pack.zs": "coop_skin_self/Mod/Player_Adult.pack.zs"})
+        self.assertFalse(os.path.exists(os.path.join(out, "Pack/Actor/Player_Adult.pack.zs")))
+        own = sarc.read(d.decompress(build.read(os.path.join(mod, "coop_skin_self/Mod/Player_Adult.pack.zs"))))
+        base = byml.loads(own["Actor/Player_Base.engine__actor__ActorParam.bgyml"])["Components"]
+        self.assertEqual(base["ASRef"], "?AS/CoopSkin_Mod_Adult.root.asb")
+        top = byml.loads(own["Actor/Player_Adult.engine__actor__ActorParam.bgyml"])["Components"]
+        self.assertIn("Player_Mod_Adult", top["ModelInfoRef"])
+        self.assertGreater(t.get("Pack/Actor/Player_Adult.pack") or 0, 0)
+        actors = {a["actor"]: a for a in m["actors"]}
+        self.assertEqual(actors["CoopPuppet_Adult_Skin_Mod"]["skin"], "Mod")
+        self.assertIsNone(actors["CoopPuppet_Adult"]["skin"])
+        self.assertIsNone(m["test_skin"])
+        # The same mod gives the same hash.
+        m2 = build.build(self.romfs, os.path.join(self.dir, "mod_skin2"), log=lambda *_: None,
+                         skins=[("Mod", mod_src)], look_slots=0)
+        self.assertEqual(m2["skins"][0]["sha256"], entry["sha256"])
+        self.assertEqual(skin.actor_name("Adult", "Mod"), "CoopPuppet_Adult_Skin_Mod")
+
+    def test_build_skin_quiet_copy(self):
+        # With puppets the game's perception sees, each skin puppet has its quiet copy too.
+        self.add_perception_and_guards()
+        mod_src = self.make_model_mod()
+        m = build.build(self.romfs, os.path.join(self.dir, "mod_skin_q"), log=lambda *_: None,
+                        skins=[("Mod", mod_src)], look_slots=0, perception=True)
+        actors = {a["actor"]: a for a in m["actors"]}
+        self.assertTrue(actors["CoopPuppet_AdultQuiet_Skin_Mod"]["quiet"])
+        self.assertEqual(actors["CoopPuppet_AdultQuiet_Skin_Mod"]["skin"], "Mod")
+        self.assertFalse(actors["CoopPuppet_Adult_Skin_Mod"]["quiet"])
+
+    def test_build_test_skin(self):
+        mod_src = self.make_model_mod()
+        mod = os.path.join(self.dir, "mod_test_skin")
+        m = build.build(self.romfs, mod, log=lambda *_: None, skins=[("Mod", mod_src)], test_skin="mod",
+                        tunics=["red"], look_slots=0)
+        d = zs.Dicts.from_romfs(self.romfs)
+        out = os.path.join(mod, "romfs")
+        self.assertEqual(m["test_skin"], "Mod")
+        for actor in ("CoopPuppet_Adult", "CoopPuppet_Adult_Red"):
+            files = sarc.read(d.decompress(build.read(os.path.join(out, f"Pack/Actor/{actor}.pack.zs"))))
+            comps = byml.loads(files[f"Actor/{actor}.engine__actor__ActorParam.bgyml"])["Components"]
+            self.assertEqual(comps["ASRef"], "?AS/CoopSkin_Mod_Adult.root.asb", actor)
+            self.assertIn("Player_Mod_Adult", comps["ModelInfoRef"], actor)
+        # The child: the mod does not change it, so the child puppets stay Link.
+        files = sarc.read(d.decompress(build.read(os.path.join(out, "Pack/Actor/CoopPuppet_Child.pack.zs"))))
+        comps = byml.loads(files["Actor/CoopPuppet_Child.engine__actor__ActorParam.bgyml"])["Components"]
+        self.assertNotIn("Player_Mod", comps["ModelInfoRef"])
+        with self.assertRaises(build.BuildError):
+            build.build(self.romfs, os.path.join(self.dir, "mod_x"), log=lambda *_: None,
+                        skins=[("Mod", mod_src)], test_skin="Other", look_slots=0)
+
+    def test_build_characters(self):
+        # A Character Select mod beside the pack (made-up data): a puppet per character and age it has a
+        # model file for, the plain puppet with that model project and the list's heap sizes.
+        mods = os.path.join(self.dir, "mods_cs")
+        cs = os.path.join(mods, "OoT Character Select")
+        os.makedirs(os.path.join(cs, "romfs", "Model"))
+        with open(os.path.join(cs, "romfs", "Model", "Player_Adult_C005.Player_Adult.bfres.zs"), "wb") as f:
+            f.write(b"made up")
+        doc = {"format": 1, "mod": "OoT Character Select",
+               "actor_heaps": {v: {"InstanceHeapSize": 0x7000000, "PreActorRenderInfoHeapSize": 0x60000}
+                               for v in build.VARIANTS},
+               "characters": [{"number": 0, "name": "Link"}, {"number": 7, "name": "Made Up", "file": 5},
+                              {"number": 8, "name": "No File", "file": 6}]}
+        with open(os.path.join(cs, build.CHARACTERS_FILE), "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        mod = os.path.join(mods, "pack")
+        found = build.find_characters(mod, log=lambda *_: None)
+        self.assertEqual(found["files"], {5: ["Adult"]})
+        self.assertEqual(found["numbers"], {5: 7})
+        self.assertIsNone(found["colours"])
+        m = build.build(self.romfs, mod, log=lambda *_: None, tunics=["red"], look_slots=0, characters=found)
+        actors = {a["actor"]: a for a in m["actors"]}
+        self.assertEqual(actors["CoopPuppet_Adult_C005"]["character"], 5)
+        self.assertEqual(actors["CoopPuppet_Adult_C005"]["model"], "Player_Adult_C005")
+        self.assertIsNone(actors["CoopPuppet_Adult_C005"]["tunic"])
+        self.assertGreaterEqual(actors["CoopPuppet_Adult_C005"]["instance_heap"], 0x7000000)
+        self.assertNotIn("CoopPuppet_Child_C005", actors)   # no model file for that age
+        self.assertNotIn("CoopPuppet_Adult_C006", actors)   # listed, no file
+        self.assertIsNone(actors["CoopPuppet_Adult"]["character"])
+        self.assertIsNone(actors["CoopPuppet_Adult_Red"]["character"])
+        self.assertEqual(m["characters"]["numbers"], {"5": 7})
+        # The puppet is the game's player pack under its own name: nothing of the mod's is copied.
+        self.assertFalse(os.path.exists(os.path.join(mod, "romfs", "Model", "Player_Adult_C005.Player_Adult.bfres.zs")))
+        # The mod's colour routine for a puppet goes into the manifest as the list names it; one that does not read
+        # leaves the characters out (said in the log).
+        doc["puppet_colours"] = {"offset": 0x2E1A000, "head": "FD7BBFA9" * 4, "bits": 4}
+        with open(os.path.join(cs, build.CHARACTERS_FILE), "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        found = build.find_characters(mod, log=lambda *_: None)
+        self.assertEqual(found["colours"], {"offset": 0x2E1A000, "head": "fd7bbfa9" * 4})
+        m = build.build(self.romfs, os.path.join(mods, "pack3"), log=lambda *_: None, look_slots=0, characters=found)
+        self.assertEqual(m["characters"]["colours"], {"offset": 0x2E1A000, "head": "fd7bbfa9" * 4})
+        doc["puppet_colours"]["head"] = "xyz"
+        with open(os.path.join(cs, build.CHARACTERS_FILE), "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        self.assertIsNone(build.find_characters(mod, log=lambda *_: None))
+        del doc["puppet_colours"]
+        # Nothing of the mod's tables without copies of them in its romfs: the game's rows, its Player rows raised.
+        d = zs.Dicts.from_romfs(self.romfs)
+        out_ai = {r["__RowId"]: r for r in byml.loads(d.decompress(build.read(
+            os.path.join(mod, "romfs", "RSDB/ActorInfo.Product.999.rstbl.byml.zs"))))}
+        self.assertEqual(build._num(out_ai["Player_Adult"]["InstanceHeapSize"]), 0x7000000)
+        self.assertEqual(build._num(out_ai["Player_Child"]["PreActorRenderInfoHeapSize"]), 0x60000)
+        self.assertEqual(out_ai["Player_Adult"]["FmdbName"], "Player_Adult")   # the rest of the row as the game's
+        self.assertEqual(out_ai["Animal"], {"__RowId": "Animal", "CalcRadius": 1.0})
+        # Another mod's list, or another format, is not ours.
+        doc["mod"] = "Something Else"
+        with open(os.path.join(cs, build.CHARACTERS_FILE), "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        self.assertIsNone(build.find_characters(mod, log=lambda *_: None))
+        m = build.build(self.romfs, os.path.join(mods, "pack2"), log=lambda *_: None, look_slots=0)
+        self.assertIsNone(m["characters"])
+
+    def test_build_characters_keeps_the_mods_tables(self):
+        # Review of #299 (2, 3): the pack's ActorInfo, GameActorInfo and size table replace the mod's own copies, so
+        # the mod's rows and entries go into the pack's (solo too: the player's own Link keeps the mod's heaps).
+        plain = zstandard.ZstdCompressor()
+        mods = os.path.join(self.dir, "mods_cs2")
+        cs = os.path.join(mods, "OoT Character Select")
+        romfs = os.path.join(cs, "romfs")
+        os.makedirs(os.path.join(romfs, "Model"))
+        os.makedirs(os.path.join(romfs, "RSDB"))
+        os.makedirs(os.path.join(romfs, "System", "Resource"))
+        for name, data in (("Player_Adult_C005.Player_Adult.bfres", b"x" * 300),
+                           ("Player_Child_C009.Player_Child.bfres", b"y" * 5000)):
+            with open(os.path.join(romfs, "Model", name + ".zs"), "wb") as f:
+                f.write(plain.compress(data))
+        doc = {"format": 1, "mod": "OoT Character Select",
+               "actor_heaps": {"Adult": {"InstanceHeapSize": 0x1000000, "PreActorRenderInfoHeapSize": 0x60000},
+                               "Child": {"InstanceHeapSize": 0x100, "PreActorRenderInfoHeapSize": 0x60000}},
+               "characters": [{"number": 7, "file": 5}, {"number": 20, "file": 9}]}
+        with open(os.path.join(cs, build.CHARACTERS_FILE), "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        d = zs.Dicts.from_romfs(self.romfs)
+        ai = byml.loads(d.decompress(build.read(os.path.join(self.romfs, "RSDB/ActorInfo.Product.999.rstbl.byml.zs"))))
+        mod_ai = [dict(r) for r in ai]
+        for r in mod_ai:
+            if r["__RowId"] == "Player_Adult":
+                r["InstanceHeapSize"] = 0x2000000      # larger than characters.json's: kept
+            if r["__RowId"] == "Player_Base":
+                r["InstanceHeapSize"] = 7000000        # any row the mod changed
+        mod_ai.append({"__RowId": "Cs_MadeUp", "InstanceHeapSize": 5})   # a row the mod adds
+        with open(os.path.join(romfs, "RSDB", "ActorInfo.Product.999.rstbl.byml.zs"), "wb") as f:
+            f.write(plain.compress(byml.dumps(mod_ai)))
+        t = rstb.Rstb()
+        t.set("Model/Player_Adult_C005.Player_Adult.bfres", 123456)   # the mod's own entry for its model
+        t.set("Layout/MadeUp.bflyt", 999)                             # and for any file of its own
+        t.set("Actor/Player_Base.engine__actor__ActorParam.bgyml", 5)  # smaller than the game's: the game's stays
+        with open(os.path.join(romfs, "System", "Resource", "ResourceSizeTable.Product.999.Test.rsizetable.zs"), "wb") as f:
+            f.write(plain.compress(t.dumps()))
+        mod = os.path.join(mods, "pack")
+        found = build.find_characters(mod, log=lambda *_: None)
+        self.assertEqual(found["numbers"], {5: 7, 9: 20})
+        said = []
+        m = build.build(self.romfs, mod, log=said.append, look_slots=0, characters=found)
+        self.assertEqual(m["characters"]["numbers"], {"5": 7, "9": 20})
+        self.assertIn("CoopPuppet_Child_C009", {a["actor"] for a in m["actors"]})
+        out_ai = {r["__RowId"]: r for r in byml.loads(d.decompress(build.read(
+            os.path.join(mod, "romfs", "RSDB/ActorInfo.Product.999.rstbl.byml.zs"))))}
+        self.assertEqual(build._num(out_ai["Player_Adult"]["InstanceHeapSize"]), 0x2000000)
+        self.assertEqual(build._num(out_ai["Player_Child"]["InstanceHeapSize"]), 5692448)   # the game's was larger
+        self.assertEqual(build._num(out_ai["Player_Child"]["PreActorRenderInfoHeapSize"]), 0x60000)
+        self.assertEqual(build._num(out_ai["Player_Base"]["InstanceHeapSize"]), 7000000)
+        self.assertEqual(out_ai["Cs_MadeUp"], {"__RowId": "Cs_MadeUp", "InstanceHeapSize": 5})
+        self.assertIn("CoopPuppet_Adult_C005", out_ai)                 # the pack's own rows too
+        self.assertIn("CoopPuppet_Adult", out_ai)
+        table = rstb.Rstb.loads(d.decompress(build.read(os.path.join(
+            mod, "romfs", "System/Resource/ResourceSizeTable.Product.999.Test.rsizetable.zs"))))
+        self.assertEqual(table.get("Model/Player_Adult_C005.Player_Adult.bfres"), 123456)
+        self.assertEqual(table.get("Model/Player_Child_C009.Player_Child.bfres"), 5024 + build.PACK_SIZE_MARGIN)
+        self.assertEqual(table.get("Layout/MadeUp.bflyt"), 999)
+        self.assertEqual(table.get("Actor/Player_Base.engine__actor__ActorParam.bgyml"), 13336)
+        self.assertTrue(any("size-table entries from OoT Character Select" in line for line in said), said)
+        # A size table for another game version: only the model files are sized (from the files).
+        os.rename(os.path.join(romfs, "System", "Resource", "ResourceSizeTable.Product.999.Test.rsizetable.zs"),
+                  os.path.join(romfs, "System", "Resource", "ResourceSizeTable.Product.998.Test.rsizetable.zs"))
+        mod2 = os.path.join(mods, "pack2")
+        build.build(self.romfs, mod2, log=lambda *_: None, look_slots=0, characters=build.find_characters(mod2))
+        table = rstb.Rstb.loads(d.decompress(build.read(os.path.join(
+            mod2, "romfs", "System/Resource/ResourceSizeTable.Product.999.Test.rsizetable.zs"))))
+        self.assertEqual(table.get("Model/Player_Adult_C005.Player_Adult.bfres"), 320 + build.PACK_SIZE_MARGIN)
+        self.assertIsNone(table.get("Layout/MadeUp.bflyt"))
+        # Without the mod (--no-characters, or none installed): the game's Player rows, as before.
+        mod3 = os.path.join(self.dir, "plain_pack")
+        build.build(self.romfs, mod3, log=lambda *_: None, look_slots=0)
+        out_ai = {r["__RowId"]: r for r in byml.loads(d.decompress(build.read(
+            os.path.join(mod3, "romfs", "RSDB/ActorInfo.Product.999.rstbl.byml.zs"))))}
+        self.assertEqual(build._num(out_ai["Player_Adult"]["InstanceHeapSize"]), 10245064)
+        self.assertNotIn("PreActorRenderInfoHeapSize", out_ai["Player_Child"])
+        self.assertNotIn("Cs_MadeUp", out_ai)
+
+    def test_skin_refusals(self):
+        cases = [
+            (("Mod", self.make_model_mod("with_code", exefs=True)), "exefs"),
+            (("Mod", self.make_model_mod("unchanged", change=False)), "does not change the player's model"),
+            (("Bad-Id", self.make_model_mod("bad_id")), "skin id"),
+            (("Mod", os.path.join(self.dir, "nothing_here")), "no romfs folder"),
+        ]
+        # A skin that cannot be built is left out with a line; the pack is built without it.
+        for i, (sk, words) in enumerate(cases):
+            said = []
+            m = build.build(self.romfs, os.path.join(self.dir, f"mod_r{i}"), log=said.append,
+                            skins=[sk], look_slots=0)
+            self.assertEqual(m["skins"], [])
+            self.assertTrue(any(f"skin {sk[0]}: left out" in s and words in s for s in said), said)
+        good = self.make_model_mod("twice")
+        said = []
+        m = build.build(self.romfs, os.path.join(self.dir, "mod_r9"), log=said.append,
+                        skins=[("Mod", good), ("mod", good)], look_slots=0)
+        self.assertEqual([e["id"] for e in m["skins"]], ["Mod"])
+        self.assertTrue(any("skin mod: left out" in s for s in said), said)
+
+    def test_broken_skin_costs_only_itself(self):
+        # One broken model (here a size table that does not decode) is left out; the good one is built
+        # whole, and nothing of the broken one is in the pack.
+        good = self.make_model_mod("good")
+        bad = self.make_model_mod("bad")
+        table = os.path.join(bad, "romfs", "System", "Resource")
+        os.makedirs(table, exist_ok=True)
+        with open(os.path.join(table, "ResourceSizeTable.Product.999.Test.rsizetable.zs"), "wb") as f:
+            f.write(b"not a table")
+        mod = os.path.join(self.dir, "mod_broken")
+        said = []
+        m = build.build(self.romfs, mod, log=said.append, skins=[("Bad", bad), ("Good", good)], look_slots=0)
+        self.assertEqual([e["id"] for e in m["skins"]], ["Good"])
+        self.assertTrue(any("skin Bad: left out" in s and "size table" in s for s in said), said)
+        self.assertFalse(os.path.exists(os.path.join(mod, "romfs", "AS", "CoopSkin_Bad_Adult.root.asb.zs")))
+        # --test-skin naming the skin that was left out says so (not "no --skin with that id").
+        with self.assertRaisesRegex(build.BuildError, "left out"):
+            build.build(self.romfs, os.path.join(self.dir, "mod_broken2"), log=lambda *_: None,
+                        skins=[("Bad", bad), ("Good", good)], test_skin="bad", look_slots=0)
+
+    def test_reader_has_is_exact(self):
+        # "Does the game have this file": an exact name, never a glob pattern. Through the real readers the
+        # build is given (a stand-in reader once hid that the .nup one has no listdir, and every skin was left out).
+        from puppet_pack import hud
+
+        class Nup:
+            def listdir(self, d):
+                if d not in ("Model",):
+                    raise KeyError(d)
+                return {"A[1].bfres.zs": ("f", 0), "Sub": ("d", 1)}
+        root = os.path.join(self.dir, "reader_romfs")
+        os.makedirs(os.path.join(root, "Model", "Sub"))
+        with open(os.path.join(root, "Model", "A[1].bfres.zs"), "wb") as f:
+            f.write(b"x")
+        for r in (hud.NupReader(Nup()), hud.DirReader(root)):
+            self.assertTrue(build._reader_has(r, "Model/A[1].bfres.zs"), r)
+            self.assertFalse(build._reader_has(r, "Model/A*.bfres.zs"), r)
+            self.assertFalse(build._reader_has(r, "Model/Sub"), r)
+            self.assertFalse(build._reader_has(r, "Nope/A.bfres.zs"), r)
+
+    def test_main_builds_a_skin(self):
+        # Review of #276: from the command line every --skin was "left out: AttributeError: 'DirReader'
+        # object has no attribute 'listdir'" (the tests called build.build directly). main, as players run it.
+        mod_src = self.make_model_mod()
+        mod = os.path.join(self.dir, "mod_main_skin")
+        self.assertEqual(build.main(["--romfs", self.romfs, "--mod-dir", mod, "--any-version",
+                                     "--skin", f"Mod={mod_src}"]), 0)
+        with open(os.path.join(mod, "coop_puppet.json"), encoding="utf-8") as f:
+            manifest = json.load(f)
+        self.assertEqual([s["id"] for s in manifest["skins"]], ["Mod"])
+        self.assertTrue(os.path.exists(os.path.join(mod, "romfs", "Pack", "Actor", "CoopPuppet_Adult_Skin_Mod.pack.zs")))
+
+    def test_skin_table_and_files(self):
+        from puppet_pack import skin
+        # The size table named like the game's, else the newest version's.
+        game = "System/Resource/ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs"
+        older = "System/Resource/ResourceSizeTable.Product.110.Nin_Ounce_NVN2.rsizetable.zs"
+        newer = "System/Resource/ResourceSizeTable.Product.120.Nin_Ounce_NVN2.rsizetable.zs"
+        self.assertEqual(skin.pick_table([older, game, newer], game), game)
+        self.assertEqual(skin.pick_table([older, newer], game), newer)
+        self.assertEqual(skin.pick_table([older, newer]), newer)
+        self.assertIsNone(skin.pick_table([]))
+        # A file the game has is a replacement even when its size table does not list it.
+        sk = skin.Skin("S", self.dir, {}, None, ["Model/New.bfres.zs", "Model/Replaced.bfres.zs"])
+
+        class NoTable:
+            def get(self, _):
+                return None
+        have = {"Model/Replaced.bfres.zs"}
+        self.assertEqual(skin.new_files(sk, NoTable(), game_has=lambda p: p in have), ["Model/New.bfres.zs"])
+        # Symlinks in a mod folder are skipped.
+        root = os.path.join(self.dir, "links")
+        os.makedirs(os.path.join(root, "Model"))
+        with open(os.path.join(root, "Model", "a.bfres.zs"), "wb") as f:
+            f.write(b"x")
+        try:
+            os.symlink(os.path.join(root, "Model", "a.bfres.zs"), os.path.join(root, "Model", "b.bfres.zs"))
+        except (OSError, NotImplementedError):
+            self.skipTest("this system makes no symlinks")
+        self.assertEqual(skin._walk(root), ["Model/a.bfres.zs"])
+
+    def test_two_versions_of_one_mod(self):
+        # Outfit variants of one mod name their models the same: identical files are shared, and the skin
+        # with a model file of other contents under the same path gets its model project under its own name.
+        a = self.make_model_mod("version_a")
+        b = self.make_model_mod("version_b")
+        m = build.build(self.romfs, os.path.join(self.dir, "mod_v1"), log=lambda *_: None,
+                        skins=[("A", a), ("B", b)], look_slots=0)
+        self.assertEqual([e["id"] for e in m["skins"]], ["A", "B"])
+        self.assertIn("Model/Npc_Mod_Adult.Player_Mod_Adult.bfres.zs", m["skins"][1]["files"])
+        with open(os.path.join(b, "romfs", "Model", "Npc_Mod_Adult.Player_Mod_Adult.bfres.zs"), "wb") as f:
+            f.write(zstandard.ZstdCompressor().compress(b"FRES another outfit"))
+        # Both add a model under the game's own Player_Adult project, of other contents: that project is not
+        # renamed (it names the game's own files too); B uses A's copy.
+        for mod_dir, body in ((a, b"FRES npc link a"), (b, b"FRES npc link b")):
+            with open(os.path.join(mod_dir, "romfs", "Model", "Player_Adult.Npc_Link_Adult.bfres.zs"), "wb") as f:
+                f.write(zstandard.ZstdCompressor().compress(body))
+        said = []
+        m = build.build(self.romfs, os.path.join(self.dir, "mod_v2"), log=said.append,
+                        skins=[("A", a), ("B", b)], look_slots=0)
+        # Both are built: B's model project gets a name of its own, and every name of it in B's packs follows.
+        self.assertEqual([e["id"] for e in m["skins"]], ["A", "B"])
+        self.assertEqual(m["skins"][1]["renamed"], {"Npc_Mod_Adult": "Npc_Mod_Adult_B"})
+        self.assertEqual(m["skins"][0]["renamed"], {})
+        self.assertIn("Model/Npc_Mod_Adult_B.Player_Mod_Adult.bfres.zs", m["skins"][1]["files"])
+        self.assertIn("Model/Npc_Mod_Adult.Player_Mod_Adult.bfres.zs", m["skins"][0]["files"])
+        self.assertEqual(m["skins"][1]["models"], {"Adult": "Npc_Mod_Adult_B"})
+        self.assertTrue(any("skin B: model project Npc_Mod_Adult -> Npc_Mod_Adult_B" in s for s in said), said)
+        self.assertTrue(any("skin B: Model/Player_Adult.Npc_Link_Adult.bfres.zs differ" in s for s in said), said)
+        self.assertIn("Model/Player_Adult.Npc_Link_Adult.bfres.zs", m["skins"][0]["files"])
+        self.assertNotIn("Model/Player_Adult.Npc_Link_Adult.bfres.zs", m["skins"][1]["files"])
+        out = os.path.join(self.dir, "mod_v2", "romfs")
+        d = zs.Dicts.from_romfs(self.romfs)
+        self.assertEqual(d.decompress(build.read(os.path.join(out, "Model/Npc_Mod_Adult_B.Player_Mod_Adult.bfres.zs"))),
+                         b"FRES another outfit")
+        rows = {r["__RowId"]: r for r in byml.loads(d.decompress(build.read(
+            os.path.join(out, "RSDB/ActorInfo.Product.999.rstbl.byml.zs"))))}
+        self.assertEqual(rows["CoopPuppet_Adult_Skin_B"]["ModelProjectName"], "Npc_Mod_Adult_B")
+        self.assertEqual(rows["CoopPuppet_Adult_Skin_A"]["ModelProjectName"], "Npc_Mod_Adult")
+        self.assertEqual(rows["Armor_Adult_Goron_Skin_B"]["ModelProjectName"], "Npc_Mod_Adult_B")
+        g = sarc.read(d.decompress(build.read(os.path.join(out, "Pack/Actor/Armor_Adult_Goron_Skin_B.pack.zs"))))
+        info = byml.loads(g["Component/ModelInfo/Armor_Adult_Goron_Skin_B.engine__component__ModelInfo.bgyml"])
+        self.assertEqual(info["ModelProjectName"], "Npc_Mod_Adult_B")
+
+    def test_skin_cli(self):
+        mod_src = self.make_model_mod()
+        quiet = io.StringIO()
+        with contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
+            self.assertEqual(build.main(["--romfs", self.romfs, "--mod-dir", os.path.join(self.dir, "cli"),
+                                         "--any-version", "--no-hud", "--skin", "noequals"]), 2)
 
     def test_not_a_romfs(self):
         with self.assertRaises(build.BuildError):
@@ -2220,6 +3558,33 @@ class DungeonRoomsTest(unittest.TestCase):
                 best = min(pts, key=lambda q: (q[1][0] - p[0]) ** 2 + (2 * (q[1][1] - p[1])) ** 2
                            + (q[1][2] - p[2]) ** 2)
                 self.assertEqual(best[0], room, f"{scene} {p}")
+
+
+class PlaceRoomsTest(unittest.TestCase):
+    """deku-ladder: a live place's own room is its room graph's vote, kept only when it is not a tie and our Link
+    near the place is guessed in that room (review round 5)."""
+
+    def test_a_tie_is_no_room(self):
+        self.assertIsNone(place_rooms.choose({3: 1, 2: 1}))  # Jabu's GreenTentacle asker
+        self.assertIsNone(place_rooms.choose({}))
+        self.assertEqual(place_rooms.choose({17: 3, 5: 1}), 17)
+
+    def test_a_room_link_is_never_in_near_the_place_is_not_kept(self):
+        # Rooms 5 and 6 around the place; room 7's only placement 45 m away (Ganon's BarrierRemove_Water).
+        points = [(5, 0.0, 0.0, 0.0), (5, 6.0, 0.0, 0.0), (6, 0.0, 0.0, 8.0), (7, 45.0, 0.0, 0.0)]
+        room, why = place_rooms.place_room({7: 1}, points, (0.0, 0.0, 0.0))
+        self.assertEqual(room, -1)
+        self.assertIn("voted", why)
+        room, _ = place_rooms.place_room({5: 2, 6: 1}, points, (0.0, 0.0, 0.0))
+        self.assertEqual(room, 5)
+        room, why = place_rooms.place_room({5: 1, 6: 1}, points, (0.0, 0.0, 0.0))
+        self.assertEqual((room, why[:5]), (-1, "a tie"))
+
+    def test_the_guess_is_coop_rooms(self):
+        points = [(1, 0.0, 0.0, 0.0), (2, 0.0, 4.0, 0.0)]
+        self.assertEqual(place_rooms.guess(points, (0.0, 1.5, 0.0)), 1)  # height counts twice
+        self.assertEqual(place_rooms.guess(points, (0.0, 2.5, 0.0)), 2)
+        self.assertIsNone(place_rooms.guess(points, (30.0, 0.0, 0.0)))  # beyond kFar
 
 
 if __name__ == "__main__":

@@ -27,12 +27,12 @@ kit_new_password() {
 # the traffic).
 kit_server_access() {
     KA_ALLOW='' KA_BIND='' KA_PASSWORD='' KA_PASSWORD_SET=0 KA_UPNP=1 KA_INVITE=1 KA_STUN=''
-    KA_RELAY='' KA_RELAY_KEY='' KA_PVP=0 KA_LOOKUP=1
+    KA_RELAY='' KA_RELAY_KEY='' KA_RELAY_ROOM='' KA_APPROVE=0 KA_PVP=0 KA_LOOKUP=1
     [[ -f $1 ]] || return 0
     local line key value
     while IFS= read -r line || [[ -n $line ]]; do
         line=${line%$'\r'}
-        [[ $line =~ ^[[:space:]]*(server_allow|server_bind|server_password|upnp|invite|stun_servers|relay|relay_key|pvp|public_address_lookup)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+        [[ $line =~ ^[[:space:]]*(server_allow|server_bind|server_password|upnp|invite|stun_servers|relay|relay_key|relay_room|approve_joins|pvp|public_address_lookup)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
         key=${BASH_REMATCH[1]} value=${BASH_REMATCH[2]}
         value=${value%"${value##*[![:space:]]}"}
         case $key in
@@ -44,6 +44,8 @@ kit_server_access() {
             stun_servers) KA_STUN=$value ;;
             relay) KA_RELAY=$value ;;
             relay_key) KA_RELAY_KEY=$value ;;
+            relay_room) KA_RELAY_ROOM=$value ;;
+            approve_joins) [[ $value =~ ^(on|yes|1|true)$ ]] && KA_APPROVE=1 || KA_APPROVE=0 ;;
             pvp) [[ $value =~ ^(on|yes|1|true)$ ]] && KA_PVP=1 || KA_PVP=0 ;;
             public_address_lookup) [[ $value =~ ^(no|off|false|0)$ ]] && KA_LOOKUP=0 ;;
         esac
@@ -93,8 +95,19 @@ kit_hosting_args() {
         else
             HOSTING_ARGS+=(--relay-via "$KA_RELAY")
             [[ -n $KA_RELAY_KEY ]] && HOSTING_ARGS+=(--relay-key-env OOT_COOP_RELAY_KEY)
-            HOSTING_NOTES+=("Relay (relay = $KA_RELAY): your join code shows in the server's lines (CODE@relay).")
+            if [[ -n $KA_RELAY_ROOM && ! $KA_RELAY_ROOM =~ ^[A-Za-z0-9_-]{3,24}$ ]]; then
+                HOSTING_NOTES+=("relay_room = '$KA_RELAY_ROOM' is not a room name (3 to 24 letters, digits, - or _); not used.")
+            elif [[ -n $KA_RELAY_ROOM ]]; then
+                HOSTING_ARGS+=(--relay-room "$KA_RELAY_ROOM")
+                HOSTING_NOTES+=("Relay (relay = $KA_RELAY), room '$KA_RELAY_ROOM': friends join with $KA_RELAY_ROOM@$KA_RELAY (Join.bat).")
+            fi
+            [[ -z $KA_RELAY_ROOM ]] && HOSTING_NOTES+=("Relay (relay = $KA_RELAY): your join code shows in the server's lines (CODE@relay).")
         fi
+    fi
+    if [[ $KA_APPROVE == 1 ]]; then
+        HOSTING_ARGS+=(--approve-joins)
+        HOSTING_NOTES+=("approve_joins = on: each new player waits until you type /allow or /deny in your game's chat"
+            '(60 seconds, then they are turned away). Add "always" to remember the answer until the server stops.')
     fi
     return 0
 }

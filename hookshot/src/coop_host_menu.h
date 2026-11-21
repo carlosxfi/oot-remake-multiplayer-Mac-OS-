@@ -50,6 +50,10 @@ struct Hooks {
     // the same helper nonce and port each time (RejoinIds). Empty: random.
     std::function<std::string()> client_id;
     std::uint64_t direct_ms = 3000;
+    // (Navi) This game's New Game+ level (coop_ngplus.h), told to our server each round for everyone. Empty: 0.
+    std::function<std::uint8_t()> ngplus_level;
+    // The host changed the join password while hosting: this game's own client takes it for its reconnects.
+    std::function<void(const std::string&)> password_changed;
 };
 
 // Most players at once for a server the title menu's Host starts: the options' number (1 to 16, more taken as 16),
@@ -66,6 +70,10 @@ public:
     int HostStart(const HosCoopHostOptions* options);
     int Join(const HosCoopJoinOptions* options);
     int Answer(const char* code);
+    // The host's new join password while hosting (the pause menu's Session view): players who join from now on
+    // need it, players already in stay in; the invite code is made again. 1: taken (the host thread sets it at its
+    // next round; the status' password and message say when); 0: not hosting or not a password (message says why).
+    int SetPassword(const char* password);
     void Leave();
     void Status(HosCoopStatus* out) const;
 
@@ -74,15 +82,26 @@ public:
 
 private:
     struct HostJob {
-        std::string name, password, relay_via, relay_key;
+        std::string name, password, relay_via, relay_key, relay_room, relay_list;
         std::uint16_t port = 0;
-        bool upnp = false, invite = false, pvp = false;
+        bool upnp = false, invite = false, pvp = false, approve_joins = false;
+        bool same_network_open = false;   // (players from a private address join without the password: chosen only)
         std::uint8_t max_players = 0;  // HostMaxPlayers'
         std::uint32_t pose_upload_kbps = 0;
+        bool public_game = false;   // (HosCoopHostOptions::public_game)
+        std::string bans_file;      // (HosCoopHostOptions::bans_file)
     };
     struct JoinJob {
         std::string name, password;
         coop::server::nat::Addr host;
+    };
+    // "<join code or room>@relay": the relay lets this PC's address in, then the game connects to the relay.
+    // The fields of relay_link.hpp's RelayJoin, which this header does not include: it brings ENet, and with it
+    // windows.h's min and max, into every file that includes this one (coop_hookshot.cpp).
+    struct RelayJoinJob {
+        std::string name, password;
+        std::string code, room, relay_host;
+        std::uint16_t relay_port = 0;
     };
     bool Busy(const char* what);
     void StopThread();  // with calls_ held
@@ -90,6 +109,7 @@ private:
     void Say(const std::string& text) const;
     void RunHost(HostJob job);
     void RunJoin(JoinJob job);
+    void RunRelayJoin(RelayJoinJob job);
     std::vector<coop::server::nat::Addr> StunServers() const;
     std::string NameOr(const char* given) const;
 
@@ -100,6 +120,7 @@ private:
     std::mutex calls_;  // one start, join or leave at a time (the menu and the game's exit)
     mutable std::mutex mutex_;
     std::deque<std::string> answers_;  // pasted, for the host thread
+    std::optional<std::string> new_password_;  // the host's new join password, for the host thread
     HosCoopStatus status_{};
 };
 

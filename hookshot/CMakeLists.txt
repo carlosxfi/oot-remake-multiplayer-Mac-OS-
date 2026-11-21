@@ -27,14 +27,24 @@ foreach(line IN LISTS _coop_lines)
 endforeach()
 list(REMOVE_DUPLICATES _coop_sources)
 
-add_library(hookshot_coop MODULE src/coop_hookshot.cpp src/coop_draw.cpp src/coop_map_page.cpp src/coop_dbno_draw.cpp src/coop_png.cpp src/coop_chatbox.cpp src/coop_cheats_panel.cpp
+set(_coop_module_type MODULE)
+if(APPLE)
+  set(_coop_module_type SHARED)
+endif()
+add_library(hookshot_coop ${_coop_module_type} src/coop_hookshot.cpp src/coop_draw.cpp src/coop_map_page.cpp src/coop_dbno_draw.cpp src/coop_png.cpp src/coop_window_brand.cpp src/coop_chatbox.cpp src/coop_cheats_panel.cpp
   src/coop_host_menu.cpp src/coop_title.cpp src/coop_title_menu.cpp src/coop_input.cpp src/coop_pause.cpp
-  src/coop_pause_menu.cpp src/coop_pause_files.cpp src/coop_i18n.cpp
+  src/coop_pause_menu.cpp src/coop_original.cpp src/coop_pause_files.cpp src/coop_i18n.cpp src/coop_null_page.cpp
   src/coop_mod_json.cpp src/coop_mod_library.cpp src/coop_mods.cpp src/coop_mod_plugins.cpp src/coop_mod_guard.cpp
+  src/coop_mod_screens.cpp
   src/coop_mods_runtime.cpp src/coop_rando.cpp src/coop_mods_tab.cpp src/coop_mods_tab_module.cpp
   src/coop_lobby_tab.cpp src/coop_lobby_tab_module.cpp
+  src/coop_pause_tab.cpp src/coop_pause_tab_module.cpp src/coop_title_native.cpp
+  src/coop_auto_rejoin.cpp src/coop_lan.cpp src/coop_lan_net.cpp src/coop_room_list.cpp src/coop_browse.cpp src/coop_longshot_settings.cpp
   src/coop_look.cpp src/coop_look_live.cpp src/coop_look_tunic.cpp src/coop_look_paint.cpp src/coop_look_parts.cpp src/coop_look_menu.cpp src/coop_look_view.cpp
   ${_coop_sources})
+if(APPLE)
+  target_sources(hookshot_coop PRIVATE src/coop_client_status.cpp)
+endif()
 # compat/ first: its core/ and common/ headers stand in for the emulator's.
 target_include_directories(hookshot_coop PRIVATE compat src "${_coop_hook}" ../server)
 target_compile_definitions(hookshot_coop PRIVATE LICHII_COOP COOP_HOOKSHOT)
@@ -56,11 +66,13 @@ else()
   # drawing (patches 0001, 0012) and the world hooks (0005) then find it with
   # dlopen("hookshot_coop.so", RTLD_NOLOAD), and glibc matches a bare name to a loaded library only
   # by its SONAME. Without one they got nothing: no Multiplayer tab, chat or name tags on Linux.
-  target_link_options(hookshot_coop PRIVATE -Wl,-soname,hookshot_coop.so)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(hookshot_coop PRIVATE -Wl,-soname,hookshot_coop.so)
+  endif()
   # The C++ runtime inside the module (none of its symbols exported), so it loads into the game on any
   # distribution from the one it was built on (CI: Ubuntu 22.04, glibc 2.35, as Longshot's own) up,
   # whatever libstdc++ that system has.
-  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(hookshot_coop PRIVATE -static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL -Wl,--no-undefined)
   endif()
   # dlsym: Ctrl+V reads the modifier keys from the game's own SDL (coop_pause.cpp Modifiers).
@@ -71,10 +83,22 @@ if(MSVC)
   target_compile_options(hookshot_coop PRIVATE /wd4456 /wd4457 /wd4458 /wd4459 /bigobj)
 endif()
 
-execute_process(COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}/.." describe --tags --always --dirty
-    OUTPUT_VARIABLE _coop_version OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-if(NOT _coop_version)
-  set(_coop_version "unknown")
+# The co-op commit for the log, from git describe on every build (cmake/coop_version.cmake;
+# a configure-time string went stale: 0.11.3's module said v0.11.2-18-gab129f5b).
+set(_coop_version_dir "${CMAKE_CURRENT_BINARY_DIR}/coop_version")
+set(_coop_upstream_release "")
+if(APPLE)
+  # The Mac branch imports the upstream release without its Git tag.
+  # Advertise the actual upstream release in HELLO and retain the Mac commit in logs.
+  set(_coop_upstream_release "v0.11.8")
 endif()
-set_property(SOURCE "${_coop_hook}/coop_hook.cpp" APPEND PROPERTY
-    COMPILE_DEFINITIONS "LICHII_COOP_VERSION=\"hookshot ${_coop_version}\"")
+add_custom_target(coop_version_hookshot ALL
+  COMMAND "${CMAKE_COMMAND}" "-DCOOP_GIT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/.." "-DCOOP_VERSION_PREFIX=hookshot"
+          "-DCOOP_UPSTREAM_RELEASE=${_coop_upstream_release}"
+          "-DCOOP_VERSION_OUT=${_coop_version_dir}/coop_version.h"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/coop_version.cmake"
+  BYPRODUCTS "${_coop_version_dir}/coop_version.h"
+  COMMENT "co-op version (git describe)"
+  VERBATIM)
+add_dependencies(hookshot_coop coop_version_hookshot)
+target_include_directories(hookshot_coop PRIVATE "${_coop_version_dir}")

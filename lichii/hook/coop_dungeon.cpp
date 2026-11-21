@@ -7,6 +7,8 @@
 #include <utility>
 #include <vector>
 
+#include "coop_event_result.h"  // row 98(2): which held gimmick events are class live
+
 #ifdef LICHII_COOP
 #include "common/logging.h"
 #endif
@@ -54,14 +56,31 @@ constexpr std::array<std::string_view, 6> kNotShared{
 // them out cannot strand a switch. The solve itself
 // (InsideTheDekuTree_RoomK_Cleared, ..._EnemyScrubDekuDestroy_003) is shared,
 // and so are _001/_002 (each set once when a lone scrub is beaten).
+// Also left out (forest-temple-b, player report #108): where ONE player's Link
+// stands. Each is set true and false by its room graph's two Player-layer
+// areas and read only by that player's own event, by no room graph:
+//   ForestTemple_IsLeftOfTimeBLock (Room 02's Song of Time block, and the Fire
+//     Temple Room 11 and Hiding Hole 23 copies of that graph; read by the
+//     block's song event, Event/EventFlow/ForestTemple_Gimmick),
+//   ForestTemple_IsInFallingCeilingRoom (Room 15; read by DmF_SY_FallDown).
+// Shared, another player's event would take our Link's side or room. The
+// block's own state (Foresttemple_SongOfTimeBlock_A_01_Disappearance, read by
+// HoldGameDataGetBoolSimple with UpdateOnce false, so live) stays shared.
+// The same kind in every dungeon (forest-temple-a sweep of the romfs room graphs: each set true AND false by
+// its graph's area or sensor nodes, so it says where one player's Link, or that player's Ruto, is; a graph that
+// reads it reads our own Link's place): Bottom of the Well Room 01 InTheCenter/Diving/ReturnArea, Room 09
+// NearRock; Dodongo's Cavern Room05_NearTreasureBox, Room10_PlayerOutOfRoom (read by Dm_DodongoCave_0010);
+// Fire Temple Room04/Room12_IsAtCorrectArea; Forest Temple Room08_ClimbIvy_Near; Gerudo Training Ground
+// Room03/Room08_InSecretRoom; Jabu-Jabu Room09/Room12_TBoxNearRuto, Room14_IsNearGimmick,
+// Room14_PlayerIsUnder, Room18_IsInHiddenArea; Deku Tree RoomA_NearScaffold; Shadow Temple Room_09_Away,
+// Room_13_PlayerPosCheck; Spirit Temple Room 02 PlayerPosChange1/1_2/2/2_2, Room16_PlayerPosCheck; Water
+// Temple Room00_Switch_NearThePlatform/NearTheShutter; Ice Cavern Room01Demo_Far. Room state that a graph also
+// sets both ways (switches, fires, air walls, lifts, Ruto's reactions) stays shared.
 constexpr std::array kFlags = std::to_array<Flag>({
     {0xfff1ad87, false, "BottomOfTheWell_BubbleAppear"},
     {0x0b5b3b0c, false, "BottomOfTheWell_CoffinRoomCheck"},
     {0x1215a1d0, false, "BottomOfTheWell_Level_Room_00_A_Clear"},
     {0x0470c37e, false, "BottomOfTheWell_Level_Room_01_C_Clear"},
-    {0x4777f331, false, "BottomOfTheWell_Level_Room_01_InTheCenterArea"},
-    {0xc6a4aa65, false, "BottomOfTheWell_Level_Room_01_InTheDivingArea"},
-    {0x99da5f45, false, "BottomOfTheWell_Level_Room_01_InTheReturnArea"},
     {0xef559f85, false, "BottomOfTheWell_Level_Room_02_BurnedAny"},
     {0x400e7348, false, "BottomOfTheWell_Level_Room_02_BurnedGimmick"},
     {0xc8929a3f, false, "BottomOfTheWell_Level_Room_03_Coffin_Open"},
@@ -77,7 +96,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0x5e784b3b, false, "BottomOfTheWell_Level_Room_09_Arrival"},
     {0xbb057cea, true, "BottomOfTheWell_Level_Room_09_ArrivalTime"},
     {0xb561f527, false, "BottomOfTheWell_Level_Room_09_GetMap"},
-    {0x5601772d, false, "BottomOfTheWell_Level_Room_09_NearRock"},
     {0x230e55c8, false, "BottomOfTheWell_Level_Room_09_RockDestoryed_01"},
     {0x25d342b9, false, "BottomOfTheWell_Level_Room_09_RockDestoryed_02"},
     {0x1f4810d0, false, "BottomOfTheWell_Level_Room_09_RockDestoryed_03"},
@@ -103,8 +121,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0x94fcf42f, false, "DodongoCavern_Room01_ReadStoneTablet2"},
     {0x4b640f7e, false, "DodongoCavern_Room02_EventFinish"},
     {0xc03c59ca, false, "DodongoCavern_Room02_StepSwitchOnPlayer"},
-    {0xeb055de5, false, "DodongoCavern_Room05_NearTreasureBox"},
-    {0x7d1f6539, false, "DodongoCavern_Room10_PlayerOutOfRoom"},
     {0x4bf8ba8a, false, "DodongoCavern_Room13_MovableBox"},
     {0x6e5f3718, false, "DodongoCavern_Room19_EventFinish"},
     {0x940530ab, false, "DodongoCavern_Room19_MovableBox"},
@@ -162,7 +178,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0xa86ced5e, false, "FireTemple_Room04_CloserFireOn"},
     {0xaf91e6ce, false, "FireTemple_Room04_FurtherFireOn"},
     {0x16ca2911, false, "FireTemple_Room04_GimmickClear"},
-    {0x6aaaf7d2, false, "FireTemple_Room04_IsAtCorrectArea"},
     {0x92fa4e64, false, "FireTemple_Room04_SwitchHit"},
     {0x90428ea7, true, "FireTemple_Room04_SwitchMovableBoxRecreatePosition"},
     {0x8eea0cd9, false, "FireTemple_Room06_ShutterOpen"},
@@ -178,7 +193,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0xa6cd88e5, false, "FireTemple_Room12_DeleteAirWall"},
     {0x2f8636c8, false, "FireTemple_Room12_FurtherFireOn"},
     {0x607500aa, false, "FireTemple_Room12_GimmickClear"},
-    {0xbfe66553, false, "FireTemple_Room12_IsAtCorrectArea"},
     {0xc25ca6e0, false, "FireTemple_Room12_SwitchHit"},
     {0x403407e5, false, "FireTemple_Room13_FireOn"},
     {0xb3dcce20, false, "FireTemple_Room14_AirWallEnemyMove00"},
@@ -207,8 +221,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0xaeac59d4, false, "ForestTemple_Ghost_Appear_Block"},
     {0x5a9f90e7, false, "ForestTemple_HidingHole23_TimeBlockOFF"},
     {0x6dc517d4, false, "ForestTemple_InRoom11_AfterGetBow"},
-    {0xece4e747, false, "ForestTemple_IsInFallingCeilingRoom"},
-    {0xaa70c440, false, "ForestTemple_IsLeftOfTimeBLock"},
     {0x24e06e44, false, "ForestTemple_Level_Room_06_PressedEyeball"},
     {0xaa9dc048, false, "ForestTemple_Level_Room_08_IN"},
     {0xf07bad26, false, "ForestTemple_Level_Room_21_Clear"},
@@ -231,7 +243,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0xe7fee3dc, false, "ForestTemple_Room07_WellIn"},
     {0x32414b27, false, "ForestTemple_Room08_Back_Enter"},
     {0x8f8af32e, false, "ForestTemple_Room08_ClimbIvy"},
-    {0x7c5d6ee1, false, "ForestTemple_Room08_ClimbIvy_Near"},
     {0x2662855d, false, "ForestTemple_Room08_EyeSwitch_Clear"},
     {0x47cc7758, false, "ForestTemple_Room08_MovableBox_MoveFront"},
     {0x44662d7f, false, "ForestTemple_Room08_MovableBox_MoveLast"},
@@ -286,7 +297,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0x49278189, false, "GerudoTrainingGround_Dungeon_Room02_SilverRupee"},
     {0xbbf8e9e3, false, "GerudoTrainingGround_Dungeon_Room03_Block"},
     {0x85ec522f, false, "GerudoTrainingGround_Dungeon_Room03_DefeatEnemy"},
-    {0xef8de0e5, false, "GerudoTrainingGround_Dungeon_Room03_InSecretRoom"},
     {0x9961be86, false, "GerudoTrainingGround_Dungeon_Room03_StepSwitch"},
     {0xc290227a, false, "GerudoTrainingGround_Dungeon_Room04_StoneStatue"},
     {0x88cc699c, false, "GerudoTrainingGround_Dungeon_Room05_DefeatEnemy"},
@@ -301,7 +311,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0x1c7725f8, false, "GerudoTrainingGround_Dungeon_Room07_DefeatEnemy"},
     {0x32da60e0, false, "GerudoTrainingGround_Dungeon_Room07_EnterFromRoom00"},
     {0xb89d711a, false, "GerudoTrainingGround_Dungeon_Room07_EnterFromRoom06"},
-    {0xfe3d998c, false, "GerudoTrainingGround_Dungeon_Room08_InSecretRoom"},
     {0xd0a07639, true, "GerudoTrainingGround_Dungeon_Room08_OpenDoorNum"},
     {0x43921d41, false, "GerudoTrainingGround_Dungeon_Room08_TBox"},
     {0x516ed4f9, false, "GerudoTrainingGround_Dungeon_Room09_SilverRupee"},
@@ -533,7 +542,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0xcd4ecb07, false, "HavePlayedEvent.WaterTemple_Waterlevelrise_FocusOnGimmick"},
     {0xa5c9012a, false, "IceCavern_Room00_RedIce_01"},
     {0x49eb1639, false, "IceCavern_Room00_RedIce_Melted"},
-    {0x111201d5, false, "IceCavern_Room01Demo_Far"},
     {0xfebfac16, false, "IceCavern_Room01_BlueRupeePot_IsCrushed"},
     {0xa44793b3, false, "IceCavern_Room01_RedIce_Melted_01"},
     {0x7464d603, false, "IceCavern_Room01_RedIce_Melted_02"},
@@ -648,17 +656,12 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0x0a8079db, false, "InsideJabuJabuBelly_Room07_StepSwitch_Ruto"},
     {0xfdec26af, false, "InsideJabuJabuBelly_Room09Door"},
     {0x8a3e5a4c, false, "InsideJabuJabuBelly_Room09_TBoxDemo"},
-    {0xf99477ee, false, "InsideJabuJabuBelly_Room09_TBoxNearRuto"},
     {0x8f1208d9, false, "InsideJabuJabuBelly_Room12_TBoxDemo"},
-    {0xc3cf4176, false, "InsideJabuJabuBelly_Room12_TBoxNearRuto"},
     {0xf6a19c8b, false, "InsideJabuJabuBelly_Room14_IsGetMap"},
     {0x0adfba29, false, "InsideJabuJabuBelly_Room14_IsLutoGimmickClear"},
-    {0xd0440e02, false, "InsideJabuJabuBelly_Room14_IsNearGimmick"},
     {0xf44b79ed, false, "InsideJabuJabuBelly_Room14_PlayedSwitchEvent_Lower"},
     {0xf036b3a1, false, "InsideJabuJabuBelly_Room14_PlayedSwitchEvent_Upper"},
-    {0xafd95a4a, false, "InsideJabuJabuBelly_Room14_PlayerIsUnder"},
     {0x5580869c, false, "InsideJabuJabuBelly_Room14_SwitchControlInEvent"},
-    {0x3d1102e5, false, "InsideJabuJabuBelly_Room18_IsInHiddenArea"},
     {0x5564f932, false, "InsideJabuJabuBelly_RutoReaction_01"},
     {0x96d9dcf7, false, "InsideJabuJabuBelly_RutoReaction_02"},
     {0x42bfcd10, false, "InsideJabuJabuBelly_RutoReaction_03"},
@@ -723,7 +726,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0x98ca7aab, false, "InsideTheDekuTree_Heart_Container_Obtained"},
     {0xfb39c3e6, false, "InsideTheDekuTree_Level_RoomH_ClearBlock"},
     {0xa356fb4c, false, "InsideTheDekuTree_RoomA_Cleared"},
-    {0xe27b79a0, false, "InsideTheDekuTree_RoomA_NearScaffold"},
     {0x64edd2f3, false, "InsideTheDekuTree_RoomB_Cleared"},
     {0x77279a83, false, "InsideTheDekuTree_RoomC_Cleared"},
     {0xd0d8a271, false, "InsideTheDekuTree_RoomD_Cleared"},
@@ -761,7 +763,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0xf8b39977, false, "ShadowTemple_Level_Room_06_HasRead_Sign_01"},
     {0xc75584b3, false, "ShadowTemple_Level_Room_06_SilverToken_Appear"},
     {0x5f30cdca, false, "ShadowTemple_Level_Room_06_TBox_Open_01"},
-    {0x645bf023, false, "ShadowTemple_Level_Room_09_Away"},
     {0x86502ca8, false, "ShadowTemple_Level_Room_09_Clear_A"},
     {0x0882bcd0, false, "ShadowTemple_Level_Room_09_Clear_B"},
     {0x2359815d, false, "ShadowTemple_Level_Room_09_SilverToken_Appear"},
@@ -775,7 +776,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0xbb6ece58, false, "ShadowTemple_Level_Room_13_DoorControl"},
     {0xa16d839c, false, "ShadowTemple_Level_Room_13_GetKey"},
     {0x59e0b2cf, false, "ShadowTemple_Level_Room_13_HasRead_Sign_01"},
-    {0x89758470, false, "ShadowTemple_Level_Room_13_PlayerPosCheck"},
     {0x146d6db5, false, "ShadowTemple_Level_Room_14_Clear"},
     {0xcd448d26, false, "ShadowTemple_Level_Room_14_Clear_A"},
     {0x805f7e36, false, "ShadowTemple_Level_Room_15_HasRead_Sign_01"},
@@ -822,10 +822,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0xe53a50c5, false, "ShadowTemple_RoomB3FB4F_OpenCounter"},
     {0x461327a8, false, "ShadowTemple_Room_01_GimmickClear"},
     {0xfdd4db41, false, "SpiritTemple_Adult_NaviGuideTimeTemple"},
-    {0x9121e5ba, false, "SpiritTemple_LevelRoom_02_PlayerPosChange1_2"},
-    {0x58b66e09, false, "SpiritTemple_LevelRoom_02_PlayerPosChange2"},
-    {0x1632014b, false, "SpiritTemple_LevelRoom_02_PlayerPosChange2_2"},
-    {0x2ea866dc, false, "SpiritTemple_Level_Room_02_PlayerPosChange1"},
     {0x09ed9480, false, "SpiritTemple_Level_Room_07_AppearEnemy"},
     {0x754623ed, false, "SpiritTemple_Level_Room_07_DefeatEnemy"},
     {0x874c0e3e, false, "SpiritTemple_Level_Room_15_AppearEnemy"},
@@ -876,7 +872,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0x98934ca7, false, "SpiritTemple_Room14_Unlocked_02"},
     {0x5ecb991c, false, "SpiritTemple_Room15_TBox_On"},
     {0x46c97e5d, false, "SpiritTemple_Room15_TBox_On_01"},
-    {0x833295b6, false, "SpiritTemple_Room16_PlayerPosCheck"},
     {0x152c570c, false, "SpiritTemple_Room16_SilverTokenAppeared"},
     {0x849f96bd, false, "SpiritTemple_Room16_TimeBoxRight_Appeared"},
     {0xdc943ffa, false, "SpiritTemple_Room16_Unlocked"},
@@ -934,8 +929,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0xfdae7d4e, false, "WaterTemple_Room00_00"},
     {0xa5c6be9b, false, "WaterTemple_Room00_OpenDoor1F"},
     {0xc3a7d1f6, false, "WaterTemple_Room00_ShootSwitchOnce"},
-    {0xc0f55710, false, "WaterTemple_Room00_Switch_NearThePlatform"},
-    {0x2f3bb3de, false, "WaterTemple_Room00_Switch_NearTheShutter"},
     {0xbeb09982, true, "WaterTemple_Room00_WaterLevel"},
     {0x236cee78, false, "WaterTemple_Room02_00"},
     {0xdee97c7c, false, "WaterTemple_Room02_Cleared"},
@@ -1020,9 +1013,19 @@ constexpr std::array kFlags = std::to_array<Flag>({
     // Foresttemple_) or puts it after Gimmick_ (the enemies-beaten shutters).
     // Left out: the Room7 area sensors (_InsideArea, _NearTheSwitch*: set true and
     // false from where a player or Ruto is), Room7_Switch2_OnlyLinkOrLuto (Ruto),
-    // two-way state (Jabu-Jabu's Room 14 water, the Water Temple torch shutters
-    // Gimmick_Ignition_Open_*: step switches and torches set them both ways) and
-    // the Spirit Temple stone tablets (what Link reads, not room state).
+    // two-way state a switch or torch HOLDS (the Water Temple torch shutters
+    // Gimmick_Ignition_Open_*, Jabu-Jabu's Room 17 stone switch: the game with
+    // nobody on its switch would write it back) and the Spirit Temple stone
+    // tablets (what Link reads, not room state).
+    // Jabu-Jabu's Room 14 water IS shared (fable-g3-objects, issue 249): the two
+    // flags are the saved state of placement groups (the scene's PlgGdTable: the
+    // water plane and the enemy air walls, each moved by its
+    // GroundControlActor_ResidentMoveTo when the flag changes), so the flag is
+    // the water's only input. Its room graph (Room_14_Prefab_90a1) sets them
+    // once per press, true or false, and only while our own switch is pressed
+    // AND the flag has the other value, so a game whose switch nobody stands on
+    // never writes them back. Not Gimmick_Insidejabujabu_Updown_MoveWaterSwitch:
+    // that one arms each game's own switch (set when it is let go).
     {0xdd4e1676, false, "Firetemple_SongOfTimeBlock_A_01_Disappearance"},
     {0x2312e749, false, "Foresttemple_SongOfTimeBlock_A_01_Disappearance"},
     {0xdba3c3ef, false, "Gimmick_DefeatEnemy_Open_DodongoCave_01"},
@@ -1036,6 +1039,8 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0x936fce7b, false, "Gimmick_DefeatEnemy_Open_ForestTemple_03"},
     {0x54184cc6, false, "Gimmick_DefeatEnemy_Open_ForestTemple_05"},
     {0x77e573a4, false, "Gimmick_DeleteFire_FireTemple"},
+    {0xc517f1b5, false, "Gimmick_Insidejabujabu_Updown_MoveWater"},
+    {0x4358c335, false, "Gimmick_Insidejabujabu_down_MoveWater"},
     {0x482f8dd4, false, "Insidejabujabu_Gimmick_Room12_Treasure"},
     {0x90629ec0, false, "Insidejabujabu_Gimmick_Room7Event"},
     {0x2d748eb5, false, "Insidejabujabu_Room0_Cleared"},
@@ -1072,6 +1077,15 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0xd6a8c454, false, "Npc_Goron_008_ShutterisOpen"},
     {0x1d5d75c3, false, "Npc_Goron_009_ShutterisOpen"},
     {0x6948b592, false, "Npc_Goron_010_ShutterisOpen"},
+    // Mid-bosses beaten (bosses-next-a-2, the mid-boss end state, #241's shape): saved records of a mid-boss's death
+    // named after the quest or the actor, so the prefix scan missed them. A game that was not there kept the mid-boss
+    // alive in its save while the room's other flags said it was beaten. As "the boss beaten stays shared" above
+    // (Dead Hand's BottomOfTheWell_Level_Room_06_Boss_Defeat). Big Octo's is set by its death in Jabu-Jabu Room 06
+    // and read by Rooms 03, 06 and 07; the Iron Knuckle's by its death setting SageOfSpirit_MiddleBossEnd (with
+    // SageOfSpirit Step08_01), read by Spirit Temple Room 33. Their _BossAppear / _BigOctoAppear (the fight started)
+    // stay each game's own, as the boss rooms' shut-in flags (issue 148).
+    {0x26c6448d, false, "Get_StoneOfWater_BigOctoDefeat"},
+    {0xe9547a14, false, "Enemy_MiddleBoss_IronKnuckle_Nabooru_BossDefeat"},
 });
 
 // Every placement in a dungeon's Banc files (Banc/<Dungeon>/*.bcett.byml)
@@ -1619,15 +1633,81 @@ std::span<const Flag> LiveFlags() {
 }
 
 namespace {
-// The Deku Tree torch room's floor plate (room E, its BootUp from
-// OperateGameDataAllocAutogenGameData __GUIDHash 72078894 in
-// Logic/InsideTheDekuTree_Level_Room_E_Prefab_e259): the player who steps on
-// it sets this bool and their torch burns. Unshared, the other players saw
-// the web burn (RoomE_KillSpiderWave is named) but their torch stayed out
-// (deku-test run groups-20261114-081307). The same bool is 0 in a save from
-// before the Deku Tree and 1 in the next checkpoint save.
+// Unnamed saved bools of room gimmicks (fire-temple-a, player report #116): a room graph's
+// OperateGameDataAllocAutogenGameData node keeps one per placement, named
+// "AutogenGameDataLogicNode.<AiGroup Hash><module path><__GUIDHash, signed>" (docs/dungeon.md "Unnamed
+// room bools"). Generated by tools/puppet_pack/autogen_flags.py from the romfs: every one of them in the 13
+// dungeons whose writer is the room's state, written true once. Each hash is in the Bool table of every save
+// checked (1196). Unshared, the room stayed as it was in every other game: the Fire Temple's big pillar
+// (0xa82cc7a2, its Buried) is the pillar's fallen state, and the room graph makes the fallen pillar and the
+// respawn swap at the bottom from it (Logic/FireTemple_Level_Room_10_Prefab_3284), so a player who stood on
+// the pillar in another game kept a respawn point on top of a pillar that was gone. The Deku Tree torch plate
+// (0x0f8f3fa3) is the first one, found in a game (deku-test run groups-20261114-081307).
+// Left out, each one player's own (the refills that come back when THAT player has no bombs, arrows or
+// sticks, a gossip stone's fairy, a record that the player walked in):
+//   0x85dc97ff BottomOfTheWell, BottomOfTheWell room 10: a refill respawn
+//   0x9c7297e5 BottomOfTheWell, BottomOfTheWell room 10: a refill respawn
+//   0xbf6652d9 BottomOfTheWell, BottomOfTheWell room 10: a refill respawn
+//   0xaecf3cfe DodongoCavern, GossipStoneWithFairySpirit_d931: a gossip stone's fairy (one player's song)
+//   0xbd902a5b ForestTemple, ForestTemple room 06: a refill respawn
+//   0x58445aa7 GerudoTrainingGround, Obj_Pot_A_05_Respawn: a refill respawn
+//   0xcfcfd932 GerudoTrainingGround, Obj_Pot_A_05_Respawn: a refill respawn
+//   0x9de51737 InsideGanonCastle, InsideGanonCastle room 24: one player walked into an area
+//   0x21958973 InsideTheDekuTree, InsideTheDekuTree room H: a refill respawn
+//   0xfe6d1779 InsideTheDekuTree, InsideTheDekuTree room C_Common_11a7: a refill respawn
+//   0x0fa9d971 ShadowTemple, ShadowTemple room B3FB4F_N: a refill respawn
+//   0x20062808 ShadowTemple, ShadowTemple room B3FB4F_F: a refill respawn
+//   0x47c1b028 ShadowTemple, ShadowTemple room B3FB4F_F: a refill respawn
+//   0x695215f6 ShadowTemple, ShadowTemple room B3FB4F_N: a refill respawn
+//   0x186adf43 SpiritTemple, Obj_Pot_A_05_Respawn: a refill respawn
 constexpr std::array kAutogenFlags = std::to_array<AutogenFlag>({
-    {0x0f8f3fa3, "InsideTheDekuTree", "room E torch plate (Obj_SwitchCandleStick_A_02)"},
+    {0x03a335cb, "FireTemple", "FireTemple room 13: [Obj_FireTemple_HammerDropFloor_A_01].Buried"},
+    {0x31559867, "FireTemple", "Gimmick_Hammer_Destruction_03: [Obj_FireTemple_HammerSlipPillar_A_02].Dead"},
+    {0x527e9698, "FireTemple", "Gimmick_Hammer_Destruction_02: OperateOR"},
+    {0x5f7f5c93, "FireTemple", "Gimmick_Hammer_Destruction_03: [Obj_FireTemple_HammerSlipPillar_A_02].Dead"},
+    {0x7bb4eb7a, "FireTemple", "Gimmick_Hammer_Destruction_01: OperateAND"},
+    {0x7ef8ab62, "FireTemple", "Gimmick_Hammer_Destruction_01: OperateAND"},
+    {0x889fa84a, "FireTemple", "Gimmick_Hammer_Destruction_02: OperateOR"},
+    {0x979dbd64, "FireTemple", "Gimmick_Hammer_Destruction_02: [Obj_FireTemple_HammerSlipPillar_A_02].Dead"},
+    {0xa14df9d1, "FireTemple", "Gimmick_Hammer_Destruction_02: OperateOR"},
+    {0xa2543535, "FireTemple", "Gimmick_Hammer_Destruction_02: [Obj_FireTemple_HammerSlipPillar_A_02].Dead"},
+    {0xa82cc7a2, "FireTemple", "FireTemple room 10: [Obj_FireTemple_HammerDropPillar_A_01].Buried"},
+    {0xb454279b, "FireTemple", "Gimmick_Hammer_Destruction_02: [Obj_FireTemple_HammerSlipPillar_A_02].Dead"},
+    {0xb8e0867b, "FireTemple", "Gimmick_Hammer_Destruction_03: [Obj_FireTemple_HammerSlipPillar_A_02].Dead"},
+    {0xc5ae6dd9, "FireTemple", "Gimmick_Hammer_Destruction_03: OperateOR"},
+    {0xc90849a2, "FireTemple", "Gimmick_Hammer_Destruction_01: OperateAND"},
+    {0xce19219c, "FireTemple", "FireTemple room 10: [Obj_FireTemple_HammerDropFloor_A_01].Buried"},
+    {0xd468547d, "FireTemple", "Gimmick_Hammer_Destruction_03: OperateOR"},
+    {0xddf113d0, "FireTemple", "Gimmick_Hammer_Destruction_03: [Obj_FireTemple_HammerSlipPillar_A_02].Dead"},
+    {0x8735ab58, "ForestTemple", "ForestTemple room 14: [Obj_StepSwitch_A_05].OnState"},
+    {0x020f18cb, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_02: OperateOR"},
+    {0x075e0c98, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_01: OperateAND"},
+    {0x0e2b68a2, "GerudoTrainingGround", "GerudoTrainingGround room 02: silver rupees appeared"},
+    {0x1e3e40f7, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_01: OperateAND"},
+    {0x2b647798, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_02: [Obj_FireTemple_HammerSlipPillar_A_02].Dead"},
+    {0x3d26fa3c, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_02: [Obj_FireTemple_HammerSlipPillar_A_02].Dead"},
+    {0x43c7d0d9, "GerudoTrainingGround", "Gimmick_TrapTreasureBox_Set_cbc2: asker[EventRequestActor].EventBool"},
+    {0x523a12d8, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_01: OperateAND"},
+    {0x54eaa240, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_02: OperateOR"},
+    {0x67cd2c0c, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_02: [Obj_FireTemple_HammerSlipPillar_A_02].Dead"},
+    {0x709024ed, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_01: OperateAND"},
+    {0x7c921fcc, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_03: [Obj_FireTemple_HammerSlipPillar_A_02].Dead"},
+    {0x86d3c04f, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_01: OperateAND"},
+    {0x8927ff7f, "GerudoTrainingGround", "GerudoTrainingGround room 06: asker[EventRequestActor].EventBool"},
+    {0x92c8ea35, "GerudoTrainingGround", "GerudoTrainingGround room 02: first silver rupees shown"},
+    {0x98e13742, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_02: OperateOR"},
+    {0x9d865d30, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_02: OperateOR"},
+    {0xa7366a43, "GerudoTrainingGround", "Obj_SilverToken_FirstDemoGroup: asker[EventRequestActor].EventBool"},
+    {0xb1d97613, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_02: [Obj_FireTemple_HammerSlipPillar_A_02].Dead"},
+    {0xba9a5f33, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_03: [Obj_FireTemple_HammerSlipPillar_A_02].Dead"},
+    {0xd25c53e3, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_03: OperateOR"},
+    {0xf6433a1a, "GerudoTrainingGround", "Gimmick_Hammer_Destruction_01: OperateAND"},
+    {0x60b5375d, "InsideGanonCastle", "Gimmick_TrapTreasureBox_Set_cbc2: asker[EventRequestActor].EventBool"},
+    {0x8b299e2f, "InsideGanonCastle", "Gimmick_TrapTreasureBox_Set_cbc2: asker[EventRequestActor].EventBool"},
+    {0xe34ee9ea, "InsideGanonCastle", "Gimmick_TrapTreasureBox_Set_cbc2: asker[EventRequestActor].EventBool"},
+    {0xe9d28e15, "InsideGanonCastle", "Gimmick_TrapTreasureBox_Set_cbc2: asker[EventRequestActor].EventBool"},
+    {0x0f8f3fa3, "InsideTheDekuTree", "InsideTheDekuTree room E: asker[EventRequestActor].EventBool"},
+    {0xc78e4dc2, "SpiritTemple", "Gimmick_TrapTreasureBox_Set_cbc2: asker[EventRequestActor].EventBool"},
 });
 } // namespace
 
@@ -1649,21 +1729,11 @@ constexpr std::string_view kCorridor[] = {
     "ForestTemple_SageOfForest_TwistedCorridor_A_02", "ForestTemple_SageOfForest_TwistedCorridor_A_03",
     "ForestTemple_SageOfForest_TwistedCorridor_A_04"};
 
-// Gimmick events whose result already came live in the other game in a player test
-// (players, Deku Tree): the basement water dropping and its button pressed,
-// the torch room's torches. Their room flags carry the result; the played
-// event is left live too, so nothing changes for them.
-constexpr std::string_view kLiveOnTest6[] = {
-    "InsideTheDekuTree_Gimmick_RoomG_WaterLevelDrop", "InsideTheDekuTree_Gimmick_RoomH_CandleStick"};
-
-// deku-switches-b (0.10.1 playtest): room flags that delete the asker of a held gimmick event, so they wait with
-// that event. The slingshot room's graph (Logic/InsideTheDekuTree_Level_Room_C_Prefab_efa7) deletes
-// EventRequestActor_d457 when RoomC_Cleared is set (Logic_Delete <- HoldGameDataGetBoolSimple), and the presser's
-// game sets it at its event's end. Taken live, it deleted our asker before our own event ran, so the ladder (IsOn <-
-// that asker's EventBool) never fell and our eye switch asked nothing. Held, our asker is there for the event (or
-// for our own eye shot), and the event's end sets the flag here too.
-constexpr std::pair<std::string_view, std::string_view> kHeldWithEvent[] = {
-    {"InsideTheDekuTree_RoomC_Cleared", "InsideTheDekuTree"}};
+// Gimmick events whose room results all come live by shared flags (row 98(2): class live, generated from the room
+// graphs in coop_event_result.cpp; it replaces the hand-made list of player test 6, the Deku basement water and the
+// torch room, both class live there) are not held: their flags carry the result. A flag that deletes the asker of a
+// class-asker event (the Deku slingshot room's RoomC_Cleared, once held here by hand) is a generated result guard now
+// (CoopEventResult::HoldFor): it waits only until our result is set, instead of until we leave the dungeon.
 
 std::string_view SceneOfEvent(std::string_view event) {
     // The game's own spellings, and the scene names that are not prefixes.
@@ -1706,16 +1776,11 @@ std::optional<std::string_view> HeldIn(std::uint32_t hash) {
         constexpr std::string_view kPlayed = "HavePlayedEvent.";
         if (name.starts_with(kPlayed)) {
             const std::string_view event = name.substr(kPlayed.size());
-            for (const std::string_view live : kLiveOnTest6) {
-                if (event == live) return std::nullopt;
-            }
+            if (CoopEventResult::IsLive(event)) return std::nullopt;
             return SceneOfEvent(event);
         }
         for (const std::string_view c : kCorridor) {
             if (name == c) return std::string_view("ForestTemple");
-        }
-        for (const auto& [flag, scene] : kHeldWithEvent) {
-            if (name == flag) return scene;
         }
         return std::nullopt;
     }
