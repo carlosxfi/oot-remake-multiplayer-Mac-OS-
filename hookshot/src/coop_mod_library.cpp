@@ -56,15 +56,10 @@ std::string NumberText(double n) {
 }
 
 std::optional<double> ReadNumber(std::string_view s) {
-    double n = 0;
-    if (s.empty() || s.size() > 32) {
+    if (s.size() > 32) {
         return std::nullopt;
     }
-    const auto [end, ec] = std::from_chars(s.data(), s.data() + s.size(), n);
-    if (ec != std::errc() || end != s.data() + s.size() || !std::isfinite(n)) {
-        return std::nullopt;
-    }
-    return n;
+    return CoopModJson::ParseNumber(s);
 }
 
 // The last part of a mod's name.

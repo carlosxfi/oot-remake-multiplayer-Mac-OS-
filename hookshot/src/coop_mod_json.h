@@ -48,6 +48,9 @@ struct Value::Member {
 // The text's value; nothing with `error` set (what and where, plain English) when it is not one JSON value.
 std::optional<Value> Parse(std::string_view text, std::string* error = nullptr);
 
+// Parse one finite decimal number without using the system locale.
+std::optional<double> ParseNumber(std::string_view text);
+
 // The value as JSON text: objects one member per line (two spaces per level), so the file can be read and edited.
 std::string Write(const Value& value);
 
