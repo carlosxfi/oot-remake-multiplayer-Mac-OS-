@@ -30,9 +30,11 @@ Replace the two `/path/to/` placeholders with your game app and game data paths.
   GAME_SOURCE="/path/to/your/game.nup"
   PUPPET_DIR="$HOME/Projects/oot-coop-puppet"
 
-  python3 -m venv .venv
-  .venv/bin/python -m pip install zstandard
-  .venv/bin/python -m tools.puppet_pack.build --romfs "$GAME_SOURCE" \
+  PACK_PYTHON="$HOME/Projects/oot-coop-pack-env/bin/python"
+
+  python3 -m venv "$HOME/Projects/oot-coop-pack-env"
+  "$PACK_PYTHON" -m pip install zstandard
+  "$PACK_PYTHON" -m tools.puppet_pack.build --romfs "$GAME_SOURCE" \
     --mod-dir "$PUPPET_DIR" --no-hud --look-slots 0
 
   sh nxnative/network/install-menu.sh "$GAME_APP" "$PUPPET_DIR/romfs"
