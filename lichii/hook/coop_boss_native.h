@@ -62,6 +62,22 @@ using coop::protocol::BossChange;
 namespace addr {
 inline constexpr std::uint64_t kActorComponents = 0x270;  // actor -> component table
 inline constexpr std::uint64_t kComponentBsa = 0x188;     // table -> BSA component
+// Row 178: where the game keeps "this actor takes no hit now" (HitGuard). The Life component (table + 0x2b8)
+// holds two lists of invincibility names (ExecuteInvincible / OneShotLifeSetInvincible push and pop them):
+// counts at +0x1c70 and +0x1c38; its damage step (main+0x3a9984) refuses a hit while either is > 0 unless
+// bit 6 of +0x1d18 is set. QueryIsInvincibleAny (main+0x2a32460) reads the same two counts.
+inline constexpr std::uint64_t kComponentLife = 0x2b8;
+inline constexpr std::uint64_t kLifeInvincibleNames = 0x1c70;  // s32
+inline constexpr std::uint64_t kLifeInvincibleOther = 0x1c38;  // s32
+inline constexpr std::uint64_t kLifeFlags = 0x1d18;            // u32, bit 6: hit through invincibility
+// OneshotChangeForceNoHitMode (main+0x295f0d0) marks each of the actor's rigid bodies in a map at table +
+// 0x240 (keys u64 body at +0x20, values u32 at +0x28, slots s32 at +0x34; a value != 0 = that body takes
+// no hit, and the game turns its contact off), so a hit cannot reach it at all.
+inline constexpr std::uint64_t kComponentNoHit = 0x240;
+inline constexpr std::uint64_t kNoHitKeys = 0x20;
+inline constexpr std::uint64_t kNoHitValues = 0x28;
+inline constexpr std::uint64_t kNoHitSlots = 0x34;
+inline constexpr std::int32_t kNoHitMaxSlots = 1024;  // (a sanity bound for the read)
 inline constexpr std::uint64_t kBsaBrainVerb = 0x28;      // s32, the current brain verb
 inline constexpr std::uint64_t kSetBrainVerb = 0x6733b0;       // main+
 inline constexpr std::uint64_t kRequestActionVerb = 0xc08f0;   // main+
@@ -82,6 +98,9 @@ inline constexpr std::size_t kReqHasPlug = 0x40;
 inline constexpr std::size_t kReqSlot = 0x48;     // s32
 inline constexpr std::size_t kReqVerb = 0x4c;     // s32
 inline constexpr std::size_t kReqFlags = 0x50;    // u16
+// Flags bit the request function reads as a new move (main+0xc0f4c: the same verb then counts as another, the
+// move starts over from its start, its module's own sub-state with it).
+inline constexpr std::uint16_t kReqStartOver = 0x100;
 inline constexpr std::size_t kReqNode = 0x58;     // the asking AI node
 inline constexpr std::uint32_t kKind = 4;
 inline constexpr std::uint32_t kKind2 = 0x11a;
@@ -95,8 +114,30 @@ using Request = std::array<std::uint8_t, addr::kRequestSize>;
 // through a plug (those are not sent: the copy then has its own places).
 std::optional<BossAction> ActionFromRequest(const Request& r, bool* plug = nullptr);
 // A request for the game from the owner's action, asked by `node` (the copy's
-// own AI node that last asked for an action: callers always name one).
+// own AI node that asks this move: callers always name one).
 Request RequestFromAction(const BossAction& a, std::uint64_t node);
+
+// Row 177 (Phantom Ganon never seen out of his painting on a copy, so never hit there): what the copy's own AI
+// names when it asks a move itself, its asking node and its plug. The game's request function (main+0xc08f0)
+// keeps the asking node in the move's slot and, for the same verb asked again with its "changed" argument,
+// compares that node's name with the request's plug name (main+0xbe070); a mismatch starts the move over. The
+// owner's game always names the node that asks that move; a copy that named whichever node of its own asked last
+// (another move's) had its move started over by the owner's every ask: PhantomGanon.action.appear waits one step
+// (ExecuteGenericDummyAction) before its fade-in (EnemyCommon.OneShotAppearOrDisappear, which also ends his
+// forced no-hit), so he stayed unseen and unhittable on every copy while the owner's Disappear (no wait) worked.
+struct OwnAsk {
+    std::uint64_t node = 0;
+    std::uint64_t plug = 0;
+    bool has_plug = false;
+    bool operator==(const OwnAsk&) const = default;
+};
+// The request for the owner's action as the copy's own AI would ask it: `ask`'s node, and its plug when the
+// owner's action names no place (the owner's own was asked through a plug: its places were not sent).
+Request RequestFromAction(const BossAction& a, const OwnAsk& ask);
+// The copy's own ask to name for `a` from what its own AI asked: the same slot and verb, else the slot's last,
+// else its last ask of all (`last`). Nothing when it never asked (no node yet).
+std::optional<OwnAsk> AskFor(const std::map<std::pair<std::int32_t, std::int32_t>, OwnAsk>& by_move,
+                             const std::map<std::int32_t, OwnAsk>& by_slot, std::uint64_t last, const BossAction& a);
 
 enum class Role : std::uint8_t { owner, copy };
 // A boss whose new copy runs its own start first (Table::kStartSteps): a
@@ -124,6 +165,22 @@ bool StallJudged(std::string_view animation, std::optional<std::int32_t> life);
 bool OwnHitTookLife(std::optional<std::int32_t> before, std::optional<std::int32_t> after);
 
 // One boss the Objects step saw in its walk.
+// Row 178: the game's own "takes no hit now" state of an actor (addr::kLifeInvincible*, kComponentNoHit),
+// as its damage step and QueryIsInvincibleAny read it. A hit its own game would refuse (an invincibility,
+// or every rigid body in no-hit mode) is TakesNoHit.
+struct HitGuard {
+    bool read = false;             // the Life component was read (else nothing is known: not refused)
+    std::int32_t invincible_names = 0;
+    std::int32_t invincible_other = 0;
+    std::uint32_t life_flags = 0;
+    std::int32_t bodies = 0;       // rigid bodies in the no-hit map
+    std::int32_t no_hit_bodies = 0;  // of them, in no-hit mode
+    bool TakesNoHit() const {
+        const bool invincible = (life_flags & 0x40) == 0 && (invincible_names > 0 || invincible_other > 0);
+        return read && (invincible || (bodies > 0 && no_hit_bodies == bodies));
+    }
+};
+
 struct Boss {
     std::uint64_t actor = 0;
     std::uint64_t bsa = 0;  // [[actor + 0x270] + 0x188]
@@ -148,6 +205,8 @@ struct Boss {
     // life (nothing: not read).
     std::string animation = {};
     std::optional<std::int32_t> life = std::nullopt;
+    // Row 178 (the fall guard, Table::kFallBelowStart): its place in our walk (nothing: not read).
+    std::optional<coop::protocol::Vec3> position = std::nullopt;
 };
 
 struct Counts {
@@ -171,12 +230,15 @@ struct Counts {
     std::uint64_t copy_killed = 0;    // a copy let die by its Life step after its owner's died
     std::uint64_t copy_finished = 0;  // a dying copy's Life step that its own rules left alive, ended (#105)
     std::uint64_t copy_shot_hits = 0; // our own shot's end at a copy, its own reaction let run (NoteOwnShotEnd)
+    std::uint64_t copy_own_stuns = 0; // a copy's own stun begun in our game, its own time (NoteOwnStun; row 169)
     std::uint64_t copy_hits_to_owner = 0; // our own hit on a copy that took life: the owner reacts (NoteOwnDamage)
     std::uint64_t plain_wants = 0;    // a plain enemy copy's own brain asked another brain verb than its owner's
     std::uint64_t plain_wakes = 0;    // a plain enemy copy's own wake let run (NoteOwnWake)
     std::uint64_t plain_deaths = 0;   // a plain enemy copy whose death began here: its own runs
     std::uint64_t owner_stalls = 0;   // row 149: our boss held one move kStallSteps with no life change: re-chosen
     std::uint64_t owner_rechosen = 0; // its brain verb set again by our caller (a stall, or a copy just made ours)
+    std::uint64_t owner_restarted = 0; // row 178: a copy made ours mid-move: that move started over as ours
+    std::uint64_t owner_fell = 0;      // row 178: our boss fell far below its fight start (the fall guard)
     std::uint64_t moves_kept = 0;     // a resync's action the copy already runs (put in, none of its own since): not asked
 };
 
@@ -217,6 +279,16 @@ public:
     // Dodongo twitching, frozen in his roll). Now nothing of its own runs: the owner judges the hit (its DAMAGE)
     // and its reaction comes as verbs. An own time already running (a stun of ours) is left as it is. Counted.
     void NoteOwnDamage(std::uint64_t actor);
+    // Row 169 (King Dodongo frozen in 'Down'): the objects walk reads this copy in a stun its owner's boss is not in
+    // (CoopObjects::Sync::TakeOwnStuns, every walk while it plays). A weak-point interrupt (a bomb King Dodongo
+    // swallowed, a seed in Gohma's eye) is the boss's own interrupt action, not an action request our wrap sees, so
+    // it runs in a copy whose brain is skipped and the copy's own game is stunned with no own time running. The
+    // stun's DAMAGE of 0 then handed the boss to us, the row-149 rule took it for a copy whose AI never ran its body
+    // and set its brain verb again (force), which cut the stun short: the new owner's boss lay in 'Down' at life 1,
+    // its chance time gone, no hit taken, the stall check's re-chooses no way out, until another player's stun
+    // took it back. Now the stun is the copy's own time (as NoteOwnHit, kReactSteps after the stun's last frame):
+    // its own interrupt and AI run, and a hand-over during it keeps the stun (no re-choose). Counted.
+    void NoteOwnStun(std::uint64_t actor);
     // Issue 150 (boss-stun-c): our game's own shot ended where it hit or went
     // off (coop_spawn's flights of ours: a seed, arrow, nut, bomb, bombchu, with
     // the remove's place; any thread). A weak-point hit that takes no life (a
@@ -238,9 +310,45 @@ public:
     // verbs came). Its wake is then its own brain's alone; the Mover's pose-era give-back of the wake's
     // animation (Sync::TakeOwnWakes) is for the other copies only, or the rise is played twice (rows 109/111).
     bool WakesOwnBrain(std::uint64_t actor) const;
+    // Row 178: whether this actor is a boss (never a plain enemy) on the brain path: a copy of it made ours
+    // goes on through its own AI here (its move started over as ours, or its AI chooses again), so the Mover's
+    // issue-157 replay of the animation its AI wanted as a copy is not played over it. That replay put
+    // SpearAttack_Ready over Phantom Ganon's running RushAttack: its module waits for the dive's AS hold events
+    // to return up, they never came, and he fell ~3 km (Geno's log). Plain enemies keep the replay (issue 157).
+    bool RunsOwnMoveWhenOurs(std::uint64_t actor) const;
+    // Row 178 (perception on): whether this actor is a boss of the table (never a plain enemy), brain path on or
+    // off. A hit of another player replayed on it names our Link as the attacker, never their puppet
+    // (CoopHitReplay::ReplayAttacker): a boss's attacks wait on the game's attack permission for its battle target
+    // (QueryTargetGetTargetInfoActor's isForbidAttackPermission, read by Phantom Ganon's Fly and every Ganondorf
+    // move) and the game gives that permission to the Player only, so with a puppet in its target memory
+    // (EnemyCommon.BattleCommon's ExecuteMemoryPushLastAttacker) Phantom Ganon flew ~22 s without a throw.
+    bool KeepsLinkAsAttacker(std::uint64_t actor) const;
+    // Row 178: whether this actor is a boss of ours (its owner's game is this one) in a move its own game takes
+    // no hit in (its game says so: HitGuard::TakesNoHit). Phantom Ganon's phase 2 started from another
+    // player's hit replayed while he rode inside his painting ('Run'), where no real hit reaches him: in
+    // LANE2 runs that start left him in Fly with no light ball in 6 of 10 (the stall check ended each), from
+    // 'Appear' (hittable) 0 of 2. Such a hit goes to its Life step as life only (RouteLife), so its damage
+    // reaction (his phase change) waits for a hit it can take.
+    // `guard` is what its own game says right now (HitGuard, read by the caller from the actor): for every
+    // boss of the table, no move list.
+    bool OutOfReach(std::uint64_t actor, const HitGuard& guard) const;
+    // The move (animation) of a boss of ours (owner, not plain), for the log; nullopt for any other actor.
+    std::optional<std::string> OurBossMove(std::uint64_t actor) const;
+    // Row 178 (Geno, Forest Temple): a boss whose own native AI (Execute*MetaAI) picks its moves for a battle
+    // target that must be the Player. Its perception (PerceptionFilterPlayerOnly) takes a perceived puppet too
+    // (Affiliation Player), and then that AI never picks an attack: Phantom Ganon flew his phase 2 with no light
+    // ball until our stall check (LANE2: 4 of 4 runs with perceived puppets, 0 of 4 without, and normal with the
+    // puppets' perception emitter off at runtime). While such a boss is here every puppet is unseen
+    // (coop_dbno_body.h's unseen puppets), so its target is a real Link in every game.
+    static bool FightsPlayerOnly(std::string_view name);
+    // The first such boss of the table now (alive in our walk, not dying), or none.
+    std::optional<std::string> PlayerOnlyBoss() const;
     // The plain enemy copies whose own brain asked for another brain verb than their owner's since the last
     // call (skipped at the wrap): their own AI wants to act here. At most kMaxWants kept.
     std::vector<std::uint64_t> TakeOwnWants();
+    // Row 178: our own bosses that fell kFallBelowStart below their fight start since the last call, each with
+    // that start (its first seen place): put back there (coop_objects Place, as a copy is placed).
+    std::vector<std::pair<std::uint64_t, coop::protocol::Vec3>> TakeReturns();
     // The boss's death has begun (the boss glue, every frame: the area rules'
     // fight is at its death or past it, ours or the owner's; player report
     // #105, a black screen after Gohma's death). Bodies named here are copies
@@ -347,9 +455,20 @@ public:
     // The server frees the fight lock of such a boss on its own (boss_stall_us), so it can be handed over.
     static constexpr std::uint64_t kStallSteps = 1500;
     static constexpr int kMaxStallRechoices = 3;  // per held move; then left (the server's hand-over is next)
+    // Row 178's fall guard: our own boss (never a plain enemy, not dying, not in our event) whose place is this
+    // far below its first seen place (its fight start: no boss room's floor is 40 m under its boss's start;
+    // free fall covers it in under 3 s) fell out of its room: its AI chooses again once per fall (its brain
+    // verb set again through the game's own function, as a stall: the change goes to every copy), the log says
+    // so, at most kMaxFallRechoices times while it stays below. Row 178 again (the Forest playtest: Phantom Ganon fell
+    // ~3 km, and a new AI choice does not bring a falling body back up): each time it is also put back at its fight
+    // start (TakeReturns: the game's own set-matrix call the copies are placed with), then its AI chooses again.
+    static constexpr float kFallBelowStart = 40.0f;
+    static constexpr int kMaxFallRechoices = 3;
     static constexpr std::size_t kMaxWants = 64;
     static constexpr std::size_t kMaxSkippedKept = 8;
     static constexpr std::size_t kMaxHeld = 8;  // copy bosses held at once (more: not held)
+    static constexpr std::size_t kMaxOwnAsks = 64;     // moves kept per copy (AskFor)
+    static constexpr std::uint64_t kMaxStreamNotes = 240;  // row 177's action stream lines per game
 
 private:
     struct Entry {
@@ -372,6 +491,12 @@ private:
         int drift = 0;                 // steps the brain verb has differed with nothing queued
         int drift_fixes = 0;           // put-backs since the owner's last new state
         std::uint64_t own_node = 0;    // the copy's own AI node that last asked for an action
+        // Row 177: the copy's own asks by move (slot, verb) and by slot (AskFor), at most kMaxOwnAsks moves.
+        std::map<std::pair<std::int32_t, std::int32_t>, OwnAsk> own_asks;
+        std::map<std::int32_t, OwnAsk> own_slot_asks;
+        // Row 177's log: the action stream's last kind (who, slot, verb, changed, plug or node source) and its run.
+        std::string stream_last;
+        std::uint64_t stream_run = 0;
         // Copy: its own changes skipped lately (step, change), and those to
         // make late; the step until which its own run (our hit); whether its
         // own ran last step (then the owner's state again).
@@ -403,6 +528,18 @@ private:
         std::uint64_t hold_asks = 0;
         int hold_rechoices = 0;
         bool rechoose = false;
+        // Row 178: a copy made ours in the middle of a move (put_action) whose AI did not run its body: that move
+        // asked again as ours with kReqStartOver, naming the node its own AI names for it (restart_ask), so its
+        // module runs it from its start in our game (its own sub-state, physics and animation events) and its AI
+        // gets the move's end. Taken instead of `rechoose` (setting the brain verb again leaves the move's
+        // module where the copy's body was: Phantom Ganon in RushAttack's dive with his rigid body forced no-hit).
+        std::optional<BossAction> restart_action;
+        OwnAsk restart_ask;
+        // Row 178's fall guard: its first seen height, and its falls rechosen while below.
+        std::optional<float> start_y;
+        std::optional<coop::protocol::Vec3> start;  // (its first seen place, for the put back)
+        int fall_rechoices = 0;
+        bool fallen = false;
         // Copy (row 149): the owner's action last put into it, and whether its own AI ran an action of its own
         // since (our event, our hit, its start). A resync whose action is the one put in, with none of its own
         // since, asks nothing: the copy runs that move already (asking it again started King Dodongo's roll
@@ -411,6 +548,7 @@ private:
         bool own_action_ran = false;
     };
     void Hold(Entry& e, const Boss& b);   // the owner's stall check (Publish)
+    void Fall(Entry& e, const Boss& b);   // row 178's fall guard (Publish; a boss, owner or copy: its start)
     bool OwnTime(const Entry& e) const;   // the copy's own changes run now
     void Keep(Entry& e, std::variant<BossBrain, BossAction> what);
     void MakeLate(Entry& e);              // its skipped ones of the last kLookBackSteps, to make
@@ -422,7 +560,13 @@ private:
     Entry* Find(std::uint64_t bsa);
     Entry* FindActor(std::uint64_t actor);
     const Entry* FindActor(std::uint64_t actor) const;
+    // Row 177 review: the kept own asks (their AI nodes) go: a brain change (its action sequence's nodes may
+    // go with it) or a role change; the copy's next own asks fill them again.
+    static void ForgetOwnAsks(Entry& e);
     void Note(std::string line);
+    // Row 177's log: one line when the stream's kind changes (the last kind's run length with it), capped.
+    void Stream(Entry& e, std::string kind);
+    std::uint64_t stream_notes_ = 0;
 
     mutable std::mutex mutex_;
     std::map<std::uint64_t, Entry> by_bsa_;
@@ -442,6 +586,7 @@ private:
     // every frame never keeps the others waiting (dozens of plain enemies share the one call a frame).
     std::uint64_t served_ = 0;
     std::vector<std::uint64_t> wants_;  // (TakeOwnWants)
+    std::vector<std::pair<std::uint64_t, coop::protocol::Vec3>> returns_;  // (TakeReturns)
     // One entry's turn in Step. True: Step ends with `call` (a call, or none while the block is asked).
     bool StepOne(CoopPuppet::Guest& guest, std::uint64_t bsa, Entry& e, std::uint64_t main_base,
                  std::optional<CoopPuppet::Call>& call);
@@ -464,7 +609,7 @@ private:
     std::uint64_t block_ = 0;      // our request in guest memory (kRequestSize)
     std::uint64_t main_base_ = 0;  // the game the block belongs to
     bool allocating_ = false;
-    enum class Pending : std::uint8_t { none, malloc, brain, action, late, rechoose } pending_ = Pending::none;
+    enum class Pending : std::uint8_t { none, malloc, brain, action, late, rechoose, restart } pending_ = Pending::none;
     std::uint64_t pending_bsa_ = 0;  // the copy whose change pending_ is (brain, action, late)
     void Made(bool made);            // pending_bsa_'s asked change: out of its queue (made) or asked again
 };

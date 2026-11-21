@@ -86,10 +86,12 @@ CoopPuppet::PlannerSettings Settings(const EnvFn& env, const std::function<bool(
 
 #ifdef LICHII_COOP
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 
 #include "common/fs/path_util.h"
 #include "common/logging.h"
@@ -165,6 +167,28 @@ std::vector<std::string> PackQuiet() {
     return {};
 }
 
+// The character puppets of every manifest (the Character Select mod's characters, tools/puppet_pack).
+std::vector<std::string> PackCharacters() {
+    std::vector<std::string> out;
+    for (const auto& text : PackManifests()) {
+        for (auto& name : CoopPuppet::PackCharacterActors(text)) {
+            out.push_back(std::move(name));
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+// The mod's stored character numbers -> the pack's model files, from every manifest (PackCharacterNumbers).
+std::map<std::uint16_t, std::uint16_t> PackCharacterFiles() {
+    std::map<std::uint16_t, std::uint16_t> out;
+    for (const auto& text : PackManifests()) {
+        out.merge(CoopPuppet::PackCharacterNumbers(text));
+    }
+    return out;
+}
+
 // A manifest of a pack built with perception.
 bool PackPerceived() {
     for (const auto& text : PackManifests()) {
@@ -229,6 +253,22 @@ void Configure(bool perceived_safe) {
         lines.push_back("coop: null-pointer reads cannot give 0 here: other players' Hookshot and Longshot stay off "
                         "their puppets (issue 232)");
     }
+    // Character Select: a player's picked character on their puppet. LICHII_COOP_CHARACTERS=0: off.
+    if (const auto v = Env("LICHII_COOP_CHARACTERS"); v != "0" && v != "off") {
+        settings.character_actors = PackCharacters();
+        settings.character_files = PackCharacterFiles();
+        for (const auto& text : PackManifests()) {
+            if (const auto colours = CoopPuppet::PackCharacterColours(text)) {
+                settings.character_apply = colours->first;
+                settings.character_apply_head = colours->second;
+            }
+        }
+        if (!settings.character_actors.empty()) {
+            lines.push_back("coop: the puppet pack has " + std::to_string(settings.character_actors.size()) +
+                            " puppets for the Character Select mod's characters: a player who picked one is shown "
+                            "as that character");
+        }
+    }
     if (settings.actor.empty() && !settings.native_player) {
         settings.quiet_scenes = PackQuiet();
         if (!settings.quiet_scenes.empty()) {
@@ -238,6 +278,7 @@ void Configure(bool perceived_safe) {
             }
             lines.push_back("coop: puppets are seen by enemies; quiet puppets (no guard sees them) in " + names);
         }
+        settings.perceived = PackPerceived();  // row 177: a hit's attacker may be the hitter's puppet
         if (!perceived_safe && PackPerceived()) {
             settings.quiet_everywhere = true;
             lines.push_back("coop: null-pointer reads cannot give 0 here (HOS_COOP_NULL_READS=0, or the guest's first "

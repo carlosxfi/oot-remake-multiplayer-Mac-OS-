@@ -62,6 +62,11 @@ class MergeTablesTest(unittest.TestCase):
         with open(self.path(mod, "romfs", "System", "Resource", NAME), "rb") as f:
             return mt.Codec(self.romfs).load(f.read())
 
+    def mark_ours(self, mod):
+        """A seed the game built (coop_rando writes coop-rando.txt into each); one put in by hand has none."""
+        with open(self.path(mod, mt.SEED_MARK), "w", encoding="utf-8", newline="\n") as f:
+            f.write("default\n")
+
     def run_merge(self):
         self.lines = []
         return mt.merge_mods(self.mods, self.romfs, self.say)
@@ -172,10 +177,34 @@ class MergeTablesTest(unittest.TestCase):
     def test_our_seeds_are_left_alone(self):
         self.put_table(PACK, {1: 100})
         self.put_table("randomizer-S1", {2: 5})  # ours: built beside every table already
+        self.mark_ours("randomizer-S1")
         self.assertEqual(self.run_merge(), 0)
         self.assertEqual(self.lines, [])
         self.assertEqual(self.table("randomizer-S1").by_crc, {2: 5})
         self.assertEqual(self.table(PACK).by_crc, {1: 100})
+
+    def test_a_hand_put_seed_that_wins_is_merged_like_any_mod(self):
+        # Nax 2026-11-20: a seed built with an OOTRR from source, its randomizer-<seed> folder copied to every player
+        # (no coop-rando.txt). Not ours: it gets the pack's entries, its own table kept (which coop_rando's
+        # SeedFilesHash reads, so two players' copies still match after their merges).
+        self.put_table(PACK, {1: 100, 3: 9})
+        hand = self.put_table("randomizer-NAX1", {1: 120, 2: 5})
+        own = read(hand)
+        self.assertEqual(self.run_merge(), 0)
+        self.assertEqual(self.table("randomizer-NAX1").by_crc, {1: 120, 2: 5, 3: 9})
+        self.assertEqual(read(self.path("randomizer-NAX1", mt.KEEP_DIR, NAME)), own)
+        self.assertTrue(os.path.isfile(self.path("randomizer-NAX1", mt.MARK)))
+        self.assertIn("randomizer-NAX1", self.lines[0])
+
+    def test_a_hand_put_seed_under_a_winning_pack_is_merged_into_it(self):
+        self.put_table(PACK, {1: 100})
+        self.put_table("randomizer-NAX1", {4: 4})
+        self.put_table("randomizer-S1", {5: 5})
+        self.mark_ours("randomizer-S1")
+        with open(os.path.join(self.mods, mt.LIST_FILE), "w", encoding="utf-8", newline="\n") as f:
+            f.write(f"coop-mods 1\non {PACK}\non randomizer-S1\non randomizer-NAX1\n")
+        self.assertEqual(self.run_merge(), 0)
+        self.assertEqual(self.table(PACK).by_crc, {1: 100, 4: 4})  # the hand seed's in, our seed's not
 
     def test_a_mod_under_the_pack_by_name_gets_its_entries_into_the_packs_table(self):
         # Player report 101: "bestbuddy" (RSDB tables made larger, its own size table) sorts under "contents/", so
@@ -210,6 +239,7 @@ class MergeTablesTest(unittest.TestCase):
         self.put_table(PACK, {1: 100})
         self.put_table("bestbuddy", {3: 3})
         self.put_table("randomizer-S1", {4: 4})
+        self.mark_ours("randomizer-S1")
         with open(os.path.join(self.mods, mt.LIST_FILE), "w", encoding="utf-8", newline="\n") as f:
             f.write(f"coop-mods 1\non {PACK}\non randomizer-S1\n")
         self.assertEqual([n for n, _ in mt.load_order(self.mods)], ["bestbuddy", "randomizer-S1", PACK])
@@ -568,6 +598,8 @@ class MergeRowsTest(unittest.TestCase):
         own = self.put_rows(SEED, [{"__RowId": "Npc_Mido", "Heap": 9}, {"__RowId": "Player_Child", "Heap": 2},
                                    {"__RowId": "Rando_Item", "Heap": 5}])
         self.put_sizes(SEED, 4000)
+        with open(self.path(SEED, mt.SEED_MARK), "w", encoding="utf-8", newline="\n") as f:
+            f.write("default\n")  # (a seed the game built)
         return read(own)
 
     def test_a_seed_with_its_own_actor_table_gets_the_pack_rows_and_a_size_that_fits(self):
@@ -631,6 +663,8 @@ class MergeRowsTest(unittest.TestCase):
         self.put_rows(PACK, self.pack_rows())
         self.put_sizes(PACK, 5000)
         self.put_sizes(SEED, 4000)  # (an OOTRR 0.5.0 seed: no ActorInfo of its own)
+        with open(self.path(SEED, mt.SEED_MARK), "w", encoding="utf-8", newline="\n") as f:
+            f.write("default\n")  # (a seed the game built: its size table is left alone)
         pack_raw = read(self.path(PACK, "romfs", "RSDB", AI))
         self.assertEqual(self.run_all(), (0, {}))
         self.assertEqual(read(self.path(PACK, "romfs", "RSDB", AI)), pack_raw)
@@ -669,6 +703,91 @@ class MergeRowsTest(unittest.TestCase):
             f.write(f"coop-mods 1\noff {SEED}\n")
         self.assertEqual(self.run_all()[0], 0)
         self.assertEqual(read(self.path(SEED, "romfs", "RSDB", AI)), own)
+
+
+@unittest.skipIf(zstandard is None, "needs zstandard")
+class MergeMembersTest(unittest.TestCase):
+    """merge_members: the pack's menu archives into another mod's copy that wins them (the Character Select mod ships
+    Mals/USen and the Common layout archive too; the game read the mod's whole file and the co-op menus lost theirs)."""
+
+    MOD = "OoT Character Select"   # (not in coop-mods.list: by name, after contents/...: it wins)
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="merge_tables_members_")
+        self.mods = os.path.join(self.dir, "mods")
+        self.romfs = os.path.join(self.dir, "romfs")
+        self.pack = os.path.join(self.mods, *PACK.split("/"))
+        self.mod = os.path.join(self.mods, self.MOD)
+        self.game = {"A.msbt": b"game A", "Hdr.msbt": b"game header", "X.msbt": b"game X"}
+        self.put(os.path.join(self.romfs, *MALS.split("/")), self.archive(self.game))
+        self.put(os.path.join(self.pack, "romfs", *MALS.split("/")), self.archive(
+            dict(self.game, **{"A.msbt": b"pack A", "Hdr.msbt": b"pack header", "Coop.msbt": b"pack only"})))
+        self.put(os.path.join(self.pack, "coop_puppet.json"), b'{"pause_menu": ["%s"]}' % MALS.encode())
+        self.mod_raw = self.archive(dict(self.game, **{"Hdr.msbt": b"mod header", "Char.msbt": b"mod only"}))
+        self.put(os.path.join(self.mod, "romfs", *MALS.split("/")), self.mod_raw)
+        raw = zstandard.ZstdCompressor(write_content_size=True).compress(
+            rstb.Rstb(by_crc={rstb.Rstb.crc(MALS[:-3]): 5000}).dumps())
+        self.put(os.path.join(self.pack, "romfs", "System", "Resource", NAME), raw)
+        self.lines = []
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    @staticmethod
+    def put(path, data):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+
+    @staticmethod
+    def archive(members):
+        return zstandard.ZstdCompressor(write_content_size=True).compress(sarc.write(members, data_align=16))
+
+    def served(self):
+        raw = read(os.path.join(self.mod, "romfs", *MALS.split("/")))
+        return sarc.read(zstandard.ZstdDecompressor().decompressobj().decompress(raw))
+
+    def merge(self, romfs=None):
+        self.lines = []
+        return mt.merge_members(self.mods, self.romfs if romfs is None else romfs, self.lines.append)
+
+    def test_the_winners_copy_gets_the_packs_members_and_keeps_its_own(self):
+        failed, fit = self.merge()
+        self.assertEqual(failed, 0)
+        got = self.served()
+        self.assertEqual(got["A.msbt"], b"pack A")         # the pack changed it, the mod did not
+        self.assertEqual(got["Coop.msbt"], b"pack only")   # the pack's own
+        self.assertEqual(got["Char.msbt"], b"mod only")    # the mod's own
+        self.assertEqual(got["Hdr.msbt"], b"mod header")   # both changed it: the mod's stays, and is named
+        self.assertEqual(got["X.msbt"], b"game X")
+        self.assertIn("Both changed Hdr.msbt", self.lines[0])
+        self.assertGreaterEqual(fit[MALS[:-3]], 5000)    # the merged file's size for the table the game reads
+        self.assertEqual(read(os.path.join(self.mod, mt.MEMBERS_KEEP, *MALS.split("/"))), self.mod_raw)
+        self.merge()                                     # the next start: nothing new
+        self.assertIn("already", self.lines[0])
+        self.assertEqual(self.served()["A.msbt"], b"pack A")
+        mt.undo(self.mods, say=self.lines.append)        # --undo: the mod's own archive back
+        self.assertEqual(read(os.path.join(self.mod, "romfs", *MALS.split("/"))), self.mod_raw)
+        self.assertFalse(os.path.isdir(os.path.join(self.mod, mt.MEMBERS_KEEP)))
+
+    def test_a_new_pack_merges_again_from_the_mods_own_copy(self):
+        self.merge()
+        self.put(os.path.join(self.pack, "romfs", *MALS.split("/")), self.archive(
+            dict(self.game, **{"A.msbt": b"pack A2"})))
+        self.merge()
+        got = self.served()
+        self.assertEqual(got["A.msbt"], b"pack A2")
+        self.assertNotIn("Coop.msbt", got)               # from the kept copy, not from the last merge
+        self.assertEqual(got["Char.msbt"], b"mod only")
+
+    def test_nothing_without_the_games_copy_or_when_the_pack_wins(self):
+        failed, _ = self.merge(romfs="")
+        self.assertEqual(failed, 1)
+        self.assertEqual(read(os.path.join(self.mod, "romfs", *MALS.split("/"))), self.mod_raw)
+        self.assertIn("not merged", self.lines[0])
+        os.remove(os.path.join(self.mod, "romfs", *MALS.split("/")))   # the mod without that archive
+        self.assertEqual(self.merge(), (0, {}))
+        self.assertEqual(self.lines, [])
 
 
 if __name__ == "__main__":

@@ -209,6 +209,9 @@ if (-not $Out) {
     if ($last -and (Test-Path -LiteralPath $last -PathType Container)) { $Out = $last }
 }
 $Out = [System.IO.Path]::GetFullPath($Out)
+# What the game in $Out is made from: the tools' stamp, and the mods' code patches it is built with (patches 0034/0035:
+# Get-KitExefsStampLine; nothing more without code mods). The tools folder keeps $stamp.
+$gameWant = $stamp + (Get-KitExefsStampLine $Out)
 $python = Join-Path $tools 'python\python.exe'
 
 # --- A Longshot of the player's own (kit-friction) -----------------------------------------------
@@ -489,7 +492,7 @@ if (-not $Rebuild -and -not $CheckOnly -and $Out -ieq $defaultOut -and -not (Fin
     }
     $list = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'OoT-Coop\kits.txt' } else { '' }
     if ($list -and (Test-Path -LiteralPath $list)) { $others += @(Get-Content -LiteralPath $list | Where-Object { $_ }) }
-    $from = Find-KitHookshotGameToCopy $kit $stamp $others -Dlss $wantDlss
+    $from = Find-KitHookshotGameToCopy $kit $gameWant $others -Dlss $wantDlss
     if ($from) {
         Step "The game: copying the one another kit on this PC built ($from), instead of building it again"
         Write-Host '  The copy starts with that kit''s saves (as they are now); from then on each kit has its own.'
@@ -514,7 +517,7 @@ $oldStamp = Join-Path $Out 'coop-built-from.txt'
 if (-not $Rebuild -and -not $CheckOnly -and (Find-HookshotExe $Out) -and (Test-Path -LiteralPath $oldStamp)) {
     $base = { param($s) (@("$s" -replace "`r", '' -split "`n") | Where-Object { $_ -match '^(release|commit)=' }) -join "`n" }
     if ((& $base ([System.IO.File]::ReadAllText($oldStamp))) -ne (& $base $stamp)) {
-        $from = Find-KitHookshotCachedGame $stamp -Dlss $wantDlss
+        $from = Find-KitHookshotCachedGame $gameWant -Dlss $wantDlss
         # (the same layout only: longshot.exe at the top, or in bin\ in both)
         $flat = { param($g) (Split-Path -Parent (Find-HookshotExe $g)).TrimEnd('\') -ieq ([System.IO.Path]::GetFullPath($g)).TrimEnd('\') }
         if ($from -and (& $flat $from) -ne (& $flat $Out)) { $from = '' }
@@ -539,7 +542,7 @@ if (-not $Rebuild -and -not $CheckOnly -and (Find-HookshotExe $Out) -and (Test-P
 }
 $gameStamp = Join-Path $Out 'coop-built-from.txt'
 $exe = Find-HookshotExe $Out
-$gameReady = $exe -and (Test-Path -LiteralPath $gameStamp) -and ([System.IO.File]::ReadAllText($gameStamp) -eq $stamp)
+$gameReady = $exe -and (Test-Path -LiteralPath $gameStamp) -and ([System.IO.File]::ReadAllText($gameStamp) -eq $gameWant)
 
 # Game files that could not be taken, with why: said at the next game question (hookshot\game-rejected.txt).
 $gameRejected = Join-Path $hs 'game-rejected.txt'
@@ -762,7 +765,7 @@ if ($gameReady -and -not $Rebuild -and -not $CheckOnly) {
     }
     $exe = Find-HookshotExe $Out
     if (-not $exe) { Fail "The build finished but there is no longshot.exe in $Out. Its log: $buildLog" }
-    [System.IO.File]::WriteAllText($gameStamp, $stamp)
+    [System.IO.File]::WriteAllText($gameStamp, $gameWant)
 }
 # Where the game is, for Host-Hookshot.bat and Join-Hookshot.bat (play.ps1 -Hookshot).
 # (relative when it is inside the kit, so a copied or moved kit keeps its own game: kit-copy)

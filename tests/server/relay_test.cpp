@@ -21,6 +21,7 @@
 #include "coop/protocol/join_password.hpp"
 #include "coop/protocol/traffic_crypto.hpp"
 #include "enet_server.hpp"
+#include "host_service.hpp"
 #include "relay.hpp"
 #include "relay_link.hpp"
 #include "relay_wire.hpp"
@@ -1118,3 +1119,270 @@ TEST_CASE("relay loopback: a host's link lists its room, the game's list_rooms_o
 }
 
 }  // namespace room_list_tests
+
+// Public games (HostServiceConfig::public_game, docs/play-online.md "Public games").
+namespace {
+bool join_with(Guest& guest, const std::string& password, const std::function<void()>& pump,
+               const std::function<bool()>& joined) {
+  Hello hello;
+  hello.build_id = "relay test";
+  hello.game_build_id = "e0f3ccfaf50065ae";
+  hello.game_version = "1.1.1";
+  hello.nickname = "Saria";
+  const KeyPair keys = KeyPair::generate();
+  hello.key_share = keys.share();
+  auto bytes = coop::protocol::encode(coop::protocol::Message{hello});
+  REQUIRE(bytes.has_value());
+  ENetPacket* p = enet_packet_create(bytes->data(), bytes->size(), ENET_PACKET_FLAG_RELIABLE);
+  REQUIRE(enet_peer_send(guest.peer, kChannelSession, p) == 0);
+  const auto until = [&](const std::function<bool()>& done) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+      pump();
+      if (done()) return true;
+    }
+    return false;
+  };
+  REQUIRE(until([&] { return guest.find<JoinChallenge>() != nullptr; }));
+  const JoinChallenge challenge = *guest.find<JoinChallenge>();
+  REQUIRE(challenge.key_share.has_value());
+  auto proof = coop::protocol::encode(coop::protocol::Message{
+      JoinProof{join_proof(password, challenge.nonce, keys.share(), *challenge.key_share)}});
+  REQUIRE(proof.has_value());
+  p = enet_packet_create(proof->data(), proof->size(), ENET_PACKET_FLAG_RELIABLE);
+  REQUIRE(enet_peer_send(guest.peer, kChannelSession, p) == 0);
+  return until(joined);
+}
+}  // namespace
+
+TEST_CASE("public game: the password comes from the room, a private game cannot use one of that shape") {
+  using coop::protocol::is_public_join_password;
+  using coop::protocol::public_join_password;
+  CHECK(public_join_password("Forest-4821") == public_join_password("forest-4821"));
+  CHECK(public_join_password("forest-4821") != public_join_password("forest-4822"));
+  CHECK(is_public_join_password(public_join_password("lake")));
+  CHECK(is_public_join_password("Squadala-Public-Game:x"));
+  CHECK_FALSE(is_public_join_password("squadala-public-game"));
+  CHECK_FALSE(is_public_join_password("my-friends-pass"));
+  CHECK(coop::protocol::public_listing_version() == (0x8000 | coop::protocol::kProtocolVersion));
+
+  EnetLife enet;
+  {
+    // A public game needs the relay and a room name.
+    HostServiceConfig c;
+    c.port = 0;
+    c.public_game = true;
+    c.relay_room = "forest-4821";
+    HostService s(c);
+    std::string error;
+    CHECK_FALSE(s.start(error));
+    CHECK(s.status().problem == HostProblem::kRelay);
+  }
+  {
+    // A private game with a password of the public shape is refused (a public secret never opens a private room).
+    HostServiceConfig c;
+    c.port = 0;
+    c.session.join_password = public_join_password("forest-4821");
+    HostService s(c);
+    std::string error;
+    CHECK_FALSE(s.start(error));
+    CHECK(s.status().problem == HostProblem::kNoPassword);
+  }
+  {
+    // ... nor can a private host change to one while hosting.
+    HostServiceConfig c;
+    c.port = 0;
+    c.bind = 0x7F000001u;
+    c.session.join_password = "friends-only";
+    HostService s(c);
+    std::string error;
+    REQUIRE(s.start(error));
+    CHECK_FALSE(s.set_join_password(public_join_password("forest-4821"), error));
+    CHECK(s.set_join_password("friends-only-2", error));
+    s.stop();
+  }
+}
+
+TEST_CASE("public game: listed with the public bit, relay only, a guest joins with the room's password, never another") {
+  EnetLife enet;
+  RelayServer relay_server(0, 0x7F000001u, RelayConfig{});  // (127.0.0.1 only)
+  REQUIRE(relay_server.start());
+  const std::uint16_t relay_port = relay_server.port();
+
+  HostServiceConfig c;
+  c.port = 0;
+  c.public_game = true;
+  c.relay_via = "127.0.0.1:" + std::to_string(relay_port);
+  c.relay_room = "Forest-4821";
+  c.session.join_password = "ignored";  // a public game's password is the room's
+  c.upnp = true;                        // all forced off: relay only
+  c.invite = true;
+  c.session.same_network_open = true;
+  HostService host(c);
+  std::string error;
+  REQUIRE(host.start(error));
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while ((host.status().relay_room.empty() || relay_server.relay().listed() == 0) &&
+         std::chrono::steady_clock::now() < deadline) {
+    host.service(0);
+    relay_server.service(1);
+  }
+  REQUIRE(relay_server.relay().listed() == 1);
+  CHECK_FALSE(host.status().upnp_open);
+  CHECK(host.status().invite.empty());
+
+  ENetAddress relay_at{};
+  enet_address_set_host_ip(&relay_at, "127.0.0.1");
+  relay_at.port = relay_port;
+  std::atomic<bool> done{false};
+  std::thread serve([&] {
+    while (!done) {
+      relay_server.service(5);
+      host.service(0);
+    }
+  });
+  const auto list = list_rooms_on_relay(relay_at);
+  done = true;
+  serve.join();
+  REQUIRE(list.has_value());
+  REQUIRE(list->rooms.size() == 1);
+  CHECK(list->rooms[0].room == "Forest-4821");
+  CHECK(list->rooms[0].host == "Forest-4821");  // the room's name: nothing of the host's PC
+  CHECK(list->rooms[0].version == coop::protocol::public_listing_version());
+
+  // The game port is on 127.0.0.1 only (the relay's link reaches it there); a guest on this PC stands in for the
+  // relay's flow. The wrong password (a private one) is refused, the room's opens it.
+  auto pump = [&] {
+    host.service(0);
+    relay_server.service(0);
+  };
+  Guest wrong;
+  wrong.connect(host.port());
+  for (int i = 0; i < 200 && !wrong.connected; ++i) {
+    pump();
+    wrong.pump();
+  }
+  REQUIRE(wrong.connected);
+  CHECK_FALSE(join_with(wrong, "ignored", [&] { pump(); wrong.pump(); },
+                        [&] { return host.session()->player_count() == 1; }));
+  Guest right;
+  right.connect(host.port());
+  for (int i = 0; i < 200 && !right.connected; ++i) {
+    pump();
+    right.pump();
+  }
+  REQUIRE(right.connected);
+  CHECK(join_with(right, coop::protocol::public_join_password("forest-4821"), [&] { pump(); right.pump(); },
+                  [&] { return host.session()->player_count() == 1; }));
+  host.stop();
+}
+
+// (a named namespace with using-declarations, as room_list_tests: the using-directive for coop::protocol in an
+// earlier unnamed namespace makes Message, encode and decode ambiguous here under clang)
+namespace room_proof_tests {
+
+using coop::server::relay::decode;
+using coop::server::relay::encode;
+using coop::server::relay::Message;
+// (the room list tests' helpers, used by the proof test below)
+using room_list_tests::ask_list;
+using room_list_tests::host_at;
+using room_list_tests::list_room_message;
+
+namespace {
+
+Message proof_message(std::uint64_t token, std::uint64_t time_s, std::uint8_t fill) {
+  Message m;
+  m.kind = Kind::kRoomProof;
+  m.token = token;
+  m.proof.time_s = time_s;
+  m.proof.signature.fill(fill);
+  return m;
+}
+
+std::optional<Message> ask_proofs(Fixture& f, Endpoint from = kGuest, std::uint64_t now = 0) {
+  Message ask;
+  ask.kind = Kind::kListProofs;
+  auto out = f.relay.received(from, encode(ask), now);
+  if (out.empty()) return std::nullopt;
+  REQUIRE(out.size() == 1);
+  CHECK(out[0].to == from);
+  CHECK(out[0].bytes.size() <= kMaxPayloadBytes);
+  return decoded(out[0]);
+}
+
+}  // namespace
+
+TEST_CASE("relay wire: a room's proof and the proofs' ask and answer go through encode and decode") {
+  auto back = decode(encode(proof_message(77, 1'795'000'000, 0xab)));
+  REQUIRE(back.has_value());
+  CHECK(back->kind == Kind::kRoomProof);
+  CHECK(back->token == 77);
+  CHECK(back->proof.time_s == 1'795'000'000);
+  CHECK(back->proof.signature[63] == 0xab);
+  std::vector<std::uint8_t> cut = encode(proof_message(77, 1, 1));
+  cut.pop_back();
+  CHECK_FALSE(decode(cut).has_value());   // (a signature byte short)
+
+  Message ask;
+  ask.kind = Kind::kListProofs;
+  std::vector<std::uint8_t> bytes = encode(ask);
+  CHECK(bytes.size() == kListRequestBytes);   // (padded as the list's ask: the answer is never much bigger)
+  REQUIRE(decode(bytes).has_value());
+  CHECK(decode(bytes)->kind == Kind::kListProofs);
+  bytes[200] = 1;
+  CHECK_FALSE(decode(bytes).has_value());
+
+  Message answer;
+  answer.kind = Kind::kRoomProofs;
+  RoomProof p;
+  p.room = "squadala";
+  p.time_s = 5;
+  p.signature.fill(7);
+  answer.proofs = {p};
+  back = decode(encode(answer));
+  REQUIRE(back.has_value());
+  CHECK(back->proofs == answer.proofs);
+  answer.proofs[0].room = "no spaces";
+  CHECK_FALSE(decode(encode(answer)).has_value());
+}
+
+TEST_CASE("relay: a listed room's proof is kept and passed on as given, none for unlisted rooms or join codes") {
+  Fixture f;
+  REQUIRE(f.register_room(1, "squadala", host_at(1)).kind == Kind::kRegisteredName);
+  REQUIRE(f.register_room(2, "forest-4821", host_at(2)).kind == Kind::kRegisteredName);
+  CHECK_FALSE(f.register_host(3, host_at(3)).empty());
+  // Nothing listed: no proofs.
+  auto page = ask_proofs(f);
+  REQUIRE(page.has_value());
+  CHECK(page->proofs.empty());
+  CHECK(f.relay.received(host_at(1), encode(list_room_message(1, true, "Squadala public game", 0, 16)), 10).empty());
+  CHECK(f.relay.received(host_at(1), encode(proof_message(1, 1000, 0x11)), 11).empty());   // (never answered)
+  CHECK(f.relay.received(host_at(2), encode(list_room_message(2, true, "forest")), 12).empty());
+  // A join-code host's proof and an unknown token's are not kept.
+  CHECK(f.relay.received(host_at(3), encode(proof_message(3, 1000, 0x33)), 13).empty());
+  f.relay.received(host_at(9), encode(proof_message(99, 1000, 0x99)), 14);
+  page = ask_proofs(f, kGuest, 20);
+  REQUIRE(page.has_value());
+  REQUIRE(page->proofs.size() == 1);
+  CHECK(page->proofs[0].room == "squadala");
+  CHECK(page->proofs[0].time_s == 1000);
+  CHECK(page->proofs[0].signature[0] == 0x11);
+  // The list itself is as before (old kits read it unchanged).
+  auto list = ask_list(f, 0, kGuest, 21);
+  REQUIRE(list.has_value());
+  CHECK(list->total == 2);
+  // A newer proof replaces it; unlisted, the room's proof is not passed on.
+  CHECK(f.relay.received(host_at(1), encode(proof_message(1, 1005, 0x12)), 30).empty());
+  page = ask_proofs(f, kGuest, 31);
+  REQUIRE(page.has_value());
+  REQUIRE(page->proofs.size() == 1);
+  CHECK(page->proofs[0].time_s == 1005);
+  CHECK(f.relay.received(host_at(1), encode(list_room_message(1, false, "")), 40).empty());
+  page = ask_proofs(f, kGuest, 41);
+  REQUIRE(page.has_value());
+  CHECK(page->proofs.empty());
+  CHECK(f.relay.stats().proofs_kept == 2);
+}
+
+}  // namespace room_proof_tests

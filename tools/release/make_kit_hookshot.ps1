@@ -146,6 +146,7 @@ foreach ($dir in $srv, $hsKit) { Get-ChildItem $crt.FullName -Filter '*.dll' | C
 Copy-Text $hsPin (Join-Path $hsKit 'PIN')
 Copy-Text (Join-Path $src 'hookshot\TOOLS.txt') (Join-Path $hsKit 'TOOLS.txt')
 Copy-Text (Join-Path $src 'hookshot\OOTRR.txt') (Join-Path $hsKit 'OOTRR.txt')   # (the randomizer the build fetches)
+Copy-Text (Join-Path $src 'hookshot\CHARACTER-SELECT.txt') (Join-Path $hsKit 'CHARACTER-SELECT.txt')   # (Snail's mod the start fetches, asked first)
 foreach ($p in $hsPatches) { Copy-Item -LiteralPath $p.FullName -Destination (Join-Path $hsKit "patches\$($p.Name)") }   # (byte for byte)
 
 # The puppet pack tool (hookshot-build.ps1 runs it with Hookshot's own Python): every module build.py imports.

@@ -2644,6 +2644,121 @@ TEST_CASE("flag watcher: a capped rise from below the cap puts the cap back and 
   CHECK(p.stats().max_caps_kept == 1);
 }
 
+// Row 181 (Geno, Phantom Ganon): player 2 took the boss's container again after player 1's had raised everyone.
+// Link's Life component kept the higher max and wrote it back into MaxLife on every frame; each put-back was undone
+// at once and put back again, with no end (a successful put-back reset the tries), so the item get waited on the
+// hearts with the heart-increase sound playing every pass. Now the put-back is a cap hold the object walk lowers
+// the component to (held_lower), and the game keeps it.
+TEST_CASE("flag watcher: a capped rise the game writes back is a cap hold its live copy is lowered to (row 181)") {
+  constexpr FlagKey kMaxLife{0xfbe01da1u, 0};
+  FakeStore game;
+  game.values[kMaxLife] = entry(kMaxLife, 16, proto::FlagKind::int32);  // player 1's container came: 16
+  ItemFlagStore store(game);
+  FlagWatcher p(SharedFlags({kMaxLife}), FlagRole::player);
+  p.frame(store);
+  CHECK_FALSE(p.held_lower(kMaxLife));  // no cap, no hold: co-op idle and plain play never lower anything
+  p.cap_max(kMaxLife, 16);
+  CHECK_FALSE(p.held_lower(kMaxLife));  // a cap alone holds nothing
+  // The second pickup: the Life component writes 20 back for a few frames before the walk lowers it.
+  for (int i = 0; i < 5; ++i) {
+    game.values[kMaxLife] = entry(kMaxLife, 20, proto::FlagKind::int32);
+    CHECK(entries(p.frame(store)).empty());
+    CHECK(game.get(kMaxLife) == 16u);
+    CHECK(p.held_lower(kMaxLife) == 16);
+  }
+  CHECK(p.stats().max_caps_kept == 5);
+  // The walk lowered the component: the game keeps 16, and the hold ends after kResetQuietFrames.
+  for (int i = 0; i < FlagWatcher::kResetQuietFrames; ++i) {
+    CHECK(p.held_lower(kMaxLife) == 16);
+    CHECK(entries(p.frame(store)).empty());
+  }
+  CHECK_FALSE(p.held_lower(kMaxLife));
+  CHECK(p.stats().max_caps_kept == 5);
+  CHECK(p.stats().max_caps_left == 0);
+  CHECK(game.get(kMaxLife) == 16u);
+}
+
+TEST_CASE("flag watcher: a capped rise undone kMaxCapTries times is left to the game, never sent, nothing fought") {
+  constexpr FlagKey kMaxLife{0xfbe01da1u, 0};
+  FakeStore game;
+  game.values[kMaxLife] = entry(kMaxLife, 16, proto::FlagKind::int32);
+  ItemFlagStore store(game);
+  FlagWatcher p(SharedFlags({kMaxLife}), FlagRole::player);
+  p.frame(store);
+  p.cap_max(kMaxLife, 16);
+  // No walk lowers the component (its life not read): the game writes 20 back on every frame.
+  for (int i = 0; i < FlagWatcher::kMaxCapTries; ++i) {
+    game.values[kMaxLife] = entry(kMaxLife, 20, proto::FlagKind::int32);
+    CHECK(entries(p.frame(store)).empty());
+    CHECK(game.get(kMaxLife) == 16u);
+  }
+  CHECK(p.stats().max_caps_kept == static_cast<std::uint64_t>(FlagWatcher::kMaxCapTries));
+  game.values[kMaxLife] = entry(kMaxLife, 20, proto::FlagKind::int32);
+  CHECK(entries(p.frame(store)).empty());  // left: not put back, not sent
+  CHECK(game.get(kMaxLife) == 20u);
+  CHECK(p.stats().max_caps_left == 1);
+  CHECK_FALSE(p.held_lower(kMaxLife));  // the walk does not fight the game either
+  for (int i = 0; i < 5; ++i) CHECK(entries(p.frame(store)).empty());
+  CHECK(game.get(kMaxLife) == 20u);
+  CHECK(p.stats().max_caps_kept == static_cast<std::uint64_t>(FlagWatcher::kMaxCapTries));
+}
+
+TEST_CASE("flag watcher: a cap hold ends when the group's raise comes, the cap rises past it or goes") {
+  constexpr FlagKey kMaxLife{0xfbe01da1u, 0};
+  FakeStore host_game, player_game;
+  host_game.values[kMaxLife] = entry(kMaxLife, 16, proto::FlagKind::int32);
+  player_game.values[kMaxLife] = entry(kMaxLife, 16, proto::FlagKind::int32);
+  ItemFlagStore host_store(host_game), player_store(player_game);
+  FlagWatcher h(SharedFlags({kMaxLife}), FlagRole::host);
+  FlagWatcher p(SharedFlags({kMaxLife}), FlagRole::player);
+  h.frame(host_store);
+  p.frame(player_store);
+  auto exchange = [&](int frames) {
+    for (int i = 0; i < frames; ++i) {
+      for (const auto& o : p.frame(player_store)) CHECK(h.receive(o.bytes));
+      for (const auto& o : h.frame(host_store)) CHECK(p.receive(o.bytes));
+    }
+  };
+  auto second_pickup = [&] {
+    p.cap_max(kMaxLife, 16);
+    player_game.values[kMaxLife] = entry(kMaxLife, 20, proto::FlagKind::int32);
+    exchange(1);
+    REQUIRE(player_game.get(kMaxLife) == 16u);
+    REQUIRE(p.held_lower(kMaxLife) == 16);
+  };
+  SUBCASE("the group's raise (a heart piece's container elsewhere) is written and not lowered") {
+    second_pickup();
+    host_game.values[kMaxLife] = entry(kMaxLife, 20, proto::FlagKind::int32);  // the host's own, outside the area
+    exchange(2);
+    CHECK(player_game.get(kMaxLife) == 20u);
+    CHECK_FALSE(p.held_lower(kMaxLife));
+  }
+  SUBCASE("the server's answer raises the cap past the hold") {
+    second_pickup();
+    p.cap_max(kMaxLife, 16);  // the same cap again (every tick): the hold stays
+    CHECK(p.held_lower(kMaxLife) == 16);
+    p.cap_max(kMaxLife, 20);
+    CHECK_FALSE(p.held_lower(kMaxLife));
+  }
+  SUBCASE("we left the boss's area") {
+    second_pickup();
+    p.clear_max_cap(kMaxLife);
+    CHECK_FALSE(p.held_lower(kMaxLife));
+  }
+  SUBCASE("the host's older save: its reset hold is the one named") {
+    second_pickup();
+    CHECK(p.receive(proto::Message{proto::FlagReset{1, {entry(kMaxLife, 12, proto::FlagKind::int32)}}}));
+    p.frame(player_store);
+    CHECK(player_game.get(kMaxLife) == 12u);
+    CHECK(p.held_lower(kMaxLife) == 12);
+  }
+  SUBCASE("the session ends") {
+    second_pickup();
+    p.reset();
+    CHECK_FALSE(p.held_lower(kMaxLife));
+  }
+}
+
 // map-get review (822e9828): after a doubled chest's gain is put back, the watcher has seen the put-back
 // value, so the frames after send nothing and take nothing back again.
 TEST_CASE("doubled chest: after the put-back, the next frames send nothing") {
@@ -3249,4 +3364,85 @@ TEST_CASE("flag watcher: a reset hold lets a rise past the old value through, en
   REQUIRE(w.reset_lowered(kMaxLife) == 12);
   w.reset();
   CHECK_FALSE(w.reset_lowered(kMaxLife));
+}
+
+namespace {
+
+// Row 159: a shared quest step as CoopQuests::Store shows it, an Int by the max rule (write keeps the higher,
+// write_exact sets it as it is).
+constexpr FlagKey kQuestStep{0x7d776b61u, 0};  // Get_StoneOfForest
+
+class QuestStore : public FakeStore {
+ public:
+  bool is_max(FlagKey key) override { return key == kQuestStep; }
+  bool write(const proto::FlagEntry& e) override {
+    const FlagKey key = key_of(e);
+    if (key == kQuestStep && values.contains(key) && values.at(key).value >= e.value) {
+      return !no_room.contains(key) && !unwritable.contains(key);  // ours as far or further: kept
+    }
+    return FakeStore::write(e);
+  }
+  bool write_exact(const proto::FlagEntry& e) override { return FakeStore::write(e); }
+};
+
+QuestStore quest_game(std::uint32_t step) {
+  QuestStore store;
+  store.values[kQuestStep] = entry(kQuestStep, step, proto::FlagKind::int32);
+  return store;
+}
+
+}  // namespace
+
+TEST_CASE("flag watcher: the host's save lowers a quest step a guest holds in a dungeon, at once (row 159)") {
+  // Run 042436: B killed Gohma (quest at GoToWarpPoint), the host loaded a save at GoToBossRoom. B was in the Deku
+  // Tree, where HoldFlagStore holds every quest step; write_exact let only a 0 through, the retry went through the
+  // max rule, and B kept GoToWarpPoint for good: its warp stayed while the shared quest made Gohma again.
+  QuestStore game_store = quest_game(9);
+  bool in_dungeon = true;
+  HoldFlagStore store(game_store, [&in_dungeon](FlagKey key) { return in_dungeon && key == kQuestStep; });
+  FlagWatcher w(SharedFlags({kQuestStep}), FlagRole::player);
+  for (int i = 0; i <= FlagWatcher::kSettleFrames; ++i) w.frame(store);
+  CHECK(w.receive(proto::Message{proto::FlagReset{1, {entry(kQuestStep, 6, proto::FlagKind::int32)}}}));
+  CHECK(w.frame(store).empty());
+  CHECK(game_store.get(kQuestStep) == 6u);  // lowered in the dungeon, no wait
+  CHECK(w.stats().reset_applied == 1);
+  CHECK(w.reset_lowered(kQuestStep) == 6);
+  // Our game writes its old step back: put back, never sent (rows 136/137's hold).
+  game_store.values[kQuestStep] = entry(kQuestStep, 9, proto::FlagKind::int32);
+  CHECK(w.frame(store).empty());
+  CHECK(game_store.get(kQuestStep) == 6u);
+}
+
+TEST_CASE("flag watcher: the host's save raising a held quest step still waits, then lands exactly (row 159)") {
+  QuestStore game_store = quest_game(2);
+  bool in_dungeon = true;
+  HoldFlagStore store(game_store, [&in_dungeon](FlagKey key) { return in_dungeon && key == kQuestStep; });
+  FlagWatcher w(SharedFlags({kQuestStep}), FlagRole::player);
+  for (int i = 0; i <= FlagWatcher::kSettleFrames; ++i) w.frame(store);
+  CHECK(w.receive(proto::Message{proto::FlagReset{1, {entry(kQuestStep, 6, proto::FlagKind::int32)}}}));
+  for (int i = 0; i < 3; ++i) CHECK(w.frame(store).empty());
+  CHECK(game_store.get(kQuestStep) == 2u);  // a step another game reached waits outside the dungeon, as before
+  CHECK(w.stats().write_failures == 0);
+  in_dungeon = false;
+  CHECK(w.frame(store).empty());
+  CHECK(game_store.get(kQuestStep) == 6u);
+}
+
+TEST_CASE("flag watcher: a FLAG_RESET's lower step refused for room is tried again exact, not by the max rule (row 159)") {
+  // The retry went through write(): the max rule kept our higher step and took the lower one as written.
+  QuestStore game_store = quest_game(9);
+  FlagWatcher w(SharedFlags({kQuestStep}), FlagRole::player);
+  for (int i = 0; i <= FlagWatcher::kSettleFrames; ++i) w.frame(game_store);
+  game_store.no_room.insert(kQuestStep);
+  CHECK(w.receive(proto::Message{proto::FlagReset{1, {entry(kQuestStep, 6, proto::FlagKind::int32)}}}));
+  for (int i = 0; i < 3; ++i) CHECK(w.frame(game_store).empty());
+  CHECK(game_store.get(kQuestStep) == 9u);
+  CHECK(w.reset_lowered(kQuestStep) == 6);  // the hold is armed while the step waits
+  game_store.no_room.clear();
+  CHECK(w.frame(game_store).empty());
+  CHECK(game_store.get(kQuestStep) == 6u);
+  CHECK(w.stats().write_failures == 0);
+  // Co-op idle / plain play: a later step of our own is progress again once the game kept the save's step.
+  for (int i = 0; i <= FlagWatcher::kResetQuietFrames; ++i) CHECK(w.frame(game_store).empty());
+  CHECK_FALSE(w.reset_lowered(kQuestStep));
 }

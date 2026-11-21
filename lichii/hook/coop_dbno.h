@@ -46,7 +46,7 @@ struct Rules {
     bool on = false;
     std::uint8_t set_by = 0;          // 0: the server's start; else the host
     std::uint8_t bleed_s = 45;        // bleed-out time
-    std::uint8_t revive_tenths = 30;  // how long a revive is held
+    std::uint8_t revive_tenths = 50;  // how long a revive is held (5 s, row 174)
     std::uint8_t revive_life = 12;    // quarter hearts a revived player gets
 
     std::uint64_t BleedUs() const { return std::uint64_t{bleed_s} * 1'000'000; }
@@ -92,7 +92,7 @@ proto::DbnoMode Applied(const Rules& now, const Command& change);
 inline constexpr std::int32_t kDownedLife = 1;
 
 enum class Guard : std::uint8_t {
-    off,         // the game's own rules (mode off, nobody to revive us, or out)
+    off,         // the game's own rules (mode off, nobody to revive us, a bottled fairy, or out)
     last_stand,  // up: a hit that would take the last life leaves kDownedLife
     shielded,    // downed, or just revived: nothing is taken
 };
@@ -267,6 +267,10 @@ struct Input {
     bool next = false;                    // spectating: the switch button went down this frame
     Moved moved = Moved::none;            // spectating: how the respawn's move asked earlier went
     bool enemy_near_us = false;           // an enemy of our game within kThreatReachM of our own Link
+    // A fairy in one of our bottles (tracker row 162): the game's own death at no
+    // life lets it revive us, as in the solo game, so a lethal hit is not held
+    // back (the guard is off while we hold one) and we are not downed.
+    bool bottled_fairy = false;
 };
 
 enum class Event : std::uint8_t {

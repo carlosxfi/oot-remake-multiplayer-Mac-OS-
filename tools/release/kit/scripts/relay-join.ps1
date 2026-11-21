@@ -168,6 +168,18 @@ function Connect-RelayJoin($Join) {
 function Get-ServerHostingArgs($Access, [string]$Password, [string]$Allow) {
     $list = @()
     $notes = @()
+    if ($Access.PublicGame) {
+        # A public game: the relay only (no router forward, no invite code, no same-network door), always listed.
+        if ($Access.Relay -notmatch '^[A-Za-z0-9._-]{1,253}(:\d{1,5})?$') {
+            $notes += "relay = '$($Access.Relay)' is not a relay address; a public game needs one (clear the line to use the kit's own)."
+            return @{ Args = $list; Notes = $notes }
+        }
+        $list += @('--relay-via', $Access.Relay, '--relay-room', "$($Access.RelayRoom)".Trim(), '--public')
+        if ($Access.RelayKey) { $list += @('--relay-key-env', 'OOT_COOP_RELAY_KEY') }
+        $notes += "Public game: room '$($Access.RelayRoom)' on the relay's list (Public games). Players join it with one press;"
+        $notes += 'no router forward, invite code or same-network line is used, so nobody sees your internet address.'
+        return @{ Args = $list; Notes = $notes }
+    }
     if ($Access.Upnp) {
         if (-not $Password) {
             $notes += 'The router forward (UPnP) is NOT used: it opens your PC to the whole internet while the server'
@@ -222,6 +234,11 @@ function Get-ServerHostingArgs($Access, [string]$Password, [string]$Allow) {
                 $notes += 'the clipboard. Your friends paste all of it (CODE@relay) into Join.bat; the code changes each time.'
             }
         }
+    }
+    if ($Access.SameNetworkOpen) {
+        $list += '--same-network-open'
+        $notes += 'Players on your own network (behind the same router) join without the join password'
+        $notes += '(same_network_password = on: they need it too).'
     }
     if ($Access.ApproveJoins) {
         $list += '--approve-joins'

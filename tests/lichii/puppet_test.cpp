@@ -9,6 +9,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "coop/host/player_reader.hpp"
@@ -2884,4 +2885,163 @@ TEST_CASE("puppet: a playing pose sent at a still frame plays on, not set back e
     CHECK(FrameFollowed("Run", 10.0f, Anim{"Run", 11.5f, 1.0f}));
     // A held pose (rate 0) at a still frame: followed (the copy is kept on that frame).
     CHECK(FrameFollowed("Pose", 4.0f, Anim{"Pose", 4.0f, 0.0f}));
+}
+
+// Character Select's colour routine for a character's puppet (Director::Dress; review of #299 at 07de2fe2).
+namespace {
+constexpr std::uint64_t kDressAt = 0x2E1A000;   // main's offset, as the pack's manifest names it
+constexpr std::uint64_t kAgainMs = 3000;      // Director::kDressAgainMs (private)
+constexpr std::array<std::uint8_t, 16> kDressHead = {0xfd, 0x7b, 0xbf, 0xa9, 0xe0, 0x03, 0x00, 0x34,
+                                                     0xab, 0x2c, 0x40, 0xb9, 0x6b, 0x1d, 0x00, 0x51};
+std::size_t Dresses(const std::vector<Call>& calls, std::uint64_t* word = nullptr) {
+    std::size_t n = 0;
+    for (const auto& c : calls) {
+        if (c.function == kBase + kDressAt) {
+            ++n;
+            if (word != nullptr) {
+                *word = c.x[1];
+            }
+        }
+    }
+    return n;
+}
+Target Dressed(std::string actor, std::uint64_t custom) {
+    Target t = At(1, 4, 5, 6, std::move(actor));
+    t.custom = custom;
+    return t;
+}
+// The calls of the frames that bring the puppet live (a Frame runs every Step until none is left, so the first
+// colour routine call is among them, at the frame the puppet goes live).
+std::vector<Call> LiveAs(Director& d, Game& g, const Target& t) {
+    d.SetInput(Wants({t}));
+    auto calls = Frame(d, g, 0);
+    REQUIRE(calls.size() >= 2);
+    g.Spawn(calls[1].x[3]);
+    calls = Frame(d, g, 10);
+    const auto more = Frame(d, g, 15);
+    calls.insert(calls.end(), more.begin(), more.end());
+    REQUIRE(d.Slots()[0].phase == Phase::live);
+    return calls;
+}
+}  // namespace
+
+TEST_CASE("puppet characters: the mod's colour routine is called with the options, once per change and again later") {
+    Game g;
+    g.guest.Map(kBase + kDressAt, 16);
+    REQUIRE(g.guest.Write(kBase + kDressAt, kDressHead.data(), kDressHead.size()));
+    std::vector<std::string> log;
+    Director d([&](const std::string& line) { log.push_back(line); });
+    d.SetCharacterApply(kDressAt, kDressHead);
+    const std::uint64_t word = (std::uint64_t{9} << 32) | 0x123456u;
+    auto calls = LiveAs(d, g, Dressed("CoopPuppet_Adult_C005", word));
+    std::uint64_t given = 0;
+    REQUIRE(Dresses(calls, &given) == 1);                                    // as soon as it is live
+    CHECK(given == word);
+    for (const auto& c : calls) {
+        if (c.function == kBase + kDressAt) {
+            CHECK(c.x[0] == kActor);   // the puppet's actor
+        }
+    }
+    CHECK(Dresses(Frame(d, g, 20)) == 0);                                    // once
+    CHECK(Dresses(Frame(d, g, 500)) == 0);
+    CHECK(Dresses(Frame(d, g, 20 + kAgainMs + 1)) == 1);      // and again later (a late model)
+    const std::uint64_t other = (std::uint64_t{9} << 32) | 0x000001u;
+    d.SetInput(Wants({Dressed("CoopPuppet_Adult_C005", other)}));
+    calls = Frame(d, g, 20 + kAgainMs + 50);
+    REQUIRE(Dresses(calls, &given) == 1);                                    // a change: at once
+    CHECK(given == other);
+    // Options cleared: the model's own once (the routine with none), then left alone.
+    const std::uint64_t none = std::uint64_t{9} << 32;
+    d.SetInput(Wants({Dressed("CoopPuppet_Adult_C005", none)}));
+    CHECK(Dresses(Frame(d, g, 20 + kAgainMs + 100)) == 1);
+    CHECK(Dresses(Frame(d, g, 20 + 3 * kAgainMs)) == 0);
+    CHECK(std::any_of(log.begin(), log.end(), [](const std::string& l) {
+        return l.find("colour routine is at main+") != std::string::npos;
+    }));
+}
+
+TEST_CASE("puppet characters: no routine call for another build of the mod, a non-character puppet or no options") {
+    // Bytes that are not the routine's (another build of the mod, or no mod code in the game): never called.
+    {
+        Game g;
+        g.guest.Map(kBase + kDressAt, 16);
+        std::vector<std::string> log;
+        Director d([&](const std::string& line) { log.push_back(line); });
+        d.SetCharacterApply(kDressAt, kDressHead);
+        LiveAs(d, g, Dressed("CoopPuppet_Adult_C005", (std::uint64_t{9} << 32) | 0x12u));
+        CHECK(Dresses(Frame(d, g, 20)) == 0);
+        CHECK(Dresses(Frame(d, g, 20 + 2 * kAgainMs)) == 0);
+        CHECK(std::count_if(log.begin(), log.end(), [](const std::string& l) {
+                  return l.find("colour routine is not at main+") != std::string::npos;
+              }) == 1);   // said once
+    }
+    // A colour puppet, or a pack without the routine, or a character with nothing set: no call.
+    const std::vector<std::tuple<std::string, std::uint64_t, std::uint64_t>> cases = {
+        {"CoopPuppet_Adult_Red", kDressAt, 0x12u},
+        {"CoopPuppet_Adult_C005", 0, (std::uint64_t{9} << 32) | 0x12u},
+        {"CoopPuppet_Adult_C005", kDressAt, std::uint64_t{9} << 32}};
+    for (const auto& [actor, offset, custom] : cases) {
+        Game g;
+        g.guest.Map(kBase + kDressAt, 16);
+        REQUIRE(g.guest.Write(kBase + kDressAt, kDressHead.data(), kDressHead.size()));
+        Director d;
+        d.SetCharacterApply(offset, kDressHead);
+        LiveAs(d, g, Dressed(actor, custom));
+        CHECK(Dresses(Frame(d, g, 20)) == 0);
+        CHECK(Dresses(Frame(d, g, 20 + 2 * kAgainMs)) == 0);
+    }
+}
+
+TEST_CASE("puppet (row 177): only a plain puppet of a pack with perception is seen by enemies") {
+    CHECK(CoopPuppet::SeenPuppetActor("CoopPuppet_Child", true));
+    CHECK(CoopPuppet::SeenPuppetActor("CoopPuppet_Adult_Red", true));
+    CHECK_FALSE(CoopPuppet::SeenPuppetActor("CoopPuppet_ChildQuiet", true));
+    CHECK_FALSE(CoopPuppet::SeenPuppetActor("CoopPuppet_AdultQuiet_Red", true));
+    CHECK_FALSE(CoopPuppet::SeenPuppetActor("CoopPuppet_Child", false));
+    CHECK_FALSE(CoopPuppet::SeenPuppetActor("Player_Child", true));
+}
+
+// Review of charsel-colours-0118 (S1): a routine whose bytes match but that the runtime cannot call (not a game
+// function the build knows) hands the puppets to co-op's own dressing after kDressNotMade calls not made.
+namespace {
+// One frame whose colour routine call is not made: the frame ends at it (as Hookshot's RunFrame on a failed call).
+bool FrameEndingAtDress(Director& d, Game& g, std::uint64_t now_ms) {
+    auto call = d.Step(g.guest, false, 0, now_ms);
+    while (call) {
+        if (call->function == kBase + kDressAt) {
+            return true;
+        }
+        std::uint64_t result = 0;
+        if (call->function == kBase + addr::kEquip) result = g.equip_result;
+        if (call->function == kBase + addr::kTakeCreated) REQUIRE(g.guest.Read(call->x[0] + addr::kRequestActor, &result, 8));
+        call = d.Step(g.guest, true, result, now_ms);
+    }
+    return false;
+}
+}  // namespace
+
+TEST_CASE("puppet characters: a colour routine that cannot be called gives the puppet to co-op's own dressing") {
+    Game g;
+    g.guest.Map(kBase + kDressAt, 16);
+    REQUIRE(g.guest.Write(kBase + kDressAt, kDressHead.data(), kDressHead.size()));
+    std::vector<std::string> log;
+    Director d([&](const std::string& line) { log.push_back(line); });
+    d.SetCharacterApply(kDressAt, kDressHead);
+    const std::uint64_t word = (std::uint64_t{9} << 32) | 0x12u;
+    REQUIRE(Dresses(LiveAs(d, g, Dressed("CoopPuppet_Adult_C005", (std::uint64_t{9} << 32) | 0x1u))) == 1);
+    d.SetInput(Wants({Dressed("CoopPuppet_Adult_C005", word)}));   // a change: its call is not made
+    const std::uint64_t now = 100;
+    REQUIRE(FrameEndingAtDress(d, g, now - 5));
+    REQUIRE(d.DressTargets().size() == 1);
+    CHECK(d.DressTargets()[0].mods_routine);    // its bytes match: the mod's routine's
+    CHECK(d.DressTargets()[0].character);
+    CHECK(d.DressTargets()[0].custom == 0x12u);
+    REQUIRE(FrameEndingAtDress(d, g, now + 5));   // the first not made: asked again
+    FrameEndingAtDress(d, g, now + 10);           // the second not made: ours from now on
+    REQUIRE(d.DressTargets().size() == 1);
+    CHECK_FALSE(d.DressTargets()[0].mods_routine);
+    CHECK(std::count_if(log.begin(), log.end(), [](const std::string& l) {
+              return l.find("could not be called") != std::string::npos;
+          }) == 1);
+    CHECK(Dresses(Frame(d, g, now + 20 + kAgainMs)) == 0);   // never asked of it again
 }

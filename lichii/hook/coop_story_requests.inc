@@ -75,6 +75,11 @@ constexpr StoryOwn kOwnStory[] = {
     {"Dm_LonLon_0040", "moves Get_Epona to AfterWonGambleRace (the race against Ingo: co-op shares only the quest's end, lichii/hook/coop_quests.cpp)"},
     {"Dm_LostWood_0015", "runs PouchSystemActor EventTriggerRemoveSwordBigGoronChallengeActor (Biggoron's sword trade challenge)"},
 };
+// Story names that turn a room's own state (neither sent nor joined: the held flags bring it), and why:
+constexpr StoryOwn kRoomStory[] = {
+    {"Dm_ForestTemple_0005", "runs GameSystemActor EventTriggerRelocateTwistCorridor (the twisted corridor turns round the player)"},
+    {"Dm_ForestTemple_0007", "runs GameSystemActor EventTriggerRelocateTwistCorridor (the twisted corridor turns round the player)"},
+};
 constexpr std::string_view kNoSetting[] = {
     "Dm_FinalBattle_0000",
     "Dm_LostWood_0030",

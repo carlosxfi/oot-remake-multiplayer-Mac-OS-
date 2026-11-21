@@ -9,7 +9,7 @@ Windows, a Unix socket on Linux, newline-delimited JSON. This module is our clie
   wait, hold, press, stick and rstick as bridge inputs let go by `release` when their time is up; `mark` logged and
   shot; `warp` as the bridge's teleport (retried until the game takes it, as the hook does); `goto` and `toward`
   steered from Link's position read through guest memory (`HOS_CONTROL_MEM=ro`). Steps that need the co-op module
-  inside the game (chat, give, wear, assign, place, kill, hit, stun, hurt, setflag, setenum, menu) are written, as the script has them, to
+  inside the game (chat, give, wear, assign, place, kill, hit, stun, drop, hurt, setflag, setenum, menu) are written, as the script has them, to
   the game's LICHII_COOP_TEST_COMMANDS file: the module (lichii/hook/coop_testinput.cpp) plays them on its next
   check (4 a second) and empties the file, so the player knows they were taken. Without that file they are logged as
   skipped.
@@ -61,11 +61,38 @@ STICK_KEYS = {  # full stick directions: (stick, x, y)
     "RSTICK_UP": ("R", 0, 1), "RSTICK_DOWN": ("R", 0, -1), "RSTICK_LEFT": ("R", -1, 0), "RSTICK_RIGHT": ("R", 1, 0),
 }
 WEAR_SLOTS = ("weapon", "shield", "head", "armor", "boots", "hand")
-MODULE_ONLY = ("chat", "give", "wear", "dress", "assign", "place", "kill", "hit", "stun", "hurt", "setflag", "setenum", "menu")
+MODULE_ONLY = ("chat", "give", "wear", "dress", "assign", "place", "face", "aim", "kill", "hit", "stun", "drop", "hurt", "setflag", "setenum", "menu")
 
 
 class ScriptError(Exception):
     pass
+
+
+INCLUDE_DEPTH = 4
+
+
+def read_script(path, _depth=0):
+    """A scenario file's text with each `include FILE` line replaced by that file's text (FILE beside it; an
+    include may include, at most INCLUDE_DEPTH deep). One copy of a step several scenarios share (the Gohma kill
+    timing: scenarios/hs-gohma-kill.inc.txt). Raises ScriptError("FILE line N: ...")."""
+    with open(path, encoding="utf-8-sig") as f:
+        text = f.read()
+    out = []
+    for number, raw in enumerate(text.split("\n"), 1):
+        w = raw.split("#", 1)[0].split()
+        if not w or w[0].upper() != "INCLUDE":
+            out.append(raw)
+            continue
+        where = "%s line %d" % (os.path.basename(path), number)
+        if len(w) != 2:
+            raise ScriptError(where + ": want: include FILE")
+        if _depth >= INCLUDE_DEPTH:
+            raise ScriptError(where + ": includes nest deeper than %d" % INCLUDE_DEPTH)
+        inner = os.path.join(os.path.dirname(os.path.abspath(path)), w[1])
+        if not os.path.isfile(inner):
+            raise ScriptError(where + ": no " + w[1])
+        out.append(read_script(inner, _depth + 1))
+    return "\n".join(out)
 
 
 class BridgeError(Exception):
@@ -131,6 +158,13 @@ def _keys(text, step):
         else:
             return k
     return None
+
+
+# `nofairy`: every bottle's item (PlayerStatus.AssignableItem.BottleInfo.Bottle<A..E>.BottleItem, as hashes:
+# coop/host/game_items.hpp letters::kBottles) set to Empty through the game's own queue (setenum). A fairy in a
+# bottle makes a lethal hit the game's own death and revive, never down-but-out (coop_dbno: "a fairy in our
+# bottle"), so a scenario that downs a player starts with it (the lane saves have one: 3 VOID runs, 2026-11-20).
+BOTTLE_ITEMS = ("0x7d48df76", "0x1edd164a", "0xb80c70a8", "0xe4c1b1fc", "0x365e1953")
 
 
 def parse(text):
@@ -223,6 +257,18 @@ def parse(text):
             else:
                 s.kind = "place"
                 s.x, s.y, s.z = (_number(v) for v in w[1:])
+        elif cmd == "FACE":
+            # Row 175: Link turned on the spot to face world X Z (the module's CoopBoss::FaceLink).
+            if len(w) != 3 or any(_number(v) is None for v in w[1:]):
+                fail("want: face X Z")
+            s.kind = "face"
+            s.x, s.z = (_number(v) for v in w[1:])
+        elif cmd == "AIM":
+            # Row 173: Link turned to world X Z, then our next arrow put on its way into X Y Z (CoopObjects::QueueTestAim).
+            if len(w) != 4 or any(_number(v) is None for v in w[1:]):
+                fail("want: aim X Y Z")
+            s.kind = "aim"
+            s.x, s.y, s.z = (_number(v) for v in w[1:])
         elif cmd == "CHAT":
             if len(w) < 2:
                 fail("want: chat TEXT")
@@ -236,6 +282,11 @@ def parse(text):
             if len(w) != 3 or not w[2].isdigit() or not 1 <= int(w[2]) <= 80:
                 fail("want: hit ACTOR N (1 to 80)")
             s.kind, s.name, s.start = "hit", w[1], w[2]
+        elif cmd == "DROP":
+            # Row 178: the nearest boss of that name that this game owns goes METRES straight down (test only).
+            if len(w) != 3 or not w[2].isdigit() or not 1 <= int(w[2]) <= 500:
+                fail("want: drop ACTOR METRES (1 to 500)")
+            s.kind, s.name, s.start = "drop", w[1], w[2]
         elif cmd == "STUN":
             if len(w) != 2:
                 fail("want: stun BOSS")
@@ -248,6 +299,16 @@ def parse(text):
             if len(w) != 3 or not w[2].lstrip("-").isdigit():
                 fail("want: setflag NAME VALUE (an Int or Bool flag, a whole number)")
             s.kind, s.name, s.start = "setflag", w[1], w[2]
+        elif cmd == "NOFAIRY":
+            if len(w) != 1:
+                fail("want: nofairy (no arguments)")
+            for item in BOTTLE_ITEMS[:-1]:
+                e = Step("timed", number)
+                e.kind, e.name, e.start = "setenum", item, "Empty"
+                e.text = "setenum %s Empty" % item
+                steps.append(e)
+            s.kind, s.name, s.start = "setenum", BOTTLE_ITEMS[-1], "Empty"
+            s.text = "setenum %s Empty" % BOTTLE_ITEMS[-1]
         elif cmd == "SETENUM":
             if len(w) != 3:
                 fail("want: setenum NAME VALUE (an Enum flag, or 0xHASH, and a value's name)")
@@ -1029,12 +1090,10 @@ def run(a):
     parsed = {}
     for x in tags:
         if scripts[x]:
-            with open(scripts[x], encoding="utf-8-sig") as f:
-                parsed[x] = parse(f.read())
+            parsed[x] = parse(read_script(scripts[x]))
     load = None
     if a.load:
-        with open(a.load, encoding="utf-8-sig") as f:
-            load = parse(f.read())   # (checked; the load itself is "A until play", see to_play)
+        load = parse(read_script(a.load))   # (checked; the load itself is "A until play", see to_play)
     procs, bridges, server, commands = {}, {}, None, {}
     failed = None
     try:
@@ -1280,20 +1339,18 @@ def main(argv=None):
     if a.what == "check":
         bad = 0
         for path in a.scripts:
-            with open(path, encoding="utf-8-sig") as f:
-                try:
-                    steps = parse(f.read())
-                except ScriptError as e:
-                    print("%s: %s" % (path, e))
-                    bad += 1
-                    continue
+            try:
+                steps = parse(read_script(path))
+            except ScriptError as e:
+                print("%s: %s" % (path, e))
+                bad += 1
+                continue
             module = sorted({s.kind for s in steps if s.kind in MODULE_ONLY})
             print("%s: %d steps%s" % (path, len(steps), (", through the module: " + " ".join(module)) if module
                                        else ""))
         return 1 if bad else 0
     if a.what == "play":
-        with open(a.script, encoding="utf-8-sig") as f:
-            steps = parse(f.read())
+        steps = parse(read_script(a.script))
         b = Bridge.connect(a.sock)
 
         def shot(name):

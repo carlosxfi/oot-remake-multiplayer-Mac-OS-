@@ -139,6 +139,8 @@ std::optional<CommandLine> parse_command_line(const std::vector<std::string>& ar
       ++i;
     } else if (arg == "--approve-joins") {
       line.approve_joins = true;
+    } else if (arg == "--same-network-open") {
+      line.same_network_open = true;
     } else if (arg == "--password" || arg == "--password-env") {
       if (!has_value || args[i + 1].empty()) {
         error = arg + " needs a value";
@@ -191,6 +193,28 @@ std::optional<CommandLine> parse_command_line(const std::vector<std::string>& ar
       }
       line.relay_room = *room;
       ++i;
+    } else if (arg == "--public") {
+      line.public_game = true;
+    } else if (arg == "--official-key-file") {
+      if (!has_value || args[i + 1].empty()) {
+        error = "--official-key-file needs the path of the official game's key file";
+        return std::nullopt;
+      }
+      line.official_key_file = args[++i];
+    } else if (arg == "--official-relay") {
+      if (!has_value || args[i + 1].empty()) {
+        error = "--official-relay needs the relay's address as the kits reach it, for example 159.54.182.85:27530";
+        return std::nullopt;
+      }
+      line.official_relay = args[++i];
+    } else if (arg == "--dedicated") {
+      line.dedicated = true;
+    } else if (arg == "--bans-file") {
+      if (!has_value || args[i + 1].empty()) {
+        error = "--bans-file needs the path of the file that keeps the bans";
+        return std::nullopt;
+      }
+      line.bans_file = args[++i];
     } else if (arg == "--relay-list") {
       // The name shown in the list is optional (the room name without one); the next option is never taken as it.
       list_room = true;
@@ -215,6 +239,37 @@ std::optional<CommandLine> parse_command_line(const std::vector<std::string>& ar
   if (!line.relay_room.empty() && line.relay_via.empty()) {
     error = "--relay-room is a name on a relay: it needs --relay-via";
     return std::nullopt;
+  }
+  if (line.dedicated && !line.public_game) {
+    error = "--dedicated is the always-on public game: it needs --public";
+    return std::nullopt;
+  }
+  if (!line.official_key_file.empty() && !line.public_game) {
+    error = "--official-key-file signs the public listing: it needs --public";
+    return std::nullopt;
+  }
+  if (line.official_key_file.empty() != line.official_relay.empty()) {
+    error = "--official-key-file and --official-relay go together (the proof names the relay the kits use)";
+    return std::nullopt;
+  }
+  if (line.dedicated && line.approve_joins) {
+    error = "--dedicated has no host to let players in: leave out --approve-joins";
+    return std::nullopt;
+  }
+  if (line.dedicated && line.invite) {
+    error = "--dedicated reads commands from its console: leave out --invite";
+    return std::nullopt;
+  }
+  if (line.public_game) {
+    if (line.relay_via.empty() || line.relay_room.empty()) {
+      error = "--public is a public game on the relay's list: it needs --relay-via and --relay-room";
+      return std::nullopt;
+    }
+    if (line.upnp) {
+      error = "--public is through the relay only: leave out --upnp (it would open this PC's port)";
+      return std::nullopt;
+    }
+    list_room = true;   // (a public game is always on the list)
   }
   if (list_room && line.relay_list.empty()) line.relay_list = line.relay_room;
   if (list_room && line.relay_room.empty()) {
@@ -246,7 +301,7 @@ const char* usage() {
          "                   [--game-build ID] [--max-players N] [--max-half-open N]\n"
          "                   [--pose-upload-kbps N] [--run-for-ms N]\n"
          "                   [--password TEXT | --password-env NAME] [--pvp on|off]\n"
-         "                   [--dbno on|off] [--approve-joins]\n"
+         "                   [--dbno on|off] [--approve-joins] [--same-network-open]\n"
          "  --port N         UDP port to listen on (default 27510, 0 for any)\n"
          "  --bind ADDRESS   listen only on this IPv4 address of this PC, for\n"
          "                   example its Hamachi or Radmin address (default: all)\n"
@@ -279,6 +334,17 @@ const char* usage() {
          "                   public room list, shown as NAME (the room name\n"
          "                   without one; players and version shown too, never\n"
          "                   the password)\n"
+         "  --public         a public game: with --relay-via and --relay-room,\n"
+         "                   anyone with the room name joins without a password\n"
+         "                   (still encrypted), through the relay only, listed\n"
+         "  --dedicated      with --public: always on, no hosting game; type\n"
+         "                   /players, /kick N, /ban N, /unban KEYID,\n"
+         "                   /mute N voice|chat, /unmute N voice|chat\n"
+         "  --bans-file PATH  keep bans by player key in this file across runs\n"
+         "  --official-key-file PATH  with --public: sign the listing with the\n"
+         "                   official game's key (docs/official-game.md)\n"
+         "  --official-relay HOST[:PORT]  the relay as the kits reach it (with\n"
+         "                   --official-key-file)\n"
          "  --relay          run as a relay for hosts that use --relay-via\n"
          "                   (UDP port 27530 unless --port), not a game server\n"
          "  --relay-key TEXT | --relay-key-env NAME  the relay's host key: on the\n"
@@ -299,6 +365,8 @@ const char* usage() {
          "  --approve-joins  each new player waits until the host lets them in\n"
          "                   (/allow or /deny in the game chat; no answer in\n"
          "                   60 s: turned away). The first player in hosts\n"
+         "  --same-network-open  players on this network (a private address)\n"
+         "                   join without the join password\n"
          "  --test-delay-ms N --test-jitter-ms J  TESTS ONLY (needs OOT_COOP_TEST=1):\n"
          "                   hold every packet N/2 ms each way, +- up to J ms,\n"
          "                   in order (a bad connection for Longshot autotests)\n";

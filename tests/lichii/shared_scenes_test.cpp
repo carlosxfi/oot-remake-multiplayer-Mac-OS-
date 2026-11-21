@@ -141,15 +141,164 @@ TEST_CASE("in a dungeon a story cutscene started in another room is not played h
     h.room = 4;
     j.Started(1, "Dm_ForestTemple_0010", "ForestTemple", Vec3{15.0f, 0.0f, 10.0f}, 100, 7);
     CHECK_FALSE(j.Next(h, kNotPlayed));
-    CHECK(j.Waiting() == 0);  // skipped, not kept waiting
+    CHECK(j.Waiting() == 1);  // not played from here, held for when we come into their room (row 176)
     const auto notes = j.TakeNotes();
     REQUIRE(notes.size() == 1);
     CHECK(notes[0].find("another room of this dungeon") != std::string::npos);
-    // The same room: played.
+    CHECK(notes[0].find("held") != std::string::npos);
+    // The same room: played (the held one in the other room does not block it).
     j.Started(1, "Dm_ForestTemple_0011", "ForestTemple", Vec3{15.0f, 0.0f, 10.0f}, 200, 4);
     const auto got = j.Next(h, kNotPlayed);
     REQUIRE(got);
     CHECK(*got == "Dm_ForestTemple_0011");
+}
+
+TEST_CASE("row 176: a start we were too far from is held and joined when we come near while it is not played here") {
+    // Run 20261119-222229: player 2 was 81 m away when player 1 started Dm_ForestTemple_0015 (Meg); it walked into
+    // her area while the cutscene still played and its own room logic started a second one: two Megs, two owners.
+    const Vec3 kMeg{0.0f, 100.0f, -3.5f};
+    Joiner j;
+    Here far = Free(1'000'000, Vec3{0.0f, 101.0f, 77.0f}, "ForestTemple");  // the entrance, 81 m
+    far.dungeon = true;
+    far.room = 1;
+    j.Started(1, "Dm_ForestTemple_0015", "ForestTemple", kMeg, 900'000, 2);
+    CHECK_FALSE(j.Next(far, kNotPlayed));
+    CHECK(j.Waiting() == 1);
+    CHECK(j.TakeNotes().at(0).find("too far") != std::string::npos);
+    far.now_us = 5'000'000;
+    CHECK_FALSE(j.Next(far, kNotPlayed));
+    CHECK(j.TakeNotes().empty());  // noted once
+    // In the room now, but our game busy (a talk): it waits 3 s from when we came near, not from the start.
+    Here near = Free(20'000'000, Vec3{12.0f, 100.0f, -3.5f}, "ForestTemple");
+    near.dungeon = true;
+    near.room = 2;
+    near.can_start = false;
+    CHECK_FALSE(j.Next(near, kNotPlayed));
+    CHECK(j.Waiting() == 1);
+    near.can_start = true;
+    near.now_us = 21'000'000;
+    CHECK(j.Next(near, kNotPlayed) == std::optional<std::string>("Dm_ForestTemple_0015"));
+    CHECK(j.TakeNotes().back().find("now near us: playing it here too (late)") != std::string::npos);
+    CHECK_FALSE(j.Ours("Dm_ForestTemple_0015", "ForestTemple"));  // joined: not sent back
+}
+
+TEST_CASE("row 176: a held start is dropped once our save has it played, or after kHoldUs") {
+    const Vec3 kFar{0.0f, 0.0f, 200.0f};
+    Joiner j;
+    j.Started(1, "Dm_Kokiri_0030", "KokiriForest", kFar, 0);
+    CHECK_FALSE(j.Next(Free(10), kNotPlayed));
+    CHECK(j.Waiting() == 1);
+    // The starter's result came by the flags: never played here.
+    CHECK_FALSE(j.Next(Free(20), [](const std::string&) { return true; }));
+    CHECK(j.Waiting() == 0);
+    CHECK(j.TakeNotes().back().find("has it played already") != std::string::npos);
+
+    j.Started(1, "Dm_Kokiri_0045", "KokiriForest", kFar, 0);
+    CHECK_FALSE(j.Next(Free(10), kNotPlayed));
+    CHECK(j.Waiting() == 1);
+    CHECK_FALSE(j.Next(Free(CoopSharedScenes::kHoldUs + 1), kNotPlayed));
+    CHECK(j.Waiting() == 0);
+    CHECK(j.TakeNotes().back().find("too far") != std::string::npos);
+}
+
+TEST_CASE("row 176: our game starting a held start of another player is theirs late, not a new start sent out") {
+    Joiner j;
+    j.Started(2, "Dm_ForestTemple_0015", "ForestTemple", Vec3{0.0f, 100.0f, -3.5f}, 0);
+    Here far = Free(10, Vec3{0.0f, 101.0f, 77.0f}, "ForestTemple");
+    CHECK_FALSE(j.Next(far, kNotPlayed));
+    j.TakeNotes();
+    // A place into Meg's area: our room logic starts it before the join is asked.
+    CHECK_FALSE(j.Ours("Dm_ForestTemple_0015", "ForestTemple"));
+    CHECK(j.Waiting() == 0);
+    CHECK(j.TakeNotes().at(0).find("which player 2 started here earlier (held for us): theirs, not sent") !=
+          std::string::npos);
+    // Without a held start ours goes out as before.
+    CHECK(j.Ours("Dm_ForestTemple_0016", "ForestTemple"));
+}
+
+TEST_CASE("row 176: a held start outlasts kHoldUs while its starter is still in that scene") {
+    // The row 176 Forest playtest (0.11.7): Meg's fight ran past 2 min. Player 1 came to the hall after that and its own
+    // room logic started a second Dm_ForestTemple_0017 (a second Meg). Player 2, the starter, was still there.
+    const Vec3 kMeg{0.0f, 100.0f, -3.5f};
+    Joiner j;
+    j.Started(2, "Dm_ForestTemple_0017", "ForestTemple", kMeg, 0, 2);
+    Here far = Free(10, Vec3{60.0f, 104.0f, 0.0f}, "ForestTemple");  // Amy's room, 60 m
+    far.in_scene = {2};
+    CHECK_FALSE(j.Next(far, kNotPlayed));
+    CHECK(j.Waiting() == 1);
+    j.TakeNotes();
+    far.now_us = CoopSharedScenes::kHoldUs + 60'000'000;  // 3 min: the starter is still in the scene
+    CHECK_FALSE(j.Next(far, kNotPlayed));
+    CHECK(j.Waiting() == 1);
+    CHECK(j.TakeNotes().empty());
+    // Our room logic starts it as we come in: theirs, late, not sent.
+    CHECK_FALSE(j.Ours("Dm_ForestTemple_0017", "ForestTemple"));
+    CHECK(j.TakeNotes().at(0).find("which player 2 started here earlier (held for us): theirs, not sent") !=
+          std::string::npos);
+
+    // Or we come near and join it, 3 min late.
+    Joiner k;
+    k.Started(2, "Dm_ForestTemple_0015", "ForestTemple", kMeg, 0);
+    Here away = Free(10, Vec3{60.0f, 104.0f, 0.0f}, "ForestTemple");
+    away.in_scene = {1, 2};
+    CHECK_FALSE(k.Next(away, kNotPlayed));
+    Here near = Free(CoopSharedScenes::kHoldUs + 60'000'000, Vec3{3.0f, 100.0f, -3.5f}, "ForestTemple");
+    near.in_scene = {2};
+    CHECK(k.Next(near, kNotPlayed) == std::optional<std::string>("Dm_ForestTemple_0015"));
+    CHECK(k.TakeNotes().back().find("(late)") != std::string::npos);
+}
+
+TEST_CASE("row 176: past kHoldUs a held start is dropped once its starter left the scene") {
+    const Vec3 kMeg{0.0f, 100.0f, -3.5f};
+    Joiner j;
+    j.Started(2, "Dm_ForestTemple_0017", "ForestTemple", kMeg, 0);
+    Here far = Free(10, Vec3{60.0f, 104.0f, 0.0f}, "ForestTemple");
+    far.in_scene = {2};
+    CHECK_FALSE(j.Next(far, kNotPlayed));
+    j.TakeNotes();
+    // Still within kHoldUs: kept even with the starter gone (as before).
+    far.in_scene.clear();
+    far.now_us = 60'000'000;
+    CHECK_FALSE(j.Next(far, kNotPlayed));
+    CHECK(j.Waiting() == 1);
+    // Past it, with only another player here: their fight left with them, so ours is a new one, sent.
+    far.in_scene = {3};
+    far.now_us = CoopSharedScenes::kHoldUs + 1;
+    CHECK_FALSE(j.Next(far, kNotPlayed));
+    CHECK(j.Waiting() == 0);
+    CHECK(j.TakeNotes().back().find("its result comes by the flags") != std::string::npos);
+    CHECK(j.Ours("Dm_ForestTemple_0017", "ForestTemple"));
+
+    // A load (scene not known) past kHoldUs does not drop it; the next scene decides.
+    Joiner k;
+    k.Started(2, "Dm_ForestTemple_0015", "ForestTemple", kMeg, 0);
+    Here early = Free(10, Vec3{60.0f, 104.0f, 0.0f}, "ForestTemple");
+    early.in_scene = {2};
+    CHECK_FALSE(k.Next(early, kNotPlayed));
+    CHECK(k.Waiting() == 1);
+    Here load;
+    load.now_us = CoopSharedScenes::kHoldUs + 5;
+    CHECK_FALSE(k.Next(load, kNotPlayed));
+    CHECK(k.Waiting() == 1);
+    // A start first looked at only after kHoldUs (never held) is not kept by its starter alone.
+    Joiner m;
+    m.Started(2, "Dm_ForestTemple_0013", "ForestTemple", kMeg, 0);
+    Here late = Free(CoopSharedScenes::kHoldUs + 1, Vec3{60.0f, 104.0f, 0.0f}, "ForestTemple");
+    late.in_scene = {2};
+    CHECK_FALSE(m.Next(late, kNotPlayed));
+    CHECK(m.Waiting() == 0);
+}
+
+TEST_CASE("row 176: every Poe sister's cutscene is a shared story start, so the hold covers all four") {
+    // Amy 0013, Beth 0011/0021/0022, Joelle 0012/0031/0032, Meg 0017 (out of her painting) and 0015 (her fight).
+    for (const char* name : {"Dm_ForestTemple_0011", "Dm_ForestTemple_0012", "Dm_ForestTemple_0013",
+                             "Dm_ForestTemple_0015", "Dm_ForestTemple_0017", "Dm_ForestTemple_0021",
+                             "Dm_ForestTemple_0022", "Dm_ForestTemple_0031", "Dm_ForestTemple_0032"}) {
+        CAPTURE(name);
+        CHECK(CoopSharedScenes::Askable(name));
+        const auto names = CoopSharedScenes::Names();
+        CHECK(std::find(names.begin(), names.end(), std::string_view(name)) != names.end());
+    }
 }
 
 TEST_CASE("in a dungeon with no room known only a very near starter is joined") {
@@ -270,6 +419,16 @@ TEST_CASE("a story cutscene asked by its event setting is sent and joined by tha
     // reader took a switch's cases right (8 bytes each; the old 0x10 never reached it): the player's own.
     CHECK_FALSE(Askable("Dm_FairyFountain_Din"));
     CHECK(CoopSharedScenes::NotShared("Dm_FairyFountain_Din") == "it changes the player's own things");
+    // The Forest Temple's twisted corridor (row 173): its flows toggle the corridor's flags and turn it round the
+    // player; a game in the same room that joined turned its own corridor again, under its player. Neither sent nor
+    // joined; the corridor's state comes by its held flags. Every other Forest Temple story scene stays shared.
+    for (const std::string_view n : {"Dm_ForestTemple_0005", "Dm_ForestTemple_0007"}) {
+        CHECK_MESSAGE(CoopSharedScenes::IsShared(n), std::string(n));
+        CHECK_MESSAGE(!Askable(n), std::string(n));
+        CHECK(CoopSharedScenes::NotShared(n) == "it turns a room of each game's own (the held flags bring it)");
+    }
+    CHECK(Askable("Dm_ForestTemple_0010"));
+    CHECK(Askable("Dm_ForestTemple_0000"));
     CHECK(IsStory(kEntry));
     CHECK(IsStory("Dm_Kokiri_0070"));
     CHECK_FALSE(IsStory("Npc_Kokiri_Mido_Child"));
@@ -352,6 +511,12 @@ TEST_CASE("a joined story setting reads its own played flag, and a story name wi
     cucco.Started(1, "Dm_HrlCastle_0020", "LonLonRanch", kBridge, 100);
     CHECK(cucco.Waiting() == 0);
     CHECK(cucco.TakeNotes()[0].find("the player's own things") != std::string::npos);
+    // Nor the twisted corridor's turn (row 173): a friend in the corridor's room is not turned with it.
+    Joiner twist;
+    twist.Started(1, "Dm_ForestTemple_0005", "ForestTemple", kBridge, 100);
+    CHECK(twist.Waiting() == 0);
+    CHECK_FALSE(twist.Next(here, kNotPlayed).has_value());
+    CHECK(twist.TakeNotes()[0].find("turns a room") != std::string::npos);
 }
 
 TEST_CASE("no story cutscene shared in 0.11.3 stops being shared unless the game's data gives a reason") {
@@ -370,6 +535,8 @@ TEST_CASE("no story cutscene shared in 0.11.3 stops being shared unless the game
         "Dm_LonLon_0040",        // Ingo beaten: moves the player's own Get_Epona to AfterWonGambleRace (row 150)
         "Dm_LostWood_0015",      // Biggoron's sword trade challenge removed (not the Pocket Egg: the old
                                  // reader's misread case reached an egg taken that its real cases never do)
+        // a room's own state turned (kRoomStory): the twisted corridor (row 173)
+        "Dm_ForestTemple_0005", "Dm_ForestTemple_0007",
         // the Great Fairies' paid heal (Dm_FairyFountain_Din:Pay, 500 rupees)
         "Dm_FairyFountain_Courage", "Dm_FairyFountain_Din", "Dm_FairyFountain_Frore", "Dm_FairyFountain_Nayru",
         "Dm_FairyFountain_Power", "Dm_FairyFountain_Wisdom",

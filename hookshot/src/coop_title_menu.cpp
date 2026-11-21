@@ -243,6 +243,18 @@ bool PasswordOk(std::string_view password) {
     });
 }
 
+std::string Options::RandomRoomName(std::uint64_t seed) {
+    static constexpr const char* kWords[] = {"forest", "lake",  "field", "river",  "valley", "meadow",
+                                             "canyon", "grove", "cliff", "marsh",  "harbor", "summit"};
+    std::uint64_t x = seed * 0x9E3779B97F4A7C15ull + 0xD1B54A32D192ED03ull;   // (splitmix64)
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+    x ^= x >> 31;
+    const char* word = kWords[x % (sizeof kWords / sizeof kWords[0])];
+    const unsigned digits = static_cast<unsigned>((x >> 16) % 9000) + 1000;
+    return std::string(word) + "-" + std::to_string(digits);
+}
+
 Options Options::Read(std::string_view coop_ini, std::string_view options_ini) {
     Options o;
     if (const auto v = IniGet(coop_ini, "name"); v && NameOk(*v)) {
@@ -274,8 +286,11 @@ Options Options::Read(std::string_view coop_ini, std::string_view options_ini) {
     o.show_players = On(IniGet(options_ini, "LICHII_COOP_SHOW_PLAYERS"));
     o.pvp = On(IniGet(options_ini, "pvp"));
     o.approve_joins = On(IniGet(options_ini, "approve_joins"));
+    o.same_network_open = On(IniGet(options_ini, "same_network_open"));
     o.auto_rejoin = On(IniGet(options_ini, "auto_rejoin"));
+    o.original_game = On(IniGet(options_ini, "original_game"));
     o.list_room = On(IniGet(options_ini, "list_room"));
+    o.public_game = On(IniGet(options_ini, "public_game"));
     o.upnp = !Off(IniGet(options_ini, "upnp"));
     if (const auto v = IniGet(options_ini, "server_password"); v && PasswordOk(*v)) {
         o.password = *v;
@@ -304,10 +319,16 @@ Options Options::Read(std::string_view coop_ini, std::string_view options_ini) {
         }
     }
     o.map_players = !Off(IniGet(options_ini, "LICHII_COOP_MAP"));
+    {
+        std::string size(Trim(IniGet(options_ini, "LICHII_COOP_HUD_SIZE").value_or("auto")));
+        for (char& c : size) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        o.hud_size = size == "full" || size == "compact" || size == "off" ? size : "auto";
+    }
     o.map_names = !Off(IniGet(options_ini, "LICHII_COOP_MAP_NAMES"));
     // The relay lines Host.bat reads too (coop-options.ini, "Advanced: relay"): the Multiplayer tab's Host uses them
     // the same way. Read only: the menu writes none of them.
-    o.relay = std::string(Trim(IniGet(options_ini, "relay").value_or("")));
+    o.relay = std::string(Trim(IniGet(options_ini, "relay").value_or(kDefaultRelay)));
+    if (o.relay.empty()) o.relay = kDefaultRelay;   // (an empty line: the built-in one, which is never removed)
     o.relay_key = std::string(Trim(IniGet(options_ini, "relay_key").value_or("")));
     o.relay_room = std::string(Trim(IniGet(options_ini, "relay_room").value_or("")));
     o.list_name = std::string(Trim(IniGet(options_ini, "list_name").value_or("")));
@@ -327,6 +348,30 @@ Options Options::Read(std::string_view coop_ini, std::string_view options_ini) {
     return o;
 }
 
+bool RoomNameOk(std::string_view room) {
+    if (room.empty()) return true;
+    if (room.size() < 3 || room.size() > 24) return false;
+    return std::all_of(room.begin(), room.end(), [](unsigned char c) {
+        return std::isalnum(c) != 0 || c == '-' || c == '_';
+    });
+}
+
+bool RelayOk(std::string_view relay) {
+    if (relay.empty()) return true;
+    if (relay.size() > 128) return false;
+    // host[:port], as the server reads it (server/relay_link.cpp parse_relay_address): a host of letters, digits, '.'
+    // and '-', then a port from 1 to 65535 when one is given.
+    std::string_view host = relay;
+    if (const auto colon = relay.rfind(':'); colon != std::string_view::npos) {
+        const std::string_view port = relay.substr(colon + 1);
+        if (port != Trim(port) || !ParsePort(port)) return false;
+        host = relay.substr(0, colon);
+    }
+    return !host.empty() && std::all_of(host.begin(), host.end(), [](unsigned char c) {
+        return std::isalnum(c) != 0 || c == '.' || c == '-';
+    });
+}
+
 void Options::Write(std::string& coop_ini, std::string& options_ini) const {
     coop_ini = IniSet(coop_ini, "name", Trim(name), true);
     std::string o = options_ini;
@@ -339,7 +384,18 @@ void Options::Write(std::string& coop_ini, std::string& options_ini) const {
     o = show_players ? IniSet(o, "LICHII_COOP_SHOW_PLAYERS", "1", false) : IniUnset(o, "LICHII_COOP_SHOW_PLAYERS");
     o = IniSet(o, "pvp", pvp ? "on" : "off", true);
     o = auto_rejoin ? IniSet(o, "auto_rejoin", "on", true) : IniUnset(o, "auto_rejoin");
+    o = original_game ? IniSet(o, "original_game", "on", true) : IniUnset(o, "original_game");
+    o = same_network_open ? IniSet(o, "same_network_open", "on", true) : IniUnset(o, "same_network_open");
     o = list_room ? IniSet(o, "list_room", "on", true) : IniUnset(o, "list_room");
+    o = public_game ? IniSet(o, "public_game", "on", true) : IniUnset(o, "public_game");
+    // (the relay: the kit's default needs no line; a room name, or none)
+    // A line whose value did not change is kept as the player wrote it (its spacing and a comment after it).
+    if (std::string(Trim(IniGet(o, "relay").value_or(kDefaultRelay))) != relay) {
+        o = relay == kDefaultRelay ? IniUnset(o, "relay") : IniSet(o, "relay", relay, true);
+    }
+    if (std::string(Trim(IniGet(o, "relay_room").value_or(""))) != relay_room) {
+        o = relay_room.empty() ? IniUnset(o, "relay_room") : IniSet(o, "relay_room", relay_room, true);
+    }
     o = upnp ? IniUnset(o, "upnp") : IniSet(o, "upnp", "no", true);
     o = password.empty() ? IniUnset(o, "server_password") : IniSet(o, "server_password", password, true);
     o = debug_panel ? IniSet(o, "LICHII_COOP_DEBUG_PANEL", "1", false) : IniUnset(o, "LICHII_COOP_DEBUG_PANEL");
@@ -352,6 +408,7 @@ void Options::Write(std::string& coop_ini, std::string& options_ini) const {
     const std::uint16_t port = host_port != 0 ? host_port : kDefaultPort;
     o = port == kDefaultPort ? IniUnset(o, "server_port") : IniSet(o, "server_port", std::to_string(port), true);
     o = map_players ? IniUnset(o, "LICHII_COOP_MAP") : IniSet(o, "LICHII_COOP_MAP", "0", false);
+    o = hud_size == "auto" ? IniUnset(o, "LICHII_COOP_HUD_SIZE") : IniSet(o, "LICHII_COOP_HUD_SIZE", hud_size, false);
     o = map_names ? IniUnset(o, "LICHII_COOP_MAP_NAMES") : IniSet(o, "LICHII_COOP_MAP_NAMES", "0", false);
     options_ini = std::move(o);
 }
@@ -369,6 +426,7 @@ std::vector<std::pair<std::string, std::string>> Options::Environment() const {
         {"LICHII_COOP_VOICE_MIC", voice_mic},
         {"LICHII_COOP_MAP", map_players ? "" : "0"},
         {"LICHII_COOP_MAP_NAMES", map_names ? "" : "0"},
+        {"LICHII_COOP_HUD_SIZE", hud_size == "auto" ? "" : hud_size},
     };
 }
 
@@ -452,6 +510,24 @@ bool AddressOk(std::string_view typed) {
     }
     const std::string_view port = t.substr(colon + 1);
     return port == Trim(port) && ParsePort(port).has_value();
+}
+
+std::optional<std::string> BareJoinName(std::string_view join_line) {
+    const std::string_view t = Trim(join_line);
+    const std::string_view address = t.substr(0, t.find_first_of(" \t"));
+    if (address.empty() || address.find_first_of(".:@") != std::string_view::npos || !RoomNameOk(address)) {
+        return std::nullopt;
+    }
+    return std::string(address);
+}
+
+std::string RoomJoinLine(std::string_view join_line, std::string_view relay) {
+    const std::string_view t = Trim(join_line);
+    const std::size_t space = t.find_first_of(" \t");
+    const std::string_view password = space == std::string_view::npos ? std::string_view{} : Trim(t.substr(space));
+    std::string out = std::string(t.substr(0, space)) + "@" + std::string(Trim(relay));
+    if (!password.empty()) out += " " + std::string(password);
+    return out;
 }
 
 JoinTarget ReadJoin(std::string_view typed, const CodeResult& code) {
@@ -914,22 +990,26 @@ TitleMenuLook MenuFor(bool any_save, bool multiplayer, bool one_start) {
         l.focus = 0;
         return l;
     }
+    // Options always on the game's own Options button (its third with a save, its second without), Multiplayer on the
+    // slot left: an Options row on another slot chose the game's Options in its place, and the game showed that
+    // button pressed, the one with Multiplayer's word on it, a moment first (a tester's run, 2026-11-19).
     if (any_save && !one_start) {
-        // Continue and New Game each their own (no file select of a mod's that does both): the game's fourth slot
-        // shown for Options, decided in its place (the game's third button is under Multiplayer).
+        // (Continue and New Game each their own, no file select of a mod's that does both: the fourth slot shown)
         l.btn_num_frame = 4;
         l.rows = {{{"0001", TitleDo::kGame},
                    {"0000", TitleDo::kGame},
-                   {"0104", TitleDo::kMultiplayer},
-                   {"0105", TitleDo::kDecide, 2}}};
+                   {"0105", TitleDo::kGame},
+                   {"0104", TitleDo::kMultiplayer}}};
         l.count = 4;
         return l;
     }
     l.btn_num_frame = 3;
-    l.rows = {{{one_start ? "0103" : "0000", TitleDo::kGame},   // (Start; New Game when no mod has a file select)
-               {"0104", TitleDo::kMultiplayer},
-               any_save ? TitleMenuRow{"0105", TitleDo::kGame} : TitleMenuRow{"0105", TitleDo::kDecide, 1},
-               {}}};
+    if (any_save) {   // (one Start for Continue and New Game: Start on Continue's slot, Multiplayer on New Game's)
+        l.rows = {{{"0103", TitleDo::kGame}, {"0104", TitleDo::kMultiplayer}, {"0105", TitleDo::kGame}, {}}};
+    } else {          // (no save: New Game, or Start, then the game's Options, then Multiplayer on the third slot)
+        l.rows = {{{one_start ? "0103" : "0000", TitleDo::kGame}, {"0105", TitleDo::kGame},
+                   {"0104", TitleDo::kMultiplayer}, {}}};
+    }
     l.count = 3;
     return l;
 }

@@ -27,6 +27,8 @@
 #include "coop_session_gate.h"
 #include "coop_objects.h"
 
+#include <atomic>
+#include <cmath>
 #include <chrono>
 #include <cstdlib>
 #include <mutex>
@@ -60,6 +62,7 @@ constexpr std::uint64_t kForceSkip = 0x3b3af30;
 constexpr std::uint64_t kActorState = 0x2c;
 constexpr std::uint32_t kActorStatePresent = 4;
 constexpr std::uint64_t kActorPosition = 0x31c;
+constexpr std::uint64_t kActorRotation = 0x328;  // 9 x f32, rows of 3 (player-state-map.md)
 constexpr std::uint64_t kSetMatrix = 0x4c6580;  // vtable slot 0x218 of every actor seen
 constexpr int kCallerOrder = CoopCallerOrders::kBossRooms;  // after the puppets, spawn, fairy, objects, time
 // Ten times a second on the steady clock, not by presented frames (issue
@@ -91,6 +94,14 @@ public:
         main_ = main;
         move_ = Move{actor, to};
     }
+    // Test only (`face X Z`, row 175): our Link turned to face the world point (x, z), its rotation (actor
+    // +0x328, rows of 3; column 2 is the way it faces, as CoopObjects reads it) written as a plain turn about
+    // the up axis, then its matrix set from it as a move does.
+    void WantFace(std::uint64_t main, std::uint64_t actor, float x, float z) {
+        std::lock_guard lock(mutex_);
+        main_ = main;
+        face_ = Face{actor, x, z};
+    }
     void WantSkip(std::uint64_t main) {
         std::lock_guard lock(mutex_);
         main_ = main;
@@ -117,6 +128,30 @@ public:
                     c.x[1] = 0;
                     LOG_INFO(Core, "coop: boss: moved Link to {:.1f} {:.1f} {:.1f}", m.to.x, m.to.y, m.to.z);
                     return c;
+                }
+            }
+        }
+        if (face_) {
+            const Face f = *face_;
+            face_.reset();
+            std::uint32_t state = 0;
+            float at[3] = {};
+            if (!guest.Read(f.actor + kActorState, &state, 4) || state != kActorStatePresent ||
+                !guest.Read(f.actor + kActorPosition, at, sizeof(at))) {
+                LOG_WARNING(Core, "coop: test face: Link's actor is gone; not turned");
+            } else {
+                const float yaw = std::atan2(f.x - at[0], f.z - at[2]);
+                const float s = std::sin(yaw);
+                const float c = std::cos(yaw);
+                const float m[9] = {c, 0.0f, s, 0.0f, 1.0f, 0.0f, -s, 0.0f, c};
+                if (guest.Write(f.actor + kActorRotation, m, sizeof(m))) {
+                    CoopPuppet::Call call;
+                    call.function = main_ + kSetMatrix;
+                    call.x[0] = f.actor;
+                    call.x[1] = 0;
+                    LOG_INFO(Core, "coop: test face {:.2f} {:.2f}: Link at {:.2f} {:.2f} turned to yaw {:.1f} deg",
+                             f.x, f.z, at[0], at[2], yaw * 57.29578f);
+                    return call;
                 }
             }
         }
@@ -150,6 +185,12 @@ private:
         std::uint64_t actor = 0;
         Vec to;
     };
+    struct Face {
+        std::uint64_t actor = 0;
+        float x = 0.0f;
+        float z = 0.0f;
+    };
+    std::optional<Face> face_;
     std::mutex mutex_;
     std::uint64_t main_ = 0;
     std::optional<Move> move_;
@@ -174,6 +215,7 @@ struct Glue {
     bool scenes_live = false;  // logged once
     std::uint64_t requests_cursor = 0;
     std::optional<std::int32_t> max_life;          // set by the hook (SetMaxLife)
+    std::atomic<std::int32_t> max_life_from_others{0};   // the maximum another game's pickup gave us (0 none)
     std::optional<std::int32_t> max_life_write;    // for the hook (TakeMaxLifeWrite)
     std::optional<std::int32_t> max_life_cap;      // for the hook (MaxLifeCap)
     std::vector<std::string> wanted;               // events for the live-event requester (TakeWantedEvents)
@@ -227,6 +269,18 @@ struct Glue {
         return true;
     }
 
+    bool AskFace(Core::System& system, std::uint64_t main, float x, float z) {
+        CoopHook::EmulatorMemory memory(system.ApplicationMemory(), main);
+        coop::host::PlayerReader reader(memory);
+        const auto actor = reader.find_player_actor();
+        if (!actor) {
+            LOG_INFO(Core, "coop: test face: Link's actor not found; not turned");
+            return false;
+        }
+        mover.WantFace(main, *actor, x, z);
+        return true;
+    }
+
     bool Scenes(Core::System& system, std::uint64_t main, const Local& local, bool event,
                 coop::host::Session* session, std::uint64_t now_us);
 
@@ -250,7 +304,8 @@ struct Glue {
         if (step == CoopSessionGate::Step::forget) {
             sync.Reset();
             scenes.Reset();
-            CoopBossBeaten::TheRecord().Clear();  // out of the session: the server tells us again on a join
+            CoopBossBeaten::TheRecord().ForgetSession();  // out of the session: the server tells us again on a join
+            CoopBossBeaten::TheHostAlive().Clear();
             CoopBossScenes::RefusedDeaths().store(0, std::memory_order_release);
             readiness.Reset();
             max_life_cap.reset();
@@ -423,6 +478,7 @@ bool Glue::Scenes(Core::System& system, std::uint64_t main, const Local& local, 
     here.event = event;
     here.self = local.self;
     here.max_life = max_life;
+    here.max_life_from_others = max_life && *max_life == max_life_from_others.load();
     if (local.scene) {
         for (const auto& room : CoopBoss::Rooms()) {  // the scene's boss (a dungeon has one boss room)
             if (room.scene == *local.scene) {
@@ -458,6 +514,9 @@ bool Glue::Scenes(Core::System& system, std::uint64_t main, const Local& local, 
     }
     if (a.skip) {
         mover.WantSkip(main);
+    }
+    if (a.refill) {
+        CoopObjects::AskRefill();   // (another player took the container: our hearts full, as its pickup would)
     }
     if (a.set_max_life) {
         max_life_write = a.set_max_life;
@@ -521,10 +580,26 @@ bool MoveLink(Core::System& system, std::uint64_t main_base, const Vec& to) {
     return main_base != 0 && TheGlue().on && TheGlue().AskMove(system, main_base, to);
 }
 
+bool FaceLink(Core::System& system, std::uint64_t main_base, float x, float z) {
+    return main_base != 0 && TheGlue().on && TheGlue().AskFace(system, main_base, x, z);
+}
+
 void OnEvent(const coop::net::Event& event) {
     if (event.kind == coop::net::EventKind::message) {
         TheGlue().sync.Receive(event.message);
         TheGlue().scenes.Receive(event.message);
+        // Row 159: the host's save load, its bosses alive. Taken off the record here, on the thread that adds to
+        // it, so a death proven before it never outlives it; the hook's frame rewinds our game (Apply::HostAlive).
+        // Only a boss that died this session is rewound: one a guest's own save beat before stays its own.
+        if (const auto* alive = std::get_if<coop::protocol::BossAlive>(&event.message)) {
+            CoopBossBeaten::Record& record = CoopBossBeaten::TheRecord();
+            const auto here = static_cast<std::uint16_t>(alive->alive & record.SeenMask());
+            record.Remove(here);
+            CoopBossBeaten::TheHostAlive().Put(coop::protocol::BossAlive{alive->player_number, alive->known, here});
+            LOG_INFO(Core, "coop: boss: the host's save holds bosses {:#05x} alive (of {:#05x} read; died this "
+                           "session: {:#05x})",
+                     alive->alive, alive->known, here);
+        }
         const auto* m = std::get_if<coop::protocol::BossRoom>(&event.message);
         if (m != nullptr && m->state != coop::protocol::BossState::in_room) {
             LOG_INFO(Core, "coop: boss: player {} says {} for {}", m->player_number, static_cast<int>(m->state),
@@ -553,6 +628,10 @@ void ForgetFights() {
 
 void SetMaxLife(std::optional<std::int32_t> max_life) {
     TheGlue().max_life = max_life;
+}
+
+void NoteMaxLifeFromOthers(std::int32_t max_life) {
+    TheGlue().max_life_from_others = max_life;
 }
 
 std::optional<std::int32_t> TakeMaxLifeWrite() {

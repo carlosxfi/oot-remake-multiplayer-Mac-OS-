@@ -719,6 +719,14 @@ RutoLetter ruto_letter_plan(std::optional<bool> got, std::optional<bool> shown, 
   return {RutoWait::give, empty, std::nullopt};
 }
 
+bool bottled_fairy(const std::function<std::optional<bool>(std::uint32_t)>& valid,
+                   const std::function<std::optional<std::uint32_t>(std::uint32_t)>& item) {
+  for (const letters::Bottle& b : letters::kBottles) {
+    if (valid(b.valid) == true && item(b.item) == kBottledFairy) return true;
+  }
+  return false;
+}
+
 std::optional<std::uint32_t> ruto_letter_bottle(std::optional<bool> got, std::optional<bool> shown,
                                                 std::optional<bool> king_moved,
                                                 const std::function<std::optional<bool>(std::uint32_t)>& valid,

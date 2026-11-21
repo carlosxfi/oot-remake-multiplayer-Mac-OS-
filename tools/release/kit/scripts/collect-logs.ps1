@@ -93,6 +93,34 @@ if ($hsExe) {
         }
     }
 }
+# Split screen with Nucleus Co-op (tools\nucleus\OoTCoop.js): each player's game runs from its own instance folder in
+# Nucleus's folder and keeps its log and coop.ini there. The handler lists them in nucleus-players\instances.txt beside
+# the game ("<player>=<folder>"); without that file (an older handler) Nucleus's usual C:\Nucleus\content\OoTCoopLongshot.
+# Nothing is added when Nucleus is not used.
+$nucInst = @()
+foreach ($hsExe2 in $hsExes) {
+    foreach ($d in (Get-KitHookshotLogDirs $hsExe2)) {
+        $list = Join-Path $d 'nucleus-players\instances.txt'
+        if (Test-Path -LiteralPath $list) {
+            $nucInst += @(Get-Content -LiteralPath $list -ErrorAction SilentlyContinue | Where-Object { $_ -match '^\d+=(.+)$' } | ForEach-Object { $Matches[1].Trim() })
+        }
+    }
+}
+if (-not $nucInst) { $nucInst = @(Get-ChildItem 'C:\Nucleus\content\OoTCoopLongshot' -Directory -Filter 'Instance*' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) }
+foreach ($inst in @($nucInst | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Unique)) {
+    $to = "nucleus\$(Split-Path -Leaf $inst)"
+    $logs = @(Get-KitHookshotLogFiles $inst)
+    # (an instance made by an older handler has logs\ linked to the game's own: that log is the kit's, zipped above)
+    $logsDir = Join-Path $inst 'logs'
+    if ((Test-Path -LiteralPath $logsDir) -and ((Get-Item -LiteralPath $logsDir -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        $logs = @($logs | Where-Object { $_.Sub -ne 'logs' })
+    }
+    $gameLogs += $logs.Count
+    $picked += $logs | ForEach-Object { @($_.File.FullName, $(if ($_.Sub) { "$to\$($_.Sub)\$($_.File.Name)" } else { "$to\$($_.File.Name)" })) }
+    foreach ($f in 'coop.ini', 'coop-options.ini') {
+        $picked += @((Join-Path $inst $f), "$to\$f")
+    }
+}
 $logHelp = @()
 if ($gameLogs -eq 0 -and ($hsExe -or -not $hasEmulator)) {
     # The log we need most: say where it is and how to add it.

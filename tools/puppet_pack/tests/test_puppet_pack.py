@@ -25,6 +25,7 @@ from test_self_tunic import *  # noqa: E402,F401,F403
 from test_merge_tables import *  # noqa: E402,F401,F403
 from test_eye_switches import *  # noqa: E402,F401,F403
 from test_room_graph import *  # noqa: E402,F401,F403
+from test_shared_anchors import *  # noqa: E402,F401,F403
 from test_look_metal import *  # noqa: E402,F401,F403
 
 try:
@@ -1772,6 +1773,58 @@ class FullBuildTest(unittest.TestCase):
         with self.assertRaises(look_items.TunicError):
             look_items.model_info(looped, item)
 
+    def test_look_copy_retargets_its_animations(self):
+        # Row 184: a copy names a model project of its own, so the item's animation project plays on it
+        # only retargeted (as the game's child Epona plays the adult's clips). The copy gets its own
+        # AnimationParam with IsRetarget on every resource; the item's own file stays as it was.
+        from puppet_pack import look_items
+        ap = "Actor/{}.engine__actor__ActorParam.bgyml"
+        mi = "Component/ModelInfo/{}.engine__component__ModelInfo.bgyml"
+        an = "Component/AnimationParam/{}.engine__component__AnimationParam.bgyml"
+        item = "Weapon_Shield_Hylian"
+        game_anim = byml.dumps({"AnimationResources": [{"ModelProjectName": "Weapon_Shield_Hylian_Animation"},
+                                                       {"IsRetarget": True, "ModelProjectName": "Other"}]})
+        members = {
+            ap.format(item): byml.dumps({"Components": {"ModelInfoRef": "?" + mi.format(item),
+                                                        "AnimationRef": "?" + an.format(item),
+                                                        "ASRef": "?AS/Weapon_Shield_Hylian.root.asb"}}),
+            mi.format(item): byml.dumps({"FmdbName": item, "ModelProjectName": item}),
+            an.format(item): game_anim,
+        }
+        actor = look_items.actor_name(item, 1)
+        pack, ap_bytes, _ = look_items.copy_pack(members, item, 1)
+        files = sarc.read(pack)
+        comps = byml.loads(ap_bytes)["Components"]
+        self.assertEqual(comps["AnimationRef"], "?" + an.format(actor))
+        self.assertEqual(comps["ASRef"], "?AS/Weapon_Shield_Hylian.root.asb")   # its AS and AI stay the game's
+        got = byml.loads(files[an.format(actor)])
+        self.assertEqual(got["AnimationResources"],
+                         [{"IsRetarget": True, "ModelProjectName": "Weapon_Shield_Hylian_Animation"},
+                          {"IsRetarget": True, "ModelProjectName": "Other"}])
+        self.assertEqual(files[an.format(item)], game_anim)   # the item's own, untouched
+        self.assertEqual(look_items.item_animation_param(members, item)[0], an.format(item))
+        # A blade copy (copy_pack_as with a shared project) gets the same.
+        pack2, ap2, _ = look_items.copy_pack_as(members, item, "Weapon_Shield_Hylian_Blade1", "P_Blade1")
+        self.assertEqual(byml.loads(ap2)["Components"]["AnimationRef"],
+                         "?" + an.format("Weapon_Shield_Hylian_Blade1"))
+        self.assertIn(an.format("Weapon_Shield_Hylian_Blade1"), sarc.read(pack2))
+        # The swords' AnimationParam has no resources: nothing to retarget, the copy keeps the game's ref.
+        sword = "Weapon_Sword_Kokiri"
+        common = an.format("EquipItemCommon")
+        swords = {
+            ap.format(sword): byml.dumps({"Components": {"ModelInfoRef": "?" + mi.format(sword),
+                                                         "AnimationRef": "?" + common}}),
+            mi.format(sword): byml.dumps({"FmdbName": sword, "ModelProjectName": sword}),
+            common: byml.dumps({}),
+        }
+        self.assertIsNone(look_items.copy_animation_param(swords, sword, look_items.actor_name(sword, 1)))
+        _, sap, _ = look_items.copy_pack(swords, sword, 1)
+        self.assertEqual(byml.loads(sap)["Components"]["AnimationRef"], "?" + common)
+        # No AnimationRef at all (the gauntlets): None, no file.
+        bare = {ap.format(sword): byml.dumps({"Components": {"ModelInfoRef": "?" + mi.format(sword)}}),
+                mi.format(sword): swords[mi.format(sword)]}
+        self.assertIsNone(look_items.copy_animation_param(bare, sword, look_items.actor_name(sword, 1)))
+
     def test_build_from_nup_has_the_gear(self):
         # The 0.11.0 kit made its pack from the player's .nup, which took out only dumpcheck's files:
         # coop_look/gear.bin had the boots alone (your own sword, shields and gauntlets kept the
@@ -2802,6 +2855,147 @@ class FullBuildTest(unittest.TestCase):
         with self.assertRaises(build.BuildError):
             build.build(self.romfs, os.path.join(self.dir, "mod_x"), log=lambda *_: None,
                         skins=[("Mod", mod_src)], test_skin="Other", look_slots=0)
+
+    def test_build_characters(self):
+        # A Character Select mod beside the pack (made-up data): a puppet per character and age it has a
+        # model file for, the plain puppet with that model project and the list's heap sizes.
+        mods = os.path.join(self.dir, "mods_cs")
+        cs = os.path.join(mods, "OoT Character Select")
+        os.makedirs(os.path.join(cs, "romfs", "Model"))
+        with open(os.path.join(cs, "romfs", "Model", "Player_Adult_C005.Player_Adult.bfres.zs"), "wb") as f:
+            f.write(b"made up")
+        doc = {"format": 1, "mod": "OoT Character Select",
+               "actor_heaps": {v: {"InstanceHeapSize": 0x7000000, "PreActorRenderInfoHeapSize": 0x60000}
+                               for v in build.VARIANTS},
+               "characters": [{"number": 0, "name": "Link"}, {"number": 7, "name": "Made Up", "file": 5},
+                              {"number": 8, "name": "No File", "file": 6}]}
+        with open(os.path.join(cs, build.CHARACTERS_FILE), "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        mod = os.path.join(mods, "pack")
+        found = build.find_characters(mod, log=lambda *_: None)
+        self.assertEqual(found["files"], {5: ["Adult"]})
+        self.assertEqual(found["numbers"], {5: 7})
+        self.assertIsNone(found["colours"])
+        m = build.build(self.romfs, mod, log=lambda *_: None, tunics=["red"], look_slots=0, characters=found)
+        actors = {a["actor"]: a for a in m["actors"]}
+        self.assertEqual(actors["CoopPuppet_Adult_C005"]["character"], 5)
+        self.assertEqual(actors["CoopPuppet_Adult_C005"]["model"], "Player_Adult_C005")
+        self.assertIsNone(actors["CoopPuppet_Adult_C005"]["tunic"])
+        self.assertGreaterEqual(actors["CoopPuppet_Adult_C005"]["instance_heap"], 0x7000000)
+        self.assertNotIn("CoopPuppet_Child_C005", actors)   # no model file for that age
+        self.assertNotIn("CoopPuppet_Adult_C006", actors)   # listed, no file
+        self.assertIsNone(actors["CoopPuppet_Adult"]["character"])
+        self.assertIsNone(actors["CoopPuppet_Adult_Red"]["character"])
+        self.assertEqual(m["characters"]["numbers"], {"5": 7})
+        # The puppet is the game's player pack under its own name: nothing of the mod's is copied.
+        self.assertFalse(os.path.exists(os.path.join(mod, "romfs", "Model", "Player_Adult_C005.Player_Adult.bfres.zs")))
+        # The mod's colour routine for a puppet goes into the manifest as the list names it; one that does not read
+        # leaves the characters out (said in the log).
+        doc["puppet_colours"] = {"offset": 0x2E1A000, "head": "FD7BBFA9" * 4, "bits": 4}
+        with open(os.path.join(cs, build.CHARACTERS_FILE), "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        found = build.find_characters(mod, log=lambda *_: None)
+        self.assertEqual(found["colours"], {"offset": 0x2E1A000, "head": "fd7bbfa9" * 4})
+        m = build.build(self.romfs, os.path.join(mods, "pack3"), log=lambda *_: None, look_slots=0, characters=found)
+        self.assertEqual(m["characters"]["colours"], {"offset": 0x2E1A000, "head": "fd7bbfa9" * 4})
+        doc["puppet_colours"]["head"] = "xyz"
+        with open(os.path.join(cs, build.CHARACTERS_FILE), "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        self.assertIsNone(build.find_characters(mod, log=lambda *_: None))
+        del doc["puppet_colours"]
+        # Nothing of the mod's tables without copies of them in its romfs: the game's rows, its Player rows raised.
+        d = zs.Dicts.from_romfs(self.romfs)
+        out_ai = {r["__RowId"]: r for r in byml.loads(d.decompress(build.read(
+            os.path.join(mod, "romfs", "RSDB/ActorInfo.Product.999.rstbl.byml.zs"))))}
+        self.assertEqual(build._num(out_ai["Player_Adult"]["InstanceHeapSize"]), 0x7000000)
+        self.assertEqual(build._num(out_ai["Player_Child"]["PreActorRenderInfoHeapSize"]), 0x60000)
+        self.assertEqual(out_ai["Player_Adult"]["FmdbName"], "Player_Adult")   # the rest of the row as the game's
+        self.assertEqual(out_ai["Animal"], {"__RowId": "Animal", "CalcRadius": 1.0})
+        # Another mod's list, or another format, is not ours.
+        doc["mod"] = "Something Else"
+        with open(os.path.join(cs, build.CHARACTERS_FILE), "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        self.assertIsNone(build.find_characters(mod, log=lambda *_: None))
+        m = build.build(self.romfs, os.path.join(mods, "pack2"), log=lambda *_: None, look_slots=0)
+        self.assertIsNone(m["characters"])
+
+    def test_build_characters_keeps_the_mods_tables(self):
+        # Review of #299 (2, 3): the pack's ActorInfo, GameActorInfo and size table replace the mod's own copies, so
+        # the mod's rows and entries go into the pack's (solo too: the player's own Link keeps the mod's heaps).
+        plain = zstandard.ZstdCompressor()
+        mods = os.path.join(self.dir, "mods_cs2")
+        cs = os.path.join(mods, "OoT Character Select")
+        romfs = os.path.join(cs, "romfs")
+        os.makedirs(os.path.join(romfs, "Model"))
+        os.makedirs(os.path.join(romfs, "RSDB"))
+        os.makedirs(os.path.join(romfs, "System", "Resource"))
+        for name, data in (("Player_Adult_C005.Player_Adult.bfres", b"x" * 300),
+                           ("Player_Child_C009.Player_Child.bfres", b"y" * 5000)):
+            with open(os.path.join(romfs, "Model", name + ".zs"), "wb") as f:
+                f.write(plain.compress(data))
+        doc = {"format": 1, "mod": "OoT Character Select",
+               "actor_heaps": {"Adult": {"InstanceHeapSize": 0x1000000, "PreActorRenderInfoHeapSize": 0x60000},
+                               "Child": {"InstanceHeapSize": 0x100, "PreActorRenderInfoHeapSize": 0x60000}},
+               "characters": [{"number": 7, "file": 5}, {"number": 20, "file": 9}]}
+        with open(os.path.join(cs, build.CHARACTERS_FILE), "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        d = zs.Dicts.from_romfs(self.romfs)
+        ai = byml.loads(d.decompress(build.read(os.path.join(self.romfs, "RSDB/ActorInfo.Product.999.rstbl.byml.zs"))))
+        mod_ai = [dict(r) for r in ai]
+        for r in mod_ai:
+            if r["__RowId"] == "Player_Adult":
+                r["InstanceHeapSize"] = 0x2000000      # larger than characters.json's: kept
+            if r["__RowId"] == "Player_Base":
+                r["InstanceHeapSize"] = 7000000        # any row the mod changed
+        mod_ai.append({"__RowId": "Cs_MadeUp", "InstanceHeapSize": 5})   # a row the mod adds
+        with open(os.path.join(romfs, "RSDB", "ActorInfo.Product.999.rstbl.byml.zs"), "wb") as f:
+            f.write(plain.compress(byml.dumps(mod_ai)))
+        t = rstb.Rstb()
+        t.set("Model/Player_Adult_C005.Player_Adult.bfres", 123456)   # the mod's own entry for its model
+        t.set("Layout/MadeUp.bflyt", 999)                             # and for any file of its own
+        t.set("Actor/Player_Base.engine__actor__ActorParam.bgyml", 5)  # smaller than the game's: the game's stays
+        with open(os.path.join(romfs, "System", "Resource", "ResourceSizeTable.Product.999.Test.rsizetable.zs"), "wb") as f:
+            f.write(plain.compress(t.dumps()))
+        mod = os.path.join(mods, "pack")
+        found = build.find_characters(mod, log=lambda *_: None)
+        self.assertEqual(found["numbers"], {5: 7, 9: 20})
+        said = []
+        m = build.build(self.romfs, mod, log=said.append, look_slots=0, characters=found)
+        self.assertEqual(m["characters"]["numbers"], {"5": 7, "9": 20})
+        self.assertIn("CoopPuppet_Child_C009", {a["actor"] for a in m["actors"]})
+        out_ai = {r["__RowId"]: r for r in byml.loads(d.decompress(build.read(
+            os.path.join(mod, "romfs", "RSDB/ActorInfo.Product.999.rstbl.byml.zs"))))}
+        self.assertEqual(build._num(out_ai["Player_Adult"]["InstanceHeapSize"]), 0x2000000)
+        self.assertEqual(build._num(out_ai["Player_Child"]["InstanceHeapSize"]), 5692448)   # the game's was larger
+        self.assertEqual(build._num(out_ai["Player_Child"]["PreActorRenderInfoHeapSize"]), 0x60000)
+        self.assertEqual(build._num(out_ai["Player_Base"]["InstanceHeapSize"]), 7000000)
+        self.assertEqual(out_ai["Cs_MadeUp"], {"__RowId": "Cs_MadeUp", "InstanceHeapSize": 5})
+        self.assertIn("CoopPuppet_Adult_C005", out_ai)                 # the pack's own rows too
+        self.assertIn("CoopPuppet_Adult", out_ai)
+        table = rstb.Rstb.loads(d.decompress(build.read(os.path.join(
+            mod, "romfs", "System/Resource/ResourceSizeTable.Product.999.Test.rsizetable.zs"))))
+        self.assertEqual(table.get("Model/Player_Adult_C005.Player_Adult.bfres"), 123456)
+        self.assertEqual(table.get("Model/Player_Child_C009.Player_Child.bfres"), 5024 + build.PACK_SIZE_MARGIN)
+        self.assertEqual(table.get("Layout/MadeUp.bflyt"), 999)
+        self.assertEqual(table.get("Actor/Player_Base.engine__actor__ActorParam.bgyml"), 13336)
+        self.assertTrue(any("size-table entries from OoT Character Select" in line for line in said), said)
+        # A size table for another game version: only the model files are sized (from the files).
+        os.rename(os.path.join(romfs, "System", "Resource", "ResourceSizeTable.Product.999.Test.rsizetable.zs"),
+                  os.path.join(romfs, "System", "Resource", "ResourceSizeTable.Product.998.Test.rsizetable.zs"))
+        mod2 = os.path.join(mods, "pack2")
+        build.build(self.romfs, mod2, log=lambda *_: None, look_slots=0, characters=build.find_characters(mod2))
+        table = rstb.Rstb.loads(d.decompress(build.read(os.path.join(
+            mod2, "romfs", "System/Resource/ResourceSizeTable.Product.999.Test.rsizetable.zs"))))
+        self.assertEqual(table.get("Model/Player_Adult_C005.Player_Adult.bfres"), 320 + build.PACK_SIZE_MARGIN)
+        self.assertIsNone(table.get("Layout/MadeUp.bflyt"))
+        # Without the mod (--no-characters, or none installed): the game's Player rows, as before.
+        mod3 = os.path.join(self.dir, "plain_pack")
+        build.build(self.romfs, mod3, log=lambda *_: None, look_slots=0)
+        out_ai = {r["__RowId"]: r for r in byml.loads(d.decompress(build.read(
+            os.path.join(mod3, "romfs", "RSDB/ActorInfo.Product.999.rstbl.byml.zs"))))}
+        self.assertEqual(build._num(out_ai["Player_Adult"]["InstanceHeapSize"]), 10245064)
+        self.assertNotIn("PreActorRenderInfoHeapSize", out_ai["Player_Child"])
+        self.assertNotIn("Cs_MadeUp", out_ai)
 
     def test_skin_refusals(self):
         cases = [

@@ -63,6 +63,9 @@ if "--check" in a:
     print("@@stage check Checking")
     print("@@check %s" % ("bad wrong version" if "bad" in game else "ok"))
     sys.exit(1 if "bad" in game else 0)
+if os.environ.get("FAKE_BUILD_FAIL"):   # (a build that stops: Character Select's undo)
+    print("@@error the build stopped (test)")
+    sys.exit(2)
 out = a[a.index("--out") + 1]
 os.makedirs(out, exist_ok=True)
 for n in ("longshot", "image.bin", "longshot_vk.so"):
@@ -225,6 +228,49 @@ cp "$tmp/build.py.good" "$D/tools/puppet_pack/build.py"
 bash "$kit/scripts/build.sh" </dev/null >"$tmp/pack5.txt" 2>&1; export CODE=$?
 check 'pack: the tool fixed: the next start makes the pack' bash -c '[ $CODE -eq 0 ] && grep -q "^puppet_pack" "$2" && [ -f "$3/.coop-stamp" ]' _ "$tmp/pack5.txt" "$log" "$P"
 
+# OoT Character Select by Snail (data/longshot/CHARACTER-SELECT.txt): fetched from his release onto the PC, never
+# carried. Offline with his zip and characters.json already in data/builder/charsel (their SHA-256 match): no network.
+# No terminal: the question's answer is yes.
+mkdir -p "$tmp/cs-rel/CS-v1/mods/OoT Character Select/romfs/Model" "$tmp/cs-rel/CS-v1/mods/OoT Character Select/exefs" "$D/builder/charsel"
+printf 'model' >"$tmp/cs-rel/CS-v1/mods/OoT Character Select/romfs/Model/Player_Child_C000.Player_Child.bfres.zs"
+printf 'ips' >"$tmp/cs-rel/CS-v1/mods/OoT Character Select/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips"
+printf 'install' >"$tmp/cs-rel/CS-v1/INSTALL.txt"
+(cd "$tmp/cs-rel" && "$py" -c 'import os, zipfile
+with zipfile.ZipFile("CS-v1.zip", "w") as z:
+    for r, _, fs in os.walk("CS-v1"):
+        for f in fs: z.write(os.path.join(r, f))')
+cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
+printf '{"format": 1, "mod": "OoT Character Select", "characters": []}' >"$D/builder/charsel/characters.json"
+cs_zsha=$(sha256sum "$D/builder/charsel/CS-v1.zip" | cut -d' ' -f1) cs_osha=$(sha256sum "$D/builder/charsel/characters.json" | cut -d' ' -f1)
+printf 'release=v1\nurl=https://example.invalid/cs\nzip=CS-v1.zip\nzip_sha256=%s\nzip_folder=CS-v1/mods/OoT Character Select\nfolder=OoT Character Select\noverlay_url=https://example.invalid/characters.json\noverlay_sha256=%s\nips_url=\nips_sha256=\n' \
+    "$cs_zsha" "$cs_osha" >"$kit/data/longshot/CHARACTER-SELECT.txt"
+rm -f "$D/character-select-answer.txt"
+CS="$D/game/mods/OoT Character Select"
+# review-geno-0118: the game build after the install fails -> the mods folder goes back to what the game was built
+# with, one line says so, and the start goes on with the game as it was (not stopped).
+stamp_was=$(cat "$D/game/coop-built-from.txt")
+FAKE_BUILD_FAIL=1 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs0.txt" 2>&1; export CODE=$?
+check 'Character Select: a failed game build after the install takes it back out and the start goes on with the game as it was'     bash -c '[ $CODE -eq 0 ] && grep -q "no terminal: yes" "$1" && grep -q "taken back out for now" "$1" && [ ! -e "$2" ] && [ ! -e "$3/game/mods/_OoT Character Select.none" ] && [ ! -e "$3/game/mods/_OoT Character Select.prev" ] &&
+        [ "$(cat "$3/game/coop-built-from.txt")" = "$4" ]' _ "$tmp/build-cs0.txt" "$CS" "$D" "$stamp_was"
+cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs1.txt" 2>&1; export CODE=$?
+check 'Character Select: his folder alone in data/game/mods with characters.json, stamped, credited, the answer kept' \
+    bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && [ -f "$2/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips" ] &&
+        [ -f "$2/characters.json" ] && [ ! -e "$2/INSTALL.txt" ] && grep -q "^v1 " "$2/coop-charsel.txt" && grep -q "belong to Nintendo" "$2/CREDITS-coop.txt" &&
+        grep -qx yes "$3/character-select-answer.txt" && [ ! -e "$3/builder/charsel/CS-v1.zip" ] && [ ! -e "$3/game/mods/coop-mods.list" ]' _ "$tmp/build-cs1.txt" "$CS" "$D"
+check 'Character Select: its code patch is in the game stamp (the build takes it in: patches 0034/0035)' grep -q 'exefs=OoT Character Select/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips:' "$D/game/coop-built-from.txt"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs2.txt" 2>&1
+check 'Character Select: a built game confirms the change (no kept state left)' bash -c '[ ! -e "$1/_OoT Character Select.none" ] && [ ! -e "$1/_OoT Character Select.prev" ]' _ "$D/game/mods"
+check 'Character Select: there already -> not asked again, nothing done' bash -c 'grep -q "Character Select v1 -> .*(there already)" "$1" && ! grep -q "Install the playable NPC mod" "$1"' _ "$tmp/build-cs2.txt"
+printf 'character_select = no\n' >>"$D/coop-options.ini"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs3.txt" 2>&1; export CODE=$?
+check 'Character Select: character_select = no takes the kit'"'"'s copy out and the game is built without its code' \
+    bash -c '[ $CODE -eq 0 ] && grep -q "taken out" "$1" && [ ! -e "$2" ] && ! grep -q "exefs=" "$3/game/coop-built-from.txt"' _ "$tmp/build-cs3.txt" "$CS" "$D"
+sed -i '/^character_select = no$/d' "$D/coop-options.ini"
+rm -f "$kit/data/longshot/CHARACTER-SELECT.txt" "$D/character-select-answer.txt"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs4.txt" 2>&1; export CODE=$?
+check 'Character Select: a kit without CHARACTER-SELECT.txt asks nothing and fetches nothing' bash -c '[ $CODE -eq 0 ] && ! grep -q "Character Select" "$1"' _ "$tmp/build-cs4.txt"
+
 # The randomizer the kit brings (data/longshot/OOTRR.txt): fetched and unpacked into data/game/tools/ootrr.
 mkdir -p "$tmp/ootrr-rel/ootrr-0.5.0-linux-x86_64"
 printf '#!/bin/sh\necho ootrr\n' >"$tmp/ootrr-rel/ootrr-0.5.0-linux-x86_64/ootrr"
@@ -249,15 +295,18 @@ OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-o4.txt" 
 check 'build offline: the OOTRR tarball already here (its SHA-256 matched) is put in, no download' \
     bash -c '[ $CODE -eq 0 ] && [ -x "$1/game/tools/ootrr/ootrr" ] && ! grep -q downloading "$2"' _ "$D" "$tmp/build-o4.txt"
 # Another OOTRR release (0.5.0 -> 0.6.0): the built seeds and their seed files go (the game makes them again with
-# it); another mod and a folder with no coop-seed.txt stay. The same release again removes nothing.
-mkdir -p "$D/game/mods/randomizer-EF" "$D/game/mods/randomizer-half" "$D/game/mods/oot-remake-randomizer" "$D/game/mods/hd/romfs"
-echo EF >"$D/game/mods/randomizer-EF/coop-seed.txt"
+# it); another mod, a folder with no coop-seed.txt and a seed put in by hand (no coop-rando.txt) stay. The same
+# release again removes nothing.
+mkdir -p "$D/game/mods/randomizer-EF" "$D/game/mods/randomizer-half" "$D/game/mods/oot-remake-randomizer" "$D/game/mods/hd/romfs" "$D/game/mods/randomizer-IJ"
+echo EF >"$D/game/mods/randomizer-EF/coop-seed.txt" && echo default >"$D/game/mods/randomizer-EF/coop-rando.txt"
+echo IJ >"$D/game/mods/randomizer-IJ/coop-seed.txt"
 echo '{}' >"$D/game/mods/oot-remake-randomizer/randomizer-EF.ootrr"
 echo chests >"$D/game/mods/oot-remake-randomizer/randomizer-EF.spoiler.txt"
 printf 'release=v0.6.0\nurl=https://example.invalid/ootrr\nlinux=OOTRR-test-linux.tar.gz\nlinux_sha256=%s\n' "$o_sha" >"$kit/data/longshot/OOTRR.txt"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-o6.txt" 2>&1; export CODE=$?
 check 'build: another OOTRR release removes the built seeds (the game makes them again), keeps the rest' \
-    bash -c '[ $CODE -eq 0 ] && grep -q "seed randomizer-EF removed for OOTRR v0.6.0" "$1" && [ ! -e "$2/game/mods/randomizer-EF" ] && [ ! -e "$2/game/mods/oot-remake-randomizer/randomizer-EF.ootrr" ] && [ ! -e "$2/game/mods/oot-remake-randomizer/randomizer-EF.spoiler.txt" ] && [ -d "$2/game/mods/randomizer-half" ] && [ -d "$2/game/mods/hd/romfs" ]' _ "$tmp/build-o6.txt" "$D"
+    bash -c '[ $CODE -eq 0 ] && grep -q "seed randomizer-EF removed for OOTRR v0.6.0" "$1" && [ ! -e "$2/game/mods/randomizer-EF" ] && [ ! -e "$2/game/mods/oot-remake-randomizer/randomizer-EF.ootrr" ] && [ ! -e "$2/game/mods/oot-remake-randomizer/randomizer-EF.spoiler.txt" ] && [ -d "$2/game/mods/randomizer-half" ] && [ -d "$2/game/mods/hd/romfs" ] && [ -f "$2/game/mods/randomizer-IJ/coop-seed.txt" ]' _ "$tmp/build-o6.txt" "$D"
+rm -rf "$D/game/mods/randomizer-IJ"
 mkdir -p "$D/game/mods/randomizer-GH" && echo GH >"$D/game/mods/randomizer-GH/coop-seed.txt"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-o7.txt" 2>&1
 check 'build: the same OOTRR release again keeps the seeds' bash -c '[ -f "$1/game/mods/randomizer-GH/coop-seed.txt" ] && ! grep -q "removed for OOTRR" "$2"' _ "$D" "$tmp/build-o7.txt"
@@ -300,11 +349,13 @@ mkdir -p "$4/$5/romfs/System/Resource" && echo new >"$4/$5/romfs/System/Resource
 EOF
 chmod +x "$G/tools/ootrr/ootrr"
 for s in AB CD; do echo old >"$G/mods/randomizer-$s/$R/T.rsizetable.zs"; echo "$s" >"$G/mods/randomizer-$s/coop-seed.txt"; done
-echo default >"$G/mods/randomizer-AB/coop-rando.txt"
+echo default >"$G/mods/randomizer-AB/coop-rando.txt" && echo default >"$G/mods/randomizer-CD/coop-rando.txt"
+# (a seed put in by hand, older than the pack too: not the kit's to build again or remove; merge_tables.py merges it)
+mkdir -p "$G/mods/randomizer-KL/$R" && echo hand >"$G/mods/randomizer-KL/$R/T.rsizetable.zs" && echo KL >"$G/mods/randomizer-KL/coop-seed.txt"
 echo chests >"$G/mods/randomizer-AB/spoiler.txt" && echo OOTRR1-XZLA >"$G/mods/randomizer-AB/settings.txt"
 echo seed >"$G/mods/oot-remake-randomizer/randomizer-AB.ootrr"   # (none kept for CD: it cannot be built again)
 echo off >"$G/mods/_off/$R/T.rsizetable.zs"
-touch -d '1 hour ago' "$G/mods/randomizer-AB/$R/T.rsizetable.zs" "$G/mods/randomizer-CD/$R/T.rsizetable.zs"
+touch -d '1 hour ago' "$G/mods/randomizer-AB/$R/T.rsizetable.zs" "$G/mods/randomizer-CD/$R/T.rsizetable.zs" "$G/mods/randomizer-KL/$R/T.rsizetable.zs"
 echo pack >"$G/mods/contents/0400486024DEC000/coop-puppet/$R/T.rsizetable.zs"
 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-r1.txt" 2>&1; export CODE=$?
 check 'build: a seed older than the puppet pack is built again beside the pack'"'"'s size table (no off folder'"'"'s), its preset, spoiler.txt and settings.txt kept' \
@@ -314,6 +365,9 @@ check 'build: a seed older than the puppet pack is built again beside the pack'"
         [ "$(cat "$2/mods/randomizer-AB/spoiler.txt")" = chests ] && [ "$(cat "$2/mods/randomizer-AB/settings.txt")" = OOTRR1-XZLA ] && [ ! -e "$2/mods/oot-remake-randomizer/_seed-build" ]' _ "$tmp/build-r1.txt" "$G"
 check 'build: a seed older than the pack that cannot be built again (no seed file kept) is removed, said once' \
     bash -c 'grep -q "seed randomizer-CD removed" "$1" && [ ! -e "$2/mods/randomizer-CD" ]' _ "$tmp/build-r1.txt" "$G"
+check 'build: a hand-put seed older than the pack stays as it is' \
+    bash -c '[ "$(cat "$2/mods/randomizer-KL/romfs/System/Resource/T.rsizetable.zs")" = hand ] && ! grep -q "randomizer-KL" "$1"' _ "$tmp/build-r1.txt" "$G"
+rm -rf "$G/mods/randomizer-KL"
 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-r2.txt" 2>&1
 check 'build: the next start leaves the rebuilt seed alone' bash -c '! grep -q "randomizer: seed" "$1"' _ "$tmp/build-r2.txt"
 rm -rf "$G/tools/ootrr" "$G/romfs" "$G/mods/randomizer-AB" "$G/mods/oot-remake-randomizer" "$G/mods/_off"

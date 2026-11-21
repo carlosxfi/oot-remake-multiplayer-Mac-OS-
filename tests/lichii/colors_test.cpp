@@ -244,6 +244,12 @@ TEST_CASE("puppets: in a scene with stealth guards each puppet is its quiet copy
     CHECK(CoopPuppet::PackPerception(R"({"perception" :  true})"));
     CHECK_FALSE(CoopPuppet::PackPerception(R"({"perception": false, "quiet_scenes": []})"));
     CHECK_FALSE(CoopPuppet::PackPerception(R"({"tool": "tools/puppet_pack"})"));  // a pack before it
+    // build.py's shape: every actor's own "perception" (null or its emitter) comes before the pack's.
+    CHECK(CoopPuppet::PackPerception(
+        R"({"actors": [{"actor": "CoopPuppet_Child", "perception": {"param": "x", "size": 4}}, )"
+        R"({"actor": "CoopPuppet_ChildQuiet", "perception": null}], "perception": true, "body": true})"));
+    CHECK_FALSE(CoopPuppet::PackPerception(
+        R"({"actors": [{"actor": "CoopPuppet_Child", "perception": null}], "perception": false, "body": false})"));
     // A quiet pack still counts its loud tunic puppets only (PackHasTunicPuppets).
     CHECK_FALSE(CoopPuppet::PackHasTunicPuppets(R"({"actors": [{"actor": "CoopPuppet_ChildQuiet"}]})"));
 

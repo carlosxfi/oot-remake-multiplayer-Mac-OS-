@@ -126,20 +126,22 @@ std::optional<LookupResult> lookup_on_relay(const ENetAddress& relay, const Rela
 
 namespace {
 
-// One page of the room list: three tries a second apart, from `s`.
+// One page of the room list (kListRooms, start) or the proofs (kListProofs): `tries` tries, `wait_ms` apart, from `s`.
 std::optional<Message> ask_page(ENetSocket s, const ENetAddress& relay, std::uint8_t start,
-                                const std::function<bool()>& stop) {
+                                const std::function<bool()>& stop, Kind kind = Kind::kListRooms, int tries = 3,
+                                int wait_ms = 1000) {
   Message ask;
-  ask.kind = Kind::kListRooms;
+  ask.kind = kind;
   ask.start = start;
   const std::vector<std::uint8_t> bytes = encode(ask);
-  for (int attempt = 0; attempt < 3; ++attempt) {
+  const Kind answer = kind == Kind::kListProofs ? Kind::kRoomProofs : Kind::kRoomList;
+  for (int attempt = 0; attempt < tries; ++attempt) {
     if (stop && stop()) return std::nullopt;
     ENetBuffer out;
     out.data = const_cast<std::uint8_t*>(bytes.data());
     out.dataLength = bytes.size();
     enet_socket_send(s, &relay, &out, 1);
-    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
     while (std::chrono::steady_clock::now() < until) {
       if (stop && stop()) return std::nullopt;
       enet_uint32 wait = ENET_SOCKET_WAIT_RECEIVE;
@@ -152,7 +154,7 @@ std::optional<Message> ask_page(ENetSocket s, const ENetAddress& relay, std::uin
       const int got = enet_socket_receive(s, &from, &in, 1);
       if (got <= 0 || from.host != relay.host || from.port != relay.port) continue;
       auto m = decode(std::span<const std::uint8_t>(data, static_cast<std::size_t>(got)));
-      if (m && m->kind == Kind::kRoomList && (m->start == start || m->total <= start)) return m;
+      if (m && m->kind == answer && (answer == Kind::kRoomProofs || m->start == start || m->total <= start)) return m;
     }
   }
   return std::nullopt;
@@ -160,7 +162,8 @@ std::optional<Message> ask_page(ENetSocket s, const ENetAddress& relay, std::uin
 
 }  // namespace
 
-std::optional<RoomList> list_rooms_on_relay(const ENetAddress& relay, const std::function<bool()>& stop) {
+std::optional<RoomList> list_rooms_on_relay(const ENetAddress& relay, const std::function<bool()>& stop,
+                                            bool ask_proofs) {
   ENetSocket s = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
   if (s == ENET_SOCKET_NULL) return std::nullopt;
   ENetAddress any{};
@@ -178,6 +181,14 @@ std::optional<RoomList> list_rooms_on_relay(const ENetAddress& relay, const std:
       result->total = m->total;
       if (m->rooms.empty()) break;
       result->rooms.insert(result->rooms.end(), m->rooms.begin(), m->rooms.end());
+    }
+    // The proofs: two tries 500 ms apart (one lost datagram does not cost the mark; a relay before 0.11.8 never
+    // answers, and the list is shown without them).
+    if (ask_proofs && result && !result->rooms.empty()) {
+      if (const auto p = ask_page(s, relay, 0, stop, Kind::kListProofs, 2, 500)) {
+        result->proofs = p->proofs;
+        result->proofs_answered = true;
+      }
     }
   }
   enet_socket_destroy(s);
@@ -486,6 +497,15 @@ void RelayLink::service() {
       m.entry.host = listing_name(m.entry.host);
     }
     send_relay(m);
+    if (entry && config_.proof) {
+      if (const std::optional<RoomProof> proof = config_.proof(room_, m.entry)) {
+        Message p;
+        p.kind = Kind::kRoomProof;
+        p.token = token_;
+        p.proof = *proof;
+        send_relay(p);
+      }
+    }
   }
 }
 

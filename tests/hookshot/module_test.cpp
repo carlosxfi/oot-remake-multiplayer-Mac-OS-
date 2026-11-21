@@ -1336,6 +1336,12 @@ TEST_CASE("hookshot: no patch logs a microphone, pad, player or server name outs
     CHECK(voice.find("+    while (named && i < MAX_STREAMS + 1 && sources[i].used) i++;") != std::string::npos);
     const std::string pads = ReadFile(kRepo / "hookshot" / "patches" / "0015-coop-pad-select.patch");
     CHECK(pads.find("+                    hos_log(\"hid: that controller is pad %d\", n);") != std::string::npos);
+    // A game with no keyboard or mouse leaves the camera to its pad; and any game behind other windows does, in every
+    // keyboard mode (Nucleus Co-op's Ctrl+H puts every game behind; a solo pad player's game on a second screen; a
+    // picked pad): the mouse camera's last angles are never put back over the right stick or the game's own follow.
+    CHECK(pads.find("+        hos_mouse_native_stick(1);\n         walk_held(0, 0,") != std::string::npos);
+    CHECK(pads.find("+        if (hos_input_keyboard_mode() == 2) hos_mouse_native_stick(1);") == std::string::npos);
+    CHECK(pads.find("+        hos_mouse_native_stick(stick[2] != 0 || stick[3] != 0);") == std::string::npos);
 }
 
 TEST_CASE("hookshot: the Insert menu files nothing with Longshot in a co-op build (patch 0027)") {
@@ -1411,7 +1417,7 @@ TEST_CASE("hookshot: every switch of the save folder marks the game's save list 
     CHECK(title.find("ArrangeTitle(ctx, mgr)", arrange + 1) == std::string::npos);   // called nowhere else
     // The game's own request path's layout, checked against the title's before any call; the frame is stopped only
     // if BtnNum reaches it, as the game's own request does.
-    const auto guard = title.find("Read64(screen + kTitleAnimLayout); layout == 0 || used != layout");
+    const auto guard = title.find("CoopTitleMenu::RequestsLayout(");   // (row 193: the screen's +0xf0 object, its +0x28)
     const auto find = title.find("k.function = Main(kAnimFind);");
     const auto last = title.find("GameCall(ctx, Main(kAnimLastFrame), player)");
     const auto stop = title.find("k.function = Main(kAnimStopAt);");
@@ -1422,7 +1428,8 @@ TEST_CASE("hookshot: every switch of the save folder marks the game's save list 
     CHECK(guard < find);
     CHECK(find < last);
     CHECK(last < stop);
-    CHECK(title.find("constexpr std::uint64_t kTitleAnimLayout = 0xe0;") != std::string::npos);
+    CHECK(title.find("if (layout == 0 || used != layout) {", guard) != std::string::npos);
+    CHECK(title.find("kTitleAnimLayout") == std::string::npos);   // (+0xe0 is the request queue, not a layout: 494768b0)
 }
 
 // Owner photo 2026-11-19 (patch 0031): the module tab's column is opaque (the game's own pause page showed through

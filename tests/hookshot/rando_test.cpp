@@ -12,6 +12,7 @@
 #include <functional>
 #include <iterator>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -93,7 +94,7 @@ struct World {
             }
             if (at == fail_at) return 3;
             // generate <preset or string> <seed> <out.ootrr> [--spoiler <file>]: the seed file (JSON, its "settings"
-            // the OOTRR1- string) and, when asked, the spoiler log, as OOTRR 0.6.1, 0.6.2 and 0.7.0 to 0.7.3 write them.
+            // the OOTRR1- string) and, when asked, the spoiler log, as OOTRR 0.6.1, 0.6.2 and 0.7.0 to 0.8.0 write them.
             if (args.size() >= 4 && args[0] == "generate") {
                 const std::string s = args[1].rfind("OOTRR", 0) == 0 ? args[1] : "OOTRR1-P" + args[1];
                 Put(CoopMods::FromUtf8(args[3]), "{\n  \"format\": \"ootrr-seed\",\n  \"seed\": \"" + args[2] +
@@ -1031,7 +1032,14 @@ TEST_CASE("rando: chat lines mask the user's folder and are cut") {
     CHECK(ChatSafe("/home/deck/kit/data/game") == "/home/<user>/kit/data/game");
     CHECK(ChatSafe("users and homes are words") == "users and homes are words");
     const std::string cut = ChatSafe(std::string(150, 'a'));
-    CHECK(cut == std::string(100, 'a') + "...");
+    CHECK(cut == std::string(97, 'a') + "...");  // ("..." counts toward the 100)
+    // A masked profile folder can make a line longer than it was: still at most the limit, "..." included.
+    const std::string masked = ChatSafe(R"(C:\Users\a\)" + std::string(200, 'b'), kTellChars);
+    CHECK(masked.size() <= kTellChars);
+    CHECK(masked.find("<user>") != std::string::npos);
+    CHECK(ChatSafe(std::string(10, 'a'), 2).size() <= 2);
+    // (cut before a whole UTF-8 character: the e-acute's two bytes sit across the cut, so neither is kept)
+    CHECK(ChatSafe(std::string(95, 'a') + "\xC3\xA9" + std::string(50, 'b'), 99) == std::string(95, 'a') + "...");
 }
 
 TEST_CASE("rando: a preset whose try was stopped is offered, not cached, and tried again at the next start (#16)") {
@@ -1343,6 +1351,7 @@ TEST_CASE("rando: a size table of a mod not made by us that wins is found (playe
     World w;
     Put(w.mods / "ootrr-site" / kTable, "site");
     Put(w.mods / "randomizer-S1" / kTable, "seed");
+    Put(w.mods / "randomizer-S1" / kPresetFile, "default\n");  // (ours: built beside every table)
     Put(w.mods / "aaa-textures" / kTable, "early");
     Put(w.mods / "no-table" / "romfs" / "a.bin", "x");
     Put(w.mods / kPackFolder / kTable, "puppet");
@@ -1633,7 +1642,7 @@ TEST_CASE("rando: a seed file that places shop items (coop_shop_sale.h)") {
 }
 
 TEST_CASE("rando: the settings string of a seed file") {
-    // As OOTRR 0.6.1 writes it (generate default abc); 0.6.2 and 0.7.0 to 0.7.3 write the same layout (settings/seed.rs is unchanged).
+    // As OOTRR 0.6.1 writes it (generate default abc); 0.6.2 and 0.7.0 to 0.8.0 write the same layout (settings/seed.rs is unchanged).
     CHECK(SeedSettings("{\n  \"format\": \"ootrr-seed\",\n  \"version\": 1,\n  \"generator\": \"ootrr-core 0.6.1\",\n"
                        "  \"seed\": \"abc\",\n  \"settings\": \"OOTRR1-EYAQCTABAFQACAMOJY\",\n  \"placements\": {}\n}\n") ==
           "OOTRR1-EYAQCTABAFQACAMOJY");
@@ -1825,4 +1834,308 @@ TEST_CASE("rando: a refreshed seed gets its own actor tables back and loses the 
     CHECK_FALSE(fs::exists(seed / "_coop-rows"));
     CHECK(PutBackKeptRows(seed) == 0);  // (nothing kept: nothing to do)
     CHECK(Get(seed / kActors) == "the seed own");
+}
+
+// ---- a seed put in by hand that every player has (Nax 2026-11-20: OOTRR built from source, the folder sent by hand) ----
+
+TEST_CASE("rando: a guest keeps the host's hand-put seed only when it has the same one") {
+    std::vector<CoopMods::Row> rows = {RowNamed("randomizer-hand", true), RowNamed("randomizer-old", true),
+                                       RowNamed("hd-textures", true)};
+    Want want;
+    want.guest = true;
+    want.host_hand = "randomizer-hand";
+    // Not known yet: nothing switched (the hash comes, then Check again).
+    want.hand_pending = true;
+    Plan p = Decide(want, {}, rows);
+    CHECK(p.what == Plan::Do::nothing);
+    CHECK(p.off.empty());
+    // The same files: it stays on, the other seeds go for the host's world (remembered), other mods untouched.
+    want.hand_pending = false;
+    want.keep = "randomizer-hand";
+    p = Decide(want, {}, rows);
+    CHECK(p.what == Plan::Do::use);
+    CHECK(p.on.empty());
+    CHECK(p.off == std::vector<std::string>{"randomizer-old"});
+    CHECK(p.remember == p.off);
+    CHECK(p.why.find("the same as yours") != std::string::npos);
+    // Switched off in the player's Mods list: switched on for the host's world.
+    rows[0].on = false;
+    p = Decide(want, {}, rows);
+    CHECK(p.on == std::vector<std::string>{"randomizer-hand"});
+    CHECK(p.remember_on == std::vector<std::string>{"randomizer-hand"});  // off again alone
+    want.restore = {"randomizer-hand"};  // off only because an earlier host's world switched it off: on alone too
+    p = Decide(want, {}, rows);
+    CHECK(p.on == std::vector<std::string>{"randomizer-hand"});
+    CHECK(p.remember_on.empty());
+    want.restore.clear();
+    rows[0].on = true;
+    // Not the same, or not there: as before, every seed off for the host's world.
+    want.keep.clear();
+    p = Decide(want, {}, rows);
+    CHECK(p.off == std::vector<std::string>{"randomizer-hand", "randomizer-old"});
+    CHECK(p.remember == p.off);
+    // The host's Mods-tab seed wins over a hand-put one: the keep is not looked at.
+    want = Want{true, "HOST8", "default"};
+    want.guest = true;
+    want.host_hand = want.keep = "randomizer-hand";
+    const std::vector<Built> built = {{"randomizer-HOST8", "HOST8", "default", "", true}};
+    rows.push_back(RowNamed("randomizer-HOST8", true));
+    p = Decide(want, built, rows);
+    CHECK(std::find(p.off.begin(), p.off.end(), "randomizer-hand") != p.off.end());
+    // Alone (no guest): the keep means nothing, a hand-put seed stays as the Mods tab has it (row 145).
+    want = Want{};
+    want.keep = "randomizer-hand";
+    p = Decide(want, {}, {RowNamed("randomizer-hand", true)});
+    CHECK(p.what == Plan::Do::nothing);
+    // Alone after a host's world switched it on (kHostOnFile): off again, both lists forgotten.
+    want.host_on = {"randomizer-hand"};
+    p = Decide(want, {}, {RowNamed("randomizer-hand", true)});
+    CHECK(p.off == std::vector<std::string>{"randomizer-hand"});
+    CHECK(p.forget);
+    // Our own switch on alone: its seed plays, the list is forgotten too.
+    want = Want{true, "MINE1", "default"};
+    want.host_on = {"randomizer-hand"};
+    p = Decide(want, {{"randomizer-MINE1", "MINE1", "default", "", true}},
+               {RowNamed("randomizer-MINE1", true), RowNamed("randomizer-hand", true)});
+    CHECK(p.off == std::vector<std::string>{"randomizer-hand"});
+    CHECK(p.forget);
+}
+
+TEST_CASE("rando: the hand-put seed's value on the wire") {
+    const std::string hash = "0123456789abcdef";
+    const std::string value = HandSeedValue(hash, "randomizer-NAX1");
+    CHECK(value == "0123456789abcdef randomizer-NAX1");
+    std::string h, f;
+    REQUIRE(ParseHandSeed(value, &h, &f));
+    CHECK(h == hash);
+    CHECK(f == "randomizer-NAX1");
+    CHECK(ParseHandSeed("0123456789abcdef randomizer-with space", &h, &f));
+    CHECK(f == "randomizer-with space");
+    CHECK(HandSeedValue("", "randomizer-NAX1").empty());                         // no hash: nothing sent
+    CHECK(HandSeedValue(hash, "hd-textures").empty());                           // not a seed folder
+    CHECK(HandSeedValue(hash, "randomizer-" + std::string(300, 'x')).empty());  // over the value limit
+    CHECK_FALSE(ParseHandSeed("0123456789ABCDEF randomizer-NAX1", &h, &f));      // upper-case hex
+    CHECK_FALSE(ParseHandSeed("0123456789abcdef hd-textures", &h, &f));
+    CHECK_FALSE(ParseHandSeed("0123456789abcdef randomizer-a/../b", &h, &f));
+    CHECK_FALSE(ParseHandSeed("0123456789abcdef randomizer-a\\b", &h, &f));
+    CHECK_FALSE(ParseHandSeed("0123456789abcdef", &h, &f));
+    CHECK_FALSE(ParseHandSeed("", &h, &f));
+}
+
+TEST_CASE("rando: two copies of a seed match by their files, also after the kit merged one") {
+    const fs::path base = ModTestDir("coop-rando-hand-hash");
+    const auto seed = [&](const std::string& name) {
+        const fs::path d = base / name;
+        Put(d / "romfs" / "Event" / "Flow.bfevfl.zs", "chest: hookshot");
+        Put(d / "romfs" / "System" / "Resource" / "T.rsizetable.zs", "own table");
+        Put(d / "romfs" / "RSDB" / "ActorInfo.Product.rstbl.byml.zs", "own rows");
+        Put(d / kSeedFile, "NAX1\n");
+        return d;
+    };
+    const fs::path a = seed("a"), b = seed("b");
+    const std::string ha = SeedFilesHash(a);
+    CHECK(ha.size() == 16);
+    CHECK(SeedFilesHash(b) == ha);
+    // The kit's start merged b: its table and actor rows rewritten, its own kept beside, its marks written.
+    Put(b / "_coop-size-table" / "T.rsizetable.zs", "own table");
+    Put(b / "romfs" / "System" / "Resource" / "T.rsizetable.zs", "merged table");
+    Put(b / "_coop-rows" / "ActorInfo.Product.rstbl.byml.zs", "own rows");
+    Put(b / "romfs" / "RSDB" / "ActorInfo.Product.rstbl.byml.zs", "merged rows");
+    Put(b / kMergedFile, "coop-merged 1\n");
+    Put(b / kRowsFile, "coop-rows 1\n");
+    Put(b / kSeedFile, "other word\n");  // (outside romfs: not counted)
+    CHECK(SeedFilesHash(b) == ha);
+    // Another world: one byte of one file, a file more, or a file renamed.
+    const fs::path c = seed("c");
+    Put(c / "romfs" / "Event" / "Flow.bfevfl.zs", "chest: hookshoT");
+    CHECK(SeedFilesHash(c) != ha);
+    const fs::path d = seed("d");
+    Put(d / "romfs" / "Event" / "More.bin", "");
+    CHECK(SeedFilesHash(d) != ha);
+    const fs::path e = seed("e");
+    fs::rename(e / "romfs" / "Event" / "Flow.bfevfl.zs", e / "romfs" / "Event" / "Flow2.bfevfl.zs");
+    CHECK(SeedFilesHash(e) != ha);
+    // A table kept for a file of another name does not stand in for it.
+    const fs::path g = seed("g");
+    Put(g / "_coop-size-table" / "Other.rsizetable.zs", "own table");
+    CHECK(SeedFilesHash(g) == ha);
+    // Nothing to compare, or stopped.
+    CHECK(SeedFilesHash(base / "none").empty());
+    const std::function<bool()> stop = [] { return true; };
+    CHECK(SeedFilesHash(a, &stop).empty());
+}
+
+TEST_CASE("rando: the seed this run plays is a hand-put one only when not ours") {
+    CoopMods::Row hand = RowNamed("randomizer-hand", true);
+    hand.on_now = true;
+    CoopMods::Row mine = RowNamed("randomizer-MINE1", true);
+    mine.on_now = true;
+    const std::vector<Built> built = {{"randomizer-MINE1", "MINE1", "default", "", true},
+                                      {"randomizer-hand", "HAND", "", "", true}};
+    CHECK(HandPlaying(built, {RowNamed("hd", true), hand}) == "randomizer-hand");
+    CHECK(HandPlaying({}, {hand}) == "randomizer-hand");  // (no coop-seed.txt: from OOTRR's page, still a seed folder)
+    CHECK(HandPlaying(built, {mine, hand}).empty());       // our seed wins: the host's Mods-tab seed is sent instead
+    CHECK(HandPlaying(built, {hand, mine}) == "randomizer-hand");
+    hand.on_now = false;  // switched on after this run started
+    CHECK(HandPlaying(built, {hand}).empty());
+}
+
+TEST_CASE("rando: the chat lines about the host's hand-put seed are plain and fit") {
+    for (const HandMatch m : {HandMatch::same, HandMatch::missing, HandMatch::different}) {
+        const std::string line = HandLine(m, "randomizer-NAX1", false);
+        CHECK(line.find("randomizer-NAX1") != std::string::npos);
+        CHECK(line.find(":\\") == std::string::npos);
+        const std::string tell = HandTellLine(m, "randomizer-NAX1");
+        CHECK(tell.size() <= kTellChars);
+        CHECK(tell.find("randomizer-NAX1") != std::string::npos);
+    }
+    CHECK(HandLine(HandMatch::missing, "randomizer-NAX1", false).find("don't have") != std::string::npos);
+    CHECK(HandLine(HandMatch::different, "randomizer-NAX1", false).find("not the same as the host's") !=
+          std::string::npos);
+    CHECK(HandLine(HandMatch::same, "randomizer-NAX1", true).find("RESTART") != std::string::npos);
+    CHECK(HandTellLine(HandMatch::missing, std::string(400, 'x')).size() <= kTellChars);
+}
+
+TEST_CASE("rando: a host playing a hand-put seed sends it once its files are hashed, not as a guest") {
+    World w;
+    Put(w.mods / "randomizer-hand" / kSeedFile, "HAND\n");
+    Put(w.mods / "randomizer-hand" / "romfs" / "System" / "a.bin", "seeded");
+    PlaysSeed(w, "randomizer-hand", 8);
+    CoopMods::Loader loader(w.mods, {nullptr, 8, nullptr});
+    loader.Start();
+    Rando rando(loader, w.Hooks());
+    rando.Start();
+    rando.Wait();
+    REQUIRE(On(loader, "randomizer-hand"));  // row 145: a host's own hand-put seed stays on
+    CHECK_FALSE(rando.HandValue());          // hashing now
+    rando.Wait();
+    CHECK(rando.HandValue() == std::optional<std::string>(
+                                   HandSeedValue(SeedFilesHash(w.mods / "randomizer-hand"), "randomizer-hand")));
+    loader.SetHostValues(std::vector<CoopMods::SharedValue>{});  // a guest in another host's world: sends nothing
+    CHECK_FALSE(rando.HandValue());
+}
+
+TEST_CASE("rando: a host playing its own built seed sends no hand-put seed") {
+    World w;
+    Put(w.mods / "randomizer-MINE1" / kSeedFile, "MINE1\n");
+    Put(w.mods / "randomizer-MINE1" / kPresetFile, "default\n");
+    Put(w.mods / "randomizer-MINE1" / "romfs" / "System" / "a.bin", "seeded");
+    PlaysSeed(w, "randomizer-MINE1", 8);
+    CoopMods::Loader loader(w.mods, {nullptr, 8, nullptr});
+    loader.Start();
+    Rando rando(loader, w.Hooks());
+    rando.Start();
+    rando.Wait();
+    CHECK_FALSE(rando.HandValue());
+    rando.Wait();
+    CHECK_FALSE(rando.HandValue());
+}
+
+namespace {
+struct HandGuest {
+    World w;
+    std::vector<std::string> told;
+    std::mutex told_mutex;
+    std::optional<CoopMods::Loader> loader;
+    std::optional<Rando> rando;
+    explicit HandGuest(bool on) {
+        Put(w.mods / "randomizer-hand" / kSeedFile, "HAND\n");
+        Put(w.mods / "randomizer-hand" / "romfs" / "System" / "a.bin", "seeded");
+        Put(w.mods / "randomizer-mine" / kSeedFile, "MINE\n");
+        Put(w.mods / "randomizer-mine" / "romfs" / "System" / "a.bin", "mine");
+        loader.emplace(w.mods, CoopMods::Loader::Hooks{nullptr, 1, nullptr});
+        loader->Start();
+        if (!on) REQUIRE(loader->SetOn("randomizer-hand", false));
+        Rando::Hooks hooks = w.Hooks();
+        hooks.tell_others = [this](const std::string& line) {
+            const std::lock_guard lock(told_mutex);
+            told.push_back(line);
+            return true;
+        };
+        rando.emplace(*loader, hooks);
+        rando->Start();
+        rando->Wait();
+        (void)rando->TakeLines();
+    }
+    ~HandGuest() { rando.reset(); }  // (before the loader it holds)
+    void Host(const std::string& value) {
+        loader->SetHostValues(std::vector<CoopMods::SharedValue>{{kId, kHandSeedKey, value}});
+        rando->Recheck();
+        rando->Wait();
+    }
+};
+}  // namespace
+
+TEST_CASE("rando: a guest with the host's hand-put seed plays it, its other seeds go for the host's world") {
+    HandGuest g(true);
+    g.Host(HandSeedValue(SeedFilesHash(g.w.mods / "randomizer-hand"), "randomizer-hand"));
+    CHECK(On(*g.loader, "randomizer-hand"));
+    CHECK_FALSE(On(*g.loader, "randomizer-mine"));
+    const auto lines = g.rando->TakeLines();
+    CHECK(std::find(lines.begin(), lines.end(), HandLine(HandMatch::same, "randomizer-hand", false)) != lines.end());
+    CHECK(g.told.empty());  // nothing to tell the host
+    g.rando->Recheck();     // joined again: said once
+    g.rando->Wait();
+    CHECK(g.rando->TakeLines().empty());
+    g.loader->SetHostValues(std::nullopt);  // alone again: its own seeds back
+    g.rando->Recheck();
+    g.rando->Wait();
+    CHECK(On(*g.loader, "randomizer-mine"));
+    CHECK(On(*g.loader, "randomizer-hand"));
+}
+
+TEST_CASE("rando: a guest that has the host's hand-put seed switched off gets it on, and a restart line") {
+    HandGuest g(false);
+    g.Host(HandSeedValue(SeedFilesHash(g.w.mods / "randomizer-hand"), "randomizer-hand"));
+    CHECK(On(*g.loader, "randomizer-hand"));
+    const auto lines = g.rando->TakeLines();
+    CHECK(std::find(lines.begin(), lines.end(), HandLine(HandMatch::same, "randomizer-hand", true)) != lines.end());
+    CHECK(fs::is_regular_file(g.w.mods / kFolder / kHostOnFile));
+    g.loader->SetHostValues(std::nullopt);  // alone again: off, as the player had it
+    g.rando->Recheck();
+    g.rando->Wait();
+    CHECK_FALSE(On(*g.loader, "randomizer-hand"));
+    CHECK(On(*g.loader, "randomizer-mine"));
+    CHECK_FALSE(fs::exists(g.w.mods / kFolder / kHostOnFile));
+}
+
+TEST_CASE("rando: a guest with another copy, or none, of the host's hand-put seed plays without it, both chats say so") {
+    {
+        HandGuest g(true);
+        g.Host(HandSeedValue("0000000000000000", "randomizer-hand"));
+        CHECK_FALSE(On(*g.loader, "randomizer-hand"));
+        CHECK(fs::is_regular_file(g.w.mods / kFolder / kHostOffFile));  // back on alone, as before
+        const auto lines = g.rando->TakeLines();
+        CHECK(std::find(lines.begin(), lines.end(), HandLine(HandMatch::different, "randomizer-hand", false)) !=
+              lines.end());
+        CHECK(g.told == std::vector<std::string>{HandTellLine(HandMatch::different, "randomizer-hand")});
+        g.rando->Recheck();
+        g.rando->Wait();
+        CHECK(g.told.size() == 1);  // told once
+        g.loader->SetHostValues(std::nullopt);
+        g.rando->Recheck();
+        g.rando->Wait();
+        CHECK(On(*g.loader, "randomizer-hand"));
+    }
+    {
+        HandGuest g(true);
+        g.Host(HandSeedValue("0123456789abcdef", "randomizer-NAX1"));
+        CHECK_FALSE(On(*g.loader, "randomizer-hand"));
+        const auto lines = g.rando->TakeLines();
+        CHECK(std::find(lines.begin(), lines.end(), HandLine(HandMatch::missing, "randomizer-NAX1", false)) !=
+              lines.end());
+        CHECK(g.told == std::vector<std::string>{HandTellLine(HandMatch::missing, "randomizer-NAX1")});
+    }
+}
+
+TEST_CASE("rando: a hand-put seed's size table that wins counts as an outside mod's, our seed's does not") {
+    World w;
+    Put(w.mods / "randomizer-hand" / kTable, "hand");
+    Put(w.mods / "randomizer-MINE1" / kTable, "mine");
+    Put(w.mods / "randomizer-MINE1" / kPresetFile, "default\n");
+    Put(w.mods / kPackFolder / kTable, "puppet");
+    const std::string pack = "contents\\0400486024DEC000\\coop-puppet";
+    const std::vector<std::string> hand_wins{pack, "randomizer-hand"}, mine_wins{pack, "randomizer-MINE1"};
+    CHECK(OutsideSizeTable(w.mods, {}, &hand_wins) == std::optional<std::string>("randomizer-hand"));
+    CHECK_FALSE(OutsideSizeTable(w.mods, {}, &mine_wins));
 }

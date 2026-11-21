@@ -532,3 +532,15 @@ TEST_CASE("dbno body: a paused teammate's puppet is unseen until they play again
     CHECK(std::find(off.begin(), off.end(),
                     "the game's perception emitter on again for player 2's puppet: they are back") != off.end());
 }
+
+TEST_CASE("dbno body (row 177): a teammate's puppet is unseen while they are in the unseen list") {
+    Crawl c;
+    CHECK_FALSE(c.PuppetUnseen(2));
+    Crawl::Wanted w;
+    w.unseen_puppets = {{2, "downed"}};
+    c.Want(w);
+    CHECK(c.PuppetUnseen(2));
+    CHECK_FALSE(c.PuppetUnseen(3));
+    c.Want(Crawl::Wanted{});
+    CHECK_FALSE(c.PuppetUnseen(2));
+}

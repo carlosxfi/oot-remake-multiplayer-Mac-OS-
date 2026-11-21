@@ -24,6 +24,7 @@
 #include "coop/host/save_transfer.hpp"
 #include "coop/net/client.hpp"
 #include "coop/protocol/messages.hpp"
+#include "coop_boundary.h"
 #include "coop_every.h"
 
 namespace CoopSave {
@@ -389,7 +390,10 @@ void SetSwitch(std::function<std::string()> root, std::function<bool(const std::
 
 void NoteInGame(bool in_game) {
     std::lock_guard lock(g_mutex);
-    g_in_game = in_game;
+    // (the title's menu up: a Link read there is the title's own scene behind it (Link rides Epona), never a file
+    // played; read as one, a guest back on the title from a join never switched to the host's save, a test run
+    // 2026-11-20)
+    g_in_game = in_game && !g_title_up;
     if (in_game && g_guest_live) g_guest_played = true;   // (the title's ask, TitleResync)
     Say(g_lines.on_in_game(in_game));
 }
@@ -455,7 +459,7 @@ void ReadSaveSetLocked() {
     if (g_set_read) return;
     g_set_read = true;
     std::FILE* f = nullptr;
-#ifdef _MSC_VER
+#ifdef _WIN32
     if (_wfopen_s(&f, SaveSetFile().c_str(), L"rb") != 0) f = nullptr;
 #else
     f = std::fopen(SaveSetFile().c_str(), "rb");
@@ -469,7 +473,7 @@ void ReadSaveSetLocked() {
 
 void KeepSaveSetLocked() {
     std::FILE* f = nullptr;
-#ifdef _MSC_VER
+#ifdef _WIN32
     if (_wfopen_s(&f, SaveSetFile().c_str(), L"wb") != 0) f = nullptr;
 #else
     f = std::fopen(SaveSetFile().c_str(), "wb");
@@ -538,6 +542,7 @@ void NoteTitle(bool title_up) {
         if (std::exchange(g_guest_played, false)) g_title_ask = true;   // (decided by the next OnFrame: TitleResync)
     }
     g_title_up = title_up;
+    if (title_up) g_in_game = false;   // (NoteInGame: the title's scene's Link is not a file played)
     if (title_up && !g_set_applied && !g_in_game && g_root) {   // (Navi) the kept choice, on the first title
         ReadSaveSetLocked();
         g_set_applied = true;
@@ -592,16 +597,34 @@ void LogPlayed(const std::optional<fs::path>& before) {
     }
 }
 
-// Patch 0025's opens now (no lock of ours: the exe's own lock, held for a copy).
-SlotOpens ReadSlotOpens() {
-    SlotOpens o;
+// Patch 0025's opens now as the exe copied them (no lock of ours: the exe's own lock, held for a copy). No heap: the
+// present thread reads it every frame (save-crash-0118: a path built here each frame was the first co-op allocation
+// to fail at the PC's commit limit); the folder becomes a path only when a caller needs it (SlotDir).
+struct RawSlotOpens {
+    unsigned opens = 0;
+    bool write = false;
+    char buf[1024] = {};
+};
+void ReadRawSlotOpens(RawSlotOpens& o) {
     if (const auto opened = g_slot_opened.load(std::memory_order_acquire)) {
-        char buf[1024];
         int w = 0;
-        o.opens = opened(buf, sizeof buf, &w);
-        if (o.opens != 0) o.dir = fs::path(buf).lexically_normal();
+        o.opens = opened(o.buf, sizeof o.buf, &w);
         o.write = w != 0;
     }
+}
+// The opens' slot folder as a path (empty: no open yet, or no ended folder in the buffer).
+fs::path SlotDir(const RawSlotOpens& o) {
+    if (o.opens == 0) return {};
+    const auto text = CoopBoundary::EndedText(o.buf, sizeof o.buf);
+    return text.empty() ? fs::path() : fs::path(text).lexically_normal();
+}
+SlotOpens ReadSlotOpens() {
+    RawSlotOpens raw;
+    ReadRawSlotOpens(raw);
+    SlotOpens o;
+    o.opens = raw.opens;
+    o.write = raw.write;
+    o.dir = SlotDir(raw);
     return o;
 }
 
@@ -624,15 +647,20 @@ void PollSlotOpens() {
         std::lock_guard lock(g_window_mutex);
         windows.swap(g_windows);
     }
-    const SlotOpens now = ReadSlotOpens();
+    RawSlotOpens now;
+    ReadRawSlotOpens(now);
     std::lock_guard lock(g_mutex);
+    // Nothing new (most frames): no lock work, no path, no heap (g_slot_opens_seen is this thread's, under g_mutex).
+    if (windows.empty() && now.opens == g_slot_opens_seen) return;
     const auto before = g_played.slot();
     // The window marks first, each with the opens as they were at it: a load's read is never lost, nor a read from
     // before the load taken as inside it, whatever the frame's timing (save::PlayedSlot counts the opens).
     for (const auto& [start, at] : windows) g_played.on_load_window(start, at.opens, at.dir, at.write);
-    if (now.opens != g_slot_opens_seen && !now.dir.empty()) {
-        g_slot_opens_seen = now.opens;   // (several opens in one frame: the last counts; one slot per load)
-        g_played.on_open(now.dir, now.write, now.opens);
+    if (now.opens != g_slot_opens_seen) {
+        if (const fs::path dir = SlotDir(now); !dir.empty()) {
+            g_slot_opens_seen = now.opens;   // (several opens in one frame: the last counts; one slot per load)
+            g_played.on_open(dir, now.write, now.opens);
+        }
     }
     LogPlayed(before);
 }

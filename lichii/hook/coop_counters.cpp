@@ -122,14 +122,24 @@ void CounterSync::Receive(const coop::protocol::PlatformCounter& message) {
         th.period_us = t.period_us;
         th.starts = t.starts;
     }
+    if (!message.ticks.empty() && !away_.contains(message.player_number)) {
+        present_since_.try_emplace(message.player_number, message.server_time_us);  // row 164: here since then
+    }
 }
 
 void CounterSync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t server_us,
-                       const std::vector<Seen>& seen, bool probe_only, Out& out) {
+                       const std::vector<Seen>& seen, bool probe_only, Out& out,
+                       const std::set<std::uint8_t>& away) {
     if (scene != scene_) {
         Reset();
         scene_ = scene;
     }
+    // Row 164: an away game (a pause menu, a load, a cutscene) leads nobody, and settles again once it is back.
+    away_ = away;
+    for (const std::uint8_t p : away_) {
+        present_since_.erase(p);
+    }
+    const bool self_away = away_.contains(self);
     for (auto it = theirs_.begin(); it != theirs_.end();) {
         std::erase_if(it->second, [&](const auto& p) { return server_us > p.second.got_us + kStaleUs; });
         it = it->second.empty() ? theirs_.erase(it) : std::next(it);
@@ -167,6 +177,7 @@ void CounterSync::Tick(const std::string& scene, std::uint8_t self, std::uint64_
         }
         n.owner_hash = s.owner_hash;
         n.owner_name = s.owner_name;
+        n.switched = s.switched;
         const float elapsed_frames = std::max(0.0f, s.duration - std::max(s.remaining, 0.0f));
         const auto began = [&] {
             const auto back = static_cast<std::uint64_t>(elapsed_frames / kFramesPerSecond * 1e6f);
@@ -237,11 +248,15 @@ void CounterSync::Tick(const std::string& scene, std::uint8_t self, std::uint64_
             }
         }
         n.last_remaining = s.remaining;
-        if (per_key[n.key] != 1 || s.remaining <= 0.0f || !Shared(n)) {
+        // Row 164: our game stands still (a pause menu, a load, a cutscene) while the server clock runs: a pause
+        // written now would end at the wrong time. A switched mover is lined up only while it loops on its own.
+        if (per_key[n.key] != 1 || s.remaining <= 0.0f || self_away || (n.switched && !n.looping)) {
             continue;
         }
-        // Pause by pause, when our wait is known and a leader sends its waits: the lowest number, the same in
-        // every game (review: counts compared at different times could leave every game thinking it leads).
+        // Pause by pause, when our wait is known and a leader sends its waits: the lowest settled number, the same
+        // in every game (review: counts compared at different times could leave every game thinking it leads).
+        // Row 164: a follower lines up from its first pause here (the leader shares only a counter that repeats in
+        // its game), not only after kPauseStarts: a game that came back into the room is in step at once.
         if (n.wait_known) {
             const std::uint8_t leader = Leader(n, self, server_us);
             if (leader != 0) {
@@ -251,7 +266,7 @@ void CounterSync::Tick(const std::string& scene, std::uint8_t self, std::uint64_
                 continue;
             }
         }
-        if (!n.looping || n.ref_us == 0 || n.written_start_us == n.start_us) {
+        if (!Shared(n) || !n.looping || n.ref_us == 0 || n.written_start_us == n.start_us) {
             continue;
         }
         // The period rule (no wait known, or a game that sends no waits: an older module): the game that has
@@ -264,7 +279,8 @@ void CounterSync::Tick(const std::string& scene, std::uint8_t self, std::uint64_
         const Theirs* best = nullptr;
         std::uint8_t best_player = 0;
         for (const auto& [player, th] : tk->second) {
-            if (player == self || th.start_us == 0 || !Close(th.period_us, period, kPeriodSlack)) {
+            if (player == self || th.start_us == 0 || !Close(th.period_us, period, kPeriodSlack) ||
+                away_.contains(player)) {  // row 164: a game standing still is followed by nobody
                 continue;
             }
             if (best == nullptr || th.starts > best->starts) {
@@ -332,6 +348,9 @@ void CounterSync::Tick(const std::string& scene, std::uint8_t self, std::uint64_
         return;
     }
     last_send_us_ = server_us;
+    if (!ticks.empty() && !self_away) {
+        present_since_.try_emplace(self, server_us);  // row 164: we are here since our first send
+    }
     // As many messages as it takes, kMaxPlatformCounters entries each (review: at 3 per node the cap filled at
     // about 10 nodes, and the same nodes always missed out).
     for (std::size_t from = 0; from < ticks.size(); from += coop::protocol::kMaxPlatformCounters) {
@@ -348,7 +367,15 @@ void CounterSync::Tick(const std::string& scene, std::uint8_t self, std::uint64_
 }
 
 bool CounterSync::Shared(const Node& n) {
+    if (n.switched) {
+        return n.looping;  // row 164: a switch's moves never loop; the shortcut lift's own loop does
+    }
     return n.looping || n.starts >= kPauseStarts;
+}
+
+bool CounterSync::Settled(std::uint8_t player, std::uint64_t server_us) const {
+    const auto it = present_since_.find(player);
+    return it != present_since_.end() && server_us >= it->second + kSettleUs;
 }
 
 std::uint8_t CounterSync::Leader(const Node& n, std::uint8_t self, std::uint64_t server_us) const {
@@ -366,20 +393,35 @@ std::uint8_t CounterSync::Leader(const Node& n, std::uint8_t self, std::uint64_t
             }
         }
     }
-    std::uint8_t lowest = 0;
+    // The games that may lead: the others that send this counter's waits, and we once we send them (a game that
+    // has not yet shared this counter leads nobody: the others would not see what to follow).
+    std::vector<std::uint8_t> candidates;
     for (const auto& [player, sp] : newest) {
         const auto [start, period] = sp;
         if (period != 0 && server_us > start + kLeaderStalePeriods * period) {
             continue;  // M1: its lift stopped starting; its resent start leads nobody
         }
-        if (lowest == 0 || player < lowest) {
-            lowest = player;
+        if (away_.contains(player)) {
+            continue;  // row 164: its game stands still (a pause menu, a load, a cutscene)
         }
+        candidates.push_back(player);
     }
-    if (lowest == 0) {
+    if (candidates.empty()) {
         return 0;  // nobody else sends this counter's waits
     }
-    return std::min(lowest, self);
+    if (Shared(n) && !away_.contains(self)) {
+        candidates.push_back(self);
+    }
+    // Row 164: the lowest settled number; none settled (all new here): the lowest number, as before.
+    std::uint8_t lowest = 0;
+    std::uint8_t settled = 0;
+    for (const std::uint8_t p : candidates) {
+        lowest = lowest == 0 ? p : std::min(lowest, p);
+        if (Settled(p, server_us)) {
+            settled = settled == 0 ? p : std::min(settled, p);
+        }
+    }
+    return settled != 0 ? settled : lowest;
 }
 
 bool CounterSync::AlignPause(Node& n, const Seen& s, std::uint8_t leader, std::uint64_t server_us,
@@ -401,7 +443,7 @@ bool CounterSync::AlignPause(Node& n, const Seen& s, std::uint8_t leader, std::u
             static_cast<double>(static_cast<std::int64_t>(n.start_us) - static_cast<std::int64_t>(th->start_us)) / 1e6);
         const float target = std::max(0.0f, static_cast<float>(static_cast<double>(end_us - static_cast<std::int64_t>(server_us)) /
                                                                 1e6 * kFramesPerSecond));
-        if (std::fabs(target - s.remaining) <= kOffS * kFramesPerSecond) {
+        if (std::fabs(target - s.remaining) <= kAlignOffS * kFramesPerSecond) {
             return false;  // in step: nothing to write
         }
         WritePause(n, s, target, gap, leader, n.wait == 0 ? " (this pause, home wait)" : " (this pause, far wait)",
@@ -472,6 +514,8 @@ void CounterSync::Reset() {
     theirs_.clear();
     last_send_us_ = 0;
     counter_owners_.clear();
+    away_.clear();
+    present_since_.clear();
 }
 
 std::set<std::uint64_t> CounterSync::LoopingOwners() const {

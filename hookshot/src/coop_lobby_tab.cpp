@@ -141,6 +141,21 @@ std::vector<Tab::Line> Tab::Lines() const {
         heading("Lobby");
         note("You are not in a game.");
         note("Host one or join a friend's on the Multiplayer tab; the players show here.");
+        // The relay's public games (the same list and words as Browse games): Join with one press.
+        heading("Public games");
+        if (lobby_.games.empty()) {
+            note(lobby_.games_state.empty() ? std::string("Looking for public games...") : lobby_.games_state);
+        }
+        for (std::size_t i = 0; i < lobby_.games.size() && i < 255; ++i) {
+            const PublicGame& g = lobby_.games[i];
+            action(g.name, g.joinable ? CoopI18n::Tr("Join") : g.detail, Act::kJoinGame,
+                   g.detail + (g.joinable ? std::string(". ") +
+                                                (g.is_public ? CoopI18n::Tr("Press to join: no password needed.")
+                                                             : CoopI18n::Tr("Press, then type the host's password."))
+                                          : std::string()),
+                   static_cast<std::uint8_t>(i));
+        }
+        action("Refresh list", "Refresh", Act::kRefreshGames, "Asks the game list again now.");
         return out;
     }
 
@@ -263,7 +278,13 @@ void Tab::Hide() {
 }
 
 void Tab::Set(Lobby lobby) {
+    const bool was_connected = lobby_.connected;
     lobby_ = std::move(lobby);
+    // In or out of a game, the page is another list (out of one: Public games): it starts at its top again.
+    if (lobby_.connected != was_connected) {
+        selected_ = 0;
+        confirm_ = Act::kNone;
+    }
     if (player_ != 0 && (Shown() == nullptr || !lobby_.connected)) {
         player_ = 0;
         selected_ = 0;
@@ -358,6 +379,28 @@ void Tab::Decide(const Line& line) {
         r.kind = Request::Kind::kCopyInvite;
         request_ = std::move(r);
         note_ = "The invite code is on the clipboard.";
+        return;
+    }
+    case Act::kJoinGame: {
+        if (line.player >= lobby_.games.size()) return;
+        const PublicGame& g = lobby_.games[line.player];
+        if (!g.joinable) {
+            note_ = g.detail;
+            return;
+        }
+        Request r;
+        r.kind = Request::Kind::kJoinRoom;
+        r.name = g.room;
+        r.on = g.is_public;
+        request_ = std::move(r);
+        note_ = g.is_public ? "Joining " + g.room + "..." : "Type the host's password on the Multiplayer tab.";
+        return;
+    }
+    case Act::kRefreshGames: {
+        Request r;
+        r.kind = Request::Kind::kRefreshGames;
+        request_ = std::move(r);
+        note_ = "Asking the game list again...";
         return;
     }
     case Act::kResync: {

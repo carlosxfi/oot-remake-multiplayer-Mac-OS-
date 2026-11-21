@@ -42,8 +42,23 @@ struct Player {
     bool operator==(const Player&) const = default;
 };
 
+// A game on the relay's public room list, as the Lobby shows it while this game is in none (CoopRoomList: the same
+// list and words as Browse games).
+struct PublicGame {
+    std::string room;          // what Join takes
+    std::string name;          // the row's name, as Browse games' (CoopPauseTab::ListName)
+    std::string detail;        // CoopRoomList::DetailText: "Public game, Players 2/4", "Needs the host's password, ..."
+    bool joinable = true;      // same version, room for one more
+    bool is_public = false;    // joined at once with no password (else the Join page asks for it)
+    bool operator==(const PublicGame&) const = default;
+};
+
 struct Lobby {
     bool connected = false;             // the session took this game in (WELCOME came)
+    // Not in a game: the relay's Public games (the list asked while this tab shows), and why there are none
+    // (CoopRoomList's words; "" still asking).
+    std::vector<PublicGame> games;
+    std::string games_state;
     // Not connected yet, but co-op was started (Host or Join on the Multiplayer tab): what it is doing, as that tab
     // says it ("" co-op is off).
     std::string waiting;
@@ -64,6 +79,9 @@ struct Request {
         kTeleport,    // /teleport to `name`
         kCopyInvite,  // the invite code onto the clipboard
         kResync,      // a guest: the host's save again (CoopSave::RequestResync; player report 120)
+        kJoinRoom,    // join the public list's room `name`: at once with no password (`on`: a public game), else
+                      // the Join page with the room typed, its Password row chosen
+        kRefreshGames,   // the public list asked again now
     };
     Kind kind = Kind::kServer;
     coop::protocol::LobbyAction action{};
@@ -92,7 +110,8 @@ public:
 
 private:
     enum class Act : std::uint8_t {
-        kNone, kPlayer, kCopy, kOwnVoice, kOwnChat, kTeleport, kHostVoice, kHostChat, kKick, kBan, kResync
+        kNone, kPlayer, kCopy, kOwnVoice, kOwnChat, kTeleport, kHostVoice, kHostChat, kKick, kBan, kResync,
+        kJoinGame, kRefreshGames
     };
     struct Line;
     std::vector<Line> Lines() const;

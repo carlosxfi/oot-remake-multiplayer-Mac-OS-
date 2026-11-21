@@ -343,6 +343,97 @@ TEST_CASE("a game build other than the session's is refused") {
   }
 }
 
+TEST_CASE("another co-op release on the same protocol joins, an older or a newer one, and the log says so") {
+  // (owner, 2026-11-21: refused only when the wire data differs, which the protocol version says)
+  for (const char* other : {"coop hookshot v0.11.6", "coop hookshot v0.11.8-3-gab12cd34"}) {
+    CAPTURE(other);
+    std::vector<std::string> lines;
+    SessionConfig config;
+    config.log = [&lines](const std::string& line) { lines.push_back(line); };
+    Harness h(config);
+    h.connect(1);
+    Hello host = hello_from("Link");
+    host.build_id = "coop hookshot v0.11.7-86-gab12cd34";
+    h.receive(1, host, kChannelSession);
+    REQUIRE(h.session.player_count() == 1);
+    h.clear();
+    h.connect(2);
+    Hello guest = hello_from("Zelda");
+    guest.build_id = other;
+    h.receive(2, guest, kChannelSession);
+    bool refused = false;
+    for (const Sent& sent : h.to(2)) refused = refused || std::holds_alternative<Refused>(sent.message);
+    CHECK_FALSE(refused);
+    CHECK(h.session.player_count() == 2);
+    CHECK(std::any_of(lines.begin(), lines.end(), [](const std::string& l) {
+      return l.find("joins the host's v0.11.7") != std::string::npos;
+    }));
+  }
+}
+
+TEST_CASE("a protocol refusal names the host's co-op release in the log, with Update.bat") {
+  std::vector<std::string> lines;
+  SessionConfig config;
+  config.log = [&lines](const std::string& line) { lines.push_back(line); };
+  Harness h(config);
+  h.connect(1);
+  Hello host = hello_from("Link");
+  host.build_id = "coop hookshot v0.11.8";
+  h.receive(1, host, kChannelSession);
+  REQUIRE(h.session.player_count() == 1);
+  lines.clear();
+  h.connect(2);
+  Bytes older = {1, 0, 2, 0, 1, 0};  // a HELLO of protocol 1
+  h.receive_raw(2, older, kChannelSession);
+  CHECK(std::any_of(lines.begin(), lines.end(), [](const std::string& l) {
+    return l.find("the host runs co-op v0.11.8") != std::string::npos && l.find("Update.bat") != std::string::npos;
+  }));
+  CHECK(h.session.player_count() == 1);
+}
+
+TEST_CASE("the same co-op release joins whatever its commit, and a build naming none is let in") {
+  Harness h;
+  h.connect(1);
+  Hello host = hello_from("Link");
+  host.build_id = "coop hookshot v0.11.7-86-gab12cd34";
+  h.receive(1, host, kChannelSession);
+  const char* others[] = {"coop hookshot v0.11.7", "coop hookshot v0.11.7-90-gffffffff-dirty",
+                          "coop hookshot b614270-dirty (Navi)"};
+  ConnectionId id = 2;
+  for (const char* other : others) {
+    CAPTURE(other);
+    h.connect(id);
+    Hello guest = hello_from("P" + std::to_string(id));
+    guest.build_id = other;
+    h.receive(id, guest, kChannelSession);
+    bool refused = false;
+    for (const Sent& sent : h.to(id)) refused = refused || std::holds_alternative<Refused>(sent.message);
+    CHECK_FALSE(refused);
+    ++id;
+  }
+  CHECK(h.session.player_count() == 4);
+}
+
+TEST_CASE("the session's co-op release is the first player's, and goes with the last") {
+  Harness h;
+  h.connect(1);
+  Hello first = hello_from("Link");
+  first.build_id = "coop hookshot v0.11.6";
+  h.receive(1, first, kChannelSession);
+  REQUIRE(h.session.player_count() == 1);
+  h.session.disconnected(1, h.now);
+  REQUIRE(h.session.player_count() == 0);
+  h.clear();
+  h.connect(2);
+  Hello next = hello_from("Zelda");
+  next.build_id = "coop hookshot v0.11.7";
+  h.receive(2, next, kChannelSession);
+  bool refused = false;
+  for (const Sent& sent : h.to(2)) refused = refused || std::holds_alternative<Refused>(sent.message);
+  CHECK_FALSE(refused);
+  CHECK(h.session.player_count() == 1);
+}
+
 TEST_CASE("crossplay: players on different clients of the same game build share one session") {
   // docs/crossplay.md: what a game runs the module in (this kit's Longshot, Hookshot, another launcher's build) is
   // never a reason to refuse it; only the protocol version, the game build and the join password are.
@@ -1530,6 +1621,67 @@ TEST_CASE("issue 163: a rejoin with a join password shows the token, then the pr
   REQUIRE(!with_token.empty());
   REQUIRE(std::holds_alternative<Welcome>(with_token[0].message));
   CHECK(h.session.stats().rejoined == 1);
+}
+
+TEST_CASE("a new join password: players who were in may rejoin with the old one, only with their token") {
+  SessionConfig config;
+  config.join_password = "kokiri";
+  Harness h(config);
+  auto join = [&](ConnectionId id, const std::string& name, const std::string& password,
+                  std::optional<RejoinTokenBytes> token, std::uint32_t address = kHomePc) {
+    h.clear();
+    h.connect(id, address);
+    if (token) h.receive(id, RejoinClaim{*token}, kChannelSession);
+    h.receive(id, hello_from(name), kChannelSession);
+    const auto challenge = only_message_to<JoinChallenge>(h, id);
+    REQUIRE(challenge.has_value());
+    h.clear();
+    h.receive(id, JoinProof{h.proof(password, challenge->nonce)}, kChannelSession);
+    return h.to(id);
+  };
+  auto welcomed = [](const std::vector<Sent>& msgs) {
+    return !msgs.empty() && std::holds_alternative<Welcome>(msgs[0].message);
+  };
+  REQUIRE(welcomed(join(1, "Link", "kokiri", std::nullopt)));
+  REQUIRE(welcomed(join(2, "Zelda", "kokiri", std::nullopt, kOtherPc)));
+  h.session.set_join_password("deku-tree");
+  CHECK(h.session.old_password_count() == 2);
+  CHECK(h.session.join_password() == "deku-tree");
+
+  // Link's game drops; its auto-rejoin still knows "kokiri" and shows its token: back in, same place.
+  h.now += 1'000'000;
+  REQUIRE(welcomed(join(9, "Link", "kokiri", token_of(h, 1))));
+  CHECK(h.session.stats().rejoin_old_password == 1);
+  CHECK(h.session.stats().rejoined == 1);
+  CHECK(h.session.player_number(9) == std::optional<std::uint8_t>{1});
+  CHECK(h.session.old_password_count() == 2);   // (its new token took the used one's place)
+
+  // The old password without a token, or with another's token, is a wrong one.
+  const std::uint64_t bad = h.session.stats().bad_password;
+  CHECK(refused_reason(join(20, "Saria", "kokiri", std::nullopt)) == RefuseReason::bad_password);
+  CHECK(refused_reason(join(21, "Saria", "kokiri", token_of(h, 1))) == RefuseReason::bad_password);   // (used up)
+  CHECK(h.session.stats().bad_password == bad + 2);
+
+  // A player who leaves (or is kicked) has no way back with the old one: the host may have changed it for that.
+  h.session.disconnected(2, h.now);   // (closed at once: left)
+  CHECK(h.session.old_password_count() == 1);
+  CHECK(refused_reason(join(22, "Zelda", "kokiri", token_of(h, 2), kOtherPc)) == RefuseReason::bad_password);
+
+  // A lost connection keeps it, also once the old place timed out and is gone.
+  h.now += 20'000'000;
+  h.session.disconnected(9, h.now);   // (silent: timed out)
+  CHECK(h.session.player_count() == 0);
+  REQUIRE(welcomed(join(23, "Link", "kokiri", token_of(h, 9))));
+  CHECK(h.session.stats().rejoin_old_password == 2);
+
+  // The new password lets anyone in; a second change keeps what each game knows.
+  REQUIRE(welcomed(join(24, "Mido", "deku-tree", std::nullopt, kOtherPc)));
+  h.session.set_join_password("lost-woods");
+  CHECK(h.session.old_password_count() == 2);   // (Link: kokiri, Mido: deku-tree)
+  h.now += 1'000'000;
+  REQUIRE(welcomed(join(25, "Mido", "deku-tree", token_of(h, 24), kOtherPc)));
+  CHECK(refused_reason(join(26, "Link", "deku-tree", token_of(h, 23))) == RefuseReason::bad_password);
+  REQUIRE(welcomed(join(27, "Link", "kokiri", token_of(h, 23))));
 }
 
 // ---------------------------------------------------------------- objects
@@ -3759,6 +3911,107 @@ TEST_CASE("join password: a game with no password (the empty one's proof) is ref
   CHECK(refused->reason == RefuseReason::bad_password);
 }
 
+TEST_CASE("join password: the same network joins with the same-network key when the host lets it, and only it") {
+  SessionConfig config = with_password("hunter2");
+  config.same_network_open = true;
+  Harness h(config);
+  // From a private address: in, with the traffic sealed as for any player.
+  h.connect(1, enet_address(192, 168, 1, 20));
+  h.clear();
+  h.receive(1, hello_from("Link"), kChannelSession);
+  auto challenge = only_message_to<JoinChallenge>(h, 1);
+  REQUIRE(challenge);
+  h.clear();
+  h.receive(1, JoinProof{h.proof(std::string(kSameNetworkPassword), challenge->nonce)}, kChannelSession);
+  bool welcomed = false;
+  for (const Sent& s : h.to(1)) welcomed = welcomed || std::holds_alternative<Welcome>(s.message);
+  CHECK(welcomed);
+  CHECK(h.session.player_count() == 1);
+  CHECK(h.session.stats().same_network_joins == 1);
+  CHECK(h.session.stats().bad_password == 0);
+  // The join password still works from there, and counts as the password.
+  h.connect(2, enet_address(10, 0, 0, 7));
+  h.clear();
+  h.receive(2, hello_from("Saria"), kChannelSession);
+  challenge = only_message_to<JoinChallenge>(h, 2);
+  REQUIRE(challenge);
+  h.receive(2, JoinProof{h.proof("hunter2", challenge->nonce)}, kChannelSession);
+  CHECK(h.session.player_count() == 2);
+  CHECK(h.session.stats().same_network_joins == 1);
+  // From an internet address, from 127.0.0.1 (a relay's or a join helper's way in) or from no known address: refused.
+  ConnectionId id = 3;
+  for (std::optional<std::uint32_t> from : {std::optional<std::uint32_t>(enet_address(8, 8, 4, 4)),
+                                            std::optional<std::uint32_t>(enet_address(127, 0, 0, 1)),
+                                            std::optional<std::uint32_t>(enet_address(100, 64, 0, 9)),
+                                            std::optional<std::uint32_t>()}) {
+    h.connect(id, from);
+    h.clear();
+    h.receive(id, hello_from("Mido"), kChannelSession);
+    challenge = only_message_to<JoinChallenge>(h, id);
+    REQUIRE(challenge);
+    h.clear();
+    h.receive(id, JoinProof{h.proof(std::string(kSameNetworkPassword), challenge->nonce)}, kChannelSession);
+    auto refused = only_message_to<Refused>(h, id);
+    REQUIRE(refused);
+    CHECK(refused->reason == RefuseReason::bad_password);
+    ++id;
+  }
+  CHECK(h.session.player_count() == 2);
+  CHECK(h.session.stats().same_network_joins == 1);
+}
+
+TEST_CASE("join password: a same-network join keeps no old password when the host changes it") {
+  SessionConfig config = with_password("hunter2");
+  config.same_network_open = true;
+  Harness h(config);
+  auto join = [&](ConnectionId id, std::uint32_t address, std::optional<RejoinTokenBytes> token) {
+    h.clear();
+    h.connect(id, address);
+    if (token) h.receive(id, RejoinClaim{*token}, kChannelSession);
+    h.receive(id, hello_from("Link"), kChannelSession);
+    const auto challenge = only_message_to<JoinChallenge>(h, id);
+    REQUIRE(challenge.has_value());
+    h.clear();
+    h.receive(id, JoinProof{h.proof(std::string(kSameNetworkPassword), challenge->nonce)}, kChannelSession);
+    return h.to(id);
+  };
+  join(1, enet_address(192, 168, 1, 20), std::nullopt);
+  REQUIRE(h.session.player_count() == 1);
+  h.session.set_join_password("deku-tree");
+  CHECK(h.session.old_password_count() == 0);   // (the key is no password of theirs to keep)
+  // Its token and the key from the internet: refused, as any wrong password.
+  h.now += 1'000'000;
+  CHECK(refused_reason(join(2, enet_address(8, 8, 4, 4), token_of(h, 1))) == RefuseReason::bad_password);
+}
+
+TEST_CASE("join password: a host that keeps the password for its own network refuses the same-network key there") {
+  Harness h(with_password("hunter2"));   // (same_network_open off: as before)
+  h.connect(1, enet_address(192, 168, 1, 20));
+  h.clear();
+  h.receive(1, hello_from("Link"), kChannelSession);
+  auto challenge = only_message_to<JoinChallenge>(h, 1);
+  REQUIRE(challenge);
+  h.clear();
+  h.receive(1, JoinProof{h.proof(std::string(kSameNetworkPassword), challenge->nonce)}, kChannelSession);
+  auto refused = only_message_to<Refused>(h, 1);
+  REQUIRE(refused);
+  CHECK(refused->reason == RefuseReason::bad_password);
+  CHECK(h.session.stats().same_network_joins == 0);
+}
+
+TEST_CASE("join password: which addresses are the same network") {
+  CHECK(is_same_network(ipv4_of(enet_address(10, 1, 2, 3))));
+  CHECK(is_same_network(ipv4_of(enet_address(172, 16, 0, 1))));
+  CHECK(is_same_network(ipv4_of(enet_address(172, 31, 255, 254))));
+  CHECK(is_same_network(ipv4_of(enet_address(192, 168, 0, 10))));
+  CHECK(is_same_network(ipv4_of(enet_address(169, 254, 9, 9))));
+  CHECK(!is_same_network(ipv4_of(enet_address(127, 0, 0, 1))));     // (a relay's and a helper's)
+  CHECK(!is_same_network(ipv4_of(enet_address(172, 32, 0, 1))));
+  CHECK(!is_same_network(ipv4_of(enet_address(100, 64, 0, 1))));    // (a carrier's NAT, a VPN's: not this network)
+  CHECK(!is_same_network(ipv4_of(enet_address(25, 1, 2, 3))));
+  CHECK(!is_same_network(ipv4_of(enet_address(8, 8, 8, 8))));
+}
+
 TEST_CASE("join password: no proof at all times out like a missing HELLO") {
   SessionConfig config = with_password("hunter2");
   config.hello_timeout_us = 1'000'000;
@@ -5111,6 +5364,23 @@ TEST_CASE("lobby: a player muted in voice is not relayed, the others are") {
   CHECK(count_to<VoiceFrame>(h, 1) == 1);
 }
 
+TEST_CASE("the host passes in join order: to the player in the longest, not the lowest number") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.join(3, "Saria");
+  h.session.disconnected(2, h.now);   // (number 2 is free again)
+  h.join(4, "Mido");                  // joins last, takes number 2
+  h.collect();
+  h.clear();
+  h.session.disconnected(1, h.now);   // the host leaves
+  h.collect();
+  CHECK(h.session.host() == 3);       // Saria (number 3, in longer), not Mido (number 2)
+  h.session.disconnected(3, h.now);
+  h.collect();
+  CHECK(h.session.host() == 2);       // (Mido: number 2)
+}
+
 TEST_CASE("lobby: when the host leaves, the new host has the controls and the mutes hold") {
   Harness h;
   h.join(1, "Link");
@@ -5378,6 +5648,37 @@ TEST_CASE("lobby: a ban follows the key: a new name does not get in, others behi
   CHECK(h.session.stats().lobby_banned == 1);
 }
 
+TEST_CASE("lobby: a host's kept bans (by key) are in force from the start and stay when the session empties") {
+  std::vector<std::string> kept;
+  {
+    Harness h;
+    REQUIRE_FALSE(join_keyed(h, 1, "Link", 1));
+    REQUIRE_FALSE(join_keyed(h, 2, "Zelda", 2));
+    CHECK(h.session.key_bans().empty());
+    h.receive(1, LobbyAction{LobbyActionKind::ban, 2}, kChannelSession);
+    kept = h.session.key_bans();
+    REQUIRE(kept.size() == 1);
+    CHECK(kept[0].rfind("k:02", 0) == 0);
+  }
+  SessionConfig config;
+  config.kept_bans = kept;
+  config.kept_bans.push_back("n:zelda");   // (a name is never kept: someone else may have it)
+  Harness h(config);
+  REQUIRE_FALSE(join_keyed(h, 1, "Link", 1));
+  h.clear();
+  CHECK(join_keyed(h, 2, "Sheik", 2) == Refused{RefuseReason::banned});   // (the key: out under any name)
+  h.clear();
+  CHECK_FALSE(join_keyed(h, 3, "Zelda", 3));                            // (another Zelda: in)
+  CHECK(h.session.key_bans() == kept);
+  // Everyone leaves (the session empties): the kept ban stays.
+  h.session.disconnected(1, h.now);
+  h.session.disconnected(3, h.now);
+  h.clear();
+  REQUIRE_FALSE(join_keyed(h, 4, "Link", 1));
+  h.clear();
+  CHECK(join_keyed(h, 5, "Sheik", 2) == Refused{RefuseReason::banned});
+}
+
 TEST_CASE("lobby: over the relay (this PC's address) a ban follows the key too") {
   Harness h;
   constexpr std::uint32_t kLoopback = 0x0100007F;
@@ -5472,6 +5773,34 @@ TEST_CASE("lobby: a muted player who restarts the game and comes back renamed wh
   h.clear();
   h.receive(4, Chat{0, "hello"}, kChannelSession);
   CHECK(all_to<Chat>(h, 1).size() == 1);
+}
+
+TEST_CASE("boss alive: the host's only, relayed to everyone else after its FLAG_RESET, never kept (row 159)") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.join(3, "Saria");
+  h.clear();
+  h.receive(2, BossAlive{0, 0x0020, 0x0020}, kChannelProgress);  // not the host
+  CHECK(h.sent.empty());
+  CHECK(h.session.stats().boss_alive_refused == 1);
+  h.receive(1, FlagReset{0, {flag(5, 1)}}, kChannelProgress);
+  h.receive(1, BossAlive{0, 0x03e0, 0x0020}, kChannelProgress);
+  for (ConnectionId id : {2u, 3u}) {
+    const auto& got = h.to(id);
+    REQUIRE(got.size() == 2);
+    CHECK(std::holds_alternative<FlagReset>(got[0].message));
+    const auto* m = std::get_if<BossAlive>(&got[1].message);
+    REQUIRE(m != nullptr);
+    CHECK(*m == BossAlive{1, 0x03e0, 0x0020});
+    CHECK(got[1].channel == kChannelProgress);
+  }
+  CHECK(h.to(1).empty());
+  CHECK(h.session.stats().boss_alive_relayed == 1);
+  // A later joiner is not told (it takes the host's save).
+  h.clear();
+  h.join(4, "Impa");
+  for (const auto& sent : h.to(4)) CHECK_FALSE(std::holds_alternative<BossAlive>(sent.message));
 }
 
 TEST_CASE("boss heart: two claims at once give one heart container, the first one's, to everyone") {
@@ -6738,4 +7067,81 @@ TEST_CASE("player lift: grown up while carried, the lifter's places stop at the 
   // Its own freed answer still reaches the lifter.
   h.receive(2, LiftAnswer{0, 1, LiftRefusal::not_young}, kChannelOwnership);
   CHECK(only_message_to<LiftAnswer>(h, 1) == LiftAnswer{2, 1, LiftRefusal::not_young});
+}
+
+TEST_CASE("lobby: the server console (coop_server --dedicated) lists, kicks, bans, unbans and mutes by number, never shows addresses") {
+  Harness h;
+  constexpr std::uint32_t kHome = 0x0A00A8C0;  // 192.168.0.10 in ENet's memory order
+  REQUIRE_FALSE(join_keyed(h, 1, "Link", 1, kHome));
+  REQUIRE_FALSE(join_keyed(h, 2, "Zelda", 2, kHome));
+  REQUIRE_FALSE(join_keyed(h, 3, "Saria", 3, kHome));
+  h.clear();
+  const std::string list = h.session.admin("/players", h.now);
+  CHECK(list.rfind("3 player(s)", 0) == 0);
+  CHECK(list.find("Zelda") != std::string::npos);
+  CHECK(list.find("k:02") != std::string::npos);
+  CHECK(list.find("(hosts the save)") != std::string::npos);
+  CHECK(list.find("192.168") == std::string::npos);
+  CHECK(list.find("10.0") == std::string::npos);
+  // Kick and ban by number; a number nobody has; anything else gets the help line.
+  CHECK(h.session.admin("/kick 2", h.now) == "kick 2: done");
+  CHECK(h.session.player_count() == 2);
+  CHECK(h.session.admin("/kick 9", h.now) == "kick 9: no player with that number");
+  CHECK(h.session.admin("/kick", h.now).rfind("commands:", 0) == 0);
+  CHECK(h.session.admin("/shutdown", h.now).rfind("commands:", 0) == 0);
+  CHECK(h.session.admin("  /ban 3", h.now) == "ban 3: done");
+  const std::vector<std::string> bans = h.session.key_bans();
+  REQUIRE(bans.size() == 1);
+  CHECK(bans[0].rfind("k:03", 0) == 0);
+  h.collect();
+  h.clear();
+  CHECK(join_keyed(h, 4, "Sheik", 3) == Refused{RefuseReason::banned});
+  h.clear();
+  // Unban by the short key id (/players' or the bans file's); too short or unknown ids are refused.
+  CHECK(h.session.admin("/unban k:03", h.now).rfind("unban: give", 0) == 0);
+  CHECK(h.session.admin("/unban ffffffffffff", h.now) == "unban: no ban with that key id");
+  CHECK(h.session.admin("/unban " + bans[0].substr(2, 12), h.now) == "unban: done");
+  CHECK(h.session.key_bans().empty());
+  CHECK_FALSE(join_keyed(h, 5, "Saria", 3));
+  h.clear();
+  // Mute: the session's host player too (the console is above every player); twice is "already".
+  CHECK(h.session.admin("/mute 1 chat", h.now) == "mute 1 chat: done");
+  CHECK(h.session.admin("/mute 1 chat", h.now) == "mute 1 chat: it was so already");
+  CHECK(h.session.admin("/mute 1 loud", h.now).rfind("commands:", 0) == 0);
+  h.clear();
+  h.receive(1, Chat{0, "hello"}, kChannelSession);
+  CHECK(all_to<Chat>(h, 5).empty());
+  CHECK(h.session.admin("/unmute 1 chat", h.now) == "unmute 1 chat: done");
+}
+
+TEST_CASE("dedicated: the player who hosts the progress has no host powers, the console keeps moderation") {
+  SessionConfig config = approving();
+  config.dedicated = true;
+  Harness h(config);
+  h.join(1, "Link");
+  REQUIRE(h.session.host() == std::optional<std::uint8_t>{1});   // (the first in hosts the session's progress)
+  const JoinKnock k = knock(h, 2, "Zelda", 2);
+  h.clear();
+  // Join answers: not from a player.
+  h.receive(1, JoinAllow{k.knock, true, false}, kChannelSession);
+  CHECK(h.session.player_count() == 1);
+  CHECK(h.session.stats().join_answers_stray == 1);
+  // Kick, ban, mute: refused as from a guest; nothing is banned.
+  h.clear();
+  h.receive(1, LobbyAction{LobbyActionKind::ban, 2}, kChannelSession);
+  h.receive(1, LobbyAction{LobbyActionKind::mute_chat, 2}, kChannelSession);
+  CHECK(h.session.stats().lobby_refused == 2);
+  CHECK(h.session.key_bans().empty());
+  // PvP, down but not out, difficulty: the server's settings stay.
+  h.receive(1, PvpMode{0, true}, kChannelSession);
+  CHECK_FALSE(h.session.pvp());
+  CHECK(h.session.stats().pvp_mode_refused == 1);
+  h.receive(1, DbnoMode{0, true, 60, 20, 8}, kChannelSession);
+  CHECK(h.session.dbno() == DbnoMode{});
+  CHECK(h.session.stats().dbno_mode_refused == 1);
+  h.receive(1, Difficulty{0, false, DifficultyPreset::hard, {}}, kChannelSession);
+  CHECK(h.session.difficulty() == Difficulty{});
+  CHECK(h.session.stats().difficulty_refused == 1);
+  // The console still acts.
+  CHECK(h.session.admin("/mute 1 chat", h.now) == "mute 1 chat: done");
 }

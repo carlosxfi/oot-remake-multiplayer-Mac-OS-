@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <deque>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -600,6 +601,9 @@ struct WaitLift {
     float remaining = 180.0f;
     double move_left = 0.0;
     bool driven = false;
+    bool switched = false;
+    bool frozen = false;                     // its game stands still (a pause menu)
+    const std::set<std::uint8_t>* away = nullptr;  // the players away, as PLAYER_STATUS says
     std::uint64_t node = 0x2140001000;
     std::uint64_t graph = 0x2140000f00;
     CounterSync sync;
@@ -608,6 +612,9 @@ struct WaitLift {
     std::vector<std::pair<std::uint64_t, int>> pause_ends;  // server time, wait
 
     void Step(double dt, std::uint64_t now_us) {
+        if (frozen) {
+            return;
+        }
         if (remaining > 0.0f) {
             remaining -= static_cast<float>(dt * 60.0);
             if (remaining <= 0.0f) {
@@ -641,8 +648,10 @@ struct WaitLift {
         s.key = KeyOf(kHash, pause, node, graph);
         s.wait = wait;
         s.driven = driven;
+        s.switched = switched;
         CounterSync::Out out;
-        sync.Tick("DodongoCavern", self, time_us, {s}, false, out);
+        static const std::set<std::uint8_t> none;
+        sync.Tick("DodongoCavern", self, time_us, {s}, false, out, away != nullptr ? *away : none);
         for (auto& m : out.send) {
             sent.push_back(std::get<proto::PlatformCounter>(m));
         }
@@ -787,7 +796,7 @@ TEST_CASE("counters: one counter timing both waits is never lined up top on bott
     CHECK(WorstEndGap(a, b, 6) < 0.15);
 }
 
-TEST_CASE("counters: a mover its own logic drives (a switch, a sensor, a rider) is never sent or written") {
+TEST_CASE("counters: a mover its own player drives (a rider, a player sensor) is never sent or written") {
     WaitLift a;
     WaitLift b;
     a.self = 1;
@@ -941,4 +950,103 @@ TEST_CASE("counters: more entries than one message holds go in more messages, no
         entries += m.ticks.size();
     }
     CHECK(entries > proto::kMaxPlatformCounters);  // all of them went, in more than one message
+}
+
+TEST_CASE("counters: row 164: the shortcut lift (a shared switch's input) is lined up once it loops") {
+    WaitLift a;
+    WaitLift b;
+    a.self = 1;
+    b.self = 2;
+    a.switched = true;  // Dodongo's 10.5 96.5 -23.0 lift: IsShortCutMove, from the shared step switch
+    b.switched = true;
+    b.moves = {7.5, 8.1};
+    b.Advance(6.0);
+    std::uint64_t time = 0;
+    Run({&a, &b}, time, 300.0);
+    CHECK(b.sync.Writes() > 0);
+    CHECK(a.sync.Writes() == 0);
+    CHECK(WorstEndGap(a, b, 6) < 0.15);
+}
+
+TEST_CASE("counters: row 164: a switched mover that does not loop (a switch's moves) is never sent or written") {
+    WaitLift a;
+    WaitLift b;
+    a.self = 1;
+    b.self = 2;
+    a.switched = true;
+    b.switched = true;
+    a.moves = {4.0, 19.0, 7.0, 31.0, 12.0};  // pressed at no steady rate: never two periods alike
+    b.moves = {9.0, 5.0, 23.0, 6.0, 15.0};
+    b.Advance(3.0);
+    std::uint64_t time = 0;
+    Run({&a, &b}, time, 240.0);
+    CHECK(a.sync.Writes() + b.sync.Writes() == 0);
+}
+
+TEST_CASE("counters: row 164: the leader in a pause menu holds nobody, and back it follows, not pulls") {
+    std::set<std::uint8_t> away;
+    WaitLift a;  // the host: player 1, the leader
+    WaitLift b;
+    a.self = 1;
+    b.self = 2;
+    a.away = &away;
+    b.away = &away;
+    b.Advance(5.0);
+    std::uint64_t time = 0;
+    Run({&a, &b}, time, 150.0);  // both settled, b follows a
+    REQUIRE(WorstEndGap(a, b, 4) < 0.15);
+    // a's player opens the pause menu for 25 s: its lift stands still, its game still sends.
+    a.frozen = true;
+    away.insert(1);
+    b.pause_ends.clear();
+    b.notes.clear();
+    Run({&a, &b}, time, 25.0);
+    CHECK_FALSE(b.Said("held for player 1"));
+    CHECK(b.pause_ends.size() >= 2);  // b's lift kept its own pace (a 21 s cycle, two waits)
+    a.frozen = false;
+    away.erase(1);
+    // Back: a is 25 s behind. It follows b (settled) until it settles again, so b's lift is never pulled.
+    const std::size_t b_writes = b.sync.Writes();
+    a.pause_ends.clear();
+    b.pause_ends.clear();
+    Run({&a, &b}, time, 120.0);
+    CHECK(a.sync.Writes() > 0);
+    CHECK(b.sync.Writes() == b_writes);
+    CHECK(WorstEndGap(b, a, 4) < 0.15);
+    // Once a has settled again it leads; in step already, so nothing moves.
+    Run({&a, &b}, time, 120.0);
+    CHECK(WorstEndGap(a, b, 4) < 0.15);
+}
+
+TEST_CASE("counters: row 164: our own game in a pause menu writes nothing") {
+    std::set<std::uint8_t> away;
+    WaitLift a;
+    WaitLift b;
+    a.self = 1;
+    b.self = 2;
+    a.away = &away;
+    b.away = &away;
+    b.Advance(8.0);
+    std::uint64_t time = 0;
+    Run({&a}, time, 30.0);
+    away.insert(2);  // b is paused from the start
+    b.frozen = true;
+    Run({&a, &b}, time, 60.0);
+    CHECK(b.sync.Writes() == 0);
+}
+
+TEST_CASE("counters: row 164: a game that comes into the room follows at once and never pulls the others") {
+    WaitLift a;  // player 1, the host, comes back into the room late
+    WaitLift b;  // player 2, there all along
+    a.self = 1;
+    b.self = 2;
+    a.Advance(9.0);
+    std::uint64_t time = 0;
+    Run({&b}, time, 120.0);  // b alone: settled
+    Run({&a, &b}, time, 45.0);
+    CHECK(a.sync.Writes() > 0);           // a lined up on b from its first pauses
+    CHECK(b.sync.Writes() == 0);          // b never moved for the lower number
+    CHECK(WorstEndGap(b, a, 2) < 0.15);
+    Run({&a, &b}, time, 150.0);           // a settles and leads: in step, so b is not pulled
+    CHECK(WorstEndGap(a, b, 4) < 0.15);
 }

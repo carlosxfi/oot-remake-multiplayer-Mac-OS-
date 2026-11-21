@@ -1462,3 +1462,175 @@ TEST_CASE("objects: issue 133, a lifeless enemy's copy that died here sends the 
     plain.Tick(kScene, 1, 50 * kMs, {Lifeless(0x200, "Wait")}, send, writes);
     CHECK(Of<proto::ObjectRemove>(send).empty());
 }
+
+TEST_CASE("objects: row 175, a Poe sister's painting that died here sends the kill at once and keeps its own death") {
+    using CoopObjects::PictureDeathHere;
+    CHECK(PictureDeathHere("Enemy_GhostPicturePerformer_Poe_Amy", false, true, "Pct_Die", "Pct_Wait"));
+    CHECK_FALSE(PictureDeathHere("Enemy_GhostPicturePerformer_Poe_Amy", false, false, "Pct_Die", "Pct_Wait"));  // ours
+    CHECK_FALSE(PictureDeathHere("Enemy_GhostPicturePerformer_Poe_Amy", false, true, "Pct_Die", "Pct_Die"));  // owner's
+    CHECK_FALSE(PictureDeathHere("Enemy_GhostPicturePerformer_Poe_Amy", false, true, "Pct_Wait", "Pct_Wait"));
+    CHECK_FALSE(PictureDeathHere("Enemy_GhostPicturePerformer_Poe_Amy", true, true, "Pct_Die", "Pct_Wait"));  // a life
+    CHECK_FALSE(PictureDeathHere("Enemy_GhostPicturePerformer_PhantomGanon", false, true, "Die", "Wait"));  // the boss's
+    CHECK_FALSE(PictureDeathHere("Enemy_Tailpasaran", false, true, "Die", "Wait"));  // issue 133's (on leaving)
+
+    const auto painting = [](const char* animation) {
+        CoopObjects::Seen s;
+        s.address = 0x300;
+        s.name = "Enemy_GhostPicturePerformer_Poe_Amy";
+        s.hash = 0x29b1;
+        s.position = {66.66f, 119.18f, 0.43f};
+        s.animation = proto::Animation{animation, 0.0f, 1.0f};
+        return s;
+    };
+    // The hitter (player 1): its copy of player 2's painting dies here and stays in the walk.
+    CoopObjects::Sync hitter;
+    std::vector<proto::Message> send;
+    std::vector<CoopObjects::LifeWrite> writes;
+    hitter.Tick(kScene, 1, 0, {painting("Pct_Wait")}, send, writes);
+    const proto::ObjectId id = *hitter.IdOf(0x300);
+    hitter.Receive(proto::ObjectOwner{id, 2, 0, 0});
+    hitter.Tick(kScene, 1, 10 * kMs, {painting("Pct_Wait")}, send, writes);
+    send.clear();
+    for (std::uint64_t t = 100; t <= 400; t += 100) {
+        hitter.Tick(kScene, 1, t * kMs, {painting("Pct_Die")}, send, writes);
+    }
+    const auto damage = Of<proto::Damage>(send);
+    REQUIRE(damage.size() == 1);  // once, while it is still in the walk
+    CHECK(damage[0].id == id);
+    CHECK(damage[0].cause == static_cast<std::uint8_t>(proto::DamageCause::killed));
+
+    // Run 20261119-232719: an owner's play already on its way cut our death off: its own death is played again,
+    // over what it shows now, and no more once it shows its death.
+    hitter.Tick(kScene, 1, 450 * kMs, {painting("Pct_Wait")}, send, writes);
+    std::vector<CoopObjects::PlayWish> plays;
+    hitter.Plays(460 * kMs, plays);
+    REQUIRE(plays.size() == 1);
+    CHECK(plays[0].address == 0x300);
+    CHECK(plays[0].name == "Pct_Die");
+    CHECK(plays[0].frame == 0.0f);
+    hitter.Tick(kScene, 1, 470 * kMs, {painting("Pct_Die")}, send, writes);
+    plays.clear();
+    hitter.Plays(480 * kMs, plays);
+    CHECK(plays.empty());
+    // Review of bd5fab5c: played again once. What it shows after that death (its end, inside kPictureReplayUs) is
+    // its own: no second replay.
+    hitter.Tick(kScene, 1, 490 * kMs, {painting("Pct_Wait")}, send, writes);
+    plays.clear();
+    hitter.Plays(500 * kMs, plays);
+    CHECK(plays.empty());
+    send.clear();
+
+    // The owner says it dead: ours is not deleted (its own death runs the room logic here).
+    proto::ObjectRemove dead;
+    dead.id = id;
+    dead.player_number = 2;
+    dead.reason = proto::RemoveReason::dead;
+    hitter.Receive(dead);
+    send.clear();
+    for (std::uint64_t t = 500; t <= 5000; t += 500) {
+        hitter.Tick(kScene, 1, t * kMs, {painting("Pct_Die")}, send, writes);
+        CHECK(hitter.Removes().empty());
+    }
+    CHECK(Of<proto::Damage>(send).empty());  // no second kill
+    // ...nor when it leaves the walk after its death.
+    for (std::uint64_t t = 5500; t <= 6000; t += 100) {
+        hitter.Tick(kScene, 1, t * kMs, {}, send, writes);
+    }
+    CHECK(Of<proto::Damage>(send).empty());
+}
+
+TEST_CASE("objects: row 175, a play never covers the copy's own death or a boss copy's own stun in slot 0") {
+    using CoopObjects::CoversOwnReaction;
+    using CoopObjects::DeathReadFromAnimation;
+    CoopObjects::PlayWish wish;
+    wish.name = "Pct_Wait";
+    wish.keep_own_death = true;
+    CHECK(CoversOwnReaction(wish, "Pct_Die"));        // runs 20261120-142219, -135153: our hit's death, kept
+    CHECK_FALSE(CoversOwnReaction(wish, "Pct_Wait"));  // nothing of its own
+    CHECK_FALSE(CoversOwnReaction(wish, ""));
+    wish.name = "Pct_Die";
+    CHECK_FALSE(CoversOwnReaction(wish, "Pct_Die"));  // the owner's own death is played as usual
+    wish.name = "Pct_Wait";
+    wish.slot = 1;
+    CHECK_FALSE(CoversOwnReaction(wish, "Pct_Die"));  // only slot 0 is its own AI's
+    wish.slot = 0;
+    wish.keep_own_death = false;
+    CHECK_FALSE(CoversOwnReaction(wish, "Pct_Die"));  // a copy whose death goes by its life
+    CoopObjects::PlayWish boss;
+    boss.name = "Walk";
+    boss.keep_own_stun = true;
+    CHECK(CoversOwnReaction(boss, "Stun_Loop"));  // row 169: its own stun stays on screen
+    boss.name = "Stun_Loop";
+    CHECK_FALSE(CoversOwnReaction(boss, "Stun_Loop"));
+    // Which copies' deaths are read from their own animation.
+    CHECK(DeathReadFromAnimation("Enemy_GhostPicturePerformer_Poe_Joelle", false, false));
+    CHECK(DeathReadFromAnimation("Enemy_GhostPicturePerformer_Poe_Beth", false, false));
+    CHECK(DeathReadFromAnimation("Enemy_GhostPicturePerformer_Poe_Amy", false, false));
+    CHECK(DeathReadFromAnimation("Enemy_GhostPicturePerformer_Poe_Meg", false, false));
+    CHECK_FALSE(DeathReadFromAnimation("Enemy_GhostPicturePerformer_Poe_Amy", false, true));  // a life
+    CHECK(DeathReadFromAnimation("Enemy_Tailpasaran", true, false));        // issue 133
+    CHECK_FALSE(DeathReadFromAnimation("Enemy_Tailpasaran", false, false));  // does not react
+    CHECK_FALSE(DeathReadFromAnimation("Enemy_Tailpasaran", true, true));
+    CHECK_FALSE(DeathReadFromAnimation("Enemy_DungeonBoss_PhantomGanon", true, false));  // a boss
+}
+
+TEST_CASE("objects: row 175, the Mover's report of a painting's own death marks it before any walk sees it") {
+    const auto painting = [](const char* animation) {
+        CoopObjects::Seen s;
+        s.address = 0x300;
+        s.name = "Enemy_GhostPicturePerformer_Poe_Amy";
+        s.hash = 0x29b1;
+        s.position = {66.66f, 119.18f, 0.43f};
+        s.animation = proto::Animation{animation, 0.0f, 1.0f};
+        return s;
+    };
+    CoopObjects::Sync hitter;
+    std::vector<proto::Message> send;
+    std::vector<CoopObjects::LifeWrite> writes;
+    hitter.Tick(kScene, 1, 0, {painting("Pct_Wait")}, send, writes);
+    const proto::ObjectId id = *hitter.IdOf(0x300);
+    hitter.Receive(proto::ObjectOwner{id, 2, 0, 0});
+    proto::ObjectSample pose;
+    pose.id = id;
+    pose.player_number = 2;
+    pose.state.time = {5 * kMs, 1};
+    pose.state.position = proto::Vec3{66.66f, 119.18f, 0.43f};
+    pose.state.animation = proto::Animation{"Pct_Wait", 100.0f, 1.0f};
+    hitter.Receive(pose);
+    hitter.Tick(kScene, 1, 10 * kMs, {painting("Pct_Wait")}, send, writes);
+    std::vector<CoopObjects::PlayWish> plays;
+    hitter.Plays(20 * kMs, plays);
+    REQUIRE(plays.size() == 1);
+    CHECK(plays[0].name == "Pct_Wait");
+    CHECK(plays[0].keep_own_death);  // the owner's idle never covers its own death
+    CHECK_FALSE(plays[0].keep_own_stun);
+    send.clear();
+
+    // The Mover saw its own 'Pct_Die' in slot 0 and did not cover it; the walk has not seen it yet.
+    hitter.NoteOwnDeath(0x300, 30 * kMs, "Pct_Wait");  // not a death: nothing
+    hitter.NoteOwnDeath(0x300, 31 * kMs, "Pct_Die");
+    plays.clear();
+    hitter.Plays(32 * kMs, plays);
+    // The owner's animation waits; only its own death is asked for (the replay-once, a no-op over its death).
+    REQUIRE(plays.size() == 1);
+    CHECK(plays[0].name == "Pct_Die");
+    hitter.Tick(kScene, 1, 40 * kMs, {painting("Pct_Die")}, send, writes);
+    plays.clear();
+    hitter.Plays(45 * kMs, plays);
+    CHECK(plays.empty());  // the walk sees its death: nothing more
+    hitter.Tick(kScene, 1, 140 * kMs, {painting("Pct_Die")}, send, writes);
+    const auto damage = Of<proto::Damage>(send);
+    REQUIRE(damage.size() == 1);  // the kill goes to its owner, once
+    CHECK(damage[0].id == id);
+    CHECK(damage[0].cause == static_cast<std::uint8_t>(proto::DamageCause::killed));
+
+    // A copy nobody owns elsewhere (ours, or solo): the report changes nothing.
+    CoopObjects::Sync own;
+    own.Tick(kScene, 1, 0, {painting("Pct_Wait")}, send, writes);
+    own.Receive(proto::ObjectOwner{*own.IdOf(0x300), 1, 0, 0});
+    send.clear();
+    own.NoteOwnDeath(0x300, 30 * kMs, "Pct_Die");
+    own.Tick(kScene, 1, 40 * kMs, {painting("Pct_Die")}, send, writes);
+    CHECK(Of<proto::Damage>(send).empty());
+    own.NoteOwnDeath(0x999, 50 * kMs, "Pct_Die");  // not in the walk: ignored
+}

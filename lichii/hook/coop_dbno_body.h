@@ -163,6 +163,8 @@ public:
     // Next (the module: the puppet director's slots).
     using PuppetActor = std::function<std::uint64_t(std::uint8_t number)>;
     void SetPuppetActor(PuppetActor find);
+    // Any thread (row 177): player n's puppet is unseen in our game now (Wanted::unseen_puppets).
+    bool PuppetUnseen(std::uint8_t number) const;
 
     // A request the game makes on any BSA; true: skip it (our downed Link in
     // the game's Crawl, any verb but Crawl and kPassVerbs, not our own call).

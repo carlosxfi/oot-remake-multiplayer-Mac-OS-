@@ -50,6 +50,11 @@ std::optional<AddressRange> parse_address_range(std::string_view text);
 // number with the first dotted part highest.
 std::uint32_t ipv4_of(std::uint32_t enet_host);
 
+// A private network address (first dotted part highest): 10/8, 172.16/12,
+// 192.168/16 or link-local 169.254/16. Not 127/8: a relay's and a join
+// helper's connections come from there, for players from anywhere.
+bool is_same_network(std::uint32_t ipv4);
+
 // Players a server takes unless told otherwise (coop_server --max-players).
 inline constexpr std::uint8_t kDefaultMaxPlayers = 16;
 
@@ -102,6 +107,21 @@ struct SessionConfig {
   // At most max_held_joins wait at once; one more is told the server is full.
   // Off: everyone with the password joins at once, as before.
   bool approve_joins = false;
+  // An always-on server with no hosting game (coop_server --dedicated, docs/official-game.md): the player who hosts
+  // the session's progress (the first in, then join order) gets no host powers: no kick, ban or mute, no join
+  // answers, no PvP, down-but-not-out or difficulty change. Moderation is the console's (admin) alone; the session
+  // keeps the server's settings. (MOD_SETTINGS stay the save host's: they belong to the save's mods.)
+  bool dedicated = false;
+  // Bans the host made in earlier sessions, kept by their player key (lobby
+  // ids "k:<hex>", the host's ban file): in force from the start and kept when
+  // the session empties. Names are never kept (one is easy to change, and
+  // someone else may have it).
+  std::vector<std::string> kept_bans;
+  // Players on the host's own network join without the password
+  // (docs/protocol.md "Same network"): a proof with the same-network key
+  // (protocol::kSameNetworkPassword) is taken from a private address only
+  // (is_same_network). Off: everyone needs the join password, as before.
+  bool same_network_open = false;
   std::uint64_t approve_wait_us = 60'000'000;
   std::size_t max_held_joins = 8;
   std::uint64_t silence_timeout_us = 10'000'000;  // nothing heard from a player
@@ -364,6 +384,8 @@ struct Stats {
   std::uint64_t boss_hearts_given = 0;     // first claims: one BOSS_HEART given to everyone
   std::uint64_t boss_hearts_late = 0;      // later claims of a decided boss, answered to their sender
   std::uint64_t boss_hearts_refused = 0;   // a "given" from a client
+  std::uint64_t boss_alive_relayed = 0;    // BOSS_ALIVE from the host, to everyone else (row 159)
+  std::uint64_t boss_alive_refused = 0;    // BOSS_ALIVE from a player who is not the host
   // Connections refused at connect: their address already had
   // max_half_open_per_address waiting for HELLO. Not packets, so not in
   // dropped().
@@ -381,6 +403,12 @@ struct Stats {
   std::uint64_t stray_rejoin_claim = 0;
   // JOIN_PROOFs that did not match the join password (each one refused).
   std::uint64_t bad_password = 0;
+  // JOIN_PROOFs that matched the password a rejoining player knew from before
+  // the host changed it (shown with that player's rejoin token).
+  std::uint64_t rejoin_old_password = 0;
+  // ... that matched the same-network key from a private address instead
+  // (SessionConfig::same_network_open): let in without the password.
+  std::uint64_t same_network_joins = 0;
   // JOIN_PROOFs nobody asked for: no challenge open on that connection.
   std::uint64_t stray_proof = 0;
   // A HELLO without a key share to a server with a join password (refused
@@ -518,6 +546,14 @@ class Session {
   std::size_t player_count() const;
   // The host's player number; none while the session is empty.
   std::optional<std::uint8_t> host() const;
+  // The bans by player key now (the kept ones and this session's), for the
+  // host's ban file; sorted.
+  std::vector<std::string> key_bans() const;
+  // The server console's moderation (coop_server --dedicated, docs/official-game.md): "/players" (number, name, a
+  // short key id, never an address), "/kick N", "/ban N", "/unban KEYID" (its first 8 or more hex digits),
+  // "/mute N voice|chat", "/unmute N voice|chat". Returns what to print. Acts as the host would, on anyone (the
+  // session's host player too); a ban by key is kept as the host's (key_bans()).
+  std::string admin(std::string_view line, std::uint64_t now_us);
   // Whether players hurt each other now (config.pvp, then the host's PVP_MODE).
   bool pvp() const { return pvp_; }
   // Down but not out now (config.dbno, then the host's DBNO_MODE).
@@ -529,6 +565,16 @@ class Session {
   // to everyone at once. 0: none. Only the in-game host's server sets it.
   void set_ngplus(std::uint8_t level);
   std::uint8_t ngplus() const { return ngplus_; }
+  // The join password from now on: a player who joins after this needs the new
+  // one; players already in keep their keys and stay in. A player who was in at
+  // the change and drops keeps a way back: its game still knows the password it
+  // joined with, so a connection that shows that player's rejoin token
+  // (REJOIN_CLAIM) may prove that one instead (old_passwords_). Not empty (the
+  // host's own checks); on the session's thread.
+  void set_join_password(std::string password);
+  // How many players' old passwords are kept for their rejoin (tests).
+  std::size_t old_password_count() const { return old_passwords_.size(); }
+  const std::string& join_password() const { return config_.join_password; }
   // Flags in the server's table.
   std::size_t flag_count() const { return flags_.size(); }
   // Connections from `address` still waiting for HELLO.
@@ -582,7 +628,13 @@ class Session {
     // HELLO: the token its REJOIN_CLAIM showed, if any.
     protocol::RejoinTokenBytes rejoin_token{};
     std::optional<protocol::RejoinTokenBytes> rejoin_claim;
+    // Once joined: the join password its game proved (the session's, or an old
+    // one on a rejoin): what that game tries again when it drops.
+    std::string proved_password;
     std::uint8_t number = 0;  // 1 to max_players once joined
+    // When it joined, in order (Session::joins_): the host passes to the
+    // earliest joiner still in (a number can be a newer player's, freed).
+    std::uint64_t joined_order = 0;
     std::string nickname;
     // Its last MOD_LIST, with its number (docs/protocol.md, "Mods").
     std::optional<protocol::ModList> mods;
@@ -774,6 +826,11 @@ class Session {
   void on_mods(ConnectionId id, Connection& c, protocol::Message& message);
   // The Lobby: the host's kick, ban and mutes (docs/protocol.md "Lobby").
   void on_lobby(ConnectionId id, const protocol::LobbyAction& a, std::uint64_t now_us);
+  // A kick, ban or mute on player a.target, by the host (`actor`: its connection, which may not be its own target)
+  // or by the server's console (no actor); `by` names who in the log. Empty: nothing to answer.
+  std::optional<protocol::LobbyResultCode> apply_lobby(const protocol::LobbyAction& a,
+                                                       std::optional<ConnectionId> actor, std::uint64_t now_us,
+                                                       const char* by);
   std::uint8_t lobby_mutes_of(const Connection& c) const;
   // Who a player is to the Lobby: its player key (sealed in JOIN_PROOF, protocol 11) when it
   // sent one, a split-screen seat by its game's key and seat; the name only
@@ -781,6 +838,8 @@ class Session {
   std::string lobby_id(const std::string& nickname, const std::optional<protocol::PlayerKey>& key,
                        std::optional<ConnectionId> parent, std::uint8_t seat) const;
   std::string lobby_id(const Connection& c) const;
+  // Whether this player may use the host's powers over the session (SessionConfig::dedicated: nobody may).
+  bool hosts_rules(ConnectionId id) const { return !config_.dedicated && host_ && *host_ == id; }
   // A ban of a player known by name (no key, or a key another player had)
   // holds for that name whatever key comes with it.
   bool lobby_banned(const std::string& id, const std::string& nickname,
@@ -941,8 +1000,10 @@ class Session {
  private:
   SessionConfig config_;
   std::string session_game_build_;  // set while players are in
+  std::string session_release_;     // the first player's co-op release (coop_release), "" none; while players are in
   std::map<ConnectionId, Connection> connections_;
   ConnectionId next_local_id_ = kLocalPlayerIds;
+  std::uint64_t joins_ = 0;   // players joined so far (Connection::joined_order)
   // The host's connection; set while players are in.
   std::optional<ConnectionId> host_;
   // The Lobby, by lobby_id (the player key; the name only without one), so a
@@ -1030,6 +1091,17 @@ class Session {
     std::uint64_t blocked_until = 0;  // 0: not blocked
   };
   std::map<std::uint32_t, WrongGuesses> wrong_guesses_;
+  // The host changed the join password (set_join_password): for each player in
+  // then (by its rejoin token), the password its game knows. Taken only with
+  // that token; a player that left or was kicked loses it; at most
+  // kMaxOldPasswords, the oldest go first.
+  struct OldPassword {
+    protocol::RejoinTokenBytes token{};
+    std::string password;
+  };
+  std::vector<OldPassword> old_passwords_;
+  static constexpr std::size_t kMaxOldPasswords = 64;
+  void forget_old_password(const protocol::RejoinTokenBytes& token);
   static constexpr std::size_t kMaxWrongGuessAddresses = 4096;
   // Counts a wrong proof from `address`; blocks it at the limit.
   void note_wrong_password(std::optional<std::uint32_t> address, std::uint64_t now_us);

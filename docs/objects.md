@@ -106,7 +106,7 @@ So a remote player's arrow can be made on this screen the same way the puppet is
 | Field | Where | Status |
 |---|---|---|
 | Name | actor +0x260, `char*` | Checked: compared with `"Item_Bomb"` at 0x26394f8 |
-| Position, rotation | +0x31c, +0x328 | [player-state-map.md](../../integration/docs/player-state-map.md) |
+| Position, rotation | +0x31c, +0x328 | `player-state-map.md` (recomp notes, outside this repository) |
 | State (4 alive, 7 to 11 gone) | +0x2c | Same |
 | Component table | +0x270 | Checked |
 | Life component | table +0x2b8 | Checked: 0x833e00, used by `QueryActorLife` |
@@ -523,6 +523,36 @@ Player report: Navi targets an invisible Deku Baba. Logs (Magloyr and Bean Selle
 - **Whose hit, beside a copy's blast.** A copy's life drop within 6 m and 1.4 s of another player's projectile copy going off was always taken for that blast and never sent, so our own sword or slingshot hit landing then was lost. The game's own hit record names the attacker (Life component +0x240). The walk reads it for every non-boss enemy with a new hit id (not our replay of the owner's hit): when it is our Link or one of our own projectiles (`CoopProjectiles::OwnShots`, kept 1.5 s after each was last on our list, so a seed removed on impact still counts), the drop is our hit and goes as DAMAGE (`Sync::kOurHitKeepUs`). Any other attacker, or none read: the blast rule as before. Only for copies: the owner's own enemy keeps its blast credit, which the thrower's DAMAGE uses up.
 - **Enemies whose life cannot be read** (Deku Scrubs, Tailpasaran, other actors with no Life value): a kill here never made a life drop, so nothing was sent, and the owner dropped any DAMAGE for them. Now a copy that played its own death animation here (`Die`, `Dead`, `Death`, within 5 s) and then left our walk, while its owner's samples show no death and the owner has not said it dead, sends DAMAGE amount 1 with cause `killed` (`LifelessKillHere`; never a boss or a boss's part). The owner takes that as a kill its game took: OBJECT_REMOVE dead to everyone, and its own enemy goes through the game's own delete request after the usual grace. Any other DAMAGE for such an enemy is still dropped.
 
+### Split enemies: the Floormaster's life 0 is no death (row 172, branch `forest-0118`)
+
+Geno's Forest Temple run: after a player died, the Floormaster's small hands bugged out and a hand came back.
+Read from the game's data: `Enemy_Floormaster` (and `Enemy_Floormaster_Truth`) holds three `Enemy_Floormaster_Little`
+in its own ActorHolder (`ActorHolderParam` "Little", MaxActors 3, IsAutoRecreate). At life 0 it plays no death (its AS
+has no Die animation): it hides (`Floormaster.brain.Hiding`), the Littles jump out, and one that is not killed in time
+grows it back (`FloormasterGrow`, the Littles' `metamorphose` module). Our sync read its life 0 as a kill: a room
+leaving with it split (the dead player's Game Over) or a hand-over at 0 told everyone it died, and the Littles, in no
+group, had owners of their own, so their grow message went to a Floormaster another game ran.
+
+**Now** (`SplitsAtZero`, `Sync::ZeroIsDeath`, `Sync::NoteBroodDeaths`; objects_test.cpp, row 172 case):
+- The Littles are a part of the nearest Floormaster within 30 m (`PartRules`): one owner runs the brood, a hand-over
+  moves it together. The Lens of Truth Floormaster holds both kinds of Little.
+- A split enemy at life 0 is a death only when every Little linked to it in this split died; leaving alive with its
+  brood alive is "away"/gone, and a hand-over at 0 lowers the copy (it splits by its own Life step) with no kill told.
+- The brood is per split: while its life reads above 0 (not split yet, grown back, raised at a hand-over) its brood is
+  cleared, and Littles join it only while its life reads 0. A Little that grew it back left alive and is never dead,
+  so a brood kept for the whole visit would have kept every later real death from being told.
+- One of ours that leaves the walk at 0 before its brood died is away (held while one of its Littles is still on the
+  walk) and is told dead the moment the last one dies. Its Littles' deaths are read from the brood's own list, not
+  the walk's links (a root off the walk links nobody).
+- At a hand-over its copy takes the old owner's life upward too (it grew back there), as a boss's does.
+- Same pattern swept in every `Enemy_` pack's ActorHolder: the Big Leever's Leevers are now its group; the Bari's
+  Biri come at its real death (each game's Bari dies by the shared kill and makes its own); the boss broods were
+  already groups. The Wallmaster holds nothing.
+- Same check for the other groups the branch made: only a `SplitsAtZero` enemy has a brood. The Big Leever's life 0
+  is its death as before (its Leevers are only its group: their own deaths, its own death); the Bari is no group.
+- Not proven in a game: that the hidden Floormaster stays on the walk (else it leaves at 0 before its Littles, and
+  its kill waits for the brood as above), that its life reads above 0 once it grew back, and that its own Life step regrows a copy raised at a hand-over.
+
 ### A ceiling Skulltula goes to the player under it (issue 35, row 3)
 
 Player report: a Skulltula won't drop. Bean Seller's log: the Skulltulas sat in `CeilingWait`, owned by the other game. Only the owner's AI moves the enemy, and it drops only on its own Link. The wake rule (issue 132) needs the copy's own AI to show its wake within `kWakeM` (10 m), which a Skulltula hanging high, or whose AI never shows the wake, does not give. Fix (module only, no new message): a copy whose owner's latest animation is `IsCeilingWait` (`CeilingWait`, any LOD) with our Link under it (`UnderCeilingEnemy`: within `kCeilingUnderM` 4 m across, below it by at most `kCeilingDropM` 30 m) is flagged targeting through `ChaseStep` (1 s held). The server then hands it to us by the issue 101 rule (`chased_by`, out of a fight), and our game's own AI drops it on our Link. This is the smallest native path: the existing hand-over, no perception of the puppet (issue 150). Check in game: a Skulltula on the ceiling (Deku Tree), owned by A (A entered first); B walks under it, A stays away. Within about 2 s B's log shows `share owner ... is player <B>` for it and it drops on B in both games.
@@ -660,6 +690,12 @@ Thanks to **Hot Onion** (same game build, shared by Alex, 2026-11-12), who found
   - **A pause we made longer** reads above its length until it runs down: that is no misread any more (it dropped the counter, which started over at zero starts and was never lined up again; the period rule's longer pauses hit it too).
   - Tests (`counters_test.cpp`): moves of 6.0 to 10.1 s in one game; a leader whose moves vary from 6.1 to 11.3 s; offsets of 5 to 16 s in a 21 s cycle; equal counts with the higher number ahead (no deadlock); three games where two agree on a period and the leader's differs; half a cycle apart (never top on bottom); a driven mover; a counter restarting every 0.15 s; no wait keys without a wait; twelve lifts in more than one message.
 - Not covered: rail movers (`ExecuteRailMove`, the spikes), which are continuous; the clock-word path may still find their word.
+- **Pause menus, late arrivals and the shortcut lift** (tracker row 164, the 0.11.6 Dodongo playtest: the lifts stayed down for a long time at random, a pause or quick-switch menu put them out of step, and leaving and coming back did not help). The logs showed three causes:
+  - **The shortcut lift was never lined up.** Of the three room 1 lifts, the one at 10.5 96.5 -23.0 has the wired input `IsShortCutMove` (the step switch's shortcut), so the room table marked it driven and its counters were never sent or written (`driven by its own logic (IsShortCutMove)` on every visit in the host's log). That input comes from a switch every game shares (`SWITCH_STATE`), so the lift runs the same logic everywhere and loops like its two neighbours. Now only a player's own input keeps a mover out (`CoopRoomObjects::PlayerDriven`: `RideOnPlayer`, `RideOnCharacter`, `IsInPlayer`, `IsTargetFloor`: the rider lifts of Jabu-Jabu and the Forest Temple, player sensors). A mover with any other wired input (`Seen::switched`: `IsShortCutMove`, `IsOn`, `MoveToPosX`, ...) is sent and lined up once it loops on its own (two periods alike), so a switch's moves never are.
+  - **A game standing still led the others.** The leader was the lowest player number (the host), also while its game stood still in a pause menu, a load or a cutscene. Each follower then held its lift at a wait for the host's next start, up to more than a period (the guest's log: `held for player 1's start` 137 times, pauses ended 11 to 27 s late). Now the players' `PLAYER_STATUS` (`paused`, `in_menu`, `loading`, `in_cutscene`) goes into the counter sync: an away game leads nobody (neither rule), and our own game writes nothing while it is away (its frames stand still while the server clock runs).
+  - **A game that came back pulled the others, and followed late.** A game that returns or comes into the room leads only once it has sent its counters for `kSettleUs` (45 s) without being away (the times are the server times of its own messages, the same in every game). Two games agree on who is settled only once both have been in the scene that long: in the first 45 s of a game in the scene, its view of the others' times may differ (it saw none of their messages yet), so the leader can change once then. Until then it follows, and it follows from its first pause there (before: its third, about a minute), as the leader shares only a counter that repeats in its game. A pause is left alone when it ends within `kAlignOffS` (0.15 s, was 0.3 s) of the leader's.
+  - Tests (`counters_test.cpp`, `room_objects_test.cpp`): the shortcut lift lined up; a switched mover pressed at no steady rate never written; the leader in a pause menu for 25 s holds nobody and, back, follows instead of pulling; our own game away writes nothing; a lower number coming into the room follows at once and never pulls the settled game.
+  - The same code covers every looping counter lift (Fire, Shadow, Spirit movers with a placement). The rider lifts (Jabu-Jabu, the Forest Temple elevators) stay each player's own (`CoopLiftRide`), as before. Not covered: a leader whose game runs slower than the others (its lifts fall behind each cycle); the followers then still hold at a wait for its start.
 
 **Not known until a run**: whether the word found is the one the platform is drawn from (a WaveLoop's phase should be; a ResidentMoveTo that steps its place toward a target may have no clock, only a place, which `WORLD_MOVE` already shares, [world.md](world.md)), and whether the Dodongo lifts' physics slider takes a written position or the AI moves it back (then the "do not hold" line comes and nothing is lost). Triggered platforms (a switch moves them once) are followed only while their clock steps in the owner's game; one that has come to rest is left to the switch's flag. Shared by both runtimes (the hook code is the same in Hookshot; nothing in `hookshot/` needed).
 

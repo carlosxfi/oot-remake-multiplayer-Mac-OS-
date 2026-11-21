@@ -80,6 +80,7 @@ install -m 644 "$module" "$kit/data/longshot/hookshot_coop.so"
 text "$pin" "$kit/data/longshot/PIN"
 text "$linux_pin" "$kit/data/longshot/LINUX.txt"
 text "$repo/tools/release/kit/hookshot/OOTRR.txt" "$kit/data/longshot/OOTRR.txt"   # (the randomizer build.sh fetches)
+text "$repo/tools/release/kit/hookshot/CHARACTER-SELECT.txt" "$kit/data/longshot/CHARACTER-SELECT.txt"   # (Snail's mod build.sh fetches, asked first)
 # (byte for byte) Every patch. Longshot (since rc.5) has no WebGPU renderer and gpu/render holds headers only, on Windows
 # and Linux alike, so a patch that changes a gpu/render .cpp has nothing to apply to: it stops the kit.
 for p in "$repo"/hookshot/patches/*.patch; do

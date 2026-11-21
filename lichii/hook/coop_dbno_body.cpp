@@ -346,6 +346,12 @@ std::optional<CoopPuppet::Call> Crawl::Next(CoopPuppet::Guest& guest, bool after
     return std::nullopt;
 }
 
+bool Crawl::PuppetUnseen(std::uint8_t number) const {
+    std::lock_guard lock(mutex_);
+    return std::any_of(want_.unseen_puppets.begin(), want_.unseen_puppets.end(),
+                       [number](const Wanted::Unseen& u) { return u.number == number; });
+}
+
 Crawl::Counts Crawl::Totals() const {
     std::lock_guard lock(mutex_);
     return counts_;

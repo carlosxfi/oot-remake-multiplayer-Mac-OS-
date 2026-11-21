@@ -41,6 +41,12 @@ const Placement* Nearest(std::string_view scene, std::string_view name, const st
 // Driven by its own logic (its placement's `why` is not empty): never written from outside.
 bool Driven(std::string_view scene, std::string_view name, const std::array<float, 3>& at);
 
+// Row 164: a `why` with an input one game's own player sets (RideOnPlayer, IsInPlayer, IsTargetFloor: a rider's lift,
+// a player sensor): that game's mover runs on its own player, so no other game's timing applies to it. The other
+// inputs (IsShortCutMove, IsOn, MoveToPosX, ...) come from a switch or an event whose state every game shares, so the
+// mover runs the same logic in every game (Dodongo's Cavern's shortcut lift loops like its two neighbours).
+bool PlayerDriven(std::string_view why);
+
 // Its logic type has the bool output RideOnPlayer (the generated list): CoopLiftRide drives it. Taken by the logic,
 // whatever the name: the Fire Temple's RiseFloor_A_02 and Ganon's Castle's ElevatedFloor_A_01 run the Forest
 // Temple elevator's logic and are no CoopPlatforms::IsDriver name.

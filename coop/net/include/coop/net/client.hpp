@@ -322,6 +322,9 @@ class Client {
 
   // Starts the first attempt. False when ENet could not start.
   bool start();
+  // The join password from the next connection on (the host changed it while
+  // this game is in: a reconnect proves the new one). Same thread as service().
+  void set_join_password(std::string password) { config_.join_password = std::move(password); }
   // Says goodbye to the server if connected and stops for good.
   void stop();
 

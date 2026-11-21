@@ -131,6 +131,11 @@ std::string_view NotShared(std::string_view name) {
             return "it changes the player's own things";
         }
     }
+    for (const StoryOwn& o : kRoomStory) {
+        if (o.name == name) {
+            return "it turns a room of each game's own (the held flags bring it)";
+        }
+    }
     return {};
 }
 
@@ -163,11 +168,42 @@ void Joiner::Started(std::uint8_t player, const std::string& name, const std::st
     pending_.push_back(Pending{player, name, scene, starter, now_us, room});
 }
 
+bool Joiner::StarterStays(const Pending& p, const Here& here) {
+    if (!p.held) {
+        return false;  // only a start already held for us (it was in reach of the hold)
+    }
+    if (here.scene.empty()) {
+        return true;  // a load: its scene decides next frame (Visit drops it on a change)
+    }
+    return p.scene == here.scene &&
+           std::find(here.in_scene.begin(), here.in_scene.end(), p.player) != here.in_scene.end();
+}
+
+bool NotNearYet(std::string_view why) {
+    return why == "we are in another scene" || why.starts_with("too far") ||
+           why == "they are in another room of this dungeon" || why.starts_with("their room in this dungeon");
+}
+
 bool Joiner::Ours(const std::string& name, const std::string& scene) {
     Visit(scene);
+    std::optional<std::uint8_t> held_by;
+    for (const Pending& p : pending_) {
+        if (p.name == name && p.held && p.scene == scene) {
+            held_by = p.player;
+        }
+    }
     std::erase_if(pending_, [&](const Pending& p) { return p.name == name; });
     if (joined_.contains(name) || done_.contains(name)) {
         return false;  // we only joined it, or sent it already
+    }
+    if (held_by) {
+        // Row 176: player N's start of it was held for us (we were not near); our game started it as we came
+        // in. It is theirs, late here: not sent (it would come back to them as a second start).
+        done_.insert(name);
+        joined_.insert(name);
+        notes_.push_back("our game started the story cutscene " + name + ", which player " +
+                         std::to_string(*held_by) + " started here earlier (held for us): theirs, not sent");
+        return false;
     }
     done_.insert(name);
     return true;
@@ -208,7 +244,8 @@ std::string Joiner::Why(const Pending& p, const Here& here, bool played) const {
         }
     }
     if (!here.can_start || !here.link || here.scene.empty()) {
-        return here.now_us >= p.at_us + kJoinUs ? "our game was busy for 3 s" : "wait";
+        const std::uint64_t from = p.near_us != 0 ? p.near_us : p.at_us;
+        return here.now_us >= from + kJoinUs ? "our game was busy for 3 s" : "wait";
     }
     return "";
 }

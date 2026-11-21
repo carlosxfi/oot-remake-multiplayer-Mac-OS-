@@ -59,6 +59,7 @@ struct FlagStats {
   std::uint64_t pickup_resets = 0;     // a pickup's 0, ours or incoming: not passed on
   std::uint64_t max_drops_kept = 0;    // a max-rule value our game lowered: ours, not sent
   std::uint64_t max_caps_kept = 0;     // a rise of our own past cap_max's cap: put back, not sent
+  std::uint64_t max_caps_left = 0;     // row 181: a capped rise left to the game after kMaxCapTries put-backs (not sent)
   std::uint64_t reset_holds_kept = 0;  // rows 136/137: the game's write-back of a value the host's save lowered
   std::uint64_t read_failures = 0;
   std::uint64_t write_failures = 0;    // each failed try; it is tried again next frame
@@ -225,7 +226,7 @@ class FlagWatcher {
   static constexpr std::uint64_t kFailureSayAt = 60;
   std::vector<KeepsFailing> take_keeps_failing() { return std::exchange(keeps_failing_, {}); }
   // Row 140: a max-rule rise past its cap whose put-back the game refused this often in a row is left (not sent,
-  // not fought every frame) until the value changes again.
+  // not fought every frame) until the value changes again. Row 181: put-backs the game undid count too (cap_max).
   static constexpr int kMaxCapTries = 60;
   static constexpr std::size_t kMaxWrittenForOthers = 1024;
 
@@ -288,8 +289,25 @@ class FlagWatcher {
   // cannot raise the group through the max rule. Values from the group are
   // written as before, and a rise up to the cap is sent as any change. One
   // cap per key; a new call replaces it.
-  void cap_max(FlagKey key, std::int32_t cap) { max_caps_[key] = cap; }
-  void clear_max_cap(FlagKey key) { max_caps_.erase(key); }
+  // Row 181: MaxLife has a live copy (Link's Life component writes its own
+  // max back into MaxLife), so a put-back alone was undone by the game at
+  // once, put back again, and so on for ever: the container's item get waited
+  // on the hearts and the heart-increase sound played on every pass (a
+  // soft-lock). A put-back now starts a cap hold: held_lower() names the
+  // value, the object walk lowers the live copy to it, and the game keeps it.
+  // Every put-back counts (also one the game undid): after kMaxCapTries in
+  // one hold the rise is left to the game (still never sent). The hold ends
+  // once the game has kept the value for kResetQuietFrames, when the value
+  // moves with no put-back (the group's value came), when the cap goes or
+  // rises past it, and at the end of a load window or the session.
+  void cap_max(FlagKey key, std::int32_t cap) {
+    max_caps_[key] = cap;
+    if (const auto h = cap_holds_.find(key); h != cap_holds_.end() && cap > h->second.low) cap_holds_.erase(h);
+  }
+  void clear_max_cap(FlagKey key) {
+    max_caps_.erase(key);
+    cap_holds_.erase(key);
+  }
 
   // Rows 136/137 (boss-away-0115): the host's save load (FLAG_RESET) lowered a
   // max-rule int in our game (PlayerStatus.MaxLife after a boss's heart
@@ -308,6 +326,14 @@ class FlagWatcher {
   std::optional<std::int32_t> reset_lowered(FlagKey key) const {
     const auto it = reset_holds_.find(key);
     return it == reset_holds_.end() ? std::nullopt : std::optional<std::int32_t>(it->second.low);
+  }
+  // What a max-rule int's live copy is to be lowered to now: a reset hold's
+  // value (reset_lowered), else a cap hold's (cap_max, row 181), else nothing
+  // (the usual case, and always with co-op idle: no session, no watcher).
+  std::optional<std::int32_t> held_lower(FlagKey key) const {
+    if (const auto r = reset_lowered(key)) return r;
+    const auto it = cap_holds_.find(key);
+    return it == cap_holds_.end() ? std::nullopt : std::optional<std::int32_t>(it->second.low);
   }
   static constexpr int kResetQuietFrames = 60;
   static constexpr std::uint64_t kDoubledGainFrames = 5 * 60;
@@ -430,11 +456,12 @@ class FlagWatcher {
     int flags = 0;
     int frames = 0;
     bool native = false;  // the game's own load nodes said it (set_native_loads), not the old signs
+    bool retry = false;   // Game Over's Try Again (the game's own load nodes said so): not a save chosen
   };
   std::optional<SaveLoadSeen> take_save_load() {
     if (!seen_) return std::nullopt;
     seen_ = false;
-    SaveLoadSeen s{seen_flags_, seen_frames_, native_loads_};
+    SaveLoadSeen s{seen_flags_, seen_frames_, native_loads_, window_retry_};
     seen_flags_ = 0;
     seen_frames_ = 0;
     return s;
@@ -541,7 +568,6 @@ class FlagWatcher {
   // Row 140: puts owed_ back (ORed with the game's floors), each once, after a room or scene load window.
   void put_owed(FlagStore& store);
   std::vector<KeepsFailing> keeps_failing_;  // row 140: note_write_failure, kFailureSayAt
-  std::map<FlagKey, int> cap_tries_;      // row 140: refused cap put-backs in a row
   std::vector<FlagKey> own_count_drops_;     // take_own_count_drops
   struct Guard {
     std::int32_t held = 0;          // own gain not sent yet
@@ -565,6 +591,13 @@ class FlagWatcher {
   // dropped); the rest of `entry`'s value.
   std::int32_t unraced(const protocol::FlagEntry& entry);
   std::map<FlagKey, std::int32_t> max_caps_;  // cap_max
+  struct CapHold {
+    std::int32_t low = 0;      // the value put back (the cap, or our value before when higher)
+    int tries = 0;             // put-backs in this hold (refused or undone by the game)
+    int quiet = 0;             // frames the game has kept `low`
+    std::uint64_t put_at = 0;  // the frame of the last put-back
+  };
+  std::map<FlagKey, CapHold> cap_holds_;  // cap_max, held_lower (row 181)
   struct ResetHold {
     std::int32_t low = 0;    // the host's save's value (FLAG_RESET)
     std::int32_t high = 0;   // our game's value before it
@@ -577,6 +610,7 @@ class FlagWatcher {
   bool hold_reset(FlagStore& store, FlagKey key, const protocol::FlagEntry& before, const protocol::FlagEntry& now,
                   protocol::FlagEntry& seen);
   void age_reset_holds(FlagStore& store, std::uint32_t step);
+  void age_cap_holds(FlagStore& store, std::uint32_t step);
   std::map<FlagKey, FlagKey> guard_source_;  // a source: its count
   Table added_;                              // count deltas add() put in this frame
   std::vector<CountGuarded> counts_guarded_;  // take_counts_guarded
@@ -602,6 +636,9 @@ class FlagWatcher {
   Table last_;        // each shared flag as the game last had it
   Table pending_;     // player: own changes waiting for the host's answer
   Table unwritten_;   // incoming values whose write failed; tried again
+  // Row 159: the unwritten_ keys from an exact write (the host's save load, the join snapshot), tried again exact;
+  // through write() the max rule kept our higher value, and the lower one was taken as written.
+  std::set<FlagKey> unwritten_exact_;
   Table unadded_;     // host: count deltas whose write failed; tried again
   Table group_;         // each shared flag as the group last had it (set_loading)
   Table group_before_;  // an Int's value in our game just before group_ took it

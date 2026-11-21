@@ -146,5 +146,27 @@ class ClassifyTest(unittest.TestCase):
                          ["Done", "load:RoomD_On"])
 
 
+class PerformerPlaysTest(unittest.TestCase):
+    """Row 165: an event's EventPlayAS on a room actor whose Logic_Delete reads the event's played state."""
+
+    PERFORMERS = {("Cave", "Ev"): {("Obj_Stair", (1.0, 2.0, 3.0))}, ("Other", "Ev"): {("Obj_Stair", (0.0, 0.0, 0.0))}}
+    PLAYS = {"Ev": {("Obj_Stair", "Stair_Demo_Anim"), ("Player_Event", "DemoWait"), ("Obj_Shutter", "Open")}}
+
+    def test_only_a_performer_the_played_state_deletes(self):
+        got = eye_switches.performer_plays("Ev", "Cave", self.PERFORMERS, self.PLAYS)
+        self.assertEqual(got, [("Obj_Stair", (1.0, 2.0, 3.0), "Stair_Demo_Anim")])
+        self.assertEqual(eye_switches.performer_plays("Ev2", "Cave", self.PERFORMERS, self.PLAYS), [])
+        self.assertEqual(eye_switches.performer_plays("Ev", "Nowhere", self.PERFORMERS, self.PLAYS), [])
+
+    def test_plays_make_a_live_asker_class_asker(self):
+        key = ("Ev", "Cave", (0.0, 0.0, 0.0))
+        w = {"results": [("flag", "Room_Done", "set")], "delete": ["Room_Done"]}
+        self.assertEqual(eye_switches.asker_class(key, w, SHARED)[0], "live")
+        plays = eye_switches.performer_plays("Ev", "Cave", self.PERFORMERS, self.PLAYS)
+        cls, why = eye_switches.asker_class(key, w, SHARED, plays)
+        self.assertEqual(cls, "asker")
+        self.assertIn("Obj_Stair plays Stair_Demo_Anim", why)
+
+
 if __name__ == "__main__":
     unittest.main()

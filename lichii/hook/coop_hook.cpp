@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -106,6 +107,7 @@
 #include "coop_boss_native.h"
 #include "coop_objects.h"
 #include "coop_link_sound.h"
+#include "coop_char_colours.h"
 #include "coop_look_share.h"
 #include "coop_ocarina_sound.h"
 #include "coop_pose.h"
@@ -123,6 +125,7 @@
 #include "coop_map_refresh.h"
 #include "coop_time.h"
 #include "coop_testinput.h"
+#include "coop_boundary.h"
 #include "coop_world.h"
 
 namespace CoopHook {
@@ -765,6 +768,13 @@ public:
         if (view.game) {
             memory.emplace(system.ApplicationMemory(), base_);
             flag_debug_.Frame(*memory);
+            // Down but not out (row 162): a bottled fairy is the game's own revive at no life.
+            if (reading) {
+                coop::host::GameFlags bottles(*memory);
+                CoopDbno::NoteBottledFairy(coop::host::bottled_fairy(
+                    [&](std::uint32_t h) { return bottles.get_bool(h); },
+                    [&](std::uint32_t h) { return bottles.get_enum(h); }));
+            }
             if (sharing_ || cheats_) {
                 game_store.emplace(*memory);
                 if (!queue_sizes_logged_) {  // once: half of each is ours (issue 175)
@@ -1310,6 +1320,22 @@ public:
             boss_beaten_.HostReset(CoopQuests::On());  // row 138 (4): a boss alive in that save, its own Bools back
             lent_keys_.forget();              // the host's save has its own key counts
         }
+        if (report.hosting && (report.host_reset || report.save_load) && !report.save_load_retry) {
+            // Row 159: our own save load (not Game Over's Try Again): which bosses it holds alive goes to the
+            // guests once our game reads the quests again (BOSS_ALIVE, after the FLAG_RESET). Also with no flag
+            // changed: a boss whose quest is each game's own changes no shared flag.
+            boss_alive_due_ = true;
+            // Row 159 (dungeon-sweep-0118-2): our own save decides, from the moment it is in. The FLAG_RESET (and
+            // ForgetFights' clear of the record) comes only when the load window ends, after the new scene is read:
+            // in between Apply gave our game the group's beaten set, so the host's save took a boss the group beat
+            // after it (Gohma's Bools written into the host, then its quest put the boss back: the warp and Gohma).
+            // Not Game Over's Try Again: the group's values come back then, the record with them.
+            if (CoopBossBeaten::OwnLoadClears(report.hosting, report.save_load, report.save_load_retry)) {
+                CoopBossBeaten::TheRecord().Clear();
+                LOG_INFO(Core, "coop: boss: our own save load (host): bosses the group beat this session are not "
+                               "given to it (the save decides)");
+            }
+        }
         // Issue 167: the host's save for the guests (coop_save.h): a guest asks
         // once, the host sends its newest save a part a frame, and again to
         // everyone after its own save load.
@@ -1396,8 +1422,9 @@ public:
                     // made and taken in one run, so it never went through our
                     // walk, and no break was ever sent for it (ROGX kept it and
                     // the count went 41 -> 42).
-                    if (CoopWorld::IsGoldSkulltulaKey(k.key)) {
-                        CoopWorld::QueueTakenPlacement(k.key);
+                    // Either of its two keys (skulltula-0118: key + 2 alone named none).
+                    if (const std::uint64_t placement = CoopWorld::GoldPlacementOfKey(k.key); placement != 0) {
+                        CoopWorld::QueueTakenPlacement(placement);
                     }
                 } else if (const auto chest = CoopChests::KeyOfOpened(k.hash)) {
                     keys.push_back(*chest);  // a chest's opened flag: that chest (issue 87)
@@ -1429,6 +1456,40 @@ public:
             // record is empty.
             // In the boss's own dungeon scene: live, once our Link is out of the boss's area (rows 136/137), or in it
             // once no death of ours can run there (row 136: came in after the death, joined, a refused ask).
+            // Row 159: the sets' quests are Enums, which the flag store neither reads nor writes: the game's Enum
+            // getter and setter for those (CoopBossBeaten::GameIo).
+            const CoopBossBeaten::GameIo boss_io{
+                [&](std::uint32_t hash) {
+                    const auto v = game_store->read(coop::protocol::FlagKey{hash, 0});
+                    return v && v->kind == coop::protocol::FlagKind::boolean ? std::optional<std::uint32_t>(v->value)
+                                                                             : std::nullopt;
+                },
+                [&](std::uint32_t hash) { return coop::host::GameFlags(*memory).get_enum(hash); },
+                [&](std::uint32_t hash, bool value) {
+                    return game_store->write(coop::protocol::FlagEntry{coop::protocol::FlagKey{hash, 0},
+                                                                       coop::protocol::FlagKind::boolean, value ? 1u : 0u});
+                },
+                [&](std::uint32_t hash, std::uint32_t value) {
+                    return coop::host::GameFlags::set_enum(*memory, hash, value);
+                }};
+            const auto read_flag = [&](std::uint32_t hash) { return CoopBossBeaten::Read(boss_io, hash); };
+            // Row 159: the host's BOSS_ALIVE (guests), and ours to send after our own save load (host).
+            if (const auto alive = CoopBossBeaten::TheHostAlive().Take()) {
+                boss_beaten_.HostAlive(alive->known, alive->alive, CoopQuests::On());
+            }
+            if (boss_alive_due_ && view.scene && at) {
+                const CoopBossBeaten::AliveBits bits = CoopBossBeaten::AliveInSave(read_flag);
+                if (bits.known != 0) {
+                    boss_alive_due_ = false;
+                    const bool sent = session_->with_client([&](coop::net::Client& c) {
+                        return c.send(coop::protocol::Message{coop::protocol::BossAlive{0, bits.known, bits.alive}}) ? 1
+                                                                                                                  : 0;
+                    }) == 1;
+                    LOG_INFO(Core, "coop: boss: our save holds bosses {:#05x} alive (of {:#05x} read): told the "
+                                   "guests{}",
+                             bits.alive, bits.known, sent ? "" : " (not sent)");
+                }
+            }
             const CoopBossBeaten::Record& record = CoopBossBeaten::TheRecord();
             const std::vector<std::uint8_t> beaten = record.Rooms();
             const auto near_boss = [&](std::uint8_t room) {
@@ -1439,27 +1500,24 @@ public:
                 return CoopBossScenes::InArea(bosses[room], *view.scene, std::nullopt, *view.scene, *at);
             };
             for (const CoopBossBeaten::Write& w : boss_beaten_.Check(
-                     view.scene, at.has_value(), beaten,
-                     [&](std::uint32_t hash) {
-                         const auto v = game_store->read(coop::protocol::FlagKey{hash, 0});
-                         return v ? std::optional<std::uint32_t>(v->value) : std::nullopt;
-                     },
-                     near_boss, [&](std::uint8_t room) {
+                     view.scene, at.has_value(), beaten, read_flag, near_boss, [&](std::uint8_t room) {
                          // an event runs (or is unread): it may be the death; else what the Director knows
                          return !reading || reading->event_running.value_or(true) || CoopBoss::DeathMayRun(room);
                      })) {
-                const bool ok = game_store->write(coop::protocol::FlagEntry{
-                    coop::protocol::FlagKey{w.hash, 0},
-                    w.is_enum ? coop::protocol::FlagKind::uint32 : coop::protocol::FlagKind::boolean, w.value});
+                const bool ok = CoopBossBeaten::WriteTo(boss_io, w);
                 const CoopBossBeaten::BeatenSet* set = CoopBossBeaten::ForRoom(w.room);
                 if (w.revert) {
-                    LOG_INFO(Core, "coop: boss: {} is alive in the host's save: {} = {} {}", set->boss, w.name,
-                             w.value, ok ? "(written)" : "(could not write)");
+                    LOG_INFO(Core, "coop: boss: {} is alive in the host's save: {} {} {}", set->boss, w.name,
+                             w.is_enum ? std::string("-> the step before its death") : "= " + std::to_string(w.value),
+                             ok ? "(written)" : "(could not write)");
                     continue;
                 }
                 LOG_INFO(Core, "coop: boss: {} was beaten by the group, not in this game: {} {} {}", set->boss, w.name,
                          w.is_enum ? std::string("-> ") + set->step_name : std::string("= ") + std::to_string(w.value),
                          ok ? "(written)" : "(could not write)");
+            }
+            for (const std::string& line : boss_beaten_.TakeNotes()) {
+                LOG_INFO(Core, "coop: boss: {}", line);
             }
         }
         {  // our own key spends, for the locks' give-back (docs/dungeon.md, "Locked doors")
@@ -1498,8 +1556,10 @@ public:
             if (session_) {
                 session_->cap_max(coop::protocol::FlagKey{0xfbe01da1u, 0}, CoopBoss::MaxLifeCap());
             }
-            // Rows 136/137: the host's older save lowered MaxLife: our Link's own max follows (coop_objects.h).
-            CoopObjects::SetMaxLifeLowerTo(session_ ? session_->reset_lowered(coop::protocol::FlagKey{0xfbe01da1u, 0})
+            // Rows 136/137: the host's older save lowered MaxLife; row 181: a capped second container pickup was put
+            // back. Either way our Link's own max follows (coop_objects.h), so his Life component stops writing the
+            // higher max back.
+            CoopObjects::SetMaxLifeLowerTo(session_ ? session_->held_lower(coop::protocol::FlagKey{0xfbe01da1u, 0})
                                                     : std::nullopt);
             if (const auto to = CoopBoss::TakeMaxLifeWrite(); to && known) {
                 auto set = *max_life;
@@ -1580,6 +1640,58 @@ public:
                                     ? std::optional<std::string>(reading->animation->name)
                                     : std::nullopt,
                                 report.connected ? session_.get() : nullptr);
+        // The character picked in the Character Select mod, when that mod is installed (coop_look_share.h): its
+        // saved Int, read twice a second while a game runs. No such flag (no mod): Link.
+        static std::uint32_t character_tick = 0;
+        if (view.game && character_tick++ % 30 == 0) {
+            static const std::uint32_t picked_hash = coop::host::flag_hash("CharacterMenu_SelectedCharacter");
+            EmulatorMemory flag_memory(system.ApplicationMemory(), base_);
+            const auto picked = coop::host::GameFlags(flag_memory).get_int(picked_hash);
+            // ... and that mod's Customize options for it (kCustomFlags: an Int each, 0 to 15; 0 is the model's own).
+            static const auto custom_hashes = [] {
+                std::array<std::uint32_t, CoopLookShare::kCustomFlags.size()> out{};
+                for (std::size_t i = 0; i < out.size(); ++i) {
+                    out[i] = coop::host::flag_hash(CoopLookShare::kCustomFlags[i]);
+                }
+                return out;
+            }();
+            std::uint32_t custom = 0;
+            for (std::size_t i = 0; i < custom_hashes.size(); ++i) {
+                const auto v = coop::host::GameFlags(flag_memory).get_int(custom_hashes[i]);
+                if (v && *v > 0 && *v <= 15) {
+                    custom |= static_cast<std::uint32_t>(*v) << (4 * i);
+                }
+            }
+            // What the mod's own code puts on every player-like model, puppets too (coop_char_colours.h Wardrobe).
+            CoopCharColours::TheWardrobe().SetViewer(custom);
+            CoopCharColours::SetShownCharacter(picked && *picked > 0 && *picked <= CoopLookShare::kCharacterMax
+                                                   ? static_cast<std::uint16_t>(*picked)
+                                                   : std::uint16_t{0});
+            // A guest on the host's save sends its own pick and options, not the host's (CoopLookShare::OwnPick).
+            using CoopLookShare::OwnPick;
+            static OwnPick own_pick;
+            const auto kept = Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir) / "coop-character.txt";
+            static const bool seeded = [&] {
+                std::ifstream in(kept);
+                std::uint64_t value = 0;
+                if (in >> value && OwnPick::CharacterIn(value) <= CoopLookShare::kCharacterMax) {
+                    own_pick.Seed(value);
+                }
+                return true;
+            }();
+            (void)seeded;
+            const std::uint16_t character =
+                picked && *picked > 0 && *picked <= CoopLookShare::kCharacterMax ? static_cast<std::uint16_t>(*picked)
+                                                                                 : std::uint16_t{0};
+            const std::uint64_t sent = own_pick.Update(OwnPick::Of(character, custom),
+                                                       CoopSave::UseCoopFolder() || CoopSave::HostSaveReady(),
+                                                       CoopSave::SaveLoadStarts());
+            CoopLookShare::SetCharacter(OwnPick::CharacterIn(sent));
+            CoopLookShare::SetCustom(OwnPick::CustomIn(sent));
+            if (const auto own = own_pick.TakeOwnChange()) {
+                std::ofstream(kept, std::ios::trunc) << *own << '\n';   // the next start (a guest that joins at once)
+            }
+        }
         // Our look of several parts, chosen in the Multiplayer tab (coop_look_share.h).
         CoopLookShare::Frame(report.connected ? session_.get() : nullptr);
         // The sounds the game starts on our own Link, for the other games (coop_link_sound.h).
@@ -1747,6 +1859,11 @@ public:
     void SetColor(std::optional<std::uint32_t> color) {
         std::lock_guard lock(color_mutex_);
         color_change_ = color;
+    }
+
+    // The host's new join password, for this client's next connection (coop_hook.h). Any thread.
+    void SetJoinPassword(const std::string& password) {
+        session_->with_client([&](coop::net::Client& c) { c.set_join_password(password); });
     }
 
     // Chat and the player list (coop_hook.h). Any thread.
@@ -2425,6 +2542,7 @@ private:
     coop::host::PlayerReader::DrawnState drawn_state_{};
     bool sharing_ = false;  // a flag list is shared; set by Begin
     CoopBoss::StaleBossFlags stale_boss_;  // issue 148: shut boss doors from older builds
+    bool boss_alive_due_ = false;          // row 159: BOSS_ALIVE to send after our own save load (host)
     CoopBossBeaten::Apply boss_beaten_;    // G2: a boss the group beat, given to a game that did not see it die
     std::string_view boss_shut_in_name_;  // issue 148: CoopBoss::ShutInFlag, and its hash
     std::uint32_t boss_shut_in_hash_ = 0;
@@ -2675,6 +2793,19 @@ private:
         here.can_start = reading && !running &&
                          (status & (proto::status::paused | proto::status::in_menu | proto::status::loading)) == 0;
         here.now_us = now_us;
+        // Row 176: who is in our scene now, so a held start whose starter is still here outlasts kHoldUs.
+        // Read from presence directly (CoopPuppet::Collect would take the puppets' sounds).
+        if (shared_joiner_.Waiting() != 0 && !here.scene.empty()) {
+            session_->with_presence([&](coop::presence::Presence& p) {
+                for (const std::uint8_t n : p.players()) {
+                    const auto* player = p.player(n);
+                    if (player != nullptr && player->scene() == here.scene) {
+                        here.in_scene.push_back(n);
+                    }
+                }
+                return 0;
+            });
+        }
         // In a dungeon only a starter in our own room is joined (the other
         // rooms are not loaded here: a black picture until the cutscene ends).
         if (shared_joiner_.Waiting() != 0 && here.link && CoopDungeon::IsDungeonScene(here.scene)) {
@@ -3313,9 +3444,33 @@ void LocalFrameOff(Core::System& system, bool writes) {
                         full ? std::optional(full->position) : std::nullopt, event, nullptr, 0);
 }
 
+namespace {
+void OnFrameBody(Core::System& system);
+}
+
+// save-crash-0118: the frame's co-op work behind the guarded boundary: a throw (a std::bad_alloc at the PC's commit
+// limit, runs 081813 + 082906) ends this frame's co-op work, logged once, and never the game (solo too).
 void OnFrame(Core::System& system) {
+    static CoopBoundary::Site site{"CoopHook::OnFrame"};
+    CoopBoundary::Run(site, [&] { OnFrameBody(system); },
+                      [](const char* where, const char* what, std::uint64_t n) {
+                          LOG_ERROR(Core, "coop: {} threw ({}, {} so far): this frame's co-op work skipped", where,
+                                    what, n);
+                      });
+}
+
+namespace {
+void OnFrameBody(Core::System& system) {
     CoopObjects::OnFrame(system);
-    CoopSave::PollSlotOpens();   // player report 120: the slot our game plays (Hookshot's patch 0025; solo too)
+    {   // player report 120: the slot our game plays (Hookshot's patch 0025; solo too). Its own guard: a slot folder
+        // that throws (a path the PC's code page cannot hold, no memory) costs only the slot, not the frame's co-op.
+        static CoopBoundary::Site site{"CoopSave::PollSlotOpens"};
+        CoopBoundary::Run(site, [] { CoopSave::PollSlotOpens(); },
+                          [](const char* where, const char* what, std::uint64_t n) {
+                              LOG_ERROR(Core, "coop: {} threw ({}, {} so far): the played save slot not read this "
+                                              "frame", where, what, n);
+                          });
+    }
     CoopTestInput::OnFrame(system);
     Start();
     // g_coop only changes in Start (before this), End (which keeps the old
@@ -3372,6 +3527,7 @@ void OnFrame(Core::System& system) {
     }
     }
 }
+}  // namespace
 
 void Shutdown() {
     Stop(false);
@@ -3410,6 +3566,14 @@ void End() {
     LOG_INFO(Core, "coop: off (left from the menu)");
     std::lock_guard lock(g_mutex);
     g_ended.push_back(std::move(coop));
+}
+
+void SetJoinPassword(const std::string& password) {
+    std::lock_guard lock(g_mutex);
+    if (g_coop) {
+        g_coop->SetJoinPassword(password);
+        LOG_INFO(Core, "coop: this game's own reconnect uses the new join password");   // (never the password)
+    }
 }
 
 void SetColor(std::optional<std::uint32_t> color) {

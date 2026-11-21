@@ -4,6 +4,7 @@
 #include "coop_testinput.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -336,6 +337,16 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             } else if (w.size() != 4 || !Number(w[1], step.x) || !Number(w[2], step.y) || !Number(w[3], step.z)) {
                 return fail("want: place X Y Z, or place PLATFORM UP");
             }
+        } else if (cmd == "FACE") {
+            step.kind = Kind::face;
+            if (w.size() != 3 || !Number(w[1], step.x) || !Number(w[2], step.z)) {
+                return fail("want: face X Z");
+            }
+        } else if (cmd == "AIM") {
+            step.kind = Kind::aim;
+            if (w.size() != 4 || !Number(w[1], step.x) || !Number(w[2], step.y) || !Number(w[3], step.z)) {
+                return fail("want: aim X Y Z");
+            }
         } else if (cmd == "CHAT") {
             if (w.size() < 2) {
                 return fail("want: chat TEXT");
@@ -360,6 +371,18 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             }
             step.kind = Kind::kill;
             step.mark = std::string(w[1]);
+        } else if (cmd == "DROP") {
+            // drop ACTOR METRES: test only (row 178's fall guard): the nearest boss of that name that our game owns
+            // is put METRES straight down by the set-matrix call the copies are placed with (a copy: not moved).
+            int metres = 0;
+            const std::string_view n = w.size() == 3 ? std::string_view(w[2]) : std::string_view();
+            const auto r = std::from_chars(n.data(), n.data() + n.size(), metres);
+            if (w.size() != 3 || r.ec != std::errc{} || r.ptr != n.data() + n.size() || metres < 1 || metres > 500) {
+                return fail("want: drop ACTOR METRES (1 to 500)");
+            }
+            step.kind = Kind::drop;
+            step.mark = std::string(w[1]);
+            step.start = std::string(w[2]);
         } else if (cmd == "HIT") {
             int amount = 0;
             const std::string_view n = w.size() == 3 ? std::string_view(w[2]) : std::string_view();
@@ -403,6 +426,23 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             step.kind = Kind::setflag;
             step.mark = std::string(w[1]);
             step.start = std::string(w[2]);
+        } else if (cmd == "NOFAIRY") {
+            // nofairy: every bottle emptied (each BottleItem Enum, coop/host game_items.hpp letters::kBottles, set to
+            // Empty: five setenum steps). A bottled fairy makes a lethal hit the game's own death and revive, never
+            // down-but-out, so a scenario that downs a player starts with it (tools/autotest/hookshot.py the same).
+            if (w.size() != 1) {
+                return fail("want: nofairy (no arguments)");
+            }
+            static constexpr std::string_view kBottleItems[] = {"0x7d48df76", "0x1edd164a", "0xb80c70a8",
+                                                                "0xe4c1b1fc", "0x365e1953"};
+            step.kind = Kind::setenum;
+            step.start = "Empty";
+            for (std::size_t i = 0; i + 1 < std::size(kBottleItems); ++i) {
+                Step bottle = step;
+                bottle.mark = std::string(kBottleItems[i]);
+                script.steps.push_back(std::move(bottle));
+            }
+            step.mark = std::string(kBottleItems[std::size(kBottleItems) - 1]);
         } else if (cmd == "SETENUM") {
             // setenum NAME VALUE: this game's Enum flag NAME (a GameDataList name,
             // or 0x and its hash: a Threads of Time quest's name is not in the
@@ -553,14 +593,14 @@ void Runner::Advance(double now_s, std::optional<std::array<float, 2>> player,
             return;
         }
         if (s.kind == Kind::warp || s.kind == Kind::give || s.kind == Kind::wear ||
-            s.kind == Kind::assign || s.kind == Kind::dress || s.kind == Kind::chat || s.kind == Kind::kill || s.kind == Kind::hurt ||
+            s.kind == Kind::assign || s.kind == Kind::dress || s.kind == Kind::chat || s.kind == Kind::kill || s.kind == Kind::drop || s.kind == Kind::hurt ||
             s.kind == Kind::hit || s.kind == Kind::stun ||
             s.kind == Kind::setflag || s.kind == Kind::setenum || s.kind == Kind::menu) {
             requests_.push_back(Request{s.kind, s.mark, s.start});
             ++index_;
             continue;
         }
-        if (s.kind == Kind::place) {
+        if (s.kind == Kind::place || s.kind == Kind::face || s.kind == Kind::aim) {
             requests_.push_back(Request{s.kind, s.mark, {}, {s.x, s.y, s.z}});
             ++index_;
             continue;
@@ -676,6 +716,36 @@ void Runner::Steer(const Step& step, double now_s, std::optional<std::array<floa
                       static_cast<std::int32_t>(std::lround(std::sin(angle) * magnitude * kStickMax))};
     aimed_at_ = now_s;
     Hold(angle, now_s);
+}
+
+std::optional<std::array<float, 12>> AimPlace(const std::array<float, 3>& from, const std::array<float, 3>& target,
+                                             float short_m) {
+    const float d[3] = {target[0] - from[0], target[1] - from[1], target[2] - from[2]};
+    const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (!std::isfinite(len) || len < 1e-3f || !std::isfinite(short_m)) {
+        return std::nullopt;
+    }
+    const float f[3] = {d[0] / len, d[1] / len, d[2] / len};  // the way it faces (column 2)
+    // Right (column 0): the world's up crossed with f, flat; straight up or down has none, so +x is taken.
+    float r[3] = {f[2], 0.0f, -f[0]};
+    const float rl = std::sqrt(r[0] * r[0] + r[2] * r[2]);
+    if (rl < 1e-4f) {
+        r[0] = 1.0f;
+        r[2] = 0.0f;
+    } else {
+        r[0] /= rl;
+        r[2] /= rl;
+    }
+    const float u[3] = {f[1] * r[2] - f[2] * r[1], f[2] * r[0] - f[0] * r[2], f[0] * r[1] - f[1] * r[0]};  // f x r
+    const float back = std::min(std::max(short_m, 0.0f), len);
+    std::array<float, 12> t{};
+    for (int i = 0; i < 3; ++i) {
+        t[i] = target[i] - f[i] * back;
+        t[3 + i * 3 + 0] = r[i];
+        t[3 + i * 3 + 1] = u[i];
+        t[3 + i * 3 + 2] = f[i];
+    }
+    return t;
 }
 
 } // namespace CoopTestInput
@@ -1207,12 +1277,26 @@ void OnFrame(Core::System& system) {
                                                CoopBoss::Vec{request.at[0], request.at[1], request.at[2]});
             LOG_INFO(Core, "coop: test place {:.2f} {:.2f} {:.2f}: {}", request.at[0], request.at[1],
                      request.at[2], ok ? "done" : "failed");
+        } else if (request.kind == Kind::face) {
+            const bool ok = CoopBoss::FaceLink(system, g_state.main, request.at[0], request.at[2]);
+            if (!ok) {
+                LOG_INFO(Core, "coop: test face {:.2f} {:.2f}: failed", request.at[0], request.at[2]);
+            }  // done: logged where it is turned
+        } else if (request.kind == Kind::aim) {
+            // Row 173: Link turned to the target (as face), then our next arrow put on its way into it.
+            if (!CoopBoss::FaceLink(system, g_state.main, request.at[0], request.at[2])) {
+                LOG_INFO(Core, "coop: test aim {:.2f} {:.2f} {:.2f}: Link not turned", request.at[0], request.at[1],
+                         request.at[2]);
+            }
+            CoopObjects::QueueTestAim(request.at[0], request.at[1], request.at[2]);
         } else if (request.kind == Kind::kill) {
             CoopObjects::QueueTestKill(request.name);  // logged where it is done
         } else if (request.kind == Kind::hit) {
             CoopObjects::QueueTestHit(request.name, std::stoi(request.start));  // logged where it is done
         } else if (request.kind == Kind::stun) {
             CoopObjects::QueueTestStun(request.name);  // logged where it is done
+        } else if (request.kind == Kind::drop) {
+            CoopObjects::QueueTestDrop(request.name, static_cast<float>(std::stoi(request.start)));  // logged there
         } else if (request.kind == Kind::hurt) {
             if (g_state.link) {
                 const std::array<float, 3> at = *g_state.link;

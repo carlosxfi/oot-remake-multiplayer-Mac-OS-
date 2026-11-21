@@ -274,7 +274,7 @@ If the selected variant is missing, it uses the plain actor. The log line
 `puppet spawn test requesting` shows the selected actor. Color is selected
 when making the actor, so relaunch after changing the remote player's color.
 
-## Shared v0.11.7 lifecycle test
+## Shared v0.11.8 lifecycle test
 
 Build the shared module and probe, then start the opt-in shared client with
 a previously generated puppet overlay and a disposable save:
@@ -307,3 +307,13 @@ or enter the address, port, and password separately. The panel shows the
 network connection state and any server refusal. Use **Leave** to end the session.
 The panel runs the shared co-op host and join functions. The game still uses
 its local save during this test.
+
+### Windows v0.11.8 playtest
+
+Use Squadala v0.11.8 on the Windows host. The Mac shared module also
+advertises v0.11.8 and uses protocol 15. Start with disposable saves and
+check that both players can see each other move. Then test a chest, key and
+rupee pickup, an enemy defeat, and a loading zone together. Check player
+lists on each platform and record any missing pages or other differences.
+After 15–20 minutes, collect a `/bugreport` from each client where available.
+For a Mac run without in-game chat, keep the nxnative game log instead.

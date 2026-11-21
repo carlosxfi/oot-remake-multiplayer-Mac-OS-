@@ -132,6 +132,24 @@ TEST_CASE("link sound: names the protocol refuses are not kept") {
     CHECK(TakeCaught().empty());
 }
 
+TEST_CASE("link sound: the player's own system sounds (the low-health beep) are never sent (row 163)") {
+    Clean clean;
+    FakeGuest g;
+    SetOurUser(kOurUser);
+    for (const char* own : {"HeartAlert", "HeartRecover", "HeartReduce", "GlassTruth_On", "GlassTruth_MP_Off"}) {
+        CHECK(OwnOnly(own));
+        PutAsset(g, own);
+        CHECK_FALSE(OnEmit(kOurUser, kCell, g.AsRead()));
+    }
+    // Link's own world sounds stay heard, the heal's sparkle (SE_Pl_HeartRecoverEffect) too.
+    for (const char* world : {"FootStep", "Healing_HP", "SleepParalysis_Mashing", "Heart", "HeartAlert_"}) {
+        CHECK_FALSE(OwnOnly(world));
+    }
+    PutAsset(g, "Healing_HP");
+    CHECK(OnEmit(kOurUser, kCell, g.AsRead()));
+    CHECK(TakeCaught() == std::vector<std::string>{"Healing_HP"});
+}
+
 TEST_CASE("link sound: at most kCaughtMax names wait between two frames") {
     Clean clean;
     FakeGuest g;

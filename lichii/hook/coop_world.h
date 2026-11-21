@@ -107,6 +107,11 @@ bool IsLyingKey(std::string_view name);
 bool IsGoldToken(std::string_view name);
 // True for the placement hash of a Gold Skulltula (gold_skulltula_keys).
 bool IsGoldSkulltulaKey(std::uint64_t hash);
+// The Gold Skulltula placement a taken key names: the placement for its own key
+// and for its second key (key + 2: a token pickup sets both, docs/items.md), 0
+// for any other key (skulltula-0118: a take that reached us as key + 2 only
+// took nothing).
+std::uint64_t GoldPlacementOfKey(std::uint64_t key);
 // The placement a token's id came from (TokenId the other way): 0 when `id`
 // is no Gold Skulltula's.
 std::uint64_t PlacementOfTokenId(std::uint64_t id);
@@ -459,9 +464,14 @@ inline NodeStarts& TheNodeStarts() {
 std::optional<std::uint64_t> FindBlockNode(
     const std::function<std::optional<std::uint64_t>(std::uint64_t)>& read, std::uint64_t actor,
     std::uint64_t main, const NodeStarts& starts);
+// Row 166: `untouched` (our player never moved the block during this follow: its room loaded after another
+// player's push, or only the other game pushed it): no push of ours can be under way, so the node is stale unless
+// both its places already hold `to`. A block whose room loads late is first seen where the map put it, its node
+// started there with the grid target at +0xfc: one of the two matched `from`, which read as mid-push, so the start
+// never ran again and our player's next push started from the map's place (the 0.11.6 Dodongo playtest).
 RestScan NodeRestWords(const std::function<std::optional<std::uint64_t>(std::uint64_t)>& read,
                        std::uint64_t node, const coop::protocol::Vec3& from,
-                       const coop::protocol::Vec3& to);
+                       const coop::protocol::Vec3& to, bool untouched = false);
 
 // Breaks and moves of placed world objects, shared by placement hash
 // (docs/world.md, "Broken for everyone" and "Moved for everyone"). Beside the
@@ -587,6 +597,8 @@ public:
             // logged only: the fix is the node start at the hand-over
             // (BlockNode::kStartFn); no anchor, no wide search.
             bool snap = false;
+            // Row 166: our player never moved it during this follow (Object::contested unset): see NodeRestWords.
+            bool untouched = false;
             int tries = 0;  // the glue's: walks its push node was not found or busy
         };
         std::vector<BlockFix> blocks;
@@ -749,6 +761,7 @@ private:
         bool roller = false;               // IsRoller: rolls on its own
         std::uint32_t place_seen = 0;      // the rest place we last took (Remote::place_serial)
         std::optional<coop::protocol::Vec3> follow_from;  // where it rested before another game moved it
+        bool contested = false;            // row 166: our own move of it gave way to another game's (this follow)
         std::uint64_t settle_us = 0;       // when we took it
         std::uint64_t quiet_until = 0;
         // deku-visuals-b: where it rested before the last followed push
@@ -768,6 +781,9 @@ private:
     void Drain(std::uint64_t now_us);
     // Whether another game's state of `o` waits (SetTriggerKeepers); `what` names it for the log, once per keeper.
     bool KeepsForTrigger(const Object& o, const char* what, Out& out);
+    // Row 175: the anchor near `from` that is this block's own (0: none); `shared`
+    // is set when one near it belongs to another block or a shared grid base.
+    std::uint64_t OwnAnchor(const Object& o, const coop::protocol::Vec3& from, bool& shared);
     std::set<std::uint64_t> trigger_keepers_;
     std::set<std::uint64_t> trigger_said_;  // keepers logged
     // A lying small key we took that has not gone out as our break yet.
@@ -843,6 +859,10 @@ private:
         std::uint64_t until_us = 0;
     };
     std::map<std::uint64_t, AnchorHold> anchor_holds_;  // by actor address
+    // Row 175: block hash by anchor address, once an anchor was found to be that
+    // block's own (OwnAnchor); an anchor of another block or a shared grid base
+    // is never moved for a block's rest.
+    std::map<std::uint64_t, std::uint64_t> anchor_of_;
     // Hits for signs, until our copy is there to take them (by hash).
     std::map<std::uint64_t, std::vector<std::pair<coop::protocol::Vec3, coop::protocol::Vec3>>> hits_;
     // Another player's cut words for signs (SIGN_CUT), until our copy is there (by hash).

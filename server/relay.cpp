@@ -168,6 +168,7 @@ void Relay::control(Endpoint from, const Message& m, std::uint64_t now_ms,
         if (!s.room.empty()) by_room_.erase(room_key(s.room));
         by_room_[key] = s.token;
         s.room = *room;
+        s.proof.reset();  // (a proof is for one room)
         say("host " + address_text(from.host) + " holds room \"" + s.room + "\" (" +
             std::to_string(by_room_.size()) + " room(s) now)");
       }
@@ -255,6 +256,28 @@ void Relay::control(Endpoint from, const Message& m, std::uint64_t now_ms,
       }
       ++stats_.lists_answered;
       return reply(list_page(m.start));
+    }
+    case Kind::kListProofs: {
+      if (over_limit(lists_, from.host, config_.lists_per_window, now_ms, true, config_.list_window_ms)) {
+        ++stats_.lists_limited;
+        return;  // (as kListRooms: one limit for both)
+      }
+      ++stats_.proofs_answered;
+      return reply(proofs_page());
+    }
+    case Kind::kRoomProof: {
+      // As often as kListRoom (its host's link sends it with each listing); no answer either way.
+      if (over_limit(listings_, from.host, config_.listings_per_window, now_ms, true, config_.list_window_ms)) {
+        ++stats_.listings_limited;
+        return;
+      }
+      auto it = sessions_.find(m.token);
+      if (it == sessions_.end() || it->second.room.empty()) return;
+      Session& s = it->second;
+      s.proof = m.proof;
+      s.proof->room = s.room;
+      ++stats_.proofs_kept;
+      return;
     }
     case Kind::kLookup:
     case Kind::kLookupName: {
@@ -349,6 +372,25 @@ Message Relay::list_page(std::uint8_t start) const {
   return page;
 }
 
+Message Relay::proofs_page() const {
+  std::vector<const Session*> listed;
+  for (const auto& [token, s] : sessions_) {
+    if (s.listed && !s.room.empty() && s.proof && s.proof->room == s.room) listed.push_back(&s);
+  }
+  std::sort(listed.begin(), listed.end(),
+            [](const Session* a, const Session* b) { return a->listed_since > b->listed_since; });
+  Message page;
+  page.kind = Kind::kRoomProofs;
+  std::size_t bytes = kMagic.size() + 2;  // (the kind and the count)
+  for (const Session* s : listed) {
+    const std::size_t more = proof_bytes(*s->proof);
+    if (bytes + more > kMaxPayloadBytes || page.proofs.size() >= kMaxListedRooms) break;
+    bytes += more;
+    page.proofs.push_back(*s->proof);
+  }
+  return page;
+}
+
 void Relay::remove_flow(Session& s, std::uint16_t flow) {
   auto it = s.flows.find(flow);
   if (it == s.flows.end()) return;
@@ -404,7 +446,8 @@ std::vector<Outgoing> Relay::tick(std::uint64_t now_ms) {
     }
     it = next;
   }
-  // (the room list's asks have a window of their own: a forged sender's addresses must not pile up either)
+  // (the room list's asks and listings have a window of their own: a forged sender's addresses must not pile up
+  // either)
   for (auto [table, window] : {std::pair{&lookups_, config_.window_ms}, std::pair{&registers_, config_.window_ms},
                                std::pair{&new_listings_, config_.window_ms}, std::pair{&lists_, config_.list_window_ms},
                                std::pair{&listings_, config_.list_window_ms}}) {

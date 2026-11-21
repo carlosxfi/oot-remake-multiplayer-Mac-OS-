@@ -99,6 +99,7 @@ FrameReport Session::frame(const std::optional<PlayerReading>& reading, FlagStor
       report.save_load_flags = seen->flags;
       report.save_load_frames = seen->frames;
       report.save_load_native = seen->native;
+      report.save_load_retry = seen->retry;
     }
   }
   report.queued = out.size();

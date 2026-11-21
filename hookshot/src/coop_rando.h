@@ -46,6 +46,9 @@ inline constexpr const char* kLogFile = "last-build.txt";          // in kFolder
 // In kFolder: the seed folders a host's world switched off in this guest's game, one per line, switched on again
 // when it plays alone (Decide: Want::restore, Plan::remember / forget).
 inline constexpr const char* kHostOffFile = "host-switched-off.txt";
+// In kFolder: the host's hand-put seed folder a host's world switched ON in this guest's game (it had it off), switched
+// off again when it plays alone (Want::host_on, Plan::remember_on / forget).
+inline constexpr const char* kHostOnFile = "host-switched-on.txt";
 inline constexpr const char* kTablesFile = "coop-tables.txt";      // in a seed: the size tables it was built beside
 // In a seed, for the players to share (player report: no spoiler log to post): OOTRR's own spoiler log (`generate
 // --spoiler`, kept as <seed folder>.spoiler.txt beside the seed file in kFolder) and the seed's OOTRR1- settings string
@@ -98,6 +101,13 @@ struct Want {
     bool guest = false;       // the host's values decide `on` (a guest in the host's world)
     bool turned_off = false;  // the player turned our switch from on to off in this run
     std::vector<std::string> restore;  // kHostOffFile: what a host's world switched off here
+    std::vector<std::string> host_on;  // kHostOnFile: what a host's world switched on here
+    // A guest whose host plays a seed folder put in by hand (kHandSeedKey): that folder, and `keep` the same when this
+    // game has it with the same files (SeedFilesHash): kept on in the host's world. `hand_pending`: this game has the
+    // folder, its hash is not known yet (Decide waits).
+    std::string host_hand;
+    std::string keep;
+    bool hand_pending = false;
 };
 
 struct Plan {
@@ -110,12 +120,35 @@ struct Plan {
     std::string why;                    // one plain line for the log and the tab
     bool for_tables = true;             // refresh: for the size tables (false: only for spoiler.txt / settings.txt)
     std::vector<std::string> remember;  // a guest: `off` goes into kHostOffFile, to come back on alone
-    bool forget = false;                // kHostOffFile is done with (removed)
+    std::vector<std::string> remember_on;  // a guest: the host's hand-put seed switched on, into kHostOnFile
+    bool forget = false;                // kHostOffFile and kHostOnFile are done with (removed)
 };
 // What the game must do for `want`, given the seeds built and which mods are on now (Loader rows). `tables`: the
 // TablesStamp of the other mods' size tables now; a built seed with another one is refreshed (none: not compared).
 Plan Decide(const Want& want, const std::vector<Built>& built, const std::vector<CoopMods::Row>& rows,
             const std::optional<std::string>& tables = std::nullopt);
+
+// A seed put in by hand (Nax 2026-11-20: built with an OOTRR from source, or made on OOTRR's page, its folder copied to
+// every player): a seed folder without kPresetFile. The host tells the guests which one this run plays, as one more
+// MOD_SETTINGS value of the control mod (key kHandSeedKey, "<SeedFilesHash> <folder>"; a key no manifest has, so an
+// older guest keeps it unread). A guest with the same folder and the same files keeps it on; any other guest switches
+// its seeds off for the host's world, as before, and both chats say why.
+inline constexpr const char* kHandSeedKey = "hand_seed";
+// The seed folder this run plays, when it is one put in by hand: the first row (the winner) of the seed folders the
+// game indexed at its start; empty when none, or when it is ours (built by the kit: kPresetFile).
+std::string HandPlaying(const std::vector<Built>& built, const std::vector<CoopMods::Row>& rows);
+std::string HandSeedValue(std::string_view hash, std::string_view folder);  // empty when too long to send
+bool ParseHandSeed(std::string_view value, std::string* hash, std::string* folder);
+// What makes two copies of a seed the same world: every file under <folder>/romfs, by path (lower case, '/') and
+// bytes, in path order, as FNV-1a 64 (16 lower-case hex). The files the kit's start rewrites in a winning mod are read
+// from the copies it keeps of the mod's own (merge_tables.py: romfs/System/Resource/<f> from _coop-size-table/<f>,
+// romfs/RSDB/<f> from _coop-rows/<f>), so two players match after their own merges. Nothing outside romfs counts
+// (coop-seed.txt, the kit's marks). Empty: no files, one could not be read, or `stop` turned true.
+std::string SeedFilesHash(const std::filesystem::path& folder, const std::function<bool()>* stop = nullptr);
+// The chat lines about the host's hand-put seed: this game's (a guest) and the one the host gets (TellLine's limit).
+enum class HandMatch { same, missing, different };
+std::string HandLine(HandMatch match, std::string_view folder, bool restart);
+std::string HandTellLine(HandMatch match, std::string_view folder);
 
 // OOTRR's command lines (arguments after the program).
 // `spoiler`: where OOTRR writes its spoiler log (--spoiler, in every OOTRR release); empty: none.
@@ -247,7 +280,8 @@ std::vector<std::string> LastLines(std::string_view text, std::size_t n);
 // was cut off in the tab). The full path goes to the chat and the log.
 std::string SeeLogLine(const std::string& head);
 // A line for the co-op chat (others may see a screenshot): the user's profile folder (Users<name>, /home/<name>)
-// masked as <user>, as collect-logs does, and cut to `max_chars` bytes at a whole UTF-8 character.
+// masked as <user>, as collect-logs does, and cut to at most `max_chars` bytes (its "..." included) at a whole UTF-8
+// character.
 std::string ChatSafe(std::string line, std::size_t max_chars = 100);
 // Whether a probe's run means OOTRR refused the preset: a real exit code above 0 with something said. A stop, a
 // timeout, a program that did not start (kStopped, -1) or a silent exit are not known: never cached as refused.
@@ -332,6 +366,9 @@ public:
     bool HoldPack() const { return hold_pack_.load() || outside_.load() || rows_out_.load(); }
     // A mod's RSDB table wins without the pack's rows this run (OutsideActorRows): the game would refuse the puppets.
     bool RowsMissing() const { return rows_out_.load(); }
+    // The host's MOD_SETTINGS value for the hand-put seed this run plays (kHandSeedKey), once its files are hashed (the
+    // first call starts that, off the caller's thread); nullopt meanwhile and when none. Cheap: called every frame.
+    std::optional<std::string> HandValue();
     // The chat lines since the last call (SwitchLine when the switch changed).
     std::vector<std::string> TakeLines();
     // Waits until no build runs (tests, exit).
@@ -383,6 +420,22 @@ private:
     std::string bad_settings_;        // the "settings" value said to be no settings string (mutex_)
     std::string restart_;             // the restart line until this game restarts (mutex_): empty when none
     std::chrono::steady_clock::time_point restart_said_{};  // when it was last put in the chat (mutex_)
+    // Hand-put seeds (HandValue, Want::keep): each folder's SeedFilesHash this run ("" none), hashed one at a time on
+    // hasher_ (a guest's Check runs again when it ends).
+    void HashLater(const std::string& folder);  // hand_mutex_ not held
+    void HashWork();                            // hasher_: hand_job_, then hand_next_
+    // A guest's chat line about the host's hand-put seed (mutex_ not held); `restart_said`: Switch said one already.
+    void SayHand(const Want& want, bool restart_said);
+    mutable std::mutex hand_mutex_;
+    std::map<std::string, std::string> hand_hash_;  // hand_mutex_
+    std::string hand_job_;                          // the folder hashed now (hand_mutex_)
+    std::string hand_next_;                         // the folder asked for meanwhile (hand_mutex_)
+    bool hasher_running_ = false;                   // until hasher_'s last step (hand_mutex_)
+    std::thread hasher_;                            // hand_mutex_
+    std::atomic<bool> stop_hash_{false};
+    std::string hand_playing_;  // set at Start: HandPlaying
+    std::string hand_said_;     // the host's folder the guest's chat line was said for, with its match (mutex_)
+    std::string hand_tell_;     // a HandTellLine not sent yet (mutex_)
 };
 
 }  // namespace CoopRando

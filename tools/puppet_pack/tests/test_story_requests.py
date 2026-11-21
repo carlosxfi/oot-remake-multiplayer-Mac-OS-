@@ -144,6 +144,40 @@ class StoryRequestsTest(unittest.TestCase):
                                       lambda flow, entry: runs.get(flow, [])),
                          [("Dm_HrlCastle_0020", "takes Item_AlarmCucco from the pouch")])
 
+    def test_room_turn_toggles_and_room_actions(self):
+        # Dm_ForestTemple_0005 (row 173): asks TwistedCorridor_A_02 and writes it both ways, and turns the corridor.
+        ask = (sr.QUERY, "EventQueryIsGameDataBool", {"GameDataName": "A_02"})
+        set_a = [("GameDataActor", "EventTriggerSetGameDataBool", {"GameDataName": "A_02", "Value": v})
+                 for v in (True, False)]
+        self.assertIn("toggles A_02", sr.room_turn([ask] + set_a))
+        self.assertIn("EventTriggerRelocateTwistCorridor",
+                      sr.room_turn([("GameSystemActor", "EventTriggerRelocateTwistCorridor", {"Is01": True})]))
+        # Not a toggle: set both ways but never asked (a mark during the scene), asked but set one way only (a
+        # first-time mark), or a level (the Water Temple's WaterLevel ints are set to one value per flow).
+        self.assertEqual(sr.room_turn(set_a), "")
+        self.assertEqual(sr.room_turn([ask, set_a[0]]), "")
+        level = (sr.QUERY, "EventQueryIsGameDataInt", {"GameDataName": "WaterTemple_Room00_WaterLevel"})
+        self.assertEqual(sr.room_turn([level, ("GameDataActor", "EventTriggerSetGameDataInt",
+                                               {"GameDataName": "WaterTemple_Room00_WaterLevel", "Value": 0})]), "")
+        # A question is no action of the player's own (a Bottle query is not a bottle's contents).
+        self.assertEqual(sr.touches_own([(sr.QUERY, "EventQueryIsBottleEmpty", {})]), "")
+
+    def test_room_story_names(self):
+        settings = sr.event_settings([setting("Dm_ForestTemple_0005", "Dm_ForestTemple_0005"),
+                                      setting("Dm_HrlCastle_0020", "Dm_HrlCastle_0020"),
+                                      setting("Dm_WaterTemple_0020", "Dm_WaterTemple_0020")])
+        turn = ("GameSystemActor", "EventTriggerRelocateTwistCorridor", {})
+        runs = {"Dm_ForestTemple_0005": [turn],
+                "Dm_HrlCastle_0020": [turn, ("PouchSystemActor", "EventTriggerAddOrRemovePouchContent",
+                                             {"Actor": "Item_AlarmCucco", "Num": -1})],  # own first: kOwnStory
+                "Dm_WaterTemple_0020": [("GameDataActor", "EventTriggerSetGameDataInt", {"Value": 0})]}
+        got = sr.room_story({"Dm_ForestTemple_0005", "Dm_HrlCastle_0020", "Dm_WaterTemple_0020"}, settings,
+                            lambda flow, entry: runs.get(flow, []))
+        self.assertEqual([n for n, _ in got], ["Dm_ForestTemple_0005"])
+        # A setting of a story flow under another name is classified "room" (not shared) the same way.
+        s = sr.Setting("Dm_ForestTemple_0005", "", "StarterPos", "TwistCorridorEvent")
+        self.assertEqual(sr.classify("Dm_ForestTemple_0005_X", s, set(), [turn])[0], "room")
+
     def test_gimmick_names_from_the_hook(self):
         dungeon = '{0xfd1a276a, false, "HavePlayedEvent.StoneOfWater_ElevatedFloor"}, {1, true, "Other.Flag"},'
         places = '{"Dm_FireTemple_0029", "FireTemple", -46.9f, 186.5f, -22.4f},'
@@ -158,7 +192,10 @@ class StoryRequestsTest(unittest.TestCase):
     def test_render(self):
         text = sr.render([("KokiriForest_Meet_DekuTree_MeetDekuTree_01", "Meet_DekuTree", "story", ""),
                           ("Get_StoneOfForest_GetSword", "Get_StoneOfForest", "own", "an item each player gets")],
-                         ["Meet_GreatFairy"], [("Dm_HrlCastle_0050", "runs X Y")])
+                         ["Meet_GreatFairy"], [("Dm_HrlCastle_0050", "runs X Y")],
+                         [("Dm_ForestTemple_0005", "toggles A_02")])
+        self.assertIn("constexpr StoryOwn kRoomStory[] = {", text)
+        self.assertIn('    {"Dm_ForestTemple_0005", "toggles A_02"},', text)
         self.assertIn('{"KokiriForest_Meet_DekuTree_MeetDekuTree_01", "Meet_DekuTree"},', text)
         self.assertIn("constexpr StorySetting kStorySettings[] = {", text)
         self.assertIn("//   own     Get_StoneOfForest_GetSword (Get_StoneOfForest): an item each player gets", text)

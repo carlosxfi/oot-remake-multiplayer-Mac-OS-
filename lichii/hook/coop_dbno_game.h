@@ -87,12 +87,22 @@ struct View {
 // What to draw now; nothing when there is nothing. Any thread.
 std::optional<View> Shown();
 
+// Any thread: `number`'s DBNO state now (ours from the last frame, the others' from their DBNO_STATE); up when not
+// known or DBNO is off. Row 160: a downed, spectating or out owner cannot play a room event (CoopEventResult).
+State StateOfPlayer(std::uint8_t number);
+
 // --- Spectating ---
 
 // The objects walk (coop_objects.cpp), each walk: whether an enemy of our
 // game (CoopDifficulty::IsEnemy, alive) is within kThreatReachM of our Link.
 // Told to the others as DBNO_THREAT while we are up.
 void NoteEnemiesNear(bool any);
+
+// The hook's frame (coop_hook.cpp), while our Link is in the game: whether one
+// of our bottles holds a fairy (coop::host::bottled_fairy, read with the
+// game's own flag getters). A lethal hit then goes to the game's own death,
+// whose fairy revives us, instead of downing us (tracker row 162).
+void NoteBottledFairy(bool held);
 
 // While we spectate a player in our scene: how far the camera moves from our
 // Link to them (their puppet's feet less our Link's, metres). The game's own

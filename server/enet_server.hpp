@@ -62,6 +62,8 @@ class EnetServer {
 
   const Session& session() const { return session_; }
   Session& session() { return session_; }  // (Navi: New Game+, HostService::set_ngplus)
+  // The console's moderation (Session::admin), with the server's clock; its kicks go out at once.
+  std::string admin(std::string_view line);
 
   // Bytes ENet had counted for players' lost fragments and we took off again
   // (coop/net/enet_waiting.hpp): above 0 means the line loses packets.

@@ -63,7 +63,7 @@ hs-gohma-door  expect='A:\+ Enemy_DungeonBoss_Gohma'  expect='B:\+ Enemy_Dungeon
 hs-pot-drops  expect='A:coop: drops: sent '  expect='B:coop: drops: got '  label="#101 #102 pot drops (a roll: inconclusive if none drops)"  see=hs-pot-drops-A  see=hs-pot-drops-B
 hs-sign-late  expect='A:Obj_GuidePost_A_02 cut here: \d+ words sent'  expect='B:Obj_GuidePost_A_02 cut by another player: \d+ of \d+ words to write'  label="#90 late loader"  see=hs-sign-late-A  see=hs-sign-late-B
 hs-goron-rock  expect='A:751d254f812d5cfb Obj_Goron_BrokenRock_A_01 broken here'  expect='B:751d254f812d5cfb .*broken by another player'  label="#84 Goron rock"  see=hs-goron-rock-A  see=hs-goron-rock-B
-hs-skulltula-token  expect='A:Obj_Token_Gold broken here'  expect='B:a token taken elsewhere'  label="#89 token (no switches: its header's @75 must win)"  see=hs-skulltula-token-A  see=hs-skulltula-token-B
+hs-skulltula-token  expect='A:Obj_Token_Gold broken here|Gold Skulltula 032f42f523be6425 is taken in this save'  expect='B:a token taken elsewhere|a Gold Skulltula.s token here goes'  never='Enemy_Skulltula_Gold: copy [0-9]+ went by itself; made again'  label="#89 token (no switches: its header's @75 must win)"  see=hs-skulltula-token-A  see=hs-skulltula-token-B
 
 [g6]
 # People and items (hs-scenarios-2): NPC animations (#200), Zelda's Letter at the gate (#171), fishing (#151).

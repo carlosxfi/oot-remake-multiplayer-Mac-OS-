@@ -30,6 +30,11 @@ namespace coop::protocol {
 // 15: PLATFORM_CLOCK keys in a mover's GroundControl node (regions 0xfffe / 0xfffd, #196, 0.11.6): a protocol 14
 // reader refuses them as bad_value and drops the whole message, so a 0.11.5 game must be refused at HELLO.
 inline constexpr std::uint16_t kProtocolVersion = 15;
+// A public game (anyone joins without typing a password) lists itself on the relay's room list with this bit
+// on top of kProtocolVersion; the relay repeats the version as given. A listing without it is a private game
+// (or an older kit's): the joiner asks for the host's password and never tries the public one on it.
+inline constexpr std::uint16_t kPublicListingBit = 0x8000;
+constexpr std::uint16_t public_listing_version() { return kPublicListingBit | kProtocolVersion; }
 inline constexpr std::uint16_t kDefaultPort = 27510;
 inline constexpr std::uint8_t kMaxPlayers = 16;  // protocol 11; 4 before
 
@@ -54,6 +59,31 @@ inline std::string clamp_build_id(std::string_view id) {
     }
   }
   return std::string(id);
+}
+// The co-op release a HELLO's build_id names (docs/crossplay.md): its first word that is a version, "v0.11.7" or
+// "0.11.7" (at least two numbers with dots), without a `git describe` tail ("-86-gab12cd34", "-dirty"); "" when it names
+// none (a launcher's own name, a commit alone, a test tool). Two games of different releases are not let play together.
+inline std::string coop_release(std::string_view id) {
+  std::size_t at = 0;
+  while (at < id.size()) {
+    const std::size_t end = (std::min)(id.find(' ', at), id.size());   // (parenthesised: windows.h's min macro)
+    std::string_view word = id.substr(at, end - at);
+    at = end + 1;
+    if (word.starts_with('v') || word.starts_with('V')) word.remove_prefix(1);
+    word = word.substr(0, word.find('-'));
+    std::size_t dots = 0;
+    bool ok = !word.empty() && word.front() != '.' && word.back() != '.';
+    for (std::size_t i = 0; ok && i < word.size(); ++i) {
+      if (word[i] == '.') {
+        ok = word[i - 1] != '.';
+        ++dots;
+      } else {
+        ok = word[i] >= '0' && word[i] <= '9';
+      }
+    }
+    if (ok && dots >= 1) return "v" + std::string(word);
+  }
+  return {};
 }
 inline constexpr std::size_t kMaxGameBuildIdChars = 32;
 inline constexpr std::size_t kMaxGameVersionChars = 16;
@@ -163,6 +193,7 @@ enum class MessageType : std::uint16_t {
   link_sound = 500,  // 500 to 509: the other Links' sounds (docs/protocol.md, "Link sounds")
   boss_scene = 520,  // 520 to 524: boss intro and death cutscenes (docs/protocol.md, "Boss cutscenes")
   boss_heart = 521,
+  boss_alive = 522,
   join_knock = 525,  // 525 to 529: the host lets joiners in (docs/protocol.md, "Host approval")
   join_allow = 526,
   bomb_take = 530,  // 530 to 534: a bomb changes hands (docs/protocol.md, "Bomb hand-over")
@@ -281,6 +312,9 @@ enum class RefuseReason : std::uint8_t {
   // Protocol 13, host approval (docs/protocol.md "Host approval"): the host
   // did not let this player in (it said no, did not answer in time, or left).
   not_let_in = 9,
+  // The game runs another co-op release than the host's (coop_release of the HELLO's build_id against the session's
+  // first player's; a build that names none is let in). Older games show it as an unknown reason.
+  wrong_coop_version = 10,
   // Never sent: the game's own refusal of a server that did not encrypt
   // although the game has a join password (docs/protocol.md "Encrypted
   // traffic"), so nobody on the path can stand in for a no-password server.
@@ -1578,7 +1612,7 @@ struct DbnoMode {
   std::uint8_t set_by = 0;         // 0 the server, 1 to kMaxPlayers a player
   bool on = true;
   std::uint8_t bleed_s = 45;       // kDbnoMinBleedS to kDbnoMaxBleedS
-  std::uint8_t revive_tenths = 30; // kDbnoMinReviveTenths to kDbnoMaxReviveTenths
+  std::uint8_t revive_tenths = 50; // kDbnoMinReviveTenths to kDbnoMaxReviveTenths
   std::uint8_t revive_life = 12;   // kDbnoMinReviveLife to kDbnoMaxReviveLife
   bool operator==(const DbnoMode&) const = default;
 };
@@ -1665,6 +1699,21 @@ struct BossHeart {
   bool given = false;                        // false: a claim (client); true: the server's answer
   std::int32_t max_life = 0;                 // 1 to kMaxBossHeartLife
   bool operator==(const BossHeart&) const = default;
+};
+
+// BOSS_ALIVE (row 159): the host's save load said which bosses it holds alive. The host sends it once after
+// its FLAG_RESET, on the same channel (so it comes after it), when its game reads the bosses' quests again. Bit
+// N of `known` is boss index N (CoopBossBeaten::Sets(): 0 to 7 the dungeon bosses, 8 Ganondorf, 9 Ganon) whose
+// quest the host read; bit N of `alive` (a subset of `known`): that quest is before the boss's death in the
+// host's save. A guest rewinds a boss whose quest the host does not set for it (each game's own) and that its
+// own game holds just beaten. The server takes it from the host only. Older games drop the unknown type.
+inline constexpr std::uint16_t kBossAliveMask = 0x03ff;  // ten bosses
+
+struct BossAlive {
+  std::uint8_t player_number = kPlayerSelf;  // the host
+  std::uint16_t known = 0;                   // within kBossAliveMask
+  std::uint16_t alive = 0;                   // within known
+  bool operator==(const BossAlive&) const = default;
 };
 
 // VOICE_FRAME (protocol 11, branch proximity-voip): 20 ms of the sender's
@@ -2053,7 +2102,7 @@ using Message = std::variant<Hello, Welcome, Refused, PlayerJoined, PlayerLeft,
                              LocalJoin, LocalJoined, LocalLeave, LocalSample, LocalMessage, LinkSound,
                              BossScene, BossHeart, PlayerLook, SwitchState, JoinKnock, JoinAllow,
                              BombTake, BombAnswer, BombShare, LiftAsk, LiftAnswer, LiftPlace,
-                             LiftShare, PvpStrike, PvpResult, PvpNative>;
+                             LiftShare, PvpStrike, PvpResult, PvpNative, BossAlive>;
 
 MessageType type_of(const Message& message);
 

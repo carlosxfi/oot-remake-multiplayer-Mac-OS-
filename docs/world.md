@@ -133,6 +133,8 @@ A late joiner gets the same: its block is first seen where the map made it, the 
 
 Logs: `world: <hash> <name> came to rest where another player left it; its base anchor is put there too` (or `was not found near its old place`), then the push node's line (below).
 
+**A block whose room loads later** (tracker row 166, the 0.11.6 Dodongo playtest: blocks were not where another player had pushed them for a player who was not in the room). The late game first sees the block where the map put it, its push node started there: +0x108 holds the map's place and +0xfc the grid cell. The block was put at the shared rest, but the node check called that "mid-push" (only one of the two at the old place), so the node's own start never ran (`push node busy (mid-push here)`, then `its next push may start from the old place`, in the guest's log). The game's own logic then started the next push from the map's place. Now a follow our player never touched (`BlockFix::untouched`: our own move of it never gave way to another game's, `Object::contested`) cannot be mid-push in our game, so its node's start runs again unless both places already hold the new rest. A follow our player was part of keeps the strict check. The same goes for a push already under way when the room loads (its moves are followed the same way) and for every block kind with a push node (the MovableBox family, the slider box). The Armos statues have no push-node fix (not `IsPushBlock`), as before.
+
 ### Blocks: the push node (issue 147, world-objects-2)
 
 Why the anchor move above is not enough: the place a push starts from is kept in the block's AI node, not in the actor, its components or its physics root. Read from main (build e0f3ccfaf50065ae; disassembled, nothing run):

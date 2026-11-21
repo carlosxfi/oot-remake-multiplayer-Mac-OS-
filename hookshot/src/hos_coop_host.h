@@ -31,12 +31,19 @@ typedef struct HosCoopHostOptions {
     uint8_t max_players;    /* most players at once, 1 to 16; 0: the server's default (16) */
     uint8_t approve_joins;  /* 1: each new player waits until the host lets them in (/allow, /deny; docs/protocol.md
                                "Host approval") */
-    uint8_t reserved[2];
+    uint8_t same_network_open;   /* 1: players from a private address join without the join password (docs/protocol.md
+                                    "Same network"); 0, every older caller's reserved byte: they need it as others do */
+    uint8_t reserved;
     uint32_t pose_upload_kbps;  /* the host's upload for other players' poses, kilobits a second; 0: no cap */
     const char *relay_room; /* with relay_via: a room name to hold on the relay (issue 261); NULL or "": none */
     const char *relay_list; /* with relay_room: the name the room is shown as on the relay's public room list
                                (coop-options.ini list_room, list_name: the room name without one); NULL or "": not
                                listed */
+    uint32_t public_game;   /* 1: a public game (anyone can join, no password): needs relay_via and relay_room; the
+                               password is made from the room (password ignored), the room is listed (relay_list,
+                               or the room name), relay only (upnp, invite and same_network_open off) */
+    const char *bans_file;  /* the host's kept bans (one player key a line, coop-bans.txt beside coop.ini): read at
+                               the start, written when a ban by key is made; NULL or "": none kept */
 } HosCoopHostOptions;
 
 typedef struct HosCoopJoinOptions {

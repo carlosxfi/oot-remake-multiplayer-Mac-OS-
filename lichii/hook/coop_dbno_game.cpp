@@ -81,6 +81,9 @@ struct Glue {
     std::atomic<bool> tell_again{false};
     // The frame's own (no lock): only the frame touches them.
     Machine machine;
+    // The machine's state and our player number, for other threads (StateOfPlayer).
+    std::atomic<std::uint8_t> own_number{0};
+    std::atomic<std::uint8_t> own_state{0};
     Reviver reviver;
     ThreatTeller threat_teller;
     bool was_button = false;  // A last frame (the spectator's switch)
@@ -96,6 +99,7 @@ struct Glue {
     std::atomic<PadMode> pad_mode{PadMode::game};
     std::atomic<bool> button{false};  // A as the player holds it (before we take it)
     std::atomic<bool> enemies_near{false};  // the objects walk
+    std::atomic<bool> bottled_fairy{false};  // the hook's frame (row 162)
 
     void Line(std::string text) {
         if (lines.size() < 32) {
@@ -365,7 +369,10 @@ void Frame(const std::optional<std::string>& scene, const std::optional<coop::ho
         in.moved = Moved::failed;
     }
     in.enemy_near_us = g.enemies_near.load(std::memory_order_relaxed);
+    in.bottled_fairy = reading && g.bottled_fairy.load(std::memory_order_relaxed);
     const Output out = g.machine.Frame(in);
+    g.own_number.store(self, std::memory_order_relaxed);
+    g.own_state.store(static_cast<std::uint8_t>(g.machine.Now()), std::memory_order_relaxed);
     g.guard.Set(out.guard);
     Body::Raising& raise = Body::TheRaising();
     if (out.write_life) {
@@ -410,9 +417,14 @@ void Frame(const std::optional<std::string>& scene, const std::optional<coop::ho
     // A teammate who cannot be fought now (downed, spectating, or PLAYER_STATUS away: paused, in a
     // menu, loading, in their own event, dead): their puppet is unseen in our game too (issue 150 with
     // row 113; review of perception-on).
+    // Row 178: and every puppet while a boss whose own AI fights the Player only is here
+    // (CoopBossNative::Table::FightsPlayerOnly: Phantom Ganon held his phase 2 with a puppet as his target).
+    const auto player_only = CoopBossNative::TheTable().PlayerOnlyBoss();
     for (const Teammate& t : team) {
         if (auto why = Body::UnseenWhy(t.state == State::downed || t.state == State::spectating, t.status)) {
             body.unseen_puppets.push_back({t.number, std::move(*why)});
+        } else if (player_only) {
+            body.unseen_puppets.push_back({t.number, "fighting " + *player_only + ", whose AI fights the Player only"});
         }
     }
     Body::TheCrawl().Want(body);
@@ -547,8 +559,26 @@ std::optional<View> Shown() {
     return g.view;
 }
 
+State StateOfPlayer(std::uint8_t number) {
+    Glue& g = TheGlue();
+    if (number != 0 && number == g.own_number.load(std::memory_order_relaxed)) {
+        return static_cast<State>(g.own_state.load(std::memory_order_relaxed));
+    }
+    std::lock_guard lock(g.mutex);
+    return g.roster.StateOf(number);
+}
+
 void NoteEnemiesNear(bool any) {
     TheGlue().enemies_near.store(any, std::memory_order_relaxed);
+}
+
+void NoteBottledFairy(bool held) {
+    Glue& g = TheGlue();
+    if (g.bottled_fairy.exchange(held, std::memory_order_relaxed) != held) {
+        LOG_INFO(Core, "coop: dbno: {}", held ? "a fairy in our bottle: a lethal hit is the game's own death, its "
+                                                "fairy revives us (not downed)"
+                                              : "no fairy in our bottles: a lethal hit downs us");
+    }
 }
 
 std::optional<Vec3> SpectateOffset() {

@@ -47,6 +47,11 @@ void End();
 // others get this player's slot colour. Any thread; works with co-op off.
 void SetColor(std::optional<std::uint32_t> color);
 
+// The hosting game changed its session's join password: its own client proves
+// the new one when it reconnects to its server. Any thread; nothing with co-op
+// off.
+void SetJoinPassword(const std::string& password);
+
 // What the co-op window shows: one line of text each. Empty when co-op is
 // off. Any thread.
 struct OverlayLine {

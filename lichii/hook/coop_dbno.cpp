@@ -463,9 +463,11 @@ Output Machine::Frame(const Input& in) {
     out.state = state_;
     switch (state_) {
     case State::up:
-        out.guard = in.now_us < mercy_until_us_ ? Guard::shielded
-                    : active && someone_up      ? Guard::last_stand
-                                                : Guard::off;
+        // A bottled fairy: the guard stays off, so the game's own death runs and
+        // its fairy revives us (row 162); the dying watch above sees him back up.
+        out.guard = in.now_us < mercy_until_us_                   ? Guard::shielded
+                    : active && someone_up && !in.bottled_fairy ? Guard::last_stand
+                                                                : Guard::off;
         break;
     case State::downed:
         out.guard = Guard::shielded;

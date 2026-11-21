@@ -105,6 +105,14 @@ bool has_magic(std::span<const std::uint8_t> bytes) {
 }
 
 std::vector<std::uint8_t> encode(const Message& m) {
+  if (m.kind == Kind::kListRooms || m.kind == Kind::kListProofs) {
+    // Fixed-size request (zero padded), so the reply is never bigger than it: built at full size, fields by index.
+    std::vector<std::uint8_t> req(kListRequestBytes, std::uint8_t{0});
+    std::copy(kMagic.begin(), kMagic.end(), req.begin());
+    req[kMagic.size()] = static_cast<std::uint8_t>(m.kind);
+    req[kMagic.size() + 1] = m.start;
+    return req;
+  }
   std::vector<std::uint8_t> out(kMagic.begin(), kMagic.end());
   out.push_back(static_cast<std::uint8_t>(m.kind));
   switch (m.kind) {
@@ -168,9 +176,23 @@ std::vector<std::uint8_t> encode(const Message& m) {
       put_text(out, m.entry.host, kMaxHostNameBytes);
       break;
     case Kind::kListRooms:
-      out.push_back(m.start);
-      out.resize(std::max(out.size(), kListRequestBytes), std::uint8_t{0});
+    case Kind::kListProofs:
+      break;  // (built above)
+    case Kind::kRoomProof:
+      put64(out, m.token);
+      put64(out, m.proof.time_s);
+      out.insert(out.end(), m.proof.signature.begin(), m.proof.signature.end());
       break;
+    case Kind::kRoomProofs: {
+      const std::size_t n = std::min<std::size_t>(m.proofs.size(), 255);
+      out.push_back(static_cast<std::uint8_t>(n));
+      for (std::size_t i = 0; i < n; ++i) {
+        put_text(out, m.proofs[i].room, kMaxRoomLength);
+        put64(out, m.proofs[i].time_s);
+        out.insert(out.end(), m.proofs[i].signature.begin(), m.proofs[i].signature.end());
+      }
+      break;
+    }
     case Kind::kRoomList: {
       const std::size_t n = std::min<std::size_t>(m.rooms.size(), 255);
       out.push_back(m.total);
@@ -181,6 +203,10 @@ std::vector<std::uint8_t> encode(const Message& m) {
     }
   }
   return out;
+}
+
+std::size_t proof_bytes(const RoomProof& p) {
+  return 1 + std::min(p.room.size(), kMaxRoomLength) + 8 + kProofSignatureBytes;
 }
 
 std::size_t entry_bytes(const RoomEntry& e) {
@@ -286,6 +312,29 @@ std::optional<Message> decode(std::span<const std::uint8_t> bytes) {
       m.start = r.u8();
       const std::vector<std::uint8_t> pad = r.rest();
       if (std::any_of(pad.begin(), pad.end(), [](std::uint8_t b) { return b != 0; })) return std::nullopt;
+      break;
+    }
+    case Kind::kListProofs: {
+      if (bytes.size() < kListRequestBytes) return std::nullopt;  // (not padded: no answer)
+      const std::vector<std::uint8_t> pad = r.rest();
+      if (std::any_of(pad.begin(), pad.end(), [](std::uint8_t b) { return b != 0; })) return std::nullopt;
+      break;
+    }
+    case Kind::kRoomProof:
+      m.token = r.u64();
+      m.proof.time_s = r.u64();
+      for (auto& b : m.proof.signature) b = r.u8();
+      break;
+    case Kind::kRoomProofs: {
+      const std::uint8_t n = r.u8();
+      for (std::uint8_t i = 0; i < n && r.ok; ++i) {
+        RoomProof p;
+        p.room = r.sized_text(kMaxRoomLength);
+        p.time_s = r.u64();
+        for (auto& b : p.signature) b = r.u8();
+        if (r.ok && !normalize_room(p.room)) return std::nullopt;
+        m.proofs.push_back(std::move(p));
+      }
       break;
     }
     case Kind::kRoomList: {

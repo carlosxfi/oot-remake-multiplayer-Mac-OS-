@@ -150,7 +150,7 @@ def _leaf(kind, what, plug, neg, under_or):
             _place(what), links)
 
 
-def switch_events(romfs, dicts=None, wiring=None, askers=None, world=None):
+def switch_events(romfs, dicts=None, wiring=None, askers=None, world=None, performers=None):
     """(lines, guards, extras), each sorted.
 
     lines:  (event, scene, switch name, switch place, plug, asker place)
@@ -169,6 +169,10 @@ def switch_events(romfs, dicts=None, wiring=None, askers=None, world=None):
             drive something), "results": all of them, "delete": [flags that delete it]}. asker_class() reads it.
     world:  when a dict, filled per scene with every placed actor: {scene: {hash: (name, DefaultDungeonRoomIndex or
             None, place, the placements all its links name)}}. trigger_guards() reads it (followed world objects).
+    performers: when a dict, filled {(scene, event): {(actor name, place)}} with every placed actor whose Logic_Delete
+            reads that event's played state (HoldGameDataHavePlayedEvent, or the flag HavePlayedEvent.<event>,
+            through gates): the room's "before" actor of the event, deleted only when the room loads with the event
+            played (row 165: Dodongo's broken stair). performer_plays() and main --results read it.
     """
     if dicts is None:
         dicts = zs.Dicts.from_romfs(romfs)
@@ -344,6 +348,37 @@ def switch_events(romfs, dicts=None, wiring=None, askers=None, world=None):
                         if by_id.get((mpre, n["imm"].get("InstanceName"))) is actor:
                             return mpre, g2, n
                 return None
+
+            def played_of(g_, src, outp, depth=0):
+                """The events whose played state the plug (src, outp) reads, through gates in this graph."""
+                nodes, multi = g_
+                if src <= -100:
+                    return {e for a, b in multi(-100 - src, outp) for e in played_of(g_, a, b, depth + 1)}
+                if src < 0 or src >= len(nodes) or depth > 12:
+                    return set()
+                node = nodes[src]
+                if node["type"] == "HoldGameDataHavePlayedEvent":
+                    return {node["sdef"].get("EventName", "")} - {""}
+                name = str(node["sdef"].get("GameDataNameBool", ""))
+                if node["type"].startswith("HoldGameDataGetBool") and name.startswith("HavePlayedEvent."):
+                    return {name[len("HavePlayedEvent."):]}
+                if not (node["type"].startswith("Operate") or "InvBool" in node["type"]):
+                    return set()
+                return {e for n, a, b in node["in"]["bool"] if n != "UpdateOnce" for e in played_of(g_, a, b, depth + 1)}
+
+            for pre, logic, _ in mods:
+                g_ = graph(logic) if logic else None
+                if g_ is None or performers is None:
+                    continue
+                for node in g_[0]:
+                    actor = by_id.get((pre, node["imm"].get("InstanceName")))
+                    if actor is None:
+                        continue
+                    for name, a, b in node["in"]["bool"]:
+                        if name == "Logic_Delete":
+                            for event in played_of(g_, a, b):
+                                performers.setdefault((scene, event), set()).add((str(actor.get("Gyaml")),
+                                                                                  _place(actor)))
 
             for pre, logic, _ in mods:
                 g_ = graph(logic) if logic else None
@@ -527,16 +562,63 @@ def classify(line, wire, shared, two_way=frozenset()):
     return "B", "none", "; ".join(misses)
 
 
-def asker_class(key, wire, shared):
+def event_plays(romfs, events, dicts=None):
+    """{event: {(actor, ASName)}}: every EventPlayAS its event flow can run (RSDB EventSetting: the flow and entry;
+    through subflows and forks, puppet_pack/evfl.py actions_of). An event without a setting or flow gives nothing."""
+    from . import evfl
+    if dicts is None:
+        dicts = zs.Dicts.from_romfs(romfs)
+    found = sorted(glob.glob(os.path.join(romfs, "RSDB", "EventSetting.Product.*.rstbl.byml.zs")))
+    if not found:
+        return {}
+    with open(found[-1], "rb") as f:
+        settings = {r["__RowId"]: r for r in byml.loads(dicts.decompress(f.read()))}
+    flows = {}
+
+    def load(name):
+        path = os.path.join(romfs, "Event", "EventFlow", name + ".bfevfl.zs")
+        if not os.path.exists(path):
+            return None
+        with open(path, "rb") as f:
+            return evfl.parse(dicts.decompress(f.read()))
+
+    out = {}
+    for event in sorted(set(events)):
+        row = settings.get(event)
+        if not row or not row.get("FlowchartFileName"):
+            continue
+        flow = str(row["FlowchartFileName"]).split("/")[-1].split(".")[0]
+        acts = evfl.actions_of(flows, flow, row.get("EntryPointName") or "", load=load)
+        out[event] = {(a, str(p.get("ASName"))) for a, act, p in acts if act == "EventPlayAS" and p.get("ASName")}
+    return out
+
+
+def performer_plays(event, scene, performers, plays):
+    """[(actor, place, ASName)] (row 165): the event flow's EventPlayAS on a room actor whose Logic_Delete reads the
+    event's played state. The game deletes that actor (and makes its end actor) only when the room loads with the
+    event played; live, the event's own AS is what changes it (Dodongo's stair falls). So the other player's played
+    flag changes nothing in our loaded room: our performer plays that AS (result only: our Link is not bound)."""
+    by_name = {}
+    for actor, asname in plays.get(event, ()):
+        by_name.setdefault(actor, set()).add(asname)
+    return sorted((actor, place, asname) for actor, place in performers.get((scene, event), ())
+                  for asname in by_name.get(actor, ()))
+
+
+def asker_class(key, wire, shared, plays=()):
     """(class, why) of one asker for result only (row 98(2), owner 07:40 UTC 2026-11-17: a gimmick event another
     player played is never replayed here). "live": every room result of the asker reaches the room through a shared
     flag the room reads live (classify's class A), so its held flags landing is the whole result; "asker": a result
     hangs on our asker's outputs (an actor input, an unshared flag, a flag the room reads only at its load), so our
     asker's outputs are set (the game's set-bool, what the event flow's EventTriggerSetEventBool does) before its held
-    flags land."""
+    flags land. `plays` (performer_plays(), row 165): a performer's AS is a result no shared flag gives (the room reads
+    the played state only at its load), so such an asker is "asker" too."""
     event, scene, at = key
     cls, _, why = classify((event, scene, "", at, "", at), {"on": [], "results": wire["results"],
                                                              "delete": wire["delete"]}, shared)
+    if plays:
+        played = "; ".join(f"{actor} plays {asname} (its room deletes it at load only)" for actor, _, asname in plays)
+        return "asker", played if cls == "A" else f"{why}; {played}"
     return ("live", why) if cls == "A" else ("asker", why)
 
 
@@ -748,15 +830,20 @@ def main(argv=None):
     wiring = {} if args.classify else None
     askers = {} if args.results else None
     world = {} if args.results else None
-    lines, guards, extras, others = switch_events(args.romfs, wiring=wiring, askers=askers, world=world)
+    performers = {} if args.results else None
+    lines, guards, extras, others = switch_events(args.romfs, wiring=wiring, askers=askers, world=world,
+                                                  performers=performers)
     if args.results:
+        plays = event_plays(args.romfs, {e for _, e in performers} & {e for e, _, _ in askers})
         print("// kResults (event, scene, asker place, the outputs to set: none for class live)")
-        guarded = []
+        guarded, all_plays = [], set()
         for key in sorted(askers):
             event, scene, at = key
             if keep is not None and (event, scene) not in keep:
                 continue
-            cls, why = asker_class(key, askers[key], shared or set())
+            mine = performer_plays(event, scene, performers, plays)
+            all_plays |= {(event, scene, *p) for p in mine}
+            cls, why = asker_class(key, askers[key], shared or set(), mine)
             outs = "+".join(o for o in ASKER_OUTPUTS if o in askers[key]["outputs"]) if cls == "asker" else ""
             print(f'    {{"{event}", "{scene}", {{{at[0]}f, {at[1]}f, {at[2]}f}}, "{outs}"}},  '
                   f'// {cls} ({askers[key]["actor"]}): {why}')
@@ -766,6 +853,9 @@ def main(argv=None):
         # set, its results are the room's shared flags (class live).
         for event, scene in sorted((keep or set()) - {(e, s) for e, s, _ in askers}):
             print(f'    {{"{event}", "{scene}", {{0.0f, 0.0f, 0.0f}}, ""}},  // live (no asker actor: a field asks it)')
+        print("// kPlays (event, scene, performer, its place, the AS our performer plays: row 165)")
+        for event, scene, actor, place, asname in sorted(all_plays):
+            print(f'    {{"{event}", "{scene}", "{actor}", {{{place[0]}f, {place[1]}f, {place[2]}f}}, "{asname}"}},')
         print("// kResultGuards (a shared flag that deletes an asker of class asker: waits until our result is set)")
         for flag, scene, event in sorted(set(guarded)):
             print(f'    {{"{flag}", "{scene}", "{event}"}},')

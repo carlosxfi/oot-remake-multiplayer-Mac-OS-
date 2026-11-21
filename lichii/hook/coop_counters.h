@@ -52,8 +52,19 @@
 //     start of this pause has not come yet (we began first, or it is more
 //     than a pause ahead), our pause is held from running out until it comes
 //     (at most kMaxHoldUs), then ends with the leader's.
-//   - A mover the room table marks driven (a switch, a sensor, a rider:
-//     Seen::driven) is never sent or written: its own logic moves it.
+//   - A mover its own player drives (a rider's lift, a player sensor:
+//     Seen::driven) is never sent or written: each game's own Link moves it.
+//     A mover with a switch's or an event's input (Seen::switched: Dodongo's
+//     shortcut lift, IsShortCutMove) runs the same logic in every game, since
+//     that state is shared: it is lined up once it loops on its own (row 164:
+//     before, it was never lined up and drifted for good).
+//   - Row 164, pause menus and late arrivals: a game whose player is away (a
+//     pause or quick-switch menu, a load, a cutscene: PLAYER_STATUS) leads
+//     nobody and writes nothing, since its lifts stand still while the server
+//     clock runs (before, every other game held its lifts for it, then ran
+//     free). A game that came back, or came into the scene, leads only after
+//     kSettleUs of sending (until then it follows: lined up from its first
+//     pause, not its third), so it never pulls the others to its own phase.
 //
 // No emulator code. Tested in tests/lichii/counters_test.cpp.
 #pragma once
@@ -189,8 +200,11 @@ struct Seen {
     // it, 1 away; -1 when its placement is not known. `home_m`: how far from it (logged at the first pauses).
     int wait = -1;
     float home_m = -1.0f;
-    // Moved by its own logic (a switch, a sensor, a rider: CoopRoomObjects::Driven): never sent or written.
+    // Moved by its own player (a rider, a player sensor: CoopRoomObjects::PlayerDriven): never sent or written.
     bool driven = false;
+    // Row 164: an input from a switch or an event every game shares (CoopRoomObjects's `why`, not the player's):
+    // sent and lined up only once it loops on its own (a switch's moves never do).
+    bool switched = false;
 };
 
 // Metres from its placement within which a platform is at its home wait.
@@ -213,6 +227,12 @@ public:
     static constexpr std::uint64_t kMinSendGapUs = 250'000;     // a start sent at once: at most this often
     static constexpr std::uint64_t kMaxHoldUs = 60'000'000;     // a pause held for the leader's start: at most
     static constexpr float kKeepFrames = 10.0f;                 // a held pause is kept above this many frames
+    // Row 164: a game leads only once it has sent its counters this long without being away (a pause menu, a
+    // load, a cutscene) in this scene; until then it follows.
+    static constexpr std::uint64_t kSettleUs = 45'000'000;
+    // Row 164: a pause lined up on the leader's is left alone when it ends this close to the leader's (seconds;
+    // was kOffS: 0.3 s of a moving lift is a visible step).
+    static constexpr float kAlignOffS = 0.15f;
 
     struct Write {
         std::uint64_t node = 0;
@@ -232,8 +252,11 @@ public:
     // Present thread, every look (a few frames): the nodes seen now.
     // `probe_only` (LICHII_COOP_PLATFORMS=probe): what would be written is
     // logged, not given as a write, and the node's state stays as read.
+    // `away`: the players whose game stands still now (PLAYER_STATUS paused, in_menu, loading, in_cutscene),
+    // ourselves included (row 164).
     void Tick(const std::string& scene, std::uint8_t self, std::uint64_t server_us,
-              const std::vector<Seen>& seen, bool probe_only, Out& out);
+              const std::vector<Seen>& seen, bool probe_only, Out& out,
+              const std::set<std::uint8_t>& away = {});
 
     void Reset();
 
@@ -278,6 +301,7 @@ private:
         int home_said = 0;                    // pauses whose distance from the placement was logged
         std::array<std::uint64_t, 2> wait_start{};   // the last start of each wait
         std::array<std::uint64_t, 2> wait_period{};  // between two starts of the same wait
+        bool switched = false;                // Seen::switched: shared only while it loops
         bool looping = false;
         bool logged = false;
     };
@@ -296,6 +320,9 @@ private:
     // left) is no leader, although it keeps resending that old start.
     std::uint8_t Leader(const Node& n, std::uint8_t self, std::uint64_t server_us) const;
     static constexpr std::uint64_t kLeaderStalePeriods = 2;
+    // Row 164: settled (sent without being away for kSettleUs in this scene), the same answer in every game: the
+    // times are the server times of that player's messages.
+    bool Settled(std::uint8_t player, std::uint64_t server_us) const;
     // PR 279 review M1: a pause held for the leader's start waits at most until that start is due: the leader's
     // last start of this wait + kHoldDuePeriods of its period + the pause (and never past kMaxHoldUs).
     static constexpr double kHoldDuePeriods = 1.25;
@@ -312,6 +339,10 @@ private:
     std::uint64_t last_send_us_ = 0;
     std::size_t writes_ = 0;
     std::set<std::uint64_t> counter_owners_;
+    // Row 164: the players away now (Tick's `away`), and since when each has sent counters in this scene without
+    // being away (its first message's server time after that; ours: our first send).
+    std::set<std::uint8_t> away_;
+    std::map<std::uint8_t, std::uint64_t> present_since_;
 };
 
 // The loop of a node from its last periods between starts (oldest first;

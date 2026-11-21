@@ -398,6 +398,13 @@ RutoLetter ruto_letter_plan(std::optional<bool> got, std::optional<bool> shown, 
                             const std::function<std::optional<bool>(std::uint32_t)>& valid,
                             const std::function<std::optional<std::uint32_t>(std::uint32_t)>& item);
 
+// Tracker row 162: whether a bottle we own holds a fairy (BottleItem Enum
+// "Fairy"), which the game's own death at no life uses to revive Link. An
+// unread bottle counts as no fairy (down but not out then holds the hit).
+constexpr std::uint32_t kBottledFairy = 0x6f49e357;  // the Enum value "Fairy"
+bool bottled_fairy(const std::function<std::optional<bool>(std::uint32_t)>& valid,
+                   const std::function<std::optional<std::uint32_t>(std::uint32_t)>& item);
+
 // The BottleItem flag to put Ruto's Letter in, or nothing: when the letter was
 // got (by anyone), nobody has shown it yet (kKingRead), King Zora has not moved here, no bottle holds it, and a
 // bottle is owned and empty (the first). Anything unread leaves it alone.

@@ -56,6 +56,26 @@ TEST_CASE("room objects: one name, two placements: the nearest decides") {
     CHECK_FALSE(Driven("DodongoCavern", "Obj_DodongoCave_MoveFloor_A_01", {-10.5f, 99.0f, -23.0f}));
 }
 
+TEST_CASE("room objects: row 164: only a player's own inputs make a mover the player's") {
+    // A rider's lift or a player sensor: its own player moves it in each game.
+    CHECK(PlayerDriven("RideOnPlayer"));
+    CHECK(PlayerDriven("IsInPlayer+IsTargetFloor+RideOnPlayer"));
+    CHECK(PlayerDriven("IsTargetFloor+RideOnPlayer"));
+    // A shared switch's or event's input: the same in every game (Dodongo's shortcut lift loops like the others).
+    CHECK_FALSE(PlayerDriven("IsShortCutMove"));
+    CHECK_FALSE(PlayerDriven("IsOn"));
+    CHECK_FALSE(PlayerDriven("MoveToPosX"));
+    CHECK_FALSE(PlayerDriven("BootUp+IsPreEvent+IsResetAngle"));
+    CHECK_FALSE(PlayerDriven("with Obj_DodongoCave_MoveFloor_A_01"));
+    CHECK_FALSE(PlayerDriven(""));
+    // Every rider lift of the table is a player's (no rider placement is missed).
+    for (const Placement& p : Placements()) {
+        if (RiderName(p.name) && !p.why.empty() && !p.why.starts_with("with ")) {
+            CHECK_MESSAGE(PlayerDriven(p.why), p.name);
+        }
+    }
+}
+
 TEST_CASE("room objects: the rider names are the logic types with RideOnPlayer") {
     CHECK(RiderName("Obj_ForestTemple_Elevator_A_01"));
     CHECK(RiderName("Obj_InsideJabu_Jabu_ElevatorLift_A_01"));

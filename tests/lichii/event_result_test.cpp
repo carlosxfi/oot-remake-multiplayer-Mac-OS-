@@ -8,6 +8,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "coop/protocol/codec.hpp"
@@ -95,12 +96,42 @@ struct Cave {
     bool sticks = true;
     int executes = 0;
     int mallocs = 0;
+    std::uint64_t malloc_size = 0;
+    // Row 165: performers (name -> address) and the game's AS play: slot 0 then shows the name it was given, unless
+    // `shows` is false (another AS took slot 0 at once).
+    std::map<std::string, std::uint64_t, std::less<>> performers;
+    bool shows = true;
+    std::vector<std::pair<std::uint64_t, std::string>> plays;  // (actor, AS) per play request
     CoopEyeSwitch::Finder Finder() {
         return [this](CoopPuppet::Guest&, std::uint64_t, std::span<const std::string_view> names,
                       const std::array<float, 3>&, float) {
             const bool asked = names.front() == "EventRequestActor";
+            if (const auto it = performers.find(names.front()); it != performers.end()) {
+                return std::vector<std::uint64_t>{it->second};
+            }
             return asked && present ? std::vector<std::uint64_t>{kAsker} : std::vector<std::uint64_t>{};
         };
+    }
+    // A performer at `actor` with an AS controller whose slot 0 plays `name` (kept in its own cell here).
+    void Performer(const std::string& name, std::uint64_t actor) {
+        namespace pa = CoopPuppet::addr;
+        performers[name] = actor;
+        std::uint64_t at = actor;
+        for (std::size_t i = 0; i < pa::kControllerPath.size(); ++i) {
+            const std::uint64_t next = actor + 0x1000 * (i + 1);
+            g.Put<std::uint64_t>(at + pa::kControllerPath[i], next);
+            at = next;
+        }
+        g.Put<std::uint64_t>(at + pa::kSlots, actor + 0x6000);
+        g.Put<std::uint64_t>(actor + 0x6000, actor + 0x7000);  // slot 0
+        g.Put<std::uint64_t>(actor + 0x7000 + pa::kSlotName, actor + 0x8000);
+        const char wait[] = "Wait";
+        g.Write(actor + 0x8000, wait, sizeof wait);
+    }
+    std::string Text(std::uint64_t at) {
+        std::string out;
+        for (char c = g.Get<char>(at); c != 0 && out.size() < 80; c = g.Get<char>(at + out.size())) out += c;
+        return out;
     }
     void Frame(CoopEventResult::Setter& s, std::uint64_t now_ms) {
         auto call = s.Step(g, false, 0, kMain, now_ms);
@@ -108,7 +139,15 @@ struct Cave {
             std::uint64_t result = 0;
             if (call->function == kMain + ls::kMalloc) {
                 ++mallocs;
+                malloc_size = call->x[0];
                 result = kBlock;
+            } else if (call->function == kMain + CoopPuppet::addr::kPlayAs) {
+                const auto actor = g.Get<std::uint64_t>(call->x[0]);
+                const auto name = g.Get<std::uint64_t>(call->x[0] + 8);
+                plays.emplace_back(actor, Text(name));
+                CHECK(name >= kBlock);
+                CHECK(name + CoopEventResult::kPlayNameCell <= kBlock + malloc_size);  // in our block
+                if (shows) g.Put<std::uint64_t>(actor + 0x7000 + CoopPuppet::addr::kSlotName, name);
             } else if (call->function == kMain + ls::kExecute) {
                 ++executes;
                 const int plug = Asker::PlugOf(g.Get<std::uint32_t>(kBlock + ls::kNodeKey));
@@ -196,6 +235,88 @@ TEST_CASE("event result: a class-live event has nothing to set") {
     CHECK_FALSE(s.Want(kWater, kDeku));
     cave.Frame(s, 100);
     CHECK(cave.mallocs == 0);  // nothing asked of the game
+}
+
+namespace {
+const std::string kStairs = "Dm_DodongoCave_0010";
+const std::string kDodongo = "DodongoCavern";
+const std::string kStair = "Obj_DodongoCave_BrokenStair_A_01";
+const std::string kStairAs = "Obj_DodongoCave_BrokenStair_A_01_Demo_Anim";
+constexpr std::uint64_t kStairActor = 0x100000;
+}  // namespace
+
+TEST_CASE("event result: row 165: an event whose performer's AS is its result is class asker") {
+    // Run hs-dc-break: the played flag landing changed nothing in a loaded room (the room swaps the stair only at its
+    // load); the event's own EventPlayAS on the stair is the live result.
+    CHECK_FALSE(CoopEventResult::IsLive(kStairs));
+    REQUIRE(CoopEventResult::AskerLines(kStairs, kDodongo).size() == 1);
+    const auto plays = CoopEventResult::PlaysOf(kStairs, kDodongo);
+    REQUIRE(plays.size() == 1);
+    CHECK(plays[0]->actor == kStair);
+    CHECK(plays[0]->as == kStairAs);
+    // The same pattern elsewhere: the Forest Temple's box puzzle boxes, Ganon's Castle's lift rock.
+    CHECK(CoopEventResult::PlaysOf("Dm_ForestTemple_0014", "ForestTemple").size() == 4);
+    CHECK(CoopEventResult::PlaysOf("Dm_InsideGanonCastle_0035", "InsideGanonCastle").size() == 1);
+    CHECK_FALSE(CoopEventResult::IsLive("Dm_ForestTemple_0014"));
+    CHECK_FALSE(CoopEventResult::IsLive("Dm_InsideGanonCastle_0035"));
+    // The Fire Temple's hammer stair is a door whose isOpen reads the shared flag live: no play, still live.
+    CHECK(CoopEventResult::PlaysOf("Dm_FireTemple_0029", "FireTemple").empty());
+    CHECK(CoopEventResult::IsLive("Dm_FireTemple_0029"));
+    // Its played flag waits in its scene until our result is set (a result guard).
+    const auto hold = CoopEventResult::HoldFor(kDodongo, {}, [](const std::string&) { return false; });
+    CHECK(hold.Waits(coop::protocol::flag_hash("HavePlayedEvent." + kStairs)));
+    const auto done = CoopEventResult::HoldFor(kDodongo, {kStairs}, [](const std::string&) { return false; });
+    CHECK(done.Releases(coop::protocol::flag_hash("HavePlayedEvent." + kStairs)));
+}
+
+TEST_CASE("event result: row 165: our stair plays the event's AS once, then the result counts as set") {
+    Cave cave;
+    cave.Performer(kStair, kStairActor);
+    CoopEventResult::Setter s(cave.Finder());
+    s.Visit(kDodongo);
+    REQUIRE(s.Want(kStairs, kDodongo));
+    std::uint64_t now = 1000;
+    for (int f = 0; f < 20 && !s.Applied().contains(kStairs); ++f) cave.Frame(s, now += 16);
+    CHECK(s.Applied().contains(kStairs));
+    REQUIRE(cave.plays.size() == 1);  // once: slot 0 showed it
+    CHECK(cave.plays[0].first == kStairActor);
+    CHECK(cave.plays[0].second == kStairAs);
+    CHECK(cave.executes == 0);  // no asker output to set
+    CHECK(cave.malloc_size >= CoopLogicSet::addr::kBlockSize + 0x30 + CoopEventResult::kPlayNameCell);
+    const auto notes = s.TakeNotes();
+    CHECK(Noted(notes, "our " + kStair + " plays " + kStairAs));
+    CHECK(Noted(notes, "set (its performers' AS)"));
+    // Asked again this visit: not played again.
+    CHECK(s.Want(kStairs, kDodongo));
+    cave.Frame(s, now += 16);
+    CHECK(cave.plays.size() == 1);
+}
+
+TEST_CASE("event result: row 165: a performer not at its place is skipped, one that never shows is played twice") {
+    {
+        Cave cave;  // no stair here (our room shows its end already)
+        CoopEventResult::Setter s(cave.Finder());
+        s.Visit(kDodongo);
+        REQUIRE(s.Want(kStairs, kDodongo));
+        std::uint64_t now = 1000;
+        for (int f = 0; f < 10; ++f) cave.Frame(s, now += 16);
+        CHECK(s.Applied().contains(kStairs));
+        CHECK(cave.plays.empty());
+        CHECK(Noted(s.TakeNotes(), "is not at its place: skipped"));
+    }
+    {
+        Cave cave;
+        cave.Performer(kStair, kStairActor);
+        cave.shows = false;
+        CoopEventResult::Setter s(cave.Finder());
+        s.Visit(kDodongo);
+        REQUIRE(s.Want(kStairs, kDodongo));
+        std::uint64_t now = 1000;
+        for (int f = 0; f < 20; ++f) cave.Frame(s, now += 16);
+        CHECK(cave.plays.size() == static_cast<std::size_t>(CoopEventResult::kMaxPlayCalls));
+        CHECK(s.Applied().contains(kStairs));
+        CHECK(Noted(s.TakeNotes(), "did not show " + kStairAs));
+    }
 }
 
 TEST_CASE("event result: our asker's EventBool then EventFinish, each read 1 for 3 frames, then set") {
@@ -408,6 +529,80 @@ TEST_CASE("event result: the kill keeper: the largest live enemy of an unplayed 
               .count(0xf8119818b5e22a95ULL) == 0);
 }
 
+TEST_CASE("event result: the kill keeper: an enemy our game owns is never kept, and no copy while one of ours lives") {
+    // Rows 160/161 (E'tykalu's 0.11.6 logs): Dodongo's Cavern's second Lizalfos room, the two Lizalfos owned by two
+    // games (the host 0x2345..., player 2 0x155c...). Before, each game kept the other owner's kill: nobody played.
+    constexpr std::uint64_t kA = 0x23456e4b5b005315ULL;  // the larger: owned by the host
+    constexpr std::uint64_t kB = 0x155ce1b2ba5028cfULL;  // owned by player 2
+    std::set<std::uint64_t> alive{kA, kB};
+    std::set<std::uint64_t> mine;
+    bool played = false;
+    const auto keepers = [&] {
+        return CoopEventResult::KillKeepers(
+            "DodongoCavern", [&](std::uint64_t h) { return alive.contains(h); },
+            [&](const std::string& e) { return played && e == "DodongoCavern_Gimmick_DefeatLizalfos02"; },
+            [&](std::uint64_t h) { return mine.contains(h); });
+    };
+    // Player 2's game: B is ours, A a copy. The host's kill of A lands (B, ours, still lives).
+    mine = {kB};
+    CHECK(keepers().empty());
+    alive.erase(kA);
+    CHECK(keepers().empty());  // B's death (a remote hit too) is our own game's: never kept; our asker plays it
+    // The host's game: A dead (ours), B a copy and the last one: its kill waits until the event's flags come.
+    mine = {kA};
+    CHECK(keepers() == std::set<std::uint64_t>{kB});
+    played = true;
+    CHECK(keepers().empty());
+    // A game that owns neither (a third player): the largest live copy waits, as before.
+    played = false;
+    mine.clear();
+    alive = {kA, kB};
+    CHECK(keepers() == std::set<std::uint64_t>{kA});
+    // Both ours (the owner of the whole fight): nothing is kept, a teammate's last hit lands here.
+    mine = {kA, kB};
+    CHECK(keepers().empty());
+    // No owner function (as before): the largest live one.
+    CHECK(CoopEventResult::KillKeepers("DodongoCavern", [&](std::uint64_t h) { return alive.contains(h); },
+                                       [](const std::string&) { return false; }) == std::set<std::uint64_t>{kA});
+}
+
+TEST_CASE("event result: crossing last kills: only the lowest-numbered owner lets the other's kill land, after a wait") {
+    // review-dc-0118: P1 owns A, P2 owns B; each kills its own within one round trip, so each keeps the other's kill.
+    constexpr std::uint64_t kA = 0x23456e4b5b005315ULL;
+    constexpr std::uint64_t kB = 0x155ce1b2ba5028cfULL;
+    constexpr auto kLong = CoopEventResult::kCrossingUs;
+    const auto died = [](std::uint64_t own) { return [own](std::uint64_t h) { return h == own; }; };
+    // P1's game keeps B's kill (B owned by 2), its own A died: lands once kept long enough.
+    CHECK_FALSE(CoopEventResult::CrossingKillLands("DodongoCavern", kB, kLong - 1, 1, 2, died(kA)));
+    CHECK(CoopEventResult::CrossingKillLands("DodongoCavern", kB, kLong, 1, 2, died(kA)));
+    // P2's game keeps A's kill (A owned by 1): never by this rule; P1's flags end it.
+    CHECK_FALSE(CoopEventResult::CrossingKillLands("DodongoCavern", kA, kLong * 4, 2, 1, died(kB)));
+    // A third player who owned neither (or whose own died long before: the caller's gap check says false): waits.
+    CHECK_FALSE(CoopEventResult::CrossingKillLands("DodongoCavern", kB, kLong * 4, 1, 2,
+                                                   [](std::uint64_t) { return false; }));
+    // Our own "died" enemy must be another kill actor of the same event, in the same scene.
+    CHECK_FALSE(CoopEventResult::CrossingKillLands("DodongoCavern", kB, kLong, 1, 2, died(kB)));
+    CHECK_FALSE(CoopEventResult::CrossingKillLands("DodongoCavern", kB, kLong, 1, 2, died(0x9cbd9c524b24df87ULL)));
+    CHECK_FALSE(CoopEventResult::CrossingKillLands("FireTemple", kB, kLong, 1, 2, died(kA)));
+    // Unknown numbers or owner: no tiebreak.
+    CHECK_FALSE(CoopEventResult::CrossingKillLands("DodongoCavern", kB, kLong, 0, 2, died(kA)));
+    CHECK_FALSE(CoopEventResult::CrossingKillLands("DodongoCavern", kB, kLong, 1, std::nullopt, died(kA)));
+    CHECK_FALSE(CoopEventResult::CrossingKillLands("DodongoCavern", kB, kLong, 1, 0, died(kA)));
+    CHECK_FALSE(CoopEventResult::CrossingKillLands("DodongoCavern", kB, kLong, 2, 2, died(kA)));
+    // The first room's pair goes the same way (every kill line shares the rule).
+    CHECK(CoopEventResult::CrossingKillLands("DodongoCavern", 0x9cbd9c524b24df87ULL, kLong, 1, 3,
+                                             died(0x01fa0074fddbc182ULL)));
+    // review-dc-0118 MUST 2: the lowest owner (1) left mid-wait. Player 2 keeps 1's kill of A: with 1 gone from our
+    // scene, the scene's decider (now 2) lets it land; a third player who does not decide still waits.
+    const auto none = [](std::uint64_t) { return false; };
+    CHECK(CoopEventResult::CrossingKillLands("DodongoCavern", kA, kLong, 2, 1, died(kB), false, true));
+    CHECK_FALSE(CoopEventResult::CrossingKillLands("DodongoCavern", kA, kLong - 1, 2, 1, died(kB), false, true));
+    CHECK_FALSE(CoopEventResult::CrossingKillLands("DodongoCavern", kA, kLong, 3, 1, none, false, false));
+    CHECK(CoopEventResult::CrossingKillLands("DodongoCavern", kA, kLong, 3, std::nullopt, none, false, true));
+    // ... but only for a kill line of our scene.
+    CHECK_FALSE(CoopEventResult::CrossingKillLands("FireTemple", kA, kLong, 2, 1, died(kB), false, true));
+}
+
 TEST_CASE("event result: the follow keepers: blocks on press switches wait, the box puzzle's largest corner waits") {
     std::set<std::string> played;
     const auto is_played = [&](const std::string& e) { return played.contains(e); };
@@ -438,4 +633,132 @@ TEST_CASE("event result: the follow keepers: blocks on press switches wait, the 
     std::size_t follows = 0;
     for (const auto& t : CoopEventResult::Triggers()) follows += t.kind == CoopEventResult::Trigger::follow;
     CHECK(follows == 22);
+}
+
+TEST_CASE("event result: row 160: an owner downed, out, spectating, dead or loading cannot play the event") {
+    namespace st = coop::protocol::status;
+    CHECK(CoopEventResult::AbleToPlay(true, true, 0));
+    CHECK(CoopEventResult::AbleToPlay(true, true, st::in_cutscene));  // the room event itself
+    CHECK(CoopEventResult::AbleToPlay(true, true, st::paused | st::in_menu));
+    CHECK_FALSE(CoopEventResult::AbleToPlay(false, true, 0));          // gone from our scene, as before
+    CHECK_FALSE(CoopEventResult::AbleToPlay(true, false, 0));          // DBNO downed / spectating / out
+    CHECK_FALSE(CoopEventResult::AbleToPlay(true, true, st::dead));
+    CHECK_FALSE(CoopEventResult::AbleToPlay(true, true, st::loading)); // a void-out's respawn, a Try Again
+    // Run 20261120-132403: B (2) owned and killed the last Lizalfos, then went down; A (1) kept its kill. With B
+    // not able, A (the lowest able game) decides: the kept kill lands there after kCrossingUs.
+    constexpr std::uint64_t kA = 0x23456e4b5b005315ULL;
+    constexpr std::uint64_t kB = 0x155ce1b2ba5028cfULL;
+    const auto none = [](std::uint64_t) { return false; };
+    const std::array<std::uint8_t, 1> two{2};
+    const auto able_but = [](std::uint8_t down) { return [down](std::uint8_t p) { return p != down; }; };
+    CHECK(CoopEventResult::DeciderAmongAble(1, two, able_but(2)) == 1);
+    CHECK(CoopEventResult::CrossingKillLands("DodongoCavern", kB, CoopEventResult::kCrossingUs, 1, 2, none,
+                                             CoopEventResult::AbleToPlay(true, false, 0), true));
+    // Player 1 is the one down: player 2 decides for the scene, though 1 is lower.
+    CHECK(CoopEventResult::DeciderAmongAble(2, std::array<std::uint8_t, 1>{1}, able_but(1)) == 2);
+    CHECK(CoopEventResult::DeciderAmongAble(1, two, able_but(1)) == 2);
+    // Nobody able: nobody decides (the first game up again does).
+    CHECK(CoopEventResult::DeciderAmongAble(1, two, [](std::uint8_t) { return false; }) == 0);
+    // Everyone up: the lowest number, as Sync::DeciderOf.
+    CHECK(CoopEventResult::DeciderAmongAble(3, std::array<std::uint8_t, 2>{2, 5}, [](std::uint8_t) { return true; }) == 2);
+    CHECK(CoopEventResult::DeciderAmongAble(0, two, [](std::uint8_t) { return true; }) == 2);
+    // An owner that is up and here still plays it: the other games only wait (no landing before its flags).
+    CHECK_FALSE(CoopEventResult::CrossingKillLands("DodongoCavern", kB, CoopEventResult::kCrossingUs * 4, 1, 2, none,
+                                                   CoopEventResult::AbleToPlay(true, true, 0), true));
+    (void)kA;
+}
+
+TEST_CASE("event result: row 160: a whole room killed in this visit is killed again when a reload makes it") {
+    constexpr std::uint64_t kA = 0x23456e4b5b005315ULL;
+    constexpr std::uint64_t kB = 0x155ce1b2ba5028cfULL;
+    const auto never = [](const std::string&) { return false; };
+    CHECK(CoopEventResult::KillEventOf("DodongoCavern", kA) == "DodongoCavern_Gimmick_DefeatLizalfos02");
+    CHECK_FALSE(CoopEventResult::KillEventOf("FireTemple", kA));
+    CHECK_FALSE(CoopEventResult::KillEventOf("DodongoCavern", 0x1234ULL));
+    // A's game: its own A seen dead, B's kill kept: both of the event are dead for the group.
+    CHECK(CoopEventResult::KillsToRedo("DodongoCavern", {kA}, {kB}, never) == std::set<std::uint64_t>{kA, kB});
+    // Only one killed: the re-made room is a native refight.
+    CHECK(CoopEventResult::KillsToRedo("DodongoCavern", {kA}, {}, never).empty());
+    CHECK(CoopEventResult::KillsToRedo("DodongoCavern", {}, {kB}, never).empty());
+    // Co-op idle (C #49): a host in a session, alone in the room, killed both itself and reloads before its event
+    // played (no other game's kill kept here): no redo, the game's own refight, as solo.
+    CHECK(CoopEventResult::KillsToRedo("DodongoCavern", {kA, kB}, {}, never).empty());
+    // The event played here: nothing to redo.
+    CHECK(CoopEventResult::KillsToRedo("DodongoCavern", {kA}, {kB},
+                                       [](const std::string& e) { return e == "DodongoCavern_Gimmick_DefeatLizalfos02"; })
+              .empty());
+    // Another scene's hashes do not count.
+    CHECK(CoopEventResult::KillsToRedo("FireTemple", {kA}, {kB}, never).empty());
+    // Every 'last enemy -> event' line (kind kill) of every room: all its actors dead with one kept -> all of them;
+    // all dead by our own game only -> none; one missing -> none of that event's.
+    std::map<std::pair<std::string_view, std::string_view>, std::set<std::uint64_t>> events;
+    for (const auto& t : CoopEventResult::Triggers()) {
+        if (t.kind == CoopEventResult::Trigger::kill) events[{t.scene, t.event}].insert(t.id);
+    }
+    CHECK(events.size() >= 44);  // 44 kill events in 11 dungeons (ff54edf6)
+    for (const auto& [key, ids] : events) {
+        CAPTURE(key.second);
+        const std::set<std::uint64_t> one_kept{*ids.rbegin()};
+        const auto redo = CoopEventResult::KillsToRedo(key.first, ids, one_kept, never);
+        for (const auto id : ids) CHECK(redo.contains(id));
+        const auto own_only = CoopEventResult::KillsToRedo(key.first, ids, {}, never);
+        for (const auto id : ids) {
+            bool shared = false;  // an id another event of the scene also names may come from that one
+            for (const auto& [k2, ids2] : events) {
+                if (k2 != key && k2.first == key.first && ids2.contains(id)) shared = true;
+            }
+            if (!shared) CHECK_FALSE(own_only.contains(id));
+        }
+        if (ids.size() > 1) {
+            std::set<std::uint64_t> one_short = ids;
+            const std::uint64_t missing = *one_short.begin();
+            one_short.erase(one_short.begin());
+            const auto partial = CoopEventResult::KillsToRedo(key.first, one_short, {*ids.rbegin()}, never);
+            for (const auto id : ids) {
+                // an id shared with another event of the scene may still come from that one
+                bool shared = false;
+                for (const auto& [k2, ids2] : events) {
+                    if (k2 != key && k2.first == key.first && ids2.contains(id)) shared = true;
+                }
+                if (!shared) CHECK_FALSE(partial.contains(id));
+            }
+            (void)missing;
+        }
+    }
+}
+
+TEST_CASE("event result: row 160 (b): a kept kill's copy holds our key while kept, the key comes out before it lands") {
+    CoopEventResult::KeptShield shield;
+    using Step = CoopEventResult::KeptShield::Step;
+    const std::set<std::uint64_t> live{0x100, 0x200};
+    // Kept: our key goes in, one component at a time.
+    auto next = shield.Next({0x100}, live);
+    REQUIRE(next);
+    CHECK(*next == Step{0x100, true});
+    shield.Called(*next, true);
+    CHECK(shield.On(0x100));
+    CHECK_FALSE(shield.Next({0x100}, live));
+    // Its kill is to land (no longer wanted): the key comes out first.
+    next = shield.Next({}, live);
+    REQUIRE(next);
+    CHECK(*next == Step{0x100, false});
+    shield.Called(*next, true);
+    CHECK_FALSE(shield.On(0x100));
+    // An actor that went (a reload): never called on, forgotten.
+    shield.Called(Step{0x200, true}, true);
+    CHECK(shield.On(0x200));
+    CHECK_FALSE(shield.Next({}, {0x100}));
+    CHECK_FALSE(shield.On(0x200));
+    // Not in the walk: never asked.
+    CHECK_FALSE(shield.Next({0x300}, live));
+    // Failed calls are given up after kKeptShieldTries.
+    for (unsigned i = 0; i < CoopEventResult::kKeptShieldTries; ++i) {
+        next = shield.Next({0x100}, live);
+        REQUIRE(next);
+        shield.Called(*next, false);
+    }
+    CHECK(shield.GivenUp(Step{0x100, true}));
+    CHECK_FALSE(shield.Next({0x100}, live));
+    CHECK(CoopEventResult::kKeptShieldKey != 0xC0DB0D01u);  // not dbno's
+    CHECK(CoopEventResult::kKeptShieldKey != 0xC0DB0D02u);  // not the PvP copies'
 }

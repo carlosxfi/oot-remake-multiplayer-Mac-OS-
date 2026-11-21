@@ -54,6 +54,16 @@ inline constexpr std::size_t kMaxNameChars = 16;   // coop_settings.h
 inline constexpr std::size_t kMaxPasswordBytes = 128;
 inline constexpr int kMinPlayers = 2, kMaxPlayers = 16;   // a session's size (protocol 11: up to 16)
 inline constexpr std::uint16_t kDefaultPort = 27510;
+// The relay a kit uses when coop-options.ini names none, or an empty one (relay = ...): the co-op project's own, run by
+// its maintainer (given 2026-11-20). It cannot be removed: clearing the Relay row (Co-op Settings) goes back to it. A
+// player may use another (a relay line of their own, or the row typed).
+inline constexpr const char* kDefaultRelay = "159.54.182.85:27530";
+inline constexpr const char* kDefaultRelayName = "Squadala relay";   // (what the Relay row shows for it)
+// A room name the relay takes: 3 to 24 letters, digits, - or _ ("": none).
+bool RoomNameOk(std::string_view room);
+// A relay line: host[:port] (a host of letters, digits, '.' and '-'; a port from 1 to 65535), at most 128 bytes
+// ("": the kit's default).
+bool RelayOk(std::string_view relay);
 
 // A name the server takes: 1 to 16 characters (code points), no control
 // characters. Spaces at the ends do not count.
@@ -74,8 +84,15 @@ struct Options {
     bool show_players = false;     // LICHII_COOP_SHOW_PLAYERS (the list always shown)
     bool pvp = false;              // pvp (the host's)
     bool approve_joins = false;    // approve_joins (the host's: each new player waits for /allow or /deny); read only
+    bool same_network_open = false;   // same_network_open (the host's: on, players from a private address join
+                                      // without the join password; off, the default, they need it too)
     bool auto_rejoin = false;      // auto_rejoin (join the last friend's game again by itself: coop_auto_rejoin.h)
+    bool original_game = false;    // original_game (from the next start: the game as it came, coop_original.h)
     bool list_room = false;        // list_room (hosting with a relay room: the room on the relay's public list)
+    // public_game (the Host view's choice, remembered): on, a public game (anyone can join with no password,
+    // through the relay only, listed in Public games; HosCoopHostOptions::public_game); off, the default, a
+    // private game (friends with the password).
+    bool public_game = false;
     bool upnp = true;              // upnp (the host's router forward)
     std::string password;          // server_password ("": a new one each session)
     bool debug_panel = false;      // LICHII_COOP_DEBUG_PANEL
@@ -87,12 +104,17 @@ struct Options {
     std::string voice_key = "V";   // LICHII_COOP_VOICE_KEY as the Voice mode row names it (read only)
     std::string voice_mic;         // LICHII_COOP_VOICE_MIC: the voice's microphone by its name ("": the game's)
     bool map_players = true;       // LICHII_COOP_MAP (0: no other players on the minimap and the pause map)
+    std::string hud_size = "auto"; // LICHII_COOP_HUD_SIZE: the player list on the left (auto, full, compact, off)
     bool map_names = true;         // LICHII_COOP_MAP_NAMES (0: their icons without names)
-    std::string relay;             // relay (the host's: host through that relay, Host.bat's too; read only here)
+    std::string relay = kDefaultRelay;   // relay (host and join rooms through it, Host.bat's too; kDefaultRelay without a
+                                   // line; Co-op Settings' Relay row writes it)
     std::string relay_key;         // relay_key (that relay's host key; read only)
-    std::string relay_room;        // relay_room (a room name on the relay, issue 261; read only)
+    std::string relay_room;        // relay_room (a room name on the relay, issue 261; Co-op Settings' Room name)
     std::string list_name;         // list_name (the name list_room shows the room as; "": the room name; read only)
 
+    // A ready room name for a public game ("forest-4821"): a plain word, a dash, four digits; `seed` any number
+    // (the time), so each call can offer another.
+    static std::string RandomRoomName(std::uint64_t seed);
     // From the two files' texts (a missing file: "").
     static Options Read(std::string_view coop_ini, std::string_view options_ini);
     // The two files with these settings in them.
@@ -142,6 +164,12 @@ JoinTarget ReadJoin(std::string_view typed, const CodeResult& code);
 // Whether `typed` is shaped as a server address ("host" or "host:port", as
 // coop-ini.ps1 Test-CoopServer).
 bool AddressOk(std::string_view typed);
+// A Join line ("<address>[ <password>]") whose address is a bare name: no '.', ':' or '@', and a room name's letters
+// (RoomNameOk, 3 to 24). Such a name is a PC on the home network ("mypc") or a room on the relay ("forest-gang"):
+// Join tries it as a PC first, then as a room (CoopPause's Join). Nothing for any other line.
+std::optional<std::string> BareJoinName(std::string_view join_line);
+// That line through the relay: "<name>@<relay>[ <password>]".
+std::string RoomJoinLine(std::string_view join_line, std::string_view relay);
 // Valid UDP port in 1..65535 (after trimming ends), or empty.
 std::optional<std::uint16_t> ParsePort(std::string_view text);
 
@@ -416,6 +444,21 @@ struct TitleArrangement {
     std::size_t count = 0;
 };
 TitleArrangement ArrangementFor(bool any_save);
+
+// The layout the title's own requests are carried out with (row 193 / report 124): the screen's update (main+0x2d1380)
+// hands each queued request the object at the screen's +0xf0 (main+0x2d1594: ldr x1, [screen, #0xf0]), and the
+// requests use that object's +0x28 as the layout (stop an animation main+0xbad090, a message main+0x377a160: ldr x0,
+// [x1, #0x28]). The screen's +0xb8..+0xe8 is the request queue itself (+0xd8 a count, +0xe0 an array of slots,
+// +0xe8 the list's head), not an object with a layout: +0xe0 read as one gave a heap pointer (in player logs exactly
+// the layout + 0xb8), so the old check always failed and the open title never re-arranged. 0 when not known.
+inline constexpr std::uint64_t kScreenRequestsOwner = 0xf0;   // the object the screen's requests get
+inline constexpr std::uint64_t kRequestsOwnerLayout = 0x28;   // that object's layout
+template <class Read64>
+std::uint64_t RequestsLayout(Read64&& read64, std::uint64_t screen) {
+    if (screen == 0) return 0;
+    const std::uint64_t owner = read64(screen + kScreenRequestsOwner);
+    return owner != 0 ? read64(owner + kRequestsOwnerLayout) : 0;
+}
 
 // The title's own menu (a pack whose Title_00 has the hidden marker pane kMenuMarker, tools/puppet_pack/title_menu.py):
 // three rows on the game's own buttons, Start, Multiplayer and Options; Multiplayer turns them into Host, Join, Co-op

@@ -91,6 +91,31 @@ Request RequestFromAction(const BossAction& a, std::uint64_t node) {
     return r;
 }
 
+Request RequestFromAction(const BossAction& a, const OwnAsk& ask) {
+    using namespace addr;
+    Request r = RequestFromAction(a, ask.node);
+    const bool placed = std::any_of(a.places.begin(), a.places.end(), [](const auto& p) { return p.has_value(); });
+    if (ask.has_plug && ask.plug != 0 && !placed) {
+        Put<std::uint64_t>(r, kReqPlug, ask.plug);
+        r[kReqHasPlug] = 1;
+    }
+    return r;
+}
+
+std::optional<OwnAsk> AskFor(const std::map<std::pair<std::int32_t, std::int32_t>, OwnAsk>& by_move,
+                             const std::map<std::int32_t, OwnAsk>& by_slot, std::uint64_t last, const BossAction& a) {
+    if (const auto it = by_move.find({a.slot, a.verb}); it != by_move.end()) {
+        return it->second;
+    }
+    if (const auto it = by_slot.find(a.slot); it != by_slot.end()) {
+        return OwnAsk{it->second.node};  // (another move's plug is not this one's)
+    }
+    if (last != 0) {
+        return OwnAsk{last};
+    }
+    return std::nullopt;
+}
+
 void Table::SetOn(bool brain, bool actions) {
     std::lock_guard lock(mutex_);
     brain_on_ = brain;
@@ -130,10 +155,30 @@ const Table::Entry* Table::FindActor(std::uint64_t actor) const {
     return nullptr;
 }
 
+void Table::ForgetOwnAsks(Entry& e) {
+    e.own_asks.clear();
+    e.own_slot_asks.clear();
+}
+
 void Table::Note(std::string line) {
     if (notes_.size() < 64) {
         notes_.push_back(std::move(line));
     }
+}
+
+void Table::Stream(Entry& e, std::string kind) {
+    if (kind == e.stream_last) {
+        ++e.stream_run;
+        return;
+    }
+    if (stream_notes_ < kMaxStreamNotes) {
+        ++stream_notes_;
+        Note(e.name + ": action stream: " + kind +
+             (e.stream_last.empty() ? std::string()
+                                    : " after " + std::to_string(e.stream_run) + " x " + e.stream_last));
+    }
+    e.stream_last = std::move(kind);
+    e.stream_run = 1;
 }
 
 void Table::Publish(const std::vector<Boss>& bosses) {
@@ -162,13 +207,29 @@ void Table::Publish(const std::vector<Boss>& bosses) {
                     Note(b.name + ": made a copy during its own start (appear): it runs on, then the owner's state");
                 }
                 if (e.role == Role::copy && b.role == Role::owner && e.wanted && !b.plain && !OwnTime(e)) {
-                    e.rechoose = true;
-                    Note(b.name + ": its AI did not run its body as a copy: it chooses again");
+                    if (actions_on_ && e.put_action && e.own_node != 0) {
+                        // Row 178: made ours in the middle of the owner's move (Phantom Ganon handed over mid
+                        // RushAttack when his owner went down): that move starts over as ours through the game's
+                        // own request, named by the node its own AI names for it (before ForgetOwnAsks below).
+                        BossAction again = *e.put_action;
+                        again.flags = static_cast<std::uint16_t>(again.flags | addr::kReqStartOver);
+                        again.changed = true;
+                        e.restart_ask =
+                            AskFor(e.own_asks, e.own_slot_asks, e.own_node, again).value_or(OwnAsk{e.own_node});
+                        e.restart_action = again;
+                        Note(b.name + ": made ours mid-move: its move (slot " + std::to_string(again.slot) +
+                             " verb " + std::to_string(again.verb) + ") starts over as ours (row 178)");
+                    } else {
+                        e.rechoose = true;
+                        Note(b.name + ": its AI did not run its body as a copy: it chooses again");
+                    }
                 }
                 e.hold_since = steps_;
                 e.hold_asks = 0;
                 e.hold_rechoices = 0;
+                ForgetOwnAsks(e);  // (row 177 review: learnt again as a copy from its own asks)
                 if (b.role == Role::copy) {
+                    e.restart_action.reset();
                     // (put_action stays: our copy's body still runs that move; a new owner whose state names
                     // the same one, its old owner's, is not asked it again)
                     e.rechoose = false;
@@ -237,6 +298,10 @@ void Table::Publish(const std::vector<Boss>& bosses) {
             if (b.role == Role::owner) {
                 Hold(e, b);
             }
+            if (e.dying) {
+                e.restart_action.reset();
+            }
+            Fall(e, b);
         }
         next.emplace(b.bsa, std::move(e));
     }
@@ -431,6 +496,8 @@ bool Table::OnActionVerb(std::uint64_t bsa, const Request& request, bool changed
         bool plug = false;
         if (auto a = ActionFromRequest(request, &plug)) {
             a->changed = changed;
+            Stream(*e, "ours asks slot " + std::to_string(a->slot) + " verb " + std::to_string(a->verb) +
+                           " (changed " + std::to_string(changed ? 1 : 0) + (plug ? ", by plug)" : ")"));
             e->mine.action = *a;
             Record(*e, std::move(*a));
             ++counts_.owner_action;
@@ -450,6 +517,16 @@ bool Table::OnActionVerb(std::uint64_t bsa, const Request& request, bool changed
     std::memcpy(&node, request.data() + addr::kReqNode, sizeof node);
     if (node != 0) {
         e->own_node = node;
+        // Row 177: the node (and plug) its own AI names for this move, for the owner's same move (AskFor).
+        const std::int32_t slot = Get<std::int32_t>(request, addr::kReqSlot);
+        const std::int32_t verb = Get<std::int32_t>(request, addr::kReqVerb);
+        const OwnAsk ask{node, Get<std::uint64_t>(request, addr::kReqPlug), request[addr::kReqHasPlug] == 1};
+        if (e->own_asks.size() < kMaxOwnAsks || e->own_asks.contains({slot, verb})) {
+            e->own_asks[{slot, verb}] = ask;
+        }
+        if (e->own_slot_asks.size() < kMaxOwnAsks || e->own_slot_asks.contains(slot)) {
+            e->own_slot_asks[slot] = ask;
+        }
     }
     if (!e->wanted) {
         return false;
@@ -488,8 +565,11 @@ bool StallJudged(std::string_view animation, std::optional<std::int32_t> life) {
     // whatever plays, as a Bongo Bongo hand down until it grows back) and a cutscene's animation (an event of
     // another game's, or one ours plays before SetEvent sees it) are never a held move: re-choosing there would
     // break the death or the cut (boss-die-0116).
+    // Nor the sleep a boss waits in for its intro (Gohma's 'Sleep' before anyone came in): re-chosen twice there in a
+    // four-player run (2026-11-20), as if stuck. (Its ceiling wait, Pre_Battle_Ceiling_Wait, stays judged: row 149.)
     namespace anim = coop::protocol::anim;
-    return !animation.empty() && life && *life > 0 && !anim::IsDeath(animation) && !anim::IsEvent(animation);
+    return !animation.empty() && animation != "Sleep" && life && *life > 0 && !anim::IsDeath(animation) &&
+           !anim::IsEvent(animation);
 }
 
 bool Table::OwnTime(const Entry& e) const {
@@ -618,6 +698,20 @@ void Table::NoteOwnHit(std::uint64_t actor, bool by_shot) {
     e->react_until = std::max(e->react_until, steps_ + kReactSteps);
 }
 
+void Table::NoteOwnStun(std::uint64_t actor) {
+    std::lock_guard lock(mutex_);
+    Entry* e = FindActor(actor);
+    if (e == nullptr || e->role != Role::copy || !e->wanted) {
+        return;
+    }
+    if (!OwnTime(*e)) {
+        MakeLate(*e);
+        ++counts_.copy_own_stuns;
+        Note(e->name + ": its own stun in our game (the owner's is not stunned): the copy runs its own");
+    }
+    e->react_until = std::max(e->react_until, steps_ + kReactSteps);
+}
+
 void Table::NoteOwnDamage(std::uint64_t actor) {
     std::lock_guard lock(mutex_);
     Entry* e = FindActor(actor);
@@ -671,6 +765,85 @@ void Table::NoteOwnWake(std::uint64_t actor) {
     e->react_until = std::max(e->react_until, steps_ + kWakeSteps);
 }
 
+bool Table::RunsOwnMoveWhenOurs(std::uint64_t actor) const {
+    std::lock_guard lock(mutex_);
+    if (!brain_on_) {
+        return false;
+    }
+    const Entry* e = FindActor(actor);
+    return e != nullptr && !e->plain;
+}
+
+bool Table::KeepsLinkAsAttacker(std::uint64_t actor) const {
+    std::lock_guard lock(mutex_);
+    const Entry* e = FindActor(actor);
+    return e != nullptr && !e->plain;
+}
+
+bool Table::OutOfReach(std::uint64_t actor, const HitGuard& guard) const {
+    std::lock_guard lock(mutex_);
+    const Entry* e = FindActor(actor);
+    return e != nullptr && !e->plain && !e->dying && e->role == Role::owner && guard.TakesNoHit();
+}
+
+std::optional<std::string> Table::OurBossMove(std::uint64_t actor) const {
+    std::lock_guard lock(mutex_);
+    const Entry* e = FindActor(actor);
+    if (e == nullptr || e->plain || e->role != Role::owner) {
+        return std::nullopt;
+    }
+    return e->hold_animation;
+}
+
+bool Table::FightsPlayerOnly(std::string_view name) {
+    // Their brains run ExecutePhantomGanonMetaAI / ExecuteDungeonBossGanondorfMetaAI (Phantom Ganon runs both;
+    // Ganondorf's fly module and moves are his too). Checked against every boss's AI files: the other bosses
+    // pick their moves in their AI files only.
+    return name == "Enemy_DungeonBoss_PhantomGanon" || name == "Enemy_DungeonBoss_Ganondorf";
+}
+
+std::optional<std::string> Table::PlayerOnlyBoss() const {
+    std::lock_guard lock(mutex_);
+    for (const auto& [bsa, e] : by_bsa_) {
+        if (!e.plain && !e.dying && FightsPlayerOnly(e.name)) {
+            return e.name;
+        }
+    }
+    return std::nullopt;
+}
+
+void Table::Fall(Entry& e, const Boss& b) {
+    if (!b.position) {
+        return;
+    }
+    const float y = (*b.position)[1];
+    if (!e.start_y) {
+        e.start_y = y;  // (its first sighting: the fight's start)
+        e.start = *b.position;
+        return;
+    }
+    const float below = *e.start_y - y;
+    if (below <= kFallBelowStart) {
+        e.fallen = false;  // (back in its room: a later fall counts again)
+        return;
+    }
+    if (b.role != Role::owner || e.dying || event_ || std::exchange(e.fallen, true)) {
+        return;
+    }
+    ++counts_.owner_fell;
+    if (e.fall_rechoices >= kMaxFallRechoices) {
+        Note(b.name + ": fell " + std::to_string(static_cast<int>(below)) + " m below its fight start again: left");
+        return;
+    }
+    ++e.fall_rechoices;
+    e.rechoose = true;
+    if (e.start && returns_.size() < kMaxWants) {
+        returns_.emplace_back(e.actor, *e.start);
+    }
+    Note(b.name + ": fell " + std::to_string(static_cast<int>(below)) +
+         " m below its fight start (row 178): put back at its fight start, its AI chooses again");
+}
+
 bool Table::WakesOwnBrain(std::uint64_t actor) const {
     std::lock_guard lock(mutex_);
     if (!brain_on_) {
@@ -683,6 +856,11 @@ bool Table::WakesOwnBrain(std::uint64_t actor) const {
 std::vector<std::uint64_t> Table::TakeOwnWants() {
     std::lock_guard lock(mutex_);
     return std::exchange(wants_, {});
+}
+
+std::vector<std::pair<std::uint64_t, coop::protocol::Vec3>> Table::TakeReturns() {
+    std::lock_guard lock(mutex_);
+    return std::exchange(returns_, {});
 }
 
 void Table::Record(Entry& e, std::variant<BossBrain, BossAction> what) {
@@ -819,6 +997,37 @@ bool Table::StepOne(CoopPuppet::Guest& guest, std::uint64_t bsa, Entry& e, std::
                 Record(e, BossBrain{own, true});
                 ++counts_.owner_brain;
             }
+            if (e.restart_action && !e.dying && !e.plain) {
+                // Row 178: the move it was in as a copy, started over as ours (Publish). Our caller's call: the
+                // wrap keeps it as any ask of ours (kReqStartOver with it), so every copy starts it over too.
+                if (block_ == 0) {
+                    if (allocating_) {
+                        call.reset();
+                        return true;
+                    }
+                    CoopPuppet::Call c;
+                    c.function = main_base + addr::kMalloc;
+                    c.x[0] = addr::kRequestSize;
+                    allocating_ = true;
+                    pending_ = Pending::malloc;
+                    call = std::move(c);
+                    return true;
+                }
+                const Request r = RequestFromAction(*e.restart_action, e.restart_ask);
+                if (guest.Write(block_, r.data(), r.size())) {
+                    CoopPuppet::Call c;
+                    c.function = main_base + addr::kRequestActionVerb;
+                    c.x[0] = bsa;
+                    c.x[1] = block_;
+                    c.x[2] = 1;
+                    pending_ = Pending::restart;
+                    pending_bsa_ = bsa;
+                    call = std::move(c);
+                    return true;
+                }
+                e.restart_action.reset();  // (a block it cannot write: its AI chooses again instead)
+                e.rechoose = true;
+            }
             if (e.rechoose && !e.dying && !e.plain) {
                 // Row 149: the brain verb it is in, set again (force) through the game's own function. Our
                 // caller's call: the wrap keeps it as any change of ours, so every copy does the same.
@@ -914,10 +1123,17 @@ bool Table::StepOne(CoopPuppet::Guest& guest, std::uint64_t bsa, Entry& e, std::
             call = std::move(c);
             return true;
         }
-        const Request r = RequestFromAction(action, e.own_node);
+        const OwnAsk ask = AskFor(e.own_asks, e.own_slot_asks, e.own_node, action).value_or(OwnAsk{e.own_node});
+        const Request r = RequestFromAction(action, ask);
         if (!guest.Write(block_, r.data(), r.size())) {
             break;
         }
+        Stream(e, "owner's put in: slot " + std::to_string(action.slot) + " verb " + std::to_string(action.verb) +
+                      " (changed " + std::to_string(action.changed ? 1 : 0) + ", our node " +
+                      (e.own_asks.contains({action.slot, action.verb}) ? "of this move"
+                       : e.own_slot_asks.contains(action.slot)        ? "of this slot"
+                                                                       : "last asked") +
+                      (r[addr::kReqHasPlug] == 1 ? ", our plug)" : ")"));
         CoopPuppet::Call c;
         c.function = main_base + addr::kRequestActionVerb;
         c.x[0] = bsa;
@@ -963,7 +1179,7 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
         // frame's calls ran out): its change stays queued and is asked again.
         if (pending_ == Pending::malloc) {
             allocating_ = false;
-        } else if (pending_ == Pending::rechoose) {
+        } else if (pending_ == Pending::rechoose || pending_ == Pending::restart) {
             pending_bsa_ = 0;  // (still asked: the next frame calls it again)
         } else {
             Made(false);
@@ -995,6 +1211,12 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
             if (Entry* e = Find(std::exchange(pending_bsa_, 0)); e != nullptr && e->role == Role::owner) {
                 e->rechoose = false;
                 ++counts_.owner_rechosen;
+            }
+            break;
+        case Pending::restart:
+            if (Entry* e = Find(std::exchange(pending_bsa_, 0)); e != nullptr && e->role == Role::owner) {
+                e->restart_action.reset();
+                ++counts_.owner_restarted;
             }
             break;
         case Pending::none:
@@ -1040,6 +1262,15 @@ void Table::Made(bool made) {
     const Entry::Asking asking = std::exchange(e->asking, Entry::Asking::none);
     if (!made) {
         return;  // the change is still at the front of its queue
+    }
+    const bool brain = (asking == Entry::Asking::due && !e->due.empty() &&
+                        std::holds_alternative<BossBrain>(e->due.front().change.what)) ||
+                       (asking == Entry::Asking::late && !e->own_late.empty() &&
+                        std::holds_alternative<BossBrain>(e->own_late.front()));
+    if (brain) {
+        // Row 177 review: a new brain verb may change the copy's action sequence, whose AI nodes go with it; the
+        // nodes kept for its moves are learnt again from its next own asks (the game reads a named node's name).
+        ForgetOwnAsks(*e);
     }
     if (asking == Entry::Asking::due && !e->due.empty()) {
         if (const auto* action = std::get_if<BossAction>(&e->due.front().change.what)) {
@@ -1087,7 +1318,8 @@ std::optional<CoopPuppet::Call> Table::Ask(CoopPuppet::Guest& guest, Entry& e, s
         pending_ = Pending::malloc;
         return c;
     }
-    const Request r = RequestFromAction(action, e.own_node);
+    const Request r =
+        RequestFromAction(action, AskFor(e.own_asks, e.own_slot_asks, e.own_node, action).value_or(OwnAsk{e.own_node}));
     *made = true;  // (a block it cannot write: dropped)
     if (!guest.Write(block_, r.data(), r.size())) {
         return std::nullopt;
@@ -1126,6 +1358,7 @@ void Table::Reset() {
     }
     dying_.clear();
     shot_ends_.clear();
+    stream_notes_ = 0;
     for (auto& slot : dying_life_) {
         slot.store(0, std::memory_order_relaxed);
     }

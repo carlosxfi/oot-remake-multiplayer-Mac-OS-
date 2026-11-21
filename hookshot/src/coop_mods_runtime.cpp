@@ -258,6 +258,13 @@ void StartSharing() {
             }
             out.push_back({std::move(v.id), std::move(v.key), std::move(v.value)});
         }
+        // The seed folder put in by hand that this run plays (coop_rando.h kHandSeedKey): a guest with the same files
+        // keeps it on. Last, so a full list drops it first (kMaxModSettingEntries).
+        if (g_rando) {
+            if (std::optional<std::string> hand = g_rando->HandValue()) {
+                out.push_back({CoopRando::kId, CoopRando::kHandSeedKey, std::move(*hand)});
+            }
+        }
         return out;
     };
     p.host_values = [](std::optional<std::vector<coop::protocol::ModSetting>> values) {

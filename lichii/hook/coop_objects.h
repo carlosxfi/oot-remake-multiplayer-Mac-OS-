@@ -42,10 +42,14 @@ void Share(Core::System& system, coop::host::Session* session,
 // component's max to it (on by default; LICHII_COOP_HEARTS_TO_LINK=0 turns
 // that off).
 void SetMaxLife(std::optional<std::int32_t> quarters);
-// Rows 136/137: while the host's save load holds MaxLife lower (FlagWatcher::reset_lowered), the walk lowers our
-// Link's own Life component to it (and his life to that max), so the game stops writing the replaced save's hearts
-// back. Nothing: no hold (the usual case, and always with co-op idle).
+// Rows 136/137 and 181: while MaxLife is held lower (FlagWatcher::held_lower: the host's save load, or a second
+// pickup of a boss's one heart container put back), the walk lowers our Link's own Life component to it (and his
+// life to that max), so the game stops writing the higher max back. Nothing: no hold (the usual case, and always
+// with co-op idle).
 void SetMaxLifeLowerTo(std::optional<std::int32_t> quarters);
+// Our Link's hearts filled to his maximum once, on his next read (another player took the boss's heart
+// container, whose pickup fills them: CoopBossScenes::Actions::refill). Any thread.
+void AskRefill();
 
 // Our own Link's hearts as the object walk last read them from his Life
 // component, in quarter hearts (4 = one heart): now and the most. Nothing
@@ -151,8 +155,15 @@ void QueueTestKill(std::string name);
 std::optional<std::array<float, 3>> TestPlatformPlace(const std::string& name);
 // Test only ("hit NAME N"): as QueueTestKill, a hit of `amount` through the game's own Life step.
 void QueueTestHit(std::string name, std::int32_t amount);
+// Test only ("aim X Y Z", row 173): our next arrow (nocked within 10 s) is put on its way into the world point the
+// first frame it flies (the mover's AimStep); logs "coop: test aim ...".
+void QueueTestAim(float x, float y, float z);
 // Test only ("stun NAME"): our copy of the nearest boss of that name says its owner a stun (Sync::TestStun).
 void QueueTestStun(std::string name);
+// Test only ("drop NAME METRES", row 178): the nearest boss of that name that our game owns is put `metres` straight
+// down at the next placing (the set-matrix call the copies are placed with), so the fall guard and the copies' fall
+// line run in a game. A copy (or none here) is not moved. Logs "coop: test drop ...". Any thread.
+void QueueTestDrop(std::string name, float metres);
 
 // Present thread: the actors of the shared things this game owns now (for
 // coop_drops: a drop beside one of them is its owner's to decide).

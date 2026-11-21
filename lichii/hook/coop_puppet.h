@@ -282,7 +282,9 @@ inline constexpr std::array<int, kGearCount> kGearSlots{0, 4, -1, -1, -1, 3, -1,
 
 // A puppet's memory block, from the game's malloc, kept for the whole run.
 namespace block {
-inline constexpr std::uint64_t kSize = 0x780;  // to 0x778: coop_puppet_flame.h's key and handle
+inline constexpr std::uint64_t kSize = 0x880;  // to 0x778: coop_puppet_flame.h's key and handle; then kDress
+// Character Select's colours on the puppet (coop_char_colours.h: names and arguments of its calls).
+inline constexpr std::uint64_t kDress = 0x780;      // CoopCharColours::kCellBytes
 inline constexpr std::uint64_t kCreateArg = 0x000;  // 0x100 bytes
 inline constexpr std::uint64_t kName = 0x100;       // {char*, u32 capacity}
 inline constexpr std::uint64_t kHandles = 0x110;    // kHandleCount slots of 8 bytes
@@ -374,6 +376,10 @@ struct Target {
     // The player's colour, 0xRRGGBB (coop_colors.h): the puppet is tinted
     // with it while live. Unset: no tint.
     std::optional<std::uint32_t> color;
+    // Character Select: for a character's puppet, what its colour routine is given (Director::Dress): the
+    // player's Customize options (CoopLookShare::CustomOf, bits 0 to 23) and their character from bit 32.
+    // 0: no character's puppet.
+    std::uint64_t custom = 0;
     // The player's newest OCARINA_NOTE, played on the puppet (issue 152).
     CoopPuppetSound::Wanted ocarina;
     // LINK_SOUNDs received since the last frame, near enough to hear
@@ -416,6 +422,14 @@ public:
     // The Link puppets' director runs the pose copy (coop_pose.h); others, such
     // as the fairies', do not.
     void SetPoseCopy(bool on) { pose_copy_ = on; }
+    // Character Select's colour routine (PackCharacterColours): main's offset and the 16 bytes it begins with.
+    // offset 0: none, no colours on a character's puppet.
+    void SetCharacterApply(std::uint64_t offset, const std::array<std::uint8_t, 16>& head) {
+        character_apply_ = offset;
+        character_apply_head_ = head;
+        character_apply_state_ = 0;
+        dress_not_made_ = 0;
+    }
     // Move each puppet with the game's own setter as well (addr::kSetMatrix),
     // once a frame: for an actor with a physics body, such as the fairy.
     void SetMatrixCall(bool on) { matrix_call_ = on; }
@@ -468,6 +482,19 @@ public:
         std::size_t strays = 0; // actors of its player still being deleted
     };
     std::vector<SlotView> Slots() const;  // the calc thread, or tests
+    // Every live puppet, for co-op's own Customize colours (coop_char_colours.h): its actor, its block's dress
+    // cells, its player's options (Target::custom, 0 for Link) and whether it is a character's puppet that the
+    // mod's own routine dresses (Dress, verified at its place). The calc thread.
+    struct DressView {
+        std::uint8_t number = 0;
+        std::uint64_t actor = 0;
+        std::uint64_t cell = 0;
+        std::uint32_t custom = 0;
+        bool character = false;
+        bool mods_routine = false;
+        std::string actor_name;   // (a puppet made again as another actor starts anew)
+    };
+    std::vector<DressView> DressTargets() const;
     // Any thread: bit n set while puppet n's actor is live in this scene and
     // shown or held (not parked for a hide), as of the last calc frame. The
     // fairies follow it, so a Navi never shows without her puppet (issue 145).
@@ -477,6 +504,14 @@ public:
     std::uint64_t LivePvpActor(std::uint8_t number) const {
         return number < live_pvp_actor_.size() ? live_pvp_actor_[number].load(std::memory_order_relaxed) : 0;
     }
+    // Any thread (row 177): player `number`'s puppet actor while it is live, shown and seen by enemies here (a
+    // pack with perception, not its quiet copy), as of the last calc frame; 0 otherwise. A hit that player made
+    // on an enemy of ours names it as the attacker (CoopHitReplay::ReplayAttacker).
+    std::uint64_t LiveSeenActor(std::uint8_t number) const {
+        return number < live_seen_actor_.size() ? live_seen_actor_[number].load(std::memory_order_relaxed) : 0;
+    }
+    // The pack's puppets carry a PerceptionEmitter (PlannerSettings::perceived).
+    void SetPerceived(bool on) { perceived_.store(on); }
     static_assert(coop::protocol::kMaxPlayers < 32, "LiveMask has one bit per player number");
     std::uint64_t Frames() const { return frames_; }
     void Note(const std::string& text) const { Say(text); }  // any thread
@@ -621,6 +656,11 @@ private:
         CoopPuppetSound::State sound;       // the player's Ocarina on it (issue 152)
         CoopLinkSound::Player link_sound;   // the player's own sounds on it (issues 131, 152)
         CoopPuppetFlame::State flame;       // their lit Deku stick's flame on it (issue 248)
+        // Character Select: what the colour routine was last given for this actor (Target::custom), when,
+        // and what the call under way gives it.
+        std::optional<std::uint64_t> dressed;
+        std::uint64_t dress_ms = 0;
+        std::uint64_t dress_asked = 0;
         // Actors made for this player that are not `taken` any more (kStrayDeleteMs):
         // deleted until gone, so there is never a second puppet of one player.
         struct Stray {
@@ -634,7 +674,7 @@ private:
     };
     enum class Pending {
         none, malloc, create, take, drop, remove, play, frame, sync, equip, unequip, hold,
-        hold_check, move, sound, link_sound, stray, own_state, head_show, head_hair, flame
+        hold_check, move, sound, link_sound, stray, own_state, head_show, head_hair, flame, dress
     };
     // sword-3: once a frame, the game's state of one of the local Link's own
     // slots (CoopPuppetOwn::kSlots, in turn), for the sender (coop_puppet_own.h).
@@ -658,6 +698,12 @@ private:
     static std::optional<std::string> Playing(Guest& guest, std::uint64_t controller);
     std::optional<Call> Equip(Slot& slot, const Target& target, Guest& guest,
                               std::uint64_t now_ms);
+    // Character Select: the player's Customize options on a character's puppet, by that mod's own routine
+    // in the game's code (cz_puppet: x0 the actor, x1 Target::custom). Called when they change, and again
+    // every kDressAgainMs while any is set (a model that was not loaded yet). Never when the bytes at its
+    // place are not the ones the pack names (another build of the mod, or its code is not in the game).
+    std::optional<Call> Dress(Slot& slot, const Target& target, Guest& guest, std::uint64_t now_ms);
+    static constexpr std::uint64_t kDressAgainMs = 3000;
     std::optional<Call> Hold(Slot& slot, const Target& target, Guest& guest,
                              std::uint64_t now_ms);
     void LeftBehind(Slot& slot, Guest& guest, std::uint64_t now_ms);
@@ -696,6 +742,13 @@ private:
     bool verbose_;
     bool anim_;
     bool pose_copy_ = false;
+    std::uint64_t character_apply_ = 0;
+    std::array<std::uint8_t, 16> character_apply_head_{};
+    int character_apply_state_ = 0;   // 0 not checked, 1 the routine is there, 2 it is not (or cannot be called)
+    // Its calls in a row that the runtime could not make (a routine that is not a game function the build knows):
+    // at kDressNotMade co-op's own dressing takes over (DressTargets).
+    int dress_not_made_ = 0;
+    static constexpr int kDressNotMade = 2;
     bool matrix_call_ = false;
     float tint_ = 0.0f;
     std::atomic<bool> null_reads_zero_{true};
@@ -725,6 +778,8 @@ private:
     std::uint64_t frames_ = 0;
     std::atomic<std::uint32_t> live_mask_{0};  // LiveMask(); written by the calc thread
     std::array<std::atomic<std::uint64_t>, coop::protocol::kMaxPlayers + 1> live_pvp_actor_{};  // LivePvpActor()
+    std::array<std::atomic<std::uint64_t>, coop::protocol::kMaxPlayers + 1> live_seen_actor_{};  // LiveSeenActor()
+    std::atomic<bool> perceived_{false};  // SetPerceived
     std::uint64_t frames_at_status_ = 0;
     std::uint64_t status_ms_ = 0;
     std::string scene_;               // input_.scene as last seen
@@ -759,6 +814,11 @@ struct Remote {
     // The item copy painted in the player's gear colours
     // (CoopLookShare::CopyOf): their puppet wears it.
     std::optional<std::size_t> look_copy;
+    // The character they picked in the Character Select mod
+    // (CoopLookShare::CharacterOf): 0 is Link.
+    std::uint16_t character = 0;
+    // ... and their Customize options there (CoopLookShare::CustomOf): 0 is none set.
+    std::uint32_t custom = 0;
 };
 
 struct PlannerSettings {
@@ -811,7 +871,44 @@ struct PlannerSettings {
     // Reads through a puppet's missing components give 0 (the emulator, or
     // Hookshot's null page armable): Director::SetNullReadsZero.
     bool null_reads_zero = true;
+    // The puppets the pack has for the characters of the Character Select mod
+    // (PackCharacterActors, sorted): a player who picked one is shown as
+    // CharacterActor(their age, the pack's file of their character) when it is
+    // among them.
+    std::vector<std::string> character_actors;
+    // The pack's map of the mod's stored character numbers to its model files
+    // (PackCharacterNumbers): a number it does not list shows the colour puppet.
+    std::map<std::uint16_t, std::uint16_t> character_files;
+    // That mod's colour routine for a puppet (PackCharacterColours): main's offset (0: none) and the
+    // 16 bytes it begins with.
+    std::uint64_t character_apply = 0;
+    std::array<std::uint8_t, 16> character_apply_head{};
+    // The pack was built with perception (PackPerception): its plain (not quiet) puppets are seen by enemies.
+    bool perceived = false;
 };
+
+// Character Select (github.com/snaildev99/OoT-Character-Select): a player there
+// is one of over a hundred characters, each a player model file of that mod,
+// Model/Player_<Age>_C<file>.Player_<Age>.bfres. The player's pick (the mod's
+// saved Int, sent as is: the mod's own id of the character) is not the file:
+// the mod's characters.json maps each number to its file, and tools/puppet_pack
+// writes that map into coop_puppet.json ("characters": {"numbers": {file:
+// number}}). The pack makes a puppet per file (CoopPuppet_<Age>_C<file>: the
+// plain puppet with that model project, as a tunic colour's), which the game
+// loads from the mod's own file. The numbers are mapped with the VIEWER's pack,
+// so another version of the mod that numbers a character the same shows it,
+// and one it does not know shows the colour puppet.
+// "CoopPuppet_Adult_C007" for (true, 7); "" past C999.
+std::string CharacterActor(bool adult, std::uint16_t file);
+// The pack's stored number -> file map ("characters": {"numbers": {...}}): empty for a pack without characters.
+std::map<std::uint16_t, std::uint16_t> PackCharacterNumbers(std::string_view manifest);
+// `actor` is a character's puppet (its quiet copy too).
+bool IsCharacterActor(std::string_view actor);
+// The character puppets a pack's coop_puppet.json lists, sorted.
+std::vector<std::string> PackCharacterActors(std::string_view manifest);
+// The mod's colour routine as a pack's coop_puppet.json names it ("colours": {"offset": n, "head": "32 hex
+// digits"}): main's offset and its first 16 bytes; nothing when the manifest has none or it does not read.
+std::optional<std::pair<std::uint64_t, std::array<std::uint8_t, 16>>> PackCharacterColours(std::string_view manifest);
 
 // The puppet pack's item copies (coop_puppet.json "look_items",
 // tools/puppet_pack/look_items.py): the items and the copy count (two per
@@ -829,6 +926,8 @@ std::vector<std::string> PackQuietScenes(std::string_view manifest);
 // The pack was built with perception (coop_puppet.json "perception": true):
 // its puppets are seen by enemies and each has a quiet copy.
 bool PackPerception(std::string_view manifest);
+// Row 177: a puppet actor enemies see (a pack with perception): a CoopPuppet_ actor that is not a quiet copy.
+bool SeenPuppetActor(std::string_view actor, bool perceived);
 // A puppet's quiet copy: CoopPuppet_Child -> CoopPuppet_ChildQuiet,
 // CoopPuppet_Adult_Red -> CoopPuppet_AdultQuiet_Red; any other name as it is.
 std::string QuietActor(std::string_view actor);
@@ -870,7 +969,7 @@ public:
                std::optional<std::uint32_t> own_color = {});
     // The actor for a player of that age and colour: CoopPuppet_<Age>, or
     // CoopPuppet_<Age>_<Colour> (CoopColors::TunicOf) while tunics are on.
-    std::string ActorFor(bool adult, std::optional<std::uint32_t> color = {}) const;
+    std::string ActorFor(bool adult, std::optional<std::uint32_t> color = {}, std::uint16_t character = 0) const;
     void SetTunics(bool on) { settings_.tunics = on; }
     void SetGreenPuppet(bool on) { settings_.green_puppet = on; }
     // Tunic actors that do not work here (Director::FailedTunics): the plain
@@ -914,6 +1013,8 @@ void SetPvpCopies(std::uint32_t mask);
 std::uint32_t PvpCopies();
 // Any thread: TheDirector's LiveMask(), 0 while the puppets are off.
 std::uint32_t LivePuppets();
+// The calc thread: TheDirector's DressTargets() (co-op's own Customize colours), none while the puppets are off.
+std::vector<Director::DressView> DressTargets();
 
 // Every remote player presence shows at `server_now_us`, with scene, status,
 // age, newest animation and gear: what Publish plans from. CoopFairy plans

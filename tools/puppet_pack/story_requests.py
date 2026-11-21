@@ -27,13 +27,17 @@ name is not that flow's is classified here from the game's data, first rule that
            gear equipped from the pouch, a shop, a chest opened. A +1 of an item co-op shares, a get
            window or a shown
            item is not. A movie with no flowchart (a timeline only) is not read;
+  room     it turns a room's own state round in the game that plays it (room_turn): a dungeon gimmick
+           whose flow toggles the room (the Forest Temple's twisted corridor, row 173), which a joining
+           game would turn once more, and under its player;
   story    a `Dm_` cutscene entry of a `Dm_` story flow, or a name that carries its flow's name as
            a whole part (`Get_StoneOfWater_ShowLetter`): shared, sent and joined by its name;
   never    anything else: a room or object event the flow's file also holds (a door, a hole).
 The `story` ones go in kStorySettings, the rest in comments with their reason. The same reading of
 the event flow is done for the story names themselves: one that changes the player's own things
 (Zelda's letter, a reward, a pouch content) goes in kOwnStory with why, and is neither sent nor
-joined: another game would be given it too. It also writes
+joined: another game would be given it too; one that turns a room's own state (room_turn) goes in
+kRoomStory with why, likewise neither sent nor joined (the room's state comes by its held flags). It also writes
 `kNoSetting`, the story names with no setting: no game can be asked for them, so they are neither
 sent nor joined. Every story setting and every other story name must have its played flag in
 GameData/GameDataList.Product.*.byml.zs, else the tool stops.
@@ -129,9 +133,10 @@ def touches_own(actions):
     player's ocarina input awaited, gear equipped from the player's pouch, a shop, a chest opened
     (Dm_SY_Treasurebox: the item comes over by the shared items anyway)."""
     for actor, action, params in actions:
-        if actor == "<subflow>":
+        if actor in ("<subflow>", QUERY):
             continue  # a call, named "flow:entry"; the actions it runs are listed after it (G2 review: the
             # get window's OpenGetWindowForBottle_SubProcess, which every item get can reach, is only text)
+            # a switch's question (QUERY) changes nothing
         if action == "EventTransition" and params.get("EventName") == "Dm_SY_Treasurebox":
             return "goes on to Dm_SY_Treasurebox (a chest the player opens)"
         if action == "EventTriggerAddOrRemovePouchContent":
@@ -159,6 +164,32 @@ def touches_own(actions):
     return ""
 
 
+# Actions that turn a room's own shape in the game that runs them, with why (every room-changing action of the shared
+# story flows, listed 2026-11-19, row 173: the flows' other warps move only the flow's own cast and the player).
+ROOM_ACTIONS = {
+    "EventTriggerRelocateTwistCorridor": "the twisted corridor turns round the player",
+}
+QUERY = "<query>"  # a switch's question in the walk (story_requests.main): (QUERY, query, params)
+
+
+def room_turn(actions):
+    """Why the actions an entry runs turn a room's own state, or "": a room action (ROOM_ACTIONS), or a flag the
+    entry asks (a switch's EventQueryIsGameDataBool, given as (QUERY, query, params)) and sets both ways: a
+    toggle, which a game joining the event turns once more (Dm_ForestTemple_0005 asks TwistedCorridor_A_02 and
+    writes its opposite; row 173). A flag set to one value only (a first-time mark, a water level) is the same in
+    every game that plays it."""
+    asked, set_to = set(), {}
+    for actor, action, params in actions:
+        if action in ROOM_ACTIONS:
+            return f"runs {actor} {action} ({ROOM_ACTIONS[action]})"
+        if actor == QUERY and action == "EventQueryIsGameDataBool" and params.get("GameDataName"):
+            asked.add(params["GameDataName"])
+        elif actor == "GameDataActor" and action == "EventTriggerSetGameDataBool" and params.get("GameDataName"):
+            set_to.setdefault(params["GameDataName"], set()).add(bool(params.get("Value")))
+    toggled = sorted(f for f in asked if set_to.get(f) == {True, False})
+    return f"toggles {', '.join(toggled)} (the room turns again in a game that joins)" if toggled else ""
+
+
 def classify(name, s, gimmicks, actions=()):
     """(class, reason) of a named setting `s` of a story flow (module docstring); `actions` are those
     its entry runs (evfl.actions_of, through its transitions too: a game asked for it plays those as well)."""
@@ -173,6 +204,9 @@ def classify(name, s, gimmicks, actions=()):
     own = touches_own(actions)
     if own:
         return "own", "changes the player's own things: " + own
+    room = room_turn(actions)
+    if room:
+        return "room", "turns the room's own state: " + room
     if (name.startswith("Dm_") and s.flow.startswith("Dm_")) or carries(name, s.flow):
         return "story", ""
     return "never", "no story name in it: a room or object event"
@@ -196,6 +230,20 @@ def own_story(story, settings, actions_of):
         s = settings.get(n)
         if s and s.flow:
             why = touches_own(actions_of(s.flow, s.entry))
+            if why:
+                out.append((n, why))
+    return out
+
+
+def room_story(story, settings, actions_of):
+    """[(story name, why)] the story names that are a setting of their own, change none of the player's own
+    things, and turn a room's own state (room_turn of what their entry runs)."""
+    out = []
+    for n in sorted(story):
+        s = settings.get(n)
+        if s and s.flow:
+            acts = actions_of(s.flow, s.entry)
+            why = "" if touches_own(acts) else room_turn(acts)
             if why:
                 out.append((n, why))
     return out
@@ -243,7 +291,7 @@ def missing_played_flags(names, gamedata):
     return [n for n in names if murmur3(played_flag(n)).to_bytes(4, "big") not in gamedata]
 
 
-def render(rows, nosetting, ownstory=()):
+def render(rows, nosetting, ownstory=(), roomstory=()):
     lines = [
         "// Generated by tools/puppet_pack/story_requests.py from the game's RSDB EventSetting and GameDataList",
         "// and the hook's own lists; do not edit. Every named event setting that plays a shared story flow under",
@@ -258,6 +306,10 @@ def render(rows, nosetting, ownstory=()):
     lines.append("// Story names that change the player's own things (neither sent nor joined), and why:")
     lines.append("constexpr StoryOwn kOwnStory[] = {")
     lines += [f'    {{"{n}", "{why}"}},' for n, why in ownstory]
+    lines.append("};")
+    lines.append("// Story names that turn a room's own state (neither sent nor joined: the held flags bring it), and why:")
+    lines.append("constexpr StoryOwn kRoomStory[] = {")
+    lines += [f'    {{"{n}", "{why}"}},' for n, why in roomstory]
     lines.append("};")
     lines.append("constexpr std::string_view kNoSetting[] = {")
     lines += [f'    "{n}",' for n in nosetting]
@@ -301,10 +353,16 @@ def main(argv=None):
         return (target.flow, target.entry) if target and target.flow else None
 
     def actions(flow, entry):
-        return evfl.actions_of(flows, flow, entry, load, transition)
+        asked = []  # the switches' questions, for room_turn (every case is still followed)
+
+        def answer(actor, query, params):
+            asked.append((QUERY, query, params))
+
+        return evfl.actions_of(flows, flow, entry, load, transition, answer) + asked
 
     rows = table(settings, story, gimmicks, actions)
     ownstory = own_story(story, settings, actions)
+    roomstory = room_story(story, settings, actions)
     nosetting = no_setting(story, settings)
     gamedata = read("GameData", "GameDataList.Product.*.byml.zs")
     asked = [r[0] for r in rows if r[2] == "story"] + sorted(story - set(nosetting))
@@ -312,10 +370,10 @@ def main(argv=None):
     if missing:
         raise SystemExit("no played flag in the game for: " + ", ".join(played_flag(n) for n in missing))
     with open(args.out, "w", newline="\n") as fh:
-        fh.write(render(rows, nosetting, ownstory))
+        fh.write(render(rows, nosetting, ownstory, roomstory))
     shared = sum(1 for r in rows if r[2] == "story")
     print(f"{shared} story settings, {len(rows) - shared} not shared, {len(ownstory)} story names changing the "
-          f"player's own things, {len(nosetting)} story names with no setting")
+          f"player's own things, {len(roomstory)} turning a room's own state, {len(nosetting)} story names with no setting")
 
 
 if __name__ == "__main__":

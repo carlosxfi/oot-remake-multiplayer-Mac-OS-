@@ -399,6 +399,15 @@ const std::vector<PartRule>& PartRules() {
         enemy("Enemy_FlockGuayManager", {"Enemy_Guay_Flock"}, 60.0f);
         r.push_back({"Enemy_Peahat_Larva",
                      GroupPart{{"Enemy_Peahat_AircraftCarrier", "Enemy_Peahat"}, 30.0f, false}});
+        // Row 172: a brood from the enemy's own ActorHolder (Pack/Actor ActorHolderParam, every Enemy_ pack read
+        // 2026-11-20). The Floormaster's Littles split from it and grow it back (SplitsAtZero), so one owner runs
+        // the whole brood and a hand-over moves it together; the Lens of Truth Floormaster holds both kinds. The
+        // Big Leever calls up its Leevers (MaxActors 5). The Bari's Biri come at its real death (each game's own
+        // Bari dies by the shared kill and makes its own, matched by order): no root left to follow.
+        r.push_back({"Enemy_Floormaster_Little",
+                     GroupPart{{"Enemy_Floormaster", "Enemy_Floormaster_Truth"}, 30.0f, false}});
+        enemy("Enemy_Floormaster_Truth", {"Enemy_Floormaster_Little_Truth"}, 30.0f);
+        enemy("Enemy_Leever_Big", {"Enemy_Leever"}, 30.0f);
         return r;
     }();
     return rules;
@@ -442,9 +451,13 @@ LifeRouted RouteLife(const LifeAsk& a) {
         }
         return {LifeRoute::lost, 0};
     }
-    if (a.hurt > 0 && a.replay_on && !a.direct && a.has_player) {
+    const bool to_step = a.out_of_reach && a.step_seen && a.has_component && a.old >= 0;  // (else replayed: none lost)
+    if (a.hurt > 0 && a.replay_on && !a.direct && a.has_player && !to_step) {
         return {LifeRoute::replay, a.hurt};
     }
+    // Row 178: a boss in a move its own game takes no hit in (Phantom Ganon riding inside his painting) gets
+    // another player's hit as life only, through its Life step: no damage reaction there (the game's own hit
+    // could not land), so its phase change waits for a hit it can take, as in a one-player game.
     const bool steppable = a.step_seen && a.has_component && a.old >= 0 && (a.hurt > 0 || a.life < a.old);
     if (steppable) {
         if (a.native && a.hurt <= 0 && !a.replay_seen) {
@@ -609,6 +622,14 @@ bool IsHatchling(std::string_view name) {
     return name == "Enemy_Gohma_Larva";
 }
 
+bool SplitsAtZero(std::string_view name) {
+    return name == "Enemy_Floormaster" || name == "Enemy_Floormaster_Truth";
+}
+
+bool IsSplitPart(std::string_view name) {
+    return name == "Enemy_Floormaster_Little" || name == "Enemy_Floormaster_Little_Truth";
+}
+
 std::string_view MinionMaker(std::string_view name) {
     // Made by the boss's own spawn action in the fight (Pack/Actor; the
     // Dodongo's: its AI node ExecuteDungeonBossDodongoSpawnBaby). The parts a
@@ -672,6 +693,14 @@ bool LifelessKillHere(std::string_view name, bool reacts, bool life_read, bool o
     return !IsDeathAnimation(owner_animation);
 }
 
+bool PictureDeathHere(std::string_view name, bool life_read, bool owned_by_other, std::string_view own_animation,
+                      std::string_view owner_animation) {
+    if (!name.starts_with("Enemy_GhostPicturePerformer_Poe_") || life_read || !owned_by_other) {
+        return false;
+    }
+    return IsDeathAnimation(own_animation) && !IsDeathAnimation(owner_animation);
+}
+
 bool IsHideAnimation(std::string_view name) {
     constexpr std::string_view word = "Visible_Off";
     for (std::size_t at = name.find(word); at != std::string_view::npos; at = name.find(word, at + 1)) {
@@ -696,7 +725,12 @@ bool UnderCeilingEnemy(const proto::Vec3& enemy, const proto::Vec3& link) {
 bool IsStunAnimation(std::string_view name) {
     const std::string_view base = AnimationBase(name);
     const std::string_view first = base.substr(0, base.find('_'));
-    return first == "Stun" || first == "Down" || first == "Fall" || first == "Faint";
+    // Row 169: also the bosses' chance times and down reactions that are no Stun/Down word (read from the AS
+    // files: Morpha 'ChanceTime', 'Chance_time_St'; Volvagia 'ChanceTimeDamageStart'; the Poe sisters 'Chance_St',
+    // 'ChanceTime_Loop'; Phantom Ganon and Ganondorf 'DownTimeReaction_Start'). Gohma's 'ChanceAfterAttack' and
+    // 'Attack_Chance' are her own moves (the owner's too), not a stun of a hit.
+    return first == "Stun" || first == "Down" || first == "Fall" || first == "Faint" || first == "Chance" ||
+           first.starts_with("ChanceTime") || first.starts_with("DownTimeReaction");
 }
 
 proto::Quat QuatOf(const Mat3& m) {
@@ -834,14 +868,38 @@ void Sync::Take(std::uint64_t hash) {
     // TokenId(placement). Both are taken, so the Skulltula and the token it
     // already made go (issue 89: the token stayed and counted a second
     // time). Only for the 100 placements: any other key would name a token
-    // that cannot exist.
-    if (!CoopWorld::IsGoldSkulltulaKey(hash)) {
+    // that cannot exist. Either of the placement's two keys (key + 2 too,
+    // skulltula-0118) names it, and the Skulltula's own hash is taken with it.
+    const std::uint64_t placement = CoopWorld::GoldPlacementOfKey(hash);
+    if (placement == 0) {
         return;
     }
-    const std::uint64_t token = CoopWorld::TokenId(hash);
+    if (placement != hash && takes_in_.size() < 1024) {
+        takes_in_.push_back(placement);
+    }
+    const std::uint64_t token = CoopWorld::TokenId(placement);
     if (token != 0 && token != kNoHash && takes_in_.size() < 1024) {
         takes_in_.push_back(token);
     }
+}
+
+void Sync::GoldTaken(std::uint64_t placement) {
+    if (placement == 0 || placement == kNoHash || !gold_taken_.insert(placement).second) {
+        return;
+    }
+    // skulltula-0118 (row 158): a copy the director made of this Skulltula
+    // (its owner announced it to a game that had not loaded it: a night one,
+    // one out of a tree, one in a room loaded later) has no placement hash of
+    // its own, so no take found it. It stood on as a frozen copy whose owner
+    // was gone, and kept the Skulltula alive on the server for the others.
+    for (auto& [key, d] : decided_) {
+        if (!d.removed && d.id.kind == proto::ObjectKind::placed && d.id.value == placement) {
+            d.removed = true;
+            d.dead = true;  // never made again (Creates: remakes 0)
+            notes_.emplace_back("its token is taken: the copy of " + d.name + " goes");
+        }
+    }
+    held_.erase(proto::ObjectId{proto::ObjectKind::placed, 0, placement});
 }
 
 bool Sync::Hatch(std::uint8_t self, const Seen& s,
@@ -997,14 +1055,17 @@ void Sync::Reset() {
     present_once_ = false;
     groups_sent_.clear();
     group_links_.clear();
+    broods_.clear();
     fish_sent_.clear();
     fish_at_ = 0;
     decided_.clear();
     held_.clear();
     copy_killed_.clear();
+    gold_taken_.clear();  // fed again for the new scene from the save's keys (Take)
     eggs_.clear();
     copy_eggs_.clear();
     away_.clear();
+    still_ours_.clear();
     left_.clear();
     game_deletes_.clear();
     bound_.clear();
@@ -1015,6 +1076,42 @@ void Sync::Reset() {
     std::lock_guard lock(inbox_mutex_);
     inbox_.clear();
     takes_in_.clear();  // the new scene's actors are made knowing every key
+}
+
+std::optional<std::uint8_t> Sync::OwnerOrDeathOwnerOf(std::uint64_t address) const {
+    if (auto owner = OwnerOf(address)) {
+        return owner;
+    }
+    const auto it = objects_.find(address);
+    if (it == objects_.end() || it->second.death_owner == 0) {
+        return std::nullopt;
+    }
+    return it->second.death_owner;
+}
+
+bool Sync::InOurScene(std::uint8_t player, std::uint64_t now_us) const {
+    if (player == 0) {
+        return false;
+    }
+    std::lock_guard lock(inbox_mutex_);
+    const auto it = scenes_.find(player);
+    if (it == scenes_.end()) {
+        return false;
+    }
+    const auto& seen = it->second;
+    const bool fresh = seen.second <= now_us ? now_us - seen.second < kSceneStaleUs : seen.second - now_us < kSceneStaleUs;
+    return fresh && seen.first == scene_;
+}
+
+std::vector<std::uint8_t> Sync::PlayersInOurScene(std::uint8_t self, std::uint64_t now_us) const {
+    std::vector<std::uint8_t> out;
+    std::lock_guard lock(inbox_mutex_);
+    for (const auto& [player, seen] : scenes_) {
+        const bool fresh = seen.second <= now_us ? now_us - seen.second < kSceneStaleUs
+                                                 : seen.second - now_us < kSceneStaleUs;
+        if (player != self && player != 0 && fresh && seen.first == scene_) out.push_back(player);
+    }
+    return out;
 }
 
 std::uint8_t Sync::DeciderOf(std::uint8_t self, std::uint64_t now_us) const {
@@ -1180,7 +1277,9 @@ void Sync::Written(std::uint64_t address, std::int32_t life, std::uint64_t now_u
     o.late_left = 0;  // nothing of it may be put back as a second fall
     o.late_until = 0;
     if (o.life && *o.life > life) {
-        o.hurt_left += *o.life - life;
+        // The whole drop from the walk's life, counted once: a hurt held for less than kHurtWaitUs still has
+        // its own hurt_left from Lower (row 172: never twice, or it swallows a later hit of our Link's).
+        o.hurt_left = std::max(o.hurt_left, *o.life - life);
         o.hurt_target = life;
         // If the game does not take it, the life is written after kHurtWaitUs and hurt_left
         // is cleared, so it cannot swallow a later hit of our Link's.
@@ -1209,6 +1308,7 @@ void Sync::GameDeleted(std::uint64_t address, std::uint64_t now_us, bool by_coop
     // an actor off the list is not run by its game (no fall, no burn), and
     // its address may be another actor's by now (review r1).
     std::erase_if(away_, [address](const Away& a) { return a.address == address; });
+    std::erase_if(still_ours_, [address](const Away& a) { return a.address == address; });
 }
 
 namespace {
@@ -1219,9 +1319,13 @@ constexpr std::string_view kAreaDeleted[] = {
 } // namespace
 
 bool Sync::LeavesForGood(std::uint8_t self, const proto::ObjectId& id, std::string_view name,
-                         std::uint64_t address, const proto::Vec3& position) const {
+                         std::uint64_t /*address*/, const proto::Vec3& position) const {
+    // A director's copy counts too once it is ours (the owner test below): its
+    // maker's one is gone and the server handed it to us, so our game deleting
+    // it with no death is its end for everyone (skulltula-0118 follow-up: before,
+    // nobody said so, and the director made it again).
     if (self == 0 || id.kind != proto::ObjectKind::placed || !name.starts_with("Enemy_") || IsBossOrPart(name) ||
-        IsHatchingEgg(name) || bound_.contains(address)) {
+        IsHatchingEgg(name)) {
         return false;
     }
     for (const std::string_view kind : kAreaDeleted) {
@@ -1447,6 +1551,11 @@ void Sync::OwnWake(Object& o, bool taken_away, std::uint64_t now_us) {
     }
 }
 
+bool Sync::RestPlay(const Object& o, std::string_view name) {
+    return o.reacts && !name.empty() && !o.rest_animation.empty() &&
+           AnimationBase(name) == AnimationBase(o.rest_animation);
+}
+
 void Sync::NoteTakeover(std::uint64_t address, std::uint64_t now_us, std::string_view name) {
     const auto it = objects_.find(address);
     if (it == objects_.end()) {
@@ -1454,6 +1563,12 @@ void Sync::NoteTakeover(std::uint64_t address, std::uint64_t now_us, std::string
     }
     Object& o = it->second;
     o.own_ai_at = now_us;  // row 97: any kind; read only while our event runs
+    // Row 167: a copy whose own AI went back to the animation it rested in
+    // (a dormant Armos' 'Wait' under its owner's newer one) has not woken for
+    // our Link: no wake, no chase, nothing given back (RestPlay).
+    if (RestPlay(o, name)) {
+        return;
+    }
     if (o.reacts || (o.guard && IsGuardReaction(name))) {
         o.took_over_at = now_us;
         o.took_over_name = std::string(name);
@@ -1475,6 +1590,34 @@ void Sync::NoteTakeover(std::uint64_t address, std::uint64_t now_us, std::string
         AnimationBase(o.received.back().animation->name) == AnimationBase(o.own_wake_over)) {
         own_wakes_.emplace_back(address, std::string(name));
         o.own_wake_given = true;
+    }
+}
+
+void Sync::NoteOwnDeath(std::uint64_t address, std::uint64_t now_us, std::string_view name) {
+    const auto it = objects_.find(address);
+    if (it == objects_.end() || !IsDeathAnimation(name)) {
+        return;
+    }
+    it->second.own_ai_at = now_us;  // row 97: its own AI acts
+    MarkOwnDeath(it->second, name, now_us, self_);
+}
+
+void Sync::MarkOwnDeath(Object& o, std::string_view own, std::uint64_t now_us, std::uint8_t self) {
+    if (!IsDeathAnimation(own)) {
+        return;
+    }
+    o.own_death_at = now_us;  // issue 133: its own death here (LifelessKillHere)
+    if (o.picture_die_at != 0) {
+        return;
+    }
+    const auto owner = owners_.find(o.id);
+    const std::string owners =
+        !o.received.empty() && o.received.back().animation ? o.received.back().animation->name : std::string{};
+    const bool other = owner != owners_.end() && owner->second.player != 0 && owner->second.player != self;
+    if (PictureDeathHere(o.name, o.life.has_value(), other, own, owners)) {
+        o.picture_die_at = now_us;  // row 175: its own death runs here; the owner's animation waits
+        o.picture_kill_due = true;
+        o.picture_die = std::string(own);
     }
 }
 
@@ -1570,6 +1713,11 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         // Takes that came while no walk ran are for actors made after them.
         const bool gap = !ticked_ || now_us < last_tick_us_ ||
                          now_us - last_tick_us_ > kTakeGapUs;
+        // A taken Gold Skulltula stays taken whatever the gap: no copy of it
+        // is made or kept (GoldTaken).
+        for (const std::uint64_t hash : takes) {
+            GoldTaken(CoopWorld::GoldPlacementOfKey(hash));
+        }
         if (!gap) {
             for (const std::uint64_t hash : takes) {
                 // The wait counts from the first take of a key: the chest's
@@ -1879,24 +2027,46 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         // boss is not in (a seed in Gohma's eye takes no life). Its stun is
         // kept on screen like a hit reaction, and a DAMAGE of 0 asks the
         // server to hand the boss to us, whose boss is the stunned one.
-        if (s.animation && IsStunAnimation(s.animation->name) && IsBossOrPart(s.name) &&
-            !(o.animation && IsStunAnimation(o.animation->name))) {
+        // Row 169: every walk while a stun begun here plays, it is the copy's own time (TakeOwnStuns); a stun the
+        // copy began as the owner's is not, also in the walk or two it still plays after the owner's ended.
+        bool own_stun = false;
+        if (s.animation && IsStunAnimation(s.animation->name) && IsBossOrPart(s.name)) {
             const auto owner = owners_.find(o.id);
             const std::string owners = !o.received.empty() && o.received.back().animation
                                            ? o.received.back().animation->name
                                            : std::string{};
             if (owner != owners_.end() && owner->second.player != 0 &&
                 owner->second.player != self && !IsStunAnimation(owners)) {
-                o.react_at = now_us;
-                o.react_over = owners;
-                if (o.stun_at == 0 || now_us - o.stun_at >= kStunEveryUs) {
-                    o.stun_due = true;
+                if (!(o.animation && IsStunAnimation(o.animation->name))) {
+                    own_stun = true;
+                    o.react_at = now_us;
+                    o.react_over = owners;
+                    if (o.stun_at == 0 || now_us - o.stun_at >= kStunEveryUs) {
+                        o.stun_due = true;
+                    }
+                } else {
+                    own_stun = o.own_stun;
+                }
+                if (own_stun && own_stuns_.size() < 64) {
+                    own_stuns_.push_back(o.address);
                 }
             }
         }
+        o.own_stun = own_stun;
         o.animation = s.animation;
-        if (s.animation && IsDeathAnimation(s.animation->name)) {
+        if (o.picture_die_at == 0 && s.animation) {
+            MarkOwnDeath(o, s.animation->name, now_us, self);
+        } else if (s.animation && IsDeathAnimation(s.animation->name)) {
             o.own_death_at = now_us;  // issue 133: its own death here (LifelessKillHere)
+        }
+        if (o.picture_die_at != 0 && o.picture_die_at != now_us && s.animation && !o.picture_replayed) {
+            // Review of bd5fab5c: a cut-off death is played again once. Its death seen playing again after it was
+            // cut ends the replay; a later other animation is its own (a finished death), never cut again.
+            if (!IsDeathAnimation(s.animation->name)) {
+                o.picture_cut = true;
+            } else if (o.picture_cut) {
+                o.picture_replayed = true;
+            }
         }
         if (s.hit_ours && *s.hit_ours) {
             o.ours_hit_at = now_us;  // issue 133: its newest hit was ours (its game's own hit record)
@@ -2117,6 +2287,7 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
     hidden_ = std::move(hidden);
     // Gone only when two walks in a row miss it: an actor drops out of the
     // list for a moment when it is lifted or changes hands.
+    NoteBroodDeaths(now_seen);  // row 172: before any leave of a split enemy is judged
     std::vector<Object> gone;
     for (auto it = objects_.begin(); it != objects_.end();) {
         if (now_seen.contains(it->first)) {
@@ -2136,10 +2307,13 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         const auto owner = owners_.find(o.id);
         // churn-b: alive, no delete request, a placed id with an owner: away, not gone.
         if (delete_events_ && !deleted && o.id.kind == proto::ObjectKind::placed && owner != owners_.end() &&
-            owner->second.player != 0 && o.dead_at == 0 && !o.dead_said && !(o.life && *o.life <= 0) &&
+            owner->second.player != 0 && o.dead_at == 0 && !o.dead_said && !(o.life && *o.life <= 0 && ZeroIsDeath(o)) &&
             !(o.animation && IsDeathAnimation(o.animation->name)) && !IsHatchingEgg(o.name) &&
-            !bound_.contains(o.address)) {
-            away_.push_back({o.id, o.address, now_us + kAwayKeepUs, o.name, o.position, now_us});
+            !bound_.contains(o.address) && !(IsAnnounced(o.name) && gold_taken_.contains(o.id.value))) {
+            // (a split enemy off the walk at life 0 is judged again when its brood dies: split)
+            // (skulltula-0118: a taken Gold Skulltula is never away: Flush says it dead)
+            away_.push_back({o.id, o.address, now_us + kAwayKeepUs, o.name, o.position, now_us,
+                             SplitsAtZero(o.name) && o.life && *o.life <= 0});
             it = objects_.erase(it);
             continue;
         }
@@ -2147,9 +2321,18 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         // (a read one goes through Flush as dead): gone for good, told after
         // kLeftWaitUs (Left), listed till then.
         if (deleted && it->second.game_deleted && o.dead_at == 0 && !o.dead_said && !o.fish &&
-            !(o.life && *o.life <= 0) && !(o.animation && IsDeathAnimation(o.animation->name)) &&
+            !(o.life && *o.life <= 0 && ZeroIsDeath(o)) && !(o.animation && IsDeathAnimation(o.animation->name)) &&
             LeavesForGood(self, o.id, o.name, o.address, o.position)) {
             left_.push_back({o.id, o.address, now_us, o.position, o.name});
+            // skulltula-0118 follow-up: a copy the director made that is ours
+            // now (its maker's one left, the server handed it to us) ends here
+            // too: never made again with nobody left to end it.
+            if (const auto bound = bound_.find(o.address); bound != bound_.end()) {
+                if (const auto d = decided_.find(bound->second); d != decided_.end()) {
+                    d->second.removed = true;
+                    d->second.dead = true;
+                }
+            }
             it = objects_.erase(it);
             continue;
         }
@@ -2343,6 +2526,39 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
                 }
                 continue;
             }
+        } else if (IsSplitPart(s->name)) {
+            // Row 172: our Floormaster split here. A copy of another player's Little being made near: wait (it
+            // binds). Another player's brood near: that split is the one, ours goes. Else ours is shared.
+            const bool waiting = std::any_of(decided_.begin(), decided_.end(), [&](const auto& e) {
+                const Decided& d = e.second;
+                return d.address == 0 && !d.removed && d.name == s->name && now_us - d.got_us < kCreateWaitUs &&
+                       Distance(d.position, s->position) < kClaimDistance;
+            });
+            if (waiting) {
+                continue;
+            }
+            const bool other_brood = std::any_of(decided_.begin(), decided_.end(), [&](const auto& e) {
+                const Decided& d = e.second;
+                return !d.removed && d.id.kind == proto::ObjectKind::made && d.id.maker != self &&
+                       IsSplitPart(d.name) && Distance(d.position, s->position) < kSplitReachM;
+            });
+            if (other_brood) {
+                if (!refused_.contains(s->address)) {
+                    ++refused_count_;
+                    notes_.emplace_back("split here too, another player's brood is the one: ours deleted: " +
+                                        s->name);
+                }
+                refused.insert(s->address);
+                continue;
+            }
+            o.id = {proto::ObjectKind::made, self, ++made_counter_};
+            owners_[o.id] = {self, 0};
+            proto::ObjectSpawn spawn;
+            spawn.id = o.id;
+            spawn.actor = o.name;
+            spawn.state = StateOf(o, now_us);
+            send.emplace_back(std::move(spawn));
+            notes_.emplace_back("split here: shared " + s->name);
         } else if (const std::string_view maker = MinionMaker(s->name);
                    !maker.empty() && MinionOwner(maker, s->position) != 0) {
             if (MinionOwner(maker, s->position) == self) {
@@ -2387,6 +2603,16 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
                               Distance(d.position, s->position) < kClaimDistance;
                    })) {
             continue;  // the copy of another game's hatchling, not yet bound
+        } else if (std::any_of(decided_.begin(), decided_.end(), [&](const auto& e) {
+                       const Decided& d = e.second;
+                       return d.address == 0 && !d.removed && d.name == s->name &&
+                              now_us - d.got_us < kCreateWaitUs && Distance(d.position, s->position) < kClaimDistance;
+                   })) {
+            // The copy of an enemy another game announced (a Gold Skulltula, a late encounter), made here but not yet
+            // bound to its id: taken as a new one of ours, it was shared under a scene id, its death never reached its
+            // copy's entry, and the director made it again after each kill (a Gold Skulltula three times, four
+            // players, 2026-11-20).
+            continue;
         } else {
             o.id = {proto::ObjectKind::placed, 0, SceneSpawnId(scene_, s->name, order_[s->name]++)};
             if (IsHatchling(s->name) && CopyHatch(self, *s, now_us)) {
@@ -2541,6 +2767,21 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
             o.hit_place.reset();
             o.hit_record.reset();
         }
+        // Row 175: our copy of a Poe sister's painting died here (our arrow): the kill goes to its owner now (it
+        // never leaves our walk, so issue 133's kill on leaving would never come).
+        if (o.picture_kill_due) {
+            o.picture_kill_due = false;
+            if (known && owner->second.player != self) {
+                proto::Damage d;
+                d.id = o.id;
+                d.epoch = owner->second.epoch;
+                d.amount = 1;
+                d.cause = static_cast<std::uint8_t>(proto::DamageCause::killed);
+                d.position = o.position;
+                send.emplace_back(d);
+                notes_.emplace_back("its copy died here (a painting, our hit): the kill goes to its owner: " + o.name);
+            }
+        }
         // Issue 150: our boss copy's own stun, as a DAMAGE of 0.
         if (o.stun_due) {
             o.stun_due = false;
@@ -2609,9 +2850,33 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
 
     // churn-b: an away object that came back goes on with its owner; one
     // still off the walk after kAwayKeepUs is gone (left), its owner forgotten.
-    std::erase_if(away_, [this, now_us](Away& a) {
+    std::erase_if(away_, [this, now_us, self, &send](Away& a) {
         if (std::any_of(objects_.begin(), objects_.end(), [&a](const auto& e) { return e.second.id == a.id; })) {
             return true;
+        }
+        // Row 172: a split enemy of ours that left the walk at life 0 before its brood died: dead for everyone
+        // once every member died; kept while one of its brood is still on our walk.
+        if (a.split) {
+            if (BroodDone(a.id)) {
+                const auto owner = owners_.find(a.id);
+                if (owner != owners_.end() && owner->second.player == self) {
+                    proto::ObjectRemove r;
+                    r.id = a.id;
+                    r.epoch = owner->second.epoch;
+                    r.reason = proto::RemoveReason::dead;
+                    r.position = a.position;
+                    send.emplace_back(r);
+                    notes_.emplace_back("dead " + a.name + ": off our walk at life 0, its whole brood died");
+                }
+                owners_.erase(a.id);
+                return true;
+            }
+            const auto b = broods_.find(a.id);
+            if (b != broods_.end() && std::any_of(objects_.begin(), objects_.end(), [&b](const auto& e) {
+                    return b->second.members.contains(e.second.id) && !b->second.dead.contains(e.second.id);
+                })) {
+                a.until = std::max(a.until, now_us + kAwayKeepUs);
+            }
         }
         if (now_us - a.since < kAwayEventMaxUs) {  // an event's performer off the list (row 138(3))
             if (in_event_) {
@@ -2626,7 +2891,12 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         owners_.erase(a.id);
         notes_.emplace_back("gone " + a.name + ": off our walk " + std::to_string(kAwayKeepUs / 1'000'000) +
                             " s with no delete request: left");
+        still_ours_.push_back(a);  // (our game still has it: no encounter copy of it meanwhile)
         return true;
+    });
+    std::erase_if(still_ours_, [this, now_us](const Away& a) {
+        return now_us - a.since >= kStillOursUs ||
+               std::any_of(objects_.begin(), objects_.end(), [&a](const auto& e) { return e.second.id == a.id; });
     });
     // enemy-left-0116: enemies of ours our game deleted itself with no death
     // read. Back on the walk (the address reused by the same id): goes on.
@@ -2724,10 +2994,13 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
                 // A copy near our Link whose own AI plays something else than
                 // the owner's enemy (issue 132): it wants to act on our Link.
                 const auto& wanted = o.received.back().animation;
+                // Row 167: never its own rest animation (RestPlay): a dormant copy under an owner's
+                // enemy that moved on, not one acting on our Link.
                 const bool differs = o.animation && !o.animation->name.empty() && wanted &&
                                      !wanted->name.empty() &&
                                      AnimationBase(o.animation->name) != AnimationBase(wanted->name) &&
-                                     (o.reacts || IsGuardReaction(o.animation->name));
+                                     (o.reacts || IsGuardReaction(o.animation->name)) &&
+                                     !RestPlay(o, o.animation->name);
                 // Or the Mover had to put the owner's one back lately (issue 157).
                 const bool put_back = o.took_over_at != 0 && now_us >= o.took_over_at &&
                                       now_us - o.took_over_at <= kWakeLatchUs;
@@ -2853,8 +3126,23 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
     }
     std::vector<proto::ObjectGroupEntry> groups = GroupsOf(walk, group_links_);
     group_links_.clear();
+    // Row 172: a brood is one split's. A split enemy whose life reads above 0 is whole (not split yet, grown
+    // back by a Little, or raised at a hand-over): its brood starts again, so a Little that grew it back (and
+    // left alive) never holds back its real death at a later split. Members join only while it is split.
+    std::set<proto::ObjectId> split_roots;
+    for (const auto& [address, o] : objects_) {
+        if (!SplitsAtZero(o.name)) continue;
+        if (o.life && *o.life > 0) {
+            broods_.erase(o.id);
+        } else {
+            split_roots.insert(o.id);
+        }
+    }
     for (const proto::ObjectGroupEntry& e : groups) {
         if (e.member != e.root) group_links_[e.member] = e.root;
+        if (e.member != e.root && split_roots.contains(e.root)) {
+            broods_[e.root].members.insert(e.member);
+        }
     }
     if (!groups.empty() && (groups != groups_sent_ || present_went)) {
         proto::ObjectGroup g;
@@ -2964,7 +3252,7 @@ void Sync::Flush(std::uint8_t self, std::uint64_t now_us, std::vector<Object>& g
         const std::string_view owner_animation = !o.received.empty() && o.received.back().animation
                                                      ? std::string_view(o.received.back().animation->name)
                                                      : std::string_view{};
-        const bool died_here = owner->second.player != self &&
+        const bool died_here = owner->second.player != self && o.picture_die_at == 0 &&  // (row 175: sent)
                                LifelessKillHere(o.name, o.reacts, o.life.has_value(), own_death_recent, owner_animation,
                                                 o.dead_at != 0 || o.owner_life_zero || o.dead_now);
         {
@@ -2978,14 +3266,19 @@ void Sync::Flush(std::uint8_t self, std::uint64_t now_us, std::vector<Object>& g
             const float mx = o.position[0] - o.first_position[0];
             const float my = o.position[1] - o.first_position[1];
             const float mz = o.position[2] - o.first_position[2];
-            char line[260];
+            // Row 178: a boss gone this far below where we first saw it fell out of its room (Phantom Ganon, ~3 km):
+            // said so, as the next owner gets the copies' place, kept in the room (Poses).
+            const bool fell = IsBoss(o.name) && o.position[1] < o.first_position[1] - kBossFallBelowStartM;
+            char line[320];
             std::snprintf(line, sizeof line,
                           "gone %016llx %s owner %u life %d anim '%s' moved %.2f from Link %.2f: %s",
                           static_cast<unsigned long long>(o.id.value), o.name.c_str(),
                           owner->second.player, o.life.value_or(-1),
                           o.animation ? o.animation->name.c_str() : "",
                           std::sqrt(mx * mx + my * my + mz * mz), near,
-                          broken_here ? "broken here" : "left");
+                          broken_here ? "broken here"
+                          : fell      ? "left (a boss that fell out of its room, row 178: the copies kept it there)"
+                                      : "left");
             notes_.emplace_back(line);
         }
         if (owner->second.player == self) {
@@ -3006,7 +3299,14 @@ void Sync::Flush(std::uint8_t self, std::uint64_t now_us, std::vector<Object>& g
             // Its life 0 alone does not reach a copy whose life cannot be
             // read (the big Skulltula), nor end a copy whose game did not
             // take the life we wrote. Rolled ones say it in Tick already.
-            const bool died = !o.dead_said && ((o.life && *o.life <= 0) ||
+            // skulltula-0118: a Gold Skulltula of ours whose token is taken
+            // went with its take (hidden or deleted), not by a death our walk
+            // read; it is dead for everyone too. Unsaid, the server kept it
+            // alive and named it again (OBJECT_SPAWN) to every game that came
+            // in later, which made a frozen copy of it.
+            const bool taken = o.id.kind == proto::ObjectKind::placed && IsAnnounced(o.name) &&
+                               gold_taken_.contains(o.id.value);
+            const bool died = !o.dead_said && ((o.life && *o.life <= 0 && ZeroIsDeath(o)) || taken ||
                                                (o.animation && IsDeathAnimation(o.animation->name)));
             // A fish of ours gone in our Link's hands: caught here (issue
             // 151), gone for everyone.
@@ -3053,6 +3353,12 @@ void Sync::HoldEncounters(std::uint64_t now_us) {
                                       [&](const auto& e) { return e.second.id == it->first && e.second.dead_at == 0; });
         if (ours || now_us - h.heard_us > kEncounterStaleUs) {
             it = held_.erase(it);  // ours came, or its owner left or unloaded it
+            continue;
+        }
+        if (std::any_of(still_ours_.begin(), still_ours_.end(), [&](const Away& a) { return a.id == it->first; })) {
+            // Row 175/176: our own one is only off the walk (no delete request): it takes the id when it is back.
+            h.near_us = 0;
+            ++it;
             continue;
         }
         const bool near = !player_ || Distance(*player_, h.position) <= kEncounterNearM;
@@ -3116,9 +3422,40 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
                 continue;
             }
             if (made && (spawn->id.maker == self || spawn->id.maker == 0 ||
-                         !(IsRolled(spawn->actor) || IsHatchling(spawn->actor) ||
+                         !(IsRolled(spawn->actor) || IsHatchling(spawn->actor) || IsSplitPart(spawn->actor) ||
                            !MinionMaker(spawn->actor).empty()))) {
                 continue;
+            }
+            if (made && IsSplitPart(spawn->actor)) {
+                // Row 172: two games split the same Floormaster at once (each shared its brood). The lower player
+                // number's is the one: a higher one's is not made here (it removes its own when ours reaches it);
+                // ours goes for a lower one's (OBJECT_REMOVE gone: the others delete their copies of it).
+                std::vector<std::uint64_t> ours;
+                for (const auto& [address, o] : objects_) {
+                    if (o.id.kind == proto::ObjectKind::made && o.id.maker == self && IsSplitPart(o.name) &&
+                        o.dead_at == 0 && Distance(o.position, *spawn->state.position) < kSplitReachM) {
+                        ours.push_back(address);
+                    }
+                }
+                if (!ours.empty() && spawn->id.maker > self) {
+                    continue;
+                }
+                for (const std::uint64_t address : ours) {
+                    const auto it = objects_.find(address);
+                    proto::ObjectRemove r;
+                    r.id = it->second.id;
+                    if (const auto owner = owners_.find(r.id); owner != owners_.end()) {
+                        r.epoch = owner->second.epoch;
+                        owners_.erase(owner);
+                    }
+                    r.reason = proto::RemoveReason::gone;
+                    r.position = it->second.position;
+                    send.emplace_back(r);
+                    notes_.emplace_back("split by player " + std::to_string(spawn->id.maker) +
+                                        " too (the lower number's brood is the one): ours deleted: " +
+                                        it->second.name);
+                    objects_.erase(it);  // seen again, it is refused (another player's brood near)
+                }
             }
             const bool encounter = !made && IsLateEncounter(spawn->actor);
             // An encounter of ours that is dying (killed, or its copy killed
@@ -3129,11 +3466,21 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
                           spawn->player_number == self)) {
                 continue;  // we have that placement ourselves
             }
+            if (!made && IsAnnounced(spawn->actor) && gold_taken_.contains(spawn->id.value)) {
+                // skulltula-0118: its token is taken (a key of this save): no copy.
+                notes_.emplace_back("its token is taken: no copy made of " + spawn->actor);
+                continue;
+            }
             // A copy still being deleted is no longer it (a respawn makes a new one).
             const bool known = std::any_of(decided_.begin(), decided_.end(), [&](const auto& e) {
                 return e.second.id == spawn->id && !(encounter && e.second.removed);
             });
             if (known) {
+                continue;
+            }
+            // A Gold Skulltula (or any announced one-time placement) this save has already taken: never copied (its
+            // owner's game may still list it; a copy was made here though its token was taken, 2026-11-20).
+            if (!made && Taken(spawn->id.value)) {
                 continue;
             }
             // Report 99 re-review: a new OBJECT_SPAWN for an enemy whose copy
@@ -3254,6 +3601,10 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
                     o->dead_now = true;
                     o->dead_at = now_us;
                     notes_.emplace_back("caught in its owner's game: " + o->name);
+                } else if (o != nullptr && o->picture_die_at != 0) {
+                    // Row 175: it died here first (our hit, sent to its owner): its own death runs here and ends
+                    // it (the room logic goes on from it); no write and no delete.
+                    notes_.emplace_back("dead in its owner's game after our kill: ours runs its own death: " + o->name);
                 } else if (o != nullptr && o->reacts && o->dead_at == 0) {
                     // Our game kills it itself (life 0 through the game), so
                     // its own kill counts: a room's enemy counter and shutter,
@@ -3274,6 +3625,11 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
                     o->hit_place.reset();
                     o->hit_record.reset();
                     o->place_seen.reset();
+                }
+                if (o != nullptr && o->death_owner == 0) {
+                    // review-dc-0118: who said it died, kept past the owner's erase below (a room event's kept kill).
+                    o->death_owner = had != owners_.end() && had->second.player != 0 ? had->second.player
+                                                                                   : remove->player_number;
                 }
                 // Nobody's now: no samples, poses or plays for it.
                 if (had != owners_.end()) {
@@ -3389,7 +3745,15 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
                 o->hit_seq_in = sample->state.hit->seq;
                 record = sample->state.hit->record;
             }
-            if (life < have) {
+            if (life < have && !record && IsBossOrPart(o->name) && o->boss_stand_in_life != 0 &&
+                life >= o->boss_stand_in_life) {
+                // A boss copy, no hit record, and the stand-in hit for this life of the owner's was replayed once
+                // already: not again. Her game refuses it (its weak point is not hit), so every later sample asked
+                // again: a copy of Gohma took about 690 refused hits in one fight, reacting to each, its life staying
+                // 21 (four players, 2026-11-20). One replay per drop of the owner's life, as the copy shows the hit.
+                o->fight_until = now_us + kFightUs;
+            } else if (life < have) {
+                if (!record && IsBossOrPart(o->name)) o->boss_stand_in_life = life;
                 // Who hit it is not sent: its owner is the best guess. The hit is the owner's game's own (record);
                 // without one (no new seq: an older game, or a fall with no hit) the stand-in sword hit.
                 Lower(*o, life, now_us, writes, sample->player_number, std::nullopt, record);
@@ -3530,7 +3894,7 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
             std::int32_t theirs = 0;
             if (o != nullptr && handed->state.life && o->life) {
                 theirs = handed->state.life->life;
-                const bool takes = IsBossOrPart(o->name) || theirs < *o->life;
+                const bool takes = IsBossOrPart(o->name) || SplitsAtZero(o->name) || theirs < *o->life;
                 if (takes && theirs > 0 && o->hit_sum > 0) {
                     notes_.emplace_back("ours now with a hit of ours not sent yet (" + std::to_string(o->hit_sum) +
                                         "): taken off its old owner's life " + std::to_string(theirs) + ": " +
@@ -3569,8 +3933,9 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
                 o->hurt_until = 0;
             } else if (o != nullptr && handed->state.life && o->life && theirs < *o->life) {
                 write(*o, theirs);
-                if (theirs <= 0) {
-                    // Killed in the old owner's game as it came to us.
+                if (theirs <= 0 && ZeroIsDeath(*o)) {
+                    // Killed in the old owner's game as it came to us (row 172: a split enemy at 0 is split, its
+                    // brood alive: our copy splits by its own Life step and nobody is told a kill).
                     DeadByWrite(*o, handed->epoch, now_us, send, "dead in the hand-over");
                 }
             }
@@ -3614,7 +3979,9 @@ bool Sync::TestStun(std::string_view name, const std::optional<proto::Vec3>& nea
 }
 
 bool Sync::TakeOwnerLife(Object& o, std::int32_t owner_life, std::vector<LifeWrite>& writes, std::string_view why) {
-    if (!IsBossOrPart(o.name) || !o.life || owner_life <= 0 || owner_life == *o.life) {
+    // Row 172: a split enemy grows back to full life in its owner's game; its copy (never healed by hits) takes
+    // that life at a hand-over too, so the new owner's Floormaster is not left at the split's 0.
+    if (!(IsBossOrPart(o.name) || SplitsAtZero(o.name)) || !o.life || owner_life <= 0 || owner_life == *o.life) {
         return false;
     }
     if (owner_life > *o.life) {
@@ -3686,6 +4053,28 @@ void Sync::KeepBossLives(std::uint8_t self, std::vector<LifeWrite>& writes) {
     }
 }
 
+bool Sync::ZeroIsDeath(const Object& o) const {
+    return !SplitsAtZero(o.name) || BroodDone(o.id);
+}
+
+bool Sync::BroodDone(const coop::protocol::ObjectId& root) const {
+    const auto b = broods_.find(root);
+    return b != broods_.end() && !b->second.members.empty() &&
+           std::includes(b->second.dead.begin(), b->second.dead.end(), b->second.members.begin(),
+                         b->second.members.end());
+}
+
+void Sync::NoteBroodDeaths(const std::map<std::uint64_t, const Seen*>& now_seen) {
+    for (const auto& [address, o] : objects_) {
+        if (now_seen.contains(address)) continue;
+        if (!(o.life && *o.life <= 0) && !(o.animation && IsDeathAnimation(o.animation->name))) continue;
+        // By the brood's own list, not the walk's links: a root already off the walk links nobody.
+        for (auto& [root, b] : broods_) {
+            if (b.members.contains(o.id)) b.dead.insert(o.id);
+        }
+    }
+}
+
 void Sync::DeadByWrite(Object& o, std::uint16_t epoch, std::uint64_t now_us,
                        std::vector<proto::Message>& send, const char* why) {
     if (!o.reacts || o.dead_at != 0 || o.dead_said) {
@@ -3724,6 +4113,7 @@ void Sync::Lower(Object& o, std::int32_t life, std::uint64_t now_us,
     // The game takes it off itself; the walk sees the drop and does not
     // count it as our hit. o.life stays as read until then.
     LifeWrite w{o.address, life, from - life, std::nullopt};
+    w.hitter = hitter;
     w.hit_at = hit_at;
     w.record = record;
     {
@@ -3800,6 +4190,10 @@ void Sync::Poses(std::uint64_t now_us, std::vector<PoseWrite>& out) const {
         if (rotation) {
             w.rotation = MatOf(*rotation);
         }
+        if (IsBoss(o.name) && w.position[1] < o.first_position[1] - kBossFallBelowStartM) {
+            ++boss_copies_kept_;
+            continue;  // row 178: the owner's boss fell out of its room: ours stays in it
+        }
         out.push_back(w);
     }
 }
@@ -3841,6 +4235,30 @@ bool IsWeb(std::string_view actor) {
     return actor.starts_with("Obj_") && actor.find("SpiderWeb") != std::string_view::npos;
 }
 
+bool CoversOwnReaction(const PlayWish& wish, std::string_view slot_name) {
+    if (wish.slot != 0 || slot_name.empty()) {
+        return false;
+    }
+    if (wish.keep_own_death && IsDeathAnimation(slot_name) && !IsDeathAnimation(wish.name)) {
+        return true;
+    }
+    return wish.keep_own_stun && IsStunAnimation(slot_name) && !IsStunAnimation(wish.name);
+}
+
+bool DeathReadFromAnimation(std::string_view name, bool reacts, bool life_read) {
+    if (life_read) {
+        return false;  // (a life that can be read sends its fall as hits)
+    }
+    if (name.starts_with("Enemy_GhostPicturePerformer_Poe_")) {
+        return true;  // PictureDeathHere
+    }
+    if (!reacts || IsBossOrPart(name)) {
+        return false;
+    }
+    const GroupPart* part = PartOf(name);
+    return part == nullptr || !part->boss;  // LifelessKillHere
+}
+
 bool PlaysOver(std::string_view slot_name, std::string_view only_over) {
     if (only_over.empty()) {
         return true;
@@ -3880,6 +4298,13 @@ void Sync::Plays(std::uint64_t now_us, std::vector<PlayWish>& out) const {
                                                                              : show.idle_over});
     }
     for (const auto& [address, o] : objects_) {
+        // Row 175: our painting's own death, cut off by an owner's play already on its way: played again (from
+        // frame 0, once a sample) over whatever else it shows, so its room logic goes on.
+        if (o.picture_die_at != 0 && now_us >= o.picture_die_at && now_us - o.picture_die_at < kPictureReplayUs &&
+            !o.picture_die.empty() && !o.picture_replayed && o.animation && !IsDeathAnimation(o.animation->name)) {
+            out.push_back({address, o.picture_die, 1.0f, 0.0f, o.picture_die_at, 0, o.animation->name});
+            continue;
+        }
         if (o.received.empty() || now_us < o.received.back().time ||
             now_us - o.received.back().time > kPoseStaleUs) {
             continue;
@@ -3904,6 +4329,10 @@ void Sync::Plays(std::uint64_t now_us, std::vector<PlayWish>& out) const {
         // reaction to our DAMAGE) is played as usual.
         if (o.react_at != 0 && now_us < o.react_at + AnswerHoldUs(kReactHoldUs, owner->second.player) &&
             wanted->name == o.react_over) {
+            continue;
+        }
+        // Row 175: a painting that died here plays its own death; the owner's animation is not put on it.
+        if (o.picture_die_at != 0) {
             continue;
         }
         // Report 109: the copy's own wake for our Link (OwnWake) runs; the
@@ -3940,6 +4369,10 @@ void Sync::Plays(std::uint64_t now_us, std::vector<PlayWish>& out) const {
             wish.frame =
                 CoopNpcAnim::Wrapped(FrameAfter(wanted->frame, wish.run, age), wish.loop);
         }
+        // Row 175: its own death (or a boss's own stun) here is read from its own animation: never covered by the
+        // owner's (CoversOwnReaction).
+        out.back().keep_own_death = DeathReadFromAnimation(o.name, o.reacts, o.life.has_value());
+        out.back().keep_own_stun = IsBossOrPart(o.name);
         // Issue 150: a boss's other slots (Gohma's eye guard and eyelids,
         // whose AS events open and close the eye's guard). Without them
         // each game's copy kept its own AI's guard: the eye stood open for

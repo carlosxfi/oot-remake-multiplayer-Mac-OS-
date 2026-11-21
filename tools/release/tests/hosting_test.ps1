@@ -208,6 +208,7 @@ $opt = Join-Path $optDir 'coop-options.ini'
 [System.IO.File]::WriteAllText($opt, "# upnp = no`r`n# invite = no`r`n")
 $a = Read-KitServerAccess $opt
 Check ($a.Upnp -and $a.Invite -and $null -eq $a.Password) 'defaults: upnp and invite on, no password line'
+Check ($a.Relay -eq '159.54.182.85:27530' -and $a.SameNetworkOpen) 'defaults: the project''s relay built in, the same network without the password'
 [System.IO.File]::WriteAllText($opt, "upnp = no`r`ninvite = no`r`nstun_servers = a.example:1`r`n")
 $a = Read-KitServerAccess $opt
 Check (-not $a.Upnp -and -not $a.Invite -and $a.Stun -eq 'a.example:1') 'upnp = no and invite = no turn them off'
@@ -215,6 +216,11 @@ Check (-not $a.Upnp -and -not $a.Invite -and $a.Stun -eq 'a.example:1') 'upnp = 
 $a = Read-KitServerAccess $opt
 Check ($a.Relay -eq 'relay.example.net' -and $a.RelayRoom -eq 'forest-gang') 'relay_room is read (a commented one is not)'
 Check (-not $a.ApproveJoins) 'approve_joins: off by default'
+[System.IO.File]::WriteAllText($opt, "relay =`r`nsame_network_password = on`r`n")
+$a = Read-KitServerAccess $opt
+Check ($a.Relay -eq '159.54.182.85:27530' -and -not $a.SameNetworkOpen) 'an empty relay line is the built-in relay; same_network_password = on'
+$h = Get-ServerHostingArgs @{ Upnp = $false; Relay = ''; RelayKey = ''; SameNetworkOpen = $true } 'secret' ''
+Check (($h.Args -join ' ') -eq '--same-network-open') 'the same network: the server lets it in without the password'
 [System.IO.File]::WriteAllText($opt, "approve_joins = on`r`n")
 $a = Read-KitServerAccess $opt
 Check ($a.ApproveJoins) 'approve_joins = on is read (issue 261)'
@@ -240,6 +246,14 @@ Check ((ConvertFrom-InviteCode 'EHDDG-3ACVT-ASCAS-DASCS-NB2JP-PE7EA-GJEUQ-WC2NA-
 Check (-not (Test-InviteCodeText 'ABCD-EFGH') -and -not (Test-InviteCodeText '203.0.113.5') -and (Test-InviteCodeText $good)) 'invite: told apart from relay codes and addresses'
 $p1 = New-JoinPassword; $p2 = New-JoinPassword
 Check ($p1.Length -eq 20 -and $p1 -match '^[A-HJ-NP-Z2-9]{20}$' -and $p1 -ne $p2) 'invite: a made password is 20 letters (100 bits) and new each time'
+
+# The public game's room (Get-KitPublicRoom): lower case as the relay keeps it; a bad override is skipped.
+$acc = @{ RelayRoom = 'Forest-Gang' }
+Check ((Get-KitPublicRoom $acc) -eq 'forest-gang') 'public room: relay_room in lower case'
+Check ((Get-KitPublicRoom $acc ' Lake-12 ') -eq 'lake-12') 'public room: the override, trimmed, in lower case'
+Check ((Get-KitPublicRoom $acc 'no spaces allowed') -eq 'forest-gang') 'public room: a bad override is skipped'
+Check ((Get-KitPublicRoom @{ RelayRoom = '' } 'x') -match '^[a-z]+-\d{4}$') 'public room: nothing usable gives a ready one'
+Check ((Get-KitPublicPassword (Get-KitPublicRoom $acc ' Lake-12 ')) -eq 'squadala-public-game:lake-12') 'public room: the password from the room as the game makes it'
 
 if ($failed) { Write-Host "$failed failed"; exit 1 }
 Write-Host 'all passed'

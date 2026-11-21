@@ -100,6 +100,7 @@ struct FrameReport {
   int save_load_flags = 0;
   int save_load_frames = 0;
   bool save_load_native = false;  // said by the game's own load nodes (patch 0024), not the old signs
+  bool save_load_retry = false;   // Game Over's Try Again (row 159: the host sends no BOSS_ALIVE for it)
 };
 
 class Session {
@@ -253,6 +254,10 @@ class Session {
   // Emulator thread only: FlagWatcher::reset_lowered (rows 136/137).
   std::optional<std::int32_t> reset_lowered(FlagKey key) const {
     return watcher_ ? watcher_->reset_lowered(key) : std::nullopt;
+  }
+  // Emulator thread only: FlagWatcher::held_lower (rows 136/137 and 181).
+  std::optional<std::int32_t> held_lower(FlagKey key) const {
+    return watcher_ ? watcher_->held_lower(key) : std::nullopt;
   }
   // Emulator thread only: FlagWatcher::take_counts_guarded.
   std::vector<FlagWatcher::CountGuarded> take_counts_guarded() {

@@ -273,14 +273,32 @@ Plan Decide(const Want& want, const std::vector<Built>& built, const std::vector
                            [&](const Built& b) { return CoopMods::NameSame(b.name, name) && !b.preset.empty(); });
     };
     if (!want.on) {
+        if (want.guest && want.hand_pending) {
+            plan.why = "the host plays the seed " + want.host_hand + ": checking that yours is the same";
+            return plan;  // nothing switched until the hash is known (Rando::Check runs again then)
+        }
         if (want.guest || want.turned_off) {
-            switch_off_all_but("");
-            if (want.guest) {
+            switch_off_all_but(want.guest ? want.keep : "");
+            if (want.guest && !want.keep.empty()) {
+                // The host's hand-put seed, the same files here: it plays in the host's world (switched on when the
+                // player had it off; first row, so its size table wins as on the host's).
+                plan.remember = plan.off;
+                const CoopMods::Row* row = RowOf(rows, want.keep);
+                if (row != nullptr && !row->on) {
+                    plan.on.push_back(row->name);
+                    // Off by the player's choice (not by an earlier host's world, kHostOffFile): off again alone.
+                    const auto same = [&](const std::string& n) { return CoopMods::NameSame(n, row->name); };
+                    const bool was_on = std::any_of(want.restore.begin(), want.restore.end(), same);
+                    if (!was_on) plan.remember_on.push_back(row->name);
+                }
+                plan.why = "the host plays the seed " + want.keep + ", the same as yours: it stays on";
+                if (!plan.off.empty()) plan.why += " (your other seeds are switched off for its world)";
+            } else if (want.guest) {
                 plan.remember = plan.off;
                 plan.why = "the host plays without the randomizer: your seeds are switched off for its world (they "
                            "are switched on again when you play alone)";
             } else {
-                plan.forget = !want.restore.empty();
+                plan.forget = !want.restore.empty() || !want.host_on.empty();
                 plan.why = "the randomizer is off: its seeds are switched off";
             }
         } else {
@@ -293,7 +311,15 @@ Plan Decide(const Want& want, const std::vector<Built>& built, const std::vector
                     plan.on.push_back(row->name);
                 }
             }
-            plan.forget = !want.restore.empty();
+            // A host's hand-put seed this game had off, switched on for the host's world: off again.
+            for (const std::string& name : want.host_on) {
+                const CoopMods::Row* row = RowOf(rows, name);
+                if (row != nullptr && row->on && IsSeedFolder(row->name) && !ours(row->name) &&
+                    std::find(plan.off.begin(), plan.off.end(), row->name) == plan.off.end()) {
+                    plan.off.push_back(row->name);
+                }
+            }
+            plan.forget = !want.restore.empty() || !want.host_on.empty();
             if (!plan.off.empty()) plan.why = "the randomizer is off: its seeds are switched off";
             if (!plan.on.empty()) {
                 plan.why += std::string(plan.why.empty() ? "" : "; ") +
@@ -342,7 +368,7 @@ Plan Decide(const Want& want, const std::vector<Built>& built, const std::vector
     if (want.guest) {
         plan.remember = plan.off;  // the host's seed in its world; ours come back on alone
     } else {
-        plan.forget = !want.restore.empty();  // our switch picks the one seed now
+        plan.forget = !want.restore.empty() || !want.host_on.empty();  // our switch picks the one seed now
     }
     plan.what = plan.on.empty() && plan.off.empty() ? Plan::Do::nothing : Plan::Do::use;
     if (plan.what == Plan::Do::nothing && plan.forget) plan.what = Plan::Do::use;
@@ -478,6 +504,112 @@ std::string Fnv64Hex(std::string_view bytes) {
     return out;
 }
 
+std::string HandPlaying(const std::vector<Built>& built, const std::vector<CoopMods::Row>& rows) {
+    for (const CoopMods::Row& r : rows) {
+        if (!IsSeedFolder(r.name) || !r.on_now) continue;
+        const bool ours = std::any_of(built.begin(), built.end(), [&](const Built& b) {
+            return CoopMods::NameSame(b.name, r.name) && !b.preset.empty();
+        });
+        return ours ? std::string() : r.name;  // the first row wins: the seed this run plays
+    }
+    return {};
+}
+
+std::string HandSeedValue(std::string_view hash, std::string_view folder) {
+    if (hash.size() != 16 || !IsSeedFolder(folder)) return {};
+    std::string value = std::string(hash) + " " + std::string(folder);
+    return value.size() <= 256 ? value : std::string();  // (MOD_SETTINGS' value limit)
+}
+
+bool ParseHandSeed(std::string_view value, std::string* hash, std::string* folder) {
+    if (value.size() < 18 || value[16] != ' ') return false;
+    const std::string_view h = value.substr(0, 16), f = value.substr(17);
+    if (h.find_first_not_of("0123456789abcdef") != std::string_view::npos || !IsSeedFolder(f) ||
+        f.find_first_of("\\:") != std::string_view::npos || f == "." || f == "..") {
+        return false;
+    }
+    if (hash != nullptr) *hash = std::string(h);
+    if (folder != nullptr) *folder = std::string(f);
+    return true;
+}
+
+std::string SeedFilesHash(const fs::path& folder, const std::function<bool()>* stop) {
+    // path (lower case, '/') -> the file whose bytes stand for it
+    std::vector<std::pair<std::string, fs::path>> files;
+    std::error_code ec;
+    const fs::path romfs = folder / "romfs";
+    for (fs::recursive_directory_iterator it(romfs, ec), end; !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        std::string rel = CoopMods::ToUtf8(it->path().lexically_relative(romfs));
+        std::replace(rel.begin(), rel.end(), '\\', '/');
+        std::transform(rel.begin(), rel.end(), rel.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        fs::path from = it->path();
+        // The kit's start rewrites these in the mod whose tables win and keeps the mod's own beside (merge_tables.py).
+        const fs::path name = it->path().filename();
+        if (rel.rfind("system/resource/", 0) == 0 && rel.find('/', 16) == std::string::npos &&
+            fs::is_regular_file(folder / "_coop-size-table" / name, ec)) {
+            from = folder / "_coop-size-table" / name;
+        } else if (rel.rfind("rsdb/", 0) == 0 && rel.find('/', 5) == std::string::npos &&
+                   fs::is_regular_file(folder / "_coop-rows" / name, ec)) {
+            from = folder / "_coop-rows" / name;
+        }
+        files.emplace_back(std::move(rel), std::move(from));
+    }
+    if (ec || files.empty()) return {};
+    std::sort(files.begin(), files.end());
+    std::uint64_t h = 0xcbf29ce484222325ull;
+    const auto mix = [&h](const char* data, std::size_t n) {
+        for (std::size_t i = 0; i < n; ++i) h = (h ^ static_cast<unsigned char>(data[i])) * 0x100000001b3ull;
+    };
+    std::vector<char> buffer(1 << 20);
+    for (const auto& [rel, from] : files) {
+        if (stop != nullptr && *stop && (*stop)()) return {};
+        mix(rel.c_str(), rel.size() + 1);  // with its 0: a path is never the start of the bytes
+        std::ifstream in(from, std::ios::binary);
+        if (!in) return {};
+        std::uint64_t size = 0;
+        while (in) {
+            in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            const auto got = static_cast<std::size_t>(in.gcount());
+            mix(buffer.data(), got);
+            size += got;
+            if (got == 0) break;
+        }
+        if (in.bad()) return {};
+        for (int i = 0; i < 8; ++i) {
+            const char byte = static_cast<char>((size >> (8 * i)) & 0xff);
+            mix(&byte, 1);
+        }
+    }
+    char out[17];
+    std::snprintf(out, sizeof out, "%016llx", static_cast<unsigned long long>(h));
+    return out;
+}
+
+std::string HandLine(HandMatch match, std::string_view folder, bool restart) {
+    const std::string f(folder);
+    switch (match) {
+    case HandMatch::same:
+        return "Randomizer: the host plays the seed " + f + ", and yours is the same: it stays on" +
+               (restart ? ". RESTART the game now and start a NEW save to play it" : "");
+    case HandMatch::missing:
+        return "Randomizer: the host plays the seed " + f + ", which you don't have: you play the base game's chests. "
+               "To play it, copy the host's " + f + " folder into your mods, then restart";
+    case HandMatch::different:
+        break;
+    }
+    return "Randomizer: the host plays the seed " + f + ", and yours is not the same as the host's: it is switched off "
+           "for this world (the base game's chests). To play it, delete your " + f + " folder, copy the host's in, then "
+           "restart";
+}
+
+std::string HandTellLine(HandMatch match, std::string_view folder) {
+    return ChatSafe("[randomizer] I play without your seed " + std::string(folder) +
+                        (match == HandMatch::missing ? ": I don't have it" : ": mine is not the same as yours"),
+                    kTellChars);
+}
+
 bool MergedByKit(const fs::path& mods_root, std::string_view mod, std::string* rule) {
     const fs::path folder = mods_root / CoopMods::FromUtf8(std::string(mod));
     std::string version, table, table_hash, pack_hash, why = "merged";  // (no rule line: a kit before 0.11.3)
@@ -545,7 +677,12 @@ std::optional<std::string> OutsideSizeTable(const fs::path& mods_root, const std
     const std::string winner = WinnerOf(rows, indexed, [&](const std::string& name) {
         return HasSizeTable(mods_root / CoopMods::FromUtf8(Slashed(name)));
     });
-    if (winner.empty() || CoopMods::NameSame(Slashed(winner), kPackFolder) || IsSeedFolder(winner) ||
+    // A seed of ours is built beside every other mod's table (StageSizeTables); one put in by hand (no kPresetFile)
+    // was not, so it counts as any other mod's table.
+    std::error_code pec;
+    const bool our_seed = IsSeedFolder(winner) &&
+                          fs::is_regular_file(mods_root / CoopMods::FromUtf8(winner) / kPresetFile, pec);
+    if (winner.empty() || CoopMods::NameSame(Slashed(winner), kPackFolder) || our_seed ||
         CoopMods::NameSame(winner, kFolder)) {
         return std::nullopt;
     }
@@ -861,11 +998,11 @@ std::string ChatSafe(std::string line, std::size_t max_chars) {
             from = name + 6;
         }
     }
-    if (line.size() > max_chars) {
-        std::size_t cut = max_chars;
+    if (line.size() > max_chars) {  // ("..." counts: at most max_chars bytes in all, as a chat line's limit wants)
+        std::size_t cut = max_chars > 3 ? max_chars - 3 : 0;
         while (cut > 0 && (static_cast<unsigned char>(line[cut]) & 0xC0) == 0x80) --cut;  // a whole UTF-8 character
         line.resize(cut);
-        line += "...";
+        line += std::string("...").substr(0, max_chars - cut < 3 ? max_chars - cut : 3);
     }
     return line;
 }
@@ -1005,6 +1142,16 @@ std::string RefreshLine(std::string_view seed) {
 Rando::Rando(CoopMods::Loader& loader, Hooks hooks) : loader_(loader), hooks_(std::move(hooks)) {}
 
 Rando::~Rando() {
+    stop_hash_ = true;  // no hasher starts from now on (HashLater)
+    for (;;) {
+        std::thread hasher;
+        {
+            const std::lock_guard lock(hand_mutex_);
+            hasher = std::move(hasher_);
+        }
+        if (!hasher.joinable()) break;
+        hasher.join();
+    }
     Wait();
 }
 
@@ -1075,10 +1222,12 @@ void Rando::Start() {
             hooks_.log("randomizer: " + playing + " places shop items: each one-time shelf sells once for the group");
         }
         // The seed this run plays, built beside other size tables than now: no pack actor until it is checked.
+        hand_playing_ = HandPlaying(Scan(loader_.Root()), loader_.Rows());
         if (on_now) {
             const std::string now = CurrentTables();
             for (const Built& b : Scan(loader_.Root())) {
-                if (CoopMods::NameSame(b.name, playing) && b.tables != now) {
+                // (only ours: a refresh checks it; a hand-put seed's table is the kit merge's, OutsideSizeTable)
+                if (CoopMods::NameSame(b.name, playing) && !b.preset.empty() && b.tables != now) {
                     hold_pack_ = true;
                     if (hooks_.log) {
                         hooks_.log("randomizer: " + playing + " was built beside other size tables than now: the "
@@ -1204,6 +1353,15 @@ void Rando::TellOthers() {
         const std::lock_guard lock(mutex_);
         outside_tell_ = false;
     }
+    std::string hand;
+    {
+        const std::lock_guard lock(mutex_);
+        hand = hand_tell_;
+    }
+    if (!hand.empty() && hooks_.tell_others(hand)) {
+        const std::lock_guard lock(mutex_);
+        if (hand_tell_ == hand) hand_tell_.clear();
+    }
     std::string line;
     {
         const std::lock_guard lock(mutex_);
@@ -1268,15 +1426,23 @@ std::string Rando::Status() const {
 }
 
 void Rando::Wait() {
-    // Not from the worker itself. A build started while waiting is waited for too.
+    // Not from the worker itself. A build started while waiting is waited for too, and a hand-put seed's hash
+    // (HashLater) first: its end may start one.
     for (;;) {
+        std::thread hasher;
+        {
+            const std::lock_guard lock(hand_mutex_);
+            hasher = std::move(hasher_);
+        }
+        const bool hashed = hasher.joinable();
+        if (hashed) hasher.join();
         std::thread t;
         {
             const std::lock_guard lock(mutex_);
             t = std::move(worker_);
         }
-        if (!t.joinable()) return;
-        t.join();
+        if (!t.joinable() && !hashed) return;
+        if (t.joinable()) t.join();
     }
 }
 
@@ -1316,8 +1482,33 @@ Want Rando::Wanted(bool* seed_locked) const {
             while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
             if (IsSeedFolder(line)) want.restore.push_back(line);
         }
+        std::istringstream on_lines(ReadFileText(loader_.Root() / kFolder / kHostOnFile));
+        for (std::string line; std::getline(on_lines, line);) {
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+            if (IsSeedFolder(line)) want.host_on.push_back(line);
+        }
     }
     want.guest = loader_.HostValuesSet();
+    if (want.guest) {
+        std::string hash, folder;
+        if (const auto value = loader_.HostValue(kId, kHandSeedKey); value && ParseHandSeed(*value, &hash, &folder)) {
+            want.host_hand = folder;
+            const CoopMods::Row* row = nullptr;
+            const std::vector<CoopMods::Row> rows = loader_.Rows();
+            for (const CoopMods::Row& r : rows) {
+                if (CoopMods::NameSame(r.name, folder)) row = &r;
+            }
+            if (row != nullptr) {
+                const std::lock_guard lock(hand_mutex_);
+                const auto have = hand_hash_.find(row->name);
+                if (have == hand_hash_.end()) {
+                    want.hand_pending = true;  // Check hashes it (HashLater)
+                } else if (!have->second.empty() && have->second == hash) {
+                    want.keep = row->name;
+                }
+            }
+        }
+    }
     // A guest plays the host's world: a host whose randomizer is off or missing sends no switch, so ours is off too
     // (our own value is kept for a game alone).
     if (want.on && loader_.HostValuesSet()) {
@@ -1328,6 +1519,102 @@ Want Rando::Wanted(bool* seed_locked) const {
         if (!host_sets) want.on = false;
     }
     return want;
+}
+
+void Rando::HashLater(const std::string& folder) {
+    std::thread old;
+    {
+        const std::lock_guard lock(hand_mutex_);
+        if (stop_hash_ || hand_hash_.count(folder) != 0 || hand_job_ == folder) return;
+        if (hasher_running_) {
+            hand_next_ = folder;  // one at a time: the hasher takes it next
+            return;
+        }
+        old = std::move(hasher_);
+    }
+    if (old.joinable()) old.join();  // (ended: it cleared hasher_running_ as its last step)
+    const std::lock_guard lock(hand_mutex_);
+    if (stop_hash_ || hand_hash_.count(folder) != 0 || hand_job_ == folder) return;
+    if (hasher_running_) {
+        hand_next_ = folder;
+        return;
+    }
+    hasher_running_ = true;
+    hand_job_ = folder;
+    hasher_ = std::thread([this] { HashWork(); });
+}
+
+void Rando::HashWork() {
+    for (;;) {
+        std::string folder;
+        {
+            const std::lock_guard lock(hand_mutex_);
+            folder = hand_job_;
+        }
+        const std::function<bool()> stop = [this] { return stop_hash_.load(); };
+        std::string hash = SeedFilesHash(loader_.Root() / CoopMods::FromUtf8(folder), &stop);
+        if (!stop_hash_) {
+            if (hooks_.log) {
+                hooks_.log("randomizer: seed folder " + folder + ": " +
+                           (hash.empty() ? std::string("no files to compare") : "files hash " + hash));
+            }
+            {
+                const std::lock_guard lock(hand_mutex_);
+                hand_hash_[folder] = std::move(hash);
+                hand_job_.clear();
+            }
+            if (loader_.HostValuesSet()) Recheck();  // a guest waits for it (a host: HandValue is asked every frame)
+        }
+        const std::lock_guard lock(hand_mutex_);
+        hand_job_.clear();
+        if (!stop_hash_ && !hand_next_.empty() && hand_hash_.count(hand_next_) == 0) {
+            hand_job_ = std::move(hand_next_);
+            hand_next_.clear();
+            continue;
+        }
+        hand_next_.clear();
+        hasher_running_ = false;
+        return;
+    }
+}
+
+std::optional<std::string> Rando::HandValue() {
+    if (hand_playing_.empty() || loader_.HostValuesSet()) return std::nullopt;
+    {
+        const std::lock_guard lock(hand_mutex_);
+        if (const auto have = hand_hash_.find(hand_playing_); have != hand_hash_.end()) {
+            if (std::string value = HandSeedValue(have->second, hand_playing_); !value.empty()) return value;
+            return std::nullopt;
+        }
+    }
+    HashLater(hand_playing_);
+    return std::nullopt;
+}
+
+void Rando::SayHand(const Want& want, bool restart_said) {
+    if (!want.guest || want.on || want.host_hand.empty() || want.hand_pending) {
+        const std::lock_guard lock(mutex_);
+        hand_said_.clear();
+        hand_tell_.clear();
+        return;
+    }
+    std::error_code ec;
+    const HandMatch match = !want.keep.empty() ? HandMatch::same
+                            : fs::is_directory(loader_.Root() / CoopMods::FromUtf8(want.host_hand), ec)
+                                ? HandMatch::different
+                                : HandMatch::missing;
+    const std::string key = want.host_hand + "\n" + std::to_string(static_cast<int>(match));
+    std::string line;
+    {
+        const std::lock_guard lock(mutex_);
+        if (hand_said_ == key) return;  // once per host seed and match (a restart line repeats on its own)
+        hand_said_ = key;
+        hand_tell_ = match == HandMatch::same ? std::string() : HandTellLine(match, want.host_hand);
+        if (match == HandMatch::same && restart_said) return;  // (that line says it, and to restart)
+        line = HandLine(match, want.host_hand, false);
+        lines_.push_back(line);
+    }
+    if (hooks_.log) hooks_.log("randomizer: " + line);
 }
 
 std::string Rando::CurrentTables() const {
@@ -1346,6 +1633,17 @@ void Rando::Switch(const Plan& plan) {
         std::error_code ec;
         fs::remove(host_off, ec);
     }
+    const fs::path host_on = loader_.Root() / kFolder / kHostOnFile;
+    if (!plan.remember_on.empty()) {
+        std::string text = ReadFileText(host_on);
+        for (const std::string& name : plan.remember_on) {
+            if (("\n" + text).find("\n" + name + "\n") == std::string::npos) text += name + "\n";
+        }
+        WriteText(host_on, text);
+    } else if (plan.forget) {
+        std::error_code ec;
+        fs::remove(host_on, ec);
+    }
     for (const std::string& name : plan.off) loader_.SetOn(name, false);
     for (const std::string& name : plan.on) {
         loader_.SetOn(name, true);
@@ -1356,7 +1654,11 @@ void Rando::Switch(const Plan& plan) {
         // A seed switched on (or to the first row, where its size table wins) plays only after a restart.
         if (!plan.on.empty()) {
             const Want want = Wanted(nullptr);
-            if (want.on) SayRestart(ReadyLine(want.seed));
+            if (want.on) {
+                SayRestart(ReadyLine(want.seed));
+            } else if (!want.keep.empty()) {
+                SayRestart(HandLine(HandMatch::same, want.keep, true));
+            }
         }
     } else if (!plan.why.empty()) {
         Say(plan.why);
@@ -1419,9 +1721,14 @@ void Rando::Check() {
             return;
         }
     }
+    if (want.guest && !want.on && want.hand_pending) {
+        HashLater(want.host_hand);  // its end runs Check again
+        return;
+    }
     const Plan plan = Decide(want, Scan(loader_.Root()), loader_.Rows(), CurrentTables());
     if (plan.what != Plan::Do::build && plan.what != Plan::Do::refresh) {
         Switch(plan);
+        SayHand(want, !plan.on.empty());  // (a seed switched on: Switch said the restart line)
         return;
     }
     std::thread old;

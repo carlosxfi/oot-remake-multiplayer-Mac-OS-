@@ -23,7 +23,7 @@ playing together (same server, same version) is not yet proven. Please report wh
 3. The first time it asks for your game: drag your `.nup` into the terminal and press Enter. (It finds it by itself
    when it is in Downloads, Desktop, Documents or your home folder.) Then it builds the game, once.
 4. The game starts. **Host** or **Join** in the game's menu (the Multiplayer tab). Host gives you an invite code for
-   your friends (it is also put on your clipboard); Join takes a friend's code.
+   your friends (it is also put on your clipboard); Join takes a room name or an address and the password.
 
 After the first build, `bash start-squadala.sh` starts the game in seconds, and the kit adds a **Squadala** entry to
 your applications menu. Each start checks for a new co-op version and offers it; every player needs the same one.

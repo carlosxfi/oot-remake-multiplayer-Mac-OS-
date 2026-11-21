@@ -1284,6 +1284,17 @@ TEST_CASE("look: coop.ini as Customize and Join write it keeps co-op on") {
     CHECK_FALSE(back[Part::hylian_emblem]);
 }
 
+TEST_CASE("look: a Nucleus game's coop.ini is known by the handler's first line (row 194)") {
+    const std::string marker = "# Written by the Nucleus Co-op handler (tools/nucleus/OoTCoop.js) at each start.";
+    CHECK(CoopLook::NucleusWrote(marker + "\r\nserver = 127.0.0.1\r\ncolor = red\r\n"));
+    CHECK(CoopLook::NucleusWrote("\xef\xbb\xbf" + marker + "\n"));
+    CHECK(CoopLook::NucleusWrote(marker));
+    CHECK_FALSE(CoopLook::NucleusWrote(""));
+    CHECK_FALSE(CoopLook::NucleusWrote("# Written by"));
+    CHECK_FALSE(CoopLook::NucleusWrote("name = Saria\r\ncolor = red\r\n"));   // (a kit's or a player's own)
+    CHECK_FALSE(CoopLook::NucleusWrote("name = Saria\r\n" + marker + "\r\n"));   // (only the first line counts)
+}
+
 TEST_CASE("look: your own Link starts in the colour of the pack's tunic files, not the switch's") {
     const std::map<std::string, std::vector<std::uint8_t>> self{{"black", {1, 2}}, {"pink", {3, 4}}, {"white", {5}}};
     const CoopLook::FileFn file = [&](const std::string& c) -> std::optional<std::vector<std::uint8_t>> {

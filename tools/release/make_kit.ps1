@@ -228,6 +228,7 @@ if (-not (Test-Path $hsPin)) {
     Copy-Text $hsPin (Join-Path $hsKit 'PIN')
     Copy-Text (Join-Path $here 'kit\hookshot\TOOLS.txt') (Join-Path $hsKit 'TOOLS.txt')
     Copy-Text (Join-Path $here 'kit\hookshot\OOTRR.txt') (Join-Path $hsKit 'OOTRR.txt')   # (the randomizer the build fetches)
+    Copy-Text (Join-Path $here 'kit\hookshot\CHARACTER-SELECT.txt') (Join-Path $hsKit 'CHARACTER-SELECT.txt')   # (Snail's mod the start fetches, asked first)
     $hsPatches = @(Get-ChildItem (Join-Path $repo 'hookshot\patches') -Filter '*.patch' -File | Sort-Object Name)
     if (-not $hsPatches) { throw 'hookshot\PIN is there but hookshot\patches has no .patch.' }
     # (byte for byte: a patch's own line ends are part of it)

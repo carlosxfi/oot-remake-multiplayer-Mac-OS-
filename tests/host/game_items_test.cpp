@@ -1511,6 +1511,35 @@ TEST_CASE("items: Ruto's Letter goes into the first empty bottle while King Zora
   CHECK_FALSE(ruto_letter_bottle(true, false, false, v, in));
 }
 
+TEST_CASE("a bottled fairy: an owned bottle holding the Enum value Fairy, unread is none (row 162)") {
+  namespace letters = coop::host::letters;
+  CHECK(coop::host::flag_hash("Fairy") == coop::host::kBottledFairy);
+  std::map<std::uint32_t, bool> valid;
+  std::map<std::uint32_t, std::uint32_t> item;
+  for (const auto& b : letters::kBottles) {
+    valid[b.valid] = true;
+    item[b.item] = letters::kEmpty;
+  }
+  const auto v = [&](std::uint32_t h) -> std::optional<bool> {
+    if (auto it = valid.find(h); it != valid.end()) return it->second;
+    return std::nullopt;
+  };
+  const auto in = [&](std::uint32_t h) -> std::optional<std::uint32_t> {
+    if (auto it = item.find(h); it != item.end()) return it->second;
+    return std::nullopt;
+  };
+  CHECK_FALSE(coop::host::bottled_fairy(v, in));
+  item[letters::kBottles[3].item] = coop::host::flag_hash("Fairy");
+  CHECK(coop::host::bottled_fairy(v, in));
+  valid[letters::kBottles[3].valid] = false;  // a bottle not owned holds nothing
+  CHECK_FALSE(coop::host::bottled_fairy(v, in));
+  valid.erase(letters::kBottles[3].valid);  // unread
+  CHECK_FALSE(coop::host::bottled_fairy(v, in));
+  valid[letters::kBottles[3].valid] = true;
+  item[letters::kBottles[3].item] = coop::host::flag_hash("BigPoe");
+  CHECK_FALSE(coop::host::bottled_fairy(v, in));
+}
+
 TEST_CASE("items: Ruto's Letter says why it waits (issue 58, the 0.11.2 big run)") {
   namespace letters = coop::host::letters;
   using coop::host::RutoWait;

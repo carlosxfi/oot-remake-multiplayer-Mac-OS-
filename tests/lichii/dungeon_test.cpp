@@ -42,6 +42,32 @@ TEST_CASE("dungeon: a mid-boss beaten is shared, its fight start is not (mid-bos
     CHECK_FALSE(has("Enemy_MiddleBoss_IronKnuckle_Nabooru_BossAppear"));
 }
 
+TEST_CASE("dungeon: an enemy room's clear reaches every game at once, never held (rows 160/161)") {
+    // Dodongo's Cavern's Lizalfos rooms: the shutters are NOT(clear flag OR asker EventBool) and the room deletes its
+    // Lizalfos on the clear flag (romfs Gimmick_DodongoCavern_MiddleBoss01/02). A game that never gets the flag (row
+    // 160: a player spectating or teleported out when the group won) re-makes the fight and stays locked in. So the
+    // flag and the event's played flag land live: no dungeon hold, no result guard, and the event is class live.
+    for (const std::string_view room : {"01", "02"}) {
+        const std::string flag = std::string("Gimmick_DefeatEnemy_Open_DodongoCave_") + std::string(room);
+        const std::string event = std::string("DodongoCavern_Gimmick_DefeatLizalfos") + std::string(room);
+        const std::string played = "HavePlayedEvent." + event;
+        CAPTURE(flag);
+        const auto flags = CoopDungeon::Flags();
+        const auto find = [&](const std::string& name) {
+            return std::find_if(flags.begin(), flags.end(), [&](const auto& f) { return f.name == name; });
+        };
+        REQUIRE(find(flag) != flags.end());
+        REQUIRE(find(played) != flags.end());
+        CHECK_FALSE(CoopDungeon::HeldIn(find(flag)->hash).has_value());
+        CHECK_FALSE(CoopDungeon::HeldIn(find(played)->hash).has_value());
+        CHECK(CoopEventResult::IsLive(event));
+        for (const auto& g : CoopEventResult::Guards()) {
+            CHECK(g.flag != flag);
+            CHECK(g.flag != played);
+        }
+    }
+}
+
 TEST_CASE("dungeon: the Water Temple's water level and switches are in the list") {
     bool level = false;
     bool shutter = false;

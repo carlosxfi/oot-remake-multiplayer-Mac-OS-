@@ -38,6 +38,11 @@ if ($Bind.Trim()) {
 . (Join-Path $PSScriptRoot 'invite.ps1')
 $kitAccess = Read-KitServerAccess (Join-Path $kit 'coop-options.ini')
 $password = $kitAccess.Password
+if ($kitAccess.PublicGame) {
+    # A public game (public_game = on): the room Host.bat chose (or a ready one), its password made from it.
+    $kitAccess.RelayRoom = Get-KitPublicRoom $kitAccess $env:OOT_COOP_PUBLIC_ROOM
+    $password = Get-KitPublicPassword $kitAccess.RelayRoom
+}
 # No server_password (no line, or an empty one): a new random one for this session. Every
 # session has a password, which also encrypts the traffic (docs/play-online.md). Host.bat
 # makes it and hands it over in OOT_COOP_SESSION_PASSWORD, so the host's own game has it too.
@@ -64,7 +69,10 @@ $log = Join-Path $logs ('server-{0:yyyyMMdd-HHmmss}.log' -f (Get-Date))
 
 Write-Host "Co-op server on UDP port $Port. Log: $log"
 Write-Host 'Keep this window open while you play; closing it (or Ctrl+C) stops the server.'
-if ($madePassword) {
+if ($kitAccess.PublicGame) {
+    Write-Host "Public game: room $($kitAccess.RelayRoom). Anyone can join it from Public games with no password, only through the relay (your address is never shown). Kick or ban in the game's Lobby tab."
+}
+elseif ($madePassword) {
     Write-Host 'Join password: a new random one for this session; it is inside the invite code (server_password in coop-options.ini sets your own).'
     # Shown here only (never in the log), for friends who join by a VPN or home-network address.
     Write-Host "Join password for this session: $password   (only needed when a friend joins by address instead of the invite code)"

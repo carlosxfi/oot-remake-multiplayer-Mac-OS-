@@ -2416,6 +2416,30 @@ Error decode_body(Reader& r, BossScene& m) {
   return check_boss_scene(m);
 }
 
+// BOSS_ALIVE: u8 player, u16 known, u16 alive (both within kBossAliveMask, alive within known).
+Error check_boss_alive(const BossAlive& m) {
+  if (!valid_player_or_self(m.player_number) || (m.known & ~kBossAliveMask) != 0 || (m.alive & ~m.known) != 0) {
+    return Error::bad_value;
+  }
+  return Error::none;
+}
+
+Error encode_body(const BossAlive& m, Writer& w) {
+  COOP_TRY(check_boss_alive(m));
+  w.u8(m.player_number);
+  w.u16(m.known);
+  w.u16(m.alive);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, BossAlive& m) {
+  m = BossAlive{};
+  COOP_READ(r.u8(m.player_number));
+  COOP_READ(r.u16(m.known));
+  COOP_READ(r.u16(m.alive));
+  return check_boss_alive(m);
+}
+
 // BOSS_HEART: u8 player, u8 boss (0 to 15), u8 given (0, 1), u32 max life (1 to 80).
 Error check_boss_heart(const BossHeart& m) {
   if (!valid_player_or_self(m.player_number) || m.boss > kMaxSceneBoss || m.max_life < 1 ||
@@ -3331,6 +3355,7 @@ MessageType type_of(const Message& message) {
       MessageType::lift_ask,    MessageType::lift_answer, MessageType::lift_place,
       MessageType::lift_share,
       MessageType::pvp_strike,  MessageType::pvp_result,  MessageType::pvp_native,
+      MessageType::boss_alive,
   };
   static_assert(std::size(kTypes) == std::variant_size_v<Message>);
   return kTypes[message.index()];
@@ -3353,6 +3378,7 @@ std::uint8_t channel_of(MessageType type) {
     case MessageType::flag_origin:
     case MessageType::flag_snapshot:
     case MessageType::host:
+    case MessageType::boss_alive:
       return kChannelProgress;
     case MessageType::object_sample:
     case MessageType::world_move:
@@ -3448,6 +3474,7 @@ bool allowed_on_channel(MessageType type, std::uint8_t channel) {
     case MessageType::flag_origin:
     case MessageType::flag_snapshot:
     case MessageType::host:
+    case MessageType::boss_alive:
       return channel == kChannelProgress;
     case MessageType::player_sample:
     case MessageType::player_pose:
@@ -3580,6 +3607,7 @@ bool may_send(Sender from, MessageType type) {
     case MessageType::link_sound:
     case MessageType::boss_scene:
     case MessageType::boss_heart:
+    case MessageType::boss_alive:
     case MessageType::lift_ask:
     case MessageType::lift_answer:
     case MessageType::lift_place:
@@ -3629,7 +3657,7 @@ auto* player_field(M& message) {
                       std::is_same_v<T, ModList> || std::is_same_v<T, ModSettings> ||
                       std::is_same_v<T, LinkSound> ||
                       std::is_same_v<T, BossScene> || std::is_same_v<T, BossHeart> ||
-                      std::is_same_v<T, PlayerLook> || std::is_same_v<T, LiftAsk> ||
+                      std::is_same_v<T, BossAlive> || std::is_same_v<T, PlayerLook> || std::is_same_v<T, LiftAsk> ||
                       std::is_same_v<T, LiftAnswer> || std::is_same_v<T, LiftPlace> ||
                       std::is_same_v<T, PvpStrike> || std::is_same_v<T, PvpResult> ||
                       std::is_same_v<T, PvpNative>) {
@@ -3794,6 +3822,7 @@ Error decode(std::span<const std::uint8_t> bytes, Message& out) {
     case MessageType::local_message: return decode_as<LocalMessage>(body, out);
     case MessageType::boss_scene: return decode_as<BossScene>(body, out);
     case MessageType::boss_heart: return decode_as<BossHeart>(body, out);
+    case MessageType::boss_alive: return decode_as<BossAlive>(body, out);
     case MessageType::drop_spawn: return decode_as<DropSpawn>(body, out);
     case MessageType::drop_take: return decode_as<DropTake>(body, out);
     case MessageType::drop_ask: return decode_as<DropAsk>(body, out);

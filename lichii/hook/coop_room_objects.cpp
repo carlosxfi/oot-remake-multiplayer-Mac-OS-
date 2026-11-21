@@ -302,6 +302,16 @@ bool Driven(std::string_view scene, std::string_view name, const std::array<floa
     return p != nullptr && !p->why.empty();
 }
 
+bool PlayerDriven(std::string_view why) {
+    for (const std::string_view input : {std::string_view("RideOnPlayer"), std::string_view("RideOnCharacter"),
+                                         std::string_view("IsInPlayer"), std::string_view("IsTargetFloor")}) {
+        if (why.find(input) != std::string_view::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool RiderName(std::string_view name) {
     for (const std::string_view n : kRiderNames) {
         if (n == name) return true;

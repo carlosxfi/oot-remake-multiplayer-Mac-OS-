@@ -58,11 +58,18 @@ enum class Kind : std::uint8_t {
   kListRoom = 0x07,      // token, listed u8 (0 or 1), players u8, max u8,
                          // version u16, host name length u8, host name: "list
                          // my room (or not) with these numbers" (RoomEntry)
+  kRoomProof = 0x08,     // token, time u64, signature (64 bytes): the listed
+                         // room's proof (RoomProof; the official game's signed
+                         // mark, docs/official-game.md). A relay before 0.11.8
+                         // drops it; this one keeps it beside the listing and
+                         // never checks it (the kits do).
   // Guest -> relay.
   kLookup = 0x10,      // the 8-letter code: lets this address join that host
   kLookupName = 0x11,  // name length u8, name: the same with a room name
   kListRooms = 0x12,   // start u8, zeros up to kListRequestBytes in all: "the
                        // listed rooms from this one on" (anyone may ask)
+  kListProofs = 0x13,  // zeros up to kListRequestBytes in all: "the listed
+                       // rooms' proofs" (a relay before 0.11.8 does not answer)
   // Relay -> host link.
   kRegistered = 0x81,      // token, code
   kRefused = 0x82,         // token, Refusal u8
@@ -74,6 +81,8 @@ enum class Kind : std::uint8_t {
   kRoomList = 0x91,  // total u8, start u8, count u8, then count entries: room
                      // length u8, room, host length u8, host, players u8,
                      // max u8, version u16, flags u8 (bit 0: a join password)
+  kRoomProofs = 0x92,  // count u8, then count proofs: room length u8, room,
+                       // time u64, signature (64 bytes); as many as fit
 };
 
 enum class Refusal : std::uint8_t {
@@ -112,6 +121,18 @@ bool listable_host_name(std::string_view name);
 // kMaxHostNameBytes before a UTF-8 letter's start; "Host" when nothing is left.
 std::string listing_name(std::string_view name);
 
+// A listed room's proof (kRoomProof, kRoomProofs): passed on as its host gave it; what it means is
+// coop::protocol::official_check's.
+inline constexpr std::size_t kProofSignatureBytes = 64;
+struct RoomProof {
+  std::string room;  // kRoomProofs: the room it was given for (kRoomProof: the relay knows it)
+  std::uint64_t time_s = 0;
+  std::array<std::uint8_t, kProofSignatureBytes> signature{};
+  bool operator==(const RoomProof&) const = default;
+};
+// What a kRoomProofs proof adds to the datagram, in bytes.
+std::size_t proof_bytes(const RoomProof& proof);
+
 struct Message {
   Kind kind = Kind::kKeepalive;
   std::uint64_t token = 0;
@@ -126,6 +147,8 @@ struct Message {
   std::uint8_t start = 0;        // kListRooms, kRoomList: the first room's place in the list
   std::uint8_t total = 0;        // kRoomList: how many rooms the list has
   std::vector<RoomEntry> rooms;  // kRoomList: the rooms from `start` on that fit
+  RoomProof proof;                // kRoomProof (room unused)
+  std::vector<RoomProof> proofs;  // kRoomProofs
 };
 
 bool has_magic(std::span<const std::uint8_t> bytes);

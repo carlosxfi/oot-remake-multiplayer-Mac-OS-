@@ -2438,6 +2438,14 @@ TEST_CASE("world: a token's count is given back once, and its placement key is t
     // from the game that took the token, through the flag list.
     CHECK(CoopWorld::IsGoldSkulltulaKey(kGoldHash));
     CHECK_FALSE(CoopWorld::IsGoldSkulltulaKey(0x1234567890abcdefull));
+    // skulltula-0118: either of a placement's two keys names it (a token pickup
+    // sets key and key + 2); nothing else does.
+    CHECK(CoopWorld::GoldPlacementOfKey(kGoldHash) == kGoldHash);
+    CHECK(CoopWorld::GoldPlacementOfKey(kGoldHash + 2) == kGoldHash);
+    CHECK(CoopWorld::GoldPlacementOfKey(kGoldHash + 1) == 0);
+    CHECK(CoopWorld::GoldPlacementOfKey(0) == 0);
+    CHECK(CoopWorld::GoldPlacementOfKey(1) == 0);
+    CHECK(CoopWorld::GoldPlacementOfKey(0x1234567890abcdefull) == 0);
 }
 
 TEST_CASE("world: a pillar that does not fall on life 0 is written 10 times, then one line, then left (breakables)") {
@@ -2551,6 +2559,117 @@ TEST_CASE("world: a block another player pushed asks for its old rest place to b
     out = Walk(w, 6600 * kMs, {Thing(0x100, 0x50, std::nullopt, kBox, {3.0f, 2.0f, 3.0f})}, proto::Vec3{3.0f, 2.0f, 4.0f});
     CHECK(Sent<proto::WorldPlace>(out).size() == 1);
     CHECK(out.blocks.empty());
+}
+
+// Row 175: one remote push of a block, from where it rests now to `to`; the
+// walk that gives the block fix (with `others` in every walk) is returned.
+WorldSync::Out FollowPush(WorldSync& w, std::uint64_t t0_ms, std::uint64_t address, std::uint64_t hash, float from,
+                          float to, const std::vector<Seen>& others) {
+    const auto with = [&](float x) {
+        std::vector<Seen> seen = others;
+        seen.push_back(Thing(address, hash, std::nullopt, kBox, {x, 2.0f, 3.0f}));
+        return seen;
+    };
+    w.Receive(MoveOf(hash, (t0_ms + 1000) * kMs, from + 0.5f * (to - from)));
+    Walk(w, (t0_ms + 1100) * kMs, with(from));
+    w.Receive(PlaceOf(hash, to));
+    Walk(w, (t0_ms + 1300) * kMs, with(from + 0.5f * (to - from)));
+    Walk(w, (t0_ms + 1700) * kMs, with(to));
+    return Walk(w, (t0_ms + 1900) * kMs, with(to));
+}
+
+bool Said(const WorldSync::Out& out, const char* text) {
+    for (const auto& n : out.notes) {
+        if (n.find(text) != std::string::npos) return true;
+    }
+    return false;
+}
+
+// Row 175 (Forest Temple, Amy's blocks): several blocks push on one grid from
+// ONE placed anchor. A block that comes to rest from the anchor's cell must
+// not move it: that would shift the other blocks' grid in this game.
+TEST_CASE("world: a shared grid anchor is never moved for one block's rest (row 175)") {
+    const auto grid = Thing(0x900, 0, std::nullopt, "Obj_MovableBox_BasePosAnchor", {1.0f, 2.0f, 3.0f});
+    const auto other = Thing(0x101, 0x51, std::nullopt, kBox, {7.0f, 2.0f, 3.0f});
+    WorldSync w;
+    Walk(w, 1000 * kMs, {Thing(0x100, 0x50, std::nullopt, kBox, {2.5f, 2.0f, 3.0f}), other, grid});
+    // Onto the anchor's cell: the anchor is 1.5 m from where the block rested.
+    auto out = FollowPush(w, 1000, 0x100, 0x50, 2.5f, 1.0f, {other, grid});
+    REQUIRE(out.blocks.size() == 1);
+    CHECK(out.blocks[0].anchor == 0);
+    // Off it again: the anchor is near the old rest but not the block's own.
+    out = FollowPush(w, 5000, 0x100, 0x50, 1.0f, 4.0f, {other, grid});
+    REQUIRE(out.blocks.size() == 1);
+    CHECK(out.blocks[0].from[0] == doctest::Approx(1.0f));
+    CHECK(out.blocks[0].anchor == 0);
+    CHECK(Said(out, "shared grid base: left"));
+    std::vector<CoopObjects::PoseWrite> poses;
+    w.Poses(7000 * kMs, poses);
+    CHECK(poses.empty());
+}
+
+// A block's own anchor (placed with it) stays paired with it: it follows that
+// block's next rest too, and is not moved for another block resting on it.
+TEST_CASE("world: a block's own anchor follows it, and only it (row 175)") {
+    const auto anchor = [](float x) {
+        return Thing(0x900, 0, std::nullopt, "Obj_MovableBox_BasePosAnchor", {x, 2.0f, 3.0f});
+    };
+    const auto second = [](float x) { return Thing(0x101, 0x51, std::nullopt, kBox, {x, 2.0f, 3.0f}); };
+    WorldSync w;
+    Walk(w, 1000 * kMs, {Thing(0x100, 0x50, std::nullopt, kBox), second(9.0f), anchor(1.0f)});
+    auto out = FollowPush(w, 1000, 0x100, 0x50, 1.0f, 2.5f, {second(9.0f), anchor(1.0f)});
+    REQUIRE(out.blocks.size() == 1);
+    CHECK(out.blocks[0].anchor == 0x900);
+    // Now 1.5 m from the block's first place, the anchor still is its own.
+    out = FollowPush(w, 5000, 0x100, 0x50, 2.5f, 4.0f, {second(9.0f), anchor(2.5f)});
+    REQUIRE(out.blocks.size() == 1);
+    CHECK(out.blocks[0].anchor == 0x900);
+    // The second block comes to rest from where that anchor lies: not its own.
+    out = FollowPush(w, 9000, 0x101, 0x51, 9.0f, 4.0f, {Thing(0x100, 0x50, std::nullopt, kBox, {4.0f, 2.0f, 3.0f}), anchor(4.0f)});
+    out = FollowPush(w, 13000, 0x101, 0x51, 4.0f, 5.5f, {Thing(0x100, 0x50, std::nullopt, kBox, {4.0f, 2.0f, 3.0f}), anchor(4.0f)});
+    REQUIRE(out.blocks.size() == 1);
+    CHECK(out.blocks[0].anchor == 0);
+    CHECK(Said(out, "another block's or a shared grid base"));
+}
+
+// Row 175 review gap: a shared anchor placed exactly at one block's first place
+// (Hyrule Castle: two Lon Lon boxes link to ONE Obj_MovableBox_BasePosAnchor,
+// and the first box stands on it; romfs Banc, shared_anchors.py). It is no
+// single block's own (kSharedAnchors), so that box's rest never moves it.
+TEST_CASE("world: a shared anchor at one block's first place is never paired (Hyrule Castle boxes)") {
+    const std::string scene = "HyruleCastle";
+    const char* const box = "Obj_LonLonRanch_MovableBox_A_01";
+    const proto::Vec3 on{31.6244f, 117.0387f, -146.6301f};  // the shared anchor, and box 1's first place
+    const proto::Vec3 rest{33.1244f, 117.0387f, -146.6301f};  // 1.5 m east, where the other player left it
+    const proto::Vec3 link{31.6244f, 117.0387f, -148.0f};
+    const auto grid = Thing(0x900, 0, std::nullopt, "Obj_MovableBox_BasePosAnchor", on);
+    const auto other = Thing(0x101, 0x51, std::nullopt, box, {31.6244f, 117.0387f, -145.1301f});
+    const auto first = [&](proto::Vec3 at) { return Thing(0x100, 0x50, std::nullopt, box, at); };
+    WorldSync w;
+    Walk(w, 1000 * kMs, {first(on), other, grid}, link, 2, scene);
+    proto::WorldMove m;
+    m.player_number = 1;
+    m.scene = scene;
+    m.hash = 0x50;
+    m.time_us = 2000 * kMs;
+    m.position = {32.3744f, 117.0387f, -146.6301f};
+    w.Receive(m);
+    Walk(w, 2100 * kMs, {first(on), other, grid}, link, 2, scene);
+    proto::WorldPlace p;
+    p.player_number = 1;
+    p.scene = scene;
+    p.hash = 0x50;
+    p.position = rest;
+    w.Receive(p);
+    Walk(w, 2300 * kMs, {first(m.position), other, grid}, link, 2, scene);
+    Walk(w, 2700 * kMs, {first(rest), other, grid}, link, 2, scene);
+    const auto out = Walk(w, 2900 * kMs, {first(rest), other, grid}, link, 2, scene);
+    REQUIRE(out.blocks.size() == 1);
+    CHECK(out.blocks[0].anchor == 0);
+    CHECK(Said(out, "shared grid base: left"));
+    std::vector<CoopObjects::PoseWrite> poses;
+    w.Poses(3000 * kMs, poses);
+    CHECK(poses.empty());
 }
 
 // deku-visuals-b (0.10.1 playtest): the second player's push of a block the
@@ -2986,4 +3105,66 @@ TEST_CASE("world: a trigger keeper waits for another game's moves, rest place an
     const auto felled = Walk(b, 8100 * kMs, {Thing(0x100, 0x11, 1, kPillar)});
     REQUIRE(felled.lives.size() == 1);
     CHECK(felled.lives[0].life == 0);
+}
+
+// Row 166 (0.11.6 Dodongo playtest): a block whose room loaded after another player pushed it is first seen where
+// the map put it, then put at the shared rest; our player never touched it, so its fix is untouched.
+TEST_CASE("world: row 166: a block first seen after another's push gives an untouched fix") {
+    WorldSync w;
+    Walk(w, 1000 * kMs, {});  // in the scene, the block's room not loaded yet
+    w.Receive(PlaceOf(0x50, 2.5f));  // the server's rest place, from another player's push
+    Walk(w, 1100 * kMs, {Thing(0x100, 0x50, std::nullopt, kBox)});  // the room loads: seen at the map's place
+    Walk(w, 1300 * kMs, {Thing(0x100, 0x50, std::nullopt, kBox, {2.5f, 2.0f, 3.0f})});
+    WorldSync::Out out;
+    for (std::uint64_t t = 1500; t <= 4000 && out.blocks.empty(); t += 200) {
+        out = Walk(w, t * kMs, {Thing(0x100, 0x50, std::nullopt, kBox, {2.5f, 2.0f, 3.0f})});
+    }
+    REQUIRE(out.blocks.size() == 1);
+    CHECK(out.blocks[0].untouched);
+    CHECK(out.blocks[0].to[0] == doctest::Approx(2.5f));
+}
+
+TEST_CASE("world: row 166: a followed push our own push gave way to is not untouched") {
+    // We are player 2 and pushing; player 1's moves come in: ours stop (contested), theirs are placed.
+    WorldSync w;
+    Walk(w, 1000 * kMs, {Thing(0x100, 0x50, std::nullopt, kBox)});
+    Walk(w, 1100 * kMs, {Thing(0x100, 0x50, std::nullopt, kBox, {1.2f, 2.0f, 3.0f})});
+    w.Receive(MoveOf(0x50, 1150 * kMs, 1.6f, 1));
+    w.Receive(MoveOf(0x50, 1200 * kMs, 2.0f, 1));
+    Walk(w, 1200 * kMs, {Thing(0x100, 0x50, std::nullopt, kBox, {1.4f, 2.0f, 3.0f})});
+    REQUIRE(w.MoverOf(0x50) == 1);
+    w.Receive(PlaceOf(0x50, 2.5f));
+    WorldSync::Out out;
+    for (std::uint64_t t = 1400; t <= 4000 && out.blocks.empty(); t += 200) {
+        out = Walk(w, t * kMs, {Thing(0x100, 0x50, std::nullopt, kBox, {2.5f, 2.0f, 3.0f})});
+    }
+    REQUIRE(out.blocks.size() == 1);
+    CHECK_FALSE(out.blocks[0].untouched);
+}
+
+TEST_CASE("world: row 166: an untouched block's node runs its start again unless it starts from the new rest") {
+    const proto::Vec3 from{-51.06f, 79.27f, 47.3f}, to{-51.06f, 79.27f, 45.6f};
+    // Its room loaded late: the node started at the map's place (+0x108), its target the grid cell (+0xfc). The
+    // strict check calls that mid-push; untouched, the start runs.
+    FakeGame g;
+    BlockNodeMemory(g);
+    PutFloats(g, kNode + CoopWorld::BlockNode::kTarget, {-51.06f, 79.27f, 47.1f});
+    PutFloats(g, kNode + CoopWorld::BlockNode::kStart, {-51.06f, 79.27f, 47.3f});
+    CHECK(CoopWorld::NodeRestWords(g.Reader(), kNode, from, to).busy);
+    const auto words = CoopWorld::NodeRestWords(g.Reader(), kNode, from, to, true);
+    CHECK_FALSE(words.busy);
+    CHECK(words.writes.size() == 6);
+    // Neither place at `from` (it settled on its way in): still stale, untouched.
+    FakeGame n;
+    BlockNodeMemory(n);
+    PutFloats(n, kNode + CoopWorld::BlockNode::kTarget, {-51.06f, 79.0f, 47.1f});
+    PutFloats(n, kNode + CoopWorld::BlockNode::kStart, {-51.06f, 79.6f, 47.3f});
+    CHECK(CoopWorld::NodeRestWords(n.Reader(), kNode, from, to).writes.empty());
+    CHECK(CoopWorld::NodeRestWords(n.Reader(), kNode, from, to, true).writes.size() == 6);
+    // Already starts from the new rest: left alone.
+    FakeGame d;
+    BlockNodeMemory(d);
+    PutFloats(d, kNode + CoopWorld::BlockNode::kTarget, {-51.06f, 79.27f, 45.6f});
+    PutFloats(d, kNode + CoopWorld::BlockNode::kStart, {-51.06f, 79.27f, 45.6f});
+    CHECK(CoopWorld::NodeRestWords(d.Reader(), kNode, from, to, true).writes.empty());
 }
