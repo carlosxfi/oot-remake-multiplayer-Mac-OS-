@@ -54,7 +54,8 @@ NSButton* button(NSString* title, id target, SEL action) {
   NSTextField* _name;
   NSTextField* _address;
   NSTextField* _port;
-  NSSecureTextField* _password;
+  NSTextField* _password;
+  NSStackView* _passwordRow;
   NSTextField* _status;
   NSButton* _host;
   NSButton* _join;
@@ -126,15 +127,20 @@ NSButton* button(NSString* title, id target, SEL action) {
     _address = [NSTextField textFieldWithString:@""];
     _address.placeholderString = @"192.168.1.10, or paste the invite line";
     _port = [NSTextField textFieldWithString:@"27510"];
-    _password = [[NSSecureTextField alloc] initWithFrame:NSZeroRect];
-    _password.placeholderString = @"Required to join; leave blank to generate one when hosting";
-    for (NSArray* row in @[@[@"Nickname", _name], @[@"Host address (to join)", _address], @[@"Port", _port],
-                        @[@"Room password", _password]]) {
+    for (NSArray* row in @[@[@"Nickname", _name], @[@"Host address (to join)", _address], @[@"Port", _port]]) {
       [stack addArrangedSubview:[NSTextField labelWithString:row[0]]];
       NSTextField* field = row[1];
       [stack addArrangedSubview:field];
       [field.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     }
+    [stack addArrangedSubview:[NSTextField labelWithString:@"Room password"]];
+    _password = [[NSSecureTextField alloc] initWithFrame:NSZeroRect];
+    _password.placeholderString = @"Required to join; leave blank to generate one when hosting";
+    auto* show = [NSButton checkboxWithTitle:@"Show password" target:self action:@selector(togglePassword:)];
+    [show setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    _passwordRow = [NSStackView stackViewWithViews:@[_password, show]];
+    [stack addArrangedSubview:_passwordRow];
+    [_passwordRow.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     _host = button(@"Host LAN", self, @selector(host:));
     _join = button(@"Join", self, @selector(join:));
     _leave = button(@"Leave", self, @selector(leave:));
@@ -149,6 +155,23 @@ NSButton* button(NSString* title, id target, SEL action) {
   }
   [self refresh];
   [_panel makeKeyAndOrderFront:nil];
+}
+
+- (void)togglePassword:(NSButton*)sender {
+  [_panel endEditingFor:nil];
+  const bool visible = sender.state == NSControlStateValueOn;
+  NSTextField* field = visible ? [[NSTextField alloc] initWithFrame:NSZeroRect]
+                               : [[NSSecureTextField alloc] initWithFrame:NSZeroRect];
+  field.editable = YES;
+  field.selectable = YES;
+  field.bezeled = YES;
+  field.drawsBackground = YES;
+  field.placeholderString = _password.placeholderString;
+  field.stringValue = _password.stringValue;
+  [_passwordRow removeArrangedSubview:_password];
+  [_password removeFromSuperview];
+  _password = field;
+  [_passwordRow insertArrangedSubview:_password atIndex:0];
 }
 
 - (void)refresh {
