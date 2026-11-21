@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -311,6 +312,34 @@ TEST_CASE("testinput: wear names a gear slot and a piece") {
     CHECK(requests[0].name == "Armor_Child_Mask_Keaton");
 }
 
+TEST_CASE("testinput: dress asks the game's equip for a slot, or all of them") {
+    std::string error;
+    CHECK_FALSE(Parse("dress\n", error));
+    CHECK_FALSE(Parse("dress hat\n", error));
+    CHECK_FALSE(Parse("dress head extra\n", error));
+    CHECK(DressKind("weapon") == std::optional<std::uint32_t>(0));
+    CHECK(DressKind("Head") == std::optional<std::uint32_t>(7));
+    CHECK(DressKind("armor") == std::optional<std::uint32_t>(8));
+    CHECK(DressKind("boots") == std::optional<std::uint32_t>(9));
+    CHECK(DressKind("hand") == std::optional<std::uint32_t>(10));
+    CHECK(DressKind("shield") == std::optional<std::uint32_t>(6));
+    CHECK_FALSE(DressKind("all"));
+    Runner r(Must("dress HEAD\ndress all\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 2);
+    CHECK(requests[0].kind == Kind::dress);
+    CHECK(requests[0].start == "head");
+    CHECK(requests[1].start == "all");
+    CHECK_FALSE(DressNext());
+    DressAsk(7);
+    DressAsk(8);
+    CHECK(DressNext() == std::optional<std::uint32_t>(7));
+    CHECK(DressNext() == std::optional<std::uint32_t>(8));
+    CHECK_FALSE(DressNext());
+}
+
 TEST_CASE("testinput: a hold's mark is said halfway, with the keys still down") {
     std::string error;
     CHECK_FALSE(Parse("hold ZR 60 aim extra\n", error));
@@ -363,6 +392,32 @@ TEST_CASE("testinput: wear SLOT none takes a piece off") {
 
 // Every input script in tools/autotest/scenarios parses (the steps files are the runner's,
 // not the emulator's), so a bad line shows here and not first in a game run.
+namespace {
+// hookshot.py read_script: each `include FILE` line is replaced by FILE's text (FILE beside it, at most 4 deep)
+// before the script reaches the module, so the module's parser never sees one.
+std::string ReadScenario(const std::filesystem::path& path, int depth = 0) {
+    std::ifstream in(path, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::string out;
+    std::size_t at = 0;
+    while (at <= text.size()) {
+        const std::size_t end = std::min(text.find('\n', at), text.size());
+        const std::string line = text.substr(at, end - at);
+        std::istringstream words(line.substr(0, line.find('#')));
+        std::string first, file;
+        words >> first >> file;
+        if (depth < 4 && (first == "include" || first == "INCLUDE") && !file.empty()) {
+            out += ReadScenario(path.parent_path() / file, depth + 1);
+        } else {
+            out += line;
+        }
+        out += '\n';
+        at = end + 1;
+    }
+    return out;
+}
+}  // namespace
+
 TEST_CASE("testinput: every autotest scenario script parses") {
     const std::filesystem::path dir =
         std::filesystem::path(COOP_TEST_SOURCE_DIR) / ".." / "tools" / "autotest" / "scenarios";
@@ -370,11 +425,11 @@ TEST_CASE("testinput: every autotest scenario script parses") {
     int checked = 0;
     for (const auto& entry : std::filesystem::directory_iterator(dir)) {
         const std::string name = entry.path().filename().string();
-        if (entry.path().extension() != ".txt" || name.find(".steps.") != std::string::npos) {
-            continue;
+        if (entry.path().extension() != ".txt" || name.find(".steps.") != std::string::npos ||
+            name.find(".inc.") != std::string::npos) {
+            continue;  // (a shared .inc.txt part is parsed inside the scenarios that include it)
         }
-        std::ifstream in(entry.path(), std::ios::binary);
-        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        const std::string text = ReadScenario(entry.path());
         std::string error;
         CHECK_MESSAGE(Parse(text, error).has_value(), name << ": " << error);
         ++checked;
@@ -393,6 +448,21 @@ TEST_CASE("testinput: chat sends the rest of the line, spaces kept") {
     CHECK(requests[0].kind == Kind::chat);
     CHECK(requests[0].name == "/teleport  Saria the  Kokiri");
     CHECK(requests[1].name == "hello");
+}
+
+TEST_CASE("testinput: place PLATFORM UP hands the hook the platform's name and the height over it (#196)") {
+    std::string error;
+    CHECK_FALSE(Parse("place Obj_Deku_MoveFloor_A_01\n", error));
+    CHECK_FALSE(Parse("place Obj_Deku_MoveFloor_A_01 up\n", error));
+    Runner r(Must("place Obj_Deku_MoveFloor_A_01 0.3\nmark on\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::place);
+    CHECK(requests[0].name == "Obj_Deku_MoveFloor_A_01");  // the name's case kept
+    CHECK(requests[0].at[1] == doctest::Approx(0.3f));
+    CHECK(r.Done());
 }
 
 TEST_CASE("testinput: place hands the hook a world point, then the script goes on (world-objects)") {
@@ -414,6 +484,25 @@ TEST_CASE("testinput: place hands the hook a world point, then the script goes o
     CHECK(r.Done());
 }
 
+TEST_CASE("testinput: hurt hands the hook a hit on our own Link in quarter hearts, then the script goes on") {
+    std::string error;
+    CHECK_FALSE(Parse("hurt\n", error));
+    CHECK_FALSE(Parse("hurt 0\n", error));
+    CHECK_FALSE(Parse("hurt 81\n", error));
+    CHECK_FALSE(Parse("hurt 2x\n", error));
+    CHECK_FALSE(Parse("hurt 4 5\n", error));
+    Runner r(Must("hurt 4\nmark hurt\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::hurt);
+    CHECK(requests[0].name == "4");
+    REQUIRE(log.size() == 1);
+    CHECK(log[0] == "mark hurt");
+    CHECK(r.Done());
+}
+
 TEST_CASE("testinput: kill hands the hook an actor name as written, then the script goes on (items-sync)") {
     std::string error;
     CHECK_FALSE(Parse("kill\n", error));
@@ -427,6 +516,29 @@ TEST_CASE("testinput: kill hands the hook an actor name as written, then the scr
     CHECK(requests[0].name == "Enemy_Skulltula_Gold");
     REQUIRE(log.size() == 1);
     CHECK(log[0] == "mark killed");
+    CHECK(r.Done());
+}
+
+TEST_CASE("testinput: hit and stun hand the hook an actor name (and an amount), then the script goes on") {
+    std::string error;
+    CHECK_FALSE(Parse("hit Enemy_DungeonBoss_Gohma\n", error));
+    CHECK_FALSE(Parse("hit Enemy_DungeonBoss_Gohma 0\n", error));
+    CHECK_FALSE(Parse("hit Enemy_DungeonBoss_Gohma 81\n", error));
+    CHECK_FALSE(Parse("hit Enemy_DungeonBoss_Gohma 2x\n", error));
+    CHECK_FALSE(Parse("stun\n", error));
+    CHECK_FALSE(Parse("stun Enemy_DungeonBoss_Gohma now\n", error));
+    Runner r(Must("hit Enemy_DungeonBoss_Gohma 2\nstun Enemy_DungeonBoss_Gohma\nmark struck\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 2);
+    CHECK(requests[0].kind == Kind::hit);
+    CHECK(requests[0].name == "Enemy_DungeonBoss_Gohma");
+    CHECK(requests[0].start == "2");
+    CHECK(requests[1].kind == Kind::stun);
+    CHECK(requests[1].name == "Enemy_DungeonBoss_Gohma");
+    REQUIRE(log.size() == 1);
+    CHECK(log[0] == "mark struck");
     CHECK(r.Done());
 }
 
@@ -464,6 +576,40 @@ TEST_CASE("testinput: setenum hands the hook an Enum flag (name or 0x hash) and 
     CHECK(requests[1].kind == Kind::setenum);
     CHECK(requests[1].name == "PlayerStatus.AssignableItem.Child");
     CHECK(requests[1].start == "Bow");
+}
+
+TEST_CASE("testinput: drop hands the hook a boss name and its metres (row 178, test only)") {
+    std::string error;
+    CHECK_FALSE(Parse("drop\n", error));
+    CHECK_FALSE(Parse("drop Enemy_DungeonBoss_PhantomGanon\n", error));
+    CHECK_FALSE(Parse("drop Enemy_DungeonBoss_PhantomGanon 0\n", error));
+    CHECK_FALSE(Parse("drop Enemy_DungeonBoss_PhantomGanon 501\n", error));
+    CHECK_FALSE(Parse("drop Enemy_DungeonBoss_PhantomGanon 6x\n", error));
+    Runner r(Must("drop Enemy_DungeonBoss_PhantomGanon 60\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::drop);
+    CHECK(requests[0].name == "Enemy_DungeonBoss_PhantomGanon");
+    CHECK(requests[0].start == "60");
+}
+
+TEST_CASE("testinput: nofairy empties every bottle (five setenum requests), as hookshot.py does") {
+    // A bottled fairy makes a lethal hit the game's own death and revive, never down-but-out (3 VOID runs).
+    std::string error;
+    CHECK_FALSE(Parse("nofairy now\n", error));
+    Runner r(Must("nofairy\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 5);
+    const char* items[] = {"0x7d48df76", "0x1edd164a", "0xb80c70a8", "0xe4c1b1fc", "0x365e1953"};
+    for (std::size_t i = 0; i < 5; ++i) {
+        CHECK(requests[i].kind == Kind::setenum);
+        CHECK(requests[i].name == items[i]);
+        CHECK(requests[i].start == "Empty");
+    }
 }
 
 TEST_CASE("testinput: menu hands the hook the Customize page or the close (issue 74)") {
@@ -516,4 +662,84 @@ TEST_CASE("test input: sync waits with every button let go until the games meet,
     std::string bad;
     CHECK_FALSE(Parse("sync title 9\n", bad).has_value());
     CHECK_FALSE(Parse("sync title\n", bad).has_value());
+}
+
+TEST_CASE("testinput: face X Z hands the hook the world point Link turns to (row 175)") {
+    std::string error;
+    CHECK_FALSE(Parse("face\n", error));
+    CHECK_FALSE(Parse("face 66.96\n", error));
+    CHECK_FALSE(Parse("face 66.96 0.0 1\n", error));
+    CHECK_FALSE(Parse("face east 0.0\n", error));
+    Runner r(Must("face 66.96 -0.5\nmark faced\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::face);
+    CHECK(requests[0].at[0] == doctest::Approx(66.96f));
+    CHECK(requests[0].at[2] == doctest::Approx(-0.5f));
+    REQUIRE(log.size() == 1);
+    CHECK(log[0] == "mark faced");
+    CHECK(r.Done());
+}
+
+TEST_CASE("testinput: aim X Y Z hands the hook the world point our next arrow is put on its way into (row 173)") {
+    std::string error;
+    CHECK_FALSE(Parse("aim\n", error));
+    CHECK_FALSE(Parse("aim -56.5 131.5\n", error));
+    CHECK_FALSE(Parse("aim -56.5 131.5 -10.1 1\n", error));
+    CHECK_FALSE(Parse("aim eye 131.5 -10.1\n", error));
+    Runner r(Must("aim -56.5 131.5 -10.1\nmark aimed\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::aim);
+    CHECK(requests[0].at[0] == doctest::Approx(-56.5f));
+    CHECK(requests[0].at[1] == doctest::Approx(131.5f));
+    CHECK(requests[0].at[2] == doctest::Approx(-10.1f));
+    REQUIRE(log.size() == 1);
+    CHECK(log[0] == "mark aimed");
+}
+
+TEST_CASE("testinput: AimPlace puts the arrow short of the target on its line, facing it (row 173)") {
+    // Row 173's relief: the arrow let go 2 m in front of Link (z -4.0 at bow height), the eye 6.1 m on and 5.3 m up.
+    const std::array<float, 3> from{-56.5f, 126.2f, -4.0f};
+    const std::array<float, 3> eye{-56.5f, 131.5f, -10.1f};
+    const auto t = AimPlace(from, eye, 0.6f);
+    REQUIRE(t.has_value());
+    const float d[3] = {eye[0] - from[0], eye[1] - from[1], eye[2] - from[2]};
+    const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    for (int i = 0; i < 3; ++i) {
+        const float f = d[i] / len;
+        CHECK((*t)[i] == doctest::Approx(eye[i] - f * 0.6f).epsilon(1e-4));  // 0.6 m short, on the line
+        CHECK((*t)[3 + i * 3 + 2] == doctest::Approx(f).epsilon(1e-4));      // column 2: the way to the eye
+    }
+    // The 3x3 is a rotation: columns of length 1, each square to the others; its up (column 1) is up-ish.
+    for (int c = 0; c < 3; ++c) {
+        float n = 0.0f;
+        for (int r = 0; r < 3; ++r) n += (*t)[3 + r * 3 + c] * (*t)[3 + r * 3 + c];
+        CHECK(n == doctest::Approx(1.0f).epsilon(1e-4));
+        for (int o = c + 1; o < 3; ++o) {
+            float dot = 0.0f;
+            for (int r = 0; r < 3; ++r) dot += (*t)[3 + r * 3 + c] * (*t)[3 + r * 3 + o];
+            CHECK(dot == doctest::Approx(0.0f).epsilon(1e-4));
+        }
+    }
+    CHECK((*t)[3 + 1 * 3 + 1] > 0.5f);
+    // A flat aim is face's turn: facing -z is the yaw of 180 degrees (face writes {c, 0, s, 0, 1, 0, -s, 0, c}).
+    const auto flat = AimPlace({0.0f, 1.0f, 0.0f}, {0.0f, 1.0f, -8.0f}, 0.6f);
+    REQUIRE(flat.has_value());
+    const float want[12] = {0.0f, 1.0f, -7.4f, -1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, -1.0f};
+    for (int i = 0; i < 12; ++i) CHECK((*flat)[i] == doctest::Approx(want[i]).epsilon(1e-4));
+    // Nearer than the short way: put where it is. Straight up: still a rotation. The same point or NaN: nothing.
+    const auto near = AimPlace({0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -0.3f}, 0.6f);
+    REQUIRE(near.has_value());
+    CHECK((*near)[2] == doctest::Approx(0.0f));
+    const auto up = AimPlace({0.0f, 0.0f, 0.0f}, {0.0f, 5.0f, 0.0f}, 0.6f);
+    REQUIRE(up.has_value());
+    CHECK((*up)[1] == doctest::Approx(4.4f));
+    CHECK((*up)[3 + 1 * 3 + 2] == doctest::Approx(1.0f));
+    CHECK_FALSE(AimPlace(eye, eye, 0.6f).has_value());
+    CHECK_FALSE(AimPlace({std::nanf(""), 0.0f, 0.0f}, eye, 0.6f).has_value());
 }

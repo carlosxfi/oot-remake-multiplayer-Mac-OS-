@@ -207,9 +207,9 @@ std::vector<CoopSpawn::Copy> Rides::Plan(const std::optional<std::string>& scene
             continue;
         }
         const std::optional<std::string_view> theirs =
-            r.scene ? std::optional<std::string_view>(*r.scene) : std::nullopt;
+            coop::host::view_of(r.scene);
         const std::optional<std::string_view> anim =
-            r.anim ? std::optional<std::string_view>(r.anim->name) : std::nullopt;
+            coop::host::name_of(r.anim);
         // The rider's own game says when it rides (its fresh PLAYER_RIDE). The
         // puppet's command is a sample that can trail it or miss a frame, and
         // waiting for it to name a horse left the rider seated on nothing.

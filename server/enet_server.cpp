@@ -99,6 +99,12 @@ std::uint16_t EnetServer::port() const {
   return bound.port;
 }
 
+std::string EnetServer::admin(std::string_view line) {
+  std::string out = session_.admin(line, now_us());
+  apply_actions();
+  return out;
+}
+
 std::uint64_t EnetServer::now_us() const {
   if (options_.now_us) return options_.now_us();
   auto elapsed = std::chrono::steady_clock::now() - start_;

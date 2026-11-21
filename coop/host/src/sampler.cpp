@@ -43,6 +43,27 @@ void push(std::vector<Outgoing>& out, const protocol::Message& message) {
 
 }  // namespace
 
+std::uint8_t status_bits(std::uint8_t previous, const std::optional<PlayerReading>& reading, bool title_up) {
+  namespace st = protocol::status;
+  std::uint8_t flags = previous;
+  const auto set = [&flags](std::uint8_t bit, bool on) {
+    flags = static_cast<std::uint8_t>(on ? (flags | bit) : (flags & ~bit));
+  };
+  const bool play = reading.has_value() && !title_up;
+  set(st::loading, !play);
+  if (reading && reading->event_running) {
+    // G1 (event_owner.hpp): only an event our Link is in. Another player's event replayed here
+    // and our free Ocarina (its take-out is a plain event, ~4 s: issue 86) do not hold our puppet
+    // in the other games.
+    set(st::in_cutscene, our_link_in_event(*reading->event_running, reading->event_whose));
+  }
+  const bool menu = play && reading->in_menu.value_or(false);
+  set(st::in_menu, menu);
+  set(st::paused, menu && (flags & st::in_cutscene) == 0);
+  if (reading && reading->dead) set(st::dead, *reading->dead);
+  return flags;
+}
+
 void Sampler::reset() {
   status_sent_ = false;
   previous_.reset();
@@ -92,23 +113,17 @@ bool Sampler::should_send(const PlayerReading& reading, std::uint64_t now) const
 }
 
 std::vector<Outgoing> Sampler::frame(const std::optional<PlayerReading>& reading,
-                                     std::uint64_t server_now_us) {
+                                     std::uint64_t server_now_us, bool title_up) {
   std::vector<Outgoing> out;
-  if (!reading) {
-    previous_.reset();  // no velocity across a gap in the readings
-    return out;
-  }
-
-  std::uint8_t flags = flags_;
-  if (reading->event_running) {
-    flags = static_cast<std::uint8_t>(
-        (flags & ~protocol::status::in_cutscene) |
-        (*reading->event_running ? protocol::status::in_cutscene : 0));
-  }
+  const std::uint8_t flags = status_bits(flags_, reading, title_up);
   if (!status_sent_ || flags != flags_) {
     flags_ = flags;
     status_sent_ = true;
     push(out, protocol::PlayerStatus{protocol::kPlayerSelf, flags_});
+  }
+  if (!reading) {
+    previous_.reset();  // no velocity across a gap in the readings
+    return out;
   }
 
   std::optional<protocol::Equipment> read = reading->equipment;

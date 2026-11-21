@@ -23,7 +23,7 @@ The kit has one file to start: **`Start Squadala.bat`**. Everything else is done
 4. **The first time, give it your game.** It asks you to drag your game's `.nup` file into the window and press Enter (for a `romfs` folder it then asks for the `exefs` folder). It remembers the file; it never asks again. Then it builds the game: **10 to 45 minutes, once**. The window shows each stage; the PC stays usable. It also makes the puppet pack (the other players' Link and tunic colours) from your game, and puts a **Play OoT Co-op** shortcut on your desktop.
 5. **The game starts.** **Host** and **Join** are in the game's menu, on its first tab, **Multiplayer**. To open it: on a controller **−** and **+** together (on an Xbox-style pad **View** and **Menu**), or **Home**; on the keyboard **F1** (Insert and Esc also open it unless you changed that in the menu); on the title screen **−** alone. The D-pad or the arrow keys choose, A or Enter confirms, B or Esc goes back.
    - **Host:** one press. The Host screen's first line says it: *Invite code copied to your clipboard. Share it in DMs only: it contains your internet address.* Send the code in a DM (Discord, a text), never in a public channel; that is all most hosts need. Below it: **Paste friend's answer (or Ctrl+V)** when a friend's game shows an answer code, **Same network** for friends in the same house, **VPN** for friends on Radmin VPN, Hamachi, ZeroTier, Tailscale or WireGuard with you, and **Port** to choose a custom UDP port (1 to 65535; default 27510; changing it while hosting restarts hosting: friends join again with the new code).
-   - **Join:** paste your friend's code (it is filled in already when it is on your clipboard), or enter their **IP address**, **Port** and **Password** (from their Same network or VPN line), then **Join**.
+   - **Join:** type your friend's room name or address into **Room or address**, then their **Password** (and **Port** for an address), then **Join**. A code or an address line on your clipboard pastes with Ctrl+V, or with A on **Room or address** on a controller.
    - **Co-op Settings:** your name, your colour, the number of players and port when you host (`Players when you host`, `Port when you host`), voice chat.
 6. **Next time**, double-click `Start Squadala.bat` or the desktop shortcut: the game starts in seconds.
 
@@ -32,6 +32,8 @@ To check it works: in the game the other players show as Link with their name ta
 ## Updating
 
 Nothing to do: on every start the kit asks GitHub whether a new co-op version is out, and if so asks you once (`auto_update = yes` in `coop-options.ini` updates without asking, `no` never does). It downloads the new kit, checks it, keeps your settings, your game file and the built game, and puts the new co-op into the game in seconds. It builds the game again only when the update moves to a new Longshot (it says so: about 15 minutes). Every player needs the same version.
+
+**A kit older than 0.11.3** (its start file is `Start OoT Co-op.bat`) updates in two steps by itself: first to 0.11.3, then, on the next start, to the newest version (its updater only knows the old download names, which releases from 0.11.4 on no longer have). To go straight to the newest version, download `Update.bat` from the newest release into your kit folder and double-click it. From 0.11.4 the kit has one start file, `Start Squadala.bat`: the update moves your desktop and Start menu shortcuts and your Steam entry over to it and removes `Start OoT Co-op.bat` (if Steam was open, restart it once).
 
 `Update.bat` in the kit folder updates by hand (for example when the start said it could not reach GitHub). It is also attached to each release: dropped into an older emulator kit, it turns that kit into a Longshot kit. The emulator, `Host.bat`, `Join.bat` and the other old files go into the kit's `backup-<version>\` folder; your emulator files (`emulator\user`: its saves, keys and settings) stay where they are, and the window says you can delete that folder when you no longer need it. **To keep playing on the emulator**, keep your emulator kit (the last emulator release is the early test release of 2026-11-12 on the [releases page](https://github.com/daurosk/oot-remake-multiplayer/releases)) as it is (do not put a newer `Update.bat` in it) and unzip the Longshot kit into a new folder.
 
@@ -52,11 +54,11 @@ On Linux the same is `bash revert.sh` and `bash scripts/update.sh --version <tag
 | What | Why |
 |---|---|
 | `Start Squadala.bat` | The only file you start |
-| `Start OoT Co-op.bat` | Its old name (up to v0.11.2), kept so old shortcuts and older updaters still work: it starts `Start Squadala.bat` |
 | `README.txt` | The steps above, short |
 | `Update.bat` | Updates by hand (the start does it by itself) |
 | `Revert.bat` | Goes back to the version before the last update ([above](#going-back-to-an-older-version)); `previous\` holds the versions kept for it |
 | `coop-options.ini` | Co-op switches; the game's Co-op Settings write it too |
+| `NVIDIA DLSS.bat` | Builds the game again with NVIDIA DLSS ([below](#nvidia-dlss)) |
 | `start-server.cmd`, `server\` | A dedicated co-op server, only if you want one (Host in the game needs neither) |
 | `hookshot\` | The co-op module and Longshot's pin and patches; after the first start also `tools\` (1.1 GB), `downloads\` (0.3 GB), `work\` (0.7 GB; kept so updates are quick, deleting them makes the next build take the full time) and `game\` (your built game, 35 GB) |
 | `scripts\`, `tools\` | What the start runs; `scripts\collect-logs.cmd` makes a log zip for a bug report |
@@ -72,7 +74,7 @@ Nothing of the game is in the kit. The built game and the puppet pack are made f
 The start window says what is wrong and what to do. What it checks:
 
 - **"This kit is still inside its zip file."** You opened the zip and double-clicked the file inside it. Close it, right-click the zip, **Extract All...**, and start `Start Squadala.bat` in the folder it made.
-- **"OoT Co-op is already starting in another window."** You double-clicked twice. Wait for the first window (the first build takes a while).
+- **"Squadala is already starting in another window."** You double-clicked twice. Wait for the first window (the first build takes a while).
 - **"This folder is in OneDrive"**, **"...letters the game build cannot handle"**, **"...too long"**, **"...cannot be written to"**: the first build cannot work in this folder. It offers to copy the kit to `C:\OoT-Coop` and start it there; say yes (or move the folder yourself). Once the game is built, the kit no longer asks.
 - **"Your antivirus has most likely removed..."**: Windows Security (or another antivirus) took a file of the kit or of the built game. Open **Windows Security > Virus & threat protection > Protection history**, restore the file, and add the kit folder under **Exclusions**. Then start again: the game is not built again.
 - **"The game isn't set up yet... Set it up now?"**: the first start. Answer **Y** (or wait a minute) and it builds the game once; **n** builds nothing until the next start.
@@ -96,11 +98,11 @@ The start window says what is wrong and what to do. What it checks:
 
 ## Built Longshot yourself?
 
-The kit never plays a Longshot you built with Longshot's own builder, and moving that game into the kit folder does nothing: co-op needs its own build of the Longshot release the kit is made for (`hookshot\PIN`, now v3.0.0-rc.4), with co-op's changes in its source. A nightly or dev build is another version, so it cannot be used either.
+The kit never plays a Longshot you built with Longshot's own builder, and moving that game into the kit folder does nothing: co-op needs its own build of the Longshot release the kit is made for (`hookshot\PIN`, now v3.0.0-rc.6), with co-op's changes in its source. A nightly or dev build is another version, so it cannot be used either.
 
 Before the first build the kit asks once: **"Built Longshot yourself? ... Drag your Longshot game folder ... into this window"** (the folder with `longshot.exe`; just Enter, or 60 seconds, for no). The answer is kept in `hookshot\longshot-folder.txt`: to be asked again, delete that file before the game is built (once it is built, copy saves by hand, below). It then:
 - copies the tool downloads your Longshot's setup already has, when they are the very same files (by SHA-256): less to download;
-- copies its compiled files too when it is the same release (v3.0.0-rc.4), so that what co-op does not change is not compiled again (the game is still translated again, with co-op in it);
+- copies its compiled files too when it is the same release (v3.0.0), so that what co-op does not change is not compiled again (the game is still translated again, with co-op in it);
 - copies your saves into the co-op game after the build (below).
 
 Nothing is ever changed in your Longshot's folders. Without a folder, the kit still reuses the downloads in Longshot Builder's home (`%LOCALAPPDATA%\LongshotBuilder`) when it finds one.
@@ -119,11 +121,28 @@ The kit brings the randomizer, OOTRR: the first build (and an update that moves 
 
 The Multiplayer tab's **Customize Link** page colours your tunic and each part of your gear (shields, swords, boots, gauntlets). Your own Link wears it when the menu closes, the other players see it on your Link, and it is saved in `coop-options.ini` for the next start ([puppet.md, The Link customizer](puppet.md#the-link-customizer)). The kit makes the puppet pack these colours are drawn with from your own game by itself, and again after an update that changes it.
 
+## Discord status
+
+With Discord open on the same PC, your Discord profile shows **Playing Squadala!** with the Squadala! logo (the Korok with the propeller leaf and four fairies), the release (*Squadala! 0.11.4*), *Solo* or *Co-op: 3 players*, and how long you have played. Only that goes to Discord: no names, no addresses, no invite code. It works the same on Windows and Linux, hosting, joining or playing alone.
+
+- **Turn it off:** in the game press **Insert** (or F1), and set the **Discord status** row to off. It stays off.
+- **Always Squadala!:** the status is always Squadala!'s, at the title, in play, paused or idle: the Squadala! application's name and icon, its release on the first line and *Solo* / *Co-op* on the second. Longshot's own status (since Longshot v3.0.0-rc.8 the place Link is, his age and hearts, and its `discord_text=`, `discord_image=` and `discord_image_text=` lines) is never shown in a co-op game, and another `discord_app_id=` is not taken. The kit writes `discord_app_id=`, `discord_image=none`, `discord_details=` and `discord_state=` into `longshot_options.ini` next to the game before each start; you may change the words of `discord_details=` (the first line), and the kit leaves a line you changed alone from then on. The *Solo* / *Co-op* line comes from the co-op module and wins over `discord_state=` ([hookshot/README.md, patch 0026](../hookshot/README.md)).
+
 ## In the game, saves, the emulator kit
 
 <a id="co-op-on-hookshot"></a><a id="saves"></a><a id="emulator-setup-for-new-players"></a><a id="4-the-puppet-pack"></a><a id="linux-and-steam-deck"></a>
 
 The co-op keys in the game (chat **T**, player list **F6**, panel **F7**, item cheats **F8**), the chat commands and how saves are shared are the same as in the emulator kits: [setup-emulator.md](setup-emulator.md#co-op-on-hookshot) and [setup-emulator.md, "Saves"](setup-emulator.md#saves). That guide also covers the older emulator kits themselves (keys, firmware, the puppet pack, Linux).
+
+## NVIDIA DLSS
+
+Longshot has **NVIDIA DLSS** and **DLAA** (and DLSS Frame Generation on RTX 40 and newer) only in a game built with NVIDIA's DLSS SDK. That SDK is under NVIDIA's own license, and nobody may pass it on: the kit never carries it, and a normal build offers only AMD FSR 3.1 and the game's own upscaler. With an NVIDIA RTX card:
+
+1. Double-click `NVIDIA DLSS.bat` in the kit folder. It shows NVIDIA's license and asks whether you accept it (**y**).
+2. It downloads NVIDIA's DLSS SDK (into `hookshot\work\ngx-sdk`) and builds the game again with it: much shorter than the first build, since only what changes is compiled. If the Longshot Builder or the Longshot Launcher already fetched the SDK on this PC, the kit starts from that copy and downloads only what differs (`"NVIDIA DLSS.bat" -DlssSdk <folder>` names another one). If the download fails (offline?), `"NVIDIA DLSS.bat" -NoDlss` builds the game without DLSS.
+3. In the game: **Graphics → Upscaler: NVIDIA DLSS** (DLAA is DLSS's **Native** on the Render resolution row).
+
+The kit remembers the choice (`hookshot\dlss.txt`): the builds after an update keep DLSS. `"NVIDIA DLSS.bat" -NoDlss` builds the game again without it. A game built with DLSS holds NVIDIA's files (`ngx\`): never share that game folder. With Nucleus split screen, each game has its own settings: pick **Upscaler: NVIDIA DLSS** once in each Nucleus game (the handler links in the `ngx` folder at every start). Linux: `bash start-squadala.sh --dlss` ([setup-linux.md](setup-linux.md#nvidia-dlss)).
 
 ## Low frame rate
 
@@ -141,4 +160,4 @@ It must say the verification succeeded. If it fails, do not use the zip, and tel
 
 ## Reporting a problem
 
-Close the game and double-click `scripts\collect-logs.cmd` in the kit. Describe what you did and what went wrong on the repo's [issue page](https://github.com/daurosk/oot-remake-multiplayer/issues), and send the zip it makes (`coop-logs-<date>.zip` in the kit folder: the game's log, the co-op settings, the server logs, the build's log and the kit's version) **privately** to the maintainer (a Discord DM), not as an attachment on the issue. Addresses, your Windows user name, your PC name and any session password are masked in it; still, never paste addresses or log lines with addresses into a public issue.
+Close the game and double-click `scripts\collect-logs.cmd` in the kit. It makes `coop-logs-<date>.zip` in the kit folder: the game's log, the co-op settings, the server logs, the build's log and the kit's version. With Nucleus split screen, every player's game log is in it (under `nucleus`). Then, on the [Squadala! Discord](https://discord.gg/GwtRKAqng5), type **`/bugreport`**, describe what you did and what went wrong, and attach that zip; the bot answers with your report's number. You may also describe it on the repo's [issue page](https://github.com/daurosk/oot-remake-multiplayer/issues) (give the report number there), but never attach the zip to a public issue. Addresses, your Windows user name, your PC name and any session password are masked in it; still, never paste addresses or log lines with addresses into a public issue.

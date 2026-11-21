@@ -109,6 +109,9 @@ public:
     void SetHostValues(std::optional<std::vector<SharedValue>> values);
     // Whether host values are set: this game is a guest in a co-op game.
     bool HostValuesSet() const;
+    // One of the host's values as it came, also for a key no manifest of this game has (the randomizer's hand_seed):
+    // nullopt when not a guest or the host sent none.
+    std::optional<std::string> HostValue(std::string_view id, std::string_view key) const;
 
     Restart RestartNeeded() const;
     // Something changed a mod's files under the running game (the randomizer made a new seed): a restart is needed

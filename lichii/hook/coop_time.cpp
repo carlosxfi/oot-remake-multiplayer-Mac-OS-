@@ -12,6 +12,8 @@
 //              0xeee640(T, seconds, 1, -1)
 
 #include "coop_time.h"
+#include "coop_caller_orders.h"
+#include "coop_session_gate.h"
 
 #include <array>
 #include <atomic>
@@ -44,7 +46,7 @@ constexpr std::uint64_t kTimeNow = 0x20;
 constexpr std::uint64_t kTimeNowOverride = 0x50;
 constexpr std::uint64_t kTimeAsked = 0x48;
 constexpr std::uint64_t kSetTime = 0x34522d0;
-constexpr int kCallerOrder = 40;  // after the puppets, spawn (10), fairy (20), objects (30)
+constexpr int kCallerOrder = CoopCallerOrders::kTime;  // after the puppets, spawn (10), fairy (20), objects (30)
 constexpr std::uint64_t kDebugEveryUs = 2'000'000;
 
 std::string Env(const char* name) {
@@ -119,7 +121,7 @@ struct Glue {
     bool debug = false;
     CoopEvery::Every every{CoopEvery::kQuarterUs};
     std::uint64_t debug_at = 0;
-    bool connected = false;
+    CoopSessionGate::Gate gate;  // the session's end seen before the quarter second (coop_session_gate.h)
     std::uint64_t unnamed_logged = 0;
     // OnGameSet's waiting set (bit 63 and the seconds), 0 when none.
     static std::uint64_t TakeGameSet() {
@@ -247,26 +249,29 @@ struct Glue {
 
     void Frame(Core::System& system, std::uint64_t main, coop::host::Session* session,
                std::uint64_t now_us, bool in_event) {
-        if (!on || !every.Due(CoopEvery::NowUs())) {
+        if (!on) {
             return;
         }
-        if (main == 0 || now_us == 0 || session == nullptr) {
-            if (connected) {
-                sync.Reset();
-                nudges_off_logged = false;
-                connected = false;
-            }
-            if (main != 0 && debug) {
+        const auto step =
+            gate.Next(main != 0 && now_us != 0 && session != nullptr, [&] { return every.Due(CoopEvery::NowUs()); });
+        if (step == CoopSessionGate::Step::forget) {
+            sync.Reset();
+            nudges_off_logged = false;
+        }
+        if (step == CoopSessionGate::Step::forget || step == CoopSessionGate::Step::idle) {
+            if (main != 0 && debug && every.Due(CoopEvery::NowUs())) {
                 (void)Read(system, main, now_us);
             }
             return;
         }
+        if (step == CoopSessionGate::Step::wait) {
+            return;
+        }
         const auto now = Read(system, main, now_us);
-        if (!connected) {
+        if (step == CoopSessionGate::Step::join) {
             joined_at = now_us;
             test_set.Joined(now_us);
         }
-        connected = true;
         const bool host = session->with_client([](coop::net::Client& c) { return c.is_host(); });
         if (const auto t = test_set.Due(now_us, host, now.has_value())) {
             LOG_INFO(Core, "coop: time: test set to {}", *t);

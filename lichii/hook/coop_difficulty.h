@@ -114,6 +114,14 @@ std::int32_t LinkTakes(std::int32_t sum, std::uint16_t damage_pct, std::int32_t&
 // 200%: twice the life and twice the damage), at most 65535. Never less than
 // `pct`: a count of 100% or less leaves it as it is.
 std::uint16_t Folded(std::uint16_t pct, std::uint16_t count_pct);
+// The count an enemy folds by. `fold_key` 0: a Treatment::fold enemy (it never
+// gets copies by design): count_pct. Otherwise the placement hash of an enemy
+// whose copies found no ground (no_spot): the copies it would have had,
+// 100 * (1 + ExtraCount(fold_key, count_pct)), so each such enemy is exactly
+// as strong as it and its extras together (player report 111 review: x1.5
+// for every no-spot enemy at 150% left those that would get 1 extra at x1.5
+// instead of x2, and those with none at x1.5 instead of x1).
+std::uint16_t FoldCount(std::uint64_t fold_key, std::uint16_t count_pct);
 
 // What the object walk found, for the Life step on the game's threads.
 enum class Kind : std::uint8_t {
@@ -121,8 +129,9 @@ enum class Kind : std::uint8_t {
     enemy_life = 1,     // an enemy's (or a boss's) Life component
     enemy = 2,          // an enemy actor, or an enemy's shot: an attacker whose hits on Link are scaled
     our_link_life = 3,  // our own Link's Life component
-    // An enemy that gets no extra copies but their weight instead (Treatment::fold):
-    // its life and its hits on Link are scaled by Folded(pct, count_pct).
+    // An enemy that gets no extra copies but their weight instead (Treatment::fold,
+    // or no ground for them: no_spot): its life and its hits on Link are scaled
+    // by Folded(pct, FoldCount(its slot's fold_key, count_pct)).
     folded_enemy_life = 4,
     folded_enemy = 5,
     // A boss or a mini-boss (ScalesAsBoss): its life at boss_hp_pct, its hits
@@ -154,8 +163,9 @@ public:
     // kPassMs go through unscaled.
     static constexpr std::uint64_t kPassMs = 1000;
 
-    // False when the table has no room for it.
-    bool Mark(std::uint64_t address, Kind kind) noexcept;
+    // False when the table has no room for it. `fold_key`: for the folded
+    // kinds, FoldCount's key (0: the whole count).
+    bool Mark(std::uint64_t address, Kind kind, std::uint64_t fold_key = 0) noexcept;
     // `address` holds no enemy (actor or Life component) now: marked none if
     // it was marked an enemy one (a reused address), else nothing.
     void Forget(std::uint64_t address) noexcept;
@@ -178,9 +188,11 @@ public:
         }
         const Kind kind = static_cast<Kind>(s->kind.load(std::memory_order_acquire));
         if (kind == Kind::enemy_life || kind == Kind::folded_enemy_life || kind == Kind::boss_life) {
-            const std::uint16_t pct = kind == Kind::enemy_life  ? values.hp_pct
-                                      : kind == Kind::boss_life ? values.boss_hp_pct
-                                                                : Folded(values.hp_pct, values.count_pct);
+            const std::uint16_t pct =
+                kind == Kind::enemy_life  ? values.hp_pct
+                : kind == Kind::boss_life ? values.boss_hp_pct
+                                          : Folded(values.hp_pct,
+                                                   FoldCount(s->fold_key.load(std::memory_order_acquire), values.count_pct));
             const std::int32_t passed = Passed(*s, sum, now_ms);
             const std::int32_t took =
                 passed == sum ? sum : passed + Scaled(*s, sum - passed, pct, &EnemyTakes, enemy_hits_);
@@ -193,11 +205,14 @@ public:
             return took;
         }
         if (kind == Kind::our_link_life) {
-            const Kind by = Of(attacker());
+            const Slot* a = Find(attacker());
+            const Kind by = a == nullptr ? Kind::none : static_cast<Kind>(a->kind.load(std::memory_order_acquire));
             if (by == Kind::enemy || by == Kind::folded_enemy || by == Kind::boss) {
-                const std::uint16_t pct = by == Kind::enemy  ? values.damage_pct
-                                          : by == Kind::boss ? values.boss_damage_pct
-                                                             : Folded(values.damage_pct, values.count_pct);
+                const std::uint16_t pct =
+                    by == Kind::enemy  ? values.damage_pct
+                    : by == Kind::boss ? values.boss_damage_pct
+                                       : Folded(values.damage_pct,
+                                                FoldCount(a->fold_key.load(std::memory_order_acquire), values.count_pct));
                 return Scaled(*s, sum, pct, &LinkTakes, link_hits_);  // (100: unchanged)
             }
         }
@@ -217,6 +232,7 @@ private:
     struct Slot {
         std::atomic<std::uint64_t> key{0};
         std::atomic<std::uint8_t> kind{0};
+        std::atomic<std::uint64_t> fold_key{0};  // FoldCount's key (folded kinds)
         // The carry and the percent it was made at (pct << 16 | carry): a
         // carry from other values is dropped.
         std::atomic<std::uint32_t> carry{0};

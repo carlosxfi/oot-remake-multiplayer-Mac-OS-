@@ -1,0 +1,41 @@
+name: macOS nxnative
+
+on:
+  push:
+    branches: [main, macos-squadala-v0118]
+    paths-ignore:
+      - '**/*.md'
+  pull_request:
+    branches: [main, macos-squadala-v0118]
+    paths-ignore:
+      - '**/*.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-nxnative-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  arm64:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Build the Mac co-op module and run nxnative tests
+        run: sh nxnative/network/build-shared.sh
+
+      - name: Verify both libraries are ARM64
+        run: |
+          for library in \
+            nxnative/network/build/shared-core/hookshot/hookshot_coop.dylib \
+            nxnative/probe/build/libcoop_nxnative_probe.dylib
+          do
+            architecture=$(lipo -archs "$library")
+            printf '%s %s\n' "$architecture" "$library"
+            test "$architecture" = arm64
+          done

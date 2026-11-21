@@ -12,6 +12,8 @@
 #                                           this kit's own co-op server is stopped first
 #   update.ps1 -Version v0.10.1             install that release instead of the newest (older ones too)
 #   update.ps1 -Revert                      go back to the version this kit had before (Revert.bat)
+#   update.ps1 -Tidy                        only point the player's shortcuts at the kit's start file (play.ps1 -NoUpdate;
+#                                           -Status does it too): Update-KitStartLinks
 #
 # Going back (Revert.bat, -Revert, -Version with an older tag): every update keeps the kit's own files of
 # the version it replaces in previous\<version>\ (the last 2; saves, keys, settings, logs and the built
@@ -68,6 +70,7 @@ param(
     [string]$Api = '',
     [ValidatePattern('^(v?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)?$')][string]$Version = '',
     [switch]$Revert,
+    [switch]$Tidy,
     [switch]$NoRun
 )
 if ($Version -and -not $Version.StartsWith('v')) { $Version = 'v' + $Version }
@@ -462,14 +465,112 @@ function Test-KitEmulator([string]$Exe) {
     return ''
 }
 
-# The start file of a Hookshot-only kit: "Start Squadala.bat" from v0.11.3 on (which keeps "Start OoT Co-op.bat",
-# the name up to v0.11.2, as a one-line call of it), else that old name; '' when there is neither.
+# The start file of a Hookshot-only kit: "Start Squadala.bat" from v0.11.3 on, else "Start OoT Co-op.bat" (the name up to
+# v0.11.2; v0.11.3 kept it as a one-line call of the new one, v0.11.4 drops it); '' when there is neither.
+$StartNames = @('Start Squadala.bat', 'Start OoT Co-op.bat')
 function Get-KitStartFile([string]$Dir) {
-    foreach ($n in 'Start Squadala.bat', 'Start OoT Co-op.bat') {
+    foreach ($n in $StartNames) {
         $f = Join-Path $Dir $n
         if (Test-Path -LiteralPath $f) { return $f }
     }
     return ''
+}
+
+# Where the player's shortcuts to a kit can be: the desktop (theirs and the shared one), the Start menu (theirs and the
+# shared one) and the taskbar pins. OOT_COOP_SHORTCUT_DIRS (';'-separated) instead, for tests; OOT_COOP_DESKTOP alone
+# (older tests) means only that folder.
+function Get-KitShortcutDirs {
+    if ($env:OOT_COOP_SHORTCUT_DIRS) { return @($env:OOT_COOP_SHORTCUT_DIRS -split ';' | Where-Object { $_ }) }
+    if ($env:OOT_COOP_DESKTOP) { return @($env:OOT_COOP_DESKTOP) }
+    $dirs = @('Desktop', 'CommonDesktopDirectory', 'Programs', 'CommonPrograms') | ForEach-Object { [Environment]::GetFolderPath($_) }
+    if ($env:APPDATA) { $dirs += Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned' }
+    return @($dirs | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
+}
+
+# Steam's non-Steam game list of each Steam user (userdata\<id>\config\shortcuts.vdf). OOT_COOP_STEAM_DIR names the Steam
+# folder (tests); OOT_COOP_SHORTCUT_DIRS or OOT_COOP_DESKTOP without it means none (a test never touches the PC's Steam).
+function Get-KitSteamLists {
+    $steam = $env:OOT_COOP_STEAM_DIR
+    if (-not $steam) {
+        if ($env:OOT_COOP_SHORTCUT_DIRS -or $env:OOT_COOP_DESKTOP) { return @() }
+        try { $steam = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Valve\Steam' -ErrorAction Stop).SteamPath } catch { return @() }
+    }
+    if (-not $steam -or -not (Test-Path -LiteralPath (Join-Path $steam 'userdata'))) { return @() }
+    return @(Get-ChildItem -LiteralPath (Join-Path $steam 'userdata') -Directory -ErrorAction SilentlyContinue |
+        ForEach-Object { Join-Path $_.FullName 'config\shortcuts.vdf' } | Where-Object { Test-Path -LiteralPath $_ })
+}
+
+# Every way in to this kit follows its start file. A shortcut (desktop, Start menu, taskbar pin) or Steam entry that
+# starts a launcher of the kit that is gone, or the old name "Start OoT Co-op.bat" once this version's MANIFEST.txt no
+# longer has it (v0.11.4 on), now starts the kit's start file (Get-KitStartFile): forward after an update (the emulator
+# kits' Play-OoT-Coop.bat, Host.bat and Join.bat too) and back after Revert.bat to a kit up to v0.11.2. Then that
+# old-name file goes (an updater up to v0.11.3 removes it already, by MANIFEST.txt; a kit going back to v0.11.3 or older
+# gets it back from previous\ and keeps it). Runs on every start (update.ps1 -Status / -Tidy) and after every update or
+# Revert.bat. Returns the lines to say.
+function Update-KitStartLinks([string]$KitDir) {
+    $start = Get-KitStartFile $KitDir
+    if (-not $start) { return @() }
+    $startName = Split-Path -Leaf $start
+    $root = [System.IO.Path]::GetFullPath($KitDir).TrimEnd('\')
+    $old = Join-Path $root 'Start OoT Co-op.bat'
+    $manifest = Join-Path $root 'MANIFEST.txt'
+    $retire = ($startName -eq 'Start Squadala.bat') -and (Test-Path -LiteralPath $old) -and (Test-Path -LiteralPath $manifest) -and
+        -not [bool](@([System.IO.File]::ReadAllLines($manifest)) | Where-Object { $_.Trim() -ieq 'Start OoT Co-op.bat' })
+    $lines = @()
+    $isOld = {
+        param([string]$Target)
+        if (-not $Target) { return $false }
+        try { $t = [System.IO.Path]::GetFullPath($Target) } catch { return $false }
+        if (-not ([System.IO.Path]::GetDirectoryName($t)).Equals($root, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        if ($t.Equals($start, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        if ($retire -and $t.Equals($old, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        return ($t -match '(?i)\.(bat|cmd)$') -and -not (Test-Path -LiteralPath $t)
+    }
+    $shell = $null
+    $leaf = Split-Path -Leaf $root
+    foreach ($d in Get-KitShortcutDirs) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $d -Filter '*.lnk' -File -Recurse -ErrorAction SilentlyContinue)) {
+            try {
+                # (only a shortcut that names this kit's folder is opened: the Start menu holds hundreds)
+                $raw = [System.IO.File]::ReadAllBytes($f.FullName)
+                $named = $false
+                foreach ($t in [System.Text.Encoding]::Unicode.GetString($raw), [System.Text.Encoding]::Default.GetString($raw),
+                        $(if ($raw.Length -gt 1) { [System.Text.Encoding]::Unicode.GetString($raw, 1, $raw.Length - 1) } else { '' })) {
+                    if ($t.IndexOf($leaf, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $named = $true; break }
+                }
+                if (-not $named) { continue }
+                if (-not $shell) { $shell = New-Object -ComObject WScript.Shell }
+                $s = $shell.CreateShortcut($f.FullName)
+                if (-not (& $isOld $s.TargetPath)) { continue }
+                $s.TargetPath = $start; $s.WorkingDirectory = $root; $s.Save()
+                $lines += "The shortcut ""$($f.BaseName)"" now starts ""$startName""."
+            } catch { }
+        }
+    }
+    # Steam keeps each path as plain UTF-8 text between the binary fields (no lengths), so a path is swapped in place.
+    $latin = [System.Text.Encoding]::GetEncoding(28591)
+    $names = @('Start Squadala.bat', 'Start OoT Co-op.bat', 'Play-OoT-Coop.bat', 'Host.bat', 'Join.bat') | Where-Object { $_ -ne $startName }
+    foreach ($vdf in Get-KitSteamLists) {
+        try {
+            $text = $latin.GetString([System.IO.File]::ReadAllBytes($vdf))
+            $new = $text
+            foreach ($n in $names) {
+                $p = Join-Path $root $n
+                if (-not (& $isOld $p)) { continue }
+                $from = $latin.GetString([System.Text.Encoding]::UTF8.GetBytes($p))
+                $to = $latin.GetString([System.Text.Encoding]::UTF8.GetBytes($start))
+                $new = [regex]::Replace($new, [regex]::Escape($from), { param($m) $to }, 'IgnoreCase')
+            }
+            if ($new -ceq $text) { continue }
+            Copy-Item -LiteralPath $vdf -Destination "$vdf.before-squadala" -Force
+            [System.IO.File]::WriteAllBytes("$vdf.new", $latin.GetBytes($new))
+            Move-Item -LiteralPath "$vdf.new" -Destination $vdf -Force
+            $lines += "Your Steam entry for this kit now starts ""$startName""" +
+                $(if (Get-Process -Name steam -ErrorAction SilentlyContinue) { ' (after Steam restarts; until then start it from the kit folder).' } else { '.' })
+        } catch { }
+    }
+    if ($retire) { try { Remove-Item -LiteralPath $old -Force -ErrorAction Stop } catch { } }
+    return $lines
 }
 
 # A co-op kit folder: an emulator kit (emulator\) or a Hookshot-only kit (make_kit_hookshot.ps1: hookshot\PIN and its launcher).
@@ -489,27 +590,14 @@ function Test-KitNewKit([string]$Dir) {
     return ''
 }
 
-# After an emulator kit became a Hookshot-only kit: the desktop shortcut to a launcher that is gone points at
-# "Start Squadala.bat" (or the old "Start OoT Co-op.bat" of a kit up to v0.11.2), and the player hears that emulator\user (theirs: saves, keys, settings) is kept.
+# After an update or a going back: every shortcut follows the kit's start file (Update-KitStartLinks), and after an
+# emulator kit became a Hookshot-only kit the player hears that emulator\user (theirs: saves, keys, settings) is kept.
 # Returns the lines to say.
-function Complete-KitHookshotOnly([string]$KitDir, [bool]$HadEmulator, [string]$Desktop = $(if ($env:OOT_COOP_DESKTOP) { $env:OOT_COOP_DESKTOP } else { [Environment]::GetFolderPath('Desktop') })) {
+function Complete-KitHookshotOnly([string]$KitDir, [bool]$HadEmulator) {
     $start = Get-KitStartFile $KitDir
     if (-not $start) { return @() }
     $startName = Split-Path -Leaf $start
-    $lines = @()
-    try {
-        $link = Join-Path $Desktop 'Play Squadala.lnk'
-        if ($Desktop -and -not (Test-Path -LiteralPath $link)) { $link = Join-Path $Desktop 'Play OoT Co-op.lnk' }
-        if ($Desktop -and (Test-Path -LiteralPath $link)) {
-            $shell = New-Object -ComObject WScript.Shell
-            $s = $shell.CreateShortcut($link)
-            $root = [System.IO.Path]::GetFullPath($KitDir).TrimEnd('\') + '\'
-            if ($s.TargetPath -and $s.TargetPath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -and -not (Test-Path -LiteralPath $s.TargetPath)) {
-                $s.TargetPath = $start; $s.WorkingDirectory = $KitDir; $s.Save()
-                $lines += "The desktop shortcut ""$([System.IO.Path]::GetFileNameWithoutExtension($link))"" now starts ""$startName""."
-            }
-        }
-    } catch { }
+    $lines = @(Update-KitStartLinks $KitDir)
     if ($HadEmulator -and -not (Test-Path -LiteralPath (Join-Path $KitDir 'emulator\lichii.exe'))) {
         $lines += 'This version is Longshot only (no emulator): the emulator and its .bat files were removed (they are in the backup folder).'
         if (Test-Path -LiteralPath (Join-Path $KitDir 'emulator\user')) {
@@ -946,6 +1034,7 @@ function Invoke-KitRevert([string]$Dir, [string]$Mine, [bool]$Unfinished) {
     }
     $r = Invoke-KitSwitch $Dir $best.Dir $to $Mine $true $false
     Write-Host "Back on $($to): $($r.N) files. The replaced files are in $($r.Backup)."
+    foreach ($l in Update-KitStartLinks $Dir) { Write-Host $l }
     if ($script:ShadersMoved) { Write-Host "The emulator changed, so its shader cache was moved to $($r.Backup)\$ShaderCache." }
     Write-Host "Starting the kit stays on $to now; it asks only when a release newer than $(Get-KitStayLeft $Dir $to) comes out. Update.bat goes forward."
     Write-Host 'Tell the others in your session to go back too: everyone needs the same version.'
@@ -975,6 +1064,13 @@ function Invoke-KitUpdate {
     $list = if ($Api) { $Api } else { "https://api.github.com/repos/$Repo/releases?per_page=30" }
     # Keys an older updater did not add (not while an update is half done).
     if (-not $unfinished) { Update-KitOptions $dir | Out-Null }
+    # Shortcuts to a start file that is gone (the old "Start OoT Co-op.bat" after an update by an older updater) follow
+    # the kit's start file (said with -Tidy; -Status prints only its one line).
+    if (-not $unfinished) {
+        $links = @(Update-KitStartLinks $dir)
+        if ($Tidy) { foreach ($l in $links) { Write-Host $l } }
+    }
+    if ($Tidy) { return 0 }
     # The player went back to this version on purpose: only a release newer than the one they left counts.
     $stay = Get-KitStay $dir $mine
     $wanted = { param($tag) (Compare-KitVersion $tag $mine) -gt 0 -and (-not $stay -or (Compare-KitVersion $tag $stay.Left) -gt 0) }
@@ -1163,12 +1259,49 @@ function Disable-KitQuickEdit {
     } catch { return $false }
 }
 
-if (-not $NoRun) {
-    if (-not ($Check -or $Status)) { [void](Disable-KitQuickEdit) }
+# Update.bat's last step, after an update and also when the kit is the newest already: the game's co-op parts this kit
+# pins (the module, the puppet pack, the randomizer OOTRR in the game's tools\ootrr, seeds to build again) are put in now,
+# by the kit's OWN scripts\hookshot-build.ps1 -Repair (the version just installed, not this updater's), while the game is
+# closed. Before, only the next "Start Squadala.bat" did it, and a failure there was one line in a window that closes:
+# Velvet's kit (2026-11-19) played on with no OOTRR, the randomizer broken, after an Update.bat that "worked".
+# A kit with no Longshot game or no hookshot-build.ps1 has nothing to repair. Returns the repair's exit code (0: fine or
+# nothing to do); never throws.
+function Invoke-KitGameRepair([string]$KitDir) {
     try {
-        exit (Invoke-KitUpdate)
+        $build = Join-Path $KitDir 'scripts\hookshot-build.ps1'
+        if (-not (Test-Path -LiteralPath (Join-Path $KitDir 'hookshot\PIN')) -or -not (Test-Path -LiteralPath $build)) { return 0 }
+        if (-not (Select-String -LiteralPath $build -SimpleMatch '[switch]$Repair' -Quiet)) { return 0 }   # (an older kit's script)
+        if (@(Get-KitRunning $KitDir).Count) {
+            Write-Host 'The game is running from this kit: close it, then run Update.bat again so it can check the game''s co-op parts and the randomizer.'
+            return 0
+        }
+        Write-Host ''
+        Write-Host 'Checking the game''s co-op parts and the randomizer...'
+        $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+        # (Start-Process in this window: its questions (the pack's game file) reach the player, and its lines never
+        # become this function's return value as `& powershell` output would)
+        $p = Start-Process -FilePath $ps -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', """$build""", '-Repair') -NoNewWindow -Wait -PassThru
+        $code = $p.ExitCode
+        if ($code -ne 0) { Write-Host 'The game could not be repaired now (above: why). "Start Squadala.bat" tries again at its next start.' }
+        return $code
     } catch {
-        if ($Check -or $Status) { exit 0 }
+        Write-Host "The game's co-op parts were not checked: $($_.Exception.Message)"
+        return 1
+    }
+}
+
+if (-not $NoRun) {
+    if (-not ($Check -or $Status -or $Tidy)) { [void](Disable-KitQuickEdit) }
+    try {
+        $code = Invoke-KitUpdate
+        # (not for play.ps1's -Launch, whose new play.ps1 does the same step next, nor going back: the older kit's start does)
+        if ($code -eq 0 -and -not ($Check -or $Status -or $Tidy -or $Launch -or $Revert)) {
+            $kitDir = if ($Kit) { $Kit } else { Split-Path -Parent $PSScriptRoot }
+            if (Test-Path -LiteralPath $kitDir) { [void](Invoke-KitGameRepair ([System.IO.Path]::GetFullPath($kitDir))) }
+        }
+        exit $code
+    } catch {
+        if ($Check -or $Status -or $Tidy) { exit 0 }
         Write-Host "$(if ($Revert) { 'Going back failed' } else { 'Update failed' }): $(Get-KitErrorText $_)"
         if (-not $Revert) { foreach ($l in Get-KitManualSteps $script:KitPage) { Write-Host $l } }
         exit 1

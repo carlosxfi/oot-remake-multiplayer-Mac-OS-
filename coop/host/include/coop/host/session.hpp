@@ -82,6 +82,11 @@ struct FrameReport {
   std::uint64_t server_now_us = 0;      // the client's estimate; 0 when not connected
   bool hosting = false;                 // the watcher's role is host
   bool holding = false;                 // a snapshot is coming in parts: hold the game
+  // Rows 106/107: a held snapshot was dropped this frame (FlagWatcher::kHoldMaxFrames): the hook says so once.
+  bool hold_timeout = false;
+  // How long (1/60 s) the watcher's load window has been open; 0 when closed. Our own changes are not sent
+  // while it is: the hook logs one that stays open for a minute (rows 106/107).
+  std::uint64_t window_for = 0;
   std::size_t queued = 0;               // messages and flag lists queued to send
   // The host's save load reached this game this frame (FlagWatcher::
   // take_reset): drop session-wide state the save undoes (docs/flags.md, "Saves").
@@ -94,6 +99,8 @@ struct FrameReport {
   bool save_load = false;  // (save_load_flags may be 0: a load through the title, #96)
   int save_load_flags = 0;
   int save_load_frames = 0;
+  bool save_load_native = false;  // said by the game's own load nodes (patch 0024), not the old signs
+  bool save_load_retry = false;   // Game Over's Try Again (row 159: the host sends no BOSS_ALIVE for it)
 };
 
 class Session {
@@ -110,6 +117,18 @@ class Session {
   // (FlagWatcher::set_title; passed on also while not connected). Never set
   // on the emulator.
   void set_title_up(bool up) { title_up_ = up; }
+  // Emulator thread, before frame(): Hookshot's save-load wraps (patch 0024; FlagWatcher::set_native_loads,
+  // note_save_load_start, note_save_loaded). Passed on also while not connected: a load then is taken at the
+  // connection's first frame. Never set on the emulator.
+  void set_native_save_loads(bool on) {
+    if (watcher_) watcher_->set_native_loads(on);
+  }
+  void note_save_load_start() {
+    if (watcher_) watcher_->note_save_load_start();
+  }
+  void note_save_loaded(bool retry = false) {
+    if (watcher_) watcher_->note_save_loaded(retry);
+  }
 
   // Emulator thread, once per emulated frame. `reading` is this frame's
   // PlayerReader::read() (nothing when the game is not the right one);
@@ -180,8 +199,17 @@ class Session {
   bool share_pickup_named(FlagKey key) { return watcher_ && watcher_->share_pickup_named(key); }
   // Emulator thread only: FlagWatcher::take_written_for_others (empty when
   // flags are not shared).
-  std::vector<FlagKey> take_one_way_restores() {
-    return watcher_ ? watcher_->take_one_way_restores() : std::vector<FlagKey>{};
+  std::vector<FlagWatcher::OneWayRestore> take_one_way_restores() {
+    return watcher_ ? watcher_->take_one_way_restores() : std::vector<FlagWatcher::OneWayRestore>{};
+  }
+  // Row 140: FlagWatcher::take_one_way_left / take_keeps_failing (for the log; empty when flags are not shared).
+  std::vector<FlagKey> take_one_way_left() {
+    return watcher_ ? watcher_->take_one_way_left() : std::vector<FlagKey>{};
+  }
+  // Row 140: FlagWatcher::take_hud_refresh (false when flags are not shared).
+  bool take_one_way_hud_refresh() { return watcher_ && watcher_->take_hud_refresh(); }
+  std::vector<FlagWatcher::KeepsFailing> take_keeps_failing() {
+    return watcher_ ? watcher_->take_keeps_failing() : std::vector<FlagWatcher::KeepsFailing>{};
   }
   // How many times a one-way Bool was put back this session (for the log).
   std::uint64_t one_way_restores() const {
@@ -222,6 +250,14 @@ class Session {
       watcher_->clear_max_cap(key);
     }
     return true;
+  }
+  // Emulator thread only: FlagWatcher::reset_lowered (rows 136/137).
+  std::optional<std::int32_t> reset_lowered(FlagKey key) const {
+    return watcher_ ? watcher_->reset_lowered(key) : std::nullopt;
+  }
+  // Emulator thread only: FlagWatcher::held_lower (rows 136/137 and 181).
+  std::optional<std::int32_t> held_lower(FlagKey key) const {
+    return watcher_ ? watcher_->held_lower(key) : std::nullopt;
   }
   // Emulator thread only: FlagWatcher::take_counts_guarded.
   std::vector<FlagWatcher::CountGuarded> take_counts_guarded() {

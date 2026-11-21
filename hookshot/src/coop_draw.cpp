@@ -21,12 +21,13 @@ constexpr float kChatWidth = 520.0f;
 // The co-op window's sizes for the game look, in the game's 720-line picture.
 constexpr float kGameHeight = 720.0f;
 constexpr float kHudLeft = 40.0f;
-constexpr float kHudNamePx = 25.0f;
-constexpr float kHudPlacePx = 19.0f;
-constexpr float kHudGap = 16.0f;
+constexpr float kHudNamePx = 21.0f;   // (25, 19, 16 and hearts 38 before: a little big, a tester 2026-11-20)
+constexpr float kHudPlacePx = 16.0f;
+constexpr float kHudGap = 12.0f;
+constexpr float kCompactPx = 18.0f;    // a compact row's name (CoopHudLayout::ListSize)
 // The heart pictures are 96 x 96 with the heart about half as wide in the
 // middle: drawn kHeartPx big, kHeartStep apart (the co-op window's HudLayer).
-constexpr float kHeartPx = 38.0f;
+constexpr float kHeartPx = 32.0f;
 constexpr float kHeartStep = 0.55f;
 constexpr float kChatGamePx = 23.0f;
 constexpr float kListGamePx = 24.0f;
@@ -110,6 +111,79 @@ std::string Elided(const HosCoopDraw& d, float px, const std::string& text, floa
         }
     }
     return "...";
+}
+
+// `text` as the lines it takes at `room` wide: the chat used to end a long line
+// with "..." and the rest was never drawn, so the difficulty notice and a
+// teleport's line lost their end. A break goes after a space, else between
+// characters (Chinese has no spaces to break at), and a line is never wider than
+// the room unless a single character is.
+std::vector<std::string> Wrapped(const HosCoopDraw& d, float px, const std::string& text, float room,
+                                 float room_after_first) {
+    std::vector<std::string> out;
+    if (text.empty()) {
+        return out;
+    }
+    if (d.text_width(d.user, px, text.c_str()) <= room_after_first) {
+        return {text};
+    }
+    std::string line;
+    std::string last_break;   // (the line as it was at the last space)
+    for (std::size_t i = 0; i < text.size();) {
+        const unsigned char b = static_cast<unsigned char>(text[i]);
+        std::size_t n = 1;
+        if ((b & 0xE0) == 0xC0) {
+            n = 2;
+        } else if ((b & 0xF0) == 0xE0) {
+            n = 3;
+        } else if ((b & 0xF8) == 0xF0) {
+            n = 4;
+        }
+        if (i + n > text.size()) {
+            n = 1;
+        }
+        const std::string glyph = text.substr(i, n);
+        const float limit = out.empty() ? room_after_first : room;
+        const std::string next = line + glyph;
+        if (!line.empty() && d.text_width(d.user, px, next.c_str()) > limit) {
+            // break here: after the last space when there was one, else between characters
+            if (!last_break.empty() && last_break.size() > line.size() / 4) {
+                // the space it broke at is not drawn: the chat's backing is as wide as the text
+                std::string kept = last_break;
+                while (!kept.empty() && kept.back() == ' ') {
+                    kept.pop_back();
+                }
+                out.push_back(kept);
+                line = line.substr(last_break.size());
+                while (!line.empty() && line.front() == ' ') {
+                    line.erase(0, 1);
+                }
+                last_break.clear();
+                continue;   // (this character goes on the new line)
+            }
+            out.push_back(line);
+            line.clear();
+            last_break.clear();
+            continue;
+        }
+        line = next;
+        if (glyph == " ") {
+            last_break = line;
+        }
+        i += n;
+    }
+    while (!line.empty() && line.back() == ' ') {
+        line.pop_back();
+    }
+    if (!line.empty()) {
+        out.push_back(line);
+    }
+    // A long word with no space is still cut when it alone overflows.
+    std::vector<std::string> fixed;
+    for (const std::string& l : out) {
+        fixed.push_back(Elided(d, px, l, room));
+    }
+    return fixed;
 }
 
 // `look`: the game look's fonts, or nullptr for the plain look.
@@ -261,22 +335,52 @@ void DrawChatGame(const HosCoopDraw& d, const std::vector<ChatShown>& chat, floa
     Font(d, look.regular);
     const float line = px * 1.3f;
     const float bottom = d.height - kMargin - (above > 0 ? above + 4.0f : 0.0f);
-    float y = bottom - kPad - line * static_cast<float>(chat.size());
     const float left = at.left + kPad;
     const float room = at.width - 2 * kPad;
+
+    // Every line wrapped first, so the block's height is known before it is drawn
+    // (a wrapped line takes a row of its own).
+    struct Row {
+        std::string name;   // ("Name:" of a chat line, in its colour; "" for a notice)
+        std::string text;
+        std::uint32_t name_colour = 0;
+        bool notice = false;
+        int alpha = 255;
+    };
+    std::vector<Row> rows;
     for (const auto& l : chat) {
         const int a = Alpha(l.alpha);
-        float x = left;
         std::string rest = l.text;
+        std::string name;
+        std::uint32_t colour = 0;
         if (const auto colon = l.text.find(": "); !l.notice && colon != std::string::npos && colon > 0) {
-            const std::string name = l.text.substr(0, colon + 1);
+            name = l.text.substr(0, colon + 1);
             rest = l.text.substr(colon + 1);
-            GameText(d, x, y, px, WithAlpha(ColourOf(scene, std::string_view(l.text).substr(0, colon)), a),
-                     name.c_str());
-            x += d.text_width(d.user, px, name.c_str());
+            colour = WithAlpha(ColourOf(scene, std::string_view(l.text).substr(0, colon)), a);
         }
-        const std::string text = Elided(d, px, rest, std::max(10.0f, room - (x - left)));
-        GameText(d, x, y, px, WithAlpha(l.notice ? kHighlight : Rgba(255, 255, 255, 255), a), text.c_str());
+        const float first_room = std::max(10.0f, room - (name.empty() ? 0.0f : d.text_width(d.user, px, name.c_str())));
+        const std::vector<std::string> lines = Wrapped(d, px, rest, room, first_room);
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            Row r;
+            if (i == 0) {
+                r.name = name;
+                r.name_colour = colour;
+            }
+            r.text = lines[i];
+            r.notice = l.notice;
+            r.alpha = a;
+            rows.push_back(std::move(r));
+        }
+    }
+
+    float y = bottom - kPad - line * static_cast<float>(rows.size());
+    for (const Row& r : rows) {
+        float x = left;
+        if (!r.name.empty()) {
+            GameText(d, x, y, px, r.name_colour, r.name.c_str());
+            x += d.text_width(d.user, px, r.name.c_str());
+        }
+        GameText(d, x, y, px, WithAlpha(r.notice ? kHighlight : Rgba(255, 255, 255, 255), r.alpha), r.text.c_str());
         y += line;
     }
 }
@@ -293,13 +397,24 @@ void DrawChat(const HosCoopDraw& d, const std::vector<ChatShown>& chat, float ab
     const float px = ChatPx(d);
     const float room = std::min(kChatWidth * px / 14.0f, d.width - 2 * kMargin) - 2 * kPad;
     const float line = px + 8.0f;
-    float y = d.height - kMargin - (above > 0 ? above + 6.0f : 0.0f) - line * static_cast<float>(chat.size());
+
+    // The same wrapping as the game look: a long notice reads in full instead of
+    // ending at "...".
+    std::vector<std::pair<std::string, int>> rows;   // (text, the colour's alpha and kind)
+    std::vector<bool> notice;
     for (const auto& l : chat) {
-        const int a = Alpha(l.alpha);
-        const std::string text = Elided(d, px, l.text, room);
+        for (std::string& part : Wrapped(d, px, l.text, room, room)) {
+            rows.emplace_back(std::move(part), Alpha(l.alpha));
+            notice.push_back(l.notice);
+        }
+    }
+    float y = d.height - kMargin - (above > 0 ? above + 6.0f : 0.0f) - line * static_cast<float>(rows.size());
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const std::string& text = rows[i].first;
+        const int a = rows[i].second;
         const float tw = d.text_width(d.user, px, text.c_str());
         d.rect(d.user, kMargin - 4, y - 2, kMargin + tw + 4, y + px + 2, Rgba(0, 0, 0, a * 150 / 255), 4.0f);
-        d.text(d.user, kMargin, y, px, l.notice ? Rgba(255, 220, 120, a) : Rgba(255, 255, 255, a), text.c_str());
+        d.text(d.user, kMargin, y, px, notice[i] ? Rgba(255, 220, 120, a) : Rgba(255, 255, 255, a), text.c_str());
         y += line;
     }
 }
@@ -402,15 +517,45 @@ void DrawVoiceIcon(const HosCoopDraw& d, float x, float top, float size, CoopVoi
     }
 }
 
+// The game look's chat: the top of its lines and box (the picture's bottom
+// when there are none), so the HUD blocks stop above it.
+float ChatTopGame(const HosCoopDraw& d, const Scene& s, const Look& look) {
+    const ChatPlace at = ChatAt(d, &look);
+    const float box = s.box ? at.px * 1.4f + 6.0f : 0.0f;   // (DrawBox's game look)
+    float top = d.height - kMargin - (box > 0 ? box + 4.0f : 0.0f);   // (DrawChatGame's bottom)
+    if (!s.chat.empty()) {
+        top -= kPad + at.px * 1.3f * static_cast<float>(s.chat.size());
+    }
+    return top;
+}
+
+// One HUD block's height, its gap under it included (as DrawHud steps). A compact row: one line.
+float BlockHeight(const HudBlock& b, float u, bool compact = false) {
+    if (compact) return kCompactPx * u * 1.35f;
+    float h = kHudNamePx * u + 2 * u;
+    if (!b.hearts.empty()) {
+        const int rows = (static_cast<int>(b.hearts.size()) + CoopHudHearts::kPerRow - 1) / CoopHudHearts::kPerRow;
+        h += rows * kHeartPx * u * kHeartStep + 3 * u;
+    }
+    if (!b.place.empty()) {
+        h += kHudPlacePx * u;
+    }
+    return h + kHudGap * u;
+}
+
 // The other players under the game's own hearts, top left, as the game would
 // draw them (the co-op window's HudLayer): per player their name in the
 // game's font, a row of their hearts with the game's heart pictures, and the
-// game's name of the place they are in. No box. Game look only.
-void DrawHud(const HosCoopDraw& d, const std::vector<HudBlock>& blocks, CoopVoice::Icon own_voice, const Look& look) {
+// game's name of the place they are in. No box. Game look only. Row 141: the
+// first block's top is below the game's own HUD as it is laid out this frame
+// (`hud_bottom`; none: the fixed top), and blocks that would run into the
+// chat at `floor` are left out, a "+N" line saying how many.
+void DrawHud(const HosCoopDraw& d, const std::vector<HudBlock>& blocks, CoopVoice::Icon own_voice, const Look& look,
+             std::optional<double> hud_bottom, float floor, bool compact) {
     const Pic p = Picture(d);
     const float u = p.u;
     const float x = p.left + kHudLeft * u;
-    float y = static_cast<float>(CoopHudLayout::BlocksTop(d.width, d.height));
+    float y = static_cast<float>(CoopHudLayout::BlocksTop(d.width, d.height, hud_bottom));
     const float heart = kHeartPx * u;
     const float name_px = kHudNamePx * u;
     const float place_px = kHudPlacePx * u;
@@ -422,7 +567,52 @@ void DrawHud(const HosCoopDraw& d, const std::vector<HudBlock>& blocks, CoopVoic
         DrawVoiceIcon(d, x + d.text_width(d.user, name_px, you.c_str()) + icon_gap, y, name_px, own_voice, 255);
         y += name_px + kHudGap * u;
     }
+    std::vector<double> heights;
+    heights.reserve(blocks.size());
     for (const auto& b : blocks) {
+        heights.push_back(BlockHeight(b, u, compact));
+    }
+    const std::size_t shown = std::min(CoopHudLayout::BlocksThatFit(y, heights, floor, name_px), CoopHudLayout::kMostRows);
+    if (compact) {   // one row each: their colour, the name, a bar of their hearts and the count ("5/16")
+        const float px = kCompactPx * u;
+        float name_w = 0;
+        Font(d, look.medium);
+        for (std::size_t i = 0; i < shown; ++i) {
+            name_w = std::max(name_w, static_cast<float>(d.text_width(d.user, px, blocks[i].name.c_str())));
+        }
+        for (std::size_t i = 0; i < shown; ++i) {
+            const auto& b = blocks[i];
+            const int a = b.dim ? 150 : 255;
+            const std::uint32_t c = b.colour;
+            const float m = px * 0.62f;   // the marker
+            d.rect(d.user, x, y + (px - m) * 0.5f, x + m, y + (px + m) * 0.5f,
+                   Rgba(static_cast<int>((c >> 16) & 0xFF), static_cast<int>((c >> 8) & 0xFF), static_cast<int>(c & 0xFF), a),
+                   m * 0.2f);
+            const float nx = x + m + px * 0.35f;
+            GameText(d, nx, y, px, Rgba(255, 255, 255, a), b.name.c_str());
+            DrawVoiceIcon(d, nx + name_w + px * 0.15f, y, px, b.voice, a);
+            if (b.life >= 0 && b.max > 0) {
+                const float bx = nx + name_w + px * 1.3f, bw = px * 3.6f, bh = px * 0.42f, by = y + (px - bh) * 0.5f;
+                const float f = std::clamp(static_cast<float>(b.life) / static_cast<float>(b.max), 0.0f, 1.0f);
+                d.rect(d.user, bx, by, bx + bw, by + bh, Rgba(0, 0, 0, a * 150 / 255), bh * 0.3f);
+                const std::uint32_t fill = f > 0.5f ? Rgba(90, 210, 90, a) : f > 0.25f ? Rgba(235, 200, 60, a)
+                                                                                     : Rgba(230, 70, 60, a);
+                if (f > 0) d.rect(d.user, bx, by, bx + bw * f, by + bh, fill, bh * 0.3f);
+                Font(d, look.regular);
+                const std::string count = std::to_string((b.life + 3) / 4) + "/" + std::to_string(b.max / 4);
+                GameText(d, bx + bw + px * 0.3f, y, px * 0.85f, Rgba(235, 235, 235, a), count.c_str());
+                Font(d, look.medium);
+            }
+            y += heights[i];
+        }
+        if (shown < blocks.size()) {
+            const std::string more = "+" + std::to_string(blocks.size() - shown) + " " + CoopI18n::Tr("elsewhere");
+            GameText(d, x, y, px, Rgba(225, 225, 225, 255), more.c_str());
+        }
+        return;
+    }
+    for (std::size_t i = 0; i < shown; ++i) {
+        const auto& b = blocks[i];
         const int a = b.dim ? 150 : 255;
         Font(d, look.medium);
         GameText(d, x, y, name_px, Rgba(255, 255, 255, a), b.name.c_str());
@@ -446,6 +636,10 @@ void DrawHud(const HosCoopDraw& d, const std::vector<HudBlock>& blocks, CoopVoic
             y += place_px;
         }
         y += kHudGap * u;
+    }
+    if (shown < blocks.size()) {   // (row 141: more players than fit above the chat)
+        Font(d, look.medium);
+        GameText(d, x, y, name_px, Rgba(225, 225, 225, 255), ("+" + std::to_string(blocks.size() - shown)).c_str());
     }
 }
 
@@ -779,7 +973,7 @@ void Draw(const HosCoopDraw& d, const Scene& s, const Look& look) {
         DrawMap(d, *s.map, game);
     }
     if (game) {
-        DrawHud(d, s.hud, s.own_voice, *game);
+        DrawHud(d, s.hud, s.own_voice, *game, s.game_hud_bottom, ChatTopGame(d, s, *game), s.hud_compact);
     }
     if (s.panel) {
         Font(d, 0);

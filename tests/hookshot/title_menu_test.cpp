@@ -3,6 +3,7 @@
 // Host and Join in plain words, the addresses for a home network or VPN, and the host's save loaded after a join.
 #include <doctest/doctest.h>
 
+#include <map>
 #include <string>
 #include <variant>
 
@@ -692,6 +693,32 @@ TEST_CASE("title menu: the voice's microphone in coop-options.ini") {
     CHECK(seen);
 }
 
+TEST_CASE("title menu: a room or join code through a relay is an address, and the relay lines are read (issue 261)") {
+    CHECK(AddressOk("forest-gang@relay.example.net"));
+    CHECK(AddressOk("Forest_Gang@relay.example.net:27530"));
+    CHECK(AddressOk("ABCD-EFGH@1.2.3.4"));
+    CHECK_FALSE(AddressOk("ab@relay.example.net"));            // too short for a room
+    CHECK_FALSE(AddressOk("forest gang@relay.example.net"));   // no spaces
+    CHECK_FALSE(AddressOk("forest-gang@"));
+    CHECK_FALSE(AddressOk("forest-gang@relay.example.net:0"));
+    const auto t = ReadJoin("forest-gang@relay.example.net pw-room", CodeResult{});
+    REQUIRE(std::holds_alternative<JoinAddress>(t));
+    CHECK(std::get<JoinAddress>(t).server == "forest-gang@relay.example.net");
+    CHECK(std::get<JoinAddress>(t).password == "pw-room");
+
+    const Options o = Options::Read("", "relay = relay.example.net:27530\r\n# relay_room = old\r\nrelay_room = forest-gang \r\n");
+    CHECK(o.relay == "relay.example.net:27530");
+    CHECK(o.relay_key.empty());
+    CHECK(o.relay_room == "forest-gang");
+    CHECK(o.list_name.empty());   // (the public list shows the room name)
+    CHECK(Options::Read("", "list_name =  Saria's forest \r\n").list_name == "Saria's forest");
+    // Read only: writing the options leaves the relay lines as they are.
+    std::string coop, options = "relay = relay.example.net:27530\r\nrelay_room = forest-gang\r\nlist_name = Saria's forest\r\n";
+    o.Write(coop, options);
+    CHECK(options.find("relay_room = forest-gang") != std::string::npos);
+    CHECK(options.find("list_name = Saria's forest") != std::string::npos);
+}
+
 TEST_CASE("title menu: ParsePort and host port, 1 to 65535, read and written") {
     CHECK(ParsePort("27510") == std::uint16_t{27510});
     CHECK(ParsePort(" 1 ") == std::uint16_t{1});
@@ -717,4 +744,474 @@ TEST_CASE("title menu: ParsePort and host port, 1 to 65535, read and written") {
     o.host_port = kDefaultPort;
     o.Write(coop, opt);
     CHECK_FALSE(IniGet(opt, "server_port").has_value());
+}
+
+TEST_CASE("title menu: the save list is re-read once after a switch, when the game's own test says idle") {
+    using R = SaveListRefresh;
+    R r;
+    R::Input in;
+    in.title = true;
+    in.manager = true;
+    in.busy = false;
+    in.state = R::kRead;                     // the game's list after its boot read (state 4): idle
+    in.now_ms = 1000;
+    CHECK(r.Step(in) == R::Action::none);    // no switch: nothing asked
+    CHECK(r.waiting() == R::Wait::none);
+    in.stale = true;
+    in.busy = true;                          // the game is reading already: wait for it
+    in.state = 2;
+    CHECK(r.Step(in) == R::Action::none);
+    CHECK(r.pending());
+    CHECK(r.waiting() == R::Wait::busy);
+    in.stale = false;
+    in.busy = false;
+    in.state = R::kRead;
+    CHECK(r.Step(in) == R::Action::ask);     // idle at state 4 (the case the first run missed): asked once
+    CHECK(r.asked());
+    in.state = 0;                            // reset, read not begun yet
+    CHECK(r.Step(in) == R::Action::none);
+    in.busy = true;
+    in.state = 1;
+    CHECK(r.Step(in) == R::Action::none);
+    in.busy = false;
+    in.state = R::kRead;
+    CHECK(r.Step(in) == R::Action::done);    // read, idle again
+    CHECK(r.Step(in) == R::Action::none);
+}
+
+TEST_CASE("title menu: the save list waits for the title and the manager, retries a refused reset, gives up") {
+    using R = SaveListRefresh;
+    R r;
+    R::Input in;
+    in.stale = true;
+    in.busy = false;
+    in.state = R::kRead;
+    CHECK(r.Step(in) == R::Action::none);    // no title: kept
+    CHECK(r.waiting() == R::Wait::title);
+    in.stale = false;
+    in.title = true;
+    CHECK(r.Step(in) == R::Action::none);    // no manager yet
+    CHECK(r.waiting() == R::Wait::manager);
+    in.manager = true;
+    CHECK(r.Step(in) == R::Action::ask);
+    r.Refused();                             // the game's reset said not now (a save screen holds the list)
+    CHECK(r.pending());
+    CHECK(r.Step(in) == R::Action::ask);     // asked again
+    in.state = 0;                            // never read
+    in.now_ms = R::kGiveUpMs - 1;
+    CHECK(r.Step(in) == R::Action::none);
+    in.stale = true;                         // another switch meanwhile
+    in.now_ms = R::kGiveUpMs;
+    CHECK(r.Step(in) == R::Action::gave_up);
+    in.stale = false;
+    in.state = R::kRead;
+    CHECK(r.Step(in) == R::Action::ask);     // the later switch: asked again
+}
+
+TEST_CASE("title menu: after a re-read the open title gets OpenTitle's buttons for the list (report 124)") {
+    // OpenTitle.module (read from the game): with a save BtnNum stops at frame 3, Continue (0001), New Game (0000),
+    // Options (0002) on Pa_Button_00..02, sound arrangement 1; without one frame 2, New Game and Options, type 0.
+    const TitleArrangement with = ArrangementFor(true);
+    CHECK(with.btn_num_frame == 3.0f);
+    CHECK(with.sound_type == 1);
+    REQUIRE(with.count == 3);
+    const char* panes[] = {"Pa_Button_00/T_Btn_00", "Pa_Button_01/T_Btn_00", "Pa_Button_02/T_Btn_00"};
+    const char* labels_with[] = {"0001", "0000", "0002"};
+    for (std::size_t i = 0; i < with.count; ++i) {
+        INFO("button " << i);
+        CHECK(std::string(with.texts[i].pane) == panes[i]);
+        CHECK(std::string(with.texts[i].label) == labels_with[i]);
+    }
+    const TitleArrangement without = ArrangementFor(false);
+    CHECK(without.btn_num_frame == 2.0f);
+    CHECK(without.sound_type == 0);
+    REQUIRE(without.count == 2);
+    const char* labels_without[] = {"0000", "0002"};
+    for (std::size_t i = 0; i < without.count; ++i) {
+        INFO("button " << i);
+        CHECK(std::string(without.texts[i].pane) == panes[i]);
+        CHECK(std::string(without.texts[i].label) == labels_without[i]);
+    }
+    CHECK(without.texts[2].pane == nullptr);   // (the third button is hidden by the frame: no text set)
+    // The frame is the number of buttons shown, as the game's BtnNum animation counts them.
+    CHECK(static_cast<std::size_t>(with.btn_num_frame) == with.count);
+    CHECK(static_cast<std::size_t>(without.btn_num_frame) == without.count);
+}
+
+TEST_CASE("title menu: the open title is arranged on its requests' layout, the screen's +0xf0 then +0x28 (row 193)") {
+    // Player logs (row 193): the screen's +0xe0 held the layout + 0xb8 in every game: it is the request queue's slot
+    // array, not a layout. The walk the game's update makes: the object at +0xf0, its +0x28.
+    const std::uint64_t screen = 0x1000, owner = 0x5000, layout = 0x9d40;
+    std::map<std::uint64_t, std::uint64_t> mem{{screen + 0x28, layout}, {screen + 0xe0, layout + 0xb8},
+                                               {screen + 0xf0, owner}, {owner + 0x28, layout}};
+    const auto read = [&](std::uint64_t a) { const auto it = mem.find(a); return it != mem.end() ? it->second : 0; };
+    CHECK(CoopTitleMenu::RequestsLayout(read, screen) == layout);
+    CHECK(CoopTitleMenu::RequestsLayout(read, screen) == read(screen + 0x28));   // (ArrangeTitle's check passes)
+    CHECK(CoopTitleMenu::RequestsLayout(read, screen) != read(screen + 0xe0));
+    mem[screen + 0xf0] = 0;   // (no owner yet: nothing is arranged)
+    CHECK(CoopTitleMenu::RequestsLayout(read, screen) == 0);
+    CHECK(CoopTitleMenu::RequestsLayout(read, 0) == 0);
+    // With the check passing, an empty list gives New Game first again (Geno's #308: Start on a file select mod).
+    CHECK(std::string(ArrangementFor(false).texts[0].label) == "0000");
+    CHECK(ArrangementFor(false).sound_type == 0);
+}
+
+TEST_CASE("title menu: Skip title screen is free solo and held while co-op does anything (patch 0028, report 133)") {
+    SkipTitleInput in;   // solo, co-op idle: Longshot's Skip title screen may choose
+    CHECK(SkipTitleHold(in) == nullptr);
+    for (const int state : {HOS_COOP_STARTING, HOS_COOP_HOSTING, HOS_COOP_JOINING, HOS_COOP_WAIT_HOST, HOS_COOP_CONNECTED,
+                            HOS_COOP_FAILED}) {
+        SkipTitleInput s;
+        s.host_state = state;
+        INFO("state " << state);
+        CHECK(SkipTitleHold(s) != nullptr);
+    }
+    SkipTitleInput live;
+    live.session_live = true;
+    CHECK(std::string(SkipTitleHold(live)) == "a co-op session is live");
+    SkipTitleInput coming;
+    coming.save_coming = true;
+    CHECK(std::string(SkipTitleHold(coming)) == "the host's save is on its way");
+    SkipTitleInput wait;
+    wait.save_wait = true;
+    CHECK(std::string(SkipTitleHold(wait)) == "the host's save is on its way");
+    SkipTitleInput host;
+    host.host_state = HOS_COOP_HOSTING;
+    CHECK(std::string(SkipTitleHold(host)) == "co-op is hosting");
+    SkipTitleInput join;
+    join.host_state = HOS_COOP_CONNECTED;
+    CHECK(std::string(SkipTitleHold(join)) == "co-op is joining");
+}
+
+TEST_CASE("title menu: approve_joins (the host's) is read from coop-options.ini, off without a line, never rewritten") {
+    CHECK_FALSE(Options::Read("", "").approve_joins);
+    CHECK_FALSE(Options::Read("", "# approve_joins = on\r\n").approve_joins);
+    CHECK_FALSE(Options::Read("", "approve_joins = off\r\n").approve_joins);
+    CHECK(Options::Read("", "approve_joins = on\r\n").approve_joins);
+    // No row edits it: the line stays as the player wrote it.
+    const Options o = Options::Read("", "approve_joins = yes\r\n");
+    CHECK(o.approve_joins);
+    std::string coop, options = "approve_joins = yes\r\n";
+    o.Write(coop, options);
+    CHECK(IniGet(options, "approve_joins") == "yes");
+}
+
+TEST_CASE("title menu: auto_rejoin is off unless coop-options.ini turns it on, and the page's row writes it") {
+    CHECK_FALSE(Options::Read("", "").auto_rejoin);
+    CHECK(Options::Read("", "auto_rejoin = on\r\n").auto_rejoin);
+    Options o = Options::Read("", "");
+    o.auto_rejoin = true;
+    std::string coop, options;
+    o.Write(coop, options);
+    CHECK(options.find("auto_rejoin = on") != std::string::npos);
+    CHECK(Options::Read(coop, options).auto_rejoin);
+    o.auto_rejoin = false;
+    o.Write(coop, options);
+    CHECK_FALSE(Options::Read(coop, options).auto_rejoin);
+}
+
+TEST_CASE("title menu: Start, Multiplayer, Options on the game's three, Multiplayer shows Host, Join, Co-op Settings, Back") {
+    using CoopTitleMenu::MenuFor;
+    using CoopTitleMenu::RowOf;
+    using CoopTitleMenu::TitleDo;
+    // With a save screen mod (one Start) and a save the game's three are Continue, New Game, Options: Start is
+    // Continue's own press, Options its own.
+    auto l = MenuFor(true, false, true);
+    CHECK(l.btn_num_frame == 3);
+    CHECK(l.count == 3);
+    CHECK(std::string(l.rows[0].label) == "0103");
+    CHECK(l.rows[0].action == TitleDo::kGame);
+    CHECK(l.rows[1].action == TitleDo::kMultiplayer);
+    CHECK(l.rows[2].action == TitleDo::kGame);
+    CHECK(l.focus == -1);
+    // Without one the game shows New Game and Options: Start is New Game's press, Options the game's own second,
+    // Multiplayer on the third slot (Options never decided on another slot: that showed its button pressed first).
+    l = MenuFor(false, false, true);
+    CHECK(l.btn_num_frame == 3);
+    CHECK(std::string(l.rows[0].label) == "0103");
+    CHECK(l.rows[0].action == TitleDo::kGame);
+    CHECK(std::string(l.rows[1].label) == "0105");
+    CHECK(l.rows[1].action == TitleDo::kGame);
+    CHECK(l.rows[2].action == TitleDo::kMultiplayer);
+    // The submenu: the game's fourth slot shown, all four the module's, the cursor on Host.
+    for (const bool any : {true, false}) {
+        for (const bool one : {true, false}) {
+            l = MenuFor(any, true, one);
+            CHECK(l.btn_num_frame == 4);
+            CHECK(l.count == 4);
+            CHECK(l.focus == 0);
+            CHECK(l.rows[0].action == TitleDo::kHost);
+            CHECK(l.rows[1].action == TitleDo::kJoin);
+            CHECK(l.rows[2].action == TitleDo::kSettings);
+            CHECK(l.rows[3].action == TitleDo::kBack);
+        }
+    }
+    // Every label a row uses is one of the pack's, or the game's own Continue (0001) and New Game (0000).
+    for (const bool any : {true, false}) {
+        for (const bool sub : {true, false}) {
+            for (const bool one : {true, false}) {
+                const auto look = MenuFor(any, sub, one);
+                for (std::size_t i = 0; i < look.count; ++i) {
+                    bool known = std::string(look.rows[i].label) == "0000" || std::string(look.rows[i].label) == "0001";
+                    for (const auto& [label, text] : CoopTitleMenu::kMenuLabels) known = known || std::string(label) == look.rows[i].label;
+                    CHECK(known);
+                }
+                CHECK((sub ? RowOf(look, TitleDo::kBack) : RowOf(look, TitleDo::kMultiplayer)) >= 0);
+            }
+        }
+    }
+}
+
+TEST_CASE("title menu: without a save screen mod, New Game stays reachable (playing alone)") {
+    using CoopTitleMenu::MenuFor;
+    using CoopTitleMenu::RowOf;
+    using CoopTitleMenu::TitleDo;
+    // A save: Continue, New Game and Options each the game's own press (its buttons 0, 1 and 2), Multiplayer in the
+    // fourth slot (the module's row, the A kept).
+    auto l = MenuFor(true, false, false);
+    CHECK(l.btn_num_frame == 4);
+    REQUIRE(l.count == 4);
+    CHECK(std::string(l.rows[0].label) == "0001");
+    CHECK(l.rows[0].action == TitleDo::kGame);
+    CHECK(std::string(l.rows[1].label) == "0000");
+    CHECK(l.rows[1].action == TitleDo::kGame);
+    CHECK(std::string(l.rows[2].label) == "0105");
+    CHECK(l.rows[2].action == TitleDo::kGame);
+    CHECK(l.rows[3].action == TitleDo::kMultiplayer);
+    CHECK(RowOf(l, TitleDo::kMultiplayer) == 3);   // (Back and B put the cursor there)
+    // No save: New Game (the game's first), Options (its second), Multiplayer on the third slot.
+    l = MenuFor(false, false, false);
+    CHECK(l.btn_num_frame == 3);
+    REQUIRE(l.count == 3);
+    CHECK(std::string(l.rows[0].label) == "0000");
+    CHECK(l.rows[0].action == TitleDo::kGame);
+    CHECK(l.rows[1].action == TitleDo::kGame);
+    CHECK(l.rows[2].action == TitleDo::kMultiplayer);
+    CHECK(RowOf(l, TitleDo::kMultiplayer) == 2);
+    CHECK(RowOf(l, TitleDo::kHost) == -1);
+}
+
+TEST_CASE("title menu: an A on the game's own rows and Options is the player's, the module's rows are not") {
+    using CoopTitleMenu::MenuFor;
+    using CoopTitleMenu::PlayersOwn;
+    using CoopTitleMenu::TitleDo;
+    CHECK_FALSE(PlayersOwn(nullptr));
+    for (const bool any : {true, false}) {
+        for (const bool one : {true, false}) {
+            const auto top = MenuFor(any, false, one);
+            for (std::size_t i = 0; i < top.count; ++i) {
+                CHECK(PlayersOwn(&top.rows[i]) == (top.rows[i].action != TitleDo::kMultiplayer));
+            }
+            const auto sub = MenuFor(any, true, one);
+            for (std::size_t i = 0; i < sub.count; ++i) {
+                CHECK_FALSE(PlayersOwn(&sub.rows[i]));   // (Host in the first place too: not the game's Continue)
+            }
+        }
+    }
+}
+
+TEST_CASE("title menu: list_room is off unless coop-options.ini turns it on, and it is written back") {
+    using CoopTitleMenu::Options;
+    CHECK_FALSE(Options::Read("", "").list_room);
+    Options o = Options::Read("", "list_room = on\r\n");
+    CHECK(o.list_room);
+    std::string coop, options = "relay = relay.example:27600\r\n";
+    o.list_room = true;
+    o.Write(coop, options);
+    CHECK(Options::Read(coop, options).list_room);
+    o.list_room = false;
+    o.Write(coop, options);
+    CHECK_FALSE(Options::Read(coop, options).list_room);
+    CHECK(options.find("relay = relay.example:27600") != std::string::npos);   // (the other lines kept)
+}
+
+TEST_CASE("title menu: public_game (the Host view's Private / Public choice) is private unless chosen, and remembered") {
+    using CoopTitleMenu::Options;
+    CHECK_FALSE(Options::Read("", "").public_game);   // private: the default
+    CHECK(Options::Read("", "public_game = on\r\n").public_game);
+    Options o = Options::Read("", "");
+    std::string coop, options;
+    o.public_game = true;
+    o.Write(coop, options);
+    CHECK(Options::Read(coop, options).public_game);
+    o.public_game = false;
+    o.Write(coop, options);
+    CHECK_FALSE(Options::Read(coop, options).public_game);
+    CHECK_FALSE(CoopTitleMenu::IniGet(options, "public_game").has_value());   // (the line is commented out, as others)
+}
+
+TEST_CASE("title menu: a ready room name for a public game is a word, a dash and four digits") {
+    using CoopTitleMenu::Options;
+    for (std::uint64_t seed = 0; seed < 200; ++seed) {
+        const std::string n = Options::RandomRoomName(seed);
+        const auto dash = n.find('-');
+        REQUIRE(dash != std::string::npos);
+        CHECK(n.size() == dash + 5);
+        for (std::size_t i = 0; i < dash; ++i) CHECK((n[i] >= 'a' && n[i] <= 'z'));
+        for (std::size_t i = dash + 1; i < n.size(); ++i) CHECK((n[i] >= '0' && n[i] <= '9'));
+    }
+    CHECK(Options::RandomRoomName(1) != Options::RandomRoomName(2));
+}
+
+namespace {
+PlayerChoice::Pad TitlePad(std::uint64_t buttons, int focused, bool coop_row = false) {
+    PlayerChoice::Pad p;
+    p.buttons = buttons;
+    p.title_up = true;
+    p.focused = focused;
+    p.on_coop_row = coop_row;
+    return p;
+}
+constexpr std::uint64_t kPadA = PlayerChoice::kA;
+}  // namespace
+
+TEST_CASE("title menu: the player's own A drops the pending switch, on the A's edge only") {
+    // (seen before a code mod's hold: Save Profiles' file select takes this A, so it is the only place it shows)
+    PlayerChoice c;
+    CHECK(c.Step(1000, TitlePad(kPadA, 0)).picks_file);
+    CHECK_FALSE(c.Step(1016, TitlePad(kPadA, 0)).picks_file);   // held: no new edge
+    CHECK_FALSE(c.Step(1032, TitlePad(0, 0)).picks_file);
+    CHECK(c.Step(1048, TitlePad(kPadA, 2)).picks_file);         // Options or New Game: the player's own too
+    c.Step(1064, TitlePad(0, 0));
+    CHECK_FALSE(c.Step(1080, TitlePad(kPadA, 4, true)).picks_file);   // Host / Join / Settings: our menu
+    c.Step(1096, TitlePad(0, 0));
+    CHECK_FALSE(c.Step(1112, TitlePad(kPadA, -1)).picks_file);  // no button focused
+    c.Step(1128, TitlePad(0, 0));
+    PlayerChoice::Pad off = TitlePad(kPadA, 0);
+    off.title_up = false;
+    CHECK_FALSE(c.Step(1144, off).picks_file);                  // not the title
+    c.Step(1160, TitlePad(0, 0));
+    CHECK_FALSE(c.Step(1176, TitlePad(1ull << 1, 0)).picks_file);   // B is not a choice
+}
+
+TEST_CASE("title menu: the player's choice window: only the first button, kWindowMs, renewed by a later A") {
+    PlayerChoice c;
+    CHECK_FALSE(c.Lately(500));
+    c.Step(1000, TitlePad(kPadA, 2));   // Options: drops the switch but is no choice of a file to load
+    CHECK_FALSE(c.Lately(1001));
+    c.Step(1016, TitlePad(0, 2));
+    c.Step(1032, TitlePad(kPadA, 4, true));   // a co-op row in the first place (the title's own menu: Host)
+    CHECK_FALSE(c.Lately(1033));
+    c.Step(1048, TitlePad(0, 0));
+    const auto seen = c.Step(2000, TitlePad(kPadA, 0));
+    CHECK(seen.window_opened);
+    CHECK(c.Lately(2000));
+    CHECK(c.Lately(2000 + PlayerChoice::kWindowMs - 1));
+    CHECK_FALSE(c.Lately(2000 + PlayerChoice::kWindowMs));
+    c.Step(3000, TitlePad(0, 0));
+    CHECK_FALSE(c.Step(4000, TitlePad(kPadA, 0)).window_opened);   // (inside the window: renewed, not new)
+    CHECK(c.Lately(4000 + PlayerChoice::kWindowMs - 1));
+    PlayerChoice z;
+    z.Step(0, TitlePad(kPadA, 0));   // a clock at 0 still counts
+    CHECK(z.Lately(0));
+}
+
+TEST_CASE("title menu: the player's choice window ends in the game, on a join and on Clear") {
+    PlayerChoice c;
+    c.Step(1000, TitlePad(kPadA, 0));
+    PlayerChoice::Pad away = TitlePad(kPadA, 0);   // (Save Profiles' file select over the title, A still held)
+    away.title_up = false;
+    c.Step(1100, away);
+    CHECK(c.Lately(1100));   // the title out of sight alone does not end it
+    PlayerChoice::Pad in_game = TitlePad(0, -1);
+    in_game.title_up = false;
+    in_game.in_game = true;
+    c.Step(5000, in_game);   // the load came: a return to the title later is a new choice
+    CHECK_FALSE(c.Lately(5001));
+    c.Step(9000, TitlePad(kPadA, 0));
+    CHECK(c.Lately(9001));
+    c.Clear();               // a join begun after the A, or the host's save offered again (backed out of the pick)
+    CHECK_FALSE(c.Lately(9002));
+}
+
+TEST_CASE("title menu: an A on Host in the Multiplayer submenu (the game's Continue place) opens no choice window") {
+    // (CoopTitle::OnCoopRow: in the title's own menu, a row that is not the player's own is a co-op row)
+    using CoopTitleMenu::MenuFor;
+    using CoopTitleMenu::PlayersOwn;
+    for (const bool one : {true, false}) {
+        PlayerChoice c;
+        const auto sub = MenuFor(true, true, one);
+        const auto seen = c.Step(1000, TitlePad(kPadA, 0, !PlayersOwn(&sub.rows[0])));
+        CHECK_FALSE(seen.picks_file);
+        CHECK_FALSE(c.Lately(1001));
+        c.Step(1016, TitlePad(0, 0));
+        const auto top = MenuFor(true, false, one);
+        CHECK(c.Step(1032, TitlePad(kPadA, 0, !PlayersOwn(&top.rows[0]))).window_opened);   // Continue / Start
+        c.Clear();
+        c.Step(1048, TitlePad(0, 1));
+        const int multiplayer = CoopTitleMenu::RowOf(top, CoopTitleMenu::TitleDo::kMultiplayer);
+        CHECK_FALSE(c.Step(1064, TitlePad(kPadA, multiplayer, true)).picks_file);
+    }
+}
+
+TEST_CASE("title menu: the relay and the room name: written when set, the kit's default needs no line") {
+    Options o;
+    CHECK(o.relay == kDefaultRelay);   // (the project's own relay, built in)
+    CHECK(Options::Read("", "relay =\r\n").relay == kDefaultRelay);   // (an empty line: never no relay)
+    std::string c, opt = "relay = old.example.net:27530\r\nrelay_room = old-room\r\n";
+    o = Options::Read("", opt);
+    CHECK(o.relay == "old.example.net:27530");
+    CHECK(o.relay_room == "old-room");
+    o.relay = "relay.example.net";
+    o.relay_room = "forest-gang";
+    o.Write(c, opt);
+    CHECK(IniGet(opt, "relay") == "relay.example.net");
+    CHECK(IniGet(opt, "relay_room") == "forest-gang");
+    o.relay = kDefaultRelay;
+    o.relay_room.clear();
+    o.Write(c, opt);
+    CHECK_FALSE(IniGet(opt, "relay").has_value());
+    CHECK_FALSE(IniGet(opt, "relay_room").has_value());
+    CHECK(Options::Read("", opt).relay == kDefaultRelay);
+    CHECK(RoomNameOk("forest-gang"));
+    CHECK(RoomNameOk(""));
+    CHECK_FALSE(RoomNameOk("ab"));
+    CHECK_FALSE(RoomNameOk("has space"));
+    CHECK_FALSE(RoomNameOk(std::string(25, 'a')));
+    CHECK(RelayOk("relay.example.net:27530"));
+    CHECK(RelayOk(""));
+    CHECK_FALSE(RelayOk("has space"));
+    CHECK(RelayOk("relay.example.net"));
+    CHECK(RelayOk("10.0.0.2:1"));
+    CHECK(RelayOk("relay-1.example.net:65535"));
+    CHECK_FALSE(RelayOk("relay.example.net:0"));       // (a port from 1 to 65535)
+    CHECK_FALSE(RelayOk("relay.example.net:65536"));
+    CHECK_FALSE(RelayOk("relay.example.net:"));
+    CHECK_FALSE(RelayOk("relay.example.net:27x30"));
+    CHECK_FALSE(RelayOk(":27530"));                    // (no host)
+    CHECK_FALSE(RelayOk("relay_example.net"));         // (the server's host letters: letters, digits, . and -)
+    CHECK_FALSE(RelayOk("a:b:27530"));
+}
+
+TEST_CASE("title menu: a bare Join name is a PC or a room, and its line through the relay") {
+    CHECK(BareJoinName("mypc") == "mypc");
+    CHECK(BareJoinName("forest-gang kokiri") == "forest-gang");
+    CHECK(BareJoinName("  DESKTOP-4F2A9 ") == "DESKTOP-4F2A9");
+    CHECK_FALSE(BareJoinName("192.168.1.20 kokiri").has_value());   // (a dot: an address)
+    CHECK_FALSE(BareJoinName("mypc:27511").has_value());            // (a port: a PC)
+    CHECK_FALSE(BareJoinName("forest-gang@relay.example.net").has_value());
+    CHECK_FALSE(BareJoinName("pc").has_value());                    // (too short for a room: a PC only)
+    CHECK_FALSE(BareJoinName("").has_value());
+    CHECK(RoomJoinLine("forest-gang kokiri", "relay.example.net:27530") == "forest-gang@relay.example.net:27530 kokiri");
+    CHECK(RoomJoinLine("forest-gang", " relay.example.net ") == "forest-gang@relay.example.net");
+    // (the room line is one ReadJoin takes, and that the relay join reads)
+    const auto t = ReadJoin(RoomJoinLine("forest-gang kokiri", "relay.example.net:27530"), {});
+    REQUIRE(std::holds_alternative<JoinAddress>(t));
+    CHECK(std::get<JoinAddress>(t).server == "forest-gang@relay.example.net:27530");
+    CHECK(std::get<JoinAddress>(t).password == "kokiri");
+}
+
+TEST_CASE("title menu: an unchanged relay or room name line is kept as the player wrote it") {
+    std::string c, opt = "relay=old.example.net:27530   # my friend's\r\nrelay_room = old-room ; ours\r\n";
+    Options o = Options::Read("", opt);
+    CHECK(o.relay == "old.example.net:27530");
+    CHECK(o.relay_room == "old-room");
+    o.pvp = true;   // (something else changes: the relay lines stay as they were)
+    o.Write(c, opt);
+    CHECK(opt.find("relay=old.example.net:27530   # my friend's\r\n") != std::string::npos);
+    CHECK(opt.find("relay_room = old-room ; ours\r\n") != std::string::npos);
+    o.relay_room = "new-room";   // (a changed one is written)
+    o.Write(c, opt);
+    CHECK(IniGet(opt, "relay_room") == "new-room");
+    CHECK(opt.find("relay=old.example.net:27530   # my friend's\r\n") != std::string::npos);
 }

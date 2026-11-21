@@ -56,15 +56,10 @@ std::string NumberText(double n) {
 }
 
 std::optional<double> ReadNumber(std::string_view s) {
-    double n = 0;
-    if (s.empty() || s.size() > 32) {
+    if (s.size() > 32) {
         return std::nullopt;
     }
-    const auto [end, ec] = std::from_chars(s.data(), s.data() + s.size(), n);
-    if (ec != std::errc() || end != s.data() + s.size() || !std::isfinite(n)) {
-        return std::nullopt;
-    }
-    return n;
+    return CoopModJson::ParseNumber(s);
 }
 
 // The last part of a mod's name.
@@ -469,7 +464,7 @@ std::optional<Manifest> ParseManifest(std::string_view text, std::string_view fo
     double api = 0;
     if (!f.Text("id", kMaxId, m.id) || !f.TextIn("name", 64, m.name) || !f.Text("version", kMaxVersion, m.version) ||
         !f.TextIn("author", 64, m.author) || !f.TextIn("description", 512, m.description) ||
-        !f.Text("coop", 16, share) || !f.Number("api", api)) {
+        !f.Text("coop", 16, share) || !f.Number("api", api) || !f.Flag("file_select", m.file_select)) {
         return fail();
     }
     if (!ValidId(m.id)) {

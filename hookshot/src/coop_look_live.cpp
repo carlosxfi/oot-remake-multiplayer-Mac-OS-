@@ -481,11 +481,16 @@ void AgreeStartTunic() {
         hint);
     // The colour chosen (sent to the others): the files should be its. They are when the kit's launcher or
     // the autotest started the game; else your own Link starts in the files' colour and the wardrobe repaints
-    // it in the chosen one (your own textures only: the puppets' copies are marked).
+    // it in the chosen one (your own textures only: the puppets' copies are marked). Under Nucleus that is the
+    // way it always goes (NucleusWrote; row 194): said as what happens, not as a fault.
     std::vector<std::string> errors;
-    const auto chosen = CoopHook::LoadSettings(
-        Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir) / "coop.ini", errors).color;
-    if (chosen && TunicName(chosen) != start) {
+    const fs::path ini = Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir) / "coop.ini";
+    const auto chosen = CoopHook::LoadSettings(ini, errors).color;
+    if (chosen && TunicName(chosen) != start && NucleusWrote(CoopFiles::ReadText(ini))) {
+        LOG_INFO(Core, "coop: look: your Link starts in the puppet pack's {} tunic and is repainted in your colour, {}, "
+                       "once the game's textures are found (a Nucleus game: its instances share the kit's pack)",
+                 start, TunicName(chosen));
+    } else if (chosen && TunicName(chosen) != start) {
         LOG_WARNING(Core, "coop: look: the puppet pack's tunic files are {}, your colour is {}: started without the "
                           "kit's launcher? Your Link is repainted in {} once the game's textures are found",
                     start, TunicName(chosen), TunicName(chosen));
@@ -568,6 +573,20 @@ void StartModule() {
     // them (patch 0020).
     const bool gear_file = ReadFile(LookDir() / (std::string(CoopLookParts::kBase) + ".bin")).has_value();
     const bool slots = gear_file && g_textures->Known();
+    // The metal parts' blocks (#202): a painted metal part is painted down to no metal.
+    if (const auto metal_file = ReadFile(LookDir() / "metal.bin")) {
+        std::string why;
+        if (auto metal = CoopLookParts::ParseMetal(*metal_file, &why)) {
+            LOG_INFO(Core, "coop: look: {} metal part block lists (a painted metal part loses its metal)",
+                     metal->size());
+            CoopLookParts::UseMetal(std::make_shared<const CoopLookParts::Metal>(std::move(*metal)));
+        } else {
+            LOG_WARNING(Core, "coop: look: coop_look/metal.bin: {}; painted metal parts stay metal", why);
+        }
+    } else if (gear_file) {
+        LOG_INFO(Core, "coop: look: the puppet pack has no coop_look/metal.bin: painted metal parts stay metal "
+                       "(make it again)");
+    }
     CoopLookShare::EnableSlots(slots);
     LOG_INFO(Core, "coop: look: other players' gear colours on their puppets {}",
              slots       ? "on (pack copies, drawn by Longshot's texture overrides)"

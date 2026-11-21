@@ -106,6 +106,11 @@ function Wait-AnyKey([int]$Seconds) {
 # with what to do, and this kit starts as it is; a failed update waits for a key first, so
 # its message is read before the game window covers it.
 $updater = Join-Path $PSScriptRoot 'update.ps1'
+if ($NoUpdate -and (Test-Path $updater)) {
+    # No -Status this time (as right after an update by an older updater, which removed "Start OoT Co-op.bat"): the
+    # player's shortcuts are still pointed at the kit's start file (-Status does it on the other starts).
+    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $updater -Kit $kit -Tidy
+}
 if (-not $NoUpdate -and (Test-Path $updater)) {
     $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
     $status = ''
@@ -164,6 +169,29 @@ if (-not $NoUpdate -and (Test-Path $updater)) {
 # and the first build when there is no game yet (the game files are asked for once and remembered). The long
 # builds (no game, a moved game, another pin) ask Y/n first; a module antivirus took is said, not built.
 if ($Hookshot) {
+    # OoT Character Select by Snail (hookshot\CHARACTER-SELECT.txt; owner, 0.11.8): asked once, downloaded from his
+    # own release onto this PC and put in the game's mods folder before the check below, so the game build that check
+    # asks for takes in his code patch (our patches 0034/0035) and the pack its characters. A first start has no game
+    # yet: the step runs after the first build, and the second pass builds the mod's code in (a few minutes).
+    $csDone = $false
+    $csMods = ''
+    # A failed or declined build after the step changed the mods folder (review-geno-0118): the folder goes back to what
+    # the game was built with (Undo-KitCharacterSelect), and when that leaves nothing to build the game starts as it
+    # was. $true: start it. The player's answer stays, so the next start tries again.
+    function Restore-KitCharacterSelectStart {
+        if (-not $csMods) { return $false }
+        try { if (-not (Undo-KitCharacterSelect $kit $csMods)) { return $false } } catch { return $false }
+        Write-Host 'Character Select: the game could not be built with it, so it is taken back out for now and the game starts as it was (the next start tries again; character_select = no in coop-options.ini stops it).' -ForegroundColor Yellow
+        $n = Get-KitHookshotNeed $kit
+        return (-not $n -or $n -eq 'offline')
+    }
+    for ($pass = 1; $pass -le 2; $pass++) {
+    if (-not $csDone -and $exe) {
+        $csDone = $true
+        $csMods = Join-Path (Split-Path -Parent $exe) 'mods'
+        try { [void](Invoke-KitCharacterSelectStep $kit (Split-Path -Parent $exe)) }
+        catch { Write-Host "Character Select was not installed: $($_.Exception.Message). The game starts without it." -ForegroundColor Yellow }
+    }
     $need = Get-KitHookshotNeed $kit
     if ($need -eq 'offline') {
         # (no internet and only the randomizer's download left: the module step is not run again on every start)
@@ -174,23 +202,32 @@ if ($Hookshot) {
         Write-Host (Get-KitHookshotNeedText $need) -ForegroundColor Yellow
         exit 1
     }
+    $built = $true
     if ($need) {
         Write-Host (Get-KitHookshotNeedText $need $hsGame $hsOnly)
         # The long builds ask first (yes by itself after a minute, so an unattended start still builds).
         $question = Get-KitHookshotNeedQuestion $need
         if ($question -and -not (Read-YesNo "$question (then the game starts; closing this window cancels)" 60)) {
-            Write-Host $(if ($hsOnly) { 'Not now. Start "Start Squadala.bat" again when you want to set it up.' } else { 'Not now. Build-Hookshot-Coop.bat sets it up (SETUP.md, "Play on Hookshot"); then start this again.' })
-            exit 1
+            if (Restore-KitCharacterSelectStart) { $built = $false }
+            else {
+                Write-Host $(if ($hsOnly) { 'Not now. Start "Start Squadala.bat" again when you want to set it up.' } else { 'Not now. Build-Hookshot-Coop.bat sets it up (SETUP.md, "Play on Hookshot"); then start this again.' })
+                exit 1
+            }
+        } else {
+            $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+            & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'hookshot-build.ps1')
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "The co-op game could not be brought up to date (above: why). $hsRetry to try again."
+                if (Restore-KitCharacterSelectStart) { $built = $false }
+                else { Wait-AnyKey 60; exit 1 }
+            }
+            $hsGame = Get-KitHookshotGame $kit
+            $exe = Get-KitHookshotExe $hsGame
         }
-        $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-        & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'hookshot-build.ps1')
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "The co-op game could not be brought up to date (above: why). $hsRetry to try again."
-            Wait-AnyKey 60
-            exit 1
-        }
-        $hsGame = Get-KitHookshotGame $kit
-        $exe = Get-KitHookshotExe $hsGame
+    }
+    # (the game is built with the mods folder as it is now: the state kept for an undo goes)
+    if ($built -and $csMods) { try { Confirm-KitCharacterSelect $kit $csMods } catch { } }
+    if ($csDone -or -not $exe) { break }
     }
     if (-not $exe) {
         Write-Host "The co-op game isn't set up yet: none in $hsGame. $(if ($hsOnly) { 'Start ""Start Squadala.bat"" again and let it finish (SETUP.md).' } else { 'Run Build-Hookshot-Coop.bat and let it finish (SETUP.md, ""Play on Hookshot"").' })"
@@ -246,6 +283,7 @@ if ($Mode -eq 'title') {
         'Puppet pack: not in the co-op game, so the other players show as names only (the game''s chat says so too).',
         $(if ($hsOnly) { '  It is made from your game file (the one hookshot\game-files.txt names): put that file back, then start again.' } else { '  Run Build-Hookshot-Coop.bat -Game <your .nup> again (SETUP.md, "Play on Hookshot").' })))
     foreach ($l in @(Invoke-KitSizeTableMerge $kit $emu)) { Write-Host $l }   # (#48: a seed from OOTRR's website)
+    foreach ($l in @(Invoke-KitDiscordStatus $kit $emu)) { Write-Host $l }   # ('Playing Squadala!' on Discord)
     $game = Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) -PassThru
     if ($testKit -and $game) { [System.IO.File]::WriteAllText($testKit, "$($game.Id)`n") }
     Write-Host 'Game started. Host or Join in the game''s menu, first tab Multiplayer (controller: Minus and Plus together, or Home;'
@@ -284,7 +322,7 @@ if ($askServer -or -not $Server) {
             else { Write-Host "Not used: $($invite.Error)." }
             continue
         }
-        # A join code with its relay (ABCD-EFGH@relay.example.net:27530): the code goes to the
+        # A join code or room name with its relay (ABCD-EFGH@relay.example.net:27530, forest-gang@...): it goes to the
         # relay first, then the game connects to the relay.
         $relayJoin = ConvertTo-RelayJoin $typed
         if ($relayJoin) {
@@ -303,7 +341,7 @@ if ($askServer -or -not $Server) {
         }
         else {
             Write-Host "'$typed' is not an address. It looks like 26.12.34.56 or 192.168.1.20 (four numbers"
-            Write-Host 'with dots), sometimes with :port at the end, or a join code with its relay (ABCD-EFGH@relay.example.net).'
+            Write-Host 'with dots), sometimes with :port at the end, or a join code or room name with its relay (ABCD-EFGH@relay.example.net, forest-gang@relay.example.net).'
             Write-Host 'Ask the host to copy it from their server window.'
         }
     } until ($ok)
@@ -348,7 +386,16 @@ if ($inviteJoin) {
     $Password = $inviteJoin.Password
 }
 elseif ($Mode -eq 'host') {
-    $Password = (Read-KitServerAccess $optionsFile).Password
+    $hostAccess = Read-KitServerAccess $optionsFile
+    $Password = $hostAccess.Password
+    if ($hostAccess.PublicGame) {
+        # A public game: the password is the room's (nobody types it); start-server.ps1 takes the same room.
+        $publicRoom = Get-KitPublicRoom $hostAccess $env:OOT_COOP_PUBLIC_ROOM
+        $env:OOT_COOP_PUBLIC_ROOM = $publicRoom
+        $Password = Get-KitPublicPassword $publicRoom
+        $env:OOT_COOP_SESSION_PASSWORD = $Password
+        Write-Host "Public game (public_game = on): room $publicRoom. Anyone can join it from Public games, no password."
+    }
     $serverExe = Join-Path $kit 'server\coop_server.exe'
     $kitServers = @()
     try {
@@ -486,6 +533,17 @@ if (-not $Hookshot -and -not $env:LICHII_COOP_HOST_SAVE) {
 # (kit-paths.ps1). Before the pack step, which puts that tunic over the game's.
 [void](Set-KitDefaultColor $Mode $Server)
 if ($Hookshot) {
+    # Original game (Co-op settings, coop-options.ini original_game = on; hookshot/src/coop_original.h): the game as it
+    # came. The module stays off and Longshot loads no mod (the game's mods list says so), so nothing of the pack, the
+    # size tables or Discord is touched here either.
+    $optionsFile = Join-Path $kit 'coop-options.ini'
+    if ((Test-Path $optionsFile) -and @(Get-Content $optionsFile -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match '^\s*original_game\s*=\s*(on|1|yes|true)\s*$' }).Count -gt 0) {
+        Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+        Write-Host 'Original game is on (Co-op settings): the game started as it came, with no co-op and no mods.'
+        Write-Host '  To have them back: the F1 menu''s "Original game" tab, then start the game again.'
+        exit 0
+    }
     # As the emulator below (kit-paths.ps1 Use-KitPuppetPack): the pack hints, your own tunic (#202), the
     # puppets off without a pack. The pack is in mods\contents (Build-Hookshot-Coop.bat installs it), and
     # Hookshot indexes its mod files once at start: this runs before Start-Process.
@@ -493,6 +551,7 @@ if ($Hookshot) {
         'Puppet pack: not in the co-op game, so the other players show as names only (the game''s chat says so too).',
         $(if ($hsOnly) { '  It is made from your game file (the one hookshot\game-files.txt names): put that file back, then start again.' } else { '  Run Build-Hookshot-Coop.bat -Game <your .nup> again (SETUP.md, "Play on Hookshot").' })))
     foreach ($l in @(Invoke-KitSizeTableMerge $kit $emu)) { Write-Host $l }   # (#48: a seed from OOTRR's website)
+    foreach ($l in @(Invoke-KitDiscordStatus $kit $emu)) { Write-Host $l }   # ('Playing Squadala!' on Discord)
     $started = Get-Date
     $game = Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) -PassThru
     Write-Host "Game started. Its log (longshot_log.txt in the game's logs folder) says 'coop: module loaded', then 'coop: connected'."

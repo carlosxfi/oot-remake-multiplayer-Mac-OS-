@@ -60,6 +60,31 @@ function Get-WcSmartAppControl {
     switch ("$v") { '1' { 'on' } '2' { 'evaluation' } default { 'off' } }
 }
 
+# Files of this kit (its game too: hookshot\game is inside it) that Microsoft Defender detected in the last 30 days,
+# kit-relative (no user path): Velvet's kit (2026-11-19) lost tools\ootrr\ootrr.exe on every start with nothing in
+# its logs. OOT_COOP_WC_MP ('|'-separated resource strings) stands in for Defender's list in the kit tests.
+function Get-WcDefenderTaken([string]$Kit) {
+    $res = @()
+    if ($env:OOT_COOP_WC_MP) { $res = @($env:OOT_COOP_WC_MP -split '\|') }
+    else {
+        try {
+            $res = @(Get-MpThreatDetection -ErrorAction Stop | Where-Object { $_.InitialDetectionTime -gt (Get-Date).AddDays(-30) } |
+                ForEach-Object { $_.Resources })
+        } catch { }
+    }
+    $root = $Kit.TrimEnd('\').ToLower() + '\'
+    $found = @()
+    foreach ($r in $res) {
+        # ("file:_E:\kit\hookshot\game\tools\ootrr\ootrr.exe", "containerfile:_...", and with a long-path prefix
+        # "file:_\\?\E:\kit\..." (review-0116-j N2))
+        $path = ("$r" -replace '^[a-z]+:_', '') -replace '^\\\\\?\\', ''
+        if (-not $path.ToLower().StartsWith($root)) { continue }
+        $name = $path.Substring($root.Length)
+        if ($found -notcontains $name) { $found += $name }
+    }
+    $found
+}
+
 # The kit's files Windows' application control (Smart App Control, WDAC) refused in the last 14 days, from the Code
 # Integrity log (3033: not loaded, 3077: blocked). The log names files as \Device\HarddiskVolumeN\...: matched
 # without the drive. Returns the kit-relative names, newest first.
@@ -196,6 +221,13 @@ function Invoke-WcChecks([string]$Kit) {
     # 2. Smart App Control on while scripts still run: what it refused, by name.
     $blocked = @(Get-WcBlockedFiles $Kit)
     if ($blocked.Count) { $log += "blocked by code integrity: $($blocked -join ', ')" } else { $log += 'blocked by code integrity: none found' }
+    # 7. Defender took a file of the kit or its game (the randomizer's ootrr.exe, the co-op module): named, and how to get it back.
+    $taken = @(Get-WcDefenderTaken $Kit)
+    if ($taken.Count) {
+        $log += "defender detections in the kit: $($taken -join ', ')"
+        $say += "Microsoft Defender took $($taken[0]) of this kit$(if ($taken.Count -gt 1) { " (and $($taken.Count - 1) more)" }) (a false alarm on an unsigned program)."
+        $say += '  Windows Security > Virus & threat protection > Protection history: choose it, Actions > Allow (or Restore), then run Update.bat.'
+    } else { $log += 'defender detections in the kit: none found' }
     if ($sac -eq 'on' -and -not $stop) {
         if ($blocked.Count) {
             $say += "Windows Smart App Control blocked $($blocked[0]) of this kit$(if ($blocked.Count -gt 1) { " (and $($blocked.Count - 1) more)" })."

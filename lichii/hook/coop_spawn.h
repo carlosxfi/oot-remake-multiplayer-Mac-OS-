@@ -14,6 +14,7 @@
 //   the owner's remove (the game's own explosion), deletes the others.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -24,6 +25,7 @@
 #include <vector>
 
 #include "coop/protocol/messages.hpp"
+#include "coop_bomb_share.h"
 #include "coop_enemy_shots.h"
 #include "coop_projectiles.h"
 #include "coop_puppet.h"
@@ -119,10 +121,13 @@ public:
     static constexpr std::uint64_t kCopyLifeUs = 20'000'000; // no remove came: dropped
     static constexpr float kClaimDistance = 1.5f;            // a fresh copy found on the list
     static constexpr unsigned kGoneWalks = 2;
+    // Phase 2: walks a copy made ours is offered to the director to let go.
+    static constexpr unsigned kReleaseWalks = 30;
     static constexpr std::uint64_t kExplodeMinUs = CoopProjectiles::kExplodeMinUs;
 
-    // Network thread: OBJECT_SPAWN, OBJECT_SAMPLE, OBJECT_REMOVE. Applied on
-    // the next Tick.
+    // Network thread: OBJECT_SPAWN, OBJECT_SAMPLE, OBJECT_REMOVE (and, with
+    // the bomb share on, HANDOVER_ASK, HANDOVER_STATE, OBJECT_OWNER and
+    // BOMB_ANSWER). Applied on the next Tick.
     void Receive(const coop::protocol::Message& message);
 
     // Present thread, once per walk. `copies_live` are the actors the
@@ -132,6 +137,20 @@ public:
               std::vector<coop::protocol::Message>& send, std::vector<Copy>& copies);
 
     void Reset();
+
+    // Native puppets phase 2 (coop_bomb_share.h, LICHII_COOP_BOMB_SHARE=1):
+    // a bomb changes hands when our Link lifts another player's. Off: none of
+    // the messages below is taken in or sent, and nothing else changes. Set
+    // before the first Tick (the network thread reads it).
+    void SetBombShare(bool on) { bomb_share_ = on; }
+    bool BombShare() const { return bomb_share_; }
+    // Present thread, before Tick: the pouch's "Bomb" count (a stash).
+    void SetPouch(std::optional<int> count, std::uint64_t now_us) { pouch_.Read(count, now_us); }
+    // Our taken bombs whose fuse ran out this Tick: the director sets their
+    // life to 0 (the game's own explosion) if the actor still has `vtable`.
+    const std::vector<Doomed>& BlowOwn() const { return blow_own_; }
+    // What the bomb share did in the last Tick, one line each (for the log).
+    const std::vector<std::string>& BombNotes() const { return bomb_notes_; }
 
     // Projectile copies get the game's setter after each place write
     // (Copy::setter). LICHII_COOP_SHOTS_SETTER=0 turns it off.
@@ -272,6 +291,15 @@ private:
         unsigned out_of_hands = 0;
         bool sent_held = false;
         std::optional<coop::protocol::Animation> animation;
+        // Phase 2 (bomb share): the epoch we own it at (0 for our own made
+        // ones), taken from another player, when it goes off (server clock;
+        // none: unlit), blown once, and its vtable (a delete or a blow
+        // checks it is still the same actor).
+        std::uint16_t epoch = 0;
+        bool taken = false;
+        std::optional<std::uint64_t> blow_at;
+        bool blown = false;
+        std::uint64_t vtable = 0;
     };
     struct Remote {
         std::uint64_t key = 0;
@@ -279,6 +307,9 @@ private:
         CoopProjectiles::Track track;  // the owner's samples on the server clock
         std::optional<coop::protocol::Quat> rotation;
         std::uint64_t got_us = 0;     // our time of the latest message
+        // #239: who sends its samples (the maker, then whoever its samples come from: a bomb handed over), whose
+        // show delay it is drawn with (CoopShowDelay::Us: as late as that player's puppet).
+        std::uint8_t player = 0;
         std::optional<coop::protocol::RemoveReason> removed;
         std::uint64_t address = 0;    // once the director made it
         // A bomb: when the owner's fuse runs out (server clock). Blown then
@@ -298,6 +329,16 @@ private:
         std::uint64_t animation_at = 0;  // server clock of its sample
         // Went off while held: the bomb is made first, then blown up.
         bool explode_once_made = false;
+        // Phase 2 (bomb share): the owner's epoch as last heard; our Link
+        // lifted it and BOMB_TAKE is out (the director stops placing it); the
+        // server made it ours (HANDOVER_STATE): adopted into mine_ once the
+        // director has the game's own bomb for it.
+        std::uint16_t epoch = 0;
+        bool taking = false;
+        // Refused (or no answer): not asked again until its animation stops
+        // saying Lifted (our Link let go of it).
+        bool refused = false;
+        std::optional<coop::protocol::HandoverState> adopt;
         Vec3 Position() const { return track.Empty() ? Vec3{} : track.Last().position; }
     };
 
@@ -310,6 +351,12 @@ private:
     // Issue 158: the made-up flight, once the grace is over (Shot).
     void MakeUpFlight(Own& m, std::uint64_t now_us);
     Vec3 ShotPlace(const Own& m, std::uint64_t now_us) const;
+    // Phase 2: the bomb share's messages (with `send`), the adoption of a
+    // handed copy, and a sample of our own for an answer.
+    void Bombs(std::uint8_t self, std::uint64_t now_us, std::vector<coop::protocol::Message>& send);
+    void Adopt(std::uint64_t now_us);
+    coop::protocol::ObjectState StateOf(const Own& m, std::uint64_t now_us) const;
+    std::optional<float> FuseOf(const Own& m, std::uint64_t now_us) const;
 
     std::string scene_;
     bool first_walk_ = true;
@@ -374,6 +421,18 @@ private:
 
     std::mutex inbox_mutex_;
     std::vector<coop::protocol::Message> inbox_;
+
+    // Phase 2 (bomb share).
+    std::atomic<bool> bomb_share_{false};
+    std::vector<coop::protocol::Message> bomb_inbox_;  // under inbox_mutex_
+    CoopBombShare::Takes takes_;
+    CoopBombShare::PouchWatch pouch_;
+    CoopBombShare::Announce announce_;
+    std::vector<Doomed> blow_own_;
+    std::vector<std::string> bomb_notes_;
+    // Copies made ours: the director is told to let go of the actor (Act::
+    // release) until it has (key to walks asked).
+    std::map<std::uint64_t, unsigned> releasing_;
 };
 
 // Issue 85: the copy of another player's slingshot seed, arrow or hookshot
@@ -444,6 +503,10 @@ public:
     // Each is deleted once, with the game's delete request, only if it is
     // still on the actor list with the same vtable and is none of ours.
     void SetDoomed(std::vector<Doomed> doomed);
+    // Phase 2 (bomb share): our own taken bombs whose fuse ran out. Each gets
+    // its life set to 0 once (the game's own explosion, as a copy is blown)
+    // if the actor still has the vtable.
+    void SetBlowOwn(const std::vector<Doomed>& blow);
     std::size_t Deleted() const;  // enemy shots deleted so far
     std::map<std::uint64_t, std::uint64_t> Live() const;  // key to actor
     // Present thread: the stand-ins the installed puppet pack has
@@ -538,6 +601,7 @@ private:
     // copied as the game's own actor from then on.
     std::set<std::string> no_stand_in_;
     std::vector<Doomed> doomed_;                     // guarded
+    std::vector<Doomed> blow_own_;                   // guarded
     std::map<std::uint64_t, std::uint64_t> done_doomed_;  // address to when deleted (ms)
     std::size_t deleted_ = 0;                        // guarded
     std::optional<CoopPuppet::Call> NextDoomed(CoopPuppet::Guest& guest, std::uint64_t now_ms);

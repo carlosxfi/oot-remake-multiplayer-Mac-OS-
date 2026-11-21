@@ -143,7 +143,7 @@ TEST_CASE("look menu: everything back to the game's own, the picture follows the
     CHECK(PictureHas(page.view(), 0x00FF00u));
     auto v = page.view();
     const auto all = static_cast<std::size_t>(v.rows.size() - 1);
-    CHECK(v.rows[all].name == "All parts back to the game's own");
+    CHECK(v.rows[all].name == "All parts to the game's own");
     page.Select(all);
     page.Press(Input::kDecide);
     CHECK(page.look() == Look{});

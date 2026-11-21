@@ -12,7 +12,10 @@ No game files, keys or firmware are part of this repository or of any kit.
 | doctest | Unit tests only, not shipped | MIT | https://github.com/doctest/doctest, fetched by CMake at a pinned version |
 | fmt 12.1.0 (Victor Zverovich and contributors) | The co-op hook's log lines in the Hookshot module (`hookshot_coop.dll`, `hookshot/compat/common/logging.h`) | MIT | https://github.com/fmtlib/fmt, fetched by CMake (`hookshot/CMakeLists.txt`) at a pinned commit |
 | Longshot (Team MagicBean and contributors; its changes are being merged into Hookshot by NotRexed and contributors) | `hookshot/patches/` changes it: the patches hold a few context lines of its files; they are applied to Longshot's source at the commit in `hookshot/PIN`, outside this repository | GPL-3.0 | https://git.magicbean.dev/MagicBeanDev/Longshot (Hookshot: https://git.notrexed.dev/Hookshot/Hookshot) |
-| Monocypher 4.0.2 (Loup Vaillant, Michael Savage, Fabio Scotoni) | Traffic encryption: X25519, BLAKE2b, XChaCha20-Poly1305 (server, emulator hook, Hookshot module) | CC0-1.0 or BSD-2-Clause, the user's choice; we use it under CC0-1.0 | https://github.com/LoupVaillant/Monocypher, fetched by CMake at a pinned commit (cmake/monocypher.cmake) |
+| Longshot's ExeFS patch builder (`nx2/exefs_patches.py`: HumanBean's draft as merged in Longshot 3653c9c5, #134; put onto v3.0.0 by snaildev99) | `hookshot/patches/0034-mods-exefs-patches-at-build.patch` (and 0035 on top): mods' code patches written into the game's code when it is built. Its parse of the three patch formats follows valentderah/totk-pc-recomp `tools/exefs_patches.py`, "Copyright (c) 2026 Valiantsin Dzerakh", MIT; the MIT text is in the file's own head inside the patch | GPL-3.0 (as Longshot), with that part MIT | https://git.magicbean.dev/MagicBeanDev/Longshot (commit 3653c9c5), https://github.com/valentderah/totk-pc-recomp |
+| OoT Character Select v0.2.1 (Copyright (c) 2026 snaildev99), its colour tables | The Customize colours on puppets (`lichii/hook/coop_char_colours.cpp`): the numbers of `HAIR_COLOURS`, `brow_colour` of `HAIR_TEXTURE` and `EYE_COLOURS` in its `mods/customize.py`, rounded to 255ths as the mod stores them; the material and parameter names the mod's palettes use. The code is ours; nothing of the mod's code patch or of its game-derived files is in this repository | MIT (text below) | https://github.com/snaildev99/OoT-Character-Select (tag v0.2.1) |
+| CityHash64 1.1 (Copyright (c) 2011 Google, Inc.) | The game's pane ids for the pack's copied UI parts (`tools/puppet_pack/ui_pack.py` `city_hash64`, written in Python from city.cc) | MIT | https://github.com/google/cityhash |
+| Monocypher 4.0.2 (Loup Vaillant, Michael Savage, Fabio Scotoni) | Traffic encryption: X25519, BLAKE2b, XChaCha20-Poly1305 (server, emulator hook, Hookshot module); its optional Ed25519 + SHA-512 (the official public game's signed mark) | CC0-1.0 or BSD-2-Clause, the user's choice; we use it under CC0-1.0 | https://github.com/LoupVaillant/Monocypher, fetched by CMake at a pinned commit (cmake/monocypher.cmake) |
 
 Code copied in from other projects gets an entry here, with its copyright line and licence text, when it is added.
 
@@ -31,18 +34,19 @@ Code copied in from other projects gets an entry here, with its copyright line a
 | Monocypher 4.0.2 | `server\coop_server.exe`, `emulator\lichii.exe`, `hookshot\hookshot_coop.dll` | CC0-1.0 (used under it; also offered under BSD-2-Clause) | none needed under CC0-1.0; source at https://github.com/LoupVaillant/Monocypher |
 | Python (only in kits made with `-Python`) | `python\` | PSF License | `python\LICENSE.txt` |
 | python-zstandard (only with `-Python`) | `python\Lib\site-packages\zstandard\` | BSD-3-Clause | its `zstandard-*.dist-info` folder |
-| This repository's Hookshot module and patches (only in kits with the Hookshot part) | `hookshot\hookshot_coop.dll` (with ENet, Monocypher and fmt built in), `hookshot\patches\`, `Start OoT Co-op.bat` and `scripts\` (the Longshot kit; `Build-Hookshot-Coop.bat`, `Host-Hookshot.bat`, `Join-Hookshot.bat` in the older emulator kits) | GPL-3.0; the patches change, and hold a few context lines of, Longshot (Team MagicBean and contributors, GPL-3.0; its changes are being merged into Hookshot by NotRexed and contributors; https://git.magicbean.dev/MagicBeanDev/Longshot) | `oot-remake-multiplayer-GPL-3.0.txt` |
+| This repository's Hookshot module and patches (only in kits with the Hookshot part) | `hookshot\hookshot_coop.dll` (with ENet, Monocypher and fmt built in), `hookshot\patches\`, `Start Squadala.bat` and `scripts\` (the Longshot kit; `Build-Hookshot-Coop.bat`, `Host-Hookshot.bat`, `Join-Hookshot.bat` in the older emulator kits) | GPL-3.0; the patches change, and hold a few context lines of, Longshot (Team MagicBean and contributors, GPL-3.0; its changes are being merged into Hookshot by NotRexed and contributors; https://git.magicbean.dev/MagicBeanDev/Longshot) | `oot-remake-multiplayer-GPL-3.0.txt` |
 
 ## Downloaded on the player's PC by the kit's game build (not in the kit)
 
-The kit's game build (`scripts\hookshot-build.ps1`, run by `Start OoT Co-op.bat`; `Build-Hookshot-Coop.bat` in the older emulator kits; `scripts/build.sh` in the Linux kit) downloads these into the kit's `hookshot\` folder on the player's own PC and builds the game there. None of them is in this repository or in a kit. The source is fetched at the commit in `hookshot/PIN` and the build tools named in the `tools.lock` of the Longshot release in `tools/release/kit/hookshot/TOOLS.txt`; each download is checked against the SHA-256 that release publishes. The game they build comes from the player's own files and is never shared.
+The kit's game build (`scripts\hookshot-build.ps1`, run by `Start Squadala.bat`; `Build-Hookshot-Coop.bat` in the older emulator kits; `scripts/build.sh` in the Linux kit) downloads these into the kit's `hookshot\` folder on the player's own PC and builds the game there. None of them is in this repository or in a kit. The source is fetched at the commit in `hookshot/PIN` and the build tools named in the `tools.lock` of the Longshot release in `tools/release/kit/hookshot/TOOLS.txt`; each download is checked against the SHA-256 that release publishes. The game they build comes from the player's own files and is never shared.
 
 | Component | Where it goes | Licence | Source |
 |---|---|---|---|
 | Longshot (Team MagicBean and contributors), with this repository's patches | `hookshot\tools\` (source), then the built game in `hookshot\game\` | GPL-3.0 (its `LICENSE`); parts it vendors under their own licences, listed in its `third_party\*\` folders | https://git.magicbean.dev/MagicBeanDev/Longshot |
-| Longshot Builder's tools (once Hookshot Builder's parts): Python with the packages the build uses, the CPM folder (Vulkan and SPIR-V headers, Vulkan Memory Allocator, FFmpeg), wgpu-native, and the prebuilt `third_party` files (a64-kit tools, SDL2, zbic, lld-link and others) | `hookshot\tools\python\`, `cpm\`, `wgpu-native\`, `third_party\` | Their own: PSF for Python and its packages' own licences (in each `*.dist-info`), Apache-2.0 / MIT for the Vulkan headers and wgpu-native, MIT for VMA, LGPL for FFmpeg, and the others as their folders say | Longshot's copies on git.magicbean.dev (the MagicBeanDev organization's packages), first made from the `builder-parts` release of Hookshot (NotRexed and contributors, then on GitHub, now https://git.notrexed.dev/Hookshot/Hookshot); listed in the Longshot release's `tools.lock` |
+| Longshot Builder's tools (once Hookshot Builder's parts): Python with the packages the build uses, the CPM folder (Vulkan and SPIR-V headers, Vulkan Memory Allocator, FFmpeg) and the prebuilt `third_party` files (a64-kit tools, SDL2, zbic, lld-link and others) | `hookshot\tools\python\`, `cpm\`, `third_party\` | Their own: PSF for Python and its packages' own licences (in each `*.dist-info`), Apache-2.0 / MIT for the Vulkan headers, MIT for VMA, LGPL for FFmpeg, and the others as their folders say | Longshot's copies on git.magicbean.dev (the MagicBeanDev organization's packages), first made from the `builder-parts` release of Hookshot (NotRexed and contributors, then on GitHub, now https://git.notrexed.dev/Hookshot/Hookshot); listed in the Longshot release's `tools.lock` (Longshot rc.4 and older also wgpu-native, for the WebGPU renderer rc.5 dropped) |
+| NVIDIA DLSS SDK (NGX), only in a kit whose player opted in (`NVIDIA DLSS.bat` / `--dlss`) and typed yes to NVIDIA's license, which the kit shows first. Fetched by Longshot's own `scripts/ngx_sdk.py` at its pinned NVIDIA commit, every file SHA-256 checked; a copy the Longshot Builder or Launcher already fetched on that PC (or `-DlssSdk`) is copied in first, so only files that differ are downloaded. Never in this repository, a kit, a release zip or CI (the license allows no redistribution as a stand-alone SDK and no use that puts it under an open-source license: it is combined with the game only on the player's own PC, and the kit tells them never to share that game folder) | `hookshot\work\ngx-sdk\` (Linux `data/work/ngx-sdk/`); its runtimes `nvngx_dlss.dll`, `nvngx_dlssg.dll` in the game's `ngx\` | NVIDIA RTX SDKs license (proprietary; its `LICENSE.txt` is saved beside the files) | https://github.com/NVIDIA/DLSS |
 | llvm-mingw (Martin Storsjö), the compiler that builds the game | `hookshot\tools\llvm-mingw\` | LLVM: Apache-2.0 with LLVM exception; mingw-w64 runtime and headers: their own permissive licences (ZPL, MIT and others), in the package | https://github.com/mstorsjo/llvm-mingw |
-| OOTRR, the randomizer (REALAZK), the release in `tools/release/kit/hookshot/OOTRR.txt` (0.6.1): its Windows zip, SHA-256 checked against that release's `SHA256SUMS.txt`. Linux kit: its `linux-x86_64.tar.gz` the same way, into `data/game/tools/ootrr/` by `scripts/build.sh` | `hookshot\game\tools\ootrr\` (`ootrr.exe`, with its own `LICENSE` and `NOTICE` beside it) | GPL-3.0-or-later since 0.5.0 (releases up to 0.4.0: MIT); its `NOTICE` credits the OoT Randomizer logic it ports (MIT) and its fonts | https://github.com/REALAZK/ootrr (the source of each release is its tag) |
+| OOTRR, the randomizer (REALAZK), the release in `tools/release/kit/hookshot/OOTRR.txt` (0.8.0): its Windows zip, SHA-256 checked against that release's `SHA256SUMS.txt`. Linux kit: its `linux-x86_64.tar.gz` the same way, into `data/game/tools/ootrr/` by `scripts/build.sh` | `hookshot\game\tools\ootrr\` (`ootrr.exe`, with its own `LICENSE` and `NOTICE` beside it) | GPL-3.0-or-later since 0.5.0 (releases up to 0.4.0: MIT); its `NOTICE` credits the OoT Randomizer logic it ports (MIT) and its fonts | https://github.com/REALAZK/ootrr (the source of each release is its tag) |
 
 ## In the Linux kit
 
@@ -67,3 +71,29 @@ The C library, graphics drivers and other libraries every desktop Linux has (gli
 | linuxdeploy 1-alpha-20251107-1 | Makes the AppImage (`lichii/build-linux.sh --appimage`; the download is checked against a SHA-256 kept in the script) | MIT | https://github.com/linuxdeploy/linuxdeploy |
 | linuxdeploy-plugin-qt 1-alpha-20250213-1 | Puts Qt and its plugins into the AppImage (also SHA-256 checked) | MIT | https://github.com/linuxdeploy/linuxdeploy-plugin-qt |
 | Qt 6.8.3 for Linux, installed by `jurplel/install-qt-action` (aqtinstall) | The Qt the emulator is built with and that goes into the AppImage | LGPL-3.0 (the action and aqtinstall: MIT) | https://download.qt.io/archive/qt/6.8/6.8.3/, https://github.com/jurplel/install-qt-action |
+
+### OoT Character Select (MIT)
+
+```
+MIT License
+
+Copyright (c) 2026 snaildev99
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

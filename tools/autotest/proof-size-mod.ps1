@@ -9,14 +9,20 @@
 #                                                                  merges bestbuddy into the pack's table, puppets show
 #   proof-size-mod.ps1 -Step cleanup -KitA <kit-A> -KitB <kit-B>   fake mod out, pack table back, kits' own tool back
 #
-# Each step prints PASS or FAIL with the log lines it went by. Only A gets the mod; B is the control.
+# Each step prints PASS, FAIL or UNPROVEN with what it went by. Only A gets the mod; B is the control.
+# before: the abort is the game's own 'FATAL: the game aborted' log line (a crash: nothing to see but a closed window),
+#         log only. after: "puppets show" is visible, so besides its log lines it needs the run's screenshot checks
+#         (-See, default hs-puppets-A/-B of tools\autotest\proofs.txt, graded by proof.py on the run folder): every one
+#         OK = PASS, a shot showing the wrong result = FAIL, else UNPROVEN (owner rule 2026-11-18: no PASS from log
+#         lines alone). Exit 0 PASS, 1 FAIL, 2 UNPROVEN.
 param(
     [Parameter(Mandatory)][ValidateSet('before', 'after', 'cleanup')][string]$Step,
     [Parameter(Mandatory)][string]$KitA,
     [Parameter(Mandatory)][string]$KitB,
     [string]$Scenario = 'hs-puppets',
     [int]$Timeout = 300,
-    [string]$Server = ''   # default: the 0.11.2 integrator's server, a path that ran before (no firewall prompt)
+    [string]$Server = '',  # default: the 0.11.2 integrator's server, a path that ran before (no firewall prompt)
+    [string[]]$See = @('hs-puppets-A', 'hs-puppets-B')   # the after step's screenshot checks (proofs.txt names)
 )
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
@@ -92,8 +98,11 @@ if ($Step -eq 'after') {
 foreach ($g in $gameA, $gameB) { Save-CrashRecords $g (Join-Path $keep 'crash-records') }
 $started = Get-Date
 $env:HOS_CRASH_WATCH = '0'   # (no modal crash window: the abort is read from the log)
-& powershell -NoProfile -ExecutionPolicy Bypass -File $runPs1 -Runtime hookshot -Lane 1 -Kit "$KitA,$KitB" -Scenario $Scenario -Timeout $Timeout -Server $Server
+$runLines = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $runPs1 -Runtime hookshot -Lane 1 -Kit "$KitA,$KitB" -Scenario $Scenario -Timeout $Timeout -Server $Server |
+    ForEach-Object { Write-Host $_; "$_" })
 $runCode = $LASTEXITCODE
+# run.ps1 prints its run folder (the shots) as its last line that is a folder
+$runDir = @($runLines | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) }) | Select-Object -Last 1
 Remove-Item Env:\HOS_CRASH_WATCH -ErrorAction SilentlyContinue
 
 $log = Get-NewestLog $gameA
@@ -110,7 +119,20 @@ Write-Host "run.ps1 exit $runCode; A's log: $log"
 Write-Host "  bestbuddy RSDB files served: $rsdb; size table served from: $table"
 Write-Host "  abort: $fatal; puppets spawned: $puppet; kit start merged bestbuddy into the pack's table: $merged"
 $ok = if ($Step -eq 'before') { $rsdb -gt 0 -and $fatal } else { $rsdb -gt 0 -and -not $fatal -and $merged -and $puppet -gt 0 }
-$what = if ($Step -eq 'before') { 'the released kit aborts with the mod (the bug reproduced)' } else { 'the fixed kit merges the mod in and the game starts with puppets' }
-Write-Host "$(if ($ok) { 'PASS' } else { 'FAIL' }) $Step`: $what"
+$what = if ($Step -eq 'before') { 'the released kit aborts with the mod (the bug reproduced) [log only: the abort is the game''s own FATAL line]' } else { 'the fixed kit merges the mod in and the game starts with puppets' }
+$state = if ($ok) { 'PASS' } else { 'FAIL' }
+if ($ok -and $Step -eq 'after') {
+    # the puppets: the shots of the run, not the 'spawned' lines
+    if (-not $runDir) {
+        $state = 'UNPROVEN'; $what += ' [no run folder from run.ps1: no shots to check]'
+    } else {
+        $proofOut = @(& $py -I (Join-Path $here 'proof.py') --kit-root $coopKit grade $runDir @See | ForEach-Object { "$_" })
+        $proofCode = $LASTEXITCODE
+        $proofOut | ForEach-Object { Write-Host "  $_" }
+        $state = switch ($proofCode) { 0 { 'PASS' } 3 { 'FAIL' } default { 'UNPROVEN' } }
+        $what += " [screenshot checks $($See -join ' ') in ${runDir}: $state]"
+    }
+}
+Write-Host "$state $Step`: $what"
 foreach ($g in $gameA, $gameB) { Save-CrashRecords $g (Join-Path $keep 'crash-records') }
-exit $(if ($ok) { 0 } else { 1 })
+exit $(switch ($state) { 'PASS' { 0 } 'FAIL' { 1 } default { 2 } })

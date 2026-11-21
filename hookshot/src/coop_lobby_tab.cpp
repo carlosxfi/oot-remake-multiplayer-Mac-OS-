@@ -41,7 +41,14 @@ std::string MutedWords(std::uint8_t bits) {
 }
 
 std::string Shorten(const std::string& s, std::size_t most) {
-    return s.size() <= most ? s : s.substr(0, most) + "...";
+    if (s.size() <= most) {
+        return s;
+    }
+    std::size_t at = most;   // (back to the start of the character the cut would split)
+    while (at > 0 && (static_cast<unsigned char>(s[at]) & 0xC0) == 0x80) {
+        --at;
+    }
+    return s.substr(0, at) + "...";
 }
 
 }  // namespace
@@ -134,6 +141,21 @@ std::vector<Tab::Line> Tab::Lines() const {
         heading("Lobby");
         note("You are not in a game.");
         note("Host one or join a friend's on the Multiplayer tab; the players show here.");
+        // The relay's public games (the same list and words as Browse games): Join with one press.
+        heading("Public games");
+        if (lobby_.games.empty()) {
+            note(lobby_.games_state.empty() ? std::string("Looking for public games...") : lobby_.games_state);
+        }
+        for (std::size_t i = 0; i < lobby_.games.size() && i < 255; ++i) {
+            const PublicGame& g = lobby_.games[i];
+            action(g.name, g.joinable ? CoopI18n::Tr("Join") : g.detail, Act::kJoinGame,
+                   g.detail + (g.joinable ? std::string(". ") +
+                                                (g.is_public ? CoopI18n::Tr("Press to join: no password needed.")
+                                                             : CoopI18n::Tr("Press, then type the host's password."))
+                                          : std::string()),
+                   static_cast<std::uint8_t>(i));
+        }
+        action("Refresh list", "Refresh", Act::kRefreshGames, "Asks the game list again now.");
         return out;
     }
 
@@ -191,6 +213,11 @@ std::vector<Tab::Line> Tab::Lines() const {
                     CoopI18n::Tr(Hearts(*lobby_.host_life) + " / " + Hearts(*lobby_.host_max) + " hearts");
         }
         note(std::move(game));
+        if (!lobby_.hosting && lobby_.can_resync) {
+            action("Resync from host", "", Act::kResync,
+                   "Gets the host's save again. Back on the title, it is switched to once the chat says Success; "
+                   "while you play nothing changes until then. Your own saves are never touched.");
+        }
         return out;
     }
 
@@ -251,7 +278,13 @@ void Tab::Hide() {
 }
 
 void Tab::Set(Lobby lobby) {
+    const bool was_connected = lobby_.connected;
     lobby_ = std::move(lobby);
+    // In or out of a game, the page is another list (out of one: Public games): it starts at its top again.
+    if (lobby_.connected != was_connected) {
+        selected_ = 0;
+        confirm_ = Act::kNone;
+    }
     if (player_ != 0 && (Shown() == nullptr || !lobby_.connected)) {
         player_ = 0;
         selected_ = 0;
@@ -346,6 +379,35 @@ void Tab::Decide(const Line& line) {
         r.kind = Request::Kind::kCopyInvite;
         request_ = std::move(r);
         note_ = "The invite code is on the clipboard.";
+        return;
+    }
+    case Act::kJoinGame: {
+        if (line.player >= lobby_.games.size()) return;
+        const PublicGame& g = lobby_.games[line.player];
+        if (!g.joinable) {
+            note_ = g.detail;
+            return;
+        }
+        Request r;
+        r.kind = Request::Kind::kJoinRoom;
+        r.name = g.room;
+        r.on = g.is_public;
+        request_ = std::move(r);
+        note_ = g.is_public ? "Joining " + g.room + "..." : "Type the host's password on the Multiplayer tab.";
+        return;
+    }
+    case Act::kRefreshGames: {
+        Request r;
+        r.kind = Request::Kind::kRefreshGames;
+        request_ = std::move(r);
+        note_ = "Asking the game list again...";
+        return;
+    }
+    case Act::kResync: {
+        Request r;
+        r.kind = Request::Kind::kResync;
+        request_ = std::move(r);
+        note_ = "Asked the host for its save: the chat says how it goes.";
         return;
     }
     case Act::kOwnVoice:
@@ -479,6 +541,13 @@ View Tab::view() const {
     v.confirm = "Choose";
     v.back = player_ != 0 ? "Back" : "Close";
     return v;
+}
+
+std::string DiscordState(bool connected, std::size_t players) {
+    if (!connected) {
+        return "Solo";
+    }
+    return players == 1 ? "Co-op: 1 player" : "Co-op: " + std::to_string(players) + " players";
 }
 
 }  // namespace CoopLobbyTab

@@ -34,6 +34,13 @@ if(MSVC)
   target_compile_options(coop_warnings INTERFACE /W4 /permissive- /utf-8)
 else()
   target_compile_options(coop_warnings INTERFACE -Wall -Wextra -Wpedantic)
+  # GCC's maybe-uninitialized is unreliable for std::optional (GCC bug 80635): at -O2 its inlining loses the engaged
+  # flag and reports a disengaged optional's unread bytes, at whichever of our ~120 conditional optionals the inliner
+  # happens to pick (gcc 13.3 on Ubuntu 24.04 flags ones GitHub's gcc does not). It stays a warning, so the log still
+  # shows it, but -Werror no longer stops the build on it: the same rule lichii/hook/core.cmake has for the emulator.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(coop_warnings INTERFACE -Wno-error=maybe-uninitialized)
+  endif()
 endif()
 
 # Sanitizers apply to everything, ENet included, so its memory is checked too.

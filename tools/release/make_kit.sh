@@ -101,7 +101,9 @@ for f in SPDX-LGPL-3.0-or-later.txt SPDX-GPL-3.0-or-later.txt; do
     [[ -f $kit/licenses/$f ]] || die "licenses/$f is missing (it comes from --emu-source's LICENSES folder); the kit may not ship without it."
 done
 # ENet's MIT text, from the server's build folder (CMake fetches ENet into _deps).
-enet_license=$(find "$(dirname "$server")/.." -maxdepth 4 -path '*enet-src/LICENSE' 2>/dev/null | head -n1)
+# (where the server's build's CMakeCache says ENet's source is: _deps/enet-src, or a source given from outside)
+. "$(dirname "${BASH_SOURCE[0]}")/kit_deps.sh"
+enet_license=$(kit_dep_license enet "$(kit_build_of "$server")")
 if [[ -n $enet_license ]]; then cp "$enet_license" "$kit/licenses/ENet-MIT.txt"
 else echo "Warning: no ENet LICENSE in the server's build folder (_deps/enet-src); add licenses/ENet-MIT.txt by hand." >&2; fi
 if [[ -n $appimage_licenses ]]; then
@@ -145,7 +147,7 @@ EOF
     echo "server: coop_server sha256 $(sha256sum "$kit/server/coop_server" | cut -d' ' -f1)"
 } >"$kit/VERSION.txt"
 # The kit's own files, for update.sh (never the player's user/ folder or logs).
-(cd "$kit" && find . -type f ! -path './emulator/user/*' ! -path './logs/*' | sed 's|^\./||' | LC_ALL=C sort) >"$kit/MANIFEST.txt"
+(cd "$kit" && find . -type f ! -name MANIFEST.txt ! -path './emulator/user/*' ! -path './logs/*' | sed 's|^\./||' | LC_ALL=C sort) >"$kit/MANIFEST.txt"
 echo MANIFEST.txt >>"$kit/MANIFEST.txt"
 
 # The build machine's home folder must not be in the kit (paths compiled into programs).

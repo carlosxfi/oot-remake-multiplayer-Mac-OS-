@@ -17,7 +17,8 @@ namespace {
 // DungeonBossVolvagia_FireBreath, Bubble_Green_Bullet_Aura) are not shots:
 // they last and follow their maker, so they are left to each game.
 // Enemy_Scrub_Business_Seed is not a shot: it is the business scrub that
-// sells seeds (it has its own talk, Event/EventFlow), a shared enemy.
+// sells seeds (it has its own talk, Event/EventFlow), each game's own shop
+// (CoopObjects::IsOwnPuzzle, GitHub 253).
 struct Shot {
     std::string_view prefix;  // the shot's name starts with it
     std::array<std::string_view, 3> makers;

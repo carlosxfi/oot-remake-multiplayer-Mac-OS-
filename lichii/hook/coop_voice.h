@@ -183,8 +183,9 @@ std::string TakeNotice();
 // The network thread: VOICE_FRAME in, a player gone.
 void OnEvent(const coop::net::Event& event);
 // The game thread, every frame: our Link (none: not in the game), the
-// others as presence shows them and the ones hidden (another scene, our
-// cutscene), and the session to send on (none: not connected).
+// others as presence shows them and the ones not heard (another or an
+// unknown scene: coop::host::voice_heard; our own talk or cutscene does not
+// count), and the session to send on (none: not connected).
 void Frame(const std::optional<std::array<float, 3>>& our_feet,
            const std::vector<coop::overlay::Shown>& others, const std::vector<std::uint8_t>& hidden,
            coop::host::Session* session);

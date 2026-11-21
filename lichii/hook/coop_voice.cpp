@@ -505,7 +505,7 @@ void Frame(const std::optional<std::array<float, 3>>& our_feet,
     if (e == nullptr) {
         return;
     }
-    // Who we hear and from where: presence's place of each Link not hidden.
+    // Who we hear and from where: presence's place of each Link heard (voice_heard: the scene alone).
     std::array<bool, kMaxSpeakers + 1> placed{};
     std::array<std::optional<float>, kMaxSpeakers + 1> distance{};  // ours to each, for the test log
     if (our_feet) {

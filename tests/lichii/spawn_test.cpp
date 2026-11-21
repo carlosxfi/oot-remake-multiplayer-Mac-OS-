@@ -1752,3 +1752,358 @@ TEST_CASE("spawn: a ridden horse copy is only ever its stand-in") {
         CHECK(d.Live().empty());
     }
 }
+
+// Native puppets phase 2 (coop_bomb_share.h, LICHII_COOP_BOMB_SHARE=1): a
+// bomb changes hands through the spawn sync.
+namespace {
+
+struct BombRun {
+    CoopSpawn::Sync sync;
+    std::vector<proto::Message> send;
+    std::vector<Copy> copies;
+    std::map<std::uint64_t, std::uint64_t> live;
+    std::uint64_t now = 5'000'000;
+    std::uint8_t self = 2;
+
+    BombRun() { sync.SetLink(proto::Vec3{10.0f, 0.0f, 2.0f}); }  // beside BombAt's copies
+
+    void Tick(std::vector<Seen> seen = {}) {
+        send.clear();
+        copies.clear();
+        now += 33 * kMs;
+        sync.Tick(kScene, self, now, seen, live, send, copies);
+    }
+    const Copy* CopyOf(std::uint64_t key) const {
+        for (const Copy& c : copies) {
+            if (c.key == key) {
+                return &c;
+            }
+        }
+        return nullptr;
+    }
+};
+
+const proto::ObjectId kTheirs{proto::ObjectKind::made, 1, 77};
+
+Seen BombAt(std::uint64_t address, const char* animation, std::uint64_t vtable = 0xB0B) {
+    Seen s = Bomb(address, {10.0f, 1.0f, 2.0f}, animation);
+    s.vtable = vtable;
+    return s;
+}
+
+// P1's bomb put down (not held), fuse `fuse` (none: unlit), as a copy here
+// made by the director at 0x9000. Returns its key.
+std::uint64_t TheirBomb(BombRun& run, std::optional<float> fuse = 3.0f) {
+    proto::ObjectSpawn spawn;
+    spawn.id = kTheirs;
+    spawn.actor = "Item_Bomb";
+    spawn.flags = proto::object_spawn::projectile;
+    spawn.state.time = {run.now, 0};
+    spawn.state.position = proto::Vec3{10.0f, 1.0f, 2.0f};
+    spawn.state.velocity = proto::Vec3{0.0f, 0.0f, 0.0f};
+    spawn.state.fuse = fuse;
+    spawn.state.state = std::uint8_t{0};
+    run.sync.Receive(Wire(spawn, 1));
+    run.Tick();
+    REQUIRE(run.copies.size() == 1);
+    const std::uint64_t key = run.copies[0].key;
+    run.live[key] = 0x9000;
+    run.Tick({BombAt(0x9000, "Bomb_Blink")});
+    return key;
+}
+
+proto::HandoverState HandedTo(std::uint64_t at, std::optional<float> fuse, std::uint16_t epoch = 1) {
+    proto::HandoverState h;
+    h.id = kTheirs;
+    h.epoch = epoch;
+    h.state.time = {at, 9};
+    h.state.position = proto::Vec3{10.0f, 1.0f, 2.0f};
+    h.state.fuse = fuse;
+    return h;
+}
+
+}  // namespace
+
+TEST_CASE("bomb share: off (the default), a lifted copy asks for nothing and hand-overs are left alone") {
+    BombRun run;
+    run.Tick();
+    CHECK(run.send.empty());  // no BOMB_SHARE
+    const std::uint64_t key = TheirBomb(run);
+    run.Tick({BombAt(0x9000, "Lifted")});
+    CHECK(run.send.empty());
+    REQUIRE(run.CopyOf(key) != nullptr);
+    CHECK(run.CopyOf(key)->place);
+    run.sync.Receive(Wire(HandedTo(run.now, 2.0f), 1));
+    run.Tick({BombAt(0x9000, "Lifted")});
+    CHECK(run.sync.Mine() == 0);
+    CHECK(run.sync.Copies() == 1);
+    CHECK(run.send.empty());
+    CHECK(run.sync.BombNotes().empty());
+    CHECK_FALSE(CoopBombShare::TheOwnBombs().Has(kTheirs));
+}
+
+TEST_CASE("bomb share: a lifted copy is asked for once, made ours by the hand-over and blown once on its fuse") {
+    BombRun run;
+    run.sync.SetBombShare(true);
+    run.Tick();
+    CHECK(Of<proto::BombShare>(run.send).size() == 1);  // step 9
+    const std::uint64_t key = TheirBomb(run);
+
+    // Its owner's animation is played on it, and it is placed: no ask.
+    CHECK(Of<proto::BombTake>(run.send).empty());
+    // Our Link lifts it (step 2): one BOMB_TAKE, and the copy is no longer
+    // placed or animated over the lift.
+    run.Tick({BombAt(0x9000, "Lifted")});
+    auto takes = Of<proto::BombTake>(run.send);
+    REQUIRE(takes.size() == 1);
+    CHECK(takes[0].id == kTheirs);
+    CHECK(takes[0].epoch == 0);
+    REQUIRE(run.CopyOf(key) != nullptr);
+    CHECK_FALSE(run.CopyOf(key)->place);
+    CHECK_FALSE(run.CopyOf(key)->setter);
+    CHECK_FALSE(run.CopyOf(key)->animation);
+    run.Tick({BombAt(0x9000, "Lifted")});
+    CHECK(Of<proto::BombTake>(run.send).empty());  // once per lift
+
+    // Step 3: the server's yes, 2 s of fuse left at the state's time.
+    const std::uint64_t handed_at = run.now;
+    run.sync.Receive(Wire(HandedTo(handed_at, 2.0f), 1));
+    run.Tick({BombAt(0x9000, "Lifted")});
+    CHECK(run.sync.Mine() == 1);
+    CHECK(run.sync.Copies() == 0);
+    CHECK(CoopBombShare::TheOwnBombs().Has(kTheirs));
+    REQUIRE(run.CopyOf(key) != nullptr);
+    CHECK(run.CopyOf(key)->act == Act::release);  // forgotten, not deleted
+    // Step 4: sampled as ours at the new epoch, with the fuse handed over.
+    auto samples = Of<proto::ObjectSample>(run.send);
+    REQUIRE(samples.size() == 1);
+    CHECK(samples[0].id == kTheirs);
+    CHECK(samples[0].epoch == 1);
+    REQUIRE(samples[0].state.fuse);
+    CHECK(*samples[0].state.fuse == doctest::Approx(2.0f - 0.033f).epsilon(0.01));
+    CHECK(Of<proto::ObjectSpawn>(run.send).empty());  // not a new bomb of ours
+    // Released while the director still lists it; then no more.
+    run.Tick({BombAt(0x9000, "Lifted")});
+    CHECK(run.CopyOf(key) != nullptr);
+    run.live.erase(key);
+    run.Tick({BombAt(0x9000, "Lifted")});
+    CHECK(run.CopyOf(key) == nullptr);
+    CHECK(run.sync.BlowOwn().empty());
+
+    // Step 5: the fuse runs out: blown once, through the director.
+    while (run.now < handed_at + 2'000'000) {
+        run.Tick({BombAt(0x9000, "Bomb_Blink")});
+    }
+    REQUIRE(run.sync.BlowOwn().size() == 1);
+    CHECK(run.sync.BlowOwn()[0].address == 0x9000);
+    CHECK(run.sync.BlowOwn()[0].vtable == 0xB0B);
+    run.Tick({BombAt(0x9000, "Explode")});
+    CHECK(run.sync.BlowOwn().empty());
+    // Step 7: gone: one remove, exploded, at our epoch; no longer ours.
+    run.Tick();
+    run.Tick();
+    auto removes = Of<proto::ObjectRemove>(run.send);
+    REQUIRE(removes.size() == 1);
+    CHECK(removes[0].reason == proto::RemoveReason::exploded);
+    CHECK(removes[0].epoch == 1);
+    CHECK(run.sync.Mine() == 0);
+    CHECK_FALSE(CoopBombShare::TheOwnBombs().Has(kTheirs));
+    // Our own bombs' fuse clock did not learn from it.
+    CHECK_FALSE(run.sync.Fuse().Fuse());
+}
+
+TEST_CASE("bomb share: a refused or unanswered lift gives the copy back, and is not asked again until let go") {
+    BombRun run;
+    run.sync.SetBombShare(true);
+    run.Tick();
+    const std::uint64_t key = TheirBomb(run);
+    run.Tick({BombAt(0x9000, "Lifted")});
+    REQUIRE(Of<proto::BombTake>(run.send).size() == 1);
+
+    proto::BombAnswer no;
+    no.id = kTheirs;
+    no.epoch = 0;
+    no.refusal = proto::BombRefusal::busy;
+    run.sync.Receive(Wire(no, 0));
+    run.Tick({BombAt(0x9000, "Lifted")});
+    REQUIRE(run.CopyOf(key) != nullptr);
+    CHECK(run.CopyOf(key)->place);  // back to the owner's place
+    CHECK(Of<proto::BombTake>(run.send).empty());
+    run.Tick({BombAt(0x9000, "Lifted")});
+    CHECK(Of<proto::BombTake>(run.send).empty());
+    // Let go, lifted again: a new ask.
+    run.Tick({BombAt(0x9000, "Bomb_Blink")});
+    run.Tick({BombAt(0x9000, "Lifted")});
+    REQUIRE(Of<proto::BombTake>(run.send).size() == 1);
+
+    // No answer within kAnswerWaitUs: dropped, given back.
+    const std::uint64_t asked = run.now;
+    while (run.now < asked + CoopBombShare::kAnswerWaitUs) {
+        run.Tick({BombAt(0x9000, "Lifted")});
+    }
+    REQUIRE(run.CopyOf(key) != nullptr);
+    CHECK(run.CopyOf(key)->place);
+    CHECK(run.sync.Mine() == 0);
+    // A late yes from the server still makes it ours (the server decides).
+    run.sync.Receive(Wire(HandedTo(run.now, 1.0f), 1));
+    run.Tick({BombAt(0x9000, "Lifted")});
+    CHECK(run.sync.Mine() == 1);
+    CoopBombShare::TheOwnBombs().Clear();
+}
+
+TEST_CASE("bomb share: our bomb is handed over unless held, then deleted here and shown as the new owner's copy") {
+    BombRun run;
+    run.self = 1;
+    run.sync.SetBombShare(true);
+    run.sync.SetLink(proto::Vec3{0.0f, 0.0f, 0.0f});
+    run.Tick();
+    // Held over our Link's head.
+    Seen held = Bomb(0x7000, {0.2f, 1.3f, 0.0f}, "Lifted");
+    held.vtable = 0xB0B;
+    run.Tick({held});
+    auto spawns = Of<proto::ObjectSpawn>(run.send);
+    REQUIRE(spawns.size() == 1);
+    const proto::ObjectId ours = spawns[0].id;
+    CHECK(CoopBombShare::TheOwnBombs().Has(ours));
+    run.Tick({held});
+    REQUIRE(run.sync.HeldMine() == 1);
+    run.sync.Receive(Wire(proto::HandoverAsk{ours, 0, 2}, 0));
+    run.Tick({held});
+    CHECK(Of<proto::HandoverState>(run.send).empty());  // kept: the server answers "kept"
+    REQUIRE(run.sync.BombNotes().size() == 1);
+
+    // Put down, away from Link.
+    run.sync.SetLink(proto::Vec3{5.0f, 0.0f, 0.0f});
+    Seen down = Bomb(0x7000, {0.2f, 0.0f, 0.0f}, "Bomb_Blink");
+    down.vtable = 0xB0B;
+    for (int i = 0; i < 4; ++i) {
+        run.Tick({down});
+    }
+    REQUIRE(run.sync.HeldMine() == 0);
+    run.sync.Receive(Wire(proto::HandoverAsk{ours, 0, 2}, 0));
+    run.Tick({down});
+    auto answers = Of<proto::HandoverState>(run.send);
+    REQUIRE(answers.size() == 1);
+    CHECK(answers[0].id == ours);
+    CHECK(answers[0].epoch == 0);
+    REQUIRE(answers[0].state.position);
+    CHECK((*answers[0].state.position)[0] == doctest::Approx(0.2f));
+
+    // Step 6: P2 has it now.
+    proto::ObjectOwner owner;
+    owner.id = ours;
+    owner.owner = 2;
+    owner.epoch = 1;
+    run.sync.Receive(Wire(owner, 0));
+    run.Tick({down});
+    REQUIRE(run.sync.Doom().size() == 1);
+    CHECK(run.sync.Doom()[0].address == 0x7000);
+    CHECK(run.sync.Doom()[0].vtable == 0xB0B);
+    CHECK(run.sync.Mine() == 0);
+    CHECK(Of<proto::ObjectRemove>(run.send).empty());  // no explosion sent: the new owner's word counts
+    CHECK_FALSE(CoopBombShare::TheOwnBombs().Has(ours));
+    // Next walk: the copy for P2's bomb, held (P2 lifted it); our dying
+    // actor is not taken for a new bomb of ours.
+    run.Tick({down});
+    CHECK(Of<proto::ObjectSpawn>(run.send).empty());
+    REQUIRE(run.copies.size() == 1);
+    CHECK(run.copies[0].actor == "Item_Bomb");
+    CHECK(run.copies[0].held);
+    CHECK(run.sync.Copies() == 1);
+}
+
+TEST_CASE("bomb share: a taken unlit bomb gone as the pouch rose by one is a stash, otherwise not") {
+    for (const bool rose : {true, false}) {
+        CAPTURE(rose);
+        BombRun run;
+        run.sync.SetBombShare(true);
+        run.Tick();
+        TheirBomb(run, std::nullopt);
+        run.Tick({BombAt(0x9000, "Lifted")});
+        run.sync.Receive(Wire(HandedTo(run.now, std::nullopt), 1));
+        run.Tick({BombAt(0x9000, "Lifted")});
+        REQUIRE(run.sync.Mine() == 1);
+        run.sync.SetPouch(10, run.now);
+        run.Tick({BombAt(0x9000, "Lifted")});
+        run.sync.SetPouch(rose ? 11 : 10, run.now + 33 * kMs);
+        run.Tick();
+        run.Tick();
+        auto removes = Of<proto::ObjectRemove>(run.send);
+        REQUIRE(removes.size() == 1);
+        CHECK(removes[0].epoch == 1);
+        if (rose) {
+            CHECK(removes[0].reason == proto::RemoveReason::picked_up);
+        } else {
+            CHECK(removes[0].reason != proto::RemoveReason::picked_up);
+        }
+        CHECK(run.sync.BlowOwn().empty());
+    }
+}
+
+TEST_CASE("bomb share: a lit taken bomb gone early went off (a hit), even with the pouch up") {
+    BombRun run;
+    run.sync.SetBombShare(true);
+    run.Tick();
+    TheirBomb(run);
+    run.Tick({BombAt(0x9000, "Lifted")});
+    run.sync.Receive(Wire(HandedTo(run.now, 2.5f), 1));
+    run.Tick({BombAt(0x9000, "Lifted")});
+    run.sync.SetPouch(10, run.now);
+    run.sync.SetPouch(11, run.now + 10 * kMs);
+    run.Tick();
+    run.Tick();
+    auto removes = Of<proto::ObjectRemove>(run.send);
+    REQUIRE(removes.size() == 1);
+    CHECK(removes[0].reason == proto::RemoveReason::exploded);
+}
+
+TEST_CASE("bomb share: a bomb handed on when its owner left is adopted, as the game's own bomb first if held") {
+    BombRun run;
+    run.sync.SetBombShare(true);
+    run.Tick();
+    proto::ObjectSpawn spawn;
+    spawn.id = kTheirs;
+    spawn.actor = "Item_Bomb";
+    spawn.state.time = {run.now, 0};
+    spawn.state.position = proto::Vec3{10.0f, 1.0f, 2.0f};
+    spawn.state.fuse = 3.0f;
+    spawn.state.state = proto::object_state::held;
+    run.sync.Receive(Wire(spawn, 1));
+    run.Tick();
+    REQUIRE(run.copies.size() == 1);
+    CHECK(run.copies[0].held);  // the stand-in
+    const std::uint64_t stand_in = run.copies[0].key;
+    run.live[stand_in] = 0x9100;
+    run.Tick();
+    run.sync.Receive(Wire(HandedTo(run.now, 2.0f), 1));
+    run.Tick();
+    CHECK(run.sync.Mine() == 0);  // the stand-in cannot go off
+    REQUIRE(run.copies.size() == 1);
+    CHECK_FALSE(run.copies[0].held);
+    CHECK(run.copies[0].key != stand_in);
+    run.live.erase(stand_in);
+    run.live[run.copies[0].key] = 0x9000;
+    run.Tick({BombAt(0x9000, "Bomb_Blink")});
+    CHECK(run.sync.Mine() == 1);
+    CHECK(Of<proto::BombTake>(run.send).empty());
+    CoopBombShare::TheOwnBombs().Clear();
+}
+
+TEST_CASE("bomb share: a Lifted copy away from our Link, or with our Link not read, asks for nothing") {
+    BombRun run;
+    run.sync.SetBombShare(true);
+    run.Tick();
+    TheirBomb(run);
+    // Our Link's place not read (a load): no take.
+    run.sync.SetLink(std::nullopt);
+    run.Tick({BombAt(0x9000, "Lifted")});
+    CHECK(Of<proto::BombTake>(run.send).empty());
+    // Read, but far from the copy: no take.
+    run.sync.SetLink(proto::Vec3{40.0f, 0.0f, 2.0f});
+    run.Tick({BombAt(0x9000, "Lifted")});
+    CHECK(Of<proto::BombTake>(run.send).empty());
+    // Beside it: one take.
+    run.sync.SetLink(proto::Vec3{10.0f, 0.0f, 2.0f});
+    run.Tick({BombAt(0x9000, "Lifted")});
+    CHECK(Of<proto::BombTake>(run.send).size() == 1);
+}

@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include "coop/host/game_items.hpp"
+
 #ifdef LICHII_COOP
 #include "common/logging.h"
 #endif
@@ -464,6 +466,83 @@ std::span<const OneWay> OneWays() {
 
 std::span<const Mend, kMends> Mends() {
     return kMendList;
+}
+
+namespace {
+
+// Row 145, read from the romfs (coop_story.h StepFloor): Ready to Step06 of
+// Get_StoneOfWater = the letter mends' list of steps King Zora waits at,
+// after NotReady (one list for both, game_items.hpp letters::kKingWaits).
+namespace letters = ::coop::host::letters;
+constexpr auto kZoraBack = std::span<const std::uint32_t>(letters::kKingWaits).subspan(1);
+constexpr std::array<std::uint32_t, 1> kWaterBack{0x21d6fa38u};  // Step06
+constexpr std::array<StepFloor, kStepFloors> kStepFloorList{{
+    {0x5bca02a6u,         // Step_Get_StoneOfWater
+     letters::kKingRead,  // HavePlayedEvent.Dm_Zora_0010: King Zora read Ruto's Letter and stepped aside
+     letters::kKingMoved[0],  // Step07
+     kZoraBack, "King Zora was back in front of the fountain after he read Ruto's Letter"},
+    // SageOfWater: WaterTemple_Arrival writes Step06 only, so that is the one
+    // step raised from. Highest first.
+    {0x560a64afu,  // Step_SageOfWater
+     0x4a9f3392u,  // HavePlayedEvent.Demo_SageOfWater_BossDefeat (SageOfWater_BossDefeat sets Step08)
+     0xa594ed54u,  // Step08
+     kWaterBack, "the Water Temple door set SageOfWater back after Morpha was beaten"},
+    {0x560a64afu,
+     0x713abc8fu,  // HavePlayedEvent.Demo_SageOfWater_BossAppears (SageOfWater_BossAppears sets Step07_2)
+     0xb6355e0cu,  // Step07_2
+     kWaterBack, "the Water Temple door set SageOfWater back after Morpha's intro"},
+    {0x560a64afu,
+     0x8341428au,  // WaterTemple_DarkLink_Death (Room 22's logic sets Step07_1 at his death)
+     0x23c23c52u,  // Step07_1
+     kWaterBack, "the Water Temple door set SageOfWater back after Dark Link (Room 23 shut)"},
+    {0x560a64afu,
+     0xb8226750u,  // HavePlayedEvent.Demo_WaterTemple_MeetAgainRutoEvent (WaterTemple_RutoDemo sets Step07)
+     0xee867c27u,  // Step07
+     kWaterBack, "the Water Temple door set SageOfWater back after Ruto's scene in the temple"},
+}};
+
+} // namespace
+
+std::span<const StepFloor, kStepFloors> StepFloors() {
+    return kStepFloorList;
+}
+
+std::optional<std::uint32_t> StepFloorDue(const StepFloor& floor, std::optional<std::uint32_t> step,
+                                          std::optional<bool> proof) {
+    if (proof != true || !step) return std::nullopt;
+    if (std::find(floor.back.begin(), floor.back.end(), *step) == floor.back.end()) return std::nullopt;
+    return floor.floor;
+}
+
+namespace {
+#include "coop_story_effects.inc"
+} // namespace
+
+std::span<const Effect> Effects() {
+    return kEffects;
+}
+
+EffectsGiven::Verdict EffectsGiven::Take(const Effect& due) {
+    const auto has = [&](const std::vector<std::uint32_t>& v) {
+        return std::find(v.begin(), v.end(), due.flag) != v.end();
+    };
+    if (!has(given_)) {
+        return Verdict::give;  // recorded by Given() once set
+    }
+    if (has(said_)) {
+        return Verdict::quiet;
+    }
+    said_.push_back(due.flag);
+    return Verdict::set_back;
+}
+
+void EffectsGiven::Given(const Effect& due) {
+    if (std::find(given_.begin(), given_.end(), due.flag) == given_.end()) given_.push_back(due.flag);
+}
+
+void EffectsGiven::NewLoad() {
+    given_.clear();
+    said_.clear();
 }
 
 bool On() {

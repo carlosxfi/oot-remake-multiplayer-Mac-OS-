@@ -7,16 +7,21 @@
 #include <cstddef>
 #include <cstring>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <span>
 #include <utility>
 
 #include <enet/enet.h>
 
+#include "coop/protocol/join_password.hpp"
 #include "coop/protocol/messages.hpp"
 #include "host_service.hpp"
 #include "join_helper.hpp"
 #include "nat_net.hpp"
 #include "options.hpp"
+#include "relay.hpp"
+#include "relay_link.hpp"
 #include "session.hpp"
 
 namespace CoopHostMenu {
@@ -172,14 +177,33 @@ int Menu::HostStart(const HosCoopHostOptions* o) {
     job.upnp = COOP_HAS(o, HosCoopHostOptions, upnp) && o->upnp != 0;
     job.invite = COOP_HAS(o, HosCoopHostOptions, invite) && o->invite != 0;
     job.pvp = COOP_HAS(o, HosCoopHostOptions, pvp) && o->pvp != 0;
+    job.approve_joins = COOP_HAS(o, HosCoopHostOptions, approve_joins) && o->approve_joins != 0;
+    job.same_network_open = COOP_HAS(o, HosCoopHostOptions, same_network_open) && o->same_network_open != 0;
     job.relay_via = Trim(COOP_HAS(o, HosCoopHostOptions, relay_via) ? Text(o->relay_via) : std::string());
     job.relay_key = COOP_HAS(o, HosCoopHostOptions, relay_key) ? Text(o->relay_key) : std::string();
+    job.relay_room = Trim(COOP_HAS(o, HosCoopHostOptions, relay_room) ? Text(o->relay_room) : std::string());
+    job.relay_list = Trim(COOP_HAS(o, HosCoopHostOptions, relay_list) ? Text(o->relay_list) : std::string());
     job.max_players = HostMaxPlayers(COOP_HAS(o, HosCoopHostOptions, max_players) ? o->max_players : 0);
     if (COOP_HAS(o, HosCoopHostOptions, pose_upload_kbps)) {
         job.pose_upload_kbps = o->pose_upload_kbps;
     }
     if (job.name.size() > kMaxName) {
         Fail("the name is longer than 16 characters", HOS_COOP_PROBLEM_BAD_NAME);
+        return 0;
+    }
+    job.public_game = COOP_HAS(o, HosCoopHostOptions, public_game) && o->public_game != 0;
+    job.bans_file = COOP_HAS(o, HosCoopHostOptions, bans_file) ? Text(o->bans_file) : std::string();
+    if (job.public_game) {
+        // (HostServiceConfig::public_game: the relay only, the password the room's)
+        if (job.relay_via.empty() || job.relay_room.empty()) {
+            Fail("a public game needs the game list's server (Relay) and a room name", HOS_COOP_PROBLEM_RELAY_FAILED);
+            return 0;
+        }
+        job.password = coop::protocol::public_join_password(job.relay_room);
+        if (job.relay_list.empty()) job.relay_list = job.relay_room;
+        job.upnp = job.invite = job.same_network_open = false;
+    } else if (!job.password.empty() && coop::protocol::is_public_join_password(job.password)) {
+        Fail("that join password is kept for public games; choose another one", HOS_COOP_PROBLEM_BAD_PASSWORD);
         return 0;
     }
     if (job.password.empty()) {
@@ -218,6 +242,8 @@ void Menu::RunHost(HostJob job) {
         config.port_tries = kPortTries;
         config.session.join_password = job.password;
         config.session.pvp = job.pvp;
+        config.session.approve_joins = job.approve_joins;
+        config.session.same_network_open = job.same_network_open;
         config.session.max_players = job.max_players;
         config.session.pose_upload_bytes_per_second = job.pose_upload_kbps * 125u;
         config.max_connections = static_cast<std::size_t>(job.max_players) + 4;
@@ -230,6 +256,12 @@ void Menu::RunHost(HostJob job) {
         config.stun_allow_private = hooks_.allow_private;
         config.relay_via = job.relay_via;
         config.relay_key = job.relay_key;
+        config.relay_room = job.relay_via.empty() ? std::string() : job.relay_room;
+        config.relay_list = config.relay_room.empty() ? std::string() : job.relay_list;   // (the public list: opt-in)
+        config.public_game = job.public_game;
+        // The host's kept bans (player keys; HosCoopHostOptions::bans_file): in force from the start.
+        std::vector<std::string> bans = coop::server::read_ban_file(job.bans_file);
+        config.session.kept_bans = bans;
         config.counts = false;  // the game's log need not have them every 5 s
         config.log_invite = false;  // it holds the join password; the menu shows it
         config.log = [this](const std::string& text) { Say("coop: host: " + text); };
@@ -256,11 +288,39 @@ void Menu::RunHost(HostJob job) {
             }
         }
         while (!stop_) {
+            host.set_ngplus(hooks_.ngplus_level ? hooks_.ngplus_level() : 0);   // (Navi) New Game+ (Hooks)
             host.service(kRoundMs);
+            if (!job.bans_file.empty() && host.session() != nullptr) {   // (a new ban by key: kept for next time)
+                std::vector<std::string> now = host.session()->key_bans();
+                if (now != bans) {
+                    coop::server::write_ban_file(job.bans_file, now);
+                    bans = std::move(now);
+                }
+            }
             std::deque<std::string> pasted;
+            std::optional<std::string> new_password;
             {
                 std::lock_guard lock(mutex_);
                 pasted.swap(answers_);
+                new_password.swap(new_password_);
+            }
+            if (new_password) {   // (the host's new join password: new joins need it, players in stay in)
+                std::string why;
+                const bool ok = host.set_join_password(*new_password, why);
+                if (ok && hooks_.password_changed) {
+                    hooks_.password_changed(*new_password);   // (our own game, if it reconnects, proves the new one)
+                }
+                std::lock_guard lock(mutex_);
+                if (ok) {
+                    job.password = *new_password;
+                    CopyText(status_.password, sizeof status_.password, *new_password);
+                    status_.problem = HOS_COOP_PROBLEM_NONE;
+                    CopyText(status_.message, sizeof status_.message,
+                             "new join password is set");   // (one line of the list)
+                } else {
+                    status_.problem = HOS_COOP_PROBLEM_BAD_PASSWORD;
+                    CopyText(status_.message, sizeof status_.message, "join password not changed: " + why);
+                }
             }
             for (const std::string& code : pasted) {
                 const nat::CodeError e = host.add_answer(code);
@@ -278,6 +338,7 @@ void Menu::RunHost(HostJob job) {
             status_.upnp_open = s.upnp_open ? 1 : 0;
             CopyText(status_.invite, sizeof status_.invite, s.invite);
             CopyText(status_.relay_code, sizeof status_.relay_code, s.relay_code);
+            CopyText(status_.relay_room, sizeof status_.relay_room, s.relay_room);
             if (!s.message.empty() && status_.message[0] == '\0') {
                 CopyText(status_.message, sizeof status_.message, s.message);
                 status_.problem = ProblemOf(s.problem);
@@ -336,6 +397,23 @@ int Menu::Join(const HosCoopJoinOptions* o) {
         Fail("invite code not used: " + nat::explain(invite.error), HOS_COOP_PROBLEM_BAD_CODE);
         return 0;
     }
+    // Through a relay (issue 261): "<join code or room>@relay[:port]". The relay lets this PC's address in
+    // (Join.bat's relay-join.ps1 does the same), then the game connects to the relay with the host's password.
+    if (auto relay_join = coop::server::relay::parse_relay_join(target)) {
+        if (password.empty()) {
+            Fail("type the join password the host sent you (every session has one)", HOS_COOP_PROBLEM_NO_PASSWORD);
+            return 0;
+        }
+        if (const char* why = coop::server::password_problem(password)) {
+            Fail(std::string("the join password is ") + why, HOS_COOP_PROBLEM_BAD_PASSWORD);
+            return 0;
+        }
+        RelayJoinJob job{name, password, std::move(relay_join->code), std::move(relay_join->room),
+                         std::move(relay_join->relay_host), relay_join->relay_port};
+        stop_ = false;
+        thread_ = std::thread([this, job = std::move(job)]() mutable { RunRelayJoin(std::move(job)); });
+        return 1;
+    }
     // A plain address: this game connects there itself.
     // The name lookup needs the sockets started (WSAStartup on Windows).
     std::optional<nat::Addr> where;
@@ -346,6 +424,11 @@ int Menu::Join(const HosCoopJoinOptions* o) {
     if (!where) {
         Fail("'" + target + "' is neither an invite code nor an address this PC can find", HOS_COOP_PROBLEM_NO_TARGET);
         return 0;
+    }
+    // A game on this network with no password typed: the same-network key (docs/protocol.md "Same network"), which
+    // its host takes from a private address when it lets the same network in without the password.
+    if (password.empty() && coop::server::is_same_network(where->ip)) {
+        password = std::string(coop::protocol::kSameNetworkPassword);
     }
     if (password.empty()) {
         Fail("type the join password the host sent you (every session has one)", HOS_COOP_PROBLEM_NO_PASSWORD);
@@ -452,6 +535,67 @@ void Menu::RunJoin(JoinJob job) {
     }
 }
 
+void Menu::RunRelayJoin(RelayJoinJob job_in) {
+    namespace relay = coop::server::relay;
+    struct {
+        std::string name, password;
+        relay::RelayJoin join;
+    } job{std::move(job_in.name), std::move(job_in.password),
+          relay::RelayJoin{std::move(job_in.code), std::move(job_in.room), std::move(job_in.relay_host), job_in.relay_port}};
+    try {
+        if (enet_initialize() != 0) {
+            Fail("the network did not start (ENet)", HOS_COOP_PROBLEM_NETWORK);
+            return;
+        }
+        struct EnetLife {
+            ~EnetLife() { enet_deinitialize(); }
+        } enet_life;
+        {
+            std::lock_guard lock(mutex_);
+            status_.state = HOS_COOP_JOINING;
+            CopyText(status_.message, sizeof status_.message, "asking the relay " + job.join.relay_host + " to let this game in");
+        }
+        ENetAddress at{};
+        if (enet_address_set_host(&at, job.join.relay_host.c_str()) != 0) {
+            Fail("cannot find the relay " + job.join.relay_host + " (is the name right, and is this PC online?)",
+                 HOS_COOP_PROBLEM_NO_TARGET);
+            return;
+        }
+        at.port = job.join.relay_port;
+        const auto result = relay::lookup_on_relay(at, job.join, [this] { return stop_.load(); });
+        if (stop_) {
+            return;
+        }
+        Say("coop: join: " + relay::lookup_text(result, job.join));
+        if (result != relay::LookupResult::kOk) {
+            Fail(relay::lookup_text(result, job.join), HOS_COOP_PROBLEM_RELAY_JOIN);
+            return;
+        }
+        const bool ok = hooks_.connect &&
+                        hooks_.connect(Target{relay::address_text(at.host), at.port, job.name, job.password});
+        {
+            std::lock_guard lock(mutex_);
+            status_.state = ok ? HOS_COOP_CONNECTED : HOS_COOP_FAILED;
+            status_.problem = ok ? HOS_COOP_PROBLEM_NONE : HOS_COOP_PROBLEM_CLIENT_FAILED;
+            status_.port = at.port;
+            CopyText(status_.message, sizeof status_.message,
+                     ok ? relay::lookup_text(result, job.join) : std::string("this game's co-op did not start (see the log)"));
+        }
+        if (!ok) {
+            return;
+        }
+        // Joined: this thread keeps the session's sockets started until Leave.
+        while (!stop_) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(kRoundMs));
+        }
+        if (hooks_.disconnect) {
+            hooks_.disconnect();
+        }
+    } catch (const std::exception& e) {
+        Fail(std::string("the relay join stopped: ") + e.what(), HOS_COOP_PROBLEM_INTERNAL);
+    }
+}
+
 int Menu::Answer(const char* code) {
     const std::string text = Trim(Text(code));
     std::lock_guard lock(mutex_);
@@ -467,6 +611,25 @@ int Menu::Answer(const char* code) {
     }
     status_.message[0] = '\0';
     answers_.push_back(text);
+    return 1;
+}
+
+int Menu::SetPassword(const char* password) {
+    const std::string text = Trim(Text(password));
+    std::lock_guard lock(mutex_);
+    const char* why = status_.state != HOS_COOP_HOSTING ? "the join password changes only while hosting"
+                      : text.empty()                    ? "type the new join password first"
+                      : text.find(' ') != std::string::npos ? "the join password has a space; use one without"
+                                                            : coop::server::password_problem(text);
+    if (why != nullptr) {
+        status_.problem = HOS_COOP_PROBLEM_BAD_PASSWORD;
+        CopyText(status_.message, sizeof status_.message,
+                 status_.state != HOS_COOP_HOSTING || text.empty() || text.find(' ') != std::string::npos
+                     ? std::string(why)
+                     : std::string("the join password is ") + why);
+        return 0;
+    }
+    new_password_ = text;
     return 1;
 }
 

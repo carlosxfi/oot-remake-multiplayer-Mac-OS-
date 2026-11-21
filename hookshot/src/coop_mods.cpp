@@ -524,6 +524,14 @@ bool Loader::HostValuesSet() const {
     return host_values_.has_value();
 }
 
+std::optional<std::string> Loader::HostValue(std::string_view id, std::string_view key) const {
+    const std::lock_guard lock(mutex_);
+    if (!host_values_) return std::nullopt;
+    const auto it = host_values_->find(std::string(id) + "\n" + std::string(key));
+    if (it == host_values_->end()) return std::nullopt;
+    return it->second;
+}
+
 std::vector<Mod> Loader::CodeToLoad() const {
     const std::lock_guard lock(mutex_);
     std::vector<Mod> out;

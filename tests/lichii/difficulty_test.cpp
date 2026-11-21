@@ -635,6 +635,28 @@ TEST_CASE("difficulty: water enemies get their weight, never a land spot") {
   }
 }
 
+TEST_CASE("difficulty: a dungeon's enemies get extras like the overworld's (player report 111)") {
+  // Report 111's buried Deku Baba extra was the give-back ping-pong of report
+  // 109 (a copy's own wake put back to the owner's rest), not the extra's
+  // dungeon room: the same Babas plan the same extras in the Deku Tree as in
+  // the same layout outside, and only an enemy with no spot gets its weight.
+  World w;
+  const World::Data& d = w.Grid("InsideTheDekuTree", "Enemy_Dekubaba", 0x0dec'0000'0000ULL, 12);
+  World w2;
+  const World::Data& d2 = w2.Grid("Lake", "Enemy_Dekubaba", 0x0dec'0000'0000ULL, 12);
+  for (const std::uint16_t pct : {std::uint16_t{125}, std::uint16_t{200}}) {
+    CoopDifficulty::Extras in(w.Lookup());
+    CoopDifficulty::Extras out(w2.Lookup());
+    const std::size_t made = in.Plan("InsideTheDekuTree", Walk(d), pct, false, 0);
+    CHECK(made > 0);
+    CHECK(made == out.Plan("Lake", Walk(d2), pct, false, 0));
+    CHECK(in.NoSpots() == out.NoSpots());
+    for (const auto& o : Walk(d)) {
+      CHECK(in.NoSpot(o.hash) == out.NoSpot(o.hash));
+    }
+  }
+}
+
 TEST_CASE("difficulty: every game plans the same extras whatever it has loaded and wherever its enemies walked") {
   World w;
   const World::Data& d =
@@ -883,6 +905,51 @@ TEST_CASE("difficulty: an enemy that gets no copies has the enemy count folded i
   // A reused address is forgotten as for any enemy.
   kinds->Forget(kPoe);
   CHECK(kinds->Of(kPoe) == Kind::none);
+}
+
+TEST_CASE("difficulty: an enemy with no ground for its copies folds by the extras it would have had") {
+  using CoopDifficulty::ExtraCount;
+  using CoopDifficulty::FoldCount;
+  using CoopDifficulty::Kind;
+  CHECK(FoldCount(0, 150) == 150);  // a patrol (Treatment::fold): the whole count
+  CHECK(FoldCount(0x1234, 100) == 100);
+  CHECK(FoldCount(0x1234, 80) == 80);
+  // Placement keys with 0 and with 1 extra at 150% and at 125%.
+  for (const std::uint16_t pct : {std::uint16_t(125), std::uint16_t(150), std::uint16_t(200), std::uint16_t(300)}) {
+    std::uint64_t none = 0, one = 0;
+    unsigned total = 0, extras = 0;
+    for (std::uint64_t k = 1; k <= 400; ++k) {
+      const unsigned e = ExtraCount(k, pct);
+      CHECK(FoldCount(k, pct) == 100 * (1 + e));
+      total += FoldCount(k, pct);
+      extras += 100 * (1 + e);
+      if (e == pct / 100u - 1u && none == 0 && pct % 100 != 0) none = k;
+      if (e == pct / 100u && one == 0) one = k;
+    }
+    CHECK(total == extras);  // the folded strength is exactly what the extras would add
+    if (pct % 100 == 0) {
+      continue;
+    }
+    REQUIRE(none != 0);
+    REQUIRE(one != 0);
+    // Life and damage of each, as the Life step scales them.
+    auto kinds = std::make_unique<CoopDifficulty::Kinds>();
+    constexpr std::uint64_t kLifeNone = 0x30'0000'1000, kLifeOne = 0x30'0000'2000;
+    constexpr std::uint64_t kNone = 0x30'0000'3000, kOne = 0x30'0000'4000, kLinkLife = 0x30'0000'5000;
+    CHECK(kinds->Mark(kLifeNone, Kind::folded_enemy_life, none));
+    CHECK(kinds->Mark(kLifeOne, Kind::folded_enemy_life, one));
+    CHECK(kinds->Mark(kNone, Kind::folded_enemy, none));
+    CHECK(kinds->Mark(kOne, Kind::folded_enemy, one));
+    CHECK(kinds->Mark(kLinkLife, Kind::our_link_life));
+    std::uint64_t attacker = kNone;
+    auto attacker_of = [&] { return attacker; };
+    const Values count_only{100, 100, pct};
+    CHECK(kinds->Step(kLifeNone, 4, count_only, 1000, attacker_of) == 4);  // x1: it would have had none
+    CHECK(kinds->Step(kLifeOne, 4, count_only, 1000, attacker_of) == 2);   // x2: itself and its one extra
+    CHECK(kinds->Step(kLinkLife, 4, count_only, 1000, attacker_of) == 4);
+    attacker = kOne;
+    CHECK(kinds->Step(kLinkLife, 4, count_only, 1000, attacker_of) == 8);
+  }
 }
 
 namespace {

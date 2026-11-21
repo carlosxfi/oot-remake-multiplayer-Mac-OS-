@@ -43,6 +43,10 @@ struct Plug {
     std::uint32_t key = 0;
     std::uint8_t type = 0;
     std::optional<std::uint8_t> value;  // the first byte of the value, when it can be read
+    // [plug + 0x28]: the value's address, its low 2 bits flags (bit 1: the game's set-bool marks a change of it,
+    // f_7103c41cf0/41d00). deku-ladder: CoopLogicSet::SetInput stores through it.
+    std::uint64_t value_word = 0;
+    std::uint64_t node = 0;  // the plug node's own address (deku-ladder: SetInput's ownership check)
 };
 
 // The actor's plugs in key order, or nothing when its logic is not there or not live.
@@ -51,7 +55,7 @@ std::optional<std::vector<Plug>> Read(const ReadWord& read, std::uint64_t actor)
 // Logs each watched actor's plugs once, then every change of a plug's value. Reads only.
 class Watch {
 public:
-    static constexpr std::size_t kMaxActors = 4;
+    static constexpr std::size_t kMaxActors = 6;  // deku-switches: ladder, pillar, eye, asker(s)
     static constexpr int kMaxLines = 600;  // per session
     // `actors`: (address, name) of the actors to watch this walk.
     std::vector<std::string> Look(const ReadWord& read,

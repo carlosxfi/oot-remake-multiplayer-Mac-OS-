@@ -79,6 +79,10 @@ check 'upnp = no, invite = no are read; an empty server_password is not set (Hos
 KA_INVITE=1
 kit_hosting_args secret
 check 'stun servers are checked' bash -c '[ "$1" = "--invite --stun a.example:1" ] && [[ $2 == *"not a name:port"* ]]' _ "${HOSTING_ARGS[*]}" "${HOSTING_NOTES[*]}"
+printf 'upnp = no\ninvite = no\napprove_joins = on\n' >"$tmp/access.ini"
+kit_server_access "$tmp/access.ini"
+kit_hosting_args secret
+check 'approve_joins = on: the server asks the host (issue 261)' bash -c '[ "$1" = "--approve-joins" ] && [[ $2 == *"/allow or /deny"* ]]' _ "${HOSTING_ARGS[*]}" "${HOSTING_NOTES[*]}"
 printf 'x\ncoop: on, server 127.0.0.1:27510\n' >"$tmp/eden.txt"
 check 'join state: trying' [ "$(kit_join_state "$tmp/eden.txt")" = trying ]
 echo 'coop: server refused: wrong join password' >>"$tmp/eden.txt"

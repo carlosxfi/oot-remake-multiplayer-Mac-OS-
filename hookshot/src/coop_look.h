@@ -141,6 +141,11 @@ using FileFn = std::function<std::optional<std::vector<std::uint8_t>>(const std:
 std::string PackStartTunic(const std::optional<std::vector<std::uint8_t>>& tile, const FileFn& self_tile,
                            const std::string& hint);
 
+// The coop.ini the Nucleus Co-op handler wrote for this game (its first line, tools/nucleus/OoTCoop.js COOP_WRITTEN;
+// row 194). Nucleus starts each game without the kit's launcher, and its instances share the kit's one puppet pack
+// (mods is a link), so the pack's tunic files are never one player's colour there: the wardrobe's repaint is the way.
+bool NucleusWrote(std::string_view coop_ini);
+
 // ---------------------------------------------------------------------------
 // The module's one look. Any thread, but Frame.
 

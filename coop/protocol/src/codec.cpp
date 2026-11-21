@@ -621,6 +621,11 @@ Error encode_body(const PlayerEquip& m, Writer& w) {
     w.u16(1);
     w.u8(*m.equipment.drawn);
   }
+  if (m.equipment.lit) {
+    w.u16(static_cast<std::uint16_t>(EquipComponent::lit));
+    w.u16(1);
+    w.u8(*m.equipment.lit);
+  }
   if (m.equipment.color) {
     const std::uint32_t rgb = *m.equipment.color;
     w.u16(static_cast<std::uint16_t>(EquipComponent::color));
@@ -671,6 +676,7 @@ Error check_object_state(const ObjectState& s) {
       }
     }
   }
+  if (s.hit && s.hit->seq == 0) return Error::bad_value;  // (seqs count from 1)
   if (s.bsa) {
     const auto finite = [](const BossAction& a) {
       for (const auto& p : a.places) {
@@ -776,6 +782,12 @@ void write_object_state(const ObjectState& s, Writer& w) {
     });
   }
   if (s.bsa) component(ObjectComponent::bsa, [&] { write_bsa(*s.bsa, w); });
+  if (s.hit) {
+    component(ObjectComponent::hit, [&] {
+      w.u32(s.hit->seq);
+      for (std::uint32_t word : s.hit->record) w.u32(word);
+    });
+  }
 }
 
 bool has_duplicate_id(const std::vector<ObjectPresence>& objects) {
@@ -944,6 +956,9 @@ Error encode_body(const Damage& m, Writer& w) {
   for (float f : m.position) w.f32(f);
   if (m.hit_at) {
     for (float f : *m.hit_at) w.f32(f);
+  }
+  if (m.hit_record) {
+    for (std::uint32_t word : *m.hit_record) w.u32(word);
   }
   return Error::none;
 }
@@ -1367,7 +1382,8 @@ Error decode_body(Reader& r, PlayerEquip& m) {
     }
     const bool is_drawn = id == static_cast<std::uint16_t>(EquipComponent::drawn);
     const bool is_color = id == static_cast<std::uint16_t>(EquipComponent::color);
-    if (name == nullptr && !is_drawn && !is_color) continue;  // unknown: skipped by its length
+    const bool is_lit = id == static_cast<std::uint16_t>(EquipComponent::lit);
+    if (name == nullptr && !is_drawn && !is_color && !is_lit) continue;  // unknown: skipped by its length
     if (seen & (1u << id)) return Error::duplicate_component;
     seen |= 1u << id;
 
@@ -1381,7 +1397,7 @@ Error decode_body(Reader& r, PlayerEquip& m) {
     } else {
       std::uint8_t bits = 0;
       e = c.u8(bits) ? Error::none : Error::truncated;
-      m.equipment.drawn = bits;
+      (is_lit ? m.equipment.lit : m.equipment.drawn) = bits;
     }
     // A known component's fields running past its length means its length
     // is wrong, not that the message was cut short.
@@ -1478,6 +1494,13 @@ Error decode_component(ObjectComponent id, Reader& c, ObjectState& s, bool& know
           return Error::bad_value;
         }
       }
+      return Error::none;
+    }
+    case ObjectComponent::hit: {
+      ObjectHit& h = s.hit.emplace();
+      COOP_READ(c.u32(h.seq));
+      if (h.seq == 0) return Error::bad_value;
+      for (std::uint32_t& word : h.record) COOP_READ(c.u32(word));
       return Error::none;
     }
     case ObjectComponent::bsa: {
@@ -1662,7 +1685,13 @@ Error decode_body(Reader& r, Damage& m) {
   if (m.amount < 0) return Error::bad_value;
   COOP_READ(r.u8(m.cause));
   COOP_TRY(read_floats(r, m.position));
-  if (r.left() == 12) COOP_TRY(read_floats(r, m.hit_at.emplace()));
+  // The tail tells by its length what follows: 12 the hit place, 152 the hit record (protocol 14), 164 both.
+  constexpr std::size_t kRecordBytes = kHitRecordWords * 4;
+  const std::size_t tail = r.left();
+  if (tail == 12 || tail == 12 + kRecordBytes) COOP_TRY(read_floats(r, m.hit_at.emplace()));
+  if (tail == kRecordBytes || tail == 12 + kRecordBytes) {
+    for (std::uint32_t& word : m.hit_record.emplace()) COOP_READ(r.u32(word));
+  }
   return Error::none;
 }
 
@@ -1996,6 +2025,41 @@ Error decode_body(Reader& r, DungeonEvent& m) {
   return check_dungeon_event(m);
 }
 
+// SWITCH_STATE: u8 player, scene, name, 3 x f32 place, u32 plug, u8 on.
+Error check_switch_state(const SwitchState& m) {
+  if (!valid_player_or_self(m.player_number) || m.scene.empty() || m.name.empty() || m.plug == 0 ||
+      !all_finite(m.place)) {
+    return Error::bad_value;
+  }
+  COOP_TRY(check_string(m.scene, kMaxSceneChars));
+  return check_string(m.name, kMaxSwitchNameChars);
+}
+
+Error encode_body(const SwitchState& m, Writer& w) {
+  COOP_TRY(check_switch_state(m));
+  w.u8(m.player_number);
+  w.str(m.scene);
+  w.str(m.name);
+  for (const float f : m.place) w.f32(f);
+  w.u32(m.plug);
+  w.u8(m.on ? 1 : 0);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, SwitchState& m) {
+  m = SwitchState{};
+  COOP_READ(r.u8(m.player_number));
+  COOP_TRY(r.str(m.scene, kMaxSceneChars));
+  COOP_TRY(r.str(m.name, kMaxSwitchNameChars));
+  for (float& f : m.place) COOP_READ(r.f32(f));
+  COOP_READ(r.u32(m.plug));
+  std::uint8_t on = 0;
+  COOP_READ(r.u8(on));
+  if (on > 1) return Error::bad_value;
+  m.on = on == 1;
+  return check_switch_state(m);
+}
+
 // PLATFORM_CLOCK: u8 player, scene, u64 server time, u8 count, then count x
 // (u64 hash, u64 key, f32 value, f32 rate, f32 cycle).
 Error check_platform_tick(const PlatformTick& t) {
@@ -2005,6 +2069,8 @@ Error check_platform_tick(const PlatformTick& t) {
   if (offset % 4 != 0) return Error::bad_value;
   if (region == kPlatformAsFrameRegion) {
     if (offset != 0) return Error::bad_value;
+  } else if (region == kPlatformWaveNodeRegion || region == kPlatformRotateNodeRegion) {
+    if (offset < kPlatformNodeFrom || offset >= kPlatformNodeTo) return Error::bad_value;
   } else if (region == 0) {
     if (offset >= kPlatformActorBytes) return Error::bad_value;
   } else if (region < 2 || region - 2 >= kPlatformComponents || offset >= kPlatformComponentBytes) {
@@ -2350,6 +2416,30 @@ Error decode_body(Reader& r, BossScene& m) {
   return check_boss_scene(m);
 }
 
+// BOSS_ALIVE: u8 player, u16 known, u16 alive (both within kBossAliveMask, alive within known).
+Error check_boss_alive(const BossAlive& m) {
+  if (!valid_player_or_self(m.player_number) || (m.known & ~kBossAliveMask) != 0 || (m.alive & ~m.known) != 0) {
+    return Error::bad_value;
+  }
+  return Error::none;
+}
+
+Error encode_body(const BossAlive& m, Writer& w) {
+  COOP_TRY(check_boss_alive(m));
+  w.u8(m.player_number);
+  w.u16(m.known);
+  w.u16(m.alive);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, BossAlive& m) {
+  m = BossAlive{};
+  COOP_READ(r.u8(m.player_number));
+  COOP_READ(r.u16(m.known));
+  COOP_READ(r.u16(m.alive));
+  return check_boss_alive(m);
+}
+
 // BOSS_HEART: u8 player, u8 boss (0 to 15), u8 given (0, 1), u32 max life (1 to 80).
 Error check_boss_heart(const BossHeart& m) {
   if (!valid_player_or_self(m.player_number) || m.boss > kMaxSceneBoss || m.max_life < 1 ||
@@ -2582,6 +2672,310 @@ Error decode_body(Reader& r, LobbyResult& m) {
   return Error::none;
 }
 
+// JOIN_KNOCK: u32 knock (not 0), u16 wait (0 to kMaxKnockWaitSeconds), u8 flags
+// (unknown bits kept), nickname (1 to kMaxNicknameChars).
+Error encode_body(const JoinKnock& m, Writer& w) {
+  if (m.knock == 0 || m.wait_s > kMaxKnockWaitSeconds || m.nickname.empty()) return Error::bad_value;
+  COOP_TRY(check_string(m.nickname, kMaxNicknameChars));
+  w.u32(m.knock);
+  w.u16(m.wait_s);
+  w.u8(m.flags);
+  w.str(m.nickname);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, JoinKnock& m) {
+  m = JoinKnock{};
+  COOP_READ(r.u32(m.knock));
+  COOP_READ(r.u16(m.wait_s));
+  COOP_READ(r.u8(m.flags));
+  COOP_TRY(r.str(m.nickname, kMaxNicknameChars));
+  if (m.knock == 0 || m.wait_s > kMaxKnockWaitSeconds || m.nickname.empty()) return Error::bad_value;
+  return Error::none;
+}
+
+// JOIN_ALLOW: u32 knock (not 0), u8 allow (0 or 1), u8 remember (0 or 1).
+Error encode_body(const JoinAllow& m, Writer& w) {
+  if (m.knock == 0) return Error::bad_value;
+  w.u32(m.knock);
+  w.u8(m.allow ? 1 : 0);
+  w.u8(m.remember ? 1 : 0);
+  return Error::none;
+}
+
+Error encode_body(const BombTake& m, Writer& w) {
+  COOP_TRY(check_object_id(m.id));
+  if (m.id.kind != ObjectKind::made) return Error::bad_value;
+  write_object_id(m.id, w);
+  w.u16(m.epoch);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, BombTake& m) {
+  m = BombTake{};
+  COOP_TRY(read_object_id(r, m.id));
+  if (m.id.kind != ObjectKind::made) return Error::bad_value;
+  COOP_READ(r.u16(m.epoch));
+  return Error::none;
+}
+
+Error encode_body(const BombShare& m, Writer& w) {
+  w.u8(m.on ? 1 : 0);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, BombShare& m) {
+  m = BombShare{};
+  std::uint8_t on = 0;
+  COOP_READ(r.u8(on));
+  if (on > 1) return Error::bad_value;
+  m.on = on != 0;
+  return Error::none;
+}
+
+// LIFT_ASK: u8 player, u8 lifted (1 to 4, not the player).
+Error encode_body(const LiftAsk& m, Writer& w) {
+  if (!valid_player_or_self(m.player_number) || !valid_player(m.lifted) || m.lifted == m.player_number) {
+    return Error::bad_value;
+  }
+  w.u8(m.player_number);
+  w.u8(m.lifted);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, LiftAsk& m) {
+  m = LiftAsk{};
+  COOP_READ(r.u8(m.player_number));
+  COOP_READ(r.u8(m.lifted));
+  if (!valid_player_or_self(m.player_number) || !valid_player(m.lifted) || m.lifted == m.player_number) {
+    return Error::bad_value;
+  }
+  return Error::none;
+}
+
+// LIFT_ANSWER: u8 player, u8 lifter (1 to 4, not the player), u8 refusal (0 to 6).
+Error encode_body(const LiftAnswer& m, Writer& w) {
+  const auto refusal = static_cast<std::uint8_t>(m.refusal);
+  if (!valid_player_or_self(m.player_number) || !valid_player(m.lifter) || m.lifter == m.player_number ||
+      refusal > kLiftRefusalMax) {
+    return Error::bad_value;
+  }
+  w.u8(m.player_number);
+  w.u8(m.lifter);
+  w.u8(refusal);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, LiftAnswer& m) {
+  m = LiftAnswer{};
+  std::uint8_t refusal = 0;
+  COOP_READ(r.u8(m.player_number));
+  COOP_READ(r.u8(m.lifter));
+  COOP_READ(r.u8(refusal));
+  if (!valid_player_or_self(m.player_number) || !valid_player(m.lifter) || m.lifter == m.player_number ||
+      refusal > kLiftRefusalMax) {
+    return Error::bad_value;
+  }
+  m.refusal = static_cast<LiftRefusal>(refusal);
+  return Error::none;
+}
+
+// LIFT_PLACE: u8 player, u8 lifted (1 to 4, not the player), u8 phase (1 to 3), 3 x f32 place.
+Error encode_body(const LiftPlace& m, Writer& w) {
+  const auto phase = static_cast<std::uint8_t>(m.phase);
+  if (!valid_player_or_self(m.player_number) || !valid_player(m.lifted) || m.lifted == m.player_number ||
+      phase == 0 || phase > kLiftPhaseMax || !all_finite(m.position)) {
+    return Error::bad_value;
+  }
+  w.u8(m.player_number);
+  w.u8(m.lifted);
+  w.u8(phase);
+  for (float f : m.position) w.f32(f);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, LiftPlace& m) {
+  m = LiftPlace{};
+  std::uint8_t phase = 0;
+  COOP_READ(r.u8(m.player_number));
+  COOP_READ(r.u8(m.lifted));
+  COOP_READ(r.u8(phase));
+  for (float& f : m.position) COOP_READ(r.f32(f));
+  if (!valid_player_or_self(m.player_number) || !valid_player(m.lifted) || m.lifted == m.player_number ||
+      phase == 0 || phase > kLiftPhaseMax || !all_finite(m.position)) {
+    return Error::bad_value;
+  }
+  m.phase = static_cast<LiftPhase>(phase);
+  return Error::none;
+}
+
+// LIFT_SHARE: u8 on (0 or 1).
+Error encode_body(const LiftShare& m, Writer& w) {
+  w.u8(m.on ? 1 : 0);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, LiftShare& m) {
+  m = LiftShare{};
+  std::uint8_t on = 0;
+  COOP_READ(r.u8(on));
+  if (on > 1) return Error::bad_value;
+  m.on = on != 0;
+  return Error::none;
+}
+
+// PVP_STRIKE: u8 player, u8 victim (1 to 16, not the player), u32 seq, u64
+// seen_us, 11 x u32 kind, s32 amount (0 to 80), u8 source (1 to 4), object
+// id (10 bytes), 3 x 3 x f32 at, copy_at, from (finite).
+// A shot or blast names the attacker's own made object; the others name none.
+bool strike_object_ok(const PvpStrike& m) {
+  const bool thrown = m.source == PvpSource::shot || m.source == PvpSource::blast;
+  if (!thrown) return m.object == ObjectId{};
+  return m.object.kind == ObjectKind::made && check_object_id(m.object) == Error::none &&
+         (m.player_number == kPlayerSelf || m.object.maker == m.player_number);
+}
+
+bool valid_strike(const PvpStrike& m) {
+  const auto source = static_cast<std::uint8_t>(m.source);
+  return valid_player_or_self(m.player_number) && valid_player(m.victim) && m.victim != m.player_number &&
+         m.amount >= 0 && m.amount <= kMaxPvpLife && source >= 1 && source <= kPvpSourceMax &&
+         all_finite(m.at) && all_finite(m.copy_at) && all_finite(m.from) && strike_object_ok(m);
+}
+
+Error encode_body(const PvpStrike& m, Writer& w) {
+  if (!valid_strike(m)) return Error::bad_value;
+  w.u8(m.player_number);
+  w.u8(m.victim);
+  w.u32(m.seq);
+  w.u64(m.seen_us);
+  for (std::uint32_t k : m.kind) w.u32(k);
+  w.u32(static_cast<std::uint32_t>(m.amount));
+  w.u8(static_cast<std::uint8_t>(m.source));
+  write_object_id(m.object, w);
+  for (float f : m.at) w.f32(f);
+  for (float f : m.copy_at) w.f32(f);
+  for (float f : m.from) w.f32(f);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, PvpStrike& m) {
+  m = PvpStrike{};
+  std::uint32_t amount = 0;
+  std::uint8_t source = 0;
+  COOP_READ(r.u8(m.player_number));
+  COOP_READ(r.u8(m.victim));
+  COOP_READ(r.u32(m.seq));
+  COOP_READ(r.u64(m.seen_us));
+  for (std::uint32_t& k : m.kind) COOP_READ(r.u32(k));
+  COOP_READ(r.u32(amount));
+  COOP_READ(r.u8(source));
+  if (const Error e = read_object_id(r, m.object); e != Error::none) return e;
+  for (float& f : m.at) COOP_READ(r.f32(f));
+  for (float& f : m.copy_at) COOP_READ(r.f32(f));
+  for (float& f : m.from) COOP_READ(r.f32(f));
+  if (amount > static_cast<std::uint32_t>(kMaxPvpLife)) return Error::bad_value;
+  m.amount = static_cast<std::int32_t>(amount);
+  m.source = static_cast<PvpSource>(source);
+  return valid_strike(m) ? Error::none : Error::bad_value;
+}
+
+// PVP_RESULT: u8 player, u8 attacker (1 to 16, not the player), u32 seq, u8
+// outcome (0 to 6), s32 amount (0 to 80), s32 life (0 to 80), 11 x u32 kind,
+// 3 x f32 at (finite).
+bool valid_result(const PvpResult& m) {
+  return valid_player_or_self(m.player_number) && valid_player(m.attacker) && m.attacker != m.player_number &&
+         static_cast<std::uint8_t>(m.outcome) <= kPvpOutcomeMax && m.amount >= 0 && m.amount <= kMaxPvpLife &&
+         m.life >= 0 && m.life <= kMaxPvpLife && all_finite(m.at);
+}
+
+Error encode_body(const PvpResult& m, Writer& w) {
+  if (!valid_result(m)) return Error::bad_value;
+  w.u8(m.player_number);
+  w.u8(m.attacker);
+  w.u32(m.seq);
+  w.u8(static_cast<std::uint8_t>(m.outcome));
+  w.u32(static_cast<std::uint32_t>(m.amount));
+  w.u32(static_cast<std::uint32_t>(m.life));
+  for (std::uint32_t k : m.kind) w.u32(k);
+  for (float f : m.at) w.f32(f);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, PvpResult& m) {
+  m = PvpResult{};
+  std::uint8_t outcome = 0;
+  std::uint32_t amount = 0;
+  std::uint32_t life = 0;
+  COOP_READ(r.u8(m.player_number));
+  COOP_READ(r.u8(m.attacker));
+  COOP_READ(r.u32(m.seq));
+  COOP_READ(r.u8(outcome));
+  COOP_READ(r.u32(amount));
+  COOP_READ(r.u32(life));
+  for (std::uint32_t& k : m.kind) COOP_READ(r.u32(k));
+  for (float& f : m.at) COOP_READ(r.f32(f));
+  if (outcome > kPvpOutcomeMax || amount > static_cast<std::uint32_t>(kMaxPvpLife) ||
+      life > static_cast<std::uint32_t>(kMaxPvpLife)) {
+    return Error::bad_value;
+  }
+  m.outcome = static_cast<PvpOutcome>(outcome);
+  m.amount = static_cast<std::int32_t>(amount);
+  m.life = static_cast<std::int32_t>(life);
+  return valid_result(m) ? Error::none : Error::bad_value;
+}
+
+// PVP_NATIVE: u8 player, u8 on (0 or 1).
+Error encode_body(const PvpNative& m, Writer& w) {
+  if (!valid_player_or_self(m.player_number)) return Error::bad_value;
+  w.u8(m.player_number);
+  w.u8(m.on ? 1 : 0);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, PvpNative& m) {
+  m = PvpNative{};
+  std::uint8_t on = 0;
+  COOP_READ(r.u8(m.player_number));
+  COOP_READ(r.u8(on));
+  if (!valid_player_or_self(m.player_number) || on > 1) return Error::bad_value;
+  m.on = on != 0;
+  return Error::none;
+}
+
+Error encode_body(const BombAnswer& m, Writer& w) {
+  COOP_TRY(check_object_id(m.id));
+  const auto refusal = static_cast<std::uint8_t>(m.refusal);
+  if (refusal == 0 || refusal > kBombRefusalMax) return Error::bad_value;
+  write_object_id(m.id, w);
+  w.u16(m.epoch);
+  w.u8(refusal);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, BombAnswer& m) {
+  m = BombAnswer{};
+  COOP_TRY(read_object_id(r, m.id));
+  COOP_READ(r.u16(m.epoch));
+  std::uint8_t refusal = 0;
+  COOP_READ(r.u8(refusal));
+  if (refusal == 0 || refusal > kBombRefusalMax) return Error::bad_value;
+  m.refusal = static_cast<BombRefusal>(refusal);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, JoinAllow& m) {
+  m = JoinAllow{};
+  std::uint8_t allow = 0;
+  std::uint8_t remember = 0;
+  COOP_READ(r.u32(m.knock));
+  COOP_READ(r.u8(allow));
+  COOP_READ(r.u8(remember));
+  if (m.knock == 0 || allow > 1 || remember > 1) return Error::bad_value;
+  m.allow = allow == 1;
+  m.remember = remember == 1;
+  return Error::none;
+}
+
 // DIFFICULTY: u8 set by (0 nobody, else a player), u8 automatic (0 or 1),
 // u8 preset, u16 life, u16 damage, u16 count (percent, within the sliders),
 // u16 boss life (25 to 1600), u16 boss damage (25 to 400).
@@ -2728,11 +3122,11 @@ Error decode_body(Reader& r, DbnoMode& m) {
   return check_dbno_mode(m);
 }
 
-// DBNO_STATE: u8 player, u8 state (0 up, 1 downed, 2 out), u16 bleed-out
+// DBNO_STATE: u8 player, u8 state (0 up, 1 downed, 2 out, 3 spectating), u16 bleed-out
 // tenths left, u8 reviver (0 nobody; not the player), u8 progress. Only a
 // downed player has time left, and only one with a reviver has progress.
 Error check_dbno_status(const DbnoStatus& m) {
-  if (!valid_player_or_self(m.player_number) || m.state > DbnoState::out ||
+  if (!valid_player_or_self(m.player_number) || m.state > DbnoState::spectating ||
       m.left_tenths > kDbnoMaxLeftTenths || m.reviver > kMaxPlayers) {
     return Error::bad_value;
   }
@@ -2760,7 +3154,7 @@ Error decode_body(Reader& r, DbnoStatus& m) {
   COOP_READ(r.u16(m.left_tenths));
   COOP_READ(r.u8(m.reviver));
   COOP_READ(r.u8(m.progress));
-  if (state > static_cast<std::uint8_t>(DbnoState::out)) return Error::bad_value;
+  if (state > static_cast<std::uint8_t>(DbnoState::spectating)) return Error::bad_value;
   m.state = static_cast<DbnoState>(state);
   return check_dbno_status(m);
 }
@@ -2788,6 +3182,24 @@ Error decode_body(Reader& r, DbnoRevive& m) {
     return Error::bad_value;
   }
   m.holding = holding == 1;
+  return Error::none;
+}
+
+// DBNO_THREAT: u8 player, u8 near (0 none, 1 an enemy near; others refused).
+Error encode_body(const DbnoThreat& m, Writer& w) {
+  if (!valid_player_or_self(m.player_number)) return Error::bad_value;
+  w.u8(m.player_number);
+  w.u8(m.enemy_near ? 1 : 0);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, DbnoThreat& m) {
+  m = DbnoThreat{};
+  std::uint8_t value = 0;
+  COOP_READ(r.u8(m.player_number));
+  COOP_READ(r.u8(value));
+  if (!valid_player_or_self(m.player_number) || value > 1) return Error::bad_value;
+  m.enemy_near = value == 1;
   return Error::none;
 }
 
@@ -2924,6 +3336,7 @@ MessageType type_of(const Message& message) {
       MessageType::platform_clock,
       MessageType::platform_counter,
       MessageType::dbno_mode,   MessageType::dbno_state, MessageType::dbno_revive,
+      MessageType::dbno_threat,
       MessageType::difficulty,
       MessageType::voice_frame,
       MessageType::mod_list,      MessageType::mod_settings,
@@ -2936,6 +3349,13 @@ MessageType type_of(const Message& message) {
       MessageType::link_sound,
       MessageType::boss_scene,  MessageType::boss_heart,
       MessageType::player_look,
+      MessageType::switch_state,
+      MessageType::join_knock,  MessageType::join_allow,
+      MessageType::bomb_take,   MessageType::bomb_answer, MessageType::bomb_share,
+      MessageType::lift_ask,    MessageType::lift_answer, MessageType::lift_place,
+      MessageType::lift_share,
+      MessageType::pvp_strike,  MessageType::pvp_result,  MessageType::pvp_native,
+      MessageType::boss_alive,
   };
   static_assert(std::size(kTypes) == std::variant_size_v<Message>);
   return kTypes[message.index()];
@@ -2950,6 +3370,7 @@ std::uint8_t channel_of(MessageType type) {
     case MessageType::player_ride:
     case MessageType::test_payload:
     case MessageType::local_sample:
+    case MessageType::lift_place:
       return kChannelPlayerSamples;
     case MessageType::flag_set:
     case MessageType::flag_state:
@@ -2957,6 +3378,7 @@ std::uint8_t channel_of(MessageType type) {
     case MessageType::flag_origin:
     case MessageType::flag_snapshot:
     case MessageType::host:
+    case MessageType::boss_alive:
       return kChannelProgress;
     case MessageType::object_sample:
     case MessageType::world_move:
@@ -2980,6 +3402,15 @@ std::uint8_t channel_of(MessageType type) {
     case MessageType::pvp_hit:
     case MessageType::pvp_hurt:
     case MessageType::dbno_revive:
+    case MessageType::bomb_take:
+    case MessageType::bomb_answer:
+    case MessageType::bomb_share:
+    case MessageType::lift_ask:
+    case MessageType::lift_answer:
+    case MessageType::lift_share:
+    case MessageType::pvp_strike:
+    case MessageType::pvp_result:
+    case MessageType::pvp_native:
       return kChannelOwnership;
     default:
       return kChannelSession;
@@ -3011,6 +3442,7 @@ bool allowed_on_channel(MessageType type, std::uint8_t channel) {
     case MessageType::world_hit:
     case MessageType::boss_room:
     case MessageType::sign_cut:
+    case MessageType::switch_state:
     case MessageType::dungeon_event:
     case MessageType::save_ask:
     case MessageType::save_part:
@@ -3024,6 +3456,7 @@ bool allowed_on_channel(MessageType type, std::uint8_t channel) {
     case MessageType::ocarina_note:
     case MessageType::dbno_mode:
     case MessageType::dbno_state:
+    case MessageType::dbno_threat:
     case MessageType::local_join:
     case MessageType::local_joined:
     case MessageType::local_leave:
@@ -3032,6 +3465,8 @@ bool allowed_on_channel(MessageType type, std::uint8_t channel) {
     case MessageType::link_sound:
     case MessageType::boss_scene:
     case MessageType::boss_heart:
+    case MessageType::join_knock:
+    case MessageType::join_allow:
       return channel == kChannelSession;
     case MessageType::flag_set:
     case MessageType::flag_state:
@@ -3039,11 +3474,13 @@ bool allowed_on_channel(MessageType type, std::uint8_t channel) {
     case MessageType::flag_origin:
     case MessageType::flag_snapshot:
     case MessageType::host:
+    case MessageType::boss_alive:
       return channel == kChannelProgress;
     case MessageType::player_sample:
     case MessageType::player_pose:
     case MessageType::player_ride:
     case MessageType::local_sample:
+    case MessageType::lift_place:
       return channel == kChannelPlayerSamples;
     case MessageType::object_sample:
     case MessageType::world_move:
@@ -3067,6 +3504,15 @@ bool allowed_on_channel(MessageType type, std::uint8_t channel) {
     case MessageType::pvp_hit:
     case MessageType::pvp_hurt:
     case MessageType::dbno_revive:
+    case MessageType::bomb_take:
+    case MessageType::bomb_answer:
+    case MessageType::bomb_share:
+    case MessageType::lift_ask:
+    case MessageType::lift_answer:
+    case MessageType::lift_share:
+    case MessageType::pvp_strike:
+    case MessageType::pvp_result:
+    case MessageType::pvp_native:
       return channel == kChannelOwnership;
     case MessageType::test_payload:
       return channel == kChannelSession || channel == kChannelPlayerSamples;
@@ -3086,6 +3532,10 @@ bool may_send(Sender from, MessageType type) {
     case MessageType::local_leave:
     case MessageType::local_sample:
     case MessageType::local_message:
+    case MessageType::join_allow:
+    case MessageType::bomb_take:
+    case MessageType::bomb_share:
+    case MessageType::lift_share:
       return from == Sender::client;
     case MessageType::welcome:
     case MessageType::refused:
@@ -3100,6 +3550,8 @@ bool may_send(Sender from, MessageType type) {
     case MessageType::lobby_mutes:
     case MessageType::lobby_result:
     case MessageType::local_joined:
+    case MessageType::join_knock:
+    case MessageType::bomb_answer:
       return from == Sender::server;
     case MessageType::ping:
     case MessageType::pong:
@@ -3136,6 +3588,7 @@ bool may_send(Sender from, MessageType type) {
     case MessageType::drop_ask:
     case MessageType::boss_room:
     case MessageType::sign_cut:
+    case MessageType::switch_state:
     case MessageType::dungeon_event:
     case MessageType::save_ask:
     case MessageType::save_part:
@@ -3149,10 +3602,18 @@ bool may_send(Sender from, MessageType type) {
     case MessageType::dbno_mode:
     case MessageType::dbno_state:
     case MessageType::dbno_revive:
+    case MessageType::dbno_threat:
     case MessageType::player_look:
     case MessageType::link_sound:
     case MessageType::boss_scene:
     case MessageType::boss_heart:
+    case MessageType::boss_alive:
+    case MessageType::lift_ask:
+    case MessageType::lift_answer:
+    case MessageType::lift_place:
+    case MessageType::pvp_strike:
+    case MessageType::pvp_result:
+    case MessageType::pvp_native:
       return true;
   }
   return false;
@@ -3185,17 +3646,21 @@ auto* player_field(M& message) {
                       std::is_same_v<T, SignCut> || std::is_same_v<T, SaveAsk> ||
                       std::is_same_v<T, SavePart> || std::is_same_v<T, PlayerLife> ||
                       std::is_same_v<T, PvpHit> || std::is_same_v<T, PvpHurt> ||
-                      std::is_same_v<T, DungeonEvent> ||
+                      std::is_same_v<T, DungeonEvent> || std::is_same_v<T, SwitchState> ||
                       std::is_same_v<T, PlayerRide> ||
                       std::is_same_v<T, OcarinaNote> ||
                       std::is_same_v<T, PlatformClock> ||
                       std::is_same_v<T, PlatformCounter> ||
                       std::is_same_v<T, DbnoStatus> || std::is_same_v<T, DbnoRevive> ||
+                      std::is_same_v<T, DbnoThreat> ||
                       std::is_same_v<T, VoiceFrame> ||
                       std::is_same_v<T, ModList> || std::is_same_v<T, ModSettings> ||
                       std::is_same_v<T, LinkSound> ||
                       std::is_same_v<T, BossScene> || std::is_same_v<T, BossHeart> ||
-                      std::is_same_v<T, PlayerLook>) {
+                      std::is_same_v<T, BossAlive> || std::is_same_v<T, PlayerLook> || std::is_same_v<T, LiftAsk> ||
+                      std::is_same_v<T, LiftAnswer> || std::is_same_v<T, LiftPlace> ||
+                      std::is_same_v<T, PvpStrike> || std::is_same_v<T, PvpResult> ||
+                      std::is_same_v<T, PvpNative>) {
           field = &m.player_number;
         }
       },
@@ -3233,7 +3698,14 @@ bool set_sender(Message& message, std::uint8_t player) {
   if (const auto* h = std::get_if<PvpHurt>(&message); h && h->attacker == player) return false;
   // Nor revive itself (down but not out).
   if (const auto* d = std::get_if<DbnoRevive>(&message); d && d->target == player) return false;
+  // Nor lift itself (native puppets phase 3).
+  if (const auto* l = std::get_if<LiftAsk>(&message); l && l->lifted == player) return false;
+  if (const auto* l = std::get_if<LiftAnswer>(&message); l && l->lifter == player) return false;
+  if (const auto* l = std::get_if<LiftPlace>(&message); l && l->lifted == player) return false;
   if (const auto* d = std::get_if<DbnoStatus>(&message); d && d->reviver == player) return false;
+  // Nor strike itself (PvP on real bodies).
+  if (const auto* s = std::get_if<PvpStrike>(&message); s && s->victim == player) return false;
+  if (const auto* s = std::get_if<PvpResult>(&message); s && s->attacker == player) return false;
   *field = player;
   return true;
 }
@@ -3299,6 +3771,7 @@ Error decode(std::span<const std::uint8_t> bytes, Message& out) {
     case MessageType::dbno_mode: return decode_as<DbnoMode>(body, out);
     case MessageType::dbno_state: return decode_as<DbnoStatus>(body, out);
     case MessageType::dbno_revive: return decode_as<DbnoRevive>(body, out);
+    case MessageType::dbno_threat: return decode_as<DbnoThreat>(body, out);
     case MessageType::flag_snapshot: return decode_as<FlagSnapshot>(body, out);
     case MessageType::host: return decode_as<Host>(body, out);
     case MessageType::object_present: return decode_as<ObjectPresent>(body, out);
@@ -3321,6 +3794,7 @@ Error decode(std::span<const std::uint8_t> bytes, Message& out) {
     case MessageType::world_hit: return decode_as<WorldHit>(body, out);
     case MessageType::sign_cut: return decode_as<SignCut>(body, out);
     case MessageType::dungeon_event: return decode_as<DungeonEvent>(body, out);
+    case MessageType::switch_state: return decode_as<SwitchState>(body, out);
     case MessageType::platform_clock: return decode_as<PlatformClock>(body, out);
     case MessageType::platform_counter: return decode_as<PlatformCounter>(body, out);
     case MessageType::voice_frame: return decode_as<VoiceFrame>(body, out);
@@ -3329,6 +3803,18 @@ Error decode(std::span<const std::uint8_t> bytes, Message& out) {
     case MessageType::lobby_action: return decode_as<LobbyAction>(body, out);
     case MessageType::lobby_mutes: return decode_as<LobbyMutes>(body, out);
     case MessageType::lobby_result: return decode_as<LobbyResult>(body, out);
+    case MessageType::join_knock: return decode_as<JoinKnock>(body, out);
+    case MessageType::join_allow: return decode_as<JoinAllow>(body, out);
+    case MessageType::bomb_take: return decode_as<BombTake>(body, out);
+    case MessageType::bomb_answer: return decode_as<BombAnswer>(body, out);
+    case MessageType::bomb_share: return decode_as<BombShare>(body, out);
+    case MessageType::lift_ask: return decode_as<LiftAsk>(body, out);
+    case MessageType::lift_answer: return decode_as<LiftAnswer>(body, out);
+    case MessageType::lift_place: return decode_as<LiftPlace>(body, out);
+    case MessageType::lift_share: return decode_as<LiftShare>(body, out);
+    case MessageType::pvp_strike: return decode_as<PvpStrike>(body, out);
+    case MessageType::pvp_result: return decode_as<PvpResult>(body, out);
+    case MessageType::pvp_native: return decode_as<PvpNative>(body, out);
     case MessageType::local_join: return decode_as<LocalJoin>(body, out);
     case MessageType::local_joined: return decode_as<LocalJoined>(body, out);
     case MessageType::local_leave: return decode_as<LocalLeave>(body, out);
@@ -3336,6 +3822,7 @@ Error decode(std::span<const std::uint8_t> bytes, Message& out) {
     case MessageType::local_message: return decode_as<LocalMessage>(body, out);
     case MessageType::boss_scene: return decode_as<BossScene>(body, out);
     case MessageType::boss_heart: return decode_as<BossHeart>(body, out);
+    case MessageType::boss_alive: return decode_as<BossAlive>(body, out);
     case MessageType::drop_spawn: return decode_as<DropSpawn>(body, out);
     case MessageType::drop_take: return decode_as<DropTake>(body, out);
     case MessageType::drop_ask: return decode_as<DropAsk>(body, out);

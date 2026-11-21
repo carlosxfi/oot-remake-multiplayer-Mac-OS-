@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <vector>
 
 #include "coop/host/flags.hpp"
 
@@ -135,5 +136,106 @@ struct Mend {
 };
 inline constexpr std::size_t kMends = 2;
 std::span<const Mend, kMends> Mends();
+
+// Row 145: a quest step the game's own flows set back below a step that a
+// played story scene proves. Get_StoneOfWater (romfs Event/EventFlow/
+// Get_StoneOfWater.bfevfl): StoneOfWater_ClearDivingGame sets Step05,
+// StoneOfWater_GetRutoletter Step05_01 and StoneOfWater_UseRutoletter Step06,
+// each only checking Get_StoneOfWater_IsAfter_Step03_Exp, never a later step;
+// Dm_SY_BancChangeArrive's Goto_ZoraDomain sets Step03 or Step03_Impa with no
+// check of the quest at all. King Zora stands aside from Step07 on (the
+// scene Dm_Zora_0010, StoneOfWater_ShowLetter), so the diving game, a letter
+// got or read, or that arrival after he moved put him back in front of the
+// fountain with the letter already spent. Solo too; co-op makes it likelier
+// (a shared Step07 in a game that never did the diving game or still holds
+// a letter). Raised back to the floor through the game's Enum setter, after
+// a hold and only outside events; never from NotReady or an unknown value.
+// The same shape, SageOfWater (review of row 145): the Lake Hylia door into
+// the Water Temple (HyruleField banc, NextEventName
+// SageOfWater_Arrival_WaterTemple = Dm_SY_BancChangeArrive:WaterTemple_Arrival)
+// plays at EVERY entry and sets Step06 whenever SageOfWater_IsAfter_Step04_Exp
+// holds, with no upper check: re-entering after Ruto's scene (Step07), Dark
+// Link (Step07_1, which Room 23 on the way to Morpha reads), Morpha's intro
+// (Step07_2) or his death (Step08) set the quest back to Step06. Each of those
+// has its own played flag; the highest one proven wins (rows of one quest are
+// listed highest first, and MendStory raises only the first row due).
+struct StepFloor {
+    std::uint32_t quest;  // the quest's Enum, Step_<quest>
+    std::uint32_t proof;  // a played-scene Bool only the floor step's own flow sets
+    std::uint32_t floor;  // the step that scene proves
+    std::span<const std::uint32_t> back;  // the lower steps the game's flows set with no check against it
+    const char* what;     // for the log
+};
+inline constexpr std::size_t kStepFloors = 5;
+std::span<const StepFloor, kStepFloors> StepFloors();
+// The floor to write, or nothing: the proof is 1 and our step is one of `back`.
+std::optional<std::uint32_t> StepFloorDue(const StepFloor& floor, std::optional<std::uint32_t> step,
+                                          std::optional<bool> proof);
+
+// Row 129 (GitHub #173): a story event whose played flag is shared never
+// runs in a game behind the group (the game counts it as played), so what
+// its own flow sets there never happens. The owl in Hyrule Field is the only
+// setter of HyruleField_ArriveEntrance, and the game's clock stays stopped
+// until that flag is 1 (docs/time.md, "Clock gate"). Each effect is a saved
+// Bool such an event sets on its unconditional path, one way only in every
+// event flow and AI graph of the game, and not shared itself
+// (tools/puppet_pack/story_effects.py writes the list from the romfs): once
+// the event has played it holds that value for good, so a game with the
+// played flag and not the value is given it through the game's own Bool
+// setter (co-op idle too: a save that got the played flag in a session).
+struct Effect {
+    std::uint32_t played;  // HavePlayedEvent.<setting>
+    std::uint32_t flag;
+    bool value;
+    const char* setting;
+    const char* name;
+};
+std::span<const Effect> Effects();
+
+// Review of owl-time (should-fix): each effect's flag is given at most once per load. A flag set back after that in
+// the same load (no such writer is known: story_effects.py reads the romfs, not the game's code) is then left alone,
+// said once, instead of being fought every 3 s with a log line each time. A new load (an older save reloaded, the
+// flag 0 there again) may give it once more. The caller's hold and the "due" rule (EffectsDue) are unchanged.
+// Take() only says whether to set it; Given() records it once set_bool succeeded, so a failed write is tried again
+// on the next pass instead of counting as given (and later as a false "set back").
+class EffectsGiven {
+public:
+    enum class Verdict : std::uint8_t {
+        give,      // not given since this load: set it
+        set_back,  // given since this load and due again: left alone, say so (once)
+        quiet,     // left alone, said already
+    };
+    Verdict Take(const Effect& due);
+    void Given(const Effect& due);  // set_bool succeeded
+    void NewLoad();  // the title or a load: nothing read now
+
+private:
+    std::vector<std::uint32_t> given_;  // flags given since this load
+    std::vector<std::uint32_t> said_;   // of those, set back and said
+};
+inline constexpr std::size_t kEffectsMax = 32;  // Effects().size() stays under it (story_test)
+
+// The effects due now: the played flag is 1 and the effect's flag is known
+// and not its value. `read` gives a Bool's value, nothing when unread
+// (unknown inputs count as "not due"). Each flag is due at most once: several
+// events can set the same flag (DeathMtCrater_IsFirstEntry from both crater
+// entrances, MelodyGet_Time_EndConversationWithZelda from both Song of Time
+// scenes; story_test checks every flag has one value), and the first played
+// row stands for all of them.
+template <class ReadBool>
+std::size_t EffectsDue(ReadBool&& read, std::span<const Effect*> out) {
+    std::size_t n = 0;
+    for (const Effect& e : Effects()) {
+        if (n == out.size()) break;
+        const std::optional<bool> played = read(e.played);
+        if (!played || !*played) continue;
+        const std::optional<bool> now = read(e.flag);
+        if (!now || *now == e.value) continue;
+        bool listed = false;
+        for (std::size_t i = 0; i < n; ++i) listed = listed || out[i]->flag == e.flag;
+        if (!listed) out[n++] = &e;
+    }
+    return n;
+}
 
 } // namespace CoopStory

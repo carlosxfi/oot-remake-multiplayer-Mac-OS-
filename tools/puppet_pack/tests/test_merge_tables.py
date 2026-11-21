@@ -13,7 +13,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from puppet_pack import merge_tables as mt, rstb, sarc  # noqa: E402
+from puppet_pack import byml, merge_tables as mt, rstb, sarc  # noqa: E402
 
 try:
     import zstandard
@@ -61,6 +61,11 @@ class MergeTablesTest(unittest.TestCase):
     def table(self, mod):
         with open(self.path(mod, "romfs", "System", "Resource", NAME), "rb") as f:
             return mt.Codec(self.romfs).load(f.read())
+
+    def mark_ours(self, mod):
+        """A seed the game built (coop_rando writes coop-rando.txt into each); one put in by hand has none."""
+        with open(self.path(mod, mt.SEED_MARK), "w", encoding="utf-8", newline="\n") as f:
+            f.write("default\n")
 
     def run_merge(self):
         self.lines = []
@@ -172,10 +177,34 @@ class MergeTablesTest(unittest.TestCase):
     def test_our_seeds_are_left_alone(self):
         self.put_table(PACK, {1: 100})
         self.put_table("randomizer-S1", {2: 5})  # ours: built beside every table already
+        self.mark_ours("randomizer-S1")
         self.assertEqual(self.run_merge(), 0)
         self.assertEqual(self.lines, [])
         self.assertEqual(self.table("randomizer-S1").by_crc, {2: 5})
         self.assertEqual(self.table(PACK).by_crc, {1: 100})
+
+    def test_a_hand_put_seed_that_wins_is_merged_like_any_mod(self):
+        # Nax 2026-11-20: a seed built with an OOTRR from source, its randomizer-<seed> folder copied to every player
+        # (no coop-rando.txt). Not ours: it gets the pack's entries, its own table kept (which coop_rando's
+        # SeedFilesHash reads, so two players' copies still match after their merges).
+        self.put_table(PACK, {1: 100, 3: 9})
+        hand = self.put_table("randomizer-NAX1", {1: 120, 2: 5})
+        own = read(hand)
+        self.assertEqual(self.run_merge(), 0)
+        self.assertEqual(self.table("randomizer-NAX1").by_crc, {1: 120, 2: 5, 3: 9})
+        self.assertEqual(read(self.path("randomizer-NAX1", mt.KEEP_DIR, NAME)), own)
+        self.assertTrue(os.path.isfile(self.path("randomizer-NAX1", mt.MARK)))
+        self.assertIn("randomizer-NAX1", self.lines[0])
+
+    def test_a_hand_put_seed_under_a_winning_pack_is_merged_into_it(self):
+        self.put_table(PACK, {1: 100})
+        self.put_table("randomizer-NAX1", {4: 4})
+        self.put_table("randomizer-S1", {5: 5})
+        self.mark_ours("randomizer-S1")
+        with open(os.path.join(self.mods, mt.LIST_FILE), "w", encoding="utf-8", newline="\n") as f:
+            f.write(f"coop-mods 1\non {PACK}\non randomizer-S1\non randomizer-NAX1\n")
+        self.assertEqual(self.run_merge(), 0)
+        self.assertEqual(self.table(PACK).by_crc, {1: 100, 4: 4})  # the hand seed's in, our seed's not
 
     def test_a_mod_under_the_pack_by_name_gets_its_entries_into_the_packs_table(self):
         # Player report 101: "bestbuddy" (RSDB tables made larger, its own size table) sorts under "contents/", so
@@ -210,6 +239,7 @@ class MergeTablesTest(unittest.TestCase):
         self.put_table(PACK, {1: 100})
         self.put_table("bestbuddy", {3: 3})
         self.put_table("randomizer-S1", {4: 4})
+        self.mark_ours("randomizer-S1")
         with open(os.path.join(self.mods, mt.LIST_FILE), "w", encoding="utf-8", newline="\n") as f:
             f.write(f"coop-mods 1\non {PACK}\non randomizer-S1\n")
         self.assertEqual([n for n, _ in mt.load_order(self.mods)], ["bestbuddy", "randomizer-S1", PACK])
@@ -377,6 +407,387 @@ class MergeTablesTest(unittest.TestCase):
             f.write(b"abc")
         self.assertEqual(mt.file_line(self.mods, p), "a b/t.bin 3 e71fa2190541574b")  # FNV-1a 64 of "abc"
         self.assertEqual(mt.fnv64(p), ("e71fa2190541574b", 3))
+
+
+AI = "ActorInfo.Product.111.rstbl.byml.zs"
+GAI = "GameActorInfo.Product.111.rstbl.byml.zs"
+AI_KEY = "RSDB/ActorInfo.Product.111.rstbl.byml"
+SEED = "randomizer-adzfteae2h83-s89dbd7a9"
+
+
+MALS = "Mals/USen.Product.110.sarc.zs"
+TITLE = "UI/Layout2Archive/Title.Product.100.Nin_Ounce_NVN2.blarc.zs"
+
+
+@unittest.skipIf(zstandard is None, "needs zstandard")
+class MenuGuardTest(unittest.TestCase):
+    """guard_menus: the pack's menu files (--title-rows / --pause-tab) only where the size table the game reads holds
+    their sizes (0.11.5's test: an old pack left as contents/.../coop-puppet.old-b26 won the table and the language
+    archive failed to load at boot: a crash)."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="merge_tables_menus_")
+        self.mods = os.path.join(self.dir, "mods")
+        self.romfs = os.path.join(self.dir, "romfs")
+        self.lines = []
+        self.pack = os.path.join(self.mods, *PACK.split("/"))
+        self.mals = 2373416 + 336         # the game's entry (made up near the real one)
+        self.grown = self.mals + 1048 + 0x1000
+        self.put_table(PACK, {self.crc(MALS): self.grown, self.crc(TITLE): 230000, 7: 70})
+        for rel in (MALS, TITLE):
+            self.put(os.path.join(self.pack, "romfs", *rel.split("/")), b"pack " + rel.encode())
+        self.put(os.path.join(self.pack, "coop_puppet.json"),
+                 b'{"title_rows": true, "title_menu": ["%s", "%s"], "pause_menu": ["%s"]}'
+                 % (TITLE.encode(), MALS.encode(), MALS.encode()))
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    @staticmethod
+    def crc(rel):
+        return rstb.Rstb.crc(rel[:-3])
+
+    @staticmethod
+    def put(path, data):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+
+    def put_table(self, mod, by_crc):
+        raw = zstandard.ZstdCompressor(write_content_size=True).compress(rstb.Rstb(by_crc=by_crc).dumps())
+        self.put(os.path.join(self.mods, *mod.split("/"), "romfs", "System", "Resource", NAME), raw)
+
+    def guard(self):
+        self.lines = []
+        return mt.guard_menus(self.mods, self.romfs, self.lines.append)
+
+    def in_play(self, rel):
+        return os.path.isfile(os.path.join(self.pack, "romfs", *rel.split("/")))
+
+    def kept(self, rel):
+        return os.path.isfile(os.path.join(self.pack, mt.MENU_KEEP, *rel.split("/")))
+
+    def test_the_menu_files_are_the_manifests_menu_lists(self):
+        self.assertEqual(mt.menu_files(self.pack), [TITLE, MALS])
+        os.remove(os.path.join(self.pack, "coop_puppet.json"))
+        self.assertEqual(mt.menu_files(self.pack), [])
+
+    def test_the_pack_reading_its_own_table_keeps_its_menus(self):
+        self.assertEqual(self.guard(), 0)
+        self.assertTrue(self.in_play(MALS) and self.in_play(TITLE))
+        self.assertEqual(self.lines, [])
+        self.assertFalse(os.path.isdir(os.path.join(self.pack, mt.MENU_KEEP)))
+
+    def test_an_old_pack_left_in_contents_takes_the_menus_out_and_they_come_back_without_it(self):
+        old = PACK + ".old-b26"   # (sorts after the pack: its table wins; a title's own mod, never rewritten)
+        self.put_table(old, {self.crc(MALS): self.mals, 7: 70})
+        self.assertEqual(self.guard(), 0)
+        self.assertFalse(self.in_play(MALS) or self.in_play(TITLE))
+        self.assertTrue(self.kept(MALS) and self.kept(TITLE))
+        self.assertEqual(len(self.lines), 1)
+        self.assertIn("coop-puppet.old-b26", self.lines[0])
+        self.assertIn("Multiplayer tab are off", self.lines[0])
+        self.guard()   # (every start while it wins: said again, nothing lost)
+        self.assertTrue(self.kept(MALS) and self.kept(TITLE))
+        shutil.rmtree(os.path.join(self.mods, *old.split("/")))
+        self.assertEqual(self.guard(), 0)
+        self.assertTrue(self.in_play(MALS) and self.in_play(TITLE))
+        self.assertFalse(os.path.isdir(os.path.join(self.pack, mt.MENU_KEEP)))
+        self.assertIn("are back (2 files)", self.lines[0])
+        with open(os.path.join(self.pack, "romfs", *MALS.split("/")), "rb") as f:
+            self.assertEqual(f.read(), b"pack " + MALS.encode())
+
+    def test_a_winning_table_without_one_entry_counts_as_lacking_it(self):
+        self.put_table("zz-site-seed", {self.crc(TITLE): 230000})   # (no Mals entry: the game's own would be used)
+        self.guard()
+        self.assertFalse(self.in_play(MALS))
+        self.assertIn("1 of the puppet pack's menu files", self.lines[0])
+
+    def test_a_winning_table_that_holds_the_sizes_keeps_the_menus(self):
+        self.put_table("zz-site-seed", {self.crc(MALS): self.grown + 5, self.crc(TITLE): 230000})   # (merged)
+        self.assertEqual(self.guard(), 0)
+        self.assertTrue(self.in_play(MALS) and self.in_play(TITLE))
+        self.assertEqual(self.lines, [])
+
+    def test_a_pack_made_again_while_its_menus_were_out_keeps_its_new_files(self):
+        self.put_table(PACK + ".old-b26", {self.crc(MALS): self.mals})
+        self.guard()
+        self.put(os.path.join(self.pack, "romfs", *MALS.split("/")), b"new pack")   # (build.py ran again)
+        shutil.rmtree(os.path.join(self.mods, *(PACK + ".old-b26").split("/")))
+        self.guard()
+        with open(os.path.join(self.pack, "romfs", *MALS.split("/")), "rb") as f:
+            self.assertEqual(f.read(), b"new pack")
+        self.assertTrue(self.in_play(TITLE))
+        self.assertFalse(os.path.isdir(os.path.join(self.pack, mt.MENU_KEEP)))
+
+    def test_a_mod_switched_off_in_the_mods_list_does_not_take_the_menus_out(self):
+        self.put_table("zz-site-seed", {self.crc(MALS): self.mals})
+        self.put(os.path.join(self.mods, mt.LIST_FILE), b"coop-mods 1\noff zz-site-seed\n")
+        self.guard()
+        self.assertTrue(self.in_play(MALS) and self.in_play(TITLE))
+
+    def test_every_start_runs_the_guard_after_the_merge(self):
+        self.put_table(PACK + ".old-b26", {self.crc(MALS): self.mals})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            mt.main(["--mods", self.mods, "--romfs", self.romfs])
+        self.assertFalse(self.in_play(MALS))
+        self.assertIn("Menus: the game reads contents/0400486024DEC000/coop-puppet.old-b26's size table", out.getvalue())
+
+
+@unittest.skipIf(zstandard is None, "needs zstandard")
+class MergeRowsTest(unittest.TestCase):
+    """Player report 144/145: a seed with its own RSDB/ActorInfo hid the puppet pack's rows (create refused)."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="merge_rows_test_")
+        self.mods = os.path.join(self.dir, "mods")
+        self.romfs = os.path.join(self.dir, "romfs")
+        self.lines = []
+        os.makedirs(self.mods)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def say(self, line):
+        self.lines.append(line)
+
+    def path(self, mod, *rest):
+        return os.path.join(self.mods, *mod.split("/"), *rest)
+
+    def put_rows(self, mod, rows, fname=AI):
+        p = self.path(mod, "romfs", "RSDB", fname)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(zstandard.ZstdCompressor(write_content_size=True).compress(byml.dumps(rows)))
+        return p
+
+    def rows(self, mod, fname=AI):
+        with open(self.path(mod, "romfs", "RSDB", fname), "rb") as f:
+            return byml.loads(mt.Codec(self.romfs).unpack(f.read()))
+
+    def put_sizes(self, mod, ai_size):
+        t = rstb.Rstb(by_crc={rstb.Rstb.crc(AI_KEY): ai_size, 7: 70})
+        p = self.path(mod, "romfs", "System", "Resource", NAME)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(zstandard.ZstdCompressor(write_content_size=True).compress(t.dumps()))
+        return p
+
+    def sizes(self, mod):
+        with open(self.path(mod, "romfs", "System", "Resource", NAME), "rb") as f:
+            return mt.Codec(self.romfs).load(f.read())
+
+    def table_bytes(self, mod):
+        return read(self.path(mod, "romfs", "RSDB", AI)), read(self.path(mod, "romfs", "System", "Resource", NAME))
+
+    def run_all(self):
+        self.lines = []
+        failed, fit = mt.merge_rows(self.mods, self.romfs, self.say)
+        return failed + mt.merge_mods(self.mods, self.romfs, self.say, fit), fit
+
+    def game_rows(self):
+        return [{"__RowId": "Npc_Mido", "Heap": 1}, {"__RowId": "Player_Child", "Heap": 2}]
+
+    def pack_rows(self):
+        return self.game_rows() + [{"__RowId": "CoopPuppet_Child", "Heap": 3}, {"__RowId": "CoopShot_Seed", "Heap": 4}]
+
+    def seed_with_own_tables(self):
+        self.put_rows(PACK, self.pack_rows())
+        self.put_sizes(PACK, 5000)
+        own = self.put_rows(SEED, [{"__RowId": "Npc_Mido", "Heap": 9}, {"__RowId": "Player_Child", "Heap": 2},
+                                   {"__RowId": "Rando_Item", "Heap": 5}])
+        self.put_sizes(SEED, 4000)
+        with open(self.path(SEED, mt.SEED_MARK), "w", encoding="utf-8", newline="\n") as f:
+            f.write("default\n")  # (a seed the game built)
+        return read(own)
+
+    def test_a_seed_with_its_own_actor_table_gets_the_pack_rows_and_a_size_that_fits(self):
+        own = self.seed_with_own_tables()
+        failed, fit = self.run_all()
+        self.assertEqual(failed, 0)
+        ids = [r["__RowId"] for r in self.rows(SEED)]
+        self.assertEqual(ids, sorted(ids, key=lambda s: s.encode("utf-8")))
+        self.assertEqual(set(ids), {"Npc_Mido", "Player_Child", "Rando_Item", "CoopPuppet_Child", "CoopShot_Seed"})
+        self.assertEqual(next(r for r in self.rows(SEED) if r["__RowId"] == "Npc_Mido")["Heap"], 9)  # the seed's own
+        self.assertEqual(read(self.path(SEED, mt.ROWS_KEEP, AI)), own)
+        # The seed's own size table (the one the game reads) holds the merged file's size; the pack's is untouched.
+        self.assertGreater(fit[AI_KEY], 5000)
+        self.assertGreaterEqual(self.sizes(SEED).get(AI_KEY), fit[AI_KEY])
+        self.assertEqual(self.sizes(PACK).get(AI_KEY), 5000)
+        # The module's mark (coop_rando RowsMergedByKit): the table written and the pack's, by FNV-1a 64.
+        mark = read(self.path(SEED, mt.ROWS_MARK)).decode("utf-8")
+        ai = mt.fnv64(self.path(SEED, "romfs", "RSDB", AI))[0]
+        pack = mt.fnv64(self.path(PACK, "romfs", "RSDB", AI))[0]
+        self.assertEqual(mark, f"coop-rows 1\ntable {AI} {ai} {pack}\n")
+        # The next start: nothing written.
+        before = self.table_bytes(SEED)
+        self.assertEqual(self.run_all()[0], 0)
+        self.assertTrue(any("already" in line for line in self.lines))
+        self.assertEqual(self.table_bytes(SEED), before)
+        # Undo puts the seed's own actor table back.
+        mt.undo(self.mods, self.say)
+        self.assertEqual(read(self.path(SEED, "romfs", "RSDB", AI)), own)
+        self.assertFalse(os.path.exists(self.path(SEED, mt.ROWS_MARK)))
+        self.assertFalse(os.path.exists(self.path(SEED, mt.ROWS_KEEP)))
+
+    def test_a_pack_made_again_is_merged_again_from_the_kept_copy(self):
+        self.seed_with_own_tables()
+        self.run_all()
+        self.put_rows(PACK, self.game_rows() + [{"__RowId": "CoopPuppet_Adult", "Heap": 7}])
+        self.assertEqual(self.run_all()[0], 0)
+        ids = {r["__RowId"] for r in self.rows(SEED)}
+        self.assertIn("CoopPuppet_Adult", ids)
+        self.assertNotIn("CoopPuppet_Child", ids)  # (from the kept copy, not the merged one)
+
+    def test_a_new_seed_put_over_the_merged_one_is_kept_as_the_new_original(self):
+        self.seed_with_own_tables()
+        self.run_all()
+        new_raw = read(self.put_rows(SEED, [{"__RowId": "Npc_Mido", "Heap": 11}]))
+        self.put_sizes(SEED, 4000)
+        self.assertEqual(self.run_all()[0], 0)
+        self.assertEqual(read(self.path(SEED, mt.ROWS_KEEP, AI)), new_raw)
+        self.assertIn("CoopPuppet_Child", {r["__RowId"] for r in self.rows(SEED)})
+        self.assertGreater(self.sizes(SEED).get(AI_KEY), 4000)
+
+    def test_every_table_the_pack_ships_is_merged(self):
+        self.seed_with_own_tables()
+        self.put_rows(PACK, [{"__RowId": "Player_Child"}, {"__RowId": "CoopPuppet_Child"}], GAI)
+        self.put_rows(SEED, [{"__RowId": "Player_Child"}], GAI)
+        self.assertEqual(self.run_all()[0], 0)
+        self.assertEqual([r["__RowId"] for r in self.rows(SEED, GAI)], ["CoopPuppet_Child", "Player_Child"])
+        mark = read(self.path(SEED, mt.ROWS_MARK)).decode("utf-8").split("\n")
+        self.assertEqual([line.split()[1] for line in mark[1:] if line], [AI, GAI])
+
+    def test_the_pack_winning_or_a_seed_without_actor_tables_is_left_alone(self):
+        self.put_rows(PACK, self.pack_rows())
+        self.put_sizes(PACK, 5000)
+        self.put_sizes(SEED, 4000)  # (an OOTRR 0.5.0 seed: no ActorInfo of its own)
+        with open(self.path(SEED, mt.SEED_MARK), "w", encoding="utf-8", newline="\n") as f:
+            f.write("default\n")  # (a seed the game built: its size table is left alone)
+        pack_raw = read(self.path(PACK, "romfs", "RSDB", AI))
+        self.assertEqual(self.run_all(), (0, {}))
+        self.assertEqual(read(self.path(PACK, "romfs", "RSDB", AI)), pack_raw)
+        self.assertFalse(os.path.exists(self.path(SEED, mt.ROWS_MARK)))
+        self.assertEqual(self.sizes(SEED).get(AI_KEY), 4000)
+
+    def test_a_site_mod_that_wins_both_tables_gets_the_rows_and_the_size_in_its_merged_table(self):
+        self.put_rows(PACK, self.pack_rows())
+        self.put_sizes(PACK, 5000)
+        self.put_rows("ootrr-site", self.game_rows() + [{"__RowId": "Rando_Item"}])
+        self.put_sizes("ootrr-site", 4000)
+        failed, fit = self.run_all()
+        self.assertEqual(failed, 0)
+        self.assertIn("CoopPuppet_Child", {r["__RowId"] for r in self.rows("ootrr-site")})
+        self.assertGreaterEqual(self.sizes("ootrr-site").get(AI_KEY), fit[AI_KEY])
+        self.assertTrue(os.path.exists(self.path("ootrr-site", mt.MARK)))
+        self.assertIn(f"fit {AI_KEY} {fit[AI_KEY]}",
+                      read(self.path("ootrr-site", mt.KEEP_DIR, mt.STAMP)).decode("utf-8"))
+        # The next start: both stamps hold; nothing written.
+        before = self.table_bytes("ootrr-site")
+        self.assertEqual(self.run_all()[0], 0)
+        self.assertEqual(self.table_bytes("ootrr-site"), before)
+
+    def test_a_title_mod_that_wins_the_actor_table_is_never_rewritten_and_said(self):
+        self.put_rows(PACK, self.pack_rows())
+        title = "contents/0400486024DEC000/zz-skins"
+        raw = read(self.put_rows(title, self.game_rows()))
+        failed, _ = self.run_all()
+        self.assertEqual(failed, 1)
+        self.assertEqual(read(self.path(title, "romfs", "RSDB", AI)), raw)
+        self.assertTrue(any("can't be shown" in line and "zz-skins" in line for line in self.lines))
+
+    def test_a_mod_switched_off_in_the_mods_list_is_not_merged(self):
+        own = self.seed_with_own_tables()
+        with open(os.path.join(self.mods, mt.LIST_FILE), "w", encoding="utf-8", newline="\n") as f:
+            f.write(f"coop-mods 1\noff {SEED}\n")
+        self.assertEqual(self.run_all()[0], 0)
+        self.assertEqual(read(self.path(SEED, "romfs", "RSDB", AI)), own)
+
+
+@unittest.skipIf(zstandard is None, "needs zstandard")
+class MergeMembersTest(unittest.TestCase):
+    """merge_members: the pack's menu archives into another mod's copy that wins them (the Character Select mod ships
+    Mals/USen and the Common layout archive too; the game read the mod's whole file and the co-op menus lost theirs)."""
+
+    MOD = "OoT Character Select"   # (not in coop-mods.list: by name, after contents/...: it wins)
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="merge_tables_members_")
+        self.mods = os.path.join(self.dir, "mods")
+        self.romfs = os.path.join(self.dir, "romfs")
+        self.pack = os.path.join(self.mods, *PACK.split("/"))
+        self.mod = os.path.join(self.mods, self.MOD)
+        self.game = {"A.msbt": b"game A", "Hdr.msbt": b"game header", "X.msbt": b"game X"}
+        self.put(os.path.join(self.romfs, *MALS.split("/")), self.archive(self.game))
+        self.put(os.path.join(self.pack, "romfs", *MALS.split("/")), self.archive(
+            dict(self.game, **{"A.msbt": b"pack A", "Hdr.msbt": b"pack header", "Coop.msbt": b"pack only"})))
+        self.put(os.path.join(self.pack, "coop_puppet.json"), b'{"pause_menu": ["%s"]}' % MALS.encode())
+        self.mod_raw = self.archive(dict(self.game, **{"Hdr.msbt": b"mod header", "Char.msbt": b"mod only"}))
+        self.put(os.path.join(self.mod, "romfs", *MALS.split("/")), self.mod_raw)
+        raw = zstandard.ZstdCompressor(write_content_size=True).compress(
+            rstb.Rstb(by_crc={rstb.Rstb.crc(MALS[:-3]): 5000}).dumps())
+        self.put(os.path.join(self.pack, "romfs", "System", "Resource", NAME), raw)
+        self.lines = []
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    @staticmethod
+    def put(path, data):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+
+    @staticmethod
+    def archive(members):
+        return zstandard.ZstdCompressor(write_content_size=True).compress(sarc.write(members, data_align=16))
+
+    def served(self):
+        raw = read(os.path.join(self.mod, "romfs", *MALS.split("/")))
+        return sarc.read(zstandard.ZstdDecompressor().decompressobj().decompress(raw))
+
+    def merge(self, romfs=None):
+        self.lines = []
+        return mt.merge_members(self.mods, self.romfs if romfs is None else romfs, self.lines.append)
+
+    def test_the_winners_copy_gets_the_packs_members_and_keeps_its_own(self):
+        failed, fit = self.merge()
+        self.assertEqual(failed, 0)
+        got = self.served()
+        self.assertEqual(got["A.msbt"], b"pack A")         # the pack changed it, the mod did not
+        self.assertEqual(got["Coop.msbt"], b"pack only")   # the pack's own
+        self.assertEqual(got["Char.msbt"], b"mod only")    # the mod's own
+        self.assertEqual(got["Hdr.msbt"], b"mod header")   # both changed it: the mod's stays, and is named
+        self.assertEqual(got["X.msbt"], b"game X")
+        self.assertIn("Both changed Hdr.msbt", self.lines[0])
+        self.assertGreaterEqual(fit[MALS[:-3]], 5000)    # the merged file's size for the table the game reads
+        self.assertEqual(read(os.path.join(self.mod, mt.MEMBERS_KEEP, *MALS.split("/"))), self.mod_raw)
+        self.merge()                                     # the next start: nothing new
+        self.assertIn("already", self.lines[0])
+        self.assertEqual(self.served()["A.msbt"], b"pack A")
+        mt.undo(self.mods, say=self.lines.append)        # --undo: the mod's own archive back
+        self.assertEqual(read(os.path.join(self.mod, "romfs", *MALS.split("/"))), self.mod_raw)
+        self.assertFalse(os.path.isdir(os.path.join(self.mod, mt.MEMBERS_KEEP)))
+
+    def test_a_new_pack_merges_again_from_the_mods_own_copy(self):
+        self.merge()
+        self.put(os.path.join(self.pack, "romfs", *MALS.split("/")), self.archive(
+            dict(self.game, **{"A.msbt": b"pack A2"})))
+        self.merge()
+        got = self.served()
+        self.assertEqual(got["A.msbt"], b"pack A2")
+        self.assertNotIn("Coop.msbt", got)               # from the kept copy, not from the last merge
+        self.assertEqual(got["Char.msbt"], b"mod only")
+
+    def test_nothing_without_the_games_copy_or_when_the_pack_wins(self):
+        failed, _ = self.merge(romfs="")
+        self.assertEqual(failed, 1)
+        self.assertEqual(read(os.path.join(self.mod, "romfs", *MALS.split("/"))), self.mod_raw)
+        self.assertIn("not merged", self.lines[0])
+        os.remove(os.path.join(self.mod, "romfs", *MALS.split("/")))   # the mod without that archive
+        self.assertEqual(self.merge(), (0, {}))
+        self.assertEqual(self.lines, [])
 
 
 if __name__ == "__main__":

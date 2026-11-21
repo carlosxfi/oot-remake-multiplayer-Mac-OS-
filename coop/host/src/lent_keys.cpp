@@ -167,6 +167,8 @@ bool LentKeyStore::write(const protocol::FlagEntry& entry) {
   return ok;
 }
 
+bool LentKeyStore::write_load_back(const protocol::FlagEntry& entry) { return inner_.write_load_back(entry); }
+
 bool LentKeyStore::write_exact(const protocol::FlagEntry& entry) {
   // The host's save load: its values as they are. The caller forgets the lent keys.
   return inner_.write_exact(entry);
