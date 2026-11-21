@@ -248,8 +248,8 @@ std::vector<Built> Scan(const fs::path& mods_root) {
         if (!it->is_directory(ec) || !IsSeedFolder(name)) continue;
         const fs::path seed_file = it->path() / kSeedFile;
         if (!fs::is_regular_file(seed_file, ec)) continue;
-        out.push_back(
-            {name, ReadLine(seed_file), ReadLine(it->path() / kPresetFile), ReadAll(it->path() / kTablesFile)});
+        out.push_back({name, ReadLine(seed_file), ReadLine(it->path() / kPresetFile), ReadAll(it->path() / kTablesFile),
+                       fs::is_regular_file(it->path() / kSettingsFile, ec)});
     }
     std::sort(out.begin(), out.end(), [](const Built& a, const Built& b) { return CoopMods::NameLess(a.name, b.name); });
     return out;
@@ -265,12 +265,42 @@ Plan Decide(const Want& want, const std::vector<Built>& built, const std::vector
             }
         }
     };
+    // Row 145: a seed is switched off only when the player asked for it (our switch turned off, or another seed of
+    // ours on), when our kit built it (a seed of ours left on, our switch off), or for a host's world (remembered and
+    // switched on again alone). A seed folder put in by hand (no kPresetFile) stays as the Mods tab has it.
+    const auto ours = [&](std::string_view name) {
+        return std::any_of(built.begin(), built.end(),
+                           [&](const Built& b) { return CoopMods::NameSame(b.name, name) && !b.preset.empty(); });
+    };
     if (!want.on) {
-        switch_off_all_but("");
-        if (!plan.off.empty()) {
-            plan.what = Plan::Do::use;
-            plan.why = "the randomizer is off: its seeds are switched off";
+        if (want.guest || want.turned_off) {
+            switch_off_all_but("");
+            if (want.guest) {
+                plan.remember = plan.off;
+                plan.why = "the host plays without the randomizer: your seeds are switched off for its world (they "
+                           "are switched on again when you play alone)";
+            } else {
+                plan.forget = !want.restore.empty();
+                plan.why = "the randomizer is off: its seeds are switched off";
+            }
+        } else {
+            for (const CoopMods::Row& r : rows) {
+                if (IsSeedFolder(r.name) && r.on && ours(r.name)) plan.off.push_back(r.name);
+            }
+            for (const std::string& name : want.restore) {
+                const CoopMods::Row* row = RowOf(rows, name);
+                if (row != nullptr && !row->on && IsSeedFolder(row->name) && !ours(row->name)) {
+                    plan.on.push_back(row->name);
+                }
+            }
+            plan.forget = !want.restore.empty();
+            if (!plan.off.empty()) plan.why = "the randomizer is off: its seeds are switched off";
+            if (!plan.on.empty()) {
+                plan.why += std::string(plan.why.empty() ? "" : "; ") +
+                            "back from the host's world: your seeds are switched on again";
+            }
         }
+        plan.what = plan.on.empty() && plan.off.empty() && !plan.forget ? Plan::Do::nothing : Plan::Do::use;
         return plan;
     }
     if (want.seed.empty()) {
@@ -294,19 +324,70 @@ Plan Decide(const Want& want, const std::vector<Built>& built, const std::vector
                    ") is made again for the other mods' size tables (the co-op puppets')";
         return plan;
     }
+    if (!have->shared_files) {
+        // Built before seeds carried spoiler.txt and settings.txt: made again once (the same seed: OOTRR is
+        // deterministic), which writes both. settings.txt is written by every build, so this does not repeat.
+        plan.what = Plan::Do::refresh;
+        plan.for_tables = false;
+        plan.why =
+            "seed " + SeedWord(want.seed) + " (" + SettingsName(preset) + ") gets its spoiler.txt and settings.txt";
+        return plan;
+    }
     switch_off_all_but(plan.folder);
     // On, and the first row: its size table (which keeps the larger entry of every other mod) must win.
     const CoopMods::Row* row = RowOf(rows, plan.folder);
     if (row == nullptr || !row->on || rows.empty() || !CoopMods::NameSame(rows.front().name, plan.folder)) {
         plan.on.push_back(plan.folder);
     }
+    if (want.guest) {
+        plan.remember = plan.off;  // the host's seed in its world; ours come back on alone
+    } else {
+        plan.forget = !want.restore.empty();  // our switch picks the one seed now
+    }
     plan.what = plan.on.empty() && plan.off.empty() ? Plan::Do::nothing : Plan::Do::use;
-    plan.why = plan.what == Plan::Do::use ? "seed " + SeedWord(want.seed) + " (" + SettingsName(preset) + ") is switched on" : "";
+    if (plan.what == Plan::Do::nothing && plan.forget) plan.what = Plan::Do::use;
+    plan.why = !plan.on.empty() || !plan.off.empty()
+                   ? "seed " + SeedWord(want.seed) + " (" + SettingsName(preset) + ") is switched on"
+                   : "";
     return plan;
 }
 
-std::vector<std::string> GenerateArgs(const std::string& preset, const std::string& seed, const fs::path& seed_file) {
-    return {"generate", preset.empty() ? "default" : preset, SeedWord(seed), CoopMods::ToUtf8(seed_file)};
+std::vector<std::string> GenerateArgs(const std::string& preset, const std::string& seed, const fs::path& seed_file,
+                                      const fs::path& spoiler) {
+    std::vector<std::string> args = {"generate", preset.empty() ? "default" : preset, SeedWord(seed),
+                                     CoopMods::ToUtf8(seed_file)};
+    if (!spoiler.empty()) {
+        args.push_back("--spoiler");
+        args.push_back(CoopMods::ToUtf8(spoiler));
+    }
+    return args;
+}
+
+std::string SeedSettings(std::string_view text) {
+    // {"format": "ootrr-seed", ..., "settings": "OOTRR1-...", ...}: the key at the top level, before "placements".
+    const auto key = text.find("\"settings\"");
+    if (key == std::string_view::npos) return {};
+    auto at = text.find_first_not_of(" \t\r\n", key + 10);
+    if (at == std::string_view::npos || text[at] != ':') return {};
+    at = text.find_first_not_of(" \t\r\n", at + 1);
+    if (at == std::string_view::npos || text[at] != '"') return {};
+    const auto end = text.find('"', at + 1);
+    if (end == std::string_view::npos) return {};
+    return SettingsString(text.substr(at + 1, end - at - 1));
+}
+
+bool SeedShops(std::string_view text) {
+    // {"format": "ootrr-seed", ..., "shops": {"KF Shop Item 1": {...}, ...}, ...} (OOTRR settings/seed.rs shops_json,
+    // written only when a slot is placed). The first "shops" key followed by ':' and an object.
+    for (auto key = text.find("\"shops\""); key != std::string_view::npos; key = text.find("\"shops\"", key + 7)) {
+        auto at = text.find_first_not_of(" \t\r\n", key + 7);
+        if (at == std::string_view::npos || text[at] != ':') continue;
+        at = text.find_first_not_of(" \t\r\n", at + 1);
+        if (at == std::string_view::npos || text[at] != '{') return false;
+        at = text.find_first_not_of(" \t\r\n", at + 1);
+        return at != std::string_view::npos && text[at] == '"';
+    }
+    return false;
 }
 
 std::vector<std::string> BuildArgs(const fs::path& seed_file, const fs::path& game_folder, const fs::path& mods_root,
@@ -422,22 +503,22 @@ bool MergedByKit(const fs::path& mods_root, std::string_view mod, std::string* r
     return true;
 }
 
-std::optional<std::string> OutsideSizeTable(const fs::path& mods_root, const std::vector<CoopMods::Row>& rows,
-                                            const std::vector<std::string>* indexed, std::string* merged, std::string* rule) {
-    // The game writes a nested folder's name with '\' (patch 0011 counts it as '/'; the pack is one).
-    const auto slashed = [](std::string name) {
-        std::replace(name.begin(), name.end(), '\\', '/');
-        return name;
-    };
-    const auto has_table = [&](const std::string& name) {
-        return HasSizeTable(mods_root / CoopMods::FromUtf8(slashed(name)));
-    };
+namespace {
+// The game writes a nested folder's name with '\' (patch 0011 counts it as '/'; the pack is one).
+std::string Slashed(std::string name) {
+    std::replace(name.begin(), name.end(), '\\', '/');
+    return name;
+}
+
+// The mod whose copy of a file the game reads, among the mods `has_file` holds for; "" when none sorts over the pack.
+template <typename Has>
+std::string WinnerOf(const std::vector<CoopMods::Row>& rows, const std::vector<std::string>* indexed, Has has_file) {
     std::string winner;
     if (indexed != nullptr) {
         // The game's own indexing order (coop-mods.applied): the Mods list's rows from the last to the first, under
         // them the mods it does not name (a mod dropped in since; the pack, never listed) by name. The last one wins.
         for (auto it = indexed->rbegin(); it != indexed->rend() && winner.empty(); ++it) {
-            if (has_table(*it)) winner = *it;
+            if (has_file(*it)) winner = *it;
         }
     } else {
         // Hookshot's order: by name, case folded, the last wins; the pack is a mod of its own in it.
@@ -448,14 +529,23 @@ std::optional<std::string> OutsideSizeTable(const fs::path& mods_root, const std
         };
         std::string best = "contents/0400486024dec000/coop-puppet";
         for (const CoopMods::Row& r : rows) {
-            if (!r.on_now || !has_table(r.name)) continue;
+            if (!r.on_now || !has_file(r.name)) continue;
             if (const std::string f = folded(r.name); f > best) {
                 best = f;
                 winner = r.name;
             }
         }
     }
-    if (winner.empty() || CoopMods::NameSame(slashed(winner), kPackFolder) || IsSeedFolder(winner) ||
+    return winner;
+}
+}  // namespace
+
+std::optional<std::string> OutsideSizeTable(const fs::path& mods_root, const std::vector<CoopMods::Row>& rows,
+                                            const std::vector<std::string>* indexed, std::string* merged, std::string* rule) {
+    const std::string winner = WinnerOf(rows, indexed, [&](const std::string& name) {
+        return HasSizeTable(mods_root / CoopMods::FromUtf8(Slashed(name)));
+    });
+    if (winner.empty() || CoopMods::NameSame(Slashed(winner), kPackFolder) || IsSeedFolder(winner) ||
         CoopMods::NameSame(winner, kFolder)) {
         return std::nullopt;
     }
@@ -464,6 +554,85 @@ std::optional<std::string> OutsideSizeTable(const fs::path& mods_root, const std
         return std::nullopt;
     }
     return winner;
+}
+
+std::vector<std::string> PackActorTables(const fs::path& mods_root) {
+    std::vector<std::string> out;
+    std::error_code ec;
+    for (fs::directory_iterator files(mods_root / CoopMods::FromUtf8(kPackFolder) / "romfs" / "RSDB", ec), last;
+         !ec && files != last; files.increment(ec)) {
+        const std::string file = CoopMods::ToUtf8(files->path().filename());
+        const std::string_view tail = ".rstbl.byml.zs";
+        if (std::error_code fec; files->is_regular_file(fec) && file.size() > tail.size() &&
+                                 file.compare(file.size() - tail.size(), tail.size(), tail) == 0) {
+            out.push_back(file);
+        }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+bool RowsMergedByKit(const fs::path& mods_root, std::string_view mod, std::string_view table) {
+    const fs::path folder = mods_root / CoopMods::FromUtf8(Slashed(std::string(mod)));
+    const std::vector<std::string> lines = LastLines(ReadAll(folder / kRowsFile), static_cast<std::size_t>(-1));
+    if (lines.empty() || lines.front() != "coop-rows 1") return false;
+    for (const std::string& line : lines) {
+        std::istringstream words(line);
+        std::string key, name, table_hash, pack_hash;
+        words >> key >> name >> table_hash >> pack_hash;
+        if (key != "table" || name != table || table_hash.size() != 16 || pack_hash.size() != 16) continue;
+        const fs::path in_mod = folder / "romfs" / "RSDB" / CoopMods::FromUtf8(name);
+        const fs::path in_pack =
+            mods_root / CoopMods::FromUtf8(kPackFolder) / "romfs" / "RSDB" / CoopMods::FromUtf8(name);
+        std::error_code ec;
+        if (!fs::is_regular_file(in_mod, ec) || !fs::is_regular_file(in_pack, ec)) return false;
+        return Fnv64Hex(ReadAll(in_mod)) == table_hash && Fnv64Hex(ReadAll(in_pack)) == pack_hash;
+    }
+    return false;
+}
+
+std::optional<std::pair<std::string, std::string>> OutsideActorRows(const fs::path& mods_root,
+                                                                    const std::vector<CoopMods::Row>& rows,
+                                                                    const std::vector<std::string>* indexed) {
+    for (const std::string& table : PackActorTables(mods_root)) {
+        const std::string winner = WinnerOf(rows, indexed, [&](const std::string& name) {
+            std::error_code ec;
+            return fs::is_regular_file(
+                mods_root / CoopMods::FromUtf8(Slashed(name)) / "romfs" / "RSDB" / CoopMods::FromUtf8(table), ec);
+        });
+        if (winner.empty() || CoopMods::NameSame(Slashed(winner), kPackFolder)) continue;
+        if (RowsMergedByKit(mods_root, winner, table)) continue;
+        return std::make_pair(winner, table);
+    }
+    return std::nullopt;
+}
+
+int PutBackKeptRows(const fs::path& folder) {
+    int back = 0;
+    const fs::path keep = folder / "_coop-rows";  // (merge_tables.py ROWS_KEEP)
+    std::error_code ec;
+    if (!fs::is_directory(keep, ec)) return 0;
+    for (fs::directory_iterator f(keep, ec), last; !ec && f != last; f.increment(ec)) {
+        const std::string name = CoopMods::ToUtf8(f->path().filename());
+        const std::string_view tail = ".rstbl.byml.zs";
+        if (name.size() <= tail.size() || name.compare(name.size() - tail.size(), tail.size(), tail) != 0) continue;
+        std::error_code cec;
+        if (!fs::copy_file(f->path(), folder / "romfs" / "RSDB" / f->path().filename(),
+                           fs::copy_options::overwrite_existing, cec)) {
+            return -1;  // (the kept folder stays: the kit's next start sorts it out)
+        }
+        ++back;
+    }
+    fs::remove(folder / kRowsFile, ec);
+    fs::remove_all(keep, ec);
+    return back;
+}
+
+std::string RowsLine(std::string_view mod, std::string_view table) {
+    const std::string_view name = table.substr(0, std::min(table.find(".Product"), table.size()));
+    return "Co-op: the mod \"" + ShortName(mod) + "\" has its own " + std::string(name) +
+           " table, without the puppet pack's rows, so the game can't make the other players' bodies (they show as "
+           "fairies). Start the game with Start Squadala (it merges the rows in), or turn the mod off.";
 }
 
 std::string OutsideLine(std::string_view mod) {
@@ -543,6 +712,23 @@ std::optional<fs::path> FindOotrr(const std::string& setting, const fs::path& ga
         if (fs::is_regular_file(p, ec)) return p;
     }
     return std::nullopt;
+}
+
+std::string OotrrMissingText(const fs::path& game_dir) {
+    std::string why;
+    {
+        std::ifstream in(game_dir / "tools" / kOotrrStatusFile, std::ios::binary);
+        std::getline(in, why);
+    }
+    while (!why.empty() && (why.back() == '\r' || why.back() == '\n' || why.back() == ' ')) why.pop_back();
+    const std::string fix = "close the game and run Update.bat in the kit folder (it sets the randomizer up again), "
+                            "or start the game with \"Start Squadala.bat\"";
+    if (why.rfind("failed ", 0) == 0) {
+        // (the kit's own words, e.g. "failed v0.7.3: ootrr.exe was removed right after it was unpacked (an antivirus
+        // took it)"; cut so a damaged file cannot flood the tab)
+        return "OOTRR (the randomizer the kit brings) is missing: the kit's last setup " + why.substr(0, 300) + ". " + fix;
+    }
+    return "OOTRR (the randomizer the kit brings) is not in tools/ootrr beside the game: " + fix;
 }
 
 std::optional<fs::path> FindGameFolder(const std::string& setting, const fs::path& game_dir) {
@@ -642,7 +828,10 @@ std::string OotrrKey(const fs::path& ootrr) {
     if (ec) return {};
     const auto when = fs::last_write_time(ootrr, ec);
     if (ec) return {};
-    return std::to_string(size) + "-" + std::to_string(when.time_since_epoch().count());
+    // libc++ can use a 128-bit file clock. This cache key only needs its
+    // low 64 bits; std::to_string has no 128-bit overload.
+    const auto ticks = static_cast<long long>(when.time_since_epoch().count());
+    return std::to_string(size) + "-" + std::to_string(ticks);
 }
 
 std::string ChatSafe(std::string line, std::size_t max_chars) {
@@ -880,6 +1069,11 @@ void Rando::Start() {
                 playing = r.name;
             }
         }
+        // Its seed file places shop items: co-op shares the one-time shelves' sold counters (coop_shop_sale.h).
+        seed_shops_ = on_now && SeedShops(ReadFileText(folder / CoopMods::FromUtf8(playing + ".ootrr")));
+        if (seed_shops_ && hooks_.log) {
+            hooks_.log("randomizer: " + playing + " places shop items: each one-time shelf sells once for the group");
+        }
         // The seed this run plays, built beside other size tables than now: no pack actor until it is checked.
         if (on_now) {
             const std::string now = CurrentTables();
@@ -914,6 +1108,24 @@ void Rando::Start() {
             outside_mod_ = *outside;
             outside_tell_ = true;
             lines_.push_back(ChatSafe(OutsideLine(*outside), 300));
+        }
+        // Player report 144/145: a mod whose RSDB table (ActorInfo, GameActorInfo) wins without the pack's rows (an
+        // OOTRR seed made with settings that change actors ships its own, built from the game's): the game refuses
+        // every puppet create, so the others show as fairies this run and the chat says why. The kit's start merges
+        // the rows in (merge_tables.py merge_rows) and marks it (kRowsFile).
+        if (const auto missing = OutsideActorRows(loader_.Root(), loader_.Rows(),
+                                                  loader_.ExeReadsList() ? &indexed : nullptr)) {
+            rows_out_ = true;
+            if (hooks_.log) {
+                hooks_.log("randomizer: the game reads RSDB/" + missing->second + " of the mod " + missing->first +
+                           ", without the co-op puppet pack's rows (no " + kRowsFile +
+                           " from the kit's start for it): the game would refuse every puppet; the others show as "
+                           "their fairy this run");
+            }
+            const std::lock_guard lock(mutex_);
+            rows_mod_ = missing->first;
+            rows_table_ = missing->second;
+            lines_.push_back(ChatSafe(RowsLine(rows_mod_, rows_table_), 300));
         }
         const std::lock_guard lock(mutex_);
         on_now_ = on_said_ = on_now;
@@ -1005,6 +1217,7 @@ void Rando::TellOthers() {
 
 void Rando::SayOutside() {
     const std::lock_guard lock(mutex_);
+    if (!rows_mod_.empty()) lines_.push_back(ChatSafe(RowsLine(rows_mod_, rows_table_), 300));
     if (outside_mod_.empty()) return;
     lines_.push_back(ChatSafe(OutsideLine(outside_mod_), 300));
     outside_tell_ = true;  // a player who joined since hears it too
@@ -1069,8 +1282,12 @@ void Rando::Wait() {
 
 Want Rando::Wanted(bool* seed_locked) const {
     Want want;
+    bool on_locked = false;  // the host's value (a guest): not the player's own switch
     for (const CoopMods::SettingRow& s : loader_.Settings(kFolder)) {
-        if (s.setting.key == "on") want.on = s.value == "1";
+        if (s.setting.key == "on") {
+            want.on = s.value == "1";
+            on_locked = s.locked;
+        }
         if (s.setting.key == "seed") {
             want.seed = s.value;
             if (seed_locked != nullptr) *seed_locked = s.locked;
@@ -1084,6 +1301,23 @@ Want Rando::Wanted(bool* seed_locked) const {
             if (std::string settings = SettingsString(s.value); !settings.empty()) want.preset = std::move(settings);
         }
     }
+    {
+        // Our own switch, not the host's: turned from on to off by the player in this run (row 145).
+        const std::lock_guard lock(own_mutex_);
+        if (!on_locked) {
+            if (own_on_ && *own_on_ != want.on) turned_off_ = !want.on;
+            own_on_ = want.on;
+        }
+        want.turned_off = turned_off_;
+    }
+    {
+        std::istringstream lines(ReadFileText(loader_.Root() / kFolder / kHostOffFile));
+        for (std::string line; std::getline(lines, line);) {
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+            if (IsSeedFolder(line)) want.restore.push_back(line);
+        }
+    }
+    want.guest = loader_.HostValuesSet();
     // A guest plays the host's world: a host whose randomizer is off or missing sends no switch, so ours is off too
     // (our own value is kept for a game alone).
     if (want.on && loader_.HostValuesSet()) {
@@ -1101,6 +1335,17 @@ std::string Rando::CurrentTables() const {
 }
 
 void Rando::Switch(const Plan& plan) {
+    const fs::path host_off = loader_.Root() / kFolder / kHostOffFile;
+    if (!plan.remember.empty()) {
+        std::string text = ReadFileText(host_off);
+        for (const std::string& name : plan.remember) {
+            if (("\n" + text).find("\n" + name + "\n") == std::string::npos) text += name + "\n";
+        }
+        WriteText(host_off, text);
+    } else if (plan.forget) {
+        std::error_code ec;
+        fs::remove(host_off, ec);
+    }
     for (const std::string& name : plan.off) loader_.SetOn(name, false);
     for (const std::string& name : plan.on) {
         loader_.SetOn(name, true);
@@ -1109,7 +1354,10 @@ void Rando::Switch(const Plan& plan) {
     if (!plan.on.empty() || !plan.off.empty()) {
         Say(plan.why + ": start the game again to play it");
         // A seed switched on (or to the first row, where its size table wins) plays only after a restart.
-        if (!plan.on.empty()) SayRestart(ReadyLine(Wanted(nullptr).seed));
+        if (!plan.on.empty()) {
+            const Want want = Wanted(nullptr);
+            if (want.on) SayRestart(ReadyLine(want.seed));
+        }
     } else if (!plan.why.empty()) {
         Say(plan.why);
     }
@@ -1244,7 +1492,11 @@ void Rando::Build(const Plan& plan, const Want& want) {
         {
             const std::lock_guard lock(mutex_);
             last_failed_ = plan.folder;
-            if (refresh) {
+            if (refresh && !plan.for_tables) {
+                // The seed plays as it is: only its spoiler.txt / settings.txt are missing.
+                lines_.push_back(ChatSafe("Randomizer: the seed's spoiler.txt and settings.txt could not be made "
+                                          "(the seed still plays): " + line));
+            } else if (refresh) {
                 // The seed still plays, with its old size table: only the co-op puppets may not show.
                 lines_.push_back(ChatSafe("Randomizer: the seed could not be made again for the co-op puppets (the "
                                           "other players may be invisible): " + line));
@@ -1294,8 +1546,7 @@ void Rando::Build(const Plan& plan, const Want& want) {
     const auto ootrr = FindOotrr(ootrr_setting, hooks_.game_dir, root);
     if (!ootrr) {
         return fail(ootrr_setting.empty()
-                        ? std::string("OOTRR (the randomizer the kit brings) is not in tools/ootrr beside the game: "
-                                      "start the game from the kit again (its setup downloads it)")
+                        ? OotrrMissingText(hooks_.game_dir)
                         : "OOTRR not found at \"" + ootrr_setting + "\" (the OOTRR program setting): empty it to use "
                                                                     "the kit's own",
                     "OOTRR not found");
@@ -1348,7 +1599,9 @@ void Rando::Build(const Plan& plan, const Want& want) {
     fs::remove(log, ec);
     Say(plan.why + " (about a minute)");
     const fs::path seed_file = control / (plan.folder + ".ootrr");
-    const int made = hooks_.run(*ootrr, GenerateArgs(want.preset, want.seed, seed_file), log);
+    const fs::path spoiler = control / (plan.folder + ".spoiler.txt");  // kept beside the seed file (kSpoilerFile)
+    fs::remove(spoiler, ec);  // (one an older run left is not this generate's)
+    const int made = hooks_.run(*ootrr, GenerateArgs(want.preset, want.seed, seed_file, spoiler), log);
     if (made != 0) {
         const std::string head = "OOTRR could not make the seed (" + exit_text(made) + ")";
         return ootrr_failed(head, head, read_log());
@@ -1381,6 +1634,20 @@ void Rando::Build(const Plan& plan, const Want& want) {
             table_changed = true;
         }
         if (!fs::is_regular_file(made_at / kSeedFile, fec)) copied = false;
+        // The kit merged the pack's rows into this seed's actor tables and raised their sizes in the table just
+        // replaced (merge_tables.py merge_rows, player report 144/145): their own copies go back, so the seed's files
+        // agree again (the game is not left reading a merged table with too small a size); the kit's next start
+        // merges them again, and a start without the kit shows the others as fairies and says why.
+        if (copied && table_changed) {
+            const int back = PutBackKeptRows(target);
+            if (back != 0 && hooks_.log) {
+                hooks_.log("randomizer: " + plan.folder +
+                           (back > 0 ? ": its own actor tables are back (the kit's next start merges the puppet rows "
+                                       "in again)"
+                                     : ": its own actor tables could not be put back (the kit's next start merges "
+                                       "the puppet rows in again)"));
+            }
+        }
     } else if (built == 0) {
         fs::rename(made_at, target, ec);
     }
@@ -1399,6 +1666,22 @@ void Rando::Build(const Plan& plan, const Want& want) {
     }
     WriteText(target / kPresetFile, (want.preset.empty() ? std::string("default") : want.preset) + "\n");
     WriteText(target / kTablesFile, stamp);
+    // For the players to share (player report: no spoiler log, no settings string to post): the seed's OOTRR1-
+    // string (the seed file's; the preset's name when it has none) and OOTRR's spoiler log. settings.txt is written
+    // last and always, so Decide does not make this seed again for it.
+    std::error_code sec;
+    if (fs::is_regular_file(spoiler, sec)) {
+        fs::copy_file(spoiler, target / kSpoilerFile, fs::copy_options::overwrite_existing, sec);
+        if (sec && hooks_.log) {
+            hooks_.log("randomizer: " + std::string(kSpoilerFile) + " not copied into " + plan.folder);
+        }
+    } else if (hooks_.log) {
+        hooks_.log("randomizer: OOTRR wrote no spoiler log for " + plan.folder);
+    }
+    const std::string settings = SeedSettings(ReadAll(seed_file));
+    WriteText(target / kSettingsFile, (settings.empty() ? (want.preset.empty() ? std::string("default") : want.preset)
+                                                        : settings) +
+                                          "\n");
     {
         const std::lock_guard lock(mutex_);
         last_failed_.clear();

@@ -80,6 +80,64 @@ bool IsShared(std::string_view name) {
     return std::binary_search(std::begin(kNames), std::end(kNames), name);
 }
 
+namespace {
+#include "coop_story_requests.inc"
+}  // namespace
+
+std::span<const StorySetting> StorySettings() {
+    return kStorySettings;
+}
+
+std::optional<std::string_view> StoryOfRequest(std::string_view request) {
+    if (const auto it = std::lower_bound(std::begin(kNames), std::end(kNames), request);
+        it != std::end(kNames) && *it == request) {
+        return *it;
+    }
+    for (const StorySetting& r : kStorySettings) {
+        if (r.request == request) {
+            return r.flow;
+        }
+    }
+    return std::nullopt;
+}
+
+bool IsStorySetting(std::string_view name) {
+    for (const StorySetting& r : kStorySettings) {
+        if (r.request == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsStory(std::string_view name) {
+    return IsShared(name) || IsStorySetting(name);
+}
+
+std::vector<std::string_view> RequestNames() {
+    std::vector<std::string_view> out(std::begin(kNames), std::end(kNames));
+    for (const StorySetting& r : kStorySettings) {
+        out.push_back(r.request);
+    }
+    return out;
+}
+
+std::string_view NotShared(std::string_view name) {
+    if (std::find(std::begin(kNoSetting), std::end(kNoSetting), name) != std::end(kNoSetting)) {
+        return "the game has no event setting of that name";
+    }
+    for (const StoryOwn& o : kOwnStory) {
+        if (o.name == name) {
+            return "it changes the player's own things";
+        }
+    }
+    return {};
+}
+
+bool Askable(std::string_view name) {
+    return NotShared(name).empty();
+}
+
 void Joiner::Visit(const std::string& scene) {
     if (scene.empty() || scene == scene_) {
         return;  // a load keeps what waits; its scene decides next frame
@@ -92,6 +150,11 @@ void Joiner::Visit(const std::string& scene) {
 
 void Joiner::Started(std::uint8_t player, const std::string& name, const std::string& scene,
                      std::optional<Vec3> starter, std::uint64_t now_us, std::optional<int> room) {
+    if (const std::string_view why = NotShared(name); !why.empty()) {
+        notes_.push_back("player " + std::to_string(player) + " started the story cutscene " + name +
+                         ": not played here (" + std::string(why) + ")");
+        return;
+    }
     for (const Pending& p : pending_) {
         if (p.name == name && p.scene == scene) {
             return;  // two players started it: one is enough

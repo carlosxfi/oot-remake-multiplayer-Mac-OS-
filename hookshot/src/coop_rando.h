@@ -26,6 +26,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <utility>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -42,7 +43,15 @@ inline constexpr const char* kSeedPrefix = "randomizer-";          // + the seed
 inline constexpr const char* kSeedFile = "coop-seed.txt";          // OOTRR writes it into a Hookshot mod
 inline constexpr const char* kPresetFile = "coop-rando.txt";       // we write the preset it was built with
 inline constexpr const char* kLogFile = "last-build.txt";          // in kFolder: OOTRR's output
+// In kFolder: the seed folders a host's world switched off in this guest's game, one per line, switched on again
+// when it plays alone (Decide: Want::restore, Plan::remember / forget).
+inline constexpr const char* kHostOffFile = "host-switched-off.txt";
 inline constexpr const char* kTablesFile = "coop-tables.txt";      // in a seed: the size tables it was built beside
+// In a seed, for the players to share (player report: no spoiler log to post): OOTRR's own spoiler log (`generate
+// --spoiler`, kept as <seed folder>.spoiler.txt beside the seed file in kFolder) and the seed's OOTRR1- settings string
+// (the seed file's "settings"). Every build writes both, host and guest alike (each builds the same seed).
+inline constexpr const char* kSpoilerFile = "spoiler.txt";
+inline constexpr const char* kSettingsFile = "settings.txt";
 inline constexpr const char* kPresets[] = {"default", "easy", "open_world", "keysanity", "full_shuffle"};
 inline constexpr const char* kPresetsFile = "presets-ok.txt";   // in kFolder: which presets the installed OOTRR builds
 
@@ -74,13 +83,21 @@ struct Built {
     std::string seed;    // coop-seed.txt
     std::string preset;  // coop-rando.txt; empty when not ours
     std::string tables;  // coop-tables.txt (TablesStamp); empty when built before it
+    bool shared_files = true;  // settings.txt is there (kSettingsFile; false: built before it)
 };
 std::vector<Built> Scan(const std::filesystem::path& mods_root);
 
 struct Want {
+    Want() = default;
+    Want(bool on_, std::string seed_, std::string preset_)
+        : on(on_), seed(std::move(seed_)), preset(std::move(preset_)) {}
     bool on = false;
     std::string seed;    // empty: none yet
     std::string preset;  // a preset, or a settings string (IsSettingsString) in its place
+    // Row 145: a seed folder is only switched off behind the player's back when the player asked for it.
+    bool guest = false;       // the host's values decide `on` (a guest in the host's world)
+    bool turned_off = false;  // the player turned our switch from on to off in this run
+    std::vector<std::string> restore;  // kHostOffFile: what a host's world switched off here
 };
 
 struct Plan {
@@ -91,6 +108,9 @@ struct Plan {
     std::vector<std::string> on;        // folders the list turns on (first wins: the seed's)
     std::vector<std::string> off;       // folders the list turns off (every other seed; all when the randomizer is off)
     std::string why;                    // one plain line for the log and the tab
+    bool for_tables = true;             // refresh: for the size tables (false: only for spoiler.txt / settings.txt)
+    std::vector<std::string> remember;  // a guest: `off` goes into kHostOffFile, to come back on alone
+    bool forget = false;                // kHostOffFile is done with (removed)
 };
 // What the game must do for `want`, given the seeds built and which mods are on now (Loader rows). `tables`: the
 // TablesStamp of the other mods' size tables now; a built seed with another one is refreshed (none: not compared).
@@ -98,8 +118,15 @@ Plan Decide(const Want& want, const std::vector<Built>& built, const std::vector
             const std::optional<std::string>& tables = std::nullopt);
 
 // OOTRR's command lines (arguments after the program).
+// `spoiler`: where OOTRR writes its spoiler log (--spoiler, in every OOTRR release); empty: none.
 std::vector<std::string> GenerateArgs(const std::string& preset, const std::string& seed,
-                                      const std::filesystem::path& seed_file);
+                                      const std::filesystem::path& seed_file,
+                                      const std::filesystem::path& spoiler = {});
+// The settings string a seed file (.ootrr, JSON) was made with: its "settings" (IsSettingsString), empty when none.
+std::string SeedSettings(std::string_view seed_file_text);
+// Whether a seed file (.ootrr, JSON) places shop items (shopsanity: a top-level "shops" object with an entry). Such a seed
+// sells its one-time shelves once (lichii/hook/coop_shop_sale.h: co-op shares their sold counters).
+bool SeedShops(std::string_view seed_file_text);
 std::vector<std::string> BuildArgs(const std::filesystem::path& seed_file, const std::filesystem::path& game_folder,
                                    const std::filesystem::path& mods_root, const std::string& folder);
 // The game uses one resource size table, the one of the mod that wins (the seed), so the seed's must hold every
@@ -149,6 +176,25 @@ inline constexpr const char* kMergedFile = "coop-merged.txt";
 inline constexpr const char* kPackFolder = "contents/0400486024DEC000/coop-puppet";
 std::string Fnv64Hex(std::string_view bytes);
 bool MergedByKit(const std::filesystem::path& mods_root, std::string_view mod, std::string* rule = nullptr);
+// The RSDB tables the puppet pack adds rows to (ActorInfo, GameActorInfo: CoopPuppet_*, ...), file names in its
+// romfs/RSDB, sorted.
+std::vector<std::string> PackActorTables(const std::filesystem::path& mods_root);
+// Player report 144/145: Longshot serves each RSDB file from the winning mod (OutsideSizeTable's order), so a mod
+// with its own copy of a pack table (an OOTRR seed whose settings change actors) hides the pack's rows and the game
+// refuses every puppet. The kit's start merges the pack's rows into the winner (tools/puppet_pack/merge_tables.py
+// merge_rows) and writes kRowsFile beside its romfs: "coop-rows 1", then per table "table <file in romfs/RSDB>
+// <FNV-1a 64 of it> <FNV-1a 64 of the pack's copy>". True only while both files are still those bytes.
+inline constexpr const char* kRowsFile = "coop-rows.txt";
+bool RowsMergedByKit(const std::filesystem::path& mods_root, std::string_view mod, std::string_view table);
+// The first pack table whose winning copy (not the pack's) lacks the kit's mark: {mod, table}. Seeds count too.
+std::optional<std::pair<std::string, std::string>> OutsideActorRows(const std::filesystem::path& mods_root,
+                                                                    const std::vector<CoopMods::Row>& rows,
+                                                                    const std::vector<std::string>* indexed);
+// A refresh replaced a seed's size table (Plan::Do::refresh): the actor tables the kit merged (kept as they were in
+// <folder>/_coop-rows) go back and kRowsFile goes. How many went back; -1 when one could not be copied.
+int PutBackKeptRows(const std::filesystem::path& folder);
+// Its chat line (repeats when joining).
+std::string RowsLine(std::string_view mod, std::string_view table);
 // This game's chat line for it (it repeats when joining), and the line the other players get (at most kTellChars).
 std::string OutsideLine(std::string_view mod);
 std::string OutsideTellLine(std::string_view mod);
@@ -172,6 +218,13 @@ const char* OotrrName();
 std::optional<std::filesystem::path> FindOotrr(const std::string& setting, const std::filesystem::path& game_dir,
                                                const std::filesystem::path& mods_root);
 std::optional<std::filesystem::path> FindGameFolder(const std::string& setting, const std::filesystem::path& game_dir);
+// The kit's last OOTRR setup result, beside the game: <game>\tools\ootrr-setup.txt ("ok <release>" or
+// "failed <release>: <why>", kit-paths.ps1 Install-KitOotrr / build.sh).
+inline constexpr const char* kOotrrStatusFile = "ootrr-setup.txt";
+// What the tab and the chat say when the kit's OOTRR is not beside the game: why the kit's last setup failed when it
+// wrote that down (a player who never saw the start window's line, Velvet 2026-11-19), and what to do: close the game,
+// run Update.bat (it repairs the game's co-op parts), or start the kit.
+std::string OotrrMissingText(const std::filesystem::path& game_dir);
 
 // What to do about a failed `ootrr build`, from its output: game files of another version than 1.1.1 (OOTRR says
 // "the game folder has no ...") say so plainly; anything else is empty (the caller gives the exit code).
@@ -273,7 +326,12 @@ public:
     // Start until the seed is checked (a refresh); cleared when its table was right after all, kept until the restart
     // when it was made again (RefreshLine) or could not be. The other players show as their fairies meanwhile.
     // Also kept for the whole run when another mod's size table wins (OutsideSizeTable).
-    bool HoldPack() const { return hold_pack_.load() || outside_.load(); }
+    // Also when a pack actor table wins without the pack's rows (OutsideActorRows, RowsMissing).
+    // This run plays one of our seeds whose seed file places shop items (SeedShops; set at Start).
+    bool SeedHasShops() const { return seed_shops_.load(); }
+    bool HoldPack() const { return hold_pack_.load() || outside_.load() || rows_out_.load(); }
+    // A mod's RSDB table wins without the pack's rows this run (OutsideActorRows): the game would refuse the puppets.
+    bool RowsMissing() const { return rows_out_.load(); }
     // The chat lines since the last call (SwitchLine when the switch changed).
     std::vector<std::string> TakeLines();
     // Waits until no build runs (tests, exit).
@@ -306,6 +364,9 @@ private:
     std::string status_;
     bool on_now_ = false;      // the switch as the game started (mutex_)
     bool on_said_ = false;     // the switch as last said (mutex_)
+    mutable std::mutex own_mutex_;              // own_on_ / turned_off_ (Wanted runs on the worker too)
+    mutable std::optional<bool> own_on_;        // our own switch as last read (not the host's)
+    mutable bool turned_off_ = false;           // the player turned it from on to off in this run
     std::vector<std::string> lines_;  // mutex_
     std::string probed_key_;               // the OOTRR the presets were tried for in this run (mutex_)
     std::map<std::string, bool> probed_;  // what that found (mutex_)
@@ -313,8 +374,11 @@ private:
     std::string tell_;                // a line for the others not sent yet (mutex_): never a path
     std::string tell_seed_;           // the host's seed it is about (mutex_)
     std::atomic<bool> hold_pack_{false};  // HoldPack
+    std::atomic<bool> seed_shops_{false};  // SeedHasShops
     std::atomic<bool> outside_{false};    // another mod's size table wins this run (HoldPack)
     std::string outside_mod_;         // that mod (mutex_): empty when none
+    std::atomic<bool> rows_out_{false};  // a pack actor table wins without the pack's rows (RowsMissing)
+    std::string rows_mod_, rows_table_;  // that mod and table (mutex_): empty when none
     bool outside_tell_ = false;       // OutsideTellLine not sent yet (mutex_)
     std::string bad_settings_;        // the "settings" value said to be no settings string (mutex_)
     std::string restart_;             // the restart line until this game restarts (mutex_): empty when none

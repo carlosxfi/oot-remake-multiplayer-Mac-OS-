@@ -59,6 +59,11 @@ struct HostServiceConfig {
   TestDelay test_delay;               // TEST ONLY: as ServerOptions::test_delay
   std::string relay_via;              // "" for none
   std::string relay_key;
+  std::string relay_room;             // a room name to hold on the relay; "" for none
+  // Not empty (and a relay_room): the room goes on the relay's public room
+  // list shown as this name (the room name when the host gives none), with the
+  // players and most players; never the password. Off ("") unless the host asks.
+  std::string relay_list;
   // coop_server's window shows the invite code (the host copies it from
   // there). The game's log must not have it: it holds the join password and
   // logs are shared (collect-logs). false: the code is only in status().
@@ -84,6 +89,7 @@ struct HostStatus {
   std::string invite;       // the invite code, once the STUN round is done
   bool invite_done = false; // the STUN round is over (with a code or not)
   std::string relay_code;   // "<code>@<relay>", once the relay gave one
+  std::string relay_room;   // "<room>@<relay>", once the relay holds the room name
   bool upnp_open = false;   // the router forwards the port (UPnP, or PCP / NAT-PMP)
   std::string external;     // the router's internet address, if known
   std::string message;      // the last problem or hint, plain English
@@ -119,6 +125,9 @@ class HostService {
   bool port_failed() const { return port_failed_; }
   std::uint16_t port() const;
   const Session* session() const;
+  // (Navi) New Game+: the hosting game's level (Session::set_ngplus). Between
+  // service() calls, on the same thread.
+  void set_ngplus(std::uint8_t level);
 
  private:
   std::uint64_t now_ms() const;

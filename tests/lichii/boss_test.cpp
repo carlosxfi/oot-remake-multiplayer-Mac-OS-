@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "coop_boss.h"
+#include "coop_boss_beaten.h"
 
 namespace proto = coop::protocol;
 using CoopBoss::Actions;
@@ -165,8 +166,11 @@ TEST_CASE("boss: our own intro and death, read with no name, are told to the are
     CHECK(a.intro_here == nullptr);
     a = s.Tick(At("ForestTemple", Forest().arrive, true), 12 * kS);  // the real intro, after the wait
     CHECK(s.phase() == Sync::Phase::intro);
+    CHECK(a.intro_here == nullptr);  // no shut-in flag here: told once it has run kMinIntroUs (issue 148)
+    a = s.Tick(At("ForestTemple", Forest().arrive, true), 15 * kS);
     CHECK(a.intro_here == &Forest());
     CHECK(a.beaten_here == nullptr);
+    CHECK(s.Tick(At("ForestTemple", Forest().arrive, true), 16 * kS).intro_here == nullptr);  // once
     a = s.Tick(At("ForestTemple", Forest().arrive, false), 30 * kS);
     CHECK(a.intro_here == nullptr);
     {
@@ -180,7 +184,8 @@ TEST_CASE("boss: our own intro and death, read with no name, are told to the are
         CHECK(g.phase() == Sync::Phase::outro);
     }
     Local dying = At("ForestTemple", Forest().arrive, true);
-    dying.boss_alive = false;  // the walk read it gone
+    dying.boss_alive = false;  // the walk read it at life 0
+    dying.boss_read_dead = true;
     a = s.Tick(dying, 90 * kS);
     CHECK(a.beaten_here == &Forest());
     CHECK(a.intro_here == nullptr);
@@ -286,6 +291,31 @@ TEST_CASE("boss: a player who comes back to the dungeon during the fight is pull
     CHECK(s.Tick(At("ForestTemple", kForestEntrance), 4 * kS).pull);
 }
 
+TEST_CASE("boss: our own intro played here makes us ready to own, a skipped one does not (boss-fails-0115)") {
+    // big-run-0115 hs-boss-fix-gohma: the game that played Gohma's intro read unready (the game had not set the
+    // intro's HavePlayedEvent flag), so the server handed her to the other game before any stun.
+    Sync s;
+    s.Tick(At("ForestTemple", Forest().arrive), 1 * kS);
+    CHECK_FALSE(s.OwnIntroPlayed());
+    s.Tick(At("ForestTemple", Forest().arrive, true), 2 * kS);
+    CHECK_FALSE(s.OwnIntroPlayed());  // (still running)
+    s.Tick(At("ForestTemple", Forest().arrive, false), 20 * kS);
+    REQUIRE(s.phase() == Sync::Phase::fight);
+    CHECK(s.OwnIntroPlayed());
+    // Leaving the room forgets it.
+    s.Tick(At("ForestTemple", kForestEntrance), 30 * kS);
+    CHECK_FALSE(s.OwnIntroPlayed());
+
+    Sync t;  // another player's intro is over: ours is skipped to follow, which is no intro played here
+    t.Tick(At("ForestTemple", Forest().arrive, false, 2), 1 * kS);
+    t.Tick(At("ForestTemple", Forest().arrive, true, 2), 2 * kS);
+    t.Receive(From(1, Forest(), proto::BossState::intro_end));
+    CHECK(t.Tick(At("ForestTemple", Forest().arrive, true, 2), 4 * kS).skip_intro);
+    t.Tick(At("ForestTemple", Forest().arrive, false, 2), 12 * kS);
+    REQUIRE(t.phase() == Sync::Phase::fight);
+    CHECK_FALSE(t.OwnIntroPlayed());
+}
+
 TEST_CASE("boss: our intro is skipped once another player's intro is over") {
     Sync s;
     s.Tick(At("ForestTemple", Forest().arrive, false, 2), 1 * kS);
@@ -363,6 +393,7 @@ namespace {
 Local Alive(Vec p, bool event, std::optional<bool> alive, std::uint8_t self = 2) {
     Local l = At("ForestTemple", p, event, self);
     l.boss_alive = alive;
+    l.boss_read_dead = alive == false;  // these fights' deaths are read at life 0
     return l;
 }
 
@@ -467,6 +498,63 @@ TEST_CASE("boss: the boss dead when the event starts, or no reading, is the deat
     a = u.Tick(Alive(Forest().arrive, false, std::nullopt), 33 * kS);
     CHECK(Has(a, proto::BossState::defeated));
     CHECK(u.phase() == Sync::Phase::done);
+}
+
+// G2 review: what the fight's guesses send must never reach the beaten record: neither beaten_here nor a message
+// CoopBossBeaten::ProvenDeath takes. The record is written into absent players' saves, for good.
+bool Recorded(const Actions& a) {
+    if (a.beaten_here != nullptr) {
+        return true;
+    }
+    return std::any_of(a.send.begin(), a.send.end(), [](const proto::BossRoom& m) {
+        return CoopBossBeaten::ProvenDeath(proto::Message{m}).has_value();
+    });
+}
+
+TEST_CASE("boss: a heuristic Defeat never reaches the record") {
+    // 1. An event in the fight with the boss not read (coop_boss.cpp: GuessedOver at the event's start).
+    Sync s;
+    ToFight(s);
+    auto a = s.Tick(Alive(Forest().arrive, true, std::nullopt), 30 * kS);
+    CHECK(Has(a, proto::BossState::defeated));  // the pull still ends
+    CHECK_FALSE(Recorded(a));
+    // 2. A long event with the boss hurt and still read alive (Morpha's grab, Phantom Ganon's paintings).
+    Sync t;
+    ToFight(t);
+    Local l = Alive(Forest().arrive, true, true);
+    l.boss_hurt = true;
+    t.Tick(l, 30 * kS);
+    a = t.Tick(l, 46 * kS);
+    CHECK(Has(a, proto::BossState::defeated));
+    CHECK_FALSE(Recorded(a));
+    // 3. The event ends with the reading lost.
+    Sync u;
+    ToFight(u);
+    u.Tick(Alive(Forest().arrive, true, true), 30 * kS);
+    a = u.Tick(Alive(Forest().arrive, false, std::nullopt), 33 * kS);
+    CHECK(Has(a, proto::BossState::defeated));
+    CHECK_FALSE(Recorded(a));
+    // 4. Gone without any reading at life 0 (a body never read this scene): a guess too.
+    Sync w;
+    ToFight(w);
+    Local gone = Alive(Forest().arrive, true, false);
+    gone.boss_read_dead = false;
+    a = w.Tick(gone, 30 * kS);
+    CHECK(Has(a, proto::BossState::defeated));
+    CHECK_FALSE(Recorded(a));
+    Sync x;
+    ToFight(x);
+    x.Tick(Alive(Forest().arrive, true, true), 30 * kS);  // provisional
+    a = x.Tick(gone, 31 * kS);
+    CHECK(Has(a, proto::BossState::defeated));
+    CHECK_FALSE(Recorded(a));
+    // A proven death (a body read at life 0) reaches it, once.
+    Sync v;
+    ToFight(v);
+    a = v.Tick(Alive(Forest().arrive, true, false), 30 * kS);
+    CHECK(a.beaten_here == &Forest());
+    CHECK(Recorded(a));
+    CHECK_FALSE(Recorded(v.Tick(Alive(Forest().arrive, true, false), 31 * kS)));
 }
 
 TEST_CASE("boss: an event right after a skipped intro is not the boss's death (integrate-p8)") {
@@ -628,6 +716,49 @@ TEST_CASE("boss: A on the way to Gohma's door moves no one, A shut in moves B (i
     }
     CHECK(said);
     CHECK(pulled);
+}
+
+TEST_CASE("boss: the area rules hear of our intro only once we are past the door (issue 148)") {
+    // The older rules tell the area rules (coop_boss_scenes) "our game runs the intro"; they send
+    // intro_start and move every other game in the area to the room's start. Told at the first event in
+    // Gohma's circle (which takes in the way to her door), the door's own event pulled the others in
+    // while the leader still stood outside.
+    Sync a;
+    std::uint64_t t = 1 * kS;
+    const auto tick = [&](Vec p, bool event, std::optional<bool> shut) {
+        Actions out = a.Tick(DekuAt(p, event, shut, 1), t);
+        t += 250'000;
+        return out;
+    };
+    tick(kDekuOnTheWay, false, false);
+    // The door opening (and texts) on the way, 6 s, not shut in: nothing told.
+    for (int i = 0; i < 24; ++i) CHECK(tick(kDekuOnTheWay, true, false).intro_here == nullptr);
+    CHECK(tick(kDekuOnTheWay, false, false).intro_here == nullptr);
+    // Came into the room with an event running, still not shut in: nothing told either.
+    for (int i = 0; i < 8; ++i) CHECK(tick(Deku().arrive, true, false).intro_here == nullptr);
+    // The door shuts behind A: told, once.
+    int told = 0;
+    for (int i = 0; i < 12; ++i) told += tick(Deku().arrive, true, true).intro_here == &Deku() ? 1 : 0;
+    CHECK(told == 1);
+}
+
+TEST_CASE("boss: in a room with no shut-in flag a short event is not told as the intro (issue 148)") {
+    Sync s;
+    s.Tick(At("ForestTemple", Forest().arrive), 1 * kS);
+    // A 2 s event (a door, a text): shorter than kMinIntroUs, never told.
+    for (std::uint64_t t = 2 * kS; t <= 4 * kS; t += kS / 2) {
+        CHECK(s.Tick(At("ForestTemple", Forest().arrive, true), t).intro_here == nullptr);
+    }
+    CHECK(s.Tick(At("ForestTemple", Forest().arrive, false), 4 * kS + kS / 2).intro_here == nullptr);
+    CHECK(s.phase() == Sync::Phase::waiting);
+    // The real intro: told while it still runs (the area rules then see it end), once.
+    int told = 0;
+    for (std::uint64_t t = 6 * kS; t <= 20 * kS; t += kS / 2) {
+        told += s.Tick(At("ForestTemple", Forest().arrive, true), t).intro_here == &Forest() ? 1 : 0;
+    }
+    CHECK(told == 1);
+    CHECK(s.Tick(At("ForestTemple", Forest().arrive, false), 21 * kS).intro_here == nullptr);
+    CHECK(s.phase() == Sync::Phase::fight);
 }
 
 TEST_CASE("boss: in the Deku Tree an event that ends with A not shut in moves no one (issue 148)") {

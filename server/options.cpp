@@ -1,5 +1,7 @@
 #include "options.hpp"
 
+#include "relay_wire.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <string_view>
@@ -32,6 +34,7 @@ const char* password_problem(std::string_view password) {
 std::optional<CommandLine> parse_command_line(const std::vector<std::string>& args,
                                               std::string& error) {
   CommandLine line;
+  bool list_room = false;   // --relay-list, with a name or without (the room's)
   for (std::size_t i = 0; i < args.size(); ++i) {
     const std::string& arg = args[i];
     bool has_value = i + 1 < args.size();
@@ -134,6 +137,8 @@ std::optional<CommandLine> parse_command_line(const std::vector<std::string>& ar
         return std::nullopt;
       }
       ++i;
+    } else if (arg == "--approve-joins") {
+      line.approve_joins = true;
     } else if (arg == "--password" || arg == "--password-env") {
       if (!has_value || args[i + 1].empty()) {
         error = arg + " needs a value";
@@ -177,6 +182,25 @@ std::optional<CommandLine> parse_command_line(const std::vector<std::string>& ar
         return std::nullopt;
       }
       line.relay_via = args[++i];
+    } else if (arg == "--relay-room") {
+      std::optional<std::string> room;
+      if (has_value) room = relay::normalize_room(args[i + 1]);
+      if (!room) {
+        error = "--relay-room needs a room name: 3 to 24 letters, digits, - or _, for example forest-gang";
+        return std::nullopt;
+      }
+      line.relay_room = *room;
+      ++i;
+    } else if (arg == "--relay-list") {
+      // The name shown in the list is optional (the room name without one); the next option is never taken as it.
+      list_room = true;
+      if (has_value && args[i + 1].rfind("-", 0) != 0) {
+        if (!relay::listable_host_name(args[i + 1])) {
+          error = "--relay-list: the name to list the room under is 1 to 32 bytes, no control characters";
+          return std::nullopt;
+        }
+        line.relay_list = args[++i];
+      }
     } else if (arg == "--relay-key" || arg == "--relay-key-env") {
       if (!has_value || args[i + 1].empty() || args[i + 1].size() > 64) {
         error = arg + " needs a value of at most 64 characters";
@@ -187,6 +211,15 @@ std::optional<CommandLine> parse_command_line(const std::vector<std::string>& ar
       error = "unknown argument: " + arg;
       return std::nullopt;
     }
+  }
+  if (!line.relay_room.empty() && line.relay_via.empty()) {
+    error = "--relay-room is a name on a relay: it needs --relay-via";
+    return std::nullopt;
+  }
+  if (list_room && line.relay_list.empty()) line.relay_list = line.relay_room;
+  if (list_room && line.relay_room.empty()) {
+    error = "--relay-list lists a room: it needs --relay-room (and --relay-via)";
+    return std::nullopt;
   }
   if (line.relay && (line.upnp || !line.relay_via.empty())) {
     error = "--relay runs a relay; it cannot also use --upnp or --relay-via";
@@ -213,7 +246,7 @@ const char* usage() {
          "                   [--game-build ID] [--max-players N] [--max-half-open N]\n"
          "                   [--pose-upload-kbps N] [--run-for-ms N]\n"
          "                   [--password TEXT | --password-env NAME] [--pvp on|off]\n"
-         "                   [--dbno on|off]\n"
+         "                   [--dbno on|off] [--approve-joins]\n"
          "  --port N         UDP port to listen on (default 27510, 0 for any)\n"
          "  --bind ADDRESS   listen only on this IPv4 address of this PC, for\n"
          "                   example its Hamachi or Radmin address (default: all)\n"
@@ -239,6 +272,13 @@ const char* usage() {
          "                   server runs\n"
          "  --relay-via ADDRESS[:PORT]  host through a relay (default port 27530)\n"
          "                   and print a join code for the players\n"
+         "  --relay-room NAME  with --relay-via, also hold this room name on the\n"
+         "                   relay (3 to 24 letters, digits, - or _): players join\n"
+         "                   with the name instead of the code\n"
+         "  --relay-list [NAME]  with --relay-room, put the room on the relay's\n"
+         "                   public room list, shown as NAME (the room name\n"
+         "                   without one; players and version shown too, never\n"
+         "                   the password)\n"
          "  --relay          run as a relay for hosts that use --relay-via\n"
          "                   (UDP port 27530 unless --port), not a game server\n"
          "  --relay-key TEXT | --relay-key-env NAME  the relay's host key: on the\n"
@@ -256,6 +296,9 @@ const char* usage() {
          "  --dbno on|off    down but not out: a player at no hearts crawls and\n"
          "                   can be revived (default: on); the host can change\n"
          "                   it in the game with /dbno\n"
+         "  --approve-joins  each new player waits until the host lets them in\n"
+         "                   (/allow or /deny in the game chat; no answer in\n"
+         "                   60 s: turned away). The first player in hosts\n"
          "  --test-delay-ms N --test-jitter-ms J  TESTS ONLY (needs OOT_COOP_TEST=1):\n"
          "                   hold every packet N/2 ms each way, +- up to J ms,\n"
          "                   in order (a bad connection for Longshot autotests)\n";

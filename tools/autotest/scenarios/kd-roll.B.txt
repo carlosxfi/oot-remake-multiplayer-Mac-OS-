@@ -1,0 +1,49 @@
+# kd-roll B (proof-0116, row 149): enters KD's room first, watches from where it lands; shots every 5 s.
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_BOSS=1,LICHII_COOP_DEBUG_OBJECTS=1
+#! timeout 720
+mark start
+warp DodongoStage DodongoStage
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark b-in
+wait 2520
+mark b-fight
+wait 300
+mark b-r1
+wait 300
+mark b-r2
+wait 300
+mark b-r3
+wait 300
+mark b-r4
+wait 300
+mark b-r5
+wait 300
+mark b-r6
+wait 300
+mark b-r7
+wait 300
+mark b-r8
+wait 300
+mark b-r9
+wait 300
+mark b-r10
+wait 300
+mark b-r11
+wait 300
+mark b-r12
+wait 300
+mark b-r13
+wait 300
+mark b-r14
+mark end

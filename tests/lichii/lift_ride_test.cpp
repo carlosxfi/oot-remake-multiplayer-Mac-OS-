@@ -66,6 +66,7 @@ void Lift(FakeGuest& g, std::uint32_t key = CoopLiftRide::kRideOnPlayer ^ 7u, st
 TEST_CASE("lift ride: which lifts ride, and who stands on them") {
     CHECK(CoopLiftRide::IsRideLift("Obj_InsideJabu_Jabu_ElevatorLift_A_01"));
     CHECK(CoopLiftRide::IsRideLift("Obj_InsideJabu_Jabu_MoveFloor_A_01"));
+    CHECK(CoopLiftRide::IsRideLift("Obj_ForestTemple_Elevator_A_01"));  // room-objects: its logic has RideOnPlayer
     CHECK_FALSE(CoopLiftRide::IsRideLift("Obj_Deku_MoveFloor_A_01"));
     CHECK_FALSE(CoopLiftRide::IsRideLift("Obj_InsideTheDekuTree_ElevatorLift_A_02"));
     CHECK_FALSE(CoopLiftRide::IsRideLift("Npc_ElevatorLift_A_01"));

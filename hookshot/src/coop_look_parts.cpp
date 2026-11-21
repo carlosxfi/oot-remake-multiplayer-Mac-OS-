@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
+#include <mutex>
 #include <string_view>
 
 namespace CoopLookParts {
@@ -78,9 +80,93 @@ std::string Name(const CoopLook::Look& look) {
     return name;
 }
 
+namespace {
+std::mutex g_metal_mutex;
+std::shared_ptr<const Metal> g_metal;   // guarded
+
+std::shared_ptr<const Metal> CurrentMetal() {
+    std::lock_guard lock(g_metal_mutex);
+    return g_metal;
+}
+}  // namespace
+
+std::optional<Metal> ParseMetal(const std::vector<std::uint8_t>& file, std::string* why) {
+    const auto fail = [&](const char* w) -> std::optional<Metal> {
+        if (why != nullptr) {
+            *why = w;
+        }
+        return std::nullopt;
+    };
+    constexpr std::size_t kName = 64;
+    static constexpr char kMagic[] = "COOPMTL1";
+    if (file.size() < 12 || std::memcmp(file.data(), kMagic, 8) != 0) {
+        return fail("not a metal file");
+    }
+    const auto u32 = [&](std::size_t at) {
+        std::uint32_t v = 0;
+        std::memcpy(&v, file.data() + at, 4);
+        return v;   // (little-endian hosts only, as the look files)
+    };
+    const std::uint32_t count = u32(8);
+    Metal out;
+    std::size_t at = 12;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        if (file.size() - at < kName + 8) {
+            return fail("the metal file is cut short");
+        }
+        const auto* name = file.data() + at;
+        MetalBlocks b;
+        b.texture.assign(name, std::find(name, name + kName, std::uint8_t{0}));
+        const std::uint32_t part = u32(at + kName);
+        const std::uint32_t n = u32(at + kName + 4);
+        at += kName + 8;
+        if (part >= CoopLook::kParts) {
+            return fail("a metal entry names no part");
+        }
+        if ((file.size() - at) / 4 < n) {
+            return fail("the metal file is cut short");
+        }
+        b.part = static_cast<CoopLook::Part>(part);
+        b.offsets.resize(n);
+        for (std::uint32_t k = 0; k < n; ++k) {
+            b.offsets[k] = u32(at + 4 * std::size_t{k});
+        }
+        at += 4 * std::size_t{n};
+        out.push_back(std::move(b));
+    }
+    return out;
+}
+
+void UseMetal(std::shared_ptr<const Metal> metal) {
+    std::lock_guard lock(g_metal_mutex);
+    g_metal = std::move(metal);
+}
+
+std::size_t PaintMetal(const Metal& metal, const std::string& name, std::vector<std::uint8_t>& texels,
+                       const CoopLook::Look& look) {
+    std::size_t set = 0;
+    for (const MetalBlocks& b : metal) {
+        if (b.texture != name || !look[b.part]) {
+            continue;
+        }
+        for (const std::uint32_t at : b.offsets) {
+            // A BC4 block with both ends 0 is 0 in every texel.
+            if (at % 8 == 0 && at <= texels.size() && texels.size() - at >= 8) {
+                std::memset(texels.data() + at, 0, 8);
+                ++set;
+            }
+        }
+    }
+    return set;
+}
+
 CoopLookTunic::Texels Painted(const CoopLookTunic::Texels& gear, const CoopLook::Look& look) {
     CoopLookTunic::Texels out = gear;
+    const std::shared_ptr<const Metal> metal = CurrentMetal();
     for (CoopLookTunic::Texture& t : out) {
+        if (metal) {
+            PaintMetal(*metal, t.name, t.texels, look);
+        }
         const GearTexture* entry = nullptr;
         for (const GearTexture& g : Gear()) {
             if (t.name == g.name) {

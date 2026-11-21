@@ -80,6 +80,12 @@ class FlagStore {
   // Writes the value as it is, with no merging (the host's save load,
   // docs/flags.md "Saves"). Default: write().
   virtual bool write_exact(const protocol::FlagEntry& entry) { return write(entry); }
+
+  // A guest's own save load, the group's value written back (FlagWatcher's load reverts): as write_exact, except
+  // that a dungeon's floors (ItemRule::bits) are ORed, never lowered (rows 63/76: the floors a player entered are
+  // not taken off its map by its own load). The host's FLAG_RESET and the join snapshot stay exact: the host's save
+  // decides (docs/flags.md, "Saves"). Default: write_exact().
+  virtual bool write_load_back(const protocol::FlagEntry& entry) { return write_exact(entry); }
 };
 
 // A FlagStore that refuses the flags `hold` names for now and passes all
@@ -114,6 +120,14 @@ class HoldFlagStore final : public FlagStore {
       return false;
     }
     return inner_.write_exact(entry);
+  }
+  bool write_load_back(const protocol::FlagEntry& entry) override {
+    if (entry.value != 0 && holds(key_of(entry))) {
+      ++held_;
+      if (held_keys_.size() < 64) held_keys_.push_back(key_of(entry));
+      return false;
+    }
+    return inner_.write_load_back(entry);
   }
 
   // Writes refused so far, and their flags (at most 64).

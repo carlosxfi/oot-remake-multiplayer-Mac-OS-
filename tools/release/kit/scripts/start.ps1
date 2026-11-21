@@ -32,7 +32,7 @@ if (Test-KitInZip $kit) {
 
 # 2. One start at a time for this folder.
 $lock = Enter-KitStartLock $kit
-if (-not $lock) { Stop-Start @('OoT Co-op is already starting in another window (it may be building the game). Wait for that window.') }
+if (-not $lock) { Stop-Start @('Squadala is already starting in another window (it may be building the game). Wait for that window.') }
 
 # 3. Files an antivirus or a broken unzip took.
 $missing = @(Get-KitMissingFiles $kit)
@@ -86,6 +86,11 @@ foreach ($o in $others) {
 }
 $reused = Copy-KitGameFilesFrom $kit $others
 if ($reused) { Write-Host "Your game file (from the other kit): $reused" }
+
+# 5b. Problem reports (problem-report.ps1, docs/problem-reports.md): asked once (default no); with yes, the problems of the
+# sessions since the last report, masked as collect-logs masks them, in coop-report-<date>.zip to send with /report.
+# Nothing is sent from here, and nothing here stops the start.
+try { & (Join-Path $PSScriptRoot 'problem-report.ps1') -AtStart } catch { }
 
 # 6. The rest: update, game build, start (play.ps1). The desktop shortcut follows the kit started last. Its name up to
 # v0.11.2, "Play OoT Co-op", becomes "Play Squadala" (when there is no such one yet; else the old one is left as it is).

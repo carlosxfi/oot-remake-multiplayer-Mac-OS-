@@ -6,11 +6,14 @@
 #include <cstdio>
 
 #include "coop_fairy.h"
-#include "coop_logic_probe.h"
+#include "coop_room_objects.h"
 
 namespace CoopLiftRide {
 
 bool IsRideLift(std::string_view name) {
+    // room-objects: every name whose logic has the RideOnPlayer plug (generated from the romfs), so the Forest
+    // Temple's elevators (Obj_ForestTemple_Elevator_A_01, the base lift's logic) too.
+    if (CoopRoomObjects::RiderName(name)) return true;
     if (!name.starts_with("Obj_")) return false;
     if (name.starts_with("Obj_Deku_") || name.starts_with("Obj_InsideTheDekuTree_")) return false;
     return name.find("ElevatorLift_") != std::string_view::npos || name.find("MoveFloor_") != std::string_view::npos;
@@ -87,10 +90,7 @@ std::optional<CoopPuppet::Call> Rider::Step(CoopPuppet::Guest& guest, bool after
         if (after_call) return std::nullopt;  // the malloc is asked at the start of a frame only
         std::lock_guard lock(mutex_);
         asked_malloc_ = true;
-        CoopPuppet::Call c;
-        c.function = main + addr::kMalloc;
-        c.x[0] = addr::kBlockSize;
-        return c;
+        return CoopLogicSet::Malloc(main);
     }
     return Next(guest, main);
 }
@@ -101,32 +101,10 @@ std::optional<CoopPuppet::Call> Rider::Next(CoopPuppet::Guest& guest, std::uint6
         frame_.pop_front();
         if (!CoopFairy::ActorPresent(guest, lift)) continue;
         // The execute reads [actor+0x270] without a check: only a lift whose logic has a live bool RideOnPlayer.
-        const auto plugs = CoopLogicProbe::Read(
-            [&guest](std::uint64_t at) -> std::optional<std::uint64_t> {
-                std::uint64_t v = 0;
-                if (!guest.Read(at, &v, 8)) return std::nullopt;
-                return v;
-            },
-            lift);
-        if (!plugs) continue;
-        const auto plug = std::find_if(plugs->begin(), plugs->end(), [](const CoopLogicProbe::Plug& p) {
-            return p.key == (kRideOnPlayer ^ 7u) && p.type == CoopLogicProbe::kBool;
-        });
-        if (plug == plugs->end()) continue;
-        if (plug->value == std::optional<std::uint8_t>(1)) continue;  // on already (our Link, or set this frame)
-        const std::uint64_t vtable = main + addr::kVtable;
-        const std::uint64_t owner = block_ + addr::kOwner;
-        const std::uint64_t holder = block_ + addr::kHolder;
-        const std::uint64_t value_at = block_ + addr::kValueByte;
-        const std::uint8_t flags = 2;
-        const std::uint32_t key = kRideOnPlayer;
-        const std::uint8_t one = 1;
-        if (!guest.Write(block_, &vtable, 8) || !guest.Write(block_ + addr::kNodeOwner, &owner, 8) ||
-            !guest.Write(block_ + addr::kNodeFlags, &flags, 1) || !guest.Write(block_ + addr::kNodeKey, &key, 4) ||
-            !guest.Write(block_ + addr::kNodeValue, &value_at, 8) || !guest.Write(value_at, &one, 1) ||
-            !guest.Write(owner + 8, &holder, 8) || !guest.Write(holder + addr::kHolderActor, &lift, 8)) {
-            continue;
-        }
+        const auto plug = CoopLogicSet::BoolPlug(guest, lift, kRideOnPlayer);
+        if (!plug) continue;
+        if (plug->value == std::uint8_t{1}) continue;  // on already (our Link, or set this frame)
+        if (!CoopLogicSet::WriteNode(guest, block_, main, lift, kRideOnPlayer)) continue;
         {
             std::lock_guard lock(mutex_);
             if (std::find(told_.begin(), told_.end(), lift) == told_.end()) {
@@ -139,10 +117,7 @@ std::optional<CoopPuppet::Call> Rider::Next(CoopPuppet::Guest& guest, std::uint6
                 notes_.emplace_back(line);
             }
         }
-        CoopPuppet::Call c;
-        c.function = main + addr::kExecute;
-        c.x[0] = block_;
-        return c;
+        return CoopLogicSet::Execute(main, block_);
     }
     return std::nullopt;
 }

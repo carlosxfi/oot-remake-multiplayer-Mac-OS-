@@ -39,6 +39,7 @@ constexpr const char* kTestPassword = "test-pass";
 ServerOptions server_options() {
   ServerOptions options;
   options.port = 0;  // any free port
+  options.bind = 0x7F000001u;  // 127.0.0.1 only: a test listens on no other address
   options.session.join_password = kTestPassword;
   return options;
 }
@@ -1068,4 +1069,84 @@ TEST_CASE("loopback: with test jitter every reliable line still arrives in order
   REQUIRE(pump_until(server, {&a, &b}, [&] { return lines().size() == kLines; }, &clock));
   const std::vector<std::string> got = lines();
   for (int i = 0; i < kLines; ++i) CHECK(got[static_cast<std::size_t>(i)] == "line " + std::to_string(i));
+}
+
+TEST_CASE("loopback: with host approval a joiner waits, sealed, until the host lets it in or says no") {
+  EnetLife enet;
+  ServerOptions options = server_options();
+  options.session.approve_joins = true;
+  EnetServer server(options);
+  REQUIRE(server.start());
+
+  Client host;
+  host.connect(server.port());
+  REQUIRE(pump_until(server, {&host}, [&] { return host.connected; }));
+  host.send(hello_from("Link"), kChannelSession);
+  REQUIRE(pump_until(server, {&host}, [&] { return host.find<Welcome>() != nullptr; }));
+
+  // A joiner with the password is held; both ends hear of the knock, encrypted.
+  Client riley;
+  riley.connect(server.port());
+  REQUIRE(pump_until(server, {&host, &riley}, [&] { return riley.connected; }));
+  riley.send(hello_from("Riley"), kChannelSession);
+  REQUIRE(pump_until(server, {&host, &riley}, [&] {
+    return riley.find<JoinKnock>() != nullptr && host.find<JoinKnock>() != nullptr;
+  }));
+  CHECK(riley.cipher != nullptr);
+  CHECK(riley.find<Welcome>() == nullptr);
+  const JoinKnock asked = *host.find<JoinKnock>();
+  CHECK(asked.nickname == "Riley");
+  CHECK(riley.find<JoinKnock>()->knock == asked.knock);
+  CHECK(server.session().player_count() == 1);
+  host.send(JoinAllow{asked.knock, true, false}, kChannelSession);
+  REQUIRE(pump_until(server, {&host, &riley}, [&] {
+    return riley.find<Welcome>() != nullptr && host.find<PlayerJoined>() != nullptr;
+  }));
+  CHECK(riley.find<Welcome>()->player_number == 2);
+
+  // Another one is turned away: REFUSED not_let_in, and the server closes it.
+  Client mido;
+  mido.connect(server.port());
+  REQUIRE(pump_until(server, {&host, &riley, &mido}, [&] { return mido.connected; }));
+  mido.send(hello_from("Mido"), kChannelSession);
+  const JoinKnock* second = nullptr;
+  REQUIRE(pump_until(server, {&host, &riley, &mido}, [&] {
+    second = nullptr;
+    for (const Received& r : host.inbox) {
+      if (const auto* k = std::get_if<JoinKnock>(&r.message); k && k->nickname == "Mido") second = k;
+    }
+    return second != nullptr;
+  }));
+  host.send(JoinAllow{second->knock, false, false}, kChannelSession);
+  REQUIRE(pump_until(server, {&host, &riley, &mido}, [&] { return mido.disconnected; }));
+  REQUIRE(mido.find<Refused>() != nullptr);
+  CHECK(mido.find<Refused>()->reason == RefuseReason::not_let_in);
+  CHECK(server.session().player_count() == 2);
+  CHECK(server.session().stats().joins_denied == 1);
+}
+
+TEST_CASE("host service: with approve_joins it says so at the start, holds a joiner, and stop says the counts") {
+  EnetLife enet;
+  std::vector<std::string> log;
+  HostServiceConfig config = service_config(&log);
+  config.session.approve_joins = true;
+  HostService service(config);
+  std::string why;
+  REQUIRE(service.start(why));
+  CHECK(said(log, "each new player waits until the host lets them in (/allow or /deny)"));
+
+  Client host;
+  host.connect(service.port());
+  REQUIRE(pump_service(service, {&host}, [&] { return host.connected; }));
+  host.send(hello_from("Link"), kChannelSession);
+  REQUIRE(pump_service(service, {&host}, [&] { return host.find<Welcome>() != nullptr; }));
+  Client riley;
+  riley.connect(service.port());
+  REQUIRE(pump_service(service, {&host, &riley}, [&] { return riley.connected; }));
+  riley.send(hello_from("Riley"), kChannelSession);
+  REQUIRE(pump_service(service, {&host, &riley}, [&] { return host.find<JoinKnock>() != nullptr; }));
+  CHECK(service.status().players == 1);  // a held joiner is not a player
+
+  service.stop();
+  CHECK(said(log, "host approval: asked 1, let in 0, turned away 0, no answer 0, in without asking 0"));
 }

@@ -1,5 +1,7 @@
 #include "game_call.hpp"
 
+#include <array>
+
 namespace coop_nxnative {
 namespace {
 

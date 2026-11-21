@@ -32,25 +32,12 @@
 #include <vector>
 
 #include "coop/protocol/messages.hpp"
+#include "coop_logic_set.h"
 #include "coop_puppet.h"
 
 namespace CoopLiftRide {
 
-namespace addr {
-inline constexpr std::uint64_t kExecute = 0x2727540;  // ExecuteLogicSetBool's execute (vtable slot 0xf0)
-inline constexpr std::uint64_t kVtable = 0x49a9550;   // ExecuteLogicSetBool's vtable
-inline constexpr std::uint64_t kMalloc = 0x14c6c90;   // as coop_puppet.h
-// Our node block.
-inline constexpr std::uint64_t kNodeFlags = 0x18;     // byte; bit 1 on
-inline constexpr std::uint64_t kNodeKey = 0x20;       // u32
-inline constexpr std::uint64_t kNodeValue = 0x38;     // -> value byte
-inline constexpr std::uint64_t kNodeOwner = 0x08;     // -> owner; [owner+8] -> holder; [holder+0x1f0] = actor
-inline constexpr std::uint64_t kOwner = 0x40;         // in the block
-inline constexpr std::uint64_t kHolder = 0x80;        // in the block
-inline constexpr std::uint64_t kHolderActor = 0x1f0;
-inline constexpr std::uint64_t kValueByte = 0x60;     // in the block
-inline constexpr std::uint64_t kBlockSize = kHolder + kHolderActor + 0x10;
-}  // namespace addr
+namespace addr = ::CoopLogicSet::addr;  // the set-bool node (coop_logic_set.h)
 
 inline constexpr std::uint32_t kRideOnPlayer = 0xa4ab760a;  // Murmur3("RideOnPlayer"); the plug's key is ^ 7
 
@@ -62,7 +49,8 @@ inline constexpr float kRideAboveM = 2.5f;
 inline constexpr std::uint64_t kHoldMs = 400;
 
 // The lifts that start on RideOnPlayer (#65): Jabu-Jabu's lift and moving floor; the other dungeons' elevator lifts
-// run the same base AI (Obj_Base_ElevatorLift_A_00). Not the Deku Tree's basement floor (GroundControl-driven) or
+// run the same base AI (Obj_Base_ElevatorLift_A_00), and every name the romfs gives a RideOnPlayer logic
+// (CoopRoomObjects::RiderName: the Forest Temple's elevators). Not the Deku Tree's basement floor (GroundControl-driven) or
 // its compass-room lifts (on/off animation actors with no RideOnPlayer plug).
 bool IsRideLift(std::string_view name);
 

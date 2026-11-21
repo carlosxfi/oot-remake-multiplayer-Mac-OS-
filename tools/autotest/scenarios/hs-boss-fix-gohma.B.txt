@@ -67,6 +67,7 @@ hold ZL+Y 8
 mark b-hit2
 wait 600
 mark b-k0
+kill Enemy_DungeonBoss_Gohma   # with the other game's: whichever game owns the boss then kills it (a kill on a copy is held at 1 and its owner keeps its stops; big-run-0115: the owner moved mid-fight)
 wait 120
 mark b-k1
 wait 900

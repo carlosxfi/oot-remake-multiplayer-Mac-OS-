@@ -26,6 +26,11 @@ std::string Caption(const CoopDbno::View& view) {
     if (view.kind == Kind::downed) {
         return view.name.empty() ? CoopI18n::Tr("You are down") : view.name + " " + CoopI18n::Tr("is reviving you");
     }
+    if (view.kind == Kind::spectating) {
+        return CoopI18n::Tr("Watching") + " " + view.name +
+               (view.elsewhere ? " " + CoopI18n::Tr("(out of sight)") : std::string()) + "  " +
+               CoopI18n::Tr("A: next player");
+    }
     return CoopI18n::Tr(view.holding ? "Reviving" : "Hold A to revive") + " " + view.name;
 }
 
@@ -37,6 +42,17 @@ void Draw(const HosCoopDraw& d, const CoopDbno::View& view) {
     const float dot = std::max(2.5f, radius * 0.09f);
     const std::size_t lit = Lit(view.progress);
     const bool downed = view.kind == CoopDbno::View::Kind::downed;
+    if (view.kind == CoopDbno::View::Kind::spectating) {
+        // No ring and no clock: whom we watch, along the lower edge.
+        const std::string caption = Caption(view);
+        const float cpx = std::clamp(d.height * 0.022f, 14.0f, 28.0f);
+        const float w = d.text_width(d.user, cpx, caption.c_str());
+        const float top = d.height * 0.86f;
+        d.rect(d.user, cx - w * 0.5f - 10.0f, top - 4.0f, cx + w * 0.5f + 10.0f, top + cpx + 6.0f,
+               Rgba(0, 0, 0, 150), 6.0f);
+        d.text(d.user, cx - w * 0.5f, top, cpx, Rgba(255, 255, 255, 255), caption.c_str());
+        return;
+    }
     d.circle(d.user, cx, cy, radius + dot * 2.5f, Rgba(0, 0, 0, 140), 0.0f);
     for (std::size_t i = 0; i < kDots; ++i) {
         // From the top, clockwise.

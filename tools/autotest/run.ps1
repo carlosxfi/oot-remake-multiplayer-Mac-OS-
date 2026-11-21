@@ -34,6 +34,12 @@ param(
     [string[]]$Switches = @("LICHII_COOP_PUPPET=1", "LICHII_COOP_OBJECTS=1", "LICHII_COOP_SPAWN=1", "LICHII_COOP_DEBUG_OBJECTS=1"),
     # Seconds to wait for each phase (boot and join, load, scenario).
     [int]$Timeout = 180,
+    # Longshot (-Runtime hookshot): each game's renderer start (hookshot.py wait_renderer). -RendererWait: seconds with
+    # no compile progress logged; while the game logs progress it waits on until -RendererStall seconds pass without a
+    # rise, never past -RendererLimit seconds. 0 = the harness default (a cold driver shader cache: minutes).
+    [int]$RendererWait = 0,
+    [int]$RendererStall = 0,
+    [int]$RendererLimit = 0,
     # Steps files: how long an `expect` line waits for the counts (seconds).
     [int]$ExpectWait = 30,
     # Skip load.txt (the games are expected to be in the world already: never, unless testing).
@@ -238,6 +244,9 @@ if ($Runtime -eq 'hookshot') {
         $a += @('--test-delay-ms', "$([int]$Lag)", '--test-jitter-ms', "$([int]$Jitter)")
     }
     if ($Pipe -ne 'coop-auto') { $a += @('--pipe', $Pipe) }
+    if ($RendererWait -gt 0) { $a += @('--renderer-wait', "$RendererWait") }
+    if ($RendererStall -gt 0) { $a += @('--renderer-stall', "$RendererStall") }
+    if ($RendererLimit -gt 0) { $a += @('--renderer-limit', "$RendererLimit") }
     if ($Kit.Count) { $a += @('--kit-a', (Resolve $Kit[0]), '--kit-b', (Resolve $Kit[1])) }
     foreach ($e in @($Switches | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().Trim('"', "'") } | Where-Object { $_ })) {
         $a += @('--env', $e)
@@ -264,7 +273,14 @@ if ($Runtime -eq 'hookshot') {
             foreach ($e in $switchList) { if ($e -match "^${x}:(.+?)=(.*)$") { $sw[$Matches[1]] = $Matches[2] } }
             $pack = Join-Path $pair 'mods\contents\0400486024DEC000\coop-puppet'
             if (-not (Test-Path -LiteralPath (Join-Path $pack 'coop_puppet.json'))) { continue }
-            $selfArgs = @('-I', (Join-Path (Split-Path $here) 'puppet_pack\self_tunic.py'), '--pack', $pack,
+            $selfTool = Join-Path (Split-Path $here) 'puppet_pack\self_tunic.py'
+            if (-not (Test-Path -LiteralPath $selfTool)) {
+                # bigrun-0115 ran a copy of tools\autotest alone: the tool was missing, the game kept the green files
+                # and hs-tunic's own colour failed with "the puppet pack's tunic files are green, your colour is blue".
+                Write-Warning "hookshot: game $x's own tunic files NOT set: $selfTool is missing (copy tools\puppet_pack beside tools\autotest)"
+                continue
+            }
+            $selfArgs = @('-I', $selfTool, '--pack', $pack,
                 "--color=$($sw['LICHII_COOP_COLOR'])", "--tunics=$($sw['LICHII_COOP_TUNICS'])",   # (=: PowerShell drops an empty argument)
                 '--options', (Join-Path $pair 'coop-options.ini'), '--coop-ini', (Join-Path $pair 'coop.ini'))
             $got = (& $py[0] @pyArgs @selfArgs | Out-String).Trim()
@@ -731,8 +747,13 @@ function Puppet-Count([string]$x) {
 #   close B / kill B      close game B's window (it leaves the server) / end it at once (a crash)
 #   server stop / server start
 #   sleep 10              seconds
-#   expect NAME A=1 B=0   wait up to -ExpectWait s until each game named has that many puppets
-#                         and as many fairies, then screenshot NAME; else FAIL (the test goes on)
+#   expect NAME A=1 B=0 [see=CHECK...]  wait up to -ExpectWait s until each game named has that many
+#                         puppets and as many fairies, then screenshot NAME (s<step>-NAME-A/-B.png); else FAIL
+#                         (the test goes on). Counts that match are PASS only when every see= check
+#                         (tools\autotest\proofs.txt, graded by proof.py on that shot) is OK; a shot showing the
+#                         wrong result is FAIL; no see= or an unclear check: UNPROVEN (owner rule 2026-11-18: no
+#                         PASS from log lines alone, and puppets are visible)
+#   see CHECK [CHECK...]  grade screenshot checks on the shots taken so far: PASS / FAIL / UNPROVEN
 #   shot NAME
 #   password B TEXT       the join password game B sends from its next start (- for none)
 #   try B welcomed        start B (no wait for the join) and check the outcome within 40 s:
@@ -741,7 +762,23 @@ function Puppet-Count([string]$x) {
 #   lines NAME B max=N REGEX  game B's log has at most N lines matching REGEX (the rest of the
 #                         line, spaces kept); PASS or FAIL with the count (a loop, a repeat);
 #                         min=N instead: at least N (the case really happened)
-# Results go to counts.txt beside the screenshots.
+# Results go to counts.txt beside the screenshots. Log-only steps by nature: try (a join's outcome, a
+# connection result) and lines (log line counts); a run of them alone needs its group line's see= or
+# logonly= (groups.py). UNPROVEN steps are counted and printed at the end; they are not a pass.
+function Prove-Shots([string[]]$checks) {
+    # proof.py grade: exit 0 PASS, 3 FAIL (a shot shows the wrong result), 1 UNPROVEN, 2 error (UNPROVEN here).
+    $py = @(Find-Python)
+    $o = @(& $py[0] @($py | Select-Object -Skip 1) -I "$here\proof.py" grade $out @checks | ForEach-Object { "$_" })
+    $state = switch ($LASTEXITCODE) { 0 { 'PASS' } 3 { 'FAIL' } default { 'UNPROVEN' } }
+    $text = (@($o | Where-Object { $_ -notmatch '^verdict ' }) -join '; ')
+    return @{ State = $state; Text = $(if ($state -eq 'PASS') { "[seen: $text]" } else { "[screenshot check: $text]" }) }
+}
+function Step-Result([string]$state, [string]$text) {
+    $res = "$state $text"
+    Write-Host $res
+    Add-Content "$out\counts.txt" $res
+    if ($state -eq 'FAIL') { $script:stepFails++ } elseif ($state -eq 'UNPROVEN') { $script:stepUnproven++ }
+}
 function Run-Steps([string]$file) {
     $n = 0
     foreach ($raw in Get-Content $file) {
@@ -806,6 +843,11 @@ function Run-Steps([string]$file) {
                 Copy-Item $st[$x].Log "$out\eden_log-$x-try$n.txt" -ErrorAction SilentlyContinue
             }
             'shot' { Shot-Both "s$n-$($rest[0])" }
+            'see' {
+                if (-not $rest.Count) { throw "steps line ${n}: want see CHECK [CHECK...]" }
+                $pr = Prove-Shots $rest
+                Step-Result $pr.State "see $($rest -join ' ') $($pr.Text)"
+            }
             'lines' {
                 if ($rest.Count -lt 4 -or $rest[2] -notmatch '^(max|min)=(\d+)$') { throw "steps line ${n}: want lines NAME B max=N|min=N REGEX" }
                 $atLeast = $Matches[1] -eq 'min'
@@ -821,8 +863,13 @@ function Run-Steps([string]$file) {
             }
             'expect' {
                 $name = $rest[0]
-                $want = [ordered]@{}
-                foreach ($kv in $rest[1..($rest.Count - 1)]) { $k, $v = $kv -split '='; $want[$k] = [int]$v }
+                $want = [ordered]@{}; $see = @()
+                foreach ($kv in $rest[1..($rest.Count - 1)]) {
+                    if ($kv -match '^see=([A-Za-z0-9_.-]+)$') { $see += $Matches[1] }
+                    elseif ($kv -match '^([AB])=(\d+)$') { $want[$Matches[1]] = [int]$Matches[2] }
+                    else { throw "steps line ${n}: expect wants A=N / B=N / see=CHECK, not '$kv'" }
+                }
+                if (-not $want.Count) { throw "steps line ${n}: want expect NAME A=1 [B=0] [see=CHECK...]" }
                 $start = Get-Date
                 while ($true) {
                     $ok = $true; $texts = @()
@@ -835,12 +882,12 @@ function Run-Steps([string]$file) {
                     Start-Sleep -Milliseconds 500
                 }
                 $secs = [int]((Get-Date) - $start).TotalSeconds
-                $res = '{0} {1} (want {2}, after {3} s): {4}' -f $(if ($ok) { 'PASS' } else { 'FAIL' }), $name,
-                    (($rest[1..($rest.Count - 1)]) -join ' '), $secs, ($texts -join '; ')
-                Write-Host $res
-                Add-Content "$out\counts.txt" $res
-                if (-not $ok) { $script:stepFails++ }
+                $res = '{0} (want {1}, after {2} s): {3}' -f $name,
+                    (@($want.Keys | ForEach-Object { "$_=$($want[$_])" }) -join ' '), $secs, ($texts -join '; ')
                 Shot-Both "s$n-$name"
+                if (-not $ok) { Step-Result 'FAIL' $res }
+                elseif (-not $see.Count) { Step-Result 'UNPROVEN' "$res [counts from the log only: no see= check on shot s$n-$name]" }
+                else { $pr = Prove-Shots $see; Step-Result $pr.State "$res $($pr.Text)" }
             }
             default { throw "steps line ${n}: unknown '$($w[0])'" }
         }
@@ -900,6 +947,7 @@ function Stop-NetSim {
 
 $failed = $null
 $stepFails = 0
+$stepUnproven = 0
 try {
     Start-Server
     Start-NetSim
@@ -913,6 +961,7 @@ try {
     if ($steps) {
         Run-Steps $steps
         if ($stepFails) { Write-Host "$stepFails expect step(s) FAILED (counts.txt)" }
+        if ($stepUnproven) { Write-Host "UNPROVEN: $stepUnproven step(s) without screenshot proof (counts.txt): not a pass" }
     } else {
         foreach ($x in $kits.Keys) { Start-Game $x; Start-Sleep 3 }
         # Wait for both windows and both joins.

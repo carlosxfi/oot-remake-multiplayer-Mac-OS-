@@ -778,17 +778,88 @@ try {
     Write-File (Join-Path $ng 'mods\randomizer-AB-keysanity\coop-seed.txt') "AB`n"
     Write-File (Join-Path $ng 'mods\randomizer-half\romfs\x.bin') 'x'
     Write-File (Join-Path $ng 'mods\oot-remake-randomizer\randomizer-AB.ootrr') '{}'
+    Write-File (Join-Path $ng 'mods\oot-remake-randomizer\randomizer-AB.spoiler.txt') 'chests'
     Write-File (Join-Path $ng 'mods\oot-remake-randomizer\settings.txt') 'on=1'
     Write-File (Join-Path $ng 'mods\hd-textures\romfs\y.bin') 'y'
     $gone = @(Remove-KitRandoSeeds $ng 'v0.6.0')
     Check ($gone.Count -eq 2 -and ($gone -join ' ') -match 'randomizer-AB removed for OOTRR v0\.6\.0' -and
            -not (Test-Path -LiteralPath (Join-Path $ng 'mods\randomizer-AB')) -and
            -not (Test-Path -LiteralPath (Join-Path $ng 'mods\randomizer-AB-keysanity')) -and
-           -not (Test-Path -LiteralPath (Join-Path $ng 'mods\oot-remake-randomizer\randomizer-AB.ootrr'))) 'new OOTRR: built seeds and their seed files removed'
+           -not (Test-Path -LiteralPath (Join-Path $ng 'mods\oot-remake-randomizer\randomizer-AB.ootrr')) -and
+           -not (Test-Path -LiteralPath (Join-Path $ng 'mods\oot-remake-randomizer\randomizer-AB.spoiler.txt'))) 'new OOTRR: built seeds, their seed files and kept spoiler logs removed'
     Check ((Test-Path -LiteralPath (Join-Path $ng 'mods\randomizer-half\romfs\x.bin')) -and
            (Test-Path -LiteralPath (Join-Path $ng 'mods\oot-remake-randomizer\settings.txt')) -and
            (Test-Path -LiteralPath (Join-Path $ng 'mods\hd-textures\romfs\y.bin'))) 'new OOTRR: other mods, the control folder and an unbuilt folder stay'
     Check (@(Remove-KitRandoSeeds (Join-Path $hk 'no-such-game') 'v0.6.0').Count -eq 0) 'new OOTRR: no mods folder -> nothing'
+    # Install-KitOotrr (player report 2026-11-19, Velvet: no tools\ootrr\ootrr.exe on every start after Update.bat, the
+    # randomizer broken; the old step deleted tools\ootrr before unpacking, so any failure after that left none).
+    # All or nothing: unpacked into tools\ootrr.new, tried (Test-KitOotrrRuns), then swapped; a failure keeps the OOTRR
+    # that was there and writes why into tools\ootrr-setup.txt, which the game's chat shows (coop_rando OotrrMissingText).
+    $ik = Join-Path $hk 'ootrr-install'
+    $ig = Join-Path $ik 'game'
+    $iDl = Join-Path $ik 'hookshot\downloads'
+    $New_OotrrZip = {
+        param([string]$Name, [string]$Release, [string]$ExeFrom, [string]$ExeText)
+        $src = Join-Path $ik "src-$Release"
+        $top = Join-Path $src "OOTRR-$Release-windows-x64"
+        New-Item -ItemType Directory -Force -Path $top, $iDl | Out-Null
+        if ($ExeFrom) { Copy-Item -LiteralPath $ExeFrom -Destination (Join-Path $top 'ootrr.exe') } else { Write-File (Join-Path $top 'ootrr.exe') $ExeText }
+        Write-File (Join-Path $top 'LICENSE') 'GPL'
+        $zip = Join-Path $iDl $Name
+        & "$env:SystemRoot\System32\tar.exe" -a -c -f $zip -C $src "OOTRR-$Release-windows-x64"
+        $sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+        Write-File (Join-Path $ik 'hookshot\OOTRR.txt') "# pin`nrelease=$Release`nurl=https://example.invalid/ootrr`nwindows=$Name`nwindows_sha256=$sha`n"
+        return $sha
+    }
+    # (stand-ins for ootrr.exe, compiled here: 'shuffle 1 1' ends with 0 as OOTRR's does; the bad one starts and fails)
+    $fakeGood = Join-Path $ik 'fake-good.exe'; $fakeBad = Join-Path $ik 'fake-bad.exe'
+    New-Item -ItemType Directory -Force -Path $ik | Out-Null
+    Add-Type -OutputType ConsoleApplication -OutputAssembly $fakeGood -TypeDefinition 'public static class P { public static int Main(string[] a) { return (a.Length == 3 && a[0] == "shuffle") ? 0 : 2; } }'
+    Add-Type -OutputType ConsoleApplication -OutputAssembly $fakeBad -TypeDefinition 'public static class Q { public static int Main(string[] a) { return 3; } }'
+    $goodSha = & $New_OotrrZip 'OOTRR-good.zip' 'v0.5.0' $fakeGood ''
+    $r = Install-KitOotrr $ik $ig
+    Check ($r.Ok -and -not $r.Why -and (Test-Path -LiteralPath (Join-Path $ig 'tools\ootrr\ootrr.exe')) -and
+           (Get-Content -LiteralPath (Join-Path $ig 'tools\ootrr\coop-ootrr.txt') -TotalCount 1).Trim() -eq "v0.5.0 $goodSha" -and
+           (Get-Content -LiteralPath (Join-Path $ig 'tools\ootrr-setup.txt') -TotalCount 1).Trim() -eq 'ok v0.5.0' -and
+           -not (Test-Path -LiteralPath (Join-Path $ig 'tools\ootrr.new')) -and -not (Test-Path -LiteralPath (Join-Path $ig 'tools\ootrr.old'))) "OOTRR install: unpacked, tried, in place, stamped, ok in ootrr-setup.txt [$($r.Lines -join ' | ')]"
+    $r = Install-KitOotrr $ik $ig
+    Check ($r.Ok -and ($r.Lines -join ' ') -match 'there already') 'OOTRR install: the pinned one there already -> nothing done'
+    # A release whose ootrr.exe Windows will not start (an antivirus's block looks the same): the old one stays.
+    [void](& $New_OotrrZip 'OOTRR-bad.zip' 'v0.6.0' '' 'not a program')
+    $r = Install-KitOotrr $ik $ig
+    Check (-not $r.Ok -and $r.Why -match 'did not let ootrr.exe run' -and $r.Had -eq 'v0.5.0' -and
+           (Get-Content -LiteralPath (Join-Path $ig 'tools\ootrr\coop-ootrr.txt') -TotalCount 1).Trim() -eq "v0.5.0 $goodSha" -and
+           (Get-Content -LiteralPath (Join-Path $ig 'tools\ootrr-setup.txt') -TotalCount 1) -match '^failed v0\.6\.0: Windows did not let ootrr\.exe run' -and
+           ($r.Lines -join ' ') -match 'is kept' -and ($r.Lines -join ' ') -match 'Protection history' -and
+           -not (Test-Path -LiteralPath (Join-Path $ig 'tools\ootrr.new'))) "OOTRR install: a program that does not run keeps the old OOTRR and says why [$($r.Lines -join ' | ')]"
+    Check (Test-KitOotrrStale $ik $ig) 'OOTRR install: after a failure the kit still counts it stale (the next start and Update.bat try again)'
+    Check ((Test-KitOotrrRuns (Join-Path $ik 'nothing.exe')) -match 'not there') 'OOTRR runs: a missing program says so'
+    # The game (or its ootrr.exe) holds the folder: the swap fails and the old folder is put back.
+    # review-0116-j N1: a program that starts but fails its test (exit 3) is not swapped in either.
+    [void](& $New_OotrrZip 'OOTRR-fails.zip' 'v0.6.5' $fakeBad '')
+    $r = Install-KitOotrr $ik $ig
+    Check (-not $r.Ok -and $r.Why -match 'failed a 1-second test \(exit 3\)' -and
+           (Get-Content -LiteralPath (Join-Path $ig 'tools\ootrr\coop-ootrr.txt') -TotalCount 1).Trim() -eq "v0.5.0 $goodSha" -and
+           -not (Test-Path -LiteralPath (Join-Path $ig 'tools\ootrr.new'))) "OOTRR install: a program that exits with an error keeps the old OOTRR [$($r.Lines -join ' | ')]"
+    $goodSha = & $New_OotrrZip 'OOTRR-good7.zip' 'v0.7.0' $fakeGood ''
+    $hold = [System.IO.File]::Open((Join-Path $ig 'tools\ootrr\LICENSE'), 'Open', 'Read', 'None')
+    try { $r = Install-KitOotrr $ik $ig } finally { $hold.Close() }
+    Check (-not $r.Ok -and $r.Why -match 'could not be put in place' -and (Test-Path -LiteralPath (Join-Path $ig 'tools\ootrr\ootrr.exe')) -and
+           (Get-Content -LiteralPath (Join-Path $ig 'tools\ootrr\coop-ootrr.txt') -TotalCount 1) -match '^v0\.5\.0 ') "OOTRR install: a held folder keeps the old OOTRR in place [$($r.Lines -join ' | ')]"
+    # A swap stopped between its two moves (power cut): tools\ootrr.old and no tools\ootrr -> put back, then updated.
+    Move-Item -LiteralPath (Join-Path $ig 'tools\ootrr') -Destination (Join-Path $ig 'tools\ootrr.old')
+    $r = Install-KitOotrr $ik $ig
+    Check ($r.Ok -and $r.Had -eq 'v0.5.0' -and (Get-Content -LiteralPath (Join-Path $ig 'tools\ootrr\coop-ootrr.txt') -TotalCount 1).Trim() -eq "v0.7.0 $goodSha" -and
+           -not (Test-Path -LiteralPath (Join-Path $ig 'tools\ootrr.old'))) "OOTRR install: a stopped swap is put back first, then the new release goes in [$($r.Lines -join ' | ')]"
+    # Offline with no zip here: no try, the old one kept, said.
+    $offWas = $env:OOT_COOP_OFFLINE; $env:OOT_COOP_OFFLINE = '1'
+    Write-File (Join-Path $ik 'hookshot\OOTRR.txt') "# pin`nrelease=v0.8.0`nurl=https://example.invalid/ootrr`nwindows=OOTRR-none.zip`nwindows_sha256=$('0' * 64)`n"
+    $r = Install-KitOotrr $ik $ig
+    $env:OOT_COOP_OFFLINE = $offWas
+    Check (-not $r.Ok -and $r.Why -eq 'offline' -and (Test-Path -LiteralPath (Join-Path $ig 'tools\ootrr\ootrr.exe')) -and
+           (Get-Content -LiteralPath (Join-Path $ig 'tools\ootrr-setup.txt') -TotalCount 1) -match '^failed v0\.8\.0: this PC had no internet') 'OOTRR install: offline -> no try, the old one kept, said'
+    Check ((Install-KitOotrr (Join-Path $ik 'no-kit') $ig).Ok) 'OOTRR install: a kit without OOTRR.txt brings none (fine)'
+    Remove-Item -LiteralPath $ik -Recurse -Force -ErrorAction SilentlyContinue
     # A randomizer seed built before the puppet pack was made again: its size table lacks the pack's entries and the
     # game aborts while it loads (lane1, 2026-11-14), so it is built again, or removed when it cannot be.
     $rg = Join-Path $hk 'rando-game'
@@ -803,6 +874,32 @@ try {
     $lines = @(Update-KitRandoSeeds $rg)
     Check (-not (Test-Path -LiteralPath (Join-Path $rg 'mods\randomizer-AB')) -and $lines.Count -eq 1 -and $lines[0] -match 'removed') 'rando seeds: no OOTRR to build it again -> the seed is removed, said once'
     Check (@(Get-KitStaleRandoSeeds $rg).Count -eq 0) 'rando seeds: nothing stale after'
+    # Built again with OOTRR (a fake: writes the seed as `ootrr build` does): the game's own files OOTRR does not
+    # write stay in the seed, so the players still find spoiler.txt and settings.txt (player report 0.11.3).
+    Write-File (Join-Path $rg "mods\randomizer-AB\$rst") 'seed'
+    Write-File (Join-Path $rg 'mods\randomizer-AB\coop-seed.txt') "AB`n"
+    Write-File (Join-Path $rg 'mods\randomizer-AB\coop-rando.txt') "default`n"
+    Write-File (Join-Path $rg 'mods\randomizer-AB\spoiler.txt') 'chests'
+    Write-File (Join-Path $rg 'mods\randomizer-AB\settings.txt') "OOTRR1-XZLA`n"
+    Write-File (Join-Path $rg 'mods\oot-remake-randomizer\randomizer-AB.ootrr') '{}'
+    Write-File (Join-Path $rg 'romfs\System\x.bin') 'x'
+    (Get-Item (Join-Path $rg "mods\randomizer-AB\$rst")).LastWriteTimeUtc = [datetime]::UtcNow.AddHours(-1)
+    $fake = Join-Path $hk 'fake-ootrr.ps1'
+    Write-File $fake @'
+# build <seed file> <romfs> <load dir> <name> --host hookshot
+$out = Join-Path $args[3] $args[4]
+New-Item -ItemType Directory -Force -Path (Join-Path $out 'romfs\System\Resource') | Out-Null
+Set-Content -LiteralPath (Join-Path $out 'romfs\System\Resource\T.rsizetable.zs') -Value 'new'
+Set-Content -LiteralPath (Join-Path $out 'coop-seed.txt') -Value 'AB'
+exit 0
+'@
+    $lines = @(Update-KitRandoSeeds $rg $fake)
+    $ab = Join-Path $rg 'mods\randomizer-AB'
+    Check ($lines.Count -eq 1 -and $lines[0] -match 'built again' -and
+           (Get-Content -Raw -LiteralPath (Join-Path $ab $rst)).Trim() -eq 'new') "rando seeds: built again with OOTRR [$($lines -join ' | ')]"
+    Check ((Get-Content -Raw -LiteralPath (Join-Path $ab 'spoiler.txt')) -eq 'chests' -and
+           (Get-Content -Raw -LiteralPath (Join-Path $ab 'settings.txt')).Trim() -eq 'OOTRR1-XZLA' -and
+           (Get-Content -Raw -LiteralPath (Join-Path $ab 'coop-rando.txt')).Trim() -eq 'default') 'rando seeds: built again, spoiler.txt, settings.txt and the preset kept'
     $env:OOT_COOP_OFFLINE = $offlineWas
     Check ((Test-KitPuppetPackStale (Join-Path $hk 'none\coop_puppet.json') (Join-Path $hk 'no-tool')) -and
         -not (Test-KitPuppetPackStale $pack (Join-Path $hk 'no-tool'))) 'pack stale: a missing pack yes, a current one no'
@@ -839,6 +936,20 @@ try {
         Check (-not (Find-KitHookshotGameToCopy $cp "$want-x" @($hk))) 'kit-copy: another kit''s game of another stamp -> not copied'
         Check (-not (Find-KitHookshotGameToCopy $hk (Get-KitHookshotStamp $hk) @($hk))) 'kit-copy: a kit never copies from itself'
         Check (-not (Find-KitHookshotGameToCopy $cp $want @($cp, (Join-Path $hk 'nothing')))) 'kit-copy: no other built kit -> not copied'
+        # NVIDIA DLSS (#234): another kit's game is copied only with DLSS as this kit chose (NVIDIA's files only after its own yes)
+        Check (-not (Find-KitHookshotGameToCopy $cp $want @($hk) -Dlss $true)) 'dlss: a kit with DLSS on does not copy a game without it'
+        $hkNgx = Join-Path $hk 'hookshot\game\ngx'
+        Write-File (Join-Path $hkNgx 'nvngx_dlss.dll') 'NVIDIA'
+        try {
+            Check ((Test-KitHookshotDlss (Join-Path $hk 'hookshot\game')) -and -not (Test-KitHookshotDlss $cg)) 'dlss: a game with ngx\nvngx_dlss.dll has DLSS, one without has not'
+            Check (-not (Find-KitHookshotGameToCopy $cp $want @($hk))) 'dlss: a kit without DLSS never copies a game with NVIDIA''s files'
+            Check ((Find-KitHookshotGameToCopy $cp $want @($hk) -Dlss $true) -eq (Join-Path ([System.IO.Path]::GetFullPath($hk)) 'hookshot\game')) 'dlss: a kit with DLSS on copies a game with it'
+        } finally { Remove-Item -LiteralPath $hkNgx -Recurse -Force -ErrorAction SilentlyContinue }
+        # the license link follows the pinned tools' scripts\ngx_sdk.py; without them, NVIDIA's repository
+        $ngxTools = Join-Path $cp 'ngx-tools'
+        Write-File (Join-Path $ngxTools 'scripts\ngx_sdk.py') "COMMIT = `"$('ab' * 20)`"   # (v1)`n"
+        Check ((Get-KitNgxLicenseUrl $ngxTools) -eq "https://github.com/NVIDIA/DLSS/blob/$('ab' * 20)/LICENSE.txt") 'dlss: the license link is the pinned ngx_sdk.py''s commit'
+        Check ((Get-KitNgxLicenseUrl (Join-Path $cp 'no-tools')) -eq 'https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt') 'dlss: no tools -> the license in NVIDIA''s repository'
     } finally {
         Remove-Item -LiteralPath $cp -Recurse -Force -ErrorAction SilentlyContinue
         Write-File (Join-Path $hk 'hookshot\game-folder.txt') "$other`n"
@@ -1024,7 +1135,7 @@ try {
 
     # Whole starts of a Hookshot-only kit, with a stub play.ps1.
     function New-StartKit([string]$Dir) {
-        foreach ($b in 'Start Squadala.bat', 'Start OoT Co-op.bat') { Copy-KitFile (Join-Path $kitSrc $b) (Join-Path $Dir $b) }
+        Copy-KitFile (Join-Path $kitSrc 'Start Squadala.bat') (Join-Path $Dir 'Start Squadala.bat')
         foreach ($f in 'start.ps1', 'start-checks.ps1', 'kit-paths.ps1', 'windows-checks.ps1') { Copy-KitFile (Join-Path $kitSrc "scripts\$f") (Join-Path $Dir "scripts\$f") }
         Write-File "$Dir\scripts\play.ps1" ("param([string]`$Mode, [switch]`$Hookshot, [switch]`$NoUpdate)`r`n" +
             "[System.IO.File]::WriteAllText((Join-Path (Split-Path -Parent `$PSScriptRoot) 'played.txt'), `"`$Mode `$Hookshot `$NoUpdate `$env:OOT_COOP_KIT`")`r`n" +
@@ -1056,14 +1167,6 @@ try {
     New-StartKit $k
     $r = Start-Kit $k
     Check ($r[0] -eq 0 -and (Read-File "$k\played.txt") -eq "choose True True $k") "start: a good kit hands over to play.ps1 choose -Hookshot with the kit named [$($r[1])] [$(Read-File "$k\played.txt")]"
-    # "Start OoT Co-op.bat", the start file's name up to v0.11.2 (shortcuts, older updaters): the same start.
-    Remove-Item -LiteralPath "$k\played.txt" -Force
-    $r = Start-Kit $k '' 'Start OoT Co-op.bat'
-    Check ($r[0] -eq 0 -and (Read-File "$k\played.txt") -eq "choose True True $k") "start: the old name Start OoT Co-op.bat starts the same [$($r[1])]"
-    Write-File "$k\scripts\play.ps1" "exit 5`r`n"
-    $r = Start-Kit $k '' 'Start OoT Co-op.bat'
-    Check ($r[0] -ne 0) "start: the old name passes a failed start on (exit $($r[0]))"
-    New-StartKit $k
     # (kit-friction review) a ' in the kit's path: the Windows checks get the folder from a variable, never in their code
     $ka = Join-Path $sk "kits\O'Brien's kit"
     New-StartKit $ka
@@ -1130,8 +1233,7 @@ try {
 # The one entry point: one command line (an update may replace it while it runs); the kit README is ten lines at most.
 $startLine = @(Get-Content (Join-Path $kitSrc 'Start Squadala.bat') | Where-Object { $_ -and $_ -notmatch '^(@echo off|rem )' })
 Check ($startLine.Count -eq 1 -and $startLine[0] -match 'scripts\\start\.ps1" %\*' -and $startLine[0] -match '& exit /b 0$') 'Start Squadala.bat: start.ps1, one line'
-$oldLine = @(Get-Content (Join-Path $kitSrc 'Start OoT Co-op.bat') | Where-Object { $_ -and $_ -notmatch '^(@echo off|rem )' })
-Check ($oldLine.Count -eq 1 -and $oldLine[0] -match 'call "%~dp0Start Squadala\.bat" %\* & exit /b\)') 'Start OoT Co-op.bat (the old name): one line that calls Start Squadala.bat'
+Check (-not (Test-Path -LiteralPath (Join-Path $kitSrc 'Start OoT Co-op.bat'))) 'one start file: no Start OoT Co-op.bat (its old name, up to v0.11.3) in the kit'
 Check (@(Get-Content (Join-Path $kitSrc 'README.txt')).Count -le 10) 'README.txt: ten lines at most'
 # --- hs-missing: Host-/Join-Hookshot.bat with no co-op Hookshot game say why in plain words and offer the build ---
 $hm = Join-Path ([System.IO.Path]::GetTempPath()) ('oot-coop-hs-missing-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -1307,12 +1409,21 @@ try {
     Write-File "$cache\fedcba9876543210fedc\game\longshot.exe" 'NEWER BUILD'
     Check ((Find-KitHookshotCachedGame $stampOld $cache) -eq "$cache\0123456789abcdef0123\game") 'revert game: the cache entry of a stamp is found (its CRLF stamp.txt too)'
     Check (-not (Find-KitHookshotCachedGame "$stampOld-x" $cache) -and -not (Find-KitHookshotCachedGame $stampOld "$kc\no-cache")) 'revert game: another stamp, or no cache -> none'
+    # NVIDIA DLSS (#234): a kit that opted in takes only a cached game built with it, and one that did not only one without
+    Check (-not (Find-KitHookshotCachedGame $stampOld $cache -Dlss $true)) 'dlss: a kit with DLSS on does not take a cached game without it'
+    Write-File "$cache\0123456789abcdef0123\game\ngx\nvngx_dlss.dll" 'NVIDIA'
+    Check ((Find-KitHookshotCachedGame $stampOld $cache -Dlss $true) -eq "$cache\0123456789abcdef0123\game" -and
+        -not (Find-KitHookshotCachedGame $stampOld $cache)) 'dlss: a cached game with DLSS goes only to a kit with DLSS on'
+    Remove-Item -LiteralPath "$cache\0123456789abcdef0123\game\ngx" -Recurse -Force
+    # (this kit's game had DLSS once; the kit has no dlss.txt: the copy without DLSS takes NVIDIA's runtime away too)
+    Write-File "$g5\ngx\nvngx_dlss.dll" 'NVIDIA'
     $env:LOCALAPPDATA = "$kc\appdata"; $env:OOT_COOP_NO_SHORTCUT = '1'; $env:OOT_COOP_NO_LONGSHOT_ASK = '1'; $env:OOT_COOP_HS_CACHE = $cache
     $ErrorActionPreference = 'Continue'
     try { $out = (& powershell -NoProfile -ExecutionPolicy Bypass -File "$k5\scripts\hookshot-build.ps1" 2>&1) -join '|'; $code = $LASTEXITCODE }
     finally { $env:LOCALAPPDATA = $keepKc[0]; $env:OOT_COOP_NO_SHORTCUT = $keepKc[1]; Remove-Item env:OOT_COOP_NO_LONGSHOT_ASK, env:OOT_COOP_HS_CACHE -ErrorAction SilentlyContinue; $ErrorActionPreference = 'Stop' }
     Check ($code -eq 0 -and $out -match 'from the game cache on this PC' -and $out -notmatch 'Building the game' -and (Read-File "$g5\longshot.exe") -eq 'OLDER BUILD') "revert game: the cached build is copied in, not built [$code $out]"
     Check ((Read-File "$g5\coop-built-from.txt") -eq $stampOld) 'revert game: the game''s stamp is this version''s'
+    Check (-not (Test-Path -LiteralPath "$g5\ngx")) 'dlss: a copy without DLSS into a kit without it leaves no NVIDIA runtime behind'
     Check ((Read-File "$g5\save\slot_00\progress.sav") -eq 'MY SAVE' -and (Read-File "$g5\longshot_options.ini") -eq 'my graphics' -and
         (Read-File "$g5\romfs\Actor\x.bin") -eq 'my game files' -and (Read-File "$g5\coop.ini") -match 'Saria') 'revert game: saves, settings, coop.ini and the game files stay the player''s'
 } finally {
@@ -1342,7 +1453,7 @@ if ($pyHome -and (Test-Path -LiteralPath (Join-Path $pyHome 'python.exe'))) {
         New-Item -ItemType Directory -Force -Path "$k\hookshot\tools" | Out-Null
         New-Item -ItemType Junction -Path "$k\hookshot\tools\python" -Value $pyHome | Out-Null
         # stand-ins: the pack tool writes a manifest (or fails, PACK_FAIL), dumpcheck takes a file that says GAME
-        Write-File "$k\tools\puppet_pack\build.py" "import os, sys`nif os.environ.get('PACK_FAIL'): print('BuildError: Tex/x.bntx.zs: broken'); sys.exit(1)`nd = sys.argv[sys.argv.index('--mod-dir') + 1]`nos.makedirs(d, exist_ok=True)`nopen(os.path.join(d, 'coop_puppet.json'), 'w').write('{}')`nopen(os.path.join(d, 'from.txt'), 'w').write(sys.argv[sys.argv.index('--romfs') + 1])`n"
+        Write-File "$k\tools\puppet_pack\build.py" "import os, sys`nif os.environ.get('PACK_FAIL'): print('BuildError: Tex/x.bntx.zs: broken'); sys.exit(1)`nd = sys.argv[sys.argv.index('--mod-dir') + 1]`nos.makedirs(d, exist_ok=True)`nopen(os.path.join(d, 'coop_puppet.json'), 'w').write('{}')`nopen(os.path.join(d, 'from.txt'), 'w').write(sys.argv[sys.argv.index('--romfs') + 1])`nopen(os.path.join(d, 'args.txt'), 'w').write(' '.join(sys.argv[1:]))`n"
         Write-File "$k\tools\puppet_pack\dumpcheck.py" "import sys`np = sys.argv[sys.argv.index('--romfs') + 1]`nsys.exit(0 if open(p, 'rb').read(5) == b'GAME' else 1)   # (5 bytes: a real .nup in Downloads is not read through)`n"
         $run = {
             $ErrorActionPreference = 'Continue'
@@ -1358,6 +1469,8 @@ if ($pyHome -and (Test-Path -LiteralPath (Join-Path $pyHome 'python.exe'))) {
         $r = & $run
         $man = "$k\hookshot\game\mods\contents\0400486024DEC000\coop-puppet\coop_puppet.json"
         Check ($r[0] -eq 0 -and $r[1] -match 'Found your game file: .*OoT\.nup' -and $r[1] -match 'Making the puppet pack' -and (Test-Path -LiteralPath $man) -and (Read-File (Join-Path (Split-Path -Parent $man) 'from.txt')) -eq "$pk\OoT.nup") "pack only: the .nup moved beside the kit: found, the pack made [$($r[0]) $($r[1])]"
+        $packArgs = Read-File (Join-Path (Split-Path -Parent $man) 'args.txt')
+        Check ($packArgs -match '--title-rows' -and $packArgs -match '--pause-tab') "pack: the kit's pack command (Get-KitPackArgs) has --title-rows and --pause-tab [$packArgs]"
         Check ((Read-File "$k\hookshot\game-files.txt").Trim() -eq "$pk\OoT.nup") 'pack only: the new place is remembered'
         $env:PACK_FAIL = '1'
         try { $r = & $run } finally { Remove-Item env:PACK_FAIL }
@@ -1374,7 +1487,7 @@ if ($pyHome -and (Test-Path -LiteralPath (Join-Path $pyHome 'python.exe'))) {
 # powershell -Command), with stand-ins for Smart App Control, the language mode, the policy, the Code Integrity log and
 # controlled folder access. And a Longshot of the player's own: its saves, its downloads, its version.
 $wk = Join-Path ([System.IO.Path]::GetTempPath()) ('oot-coop-wc-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
-$wcVars = 'OOT_COOP_WC_SAC', 'OOT_COOP_WC_MODE', 'OOT_COOP_WC_POLICY', 'OOT_COOP_WC_CI', 'OOT_COOP_WC_CFA', 'OOT_COOP_WC_WRITE'
+$wcVars = 'OOT_COOP_WC_SAC', 'OOT_COOP_WC_MODE', 'OOT_COOP_WC_POLICY', 'OOT_COOP_WC_CI', 'OOT_COOP_WC_MP', 'OOT_COOP_WC_CFA', 'OOT_COOP_WC_WRITE'
 function Invoke-Wc([string]$Kit, [hashtable]$Vars = @{}, [switch]$Constrained) {
     foreach ($v in $wcVars) { Remove-Item "env:$v" -ErrorAction SilentlyContinue }
     foreach ($n in $Vars.Keys) { Set-Item "env:$n" $Vars[$n] }
@@ -1415,6 +1528,12 @@ try {
     $dev = $wkit.Substring(2)
     $r = Invoke-Wc $wkit -Vars @{ OOT_COOP_WC_SAC = 'on'; OOT_COOP_WC_CI = "Code Integrity determined that a process (\Device\HarddiskVolume3$dev\hookshot\game\bin\longshot.exe) attempted to load \Device\HarddiskVolume3$dev\hookshot\game\bin\hookshot_coop.dll that did not meet the requirements.|Another (\Device\HarddiskVolume3\Windows\x.dll)" }
     Check ($r[0] -eq 0 -and $r[1] -match 'Smart App Control blocked hookshot\\game\\bin\\hookshot_coop\.dll of this kit\.' -and (Read-File "$wkit\logs\windows-checks.txt") -match 'blocked by code integrity: hookshot\\game\\bin\\hookshot_coop\.dll') "windows checks: the file Smart App Control blocked is named, from the Code Integrity log [$($r[1])]"
+    # Defender took a file of the kit's game (Velvet 2026-11-19: tools\ootrr\ootrr.exe gone on every start): named
+    # kit-relative in the log and said, with how to allow it; another folder's detection is not this kit's.
+    $r = Invoke-Wc $wkit -Vars @{ OOT_COOP_WC_MP = "file:_\\?\$wkit\hookshot\game\tools\ootrr\ootrr.exe|file:_C:\Elsewhere\x.exe" }   # (\\?\: review-0116-j N2)
+    Check ($r[0] -eq 0 -and $r[1] -match 'Microsoft Defender took hookshot\\game\\tools\\ootrr\\ootrr\.exe of this kit' -and $r[1] -match 'Protection history' -and
+           (Read-File "$wkit\logs\windows-checks.txt") -match 'defender detections in the kit: hookshot\\game\\tools\\ootrr\\ootrr\.exe' -and
+           (Read-File "$wkit\logs\windows-checks.txt") -notmatch 'Elsewhere') "windows checks: a Defender detection in the kit is named and said [$($r[1])]"
     $r = Invoke-Wc $wkit -Vars @{ OOT_COOP_WC_SAC = 'on' }
     Check ($r[0] -eq 0 -and $r[1] -match 'Smart App Control is on\. It may block') "windows checks: Smart App Control on, nothing blocked yet: said, goes on [$($r[1])]"
     $r = Invoke-Wc $wkit -Vars @{ OOT_COOP_WC_WRITE = 'Access to the path is denied.'; OOT_COOP_WC_CFA = '1' }

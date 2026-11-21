@@ -102,22 +102,88 @@ TEST_CASE("hookshot draw: chat lines show 8 s, fade in 1 s, then go") {
     CHECK(CoopDraw::Wanted(s));
 }
 
-TEST_CASE("hookshot draw: chat at the bottom left, oldest first, long lines cut") {
+TEST_CASE("hookshot draw: chat at the bottom left, oldest first, long lines wrapped") {
     Canvas c(1280, 720);
     CoopDraw::Scene s;
     s.chat = {{"Saria: hi", false, 1.0f}, {"Mido joined", true, 0.5f}, {std::string(300, 'x'), false, 1.0f}};
     CoopDraw::Draw(c.d, s);
     const auto texts = c.Of("text");
-    REQUIRE(texts.size() == 3);
+    // A line longer than the room takes rows of its own (it used to end at "..." and
+    // the rest was never drawn: the difficulty notice lost its end that way).
+    REQUIRE(texts.size() > 3);
     CHECK(texts[0].text == "Saria: hi");
     CHECK(texts[0].x == doctest::Approx(16.0f));
     CHECK(texts[0].y < texts[1].y);
-    CHECK(texts[2].y + texts[2].px < 720.0f - 16.0f + 1.0f);  // above the bottom margin
+    CHECK(texts[texts.size() - 1].y + texts[texts.size() - 1].px < 720.0f - 16.0f + 1.0f);  // above the margin
     CHECK(AlphaOf(texts[1].rgba) == 127);                     // the notice, half faded
     CHECK(texts[1].rgba != texts[0].rgba);                    // notices in the highlight colour
-    CHECK(texts[2].text.size() < 300);
-    CHECK(texts[2].text.substr(texts[2].text.size() - 3) == "...");
-    CHECK(c.Of("rect").size() == 3);  // a dark box behind each
+    // Every row of the long line reads: no row is cut.
+    for (std::size_t i = 1; i < texts.size(); ++i) {
+        CHECK(texts[i].text.find("...") == std::string::npos);
+    }
+    std::string joined;
+    for (std::size_t i = 2; i < texts.size(); ++i) {
+        joined += texts[i].text;
+    }
+    CHECK(joined == std::string(300, 'x'));
+    CHECK(c.Of("rect").size() == texts.size());  // a dark box behind each row
+}
+
+TEST_CASE("hookshot draw: a long notice breaks after a space, and the space is not drawn") {
+    Canvas c(1280, 720);
+    CoopDraw::Scene s;
+    std::string words;
+    for (int i = 0; i < 60; ++i) {
+        words += (i == 0 ? "" : " ") + std::string("word");
+    }
+    s.chat = {{words, true, 1.0f}};
+    CoopDraw::Draw(c.d, s);
+    const auto texts = c.Of("text");
+    REQUIRE(texts.size() > 1);
+    std::size_t letters = 0;
+    for (const auto& t : texts) {
+        // a row ends at a word: its backing is no wider than its text
+        CHECK(t.text.back() != ' ');
+        CHECK(t.text.front() != ' ');
+        letters += t.text.size() - static_cast<std::size_t>(std::count(t.text.begin(), t.text.end(), ' '));
+    }
+    CHECK(letters == 60 * 4);   // no word lost
+}
+
+TEST_CASE("hookshot draw: a chat line in Chinese wraps between characters") {
+    // Chinese has no spaces to break at, so a row breaks where the next character
+    // would pass the room (the difficulty notice is ~70 characters wide).
+    Canvas c(1280, 720);
+    CoopDraw::Scene s;
+    const std::string notice =
+        "难度：自动（1 名玩家）：生命 100%，伤害 100%，敌人 100%；Boss：生命 100%，伤害 100%";
+    s.chat = {{notice, true, 1.0f}};
+    CoopDraw::Draw(c.d, s);
+    const auto texts = c.Of("text");
+    REQUIRE(texts.size() >= 2);
+    std::string joined;
+    for (const auto& t : texts) {
+        CHECK(t.text.find("...") == std::string::npos);
+        // a row ends on a whole character, not in the middle of one: each lead
+        // byte's sequence ends inside the row
+        bool whole = true;
+        for (std::size_t i = 0; i < t.text.size();) {
+            const unsigned char b = static_cast<unsigned char>(t.text[i]);
+            const std::size_t n = b < 0x80 ? 1 : (b & 0xE0) == 0xC0 ? 2 : (b & 0xF0) == 0xE0 ? 3 : 4;
+            whole = whole && i + n <= t.text.size();
+            i += n;
+        }
+        CHECK(whole);
+        // a row broken at a space does not draw that space
+        CHECK(t.text.front() != ' ');
+        CHECK(t.text.back() != ' ');
+        joined += t.text;
+    }
+    // nothing lost, nothing repeated (only the spaces the rows broke at are not drawn)
+    std::string bare = notice;
+    bare.erase(std::remove(bare.begin(), bare.end(), ' '), bare.end());
+    joined.erase(std::remove(joined.begin(), joined.end(), ' '), joined.end());
+    CHECK(joined == bare);
 }
 
 TEST_CASE("hookshot draw: name tags scaled from the scene target to the picture") {
@@ -840,6 +906,52 @@ TEST_CASE("hookshot map page: a tap held for one present counts as a press, like
     CHECK_FALSE(w.Update(true, false));
     CHECK(w.Update(true, true));        // and back
     CHECK(w.Update(true, false));
+}
+
+TEST_CASE("hookshot draw row 141: the blocks start below the game's own HUD as laid out, and stop above the chat") {
+    CoopDraw::Scene s;
+    s.hud = {{"Mido", "Kokiri Forest", {4, 4, 2, 0}, false}};
+    s.game_hud_bottom = 0.45;   // two heart rows, the magic bar and the d-pad under them
+    Canvas c(1280, 720);
+    CoopDraw::Draw(c.d, s, GameLook());
+    auto texts = c.Of("text");
+    REQUIRE(texts.size() == 12);
+    CHECK(texts[5].text == "Mido");
+    CHECK(texts[5].y == doctest::Approx((0.45 + CoopHudLayout::kGap) * 720));
+    CHECK(texts[5].y > 0.45f * 720);   // under the game's d-pad, not over it
+    // A one-row HUD: the blocks come up with it.
+    s.game_hud_bottom = 0.30;
+    Canvas up(1280, 720);
+    CoopDraw::Draw(up.d, s, GameLook());
+    CHECK(up.Of("text")[5].y == doctest::Approx((0.30 + CoopHudLayout::kGap) * 720));
+
+    // Fifteen others (16 players) with 20 hearts and a place each, chat lines at the bottom: the blocks that would
+    // run into the chat are left out and a "+N" line says how many.
+    s.hud.clear();
+    for (int i = 0; i < 15; ++i) {
+        s.hud.push_back({"Player " + std::to_string(i + 2), "Kokiri Forest", std::vector<int>(20, 4), false});
+    }
+    s.chat = {{"Saria: hi", false, 1.0f}, {"Mido: hello", false, 1.0f}};
+    Canvas many(1280, 720);
+    CoopDraw::Draw(many.d, s, GameLook());
+    texts = many.Of("text");
+    float chat_top = 720.0f, lowest = 0.0f;
+    std::string more;
+    for (const auto& t : texts) {
+        if (t.text.rfind("Saria", 0) == 0) chat_top = std::min(chat_top, t.y);
+        if (t.text.rfind("Player ", 0) == 0 || t.text == "Kokiri Forest") lowest = std::max(lowest, t.y + t.px);
+        if (!t.text.empty() && t.text[0] == '+') more = t.text;
+    }
+    CHECK(chat_top < 720.0f);
+    CHECK(lowest > 0.0f);
+    CHECK(lowest <= chat_top);
+    REQUIRE_FALSE(more.empty());
+    std::size_t names = 0;
+    for (std::size_t i = 5; i < texts.size(); i += 6) {
+        if (texts[i].text.rfind("Player ", 0) == 0) ++names;
+    }
+    CHECK(names >= 1);
+    CHECK(more == "+" + std::to_string(15 - names));
 }
 
 TEST_CASE("hookshot draw: the voice icon after a talking or muted player's name, our row over the others") {

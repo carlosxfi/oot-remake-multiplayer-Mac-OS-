@@ -29,14 +29,21 @@ typedef struct HosCoopHostOptions {
     const char *relay_via;  /* a relay "host[:port]"; NULL or "": none */
     const char *relay_key;  /* that relay's host key; NULL: none */
     uint8_t max_players;    /* most players at once, 1 to 16; 0: the server's default (16) */
-    uint8_t reserved[3];
+    uint8_t approve_joins;  /* 1: each new player waits until the host lets them in (/allow, /deny; docs/protocol.md
+                               "Host approval") */
+    uint8_t reserved[2];
     uint32_t pose_upload_kbps;  /* the host's upload for other players' poses, kilobits a second; 0: no cap */
+    const char *relay_room; /* with relay_via: a room name to hold on the relay (issue 261); NULL or "": none */
+    const char *relay_list; /* with relay_room: the name the room is shown as on the relay's public room list
+                               (coop-options.ini list_room, list_name: the room name without one); NULL or "": not
+                               listed */
 } HosCoopHostOptions;
 
 typedef struct HosCoopJoinOptions {
     uint32_t size;          /* sizeof(HosCoopJoinOptions) */
     const char *name;       /* NULL: coop.ini's */
-    const char *target;     /* an invite code, or the host's address "host[:port]" */
+    const char *target;     /* an invite code, the host's address "host[:port]", or through a relay
+                               "<join code or room name>@relay[:port]" (issue 261) */
     const char *password;   /* for an address; an invite code holds its own */
 } HosCoopJoinOptions;
 
@@ -68,7 +75,9 @@ enum {
     HOS_COOP_PROBLEM_HELPER_PORT_TAKEN = 12, /* the join helper's local port is taken (a Join.bat window open?) */
     HOS_COOP_PROBLEM_CLIENT_FAILED = 13,     /* this game's co-op did not start (the log says why) */
     HOS_COOP_PROBLEM_INTERNAL = 14,          /* the host thread stopped on an error (the log says which) */
-    HOS_COOP_PROBLEM_SYMMETRIC_NAT = 15      /* a hint: friends may not get through this router (still hosting) */
+    HOS_COOP_PROBLEM_SYMMETRIC_NAT = 15,     /* a hint: friends may not get through this router (still hosting) */
+    HOS_COOP_PROBLEM_RELAY_JOIN = 16         /* the relay did not let this game in: no such code or room, too many
+                                                tries, a full host, or no answer */
 };
 
 typedef struct HosCoopStatus {
@@ -86,6 +95,7 @@ typedef struct HosCoopStatus {
     char message[256];       /* the last problem or hint, plain English; "" when none */
     int32_t problem;         /* HOS_COOP_PROBLEM_* for message */
     uint32_t stream_kbps;    /* host: other players' samples and poses sent in the last second, kilobits (the upload) */
+    char relay_room[160];    /* "<room>@<relay>" (host with a relay room, once the relay holds it) */
 } HosCoopStatus;
 
 /* The module's exports (extern "C"). */

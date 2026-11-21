@@ -65,8 +65,15 @@ SharedFlags item_shared_flags(bool with_off = false);
 // issue 146): a Bool the game never takes back once got. Only entries that
 // are on.
 bool is_one_way_item(FlagKey key);
+// Rows 63/76, #146: a dungeon item the HUD screen keeps its own copy of for the Map page and the minimap
+// (DungeonInfo.<dungeon>.IsGetMap, IsGetCompass, IsGetBossKey, EnteredFloorBit; every dungeon): a co-op write of
+// one asks the game's HUD refresh (lichii/hook/coop_map_refresh.h).
+bool is_hud_dungeon_item(FlagKey key);
 // Every such flag, sorted by hash.
 std::vector<FlagKey> one_way_item_flags();
+// dungeon-sync-b (#63/#76): a dungeon's floors flag (DungeonInfo.<dungeon>.EnteredFloorBit) gives the same
+// dungeon's map flag (DungeonInfo.<dungeon>.IsGetMap); anything else gives nothing.
+std::optional<FlagKey> map_of_floors(FlagKey floors);
 
 // A shared UInt item (DungeonInfo.<dungeon>.EnteredFloorBit, issue 146): the
 // game's UInt table is read and written for it (GameFlagStore). Other UInts
@@ -198,8 +205,13 @@ constexpr std::uint64_t kHolderEquipment = 0x200;        // holder -> the equipm
 constexpr std::array<std::uint32_t, 2> kEquipSlots{13, 16};
 }  // namespace ocarina
 
-// Asks the game to equip the ocarina from its flags once, after co-op changed them (OcarinaEquip). Thread-safe:
-// the hook's frame arms it, the game's calc thread steps it (a CoopCallers caller).
+// The best ocarina the flags hold when EquipOcarina already names it (else empty: none held, or the mend still has
+// to write the name, and wants it then).
+std::string_view ocarina_held(std::int32_t fairy, std::int32_t time, std::string_view current);
+
+// Asks the game to equip the ocarina from its flags: once after co-op changed them, and once per stay of our Link
+// while one is held (OcarinaEquip::link). Thread-safe: the hook's frame arms it, the game's calc thread steps it (a
+// CoopCallers caller).
 class OcarinaEquip {
  public:
   // Co-op wrote the ocarina's flags for `name` (the equipped name, or the Bools of an ocarina already named): the
@@ -209,10 +221,15 @@ class OcarinaEquip {
   // for kSettleFrames frames in a row (a queued String64 already reads so before the game's applier wrote it),
   // with Link's actor known and nothing running (`busy`: an event, a menu, the pause or a load).
   static constexpr int kSettleFrames = 30;
-  void arm(std::optional<std::string_view> live, bool link_known, bool busy);
+  void arm(const std::optional<std::string_view>& live, bool link_known, bool busy);
   // The calc thread: the next slot to ask, or nothing. `after_call` false starts a frame. After the last slot the
   // want is spent (a note says so).
   std::optional<std::uint32_t> step(bool after_call);
+  // Each frame: whether our Link is in the game, and `held` (ocarina_held). Once per stay of Link (a save load or a
+  // scene change ends one) a held ocarina is wanted. Asking only after a write of ours (0.11.3) missed every ocarina
+  // whose flags were already there and needed no mend: a save an earlier co-op mend wrote them into, the join
+  // snapshot, a load of the host's file (row 103). The game's own load asks the equipment for every slot the same way.
+  void link(bool in_game, std::string_view held);
   // The equipment could not be read: the want stays, and is asked again on a later frame.
   void not_now();
   // Lines for the log since the last call.
@@ -220,11 +237,14 @@ class OcarinaEquip {
   bool waiting() const;
 
  private:
+  void want_locked(std::string_view name);
+
   mutable std::mutex mutex_;
   std::optional<std::string> wanted_;
   bool armed_ = false;
   int seen_ = 0;
   std::size_t next_ = 0;
+  bool asked_this_stay_ = false;
   std::vector<std::string> notes_;
 };
 
@@ -236,10 +256,18 @@ namespace letters {
 constexpr std::uint32_t kZelda = 0x6be5c3b0;     // PouchData.Item_ZeldaLetter.StockNum
 constexpr std::uint32_t kGateOpen = 0x19898d14;  // Npc_Hylia_Soldier_003_GateOpen
 // Ruto's Letter is a bottle's contents (BottleItem Enum "Letter"), per player as
-// every bottle's contents: another player got only the bottle, empty, and King
-// Zora (the game's ChallengeMgr, per game) never moved for them.
+// every bottle's contents: another player got only the bottle, empty. King Zora
+// moves in each game by its own ChallengeMgr step (Get_StoneOfWater Step07),
+// which the shared quest catch-up (coop_quest.cpp) raises there, separately
+// from the scene's Bool below.
 constexpr std::uint32_t kRutoGot = 0x170b5df2;   // IsGet.Item_Bottle_Letter
 constexpr std::uint32_t kLetter = 0x0f24e808;    // the Enum value "Letter"
+// The scene of King Zora reading the letter and moving aside (romfs
+// Event/EventFlow/Dm_Zora_0010: the flow takes Item_Bottle_Letter out of the
+// bottle). Its HavePlayedEvent Bool is shared story (coop_story.cpp), so once
+// any player has shown the letter, every game has it: never given again, and
+// spent in a game once its own King Zora has moved too (tracker row 117).
+constexpr std::uint32_t kKingRead = 0xbf9dfc7e;  // HavePlayedEvent.Dm_Zora_0010
 constexpr std::uint32_t kEmpty = 0xbe69de49;     // the Enum value "Empty"
 struct Bottle {
   std::uint32_t valid;  // PlayerStatus.AssignableItem.BottleInfo.Bottle<X>.IsValid
@@ -259,6 +287,82 @@ constexpr std::array<std::uint32_t, 10> kKingMoved{0xee867c27, 0xa594ed54, 0x5da
                                                    0xc25a29d8, 0x2f0ed242, 0xa6447454, 0x84be6ff1, 0x4c0a63f4};
 }  // namespace letters
 
+// The adult trading sequence (tracker row 117, review): each trade item is
+// shared by mirror, but every trade NPC's flow also tests that game's own
+// quest step (SubEvent_GetSwordBigGoron_IsAfter_StepNN_Exp, GameData), and the
+// quest is each game's own (CoopQuests leaves it out: its steps go back on a
+// spoiled item). So a player who did not trade held the next item while their
+// NPCs still waited for the last one. The step follows the item instead: the
+// step at which the game's own flow hands that item over (read from the romfs
+// flows' EventExecuteProgressChallengeStep: Anju gives the Pocket Egg and sets
+// StartSubEvent, the egg hatches at EggHatched, Anju's Cojiro Step03, the
+// Lost Woods' mushroom Step04, Granny's potion Step05, Fado's saw Step06, the
+// carpenter's Broken Sword Step07, Biggoron's Prescription Step08, King Zora's
+// frog Step09, the lab's Eye Drops Step10, Biggoron's Claim Check Step11).
+namespace trade {
+constexpr std::uint32_t kQuest = 0x26a2e01c;      // GameData Enum Step_SubEvent_GetSwordBigGoron
+constexpr std::uint32_t kChallenge = 0x01e5c1d7;  // the ChallengeMgr entry SubEvent_GetSwordBigGoron
+// The Enum's values in the game's order (NotReady, the RSDB Challenge row's
+// steps, Complete), as name hashes.
+constexpr std::array<std::uint32_t, 27> kSteps{
+    0x57b849f0,  // NotReady
+    0x17bfaa46,  // Ready
+    0xd157b76f,  // StartSubEvent
+    0x777ea18c,  // WaitEggHatch
+    0x3e6c49bc,  // EggHatched
+    0xeb62add9,  // Step01
+    0x93e1d7d7,  // Step01_01
+    0x0e5afad8,  // Step02
+    0x6f917dfe,  // Step03
+    0x14376953,  // Step03_01
+    0xd932a31c,  // Step03_02
+    0x057ef5f8,  // Step03_03 (the mushroom spoiled)
+    0x27f660fe,  // Step04
+    0x5cde171f,  // Step05
+    0xec4c4a24,  // Step05_01
+    0x21d6fa38,  // Step06
+    0xd7a3defb,  // Step06_01
+    0x6ef85d0f,  // Step06_02
+    0x03c56929,  // Step06_03
+    0xee867c27,  // Step07
+    0xa594ed54,  // Step08
+    0xd677164b,  // Step08_01 (the frog spoiled)
+    0x5daeca58,  // Step09
+    0xd2f8add5,  // Step09_01 (the Eye Drops spoiled)
+    0x0be69809,  // Step10
+    0x02428c32,  // Step11
+    0x4c0a63f4,  // Complete
+};
+struct Hold {
+  std::uint32_t item;  // PouchData.<item>.StockNum
+  std::uint32_t step;  // the step the game's own hand-over of it sets
+  const char* name;
+};
+constexpr std::array<Hold, 11> kHolds{{
+    {0x07f10aaf, 0xd157b76f, "Item_PocketEgg"},     // StartSubEvent
+    {0x0165e7ca, 0x3e6c49bc, "Item_PocketCucco"},   // EggHatched
+    {0x51d89ef0, 0x6f917dfe, "Item_CojiroCucco"},   // Step03
+    {0x07de3e6f, 0x27f660fe, "Item_OddMushroom"},   // Step04
+    {0x58c9bc78, 0x5cde171f, "Item_OddPowder"},     // Step05
+    {0xa862d276, 0x21d6fa38, "Item_PoacherSaw"},    // Step06
+    {0x2815c82a, 0xee867c27, "Item_BrokenSword"},   // Step07
+    {0x897cf7eb, 0xa594ed54, "Item_Prescription"},  // Step08
+    {0x919ea324, 0x5daeca58, "Item_EyeballFrog"},   // Step09
+    {0x5c41a6b1, 0x0be69809, "Item_EyeDrop"},       // Step10
+    {0xded8e8d3, 0x02428c32, "Item_ClaimCheck"},    // Step11
+}};
+}  // namespace trade
+
+// The step to raise our SubEvent_GetSwordBigGoron to, or nothing: the step of
+// the furthest trade item held (StockNum > 0), when it is above ours. Only
+// forward; never from NotReady (the quest manager readies it; a child or a
+// game before it is left alone), never to Complete; our step unread or not in
+// the list leaves it alone, and so does an unread item.
+std::optional<std::uint32_t> trade_step_raise(std::optional<std::uint32_t> step,
+                                              const std::function<std::optional<std::int32_t>(std::uint32_t)>& stock);
+// Index of `step` in trade::kSteps, or nothing.
+std::optional<std::size_t> trade_step_rank(std::uint32_t step);
+
 // True when the held Zelda's Letter is spent: the gate's Bool is set (by any
 // player), so the guard never asks for it again. The guard takes it from the
 // shower; this takes it from the others.
@@ -272,6 +376,9 @@ std::optional<bool> king_zora_moved(std::uint32_t live_step);
 // run where it never came said nothing about which test held it back.
 enum class RutoWait {
   not_got,        // IsGet.Item_Bottle_Letter unset (or unread)
+  shown,          // the letter was shown to King Zora in some game (kKingRead): never given
+  shown_king_waits,  // shown elsewhere, but our King Zora has not moved (or is unread): ours is kept
+  shown_unread,   // kKingRead unread: neither given nor taken
   king_unread,    // our ChallengeMgr's Get_StoneOfWater unread or at a step not in the quest
   king_moved,     // King Zora has moved here: no letter needed
   bottle_unread,  // a bottle's IsValid or BottleItem unread
@@ -282,16 +389,20 @@ enum class RutoWait {
 struct RutoLetter {
   RutoWait why = RutoWait::not_got;
   std::optional<std::uint32_t> bottle;  // the BottleItem flag, with `give`
+  // With `shown` and our King Zora moved: a bottle that still holds the
+  // letter, to empty as his own scene empties the shower's.
+  std::optional<std::uint32_t> spent;
 };
 std::string_view ruto_wait_text(RutoWait why);
-RutoLetter ruto_letter_plan(std::optional<bool> got, std::optional<bool> king_moved,
+RutoLetter ruto_letter_plan(std::optional<bool> got, std::optional<bool> shown, std::optional<bool> king_moved,
                             const std::function<std::optional<bool>(std::uint32_t)>& valid,
                             const std::function<std::optional<std::uint32_t>(std::uint32_t)>& item);
 
 // The BottleItem flag to put Ruto's Letter in, or nothing: when the letter was
-// got (by anyone), King Zora has not moved here, no bottle holds it, and a
+// got (by anyone), nobody has shown it yet (kKingRead), King Zora has not moved here, no bottle holds it, and a
 // bottle is owned and empty (the first). Anything unread leaves it alone.
-std::optional<std::uint32_t> ruto_letter_bottle(std::optional<bool> got, std::optional<bool> king_moved,
+std::optional<std::uint32_t> ruto_letter_bottle(std::optional<bool> got, std::optional<bool> shown,
+                                                std::optional<bool> king_moved,
                                                 const std::function<std::optional<bool>(std::uint32_t)>& valid,
                                                 const std::function<std::optional<std::uint32_t>(std::uint32_t)>& item);
 
@@ -374,6 +485,8 @@ class ItemFlagStore final : public FlagStore {
   // The value as it is (no max, OR or mirror merging; per-player flags still
   // refused): the host's save decides (docs/flags.md, "Saves").
   bool write_exact(const protocol::FlagEntry& entry) override;
+  // As write_exact, but a dungeon's floors are ORed (FlagStore::write_load_back).
+  bool write_load_back(const protocol::FlagEntry& entry) override;
   // An item merged from 0 (or less, or false) to 1 or more (true) in the
   // game also raises its grants (item_grants) to their floor, per-player
   // flags included. An item the game holds already gets its capacity grants
@@ -399,7 +512,8 @@ class ItemFlagStore final : public FlagStore {
  private:
   void grant(std::uint32_t item, bool new_item);
 
-  bool exact_ = false;  // write_exact: take the value as it is
+  bool exact_ = false;      // write_exact: take the value as it is
+  bool keep_bits_ = false;  // write_load_back: and OR a bits item (floors)
   FlagStore& inner_;
   LoadMend* load_ = nullptr;
   bool ready_ = true;

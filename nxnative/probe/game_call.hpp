@@ -1,18 +1,15 @@
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 
+#include "../../hookshot/src/hos_coop_api.h"
+
 namespace coop_nxnative {
 
-// Same argument layout as the existing co-op actor director's calls.
-struct GameCall {
-  std::uint64_t function = 0;
-  std::array<std::uint64_t, 8> x{};
-  std::array<std::uint64_t, 4> stack{};
-  float s0 = 0.0f;
-};
+// Use the Windows co-op module's call contract directly. The assertions
+// guard the assembly's load offsets when that header changes.
+using GameCall = HosCoopCall;
 
 static_assert(offsetof(GameCall, x) == 8);
 static_assert(offsetof(GameCall, stack) == 72);

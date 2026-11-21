@@ -45,5 +45,5 @@ body:
     id: log
     attributes:
       label: Log
-      description: Paste the end of the emulator log, or attach the log file.
+      description: Paste the last co-op lines (`coop:`) of the game's log, addresses masked. Send the full log zip from `scripts\collect-logs.cmd` with `/bugreport` on the Squadala! Discord, not here, and give its report number here.
       render: text

@@ -1,5 +1,6 @@
 #include "relay.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <memory>
@@ -40,9 +41,9 @@ void Relay::say(const std::string& text) const {
 }
 
 bool Relay::over_limit(std::map<std::uint32_t, Tries>& tries, std::uint32_t address,
-                       std::uint32_t limit, std::uint64_t now_ms, bool count) {
+                       std::uint32_t limit, std::uint64_t now_ms, bool count, std::uint64_t window_ms) {
   Tries& t = tries[address];
-  if (t.count == 0 || now_ms - t.window_start >= config_.window_ms) {
+  if (t.count == 0 || now_ms - t.window_start >= (window_ms != 0 ? window_ms : config_.window_ms)) {
     t.window_start = now_ms;
     t.count = 0;
   }
@@ -70,6 +71,65 @@ std::vector<Outgoing> Relay::received(Endpoint from, std::span<const std::uint8_
   return out;
 }
 
+std::map<std::uint64_t, Relay::Session>::iterator Relay::open_session(Endpoint from, const Message& m,
+                                                                       std::uint64_t now_ms,
+                                                                       std::vector<Outgoing>& out) {
+  auto refuse = [&](Refusal why) {
+    ++stats_.hosts_refused;
+    Message r;
+    r.kind = Kind::kRefused;
+    r.token = m.token;
+    r.status = static_cast<std::uint8_t>(why);
+    out.push_back({from, encode(r)});
+    return sessions_.end();
+  };
+  auto it = sessions_.find(m.token);
+  if (it == sessions_.end()) {
+    if (!config_.host_key.empty() && m.key != config_.host_key) return refuse(Refusal::kWrongKey);
+    if (sessions_.size() >= config_.max_sessions) return refuse(Refusal::kFull);
+    std::size_t same_address = 0;
+    for (const auto& [token, s] : sessions_) same_address += s.link.host == from.host ? 1u : 0u;
+    if (same_address >= config_.max_sessions_per_address) return refuse(Refusal::kTooMany);
+    if (over_limit(registers_, from.host, config_.registers_per_window, now_ms, true)) {
+      return refuse(Refusal::kSlowDown);
+    }
+    Session s;
+    s.token = m.token;
+    s.code = new_code();
+    s.link = from;
+    s.last_ms = now_ms;
+    by_code_[s.code] = s.token;
+    it = sessions_.emplace(s.token, std::move(s)).first;
+    ++stats_.hosts_registered;
+    say("host " + address_text(from.host) + " registered, join code " + show_code(it->second.code) + " (" +
+        std::to_string(sessions_.size()) + " host(s) now)");
+  }
+  it->second.link = from;
+  it->second.last_ms = now_ms;
+  return it;
+}
+
+LookupResult Relay::let_in(Endpoint from, std::optional<std::uint64_t> token, const std::string& what,
+                           std::uint64_t now_ms) {
+  if (over_limit(lookups_, from.host, config_.lookups_per_window, now_ms, false)) {
+    ++stats_.lookups_limited;
+    return LookupResult::kSlowDown;
+  }
+  if (!token) {
+    over_limit(lookups_, from.host, config_.lookups_per_window, now_ms, true);
+    ++stats_.lookups_wrong;
+    return LookupResult::kUnknown;
+  }
+  Session& s = sessions_.at(*token);
+  const bool known = s.guests.find(from.host) != s.guests.end();
+  if (!known && s.guests.size() >= config_.max_guest_addresses) return LookupResult::kFull;
+  if (!known) say("a guest from " + address_text(from.host) + " used " + what);
+  s.guests[from.host] = now_ms;
+  guest_session_[from.host] = s.token;
+  ++stats_.lookups_ok;
+  return LookupResult::kOk;
+}
+
 void Relay::control(Endpoint from, const Message& m, std::uint64_t now_ms,
                     std::vector<Outgoing>& out) {
   auto reply = [&](Message answer) { out.push_back({from, encode(answer)}); };
@@ -82,43 +142,40 @@ void Relay::control(Endpoint from, const Message& m, std::uint64_t now_ms,
   };
   switch (m.kind) {
     case Kind::kRegister: {
-      auto it = sessions_.find(m.token);
-      if (it == sessions_.end()) {
-        if (!config_.host_key.empty() && m.key != config_.host_key) {
-          ++stats_.hosts_refused;
-          return refuse(Refusal::kWrongKey);
-        }
-        if (sessions_.size() >= config_.max_sessions) {
-          ++stats_.hosts_refused;
-          return refuse(Refusal::kFull);
-        }
-        std::size_t same_address = 0;
-        for (const auto& [token, s] : sessions_) same_address += s.link.host == from.host ? 1u : 0u;
-        if (same_address >= config_.max_sessions_per_address) {
-          ++stats_.hosts_refused;
-          return refuse(Refusal::kTooMany);
-        }
-        if (over_limit(registers_, from.host, config_.registers_per_window, now_ms, true)) {
-          ++stats_.hosts_refused;
-          return refuse(Refusal::kSlowDown);
-        }
-        Session s;
-        s.token = m.token;
-        s.code = new_code();
-        s.link = from;
-        s.last_ms = now_ms;
-        by_code_[s.code] = s.token;
-        it = sessions_.emplace(s.token, std::move(s)).first;
-        ++stats_.hosts_registered;
-        say("host " + address_text(from.host) + " registered, join code " + show_code(it->second.code) +
-            " (" + std::to_string(sessions_.size()) + " host(s) now)");
-      }
-      it->second.link = from;
-      it->second.last_ms = now_ms;
+      auto it = open_session(from, m, now_ms, out);
+      if (it == sessions_.end()) return;
       Message ok;
       ok.kind = Kind::kRegistered;
       ok.token = m.token;
       ok.code = it->second.code;
+      return reply(ok);
+    }
+    case Kind::kRegisterName: {
+      const auto room = normalize_room(m.name);
+      if (!room) {
+        ++stats_.hosts_refused;
+        return refuse(Refusal::kBadName);
+      }
+      const std::string key = room_key(*room);
+      if (auto held = by_room_.find(key); held != by_room_.end() && held->second != m.token) {
+        ++stats_.rooms_taken;
+        return refuse(Refusal::kNameTaken);
+      }
+      auto it = open_session(from, m, now_ms, out);
+      if (it == sessions_.end()) return;
+      Session& s = it->second;
+      if (room_key(s.room) != key) {
+        if (!s.room.empty()) by_room_.erase(room_key(s.room));
+        by_room_[key] = s.token;
+        s.room = *room;
+        say("host " + address_text(from.host) + " holds room \"" + s.room + "\" (" +
+            std::to_string(by_room_.size()) + " room(s) now)");
+      }
+      Message ok;
+      ok.kind = Kind::kRegisteredName;
+      ok.token = m.token;
+      ok.code = s.code;
+      ok.name = s.room;
       return reply(ok);
     }
     case Kind::kKeepalive:
@@ -158,33 +215,61 @@ void Relay::control(Endpoint from, const Message& m, std::uint64_t now_ms,
       out.push_back({flow->second.guest, m.payload});
       return;
     }
-    case Kind::kLookup: {
+    case Kind::kListRoom: {
+      // Over the limit: not taken and not answered (its host's link sends it again with its next keepalive).
+      if (over_limit(listings_, from.host, config_.listings_per_window, now_ms, true, config_.list_window_ms)) {
+        ++stats_.listings_limited;
+        return;
+      }
+      auto it = sessions_.find(m.token);
+      if (it == sessions_.end()) return refuse(Refusal::kUnknownSession);
+      Session& s = it->second;
+      s.link = from;
+      s.last_ms = now_ms;
+      // Only a room is listed: a join code alone is not for everyone to see.
+      const bool list_it = m.listed && !s.room.empty();
+      if (list_it && !s.listed &&
+          over_limit(new_listings_, from.host, config_.new_listings_per_window, now_ms, true)) {
+        ++stats_.listings_limited;
+        return;  // (it stays off the list until the window is over)
+      }
+      if (list_it && !s.listed) {
+        s.listed_since = ++list_order_;
+        say("host " + address_text(from.host) + " lists room \"" + s.room + "\" (" + std::to_string(listed() + 1) +
+            " listed now)");
+      } else if (!list_it && s.listed) {
+        say("host " + address_text(from.host) + " took room \"" + s.room + "\" off the list");
+      }
+      s.listed = list_it;
+      if (list_it) {
+        s.listing = m.entry;
+        s.listing.room = s.room;
+        s.listing.password = true;  // (every session has one: docs/protocol.md)
+      }
+      return;
+    }
+    case Kind::kListRooms: {
+      if (over_limit(lists_, from.host, config_.lists_per_window, now_ms, true, config_.list_window_ms)) {
+        ++stats_.lists_limited;
+        return;  // (no answer: an answer would be more bytes toward a sender that may be forged)
+      }
+      ++stats_.lists_answered;
+      return reply(list_page(m.start));
+    }
+    case Kind::kLookup:
+    case Kind::kLookupName: {
+      std::optional<std::uint64_t> token;
+      std::string what;
+      if (m.kind == Kind::kLookup) {
+        if (auto code = by_code_.find(m.code); code != by_code_.end()) token = code->second;
+        what = "join code " + show_code(m.code);
+      } else if (auto room = normalize_room(m.name)) {
+        if (auto held = by_room_.find(room_key(*room)); held != by_room_.end()) token = held->second;
+        what = "room \"" + *room + "\"";
+      }
       Message found;
       found.kind = Kind::kFound;
-      if (over_limit(lookups_, from.host, config_.lookups_per_window, now_ms, false)) {
-        ++stats_.lookups_limited;
-        found.status = static_cast<std::uint8_t>(LookupResult::kSlowDown);
-        return reply(found);
-      }
-      auto code = by_code_.find(m.code);
-      if (code == by_code_.end()) {
-        over_limit(lookups_, from.host, config_.lookups_per_window, now_ms, true);
-        ++stats_.lookups_wrong;
-        found.status = static_cast<std::uint8_t>(LookupResult::kUnknown);
-        return reply(found);
-      }
-      Session& s = sessions_.at(code->second);
-      if (s.guests.find(from.host) == s.guests.end() && s.guests.size() >= config_.max_guest_addresses) {
-        found.status = static_cast<std::uint8_t>(LookupResult::kFull);
-        return reply(found);
-      }
-      if (s.guests.find(from.host) == s.guests.end()) {
-        say("a guest from " + address_text(from.host) + " used join code " + show_code(s.code));
-      }
-      s.guests[from.host] = now_ms;
-      guest_session_[from.host] = s.token;
-      ++stats_.lookups_ok;
-      found.status = static_cast<std::uint8_t>(LookupResult::kOk);
+      found.status = static_cast<std::uint8_t>(let_in(from, token, what, now_ms));
       return reply(found);
     }
     default:
@@ -227,6 +312,43 @@ void Relay::from_guest(Endpoint from, std::span<const std::uint8_t> bytes, std::
   out.push_back({s->link, encode(m)});
 }
 
+std::size_t Relay::listed() const {
+  return static_cast<std::size_t>(
+      std::count_if(sessions_.begin(), sessions_.end(), [](const auto& kv) { return kv.second.listed; }));
+}
+
+std::vector<RoomEntry> Relay::room_list() const {
+  std::vector<const Session*> listed;
+  for (const auto& [token, s] : sessions_) {
+    if (s.listed && !s.room.empty()) listed.push_back(&s);
+  }
+  std::sort(listed.begin(), listed.end(),
+            [](const Session* a, const Session* b) { return a->listed_since > b->listed_since; });
+  std::vector<RoomEntry> out;
+  for (const Session* s : listed) {
+    if (out.size() >= kMaxListedRooms) break;
+    out.push_back(s->listing);
+    out.back().room = s->room;  // (the name it holds now)
+  }
+  return out;
+}
+
+Message Relay::list_page(std::uint8_t start) const {
+  const std::vector<RoomEntry> all = room_list();
+  Message page;
+  page.kind = Kind::kRoomList;
+  page.total = static_cast<std::uint8_t>(all.size());
+  page.start = static_cast<std::uint8_t>(std::min<std::size_t>(start, all.size()));
+  std::size_t bytes = kMagic.size() + 4;  // (the kind, total, start and count)
+  for (std::size_t i = page.start; i < all.size(); ++i) {
+    const std::size_t more = entry_bytes(all[i]);
+    if (bytes + more > kMaxPayloadBytes) break;
+    bytes += more;
+    page.rooms.push_back(all[i]);
+  }
+  return page;
+}
+
 void Relay::remove_flow(Session& s, std::uint16_t flow) {
   auto it = s.flows.find(flow);
   if (it == s.flows.end()) return;
@@ -242,7 +364,9 @@ void Relay::remove_session(std::map<std::uint64_t, Session>::iterator it, const 
     if (g != guest_session_.end() && g->second == s.token) guest_session_.erase(g);
   }
   by_code_.erase(s.code);
-  say("host " + address_text(s.link.host) + " (join code " + show_code(s.code) + ") " + why + "; " +
+  if (!s.room.empty()) by_room_.erase(room_key(s.room));  // (and off the room list: it goes with the session)
+  say("host " + address_text(s.link.host) + " (join code " + show_code(s.code) +
+      (s.room.empty() ? std::string() : ", room \"" + s.room + "\"") + ") " + why + "; " +
       std::to_string(sessions_.size() - 1) + " host(s) now");
   sessions_.erase(it);
 }
@@ -280,9 +404,12 @@ std::vector<Outgoing> Relay::tick(std::uint64_t now_ms) {
     }
     it = next;
   }
-  for (auto* table : {&lookups_, &registers_}) {
+  // (the room list's asks have a window of their own: a forged sender's addresses must not pile up either)
+  for (auto [table, window] : {std::pair{&lookups_, config_.window_ms}, std::pair{&registers_, config_.window_ms},
+                               std::pair{&new_listings_, config_.window_ms}, std::pair{&lists_, config_.list_window_ms},
+                               std::pair{&listings_, config_.list_window_ms}}) {
     for (auto t = table->begin(); t != table->end();) {
-      if (now_ms - t->second.window_start >= config_.window_ms) {
+      if (now_ms - t->second.window_start >= window) {
         t = table->erase(t);
       } else {
         ++t;

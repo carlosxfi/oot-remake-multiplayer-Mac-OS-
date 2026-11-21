@@ -53,6 +53,7 @@ struct Lobby {
     std::vector<Player> players;        // by number
     std::string host_place;             // the host's game: where its Link is
     std::optional<std::uint16_t> host_life, host_max;   // quarter hearts
+    bool can_resync = false;            // a guest whose game can take the host's save again (CoopSave::CanResync)
     bool operator==(const Lobby&) const = default;
 };
 
@@ -62,6 +63,7 @@ struct Request {
         kOwnMute,     // our own mute of `player`: `what` (proto::lobby_mute bits) on or off
         kTeleport,    // /teleport to `name`
         kCopyInvite,  // the invite code onto the clipboard
+        kResync,      // a guest: the host's save again (CoopSave::RequestResync; player report 120)
     };
     Kind kind = Kind::kServer;
     coop::protocol::LobbyAction action{};
@@ -90,7 +92,7 @@ public:
 
 private:
     enum class Act : std::uint8_t {
-        kNone, kPlayer, kCopy, kOwnVoice, kOwnChat, kTeleport, kHostVoice, kHostChat, kKick, kBan
+        kNone, kPlayer, kCopy, kOwnVoice, kOwnChat, kTeleport, kHostVoice, kHostChat, kKick, kBan, kResync
     };
     struct Line;
     std::vector<Line> Lines() const;
@@ -111,6 +113,11 @@ private:
 
 // The value cell of a player's row on the list: "42 ms  Kokiri Forest  downed  talking  muted".
 std::string Summary(const Player& p);
+
+// The second line of the player's Discord status (Longshot patch 0026, host/discord_rpc.c, through the module's
+// hos_coop_discord_state): "Co-op: 3 players" while this game is in a session, "Solo" otherwise (co-op idle,
+// or still starting). No names: friends on Discord see only the count. English, as Discord shows it to others.
+std::string DiscordState(bool connected, std::size_t players);
 
 // The module's part (coop_lobby_tab_module.cpp, only in hookshot_coop.dll): the one Tab, handed to Hookshot
 // right after Multiplayer through coop_pause.cpp's exports (hos_coop_menu.h). Thread-safe.

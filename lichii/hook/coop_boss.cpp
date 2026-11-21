@@ -214,6 +214,8 @@ void Sync::Reset() {
     phase_ = Phase::none;
     entered_at_ = sent_at_ = intro_at_ = skip_at_ = skip_since_ = 0;
     committed_ = false;
+    own_intro_played_ = false;
+    intro_told_ = false;
     skip_asked_ = false;
     event_ = false;
     last_now_ = 0;
@@ -281,15 +283,22 @@ void Sync::Take(const proto::BossRoom& m, std::uint64_t now_us, std::uint8_t sel
     }
 }
 
-void Sync::Defeat(Actions& out, bool read_gone) {
-    Say(out, *here_, proto::BossState::defeated);
+void Sync::EndFight(Actions& out) {
+    Say(out, *here_, proto::BossState::defeated);  // the fight here is over: no proof of a death (protocol.md)
     if (std::find(defeated_.begin(), defeated_.end(), here_->index) == defeated_.end()) {
         defeated_.push_back(here_->index);
     }
-    if (read_gone) {
-        out.beaten_here = here_;  // only when the walk read the boss gone, never a guess from the event alone
-    }
+}
+
+void Sync::Died(Actions& out) {
+    EndFight(out);
+    out.beaten_here = here_;  // a body read at life 0: its death, proven
     out.log.push_back("boss beaten (" + std::string(here_->outro) + ")");
+}
+
+void Sync::GuessedOver(Actions& out, const char* why) {
+    EndFight(out);  // pulls stop; never a death anyone keeps (no beaten_here; G2's record takes proofs only)
+    out.log.push_back("boss beaten (" + std::string(here_->outro) + ") (a guess: " + why + ")");
 }
 
 void Sync::Commit(Actions& out, const char* why) {
@@ -299,7 +308,8 @@ void Sync::Commit(Actions& out, const char* why) {
     committed_ = true;
     const bool fight = phase_ == Phase::fight || phase_ == Phase::outro;
     Say(out, *here_, fight ? proto::BossState::intro_end : proto::BossState::intro_start);
-    if (!fight) {
+    if (!fight && !intro_told_) {
+        intro_told_ = true;
         out.intro_here = here_;  // past the door during our intro: it is the boss's (a door before it is not)
     }
     out.log.push_back(std::string("past the door (") + why + "): the others are moved in");
@@ -413,6 +423,8 @@ Actions Sync::Step(const Local& local, std::uint64_t now_us) {
         intro_at_ = 0;
         skip_asked_ = false;
         committed_ = false;
+        own_intro_played_ = false;
+        intro_told_ = false;
         phase_ = Phase::none;
         if (here_ != nullptr) {
             pulls_ = 0;
@@ -429,7 +441,6 @@ Actions Sync::Step(const Local& local, std::uint64_t now_us) {
                 if (local.event) {  // came in with an event running: that is the intro
                     phase_ = Phase::intro;
                     intro_at_ = now_us;
-                    out.intro_here = here_;
                     out.log.push_back("intro started (" + std::string(here_->intro) + ")");
                     if (moved_in) {
                         Commit(out, "moved in");
@@ -472,6 +483,15 @@ Actions Sync::Step(const Local& local, std::uint64_t now_us) {
             }
             break;
         case Phase::intro:
+            // A room with no shut-in flag: our event, still running after kMinIntroUs, is the intro (a door's
+            // event is shorter). Told to the area rules while it runs, so they see it end (issue 148). A room
+            // with the flag tells it at Commit("shut in") instead.
+            if (local.event && !intro_told_ && !local.shut_in.has_value() && now_us - intro_at_ >= kMinIntroUs) {
+                intro_told_ = true;
+                out.intro_here = here_;
+                out.log.push_back("our event here ran " + std::to_string(kMinIntroUs / 1'000'000) +
+                                  " s: the intro (" + std::string(here_->intro) + ")");
+            }
             if (fell) {
                 // Past the door? The game's shut-in flag where the room has
                 // one; else an intro long enough (or skipped to follow).
@@ -491,6 +511,7 @@ Actions Sync::Step(const Local& local, std::uint64_t now_us) {
                 if (committed_) {
                     Say(out, *here_, proto::BossState::intro_end);
                 }
+                own_intro_played_ = own_intro_played_ || !skip_asked_;
                 out.log.push_back(skip_asked_ ? "intro ended (skipped to follow the others)" : "intro ended");
                 Commit(out, local.shut_in.has_value() ? "shut in" : "the intro is over");
             }
@@ -508,7 +529,6 @@ Actions Sync::Step(const Local& local, std::uint64_t now_us) {
                 // boss's death).
                 phase_ = Phase::intro;
                 intro_at_ = now_us;
-                out.intro_here = here_;
                 out.log.push_back("intro started (" + std::string(here_->intro) + ", after the wait)");
             } else if (rose && now_us - fight_at_ < kMinFightUs) {
                 out.log.push_back("an event right after the intro: the rest of it, not the boss's death");
@@ -519,8 +539,12 @@ Actions Sync::Step(const Local& local, std::uint64_t now_us) {
                     // Maybe the death, maybe a grab: decided while it runs.
                     provisional_ = true;
                     out.log.push_back("an event in the fight; the boss is still there: waiting to see");
+                } else if (local.boss_read_dead) {
+                    Died(out);  // read at life 0
+                } else if (local.boss_alive.has_value()) {
+                    GuessedOver(out, "the boss gone without a reading at life 0");
                 } else {
-                    Defeat(out, local.boss_alive.has_value());  // read gone, or no reading at all
+                    GuessedOver(out, "an event in the fight, the boss not read");
                 }
             }
             break;
@@ -533,12 +557,16 @@ Actions Sync::Step(const Local& local, std::uint64_t now_us) {
                 const bool long_event = now_us - outro_at_ >= kLongEventUs && !untouched;
                 if (gone || (long_event && local.event)) {
                     provisional_ = false;
-                    Defeat(out, gone);
-                    if (!gone) out.log.back() += " after a long event";
+                    if (gone && local.boss_read_dead) {
+                        Died(out);
+                    } else {
+                        GuessedOver(out, gone ? "the boss gone without a reading at life 0"
+                                              : "a long event with the boss hurt");
+                    }
                 } else if (fell) {
                     provisional_ = false;
                     if (!local.boss_alive.has_value()) {
-                        Defeat(out, false);  // no reading at the end: as before
+                        GuessedOver(out, "the event ended with the boss not read");  // as before
                     } else {
                         phase_ = Phase::fight;
                         out.log.push_back("the event is over and the boss is alive: the fight goes on");

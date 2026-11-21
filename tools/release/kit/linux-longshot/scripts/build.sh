@@ -9,6 +9,9 @@
 #   bash scripts/build.sh --rebuild             build again even when nothing changed
 #   bash scripts/build.sh --check-only          get the tools and check your game files; build nothing
 #   bash scripts/build.sh --jobs N              at most N compilers at once
+#   bash scripts/build.sh --dlss                with NVIDIA DLSS: asks you to accept NVIDIA's license once, then every
+#                                               build fetches NVIDIA's DLSS SDK and builds with it (data/dlss.txt)
+#   bash scripts/build.sh --no-dlss             without DLSS again (the game is built again without it)
 #   bash scripts/build.sh --renderer-only DIR   (CI, no game) steps 1 to 3, then compile Longshot's patched
 #                                               Linux renderer and our host files into DIR
 #
@@ -28,13 +31,15 @@
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-game='' exefs='' rebuild=0 check_only=0 jobs='' renderer_out=''
+game='' exefs='' rebuild=0 check_only=0 jobs='' renderer_out='' dlss=0 no_dlss=0
 while (($#)); do
     case $1 in
         --game) game=$2; shift ;;
         --exefs) exefs=$2; shift ;;
         --rebuild) rebuild=1 ;;
         --check-only) check_only=1 ;;
+        --dlss) dlss=1 ;;
+        --no-dlss) no_dlss=1 ;;
         --jobs) jobs=$2; shift ;;
         --renderer-only) renderer_out=$2; shift ;;
         *) fail "build.sh: unknown option $1" ;;
@@ -108,11 +113,13 @@ tools_env=$(env -u LONGSHOT_TOOLS "$PY" -I "$SRC/builder/linux/linux_tools.py" e
 eval "$tools_env"
 # Longshot's own variables for its build, and nothing of a launcher or test run: LONGSHOT_TOOLS
 # unset keeps the game in one folder (no bin/), LONGSHOT_VK_PREBUILT unset compiles the patched
-# renderer. Its lift key hashes every A64_/OOT_/RX_ variable: co-op's OOT_COOP_* ones go.
+# renderer, LONGSHOT_ROMFS_FROM unset (a launcher's, Longshot rc.6 #360: game files hard-linked from
+# another folder) unpacks the game files the kit names. Co-op's OOT_COOP_* ones go too (Longshot's lift
+# key hashed every A64_/OOT_/RX_ variable before rc.6, and they are no business of the build's).
 language=${OOT_COOP_LANGUAGE:-en-US}   # (read before the OOT_COOP_* variables go below)
 fetch_local=${OOT_COOP_FETCH_LOCAL-}   # (tests: a local OOTRR in step 5, after they go)
 offline=${OOT_COOP_OFFLINE-}           # (tests: 1 = no internet, for step 5)
-unset LONGSHOT_TOOLS LONGSHOT_VK_PREBUILT LONGSHOT_BUILDER_EXE LONGSHOT_NGX_SDK LONGSHOT_FFX_SDK
+unset LONGSHOT_TOOLS LONGSHOT_VK_PREBUILT LONGSHOT_BUILDER_EXE LONGSHOT_NGX_SDK LONGSHOT_FFX_SDK LONGSHOT_ROMFS_FROM
 while IFS='=' read -r v _; do [[ $v == OOT_COOP_* ]] && unset "$v"; done < <(env)
 export PYTHONIOENCODING=utf-8
 
@@ -143,6 +150,35 @@ make_game() {
 game_stamp=$GAME/coop-built-from.txt
 ready=0
 [[ -n $(kit_game_exe) && $(cat "$game_stamp" 2>/dev/null) == "$src_stamp" ]] && ready=1
+
+# NVIDIA DLSS (#234), as hookshot-build.ps1: only in a game built with NVIDIA's DLSS SDK, which nobody may pass on, so
+# each build downloads it once NVIDIA's license is accepted. --dlss asks once and data/dlss.txt keeps the answer (the
+# builds after an update keep DLSS); --no-dlss takes it back. Not in coop-built-from.txt (release, pin and patches).
+# A game with DLSS has its runtime in data/game/ngx (make_game.py's place_ngx_runtime; gone again without the SDK).
+dlss_note=$DATA/dlss.txt
+if ((no_dlss)); then
+    rm -f "$dlss_note"
+elif ((dlss)) && [[ ! -f $dlss_note ]]; then
+    kit_tty || fail 'NVIDIA DLSS needs NVIDIA'"'"'s license accepted: run bash scripts/build.sh --dlss from a terminal.'
+    say ''
+    warn "NVIDIA DLSS (NVIDIA RTX graphics cards): the build downloads NVIDIA's DLSS SDK, under NVIDIA's own license:"
+    # (the link as the pinned Longshot's scripts/ngx_sdk.py names it, so a pin that moves NVIDIA's commit moves it too)
+    ngx_commit=$(sed -n 's/^COMMIT *= *"\([0-9a-f]\{40\}\)".*/\1/p' "$SRC/scripts/ngx_sdk.py" 2>/dev/null | head -n 1 || true)
+    say "  https://github.com/NVIDIA/DLSS/blob/${ngx_commit:-main}/LICENSE.txt (the build prints NVIDIA's notice too)."
+    say "  The game folder then holds NVIDIA's files: never share it, and never post builds made with them."
+    read -r -p "  Accept NVIDIA's license and build with DLSS? (y/n) " answer || answer=''
+    [[ ${answer,,} =~ ^(y|yes|j|ja)$ ]] || fail "NVIDIA's license not accepted: nothing changed (the game stays as it is, without DLSS)."
+    printf 'nvidia-license=accepted\n' >"$dlss_note"
+fi
+want_dlss=0
+((!no_dlss)) && [[ -f $dlss_note ]] && want_dlss=1
+game_dlss=0
+compgen -G "$GAME/ngx/libnvidia-ngx-dlss.so.*" >/dev/null && game_dlss=1
+if ((ready && want_dlss != game_dlss && (want_dlss || no_dlss))); then
+    if ((want_dlss)); then say 'NVIDIA DLSS: the game has no DLSS yet, so it is built again with it (much shorter than the first build).'
+    else say 'NVIDIA DLSS off: the game is built again without it.'; fi
+    ready=0
+fi
 remembered=$DATA/game-files.txt
 
 if [[ -z $game ]] && ((!ready || rebuild || check_only)); then
@@ -211,8 +247,15 @@ else
     step 'Building the game (15 to 60 minutes, once; the PC stays usable)'
     build_args=("${game_args[@]}" --out "$GAME" --work "$WORK" --language "$language" --log "$LOGS/build.log")
     [[ -n $jobs ]] && build_args+=(--jobs "$jobs")
+    # (NVIDIA DLSS: make_game.py fetches NVIDIA's SDK into data/work/ngx-sdk, only what is missing, and builds the
+    # renderer with it; the license was accepted above, data/dlss.txt)
+    ((want_dlss)) && build_args+=(--fetch-ngx-sdk --accept-nvidia-license)
     mkdir -p "$GAME"
-    make_game "${build_args[@]}" || fail "The build stopped. Its log: $LOGS/build.log"
+    ((want_dlss)) && export LONGSHOT_NGX_SDK=$WORK/ngx-sdk
+    # (make_game.py's own words for a failed SDK download are the Builder's, "untick NVIDIA DLSS": the kit's way is --no-dlss)
+    no_dlss_hint=''
+    ((want_dlss)) && no_dlss_hint=" This build was with NVIDIA DLSS: if NVIDIA's SDK could not be downloaded (offline?), bash start-squadala.sh --no-dlss builds the game without it."
+    make_game "${build_args[@]}" || fail "The build stopped. Its log: $LOGS/build.log$no_dlss_hint"
     [[ -n $(kit_game_exe) ]] || fail "The build finished but there is no game in $GAME. Its log: $LOGS/build.log"
     printf '%s' "$src_stamp" >"$game_stamp"
 fi
@@ -248,32 +291,58 @@ if [[ -f $ootrr_pin ]]; then
             OOT_COOP_FETCH_LOCAL=$fetch_local fetch_verified "$o_tgz" "$o_sha" "$o_url/$o_file" || o_why="the download failed ($KIT_FETCH_WHY)"
         fi
         o_had=$(cat "$o_dir/coop-ootrr.txt" 2>/dev/null || true)
+        o_new=$GAME/tools/ootrr.new o_old=$GAME/tools/ootrr.old
+        # (a swap stopped between its two moves: the old folder goes back first)
+        [[ ! -d $o_dir && -f $o_old/ootrr ]] && mv "$o_old" "$o_dir"
         if [[ -z $o_why ]]; then
-            rm -rf "$o_dir" && mkdir -p "$o_dir"
+            # All or nothing (Windows: kit-paths.ps1 Install-KitOotrr): unpacked beside the old one, tried, then swapped,
+            # so a failure keeps the OOTRR that was there; the old way deleted it first (player report 2026-11-19).
+            rm -rf "$o_new" && mkdir -p "$o_new"
             # (one folder, ootrr-<version>-linux-x86_64/: ootrr, LICENSE, NOTICE, README.md, install.sh, ootrr.desktop)
-            if tar -xzf "$o_tgz" -C "$o_dir" --strip-components=1 && [[ -f $o_dir/ootrr ]]; then
-                chmod +x "$o_dir/ootrr"
-                printf '%s\n' "$o_want" >"$o_dir/coop-ootrr.txt"
-                # Another release than the one before: its seeds are other worlds and the old seed files do not build
-                # with it, so every built seed goes and the game makes it again at its next start
-                # (kit-paths.ps1 Remove-KitRandoSeeds on Windows).
-                if [[ -n $o_had && ${o_had%% *} != "$o_rel" ]]; then
-                    for seed_dir in "$GAME"/mods/randomizer-*/; do
-                        [[ -f ${seed_dir}coop-seed.txt ]] || continue
-                        seed_name=$(basename "$seed_dir")
-                        rm -rf "$seed_dir" "$GAME/mods/oot-remake-randomizer/$seed_name.ootrr"
-                        say "  randomizer: seed $seed_name removed for OOTRR $o_rel: the game makes it again at its next start (another world: start a new save)"
-                    done
-                fi
-            else
+            if ! tar -xzf "$o_tgz" -C "$o_new" --strip-components=1 || [[ ! -f $o_new/ootrr ]]; then
                 o_why="unpacking $o_file failed"
+            else
+                chmod +x "$o_new/ootrr"
+                # ('shuffle 1 1' prints one number at once and touches no file: the program runs on this system)
+                if ! timeout 30 "$o_new/ootrr" shuffle 1 1 >/dev/null 2>&1; then
+                    o_why="ootrr did not run here (a 1-second test failed)"
+                else
+                    printf '%s\n' "$o_want" >"$o_new/coop-ootrr.txt"
+                    rm -rf "$o_old"
+                    if { [[ ! -e $o_dir ]] || mv "$o_dir" "$o_old"; } && mv "$o_new" "$o_dir"; then
+                        rm -rf "$o_old"
+                    else
+                        [[ ! -e $o_dir && -d $o_old ]] && mv "$o_old" "$o_dir"
+                        o_why="it could not be put in place: close the game and start again"
+                    fi
+                fi
+            fi
+            rm -rf "$o_new"
+        fi
+        if [[ -z $o_why ]]; then
+            # Another release than the one before: its seeds are other worlds and the old seed files do not build
+            # with it, so every built seed goes and the game makes it again at its next start
+            # (kit-paths.ps1 Remove-KitRandoSeeds on Windows).
+            if [[ -n $o_had && ${o_had%% *} != "$o_rel" ]]; then
+                for seed_dir in "$GAME"/mods/randomizer-*/; do
+                    [[ -f ${seed_dir}coop-seed.txt ]] || continue
+                    seed_name=$(basename "$seed_dir")
+                    rm -rf "$seed_dir" "$GAME/mods/oot-remake-randomizer/$seed_name.ootrr" \
+                        "$GAME/mods/oot-remake-randomizer/$seed_name.spoiler.txt"
+                    say "  randomizer: seed $seed_name removed for OOTRR $o_rel: the game makes it again at its next start (another world: start a new save)"
+                done
             fi
         fi
+        # (how it went, for the game's chat and collect-logs: data/game/tools/ootrr-setup.txt, as on Windows)
+        mkdir -p "$GAME/tools"
         if [[ $o_why == offline ]]; then
+            printf 'failed %s: this PC had no internet at the last start\n' "$o_rel" >"$GAME/tools/ootrr-setup.txt"
             say "  offline: using the tools already here (the randomizer, OOTRR $o_rel, is set up at the next start with internet)"
         elif [[ -n $o_why ]]; then
+            printf 'failed %s: %s\n' "$o_rel" "$o_why" >"$GAME/tools/ootrr-setup.txt"
             warn "the randomizer (OOTRR $o_rel) was not set up: $o_why. Co-op works without it; start again to retry."
         else
+            printf 'ok %s\n' "$o_rel" >"$GAME/tools/ootrr-setup.txt"
             say "  randomizer: OOTRR $o_rel -> $o_dir"
         fi
     fi
@@ -289,7 +358,7 @@ pack_from=$game
 mod=$GAME/mods/contents/0400486024DEC000/coop-puppet
 # (the pack tool's own files too: a pack made by another version of the tool is made again, as the
 # Windows kit's Test-KitPuppetPackStale does; the look files and the copies' marks change with it)
-pack_stamp="$src_stamp tool:$(cd "$DATA/tools/puppet_pack" && LC_ALL=C sha256sum -- *.py | sha256sum | cut -d' ' -f1)"
+pack_stamp="$src_stamp menus:1 tool:$(cd "$DATA/tools/puppet_pack" && LC_ALL=C sha256sum -- *.py | sha256sum | cut -d' ' -f1)"
 # A file the pack's manifest names that is gone (a pack tool stopped half way, a hand-copied pack): the look files
 # (coop_look/gear.bin, a colour's .bin) and each tunic's files, as the Windows kit's Get-KitPuppetPackGaps (pack-retry).
 pack_gap() {
@@ -353,13 +422,17 @@ if [[ ! -e ${pack_from:-} ]] && ! [[ -f $mod/coop_puppet.json && $(cat "$mod/.co
         fi
     fi
 fi
+# The pack with the title's Host/Join/Co-op Settings rows and the pause menu's Multiplayer tab (--title-rows
+# --pause-tab, as the Windows kit's Get-KitPackArgs). They make the pack replace files the game reads at boot (each
+# language's Mals archive, the Title and Common layout archives) with larger ones; start.sh's merge_tables.py takes
+# them out of play when the size table the game reads cannot hold them (another mod's table wins).
 gap=$(pack_gap)
 if [[ -f $mod/coop_puppet.json && $(cat "$mod/.coop-stamp" 2>/dev/null) == "$pack_stamp" && -z $gap ]]; then
     say '  puppet pack: built already'
 elif [[ -n $pack_from && -e $pack_from ]]; then
     [[ -n $gap && -f $mod/coop_puppet.json ]] && say "  puppet pack: incomplete ($gap is missing): made again"
     say '  Making the puppet pack (how you see the other players; about a minute) ...'
-    if "$PY" -I -B "$DATA/tools/puppet_pack/build.py" --romfs "$pack_from" --mod-dir "$mod" --title-rows 2>&1 | sed 's/^/    /'; then
+    if "$PY" -I -B "$DATA/tools/puppet_pack/build.py" --romfs "$pack_from" --mod-dir "$mod" --title-rows --pause-tab 2>&1 | sed 's/^/    /'; then
         printf '%s' "$pack_stamp" >"$mod/.coop-stamp"
         rm -f "$pack_asked"
     else
@@ -401,7 +474,11 @@ for seed_dir in "$GAME"/mods/randomizer-*/; do
         done < <(rando_tables)
         if "$GAME/tools/ootrr/ootrr" build "$control/$seed_name.ootrr" "$GAME/romfs" "$stage" "$seed_name" --host hookshot \
             >"$control/last-build.txt" 2>&1 && [[ -f $stage/$seed_name/coop-seed.txt ]]; then
-            [[ -f ${seed_dir}coop-rando.txt ]] && cp "${seed_dir}coop-rando.txt" "$stage/$seed_name/"
+            # the game's own files OOTRR's build does not write: the preset, and the spoiler log and settings
+            # string the players share (the same seed file: the same seed)
+            for keep in coop-rando.txt spoiler.txt settings.txt; do
+                [[ -f ${seed_dir}$keep ]] && cp "${seed_dir}$keep" "$stage/$seed_name/"
+            done
             rm -rf "$seed_dir" && mv "$stage/$seed_name" "$GAME/mods/$seed_name" && ok=1
         fi
     fi

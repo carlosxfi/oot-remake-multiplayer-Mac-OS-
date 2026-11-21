@@ -106,6 +106,11 @@ function Wait-AnyKey([int]$Seconds) {
 # with what to do, and this kit starts as it is; a failed update waits for a key first, so
 # its message is read before the game window covers it.
 $updater = Join-Path $PSScriptRoot 'update.ps1'
+if ($NoUpdate -and (Test-Path $updater)) {
+    # No -Status this time (as right after an update by an older updater, which removed "Start OoT Co-op.bat"): the
+    # player's shortcuts are still pointed at the kit's start file (-Status does it on the other starts).
+    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $updater -Kit $kit -Tidy
+}
 if (-not $NoUpdate -and (Test-Path $updater)) {
     $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
     $status = ''
@@ -246,6 +251,7 @@ if ($Mode -eq 'title') {
         'Puppet pack: not in the co-op game, so the other players show as names only (the game''s chat says so too).',
         $(if ($hsOnly) { '  It is made from your game file (the one hookshot\game-files.txt names): put that file back, then start again.' } else { '  Run Build-Hookshot-Coop.bat -Game <your .nup> again (SETUP.md, "Play on Hookshot").' })))
     foreach ($l in @(Invoke-KitSizeTableMerge $kit $emu)) { Write-Host $l }   # (#48: a seed from OOTRR's website)
+    foreach ($l in @(Invoke-KitDiscordStatus $kit $emu)) { Write-Host $l }   # ('Playing Squadala!' on Discord)
     $game = Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) -PassThru
     if ($testKit -and $game) { [System.IO.File]::WriteAllText($testKit, "$($game.Id)`n") }
     Write-Host 'Game started. Host or Join in the game''s menu, first tab Multiplayer (controller: Minus and Plus together, or Home;'
@@ -284,7 +290,7 @@ if ($askServer -or -not $Server) {
             else { Write-Host "Not used: $($invite.Error)." }
             continue
         }
-        # A join code with its relay (ABCD-EFGH@relay.example.net:27530): the code goes to the
+        # A join code or room name with its relay (ABCD-EFGH@relay.example.net:27530, forest-gang@...): it goes to the
         # relay first, then the game connects to the relay.
         $relayJoin = ConvertTo-RelayJoin $typed
         if ($relayJoin) {
@@ -303,7 +309,7 @@ if ($askServer -or -not $Server) {
         }
         else {
             Write-Host "'$typed' is not an address. It looks like 26.12.34.56 or 192.168.1.20 (four numbers"
-            Write-Host 'with dots), sometimes with :port at the end, or a join code with its relay (ABCD-EFGH@relay.example.net).'
+            Write-Host 'with dots), sometimes with :port at the end, or a join code or room name with its relay (ABCD-EFGH@relay.example.net, forest-gang@relay.example.net).'
             Write-Host 'Ask the host to copy it from their server window.'
         }
     } until ($ok)
@@ -493,6 +499,7 @@ if ($Hookshot) {
         'Puppet pack: not in the co-op game, so the other players show as names only (the game''s chat says so too).',
         $(if ($hsOnly) { '  It is made from your game file (the one hookshot\game-files.txt names): put that file back, then start again.' } else { '  Run Build-Hookshot-Coop.bat -Game <your .nup> again (SETUP.md, "Play on Hookshot").' })))
     foreach ($l in @(Invoke-KitSizeTableMerge $kit $emu)) { Write-Host $l }   # (#48: a seed from OOTRR's website)
+    foreach ($l in @(Invoke-KitDiscordStatus $kit $emu)) { Write-Host $l }   # ('Playing Squadala!' on Discord)
     $started = Get-Date
     $game = Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) -PassThru
     Write-Host "Game started. Its log (longshot_log.txt in the game's logs folder) says 'coop: module loaded', then 'coop: connected'."

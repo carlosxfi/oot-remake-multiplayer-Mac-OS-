@@ -1,4 +1,4 @@
-From e9d0fb662b7cfa470d5b25e453247bc7c214742c Mon Sep 17 00:00:00 2001
+From f0ee087bb81793a419286adfaa39635c7d8f643c Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Fri, 13 Nov 2026 00:35:10 -0900
 Subject: [PATCH] Co-op mods: the Mods tab's order and switches, read at the
@@ -21,7 +21,7 @@ code only: no lift change.
 
 diff --git a/host/hos_coop_mods.h b/host/hos_coop_mods.h
 new file mode 100644
-index 00000000..55518ebd
+index 0000000..55518eb
 --- /dev/null
 +++ b/host/hos_coop_mods.h
 @@ -0,0 +1,109 @@
@@ -135,7 +135,7 @@ index 00000000..55518ebd
 +
 +#endif
 diff --git a/host/mods.c b/host/mods.c
-index a217443e..16069e75 100644
+index a43b3ae..674479f 100644
 --- a/host/mods.c
 +++ b/host/mods.c
 @@ -111,7 +111,7 @@ static int index_romfs(const char *host_dir, const char *rel, int depth) {

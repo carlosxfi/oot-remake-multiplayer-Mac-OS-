@@ -248,10 +248,102 @@ TEST_CASE("host sampler: turning, scene and age changes send a sample while stil
   CHECK(next(r) == 0);
 }
 
-TEST_CASE("host sampler: no reading, no sample") {
+TEST_CASE("host sampler: no reading, no sample, the status loading") {
   Sampler s;
-  CHECK(s.frame(std::nullopt, kStart).empty());
+  const auto d = decode(s.frame(std::nullopt, kStart));
+  CHECK(d.samples.empty());
+  REQUIRE(d.statuses.size() == 1);
+  CHECK(d.statuses[0].flags == proto::status::loading);
   CHECK(s.next_sequence() == 0);
+  CHECK(s.frame(std::nullopt, kStart + kFrameUs).empty());  // no change, nothing
+}
+
+TEST_CASE("host sampler: status_bits, every away bit (issue 150, away-status)") {
+  namespace st = proto::status;
+  PlayerReading r = at(1.0f, false);
+
+  SUBCASE("play, nothing away") { CHECK(status_bits(0, r, false) == 0); }
+  SUBCASE("no Link: loading, the menus clear, the cutscene and dead keep") {
+    const std::uint8_t all = st::paused | st::in_menu | st::in_cutscene | st::dead;
+    CHECK(status_bits(all, std::nullopt, false) == (st::loading | st::in_cutscene | st::dead));
+    CHECK(status_bits(0, std::nullopt, false) == st::loading);
+  }
+  SUBCASE("the title's menu up with a Link read: loading, its menus are not the pause menu") {
+    r.in_menu = true;
+    CHECK(status_bits(0, r, true) == st::loading);
+  }
+  SUBCASE("Link read again: loading clears") {
+    CHECK(status_bits(st::loading | st::dead, r, false) == st::dead);
+  }
+  SUBCASE("a game menu in front, no event: in_menu and paused") {
+    r.in_menu = true;
+    CHECK(status_bits(0, r, false) == (st::in_menu | st::paused));
+    r.in_menu = false;
+    CHECK(status_bits(st::in_menu | st::paused, r, false) == 0);
+  }
+  SUBCASE("a menu inside our event (a talk's choices): in_menu, not paused") {
+    r.in_menu = true;
+    r.event_running = true;
+    CHECK(status_bits(0, r, false) == (st::in_cutscene | st::in_menu));
+  }
+  SUBCASE("a menu during another player's event replayed here: paused (our world stops)") {
+    r.in_menu = true;
+    r.event_running = true;
+    r.event_whose = EventWhose::others;
+    CHECK(status_bits(0, r, false) == (st::in_menu | st::paused));
+  }
+  SUBCASE("menu state not known (emulator, Linux): never set") {
+    r.in_menu = std::nullopt;
+    CHECK(status_bits(0, r, false) == 0);
+    CHECK(status_bits(st::in_menu | st::paused, r, false) == 0);
+  }
+  SUBCASE("dead: set, cleared, unknown keeps") {
+    r.dead = true;
+    CHECK(status_bits(0, r, false) == st::dead);
+    r.dead = false;
+    CHECK(status_bits(st::dead, r, false) == 0);
+    r.dead = std::nullopt;
+    CHECK(status_bits(st::dead, r, false) == st::dead);
+    CHECK(status_bits(0, r, false) == 0);
+  }
+}
+
+TEST_CASE("host sampler: each away bit goes out once on its change and back") {
+  namespace st = proto::status;
+  Sampler s;
+  std::uint64_t now = kStart;
+  auto statuses = [&](const std::optional<PlayerReading>& r, bool title = false) {
+    return decode(s.frame(r, now += kFrameUs, title)).statuses;
+  };
+  PlayerReading r = at(1.0f, false);
+  REQUIRE(statuses(r).size() == 1);
+
+  r.in_menu = true;  // the pause menu opens
+  auto paused = statuses(r);
+  REQUIRE(paused.size() == 1);
+  CHECK(paused[0].flags == (st::in_menu | st::paused));
+  CHECK(statuses(r).empty());
+  r.in_menu = false;  // and closes
+  auto back = statuses(r);
+  REQUIRE(back.size() == 1);
+  CHECK(back[0].flags == 0);
+
+  r.dead = true;  // Game Over
+  auto dead = statuses(r);
+  REQUIRE(dead.size() == 1);
+  CHECK(dead[0].flags == st::dead);
+  auto load = statuses(std::nullopt);  // Try Again: the reload
+  REQUIRE(load.size() == 1);
+  CHECK(load[0].flags == (st::dead | st::loading));
+  r.dead = false;  // Link back with his hearts
+  auto up = statuses(r);
+  REQUIRE(up.size() == 1);
+  CHECK(up[0].flags == 0);
+
+  auto title = statuses(r, true);  // the title's menu (Quit Game)
+  REQUIRE(title.size() == 1);
+  CHECK(title[0].flags == st::loading);
+  CHECK(s.last_sample().has_value());
 }
 
 TEST_CASE("host sampler: status on every change") {

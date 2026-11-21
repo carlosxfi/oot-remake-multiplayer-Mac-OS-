@@ -701,11 +701,17 @@ TEST_CASE("client: an unknown refusal reason is kept") {
   Events events;
   REQUIRE(client.start());
   REQUIRE(pump(client, server, [&] { return server.find<proto::Hello>().has_value(); }));
-  server.send_bytes({0x03, 0x00, 0x01, 0x00, 0x09}, proto::kChannelSession);  // REFUSED 9
+  server.send_bytes({0x03, 0x00, 0x01, 0x00, 0x0A}, proto::kChannelSession);  // REFUSED 10
   REQUIRE(wait_event(client, server, events, EventKind::refused));
   const Event& refused = events.all[*events.find(EventKind::refused)];
-  CHECK(static_cast<int>(refused.refuse_reason) == 9);
+  CHECK(static_cast<int>(refused.refuse_reason) == 10);
   CHECK(refuse_reason_text(refused.refuse_reason) == "unknown reason");
+}
+
+TEST_CASE("client: a version refusal tells the player to update every kit (0.11.5 vs 0.11.6)") {
+  const std::string_view text = refuse_reason_text(proto::RefuseReason::wrong_protocol_version);
+  CHECK(text.starts_with("wrong protocol version"));
+  CHECK(text.find("Update.bat") != std::string_view::npos);
 }
 
 TEST_CASE("client: kicked or banned by the host after WELCOME, it stops and does not join again") {
@@ -971,7 +977,8 @@ TEST_CASE("client: every refusal reason the protocol has is named") {
   CHECK(refuse_reason_text(proto::RefuseReason::bad_password).starts_with("wrong join password"));
   CHECK(refuse_reason_text(proto::RefuseReason::kicked).starts_with("the host took you out"));
   CHECK(refuse_reason_text(proto::RefuseReason::banned).starts_with("the host banned you"));
-  CHECK(refuse_reason_text(static_cast<proto::RefuseReason>(9)) == "unknown reason");
+  CHECK(refuse_reason_text(proto::RefuseReason::not_let_in).starts_with("the host did not let you in"));
+  CHECK(refuse_reason_text(static_cast<proto::RefuseReason>(10)) == "unknown reason");
 }
 
 TEST_CASE("client: send_chat sends CHAT and refuses empty, long or bad text") {
@@ -1163,6 +1170,7 @@ TEST_CASE("client: the new event kinds are named") {
   CHECK(to_string(EventKind::player_joined) == "player joined");
   CHECK(to_string(EventKind::player_left) == "player left");
   CHECK(to_string(EventKind::player_status) == "player status");
+  CHECK(to_string(EventKind::waiting_for_host) == "waiting for host");
 }
 
 // ---- Shared flags and join partner ----
@@ -2579,4 +2587,115 @@ TEST_CASE("client: once keyed, only a plain REFUSED 6 is believed") {
   REQUIRE(wait_event(client, server, events, EventKind::refused));
   CHECK(events.all[*events.find(EventKind::refused)].refuse_reason ==
         proto::RefuseReason::bad_password);
+}
+
+// ---- Host approval (protocol 13, docs/protocol.md "Host approval") ----
+
+TEST_CASE("client: held for the host's answer, it waits past the handshake timeout as long as the server says") {
+  FakeServer server;
+  ClientConfig config = config_for(server);
+  std::uint64_t fake_now = 1'000'000'000'000;
+  config.now_us = [&fake_now] { return fake_now; };
+  config.handshake_timeout_ms = 1000;
+  Client client(config);
+  Events events;
+  REQUIRE(client.start());
+  REQUIRE(pump(client, server, [&] { return server.find<proto::Hello>().has_value(); }));
+  key_client(client, server);
+  server.send(proto::JoinKnock{5, 60, 0, "Link"}, proto::kChannelSession);
+  REQUIRE(wait_event(client, server, events, EventKind::waiting_for_host));
+  const Event& held = events.all[*events.find(EventKind::waiting_for_host)];
+  CHECK(std::get<proto::JoinKnock>(held.message) == proto::JoinKnock{5, 60, 0, "Link"});
+  // Far past handshake_timeout_ms, within the server's 60 s and the margin: still waiting.
+  fake_now += 64'000'000;
+  settle(client, server, events);
+  CHECK(events.count(EventKind::connect_failed) == 0);
+  CHECK(client.state() == State::handshaking);
+  // The host says yes: WELCOME as usual.
+  server.send(proto::Welcome{2, 5, 20, {{1, "Saria"}}}, proto::kChannelSession);
+  REQUIRE(wait_event(client, server, events, EventKind::welcomed));
+  CHECK(client.player_number() == 2);
+}
+
+TEST_CASE("client: held with no answer at all, the attempt ends after the server's time and a margin") {
+  FakeServer server;
+  ClientConfig config = config_for(server);
+  std::uint64_t fake_now = 1'000'000'000'000;
+  config.now_us = [&fake_now] { return fake_now; };
+  config.handshake_timeout_ms = 1000;
+  Client client(config);
+  Events events;
+  REQUIRE(client.start());
+  REQUIRE(pump(client, server, [&] { return server.find<proto::Hello>().has_value(); }));
+  key_client(client, server);
+  server.send(proto::JoinKnock{5, 2, 0, "Link"}, proto::kChannelSession);
+  REQUIRE(wait_event(client, server, events, EventKind::waiting_for_host));
+  fake_now += 6'000'000;  // 2 s and the 5 s margin are not over yet
+  settle(client, server, events);
+  CHECK(events.count(EventKind::connect_failed) == 0);
+  fake_now += 2'000'000;
+  REQUIRE(wait_event(client, server, events, EventKind::connect_failed));
+  CHECK(events.all[*events.find(EventKind::connect_failed)].drop_reason == DropReason::handshake_timeout);
+}
+
+TEST_CASE("client: the host turns it away: refused with the reason, and it does not join again by itself") {
+  FakeServer server;
+  Client client(config_for(server));
+  Events events;
+  REQUIRE(client.start());
+  REQUIRE(pump(client, server, [&] { return server.find<proto::Hello>().has_value(); }));
+  key_client(client, server);
+  server.send(proto::JoinKnock{5, 60, 0, "Link"}, proto::kChannelSession);
+  REQUIRE(wait_event(client, server, events, EventKind::waiting_for_host));
+  server.send(proto::Refused{proto::RefuseReason::not_let_in}, proto::kChannelSession);
+  REQUIRE(wait_event(client, server, events, EventKind::refused));
+  const Event& refused = events.all[*events.find(EventKind::refused)];
+  CHECK(refused.refuse_reason == proto::RefuseReason::not_let_in);
+  CHECK(refuse_text(refused).starts_with("the host did not let you in"));
+  CHECK(client.state() == State::refused);
+  pump(client, server, [] { return false; }, 400);
+  CHECK(server.connects == 1);
+}
+
+TEST_CASE("client: a JOIN_KNOCK before the keys is dropped and does not stretch the wait") {
+  FakeServer server;
+  ClientConfig config = config_for(server);
+  std::uint64_t fake_now = 1'000'000'000'000;
+  config.now_us = [&fake_now] { return fake_now; };
+  config.handshake_timeout_ms = 1000;
+  Client client(config);
+  Events events;
+  REQUIRE(client.start());
+  REQUIRE(pump(client, server, [&] { return server.find<proto::Hello>().has_value(); }));
+  const std::size_t rejected = client.rejected_count();
+  server.send(proto::JoinKnock{5, 60, 0, "Link"}, proto::kChannelSession);  // plain, before the challenge
+  REQUIRE(pump(client, server, [&] { return client.rejected_count() > rejected; }));
+  events.drain(client);
+  CHECK(events.count(EventKind::waiting_for_host) == 0);
+  fake_now += 2'000'000;
+  REQUIRE(wait_event(client, server, events, EventKind::connect_failed));
+  CHECK(events.all[*events.find(EventKind::connect_failed)].drop_reason == DropReason::handshake_timeout);
+}
+
+TEST_CASE("client: as the host, another player's JOIN_KNOCK is a message, and JOIN_ALLOW answers it") {
+  FakeServer server;
+  Client client(config_for(server));
+  Events events;
+  REQUIRE(client.start());
+  welcome_as(client, server, events, 1, {});
+  server.send(proto::JoinKnock{5, 60, proto::join_knock::known, "Riley"}, proto::kChannelSession);
+  std::optional<proto::JoinKnock> got;
+  REQUIRE(pump(client, server, [&] {
+    events.drain(client);
+    for (const Event& e : events.all) {
+      if (const auto* k = std::get_if<proto::JoinKnock>(&e.message); k && e.kind == EventKind::message) got = *k;
+    }
+    return got.has_value();
+  }));
+  CHECK(got->nickname == "Riley");
+  CHECK(events.count(EventKind::waiting_for_host) == 0);
+  const std::size_t from = server.received.size();
+  REQUIRE(client.send(proto::JoinAllow{5, true, false}));
+  const std::size_t at = wait_received<proto::JoinAllow>(client, server, from);
+  CHECK(std::get<proto::JoinAllow>(server.received[at].message) == proto::JoinAllow{5, true, false});
 }

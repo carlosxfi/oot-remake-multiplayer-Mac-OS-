@@ -273,6 +273,9 @@ Options Options::Read(std::string_view coop_ini, std::string_view options_ini) {
     }
     o.show_players = On(IniGet(options_ini, "LICHII_COOP_SHOW_PLAYERS"));
     o.pvp = On(IniGet(options_ini, "pvp"));
+    o.approve_joins = On(IniGet(options_ini, "approve_joins"));
+    o.auto_rejoin = On(IniGet(options_ini, "auto_rejoin"));
+    o.list_room = On(IniGet(options_ini, "list_room"));
     o.upnp = !Off(IniGet(options_ini, "upnp"));
     if (const auto v = IniGet(options_ini, "server_password"); v && PasswordOk(*v)) {
         o.password = *v;
@@ -302,6 +305,12 @@ Options Options::Read(std::string_view coop_ini, std::string_view options_ini) {
     }
     o.map_players = !Off(IniGet(options_ini, "LICHII_COOP_MAP"));
     o.map_names = !Off(IniGet(options_ini, "LICHII_COOP_MAP_NAMES"));
+    // The relay lines Host.bat reads too (coop-options.ini, "Advanced: relay"): the Multiplayer tab's Host uses them
+    // the same way. Read only: the menu writes none of them.
+    o.relay = std::string(Trim(IniGet(options_ini, "relay").value_or("")));
+    o.relay_key = std::string(Trim(IniGet(options_ini, "relay_key").value_or("")));
+    o.relay_room = std::string(Trim(IniGet(options_ini, "relay_room").value_or("")));
+    o.list_name = std::string(Trim(IniGet(options_ini, "list_name").value_or("")));
     if (const auto v = IniGet(options_ini, "max_players"); v && !v->empty() && v->size() <= 2 &&
         std::all_of(v->begin(), v->end(), [](char c) { return c >= '0' && c <= '9'; })) {
         o.max_players = std::clamp(std::stoi(*v), kMinPlayers, kMaxPlayers);
@@ -329,6 +338,8 @@ void Options::Write(std::string& coop_ini, std::string& options_ini) const {
     o = chat_key == "T" ? IniUnset(o, "LICHII_COOP_CHAT_KEY") : IniSet(o, "LICHII_COOP_CHAT_KEY", chat_key, false);
     o = show_players ? IniSet(o, "LICHII_COOP_SHOW_PLAYERS", "1", false) : IniUnset(o, "LICHII_COOP_SHOW_PLAYERS");
     o = IniSet(o, "pvp", pvp ? "on" : "off", true);
+    o = auto_rejoin ? IniSet(o, "auto_rejoin", "on", true) : IniUnset(o, "auto_rejoin");
+    o = list_room ? IniSet(o, "list_room", "on", true) : IniUnset(o, "list_room");
     o = upnp ? IniUnset(o, "upnp") : IniSet(o, "upnp", "no", true);
     o = password.empty() ? IniUnset(o, "server_password") : IniSet(o, "server_password", password, true);
     o = debug_panel ? IniSet(o, "LICHII_COOP_DEBUG_PANEL", "1", false) : IniUnset(o, "LICHII_COOP_DEBUG_PANEL");
@@ -416,7 +427,18 @@ std::optional<std::uint16_t> ParsePort(std::string_view text) {
 }
 
 bool AddressOk(std::string_view typed) {
-    const std::string_view t = Trim(typed);
+    std::string_view t = Trim(typed);
+    // Through a relay (issue 261): "<join code or room name>@relay[:port]", the relay's address checked as any other.
+    if (const std::size_t at = t.find('@'); at != std::string_view::npos) {
+        const std::string_view what = t.substr(0, at);
+        if (what.size() < 3 || what.size() > 24 ||
+            !std::all_of(what.begin(), what.end(), [](char c) {
+                return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-';
+            })) {
+            return false;
+        }
+        t = t.substr(at + 1);
+    }
     const std::size_t colon = t.find(':');
     const std::string_view host = t.substr(0, colon);
     if (host.empty() || host.size() > 253 ||
@@ -833,6 +855,105 @@ std::string SaveWait::Line() const {
                        "one.";
     default:
         return {};
+    }
+}
+
+SaveListRefresh::Action SaveListRefresh::Step(const Input& in) {
+    if (in.stale) {
+        pending_ = true;   // (another switch while the game reads: it reads again after this one)
+    }
+    if (asked_) {
+        if (in.manager && !in.busy && in.state == kRead) {
+            asked_ = false;
+            return Action::done;
+        }
+        if (in.now_ms - asked_ms_ >= kGiveUpMs) {
+            asked_ = false;
+            return Action::gave_up;
+        }
+        return Action::none;
+    }
+    if (!pending_) {
+        wait_ = Wait::none;
+        return Action::none;
+    }
+    wait_ = !in.title ? Wait::title : !in.manager ? Wait::manager : in.busy ? Wait::busy : Wait::none;
+    if (wait_ != Wait::none) {
+        return Action::none;   // (the game's own reading first: asked once it is idle)
+    }
+    pending_ = false;
+    asked_ = true;
+    asked_ms_ = in.now_ms;
+    return Action::ask;
+}
+
+TitleArrangement ArrangementFor(bool any_save) {
+    TitleArrangement a;
+    if (any_save) {
+        a.btn_num_frame = 3;
+        a.sound_type = 1;
+        a.texts = {{{"Pa_Button_00/T_Btn_00", "0001"}, {"Pa_Button_01/T_Btn_00", "0000"},
+                    {"Pa_Button_02/T_Btn_00", "0002"}}};
+        a.count = 3;
+    } else {
+        a.btn_num_frame = 2;
+        a.sound_type = 0;
+        a.texts = {{{"Pa_Button_00/T_Btn_00", "0000"}, {"Pa_Button_01/T_Btn_00", "0002"}, {}}};
+        a.count = 2;
+    }
+    return a;
+}
+
+TitleMenuLook MenuFor(bool any_save, bool multiplayer, bool one_start) {
+    TitleMenuLook l;
+    if (multiplayer) {
+        l.btn_num_frame = 4;
+        l.rows = {{{"0100", TitleDo::kHost}, {"0101", TitleDo::kJoin}, {"0102", TitleDo::kSettings},
+                   {"0106", TitleDo::kBack}}};
+        l.count = 4;
+        l.focus = 0;
+        return l;
+    }
+    if (any_save && !one_start) {
+        // Continue and New Game each their own (no file select of a mod's that does both): the game's fourth slot
+        // shown for Options, decided in its place (the game's third button is under Multiplayer).
+        l.btn_num_frame = 4;
+        l.rows = {{{"0001", TitleDo::kGame},
+                   {"0000", TitleDo::kGame},
+                   {"0104", TitleDo::kMultiplayer},
+                   {"0105", TitleDo::kDecide, 2}}};
+        l.count = 4;
+        return l;
+    }
+    l.btn_num_frame = 3;
+    l.rows = {{{one_start ? "0103" : "0000", TitleDo::kGame},   // (Start; New Game when no mod has a file select)
+               {"0104", TitleDo::kMultiplayer},
+               any_save ? TitleMenuRow{"0105", TitleDo::kGame} : TitleMenuRow{"0105", TitleDo::kDecide, 1},
+               {}}};
+    l.count = 3;
+    return l;
+}
+
+int RowOf(const TitleMenuLook& look, TitleDo action) {
+    for (std::size_t i = 0; i < look.count; ++i) {
+        if (look.rows[i].action == action) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+const char* SkipTitleHold(const SkipTitleInput& in) {
+    if (in.session_live) {
+        return "a co-op session is live";
+    }
+    if (in.save_wait || in.save_coming) {
+        return "the host's save is on its way";
+    }
+    switch (in.host_state) {
+    case HOS_COOP_IDLE: return nullptr;
+    case HOS_COOP_STARTING:
+    case HOS_COOP_HOSTING: return "co-op is hosting";
+    case HOS_COOP_FAILED: return "a co-op host or join was tried";
+    default: return "co-op is joining";
     }
 }
 

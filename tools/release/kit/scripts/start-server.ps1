@@ -10,6 +10,11 @@ param(
     [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest
 )
 $ErrorActionPreference = 'Continue'
+# QuickEdit off first (#239, the alt-tab freeze): a click in this window starts a selection that pauses
+# Write-Host below; coop_server.exe's output pipe then fills, its log write blocks and the server stops
+# sending to every player (0.11.0 logs: "nothing from the server for 16 s", then a reconnect). console-mode.ps1, never fails.
+$consoleMode = Join-Path $PSScriptRoot 'console-mode.ps1'
+if (Test-Path -LiteralPath $consoleMode) { . $consoleMode; [void](Disable-KitQuickEdit) }
 $kit = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $kit 'server\coop_server.exe'
 if (-not (Test-Path $exe)) { Write-Host "Not found: $exe"; exit 1 }
@@ -104,8 +109,13 @@ try { $sessionText = Write-KitHostSession $kit $Port $password } catch { }
     if ($release -and $text -match 'refused a connection, reason 1\b') {
         $text += ". This server is co-op ${release}: every player needs $release (Update.bat updates to the newest release)."
     }
-    # The relay's join code (relay-join.ps1): copied, so the host can paste it to the others.
-    if ($text -match 'relay: join code \S+\. Give your friends (\S+) ') {
+    # The relay's room name or join code (relay-join.ps1): copied, so the host can paste it to the
+    # others. The room, when the host has one (relay_room), is what friends type; the code does not
+    # take its place on the clipboard.
+    if ($text -match 'relay: room "\S+" is yours\. Friends join with (\S+)') {
+        try { Set-Clipboard -Value $Matches[1] -ErrorAction Stop; $text += ' Copied to the clipboard.'; $script:RoomCopied = $true } catch { }
+    }
+    elseif (-not $script:RoomCopied -and $text -match 'relay: join code \S+\. Give your friends (\S+) ') {
         try { Set-Clipboard -Value $Matches[1] -ErrorAction Stop; $text += ' Copied to the clipboard.' } catch { }
     }
     # The invite code (coop_server --invite): copied for the host, and never written to the log

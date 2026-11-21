@@ -209,7 +209,7 @@ std::size_t Kinds::Hash(std::uint64_t address) noexcept {
     return static_cast<std::size_t>(((address >> 4) * 0x9e3779b97f4a7c15ull) >> 54);  // 10 bits: kSlots
 }
 
-bool Kinds::Mark(std::uint64_t address, Kind kind) noexcept {
+bool Kinds::Mark(std::uint64_t address, Kind kind, std::uint64_t fold_key) noexcept {
     if (address == 0) {
         return false;
     }
@@ -222,11 +222,13 @@ bool Kinds::Mark(std::uint64_t address, Kind kind) noexcept {
             // first, so a reader that finds the key reads its kind.
             s.carry.store(0, std::memory_order_relaxed);
             s.pass.store(0, std::memory_order_relaxed);
+            s.fold_key.store(fold_key, std::memory_order_relaxed);
             s.kind.store(k, std::memory_order_release);
             s.key.store(address, std::memory_order_release);
             return true;
         }
         if (key == address) {
+            s.fold_key.store(fold_key, std::memory_order_release);
             if (s.kind.load(std::memory_order_relaxed) != k) {
                 s.carry.store(0, std::memory_order_relaxed);  // another actor at that address now
                 s.pass.store(0, std::memory_order_relaxed);
@@ -303,6 +305,7 @@ void Kinds::Clear() noexcept {
     for (Slot& s : slots_) {
         s.key.store(0, std::memory_order_release);
         s.kind.store(0, std::memory_order_relaxed);
+        s.fold_key.store(0, std::memory_order_relaxed);
         s.carry.store(0, std::memory_order_relaxed);
         s.pass.store(0, std::memory_order_relaxed);
     }
@@ -487,6 +490,13 @@ std::uint16_t Folded(std::uint16_t pct, std::uint16_t count_pct) {
     }
     const std::uint32_t folded = static_cast<std::uint32_t>(pct) * count_pct / 100u;
     return static_cast<std::uint16_t>(std::min<std::uint32_t>(folded, 0xffff));
+}
+
+std::uint16_t FoldCount(std::uint64_t fold_key, std::uint16_t count_pct) {
+    if (fold_key == 0 || count_pct <= 100) {
+        return count_pct;
+    }
+    return static_cast<std::uint16_t>(std::min<std::uint32_t>(100u * (1u + ExtraCount(fold_key, count_pct)), 0xffff));
 }
 
 std::uint64_t PackValues(const Values& v) noexcept {

@@ -56,7 +56,7 @@ class MapDropLog {
   // Link is; returns a line for each that went from 1 to 0 since the last
   // frame (capped: kLinesPerFlag, then a summary a minute; more than kBatch
   // at once: one line). Also notes loads and scene changes.
-  std::vector<std::string> frame(FlagStore& store, std::optional<std::string_view> scene, bool in_play,
+  std::vector<std::string> frame(FlagStore& store, const std::optional<std::string_view>& scene, bool in_play,
                                  std::optional<std::array<float, 3>> link = std::nullopt);
 
  private:

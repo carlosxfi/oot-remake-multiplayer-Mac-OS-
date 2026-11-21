@@ -189,6 +189,53 @@ TEST_CASE("look items: a puppet wears its painted copy of the items the pack has
     CHECK(CoopPuppet::LookItemName("Armor_Adult_Zora", 1) == "Armor_Adult_Zora_Look1");
 }
 
+TEST_CASE("blade copies: every puppet with no ready Look copy wears its own number's sword copy") {
+    // held-piece: the blade is a switch of the sword's model resource, shared by every actor of one
+    // name. A 5th or later player (no Look slot left), a player whose copy is not painted yet, a
+    // Longshot without patch 0020 and the emulator (no slots at all) wear <sword>_Blade<number>.
+    const auto blades = CoopPuppet::PackLookItems(
+        R"({"look_items": null, "blade_items": {"copies": 16, "actors": ["Weapon_Sword_Kokiri", "Weapon_Sword_Giant"], "files": []}})",
+        "blade_items");
+    CHECK(blades.copies == 16);
+    CHECK(blades.actors == std::vector<std::string>{"Weapon_Sword_Kokiri", "Weapon_Sword_Giant"});
+    CHECK(CoopPuppet::PackLookItems(R"({"look_items": null, "blade_items": null})", "blade_items").copies == 0);
+    CHECK(CoopPuppet::PackLookItems(R"({"blade_items": {"copies": 16, "actors": ["A"]}})").copies == 0);  // not look_items
+    CHECK(CoopPuppet::BladeItemName("Weapon_Sword_Kokiri", 5) == "Weapon_Sword_Kokiri_Blade5");
+
+    CoopPuppet::PlannerSettings settings;
+    settings.look_items = {"Weapon_Shield_Hylian", "Weapon_Sword_Kokiri"};
+    settings.look_copies = 8;
+    settings.blade_items = blades.actors;
+    settings.blade_copies = 16;
+    CoopPuppet::Planner p(settings);
+    std::vector<CoopPuppet::Remote> remotes(4);
+    const std::uint8_t numbers[] = {2, 6, 16, 9};
+    for (std::size_t i = 0; i < remotes.size(); ++i) {
+        remotes[i].number = numbers[i];
+        remotes[i].scene = "Kokiri";
+        remotes[i].gear[0] = "Weapon_Sword_Kokiri";
+        remotes[i].gear[1] = "Weapon_Shield_Hylian";
+    }
+    remotes[0].look_copy = 1;                       // painted Look copy: that one, for every piece
+    remotes[3].gear[0] = "Weapon_Sword_Giant";      // no Look copy listed here: the blade copy
+    const auto in = p.Plan(0x8000000, std::string("Kokiri"), CoopPuppet::Vec3{0, 0, 0}, false, remotes, 1000);
+    REQUIRE(in.targets.size() == 4);
+    CHECK(in.targets[0].gear[0] == std::string("Weapon_Sword_Kokiri_Look1"));
+    CHECK(in.targets[0].gear[1] == std::string("Weapon_Shield_Hylian_Look1"));
+    CHECK(in.targets[1].gear[0] == std::string("Weapon_Sword_Kokiri_Blade6"));   // a 5th+ player: no slot
+    CHECK(in.targets[1].gear[1] == std::string("Weapon_Shield_Hylian"));         // no blade: the game's
+    CHECK(in.targets[2].gear[0] == std::string("Weapon_Sword_Kokiri_Blade16"));
+    CHECK(in.targets[3].gear[0] == std::string("Weapon_Sword_Giant_Blade9"));
+
+    // A pack with fewer numbers than the player's: the game's own sword, as before.
+    CoopPuppet::Gear gear;
+    gear[0] = "Weapon_Sword_Kokiri";
+    CoopPuppet::DressInBlades(gear, 9, settings.blade_items, 8);
+    CHECK(gear[0] == std::string("Weapon_Sword_Kokiri"));
+    CoopPuppet::DressInBlades(gear, 0, settings.blade_items, 16);   // the debug puppet
+    CHECK(gear[0] == std::string("Weapon_Sword_Kokiri"));
+}
+
 TEST_CASE("look share: a new room forgets the last room's looks, a reconnect keeps them") {
     CoopLookShare::Share s;
     CHECK_FALSE(s.OnEvent(Kind(EventKind::welcomed)));   // nothing to forget

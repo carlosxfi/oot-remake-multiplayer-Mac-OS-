@@ -29,10 +29,12 @@ void OneWayKeeper::reset() {
   seen_.clear();
   given_.clear();
   wait_.clear();
+  put_.clear();
+  refused_.clear();
   ++stats_.resets;
 }
 
-std::vector<FlagKey> OneWayKeeper::frame(FlagStore& store, bool in_play, std::optional<std::string_view> scene) {
+std::vector<FlagKey> OneWayKeeper::frame(FlagStore& store, bool in_play, const std::optional<std::string_view>& scene) {
   const unsigned step = ticks_.step();
   std::vector<FlagKey> restored;
   if (!in_play) {
@@ -43,11 +45,14 @@ std::vector<FlagKey> OneWayKeeper::frame(FlagStore& store, bool in_play, std::op
     return restored;
   }
   no_scene_ = 0;
+  now_ += static_cast<int>(step);
   if (std::exchange(save_load_, false)) {
     // Another save (or the same one again): nothing seen before counts.
     seen_.clear();
     given_.clear();
     wait_.clear();
+    put_.clear();
+    refused_.clear();
     ++stats_.save_loads;
     save_load_seen_ = true;
   }
@@ -66,18 +71,38 @@ std::vector<FlagKey> OneWayKeeper::frame(FlagStore& store, bool in_play, std::op
     if (first) continue;  // the baseline: what the save (or the session) left
     const bool was = std::exchange(it->second, one);
     if (one) {
-      if (!was) given_.insert(k.key);  // the game gave it while we watched
+      if (!was && !given_.contains(k.key)) {  // the game gave it while we watched
+        given_.insert(k.key);
+        put_.erase(k.key);  // a fresh count after it was left to the game (row 140)
+      }
       continue;
     }
     if (!was || !given_.contains(k.key) || scene != std::string_view(k.dungeon)) continue;
     // Given here, 0 now, in its dungeon, no save load between: the game
     // took it back.
+    const auto pb = put_.find(k.key);
+    const bool quick = pb != put_.end() && now_ - pb->second.at <= kWriteWait + kUndoTicks;
+    const int undone = quick ? pb->second.undone + 1 : 0;
+    if (undone >= kMaxQuickUndos || refused_[k.key] >= kMaxRefused) {
+      // Row 140: the game lowered it again right after our write, kMaxQuickUndos times in a row (or refuses the
+      // write): its own value until it gives it again.
+      given_.erase(k.key);
+      put_.erase(k.key);
+      refused_.erase(k.key);
+      ++stats_.left;
+      left_.push_back(k.key);
+      it->second = false;
+      continue;
+    }
     if (store.write(protocol::FlagEntry(k.key, protocol::FlagKind::boolean, 1))) {
       ++stats_.restores;
+      put_[k.key] = PutBack{now_, undone};
+      refused_.erase(k.key);
       restored.push_back(k.key);
       wait_[k.key] = kWriteWait;
     } else {
       ++stats_.failures;
+      ++refused_[k.key];  // left on the next frame at kMaxRefused (row 140)
     }
     it->second = true;  // still given: a refused write is tried again next frame
   }

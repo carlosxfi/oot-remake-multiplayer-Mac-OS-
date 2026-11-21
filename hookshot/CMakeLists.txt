@@ -27,12 +27,19 @@ foreach(line IN LISTS _coop_lines)
 endforeach()
 list(REMOVE_DUPLICATES _coop_sources)
 
-add_library(hookshot_coop MODULE src/coop_hookshot.cpp src/coop_draw.cpp src/coop_map_page.cpp src/coop_dbno_draw.cpp src/coop_png.cpp src/coop_chatbox.cpp src/coop_cheats_panel.cpp
+set(_coop_module_type MODULE)
+if(APPLE)
+  set(_coop_module_type SHARED)
+endif()
+add_library(hookshot_coop ${_coop_module_type} src/coop_hookshot.cpp src/coop_draw.cpp src/coop_map_page.cpp src/coop_dbno_draw.cpp src/coop_png.cpp src/coop_window_brand.cpp src/coop_chatbox.cpp src/coop_cheats_panel.cpp
   src/coop_host_menu.cpp src/coop_title.cpp src/coop_title_menu.cpp src/coop_input.cpp src/coop_pause.cpp
-  src/coop_pause_menu.cpp src/coop_pause_files.cpp src/coop_i18n.cpp
+  src/coop_pause_menu.cpp src/coop_pause_files.cpp src/coop_i18n.cpp src/coop_null_page.cpp
   src/coop_mod_json.cpp src/coop_mod_library.cpp src/coop_mods.cpp src/coop_mod_plugins.cpp src/coop_mod_guard.cpp
+  src/coop_mod_screens.cpp
   src/coop_mods_runtime.cpp src/coop_rando.cpp src/coop_mods_tab.cpp src/coop_mods_tab_module.cpp
   src/coop_lobby_tab.cpp src/coop_lobby_tab_module.cpp
+  src/coop_pause_tab.cpp src/coop_pause_tab_module.cpp
+  src/coop_auto_rejoin.cpp src/coop_lan.cpp src/coop_lan_net.cpp src/coop_room_list.cpp src/coop_longshot_settings.cpp
   src/coop_look.cpp src/coop_look_live.cpp src/coop_look_tunic.cpp src/coop_look_paint.cpp src/coop_look_parts.cpp src/coop_look_menu.cpp src/coop_look_view.cpp
   ${_coop_sources})
 # compat/ first: its core/ and common/ headers stand in for the emulator's.
@@ -73,10 +80,15 @@ if(MSVC)
   target_compile_options(hookshot_coop PRIVATE /wd4456 /wd4457 /wd4458 /wd4459 /bigobj)
 endif()
 
-execute_process(COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}/.." describe --tags --always --dirty
-    OUTPUT_VARIABLE _coop_version OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-if(NOT _coop_version)
-  set(_coop_version "unknown")
-endif()
-set_property(SOURCE "${_coop_hook}/coop_hook.cpp" APPEND PROPERTY
-    COMPILE_DEFINITIONS "LICHII_COOP_VERSION=\"hookshot ${_coop_version}\"")
+# The co-op commit for the log, from git describe on every build (cmake/coop_version.cmake;
+# a configure-time string went stale: 0.11.3's module said v0.11.2-18-gab129f5b).
+set(_coop_version_dir "${CMAKE_CURRENT_BINARY_DIR}/coop_version")
+add_custom_target(coop_version_hookshot ALL
+  COMMAND "${CMAKE_COMMAND}" "-DCOOP_GIT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/.." "-DCOOP_VERSION_PREFIX=hookshot"
+          "-DCOOP_VERSION_OUT=${_coop_version_dir}/coop_version.h"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/coop_version.cmake"
+  BYPRODUCTS "${_coop_version_dir}/coop_version.h"
+  COMMENT "co-op version (git describe)"
+  VERBATIM)
+add_dependencies(hookshot_coop coop_version_hookshot)
+target_include_directories(hookshot_coop PRIVATE "${_coop_version_dir}")

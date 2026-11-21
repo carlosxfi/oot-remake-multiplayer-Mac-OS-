@@ -136,6 +136,7 @@ struct World {
         std::optional<Addr> invite_host = std::nullopt, std::optional<std::vector<Addr>> nearby = std::vector<Addr>{}) {
     ServerOptions options;
     options.port = 0;
+    options.bind = 0x7F000001u;  // 127.0.0.1 only: the one way in these tests reach (the others are meant not to)
     options.session.join_password = host_password;
     server = std::make_unique<EnetServer>(options);
     REQUIRE(server->start());

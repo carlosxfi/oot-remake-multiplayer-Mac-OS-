@@ -8,11 +8,13 @@
 // menu, where all of it began.
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -71,6 +73,9 @@ struct Options {
     std::string chat_key = "T";    // LICHII_COOP_CHAT_KEY
     bool show_players = false;     // LICHII_COOP_SHOW_PLAYERS (the list always shown)
     bool pvp = false;              // pvp (the host's)
+    bool approve_joins = false;    // approve_joins (the host's: each new player waits for /allow or /deny); read only
+    bool auto_rejoin = false;      // auto_rejoin (join the last friend's game again by itself: coop_auto_rejoin.h)
+    bool list_room = false;        // list_room (hosting with a relay room: the room on the relay's public list)
     bool upnp = true;              // upnp (the host's router forward)
     std::string password;          // server_password ("": a new one each session)
     bool debug_panel = false;      // LICHII_COOP_DEBUG_PANEL
@@ -83,6 +88,10 @@ struct Options {
     std::string voice_mic;         // LICHII_COOP_VOICE_MIC: the voice's microphone by its name ("": the game's)
     bool map_players = true;       // LICHII_COOP_MAP (0: no other players on the minimap and the pause map)
     bool map_names = true;         // LICHII_COOP_MAP_NAMES (0: their icons without names)
+    std::string relay;             // relay (the host's: host through that relay, Host.bat's too; read only here)
+    std::string relay_key;         // relay_key (that relay's host key; read only)
+    std::string relay_room;        // relay_room (a room name on the relay, issue 261; read only)
+    std::string list_name;         // list_name (the name list_room shows the room as; "": the room name; read only)
 
     // From the two files' texts (a missing file: "").
     static Options Read(std::string_view coop_ini, std::string_view options_ini);
@@ -284,6 +293,57 @@ private:
     bool live_seen_ = false;             // the session was seen on since Start (a join still connecting is not off)
 };
 
+// The player's own A on the title, seen on player 1's buttons BEFORE a code mod's hold takes them
+// (CoopTitle::NotePlayerPad, coop_pad_order.h step 2). Save Profiles' file select holds that A, so the title's watch on
+// the game's buttons (step 3) never sees it: this one does, for both things the A means.
+// - picks_file: the player picks their own file (or a new game, or the title's options) on a title button that is not
+//   a co-op row: a guest's pending switch to the host's save is dropped (CoopSave::CancelPendingSwitch), else the
+//   switch could change the save folder under the load a mod's Continue starts.
+// - the window: an A on the title's first button (Continue, or Start in the title's own menu) makes a code mod's
+//   button choice the player's for kWindowMs (a file picked with the mouse brings no A after the first), co-op busy or
+//   not (coop_hookshot.cpp, TitleHoldWhy). It ends once Link is in the game (the load came, or a later return to the
+//   title is a new choice) and on Clear: a join begun after the A (StartSaveWait), or the host's save offered again
+//   because the player backed out of their pick (SaveWait's rearm).
+class PlayerChoice {
+public:
+    static constexpr std::uint64_t kA = 1ull << 0;          // (nn::hid::NpadButton A)
+    static constexpr std::uint64_t kWindowMs = 120000;      // naming a file in a mod's file select takes a while
+    struct Pad {
+        std::uint64_t buttons = 0;   // player 1's, before the mods' holds
+        bool title_up = false;
+        int focused = -1;            // the title's focused button (-1: none)
+        bool on_coop_row = false;    // a row the module answers (Host, Join, Co-op Settings, Multiplayer, Back, ...)
+        bool in_game = false;        // Link is in the game
+    };
+    struct Seen {
+        bool picks_file = false;     // drop the pending switch
+        bool window_opened = false;  // a new window (for the log)
+    };
+    Seen Step(std::uint64_t now_ms, const Pad& in) {
+        const std::uint64_t down = in.buttons & ~last_;
+        last_ = in.buttons;
+        if (in.in_game) {
+            at_ms_ = 0;
+        }
+        Seen s;
+        if ((down & kA) == 0) {
+            return s;
+        }
+        s.picks_file = SaveWait::PlayerPicksFile(in.title_up, in.focused, in.on_coop_row);
+        if (s.picks_file && in.focused == 0) {
+            s.window_opened = !Lately(now_ms);
+            at_ms_ = now_ms + 1;   // (+1: 0 is "none")
+        }
+        return s;
+    }
+    bool Lately(std::uint64_t now_ms) const { return at_ms_ != 0 && now_ms + 1 - at_ms_ < kWindowMs; }
+    void Clear() { at_ms_ = 0; }
+
+private:
+    std::uint64_t last_ = 0;    // the buttons last seen (A edges only)
+    std::uint64_t at_ms_ = 0;   // the A that opened the window, + 1 (0: none)
+};
+
 // ---------------------------------------------------------------------------
 // Text, for the menu's fields (coop_pause_menu.h).
 
@@ -297,5 +357,128 @@ void PopCodePoint(std::string& s);
 std::string Utf8(std::uint32_t cp);
 // On one line: line ends and tabs become spaces.
 std::string OneLine(std::string_view text);
+
+// ---------------------------------------------------------------------------
+// Player report 124: after the save folder is switched (CoopSave, a join's host's save, Resync from host, a new
+// session back on the player's own folder) the game's save list still shows the old folder: no Continue until a
+// restart. The game keeps that list in its caption manager (the title's SeqQueryIsExistSave reads it). Its state
+// byte: 0 cleared, 1-3 reading, 4 read (done once every slot entry says so: the game's own idle test). A new read
+// starts only from 0, so the game's order is: its idle test, its list reset (back to 0), then its read
+// (SeqOneshotRequestLoadAndSerializeCaption's body). SaveListRefresh says when the title's step does that, and when
+// the game is done: idle again with state 4. Only on the title (its step), once per switch.
+class SaveListRefresh {
+public:
+    struct Input {
+        bool stale = false;          // CoopSave::TakeSaveListStale() this step
+        bool title = false;          // the title's step runs (on its menu)
+        bool manager = false;        // the caption manager was found
+        bool busy = true;            // the game's own idle test says it is reading (or it could not be asked)
+        std::uint8_t state = 0;      // its state byte
+        std::uint64_t now_ms = 0;
+    };
+    enum class Action { none, ask, done, gave_up };
+    // Why nothing is asked yet (for a log line once per wait): nothing pending, no title, no manager, the game busy.
+    enum class Wait { none, title, manager, busy };
+    static constexpr std::uint8_t kRead = 4;            // the state byte once the game's read is done
+    static constexpr std::uint64_t kGiveUpMs = 10000;   // not read after this: said once, not asked again
+
+    Action Step(const Input& in);
+    // The ask could not be made (the game's reset said no: a save screen is busy): asked again at a later step.
+    void Refused() { asked_ = false; pending_ = true; }
+    bool pending() const { return pending_; }
+    bool asked() const { return asked_; }
+    Wait waiting() const { return wait_; }
+
+private:
+    bool pending_ = false;   // a switch happened, the game has not re-read its list since
+    bool asked_ = false;
+    Wait wait_ = Wait::none;
+    std::uint64_t asked_ms_ = 0;
+};
+
+// Player report 124, its second half: the re-read list is not what the open title shows. The title's buttons are
+// arranged once, by the game's Sequence graph OpenTitle.module when the title opens: from SeqQueryIsExistSave's
+// IsExist (the caption manager's +0x8e) it stops the Title_00 layout's `BtnNum` animation at frame 3 (three buttons:
+// Continue, New Game, Options) or 2 (two: New Game, Options), sets the buttons' texts from LayoutMsg/Title_00 and the
+// title's sound-link arrangement (SeqOneShotSetSLinkPropertyTitleBtnArrangementType: 1 with a save, 0 without).
+// TitleArrangement is that branch's values as the graph has them (read from the game's OpenTitle.module.ainb: nodes
+// 6-8 and 20 without a save, 11-14 and 21 with one). After a re-read (SaveListRefresh's done) the title's step makes
+// the same calls the graph's nodes end in, so the open title shows the list the game has now. What a press does is the
+// game's NormalTitle.module, which asks SeqQueryIsExistSave again at the press: it already follows the new list.
+struct TitleButtonText {
+    const char* pane = nullptr;    // the button's text pane in Title_00
+    const char* label = nullptr;   // its message in LayoutMsg/Title_00 (0000 New Game, 0001 Continue, 0002 Options)
+};
+struct TitleArrangement {
+    float btn_num_frame = 0;                 // the frame BtnNum stops at: the buttons shown
+    std::int32_t sound_type = 0;             // the title's sound-link property (its arrangement type)
+    std::array<TitleButtonText, 3> texts{};  // the first `count` are set
+    std::size_t count = 0;
+};
+TitleArrangement ArrangementFor(bool any_save);
+
+// The title's own menu (a pack whose Title_00 has the hidden marker pane kMenuMarker, tools/puppet_pack/title_menu.py):
+// three rows on the game's own buttons, Start, Multiplayer and Options; Multiplayer turns them into Host, Join, Co-op
+// Settings and Back, the game's hidden fourth slot shown (BtnNum's frame 4). With a save-screen mod's file select,
+// Continue and New Game led to the same place, so one Start row stands for both (one_start): the game's first button,
+// Continue with a save, New Game without. Without such a mod (one_start false: no running code mod whose mod.json says
+// "file_select": true, CoopModsRuntime::FileSelectRuns; another menu-screen mod does not count) and with a save the rows are Continue, New Game, Multiplayer and Options, the fourth
+// slot shown for Options (the game's third button decided in its place), so New Game stays reachable; without a save
+// New Game, Multiplayer, Options. Options is the game's own (its third button with a save; without one the game's
+// second is Options, decided by the module when the third row is chosen). The other rows are the module's: it takes
+// their A (the game never sees it) and plays the decide sound itself.
+inline constexpr const char* kMenuMarker = "Pa_CoopMenu_00";
+enum class TitleDo {
+    kGame,         // the game's own press (the A goes through)
+    kDecide,       // the game's button `decide` chosen in its place (Button::Decide)
+    kMultiplayer,  // the submenu
+    kHost,
+    kJoin,
+    kSettings,
+    kBack,         // the three rows again (also B in the submenu)
+};
+struct TitleMenuRow {
+    const char* label = nullptr;   // LayoutMsg/Title_00 (the pack's 0100..0106)
+    TitleDo action = TitleDo::kGame;
+    int decide = -1;               // kDecide: which of the game's buttons
+};
+struct TitleMenuLook {
+    float btn_num_frame = 3;   // the game's buttons shown (BtnNum's frame)
+    std::array<TitleMenuRow, 4> rows{};
+    std::size_t count = 0;
+    int focus = -1;            // where the cursor goes when this look comes in (-1: where it is)
+};
+TitleMenuLook MenuFor(bool any_save, bool multiplayer, bool one_start);
+// Whether an A on that row is the player's own choice on the title (the game's press, or Options decided in its
+// place): it drops a guest's pending switch to the host's save. The module's rows (Multiplayer, Host, Join, Co-op
+// Settings, Back) and no row are not.
+inline bool PlayersOwn(const TitleMenuRow* row) {
+    return row != nullptr && (row->action == TitleDo::kGame || row->action == TitleDo::kDecide);
+}
+// The first row of `look` that does `action` (-1: none).
+int RowOf(const TitleMenuLook& look, TitleDo action);
+// The pack's labels: 0100 Host, 0101 Join, 0102 Co-op Settings (the older packs' rows too), 0103 Start,
+// 0104 Multiplayer, 0105 Options, 0106 Back. (Continue and New Game rows use the game's own 0001 and 0000.)
+inline constexpr std::array<std::pair<const char*, const char*>, 7> kMenuLabels{{{"0100", "Host"},
+                                                                               {"0101", "Join"},
+                                                                               {"0102", "Co-op Settings"},
+                                                                               {"0103", "Start"},
+                                                                               {"0104", "Multiplayer"},
+                                                                               {"0105", "Options"},
+                                                                               {"0106", "Back"}}};
+
+// ---------------------------------------------------------------------------
+// Player report 133: Longshot's Skip title screen (its Insert menu row, off by default) starts a launch with the newest
+// save. Patch 0028 makes it choose the title's own buttons natively (the game's Button::Decide on the focused one, no
+// pressed buttons), once per launch, and first asks the module (hos_coop_title_hold): while co-op is doing something
+// at the title, the choice is the player's. SkipTitleHold is that answer: why it must not choose now, or nullptr (free:
+// solo, co-op idle). Any state but idle holds, a failed try too (the player was choosing co-op).
+struct SkipTitleInput {
+    int host_state = 0;          // HosCoopStatus.state (hos_coop_host.h HOS_COOP_*): 0 idle
+    bool session_live = false;   // CoopSave::SessionLive(): a session chose its save folder and is connected
+    bool save_coming = false;    // CoopSave::HostSaveComing(): the host's save is on its way or waits for the title
+    bool save_wait = false;      // the title waits for the host's save (CoopTitle's SaveWait)
+};
+const char* SkipTitleHold(const SkipTitleInput& in);
 
 }  // namespace CoopTitleMenu

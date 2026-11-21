@@ -1,0 +1,62 @@
+# kd-roll (proof-0116, tracker row 149, reports/kd-roll-149-2.md 'NOT proven'): King Dodongo stuck in his roll.
+# B enters FIRST (its title press comes 600 ticks before A's), A then owns KD (check A log 'native boss sync on (... ours)').
+# PASS: shots both every 5 s over 70 s of fight (a-r1..14 / b-r1..14) show KD leave Rolling_Loop after each roll on BOTH
+# screens (no roll stuck against nothing); host log has NO 'held ... stuck' line; server parts_to_root > 0 at the first roll.
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_BOSS=1,LICHII_COOP_DEBUG_OBJECTS=1,LICHII_COOP_CHEATS=1
+#! timeout 720
+mark start
+warp DodongoStage DodongoStage
+wait 1800
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark a-in
+give bombs
+wait 120
+assign Bomb
+wait 1800
+mark a-fight
+wait 300
+mark a-r1
+wait 300
+mark a-r2
+wait 300
+mark a-r3
+wait 300
+mark a-r4
+wait 300
+mark a-r5
+wait 300
+mark a-r6
+wait 300
+mark a-r7
+press ZL 10
+wait 30
+press ZR
+wait 120
+hold ZL+LSTICK_UP 60
+press A
+mark a-bomb
+wait 300
+mark a-s8
+wait 300
+mark a-s9
+wait 300
+mark a-s10
+wait 300
+mark a-s11
+wait 300
+mark a-s12
+wait 300
+mark a-s13
+wait 300
+mark a-s14
+mark end

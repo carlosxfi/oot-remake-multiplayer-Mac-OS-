@@ -568,6 +568,20 @@ void StartModule() {
     // them (patch 0020).
     const bool gear_file = ReadFile(LookDir() / (std::string(CoopLookParts::kBase) + ".bin")).has_value();
     const bool slots = gear_file && g_textures->Known();
+    // The metal parts' blocks (#202): a painted metal part is painted down to no metal.
+    if (const auto metal_file = ReadFile(LookDir() / "metal.bin")) {
+        std::string why;
+        if (auto metal = CoopLookParts::ParseMetal(*metal_file, &why)) {
+            LOG_INFO(Core, "coop: look: {} metal part block lists (a painted metal part loses its metal)",
+                     metal->size());
+            CoopLookParts::UseMetal(std::make_shared<const CoopLookParts::Metal>(std::move(*metal)));
+        } else {
+            LOG_WARNING(Core, "coop: look: coop_look/metal.bin: {}; painted metal parts stay metal", why);
+        }
+    } else if (gear_file) {
+        LOG_INFO(Core, "coop: look: the puppet pack has no coop_look/metal.bin: painted metal parts stay metal "
+                       "(make it again)");
+    }
     CoopLookShare::EnableSlots(slots);
     LOG_INFO(Core, "coop: look: other players' gear colours on their puppets {}",
              slots       ? "on (pack copies, drawn by Longshot's texture overrides)"

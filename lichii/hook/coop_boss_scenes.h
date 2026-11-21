@@ -43,6 +43,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -106,6 +107,9 @@ struct Local {
     // Whether our game owns the boss (the object walk): a death seen with no name is taken only from the owner,
     // so a copy that dies in its own game (its hit judged lethal there, refused by the owner) starts nothing.
     std::optional<bool> boss_ours;
+    // Whether the room's boss lives in our game (the object walk: life above 0; nothing when not seen). Another's
+    // death is asked as the boss's own death setting only once our copy does not (player report #105).
+    std::optional<bool> boss_alive;
 };
 
 // One of our game's own event requests since the last tick.
@@ -135,7 +139,18 @@ struct Actions {
     std::optional<std::int32_t> max_life_cap;
     std::vector<ChatLine> chat;
     std::vector<std::string> log;
+    // Review-boss-0114 risk 3: one death cutscene per game. Bit b: boss b's death (its flow or a setting) played in
+    // our game, our Link is still in its area and no event runs, so any later ask of it by our game is refused at
+    // the request (RefuseAsk: the manager's own "not taken"), whoever asks (its own death logic, late). While an
+    // event runs the manager refuses such asks itself (the boss's logic asks every frame during its death).
+    std::uint16_t refuse_deaths = 0;
 };
+static_assert(kBossCount <= 16);
+
+// The glue publishes the last Tick's refuse_deaths here; the game's event request (any game thread) reads it.
+std::atomic<std::uint16_t>& RefusedDeaths();
+// Whether our game's ask of `name` is refused now: the death (flow or setting) of a boss in RefusedDeaths.
+bool RefuseAsk(std::string_view name);
 
 class Director {
 public:
@@ -146,6 +161,11 @@ public:
     static constexpr std::uint64_t kMoveEveryUs = 3'000'000;
     static constexpr unsigned kMoveTries = 3;
     static constexpr std::int32_t kContainer = 4;  // one heart container: 4 quarter hearts
+    // Another's death while our copy lives: how long the setting waits for our released copy to read dead before
+    // the death flow alone. A fault guard, not the usual path: the released copy is given its whole life on the next
+    // share (two frames) and its Life step goes past its own stops (patch 0007 LIFE_STOPS), so it reads dead in a
+    // few frames; only a game without that hook (a stop holds it) or a copy off the walk gets here.
+    static constexpr std::uint64_t kCopyWaitUs = 1'500'000;
     static constexpr float kNearStart = 6.0f;  // during the intro a joiner this near its spot is not moved
 
     // Network thread: BOSS_SCENE, BOSS_HEART, PLAYER_LEFT. Taken on the next Tick.
@@ -158,6 +178,11 @@ public:
     enum class Phase : std::uint8_t { none, intro, fight, outro, done };
     Phase phase(std::uint8_t boss) const { return boss < fights_.size() ? fights_[boss].phase : Phase::none; }
     std::uint8_t starter(std::uint8_t boss) const { return boss < fights_.size() ? fights_[boss].starter : 0; }
+    // Row 136: whether our game's own death of `boss` may still run here: an outro_start of it not yet taken (the
+    // next Tick joins it), our ask of it within kJoinUs, its event playing, the wait for our copy to read dead, or
+    // any event running in our game (last Tick). Otherwise nothing of ours will run it: CoopBossBeaten::Apply gives
+    // the boss's beaten set in its area then. Present thread (the inbox under its lock).
+    bool DeathMayRun(std::uint8_t boss) const;
 
 private:
     struct Fight {
@@ -175,6 +200,9 @@ private:
         std::int32_t base = 0;     // our maximum when the boss's death was heard or started (0: unread)
         std::int32_t heart = 0;    // the server's answer (0: none yet)
         std::uint8_t heart_by = 0;
+        std::uint64_t wait_copy_since = 0;  // the setting waits for our copy to read dead (0: not)
+        bool death_played = false;          // our game took its death (flow or setting): never a second one here
+        bool refused_said = false;          // a late ask of it was logged (once per fight)
     };
     struct Playing {
         std::uint8_t boss = 0;
@@ -190,6 +218,7 @@ private:
     void Take(const coop::protocol::Message& m, const Local& local, std::uint64_t now_us, Actions& out);
     void Ours(const Request& r, const Local& local, std::uint64_t now_us, Actions& out);
     void Join(std::uint8_t b, Kind kind, const Local& local, std::uint64_t now_us, Actions& out);
+    void WaitForCopy(std::uint8_t b, const Local& local, std::uint64_t now_us, Actions& out);
     bool Here(std::uint8_t b, const Local& local) const;
     std::int32_t Base(const Local& local) const;
     void Say(Actions& out, std::uint8_t b, coop::protocol::BossSceneKind kind, const Local& local) const;
@@ -201,7 +230,7 @@ private:
     std::optional<std::int32_t> max_life_;  // last tick's
     std::uint64_t last_now_ = 0;
 
-    std::mutex inbox_mutex_;
+    mutable std::mutex inbox_mutex_;
     std::vector<coop::protocol::Message> inbox_;
 };
 

@@ -3,8 +3,8 @@
 This folder brings the co-op library into nxnative in stages. The Mac dylib
 now uses the shared `coop::host::PlayerReader` and `Sampler` through a
 read-only `GameMemory` adapter. The default build encodes messages locally.
-An optional network build can test the encrypted relay with a local observer.
-Neither build applies another player's state to the game yet.
+An optional network build can test the encrypted relay with a local observer
+or join a Windows host. Its opt-in spawn test can display one remote player.
 
 ## Compatibility milestones
 
@@ -24,6 +24,14 @@ After that milestone, the goal is feature parity with the Windows release.
 Compare the Mac and Windows clients for full pose and equipment, name tags,
 map markers, customization, hosting and session menus, chat, and voice.
 Keep the Windows build and game versions in each test result.
+
+Use a disposable save in Kokiri Forest for the first lifecycle check.
+Join a Windows host, walk into Lost Woods and back, repeat with the other
+player crossing, then disconnect and rejoin. There should be exactly one
+remote actor when both players are in the same scene. For shared progress,
+start before a chest or small-key pickup. For combat, start before a boss
+and check the saved result on both games after a reload. Keep saves local
+and record the observed outcomes and relevant co-op log lines.
 
 ## Position probe
 

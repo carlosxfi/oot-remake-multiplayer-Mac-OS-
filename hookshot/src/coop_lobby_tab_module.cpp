@@ -17,9 +17,14 @@
 #include "coop_lobby_game.h"
 #include "coop_objects.h"
 #include "coop_pause_files.h"
+#include "coop_save.h"
 #include "coop_title_menu.h"
 #include "coop_voice.h"
 #include "hos_coop_host.h"
+
+#ifndef _WIN32
+#include "coop_clipboard_posix.h"
+#endif
 
 namespace CoopLobbyTab {
 
@@ -72,6 +77,7 @@ Lobby Read(int max_players) {
         return l;
     }
     l.hosting = seen.host != 0 && seen.host == seen.self;
+    l.can_resync = !l.hosting && CoopSave::CanResync();   // (the guest's row; never solo or for the host)
     l.max_players = l.hosting ? max_players : 0;
     if (l.hosting) {
         HosCoopStatus st{};
@@ -92,7 +98,7 @@ Lobby Read(int max_players) {
         p.host_mutes = s.host_mutes;
         p.own_mutes = s.own_mutes;
         p.talking = s.self ? CoopVoice::Talking() : CoopVoice::Speaking(s.number);
-        if (s.dbno == proto::DbnoState::downed) {
+        if (s.dbno == proto::DbnoState::downed || s.dbno == proto::DbnoState::spectating) {  // spectating: still down
             p.life = Player::Life::downed;
         } else if (s.dbno == proto::DbnoState::out) {
             p.life = Player::Life::out;
@@ -155,12 +161,20 @@ void Carry(std::optional<Request> r) {
         break;
     case Request::Kind::kOwnMute: CoopLobby::SetOwnMute(r->player, r->what, r->on); break;
     case Request::Kind::kTeleport: CoopHook::SendChat("/teleport " + r->name); break;
+    case Request::Kind::kResync:
+        LOG_INFO(Core, "coop: lobby tab: resync from host");
+        CoopSave::RequestResync();
+        break;
     case Request::Kind::kCopyInvite: {
         HosCoopStatus st{};
         st.size = sizeof st;
         CoopHookshot::HostMenu().Status(&st);
         if (st.invite[0] != '\0') {
+#ifdef _WIN32
             CoopFiles::SetClipboardText(st.invite);
+#else
+            CoopClipboard::CopyLater(st.invite, false);   // (off the game's thread: wl-copy or xclip may wait 2 s)
+#endif
         }
         break;
     }

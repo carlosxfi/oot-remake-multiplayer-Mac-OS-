@@ -37,6 +37,7 @@ Ganon's Castle (`InsideGanonCastle` room 63, `Enemy_DungeonBoss_Ganondorf`; Gano
      - Deku Tree: the game's own `InsideTheDekuTree_BossArea_ShutIn` (the flag that shut the door when it was shared) is read every frame in that scene (`CoopBoss::ShutInFlag`, `Local::shut_in`). Set while Link is in the room: past the door, at once, also with no intro (seen before). An event that ends while it is still 0 was not the intro: the wait starts again (log `that event was not the intro (not shut in the room): nobody is moved in`).
      - The other rooms (no such flag known): an intro that lasted at least 3 s (`kMinIntroUs`) and ended with Link still in the room sends "intro over"; a shorter event is not the intro. So the others are moved in at the end of the leader's intro, and their own intro is skipped to follow.
      - A player our own pull put in the room a moment ago is past the door.
+     - The area rules (`coop_boss_scenes`, which move every game in the area to the room's start on an intro) hear "our game runs the intro" from these rules (`Actions::intro_here`) by the same word (boss-misc-0116): Deku at the shut-in flag; a room without one once our event there has run 3 s and still runs; never at the first event in the room's circle. Before, that first event (the door's own, still on the way) started the area rules' intro and pulled the others in while the leader stood outside (#148, and the same path in every boss room).
      - A fight that began here with no intro while nobody is past the door (no event for 10 s, or only events that were not the intro) takes its next event as a possible intro, judged the same way, not as the boss's death (unless the boss is already seen dead). Otherwise a real intro coming more than 10 s after a door event would have pulled nobody, and a 15 s one would have counted as the boss beaten.
      - Not measured: the 3 s rule outside the Deku Tree. A door or boss-key event of 3 s or more that ends with Link inside the room's circle would still move the others in early there.
      - Log: `past the door (shut in)`, `past the door (the intro is over)` or `past the door (moved in)`, then the others move in. `LICHII_COOP_DEBUG_BOSS=1` adds `shut in 0/1/-` to the phase line.
@@ -113,8 +114,8 @@ Goal: every boss fight the same in every game, run by the game's own code. Gohma
 - Hits are as for every enemy (native-actors: the copy's Life step turns a hit into `DAMAGE` for the owner); the stun the owner's game makes comes back to the copies as its next brain or action verb.
 - **Every change, once, in order** (branch bosses). Each sample carries the owner's newest 8 changes (a brain verb set with its force, or an action request with its "verb changed" argument), each with its `seq`, beside the state now. A copy makes every change after the newest it made, one call each, in the owner's order, so a lost sample loses no attack and no phase. An older sample after a newer one is dropped. A copy that missed more than 8 starts from the state now (the brain verb, then the last action, each only when it is not so already; log `started again from the owner's state`).
 - **Put back.** A copy's brain verb that differs from the owner's for about a second with nothing queued (a change the game made where no wrap sees it, or one of ours it refused) is set to the owner's again, at most 5 times per owner state (a verb the game keeps refusing is then left alone until the owner's next state; the log says so once).
-- **Minions.** A boss's mid-fight minions (`CoopObjects::MinionMaker`: King Dodongo's baby Dodongos `Enemy_DungeonBoss_Dodongo_SpawnBabyDodongo`, Big Octo's `Enemy_Shabom_BigOctoChild`) are made only by the game that owns their boss. They are shared like every made object; a copy boss's own create request for one is stopped (`Table::CopyMakes`), or the minion is deleted when it was made anyway. Gohma's eggs and larvae keep their own rule (gohma-sync, above); the bosses' shots go through the enemy-shot rule (only the shooter's owner fires). Parts a boss makes as it loads (Attention actors, Barinade's jellyfish, Morpha's tentacle) are each game's own and follow their root.
-- A hand-over (the boss changes owner) keeps the state: the new owner counts on from the old owner's `seq`, and the brain verb it sends is always the one its own game's boss is in (read from the BSA each frame), never a queued change it had not made yet. The other copies forget the old owner's last state when the owner changes, see the new owner's number and start again from its first state, so a new owner whose count is behind theirs is not ignored. A resync (joiner, new owner, more than 8 changes missed) asks the owner's current action again, so that move starts over on the copy.
+- **Minions.** A boss's mid-fight minions (`CoopObjects::MinionMaker`: King Dodongo's baby spawner `Enemy_DungeonBoss_Dodongo_SpawnBabyDodongo` and the `Enemy_BabyDodongo` it makes, Gohma's fight eggs `Enemy_DungeonBoss_Gohma_Egg`, Big Octo's `Enemy_Shabom_BigOctoChild`) are made only by the game that owns their boss. They are shared like every made object; a copy boss's own create request for one is stopped (`Table::CopyMakes`), or the minion is deleted when it was made anyway. A minion's create is judged by its whole name (the create hook reads 63 bytes; 31 before boss-larva-0116, so the 42-byte spawner name never matched). Gohma's larvae keep their own rule (out of an egg, gohma-sync, above), and so do the eggs the Deku Tree places (`Enemy_Gohma_Egg`, a placement hash); the bosses' shots go through the enemy-shot rule (only the shooter's owner fires). Parts a boss makes as it loads (Attention actors, Barinade's jellyfish, Morpha's tentacle) are each game's own and follow their root.
+- A hand-over (the boss changes owner) keeps the state: the new owner counts on from the old owner's `seq`, and the brain verb it sends is always the one its own game's boss is in (read from the BSA each frame), never a queued change it had not made yet. The other copies forget the old owner's last state when the owner changes, see the new owner's number and start again from its first state, so a new owner whose count is behind theirs is not ignored. A resync (joiner, new owner, more than 8 changes missed) asks the owner's current action again, so that move starts over on the copy, except when that action is the one last put into the copy and its own AI ran no action since (row 149: a sword hit with no stun restarted King Dodongo's roll on the hitter's screen).
 
 **Log.** `coop: bosses: native sync on (brain verbs wrapped, action verbs wrapped)`; per boss `coop: bosses: Enemy_DungeonBoss_Gohma: native boss sync on (BSA 0x..., ours|a copy)` and on a copy `...: the owner's verbs came (brain N): the copy's own brain is skipped from now`; every 10 s while it works `coop: bosses: ours sent N brain + N action verbs (N by plug); copies: N own skipped, N brain + N action verbs put in (N waited for a node), N busy`.
 
@@ -131,11 +132,26 @@ Goal: every boss fight the same in every game, run by the game's own code. Gohma
 **Now** (`lichii/hook/coop_boss_native.*`, module only).
 - *Our event.* The boss glue tells the table every frame whether our game runs an event (`Table::SetEvent`, the player reader's event flag). While it runs, a copy's own changes run (the game's function is called as usual) and the owner's changes wait (none put in, no put-back). When it is over the copy starts again from the owner's state now (brain verb, then the last action). The owner keeps nothing of its own events (their verbs are the cutscene's, not the fight's; a copy in no event would be put in a cutscene verb) and, when its event is over, sends the brain verb the event left as a change.
 - *Our own hit.* The objects walk's own-hit reading (the Life's last hit id moved, not to one we replayed) calls `Table::NoteOwnHit`: that copy runs its own changes for `kReactSteps` (120 frames, about 2 s): the stun plays in the hitter's game, its stun animation sends the `DAMAGE` of 0, and the server hands the boss to the stunner as before; after the time, the owner's state again.
+- *Our own hit that took life (row 138 (2)(7), issue 238, enemy-owner-0115).* Only a hit that took **no** life (the stun, a guard, a weak-point reaction, our shot's end at it) runs the copy's own reaction. A hit whose fall the walk reads (its life the walk before above its life after the hit, `OwnHitTookLife`) is the owner's to judge: its `DAMAGE` goes to the owner, the server keeps the boss with its owner (`boss_hit_handover` off; only a `DAMAGE` of 0 hands it over), and the owner's game's flinch comes back as its verbs (`Table::NoteOwnDamage`: nothing of the copy's own runs or is made late; an own time already running, our stun, goes on). Before, every own hit ran the copy's own brain for `kReactSteps`, and each further hit again: in Revirie's 4-player 0.11.4 host log 11,230 of a copy's own changes ran this way. With three or four players hitting, each hitter's copy of the Lizalfos or of King Dodongo ran its own AI against its own Link for much of the fight (the jump slash went another way on each screen), then snapped back to the owner's state (King Dodongo twitching, frozen in his roll). Every boss, mid-boss (`Enemy_MiddleBoss_*`) and, with `LICHII_COOP_ENEMY_BRAIN=1`, plain enemy on the native path goes through the same walk reading. A life not read the walk before counts as no fall (its own reaction, as before). Log: note `our own hit took life: its owner's game reacts (the copy keeps the owner's verbs)`; the 10 s line `(N late, M hits by our shots; K hits that took life left to the owner)`.
+- *A new mid-boss copy (issue 62, enemy-area-b).* A copy of an `Enemy_MiddleBoss_*` boss newly seen in our walk (`RunsOwnStart`) runs its own changes for `kStartSteps` (180 frames, about 3 s), then takes the owner's state. A mid-boss appears in its room by its own AI with no intro event; in the 0.11.0 log (seed N2BTEYKM, Dodongo's Cavern 2F) the second Lizalfos came back into the walk after the first died, took the owner's verbs at once (`the copy's own brain is skipped from now`), its own appear was skipped and it stayed unseen while hittable. Log: `a new copy: its own start (appear) runs first, then the owner's state`. A hand-over of a copy already seen starts no own time.
+- *A mid-boss handed over during its start (#238, enemy-copy-0116).* One of ours made a copy within `kStartSteps` of its first sighting, or while its start animation plays (`PlaysOwnStart`: `Appear`), runs its own start on for `kStartSteps`; any mid-boss copy whose `Appear` still plays as its own time ends keeps running it, up to `kStartMaxSteps` (600 frames) from its first sighting. Revirie's 0.11.0 log: our Lizalfos were handed to player 1 mid-appear, took the owner's verbs at once and one stayed at `Appear` (moved 0.00), unseen on our screen while it fought.
 - *Late by a frame.* The event and the hit are seen up to a few frames after the game asked its change (the walk and the glue run after the AI). A copy's own skipped changes of the last `kLookBackSteps` (12 frames) are kept and made then through the same two functions, in order, with the copy's own node.
 - *The boss's own start of the fight is never skipped* (`coop_boss_scenes`, `Director::Skip`). The 0.11.0 log of a player test: the door's event was taken for the intro, its end ended the area's intro, and then Gohma's own `InsideTheDekuTree_BossAppear` in the same game was force-skipped eight times as a late arrival's. An event our game asked as the boss's own setting (an `intro_asks` name, not the flow) now always plays out, for the starter and for a follower (log `..., but our game asked it as the boss's own start of the fight: not skipped`); the flow (`Dm_Deku_BossIn`) is still skipped late as before.
 - Log: the 10 s line adds `N own run in our event or after our hit (N late)`; notes `our event: the copy runs its own (the owner's wait)`, `our event is over`, `our own hit: the copy runs its own reaction`, `the copy takes the owner's state again`.
 - Tested: `tests/lichii/boss_native_test.cpp` (boss-fix cases).
 - **Not proven in game:** that the intro then hands control back in every game, that a seed in a copy's eye stuns her there and the hand-over follows, and that the death plays for everyone. The players' 0.11 logs were not to hand (the Gohma logs in player-logs/magloyr-20261115 are from 0.10.1, without the wraps). Check: two players, save `1. Deku Tree` (owner-saves-OoTRsaves1.0), both enter Gohma's room, both get control after the intro, each stuns her with the slingshot and hits her eye, she dies in both games.
+
+## A non-owner's stun: our shot's end counts as our hit (branch boss-stun-c-2, tracker rows 135 and 138, issue 150)
+
+**Seen.** 0.11.4, four players (row 138) and three (row 135): only one player could stun Gohma, everyone could hurt her afterwards, and the stunner changed (it was her owner: the last one out of the intro). In a guest's log (player-logs/alexithemia-20261118-030748, copy fight from line 165961) the guest's seed `#0x1fc7bb4f` ended on a hit 767 ms after the shot, bounced 0 times, beside her: no `our own hit` line followed, no `stunned here, said to the owner` line for Gohma in the whole log (the only one is King Dodongo's), and the 10 s line's own-skipped count kept rising.
+
+**Why (root cause).** The boss-fix rule above lets a copy run its own reaction only after `Table::NoteOwnHit`, and the walk called that only when the boss's Life component's last hit id moved. A weak-point hit that takes no life (a seed or nut in Gohma's eye, a bomb in King Dodongo's mouth, a seed or arrow at Bongo Bongo's hand) never goes through the Life step, so the id never moved. The copy's own AI asked its stun (the weak-point interrupt's action), the wrap skipped it as any copy's own change, no stun animation played, no `DAMAGE` of 0 went out and the server never handed the boss to the stunner. Only the owner's game, whose AI runs unskipped, could stun her. Damage after the stun counted for everyone because a damaging hit does move the hit id.
+
+**Now.** Our own shot's end is the second reading of our hit. coop_spawn's flights of ours (`Item_Bomb`, `Item_Bombchu`, `Item_DekuNut`, `Shootable_DekuSeed`, `NormalArrow`) that ended where they hit or went off (remove reason hit / exploded, the remove's place; the same ends PvP uses) go to `Table::NoteOwnShotEnd`; they are kept 20 frames (`kShotEndKeepSteps`). The objects walk asks `OwnShotNear` for every boss actor it reads whose hit id did not move, and calls `NoteOwnHit(actor, true)` when an end lies within 6 m (`kShotNearBoss`) of it. The rest is boss-fix's: the copy's skipped changes of the last 12 frames are made late (the stun), it runs its own changes for 120 frames, its stun animation sends the `DAMAGE` of 0, and the server hands the boss to the stunner. Copies only: an owner's boss (and solo play, which has no copies) never skips its own AI, so nothing changes there. A wall hit within 6 m only runs the copy's own AI for 2 s, then the owner's state again. Log: `<boss>: our own shot ended at it: the copy runs its own reaction`; the 10 s line's `(N late, M hits by our shots)`.
+
+**Cases sharing the cause** (a stun or opening from a hit that takes no life): Gohma's eye (seed, nut), King Dodongo's bomb or bombchu in the mouth, Bongo Bongo's hands (seed, arrow; each hand is a boss actor of the walk, so this holds where a hand has a BSA of its own, else only within 6 m of his root: not proven), Phantom Ganon and Ganondorf hit by an arrow, Twinrova, Ganon's arrows, mid-bosses' stuns from a nut: covered when the shot ends at the boss. **Not covered by this reading** (no shot end of ours at the boss): a reflected boss shot (Phantom Ganon's and Ganondorf's energy ball, Twinrova's beams on the Mirror Shield: the ball is the owner's shot, a copy in the other games), the boomerang and the hookshot (they come back; not in the hit/exploded ends PvP uses as far as read: Barinade's stem, Morpha's nucleus); those still stun only where their hit moves the hit id (Barinade's and Morpha's take life).
+
+**Test.** tests/lichii/boss_native_test.cpp (a shot's end near a copy runs its skipped stun late and counts once; far, NaN, old or on an owner's boss: nothing). In game: autotest `hs-boss-stun-gohma` (B, the copy, seeds her eye; screenshots at `b-stunN` must show her stunned in both games; then A, a copy after the hand-over, does the same).
 
 ## A copy Gohma stuck at the intro spot (branch boss-copy, 0.11.2/0.11.3)
 
@@ -149,6 +165,35 @@ LANE1 autotest hs-boss-full (runs 20261115-122137 and -130255): in A's game the 
 - *Ready without the intro* (`CoopBoss::Readiness`, coop_boss_game.cpp). A late joiner's game never plays the intro (its copy follows an owner already fighting), so by the flag alone it stayed unready for good and the hit rule refused its stun hand-over. Now a game is also ready once its own boss was seen in the pre-battle phase this visit and then out of it: the body's own animation (AS slot 0, read by the objects walk, `CoopObjects::LastBossPreBattle`): Gohma's `Sleep` / `Pre_Battle_*`. Kept until the room changes. A boss never seen in such an animation is ready by the flag only. Log once: `coop: boss: our boss left its pre-battle phase here: ready to own it without our intro`.
 - Tested: `tests/server/session_test.cpp` (four `boss-copy-b` cases: chase/near refused while unready, an unready owner hands to a ready game, ready before nearer unready when the owner leaves, a late joiner's stun once ready), `tests/lichii/boss_native_test.cpp` (the event case waits for the grace), `boss_test.cpp` (Readiness, 2 cases), `objects_test.cpp` (BossPreBattle).
 - **Not proven in game.** Check (LANE1, hs-boss-full or hs-boss-fix-gohma): A walks in first and under her; during A's intro no "now ours" in B's log while B logs "not ready to own the boss"; A's copy (if it is one) never asks `BossAppear` twice; after B's own intro (if it plays) "now ours" comes within ~1 s. A late B logs "our boss left its pre-battle phase here" once its copy follows A's fight, and B's seed stun then hands B the boss ("now ours").
+
+## Entering together: a copy's own event held by its owner's motion (tracker row 130, GitHub #173, 0.11.3)
+
+**Seen.** Two players walked into Gohma's room together; one softlocked, the other beat her. The softlocked game's log
+(0.11.3): player 1 started the intro; her own game took `InsideTheDekuTree_BossAppear` a moment later, after player 1's
+intro was over ("the fight is on already ..., not skipped"), with a copy Gohma. Through that whole event the objects
+layer put player 1's animation on the copy (`copy ... plays 'C01-Enemy_DungeonBoss_Gohma-A-0' at frame 1.0 (its own
+AI: 'Pre_Battle_Ceiling_Find')`). The event never ended (`teleport: not during a cutscene`) until player 1 killed her.
+
+**Root cause.** Two layers drive a boss copy. The native table (`coop_boss_native`) lets the copy run its own changes in
+four windows (`OwnTime`): our event and `kAfterEventSteps` after it, `kReactSteps` after our own hit, a new mid-boss's
+`kStartSteps`, and its death. The objects layer did not know about these windows and still put the owner's place,
+animation and frame on the copy every frame. Its event-partner rule (row 97) leaves bosses out on purpose, because the
+native table "runs their own". So the copy's own game asked its own steps while the owner's motion undid them.
+
+**Fix.** `CoopBossNative::Table::CopiesRunningOwn()` names those copies (empty while native sync is off). The objects
+tick drops the owner's poses and plays for them before the Mover (`coop_objects.cpp`). The owner's remove still comes.
+Log: `coop: objects: N boss copy(ies) run their own ...: their owner's place and animation wait`, then `... again`.
+
+**Every case with the same cause** (all four windows, every boss and mid-boss with native sync):
+- A copy's own intro / appear event (this report; also a late arrival's own `BossAppear` with a copy Gohma).
+- The reaction to our own hit (a seed stun on a copy: the owner's animation undid the stun, a likely part of "Gohma
+  can't be stunned" in the 0.11 reports).
+- A new mid-boss copy's own start (issue 62: its appear undone, "stayed unseen").
+- A copy's death (player report #105: its own death setting played under the owner's last motion).
+
+Tests: `tests/lichii/boss_native_test.cpp` ("the copies that run their own now are named for the objects layer").
+Autotest: `hs-boss-together-gohma` (both walk through the door at once; offline job `boss-together-a-repro`).
+**Not proven in game** until that run passes on a module with this fix.
 
 ## One boss death for everyone (branch boss-fix, seed N2BTEYKM report, 0.11.2)
 Before: each game's boss could die of its own game's hits. A copy took its own hits through its own Life step
@@ -196,7 +241,7 @@ Now:
 
 **The game's own target choice.** An enemy picks its target with the game's perception search: Gohma's wander phase runs the AI module `EnemyCommmon.PerceptionTargetSearchAndSet`, her hanging battle `Common.MinimumPerceptionSetTarget`, and each egg runs `EnemyCommmon.PerceptionTargetSearchAndSet` before it hatches (`AI/Enemy_Gohma_Egg.root.ainb`). It finds actors that emit perception (`PerceptionEmitterRef`) of an affiliation the enemy targets: Gohma's and her eggs' `AffiliationParam/EnemyCommon` has `TargetAffiliations` Player (murmur3 145979025), the player's `AffiliationParam/Player` has `DefaultAffiliation` Player. The puppets had neither component, so each game's Gohma, and each game's eggs, saw only that game's own Link: the owner's boss went for the owner alone (issue 150), and an egg hatched only in the game whose Link came near it (issue 178).
 
-(0.11: this is **off by default** in the pack tool, `--perception` turns it on, because with it a game crashed with a puppet in customized gear holding the slingshot; [puppet.md](puppet.md). So 0.11 ships with issue 150 open.) The puppet pack can give each puppet the player's `AffiliationRef`, a `PerceptionEmitter` of its own (the player's param without `AdvancedEmitters`: `AimTerror` is worked by the player's aiming code) and a body-less `Physics` component (InterestSpotActor's: a `ProjectBase` physics param with an empty controller set, as every logic-only perception emitter in the game has one). The puppet still collides with nothing. `tools/puppet_pack/build.py` (`PERCEPTION_SOURCE`, `add_perception`), on by default (`--no-perception` builds the pack without it). So in the owner's game Gohma's own perception can pick player 2's puppet, and the copies run her moves toward player 2 through the native verbs; after a stun the owner's next turn and walk name player 2's place, so player 2's copy turns to player 2 (the second half of issue 150), with no target written from outside.
+(It was off in 0.11 because a game crashed with a puppet in customized gear holding the slingshot; that cause is fixed and it is on by default since the lane proof, [puppet.md](puppet.md). How an enemy chooses among the Links it sees, read from the game's AI: `EnemyCommon.SetTargetFromParceptionAndChangeBrain` / `EnemyCommmon.PerceptionTargetSearchAndSet` take a Link its senses perceive inside its territory and keep it while it stays perceived (`DontUpdateIfSameTarget`, `TrackTarget`) until it is defeated or leaves; in battle `EnemyCommon.BattleCommon` pushes the last attacker into its memory (`ExecuteMemoryPushLastAttacker`). No threat table: first seen, sticky, and a hit draws it.) **Only players who can be fought.** A teammate who is downed or spectating, or whose PLAYER_STATUS is away (paused, in a menu, loading, in their own event or talk, dead; `proto::status::away`, the same set PvP never hits) has their puppet's perception switched off in every other game with the game's own switch (`coop_dbno_body.h`, `UnseenWhy`), and back on when they play again: an enemy never sticks to an idle player's puppet or attacks a player mid-talk. Log: `the game's perception emitter off for player N's puppet: they are <why>` / `on again ...: they are back`. (Decision for the owner: real AFK players stay targets in some games; here they do not.) The puppet pack can give each puppet the player's `AffiliationRef`, a `PerceptionEmitter` of its own (the player's param without `AdvancedEmitters`: `AimTerror` is worked by the player's aiming code) and a body-less `Physics` component (InterestSpotActor's: a `ProjectBase` physics param with an empty controller set, as every logic-only perception emitter in the game has one). The puppet still collides with nothing. `tools/puppet_pack/build.py` (`PERCEPTION_SOURCE`, `add_perception`), on by default (`--no-perception` builds the pack without it). So in the owner's game Gohma's own perception can pick player 2's puppet, and the copies run her moves toward player 2 through the native verbs; after a stun the owner's next turn and walk name player 2's place, so player 2's copy turns to player 2 (the second half of issue 150), with no target written from outside.
 
 **Guards never see a puppet.** The stealth guards (`AffiliationParam/NpcSecurityGuard`: `Npc_Hylia_Soldier_SecurityGuard`, the castle's child soldiers `Npc_Hylia_Soldier_0NN_Child`, `Npc_Gerudo_*` and `Npc_Gerudo_FortressGuard`, 37 actors) target Enemy and Player, and their AI (`NpcSecurityGuard.SetIsObserve`, `brain.prioritySecurity`) takes any perceived emitter with `IsAffiliationPlayer` as Link: a puppet in view would catch this game's Link. Read from the game's data, nothing keeps them apart from the enemies: every enemy's `TargetAffiliations` is Player alone (EnemyCommon, Enemy_Dodongo, the scrubs), and the sight filters are physics sub-layer masks (`Phive/Config/PhiveConfig.byml` in the Bootup pack, `SubLayerHitMaskSensorCollection`): the eggs' `PerceptionFilterPlayerOnly` is mask 2 (the `PerceptionPlayer` sub-layer alone), the guards' `PerceptionFilterNone` is 0x41803FFF, which has that bit too. So the pack makes each puppet twice: the perceived one under its usual name and a quiet copy with no perception (`CoopPuppet_ChildQuiet`, `CoopPuppet_AdultQuiet_Red`, ...; `quiet_name`), and lists in `coop_puppet.json` the scenes whose placements (Banc) have a stealth guard (`guard_scenes`: `quiet_scenes` and `guards`; in the game's data `GerudoFortress_Adult` 19 guards, `HyruleCastle` 13, `GerudoValley_Child` 1). There the hook makes the quiet copies (`Planner::ActorFor`, `PackQuietScenes`, `QuietActor`): the guards see only this game's Link, as before, and so do that scene's enemies (Gerudo Fortress's thieves). A pack without `quiet_scenes` (older, or `--no-perception`) has no perceived puppets, so nothing changes with it. Log: `coop: puppets are seen by enemies; quiet puppets (no guard sees them) in ...`.
 
@@ -240,6 +285,249 @@ A copy that dies in its own game (its hit judged lethal there, refused by the ow
 | Mini-bosses | none: no event flow of the RomFS is a mini-boss's intro or death | - |
 
 Autotests: `tools/autotest/groups/hookshot-boss-cutscenes.txt` (`hs-boss-cutscenes-gohma`: intro with B before the door, then the death; `hs-boss-far-gohma`: B far, chat lines only; `hs-boss-cutscenes-dodongo`: both start together in the boss rush, then the death). **Not proven in game:** that a boss event asked by name plays right in a game whose own trigger did not fire (the boss copy's state, the door), that the antechamber margin fits the walls, that the game's container pickup raises `MaxLife` (the cap and the claim read it), and that the heart container vanishes live on the other screens.
+
+## A non-owner's hits count (branch boss-hits, tracker 104, issue 150)
+
+**Seen.** "Still only the player targeted by the boss can damage it" (a player report on 0.11.2). Two logs show why. In one player's own log as Gohma's owner (0.11.0, the same replay path as 0.11.2), 23 `DAMAGE` came in from the other players (`share got damage 1 for 0xd45e52e43b253151`). Every one was replayed (`replays a hit of 1`, 10 of them `where it landed in the hitter's game`) and none was taken (19 lines `a hit the boss's game did not take: its life stays its game's`, no hurt taken). So the hit place from boss-intro (above) is not enough: her game judges the template sword hit as no eye hit. In hs-boss-full 20261115-122137, B took her at 21 while A's was 17. The plain lower waited for a replay that never came (`its damage step has not seen our replayed hit yet: nothing given (life 21, owner's 17)`), and then A's copy was raised back to 21 as well. Each hand-over healed her, so only the player who kept her could wear her down.
+
+**Now** (module only, `lichii/hook/coop_objects_sync.cpp`).
+- The owner still replays another player's hit first, so her game reacts where it takes it. If her life is still above the target after the wait (`kHurtWaitUs`), the rest goes into our game's own Life step (`LifeWrite::direct`, patch 0007), never as a write. The hitter's game already judged that hit with its own damage rules on its copy: its copy's life fell there. Her game clamps the sum as it does any (Gohma keeps 1 outside her chance time) and runs its own death. Log: `a hit our boss's game did not take as a replay: N given to its own Life step (the hitter's game judged it)`, then `share hurt ...: N through the game's Life step`. The 5 s line counts them: `(boss hits to its Life step N)`.
+- A boss copy that becomes ours with more life than its old owner's is lowered to the old owner's life through its own Life step (direct) instead of the plain lower. Log: `ours now with more life than its old owner's (21 > 17): lowered through its own Life step`.
+- Unchanged: a copy is never given its owner's refused hit (the owner judges), and a copy is still held at 1 until the owner's death.
+- Tests: `tests/lichii/objects_test.cpp` (boss-hits cases; the boss-intro case now expects the direct rest).
+
+**The life a hand-over carries has every hit in it (branch fable-g2-bosses, rows 104/118, issue 150).** A boss changes owner on every stun by a non-owner, and the old `HANDOVER_STATE` carried the old owner's life as read, so any hit not yet in that number was given back to the boss at each hand-over. Five such hits, each now counted once:
+- H1, the old owner's pending replay (`kHurtWaitUs`): it answers the ask with the life after it (`hurt_target`).
+- H2, a `DAMAGE` the server passes on after the ask (the old owner reads it as a copy): `finish_handover` takes the hits passed on since the ask off the answer's life. The old cap (`hit_base - hit_sum`) stays as a minimum for older games.
+- H3, the new owner's own hit summed but not sent yet (100 ms): taken off the life it is handed.
+- H4, the new owner's own `DAMAGE` still on the wire (its epoch older than the change): the server gives it back to its sender (stat `damage_returned`), whose game takes it off within 2 s: a boss through its own Life step, an enemy by write.
+- H5, a `DAMAGE` while the object has no owner yet (owner hold after a start): kept (16 at most, stat `damage_held`) and passed on to the owner when the hold ends, unless it is the owner's own.
+A boss is never written, also at 0: a handed life of 0 (or one our own unsent hit ends) goes into its own Life step once (`death_given`), and its own game runs the death. Our hits on a copy are held back only until the owner news that follows a `HANDOVER_STATE`, not a fixed 2 s, so a boss handed on again at once keeps them. Logs: `ours now with a hit of ours not sent yet`, `our own hit crossed the hand-over`. Tests: `tests/server/session_test.cpp` and `tests/lichii/objects_test.cpp` (cases named "boss hand-over", H1-H5, D1). Not proven in game.
+
+**The same at a session's end (H3 for `KeepBossLives`).** When the session ends (we left, the server dropped, the host's game crashed) each live boss copy takes its owner's last life so the fight goes on in our game; our own hit summed but not sent yet comes off that life first, as at a hand-over, or the end of the session gave it back. If it ends her there, the rest goes into her own Life step once (`death_given`, never a write) and her own game runs the death. Log: `the session ended with a hit of ours not sent yet`. A copy's own hit while a replay waits is ours, not the replay landing (the hit id rule, [objects.md](objects.md) "Whose fall it is"). Tests: `tests/lichii/objects_test.cpp` ("at the session's end our boss copy's hit not sent yet"). Not proven in game.
+
+**Not proven in game.** That the Life step takes a direct sum on the owner's Gohma in a real fight. The test kill showed it does (21 -> 1). The check is boss-autotest round 5: the guest's eye hits show the owner's `given to its own Life step` line, and her life falls in both games.
+
+## A copy's death runs in its own game (branch gohma-death, player report #105, 0.11.4)
+Revirie's 0.11.2 host held a copy Gohma; the guest owned her. The host's game was asked her death setting
+(`InsideTheDekuTree_BossDie`, guest-warp) while the copy rules still held her: Life at 1 (`HeldLifeStep`), the
+owner's killing hit refused, her own brain and action changes skipped again after the event. Her death in the host's
+game could never finish: a black screen, no fade back, no warp.
+- **SetDying.** While the area rules' fight for the scene's boss is at outro or later (our death, or the owner's
+  `outro_start`), the glue marks the room's bodies dying (`CoopBossNative::Table::SetDying`, `CoopObjects::
+  SetDyingBosses` -> `Sync::SetDying`). A dying copy runs all its own changes (the ones skipped in the last frames
+  are made late, once), its held Life slot is released, and its Life component is kept in `dying_life_` also after
+  the owner's dead remove takes it off the owned list. `HeldLifeStep` turns any positive sum on a dying copy into its
+  whole life (`max(sum, life)`): the next step ends it. A refused hit on a dying boss goes to its Life step after the
+  wait, as for any enemy. The list empties on scenes off, a new fight and Reset. Log: `its death has begun: the copy's
+  own Life step lets it die now`; totals `N ended in their death`.
+- **The life stops (the Life-1 clamp, review-boss-0114 risk 2).** In hs-gohma-death 20261115-191432 the copy was
+  released (`its death has begun`) and its own Life step was given her whole life (`21 given ... (its death has
+  begun)`), but her game took her `21 -> 1` and held her at 1 against every `1 given` after it, while the owner's
+  test kill took the owner's `21 -> 0`. The hold is the game's Life step itself (main+0x49d8c0, read from the game's
+  code): after the frame's sum (main+0x49dcb0, LIFE_STEP) it tests `Life+0x70`, the count of the component's life
+  stops, a ring at `Life+0x60` (0x14 bytes each: a share of the maximum life at +4, or with +4 NaN and +0xc set an
+  absolute life at +8) that the actor's own code keeps. With stops, main+0x49ea94 cuts the sum so life stays at the
+  first stop it would cross and records the crossing (`Life+0x1be8[Life+0x1be0++]`, until `+0x1be4` are recorded);
+  bit 8 of `Life+0x1d18` takes nothing at all. The actor's code reads the crossings (Gohma: her death only in her
+  chance time). A copy's stops are its own game's state of a fight its owner runs, so Gohma's copy kept a stop at 1
+  that the owner's did not have. Fixed at that step: patch 0007's fifth hook (`HOS_COOP_WORLD_LIFE_STOPS`, after
+  main+0x49dcbc, words checked) asks the module before the stop test, and a module answer of 1 clears w10, so that
+  frame's sum goes past the stops as for a component with none. The module answers 1 only when the step takes the
+  component to its death (`sum >= life`) and that death is its owner's (`CoopActorEvents::PassStops`): a copy boss
+  whose death has begun or whose owner's died (`CoopBossNative::Table::Finishes`), or a judged give, the owner's life
+  for any copy (CoopObjects' Lower: `LifeTable::Give(..., judged)`), so every enemy copy whose owner died dies here
+  too, whatever its own stops. A hit our game judges (our own enemy, another player's hit on it) keeps every
+  stop. The test script's `kill` is a kill: in the game that owns the enemy it goes past the
+  stops too (`LifeWrite::test_kill`; LANE1 run 4 held a test kill at 1 outside her chance time); on a copy boss
+  HeldLifeStep still holds it and the owner judges its hit. A real hit outside her chance time still stops at 1, as
+  in a one-player game. Log: `the game's Life step asks the module before its life stops`, and the actors'
+  10 s line counts `owners' deaths past a copy's own life stops N`. A game built before this hook keeps the stops:
+  there a copy held by one still takes the death flow alone (below).
+- **The revive (big-run-0115, boss-fails-0115).** The stops were not the only hold. In big-run-0115 every test kill
+  went `21 -> 1`, also in the game that owned Gohma (hs-boss-fix-gohma-rev B: owner, `life stops 1` counted, `0 own
+  Life steps held at 1`, life still 1). Read from the game's code: when the step takes life to 0 (main+0x49dd14
+  `b.le` to main+0x49ed04) it asks a revive check, main+0x49d6b0 on `Life+0x18c0`: flags on the boss's BSA, then the
+  actor's own callback (`[Life+0x18c0+0x240]`, its vtable +0x30), and adds what that answers back onto life. Gohma's
+  answers 1 outside her chance time, so a death there ends at 1, as a one-player hit does. Past the stops is not past
+  this. So the 11-15 copy held at 1 after its owner's death was most likely this too, and every boss with such a
+  callback can do it (the copy's own state is not its owner's). Fixed beside the stops: patch 0007's sixth hook
+  (`HOS_COOP_WORLD_LIFE_REVIVE`, after `add x0, x19, x8` at main+0x49ed0c, words checked) asks the module before the
+  check; its 1 (only for the component whose stops LIFE_STOPS passed in that same step: an owner's death on its copy,
+  or the test script's kill on our own) sets x0 = 0 and goes on at main+0x49dd18, where the step goes when the check
+  answers 0. Every other death (a real hit outside chance time, anything our game judges) keeps its revive. Log: `the game's
+  Life step asks the module before its revive`, and the 10 s line's `past its revive N`. Needs a game build with the
+  new patch 0007; not proven in game yet.
+- **The revive is asked on every step at 0 (boss-die-0116).** The skip above held for one frame only. LANE2
+  2026-11-19 (module 861e61fe, hs-boss-away-reset and two more): the test kill went past the stops and the revive
+  (`past a copy's own life stops 1, past its revive 1`), yet Gohma read `21 -> 1` and stayed in `Die` at life 1, no
+  `Dm_Deku_BossOut`. The step's `b.le` at main+0x49dd14 sends EVERY step that ends at life 0 to the revive check, not
+  only the step that took the life, and the skip was armed for that one step (a thread_local set by LIFE_STOPS), so the
+  next frame's step asked her callback again and it gave 1 back. Now a death kept past its revive is kept
+  (`CoopActorEvents::KeptDeaths`, `SkipRevive`): every later step of that component at 0 skips the revive too, until a
+  step reads it alive (a heal, or a new actor's Life component at that address). Same for every boss with a revive
+  callback and for an owner's death on a copy (the same path). Log: the actors' 10 s line `past its revive N (later
+  steps kept dead M)`. Not proven in game yet.
+- **The owner's death finishes the copy (review-boss-0114, every boss).** Nothing used to give a released copy its
+  death: the owner's killing hit reaches it as a replay before the outro_start, its game refuses it, and after the
+  400 ms wait a boss copy is never written (bosses are never resent either). So a released copy stayed alive unless
+  that replay was still in flight when SetDying landed. Now `Sync` gives a copy boss that is dying AND whose owner
+  says it is dead (its dead remove, or its samples at life 0) its whole remaining life in its own Life step, once
+  (direct, never a write; `HeldLifeStep` passes it): its own game kills it and runs its own death. Not for our own
+  boss, and not while the owner's still lives. Log: `its owner's is dead and its death has begun here: its life N
+  given to its own Life step`; the share line counts `dying copies finished N`. That step goes past the copy's own
+  life stops (above).
+- **The setting waits for the copy to read dead (boss-0113 fallback, boss-0114-a).** Another's death while our walk
+  reads our copy alive (`boss_ours` false, `boss_alive` true) never asks the setting at once: its flow would wait for
+  that copy's death. The copy is released and finished right after that tick (the glue runs SetDying after
+  `Director::Tick`; the finish above on the next share), so the Director waits up to `kCopyWaitUs` (1.5 s) for the
+  walk to read it dead (life 0), then asks the setting (`our copy of the boss died here: asking its own death`): the
+  whole death, the quest step and the warp in our game. With the life stops passed (above) a released copy reads
+  dead a few frames after the release, so the 1.5 s is a fault guard. Still alive then (a game built without
+  LIFE_STOPS, or a copy off the walk): the death flow alone (the timeline, as 0.11.1: `... one death cutscene here,
+  nothing asked again`), and that player's warp does nothing until their Link leaves the dungeon (#88). A copy
+  deleted by its owner's dead remove (gone, not dead here) reads removed alive (row 114 below), so it never gets a
+  setting that would wait for it. Our own game taking the death setting itself ends the wait.
+- **One death cutscene per game (review-boss-0114 risk 3).** The first version asked the setting again when the copy
+  died after the flow alone, so its death cutscene played a second time. That re-ask is gone, and nothing else may
+  play it twice: once our game took a boss's death (the flow or a setting, ours or its own logic's: `death_played`),
+  while our Link is in that boss's area and no event runs, the Director's `refuse_deaths` bit is set; the glue
+  publishes it (`CoopBossScenes::RefusedDeaths`) and the game's event request wrap (patch 0005,
+  `HOS_COOP_WRAP_EVENT_REQUEST`) refuses any ask of that boss's death flow or settings at the request
+  (`RefuseAsk`: the function is not run and x0 is 0, the manager's own "not taken"; phase 1 still reports it).
+  While an event runs nothing is refused by us: during its death the boss's own logic asks its setting every frame
+  and the manager refuses those itself, as it always has (about 50 asks in hs-gohma-death 20261115-191432 B, all
+  before its event ended). A refused late ask asks no flow either. Log: `our game asked it again, not taken
+  (refused at the request once its event is over)`.
+- Tests: `tests/lichii/boss_scenes_test.cpp` (report 88 case: the real order, a copy that dies after the release,
+  one still alive past the wait (the flow alone, then nothing asked when it dies, its late ask refused), our
+  game's own setting, leaving the area; the owner's own death refused only after its event), `boss_native_test.cpp`
+  and `objects_test.cpp` (dying release, late changes, finish; the owner's death finishing a copy whose killing
+  replay timed out before SetDying), `actor_events_test.cpp` (PassStops, judged gives).
+- In game: scenario `hs-gohma-death` (LANE1; PASS lines in its header).
+
+## Phantom Ganon with more than one player (player report row 114, boss-0114-a)
+PiscesGamer97's 0.11.2 host log (player-logs/piscesgamer97-phantomganon-20261116): the fight "bugs out" with two
+players, and the host's death left it "fully scuffed".
+- **Root cause: a boss off the walk read as dead.** Phantom Ganon left the object walk at life 15 (the share's
+  `moved 4050 ... left`). `BossAlive` read "no body there" as dead, so the host's Game Over (an event, boss "gone")
+  was taken for his death: `boss beaten` and BOSS_STATE defeated went to everyone, and the host's own rules came
+  back to a beaten room. Any other event while he was off the walk would do the same.
+  Fixed where it starts: `CoopObjects::BossAliveKept` (used by `LastBossAlive`, so by every boss rule) reads a body
+  off the walk by what is known of it, with no timer (review-boss-0114 risk 1 replaced the first 30 s window).
+  A boss's death is the game's own life 0, read while its death runs (its event deletes it later). So: last read at
+  life 0 is dead; last read with life left and no delete request since is away (the game takes live actors off its
+  list, churn-b), alive; last read with life left and then deleted (the game's delete request, patch 0007, or our
+  own remove of a copy) is removed alive: never a death, and it no longer keeps a boss of several bodies alive
+  (Twinrova's sisters). A body never read this scene (a save that beat it) still reads dead. The readings are
+  forgotten with the scene (another scene's bodies leave with it, not one delete at a time) and on a new session.
+  The emulator has no delete requests: there a body off the walk with life left is away. So the Game Over rule
+  (boss-gameover-b: an event while our Link is dead is the Game Over unless the boss reads gone) holds again:
+  "gone" is now a real death.
+- **His painting show follows him.** `Enemy_GhostPicturePerformer_PhantomGanon`, `_PhantomGanonHorse` and their
+  `_Imitation` (the riders in the paintings, real and fake) were shared objects with their own owner: in the log
+  they stayed with player 2 while the boss went to player 1, so a copy game's riders came from another game than
+  its boss. They are now parts of his boss group (docs/objects.md, "Groups").
+- **Not causes (checked):** `PhantomGanon_Bullet_Thunder_Sho(ckwave)` "refused at create" in a copy game: the copy
+  of the owner's thunder ball makes its own shockwaves, and the owner's come as copies (one set, as for every
+  enemy shot). The older rules' `moving in (try N)` / `could not move ... giving up` lines while the area rules
+  are on are only logged: the glue drops that pull (the area rules move players).
+- Tests: `objects_test.cpp` (off the walk: away, removed alive, died, never seen; Twinrova's removed sister; the
+  painting show's group).
+- Not proven in game: a two-player Phantom Ganon run (proposed scenario `hs-phantom-ganon` from the player's save).
+
+## Beaten by the group (G2, player report #241)
+
+D9 ([sync-coverage.md](sync-coverage.md)) stays: every game in the boss's area runs the boss's own death setting itself,
+which sets that game's flags, quest step and warp as a solo kill does. A game that did not (its player was elsewhere,
+or an old build without the life-stops hook) kept the boss alive while the shared heart container key was taken, so a
+reload brought the fight back with no container to win (#241, row 52).
+
+- **The record: proven deaths only** (review of 5d801cb9: a beaten set written on a guess would stay in an absent
+  player's save for good). `CoopBossBeaten::ProvenDeath`, the same rule on the server: a `BOSS_SCENE` outro_start or
+  outro_end (a game took the boss's death event itself, by name, a copy's game only once its owner died; only that
+  game sends the end) in that boss's dungeon scene (not the boss rush); the server keeps the outro_starts and tells a
+  joiner each as the same player's outro_end. In our own game also Sync's `beaten_here` (the walk read the boss
+  gone). Never a `BOSS_ROOM` defeated:
+  Sync sends it from `Died` (proven) and from `GuessedOver` (an event in the fight with the boss not read, a long
+  event with the boss hurt, an event that ended with the reading lost: Twinrova's merge, Phantom Ganon's paintings,
+  Bongo Bongo, Morpha's grab), and it only ends the pull. Every game keeps the rooms for the session
+  (`CoopBossBeaten::Record`); the server keeps the deaths and tells a player who joins later. Forgotten when the host loads a save (`CoopBoss::ForgetFights`, the server's `on_host_reset`: those bosses
+  fight again, as the heart container claims, #52) and when the game leaves the session or the session empties.
+- **The beaten set** (`lichii/hook/coop_boss_beaten.inc`, generated by `tools/puppet_pack/boss_beaten.py` from the
+  romfs): what the boss's death setting writes in the dungeon (its flow walked with sub flows, not the dream world or
+  the boss rush): the saved Bools it sets with their values, `HavePlayedEvent` of the setting, of its
+  `Dm_<Dungeon>_BossOut` and of the intro `Dm_<Dungeon>_BossIn`, and the dungeon quest's step after its last boss step
+  (RSDB Challenge `IsBossBattle`). Left out: unsaved flags (`PhantomGanonPaintings_TemporaryDelete`) and the fight's
+  own state (`CoopDungeon::NotShared`, which the stale-flag mend clears). The rooms' own logic reads exactly these
+  (`Logic/*_Level_Room_*`): Gohma's room `Gohma_DefeatBoss` and `Get_StoneOfForest_IsAfter_GoToWarpPoint_Exp`;
+  Dodongo's `HavePlayedEvent.Dm_DodongoCave_BossOut` and `Enemy_DungeonBoss_Dodongo_BossAppear`; Volvagia's
+  `Enemy_DungeonBoss_Volvagia_BossAppear`, `HavePlayedEvent.Dm_FireTemple_BossIn` and `SageOfFire_IsAfter_DefeatBoss_Exp`;
+  the other five their quest's `IsAfter_<step>_Exp`.
+
+  | Boss | Quest -> step | Bools |
+  |---|---|---|
+  | Queen Gohma | Get_StoneOfForest -> GoToWarpPoint | Gohma_DefeatBoss |
+  | King Dodongo | Get_StoneOfFire -> EscapeDungeon | Enemy_DungeonBoss_Dodongo_BossAppear = 0 |
+  | Barinade | Get_StoneOfWater -> Step14 | |
+  | Phantom Ganon | SageOfForest -> Step09 | SageOfForest_IsBefore_Step08 = 0 |
+  | Volvagia | SageOfFire -> GoToWarpPoint | Volvagia_TemporaryDelete, Enemy_DungeonBoss_Volvagia_BossAppear = 0 |
+  | Morpha | SageOfWater -> Step08 | Morpha_DeleteWater |
+  | Bongo Bongo | SageOfShadow -> GoToWarpPoint | |
+  | Twinrova | SageOfSpirit -> Step10 | |
+  | Ganondorf (8) | Defeat_Ganon -> Step06 | |
+  | Ganon (9) | Defeat_Ganon -> Complete | FinalBattleField_DefeatGanonStart; `HavePlayedEvent` of the sage, ending and credits events it plays |
+
+  Every row also has the three `HavePlayedEvent` flags (the setting, BossIn, BossOut).
+- **Ganondorf and Ganon** (bosses-next-a-2, 2026-11-17). Root: the record, the proof and the "never in its own scene"
+  rule all went through `CoopBoss::Rooms()`, which has the eight dungeon rooms only, so the final fights were never
+  kept and `Defeat_Ganon` (each game's own: `coop_quests.cpp` leaves the final battle out) stayed where it was for a
+  player who was not there. Now each set has its boss index (BOSS_SCENE's: 8 Ganondorf, 9 Ganon), a death scene
+  (`CoopBossBeaten::DeathScene`: `InsideGanonCastle`, Room_26's `Create_Ganondorf`; `FinalBattleField`, the Banc in
+  `Banc/GanonCastle/`; never their boss rush `GanondorfStage`/`GanonStage`) and the scenes it is never given in
+  (`KeptScene`: for both the whole end sequence, `InsideGanonCastle`, `CrumblingGanonCastle`, `FinalBattleField`).
+  Ganondorf's death moves `Defeat_Ganon` to Step06 (after the boss step Step05), Ganon's to Complete (after Step09);
+  both set: one write, the furthest step, in whatever order the record holds them. `EscapeFromCrumblingGanonCastle`
+  is read only by `CrumblingGanonCastle`'s own logic, so neither set gives it. Check in game: a player away from the
+  final fight gets Step06 (then Complete) at the next load outside the castle; a Step06 save entering
+  `InsideGanonCastle` finds no Ganondorf (Room_26 creates him only up to Step05) and gets on as a save made during
+  the escape does.
+- **Given one way, outside the boss's scene, only at a scene load.** The bosses the record holds when a scene is
+  first seen are given there, once, while our Link stands in any scene but the boss's dungeon. A boss beaten while we
+  stand in a scene waits for the next load (a door, a warp, a reload), never mid-scene: some of the set is read live
+  outside the dungeon (`Gohma_DefeatBoss` by Kokiri Forest's `Npc_Kokiri_011`, `HavePlayedEvent.Dm_DodongoCave_BossOut`
+  by Death Mountain Trail's `DeathMountainTrail_Child_Prefab_6f34`, `SageOfForest_IsBefore_Step08` by Kokiri Forest's
+  `Level_All_01` and `Level_Area_01`; romfs `Logic`), and in the game alone a kill is always in another scene, so those
+  scenes never see them change while loaded (review of c78d17c4, boss-away-crash). Then each Bool not at its beaten value is written to it, and the quest
+  is raised to the step only from a step before it: a save that finished the dungeon (Complete) is never stepped
+  back. Never in the boss's own dungeon scene: its room's logic is loaded there (maybe a fight); the next scene gives
+  it. The dungeon then loads as a beaten save's: no boss, the blue warp there; a reload of an older save of ours gets
+  it again at the next scene. Log: `coop: boss: <boss> was beaten by the group, not in this game: <flag> ...`.
+- **In the boss's own dungeon: live** (rows 136/137, boss-away-0115). Read from the romfs (`Logic/InsideTheDekuTree_Level_Room_L_Common_865f`, its links): Gohma's room makes the blue warp from `Gohma_DefeatBoss` alone (`Create_WarpPrefab`, held live), deletes Gohma from `Get_StoneOfForest_IsAfter_DefeatBoss_Exp` (the shared quest) and shows the container while the shared `InsideTheDekuTree_Heart_Container_Obtained` is 0 (the room sets it when it is taken). A player still in the Deku Tree at the kill had the quest moved by the group (no Gohma) but no `Gohma_DefeatBoss` (no warp) and the set was kept out of the whole dungeon scene: a pit with no boss, no warp and no way out, and a reload into the dungeon never gave it (#136). Now, in a dungeon boss's own scene (0 to 7), `Apply` gives the set as soon as the record has it and our Link is out of that boss's area (`CoopBossScenes::InArea`; in it D9 plays the boss's own death). Other scenes still wait for their next load (47b2bd06), and Ganondorf's and Ganon's end sequence is unchanged (no room; the escape reads Defeat_Ganon live).
+- **In the boss's area, once no death of ours can run there** (row 136, boss-warp-136). D9 asks the boss's death only of a game that is in the area when the death starts. A game that came into the area afterwards (walked in during the others' death cutscene, fell into Gohma's room later, joined the session there, Game Over or a load into the room) or whose ask was refused (the death flow alone: no quest step, no warp) had nothing left to run it, and the set waited for a walk out of a room whose only way out is the warp. Now `Apply` waits in the area only while `CoopBoss::DeathMayRun(boss)` (the Director: an outro_start not yet taken, our ask within kJoinUs, its event playing, the wait for our copy to read dead) or any event runs in our game; then the set is given there, live, and the room's own logic makes the warp and shows the container (if nobody took it; the container's taken flag is shared, and everyone's maximum comes from the server's one BOSS_HEART answer, so no repeat). A host-reset put-back (row 138 (4)) still waits until we are out of the area.
+- **The host's older save** (row 138 item 4). The set's Bools are each game's own, so the host's FLAG_RESET never sets them back, while the shared quests (Get_StoneOfForest, Get_StoneOfFire, Get_StoneOfWater, SageOfForest, SageOfFire) go to the host's step. A guest that held the boss beaten then had the warp up while the quest said the boss was alive: the warp AND Gohma in one room. On `report.host_reset` `Apply::HostReset` marks those five bosses; at the next `Check` where a set would be given (out of the boss's area in its dungeon, anywhere else at once), when the quest reads a step in `below` and the record does not hold the boss again, each Bool the death raises goes back to false (not `..._BossIn`: a save from after the intro has it), and `<quest>_IsBefore_<Step>` goes back to true when the quest is before that step (SageOfForest_IsBefore_Step08). King Dodongo's `BossAppear` (cleared by the death, no rule for its value before) is left. Quests each game keeps (SageOfWater, SageOfShadow, SageOfSpirit, Defeat_Ganon) are not reset by the host, so the guest's boss stays as its own save has it, quest and Bools together. The host's own load and solo / co-op idle write nothing.
+- **The heart container.** Its placement key is shared (taken), and the game that took it raised everyone's maximum
+  (BOSS_HEART). With the set given, an absent player never meets a refight whose container is already gone.
+- Solo or co-op idle: nothing is recorded, nothing written.
+- Tests: `tests/lichii/boss_beaten_test.cpp` (the table against CoopQuests and NotShared; ProvenDeath; the record;
+  once per scene load; never in the boss's scene; Complete kept; unread flags kept), `boss_test.cpp` (a heuristic
+  Defeat never reaches the record), `tests/server/session_test.cpp` (a later joiner is
+  told; not after the host's save load; a new group starts with none), `tools/puppet_pack/tests/test_boss_beaten.py`.
+- Not proven in game: B beats Gohma while A is outside the Deku Tree; A walks into the boss room: no boss, the warp
+  works; A reloads: still beaten. Dodongo and Volvagia: their arena floor (`BossGroundChange`) is not in the set
+  (NotShared, the stale mend clears it); an absent player's beaten room must still show a floor that works. A player still inside the dungeon (not in the room) at the kill gets the set only
+  once they leave its scene; until then, as before, nobody is pulled into that room again.
+
+## A boss stuck in one move (tracker row 149, 0.11.6)
+
+King Dodongo rolled forever (Rolling_Start, Rolling_Loop_Start, Rolling_Loop, never Rolling_Impact or Rolling_End) on every screen and the fight could not be won (row 138 host log, 0.11.4).
+
+- **Root cause.** `IsBoss` was any `Enemy_DungeonBoss_*` name, so a boss *part* was a boss of its own with its own server owner and boss lock. King Dodongo's roll centre (`Enemy_DungeonBoss_Dodongo_Attention_RollingCenter`) is made anew for each roll in every game; its owner was whichever game listed it first, and it reached King Dodongo's owner only through a later hand-over ask. Until then the roll centre in the boss owner's game was another game's copy (its brain skipped, its pose from that game), and the roll never reached its end. Nothing recovered it: a copy only mirrors its owner, the drift check reads the brain verb only, every hand-over path is closed during a roll (stun, life hits, the fight lock renewed by each sample), and a resync asked the roll again after each own hit.
+- **Exact boss names** (`coop_objects_sync`): `IsBoss` is the real roots only; `IsBossPart` is a boss group's part that is no group root (Twinrova stays a boss); `IsBossOrPart` is the old meaning and keeps every life, hit, slot and animation rule. A boss part never linked to its root sends no boss lock of its own, and the native table gives a part its root's owner from its first frame (`BossPartRoot`). The server gives a group member listed in the last `part_fresh_us` (3 s) its root's owner at the link, with no ask (`parts_to_root`).
+- **Stall check** (`CoopBossNative::Table::Hold`, every boss the native table runs: King Dodongo, Gohma, Barinade, Morpha, Bongo Bongo, Volvagia and the others). Our own boss (never a plain enemy) that holds one animation, brain verb, last action verb and life for `kStallSteps` (1500, about 25 s) while its AI keeps asking actions gets its brain verb set again (force) by our caller, sent to every copy like any change of ours, and logged (`held '<anim>' ... stuck, its AI chooses again`). At most `kMaxStallRechoices` (3) times per move; never in our event, while dying, with no life read, or for a copy. Only a fight move is judged (`StallJudged`, boss-die-0116): never a death animation (`coop::protocol::anim::IsDeath`: Die, Dead, Death as a word), never a cutscene's (`anim::IsEvent`: `C01-...`, `C03_00-...`, `AS-...`, any `Dm_`), never at life 0. Before, `e.dying` (the Director's outro) was the only death rule, so a boss in its own death move before the outro (the death event refused, late or waiting) could be forced out of it after 25 s; the test kill's Gohma was (`held 'Die' (brain 8, action 141, life 1)` x3). Every boss and part (Twinrova's sisters, Bongo Bongo's hands, Ganon) is judged by its own animation and life. A move whose animation changes or that takes a hit is never judged. A copy made ours whose AI did not run its body (each skipped request was answered as taken) chooses again once; one handed over in its own time (our stun, our event) is left as it is.
+- **Server** (`boss_stall_us`, 40 s): a boss root whose owner's samples keep one animation, action verb and life loses its fight lock until the move changes, so a chase or the near-player rule can hand it to a game whose AI chooses from its own body (`boss_stalled`). The same fight-move rule as the game's (`coop/protocol/animation_words.hpp`): a death or a cut never frees the lock, so a dying boss is never handed over mid-death.
+- **Tests**: `boss_native_test` (row 149 cases, with Barinade, Morpha, Bongo Bongo, Volvagia and Gohma; boss-die-0116: every boss and part held in a death or cut, then a live stuck move still chosen again), `session_test` (row 149; boss-die-0116), `objects_test` (row 149), `actor_events_test` (boss-die-0116: KeptDeaths).
+- **Not proven in a game yet**: that a forced set of the same brain verb makes the AI leave the held move. Offline check: King Dodongo held in Rolling_Loop (a roll centre owned by the other game), the log line, then the animation changes.
 
 ## Not known yet (for the in-game check)
 

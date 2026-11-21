@@ -311,6 +311,34 @@ TEST_CASE("testinput: wear names a gear slot and a piece") {
     CHECK(requests[0].name == "Armor_Child_Mask_Keaton");
 }
 
+TEST_CASE("testinput: dress asks the game's equip for a slot, or all of them") {
+    std::string error;
+    CHECK_FALSE(Parse("dress\n", error));
+    CHECK_FALSE(Parse("dress hat\n", error));
+    CHECK_FALSE(Parse("dress head extra\n", error));
+    CHECK(DressKind("weapon") == std::optional<std::uint32_t>(0));
+    CHECK(DressKind("Head") == std::optional<std::uint32_t>(7));
+    CHECK(DressKind("armor") == std::optional<std::uint32_t>(8));
+    CHECK(DressKind("boots") == std::optional<std::uint32_t>(9));
+    CHECK(DressKind("hand") == std::optional<std::uint32_t>(10));
+    CHECK(DressKind("shield") == std::optional<std::uint32_t>(6));
+    CHECK_FALSE(DressKind("all"));
+    Runner r(Must("dress HEAD\ndress all\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 2);
+    CHECK(requests[0].kind == Kind::dress);
+    CHECK(requests[0].start == "head");
+    CHECK(requests[1].start == "all");
+    CHECK_FALSE(DressNext());
+    DressAsk(7);
+    DressAsk(8);
+    CHECK(DressNext() == std::optional<std::uint32_t>(7));
+    CHECK(DressNext() == std::optional<std::uint32_t>(8));
+    CHECK_FALSE(DressNext());
+}
+
 TEST_CASE("testinput: a hold's mark is said halfway, with the keys still down") {
     std::string error;
     CHECK_FALSE(Parse("hold ZR 60 aim extra\n", error));
@@ -395,6 +423,21 @@ TEST_CASE("testinput: chat sends the rest of the line, spaces kept") {
     CHECK(requests[1].name == "hello");
 }
 
+TEST_CASE("testinput: place PLATFORM UP hands the hook the platform's name and the height over it (#196)") {
+    std::string error;
+    CHECK_FALSE(Parse("place Obj_Deku_MoveFloor_A_01\n", error));
+    CHECK_FALSE(Parse("place Obj_Deku_MoveFloor_A_01 up\n", error));
+    Runner r(Must("place Obj_Deku_MoveFloor_A_01 0.3\nmark on\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::place);
+    CHECK(requests[0].name == "Obj_Deku_MoveFloor_A_01");  // the name's case kept
+    CHECK(requests[0].at[1] == doctest::Approx(0.3f));
+    CHECK(r.Done());
+}
+
 TEST_CASE("testinput: place hands the hook a world point, then the script goes on (world-objects)") {
     std::string error;
     CHECK_FALSE(Parse("place 1 2\n", error));
@@ -414,6 +457,25 @@ TEST_CASE("testinput: place hands the hook a world point, then the script goes o
     CHECK(r.Done());
 }
 
+TEST_CASE("testinput: hurt hands the hook a hit on our own Link in quarter hearts, then the script goes on") {
+    std::string error;
+    CHECK_FALSE(Parse("hurt\n", error));
+    CHECK_FALSE(Parse("hurt 0\n", error));
+    CHECK_FALSE(Parse("hurt 81\n", error));
+    CHECK_FALSE(Parse("hurt 2x\n", error));
+    CHECK_FALSE(Parse("hurt 4 5\n", error));
+    Runner r(Must("hurt 4\nmark hurt\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::hurt);
+    CHECK(requests[0].name == "4");
+    REQUIRE(log.size() == 1);
+    CHECK(log[0] == "mark hurt");
+    CHECK(r.Done());
+}
+
 TEST_CASE("testinput: kill hands the hook an actor name as written, then the script goes on (items-sync)") {
     std::string error;
     CHECK_FALSE(Parse("kill\n", error));
@@ -427,6 +489,29 @@ TEST_CASE("testinput: kill hands the hook an actor name as written, then the scr
     CHECK(requests[0].name == "Enemy_Skulltula_Gold");
     REQUIRE(log.size() == 1);
     CHECK(log[0] == "mark killed");
+    CHECK(r.Done());
+}
+
+TEST_CASE("testinput: hit and stun hand the hook an actor name (and an amount), then the script goes on") {
+    std::string error;
+    CHECK_FALSE(Parse("hit Enemy_DungeonBoss_Gohma\n", error));
+    CHECK_FALSE(Parse("hit Enemy_DungeonBoss_Gohma 0\n", error));
+    CHECK_FALSE(Parse("hit Enemy_DungeonBoss_Gohma 81\n", error));
+    CHECK_FALSE(Parse("hit Enemy_DungeonBoss_Gohma 2x\n", error));
+    CHECK_FALSE(Parse("stun\n", error));
+    CHECK_FALSE(Parse("stun Enemy_DungeonBoss_Gohma now\n", error));
+    Runner r(Must("hit Enemy_DungeonBoss_Gohma 2\nstun Enemy_DungeonBoss_Gohma\nmark struck\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 2);
+    CHECK(requests[0].kind == Kind::hit);
+    CHECK(requests[0].name == "Enemy_DungeonBoss_Gohma");
+    CHECK(requests[0].start == "2");
+    CHECK(requests[1].kind == Kind::stun);
+    CHECK(requests[1].name == "Enemy_DungeonBoss_Gohma");
+    REQUIRE(log.size() == 1);
+    CHECK(log[0] == "mark struck");
     CHECK(r.Done());
 }
 

@@ -10,14 +10,30 @@
 // the tool's standard input from a file, and what the tool prints is only read back from a pipe.
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
 
 namespace CoopClipboard {
 
-// Puts `text` on the clipboard. False when no tool did it.
+// Puts `text` on the clipboard. False when no tool did it. Waits for the tool (up to 2 s): never on the game's
+// thread, which then stops drawing (Steam Deck Game Mode hosting fell to a few frames a second): CopyLater there.
 bool Copy(const std::string& text);
+
+// The same, off the calling thread: the tool runs on the clipboard's own thread (one job at a time, in the order
+// given), and the result is taken later with Take(ticket). `keep` false: nobody asks, the result is not kept.
+std::uint64_t CopyLater(std::string text, bool keep = true);
+// The tools' paste (as Paste, without SDL's clipboard: that one is read now with PasteNow), off the calling thread.
+std::uint64_t PasteLater();
+// SDL's clipboard when this is SDL's thread (OnSdlThread) and it has text (trimmed as Paste); else nothing, at once.
+std::optional<std::string> PasteNow();
+// A job's result once it is done (and then forgotten); nothing while it runs. Copy: `ok`. Paste: `text`, as Paste.
+struct Done {
+    bool ok = false;
+    std::optional<std::string> text;
+};
+std::optional<Done> Take(std::uint64_t ticket);
 
 // The clipboard's text: at most 4096 bytes (at most 64 KiB is read from the tool, what was read stands),
 // trailing line ends dropped. The tool is Wayland's (with $WAYLAND_DISPLAY), else xclip, else xsel (with

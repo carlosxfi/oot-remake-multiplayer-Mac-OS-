@@ -3,8 +3,11 @@
 // How to install it and what it does: tools/nucleus/README.md and docs/play-lan.md, "Split-screen with Nucleus Co-op".
 //
 // Each player's game runs from its own Nucleus instance folder (links to the game's big files, its own small ones).
-// Player 1 starts the kit's co-op server (this PC only, a new join password each session) and plays on it; players
-// 2 to 4 join it. Every game reads its own controller itself (LICHII_COOP_PAD, patch 0015), also behind the other
+// Player 1 starts the kit's co-op server and plays on it; players 2 to 4 join it on this PC. The option "Who can join"
+// picks the server: "This PC only" (the default: 127.0.0.1, port 27590, a new join password each session) or "Allow
+// online players" (the kit's own start-server.cmd, as Host.bat starts it: every address of this PC, the kit's port
+// and join password, the router forward (UPnP) and an invite code in the server's window, copied to the clipboard,
+// that friends on other PCs paste under Join). Every game reads its own controller itself (LICHII_COOP_PAD, patch 0015), also behind the other
 // windows, so no Nucleus input hooks are used (Nucleus only lists the pads).
 // Written for Nucleus's script engine (Jint) in plain ES3 style, so tools/nucleus/test_handler.js runs it under
 // Windows' own cscript too.
@@ -15,7 +18,19 @@ Game.ExecutableName = "longshot.exe";
 Game.MaxPlayers = 4;
 Game.MaxPlayersOneMonitor = 4;
 Game.Description = "Split-screen OoT Co-op on Longshot. Add the longshot.exe of a kit's co-op game (the kit's " +
-    "hookshot\\game folder). Player 1 hosts on this PC, the others join. Each game needs about 10 GB of RAM.";
+    "hookshot\\game folder). Player 1 hosts on this PC, the others join. Each game needs about 10 GB of RAM. " +
+    "Who can join: This PC only, or Allow online players (friends on other PCs join with the invite code the " +
+    "server window shows and copies).";
+
+// The option on Nucleus's setup screen. Anything but COOP_ONLINE (no choice made yet, an older Nucleus) is this PC
+// only.
+var COOP_LOCAL = "This PC only";
+var COOP_ONLINE = "Allow online players";
+Game.AddOption("Who can join",
+               "This PC only: the players on this PC. Allow online players: also friends on other PCs, as with " +
+               "Host.bat (the router forward and an invite code in the server window, copied to the clipboard; " +
+               "Windows may ask once to let coop_server through its firewall).",
+               "Online", [COOP_LOCAL, COOP_ONLINE], COOP_LOCAL);
 
 // The files: the game's big read-only files are linked, its folders too; what a game writes is its own.
 Game.SymlinkGame = true;
@@ -55,7 +70,8 @@ Game.PauseBetweenProcessGrab = 5;     // seconds
 Game.KillProcessesOnClose = ["coop_server"];   // the session's server (and any other coop_server.exe on this PC)
 
 // The session's settings (also in nucleus-players\session.txt, for a start that runs the script anew per player).
-var COOP_PORT = 27590;   // not the kit's 27510, nor the test lanes' 27520/27530
+var COOP_PORT = 27590;       // this PC only: not the kit's 27510, nor the test lanes' 27520/27530
+var COOP_KIT_PORT = 27510;   // online: the kit's coop.ini port, else this one (Host.bat's)
 var coopSession = null;
 
 function coopPath(a, b) {
@@ -90,6 +106,77 @@ function coopFindKit(gameDir) {
         d = String(up);
     }
     return "";
+}
+
+// The value of `key` in an ini text ("key = value", any case; '#' and ';' lines skipped; the last one wins), ""
+// when none.
+function coopGetKey(text, key) {
+    var lines = String(text).split(/\r?\n/), value = "";
+    for (var i = 0; i < lines.length; i++) {
+        var t = coopTrim(lines[i]), eq = t.indexOf("=");
+        if (eq > 0 && t.charAt(0) !== "#" && t.charAt(0) !== ";" &&
+            coopTrim(t.substring(0, eq)).toLowerCase() === key.toLowerCase()) {
+            value = coopTrim(t.substring(eq + 1));
+        }
+    }
+    return value;
+}
+
+// True when Nucleus's setup screen has "Allow online players" chosen.
+function coopWantsOnline() {
+    try {
+        var o = Context.Options;
+        return !!o && String(o["Online"]) === COOP_ONLINE;
+    } catch (e) {
+        return false;   // no such option (an older Nucleus): this PC only
+    }
+}
+
+// Player 1's server for "Allow online players": the kit's start-server.cmd in a window of its own, as Host.bat starts
+// it (scripts\start-server.ps1: coop_server on every address of this PC, the router forward, the invite code shown and
+// copied, a log in the kit's logs folder). Returns the session { password, server, port } the players on this PC use.
+function coopStartOnline(kit) {
+    var options = coopRead(coopPath(kit, "coop-options.ini"));
+    var port = parseInt(coopGetKey(coopRead(coopPath(kit, "coop.ini")), "port"), 10);
+    if (!(port >= 1 && port <= 65535)) {
+        port = COOP_KIT_PORT;
+    }
+    // The kit's join password (server_password), else a new one for this session, handed over as Host.bat does
+    // (OOT_COOP_SESSION_PASSWORD: never on a command line; the server puts it in the invite code).
+    var password = coopGetKey(options, "server_password");
+    var made = password === "";
+    if (made) {
+        password = coopNewKey();
+    }
+    // server_bind: the server listens on that address only, so the players on this PC go there too (and come from
+    // it). server_allow: this PC's address the players come from (127.0.0.1, or the bound one) is added, else its own
+    // players would be refused.
+    var bind = coopGetKey(options, "server_bind");
+    var allow = coopGetKey(options, "server_allow").replace(/\s/g, "");
+    var args = String(port);
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(bind)) {
+        args += " -Bind " + bind;
+    } else {
+        bind = "";
+    }
+    if (/^[0-9.\/,]+$/.test(allow)) {
+        args += " -Allow " + allow + ",127.0.0.1" + (bind !== "" ? "," + bind : "");
+    }
+    // A window of its own that closes with the server: start runs cmd /c (a .cmd started by itself would be cmd /k,
+    // whose window stays open after Nucleus closes coop_server). The inner cmd /c drops the outer pair of quotes.
+    var cmd = String(System.Environment.GetEnvironmentVariable("ComSpec") || "C:\\Windows\\System32\\cmd.exe");
+    try {
+        if (made) {
+            System.Environment.SetEnvironmentVariable("OOT_COOP_SESSION_PASSWORD", password);
+        }
+        Context.StartProcess(cmd, "/c start \"Squadala server\" /d \"" + kit + "\" \"" + cmd + "\" /c \"\"" +
+                             coopPath(kit, "start-server.cmd") + "\" " + args + "\"", false);
+    } finally {
+        if (made) {
+            System.Environment.SetEnvironmentVariable("OOT_COOP_SESSION_PASSWORD", null);
+        }
+    }
+    return { password: password, server: bind !== "" ? bind : "127.0.0.1", port: port, pads: 0 };
 }
 
 // A player name the game takes: 1 to 16 characters, no control characters.
@@ -162,6 +249,28 @@ function coopNewKey() {
     return String(System.Guid.NewGuid().ToString("N"));
 }
 
+// How many coop_server.exe run on this PC now (0 when it cannot be told). A CLR array may come over with Length or
+// length.
+function coopServersRunning() {
+    try {
+        var ps = System.Diagnostics.Process.GetProcessesByName("coop_server");
+        var n = ps.Length !== undefined ? ps.Length : ps.length;
+        return Number(n) || 0;
+    } catch (e) {
+        return 0;
+    }
+}
+
+// A message for the player: a message box when the script may show one, and Nucleus's log either way.
+function coopTell(text) {
+    Context.Log("OoT Co-op: " + text);
+    try {
+        System.Windows.Forms.MessageBox.Show(text, "Squadala!");
+    } catch (e) {
+        // no Windows Forms in this script engine: the log only
+    }
+}
+
 Game.Play = function () {
     var player = Context.PlayerID + 1;                  // 1 to 4
     var game = String(Context.RootInstallFolder);       // the game folder Nucleus was given
@@ -172,18 +281,37 @@ Game.Play = function () {
     var kit = coopFindKit(game);
 
     // The session: player 1 makes it and starts the server; the others take it.
+    // session.txt: the join password, the server's address, its port (a line each).
     if (player === 1) {
-        coopSession = { password: coopNewKey(), pads: 0 };
-        coopWrite(sessionFile, coopSession.password + "\r\n");
-        if (kit !== "") {
-            var server = coopPath(coopPath(kit, "server"), "coop_server.exe");
-            Context.StartProcess(server, "--port " + COOP_PORT + " --bind 127.0.0.1 --max-players 4 --password " +
-                coopSession.password, false);
+        var running = kit !== "" ? coopServersRunning() : 0;
+        if (running > 0) {
+            // Another server (Host.bat, start-server.cmd, an earlier session not ended) holds the port or has
+            // another join password: this session's games could not join. Nothing is started; it is not closed here
+            // (a friend may be playing on it).
+            coopSession = { password: coopNewKey(), server: "127.0.0.1", port: COOP_PORT, pads: 0 };
+            coopTell("A co-op server (coop_server.exe) is already running on this PC, so this session starts none " +
+                     "and its games cannot join. Close that server's window, end this " +
+                     "session in Nucleus and press Play again.");
+        } else if (kit !== "" && coopWantsOnline()) {
+            coopSession = coopStartOnline(kit);
+            Context.Log("OoT Co-op: online players allowed: the server window shows the invite code (also copied)");
         } else {
-            Context.Log("OoT Co-op: no kit above " + game + " (server\\coop_server.exe): no server started");
+            coopSession = { password: coopNewKey(), server: "127.0.0.1", port: COOP_PORT, pads: 0 };
+            if (kit !== "") {
+                var server = coopPath(coopPath(kit, "server"), "coop_server.exe");
+                Context.StartProcess(server, "--port " + COOP_PORT + " --bind 127.0.0.1 --max-players 4 --password " +
+                    coopSession.password, false);
+            } else {
+                Context.Log("OoT Co-op: no kit above " + game + " (server\\coop_server.exe): no server started");
+            }
         }
+        coopWrite(sessionFile, coopSession.password + "\r\n" + coopSession.server + "\r\n" + coopSession.port + "\r\n");
     } else if (coopSession === null) {
-        coopSession = { password: coopTrim(coopRead(sessionFile).split(/\r?\n/)[0]), pads: 0 };
+        var saved = coopRead(sessionFile).split(/\r?\n/);
+        var savedServer = coopTrim(saved.length > 1 ? saved[1] : ""), savedPort = parseInt(saved[2], 10);
+        coopSession = { password: coopTrim(saved[0]),
+                        server: /^\d{1,3}(\.\d{1,3}){3}$/.test(savedServer) ? savedServer : "127.0.0.1",
+                        port: savedPort >= 1 && savedPort <= 65535 ? savedPort : COOP_PORT, pads: 0 };
     }
 
     // The saves: player 1's own (the game's user folder), the others' their own folder beside the game. A guest
@@ -205,7 +333,7 @@ Game.Play = function () {
     // coop.ini: the server on this PC, the session's join password, the player's name.
     coopWrite(coopPath(inst, "coop.ini"),
               "# Written by the Nucleus Co-op handler (tools/nucleus/OoTCoop.js) at each start.\r\n" +
-              "server = 127.0.0.1\r\nport = " + COOP_PORT + "\r\nname = " + coopName(Context.Nickname, player) + "\r\n" +
+              "server = " + coopSession.server + "\r\nport = " + coopSession.port + "\r\nname = " + coopName(Context.Nickname, player) + "\r\n" +
               "password = " + coopSession.password + "\r\n");
 
     // coop-options.ini: the kit's (else the game's) switches, with this game's controller and keyboard. The game

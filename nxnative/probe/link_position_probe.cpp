@@ -267,7 +267,7 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
       return;
     phase = Phase::done;  // one request per launch, even if creation is refused
     std::fprintf(stderr, "[coop-nxnative] puppet spawn test allocating request\n");
-    const GameCall allocate{base + malloc_offset, {0x2e0}};
+    const GameCall allocate{base + malloc_offset, {0x2e0}, {}, 0.0f};
     block = coop_nxnative_invoke_game_call(&allocate);
     if (!block) {
       std::fprintf(stderr, "[coop-nxnative] puppet spawn test allocation failed\n");
@@ -292,7 +292,7 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
     }
 
     std::fprintf(stderr, "[coop-nxnative] puppet spawn test requesting %s\n", actor_name);
-    const GameCall create{base + create_offset, {manager, block + 0x100, block, slot, 1}};
+    const GameCall create{base + create_offset, {manager, block + 0x100, block, slot, 1}, {}, 0.0f};
     const auto accepted = coop_nxnative_invoke_game_call(&create);
     std::uint64_t request = 0;
     if (!static_cast<std::uint32_t>(accepted) && (!read_at(slot, request) || !request)) {
@@ -312,7 +312,7 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
     if (read_at(slot, request) && request && read_at(request, word)) {
       const auto state = word & 0xffff;
       if (state == 3) {
-        const GameCall take{base + take_offset, {request, 1}};
+        const GameCall take{base + take_offset, {request, 1}, {}, 0.0f};
         actor = coop_nxnative_invoke_game_call(&take);
         write_value(slot, std::uint64_t{0});
         phase = actor && read_at(actor, vtable) && vtable ? Phase::live : Phase::done;
@@ -322,7 +322,7 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
       }
       if (state == 4 || state == 5 || state == 6) {
         if (state == 4) {
-          const GameCall drop{base + drop_offset, {request}};
+          const GameCall drop{base + drop_offset, {request}, {}, 0.0f};
           coop_nxnative_invoke_game_call(&drop);
         }
         write_value(slot, std::uint64_t{0});
@@ -349,7 +349,7 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
   }
   if (state != 4) return;
   if (now - last_target > std::chrono::seconds(1)) {
-    const GameCall remove{base + delete_offset, {actor}};
+    const GameCall remove{base + delete_offset, {actor}, {}, 0.0f};
     coop_nxnative_invoke_game_call(&remove);
     phase = Phase::done;
     std::fprintf(stderr, "[coop-nxnative] puppet spawn test delete requested\n");
@@ -378,7 +378,7 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
       if (!read_at(controller + 0x18, count)) return;
       if (next_partial_slot < std::min(count, max_slots)) {
         const GameCall sync{base + 0x3abec10,
-                            {actor, 0, static_cast<std::uint64_t>(next_partial_slot)}};
+                            {actor, 0, static_cast<std::uint64_t>(next_partial_slot)}, {}, 0.0f};
         coop_nxnative_invoke_game_call(&sync);
         ++next_partial_slot;
         return;
@@ -403,7 +403,7 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
     std::memcpy(request.data() + 0x18, &unset, sizeof(unset));
     std::memcpy(request.data() + 0x1c, &unset, sizeof(unset));
     if (!write_value(text, name_buffer) || !write_value(request_address, request)) return;
-    const GameCall play{base + 0x2022a0, {request_address}};
+    const GameCall play{base + 0x2022a0, {request_address}, {}, 0.0f};
     coop_nxnative_invoke_game_call(&play);
     anim_buffer ^= 1;
     motion = target.motion;

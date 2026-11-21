@@ -51,6 +51,6 @@ body:
     id: logs
     attributes:
       label: Logs from every player
-      description: Attach one log file per player and say whose is whose.
+      description: Each player sends their zip from `scripts\collect-logs.cmd` with `/bugreport` on the Squadala! Discord (not here). List the report numbers and say whose is whose; paste only the `coop:` lines you need, addresses masked.
     validations:
       required: true

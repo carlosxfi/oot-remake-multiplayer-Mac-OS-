@@ -23,6 +23,8 @@
 #include "coop_host_menu.h"
 #include "nat_codes.hpp"
 #include "nat_net.hpp"
+#include "relay.hpp"
+#include "relay_link.hpp"
 #include "stun.hpp"
 
 namespace nat = coop::server::nat;
@@ -255,6 +257,67 @@ TEST_CASE("host menu: Join by address needs the password, and with it the game c
     CHECK(status_of(menu).state == HOS_COOP_IDLE);
 }
 
+TEST_CASE("host menu: Join with a room name through a relay: the relay lets this PC in, the game connects to it "
+          "(issue 261)") {
+    namespace relay = coop::server::relay;
+    EnetLife enet;
+    relay::RelayServer relay_server(0, std::nullopt, relay::RelayConfig{});
+    REQUIRE(relay_server.start());
+    const std::uint16_t relay_port = relay_server.port();
+    relay::RelayLinkConfig lc;
+    lc.relay_host = "127.0.0.1";
+    lc.relay_port = relay_port;
+    lc.server_port = 1;  // no game server here: only the room is held
+    lc.room = "forest-gang";
+    std::atomic<bool> room_held{false};  // (set on the serving thread: link.room() is that thread's to read)
+    lc.on_room = [&room_held](const std::string&) { room_held = true; };
+    relay::RelayLink link(lc);
+    std::string why;
+    REQUIRE(link.start(why));
+    std::atomic<bool> done{false};
+    std::thread serve([&] {
+        while (!done) {
+            relay_server.service(5);
+            link.service();
+        }
+    });
+    REQUIRE(wait_for([&] { return room_held.load(); }, 3000));
+
+    Game game;
+    CoopHostMenu::Menu menu(game.hooks());
+    const std::string target = "Forest-Gang@127.0.0.1:" + std::to_string(relay_port);
+    HosCoopJoinOptions o{};
+    o.size = sizeof o;
+    o.target = target.c_str();
+    CHECK(menu.Join(&o) == 0);  // a relay join needs the host's password too
+    CHECK(status_of(menu).problem == HOS_COOP_PROBLEM_NO_PASSWORD);
+    o.password = "pw-room";
+    o.name = "Link";
+    REQUIRE(menu.Join(&o) == 1);
+    REQUIRE(wait_for([&] { return status_of(menu).state == HOS_COOP_CONNECTED; }, 5000));
+    const Target t = *game.target();
+    CHECK(t.server == "127.0.0.1");
+    CHECK(t.port == relay_port);
+    CHECK(t.password == "pw-room");
+    CHECK(std::string(status_of(menu).message).find("forest-gang") == std::string::npos);  // as typed
+    CHECK(std::string(status_of(menu).message).find("Forest-Gang") != std::string::npos);
+    menu.Leave();
+    CHECK(game.disconnects == 1);
+
+    // A room nobody holds: refused with the relay's reason.
+    const std::string wrong = "lake-gang@127.0.0.1:" + std::to_string(relay_port);
+    o.target = wrong.c_str();
+    REQUIRE(menu.Join(&o) == 1);
+    REQUIRE(wait_for([&] { return status_of(menu).state == HOS_COOP_FAILED; }, 5000));
+    CHECK(status_of(menu).problem == HOS_COOP_PROBLEM_RELAY_JOIN);
+    CHECK(std::string(status_of(menu).message).find("no join code or room \"lake-gang\"") != std::string::npos);
+    menu.Leave();
+
+    done = true;
+    serve.join();
+    link.stop();
+}
+
 TEST_CASE("host menu: a broken invite code is explained, not used as an address") {
     Game game;
     CoopHostMenu::Menu menu(game.hooks());
@@ -437,4 +500,54 @@ TEST_CASE("host menu: Host on a custom port: a manual IP and port join gets in w
     join_game.client->stop();
     join_menu.Leave();
     host_menu.Leave();
+}
+
+TEST_CASE("host menu: with approve_joins the host's game is asked about a new player, and its answer lets them in") {
+    EnetLife enet;
+    Game game;
+    CoopHostMenu::Menu menu(game.hooks());
+    HosCoopHostOptions o = host_options();
+    o.approve_joins = 1;
+    REQUIRE(menu.HostStart(&o) == 1);
+    REQUIRE(wait_for([&] { return status_of(menu).state == HOS_COOP_HOSTING && game.target().has_value(); }, 3000));
+    game.start_client();
+    // The host's own game is never asked about: it is the first in.
+    REQUIRE(wait_for([&] { return game.client->state() == coop::net::State::connected; }, 5000,
+                     [&] { game.client->service(1); }));
+
+    const Target t = *game.target();
+    coop::net::ClientConfig config;
+    config.host = t.server;
+    config.port = t.port;
+    config.hello.build_id = "host menu test";
+    config.hello.game_build_id = "e0f3ccfaf50065ae";
+    config.hello.game_version = "1.1.1";
+    config.hello.nickname = "Riley";
+    config.join_password = t.password;
+    coop::net::Client riley(std::move(config));
+    REQUIRE(riley.start());
+    std::optional<coop::protocol::JoinKnock> asked;
+    bool waiting = false;
+    REQUIRE(wait_for([&] { return asked.has_value() && waiting; }, 5000, [&] {
+        game.client->service(1);
+        riley.service(1);
+        while (auto e = game.client->next_event()) {
+            if (const auto* k = std::get_if<coop::protocol::JoinKnock>(&e->message)) asked = *k;
+        }
+        while (auto e = riley.next_event()) {
+            waiting = waiting || e->kind == coop::net::EventKind::waiting_for_host;
+        }
+    }));
+    CHECK(asked->nickname == "Riley");
+    CHECK(riley.state() == coop::net::State::handshaking);
+    CHECK(status_of(menu).players == 1);
+    REQUIRE(game.client->send(coop::protocol::JoinAllow{asked->knock, true, false}));
+    REQUIRE(wait_for([&] { return riley.state() == coop::net::State::connected && status_of(menu).players == 2; }, 5000,
+                     [&] {
+                         game.client->service(1);
+                         riley.service(1);
+                     }));
+    riley.stop();
+    game.client->stop();
+    menu.Leave();
 }

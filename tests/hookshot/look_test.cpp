@@ -795,6 +795,109 @@ TEST_CASE("look parts: the gear painted in a look, a painting's name says its co
     CHECK(CoopLookParts::Painted(*gear, boots)[0].texels == Shield());
 }
 
+namespace {
+// metal.bin's bytes (tools/puppet_pack/look_metal.py pack).
+struct MetalEntry {
+    std::string name;
+    std::uint32_t part;
+    std::vector<std::uint32_t> offsets;
+};
+std::vector<std::uint8_t> MetalFile(const std::vector<MetalEntry>& entries) {
+    std::vector<std::uint8_t> out = {'C', 'O', 'O', 'P', 'M', 'T', 'L', '1'};
+    const auto put = [&](std::uint32_t v) {
+        for (int k = 0; k < 4; ++k) {
+            out.push_back(static_cast<std::uint8_t>(v >> (8 * k)));
+        }
+    };
+    put(static_cast<std::uint32_t>(entries.size()));
+    for (const MetalEntry& e : entries) {
+        std::string n = e.name;
+        n.resize(64, '\0');
+        out.insert(out.end(), n.begin(), n.end());
+        put(e.part);
+        put(static_cast<std::uint32_t>(e.offsets.size()));
+        for (const std::uint32_t o : e.offsets) {
+            put(o);
+        }
+    }
+    return out;
+}
+const char* const kHylianMetal = "Mt_Weapon_Shield_Hylian_Mtl";
+// Eight BC4 blocks (a look file's texture holds 64 bytes or more), every one metal (ends 200 and 120).
+std::vector<std::uint8_t> MetalTexels() {
+    std::vector<std::uint8_t> t;
+    for (int b = 0; b < 8; ++b) {
+        const std::uint8_t block[8] = {200, 120, 0x49, 0x92, 0x24, 0x49, 0x92, 0x24};
+        t.insert(t.end(), block, block + 8);
+    }
+    return t;
+}
+}  // namespace
+
+TEST_CASE("look parts: metal.bin is read whole or not at all") {
+    const auto file = MetalFile({{kHylianMetal, 3, {0, 16}}, {kHylianMetal, 4, {8}}});
+    const auto metal = CoopLookParts::ParseMetal(file);
+    REQUIRE(metal);
+    REQUIRE(metal->size() == 2);
+    CHECK((*metal)[0].texture == kHylianMetal);
+    CHECK((*metal)[0].part == Part::hylian_frame);
+    CHECK((*metal)[0].offsets == std::vector<std::uint32_t>{0, 16});
+    CHECK((*metal)[1].part == Part::hylian_face);
+    std::string why;
+    auto cut = file;
+    cut.pop_back();
+    CHECK_FALSE(CoopLookParts::ParseMetal(cut, &why));
+    CHECK(why == "the metal file is cut short");
+    auto magic = file;
+    magic[7] = '2';
+    CHECK_FALSE(CoopLookParts::ParseMetal(magic, &why));
+    CHECK(why == "not a metal file");
+    CHECK_FALSE(CoopLookParts::ParseMetal(MetalFile({{kHylianMetal, CoopLook::kParts, {0}}}), &why));
+    CHECK(why == "a metal entry names no part");
+    CHECK(CoopLookParts::ParseMetal(MetalFile({}))->empty());
+}
+
+TEST_CASE("look parts: a painted metal part loses its metal, the other blocks and an unpainted part keep it (#202)") {
+    const CoopLookParts::Metal metal = *CoopLookParts::ParseMetal(
+        MetalFile({{kHylianMetal, 3, {0, 16, 64}}, {kHylianMetal, 4, {8}}, {"Other_Mtl", 3, {24}}}));
+    Look look;
+    std::vector<std::uint8_t> t = MetalTexels();
+    // nothing painted: the game's own metal
+    CHECK(CoopLookParts::PaintMetal(metal, kHylianMetal, t, look) == 0);
+    CHECK(t == MetalTexels());
+    // the frame painted: its blocks 0 and 2 are 0 (offset 64 is past the texels: left alone)
+    look[Part::hylian_frame] = 0xE0C030u;
+    CHECK(CoopLookParts::PaintMetal(metal, kHylianMetal, t, look) == 2);
+    CHECK(std::all_of(t.begin(), t.begin() + 8, [](std::uint8_t b) { return b == 0; }));
+    CHECK(std::equal(t.begin() + 8, t.begin() + 16, MetalTexels().begin() + 8));   // the face's: kept
+    CHECK(std::all_of(t.begin() + 16, t.begin() + 24, [](std::uint8_t b) { return b == 0; }));
+    CHECK(std::equal(t.begin() + 24, t.end(), MetalTexels().begin() + 24));   // Other_Mtl's entry
+    // a misaligned offset is never written
+    const CoopLookParts::Metal odd = *CoopLookParts::ParseMetal(MetalFile({{kHylianMetal, 3, {4}}}));
+    std::vector<std::uint8_t> u = MetalTexels();
+    CHECK(CoopLookParts::PaintMetal(odd, kHylianMetal, u, look) == 0);
+    CHECK(u == MetalTexels());
+
+    // Painted uses the table it is given (UseMetal); without one, metal stays.
+    const auto gear = Colour({{kHylian, Shield()}, {kHylianMetal, MetalTexels()}});
+    CHECK(CoopLookParts::Painted(*gear, look)[1].texels == MetalTexels());
+    CoopLookParts::UseMetal(std::make_shared<const CoopLookParts::Metal>(metal));
+    const auto painted = CoopLookParts::Painted(*gear, look);
+    CHECK(painted[1].texels == t);
+    CHECK(painted[0].texels != Shield());   // (the frame's colour as before)
+    Look plain;
+    CHECK(CoopLookParts::Painted(*gear, plain)[1].texels == MetalTexels());
+    // a puppet's copy: renamed, its metal painted down, then marked
+    const auto copy = CoopLookParts::CopyTexels(*gear, 2, look);
+    REQUIRE(copy.size() == 2);
+    CHECK(copy[1].name == "C2_Weapon_Shield_Hylian_Mtl");
+    auto marked = t;
+    CoopLookParts::Mark(marked, 2);
+    CHECK(copy[1].texels == marked);
+    CoopLookParts::UseMetal(nullptr);
+    CHECK(CoopLookParts::Painted(*gear, look)[1].texels == MetalTexels());
+}
+
 TEST_CASE("look parts: the adult's Goron and Zora tunics are painted in all their cloth") {
     // The adult's tunic models name more cloth than the vest and hat (the dump: Armor_Adult_Goron's inner,
     // Armor_Adult_Zora's parts and feather): each is in the table under its tunic.

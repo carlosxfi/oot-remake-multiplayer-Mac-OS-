@@ -313,14 +313,16 @@ TEST_CASE("session: reset sends the status again on the next connected frame") {
   REQUIRE(pump(server, peers, [&] { return a.session.sampler().last_sample().has_value(); }));
 
   // A new game process: the reset is applied on the next connected frame,
-  // before that frame's reading (none here), so nothing was sent since.
+  // before that frame's reading (none here: no Link), so only the status
+  // `loading` was sent since, no sample.
   a.session.reset();
   const auto report = a.session.frame(std::nullopt, nullptr);
   CHECK(report.connected);
-  CHECK(report.queued == 0);
+  CHECK(report.queued == 1);
+  CHECK(a.session.sampler().status_flags() == coop::protocol::status::loading);
   CHECK_FALSE(a.session.sampler().last_sample().has_value());
 
-  // The next reading goes out as a status and a sample at once.
+  // The next reading goes out as a status (loading over) and a sample at once.
   const auto again = a.session.frame(a.memory, nullptr);
   CHECK(again.queued == 2);
   CHECK(a.session.sampler().last_sample().has_value());

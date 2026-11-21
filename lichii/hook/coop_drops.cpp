@@ -5,6 +5,7 @@
 // glue at the end is built into the emulator only (LICHII_COOP).
 
 #include "coop_drops.h"
+#include "coop_caller_orders.h"
 
 #include <algorithm>
 #include <array>
@@ -794,7 +795,7 @@ constexpr u64 kActorPlacement = 0x3d8;
 constexpr u64 kPlacementHash = 0x88;
 constexpr std::size_t kMaxWalk = 8192;
 constexpr u64 kDropKey = u64{1} << 62;  // the director's keys for drops
-constexpr int kCallerOrder = 40;        // after the mover (30)
+constexpr int kCallerOrder = CoopCallerOrders::kDrops;        // after the mover (30)
 
 std::string Env(const char* name) {
 #ifdef _WIN32

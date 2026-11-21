@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -25,6 +26,9 @@
 #include "coop_puppet.h"
 
 namespace CoopQuest {
+
+// Rule::from's default: the rule applies from the quest's own floor.
+inline constexpr std::size_t kQuestFloor = static_cast<std::size_t>(-1);
 
 // A shared story flag (a saved Bool) that, once 1, means the quest is at least
 // at `step`. `flag` 0: no flag; then the quests in `done` decide alone.
@@ -37,6 +41,11 @@ struct Rule {
     // DoorOfTime_CheckStoneNum reads Get_StoneOfFire / Get_StoneOfWater.
     std::uint32_t done_a = 0;
     std::uint32_t done_b = 0;
+    // The lowest step (index into the quest's steps) our own value must have
+    // for this rule; kQuestFloor: the quest's floor. Row 150: a step a shared
+    // played scene proves far below the quest's floor (SageOfSpirit Step02,
+    // the carpenters freed, under its Step07 floor).
+    std::size_t from = kQuestFloor;
 };
 
 // One quest: its Enum (hash from GameDataList, matched by its value list), its
@@ -127,15 +136,17 @@ std::string LiveDescribe(const ReadMemory& read, std::uint64_t main, std::uint32
 // issue 171) from KakarikoVillageNpc on, and DoorOfTime (issue 60) from
 // Step2_1 on: the field's trigger for Zelda's escape
 // (Logic/HyruleField_Child_Prefab_0ce5, HoldChallengeCurrentStepCheckOrder
-// DoorOfTime Step03) reads the manager, never GameData. The other quests stay
-// as before (GameData and the Threads of Time tab); each joins later on its
-// own, with its own floor and an in-game check.
+// DoorOfTime Step03) reads the manager, never GameData. The other shared
+// quests reach the manager through CoopQuests::LiveWants (issue 94).
 std::optional<StepWant> LiveWant(const Quest& quest, const ReadEnum& value);
 
 // Moves the manager's entries up to the steps GameData holds. Never lowers,
 // never into or out of a held step, never from NotReady (the game refuses it
 // without force, and none is passed); an unknown step or a quest the manager
 // does not have is left alone, and a step already asked is not asked again.
+// A step the game refused is tried again only after 2, 4, 8 ... (at most 60)
+// more lists, and noted once (then at 10, 100, ... refusals; the count is in
+// the note when the game takes it at last), not every second.
 class Challenges {
 public:
     // Any thread: the quests to check on the next frame (replaces any waiting).
@@ -154,6 +165,12 @@ private:
     std::size_t next_ = 0;
     std::uint32_t asked_from_ = 0;
     std::vector<std::string> notes_;
+    // Refused steps (under mutex_; counted down by Want): key challenge << 32 | step.
+    struct Refusal {
+        std::uint32_t count = 0;
+        std::uint32_t skip = 0;  // lists still to pass over
+    };
+    std::map<std::uint64_t, Refusal> refused_;
 };
 
 } // namespace CoopQuest

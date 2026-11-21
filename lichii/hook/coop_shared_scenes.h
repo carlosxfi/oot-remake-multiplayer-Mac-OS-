@@ -37,6 +37,57 @@ namespace CoopSharedScenes {
 std::span<const std::string_view> Names();
 bool IsShared(std::string_view name);
 
+// Player report 110 (Deku Tree): the game asks for an event by its *event
+// setting* (RSDB EventSetting: a name, the flow and the entry it plays), and
+// keeps "already played" per setting (HavePlayedEvent.<setting>; every one of
+// the game's 2172 named settings has that flag). Most story cutscenes are a
+// setting of their own name; many settings play a story flow under another
+// name: the Great Deku Tree's meeting is the setting
+// KokiriForest_Meet_DekuTree_MeetDekuTree_01 (flow Meet_DekuTree), the Fire
+// Temple's freed Gorons Dm_FireTemple_0014.._0022 (flow Dm_FireTemple_0020).
+// The game's request then named no story event, the story search's flow name
+// counted as a leftover of another event (intro-ocarina) and was never sent:
+// each player watched it alone. So the key of such a cutscene is its setting:
+// the starter sends it, a game that joins asks for it and reads its played
+// flag. coop_story_requests.inc (tools/puppet_pack/story_requests.py) holds
+// every named setting of a story flow under another name, classified from the
+// game's data: the shared ones here, the others (boss events, dungeon
+// gimmicks, talks, arrivals, items, room events) in comments with why.
+struct StoryOwn {
+    std::string_view name;  // a story name
+    std::string_view why;   // what of the player's own its flow changes
+};
+struct StorySetting {
+    std::string_view request;  // the setting's name (what the game's request names)
+    std::string_view flow;     // the shared story flow it plays
+};
+std::span<const StorySetting> StorySettings();
+// The shared story flow a request of our game plays: `request` itself when it
+// is a story name, the flow of a story setting in the table, else nothing.
+std::optional<std::string_view> StoryOfRequest(std::string_view request);
+// A setting in the table (sent and joined by that name).
+bool IsStorySetting(std::string_view name);
+// A story start to send or join: a story name or a story setting.
+bool IsStory(std::string_view name);
+// The names a request of our game counts as a story start by: the story
+// names and the story settings (RequestedOf / RequestedOtherOf).
+std::vector<std::string_view> RequestNames();
+// Why `name` is neither sent nor joined, or "" when it is shared:
+// - a story name the game has no event setting of (the quests Meet_DekuTree,
+//   Meet_GreatFairy, Get_StoneOf{Forest,Fire,Water}, which also have no played
+//   flag, and Dm_FinalBattle_0000, Dm_LostWood_0030, played inside other
+//   settings): asking it plays nothing, and a game could not tell it played
+//   it. Their cutscenes are settings of their own (the table above,
+//   Dm_FairyFountain_*, the boss events);
+// - a story name whose event flow changes what is the player's own (a trade
+//   item taken, rupees, gear equipped from the pouch: Talon woken with the
+//   Cucco Dm_HrlCastle_0020; kOwnStory with why, read from the game's flows by
+//   story_requests.py): another game asked for it would be charged or changed
+//   too. A gift of an item co-op shares stays shared (Zelda's letter).
+std::string_view NotShared(std::string_view name);
+// NotShared(name) is "".
+bool Askable(std::string_view name);
+
 // How near the starter must be to our Link for us to join: same room. The
 // Kokiri bridge and Saria are about 20 m apart; the Deku Tree's clearing is
 // about 40 m across.

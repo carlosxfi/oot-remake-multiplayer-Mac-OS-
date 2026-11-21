@@ -113,7 +113,7 @@ std::string MapDropLog::context(std::uint64_t now, std::optional<FlagKey> key, s
   return out;
 }
 
-std::vector<std::string> MapDropLog::frame(FlagStore& store, std::optional<std::string_view> scene, bool in_play,
+std::vector<std::string> MapDropLog::frame(FlagStore& store, const std::optional<std::string_view>& scene, bool in_play,
                                            std::optional<std::array<float, 3>> link) {
   const std::uint64_t now = clock_();
   std::vector<std::string> lines;

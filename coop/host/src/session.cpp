@@ -72,15 +72,17 @@ FrameReport Session::frame(const std::optional<PlayerReading>& reading, FlagStor
     sampler_.set_player_number(number);
     const std::uint64_t sample_us =
         frame_aligned_us(report.server_now_us, game_frame_age_us_ ? game_frame_age_us_() : 0);
-    for (const Outgoing& m : sampler_.frame(reading, sample_us)) {
+    for (const Outgoing& m : sampler_.frame(reading, sample_us, title_up_)) {
       protocol::Message message;
       if (protocol::decode(m.bytes, message) == protocol::Error::none) {
         out.emplace_back(std::move(message));
       }
     }
     if (watcher_ && flags != nullptr) {
-      // No Link to read: the game is loading (FlagWatcher::set_loading).
-      watcher_->set_loading(!reading.has_value());
+      // No Link to read: the game is loading (FlagWatcher::set_loading). Hookshot's title menu up is never play
+      // either, Link or not (forest-temple-a: a host's save load through it was not seen as one, and the old
+      // save's floors were put back into the new save, once a frame).
+      watcher_->set_loading(!reading.has_value() || title_up_);
       watcher_->set_scene(scene_readable_);
       queue_flags(watcher_->frame(*flags), out);
     }
@@ -88,12 +90,15 @@ FrameReport Session::frame(const std::optional<PlayerReading>& reading, FlagStor
   if (watcher_) {
     report.hosting = watcher_->role() == FlagRole::host;
     report.holding = watcher_->holding();
+    report.hold_timeout = watcher_->take_hold_timeout();
+    report.window_for = watcher_->window_for();
     report.host_reset = watcher_->take_reset();
     report.received = watcher_->take_received();
     if (const auto seen = watcher_->take_save_load()) {
       report.save_load = true;
       report.save_load_flags = seen->flags;
       report.save_load_frames = seen->frames;
+      report.save_load_native = seen->native;
     }
   }
   report.queued = out.size();

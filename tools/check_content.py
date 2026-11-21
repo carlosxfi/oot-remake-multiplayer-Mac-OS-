@@ -9,6 +9,11 @@ date or the issue instead of the release. Text files are searched for "test"
 followed by a number as a whole word, and for the tag form (v, 0.1.0, dash, test).
 Example tags in tests use another word ("beta").
 
+Test names: a doctest name with a ';' (TEST_CASE, SUBCASE, SCENARIO, TEST_CASE_TEMPLATE, or the
+second argument of TEST_CASE_FIXTURE) splits the name for ctest, which then runs nothing for it;
+tests/CMakeLists.txt refuses it at configure time. The guard refuses it at commit time, before any
+configure (three branches in one day only found out from a failed build).
+
 Private names: the owner's real name must never appear in the repository (in
 any case, also inside a path or a longer word); the owner is "Alex". The guard
 keeps only a hash of the name, so the name itself is not in this file either.
@@ -36,6 +41,13 @@ PRIVATE_NAME_HASHES = {
 }
 PRIVATE_NAME_LENGTHS = {5}
 LETTERS = re.compile(r"[a-z]+")
+
+# A doctest name as written in a test source: the macro, then the name's string literal.
+TEST_SOURCE_EXTENSIONS = (".cpp", ".hpp", ".h")
+_STRING = r'"((?:[^"' + "\\\\" + r']|' + "\\\\" + r'.)*)"'  # a C++ string literal ("\\" escapes)
+TEST_NAME = re.compile(
+    r'\b(?:TEST_CASE|SUBCASE|SCENARIO|TEST_CASE_TEMPLATE)\s*\(\s*' + _STRING
+    + r'|\bTEST_CASE_FIXTURE\s*\(\s*[\w:<>]+\s*,\s*' + _STRING)
 
 # Files that may name a release because they cannot change ("path": "why").
 RELEASE_NAME_ALLOWED = {}
@@ -123,11 +135,28 @@ def private_names(root, path):
     return found
 
 
+def bad_test_names(text):
+    """The doctest names in a source's text that have a ';' (ctest would run nothing for them)."""
+    return [a or b for a, b in TEST_NAME.findall(text) if ";" in (a or b)]
+
+
+def test_name_problems(root, path):
+    """'line N: "name"' for each test name with a ';' in a C++ source under tests/."""
+    if not path.replace("\\", "/").startswith("tests/") or not path.endswith(TEST_SOURCE_EXTENSIONS):
+        return []
+    found = []
+    for number, line in enumerate(text_lines(root, path), 1):
+        for name in bad_test_names(line):
+            found.append(f'line {number}: "{name}"')
+    return found
+
+
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     bad = []
     named = []
     private = []
+    semicolons = []
     for path in tracked_files(root):
         reason = problem(root, path)
         if reason:
@@ -136,6 +165,8 @@ def main():
             named.append(f"{path}: {line}")
         for where in private_names(root, path):
             private.append(f"{path}: {where}")
+        for where in test_name_problems(root, path):
+            semicolons.append(f"{path}: {where}")
     if bad:
         print("Content guard failed. Remove these files:")
         for line in bad:
@@ -149,7 +180,12 @@ def main():
         print("Content guard failed. These name the owner by a private name; write Alex:")
         for line in private:
             print("  " + line)
-    if bad or named or private:
+    if semicolons:
+        print("Content guard failed. These test names have a ';' (ctest would run nothing for them;")
+        print("tests/CMakeLists.txt refuses them at configure). Use ',' or ':' instead:")
+        for line in semicolons:
+            print("  " + line)
+    if bad or named or private or semicolons:
         return 1
     print("Content guard passed.")
     return 0

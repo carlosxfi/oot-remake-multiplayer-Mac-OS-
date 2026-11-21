@@ -31,6 +31,10 @@ In the kit: `hookshot\game\bin\user\save\`. They are your own and stay on your P
 
 We never ship save files, keys, firmware or the game in a release or in this repository: each player uses their own.
 
+## Start Squadala.bat or Start OoT Co-op.bat?
+
+`Start Squadala.bat` (`bash start-squadala.sh` on Linux). It is the only start file from 0.11.4 on; `Start OoT Co-op.bat` (`start-oot-coop.sh`) was its old name. When your kit updates to 0.11.4, your desktop and Start menu shortcuts, the Linux menu entry and your Steam entry are moved over to the new name and the old file goes. If Steam was open at the time, restart it once.
+
 ## The update did not happen
 
 `Start Squadala.bat` and `Update.bat` say why and how to update by hand. Most often: the game is still open (close it), there is no network, or GitHub turned the check away for a while (it allows 60 checks an hour from one internet address). If it says the release signature does not check, the release was published moments ago and is not signed yet: try again later (only set `verify_signature = no` in `coop-options.ini` if it keeps failing and you downloaded nothing from elsewhere). By hand: download **Update.bat** from the newest [release](https://github.com/daurosk/oot-remake-multiplayer/releases) into your kit folder and double-click it.

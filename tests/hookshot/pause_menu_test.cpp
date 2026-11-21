@@ -147,9 +147,18 @@ TEST_CASE("pause tab: Host hosts in one press, then the page shows the code, the
     CHECK(m.view().rows[0].value == "Hosting");
     CHECK(m.view().rows[1].fixed);
     m.Press(Input::kDown);
-    m.Press(Input::kDecide);   // a fixed row says why, and does nothing
+    const std::string hover = m.view().help;   // what selecting the dim row shows already
+    m.Press(Input::kDecide);   // a fixed row says why, and does nothing else
     CHECK(m.page() == Page::kMain);
+    CHECK_FALSE(m.TakeRequest().has_value());
     CHECK(m.view().help.find("stop yours first") != std::string::npos);
+    CHECK(m.view().help.rfind("Not now.", 0) == 0);   // the press is seen: the help changes
+    CHECK(m.view().help != hover);
+    m.Press(Input::kUp);
+    m.Press(Input::kDown);
+    m.Click(1, 0);   // a click on it: the same answer
+    CHECK(m.page() == Page::kMain);
+    CHECK(m.view().help.rfind("Not now.", 0) == 0);
 }
 
 TEST_CASE("pause tab: the host's player count goes round 2 to 16 and is saved") {
@@ -323,17 +332,42 @@ TEST_CASE("pause tab: co-op that came with the game's start is shown, not starte
     m.Show(CoopTitleMenu::Options{});
     Session s;
     s.by_launcher = true;
+    s.state = State::kJoined;   // (the harness's and Join.bat's: connected from the start)
     m.SetSession(s);
-    CHECK(m.view().rows[0].fixed);
-    CHECK(m.view().rows[1].fixed);
+    // Host and Join are not dim: a press opens their page, which says what is on (the owner, 2026-11-19: "Clicking
+    // on Host Game or Join Game doesn't do anything" with co-op from the game's start)
+    CHECK_FALSE(m.view().rows[0].fixed);
+    CHECK_FALSE(m.view().rows[1].fixed);
+    CHECK(m.view().rows[0].value == "Co-op is on");
+    CHECK(m.view().rows[1].value == "Co-op is on");
     CHECK(m.view().gold == "Co-op is on");
+    CHECK(m.view().help.find("Host.bat") != std::string::npos);
     s.players = 3;
     m.SetSession(s);
     CHECK(m.view().gold == "Co-op is on: 3 players");
     m.Press(Input::kDecide);
-    CHECK(m.page() == Page::kMain);
-    CHECK_FALSE(m.TakeRequest().has_value());
+    CHECK(m.page() == Page::kHost);
+    CHECK_FALSE(m.TakeRequest().has_value());   // nothing is started
+    const std::vector<std::string> launcher{"Co-op is on: 3 players",
+                                            "Co-op started with the game: Host.bat, Join.bat or coop.ini.",
+                                            "Who is in the game: the Lobby tab.",
+                                            "To host or join another game, start the game again."};
+    CHECK(Names(m) == launcher);
+    CHECK(m.view().selected == -1);   // notes only: nothing to press
     CHECK(m.view().help.find("Host.bat") != std::string::npos);
+    m.Press(Input::kDecide);
+    m.Click(0, 0);
+    CHECK(m.page() == Page::kHost);
+    CHECK_FALSE(m.TakeRequest().has_value());
+    m.Press(Input::kBack);
+    CHECK(m.page() == Page::kMain);
+    CHECK(Selected(m) == "Host a game");
+    m.Press(Input::kDown);
+    m.Click(1, 0);   // a click opens Join's page the same way
+    CHECK(m.page() == Page::kJoin);
+    CHECK(Names(m) == launcher);
+    CHECK_FALSE(m.TakeRequest().has_value());
+    m.Press(Input::kBack);
     SelectRow(m, "Settings");   // the settings still open
     m.Press(Input::kDecide);
     CHECK(m.page() == Page::kSettings);
@@ -411,7 +445,8 @@ TEST_CASE("pause tab: Settings: name, Link's look, players and voice chat (off u
     m.Open(Page::kSettings);
     CHECK(Names(m) == std::vector<std::string>{"Your name", "Link's look", "Players when you host",
                                                "Port when you host", "Proximity voice chat", "Chat key",
-                                               "Show players on map", "Names on map"});   // (no patch 0015: no input rows)
+                                               "Show players on map", "Names on map", "New Game+",
+                                               "Saves"});   // (no patch 0015: no input rows; Navi's two last)
     View v = m.view();
     CHECK(v.rows[0].value == "Saria");
     CHECK(v.rows[1].value == "By player number");
@@ -489,7 +524,7 @@ TEST_CASE("pause tab: Settings: players on the map and their names, on unless tu
     m.Show(CoopTitleMenu::Options{});
     m.Open(Page::kSettings);
     View v = m.view();
-    REQUIRE(v.rows.size() == 8);   // (the port and chat key rows before them; no patch 0015: no input rows)
+    REQUIRE(v.rows.size() == 10);   // (the port and chat key rows before them, New Game+ and Saves after; no patch 0015)
     CHECK(v.rows[6].kind == RowKind::kToggle);
     CHECK(v.rows[6].on);
     CHECK(v.rows[7].on);
@@ -628,7 +663,7 @@ TEST_CASE("pause tab: Settings: Controller and Keyboard rows when this Hookshot 
     CHECK(Names(m) == std::vector<std::string>{"Your name", "Link's look", "Players when you host",
                                                "Port when you host", "Proximity voice chat", "Chat key",
                                                "Controller", "Keyboard and mouse", "Show players on map",
-                                               "Names on map"});
+                                               "Names on map", "New Game+", "Saves"});
     SelectRow(m, "Controller");
     View v = m.view();
     CHECK(v.rows[static_cast<std::size_t>(v.selected)].value == "all");
@@ -653,7 +688,7 @@ TEST_CASE("pause tab: Settings: Controller and Keyboard rows when this Hookshot 
     CHECK(r->kind == Request::Kind::kKeyboard);
     // gone again (the module found no patch 0015): the selection stays on a row there is
     m.SetInputRows({}, {});
-    CHECK(Names(m).size() == 8);   // (with the port and two map rows)
+    CHECK(Names(m).size() == 10);   // (with the port, two map rows, New Game+ and Saves)
     CHECK_FALSE(Selected(m).empty());
 }
 
@@ -1007,4 +1042,36 @@ TEST_CASE("pause tab: q and e type into the code and the password, the page stay
     CHECK(SelectedValue(p) == "******_");
     p.Press(Input::kDecide);
     CHECK(p.join_text() == "10.0.0.2:28000 qEeQue");
+}
+
+// Owner photo 2026-11-19: the Multiplayer tab's value column was empty. Every page row says where it stands and
+// carries the page arrow (right), so the cell is never blank.
+TEST_CASE("pause tab: every first-page row has a value and the page arrow") {
+    Menu m;
+    m.Show(CoopTitleMenu::Options{});
+    const View v = m.view();
+    REQUIRE(v.rows.size() == 6);
+    for (const Row& r : v.rows) {
+        CHECK_FALSE(r.value.empty());
+        CHECK(r.right);
+    }
+    CHECK(v.rows[0].value == "Off");
+    CHECK(v.rows[1].value == "Off");
+}
+
+TEST_CASE("pause tab: a long name is cut on the Settings row so the page arrow keeps its room") {
+    Menu m;
+    CoopTitleMenu::Options o;
+    o.name = "AVeryLongPlayerName";
+    m.Show(o);
+    CHECK(m.view().rows[3].value == "AVeryLong...");
+}
+
+TEST_CASE("pause tab: the Settings row's name is cut on a character, not in the middle of one") {
+    Menu m;
+    CoopTitleMenu::Options o;
+    o.name = "Ab\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9";   // 2 + 8 two-byte letters: byte 9 is mid-letter
+    m.Show(o);
+    const std::string v = m.view().rows[3].value;
+    CHECK(v == "Ab\xC3\xA9\xC3\xA9\xC3\xA9...");   // (byte 9 is inside the fourth letter: the cut steps back to its start)
 }

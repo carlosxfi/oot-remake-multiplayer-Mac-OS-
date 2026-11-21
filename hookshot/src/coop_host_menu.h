@@ -50,6 +50,8 @@ struct Hooks {
     // the same helper nonce and port each time (RejoinIds). Empty: random.
     std::function<std::string()> client_id;
     std::uint64_t direct_ms = 3000;
+    // (Navi) This game's New Game+ level (coop_ngplus.h), told to our server each round for everyone. Empty: 0.
+    std::function<std::uint8_t()> ngplus_level;
 };
 
 // Most players at once for a server the title menu's Host starts: the options' number (1 to 16, more taken as 16),
@@ -74,9 +76,9 @@ public:
 
 private:
     struct HostJob {
-        std::string name, password, relay_via, relay_key;
+        std::string name, password, relay_via, relay_key, relay_room, relay_list;
         std::uint16_t port = 0;
-        bool upnp = false, invite = false, pvp = false;
+        bool upnp = false, invite = false, pvp = false, approve_joins = false;
         std::uint8_t max_players = 0;  // HostMaxPlayers'
         std::uint32_t pose_upload_kbps = 0;
     };
@@ -84,12 +86,21 @@ private:
         std::string name, password;
         coop::server::nat::Addr host;
     };
+    // "<join code or room>@relay": the relay lets this PC's address in, then the game connects to the relay.
+    // The fields of relay_link.hpp's RelayJoin, which this header does not include: it brings ENet, and with it
+    // windows.h's min and max, into every file that includes this one (coop_hookshot.cpp).
+    struct RelayJoinJob {
+        std::string name, password;
+        std::string code, room, relay_host;
+        std::uint16_t relay_port = 0;
+    };
     bool Busy(const char* what);
     void StopThread();  // with calls_ held
     void Fail(const std::string& why, int problem);
     void Say(const std::string& text) const;
     void RunHost(HostJob job);
     void RunJoin(JoinJob job);
+    void RunRelayJoin(RelayJoinJob job);
     std::vector<coop::server::nat::Addr> StunServers() const;
     std::string NameOr(const char* given) const;
 

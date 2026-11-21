@@ -3,10 +3,11 @@
 # that names the new release's assets as GitHub will. No network, nothing published, no game run.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\release\tests\old_kit_update_test.ps1 `
-#       -OldZip <oot-coop-v0.11.2-windows.zip or another old kit> -NewDir <make_kit_hookshot -OutRoot folder> -Tag v0.11.3
+#       -OldZip <Squadala-v0.11.3-windows.zip or a newer kit> -NewDir <make_kit_hookshot -OutRoot folder> -Tag v0.11.4
 #
-# -OldZip  the old release's zip (best the one downloaded from its GitHub release; its .sha256 beside it is checked)
-# -NewDir  the folder make_kit_hookshot.ps1 wrote Squadala-<Tag>-windows.zip, oot-coop-<Tag>.zip and their .sha256 to
+# -OldZip  the old release's zip (best the one downloaded from its GitHub release; its .sha256 beside it is checked).
+#          From v0.11.4 a kit up to v0.11.2 cannot see the new release (no oot-coop-* asset): it goes through v0.11.3.
+# -NewDir  the folder make_kit_hookshot.ps1 wrote Squadala-<Tag>-windows.zip and its .sha256 to
 # -Tag     the new release's tag
 # -Work    a folder for the test (default: a new temp folder, removed after)
 #
@@ -74,10 +75,9 @@ try {
 
     # --- The new release, as GitHub lists it
     $newWin = Join-Path $NewDir "Squadala-$Tag-windows.zip"
-    $newOld = Join-Path $NewDir "oot-coop-$Tag.zip"
-    foreach ($f in $newWin, "$newWin.sha256", $newOld, "$newOld.sha256") { Check (Test-Path -LiteralPath $f) "the new release has $([System.IO.Path]::GetFileName($f))" }
-    Check ((Sha $newWin) -eq (Sha $newOld)) 'the -windows zip and the old-name zip are the same file'
-    foreach ($z in $newWin, $newOld) {
+    foreach ($f in $newWin, "$newWin.sha256") { Check (Test-Path -LiteralPath $f) "the new release has $([System.IO.Path]::GetFileName($f))" }
+    Check (-not (Test-Path -LiteralPath (Join-Path $NewDir "oot-coop-$Tag.zip"))) "the new release has no oot-coop-$Tag.zip (Squadala- names only, from v0.11.4)"
+    foreach ($z in @($newWin)) {
         $line = [System.IO.File]::ReadAllText("$z.sha256").Trim()
         Check ($line -eq "$(Sha $z)  $([System.IO.Path]::GetFileName($z))") "$([System.IO.Path]::GetFileName($z)).sha256 names its own file and hash"
     }
@@ -86,7 +86,7 @@ try {
         $assets += [pscustomobject]@{ name = $f.Name; browser_download_url = $f.FullName; size = $f.Length }
     }
     # (the Linux kit goes up beside it: the Windows updater must never take it)
-    foreach ($ln in "Squadala-$Tag-linux.zip", "oot-coop-$Tag-linux.zip") {
+    foreach ($ln in @("Squadala-$Tag-linux.zip")) {
         $lin = Join-Path $Work $ln
         [System.IO.File]::WriteAllText($lin, 'not a windows kit')
         [System.IO.File]::WriteAllText("$lin.sha256", "$(Sha $lin)  $ln`n")
@@ -128,7 +128,15 @@ try {
     $newTop = @(Get-ChildItem -LiteralPath $newKit -File | ForEach-Object Name | Sort-Object)
     Check ((Compare-Object $top $newTop).Count -eq 0) "the kit's top folder is the new kit's [$($top -join ', ')]"
     Check (Test-Path -LiteralPath (Join-Path $kit 'Start Squadala.bat')) 'the start file Start Squadala.bat is there'
-    Check ((Get-Content -LiteralPath (Join-Path $kit 'Start OoT Co-op.bat') -Raw) -match 'call "%~dp0Start Squadala\.bat"') 'Start OoT Co-op.bat (the old name) is the one-line call of it now'
+    Check (-not (Test-Path -LiteralPath (Join-Path $kit 'Start OoT Co-op.bat'))) 'one start file: the old updater removed Start OoT Co-op.bat (by its MANIFEST.txt)'
+    # The new kit's first start (play.ps1 -NoUpdate after the old updater: update.ps1 -Tidy) moves a shortcut that started it.
+    $links = Join-Path $Work 'links'
+    New-Item -ItemType Directory -Force -Path $links | Out-Null
+    $wsh = New-Object -ComObject WScript.Shell
+    $l = $wsh.CreateShortcut((Join-Path $links 'My co-op.lnk')); $l.TargetPath = Join-Path $kit 'Start OoT Co-op.bat'; $l.Save()
+    $env:OOT_COOP_SHORTCUT_DIRS = $links
+    try { & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $kit 'scripts\update.ps1') -Kit $kit -Tidy | Out-Null } finally { Remove-Item env:OOT_COOP_SHORTCUT_DIRS }
+    Check ($wsh.CreateShortcut((Join-Path $links 'My co-op.lnk')).TargetPath -ieq (Join-Path $kit 'Start Squadala.bat')) 'one start file: the new kit''s -Tidy points the shortcut at Start Squadala.bat'
     Check ((Select-String -LiteralPath (Join-Path $kit 'scripts\update.ps1') -SimpleMatch 'function Get-KitReleaseZip' -Quiet)) 'the new kit''s updater knows the -windows name'
     $o = [System.IO.File]::ReadAllText($optFile)
     Check ($o -match '(?m)^pvp = on' -and $o -match '(?m)^# mine' -and $o -match '(?m)^verify_signature = no') 'coop-options.ini keeps the player''s values'

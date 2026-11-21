@@ -1,0 +1,18 @@
+# save-refresh (player report 124): a guest with NO save of its own joins on the title; once the host's save is written
+# into its co-op folder and the game is switched to it, the title has the game re-read its save list (CoopSave
+# RemountLocked -> coop_title RefreshSaveList), so Continue shows without a restart.
+# Prep (the offline job does it, and puts it back): game B's autotest-save without its slot_NN folders (no save).
+# PASS: b-switched, b-list-asked, b-list-read (the game's own list now says a save exists), b-no-crash; look at the
+# shot b-title-after (Continue on B's title) and a-loaded.
+#! switches B:LICHII_COOP_TEST_OWN_SAVE=0
+#! timeout 420
+start A B
+load A
+sleep 20
+shot a-loaded
+sleep 60
+shot b-title-after
+lines b-switched B min=1 coop: save: now playing from the co-op save folder
+lines b-list-asked B min=1 coop: title: save list: reset \(state 0\), read started
+lines b-list-read B min=1 coop: title: save list: read again by the game: a save yes
+lines b-no-crash B max=0 unhandled exception|fault at|coop: null read

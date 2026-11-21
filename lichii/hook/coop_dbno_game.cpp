@@ -11,6 +11,7 @@
 
 #include "coop_dbno_game.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -18,11 +19,18 @@
 #include <variant>
 
 #include "common/logging.h"
+#include "coop/host/event_owner.hpp"
 #include "coop/host/session.hpp"
 #include "coop/net/client.hpp"
 #include "coop_actor_events.h"
+#include "coop_dbno_body.h"
 #include "coop_objects.h"
 #include "coop_puppet.h"
+#include "coop_fairy.h"
+#include "coop_pvp_game.h"
+#include "coop_rooms.h"
+#include "coop_teleport.h"
+#include "coop_teleport_game.h"
 
 namespace CoopDbno {
 namespace {
@@ -34,7 +42,21 @@ std::uint64_t SteadyUs() {
 }
 
 // What the pad hook does with the pad (set by the frame).
-enum class PadMode : std::uint8_t { game, downed, reviver };
+enum class PadMode : std::uint8_t { game, downed, reviver, spectating };
+
+const char* StateName(State s) {
+    switch (s) {
+    case State::up:
+        return "up";
+    case State::downed:
+        return "down";
+    case State::out:
+        return "out";
+    case State::spectating:
+        return "spectating";
+    }
+    return "?";
+}
 
 struct Glue {
     std::mutex mutex;  // everything below that is not atomic
@@ -46,6 +68,12 @@ struct Glue {
         bool holding;
     };
     std::vector<HoldIn> holds;        // network thread -> frame
+    struct ThreatIn {
+        bool enemy_near = false;
+        std::uint64_t at_us = 0;
+    };
+    std::array<std::optional<ThreatIn>, proto::kMaxPlayers + 1> threats{};  // their DBNO_THREAT
+    std::optional<Vec3> spectate_offset;  // frame -> the camera
     std::vector<std::string> lines;   // any thread -> chat
     std::optional<View> view;         // frame -> the screen
     coop::host::Session* session = nullptr;  // the last frame's, for Change
@@ -54,14 +82,20 @@ struct Glue {
     // The frame's own (no lock): only the frame touches them.
     Machine machine;
     Reviver reviver;
+    ThreatTeller threat_teller;
+    bool was_button = false;  // A last frame (the spectator's switch)
+    bool move_refused = false;  // the respawn's move could not even be asked
 
     // The game's threads.
     LifeGuard guard;
     std::atomic<std::uint64_t> life_component{0};
+    std::atomic<std::uint64_t> bsa{0};      // our Link's BSA (the objects walk)
+    std::atomic<std::uint64_t> emitter{0};  // our Link's PerceptionEmitter (the objects walk)
     std::atomic<std::int32_t> life_write{-1};  // raise to this (-1: none); the objects walk writes it
     Lowering take_to;                          // lower to this; the Life step takes it
     std::atomic<PadMode> pad_mode{PadMode::game};
     std::atomic<bool> button{false};  // A as the player holds it (before we take it)
+    std::atomic<bool> enemies_near{false};  // the objects walk
 
     void Line(std::string text) {
         if (lines.size() < 32) {
@@ -174,6 +208,7 @@ void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
         g.rules = Rules{};
         g.heard = false;
         g.roster.Clear();
+        g.threats.fill(std::nullopt);
         g.holds.clear();
         if (event.kind != EventKind::disconnected) {
             g.tell_again.store(true);
@@ -186,6 +221,9 @@ void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
     case EventKind::player_left: {
         std::lock_guard lock(g.mutex);
         g.roster.Left(event.player);
+        if (event.player <= proto::kMaxPlayers) {
+            g.threats[event.player].reset();
+        }
         return;
     }
     case EventKind::message:
@@ -222,8 +260,12 @@ void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
             g.Line(std::move(*line));
         }
         if (!was || was->state != s->state) {
-            LOG_INFO(Core, "coop: dbno: P{} is {}", s->player_number,
-                     s->state == State::up ? "up" : s->state == State::downed ? "down" : "out");
+            LOG_INFO(Core, "coop: dbno: P{} is {}", s->player_number, StateName(s->state));
+        }
+    } else if (const auto* t = std::get_if<proto::DbnoThreat>(&event.message)) {
+        std::lock_guard lock(g.mutex);
+        if (t->player_number >= 1 && t->player_number <= proto::kMaxPlayers) {
+            g.threats[t->player_number] = Glue::ThreatIn{t->enemy_near, now_us};
         }
     } else if (const auto* r = std::get_if<proto::DbnoRevive>(&event.message)) {
         std::lock_guard lock(g.mutex);
@@ -275,8 +317,14 @@ void Frame(const std::optional<std::string>& scene, const std::optional<coop::ho
             t.number = r.number;
             t.state = g.roster.StateOf(r.number);
             t.in_game = r.scene.has_value() && !r.scene->empty() && (r.status & proto::status::loading) == 0;
+            t.loading = (r.status & proto::status::loading) != 0;
+            t.status = r.status;
             t.scene = r.scene;
             t.position = r.position;
+            if (const auto& th = g.threats[r.number <= proto::kMaxPlayers ? r.number : 0];
+                th && now_us < th->at_us + kThreatStaleUs) {
+                t.threat = th->enemy_near ? Threat::enemy : Threat::clear;
+            }
             team.push_back(std::move(t));
             if (g.roster.Downed(r.number)) {
                 fallen.push_back(Fallen{r.number, r.scene, r.position});
@@ -306,38 +354,124 @@ void Frame(const std::optional<std::string>& scene, const std::optional<coop::ho
     in.scene = scene;
     in.position = reading ? reading->position : Vec3{};
     in.team = team;
+    // Spectating: A (as the player pressed it) watches the next player.
+    const bool button = g.button.load();
+    in.next = g.machine.Now() == State::spectating && button && !g.was_button;
+    g.was_button = button;
+    // The respawn's move (asked by an earlier frame): how it went.
+    if (const auto moved = CoopTeleport::TakeRespawnMove()) {
+        in.moved = *moved ? Moved::done : Moved::failed;
+    } else if (std::exchange(g.move_refused, false)) {
+        in.moved = Moved::failed;
+    }
+    in.enemy_near_us = g.enemies_near.load(std::memory_order_relaxed);
     const Output out = g.machine.Frame(in);
     g.guard.Set(out.guard);
+    Body::Raising& raise = Body::TheRaising();
     if (out.write_life) {
-        // Less: through the game's own Life step (its death at 0). More (a
-        // revive): written, as the step heals nothing.
-        // The step not taken in time: written after all (it skips frames).
+        // Both ways through the game's own Life step: less as its damage (its
+        // death at 0), more (a revive, a respawn) as a negative sum, its heal
+        // (coop_dbno_body.h). The step not taken in time: written after all
+        // (it skips frames).
         if (in.life && *out.write_life < *in.life) {
+            raise.Drop();
             if (const auto late = g.take_to.Ask(*out.write_life, now_us)) {
                 g.life_write.store(*late);
                 LOG_INFO(Core, "coop: dbno: the Life step did not lower our Link in time: written");
             }
+        } else if (in.life && GuardLive()) {
+            g.take_to.Drop();
+            raise.Start(*out.write_life, now_us);
+            LOG_INFO(Core, "coop: dbno: our Link's life {} -> {}: asked through the game's Life step (its heal)",
+                     *in.life, *out.write_life);
         } else {
             g.take_to.Drop();
-            g.life_write.store(*out.write_life);
+            g.life_write.store(*out.write_life);  // no Life step (or no life read): written
         }
     } else if (out.state == State::up) {
         g.take_to.Drop();  // up again (a fairy, the title screen): nothing left to lower
     }
+    if (const auto late = raise.Frame(in.life, now_us)) {
+        g.life_write.store(*late);
+        LOG_INFO(Core, "coop: dbno: the Life step did not raise our Link in time: written");
+    }
+
+    // Our downed Link's body (coop_dbno_body.h): crawl, shield and unseen while
+    // down; an event of ours drives our Link meanwhile. G1 (coop/host/event_owner.hpp):
+    // only an event our Link is in, not another player's replayed here nor our free Ocarina.
+    Body::Crawl::Wanted body;
+    // Lying while downed and while spectating (down-spectate): the body stays down until the respawn.
+    body.lying = out.state == State::downed || out.state == State::spectating;
+    body.event = reading && coop::host::our_link_in_event(reading->event_running.value_or(false),
+                                                           reading->event_whose);
+    body.emitter = g.emitter.load(std::memory_order_acquire);
+    body.bsa = g.bsa.load(std::memory_order_acquire);
+    body.life = g.life_component.load(std::memory_order_acquire);
+    // A teammate who cannot be fought now (downed, spectating, or PLAYER_STATUS away: paused, in a
+    // menu, loading, in their own event, dead): their puppet is unseen in our game too (issue 150 with
+    // row 113; review of perception-on).
+    for (const Teammate& t : team) {
+        if (auto why = Body::UnseenWhy(t.state == State::downed || t.state == State::spectating, t.status)) {
+            body.unseen_puppets.push_back({t.number, std::move(*why)});
+        }
+    }
+    Body::TheCrawl().Want(body);
+    for (auto& note : Body::TheCrawl().TakeNotes()) {
+        LOG_INFO(Core, "coop: dbno: {}", note);
+    }
 
     // Beside a downed teammate: hold A.
-    const bool event = reading && reading->event_running.value_or(false);
+    // G1 (coop/host/event_owner.hpp): no revive while the game's event holds our Link (ours, or the
+    // free Ocarina); another player's event replayed here leaves our Link free, so it may revive.
+    const bool event = reading && coop::host::event_blocks_revive(reading->event_running.value_or(false),
+                                                                  reading->event_whose);
     const bool able = connected && rules.on && out.state == State::up && reading.has_value() && !event;
     const Reviver::Out rev =
         g.reviver.Frame(now_us, able, g.button.load(), in.position, scene, fallen);
-    g.pad_mode.store(out.state == State::downed ? PadMode::downed
-                     : g.reviver.TakesButton()  ? PadMode::reviver
-                                                : PadMode::game);
+    g.pad_mode.store(out.state == State::downed       ? PadMode::downed
+                     : out.state == State::spectating ? PadMode::spectating
+                     : g.reviver.TakesButton()        ? PadMode::reviver
+                                                      : PadMode::game);
+
+    // Enemies near our Link, for those who spectate (told only while we are up).
+    // With PvP on, another player up beside us is a threat too: a player
+    // downed in a duel does not come back in the middle of it.
+    bool threatened = in.enemy_near_us;
+    if (!threatened && CoopPvp::On() && reading) {
+        std::vector<Vec3> rivals;
+        for (const Teammate& t : team) {
+            if (t.state == State::up && t.in_game && t.scene && scene && *t.scene == *scene && t.position) {
+                rivals.push_back(*t.position);
+            }
+        }
+        threatened = AnyNear(in.position, rivals);
+    }
+    const auto threat = g.threat_teller.Frame(
+        now_us, connected && heard && rules.on && out.state == State::up && reading.has_value(), threatened);
+
+    // Spectating: the camera follows the one watched while the game can draw
+    // where they are: our scene, and in a dungeon our room (rooms load one at
+    // a time: coop_teleport.h CheckMove; the camera moves, Link does not, so his room stays the one loaded).
+    std::optional<Vec3> offset;
+    if (out.state == State::spectating && reading && scene) {
+        static const CoopRooms::Table rooms = CoopFairy::RoomTable();
+        for (const Teammate& t : team) {
+            if (t.number == out.watching && t.scene && *t.scene == *scene && t.position &&
+                CoopTeleport::CheckMove(rooms, *scene, CoopTeleport::Vec{in.position[0], in.position[1], in.position[2]},
+                                        CoopTeleport::Vec{(*t.position)[0], (*t.position)[1], (*t.position)[2]}) ==
+                    CoopTeleport::MoveCheck::ok) {
+                offset = Vec3{(*t.position)[0] - in.position[0], (*t.position)[1] - in.position[1],
+                              (*t.position)[2] - in.position[2]};
+            }
+        }
+    }
+    const bool watched_here = offset.has_value();
 
     std::vector<std::string> lines;
     std::optional<View> view;
-    if (session != nullptr && (out.send || rev.send || !out.events.empty() || out.state == State::downed ||
-                               rev.target != 0)) {
+    std::optional<std::pair<std::uint8_t, std::string>> move_beside;
+    if (session != nullptr && (out.send || rev.send || threat || !out.events.empty() ||
+                               out.state == State::downed || out.state == State::spectating || rev.target != 0)) {
         session->with_client([&](coop::net::Client& client) {
             if (connected && out.send) {
                 client.send(*out.send);
@@ -345,14 +479,23 @@ void Frame(const std::optional<std::string>& scene, const std::optional<coop::ho
             if (connected && rev.send) {
                 client.send(*rev.send);
             }
+            if (connected && threat) {
+                client.send(*threat);
+            }
             for (const Event e : out.events) {
                 if (auto line = OwnLine(e, NameOf(client, out.by))) {
                     lines.push_back(std::move(*line));
                 }
                 LOG_INFO(Core, "coop: dbno: our Link: event {} (by P{})", static_cast<int>(e), out.by);
             }
+            if (out.move_beside != 0) {
+                move_beside = std::make_pair(out.move_beside, NameOf(client, out.move_beside));
+            }
             if (out.state == State::downed) {
                 view = View{View::Kind::downed, NameOf(client, out.reviver), out.left_us, out.progress, false};
+            } else if (out.state == State::spectating) {
+                view = View{View::Kind::spectating, NameOf(client, out.watching), 0, 0.0f, false};
+                view->elsewhere = out.watching != 0 && !watched_here;
             } else if (rev.target != 0) {
                 View v{View::Kind::reviving, NameOf(client, rev.target), 0, 0.0f, rev.holding};
                 std::lock_guard lock(g.mutex);
@@ -366,11 +509,28 @@ void Frame(const std::optional<std::string>& scene, const std::optional<coop::ho
             }
         });
     }
+    // Coming back: our Link is moved first, the respawn follows once it is
+    // (Input::moved). Beside the one watched: the /teleport trip (its own
+    // scene load when they are elsewhere; the game's own move in our scene).
+    // Else the entrance: the game's own scene start.
+    if (move_beside) {
+        LOG_INFO(Core, "coop: dbno: respawn: moving beside P{}", move_beside->first);
+        if (!CoopTeleport::Beside(move_beside->first, std::move(move_beside->second))) {
+            g.move_refused = true;  // teleport is off in this game: the entrance
+        }
+    }
+    if (out.move_entrance) {
+        LOG_INFO(Core, "coop: dbno: respawn: not beside them: to the entrance");
+        if (!CoopTeleport::ToEntrance()) {
+            g.move_refused = true;
+        }
+    }
     std::lock_guard lock(g.mutex);
     for (auto& l : lines) {
         g.Line(std::move(l));
     }
     g.view = std::move(view);
+    g.spectate_offset = offset;
 }
 
 std::vector<std::string> TakeLines() {
@@ -385,6 +545,16 @@ std::optional<View> Shown() {
     Glue& g = TheGlue();
     std::lock_guard lock(g.mutex);
     return g.view;
+}
+
+void NoteEnemiesNear(bool any) {
+    TheGlue().enemies_near.store(any, std::memory_order_relaxed);
+}
+
+std::optional<Vec3> SpectateOffset() {
+    Glue& g = TheGlue();
+    std::lock_guard lock(g.mutex);
+    return g.spectate_offset;
 }
 
 // --- The game's threads ---
@@ -407,7 +577,16 @@ std::int32_t LifeStep(std::uint64_t component, std::int32_t life, std::int32_t s
         return sum;
     }
     sum = g.guard.Step(life, sum);
-    return Lowered(life, sum, g.take_to.Take());
+    sum = Lowered(life, sum, g.take_to.Take());
+    // A raise (revive, respawn) as a negative sum: the game's heal. Kept until
+    // the frame sees the life reached (Raising::Frame), as the step may not
+    // apply it this frame.
+    return Body::Raised(life, sum, Body::TheRaising().Peek());
+}
+
+void SetOurComponents(std::uint64_t bsa, std::uint64_t emitter) {
+    TheGlue().bsa.store(bsa, std::memory_order_release);
+    TheGlue().emitter.store(emitter, std::memory_order_release);
 }
 
 std::optional<std::int32_t> TakeLifeWrite() {
@@ -426,6 +605,8 @@ Pad OnPad(const Pad& in) {
         return DownedPad(in);
     case PadMode::reviver:
         return ReviverPad(in);
+    case PadMode::spectating:
+        return SpectatorPad(in);
     case PadMode::game:
         break;
     }

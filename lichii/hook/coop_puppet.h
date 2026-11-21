@@ -32,6 +32,7 @@
 #include "coop_follow.h"
 #include "coop_snap.h"
 #include "coop_link_sound.h"
+#include "coop_puppet_flame.h"
 #include "coop_puppet_sound.h"
 
 namespace coop::protocol {
@@ -131,6 +132,23 @@ inline constexpr std::uint64_t kEquipState = 0xce7ab0;
 // kind 7 (head) index 0, 8 (upper) 1, 9 (lower) 2, 10 (hand) 3. It returns
 // 0 when there was a piece it could not take off.
 inline constexpr std::uint64_t kUnequipArmor = 0x10aceb0;
+// A worn head piece shown (#91). The EquipmentUser has one byte per armor
+// link at +0x13c4 (link 0 the head; the hand slots' bytes are just before it,
+// +0x13bc + slot), whose low two bits say whether the piece is drawn: 2
+// shown, 1 not. The equip call and the GameData path leave it alone, so a
+// mask worn so was made but never drawn, on the player's own Link too
+// (wear-masks, 20261110-155536 and probe2 of 11-18). The game sets it where
+// a mask is really put on: its ZR use (0x4b7b20: 2 and 0x4b84b0 to wear, 1
+// and 0x4b8240 to take off) and the pause menu's equipment (0xa7aa60), which
+// calls 0x33abfa0(owner): eu = [owner + 0x470]; byte = (byte & ~3) | 2; then
+// 0x4b84b0(eu), which moves the hair texture for the mask (MaskParam's UV,
+// material Mt_Hairs). The director calls it with `owner` = a cell of the
+// puppet's block holding its EquipmentUser, minus 0x470.
+// 0x4b8240(eu) puts the hair back (the game's take-off).
+inline constexpr std::uint64_t kShowHeadArmor = 0x33abfa0;
+inline constexpr std::uint64_t kShowHeadArmorEu = 0x470;   // [owner + this] = EquipmentUser
+inline constexpr std::uint64_t kHeadArmorHairBack = 0x4b8240;
+inline constexpr std::uint64_t kArmorShownBytes = 0x13c4;  // + armor link: low bits 2 shown, 1 not
 inline constexpr std::uint32_t kArmorKindFirst = 7;   // ArmorHead
 inline constexpr std::uint32_t kArmorKindLast = 10;   // ArmorHand
 inline constexpr std::uint64_t kArmorLinks = 0xe0;    // kArmorLinkCount links of kEquipSlotStride
@@ -191,6 +209,7 @@ inline constexpr std::uint64_t kSetMatrix = 0x4c6580;
 // Worn swapped, the puppet's Ocarina sat in the holder's slot, and players
 // saw it vanish (or something else in the hand) while it played.
 inline constexpr std::size_t kGearCount = 13;
+inline constexpr std::size_t kGearHead = 2;  // the mask
 inline constexpr std::size_t kGearHeld = 5;  // index of the held item
 inline constexpr std::size_t kGearHand = 6;  // the gauntlets
 inline constexpr std::size_t kGearSubWeapon = 7;
@@ -239,9 +258,19 @@ constexpr bool GearIsCarried(std::size_t i) {
 // 'Weapon_Range_Hookshot' (returned 0x1)`, with every other piece of the same
 // player worn fine, and the player never fired it: the piece is stepped by the
 // game and cannot follow the puppet, parked or not. The Longshot is the same
-// actor family. Such a piece stays off the puppet: only its own player's Link
-// shows it. LICHII_COOP_PUPPET_HOOKSHOT=1 wears it again (a test). By name and
-// not by slot: it is the piece the game steps, whichever slot sends it.
+// actor family. By name and not by slot: it is the piece the game steps,
+// whichever slot sends it.
+//
+// Root cause (held-piece, 2026-11-16): the read is the one every held piece
+// makes (f_7102dcee60 after a held-item change, the wearer's Player
+// component at component table +0x358, which a puppet has not). In the
+// 0.11.1 to 0.11.3 packs a puppet carries the perception's Physics in its
+// component slot 10, so patch 0002's guard (armed by a Link with no slot 10)
+// never armed the null page and the read faulted. The module now arms that
+// page itself before its first puppet (hookshot/src/coop_null_page.h), and
+// the emulator reads 0 there anyway. So such a piece is left off a puppet
+// only where null reads cannot give 0 (Director::SetNullReadsZero(false));
+// LICHII_COOP_PUPPET_HOOKSHOT=0 leaves it off, =1 wears it, everywhere.
 constexpr bool GearIsUnsafe(std::string_view name) {
     return name.find("Hookshot") != std::string_view::npos ||
            name.find("Longshot") != std::string_view::npos;
@@ -253,7 +282,7 @@ inline constexpr std::array<int, kGearCount> kGearSlots{0, 4, -1, -1, -1, 3, -1,
 
 // A puppet's memory block, from the game's malloc, kept for the whole run.
 namespace block {
-inline constexpr std::uint64_t kSize = 0x740;  // to 0x738: coop_link_sound.h's handles
+inline constexpr std::uint64_t kSize = 0x780;  // to 0x778: coop_puppet_flame.h's key and handle
 inline constexpr std::uint64_t kCreateArg = 0x000;  // 0x100 bytes
 inline constexpr std::uint64_t kName = 0x100;       // {char*, u32 capacity}
 inline constexpr std::uint64_t kHandles = 0x110;    // kHandleCount slots of 8 bytes
@@ -272,6 +301,9 @@ inline constexpr std::uint64_t kAnimCapacity = 0x50;  // 64 characters and the 0
 inline constexpr std::uint64_t kGearText = 0x300;
 inline constexpr std::uint64_t kGearCapacity = 0x40;
 inline constexpr std::uint64_t kGearPtr = 0x640;  // kGearCount x 8 bytes (to 0x6a8)
+// The EquipmentUser, for the head show call (addr::kShowHeadArmor reads it at
+// owner + 0x470: the call is given this cell's address minus 0x470).
+inline constexpr std::uint64_t kHeadOwnerEu = 0x6a8;  // 8 bytes (then coop_puppet_sound.h's)
 }  // namespace block
 
 // Guest memory, as the director sees it. Failures are quiet.
@@ -288,6 +320,10 @@ struct Call {
     std::array<std::uint64_t, 8> x{};    // x0 to x7
     std::array<std::uint64_t, 4> stack{};// what the function sees at sp
     float s0 = 0.0f;                     // the first float argument
+    // The call runs a copy's own game code (its AI: the native boss sync's brain and action calls): what the game
+    // creates or deletes inside it is the game's own doing, judged as any (a copy enemy's own shot or minion is
+    // stopped), not the module's own (CoopActorEvents::Ours).
+    bool copy_game = false;
 };
 
 // A remote player's animation, as PLAYER_SAMPLE field 7 carries it.
@@ -296,6 +332,16 @@ struct Anim {
     float frame = 0.0f;
     float rate = 1.0f;
 };
+
+// Whether a sample's frame follows its player's animation, given the sample before it (same slot). A playing pose
+// (rate above 0) whose frame stands still from one sample to the next (same command, the same frame) is sent at a
+// fixed frame: the sender does not follow the frame (the carried pose of a lifted player, coop_lift_player.h
+// CarriedAnimation, sends frame 0 at rate 1). The copy then plays on at the rate, and its frame is not set back to
+// the sample's (which would snap the loop back to frame 0 on every sample). A real player's playing animation
+// moves on between samples, so its frame is followed as before; a new command or the first sample is followed.
+inline bool FrameFollowed(const std::string& before_name, float before_frame, const Anim& now) {
+    return !(now.rate > 0.0f && !before_name.empty() && now.name == before_name && now.frame == before_frame);
+}
 
 // coop/host/scene.hpp's Visibility, for a puppet that exists.
 enum class Show { show, hold, hide };
@@ -322,6 +368,9 @@ struct Target {
     // PLAYER_EQUIP's drawn bits: bit i set when the player's equipment slot i
     // is in hand (sword out, shield on the arm). Unset: not known.
     std::optional<std::uint8_t> drawn;
+    // PLAYER_EQUIP's lit bits (issue 248): bit i set when the piece in their
+    // slot i burns. Unset: not known (an older build), as 0.
+    std::optional<std::uint8_t> lit;
     // The player's colour, 0xRRGGBB (coop_colors.h): the puppet is tinted
     // with it while live. Unset: no tint.
     std::optional<std::uint32_t> color;
@@ -374,6 +423,14 @@ public:
     // alpha of the game's hit-flash colour, coop_colors.h); 0, the default,
     // writes no colour (the fairies' director).
     void SetTint(float strength) { tint_ = strength; }
+    // Whether the game's reads through a puppet's missing components give 0
+    // here (the emulator; Hookshot once its null page is armed). Without that
+    // a GearIsUnsafe piece stays off the puppet (issue 232). Default: yes.
+    // (Atomic: Hookshot's create hook may turn it off on another thread.)
+    void SetNullReadsZero(bool on) { null_reads_zero_.store(on); }
+    // A piece Equip leaves off the puppet: nothing is made for it, and the
+    // piece its slot may still hold is neither put away nor re-worn.
+    bool LeftOff(const std::string& name) const;
     // Tunic puppets (CoopPuppet_<Age>_<Colour>) found not to work: the mod is
     // a pack from before the colours (two create timeouts of that actor while
     // no tunic puppet has spawned yet), or one spawned without a Player_ model
@@ -415,6 +472,11 @@ public:
     // shown or held (not parked for a hide), as of the last calc frame. The
     // fairies follow it, so a Navi never shows without her puppet (issue 145).
     std::uint32_t LiveMask() const { return live_mask_.load(std::memory_order_relaxed); }
+    // Any thread (native puppets phase 4, coop_pvp_native.h): player `number`'s copy actor while it is a live,
+    // present `_Pvp` actor in this scene, as of the last calc frame; 0 otherwise (a plain copy, none, a load).
+    std::uint64_t LivePvpActor(std::uint8_t number) const {
+        return number < live_pvp_actor_.size() ? live_pvp_actor_[number].load(std::memory_order_relaxed) : 0;
+    }
     static_assert(coop::protocol::kMaxPlayers < 32, "LiveMask has one bit per player number");
     std::uint64_t Frames() const { return frames_; }
     void Note(const std::string& text) const { Say(text); }  // any thread
@@ -496,6 +558,8 @@ private:
         CoopOcarina::HandBind ocarina_hand;  // issue 152: Ocarina in hand while it plays
         std::string their_anim;              // their last AS command (debug log)
         std::uint32_t anim_serial = 0;
+        std::string sample_name;     // the last sample's command and frame (FrameFollowed)
+        float sample_frame = 0.0f;
         std::uint64_t anim_buffer = 0;  // which name buffer is next
         std::optional<float> frame_to_set;  // after a play
         std::optional<float> held_frame;    // while held
@@ -548,9 +612,15 @@ private:
         bool remake = false;
         std::array<std::uint64_t, kGearCount> off_since_ms{};  // its player's slot empty since (0: not)
         std::array<bool, kGearCount> unequip_refused{};        // the take-off call returned 0
+        // The head piece worn and not yet shown (addr::kShowHeadArmor, #91),
+        // and the hair to put back after a head piece was taken off.
+        bool head_show = false;
+        bool head_shown = false;        // the show call was made for the head piece worn
+        bool head_hair_back = false;
         std::uint64_t moved_frame = 0;      // the cave frame of the last matrix call
         CoopPuppetSound::State sound;       // the player's Ocarina on it (issue 152)
         CoopLinkSound::Player link_sound;   // the player's own sounds on it (issues 131, 152)
+        CoopPuppetFlame::State flame;       // their lit Deku stick's flame on it (issue 248)
         // Actors made for this player that are not `taken` any more (kStrayDeleteMs):
         // deleted until gone, so there is never a second puppet of one player.
         struct Stray {
@@ -564,7 +634,7 @@ private:
     };
     enum class Pending {
         none, malloc, create, take, drop, remove, play, frame, sync, equip, unequip, hold,
-        hold_check, move, sound, link_sound, stray, own_state
+        hold_check, move, sound, link_sound, stray, own_state, head_show, head_hair, flame
     };
     // sword-3: once a frame, the game's state of one of the local Link's own
     // slots (CoopPuppetOwn::kSlots, in turn), for the sender (coop_puppet_own.h).
@@ -628,6 +698,7 @@ private:
     bool pose_copy_ = false;
     bool matrix_call_ = false;
     float tint_ = 0.0f;
+    std::atomic<bool> null_reads_zero_{true};
     mutable std::mutex tunic_mutex_;
     std::set<std::string> tunic_failed_;           // guarded by tunic_mutex_
     std::map<std::string, int> tunic_timeouts_;    // by actor name
@@ -653,6 +724,7 @@ private:
     std::size_t first_slot_ = 0;  // where this frame's Step starts (round robin)
     std::uint64_t frames_ = 0;
     std::atomic<std::uint32_t> live_mask_{0};  // LiveMask(); written by the calc thread
+    std::array<std::atomic<std::uint64_t>, coop::protocol::kMaxPlayers + 1> live_pvp_actor_{};  // LivePvpActor()
     std::uint64_t frames_at_status_ = 0;
     std::uint64_t status_ms_ = 0;
     std::string scene_;               // input_.scene as last seen
@@ -672,10 +744,13 @@ struct Remote {
     float fade = 1.0f;
     std::uint8_t status = 0;  // PLAYER_STATUS flags
     bool adult = false;
+    // Presence says child (native puppets phase 3: only a young Link is liftable). Age not known: false.
+    bool young = false;
     std::optional<Anim> anim;
     std::uint32_t anim_serial = 0;
     Gear gear;  // as Target::gear
     std::optional<std::uint8_t> drawn;               // as Target::drawn
+    std::optional<std::uint8_t> lit;                 // as Target::lit
     // PLAYER_EQUIP's colour; unset: the player chose none, and Plan gives the
     // player's slot colour (coop::protocol::slot_color).
     std::optional<std::uint32_t> color;
@@ -711,11 +786,31 @@ struct PlannerSettings {
     // (PackLookItems). None: every puppet wears the game's items.
     std::vector<std::string> look_items;
     std::size_t look_copies = 0;
+    // Wearer copies (coop_puppet.json "blade_items", look_items.is_wearer_item):
+    // the items the pack has one copy of per player number (every player item
+    // with the game's weapon component: swords, hammer, Deku Stick, bottles,
+    // fishing rod), and how many numbers. That component writes the model's
+    // shader values from the wearer every frame (a sword's blade), into the
+    // model resource every actor of one name shares, so a puppet in the
+    // game's own sword showed its blade only while our own sword was out. A
+    // puppet with no ready Look copy wears `<item>_Blade<its number>`
+    // (DressInBlades): a resource of its own, on every runtime, for every
+    // player number. LICHII_COOP_BLADE_COPIES=0: none.
+    std::vector<std::string> blade_items;
+    std::size_t blade_copies = 0;
     // Scenes with stealth guards (coop_puppet.json "quiet_scenes",
     // tools/puppet_pack/build.py guard_scenes): there each puppet is its
     // quiet copy (QuietActor), which no perception sees, so a guard of this
     // game never takes another player's puppet for our Link (issue 150).
     std::vector<std::string> quiet_scenes;
+    // Every scene, not only quiet_scenes: the runtime cannot make the reads of
+    // a perceived puppet's missing Player component give 0 (Hookshot's null
+    // page cannot be armed, hookshot/src/coop_null_page.h), so no puppet
+    // carries the perception's Physics.
+    bool quiet_everywhere = false;
+    // Reads through a puppet's missing components give 0 (the emulator, or
+    // Hookshot's null page armable): Director::SetNullReadsZero.
+    bool null_reads_zero = true;
 };
 
 // The puppet pack's item copies (coop_puppet.json "look_items",
@@ -725,11 +820,15 @@ struct LookItems {
     std::vector<std::string> actors;
     std::size_t copies = 0;
 };
-LookItems PackLookItems(std::string_view manifest);
+// `key`: "look_items", or "blade_items" (the same shape, "copies" per player number).
+LookItems PackLookItems(std::string_view manifest, std::string_view key = "look_items");
 
 // The pack's "quiet_scenes" (a list of scene names; none for a pack made
 // before them, or without perception).
 std::vector<std::string> PackQuietScenes(std::string_view manifest);
+// The pack was built with perception (coop_puppet.json "perception": true):
+// its puppets are seen by enemies and each has a quiet copy.
+bool PackPerception(std::string_view manifest);
 // A puppet's quiet copy: CoopPuppet_Child -> CoopPuppet_ChildQuiet,
 // CoopPuppet_Adult_Red -> CoopPuppet_AdultQuiet_Red; any other name as it is.
 std::string QuietActor(std::string_view actor);
@@ -738,6 +837,11 @@ std::string QuietActor(std::string_view actor);
 std::string LookItemName(std::string_view item, std::size_t copy);
 // Every piece of `gear` the pack has a copy of becomes that copy.
 void DressInLook(Gear& gear, std::size_t copy, const std::vector<std::string>& items);
+// A blade copy: "Weapon_Sword_Kokiri", 5 -> "Weapon_Sword_Kokiri_Blade5".
+std::string BladeItemName(std::string_view item, std::size_t number);
+// Every piece of `gear` that is still one of `items` (a Look copy is left
+// as it is) becomes player `number`'s blade copy, if the pack has that many.
+void DressInBlades(Gear& gear, std::size_t number, const std::vector<std::string>& items, std::size_t copies);
 
 // A puppet pack's coop_puppet.json lists both green puppets
 // (CoopPuppet_Child_Green, CoopPuppet_Adult_Green): only then may
@@ -786,6 +890,28 @@ private:
 // Configure once, before the game starts (CoopSvc does it).
 void Configure(PlannerSettings settings, bool verbose, Director::Log log);
 Director& TheDirector();
+
+// Native puppets phase 3 (coop_lift_player.h): lifting another player. All of it does nothing until
+// WatchGamePlaces(true) (the switch LICHII_COOP_LIFT_PLAYER=1).
+// - WatchGamePlaces: the director keeps, for each copy it draws, where it drew it last and where the game had it
+//   when the director came back to it (read before its write).
+// - SetGameHolds: the copy of player `number` is left to the game (our Link lifted it): the director neither
+//   places, turns nor moves it with the setter while set, and keeps reading where the game has it. 0: none.
+// - GamePlaces: what WatchGamePlaces kept, for the copies drawn in the last 250 ms. Any thread.
+struct GamePlace {
+    std::uint8_t number = 0;
+    Vec3 drawn{};
+    std::optional<Vec3> game;
+};
+void WatchGamePlaces(bool on);
+void SetGameHolds(std::uint8_t number);
+std::uint8_t GameHolds();
+std::vector<GamePlace> GamePlaces();
+// Native puppets phase 4 (coop_pvp_native.h, docs/native-puppets.md 5.0): bit n set = player n's copy is the
+// `_Pvp` actor (CoopPvpNative::PvpActor). Set each frame by coop_pvp_native_game.cpp; 0 (the default, and with
+// LICHII_COOP_PVP_NATIVE off) keeps every copy plain. Any thread.
+void SetPvpCopies(std::uint32_t mask);
+std::uint32_t PvpCopies();
 // Any thread: TheDirector's LiveMask(), 0 while the puppets are off.
 std::uint32_t LivePuppets();
 

@@ -103,7 +103,7 @@ struct Clean {  // the catcher is global: each test starts and ends with it empt
 
 }  // namespace
 
-TEST_CASE("link sound: the emit wrap keeps only our own Link's names, read from [[cell]]") {
+TEST_CASE("link sound: the emit wrap keeps only our own Link's names, read through the cell's two pointers") {
     Clean clean;
     FakeGuest g;
     PutAsset(g, "Pl_Voice_Attack_00");

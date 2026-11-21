@@ -240,6 +240,10 @@ TEST_CASE("puppets: in a scene with stealth guards each puppet is its quiet copy
           std::vector<std::string>{"GerudoFortress_Adult", "HyruleCastle"});
     CHECK(CoopPuppet::PackQuietScenes(R"({"quiet_scenes": []})").empty());
     CHECK(CoopPuppet::PackQuietScenes(R"({"perception": false})").empty());  // a pack before them
+    CHECK(CoopPuppet::PackPerception(R"({"perception": true, "quiet_scenes": []})"));
+    CHECK(CoopPuppet::PackPerception(R"({"perception" :  true})"));
+    CHECK_FALSE(CoopPuppet::PackPerception(R"({"perception": false, "quiet_scenes": []})"));
+    CHECK_FALSE(CoopPuppet::PackPerception(R"({"tool": "tools/puppet_pack"})"));  // a pack before it
     // A quiet pack still counts its loud tunic puppets only (PackHasTunicPuppets).
     CHECK_FALSE(CoopPuppet::PackHasTunicPuppets(R"({"actors": [{"actor": "CoopPuppet_ChildQuiet"}]})"));
 
@@ -263,4 +267,24 @@ TEST_CASE("puppets: in a scene with stealth guards each puppet is its quiet copy
     p.SetTunics(false);
     CHECK(plan("HyruleCastle") == "CoopPuppet_ChildQuiet");
     CHECK(plan("Kokiri") == "CoopPuppet_Child");
+}
+
+TEST_CASE("puppets: quiet everywhere when the runtime cannot make a perceived puppet safe (issue 150)") {
+    CoopPuppet::PlannerSettings s;
+    s.quiet_scenes = {"HyruleCastle"};
+    s.quiet_everywhere = true;
+    CoopPuppet::Planner p(s);
+    std::vector<CoopPuppet::Remote> remotes(1);
+    remotes[0].number = 2;
+    remotes[0].color = 0xFF3030u;
+    const auto plan = [&](const char* scene) {
+        remotes[0].scene = scene;
+        const auto in = p.Plan(0x8000000, std::string(scene), CoopPuppet::Vec3{0, 0, 0}, false, remotes, 1000);
+        REQUIRE(in.targets.size() == 1);
+        return in.targets[0].actor;
+    };
+    CHECK(plan("Kokiri") == "CoopPuppet_ChildQuiet_Red");  // no Physics: patch 0002's guard arms the null page too
+    CHECK(plan("HyruleCastle") == "CoopPuppet_ChildQuiet_Red");
+    p.SetTunics(false);
+    CHECK(plan("Kokiri") == "CoopPuppet_ChildQuiet");
 }

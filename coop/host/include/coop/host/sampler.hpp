@@ -52,15 +52,27 @@ inline std::uint64_t frame_aligned_us(std::uint64_t server_now_us, std::uint64_t
   return server_now_us - age_us;
 }
 
+// PLAYER_STATUS's bits for this frame (docs/protocol.md, docs/puppet.md "Away"), from the bits sent last:
+// - loading: no Link to read (the game loads a scene or a save, or shows its title), or the title's menu is up;
+//   menus count for nothing then, and in_cutscene and dead keep what they were (a load inside an event, a Game Over's
+//   reload);
+// - in_cutscene: our Link in an event (G1: our_link_in_event); an unknown event state keeps the bit;
+// - in_menu: a game menu is in front (PlayerReading::in_menu);
+// - paused: a game menu is in front and our Link is in no event: the pause menu or the panel, which stop the game's
+//   world (a talk's choices are a menu inside an event: the world runs on);
+// - dead: our Link's life at 0 (PlayerReading::dead); unknown keeps the bit.
+std::uint8_t status_bits(std::uint8_t previous, const std::optional<PlayerReading>& reading, bool title_up);
+
 class Sampler {
  public:
   explicit Sampler(SamplerSettings settings = {}) : settings_(settings) {}
 
   // One emulated frame. `server_now_us` is coop::net::Client::server_now_us();
   // call only once the client is welcomed (it has a clock offset). The
-  // status, if any, comes first in the result.
+  // status, if any, comes first in the result. No reading (no Link) sends no
+  // sample, only the status `loading`; so does `title_up` (status_bits).
   std::vector<Outgoing> frame(const std::optional<PlayerReading>& reading,
-                              std::uint64_t server_now_us);
+                              std::uint64_t server_now_us, bool title_up = false);
   std::vector<Outgoing> frame(PlayerReader& reader, std::uint64_t server_now_us) {
     return frame(reader.read(), server_now_us);
   }

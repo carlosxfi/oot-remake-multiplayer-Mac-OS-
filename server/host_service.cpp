@@ -2,6 +2,7 @@
 // The lines it says are the ones coop_server always printed.
 #include "host_service.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <exception>
 #include <utility>
@@ -60,6 +61,10 @@ std::uint16_t HostService::port() const { return server_ ? server_->port() : 0; 
 
 const Session* HostService::session() const { return server_ ? &server_->session() : nullptr; }
 
+void HostService::set_ngplus(std::uint8_t level) {
+  if (server_) server_->session().set_ngplus(level);
+}
+
 bool HostService::start(std::string& error) {
   auto fail = [&](const std::string& why, HostProblem problem) {
     error = why;
@@ -110,6 +115,7 @@ bool HostService::start(std::string& error) {
       std::to_string(coop::protocol::kDatagramBytes) + " bytes)");
   say("players must give the join password to join; the traffic is encrypted");
   if (config_.session.pvp) say("PvP is on: players can hurt each other");
+  if (config_.session.approve_joins) say("each new player waits until the host lets them in (/allow or /deny)");
   if (!config_.session.allowed.empty()) {
     say("only the " + std::to_string(config_.session.allowed.size()) +
         " address range(s) given with --allow may connect");
@@ -157,8 +163,26 @@ bool HostService::start(std::string& error) {
     } else {
       c.server_port = server_->port();
       c.key = config_.relay_key;
+      c.room = config_.relay_room;
+      if (!config_.relay_list.empty() && !config_.relay_room.empty()) {
+        const std::string host = relay::listing_name(config_.relay_list);
+        c.listing = [this, host]() -> std::optional<relay::RoomEntry> {
+          relay::RoomEntry e;
+          e.host = host;
+          const Session& session = server_->session();
+          e.players = static_cast<std::uint8_t>(std::min<std::size_t>(session.player_count(), 255));
+          e.max_players = config_.session.max_players;
+          e.version = protocol::kProtocolVersion;
+          return e;
+        };
+      }
       c.log = [this](const std::string& text) { say("relay: " + text); };
       const std::string relay_text = config_.relay_via;
+      c.on_room = [this, relay_text](const std::string& room) {
+        say("relay: room \"" + room + "\" is yours. Friends join with " + room + "@" + relay_text);
+        std::lock_guard lock(status_mutex_);
+        status_.relay_room = room + "@" + relay_text;
+      };
       c.on_code = [this, relay_text](const std::string& code) {
         const std::string shown = relay::show_code(code);
         say("relay: join code " + shown + ". Give your friends " + shown + "@" + relay_text +
@@ -173,7 +197,9 @@ bool HostService::start(std::string& error) {
         set_message("relay: " + why, HostProblem::kRelay);
         link_.reset();
       } else {
-        say("relay: asking " + config_.relay_via + " for a join code");
+        say("relay: asking " + config_.relay_via + " for a join code" +
+            (config_.relay_room.empty() ? std::string() : " and room \"" + config_.relay_room + "\"") +
+            (c.listing ? std::string(", listed on its room list") : std::string()));
       }
     }
   }
@@ -270,13 +296,15 @@ void HostService::say_counts() {
   shown_limited_ = now.rate_limited;
   // Enemy counts (issues 105, 133), at most every 5 s while they change.
   const std::uint64_t enemies =
-      now.group_links + now.group_refused + now.damage_relayed + now.damage_dropped + now.dead_told;
+      now.group_links + now.group_refused + now.damage_relayed + now.damage_dropped + now.damage_returned +
+      now.damage_held + now.dead_told;
   if (config_.counts && enemies != shown_enemies_ && now_ms() - enemies_at_ >= 5000) {
     shown_enemies_ = enemies;
     enemies_at_ = now_ms();
     say("enemies: group entries taken " + count(now.group_links) + ", refused " + count(now.group_refused) +
         "; damage relayed " + count(now.damage_relayed) + ", dropped " + count(now.damage_dropped) +
-        "; kills told late " + count(now.dead_told));
+        ", given back across a hand-over " + count(now.damage_returned) + ", kept through the owner hold " +
+        count(now.damage_held) + "; kills told late " + count(now.dead_told));
   }
 }
 
@@ -319,6 +347,11 @@ void HostService::stop() {
   say("flags relayed " + count(stats.flag_relayed) + ", refused " + count(stats.flag_refused) + ", clashes " +
       count(stats.flag_clashes) + "; join relayed " + count(stats.join_relayed) + ", not there " +
       count(stats.join_not_there) + ", dropped " + count(stats.join_dropped));
+  if (config_.session.approve_joins) {
+    say("host approval: asked " + count(stats.joins_held) + ", let in " + count(stats.joins_allowed) +
+        ", turned away " + count(stats.joins_denied) + ", no answer " + count(stats.joins_unanswered) +
+        ", in without asking " + count(stats.joins_remembered));
+  }
   std::lock_guard lock(status_mutex_);
   status_.state = HostState::kStopped;
   status_.players = 0;

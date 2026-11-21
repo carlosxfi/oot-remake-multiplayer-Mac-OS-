@@ -95,14 +95,24 @@ Each kit's game log `longshot_log.txt` (in the `logs` folder of `hookshot\game\`
 
 Split screen is **experimental** in this release: each player runs a **full game**. Each copy takes about 10 GB of RAM, so 2 players need about 20 GB free and 4 need about 40 GB, and a strong graphics card, with its memory for each copy. Without Nucleus, do the same by hand: two kits started once each, each game its own controller (Settings, Controller), Host in one and Join in the other (above). Native split screen (one game, one world, every player's view in it; [local-coop.md](local-coop.md)) comes in a later release.
 
-1. **Once:** install Nucleus and our handler as [tools/nucleus/README.md](../tools/nucleus/README.md) says (unzip Nucleus, copy `OoTCoop.js` into its `handlers` folder, add the `longshot.exe` of your kit's co-op game). The co-op game must be built from this release or a later one. With an older one, every copy reads the same controller: run `Build-Hookshot-Coop.bat` again.
-2. **Plug in the controllers**, start Nucleus and choose **OoT Co-op (Longshot)**. Drag each controller (and the keyboard, for a keyboard-and-mouse player) onto a part of the screen, give each player a name, then press **Play**.
+1. **Once:** install Nucleus and our handler as [tools/nucleus/README.md](../tools/nucleus/README.md) says (unzip Nucleus, copy `OoTCoop.js` from the kit's `nucleus` folder into Nucleus's `handlers` folder, then **+ / Add game** and pick the `longshot.exe` of your kit's co-op game; the handler is not on Nucleus's handler hub). The co-op game must be built from this release or a later one. With an older one, every copy reads the same controller: run `Build-Hookshot-Coop.bat` again.
+2. **Plug in the controllers**, start Nucleus and choose **OoT Co-op (Longshot)**. Drag each controller (and the keyboard, for a keyboard-and-mouse player) onto a part of the screen, give each player a name. Under **Who can join**, keep **This PC only**, or choose **Allow online players** when friends on other PCs join too (below). Then press **Play**.
 3. **The first time**, Windows asks to let Nucleus make changes. Nucleus makes the links to the game's files as administrator. Later starts do not ask.
-4. The games start one after another, about 15 seconds apart. Player 1's start also opens the server in a window of its own, for this PC only (port 27590, a new join password each session, nothing to type). Each game joins it by itself. Player 1 hosts and plays their own saves. Players 2 to 4 get the host's save when they join, and their own files stay in `nucleus-players\player2` to `player4` beside the game.
+4. The games start one after another, about 15 seconds apart. Player 1's start also opens the server in a window of its own (with **This PC only**: port 27590, a new join password each session, nothing to type). Each game on this PC joins it by itself. Player 1 hosts and plays their own saves. Players 2 to 4 get the host's save when they join, and their own files stay in `nucleus-players\player2` to `player4` beside the game.
 5. Each controller works in its own window, even while another window is in front. The keyboard and mouse go to the keyboard player's window when it is in front: click it to play there. If a game reads the wrong controller, choose the right one on its **Multiplayer** tab, under **Settings > Controller** (it applies at once).
-6. **To stop**, end the session in Nucleus. It closes the games and the server. It closes **every** `coop_server.exe` on this PC, so do not host with `Host.bat` at the same time.
+6. **To stop**, end the session in Nucleus. It closes the games and the server. It closes **every** `coop_server.exe` on this PC, so do not host with `Host.bat` or `start-server.cmd` at the same time. If one of those (or a session not ended) is still running when you press **Play**, the handler starts no server and says so: close that server window, end the session and press **Play** again.
 
-Friends on other PCs cannot join a Nucleus session: its server is for this PC only. For that, use **Host** in one game instead (above).
+### Friends on other PCs (Allow online players)
+
+With **Who can join: Allow online players**, player 1's start runs the kit's own `start-server.cmd`, as `Host.bat` does, instead of the server for this PC only:
+
+- The server listens on every address of this PC, on the kit's port (`port` in the kit's `coop.ini`, else 27510), with the kit's join password (`server_password` in `coop-options.ini`, else a new one for this session). `server_bind` and `server_allow` in `coop-options.ini` count too; the players on this PC are always let in.
+- It asks your router to forward the port (UPnP; `upnp = no` turns it off) and shows an **invite code** in its window a few seconds later, already copied to the clipboard. Send it to your friends in DMs only: it holds your internet address and the join password.
+- Each friend on another PC opens **Join** in the Multiplayer tab of their own game, pastes the code (it is filled in already when it is on their clipboard) and chooses **Join** ([play-online.md](play-online.md#in-the-game-host-and-an-invite-code-the-longshot-kit)).
+- The players on this PC join by themselves at 127.0.0.1, as with **This PC only**.
+- The first time, Windows may ask to let `coop_server.exe` through its firewall: allow it ([Firewall](#firewall) above). The Nucleus windows may cover the prompt and the server window: press Alt+Tab to find them.
+
+The game windows start in front of the server window. To see the invite code again, Alt+Tab to the window named **Squadala server**, or paste the clipboard right after the start.
 
 ## Something does not work
 

@@ -131,7 +131,7 @@ if ((ask_server)) || [[ -z $server ]]; then
             continue
         fi
         if [[ $typed == *@* ]]; then
-            echo 'A relay join code (CODE@relay) works only in the Windows kit for now; ask the host for the invite code or address.'
+            echo 'A relay join code or room name (CODE@relay, room@relay) works only in the Windows kit for now; ask the host for the invite code or address.'
             continue
         fi
         if parsed=$(kit_join_address "$typed") && coop_test_server "${parsed%% *}"; then

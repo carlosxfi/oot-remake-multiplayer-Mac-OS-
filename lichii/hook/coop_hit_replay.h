@@ -47,6 +47,28 @@ inline constexpr std::array<std::uint32_t, 0x98 / 4> kHitTemplate{
     0x03010102, 0x00030000,                          // +0x2d0
 };
 
+using Record = std::array<std::uint32_t, 0x98 / 4>;  // the incoming hit, +0x240..+0x2d8 (protocol 14's HitRecord)
+
+// Indexes into a Record.
+inline constexpr std::size_t kRecPresent = 3;
+inline constexpr std::size_t kRecKind = 0x250 / 4 - kHitRecord / 4;   // attack kind, two words (the header's too)
+inline constexpr std::size_t kRecPlace = 0x27c / 4 - kHitRecord / 4;  // the hit's place, 3 floats
+inline constexpr std::size_t kRecFrom = 0x2a0 / 4 - kHitRecord / 4;   // the attacker's place, 3 floats
+inline constexpr std::size_t kRecIdAgain = 0x2c4 / 4 - kHitRecord / 4;
+// The words taken from another game's record (review-pr-d crash guard): only its hit kind, +0x250 up to the
+// hit's place (+0x27c): attack kind and its parameters, plain values. Every other word (pointers, list
+// links, ids of the other process) stays kHitTemplate's; attacker, id, present and places are ours.
+inline constexpr std::size_t kRecKindEnd = kRecPlace;
+
+// kHitTemplate with another game's hit kind in it (words kRecKind up to kRecKindEnd), nothing else of it.
+inline Record WithHitKind(const Record& other) {
+    Record rec = kHitTemplate;
+    for (std::size_t i = kRecKind; i < kRecKindEnd; ++i) {
+        rec[i] = other[i];
+    }
+    return rec;
+}
+
 struct Hit {
     std::uint64_t actor = 0;      // the copy
     std::uint64_t attacker = 0;   // our player
@@ -55,6 +77,9 @@ struct Hit {
     std::array<float, 3> from{};  // the hitter's place (ours when not known)
     std::uint64_t asked_ms = 0;   // set by Add
     bool exact = false;           // `at` is where the hit landed, not the actor's foot
+    // Protocol 14 (every hit shows on every screen): the hit that happened in the other game. Only its hit kind
+    // (weapon, element: WithHitKind) goes into this game's damage step; the rest is kHitTemplate's and ours.
+    std::optional<Record> record;
 };
 
 // One hit written: for the caller's log and the difficulty's pass.
@@ -64,6 +89,7 @@ struct Written {
     std::int32_t amount = 0;
     std::uint32_t id = 0;
     bool exact = false;
+    bool real = false;  // the other game's own hit record (protocol 14), not the stand-in
 };
 
 class Replayer {
@@ -130,15 +156,17 @@ private:
         std::uint32_t last = 0;
         guest.Read(life + kLastHitId, &last, 4);
         const std::uint32_t id = (last == 0xffffffffu ? 0x1000u : last + 2u) & 0x7fffffffu;
-        std::array<std::uint32_t, kHitTemplate.size()> rec = kHitTemplate;
+        const bool real = h.record.has_value();
+        Record rec = real ? WithHitKind(*h.record) : kHitTemplate;
         std::memcpy(&rec[0], &h.attacker, 8);
         rec[2] = id;
-        rec[0x2c4 / 4 - kHitRecord / 4] = id;
+        rec[kRecIdAgain] = id;
         const std::array<float, 3> at{h.at[0], h.at[1] + (h.exact ? 0.0f : 1.0f), h.at[2]};
-        std::memcpy(&rec[0x27c / 4 - kHitRecord / 4], at.data(), 12);
-        std::memcpy(&rec[0x2a0 / 4 - kHitRecord / 4], h.from.data(), 12);
-        rec[3] = 0;  // present last, below
-        const std::array<std::uint32_t, 4> header{0x00060001, 0x40040000, id, 2};
+        std::memcpy(&rec[kRecPlace], at.data(), 12);
+        std::memcpy(&rec[kRecFrom], h.from.data(), 12);
+        rec[kRecPresent] = 0;  // present last, below
+        // The attack header names the same attack kind as the record (the template's: a sword).
+        const std::array<std::uint32_t, 4> header{rec[kRecKind], rec[kRecKind + 1], id, 2};
         const std::array<std::int32_t, 2> amount{4, h.amount};
         {
             std::lock_guard lock(ids_mutex_);
@@ -149,7 +177,7 @@ private:
         guest.Write(life + kHitRecord, rec.data(), sizeof(rec));
         const std::uint32_t present = 1;
         guest.Write(life + kHitRecord + 0xc, &present, 4);
-        return Written{h.actor, life, h.amount, id, h.exact};
+        return Written{h.actor, life, h.amount, id, h.exact, real};
     }
 
     std::mutex hits_mutex_;
