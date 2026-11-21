@@ -42,6 +42,9 @@ add_library(hookshot_coop ${_coop_module_type} src/coop_hookshot.cpp src/coop_dr
   src/coop_auto_rejoin.cpp src/coop_lan.cpp src/coop_lan_net.cpp src/coop_room_list.cpp src/coop_longshot_settings.cpp
   src/coop_look.cpp src/coop_look_live.cpp src/coop_look_tunic.cpp src/coop_look_paint.cpp src/coop_look_parts.cpp src/coop_look_menu.cpp src/coop_look_view.cpp
   ${_coop_sources})
+if(APPLE)
+  target_sources(hookshot_coop PRIVATE src/coop_client_status.cpp)
+endif()
 # compat/ first: its core/ and common/ headers stand in for the emulator's.
 target_include_directories(hookshot_coop PRIVATE compat src "${_coop_hook}" ../server)
 target_compile_definitions(hookshot_coop PRIVATE LICHII_COOP COOP_HOOKSHOT)

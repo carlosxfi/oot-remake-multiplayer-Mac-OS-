@@ -17,6 +17,7 @@ struct SessionApi {
   hos_coop_join_fn join;
   hos_coop_leave_fn leave;
   hos_coop_status_fn status;
+  void (*client_status)(char*, std::uint32_t);
 };
 
 NSString* lan_addresses(std::uint16_t port) {
@@ -52,6 +53,7 @@ NSButton* button(NSString* title, id target, SEL action) {
   NSPanel* _panel;
   NSTextField* _name;
   NSTextField* _address;
+  NSTextField* _port;
   NSSecureTextField* _password;
   NSTextField* _status;
   NSButton* _host;
@@ -59,6 +61,7 @@ NSButton* button(NSString* title, id target, SEL action) {
   NSButton* _leave;
   NSButton* _copy;
   BOOL _working;
+  NSString* _inputError;
 }
 
 - (instancetype)initWithApi:(SessionApi)api {
@@ -97,7 +100,7 @@ NSButton* button(NSString* title, id target, SEL action) {
 - (void)show:(id)sender {
   (void)sender;
   if (!_panel) {
-    _panel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 470, 310)
+    _panel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 470, 365)
          styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
            backing:NSBackingStoreBuffered defer:NO];
     _panel.title = @"Multiplayer";
@@ -121,10 +124,11 @@ NSButton* button(NSString* title, id target, SEL action) {
 
     _name = [NSTextField textFieldWithString:@"MacLink"];
     _address = [NSTextField textFieldWithString:@""];
-    _address.placeholderString = @"192.168.1.10:27510";
+    _address.placeholderString = @"192.168.1.10, or paste the invite line";
+    _port = [NSTextField textFieldWithString:@"27510"];
     _password = [[NSSecureTextField alloc] initWithFrame:NSZeroRect];
     _password.placeholderString = @"Required to join; leave blank to generate one when hosting";
-    for (NSArray* row in @[@[@"Nickname", _name], @[@"Host address (to join)", _address],
+    for (NSArray* row in @[@[@"Nickname", _name], @[@"Host address (to join)", _address], @[@"Port", _port],
                         @[@"Room password", _password]]) {
       [stack addArrangedSubview:[NSTextField labelWithString:row[0]]];
       NSTextField* field = row[1];
@@ -158,10 +162,16 @@ NSButton* button(NSString* title, id target, SEL action) {
   _copy.enabled = !_working && status.state == HOS_COOP_HOSTING && status.password[0];
   if (_working) {
     _status.stringValue = @"Updating session…";
+  } else if (_inputError) {
+    _status.stringValue = _inputError;
   } else if (status.state == HOS_COOP_HOSTING) {
     auto* address = lan_addresses(status.port);
     _status.stringValue = [NSString stringWithFormat:@"Hosting LAN · %u player(s)\n%@",
         static_cast<unsigned>(status.players), address.length ? address : @"No active LAN address found."];
+  } else if (status.state == HOS_COOP_CONNECTED && _api.client_status) {
+    char detail[256]{};
+    _api.client_status(detail, sizeof(detail));
+    _status.stringValue = detail[0] ? [NSString stringWithUTF8String:detail] : @"Connecting to the host…";
   } else if (status.message[0]) {
     _status.stringValue = [NSString stringWithUTF8String:status.message] ?: @"Session error";
   } else {
@@ -174,6 +184,7 @@ NSButton* button(NSString* title, id target, SEL action) {
 
 - (void)run:(dispatch_block_t)job {
   if (_working) return;
+  _inputError = nil;
   _working = YES;
   [self refresh];
   dispatch_async(_queue, ^{
@@ -185,16 +196,32 @@ NSButton* button(NSString* title, id target, SEL action) {
   });
 }
 
+- (int)selectedPort {
+  NSString* port = [_port.stringValue stringByTrimmingCharactersInSet:
+      NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (!port.length) return 27510;
+  if ([port rangeOfCharacterFromSet:
+      [NSCharacterSet characterSetWithCharactersInString:@"0123456789"].invertedSet].location != NSNotFound ||
+      port.integerValue < 1 || port.integerValue > 65535) {
+    _inputError = @"Enter a port from 1 to 65535.";
+    [self refresh];
+    return 0;
+  }
+  return port.intValue;
+}
+
 - (void)host:(id)sender {
   (void)sender;
   NSString* name = _name.stringValue;
   NSString* password = _password.stringValue;
+  const int port = [self selectedPort];
+  if (!port) return;
   [self run:^{
     HosCoopHostOptions options{};
     options.size = sizeof(options);
     options.name = name.UTF8String;
     options.password = password.UTF8String;
-    options.port = 27510;
+    options.port = static_cast<std::uint16_t>(port);
     self->_api.host(&options);
   }];
 }
@@ -212,6 +239,17 @@ NSButton* button(NSString* title, id target, SEL action) {
           NSCharacterSet.whitespaceAndNewlineCharacterSet];
     }
     address = [address substringToIndex:space.location];
+  }
+  if (!address.length) {
+    _inputError = @"Enter the Windows host's address.";
+    [self refresh];
+    return;
+  }
+  if ([address rangeOfString:@":"].location == NSNotFound &&
+      [address rangeOfString:@"@"].location == NSNotFound && password.length) {
+    const int port = [self selectedPort];
+    if (!port) return;
+    address = [NSString stringWithFormat:@"%@:%d", address, port];
   }
   [self run:^{
     HosCoopJoinOptions options{sizeof(HosCoopJoinOptions), name.UTF8String,
@@ -247,6 +285,7 @@ void install_multiplayer_menu(void* module) {
       reinterpret_cast<hos_coop_join_fn>(dlsym(module, "hos_coop_join")),
       reinterpret_cast<hos_coop_leave_fn>(dlsym(module, "hos_coop_leave")),
       reinterpret_cast<hos_coop_status_fn>(dlsym(module, "hos_coop_status")),
+      reinterpret_cast<void (*)(char*, std::uint32_t)>(dlsym(module, "hos_coop_client_status")),
   };
   if (!api.host || !api.join || !api.leave || !api.status) return;
   dispatch_async(dispatch_get_main_queue(), ^{
