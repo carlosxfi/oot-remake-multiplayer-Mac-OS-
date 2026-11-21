@@ -39,15 +39,19 @@ target_include_directories(nxnative_loopback PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(nxnative_loopback PUBLIC nxnative_shared)
 
 if(APPLE)
-  enable_language(ASM)
+  enable_language(ASM OBJCXX)
   # DYLD_INSERT_LIBRARIES requires MH_DYLIB; MODULE emits MH_BUNDLE on macOS.
   add_library(coop_nxnative_probe SHARED
     "${repo}/nxnative/probe/link_position_probe.cpp"
     "${repo}/nxnative/probe/game_call.cpp"
     "${repo}/nxnative/probe/game_call.S"
+    "${repo}/nxnative/probe/multiplayer_menu.mm"
     "${repo}/lichii/hook/coop_colors.cpp")
   target_compile_definitions(coop_nxnative_probe PRIVATE COOP_NXNATIVE_NETWORK=1)
-  target_link_libraries(coop_nxnative_probe PRIVATE nxnative_loopback)
+  set_property(TARGET coop_nxnative_probe PROPERTY OBJCXX_STANDARD 20)
+  target_compile_options(coop_nxnative_probe PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+  find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
+  target_link_libraries(coop_nxnative_probe PRIVATE nxnative_loopback "${APPKIT_FRAMEWORK}")
   # The existing run.sh injects this path for both build variants.
   set_target_properties(coop_nxnative_probe PROPERTIES
     SUFFIX ".dylib" LIBRARY_OUTPUT_DIRECTORY "${repo}/nxnative/probe/build")

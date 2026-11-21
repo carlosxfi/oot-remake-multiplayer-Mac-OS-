@@ -22,6 +22,7 @@
 #include "remote_peer.hpp"
 #ifdef __APPLE__
 #include "game_call.hpp"
+#include "multiplayer_menu.hpp"
 #include "../../lichii/hook/coop_colors.h"
 #include <filesystem>
 #endif
@@ -267,6 +268,8 @@ bool start_shared_module(const char* path, std::uint64_t base) {
     return false;
   }
   shared_frame.store(frame, std::memory_order_release);
+  if (std::getenv("COOP_NXNATIVE_MENU"))
+    install_multiplayer_menu(module);
   std::fprintf(stderr, "[coop-nxnative] shared module active on calc thread\n");
   return true;
 }

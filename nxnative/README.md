@@ -289,3 +289,20 @@ Look for `shared module active on calc thread`, then the shared module's
 connection and actor logs. Walk out of and back into the same scene, then
 reconnect. This test uses the calc-thread callback. Present, input, and UI
 hooks, atomic guest writes, and save handoff still need Mac integration.
+
+## Mac multiplayer menu
+
+Install the Finder launcher once using the nxnative app and a built puppet
+overlay:
+
+```sh
+sh nxnative/network/install-menu.sh "/path/to/game.app" "$HOME/Projects/oot-coop-puppet-colors/romfs"
+```
+
+Open **OOT Co-op** from your home folder's **Applications** folder. In the
+game window, choose **Multiplayer → Host or Join** or press **⌘⇧M**. For LAN
+hosting, leave the password blank to generate one and use **Copy invite** to
+share the address and password. To join, paste that line in the address box
+or enter the address and password separately. Use **Leave** to end the session.
+The panel runs the shared co-op host and join functions. The game still uses
+its local save during this test.
