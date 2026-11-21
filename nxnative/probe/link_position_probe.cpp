@@ -45,6 +45,11 @@ std::atomic<unsigned> calc_remote_targets{0};
 #ifdef __APPLE__
 enum class GameCallCheck { pending, passed, failed };
 std::atomic<GameCallCheck> game_call_check{GameCallCheck::pending};
+std::atomic<std::uint64_t> spawn_test_base{0};
+std::uint64_t remote_scene_generation = 0;
+bool remote_local_scene_valid = false;
+void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& target,
+                     std::uint64_t generation, bool local_scene_valid);
 #endif
 #endif
 
@@ -56,11 +61,23 @@ extern "C" __attribute__((visibility("default"))) void coop_nxnative_calc_frame(
 #ifdef COOP_NXNATIVE_NETWORK
   // Networking publishes on the sampler thread. Never wait for it in the game.
   unsigned target_count = 0;
+#ifdef __APPLE__
+  coop_nxnative::RemoteTarget target;
+  std::uint64_t generation = 0;
+  bool local_scene_valid = false;
+#endif
   {
     const std::unique_lock lock(remote_targets_mutex, std::try_to_lock);
     if (!lock.owns_lock()) return;
     target_count = static_cast<unsigned>(std::count_if(remote_targets.begin(), remote_targets.end(),
-        [](const auto& target) { return target.player != 0; }));
+        [](const auto& entry) { return entry.player != 0; }));
+#ifdef __APPLE__
+    const auto first = std::find_if(remote_targets.begin(), remote_targets.end(),
+        [](const auto& entry) { return entry.player != 0; });
+    if (first != remote_targets.end()) target = *first;
+    generation = remote_scene_generation;
+    local_scene_valid = remote_local_scene_valid;
+#endif
   }
   calc_remote_targets.store(target_count, std::memory_order_relaxed);
 #ifdef __APPLE__
@@ -68,6 +85,9 @@ extern "C" __attribute__((visibility("default"))) void coop_nxnative_calc_frame(
     game_call_check.store(coop_nxnative::check_game_call() ? GameCallCheck::passed : GameCallCheck::failed,
                           std::memory_order_relaxed);
   }
+  const auto base = spawn_test_base.load(std::memory_order_acquire);
+  if (base && game_call_check.load(std::memory_order_relaxed) == GameCallCheck::passed)
+    tick_spawn_test(base, target, generation, local_scene_valid);
 #endif
 #endif
 }
@@ -92,12 +112,12 @@ bool write_code(std::uint64_t address, std::span<const std::uint8_t> bytes) {
   return result == KERN_SUCCESS;
 }
 
-void install_puppet_guard(std::uint64_t base) {
+bool install_puppet_guard(std::uint64_t base) {
   using namespace coop_nxnative;
   std::array<std::uint32_t, kPuppetGuardOriginal.size()> original{};
   if (!read_at(base + kPuppetGuardSite - 4, original) || original != kPuppetGuardOriginal) {
     std::fprintf(stderr, "[coop-nxnative] puppet guard refused: instruction mismatch\n");
-    return;
+    return false;
   }
 
   const auto cave = make_puppet_guard();
@@ -108,9 +128,10 @@ void install_puppet_guard(std::uint64_t base) {
   if (!write_code(base + kPuppetGuardCave, code(cave)) ||
       !write_code(base + kPuppetGuardSite, code(hook))) {
     std::fprintf(stderr, "[coop-nxnative] puppet guard refused: could not install patch\n");
-    return;
+    return false;
   }
   std::fprintf(stderr, "[coop-nxnative] puppet guard installed (component chain)\n");
+  return true;
 }
 
 bool install_calc_bridge(std::uint64_t base) {
@@ -172,6 +193,151 @@ bool read_at(std::uint64_t address, T& value) {
   coop_nxnative::LocalMemory memory(0, copy_local);
   return memory.read(address, {reinterpret_cast<std::uint8_t*>(&value), sizeof(value)});
 }
+
+#if defined(__APPLE__) && defined(COOP_NXNATIVE_NETWORK)
+template <typename T>
+bool write_value(std::uint64_t address, const T& value) {
+  return mach_vm_write(mach_task_self(), address, reinterpret_cast<vm_offset_t>(&value),
+                       sizeof(value)) == KERN_SUCCESS;
+}
+
+void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& target,
+                     std::uint64_t generation, bool local_scene_valid) {
+  using Clock = std::chrono::steady_clock;
+  using coop_nxnative::GameCall;
+  using coop_nxnative::coop_nxnative_invoke_game_call;
+
+  // Build 1.1.1 factory calls and object layout, as used in coop_puppet.cpp.
+  constexpr std::uint64_t malloc_offset = 0x14c6c90, manager_offset = 0x4e91888,
+      default_offset = 0x4c7dad0, create_offset = 0x372a70, take_offset = 0x36fbd0,
+      drop_offset = 0x36fde0, delete_offset = 0xa6490;
+  enum class Phase { waiting, creating, live, done };
+  static Phase phase = Phase::waiting;
+  static Clock::time_point since{}, last_target{};
+  static std::uint64_t scene = 0, slot = 0, actor = 0, vtable = 0;
+  static std::uint8_t player = 0;
+  static coop::protocol::Age age{};
+  const auto now = Clock::now();
+
+  if (phase == Phase::done) return;
+  if (phase != Phase::waiting && local_scene_valid && generation != scene) {
+    // The engine owns old-scene actors and requests during scene teardown.
+    phase = Phase::done;
+    std::fprintf(stderr, "[coop-nxnative] puppet spawn test ended on local scene change\n");
+    return;
+  }
+  if (!local_scene_valid) return;
+
+  if (phase == Phase::waiting) {
+    if (target.player == 0 || player != target.player || scene != generation || age != target.age) {
+      player = target.player;
+      age = target.age;
+      scene = generation;
+      since = now;
+      return;
+    }
+    if (now - since < std::chrono::seconds(2)) return;
+
+    std::uint64_t manager = 0, create_default = 0, manager_vtable = 0;
+    if (!read_at(base + manager_offset, manager) || !manager ||
+        !read_at(manager, manager_vtable) || !manager_vtable ||
+        !read_at(base + default_offset, create_default) || !create_default)
+      return;
+    phase = Phase::done;  // one request per launch, even if creation is refused
+    std::fprintf(stderr, "[coop-nxnative] puppet spawn test allocating request\n");
+    const GameCall allocate{base + malloc_offset, {0x180}};
+    const auto block = coop_nxnative_invoke_game_call(&allocate);
+    if (!block) {
+      std::fprintf(stderr, "[coop-nxnative] puppet spawn test allocation failed\n");
+      return;
+    }
+    std::array<std::uint8_t, 0x100> arg{};
+    constexpr std::array<float, 9> rotation{1, 0, 0, 0, 1, 0, 0, 0, 1};
+    constexpr std::array<float, 3> scale{1, 1, 1};
+    std::memcpy(arg.data(), target.position.data(), sizeof(target.position));
+    std::memcpy(arg.data() + 0x0c, rotation.data(), sizeof(rotation));
+    std::memcpy(arg.data() + 0x30, scale.data(), sizeof(scale));
+    std::memcpy(arg.data() + 0x40, &create_default, sizeof(create_default));
+    arg[0x98] = 1;
+    std::array<char, 64> name{};
+    const char* actor_name = age == coop::protocol::Age::child ? "CoopPuppet_Child" : "CoopPuppet_Adult";
+    std::strcpy(name.data(), actor_name);
+    const std::array<std::uint64_t, 2> name_ref{block + 0x140, name.size()};
+    slot = block + 0x110;
+    if (!write_value(block, arg) || !write_value(block + 0x100, name_ref) ||
+        !write_value(slot, std::uint64_t{0}) || !write_value(block + 0x140, name)) {
+      std::fprintf(stderr, "[coop-nxnative] puppet spawn test could not write request\n");
+      return;
+    }
+
+    std::fprintf(stderr, "[coop-nxnative] puppet spawn test requesting %s\n", actor_name);
+    const GameCall create{base + create_offset, {manager, block + 0x100, block, slot, 1}};
+    const auto accepted = coop_nxnative_invoke_game_call(&create);
+    std::uint64_t request = 0;
+    if (!static_cast<std::uint32_t>(accepted) && (!read_at(slot, request) || !request)) {
+      std::fprintf(stderr, "[coop-nxnative] puppet spawn test create refused\n");
+      return;
+    }
+    phase = Phase::creating;
+    since = now;
+    last_target = now;
+    return;
+  }
+
+  if (target.player == player && target.age == age) last_target = now;
+  if (phase == Phase::creating) {
+    std::uint64_t request = 0;
+    std::uint32_t word = 0;
+    if (read_at(slot, request) && request && read_at(request, word)) {
+      const auto state = word & 0xffff;
+      if (state == 3) {
+        const GameCall take{base + take_offset, {request, 1}};
+        actor = coop_nxnative_invoke_game_call(&take);
+        write_value(slot, std::uint64_t{0});
+        phase = actor && read_at(actor, vtable) && vtable ? Phase::live : Phase::done;
+        std::fprintf(stderr, "[coop-nxnative] puppet spawn test %s\n",
+            phase == Phase::live ? "actor taken" : "take returned no actor");
+        return;
+      }
+      if (state == 4 || state == 5 || state == 6) {
+        if (state == 4) {
+          const GameCall drop{base + drop_offset, {request}};
+          coop_nxnative_invoke_game_call(&drop);
+        }
+        write_value(slot, std::uint64_t{0});
+        phase = Phase::done;
+        std::fprintf(stderr, "[coop-nxnative] puppet spawn test request failed (state %u)\n", state);
+        return;
+      }
+    }
+    if (since != Clock::time_point::max() && now - since > std::chrono::seconds(10)) {
+      std::fprintf(stderr, "[coop-nxnative] puppet spawn test still pending after 10 seconds\n");
+      // Keep draining the outstanding request. Do not reissue it or lose a
+      // late actor that will need to be taken and deleted.
+      since = Clock::time_point::max();
+    }
+    return;
+  }
+
+  std::uint64_t observed_vtable = 0;
+  std::uint32_t state = 0;
+  if (!read_at(actor, observed_vtable) || observed_vtable != vtable ||
+      !read_at(actor + 0x2c, state) || state >= 7) {
+    phase = Phase::done;
+    return;
+  }
+  if (state != 4) return;
+  if (now - last_target > std::chrono::seconds(1)) {
+    const GameCall remove{base + delete_offset, {actor}};
+    coop_nxnative_invoke_game_call(&remove);
+    phase = Phase::done;
+    std::fprintf(stderr, "[coop-nxnative] puppet spawn test delete requested\n");
+  } else if (target.player == player && target.age == age) {
+    write_value(actor + 0x358, target.position);
+    write_value(actor + 0x31c, target.position);
+  }
+}
+#endif
 
 [[maybe_unused]] bool valid_main_base(std::uint64_t base, std::uint64_t size) {
   std::uint32_t mod0 = 0;
@@ -317,8 +483,16 @@ void probe() {
 #ifdef __APPLE__
     if (!calc_bridge_installed && now >= next_calc_attempt) {
       calc_bridge_installed = install_calc_bridge(base);
-      if (calc_bridge_installed && std::getenv("COOP_NXNATIVE_PUPPET_PREFLIGHT"))
-        install_puppet_guard(base);
+      if (calc_bridge_installed && std::getenv("COOP_NXNATIVE_PUPPET_PREFLIGHT")) {
+        const bool guarded = install_puppet_guard(base);
+#ifdef COOP_NXNATIVE_NETWORK
+        const char* spawn_test = std::getenv("COOP_NXNATIVE_SPAWN_TEST");
+        if (guarded && spawn_test && std::strcmp(spawn_test, "1") == 0)
+          spawn_test_base.store(base, std::memory_order_release);
+#else
+        (void)guarded;
+#endif
+      }
       next_calc_attempt = now + 5'000'000;
     }
     if (calc_bridge_installed && now >= next_calc_report) {
@@ -338,6 +512,14 @@ void probe() {
           ? remote->targets(*reading->scene) : coop_nxnative::RemoteTargets{};
       const std::lock_guard lock(remote_targets_mutex);
       remote_targets = targets;
+#ifdef __APPLE__
+      static std::string local_scene;
+      remote_local_scene_valid = reading && reading->scene.has_value();
+      if (remote_local_scene_valid && *reading->scene != local_scene) {
+        local_scene = *reading->scene;
+        ++remote_scene_generation;
+      }
+#endif
     }
 #endif
     // The diagnostic sampler is independent of the LAN client's server clock.

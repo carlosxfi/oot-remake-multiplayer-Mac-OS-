@@ -215,3 +215,22 @@ expected instructions differ, the probe logs a refusal and skips the guard.
 This check does not create actors. Hookshot's Windows patch also handles other
 near-null reads during creation and updates. The component-chain guard only
 covers the known hair-component path.
+
+## One-puppet spawn test
+
+Launch with the same generated overlay and opt in for a single experimental
+actor request. Use a test save in both games.
+
+```sh
+COOP_NXNATIVE_SPAWN_TEST=1 sh nxnative/network/join.sh "/path/to/game.app" \
+  "$HOME/Projects/oot-coop-puppet/romfs"
+```
+
+After two seconds with the same remote target in the same scene, the Mac
+requests one actor for that target. The log reports `puppet spawn test`
+messages for the request and result. A live actor follows received positions.
+If the remote target leaves, the client requests deletion. On a local scene
+change the game handles teardown. Relaunch to try another spawn. This first
+test uses a fixed rotation and does not synchronize animation. The known
+component-chain guard is required, but other missing-component crash paths
+are still possible during a real spawn.
