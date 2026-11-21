@@ -1,5 +1,12 @@
 # Squadala!
 
+This fork develops the Apple Silicon port of Squadala! using nxnative. The Mac source and setup steps are on `macos-squadala-v0118`.
+
+- [Build and play the Mac port](https://github.com/carlosxfi/oot-remake-multiplayer-Mac-OS-/tree/macos-squadala-v0118#build-and-play-on-a-mac)
+- [Report a Mac issue or contribute a PR](https://github.com/carlosxfi/oot-remake-multiplayer-Mac-OS-/tree/macos-squadala-v0118#help-with-testing-and-development)
+
+## About upstream Squadala
+
 Squadala! - online co-op for the Ocarina of Time remake on PC. (The repository keeps its name, `oot-remake-multiplayer`.)
 
 The goal of this project is working multiplayer in two stages:
