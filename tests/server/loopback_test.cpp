@@ -1056,6 +1056,11 @@ TEST_CASE("loopback: the test delay holds packets each way and keeps their order
   clock.step();
   clock.enet();
   a.pump();
+  // Queue the chat at the server before disconnecting, regardless of ENet's flush timing.
+  enet_host_flush(a.host);
+  clock.enet();
+  server.service(0);
+  REQUIRE(server.held_packets() >= 1);
   enet_peer_disconnect(a.peer, 0);
   REQUIRE(pump_until(server, {&a, &b}, [&] { return b.find<PlayerLeft>() != nullptr; }, &clock));
   std::size_t chat_at = 0;
