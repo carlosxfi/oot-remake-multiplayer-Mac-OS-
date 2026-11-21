@@ -6,6 +6,25 @@ read-only `GameMemory` adapter. The default build encodes messages locally.
 An optional network build can test the encrypted relay with a local observer.
 Neither build applies another player's state to the game yet.
 
+## Compatibility milestones
+
+The first milestone is a full play session with a Windows host on the same
+co-op release. Use the shared co-op core for the gameplay rules and adapt
+nxnative's frame, memory, game-call, input, and rendering interfaces around it.
+The single-puppet LAN probe remains a reference for the Mac adapter.
+
+- Player lifecycle: join, show every peer, move between scenes, despawn,
+  reappear, and reconnect without duplicate actors or crashes.
+- Shared progress: pick up items, use dungeon keys, open doors, and reload a
+  save without either player losing progress or becoming stuck.
+- Shared world and combat: interact with objects, defeat enemies and a boss,
+  then leave and return to verify the same state on both clients.
+
+After that milestone, the goal is feature parity with the Windows release.
+Compare the Mac and Windows clients for full pose and equipment, name tags,
+map markers, customization, hosting and session menus, chat, and voice.
+Keep the Windows build and game versions in each test result.
+
 ## Position probe
 
 Build and run it on the Mac that built the nxnative app:

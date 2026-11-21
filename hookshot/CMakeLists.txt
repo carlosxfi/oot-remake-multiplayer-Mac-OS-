@@ -56,11 +56,13 @@ else()
   # drawing (patches 0001, 0012) and the world hooks (0005) then find it with
   # dlopen("hookshot_coop.so", RTLD_NOLOAD), and glibc matches a bare name to a loaded library only
   # by its SONAME. Without one they got nothing: no Multiplayer tab, chat or name tags on Linux.
-  target_link_options(hookshot_coop PRIVATE -Wl,-soname,hookshot_coop.so)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(hookshot_coop PRIVATE -Wl,-soname,hookshot_coop.so)
+  endif()
   # The C++ runtime inside the module (none of its symbols exported), so it loads into the game on any
   # distribution from the one it was built on (CI: Ubuntu 22.04, glibc 2.35, as Longshot's own) up,
   # whatever libstdc++ that system has.
-  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(hookshot_coop PRIVATE -static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL -Wl,--no-undefined)
   endif()
   # dlsym: Ctrl+V reads the modifier keys from the game's own SDL (coop_pause.cpp Modifiers).
