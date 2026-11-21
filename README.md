@@ -2,6 +2,60 @@
 
 # Squadala!
 
+This fork ports [Squadala!](https://github.com/daurosk/oot-remake-multiplayer) to Apple Silicon using nxnative. The Mac port uses the shared Squadala co-op code and protocol 15. The [Windows v0.11.8 build](https://github.com/daurosk/oot-remake-multiplayer/releases/tag/v0.11.8) is the reference for cross-play testing.
+
+## Build and play on a Mac
+
+You’ll need an Apple Silicon Mac, the Xcode Command Line Tools, CMake 3.24 or newer, and Python 3.10 or newer. You’ll also need a working nxnative game app and your own game data for version 1.1.1. The pack builder accepts a local `.nup` or an extracted RomFS folder. Start the nxnative app once on its own to check that it runs.
+
+If the command line tools are missing, run `xcode-select --install`. If you use Homebrew, you can install CMake and Python with `brew install cmake python`.
+
+**1. Download the Mac source.**
+
+```sh
+mkdir -p "$HOME/Projects"
+cd "$HOME/Projects"
+git clone --branch macos-squadala-v0118 https://github.com/carlosxfi/oot-remake-multiplayer-Mac-OS-.git oot-coop-nxnative
+cd oot-coop-nxnative
+```
+
+**2. Build the local co-op asset pack and install the Finder launcher.**
+
+Replace the two `/path/to/` placeholders with your game app and game data paths. Keep the quotes around the paths.
+
+```sh
+(
+  set -e
+  GAME_APP="/path/to/your/nxnative game.app"
+  GAME_SOURCE="/path/to/your/game.nup"
+  PUPPET_DIR="$HOME/Projects/oot-coop-puppet"
+
+  python3 -m venv .venv
+  .venv/bin/python -m pip install zstandard
+  .venv/bin/python -m tools.puppet_pack.build --romfs "$GAME_SOURCE" \
+    --mod-dir "$PUPPET_DIR" --no-hud --look-slots 0
+
+  sh nxnative/network/install-menu.sh "$GAME_APP" "$PUPPET_DIR/romfs"
+  open "$HOME/Applications/OOT Co-op.app"
+)
+```
+
+The installer builds both ARM64 co-op libraries, runs the nxnative checks, and creates **OOT Co-op** in your home folder’s **Applications** folder. The launcher uses the paths you supplied and the build in this checkout. If you move those folders, run the installer again with the new paths.
+
+**3. Host or join a LAN playtest.**
+
+Open **OOT Co-op** from Finder and choose **Multiplayer → Host or Join** in the macOS menu bar. To join, enter the host address, port, and room password, or paste the complete LAN invite into the address field. To host, choose **Host LAN**, then **Copy invite**. Keep invites private. For a cross-play test, start with the Windows host above, disposable saves, and both players in the same scene.
+
+The port is in development. The menu, native build, and automated networking checks are in place. A live join launched from Finder can stall at **Connecting**. Use the panel status in your report. Host-save handoff is disabled in this launcher.
+
+## Help with testing and development
+
+- **Report a Mac issue.** Label the report **macOS/nxnative** and include your Mac model, macOS version, the short commit from `git rev-parse --short HEAD`, your game version, the host platform and co-op release, and the steps that reproduce the problem. For a join issue, include the exact panel status and whether you launched from Finder. The Mac log is at `~/Library/Logs/nxnative/0400486024DEC000.log`. Share only the relevant lines with addresses, player names, passwords, and invite codes removed. Keep game files, extracted assets, and saves local. [Squadala! Discord](https://discord.gg/GwtRKAqng5)
+- **Send a PR.** Fork this repository, start your topic branch from `macos-squadala-v0118`, and select `macos-squadala-v0118` as the base branch when you open the PR here. Keep each PR focused. Say what you tested and what still needs an in-game check. Run `sh nxnative/network/build-shared.sh` on Apple Silicon and `python3 tools/check_content.py` before submitting. The automated Mac build can run without a game app or game files. [Pull requests](https://github.com/carlosxfi/oot-remake-multiplayer-Mac-OS-/pulls) · [Apple Silicon CI](https://github.com/carlosxfi/oot-remake-multiplayer-Mac-OS-/actions/workflows/macos-nxnative.yml)
+- **Pick a feature to work on.** Start with the Finder join stall, player lifecycle across scene changes and reconnects, or parity work for shared progress, remote animations and equipment, name tags, and minimap markers. The Mac launch and game bridge code is in `nxnative/`. [Developer notes and playtest checklist](nxnative/README.md)
+
+## About upstream Squadala
+
 Squadala! - online co-op for the Ocarina of Time remake on PC. (The repository keeps its name, `oot-remake-multiplayer`.)
 
 The goal of this project is working multiplayer in two stages:
