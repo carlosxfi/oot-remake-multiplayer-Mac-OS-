@@ -20,6 +20,7 @@ add_library(nxnative_shared STATIC
   "${repo}/coop/host/src/one_way_keeper.cpp"
   "${repo}/coop/protocol/src/codec.cpp"
   "${repo}/coop/protocol/src/join_password.cpp"
+  "${repo}/coop/protocol/src/official_mark.cpp"
   "${repo}/coop/protocol/src/traffic_crypto.cpp"
   "${repo}/coop/net/src/client.cpp"
   "${repo}/coop/net/src/clock.cpp"

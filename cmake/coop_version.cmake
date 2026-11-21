@@ -6,8 +6,17 @@
 #   cmake -DCOOP_GIT_DIR=<repo> -DCOOP_VERSION_PREFIX=<word, or empty> -DCOOP_VERSION_OUT=<file> -P coop_version.cmake
 #
 # Used by lichii/hook/core.cmake (the emulator) and hookshot/CMakeLists.txt (the module).
-execute_process(COMMAND git -C "${COOP_GIT_DIR}" describe --tags --always --dirty
-    OUTPUT_VARIABLE _coop_version OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(COOP_UPSTREAM_RELEASE)
+    execute_process(COMMAND git -C "${COOP_GIT_DIR}" describe --always --dirty --exclude "*"
+        OUTPUT_VARIABLE _coop_revision OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    set(_coop_version "${COOP_UPSTREAM_RELEASE}")
+    if(_coop_revision)
+        string(APPEND _coop_version "-g${_coop_revision}")
+    endif()
+else()
+    execute_process(COMMAND git -C "${COOP_GIT_DIR}" describe --tags --always --dirty
+        OUTPUT_VARIABLE _coop_version OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+endif()
 if(COOP_VERSION_PREFIX)
     set(COOP_VERSION_PREFIX "${COOP_VERSION_PREFIX} ")  # "hookshot v0.11.4"
 endif()

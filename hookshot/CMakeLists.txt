@@ -86,14 +86,15 @@ endif()
 # The co-op commit for the log, from git describe on every build (cmake/coop_version.cmake;
 # a configure-time string went stale: 0.11.3's module said v0.11.2-18-gab129f5b).
 set(_coop_version_dir "${CMAKE_CURRENT_BINARY_DIR}/coop_version")
-set(_coop_version_prefix "hookshot")
+set(_coop_upstream_release "")
 if(APPLE)
   # The Mac branch imports the upstream release without its Git tag.
   # Advertise the actual upstream release in HELLO and retain the Mac commit in logs.
-  set(_coop_version_prefix "hookshot v0.11.8")
+  set(_coop_upstream_release "v0.11.8")
 endif()
 add_custom_target(coop_version_hookshot ALL
-  COMMAND "${CMAKE_COMMAND}" "-DCOOP_GIT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/.." "-DCOOP_VERSION_PREFIX=${_coop_version_prefix}"
+  COMMAND "${CMAKE_COMMAND}" "-DCOOP_GIT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/.." "-DCOOP_VERSION_PREFIX=hookshot"
+          "-DCOOP_UPSTREAM_RELEASE=${_coop_upstream_release}"
           "-DCOOP_VERSION_OUT=${_coop_version_dir}/coop_version.h"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/coop_version.cmake"
   BYPRODUCTS "${_coop_version_dir}/coop_version.h"
