@@ -59,6 +59,10 @@ export DM_ROMFS_OVERLAY="$overlay" COOP_NXNATIVE_PUPPET_PREFLIGHT=1
 export COOP_NXNATIVE_MENU=1 COOP_NXNATIVE_SHARED_MODULE="$module" COOP_NXNATIVE_SHARED_DIR="$state"
 export HOS_COOP_MENU=1 LICHII_COOP_PUPPET=1 LICHII_COOP_HOST_SAVE=0
 export HOS_COOP_MODS_CODE=0 HOS_COOP_NULL_READS=0
+unset COOP_NXNATIVE_PAUSE_PACK
+if /usr/bin/plutil -extract pause_menu.0 raw -o - "$overlay/../coop_puppet.json" >/dev/null 2>&1; then
+  export COOP_NXNATIVE_PAUSE_PACK=1
+fi
 exec /bin/sh "$here/../probe/run.sh" "$app"
 LAUNCH
 printf 'Open %s in Finder, then choose Multiplayer → Host or Join in the game window.\n' "$launcher"

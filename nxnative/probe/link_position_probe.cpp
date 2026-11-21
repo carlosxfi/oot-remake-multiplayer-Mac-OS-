@@ -279,7 +279,7 @@ bool install_native_pause_menu(void* module, std::uint64_t base, RegisterPad reg
   original_screen_update.store(reinterpret_cast<UpdateScreen>(original), std::memory_order_release);
   const auto put = [](std::uint64_t where, std::uint64_t value) {
     return with_writable_alias(where, sizeof(value), [&](void* alias) {
-      std::atomic_ref(*static_cast<std::uint64_t*>(alias)).store(value, std::memory_order_release);
+      __atomic_store_n(static_cast<std::uint64_t*>(alias), value, __ATOMIC_RELEASE);
     });
   };
   const auto wrapper = reinterpret_cast<std::uint64_t>(&update_pause_screen);
@@ -318,7 +318,8 @@ bool start_shared_module(const char* path, std::uint64_t base) {
   std::error_code overlay_error;
   const bool has_pause_layout = overlay && std::filesystem::is_regular_file(std::filesystem::path(overlay) /
       "UI/Layout2Archive/Common.Product.100.Nin_Ounce_NVN2.blarc.zs", overlay_error);
-  const bool try_native_menu = want_menu && register_pad && has_pause_layout;
+  const bool try_native_menu = want_menu && register_pad && has_pause_layout &&
+      std::getenv("COOP_NXNATIVE_PAUSE_PACK");
   shared_api.version = HOS_COOP_API_VERSION;
   shared_api.size = try_native_menu ? offsetof(HosCoopApi, setting) : offsetof(HosCoopApi, pad_buttons);
   if (try_native_menu) {
