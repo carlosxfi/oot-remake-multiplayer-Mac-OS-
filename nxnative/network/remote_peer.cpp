@@ -80,7 +80,12 @@ struct RemotePeer::Impl {
       if (!player || player->has_flag(coop::protocol::status::loading) ||
           !sample.scene || *sample.scene != scene || !sample.age || !sample.position)
         continue;
-      result[i] = {sample.player_number, *sample.age, *sample.position, sample.rotation};
+      auto motion = RemoteMotion::unknown;
+      if (sample.animation) {
+        if (sample.animation->name == "Wait") motion = RemoteMotion::idle;
+        if (sample.animation->name == "Move") motion = RemoteMotion::move;
+      }
+      result[i] = {sample.player_number, *sample.age, *sample.position, sample.rotation, motion};
     }
     return result;
   }

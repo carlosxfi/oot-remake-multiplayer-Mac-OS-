@@ -108,6 +108,8 @@ int main() {
     coop::protocol::Vec3 windows_position{4, 5, 6};
     std::string windows_scene = "SyntheticScene";
     bool send_windows_samples = true;
+    std::string windows_animation = "Wait";
+    const coop::protocol::Quat windows_rotation{0, 1, 0, 0};
     auto next_send = std::chrono::steady_clock::now();
     const auto step = [&] {
       server.service(0);
@@ -119,6 +121,8 @@ int main() {
         sample.position = windows_position;
         sample.scene = windows_scene;
         sample.age = coop::protocol::Age::child;
+        sample.rotation = windows_rotation;
+        sample.animation = coop::protocol::Animation{windows_animation, 0.0f, 1.0f};
         assert(windows.send(sample));
         next_send = now + std::chrono::milliseconds(20);
       }
@@ -154,9 +158,13 @@ int main() {
     assert(mac.targets("SyntheticScene")[windows_slot].position == windows_position);
     assert(mac.targets("OtherScene")[windows_slot].player == 0);
     assert(mac.targets("")[windows_slot].player == 0);
+    assert(mac.targets("SyntheticScene")[windows_slot].rotation == windows_rotation);
+    assert(mac.targets("SyntheticScene")[windows_slot].motion == coop_nxnative::RemoteMotion::idle);
+    windows_animation = "Move";
     windows_position = {10, 11, 12};
     assert(wait_for(step, [&] {
-      return mac.targets("SyntheticScene")[windows_slot].position == windows_position;
+      const auto target = mac.targets("SyntheticScene")[windows_slot];
+      return target.position == windows_position && target.motion == coop_nxnative::RemoteMotion::move;
     }));
     windows_scene = "OtherScene";
     assert(wait_for(step, [&] {

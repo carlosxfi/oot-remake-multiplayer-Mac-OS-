@@ -1,6 +1,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -201,6 +202,19 @@ bool write_value(std::uint64_t address, const T& value) {
                        sizeof(value)) == KERN_SUCCESS;
 }
 
+// Same row-major conversion used by the shared puppet director.
+std::array<float, 9> puppet_rotation(const coop::protocol::Quat& q) {
+  const auto [qx, qy, qz, qw] = q;
+  const double length = std::hypot(std::hypot(qx, qy), std::hypot(qz, qw));
+  if (!(length > 1e-6) || !std::isfinite(length)) return {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  const double x = qx / length, y = qy / length, z = qz / length, w = qw / length;
+  return {
+      float(1 - 2 * (y*y + z*z)), float(2 * (x*y - z*w)), float(2 * (x*z + y*w)),
+      float(2 * (x*y + z*w)), float(1 - 2 * (x*x + z*z)), float(2 * (y*z - x*w)),
+      float(2 * (x*z - y*w)), float(2 * (y*z + x*w)), float(1 - 2 * (x*x + y*y)),
+  };
+}
+
 void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& target,
                      std::uint64_t generation, bool local_scene_valid) {
   using Clock = std::chrono::steady_clock;
@@ -214,7 +228,9 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
   enum class Phase { waiting, creating, live, done };
   static Phase phase = Phase::waiting;
   static Clock::time_point since{}, last_target{};
-  static std::uint64_t scene = 0, slot = 0, actor = 0, vtable = 0;
+  static std::uint64_t scene = 0, block = 0, slot = 0, actor = 0, vtable = 0;
+  static coop_nxnative::RemoteMotion motion = coop_nxnative::RemoteMotion::unknown;
+  static unsigned anim_buffer = 0;
   static std::uint8_t player = 0;
   static coop::protocol::Age age{};
   const auto now = Clock::now();
@@ -245,14 +261,14 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
       return;
     phase = Phase::done;  // one request per launch, even if creation is refused
     std::fprintf(stderr, "[coop-nxnative] puppet spawn test allocating request\n");
-    const GameCall allocate{base + malloc_offset, {0x180}};
-    const auto block = coop_nxnative_invoke_game_call(&allocate);
+    const GameCall allocate{base + malloc_offset, {0x2e0}};
+    block = coop_nxnative_invoke_game_call(&allocate);
     if (!block) {
       std::fprintf(stderr, "[coop-nxnative] puppet spawn test allocation failed\n");
       return;
     }
     std::array<std::uint8_t, 0x100> arg{};
-    constexpr std::array<float, 9> rotation{1, 0, 0, 0, 1, 0, 0, 0, 1};
+    const auto rotation = puppet_rotation(target.rotation.value_or(coop::protocol::Quat{0, 0, 0, 1}));
     constexpr std::array<float, 3> scale{1, 1, 1};
     std::memcpy(arg.data(), target.position.data(), sizeof(target.position));
     std::memcpy(arg.data() + 0x0c, rotation.data(), sizeof(rotation));
@@ -335,6 +351,38 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
   } else if (target.player == player && target.age == age) {
     write_value(actor + 0x358, target.position);
     write_value(actor + 0x31c, target.position);
+    if (target.rotation) {
+      const auto rotation = puppet_rotation(*target.rotation);
+      write_value(actor + 0x364, rotation);
+      write_value(actor + 0x328, rotation);
+    }
+
+    using coop_nxnative::RemoteMotion;
+    if (target.motion == RemoteMotion::unknown || target.motion == motion) return;
+    std::uint64_t controller = actor;
+    for (const auto offset : {0x270, 0x40, 0x18, 0x18}) {
+      if (!read_at(controller + offset, controller) || !controller) return;
+    }
+
+    // The game may retain the previous animation name pointer across calls.
+    const auto text = block + 0x240 + 0x50 * anim_buffer;
+    const auto request_address = block + 0x200;
+    const char* name = target.motion == RemoteMotion::move ? "Move" : "Wait";
+    std::array<char, 0x50> name_buffer{};
+    std::strcpy(name_buffer.data(), name);
+    std::array<std::uint8_t, 0x30> request{};
+    constexpr float rate = 1.0f, unset = -1.0f;
+    std::memcpy(request.data(), &actor, sizeof(actor));
+    std::memcpy(request.data() + 0x08, &text, sizeof(text));
+    std::memcpy(request.data() + 0x14, &rate, sizeof(rate));
+    std::memcpy(request.data() + 0x18, &unset, sizeof(unset));
+    std::memcpy(request.data() + 0x1c, &unset, sizeof(unset));
+    if (!write_value(text, name_buffer) || !write_value(request_address, request)) return;
+    const GameCall play{base + 0x2022a0, {request_address}};
+    coop_nxnative_invoke_game_call(&play);
+    anim_buffer ^= 1;
+    motion = target.motion;
+    std::fprintf(stderr, "[coop-nxnative] puppet spawn test requested animation %s\n", name);
   }
 }
 #endif

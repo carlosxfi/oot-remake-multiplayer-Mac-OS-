@@ -230,7 +230,9 @@ After two seconds with the same remote target in the same scene, the Mac
 requests one actor for that target. The log reports `puppet spawn test`
 messages for the request and result. A live actor follows received positions.
 If the remote target leaves, the client requests deletion. On a local scene
-change the game handles teardown. Relaunch to try another spawn. This first
-test uses a fixed rotation and does not synchronize animation. The known
+change the game handles teardown. Relaunch to try another spawn. This test
+applies received rotation and switches between the `Wait` and `Move`
+animation commands. Other animations and their exact playback frames are
+outside this test. The known
 component-chain guard is required, but other missing-component crash paths
 are still possible during a real spawn.

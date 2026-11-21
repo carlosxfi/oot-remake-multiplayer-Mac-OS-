@@ -16,11 +16,14 @@ std::optional<coop::net::ClientConfig> remote_config(
     std::string_view host, std::string_view port,
     std::string_view nickname, std::string_view password);
 
+enum class RemoteMotion { unknown, idle, move };
+
 struct RemoteTarget {
   std::uint8_t player = 0;
   coop::protocol::Age age = coop::protocol::Age::child;
   coop::protocol::Vec3 position{};
   std::optional<coop::protocol::Quat> rotation;
+  RemoteMotion motion = RemoteMotion::unknown;
 };
 
 using RemoteTargets = std::array<RemoteTarget, coop::protocol::kMaxPlayers>;
