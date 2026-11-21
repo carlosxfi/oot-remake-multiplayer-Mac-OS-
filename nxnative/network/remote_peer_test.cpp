@@ -105,16 +105,20 @@ int main() {
     std::optional<coop::protocol::PlayerSample> received_by_windows;
     std::optional<std::uint32_t> pending_knock;
     std::uint32_t sequence = 0;
+    coop::protocol::Vec3 windows_position{4, 5, 6};
+    std::string windows_scene = "SyntheticScene";
+    bool send_windows_samples = true;
     auto next_send = std::chrono::steady_clock::now();
     const auto step = [&] {
       server.service(0);
       windows.service(0);
       const auto now = std::chrono::steady_clock::now();
-      if (now >= next_send) {
+      if (send_windows_samples && now >= next_send) {
         coop::protocol::PlayerSample sample;
         sample.time = {windows.server_now_us(), sequence++};
-        sample.position = coop::protocol::Vec3{4, 5, 6};
-        sample.scene = "SyntheticScene";
+        sample.position = windows_position;
+        sample.scene = windows_scene;
+        sample.age = coop::protocol::Age::child;
         assert(windows.send(sample));
         next_send = now + std::chrono::milliseconds(20);
       }
@@ -146,8 +150,23 @@ int main() {
     assert(stats.last_received->position == (coop::protocol::Vec3{4, 5, 6}));
     assert(stats.last_received->player_number == windows.player_number());
 
+    const auto windows_slot = windows.player_number() - 1;
+    assert(mac.targets("SyntheticScene")[windows_slot].position == windows_position);
+    assert(mac.targets("OtherScene")[windows_slot].player == 0);
+    assert(mac.targets("")[windows_slot].player == 0);
+    windows_position = {10, 11, 12};
+    assert(wait_for(step, [&] {
+      return mac.targets("SyntheticScene")[windows_slot].position == windows_position;
+    }));
+    windows_scene = "OtherScene";
+    assert(wait_for(step, [&] {
+      return mac.targets("SyntheticScene")[windows_slot].player == 0 &&
+             mac.targets("OtherScene")[windows_slot].player == windows.player_number();
+    }));
     reading.position = {7, 8, 9};
     assert(wait_for(step, [&] { return received_by_windows->position == reading.position; }));
+    send_windows_samples = false;
+    assert(wait_for(step, [&] { return mac.targets("OtherScene")[windows_slot].player == 0; }));
     auto bad_config = remote_config("127.0.0.1", port, "Wrong-password", "wrong");
     assert(bad_config);
     coop_nxnative::RemotePeer rejected(*bad_config);

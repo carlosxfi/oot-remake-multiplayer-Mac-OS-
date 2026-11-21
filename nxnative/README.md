@@ -175,3 +175,13 @@ the check. Mac-side puppet display and shared progress are separate work.
 The LAN mode and its new test still need to run on the Mac.
 
 
+
+## Preparing remote Link
+
+The LAN client hands fresh, same-scene poses to the calc-thread callback.
+The count appears as `calc-thread remote targets`. With both games in the
+same scene it should reach one. It returns to zero after a scene change or
+after the remote game's samples go stale.
+
+The callback currently counts eligible poses. Actor creation still needs
+nxnative game calls and the equivalent of Hookshot's Link puppet guard.

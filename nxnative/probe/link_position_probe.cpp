@@ -14,6 +14,8 @@
 #include "coop/host/player_reader.hpp"
 #include "coop/host/sampler.hpp"
 #ifdef COOP_NXNATIVE_NETWORK
+#include <algorithm>
+#include <mutex>
 #include "loopback.hpp"
 #include "remote_peer.hpp"
 #endif
@@ -32,12 +34,25 @@ namespace {
 
 std::atomic<bool> running{true};
 std::atomic<std::uint64_t> calc_frames{0};
+#ifdef COOP_NXNATIVE_NETWORK
+std::mutex remote_targets_mutex;
+coop_nxnative::RemoteTargets remote_targets{};
+std::atomic<unsigned> calc_remote_targets{0};
+#endif
 
 template <typename T>
 bool read_at(std::uint64_t address, T& value);
 
 extern "C" __attribute__((visibility("default"))) void coop_nxnative_calc_frame() {
   calc_frames.fetch_add(1, std::memory_order_relaxed);
+#ifdef COOP_NXNATIVE_NETWORK
+  // Networking publishes on the sampler thread. Never wait for it in the game.
+  const std::unique_lock lock(remote_targets_mutex, std::try_to_lock);
+  if (lock.owns_lock())
+    calc_remote_targets.store(static_cast<unsigned>(std::count_if(
+        remote_targets.begin(), remote_targets.end(),
+        [](const auto& target) { return target.player != 0; })), std::memory_order_relaxed);
+#endif
 }
 
 #ifdef __APPLE__
@@ -277,7 +292,13 @@ void probe() {
     const auto reading = reader.read(coop::host::PlayerReader::PositionOrder::actor_first);
 #ifdef COOP_NXNATIVE_NETWORK
     if (network_on) loopback.tick(reading);
-    if (remote) remote->tick(reading);
+    if (remote) {
+      remote->tick(reading);
+      const auto targets = reading && reading->scene
+          ? remote->targets(*reading->scene) : coop_nxnative::RemoteTargets{};
+      const std::lock_guard lock(remote_targets_mutex);
+      remote_targets = targets;
+    }
 #endif
     // The diagnostic sampler is independent of the LAN client's server clock.
     const auto outgoing = sampler.frame(reading, now);
@@ -292,6 +313,8 @@ void probe() {
           static_cast<int>(state.size()), state.data(), static_cast<unsigned>(stats.self), stats.peers,
           static_cast<unsigned long long>(stats.sent), static_cast<unsigned long long>(stats.received_samples),
           static_cast<unsigned long long>(stats.send_failures), stats.detail.c_str());
+      std::fprintf(stderr, "[coop-nxnative] calc-thread remote targets=%u\n",
+          calc_remote_targets.load(std::memory_order_relaxed));
       if (stats.last_received && stats.last_received->position) {
         const auto& p = *stats.last_received->position;
         std::fprintf(stderr, "[coop-nxnative] remote player %u position %.3f %.3f %.3f scene=%s\n",

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -14,6 +15,15 @@ namespace coop_nxnative {
 std::optional<coop::net::ClientConfig> remote_config(
     std::string_view host, std::string_view port,
     std::string_view nickname, std::string_view password);
+
+struct RemoteTarget {
+  std::uint8_t player = 0;
+  coop::protocol::Age age = coop::protocol::Age::child;
+  coop::protocol::Vec3 position{};
+  std::optional<coop::protocol::Quat> rotation;
+};
+
+using RemoteTargets = std::array<RemoteTarget, coop::protocol::kMaxPlayers>;
 
 struct RemoteStats {
   coop::net::State state = coop::net::State::idle;
@@ -35,6 +45,8 @@ class RemotePeer {
   bool start();
   void tick(const std::optional<coop::host::PlayerReading>& reading);
   RemoteStats stats() const;
+  // Only fresh samples containing pose and scene together are eligible.
+  RemoteTargets targets(std::string_view scene) const;
 
  private:
   struct Impl;

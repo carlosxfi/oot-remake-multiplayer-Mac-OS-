@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <utility>
 
 #include "coop/host/sampler.hpp"
@@ -60,6 +61,29 @@ struct RemotePeer::Impl {
   coop::host::Sampler sampler;
   coop::presence::Presence presence;
   RemoteStats totals;
+  using Clock = std::chrono::steady_clock;
+  struct TimedSample {
+    coop::protocol::PlayerSample sample;
+    Clock::time_point arrival;
+  };
+  std::array<std::optional<TimedSample>, coop::protocol::kMaxPlayers> latest{};
+
+  RemoteTargets targets(std::string_view scene) const {
+    RemoteTargets result{};
+    if (scene.empty() || client.state() != coop::net::State::connected) return result;
+    const auto now = Clock::now();
+    for (std::size_t i = 0; i < latest.size(); ++i) {
+      const auto& entry = latest[i];
+      if (!entry || now - entry->arrival > std::chrono::seconds(1)) continue;
+      const auto& sample = entry->sample;
+      const auto* player = presence.player(sample.player_number);
+      if (!player || player->has_flag(coop::protocol::status::loading) ||
+          !sample.scene || *sample.scene != scene || !sample.age || !sample.position)
+        continue;
+      result[i] = {sample.player_number, *sample.age, *sample.position, sample.rotation};
+    }
+    return result;
+  }
 
   void drain() {
     while (auto event = client.next_event()) {
@@ -69,24 +93,39 @@ struct RemotePeer::Impl {
         sampler.set_player_number(event->welcome.player_number);
         presence.on_welcome(event->welcome);
         totals.last_received.reset();
+        latest = {};
         totals.detail = "welcomed";
       } else if (event->kind == Kind::waiting_for_host) {
         totals.detail = "waiting for Windows host approval";
       } else if (event->kind == Kind::disconnected || event->kind == Kind::connect_failed) {
         presence.clear();
         totals.last_received.reset();
+        latest = {};
         totals.detail = std::string(coop::net::to_string(event->kind));
       } else if (event->kind == Kind::refused) {
         totals.detail = std::string(coop::net::refuse_text(*event));
         presence.clear();
         totals.last_received.reset();
+        latest = {};
       } else if (event->kind == Kind::message) {
         presence.apply(event->message);
+        if (const auto* joined = std::get_if<coop::protocol::PlayerJoined>(&event->message);
+            joined && joined->player_number > 0 && joined->player_number <= latest.size()) {
+          latest[joined->player_number - 1].reset();
+        }
         if (const auto* sample = std::get_if<coop::protocol::PlayerSample>(&event->message);
             sample && sample->player_number != client.player_number()) {
           presence.seen(sample->player_number, sample->time.server_time_us, client.server_now_us());
           totals.last_received = *sample;
           ++totals.received_samples;
+          if (sample->player_number > 0 && sample->player_number <= latest.size() &&
+              presence.player(sample->player_number)) {
+            auto& slot = latest[sample->player_number - 1];
+            const auto delta = slot ? sample->time.sequence - slot->sample.time.sequence : 1;
+            // Sequence numbers wrap. Half the unsigned range distinguishes older packets.
+            if (delta > 0 && delta < (std::uint32_t{1} << 31))
+              slot = TimedSample{*sample, Clock::now()};
+          }
         }
       } else if (event->kind == Kind::host_changed && event->player == client.player_number()) {
         // Keep Windows as progress host. Taking over would require flag and
@@ -95,6 +134,7 @@ struct RemotePeer::Impl {
         client.stop();
         presence.clear();
         totals.last_received.reset();
+        latest = {};
       }
     }
   }
@@ -121,6 +161,10 @@ void RemotePeer::tick(const std::optional<coop::host::PlayerReading>& reading) {
   }
   s.client.service(0);
   s.drain();
+}
+
+RemoteTargets RemotePeer::targets(std::string_view scene) const {
+  return impl_->targets(scene);
 }
 
 RemoteStats RemotePeer::stats() const {
