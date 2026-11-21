@@ -67,6 +67,7 @@ struct RemotePeer::Impl {
     Clock::time_point arrival;
   };
   std::array<std::optional<TimedSample>, coop::protocol::kMaxPlayers> latest{};
+  std::array<std::optional<std::uint32_t>, coop::protocol::kMaxPlayers> colors{};
 
   RemoteTargets targets(std::string_view scene) const {
     RemoteTargets result{};
@@ -85,7 +86,8 @@ struct RemotePeer::Impl {
         if (sample.animation->name == "Wait") motion = RemoteMotion::idle;
         if (sample.animation->name == "Move") motion = RemoteMotion::move;
       }
-      result[i] = {sample.player_number, *sample.age, *sample.position, sample.rotation, motion};
+      result[i] = {sample.player_number, *sample.age, *sample.position, sample.rotation, motion,
+                   colors[i].value_or(coop::protocol::slot_color(sample.player_number))};
     }
     return result;
   }
@@ -99,6 +101,7 @@ struct RemotePeer::Impl {
         presence.on_welcome(event->welcome);
         totals.last_received.reset();
         latest = {};
+        colors = {};
         totals.detail = "welcomed";
       } else if (event->kind == Kind::waiting_for_host) {
         totals.detail = "waiting for Windows host approval";
@@ -106,17 +109,24 @@ struct RemotePeer::Impl {
         presence.clear();
         totals.last_received.reset();
         latest = {};
+        colors = {};
         totals.detail = std::string(coop::net::to_string(event->kind));
       } else if (event->kind == Kind::refused) {
         totals.detail = std::string(coop::net::refuse_text(*event));
         presence.clear();
         totals.last_received.reset();
         latest = {};
+        colors = {};
       } else if (event->kind == Kind::message) {
         presence.apply(event->message);
         if (const auto* joined = std::get_if<coop::protocol::PlayerJoined>(&event->message);
             joined && joined->player_number > 0 && joined->player_number <= latest.size()) {
           latest[joined->player_number - 1].reset();
+          colors[joined->player_number - 1].reset();
+        }
+        if (const auto* equip = std::get_if<coop::protocol::PlayerEquip>(&event->message);
+            equip && equip->equipment.color && presence.player(equip->player_number)) {
+          colors[equip->player_number - 1] = equip->equipment.color;
         }
         if (const auto* sample = std::get_if<coop::protocol::PlayerSample>(&event->message);
             sample && sample->player_number != client.player_number()) {
@@ -140,6 +150,7 @@ struct RemotePeer::Impl {
         presence.clear();
         totals.last_received.reset();
         latest = {};
+        colors = {};
       }
     }
   }

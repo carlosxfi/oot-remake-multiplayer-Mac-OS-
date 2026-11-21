@@ -237,3 +237,12 @@ for the upper body and other layers. Other animations and their exact playback f
 outside this test. The known
 component-chain guard is required, but other missing-component crash paths
 are still possible during a real spawn.
+
+### Colored puppet packs
+
+For a colored Link, generate the overlay with the pack builder's default
+tunic list (omit `--tunics none`). The spawn test uses the remote player's
+co-op color and the same nearest-preset selection as the Windows client.
+If the selected variant is missing, it uses the plain actor. The log line
+`puppet spawn test requesting` shows the selected actor. Color is selected
+when making the actor, so relaunch after changing the remote player's color.

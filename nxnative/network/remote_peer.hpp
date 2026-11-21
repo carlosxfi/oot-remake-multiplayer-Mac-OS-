@@ -24,6 +24,7 @@ struct RemoteTarget {
   coop::protocol::Vec3 position{};
   std::optional<coop::protocol::Quat> rotation;
   RemoteMotion motion = RemoteMotion::unknown;
+  std::uint32_t color = 0;
 };
 
 using RemoteTargets = std::array<RemoteTarget, coop::protocol::kMaxPlayers>;

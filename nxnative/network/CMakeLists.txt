@@ -44,7 +44,8 @@ if(APPLE)
   add_library(coop_nxnative_probe SHARED
     "${repo}/nxnative/probe/link_position_probe.cpp"
     "${repo}/nxnative/probe/game_call.cpp"
-    "${repo}/nxnative/probe/game_call.S")
+    "${repo}/nxnative/probe/game_call.S"
+    "${repo}/lichii/hook/coop_colors.cpp")
   target_compile_definitions(coop_nxnative_probe PRIVATE COOP_NXNATIVE_NETWORK=1)
   target_link_libraries(coop_nxnative_probe PRIVATE nxnative_loopback)
   # The existing run.sh injects this path for both build variants.

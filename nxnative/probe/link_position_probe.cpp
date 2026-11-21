@@ -22,6 +22,8 @@
 #include "remote_peer.hpp"
 #ifdef __APPLE__
 #include "game_call.hpp"
+#include "../../lichii/hook/coop_colors.h"
+#include <filesystem>
 #endif
 #endif
 
@@ -49,8 +51,9 @@ std::atomic<GameCallCheck> game_call_check{GameCallCheck::pending};
 std::atomic<std::uint64_t> spawn_test_base{0};
 std::uint64_t remote_scene_generation = 0;
 bool remote_local_scene_valid = false;
+std::array<char, 64> remote_actor_name{};
 void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& target,
-                     std::uint64_t generation, bool local_scene_valid);
+                     std::uint64_t generation, bool local_scene_valid, const char* actor_name);
 #endif
 #endif
 
@@ -66,6 +69,7 @@ extern "C" __attribute__((visibility("default"))) void coop_nxnative_calc_frame(
   coop_nxnative::RemoteTarget target;
   std::uint64_t generation = 0;
   bool local_scene_valid = false;
+  std::array<char, 64> actor_name{};
 #endif
   {
     const std::unique_lock lock(remote_targets_mutex, std::try_to_lock);
@@ -78,6 +82,7 @@ extern "C" __attribute__((visibility("default"))) void coop_nxnative_calc_frame(
     if (first != remote_targets.end()) target = *first;
     generation = remote_scene_generation;
     local_scene_valid = remote_local_scene_valid;
+    actor_name = remote_actor_name;
 #endif
   }
   calc_remote_targets.store(target_count, std::memory_order_relaxed);
@@ -88,7 +93,7 @@ extern "C" __attribute__((visibility("default"))) void coop_nxnative_calc_frame(
   }
   const auto base = spawn_test_base.load(std::memory_order_acquire);
   if (base && game_call_check.load(std::memory_order_relaxed) == GameCallCheck::passed)
-    tick_spawn_test(base, target, generation, local_scene_valid);
+    tick_spawn_test(base, target, generation, local_scene_valid, actor_name.data());
 #endif
 #endif
 }
@@ -216,7 +221,7 @@ std::array<float, 9> puppet_rotation(const coop::protocol::Quat& q) {
 }
 
 void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& target,
-                     std::uint64_t generation, bool local_scene_valid) {
+                     std::uint64_t generation, bool local_scene_valid, const char* actor_name) {
   using Clock = std::chrono::steady_clock;
   using coop_nxnative::GameCall;
   using coop_nxnative::coop_nxnative_invoke_game_call;
@@ -253,7 +258,7 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
       since = now;
       return;
     }
-    if (now - since < std::chrono::seconds(2)) return;
+    if (!*actor_name || now - since < std::chrono::seconds(2)) return;
 
     std::uint64_t manager = 0, create_default = 0, manager_vtable = 0;
     if (!read_at(base + manager_offset, manager) || !manager ||
@@ -277,7 +282,6 @@ void tick_spawn_test(std::uint64_t base, const coop_nxnative::RemoteTarget& targ
     std::memcpy(arg.data() + 0x40, &create_default, sizeof(create_default));
     arg[0x98] = 1;
     std::array<char, 64> name{};
-    const char* actor_name = age == coop::protocol::Age::child ? "CoopPuppet_Child" : "CoopPuppet_Adult";
     std::strcpy(name.data(), actor_name);
     const std::array<std::uint64_t, 2> name_ref{block + 0x140, name.size()};
     slot = block + 0x110;
@@ -487,7 +491,28 @@ std::uint64_t discover_main_base() {
   return symbol_base != 0 ? symbol_base : discover_main_base_from_log();
 }
 
+#if defined(__APPLE__) && defined(COOP_NXNATIVE_NETWORK)
+std::vector<std::string> available_tunic_actors() {
+  std::vector<std::string> result;
+  const char* overlay = std::getenv("DM_ROMFS_OVERLAY");
+  if (!overlay || !*overlay) return result;
+  const auto actor_dir = std::filesystem::path(overlay) / "Pack" / "Actor";
+  for (const auto suffix : CoopColors::Tunics()) {
+    for (const auto* plain : {"CoopPuppet_Child", "CoopPuppet_Adult"}) {
+      auto name = std::string(plain) + "_" + std::string(suffix);
+      std::error_code error;
+      const auto size = std::filesystem::file_size(actor_dir / (name + ".pack.zs"), error);
+      if (!error && size > 0) result.push_back(std::move(name));
+    }
+  }
+  return result;
+}
+#endif
+
 void probe() {
+#if defined(__APPLE__) && defined(COOP_NXNATIVE_NETWORK)
+  const auto tunic_actors = available_tunic_actors();
+#endif
   std::uint64_t base = configured_main_base();
   std::fprintf(stderr, "[coop-nxnative] position probe loaded; %s\n",
                base ? "using the configured main base" : "waiting for nxnative's main module");
@@ -580,9 +605,23 @@ void probe() {
       remote->tick(reading);
       const auto targets = reading && reading->scene
           ? remote->targets(*reading->scene) : coop_nxnative::RemoteTargets{};
+#ifdef __APPLE__
+      std::array<char, 64> actor_name{};
+      const auto first = std::find_if(targets.begin(), targets.end(),
+          [](const auto& entry) { return entry.player != 0; });
+      if (first != targets.end()) {
+        const auto* plain = first->age == coop::protocol::Age::child ? "CoopPuppet_Child" : "CoopPuppet_Adult";
+        const auto suffix = CoopColors::TunicOf(first->color);
+        const auto colored = std::string(plain) + "_" + std::string(suffix);
+        const auto found = std::find(tunic_actors.begin(), tunic_actors.end(), colored);
+        std::snprintf(actor_name.data(), actor_name.size(), "%s",
+                      found == tunic_actors.end() ? plain : found->c_str());
+      }
+#endif
       const std::lock_guard lock(remote_targets_mutex);
       remote_targets = targets;
 #ifdef __APPLE__
+      remote_actor_name = actor_name;
       static std::string local_scene;
       remote_local_scene_valid = reading && reading->scene.has_value();
       if (remote_local_scene_valid && *reading->scene != local_scene) {

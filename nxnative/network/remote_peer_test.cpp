@@ -158,6 +158,14 @@ int main() {
     assert(mac.targets("SyntheticScene")[windows_slot].position == windows_position);
     assert(mac.targets("OtherScene")[windows_slot].player == 0);
     assert(mac.targets("")[windows_slot].player == 0);
+    assert(mac.targets("SyntheticScene")[windows_slot].color ==
+           coop::protocol::slot_color(windows.player_number()));
+    coop::protocol::PlayerEquip equip;
+    equip.equipment.color = 0xFF3030;
+    assert(windows.send(equip));
+    assert(wait_for(step, [&] {
+      return mac.targets("SyntheticScene")[windows_slot].color == 0xFF3030;
+    }));
     assert(mac.targets("SyntheticScene")[windows_slot].rotation == windows_rotation);
     assert(mac.targets("SyntheticScene")[windows_slot].motion == coop_nxnative::RemoteMotion::idle);
     windows_animation = "Move";
