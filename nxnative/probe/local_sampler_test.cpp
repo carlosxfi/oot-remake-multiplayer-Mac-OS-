@@ -91,7 +91,11 @@ int main() {
   moved[0] = std::numeric_limits<float>::quiet_NaN();
   fake.put(ui + addr::kGameUiPosition, moved);
   assert(!reader.read());
-  assert(sampler.frame(reader.read(), 1'040'000).empty());
+  outgoing = sampler.frame(reader.read(), 1'040'000);
+  assert(outgoing.size() == 1);
+  assert(protocol::decode(outgoing.front().bytes, decoded) == protocol::Error::none);
+  const auto* loading = std::get_if<protocol::PlayerStatus>(&decoded);
+  assert(loading && (loading->flags & protocol::status::loading));
   fake.put(ui + addr::kGameUiPosition, initial);
   fake.put(ui + addr::kGameUiPoseFlags, std::uint16_t{0});
   assert(!reader.read());
