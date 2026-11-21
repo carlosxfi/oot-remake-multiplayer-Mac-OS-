@@ -1,0 +1,41 @@
+diff --git a/dm/host/hle_hid.c b/dm/host/hle_hid.c
+index a0b9eda..281ff5e 100644
+--- a/dm/host/hle_hid.c
++++ b/dm/host/hle_hid.c
+@@ -633,7 +633,7 @@ static uint64_t single_joy_fold(uint32_t style, uint64_t buttons, int32_t a[4])
+     a[2 * !side] = 0; a[2 * !side + 1] = 0;
+     return folded;
+ }
+-static void fill(NpadState *s, uint32_t id, uint32_t style) {
++static void fill_unfiltered(NpadState *s, uint32_t id, uint32_t style) {
+     memset(s, 0, sizeof *s);
+     s->sampling = atomic_fetch_add(&g_sampling, 1) + 1;
+     npad_ref ref = npad_resolve(id);
+@@ -671,6 +671,27 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
+     s->attributes = ATTR_CONNECTED | halves;
+     if (id == NPAD_HANDHELD) s->attributes |= ATTR_WIRED | ATTR_LEFT_WIRED | ATTR_RIGHT_WIRED;
+ }
++// Optional host-side filter for a co-op pause menu. Register once after loading the co-op module.
++typedef uint64_t (*DmCoopPadFilter)(uint64_t buttons, int32_t axes[4]);
++static _Atomic(DmCoopPadFilter) g_coop_pad_filter;
++
++__attribute__((visibility("default")))
++int dm_coop_set_pad_filter(DmCoopPadFilter filter) {
++    DmCoopPadFilter expected = NULL;
++    return filter && atomic_compare_exchange_strong(&g_coop_pad_filter, &expected, filter);
++}
++
++static void fill(NpadState *s, uint32_t id, uint32_t style) {
++    fill_unfiltered(s, id, style);
++    DmCoopPadFilter filter = atomic_load(&g_coop_pad_filter);
++    if (!filter || !s->attributes || (id != NPAD_NO1 && id != NPAD_HANDHELD)) return;
++
++    int32_t axes[4] = {s->lx, s->ly, s->rx, s->ry};
++    s->buttons = filter(s->buttons, axes);
++    s->lx = axes[0]; s->ly = axes[1];
++    s->rx = axes[2]; s->ry = axes[3];
++}
++
+ // The cheat VM's key mask (hle_cheats.c "all keys of the mask held"): the OR of every player's controller buttons
+ // (the keyboard / touch source's bits included) plus the eight stick-direction pseudo buttons of the merged axes —
+ // one flat bitset, not exactly any one npad read (fill() publishes per-npad states with attributes, merges and

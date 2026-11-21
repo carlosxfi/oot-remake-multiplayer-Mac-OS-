@@ -77,7 +77,7 @@ NSString* heart_count(std::uint16_t quarters) {
 
 @interface NxnativeMultiplayerMenu : NSObject
 - (instancetype)initWithApi:(SessionApi)api;
-- (void)install;
+- (void)installWithPanel:(bool)showPanel;
 @end
 
 @implementation NxnativeMultiplayerMenu {
@@ -111,14 +111,15 @@ NSString* heart_count(std::uint16_t quarters) {
   return self;
 }
 
-- (void)install {
-  [self attachToGameMenu];
+- (void)installWithPanel:(bool)showPanel {
+  if (showPanel) [self attachToGameMenu];
   auto* timer = [NSTimer timerWithTimeInterval:0.5 repeats:YES block:^(NSTimer*) {
-    [self attachToGameMenu];
+    if (showPanel) [self attachToGameMenu];
     if (self->_panel.window) [self refresh];
     [self refreshPeers];
   }];
   [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
+  if (!showPanel) return;
   [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent*(NSEvent* event) {
     const auto modifiers = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
     if (!modifiers && [event.charactersIgnoringModifiers isEqualToString:@"\033"] &&
@@ -428,7 +429,7 @@ NSString* heart_count(std::uint16_t quarters) {
 
 @end
 
-void install_multiplayer_menu(void* module) {
+void install_multiplayer_menu(void* module, bool show_panel) {
   const SessionApi api{
       reinterpret_cast<hos_coop_host_start_fn>(dlsym(module, "hos_coop_host_start")),
       reinterpret_cast<hos_coop_join_fn>(dlsym(module, "hos_coop_join")),
@@ -440,6 +441,6 @@ void install_multiplayer_menu(void* module) {
   if (!api.host || !api.join || !api.leave || !api.status) return;
   dispatch_async(dispatch_get_main_queue(), ^{
     static NxnativeMultiplayerMenu* menu = [[NxnativeMultiplayerMenu alloc] initWithApi:api];
-    [menu install];
+    [menu installWithPanel:show_panel];
   });
 }

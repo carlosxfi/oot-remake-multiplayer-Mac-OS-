@@ -22,6 +22,7 @@
 #include "remote_peer.hpp"
 #ifdef __APPLE__
 #include "game_call.hpp"
+#include "../../hookshot/src/coop_pause_tab.h"
 #include "multiplayer_menu.hpp"
 #include "../../lichii/hook/coop_colors.h"
 #include <filesystem>
@@ -53,6 +54,18 @@ std::atomic<std::uint64_t> spawn_test_base{0};
 std::atomic<hos_coop_frame_fn> shared_frame{nullptr};
 HosCoopApi shared_api{};
 thread_local bool in_shared_frame = false;
+alignas(16) thread_local std::array<std::uint8_t, 256> shared_scratch{};
+alignas(16) thread_local std::array<std::uint8_t, 128> shared_indirect_result{};
+
+using UpdateScreen = void (*)(std::uint64_t);
+using ScreenEvent = void (*)(void*, std::uint64_t);
+using FilterPad = std::uint64_t (*)(std::uint64_t, std::int32_t*);
+using RegisterPad = int (*)(FilterPad);
+std::atomic<UpdateScreen> original_screen_update{nullptr};
+std::atomic<bool> native_menu_active{false};
+std::atomic<std::uint64_t> native_pad_buttons{0};
+ScreenEvent native_screen_event = nullptr;
+FilterPad native_pad_filter = nullptr;
 std::uint64_t remote_scene_generation = 0;
 bool remote_local_scene_valid = false;
 std::array<char, 64> remote_actor_name{};
@@ -113,10 +126,11 @@ extern "C" __attribute__((visibility("default"))) void coop_nxnative_calc_frame(
 }
 
 #ifdef __APPLE__
-bool write_code(std::uint64_t address, std::span<const std::uint8_t> bytes) {
+template <class Write>
+bool with_writable_alias(std::uint64_t address, std::size_t size, Write write) {
   const auto page_size = static_cast<std::uint64_t>(getpagesize());
   const auto page = address & ~(page_size - 1);
-  const auto end = (address + bytes.size() + page_size - 1) & ~(page_size - 1);
+  const auto end = (address + size + page_size - 1) & ~(page_size - 1);
   mach_vm_address_t alias = 0;
   vm_prot_t current = 0, maximum = 0;
   const auto task = mach_task_self();
@@ -125,11 +139,17 @@ bool write_code(std::uint64_t address, std::span<const std::uint8_t> bytes) {
   if (result != KERN_SUCCESS) return false;
   result = mach_vm_protect(task, alias, end - page, FALSE, VM_PROT_READ | VM_PROT_WRITE);
   if (result == KERN_SUCCESS) {
-    std::memcpy(reinterpret_cast<void*>(alias + address - page), bytes.data(), bytes.size());
-    sys_icache_invalidate(reinterpret_cast<void*>(address), bytes.size());
+    write(reinterpret_cast<void*>(alias + address - page));
   }
   mach_vm_deallocate(task, alias, end - page);
   return result == KERN_SUCCESS;
+}
+
+bool write_code(std::uint64_t address, std::span<const std::uint8_t> bytes) {
+  return with_writable_alias(address, bytes.size(), [&](void* alias) {
+    std::memcpy(alias, bytes.data(), bytes.size());
+    sys_icache_invalidate(reinterpret_cast<void*>(address), bytes.size());
+  });
 }
 
 bool install_puppet_guard(std::uint64_t base) {
@@ -215,8 +235,65 @@ bool read_at(std::uint64_t address, T& value) {
 }
 
 #if defined(__APPLE__) && defined(COOP_NXNATIVE_NETWORK)
-// The first adapter exposes guest memory and calc-thread calls. Input,
-// renderer, and atomic guest operations are left unavailable in this test.
+// Slot 17 is UIScreen::Update (docs/game-ui.md). Keep the game's call and
+// dispatch the shared pause-menu code on that screen's own update thread.
+void update_pause_screen(std::uint64_t screen) {
+  const auto original = original_screen_update.load(std::memory_order_acquire);
+  if (native_menu_active.load(std::memory_order_acquire) && !in_shared_frame) {
+    in_shared_frame = true;
+    native_screen_event(&shared_api, screen);
+    in_shared_frame = false;
+  }
+  original(screen);
+}
+
+std::uint64_t filter_pause_pad(std::uint64_t buttons, std::int32_t* axes) {
+  if (!native_menu_active.load(std::memory_order_acquire)) return buttons;
+  const auto filtered = native_pad_filter(buttons, axes);
+  native_pad_buttons.store(filtered, std::memory_order_relaxed);
+  return filtered;
+}
+
+bool install_native_pause_menu(void* module, std::uint64_t base, RegisterPad register_pad) {
+  constexpr std::uint64_t kUpdateOffset = 0x2d1380;
+  constexpr std::size_t kUpdateSlot = 17;
+  constexpr std::array tables{
+    CoopPauseTab::kPagesVtable, CoopPauseTab::kStripVtable,
+    CoopPauseTab::kBlockerVtables[0], CoopPauseTab::kBlockerVtables[1],
+    CoopPauseTab::kBlockerVtables[2], CoopPauseTab::kBlockerVtables[3],
+    CoopPauseTab::kBlockerVtables[4], CoopPauseTab::kBlockerVtables[5],
+    CoopPauseTab::kBlockerVtables[6], CoopPauseTab::kBlockerVtables[7],
+  };
+  native_screen_event = reinterpret_cast<ScreenEvent>(dlsym(module, "hos_coop_game_screen"));
+  native_pad_filter = reinterpret_cast<FilterPad>(dlsym(module, "hos_coop_pad"));
+  if (!native_screen_event || !native_pad_filter) return false;
+
+  const auto slot = [&](std::size_t index) { return base + tables[index] + kUpdateSlot * sizeof(std::uint64_t); };
+  const std::uint64_t original = base + kUpdateOffset;
+  for (std::size_t i = 0; i < tables.size(); ++i) {
+    std::uint64_t actual = 0;
+    if (!read_at(slot(i), actual) || actual != original) return false;
+  }
+  if (!register_pad(filter_pause_pad)) return false;
+
+  original_screen_update.store(reinterpret_cast<UpdateScreen>(original), std::memory_order_release);
+  const auto put = [](std::uint64_t where, std::uint64_t value) {
+    return with_writable_alias(where, sizeof(value), [&](void* alias) {
+      std::atomic_ref(*static_cast<std::uint64_t*>(alias)).store(value, std::memory_order_release);
+    });
+  };
+  const auto wrapper = reinterpret_cast<std::uint64_t>(&update_pause_screen);
+  for (std::size_t i = 0; i < tables.size(); ++i) {
+    if (put(slot(i), wrapper)) continue;
+    // A slot that could not be restored still calls the original; forwarding
+    // to co-op remains disabled until all hooks are installed.
+    for (std::size_t j = 0; j < i; ++j) put(slot(j), original);
+    return false;
+  }
+  native_menu_active.store(true, std::memory_order_release);
+  return true;
+}
+
 bool start_shared_module(const char* path, std::uint64_t base) {
   const char* game_dir = std::getenv("COOP_NXNATIVE_SHARED_DIR");
   if (!game_dir || !*game_dir) {
@@ -235,8 +312,23 @@ bool start_shared_module(const char* path, std::uint64_t base) {
     dlclose(module);
     return false;
   }
+  const bool want_menu = std::getenv("COOP_NXNATIVE_MENU") != nullptr;
+  const char* overlay = std::getenv("DM_ROMFS_OVERLAY");
+  const auto register_pad = reinterpret_cast<RegisterPad>(dlsym(RTLD_DEFAULT, "dm_coop_set_pad_filter"));
+  std::error_code overlay_error;
+  const bool has_pause_layout = overlay && std::filesystem::is_regular_file(std::filesystem::path(overlay) /
+      "UI/Layout2Archive/Common.Product.100.Nin_Ounce_NVN2.blarc.zs", overlay_error);
+  const bool try_native_menu = want_menu && register_pad && has_pause_layout;
   shared_api.version = HOS_COOP_API_VERSION;
-  shared_api.size = offsetof(HosCoopApi, pad_buttons);
+  shared_api.size = try_native_menu ? offsetof(HosCoopApi, setting) : offsetof(HosCoopApi, pad_buttons);
+  if (try_native_menu) {
+    shared_api.pad_buttons = [] { return native_pad_buttons.load(std::memory_order_relaxed); };
+    shared_api.scratch = [](void* ctx, const void* data, std::size_t size) -> std::uint64_t {
+      if (!in_shared_frame || ctx != &shared_api || !data || size > shared_scratch.size()) return 0;
+      std::memcpy(shared_scratch.data(), data, size);
+      return reinterpret_cast<std::uint64_t>(shared_scratch.data());
+    };
+  }
   shared_api.main_base = base;
   shared_api.main_build_id = "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348";
   shared_api.game_dir = game_dir;
@@ -256,7 +348,8 @@ bool start_shared_module(const char* path, std::uint64_t base) {
     if (!in_shared_frame || ctx != &shared_api || !call || !result || (call->function & 3) ||
         call->function < shared_api.main_base ||
         call->function - shared_api.main_base >= coop_nxnative::kCalcCaveOffset) return 0;
-    *result = coop_nxnative::coop_nxnative_invoke_game_call(call);
+    *result = coop_nxnative::coop_nxnative_invoke_game_call(
+        call, shared_api.scratch ? shared_indirect_result.data() : nullptr);
     return 1;
   };
   shared_api.log = [](const char* line) {
@@ -268,8 +361,17 @@ bool start_shared_module(const char* path, std::uint64_t base) {
     return false;
   }
   shared_frame.store(frame, std::memory_order_release);
-  if (std::getenv("COOP_NXNATIVE_MENU"))
-    install_multiplayer_menu(module);
+  if (want_menu) {
+    const bool native_menu = try_native_menu && install_native_pause_menu(module, base, register_pad);
+    if (native_menu) {
+      std::fprintf(stderr, "[coop-nxnative] native pause-menu bridge installed\n");
+    } else if (try_native_menu) {
+      std::fprintf(stderr, "[coop-nxnative] native pause-menu bridge refused: screen or pad hook unavailable\n");
+    } else {
+      std::fprintf(stderr, "[coop-nxnative] native pause menu needs the controller bridge and pause-menu pack\n");
+    }
+    install_multiplayer_menu(module, !native_menu);
+  }
   std::fprintf(stderr, "[coop-nxnative] shared module active on calc thread\n");
   return true;
 }

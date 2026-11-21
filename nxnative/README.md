@@ -331,3 +331,9 @@ damage or heals, and that their row goes away when they leave. Try the
 panel with the game window resized and in fullscreen. Record any focus
 problems, and whether Finder joining still stalls. The panel is operated
 with the mouse and keyboard. Overhead name tags are a future step.
+
+### Native pause menu playtest
+
+The `macos-playtest-pause-menu` branch uses the game's **System → Multiplayer**
+entry with a patched nxnative app and the local pause-menu asset pack.
+See [the runtime setup and playtest checklist](runtime/README.md).

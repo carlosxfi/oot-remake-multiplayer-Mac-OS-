@@ -15,7 +15,7 @@ static_assert(offsetof(GameCall, x) == 8);
 static_assert(offsetof(GameCall, stack) == 72);
 static_assert(offsetof(GameCall, s0) == 104);
 
-extern "C" std::uint64_t coop_nxnative_invoke_game_call(const GameCall* call);
+extern "C" std::uint64_t coop_nxnative_invoke_game_call(const GameCall* call, void* indirect = nullptr);
 
 bool check_game_call();
 

@@ -6,6 +6,7 @@ _coop_nxnative_invoke_game_call:
     mov x29, sp
     sub sp, sp, #32
     mov x9, x0
+    mov x8, x1
     ldr x16, [x9]
     ldp x10, x11, [x9, #72]
     ldp x12, x13, [x9, #88]
