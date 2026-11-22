@@ -247,6 +247,66 @@ void update_pause_screen(std::uint64_t screen) {
   original(screen);
 }
 
+// The title uses dedicated lifecycle functions, separate from pause updates.
+using TitleMethod = std::uint64_t (*)(std::uint64_t);
+std::array<std::atomic<TitleMethod>, 3> original_title_methods{};
+std::atomic<bool> native_title_active{false};
+hos_coop_title_fn native_title_event = nullptr;
+
+void dispatch_title(std::uint64_t screen, int event) {
+  if (!native_title_active.load(std::memory_order_acquire) || in_shared_frame) return;
+  in_shared_frame = true;
+  native_title_event(&shared_api, screen, event);
+  in_shared_frame = false;
+}
+
+std::uint64_t title_gone(std::uint64_t screen) {
+  dispatch_title(screen, HOS_COOP_TITLE_GONE);
+  return original_title_methods[0].load(std::memory_order_acquire)(screen);
+}
+
+std::uint64_t title_setup(std::uint64_t screen) {
+  const auto result = original_title_methods[1].load(std::memory_order_acquire)(screen);
+  dispatch_title(screen, HOS_COOP_TITLE_SETUP);
+  return result;
+}
+
+std::uint64_t title_step(std::uint64_t screen) {
+  dispatch_title(screen, HOS_COOP_TITLE_STEP);
+  return original_title_methods[2].load(std::memory_order_acquire)(screen);
+}
+
+bool install_native_title(void* module, std::uint64_t base) {
+  constexpr std::uint64_t kTitleVtable = 0x4bf06e8;
+  constexpr std::array<std::uint64_t, 3> offsets{0x34067a0, 0x34067d0, 0x3406d70};
+  constexpr std::array<TitleMethod, 3> wrappers{title_gone, title_setup, title_step};
+  const auto table = base + kTitleVtable;
+  std::array<std::uint64_t, 3> slots{0, table + 93 * sizeof(std::uint64_t), table + 96 * sizeof(std::uint64_t)};
+  // Verify the deleting destructor rather than assuming which leading slot it uses.
+  for (std::size_t i = 0; i < 2; ++i) {
+    std::uint64_t current = 0;
+    const auto slot = table + i * sizeof(std::uint64_t);
+    if (read_at(slot, current) && current == base + offsets[0]) slots[0] = slot;
+  }
+  if (!slots[0]) return false;
+  native_title_event = reinterpret_cast<hos_coop_title_fn>(dlsym(module, "hos_coop_title"));
+  if (!native_title_event) return false;
+
+  for (std::size_t i = 0; i < slots.size(); ++i) {
+    std::uint64_t current = 0;
+    if (!read_at(slots[i], current) || current != base + offsets[i]) return false;
+    original_title_methods[i].store(reinterpret_cast<TitleMethod>(current), std::memory_order_release);
+  }
+  for (std::size_t i = 0; i < slots.size(); ++i) {
+    if (!with_writable_alias(slots[i], sizeof(std::uint64_t), [&](void* alias) {
+      __atomic_store_n(static_cast<std::uint64_t*>(alias),
+                       reinterpret_cast<std::uint64_t>(wrappers[i]), __ATOMIC_RELEASE);
+    })) return false;  // any installed wrappers still forward to the original methods
+  }
+  native_title_active.store(true, std::memory_order_release);
+  return true;
+}
+
 std::uint64_t filter_pause_pad(std::uint64_t buttons, std::int32_t* axes) {
   if (!native_menu_active.load(std::memory_order_acquire)) return buttons;
   const auto filtered = native_pad_filter(buttons, axes);
@@ -366,6 +426,12 @@ bool start_shared_module(const char* path, std::uint64_t base) {
     const bool native_menu = try_native_menu && install_native_pause_menu(module, base, register_pad);
     if (native_menu) {
       std::fprintf(stderr, "[coop-nxnative] native pause-menu bridge installed\n");
+      std::error_code title_error;
+      if (overlay && std::filesystem::is_regular_file(std::filesystem::path(overlay) /
+          "UI/Layout2Archive/Title.Product.100.Nin_Ounce_NVN2.blarc.zs", title_error)) {
+        std::fprintf(stderr, "[coop-nxnative] native title-menu bridge %s\n",
+                     install_native_title(module, base) ? "installed" : "refused: unexpected title layout or functions");
+      }
     } else if (try_native_menu) {
       std::fprintf(stderr, "[coop-nxnative] native pause-menu bridge refused: screen or pad hook unavailable\n");
     } else {
