@@ -15,3 +15,10 @@ The playtest needs a local nxnative app built with the controller bridge in [pau
 - Pause in solo play, move to **System**, and open **Multiplayer** with the controller. Confirm **B** returns to System and that the existing pause pages still work.
 - Host a LAN session, or join a Windows v0.11.8 host, and verify both players can see each other move. Test controller focus, the session status, and leaving.
 - If the button is missing, check the nxnative log for `native pause-menu bridge installed`, `native pause-menu bridge refused`, or `native pause menu needs the controller bridge and pause-menu pack`. Keep invite codes and room passwords out of reports.
+
+## Playtest priorities
+
+1. **Passed on Apple Silicon.** Launch OOT Co-op from Finder, allow Local Network, and join a Windows v0.11.8 host from the in-game menu. A second launch and join passed with Terminal closed.
+2. **Current priority.** Compare connected FPS in the same scene and across scenes, with the profiler off. Check a shared chest, key and story flag after optimizing flag polling.
+3. **Session lifecycle.** Verify Windows can join a Mac-hosted room, then test leave, reconnect and scene transitions in both directions.
+4. **Gameplay and presentation parity.** Exercise shared progress and combat, then verify keyboard input, menu layout, tunic colors, overhead names, minimap markers and animation.
