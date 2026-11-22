@@ -776,7 +776,11 @@ public:
                     [&](std::uint32_t h) { return bottles.get_enum(h); }));
             }
             if (sharing_ || cheats_) {
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+                game_store.emplace(*memory, true);
+#else
                 game_store.emplace(*memory);
+#endif
                 if (!queue_sizes_logged_) {  // once: half of each is ours (issue 175)
                     if (const auto q = coop::host::GameFlags(*memory).queue_sizes()) {
                         queue_sizes_logged_ = true;
