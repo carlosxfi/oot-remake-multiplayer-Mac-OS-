@@ -35,8 +35,11 @@ mkdir -p "$pack" "$HOME/Applications"
 cp "$overlay/../coop_puppet.json" "$pack/"
 launcher="$HOME/Applications/OOT Co-op.app"
 if [ -e "$launcher" ] && [ ! -f "$launcher/Contents/Resources/oot-coop-launch.sh" ]; then
-  echo "An unrelated app already exists at $launcher." >&2
-  exit 2
+  installed_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$launcher/Contents/Info.plist" 2>/dev/null || true)
+  if [ "$installed_id" != org.squadala.oot-coop-launcher ]; then
+    echo "An unrelated app already exists at $launcher." >&2
+    exit 2
+  fi
 fi
 
 staging=$(mktemp -d "$HOME/Applications/.oot-coop-install.XXXXXX")
@@ -86,6 +89,33 @@ int main(void) {
 SOURCE
 /usr/bin/xcrun clang -fobjc-arc -framework Foundation "$staging/launcher.m" \
   -o "$bundle/Contents/MacOS/oot-coop-launcher"
+printf '%s\n' "$here" "$app" "$overlay" "$module" "$state" > "$resources/oot-coop-paths"
+cat > "$resources/oot-coop-launch.sh" <<'LAUNCH'
+#!/bin/sh
+set -eu
+directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+{
+  IFS= read -r here
+  IFS= read -r app
+  IFS= read -r overlay
+  IFS= read -r module
+  IFS= read -r state
+} < "$directory/oot-coop-paths"
+
+unset LICHII_COOP_SERVER LICHII_COOP_PORT LICHII_COOP_PASSWORD
+export DM_ROMFS_OVERLAY="$overlay" COOP_NXNATIVE_PUPPET_PREFLIGHT=1
+export COOP_NXNATIVE_MENU=1 COOP_NXNATIVE_SHARED_MODULE="$module" COOP_NXNATIVE_SHARED_DIR="$state"
+export HOS_COOP_MENU=1 LICHII_COOP_PUPPET=1 LICHII_COOP_HOST_SAVE=0
+export HOS_COOP_MODS_CODE=0 HOS_COOP_NULL_READS=0
+unset COOP_NXNATIVE_PAUSE_PACK
+if /usr/bin/plutil -extract pause_menu.0 raw -o - "$overlay/../coop_puppet.json" >/dev/null 2>&1; then
+  export COOP_NXNATIVE_PAUSE_PACK=1
+fi
+exec /bin/sh "$here/../probe/run.sh" "$app"
+LAUNCH
+test -s "$resources/oot-coop-paths"
+test -s "$resources/oot-coop-launch.sh"
+sh -n "$resources/oot-coop-launch.sh"
 /usr/bin/plutil -lint "$bundle/Contents/Info.plist"
 /usr/bin/codesign --force --sign - "$bundle"
 /usr/bin/codesign --verify --strict "$bundle"
