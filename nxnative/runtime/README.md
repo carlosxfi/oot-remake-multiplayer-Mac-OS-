@@ -22,3 +22,11 @@ The playtest needs a local nxnative app built with the controller bridge in [pau
 2. **Performance retest passed on M4 Pro.** Connected gameplay improved from about 18 FPS to 60 FPS at 2560×1440 with the Windows player visible after spreading routine flag polling across eight frames. Mac → Windows heart capacity sync passed when loading a four-heart save. Shared chest, key and story flag checks are still pending. Watch for FPS drops across loading transitions and longer sessions.
 3. **Session lifecycle.** Verify Windows can join a Mac-hosted room, then test leave, reconnect and scene transitions in both directions.
 4. **Gameplay and presentation parity.** Exercise shared progress and combat, then verify keyboard input, menu layout, tunic colors, overhead names, minimap markers and animation.
+
+## Developer-recommended multiplayer tests
+
+- [ ] Leave and rejoin mid-dungeon. Check that keys, opened chests, and unlocked doors agree on both clients.
+- [ ] Have one player warp or play the ocarina while the other enters a loading zone. Swap roles and check that both can continue playing and see each other when back in the same area.
+- [ ] Trigger Game Over and test save/load on Mac and Windows separately using disposable saves. Check heart capacity, shared progress, and whether the session recovers.
+- [ ] Fight a boss together. Check damage, defeat, rewards, and room state on both clients.
+- [ ] If a third player is available, repeat join, scene transitions, and leave/rejoin. Check that both remaining players stay connected and watch Mac FPS with all three present.
