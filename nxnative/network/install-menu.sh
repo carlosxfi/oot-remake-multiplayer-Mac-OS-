@@ -1,8 +1,13 @@
 #!/bin/sh
 set -eu
 umask 077
+launcher_only=0
+if [ "${1:-}" = "--launcher-only" ]; then
+  launcher_only=1
+  shift
+fi
 if [ "$#" -ne 2 ]; then
-  echo "usage: $0 /path/to/game.app /path/to/puppet-mod/romfs" >&2
+  echo "usage: $0 [--launcher-only] /path/to/game.app /path/to/puppet-mod/romfs" >&2
   exit 2
 fi
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -16,8 +21,10 @@ if [ ! -f "$app/Contents/Info.plist" ] ||
   echo 'Choose a working nxnative app and the romfs folder of a built co-op pack.' >&2
   exit 2
 fi
-sh "$here/build-shared.sh"
-if [ ! -f "$module" ]; then
+if [ "$launcher_only" -eq 0 ]; then
+  sh "$here/build-shared.sh"
+fi
+if [ ! -f "$module" ] || [ ! -f "$here/../probe/build/libcoop_nxnative_probe.dylib" ]; then
   echo 'Shared co-op module was not built.' >&2
   exit 2
 fi
@@ -27,42 +34,72 @@ pack="$state/mods/contents/0400486024DEC000/coop-puppet"
 mkdir -p "$pack" "$HOME/Applications"
 cp "$overlay/../coop_puppet.json" "$pack/"
 launcher="$HOME/Applications/OOT Co-op.app"
-if [ -e "$launcher" ]; then
-  if [ ! -f "$launcher/Contents/Resources/oot-coop-launch.sh" ]; then
-    echo "An unrelated app already exists at $launcher." >&2
-    exit 2
-  fi
-else
-  /usr/bin/osacompile -o "$launcher" <<'APPLESCRIPT'
-on run
-    set scriptPath to POSIX path of (path to resource "oot-coop-launch.sh")
-    do shell script "/bin/sh " & quoted form of scriptPath & " >/dev/null 2>&1 &"
-end run
-APPLESCRIPT
+if [ -e "$launcher" ] && [ ! -f "$launcher/Contents/Resources/oot-coop-launch.sh" ]; then
+  echo "An unrelated app already exists at $launcher." >&2
+  exit 2
 fi
-resources="$launcher/Contents/Resources"
-printf '%s\n' "$here" "$app" "$overlay" "$module" "$state" > "$resources/oot-coop-paths"
-cat > "$resources/oot-coop-launch.sh" <<'LAUNCH'
-#!/bin/sh
-set -eu
-directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-{
-  IFS= read -r here
-  IFS= read -r app
-  IFS= read -r overlay
-  IFS= read -r module
-  IFS= read -r state
-} < "$directory/oot-coop-paths"
 
-unset LICHII_COOP_SERVER LICHII_COOP_PORT LICHII_COOP_PASSWORD
-export DM_ROMFS_OVERLAY="$overlay" COOP_NXNATIVE_PUPPET_PREFLIGHT=1
-export COOP_NXNATIVE_MENU=1 COOP_NXNATIVE_SHARED_MODULE="$module" COOP_NXNATIVE_SHARED_DIR="$state"
-export HOS_COOP_MENU=1 LICHII_COOP_PUPPET=1 LICHII_COOP_HOST_SAVE=0
-export HOS_COOP_MODS_CODE=0 HOS_COOP_NULL_READS=0
-unset COOP_NXNATIVE_PAUSE_PACK
-if /usr/bin/plutil -extract pause_menu.0 raw -o - "$overlay/../coop_puppet.json" >/dev/null 2>&1; then
-  export COOP_NXNATIVE_PAUSE_PACK=1
+staging=$(mktemp -d "$HOME/Applications/.oot-coop-install.XXXXXX")
+trap 'if [ ! -e "$staging/previous.app" ]; then rm -rf "$staging"; fi' EXIT
+bundle="$staging/OOT Co-op.app"
+resources="$bundle/Contents/Resources"
+mkdir -p "$resources" "$bundle/Contents/MacOS"
+cat > "$bundle/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>org.squadala.oot-coop-launcher</string>
+  <key>CFBundleName</key><string>OOT Co-op</string>
+  <key>CFBundleExecutable</key><string>oot-coop-launcher</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSUIElement</key><true/>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Join and host OOT Co-op games with players on your local network.</string>
+</dict>
+</plist>
+PLIST
+cat > "$staging/launcher.m" <<'SOURCE'
+#import <Foundation/Foundation.h>
+
+int main(void) {
+    @autoreleasepool {
+        NSURL *script = [NSBundle.mainBundle URLForResource:@"oot-coop-launch" withExtension:@"sh"];
+        if (!script) {
+            NSLog(@"OOT Co-op could not find its launch script.");
+            return 1;
+        }
+
+        NSTask *game = [[NSTask alloc] init];
+        game.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
+        game.arguments = @[script.path];
+        NSError *error = nil;
+        if (![game launchAndReturnError:&error]) {
+            NSLog(@"OOT Co-op could not start: %@", error.localizedDescription);
+            return 1;
+        }
+        [game waitUntilExit];
+        return game.terminationStatus;
+    }
+}
+SOURCE
+/usr/bin/xcrun clang -fobjc-arc -framework Foundation "$staging/launcher.m" \
+  -o "$bundle/Contents/MacOS/oot-coop-launcher"
+/usr/bin/plutil -lint "$bundle/Contents/Info.plist"
+/usr/bin/codesign --force --sign - "$bundle"
+/usr/bin/codesign --verify --strict "$bundle"
+if [ -e "$launcher" ]; then
+  mv "$launcher" "$staging/previous.app"
 fi
-exec /bin/sh "$here/../probe/run.sh" "$app"
-LAUNCH
-printf 'Open %s in Finder, then choose Multiplayer → Host or Join in the game window.\n' "$launcher"
+if ! mv "$bundle" "$launcher"; then
+  if [ -e "$staging/previous.app" ]; then
+    if ! mv "$staging/previous.app" "$launcher"; then
+      trap - EXIT
+      echo "Previous launcher saved at $staging/previous.app." >&2
+    fi
+  fi
+  exit 1
+fi
+rm -rf "$staging/previous.app"
+printf 'Open %s in Finder and use the in-game Multiplayer menu.\n' "$launcher"
