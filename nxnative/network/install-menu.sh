@@ -58,6 +58,8 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSUIElement</key><true/>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>Use Bluetooth game controllers to play OOT Co-op.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Join and host OOT Co-op games with players on your local network.</string>
 </dict>
