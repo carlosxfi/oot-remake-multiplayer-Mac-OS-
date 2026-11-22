@@ -19,6 +19,6 @@ The playtest needs a local nxnative app built with the controller bridge in [pau
 ## Playtest priorities
 
 1. **Passed on Apple Silicon.** Launch OOT Co-op from Finder, allow Local Network, and join a Windows v0.11.8 host from the in-game menu. A second launch and join passed with Terminal closed.
-2. **Current priority.** Compare connected FPS in the same scene and across scenes, with the profiler off. Check a shared chest, key and story flag after optimizing flag polling.
+2. **Performance retest passed on M4 Pro.** Connected gameplay improved from about 18 FPS to 60 FPS at 2560×1440 with the Windows player visible after spreading routine flag polling across eight frames. Shared chest, key and story flag checks are still pending. Watch for FPS drops across loading transitions and longer sessions.
 3. **Session lifecycle.** Verify Windows can join a Mac-hosted room, then test leave, reconnect and scene transitions in both directions.
 4. **Gameplay and presentation parity.** Exercise shared progress and combat, then verify keyboard input, menu layout, tunic colors, overhead names, minimap markers and animation.
