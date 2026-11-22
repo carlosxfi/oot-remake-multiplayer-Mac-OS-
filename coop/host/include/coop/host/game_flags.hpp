@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <span>
+#include <unordered_map>
 
 #include "coop/host/flags.hpp"
 #include "coop/host/game_memory.hpp"
@@ -38,12 +39,12 @@ class WritableGameMemory : public GameMemory {
                                                             std::uint32_t desired) = 0;
 };
 
-// Reads and writes flags in the running game. Holds no state: every call
-// follows the manager pointer again, so it is safe across scene changes and
-// before the GameData module is up (calls then fail).
+// Reads and writes flags in the running game. Every call follows the manager
+// pointer. Enable key lookup reuse only for a store scoped to one game frame.
 class GameFlags {
  public:
-  explicit GameFlags(GameMemory& memory) : memory_(memory) {}
+  explicit GameFlags(GameMemory& memory, bool reuse_key_lookups = false)
+      : memory_(memory), reuse_key_lookups_(reuse_key_lookups) {}
 
   // The flag's value, or nothing when the manager is not up, the hash is not
   // in that table, or memory cannot be read. Hash 0 is never a flag.
@@ -120,6 +121,8 @@ class GameFlags {
 
  private:
   GameMemory& memory_;
+  bool reuse_key_lookups_;
+  std::unordered_map<std::uint64_t, std::uint64_t> key_probes_;
 };
 
 // FlagStore over the game's tables, for FlagWatcher. A named key with index
@@ -129,7 +132,8 @@ class GameFlags {
 // unknown.
 class GameFlagStore final : public FlagStore {
  public:
-  explicit GameFlagStore(WritableGameMemory& memory) : memory_(memory) {}
+  explicit GameFlagStore(WritableGameMemory& memory, bool reuse_key_lookups = false)
+      : memory_(memory), flags_(memory, reuse_key_lookups) {}
   std::optional<protocol::FlagEntry> read(FlagKey key) override;
   bool write(const protocol::FlagEntry& entry) override;
   // The queue this flag's writes go to has half its slots taken or more.
@@ -137,6 +141,7 @@ class GameFlagStore final : public FlagStore {
 
  private:
   WritableGameMemory& memory_;
+  GameFlags flags_;
 };
 
 }  // namespace coop::host
