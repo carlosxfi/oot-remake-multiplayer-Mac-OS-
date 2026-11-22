@@ -30,3 +30,9 @@ The playtest needs a local nxnative app built with the controller bridge in [pau
 - [ ] Trigger Game Over and test save/load on Mac and Windows separately using disposable saves. Check heart capacity, shared progress, and whether the session recovers.
 - [ ] Fight a boss together. Check damage, defeat, rewards, and room state on both clients.
 - [ ] If a third player is available, repeat join, scene transitions, and leave/rejoin. Check that both remaining players stay connected and watch Mac FPS with all three present.
+
+## Host-save loading on Mac
+
+Apply [host-save-remount.patch](host-save-remount.patch) to the same pinned nxnative checkout as the controller patch. Repackage the app with the same game input and existing build cache so it includes the updated Mac host. The existing co-op module discovers the save-root and remount exports at startup. Use a pack built with `--title-rows --pause-tab` for the title-screen test.
+
+Open a Windows host session with a saved file, then join from the Mac title screen. Wait for the host-save ready notice before loading a file. Verify the guest loads the host's location and heart capacity, then quit, relaunch without joining, and verify the Mac's original slot. The guest uses a sibling `save-coop` folder. In-session host-save refreshes wait until the next title screen on Mac.
