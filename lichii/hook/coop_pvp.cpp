@@ -4,6 +4,7 @@
 
 #include "coop_pvp.h"
 
+#include "coop/protocol/scene_place.hpp"
 #include <algorithm>
 #include <utility>
 #include <cctype>
@@ -51,7 +52,8 @@ bool Touches(const Vec3& p, const Vec3& feet, float reach) {
 
 bool CanBeHit(const Target& t, std::string_view scene, std::uint8_t self_number) {
     return t.number >= 1 && t.number <= proto::kMaxPlayers && t.number != self_number &&
-           t.scene && *t.scene == scene && !Guarded(t.status) && Finite(t.position);
+           t.scene && coop::protocol::same_place(*t.scene, scene) && !Guarded(t.status) &&
+           Finite(t.position);  // either era of one place (row 221)
 }
 
 } // namespace
@@ -93,6 +95,7 @@ std::int32_t AmountOf(proto::DamageCause cause) {
     case proto::DamageCause::magic: return 4;
     case proto::DamageCause::nut:     // a nut stuns, it does not hurt
     case proto::DamageCause::killed:  // a lifeless copy's kill report (issue 133), never a PvP hit
+    case proto::DamageCause::reflected:  // row 177: a notice to a shot's owner (amount 0), never a PvP hit
     case proto::DamageCause::unknown: return 0;
     }
     return 0;
@@ -196,7 +199,7 @@ std::optional<Decision> Victim::Hit(const proto::PvpHit& hit, bool pvp_on, const
     const bool mercy = last_hurt_us_ && now_us < *last_hurt_us_ + kMercyUs;
     const bool guarded = !local.life || life <= 0 || local.event || Guarded(local.status) ||
                          !local.scene || !attacker.known || Guarded(attacker.status) ||
-                         !attacker.scene || *attacker.scene != *local.scene || mercy;
+                         !attacker.scene || !coop::protocol::same_place(*attacker.scene, *local.scene) || mercy;
     if (guarded) {
         d.hurt.flags = proto::pvp_hurt::guarded;
         return d;

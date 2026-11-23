@@ -70,6 +70,9 @@ class JoinHelper {
   void stop();
 
   JoinState state() const { return state_; }
+  // Row 209: still waiting for the host after punch_ms: no way through the routers was found (both strict, or a
+  // provider's shared address: CGNAT). An answer code or UPnP cannot open it; a VPN network can (no_way_help).
+  bool no_way() const { return helped_; }
   bool direct() const { return direct_; }
   // Where the host's server is reached: the invite's address, or the
   // nearby one (this PC, the local network) that answered first.

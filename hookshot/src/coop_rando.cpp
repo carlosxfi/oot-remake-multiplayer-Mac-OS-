@@ -540,7 +540,8 @@ std::string SeedFilesHash(const fs::path& folder, const std::function<bool()>* s
     const fs::path romfs = folder / "romfs";
     for (fs::recursive_directory_iterator it(romfs, ec), end; !ec && it != end; it.increment(ec)) {
         if (!it->is_regular_file(ec)) continue;
-        std::string rel = CoopMods::ToUtf8(it->path().lexically_relative(romfs));
+        const fs::path rel_path = it->path().lexically_relative(romfs);
+        std::string rel = CoopMods::ToUtf8(rel_path);
         std::replace(rel.begin(), rel.end(), '\\', '/');
         std::transform(rel.begin(), rel.end(), rel.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -553,7 +554,13 @@ std::string SeedFilesHash(const fs::path& folder, const std::function<bool()>* s
         } else if (rel.rfind("rsdb/", 0) == 0 && rel.find('/', 5) == std::string::npos &&
                    fs::is_regular_file(folder / "_coop-rows" / name, ec)) {
             from = folder / "_coop-rows" / name;
+        } else if (rel.rfind("gamedata/", 0) == 0 && rel.find('/', 9) == std::string::npos &&
+                   fs::is_regular_file(folder / "_coop-gamedata" / name, ec)) {
+            from = folder / "_coop-gamedata" / name;  // (player report 206: other mods' saved values merged in)
+        } else if (fs::is_regular_file(folder / "_coop-archives" / rel_path, ec)) {
+            from = folder / "_coop-archives" / rel_path;  // (the pack's or another mod's archive members merged in)
         }
+        ec.clear();
         files.emplace_back(std::move(rel), std::move(from));
     }
     if (ec || files.empty()) return {};
@@ -744,8 +751,32 @@ std::optional<std::pair<std::string, std::string>> OutsideActorRows(const fs::pa
     return std::nullopt;
 }
 
+namespace {
+// Every file kept under `keep` (but the stamps, *.txt) back over the same path under `to_root`; the kept folder goes.
+bool PutBackKeptTree(const fs::path& keep, const fs::path& to_root) {
+    std::error_code ec;
+    if (!fs::is_directory(keep, ec)) return true;
+    for (fs::recursive_directory_iterator f(keep, ec), last; !ec && f != last; f.increment(ec)) {
+        std::error_code fec;
+        if (!f->is_regular_file(fec) || f->path().extension() == ".txt") continue;
+        if (!fs::copy_file(f->path(), to_root / f->path().lexically_relative(keep),
+                           fs::copy_options::overwrite_existing, fec)) {
+            return false;  // (the kept folder stays: the kit's next start sorts it out)
+        }
+    }
+    fs::remove_all(keep, ec);
+    return true;
+}
+}  // namespace
+
 int PutBackKeptRows(const fs::path& folder) {
     int back = 0;
+    // Player report 206: the kit merges other mods' saved values and archive members into a seed too
+    // (merge_tables.py GAMEDATA_KEEP, MEMBERS_KEEP); their sizes were in the table just replaced as well.
+    if (!PutBackKeptTree(folder / "_coop-gamedata", folder / "romfs" / "GameData") ||
+        !PutBackKeptTree(folder / "_coop-archives", folder / "romfs")) {
+        return -1;
+    }
     const fs::path keep = folder / "_coop-rows";  // (merge_tables.py ROWS_KEEP)
     std::error_code ec;
     if (!fs::is_directory(keep, ec)) return 0;

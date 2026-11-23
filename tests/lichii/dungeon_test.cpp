@@ -970,6 +970,19 @@ TEST_CASE("dungeon: a held flag that a load puts back to 0 is kept for later, ne
     CHECK(b.values[ladder].value == 1);
 }
 
+TEST_CASE("dungeon: the Dark Link rooms' passage flags and the Shadow boat's crush flag are each player's own") {
+    std::set<std::uint32_t> listed;
+    for (const auto& f : CoopDungeon::Flags()) listed.insert(f.hash);
+    for (const char* name : {"WaterTemple_Room23_DeleteBackRoom", "WaterTemple_Room23_DeleteFrontRoom",
+                             "WaterTemple_Room23_ResetDeletedRoom", "WaterTemple_SwitchDarkLinkDome",
+                             "WaterTemple_Room22_CreateDome", "ShadowTemple_Level_PaddelShip_Elevator_AbyssTriggered"}) {
+        CAPTURE(name);
+        CHECK_FALSE(listed.contains(host::flag_hash(name)));
+    }
+    CHECK(listed.contains(host::flag_hash("WaterTemple_Room22_Cleared")));  // the room beaten stays shared
+    CHECK(listed.contains(host::flag_hash("WaterTemple_Room23_Cleared")));
+}
+
 TEST_CASE("dungeon: a player's place in a boss fight is never shared, the group's progress is (issue 148)") {
     // Player test, Deku Tree: the boss door shut for a player still outside, and every reload got
     // it back from the group (the join snapshot). Those flags are left out.

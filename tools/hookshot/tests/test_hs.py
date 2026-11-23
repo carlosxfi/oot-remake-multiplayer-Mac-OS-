@@ -545,5 +545,82 @@ class CompileTest(unittest.TestCase):
         self.assertTrue(any("ninja -C E" in line for line in lines))
 
 
+class CodeModsTest(Fixture):
+    """charsel-tab-0119: a pair's mods with code patches (Character Select's exefs) go into the game build's key and
+    HOS_MODS; a game without them takes an older build's exefs_patches.txt away."""
+
+    LINE = "\nexefs=CS/exefs/E0.ips:aa;list=none"   # (what Get-KitExefsStampLine says: a fake here)
+
+    class Run:
+        def __init__(self, out="\nexefs=CS/exefs/E0.ips:aa;list=none", code=0):
+            self.out, self.code, self.calls = out, code, []
+
+        def __call__(self, cmd, **kw):
+            self.calls.append(cmd)
+            return type("R", (), {"returncode": self.code, "stdout": self.out, "stderr": ""})()
+
+    def mods(self, pair, folder="OoT Character Select", name="E0F3.ips"):
+        write(os.path.join(self.tmp, pair, "mods", folder, "exefs", name), "PATCH")
+        return os.path.join(self.tmp, pair, "mods")
+
+    def test_code_patches_found_by_the_kit_rule(self):
+        self.assertTrue(hs.has_code_patches(self.mods("A")))
+        self.assertTrue(hs.has_code_patches(self.mods("P", "OoT Character Select", "x.pchtxt")))
+        self.assertFalse(hs.has_code_patches(self.mods("B", "_OoT Character Select.prev")))   # (a mod kept aside)
+        self.assertFalse(hs.has_code_patches(self.mods("C", "OoT Character Select", "readme.txt")))
+        write(os.path.join(self.tmp, "D", "mods", "contents", "0400486024DEC000", "coop-puppet", "romfs", "a"), "x")
+        self.assertFalse(hs.has_code_patches(os.path.join(self.tmp, "D", "mods")))
+        self.assertFalse(hs.has_code_patches(os.path.join(self.tmp, "none")))
+
+    def test_line_asks_the_kit_only_with_code_patches(self):
+        run = self.Run()
+        self.assertEqual(hs.code_mods_line(os.path.join(self.tmp, "none"), self.repo, run), "")
+        self.assertEqual(run.calls, [])
+        self.assertEqual(hs.code_mods_line(self.mods("A"), self.repo, run), self.LINE)
+        self.assertIn("Get-KitExefsStampLine -Game '' -Mods", run.calls[0][-1])
+        with self.assertRaises(hs.Fail):
+            hs.code_mods_line(self.mods("B"), self.repo, self.Run(out="", code=1))
+
+    def test_pairs_must_share_their_code_patches(self):
+        a, b = os.path.join(self.tmp, "A"), os.path.join(self.tmp, "B")
+        self.mods("A"), self.mods("B")
+        line, mods = hs.pairs_code_mods([a, b], self.repo, self.Run())
+        self.assertEqual((line, mods), (self.LINE, os.path.join(a, "mods")))
+        self.assertEqual(hs.pairs_code_mods([os.path.join(self.tmp, "X"), os.path.join(self.tmp, "Y")], self.repo,
+                                            self.Run()), ("", None))
+        with self.assertRaises(hs.Fail):   # (one game for both: B without Character Select's code cannot share A's)
+            hs.pairs_code_mods([a, os.path.join(self.tmp, "Y")], self.repo, self.Run())
+
+    def test_key_and_restore_with_code_patches(self):
+        st = hs.stamp(self.repo) + self.LINE
+        self.assertNotEqual(hs.key_of(st), hs.key_of(hs.stamp(self.repo)))
+        g = self.game(stamp=st)
+        write(os.path.join(g, "exefs_patches.txt"), "OoT Character Select	E0.ips")
+        k = hs.cache_store(g, self.repo, say=self.say, want=st)
+        self.assertEqual(k, hs.key_of(st))
+        pair = os.path.join(self.tmp, "pair")
+        self.assertTrue(hs.cache_restore(pair, self.repo, say=self.say, want=st))
+        self.assertTrue(os.path.isfile(os.path.join(pair, "exefs_patches.txt")))
+
+    def test_mismatch_of_a_code_mod_added_after_the_build(self):
+        g = self.game(stamp=hs.stamp(self.repo))
+        self.assertIsNone(hs.code_mods_mismatch(g, self.repo, self.Run()))          # no code mods, none built in
+        self.mods("built")                                                            # Character Select put in after
+        why = hs.code_mods_mismatch(g, self.repo, self.Run())
+        self.assertIn("game: none", why)
+        self.assertIn("mods: exefs=CS/exefs/E0.ips:aa;list=none", why)
+        write(os.path.join(g, "coop-built-from.txt"), hs.stamp(self.repo) + self.LINE + "\r\n")   # built with it
+        self.assertIsNone(hs.code_mods_mismatch(g, self.repo, self.Run()))
+        self.assertIsNone(hs.code_mods_mismatch(os.path.join(self.tmp, "no-game"), self.repo, self.Run()))
+
+    def test_restore_of_a_plain_game_takes_a_stale_list_away(self):
+        hs.cache_store(self.game(), self.repo, say=self.say)
+        pair = os.path.join(self.tmp, "B1")
+        write(os.path.join(pair, "exefs_patches.txt"), "OoT Character Select	E0.ips (an older build's)")
+        self.assertTrue(hs.cache_restore(pair, self.repo, say=self.say))
+        self.assertFalse(os.path.exists(os.path.join(pair, "exefs_patches.txt")))
+        self.assertIn("older build's exefs_patches.txt removed", self.out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

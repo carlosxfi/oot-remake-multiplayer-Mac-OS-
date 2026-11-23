@@ -123,6 +123,78 @@ def stamp(repo=REPO):
     return "release=%s\ncommit=%s\npatches=%s" % (tools["release"], pin["commit"], hashes)
 
 
+# --- the mods' code patches (patches 0034/0035) -------------------------------------------------------------------
+# A mod with code patches (an exefs folder of .ips / .pchtxt: OoT Character Select) is compiled into the game when it is
+# built, from the game folder's mods (or HOS_MODS, the game's own name for that folder: nx2/exefs_patches.py). A test
+# pair's game is built in the pin's shared folder, which has none of the pairs' mods: before charsel-tab-0119 every pair
+# got a game without them (0.11.9 test kit: no Characters tab, his code not in the game, while B1 kept an older build's
+# exefs_patches.txt saying it was). Now the pairs' code mods go into the build (HOS_MODS) and into its key, by the kit's
+# own rule (kit-paths.ps1 Get-KitExefsStampLine, the line hookshot-build.ps1 writes into coop-built-from.txt).
+KIT_PATHS = os.path.join("tools", "release", "kit", "scripts", "kit-paths.ps1")
+EXEFS_LIST = "exefs_patches.txt"   # (the game folder's list of the code patches it was built with: host/mods.c reads it)
+
+
+def has_code_patches(mods):
+    """Whether a mods folder holds a code patch the kit's rule counts: <mod>/exefs/*.ips or *.pchtxt, at most five
+    folders down, no folder before exefs named with '-', '_' or '.' first (a mod kept aside: '_OoT Character Select.prev')."""
+    if not mods or not os.path.isdir(mods):
+        return False
+    base = os.path.abspath(mods)
+    for top, dirs, files in os.walk(base):
+        rel = os.path.relpath(top, base)
+        parts = [] if rel == "." else rel.split(os.sep)
+        if len(parts) > 5:
+            dirs[:] = []
+            continue
+        if len(parts) >= 2 and parts[-1].lower() == "exefs" and not any(x[:1] in "-_." for x in parts[:-1]):
+            if any(f.lower().endswith((".ips", ".pchtxt")) for f in files):
+                return True
+    return False
+
+
+def code_mods_line(mods, repo=REPO, run=subprocess.run):
+    """The code patches' part of a game's stamp for a mods folder: '' without code patches, else the kit's own line
+    (Get-KitExefsStampLine: each patch file's path and SHA-256, and those mods' on/off rows in coop-mods.list)."""
+    if not has_code_patches(mods):
+        return ""
+    q = lambda t: "'" + t.replace("'", "''") + "'"
+    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+           ". %s; [Console]::Out.Write((Get-KitExefsStampLine -Game '' -Mods %s))"
+           % (q(os.path.join(repo, KIT_PATHS)), q(os.path.abspath(mods)))]
+    r = run(cmd, capture_output=True, text=True, errors="replace")
+    if r.returncode or not r.stdout.strip():
+        raise Fail("the mods' code patches in %s could not be read (kit-paths.ps1 Get-KitExefsStampLine): %s"
+                   % (mods, (r.stdout + r.stderr).strip()[-300:]))
+    return r.stdout.replace("\r", "")
+
+
+def code_mods_mismatch(game, repo=REPO, run=subprocess.run):
+    """None when a game folder's mods have the code patches its game was built with (coop-built-from.txt's exefs= line,
+    none without), else why not. A code mod put into a pair after its build (lane-0119 2026-11-21: Character Select
+    copied into lane1's mods) shows his menus without his code: no Characters tab, a pick does nothing."""
+    try:
+        with open(os.path.join(game, "coop-built-from.txt"), encoding="utf-8") as f:
+            built = [l.strip() for l in f.read().splitlines() if l.strip().startswith("exefs=")]
+    except OSError:
+        return None   # (no build of ours there)
+    want = code_mods_line(os.path.join(game, "mods"), repo, run).strip()
+    have = built[0] if built else ""
+    if want == have:
+        return None
+    return ("%s: its mods' code patches are not the ones its game was built with (game: %s; mods: %s): build it again"
+            " (hs.py build --pair, or the kit's start)" % (game, have or "none", want or "none"))
+
+
+def pairs_code_mods(pairs, repo=REPO, run=subprocess.run):
+    """(line, mods folder) of the pairs' code patches; ('', None) when no pair has any. One game serves every pair,
+    so pairs with different code patches cannot be built together (Fail)."""
+    found = [(code_mods_line(os.path.join(p, "mods"), repo, run), os.path.join(p, "mods")) for p in pairs]
+    if len({line for line, _ in found}) > 1:
+        raise Fail("the pairs have different mods with code patches (one game serves them all): %s"
+                   % "; ".join("%s: %s" % (m, line.strip() or "none") for line, m in found))
+    return (found[0][0], found[0][1]) if found and found[0][0] else ("", None)
+
+
 def pin_of(stamp_text):
     """'<release>-<commit 12>' of a stamp: what one shared tools and work folder serves (hs-build-speed)."""
     keys = dict(line.split("=", 1) for line in stamp_text.replace("\r", "").split("\n") if "=" in line)
@@ -290,9 +362,10 @@ def make_link(path, target):
         os.symlink(target, path, target_is_directory=os.path.isdir(target))
 
 
-def cache_store(src, repo=REPO, force=False, dry=False, say=print):
-    """Stores a built game folder under the current key. The folder's coop-built-from.txt must match the stamp."""
-    want = stamp(repo)
+def cache_store(src, repo=REPO, force=False, dry=False, say=print, want=None):
+    """Stores a built game folder under the current key (want: the stamp; default the repo's with the folder's own
+    mods' code patches). The folder's coop-built-from.txt must match the stamp."""
+    want = want or stamp(repo) + code_mods_line(os.path.join(src, "mods"), repo)
     k = key_of(want)
     if not find_exe(src):
         raise Fail("no longshot.exe in %s" % src)
@@ -326,9 +399,10 @@ def cache_store(src, repo=REPO, force=False, dry=False, say=print):
     return k
 
 
-def cache_restore(dst, repo=REPO, dry=False, say=print):
-    """Copies the cached game for the current key into a pair folder (its per-player files kept). False on a miss."""
-    k = key_of(stamp(repo))
+def cache_restore(dst, repo=REPO, dry=False, say=print, want=None):
+    """Copies the cached game for the current key into a pair folder (its per-player files kept). False on a miss.
+    want: the stamp (default the repo's with the pair's own mods' code patches)."""
+    k = key_of(want or stamp(repo) + code_mods_line(os.path.join(dst, "mods"), repo))
     folder = os.path.join(cache_root(), k)
     if not os.path.isfile(os.path.join(folder, "stamp.txt")):
         say("cache: miss for %s" % k)
@@ -345,6 +419,13 @@ def cache_restore(dst, repo=REPO, dry=False, say=print):
         say("cache: %s held another build (%s): its runtime caches are replaced" % (dst, key_of(have)))
     c, n = copy_tree(os.path.join(folder, CACHE_GAME), dst, dry=dry, say=lambda *_: None, runtime_too=other)
     say("cache: %s -> %s: %d file(s) %s, %d link(s)" % (k, dst, c, "to copy" if dry else "copied", n))
+    # (a build without code patches has no list; an older build's would say the game holds patches it does not: the
+    # kit's own restore takes it away too, kit-paths.ps1 Restore-KitGameVariant)
+    stale = os.path.join(dst, EXEFS_LIST)
+    if not os.path.isfile(os.path.join(folder, CACHE_GAME, EXEFS_LIST)) and os.path.isfile(stale):
+        say("cache: %s: an older build's %s removed (this game has no mods' code patches)" % (dst, EXEFS_LIST))
+        if not dry:
+            os.remove(stale)
     if not dry:
         touch_used(folder)
     return True
@@ -449,7 +530,7 @@ def warm_start(game, out, timeout, say=print, popen=subprocess.Popen, connect=No
 def warmup(pair, to=(), timeout=3600, out=None, repo=REPO, dry=False, say=print, start=warm_start):
     """One pair's first start prepares the shaders; its warm files then go into the cache entry and the other pairs.
     A game run, not a build: no build lock (whoever runs it holds the test turn)."""
-    k = key_of(stamp(repo))
+    k = key_of(stamp(repo) + code_mods_line(os.path.join(pair, "mods"), repo))
     sf = os.path.join(pair, "coop-built-from.txt")
     have = ""
     if os.path.isfile(sf):
@@ -686,13 +767,13 @@ def hook_objects(ninja_targets):
     return sorted(set(HOOK_OBJ.findall(ninja_targets)))
 
 
-def run_steps(steps, prefix, dry, say=print, cwd=None):
+def run_steps(steps, prefix, dry, say=print, cwd=None, env=None):
     for s in steps:
         cmd = prefix + s
         say("$ " + " ".join('"%s"' % c if " " in c else c for c in s))
         if dry:
             continue
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, errors="replace")
+        r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, errors="replace")
         if r.returncode:
             tail = (r.stdout + r.stderr).strip().splitlines()[-25:]
             say("\n".join(tail))
@@ -781,8 +862,11 @@ def build(pairs, build_dir, kit=None, game=None, jobs=0, keep=3, repo=REPO, dry=
           owner="hs-build"):
     """Game from the cache (or built once through a kit and stored), hookshot_coop.dll rebuilt, both into each pair."""
     root = root or main_root(repo)
-    st = stamp(repo)
+    mods_line, mods = pairs_code_mods(pairs, repo)
+    st = stamp(repo) + mods_line
     k = key_of(st)
+    if mods:
+        say("mods' code patches: the pairs' (%s) go into the game (HOS_MODS)" % mods)
     say("key %s (%s)" % (k, st.replace("\n", "; ")[:160]))
     hit = os.path.isfile(os.path.join(cache_root(), k, "stamp.txt"))
     if not dry and not lock_acquire(root, "hs", owner, wait=1800, say=say):
@@ -823,12 +907,16 @@ def build(pairs, build_dir, kit=None, game=None, jobs=0, keep=3, repo=REPO, dry=
             else:
                 say("cache: miss; this kit's hookshot-build.ps1 has no -Tools/-Work (a kit from before hs-build-speed):"
                     " a full build in the kit's own folders")
-            if not run_steps([cmd], [], dry, say):
+            env = dict(os.environ)
+            env.pop("HOS_MODS", None)
+            if mods:
+                env["HOS_MODS"] = os.path.abspath(mods)   # (nx2/exefs_patches.py and Get-KitExefsStampLine read it)
+            if not run_steps([cmd], [], dry, say, env=env):
                 raise Fail("hookshot-build.ps1 failed")
             if dry:
                 say("cache: would store %s as %s" % (out, k))
             else:
-                cache_store(out, repo, say=say)
+                cache_store(out, repo, say=say, want=st)
                 if not shared:
                     remove_tree(out)
         else:
@@ -842,7 +930,7 @@ def build(pairs, build_dir, kit=None, game=None, jobs=0, keep=3, repo=REPO, dry=
             if not dry:
                 os.makedirs(p, exist_ok=True)
             if hit or not dry:
-                cache_restore(p, repo, dry=dry, say=say)
+                cache_restore(p, repo, dry=dry, say=say, want=st)
             else:
                 say("cache: would copy the new game into %s" % p)
             exe = find_exe(p) if not dry else os.path.join(p, "bin", "longshot.exe")

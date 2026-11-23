@@ -2,6 +2,7 @@
 #include "coop_char_colours.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace CoopCharColours {
@@ -159,7 +160,17 @@ public:
             if (Stopped()) return;
             u.looked_up = true;
         }
-        if (o.hair != 0 || put_back) {
+        if (o.hair_exact && !Stopped()) {
+            // (co-op's hair colour on a Link model: the parameters alone, as the game colours its own hair)
+            for (std::size_t i = 0; i < kHairNames.size() && !Stopped(); i++) {
+                if (u.material[i] < 0) continue;
+                const bool brow = i + 1 == kHairNames.size();
+                for (int p = 0; p < 2; p++) {
+                    SetFloats(u.unit, u.material[i], u.param[i][static_cast<std::size_t>(p)],
+                              brow ? (*o.hair_exact)[2] : (*o.hair_exact)[static_cast<std::size_t>(p)]);
+                }
+            }
+        } else if (o.hair != 0 || put_back) {
             for (std::size_t i = 0; i < kHairNames.size() && !Stopped(); i++) {
                 if (u.material[i] < 0) continue;
                 const std::uint64_t object = MaterialObject(u.unit, u.material[i]);
@@ -174,9 +185,9 @@ public:
                 PutTexture(object, o.hair, put_back);
             }
         }
-        if ((o.eyes != 0 || put_back) && !Stopped()) {
+        if ((o.eyes != 0 || o.eyes_exact || put_back) && !Stopped()) {
             const std::size_t e = kHairNames.size();
-            SetFloats(u.unit, u.material[e], u.param[e][2], EyeColour(o.eyes, iris_shift));
+            SetFloats(u.unit, u.material[e], u.param[e][2], o.eyes_exact ? o.eyes_exact : EyeColour(o.eyes, iris_shift));
         }
         const bool clothes = o.clothes[0] != 0 || o.clothes[1] != 0 || o.clothes[2] != 0;
         if ((clothes || put_back) && !Stopped()) {
@@ -190,8 +201,7 @@ public:
         }
     }
 
-    void Run(std::uint32_t custom, bool put_back, int iris_shift) {
-        const Options o = Options::Of(custom);
+    void Run(const Options& o, bool put_back, int iris_shift) {
         if (!o.Colours() && !put_back) return;
         // The model component, the player's kind only (the mod's own check: its +0xf8 is the player model's).
         const std::uint64_t component = R64(R64(s_.actor + kActorComponents) + 8);
@@ -284,6 +294,11 @@ namespace {
 std::atomic<std::uint16_t> g_shown{0};
 }
 void SetShownCharacter(std::uint16_t number) { g_shown.store(number, std::memory_order_relaxed); }
+namespace {
+std::atomic<bool> g_mod_present{false};
+}
+void SetModPresent(bool present) { g_mod_present.store(present, std::memory_order_relaxed); }
+bool ModPresent() { return g_mod_present.load(std::memory_order_relaxed); }
 std::uint16_t ShownCharacter() { return g_shown.load(std::memory_order_relaxed); }
 
 Wardrobe& TheWardrobe() {
@@ -295,8 +310,47 @@ Result Dress(const Game& game, State& state, std::uint32_t custom, bool put_back
              std::size_t max_calls) {
     Result r;
     if (state.cell == 0 || state.actor == 0 || !game.read || !game.write || !game.call) return r;
-    Dresser(game, state, r, max_calls).Run(custom, put_back, iris_shift);
+    Dresser(game, state, r, max_calls).Run(Options::Of(custom), put_back, iris_shift);
     return r;
+}
+
+Result Dress(const Game& game, State& state, const Options& options, bool put_back, int iris_shift,
+             std::size_t max_calls) {
+    Result r;
+    if (state.cell == 0 || state.actor == 0 || !game.read || !game.write || !game.call) return r;
+    Dresser(game, state, r, max_calls).Run(options, put_back, iris_shift);
+    return r;
+}
+
+std::array<std::array<float, 3>, 3> HairParam(std::uint32_t rgb) {
+    const auto linear = [](std::uint32_t c) {
+        const float s = static_cast<float>(c & 0xFF) / 255.0f;
+        return s <= 0.04045f ? s / 12.92f : std::pow((s + 0.055f) / 1.055f, 2.4f);
+    };
+    const std::array<float, 3> c0{linear(rgb >> 16), linear(rgb >> 8), linear(rgb)};
+    std::array<float, 3> c1{}, brow{};
+    for (std::size_t i = 0; i < 3; ++i) {
+        c1[i] = std::min(1.0f, c0[i] * kHairLighter);
+        brow[i] = c0[i] * kBrowScale;
+    }
+    return {c0, c1, brow};
+}
+
+std::array<float, 3> EyeParam(std::uint32_t rgb) {
+    const float r = static_cast<float>((rgb >> 16) & 0xFF) / 255.0f, g = static_cast<float>((rgb >> 8) & 0xFF) / 255.0f,
+                b = static_cast<float>(rgb & 0xFF) / 255.0f;
+    const float hi = std::max({r, g, b}), lo = std::min({r, g, b}), d = hi - lo;
+    float h = 0.0f;
+    if (d > 0.0f) {
+        h = hi == r ? std::fmod((g - b) / d, 6.0f) : hi == g ? (b - r) / d + 2.0f : (r - g) / d + 4.0f;
+        h /= 6.0f;
+        if (h < 0.0f) h += 1.0f;
+    }
+    const float s = hi > 0.0f ? d / hi : 0.0f, v = hi;
+    // (a grey: the iris's own hue, only less saturated)
+    const float x = d > 0.0f ? 0.5f + (h - kIrisHue) / 2.0f : 0.5f;
+    const auto clamp01 = [](float t) { return std::clamp(t, 0.0f, 1.0f); };
+    return {clamp01(x), clamp01(0.5f + (s - kIrisSaturation) / 2.0f), clamp01(0.5f + (v - kIrisBrightness) / 2.0f)};
 }
 
 std::size_t Wardrobe::Frame(const Game& game, const std::vector<Target>& targets, std::uint64_t now_ms,
@@ -326,18 +380,21 @@ std::size_t Wardrobe::Frame(const Game& game, const std::vector<Target>& targets
             k.seen = true;
         }
         if (t.mods_routine || calls >= kCallsPerFrame || now_ms < k.retry_ms) continue;
-        const bool colours = Options::Of(t.custom).Colours();
+        Options o = Options::Of(t.custom);
+        if (t.eyes) o.eyes_exact = EyeParam(*t.eyes);
+        if (t.hair) o.hair_exact = HairParam(*t.hair);
+        const bool colours = o.Colours();
         bool due;
         if (viewer_paints) {
             due = true;   // the mod's code painted the viewer's options on it this frame
-        } else if (!k.dressed || *k.dressed != t.custom) {
+        } else if (!k.dressed || *k.dressed != t.custom || k.dressed_eyes != t.eyes || k.dressed_hair != t.hair) {
             due = colours || k.ever;   // a change (to none: put back what was put on)
         } else {
             due = colours && now_ms - k.at_ms >= kAgainMs;
         }
         if (!due) continue;
         const bool put_back = viewer_paints || k.ever;
-        const Result r = Dress(game, k.state, t.custom, put_back, t.iris_shift, kCallsPerFrame - calls);
+        const Result r = Dress(game, k.state, o, put_back, t.iris_shift, kCallsPerFrame - calls);
         calls += r.calls;
         if (r.failed) {
             // Not again before kAgainMs (a call that cannot be made fails every frame), said once per puppet.
@@ -355,6 +412,8 @@ std::size_t Wardrobe::Frame(const Game& game, const std::vector<Target>& targets
                 std::to_string(r.units) + " model unit(s), " + std::to_string(r.calls) + " calls)");
         }
         k.dressed = t.custom;
+        k.dressed_eyes = t.eyes;
+        k.dressed_hair = t.hair;
         k.ever = k.ever || colours;
         k.at_ms = now_ms;
     }

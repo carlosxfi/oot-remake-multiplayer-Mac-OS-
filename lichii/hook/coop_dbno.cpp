@@ -3,6 +3,7 @@
 // Down but not out: the rules (coop_dbno.h).
 
 #include "coop_dbno.h"
+#include "coop/protocol/scene_place.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -221,7 +222,8 @@ std::uint8_t Machine::PickWatch(const Input& in) const {
     const Teammate* best = nullptr;
     float best_m = 0.0f;
     for (const Teammate* t : up) {
-        if (!t->scene || !in.scene || *t->scene != *in.scene || !t->position || !Finite(*t->position)) {
+        if (!t->scene || !in.scene || !coop::protocol::same_place(*t->scene, *in.scene) || !t->position ||
+            !Finite(*t->position)) {
             continue;
         }
         const float m = Level(in.position, *t->position);
@@ -248,7 +250,8 @@ bool Machine::Quiet(const Input& in) const {
         if (t.state != State::up || !t.in_game) {
             continue;
         }
-        const bool with_them = &t == watched || (t.scene && watched->scene && *t.scene == *watched->scene);
+        const bool with_them =
+            &t == watched || (t.scene && watched->scene && coop::protocol::same_place(*t.scene, *watched->scene));
         if (with_them && t.threat == Threat::enemy) {
             return false;
         }
@@ -260,7 +263,7 @@ std::uint8_t Machine::PickReviver(const Input& in) const {
     std::uint8_t best = 0;
     for (const Teammate& t : in.team) {
         if (!ValidPlayer(t.number) || t.state != State::up || !t.in_game || !t.scene || !in.scene ||
-            *t.scene != *in.scene || !t.position ||
+            !coop::protocol::same_place(*t.scene, *in.scene) || !t.position ||
             !InReach(in.position, *t.position, kReviveSlack)) {
             continue;
         }
@@ -601,7 +604,7 @@ Reviver::Out Reviver::Frame(std::uint64_t now_us, bool able, bool button, const 
     float pick_m = 0.0f;
     if (able && scene) {
         for (const Fallen& f : fallen) {
-            if (!ValidPlayer(f.number) || !f.scene || *f.scene != *scene) {
+            if (!ValidPlayer(f.number) || !f.scene || !coop::protocol::same_place(*f.scene, *scene)) {
                 continue;
             }
             if (f.number == target_ && InReach(self, f.position, 1.2f)) {

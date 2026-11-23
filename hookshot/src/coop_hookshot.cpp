@@ -55,6 +55,7 @@
 #include "coop_actor_events.h"
 #include "coop_boss_native.h"
 #include "coop_boss_scenes.h"
+#include "coop_hallway.h"
 #include "coop_dbno_body.h"
 #include "coop_dbno_game.h"
 #include "coop_enemy_shots.h"
@@ -88,15 +89,16 @@
 #include "coop_player_input.h"
 #include "coop_png.h"
 #include "coop_window_brand.h"
+#include "coop_pose.h"
 #include "coop_puppet.h"
 #include "coop_puppet_config.h"
 #include "coop_pack_notice.h"
 #include "coop_frame_clock.h"
 #include "coop_original.h"
-#include "coop_hud_layout.h"
 #include "coop/protocol/messages.hpp"
 #include "coop_runtime.h"
 #include "coop_pause_files.h"
+#include "coop_pickups.h"
 #include "coop_settings.h"
 #include "coop_svc.h"
 #include "coop_time.h"
@@ -417,6 +419,11 @@ void SetBossNative() {
     const bool brain = WrapIn(HOS_COOP_WRAP_BRAIN_VERB) && Env("LICHII_COOP_BOSS_NATIVE") != "0";
     const bool actions = brain && WrapIn(HOS_COOP_WRAP_ACTION_VERB) && Env("LICHII_COOP_BOSS_ACTIONS") != "0";
     CoopBossNative::Table& t = CoopBossNative::TheTable();
+    const bool turns = CoopBossNative::TurnsSwitch(Env("LICHII_COOP_BOSS_TURNS"));
+    if (t.TurnsOn() != turns) {
+        t.SetTurns(turns);
+        LOG_INFO(Core, "coop: bosses: turns {} (LICHII_COOP_BOSS_TURNS)", turns ? "on" : "off");
+    }
     if (t.BrainOn() == brain && t.ActionsOn() == actions) {
         return;
     }
@@ -782,8 +789,6 @@ bool EnvOff(const char* name) {
     return v == "0" || v == "no" || v == "off" || v == "false";
 }
 std::atomic<bool> g_map_players{!EnvOff("LICHII_COOP_MAP")};
-// The player list's size (Co-op settings' "Player list", SetHudSize): Auto, Full, Compact or Off.
-std::atomic<int> g_hud_size{static_cast<int>(CoopHudLayout::ParseListSize(Env("LICHII_COOP_HUD_SIZE")))};
 std::atomic<bool> g_map_names{!EnvOff("LICHII_COOP_MAP_NAMES")};
 
 // The players on the maps (CoopDraw::MapShown), or null: the setting is
@@ -812,7 +817,9 @@ const CoopDraw::MapShown* MapScene(bool camera, std::uint8_t self) {
     const auto menu = CoopMapPage::MenuState();
     const auto page = CoopMapPage::Shown(capture->dungeon);
     m.minimap.reset();
-    if (camera && !(menu && menu->menu_open)) {
+    // (row 199: also while the pause menu's tab strip is up, any page: patch 0018's menu_open is a screen that had the
+    // mouse, which a mod's page such as Character Select's never has, so the marks drew over it. The Map page: m.page)
+    if (camera && !(menu && menu->menu_open) && !CoopPauseTab::GameMenuUp()) {
         m.minimap = CoopMapPage::Minimap(capture->dungeon);
     }
     m.minimap_floor = coop::overlay::map::floor_of(*capture, view.self[1]);
@@ -886,10 +893,6 @@ const CoopDraw::MapShown* MapScene(bool camera, std::uint8_t self) {
 }
 
 }  // namespace
-
-void SetHudSize(const std::string& size) {
-    g_hud_size.store(static_cast<int>(CoopHudLayout::ParseListSize(size)));
-}
 
 void SetMapOptions(bool players, bool names) {
     g_map_players.store(players);
@@ -977,7 +980,7 @@ CoopDraw::Scene DrawScene() {
             }
         }
     }
-    // The voice icons (docs/voice.md, "Who is talking"): only while voice chat is on here.
+    // The voice states after the names, as words (docs/voice.md, "Who is talking"): only while voice chat is on here.
     const bool voice_on = game && CoopVoice::Available() && CoopVoice::Get().mode != coop::voice::Mode::off;
     const CoopLobby::Seen seen = voice_on ? CoopLobby::Now() : CoopLobby::Seen{};
     const auto voice_muted = [&](std::uint8_t number) {
@@ -1002,12 +1005,9 @@ CoopDraw::Scene DrawScene() {
     }
     // (the game's pause menu up: the other players' blocks wait; drawn over the pause menu's left rows they hid our
     // Multiplayer page's, a test run 2026-11-20)
+    CoopPauseTab::CensusFromMenuState();   // (the - menu research: only with COOP_TEST_SCREEN_PROBE=1)
     const auto menu_state = CoopMapPage::MenuState();
-    const bool game_menu_up = menu_state && menu_state->menu_open;
-    std::optional<std::string> own_scene;
-    for (const auto& row : rows) {
-        if (row.self) own_scene = row.scene;
-    }
+    const bool game_menu_up = (menu_state && menu_state->menu_open) || CoopPauseTab::GameMenuUp();   // (row 199)
     for (const auto& row : game ? rows : std::vector<CoopHook::PlayerRow>{}) {
         if (row.self) {
             s.own_voice = CoopVoice::IconFor(voice_on, CoopVoice::Get().muted || voice_muted(row.number),
@@ -1025,18 +1025,9 @@ CoopDraw::Scene DrawScene() {
         }
         if (const auto life = CoopHud::PlayerLife(row.number); life && life->max > 0) {
             b.hearts = CoopHudHearts::Quarters(life->life, life->max);
-            b.life = life->life, b.max = life->max;
         }
-        b.colour = coop::protocol::slot_color(row.number);
-        b.here = own_scene && row.scene && *own_scene == *row.scene;
         b.dim = dim_hold.Dim(row.number, row.state == "connected", dim_now);
         s.hud.push_back(std::move(b));
-    }
-    {   // the player list: Off, or the players in our own area first; compact rows for many (CoopHudLayout::ListSize)
-        const auto size = static_cast<CoopHudLayout::ListSize>(g_hud_size.load());
-        if (size == CoopHudLayout::ListSize::kOff) s.hud.clear();
-        CoopHudLayout::HereFirst(s.hud, [](const CoopDraw::HudBlock& b) { return b.here; });
-        s.hud_compact = CoopHudLayout::CompactFor(size, s.hud.size());
     }
     if (!s.hud.empty()) {   // row 141: the blocks go below the game's own HUD as it is laid out now
         s.game_hud_bottom = CoopMapPage::GameHudBottom();
@@ -1246,6 +1237,14 @@ bool Start(const HosCoopApi* api) {
              HasPadButtons(api) ? "" : "; this Hookshot gives no pad word (own Ocarina notes not sent: build it again)");
     // Started without the kit's launcher: its coop-options.ini switches still count.
     CoopTitle::ApplyKitOptions();
+    // Row 219 (#84): the one-time placements the kit's start lists beside the mods (merge_tables.py one_time_keys),
+    // read by the hook when a session starts. The mods folder as Hookshot's host/mods.c finds it.
+    if (Env("LICHII_COOP_ONE_TIME_KEYS").empty()) {
+        const std::string mods = Env("HOS_MODS");
+        const std::filesystem::path root =
+            mods.empty() ? CoopRuntime::GameDir() / "mods" : std::filesystem::path(std::u8string(mods.begin(), mods.end()));
+        CoopFiles::SetEnv("LICHII_COOP_ONE_TIME_KEYS", CoopFiles::Utf8Path(root / CoopPickups::kOneTimeFile));
+    }
     // Original game (coop_original.h): the module stays off, all of it, and Longshot's F1 menu gets one tab with the
     // switch alone, so the player can turn it back.
     if (const auto options = CoopTitle::KitOptionsFile();
@@ -1258,9 +1257,8 @@ bool Start(const HosCoopApi* api) {
         return false;
     }
     UseInputSelect();
-    // (the player list's size as coop-options.ini says, now that ApplyKitOptions put it in the process's variables:
-    // read at the module's load, it was always Auto without the kit's launcher, a test run 2026-11-20)
-    SetHudSize(Env("LICHII_COOP_HUD_SIZE"));
+    // (the map's players and names as coop-options.ini says, now that ApplyKitOptions put them in the process's
+    // variables: read at the module's load they missed the kit's options without the kit's launcher, 2026-11-20)
     g_map_players.store(!EnvOff("LICHII_COOP_MAP"));   // (the same for the map's players and names)
     g_map_names.store(!EnvOff("LICHII_COOP_MAP_NAMES"));
     CoopFiles::CheckName();  // never the PC's user or PC name as the co-op name (coop_name_privacy.h), before coop.ini is read
@@ -1287,6 +1285,13 @@ bool Start(const HosCoopApi* api) {
         CoopPuppetConfig::Configure(PerceivedSafe());  // as the emulator's cave (coop_puppet_config.h)
     }
     CoopPackNotice::Enable(CoopPuppetConfig::HasPack());  // no pack: the chat says so once (coop_pack_notice.h)
+    // The kit's start file sets OOT_COOP_KIT_START (play.ps1, start.sh, the autotest). Without it (and not Nucleus
+    // Co-op, which starts each game its own way) the chat says to use Start Squadala (player report 225).
+    const bool direct = !EnvOn("OOT_COOP_KIT_START") && !CoopLook::NucleusWrote(CoopFiles::ReadText(ini));
+    CoopPackNotice::EnableDirect(direct);
+    if (direct) {
+        LOG_WARNING(Core, "coop: the game was not started with Start Squadala (the kit's start file): the title and the chat say so");
+    }
     g_hold = EnvOn("LICHII_COOP_OBJECTS_AI_HOLD");
     CoopLinkSound::SetProbe(EnvOn("LICHII_COOP_DEBUG_SOUND"));  // every user's sounds named once in the log
     // Flags through the game's own functions (coop_flag_native.h): its writes as events from the applier's wrap, ours
@@ -1732,6 +1737,12 @@ int Wrap(std::uint32_t id, int phase, std::uint64_t* x, void* /*ctx*/) {
                 x[0] = 0;
                 return 1;
             }
+            // The Forest Temple's twisting hallway never turns under another player standing in it
+            // (coop_hallway.h): the eye's turn is not run, and the lines say who is in the way.
+            if (named && CoopHallway::RefuseAsk(name)) {
+                x[0] = 0;
+                return 1;
+            }
         } else if (named) {
             named = false;
             CoopLiveEvents::TheGameRequests().Push(name, x[0] != 0);
@@ -1908,7 +1919,6 @@ void LocalLayer(void* ctx) {
 void DressCharacters(void* ctx) {
     if (g_api == nullptr || g_api->call == nullptr) return;
     const auto views = CoopPuppet::DressTargets();
-    if (views.empty()) return;
     static void* frame_ctx = nullptr;
     frame_ctx = ctx;
     static const CoopCharColours::Game game = [] {
@@ -1928,10 +1938,74 @@ void DressCharacters(void* ctx) {
     CoopCharColours::Game g = game;
     g.main_base = CoopRuntime::MainBase();
     std::vector<CoopCharColours::Target> targets;
-    targets.reserve(views.size());
+    targets.reserve(views.size() + 1);
     for (const auto& v : views) {
-        targets.push_back({v.actor, v.cell, v.custom, v.mods_routine, 0, std::hash<std::string>{}(v.actor_name)});
+        CoopCharColours::Target t{v.actor, v.cell, v.custom, v.mods_routine, 0, std::hash<std::string>{}(v.actor_name)};
+        t.eyes = v.eyes;
+        t.hair = v.hair;
+        targets.push_back(t);
     }
+    // (0.11.9: your own Link's eye colour, the look shown: the one chosen in Customize at once, a preview, else worn;
+    // its cell of guest memory made once with the game's malloc, as a puppet's block)
+    // (and, while the menu is up, the pause menu's model actor that is your Link: Character Select's Customize picture
+    // is a model of the menu's own, so the eyes chosen showed on your Link in the field but not in the picture,
+    // lane-0119 13:03. Your Link there: an actor of the field player's own actor name, while you are Link; never the
+    // picker's other characters (review). Each its own cell: 0 your Link's, 1..4 the menu's slots)
+    static std::array<std::uint64_t, 5> cells{};
+    static std::array<bool, 5> cells_asked{};
+    const auto cell = [&](std::size_t i) {
+        if (cells[i] == 0 && !cells_asked[i]) {
+            cells_asked[i] = true;
+            HosCoopCall k{};
+            k.function = CoopRuntime::MainBase() + CoopPuppet::addr::kMalloc;
+            k.x[0] = CoopCharColours::kCellBytes;
+            std::uint64_t x0 = 0;
+            if (g_api->call(ctx, &k, &x0) && x0 != 0) {
+                const std::array<std::uint8_t, CoopCharColours::kCellBytes> zero{};
+                CoopRuntime::Write(x0, zero.data(), zero.size());
+                cells[i] = x0;
+            }
+        }
+        return cells[i];
+    };
+    const CoopLook::Look shown = CoopLook::Shown();
+    const auto own = CoopCharColours::LinkOnly(CoopCharColours::ShownCharacter() == 0, shown[CoopLook::Part::eyes],
+                                               shown[CoopLook::Part::hair]);
+    if (own.eyes || own.hair) {
+        const auto dress = [&](std::uint64_t actor, std::size_t i, std::uint64_t model) {
+            if (actor == 0 || cell(i) == 0) return;
+            CoopCharColours::Target t{actor, cells[i], 0, false, 0, model};
+            t.eyes = own.eyes, t.hair = own.hair;
+            targets.push_back(t);
+        };
+        const auto name_of = [](std::uint64_t actor) {
+            std::uint64_t at = 0;
+            char text[64] = {};
+            if (actor == 0 || !CoopRuntime::Read(actor + 0x260, &at, sizeof at) || at == 0) return std::string();
+            if (!CoopRuntime::Read(at, text, sizeof text - 1)) return std::string();
+            return std::string(text);
+        };
+        BridgeGuest guest;
+        const std::uint64_t player = CoopPose::FindPlayer(guest, CoopRuntime::MainBase());
+        dress(player, 0, 0);
+        if (CoopPauseTab::GameMenuUp() && player != 0) {
+            const std::string link = name_of(player);
+            static std::string said;
+            std::string seen;
+            const auto menu = CoopPauseTab::MenuActors();
+            for (std::size_t s = 0; s < menu.size(); ++s) {
+                if (menu[s].actor == 0) continue;
+                const std::string name = name_of(menu[s].actor);
+                seen += fmt::format("{}{}: {}", seen.empty() ? "" : ", ", s, name.empty() ? "?" : name);
+                if (CoopCharColours::MenuModelOfPlayer(name, link)) dress(menu[s].actor, 1 + s, 0x6d656e7500000000ull | menu[s].id);
+            }
+            if (seen != said) {   // (what the menu holds, once a change: which of them is your Link)
+                said = seen;
+                LOG_INFO(Core, "coop: look: the menu's models ({}); your Link's actor {}", seen.empty() ? "none" : seen, link);
+            }
+        }
+    }
+    if (targets.empty()) return;
     CoopCharColours::TheWardrobe().Frame(g, targets, SteadyMs(),
                                          [](const std::string& line) { LOG_INFO(Core, "coop: {}", line); });
 }

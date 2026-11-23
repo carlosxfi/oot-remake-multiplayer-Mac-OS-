@@ -134,7 +134,8 @@ std::vector<Tab::Line> Tab::Lines() const {
     if (!lobby_.connected && !lobby_.waiting.empty()) {
         heading("Lobby");
         note(lobby_.waiting);
-        note("The players show here once this game is in the session.");
+        note(lobby_.waiting_next.empty() ? "The players show here once this game is in the session."
+                                         : lobby_.waiting_next);
         return out;
     }
     if (!lobby_.connected) {
@@ -548,6 +549,33 @@ std::string DiscordState(bool connected, std::size_t players) {
         return "Solo";
     }
     return players == 1 ? "Co-op: 1 player" : "Co-op: " + std::to_string(players) + " players";
+}
+
+Waiting WaitingText(int state, const std::string& answer, bool held, std::uint64_t waited_ms) {
+    // (the numbers of hos_coop_host.h's HosCoopState: this file has no C header of the host menu)
+    constexpr int kIdle = 0, kJoining = 3, kWaitHost = 4, kConnected = 5, kFailed = 6;   // (1 starting, 2 hosting)
+    Waiting w;
+    if (state == kIdle || state == kFailed) return w;
+    if (held) {
+        w.line = "The host has to let you in.";
+        w.next = "They answer with /allow in their chat. This page joins by itself once they do.";
+        return w;
+    }
+    const bool joining = state == kJoining || state == kWaitHost || state == kConnected;
+    if (!joining) {   // (our own hosting, starting or listening: as before)
+        w.line = "Co-op is starting...";
+        return w;
+    }
+    if (state == kWaitHost || waited_ms >= kNoAnswerMs) {
+        w.line = "The host's game has not answered yet.";
+        // (each line whole on one line: the table finds it by its text, i18n_test)
+        w.next = answer.empty()
+            ? "Ask the host to choose Host (Multiplayer tab, or the title screen). Keep this page open: it joins by itself."
+            : "Ask the host to choose Host (Multiplayer tab, or the title screen). If they host already, send them this answer code: " + answer;
+        return w;
+    }
+    w.line = state == kConnected ? "Joining the host's game..." : "Looking for the host's game...";
+    return w;
 }
 
 }  // namespace CoopLobbyTab

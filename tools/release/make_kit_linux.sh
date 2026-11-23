@@ -71,6 +71,8 @@ text "$src/revert.sh" "$kit/revert.sh"
 for f in start.sh build.sh update.sh collect-logs.sh lib.sh; do text "$src/scripts/$f" "$kit/scripts/$f"; done
 text "$repo/tools/release/kit/scripts/apply_patch.py" "$kit/scripts/apply_patch.py"
 text "$repo/tools/release/kit/scripts/discord_status.py" "$kit/scripts/discord_status.py"
+text "$src/scripts/problem_report.py" "$kit/scripts/problem_report.py"
+text "$repo/tools/release/kit/scripts/problem-send-url.txt" "$kit/scripts/problem-send-url.txt"
 text "$repo/tools/release/kit/coop.ini.template" "$kit/scripts/coop.ini.template"
 text "$repo/tools/release/kit/coop-options.ini" "$kit/data/coop-options.ini"
 cp -- "$repo/tools/release/kit/assets/squadala-icon.png" "$kit/data/squadala-icon.png"   # (the window and menu icon, start.sh)

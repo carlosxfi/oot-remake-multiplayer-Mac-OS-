@@ -28,6 +28,10 @@ namespace CoopPause {
 // leaves Host and Join alone.
 void Init(bool coop_on);
 
+// The game folder's exefs_patches.txt: the mods' code patches the game was built with (read once: another build needs
+// the game started again). The - strip's slot 3 and the home of Link's look follow it (charsel-tab-0119).
+const std::string& ExefsList();
+
 // Each game frame (HOS_COOP_SITE_FRAME), shown or not: what follows from
 // co-op's state (the invite code copied, a connected join remembered and the
 // host's save loaded at the title). At most every 250 ms.
@@ -62,9 +66,15 @@ CoopPauseMenu::View NativeView();
 bool NativeOpen();
 CoopPauseMenu::Page NativePage();   // (the page the menu shows now)
 void CloseNative();
+// B on the title's page leaves it (the Multiplayer rows again) rather than going back a page (Menu::BackLeaves).
+bool NativeBackLeaves();
+// Y on the title's list of games: asked again (Menu::RefreshFound; nothing on another page).
+void NativeRefresh();
 // Another page of co-op's menu while it shows natively (the pause page's Settings and look): the page only, no files
 // read again (OpenNative read them as it opened).
 void NativeGo(CoopPauseMenu::Page page);
+// Co-op settings shown natively: its first host row selected (Menu::HostRulesRow; the Host view's Host settings).
+void NativeSelectHostRules();
 
 // The pause menu's Multiplayer page (coop_pause_tab.h): its copies, done on the page itself (co-op's menu stays shut): the host's room name (else its relay join code,
 // else its invite code), a waiting guest's answer code, the host's same-network or VPN join line (as the menu's rows).

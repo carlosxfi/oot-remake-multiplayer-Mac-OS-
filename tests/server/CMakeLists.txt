@@ -15,6 +15,10 @@ add_executable(coop_server_tests
 )
 # upnp_test runs a fake router on its own thread.
 target_link_libraries(coop_server_tests PRIVATE coop_server_lib doctest::doctest coop_warnings Threads::Threads)
+# session_test.cpp holds so many tests that MSVC runs out of object sections (C1128) without /bigobj.
+if(MSVC)
+  target_compile_options(coop_server_tests PRIVATE /bigobj)
+endif()
 doctest_discover_tests(coop_server_tests)
 
 # The real program starts, listens on a free port and stops by itself.

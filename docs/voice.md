@@ -2,7 +2,7 @@
 
 Players hear each other talk as if their Links were speaking: the voice comes from where that player's Link stands, louder up close, duller and quieter further off, silent past the range, and never from another scene. It plays in the game's own sound, so the game's volume, its effects and the speaker layout (stereo or 5.1) apply to it as to any other sound. Up to 16 players. Hookshot only for now (the emulator has no voice).
 
-**Voice chat is off until you turn it on.** Off means off both ways: your microphone is never opened and you hear nobody's voice. Turn it on with the **Proximity voice chat** row of the co-op settings in the game (Multiplayer tab, Settings), or with the line `LICHII_COOP_VOICE=open` in the kit's `coop-options.ini`. Turned on, it is **open mic**: just talk, you are heard when you speak (silence, fans and key clicks are not sent). The **Voice mode** row under it switches to **Push to talk (V)**: hold **V** to talk, let go and you are silent. The chat says which once voice is on (`Voice chat on: open mic (change to push-to-talk in Settings)`). Everyone who wants to talk or listen turns it on in their own game.
+**Voice chat is off until you turn it on.** Off means off both ways: your microphone is never opened and you hear nobody's voice. Turn it on with the **Proximity voice chat** row of the co-op settings in the game (Multiplayer tab, Co-op settings), or with the line `LICHII_COOP_VOICE=open` in the kit's `coop-options.ini`. Turned on, it is **open mic**: just talk, you are heard when you speak (silence, fans and key clicks are not sent). The **Voice mode** row under it switches to **Push to talk (V)**: hold **V** to talk, let go and you are silent. The chat says which once voice is on (`Voice chat on: open mic (change to push-to-talk in Settings)`). Everyone who wants to talk or listen turns it on in their own game.
 
 **On speakers, not headphones?** Open mic hears the others' voices from your speakers and could send them back as an echo. While someone is heard, open mic needs your voice 10 dB louder before it sends (the echo guard below), which stops most of it; Opus has no echo cancellation, so headphones or push to talk are best.
 
@@ -24,13 +24,13 @@ The microphone is opened only when it may send: with push to talk when you press
 
 ### Who is talking
 
-The player HUD on the left (the names and hearts under your own hearts) shows a small microphone after a name:
+The player HUD on the left (the names and hearts under your own hearts) says it after a name, in the game's font (no drawn icon: co-op UI uses only the game's own assets, hud-native-0119):
 
-- **lit green, with a ring**: that player's voice plays here now (held 300 ms after its last frame);
-- **crossed out in red**: muted (by you, or by the host for everyone);
+- **(talking)**: that player's voice plays here now (held 300 ms after its last frame);
+- **(muted)**: muted (by you, or by the host for everyone);
 - nothing: quiet (whether their voice chat is on is not known here).
 
-While your voice chat is on, a **You** row above them shows your own: lit while you send, dim while you are quiet, crossed out when muted. Voice off: no icons at all. The Multiplayer tab's Lobby page marks the same players as talking.
+While your voice chat is on, a **You** row above them shows your own: "You (talking)" while you send, "You" while you are quiet, "You (muted)" when muted. Voice off: no words and no You row. The Multiplayer tab's Lobby page marks the same players as talking.
 
 ## How it works
 

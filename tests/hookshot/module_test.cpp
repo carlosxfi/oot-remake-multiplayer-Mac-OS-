@@ -1344,6 +1344,26 @@ TEST_CASE("hookshot: no patch logs a microphone, pad, player or server name outs
     CHECK(pads.find("+        hos_mouse_native_stick(stick[2] != 0 || stick[3] != 0);") == std::string::npos);
 }
 
+TEST_CASE("hookshot: a picked Steam Controller is its real pad and Steam's stand-in together (player report 202)") {
+    // Under Steam Input a Valve pad is two pads in SDL's list: the real one gives motion only, Steam's stand-in its
+    // buttons. Picking the one named after the controller in Settings' Controller row left a game with no buttons.
+    const std::string pads = ReadFile(kRepo / "hookshot" / "patches" / "0015-coop-pad-select.patch");
+    // Only the real Valve pad (motion only) pairs, and only with exactly one stand-in open: two players' pads under
+    // Steam Input (two stand-ins: PlayStation, Switch Pro, Xbox) never merge, each counts by its own number.
+    CHECK(pads.find("+static int valve_real(int i) { return pads[i].gc && steam_pads_motion_only(pads[i].vendor, "
+                    "pads[i].steam, 1); }") != std::string::npos);
+    CHECK(pads.find("+    if (!pick || pad_rank[i] == pick) return 1;\n+    if (pick < 0) return 0;") != std::string::npos);
+    CHECK(pads.find("+    if (picked < 0 || !(valve_real(picked) || pads[picked].steam)) return 0;\n"
+                    "+    if (stand_ins != 1) {") != std::string::npos);
+    CHECK(pads.find("+    return pads[picked].steam ? valve_real(i) : pads[i].steam != 0;") != std::string::npos);
+    CHECK(pads.find("steam_side(") == std::string::npos);   // (ad2857c8's rule: every stand-in counted together)
+    CHECK(pads.find("+    return !pick || pad_rank[i] == pick;") == std::string::npos);
+    // Every user of the pick goes through pad_counts (buttons, motion; patch 0016's local pads keep their own rule).
+    const std::string local = ReadFile(kRepo / "hookshot" / "patches" / "0016-coop-local-pads.patch");
+    CHECK(local.find("+            if (!pad_counts(i) && !taken) {") != std::string::npos);
+    CHECK(local.find("pad_counts(i) && !pad_taken(i) &&") != std::string::npos);
+}
+
 TEST_CASE("hookshot: the Insert menu files nothing with Longshot in a co-op build (patch 0027)") {
     const std::string patch = ReadFile(kRepo / "hookshot" / "patches" / "0027-coop-crash-report.patch");
     // Bug report: co-op's page, not Longshot's issue chooser or its game-problem form; co-op's lines out of the copied logs.

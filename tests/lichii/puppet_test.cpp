@@ -2197,6 +2197,23 @@ TEST_CASE("puppet gear: a PLAYER_EQUIP becomes the pieces, the sword hand's own 
     CHECK(GearOf(e)[0] == "Weapon_Sword_Kokiri");
     e.weapon_slot = "Weapon_Sword_DekuStick";  // a stick in the sword hand
     CHECK(GearOf(e)[0] == "Weapon_Sword_DekuStick");
+    // Only a mask is worn on the head (row 197): a 0.11.8 sender's Lens of
+    // Truth flag is taken off, a mask stays, nothing sent stays unknown.
+    CHECK_FALSE(GearOf(e)[kGearHead]);
+    e.head = "Armor_GlassTruth";
+    CHECK(GearOf(e)[kGearHead] == "");
+    e.head = "Armor_Child_GlassTruth";
+    CHECK(GearOf(e)[kGearHead] == "");
+    e.head = "Armor_Adult_Default_Head";
+    CHECK(GearOf(e)[kGearHead] == "");
+    e.head = "Armor_Mask_Base";  // the masks' base actor is no mask
+    CHECK(GearOf(e)[kGearHead] == "");
+    e.head = "Armor_Child_Mask_";
+    CHECK(GearOf(e)[kGearHead] == "");
+    e.head = "Armor_Child_Mask_Truth";
+    CHECK(GearOf(e)[kGearHead] == "Armor_Child_Mask_Truth");
+    e.head = "";
+    CHECK(GearOf(e)[kGearHead] == "");
 }
 
 TEST_CASE("puppet gear: the Ocarina and its belt holder come from PLAYER_EQUIP's ocarina (issue 152)") {

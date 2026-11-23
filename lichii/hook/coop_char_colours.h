@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <functional>
 #include <optional>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -52,9 +53,28 @@ inline constexpr std::uint8_t kHairs = 9, kEyes = 7, kCloths = 7;
 struct Options {
     std::uint8_t hair = 0, eyes = 0, gear = 0;
     std::array<std::uint8_t, 3> clothes{};
+    // 0.11.9: co-op's own eye colour, exact (EyeParam of the look's eyes part); over `eyes` when set.
+    std::optional<std::array<float, 3>> eyes_exact;
+    // 0.11.9: co-op's own hair colour (HairParam: colour 0, colour 1, the brows'); over `hair` when set. Link models
+    // only (a character's stand-in hair keeps its own).
+    std::optional<std::array<std::array<float, 3>, 3>> hair_exact;
     static Options Of(std::uint32_t custom);
-    bool Colours() const { return hair != 0 || eyes != 0 || clothes[0] != 0 || clothes[1] != 0 || clothes[2] != 0; }
+    bool Colours() const {
+        return hair != 0 || eyes != 0 || eyes_exact || hair_exact || clothes[0] != 0 || clothes[1] != 0 ||
+               clothes[2] != 0;
+    }
 };
+
+// 0.11.9, co-op's eye colour (CoopLook's eyes part) as Mt_Eye_Inner's ns_param_color2: each of its three values moves
+// the iris texture's hue, saturation and brightness by twice its distance from a half, clamped (the mod's notes,
+// mods/customize.py EYE_COLOURS); the common iris is hue 0.608 (kIrisHue) at about kIrisSaturation / kIrisBrightness.
+inline constexpr float kIrisHue = 0.608f, kIrisSaturation = 0.6f, kIrisBrightness = 0.55f;
+std::array<float, 3> EyeParam(std::uint32_t rgb);
+// 0.11.9, co-op's hair colour as the hair materials' ns_param_color0 and 1 and the brows' (linear, as the game's own
+// hair values are; the mod's table, mods/customize.py HAIR_COLOURS, pairs a colour with a near one): colour 0 the
+// colour, colour 1 a touch lighter, the brows darker (kBrowScale).
+inline constexpr float kHairLighter = 1.12f, kBrowScale = 0.6f;
+std::array<std::array<float, 3>, 3> HairParam(std::uint32_t rgb);
 
 // The colours as the mod sets them (linear, as the game's own hair has them), 0..1. Nothing for 0 or out of range.
 std::optional<std::array<float, 3>> HairColour(std::uint8_t option, int which);   // which: colour 0 or 1
@@ -111,6 +131,9 @@ struct Result {
 // At most `max_calls` calls are made (Result::cut when it stopped there).
 Result Dress(const Game& game, State& state, std::uint32_t custom, bool put_back, int iris_shift = 0,
              std::size_t max_calls = SIZE_MAX);
+// The same with the options given (co-op's exact eyes among them).
+Result Dress(const Game& game, State& state, const Options& options, bool put_back, int iris_shift = 0,
+             std::size_t max_calls = SIZE_MAX);
 
 // Which puppets are dressed when, each frame (the calc thread).
 // - The mod's own per-frame code puts the VIEWER's options (the six Ints of this game) on every player-like actor,
@@ -119,12 +142,41 @@ Result Dress(const Game& game, State& state, std::uint32_t custom, bool put_back
 // - Otherwise a puppet is dressed when its options change or its actor is new, and again every kAgainMs while it
 //   has any (a model not loaded at the first try), with put_back once it was ever dressed.
 // - A puppet the mod's own released routine dresses (Director::Dress, verified) is left to it.
+// The eyes' and hair's colours of a player's look (CoopLook's parts 18 and 19) go on a Link model only: Customize offers
+// them on Link alone, and a character's model has its own (review 0.11.9: a character picked, or a picker of others,
+// got your eyes). Every site that dresses a model takes them through this: the puppets, your own Link, the menu's.
+struct LinkColours {
+    std::optional<std::uint32_t> eyes, hair;
+    bool operator==(const LinkColours&) const = default;
+};
+inline LinkColours LinkOnly(bool link_model, std::optional<std::uint32_t> eyes, std::optional<std::uint32_t> hair) {
+    if (!link_model) return {};
+    if (eyes) *eyes &= 0xFFFFFFu;
+    if (hair) *hair &= 0xFFFFFFu;
+    return {eyes, hair};
+}
+
+// The pause menu's model of your Link: the game's menu shows the player as its own actor, named "Pouch" + the field
+// player's actor name (PouchPlayer_Child for Player_Child, PouchPlayer_Adult for Player_Adult: RSDB ActorInfo's
+// PouchPlayer rows; lane 0.11.9: menu "0: PouchPlayer_Child", field "Player_Child"). A model of any other name (a
+// picker's character, the menu's tapestry) is not your Link.
+inline bool MenuModelOfPlayer(std::string_view menu_name, std::string_view player_name) {
+    constexpr std::string_view kMenu = "Pouch";
+    if (player_name.empty() || menu_name.size() != kMenu.size() + player_name.size()) return false;
+    return menu_name.substr(0, kMenu.size()) == kMenu && menu_name.substr(kMenu.size()) == player_name;
+}
+
 struct Target {
     std::uint64_t actor = 0;
     std::uint64_t cell = 0;
     std::uint32_t custom = 0;
     bool mods_routine = false;
     int iris_shift = 0;
+    // 0.11.9: the player's eye colour (CoopLook's eyes part, 0xRRGGBB): dressed on any model, Link's too.
+    std::optional<std::uint32_t> eyes;
+    // 0.11.9: the player's hair colour (CoopLook's hair part): on a Link model only (the caller leaves it out for a
+    // character's).
+    std::optional<std::uint32_t> hair;
     // What the puppet is (a hash of its actor's pack name): a puppet made again as another actor at the same
     // address, or in the same block, starts anew (its old model's material numbers are not this one's).
     std::uint64_t model = 0;
@@ -146,6 +198,8 @@ private:
     struct Kept {
         State state;
         std::optional<std::uint32_t> dressed;   // the options last put on (nothing: never)
+        std::optional<std::uint32_t> dressed_eyes;   // and the exact eye colour
+        std::optional<std::uint32_t> dressed_hair;   // and hair colour
         bool ever = false;                      // a colour was ever put on this actor
         std::uint64_t at_ms = 0;
         std::uint64_t model = 0;
@@ -162,6 +216,11 @@ private:
 // coop_hook reads it twice a second. Any thread.
 void SetShownCharacter(std::uint16_t number);
 std::uint16_t ShownCharacter();
+// Character Select's code and data are in this game (its saved Int CharacterMenu_SelectedCharacter exists; the hook
+// reads it twice a second). Any thread. Row 207 (0.11.9): co-op then never opens its own Customize on System, whose
+// live picture forces the menu's Link model, which that mod's code patches; Customize is in its screen.
+void SetModPresent(bool present);
+bool ModPresent();
 
 // The one wardrobe of the game (the runtime's frame and coop_hook's reading of the six Ints).
 Wardrobe& TheWardrobe();

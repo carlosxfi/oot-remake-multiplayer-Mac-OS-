@@ -219,6 +219,26 @@ TEST_CASE("char colours: the colours are the mod's, the iris shift is held to a 
     CHECK(EyeColour(8, 0) == std::nullopt);
 }
 
+TEST_CASE("char colours: the eyes' and hair's colours go on a Link model only (review: a character got your eyes)") {
+    using CoopCharColours::LinkColours;
+    using CoopCharColours::LinkOnly;
+    CHECK(LinkOnly(true, 0xFF123456u, 0x00ABCDEFu) == LinkColours{0x123456u, 0xABCDEFu});
+    CHECK(LinkOnly(true, std::nullopt, 0xABCDEFu) == LinkColours{std::nullopt, 0xABCDEFu});
+    CHECK(LinkOnly(false, 0x123456u, 0xABCDEFu) == LinkColours{});   // (a character: neither)
+    CHECK(LinkOnly(false, 0x123456u, std::nullopt) == LinkColours{});
+}
+
+TEST_CASE("char colours: the pause menu's model of your Link is the game's Pouch twin of the field player (lane: eyes)") {
+    using CoopCharColours::MenuModelOfPlayer;
+    CHECK(MenuModelOfPlayer("PouchPlayer_Child", "Player_Child"));
+    CHECK(MenuModelOfPlayer("PouchPlayer_Adult", "Player_Adult"));
+    CHECK_FALSE(MenuModelOfPlayer("PouchPlayer_Adult", "Player_Child"));   // (the other age: not this Link)
+    CHECK_FALSE(MenuModelOfPlayer("Player_Child", "Player_Child"));        // (the field actor's own name: not the menu's)
+    CHECK_FALSE(MenuModelOfPlayer("Tapestry_ChallengeMenu", "Player_Child"));
+    CHECK_FALSE(MenuModelOfPlayer("Pouch", ""));                            // (no field player: nothing)
+    CHECK_FALSE(MenuModelOfPlayer("", ""));
+}
+
 TEST_CASE("char colours: a puppet gets its player's hair, eyes and clothes through the model's own calls") {
     FakeGame f(Character());
     State s = StateFor();
@@ -292,7 +312,7 @@ TEST_CASE("char colours: the wardrobe dresses on a change, again after kAgainMs,
     const Game g = f.AsGame();
     std::vector<std::string> said;
     const auto say = [&](const std::string& l) { said.push_back(l); };
-    std::vector<Target> t{{FakeGame::kActor, FakeGame::kCell, Custom(2, 0, 0, 0), false, 0, 1}};
+    std::vector<Target> t{{FakeGame::kActor, FakeGame::kCell, Custom(2, 0, 0, 0), false, 0, std::nullopt, std::nullopt, 1}};
     CHECK(w.Frame(g, t, 1000, say) > 0);
     CHECK(said.size() == 1);
     CHECK(w.Frame(g, t, 1100, say) == 0);
@@ -334,7 +354,7 @@ TEST_CASE("char colours: a failed call waits kAgainMs and is said once (review M
     };
     std::vector<std::string> said;
     const auto say = [&](const std::string& l) { said.push_back(l); };
-    std::vector<Target> t{{FakeGame::kActor, FakeGame::kCell, Custom(2, 0, 0, 0), false, 0, 1}};
+    std::vector<Target> t{{FakeGame::kActor, FakeGame::kCell, Custom(2, 0, 0, 0), false, 0, std::nullopt, std::nullopt, 1}};
     w.SetViewer(Custom(5, 0, 0, 0));   // the viewer paints: due every frame, still held back after a failure
     CHECK(w.Frame(g, t, 1000, say) == 1);
     CHECK(w.Frame(g, t, 1016, say) == 0);
@@ -350,7 +370,7 @@ TEST_CASE("char colours: a puppet made again as another actor looks its material
     FakeGame f(Character());
     Wardrobe w;
     const Game g = f.AsGame();
-    std::vector<Target> t{{FakeGame::kActor, FakeGame::kCell, Custom(2, 0, 0, 0), false, 0, 1}};
+    std::vector<Target> t{{FakeGame::kActor, FakeGame::kCell, Custom(2, 0, 0, 0), false, 0, std::nullopt, std::nullopt, 1}};
     w.Frame(g, t, 1000, {});
     // The same address and block, another character with fewer materials: Mt_Hairs is now number 3 of 4.
     f.mats = {{"Mt_Skin", 1, 1, {}}, {"Mt_Eye_Inner", 1, 1, {"x", "y", "ns_param_color2"}}, {"Mt_A", 1, 1, {}},
@@ -391,4 +411,53 @@ TEST_CASE("char colours: the call budget stops a dressing, the next frame goes o
     // (the three palettes of the full dressing above: the hair, Clothing Color 1 and 2; with Clothing Color 2 at 0
     // Mt_Vest keeps its own texture and only two are set)
     CHECK(f.textures.size() == 3);
+}
+
+TEST_CASE("char colours (0.11.9): co-op's exact eye colour as the iris parameter's three moves") {
+    using CoopCharColours::EyeParam;
+    // The common iris's own colour: no move.
+    const auto same = EyeParam(0x2E5BA8);   // (hue 0.608, about its saturation and brightness)
+    CHECK(same[0] == doctest::Approx(0.5f).epsilon(0.02));
+    // Green (hue 1/3): 0.5 + (0.333 - 0.608) / 2.
+    const auto green = EyeParam(0x00FF00);
+    CHECK(green[0] == doctest::Approx(0.5f + (1.0f / 3.0f - CoopCharColours::kIrisHue) / 2.0f));
+    CHECK(green[1] == doctest::Approx(0.5f + (1.0f - CoopCharColours::kIrisSaturation) / 2.0f));
+    CHECK(green[2] == doctest::Approx(0.5f + (1.0f - CoopCharColours::kIrisBrightness) / 2.0f));
+    // A grey keeps the iris's hue, less saturated; black and white stay within 0..1.
+    const auto grey = EyeParam(0x808080);
+    CHECK(grey[0] == 0.5f);
+    CHECK(grey[1] < 0.5f);
+    for (std::uint32_t c : {0x000000u, 0xFFFFFFu, 0xFF0000u, 0xFF00FFu}) {
+        for (float v : EyeParam(c)) {
+            CHECK(v >= 0.0f);
+            CHECK(v <= 1.0f);
+        }
+    }
+    // As options: an exact eye colour is a colour to put on (Colours), over the mod's eye option.
+    CoopCharColours::Options o;
+    CHECK_FALSE(o.Colours());
+    o.eyes_exact = EyeParam(0x00FF00);
+    CHECK(o.Colours());
+}
+
+TEST_CASE("char colours (0.11.9): co-op's hair colour as the hair parameters (linear), colour 1 lighter, brows darker") {
+    using CoopCharColours::HairParam;
+    const auto h = HairParam(0xFF8000);
+    CHECK(h[0][0] == doctest::Approx(1.0f));
+    CHECK(h[0][1] == doctest::Approx(0.2158f).epsilon(0.01));   // (0x80 linear)
+    CHECK(h[0][2] == doctest::Approx(0.0f));
+    CHECK(h[1][0] == doctest::Approx(1.0f));                    // (lighter, not past 1)
+    CHECK(h[1][1] == doctest::Approx(0.2158f * CoopCharColours::kHairLighter).epsilon(0.01));
+    CHECK(h[2][1] == doctest::Approx(0.2158f * CoopCharColours::kBrowScale).epsilon(0.01));
+    CoopCharColours::Options o;
+    o.hair_exact = h;
+    CHECK(o.Colours());
+}
+
+TEST_CASE("char colours (row 207): whether Character Select is in this game, as the hook last read it") {
+    CHECK_FALSE(CoopCharColours::ModPresent());
+    CoopCharColours::SetModPresent(true);
+    CHECK(CoopCharColours::ModPresent());
+    CoopCharColours::SetModPresent(false);
+    CHECK_FALSE(CoopCharColours::ModPresent());
 }

@@ -162,8 +162,7 @@ bool Tab::Page(HosCoopMenuPage* out) {
     status_ = !note_.empty() ? note_
               : changed_     ? std::string("Start the game again to finish: ") +
                                (on_ ? "it comes back as the original game." : "co-op and its extras come back.")
-              : on_ ? std::string("The game is as it came: co-op, its pause menu pages and buttons, Link's look, the "
-                                  "co-op pack and code mods (Save Profiles) are all off.")
+              : on_ ? std::string("Co-op, its menus, Link's look, the pack and mods are all off.")
                     : std::string("Co-op and its extras are on.");
     rows_.clear();
     HosCoopMenuRow r{};

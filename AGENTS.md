@@ -10,6 +10,14 @@ You are an AI coding agent and someone has handed you this repository. This page
 - Logs: a zip from `scripts\collect-logs.cmd` is already masked, but it goes through the `/bugreport` command on the Squadala! Discord (https://discord.gg/GwtRKAqng5), never as an attachment on a public issue or pull request ([docs/setup.md](docs/setup.md)). Still, never paste addresses, IP addresses, user names or passwords from a log into an issue, a commit or a pull request. Quote only the lines you need, masked.
 - `tools/check_content.py` enforces this. It must pass. Never bypass it or the git hook (`--no-verify`).
 
+## The UI rule
+
+**Every co-op screen, menu, tab, notice, name tag and HUD piece is built from the game's own UI: its Layout panes, buttons, textures, fonts, icons and sounds, through the game's own UI system.** No hand-drawn UI: no rectangles, lines, bars, circles, boxes or panels drawn by our code (Dear ImGui or any other drawing), and no pictures we made. The game's assets are read from the player's own game at run time (never committed; see the hard rule above).
+
+- Everything fits on screen: no row hidden below a scroll, no text cut off, nothing off the edge. When a list is longer than the screen, it pages (the game's own page buttons), and Back is always in view.
+- It looks and behaves like the game's own menus: the game's focus frame, move and decide sounds, A to pick, B to go back one step.
+- A pull request that adds a drawn shape or a screen that does not fit is sent back in review. Name in the pull request the game pane or texture each new UI piece uses.
+
 ## Licence rules
 
 - The project is GPL-3.0. Your contribution is GPL-3.0.

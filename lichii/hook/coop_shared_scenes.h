@@ -33,7 +33,13 @@ namespace CoopSharedScenes {
 // (Dm_Kokiri_0000), the parts played inside another (_Effect, _Env, _Get,
 // _move), boss intros and outs (dungeons-boss.md), the Chamber of Sages
 // (Dm_Awake_, Dm_SageRoom_), and time travel (Dm_TimeTemple_: threads-of-time,
-// issue 193); plus Meet_DekuTree, Meet_GreatFairy and Get_StoneOf...
+// issue 193), and the Gerudo Fortress cells' own scenes (player report 200:
+// Dm_Gerudo_0010, the caught player thrown into the prison, and Dm_Gerudo_0020
+// with its settings _0021.._0023, the carpenter freed by the player who opened
+// that cell: each warps the Player to that player's own place, the prison or
+// the cell's LinkStartPosition, so a joiner within reach was moved into a room
+// it was not in, through the floor; the rescue's result comes by its shared
+// flags, report 99); plus Meet_DekuTree, Meet_GreatFairy and Get_StoneOf...
 std::span<const std::string_view> Names();
 bool IsShared(std::string_view name);
 
@@ -103,6 +109,17 @@ inline constexpr float kRoomM = 30.0f;
 // starter must be in our room (Here::room, Started's room: coop_rooms.h);
 // where a room is not known (no room table), only this near.
 inline constexpr float kNoRoomM = 8.0f;
+// Player report 200: in the Gerudo Fortress the 30 m reach also goes through
+// floors: its roofs and outdoor prison are 8 to 20 m over the cells' rooms,
+// in the same scene. A joined cutscene warps our Link to its own place for the
+// Player (EventPlayerWarpTo*), so a joiner on another level would be moved into
+// a room it was not in. Only in that scene (StackedScene) the starter must
+// also be within this much above or below our Link; one further waits as "too
+// far" (NotNearYet), and the result comes by the flags as for any player who
+// could not join. Every other scene joins as before (slopes and stairs too).
+inline constexpr float kJoinRiseM = 6.0f;
+// The scenes with rooms stacked under their open ground (GerudoFortress_*).
+bool StackedScene(std::string_view scene);
 // How long a start waits while our game cannot take it (our own event, a
 // menu, a pause, a load) before it is skipped: a cutscene joined later than
 // this would be far behind the starter's.

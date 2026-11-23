@@ -94,9 +94,12 @@ The start window says what is wrong and what to do. What it checks:
 - **Not enough space:** the build warns below about 60 GB free. Free some space, or move the kit to a bigger drive.
 - **Note: another co-op kit is on this PC.** An older kit folder: you can delete it once this one works. The new kit takes your game file from it, so it does not ask again.
 - **The game closes at the start or the screen goes black:** check that your card has mesh shaders (above) and that its driver is up to date. Longshot's own open problems are on [Longshot's page](https://git.magicbean.dev/MagicBeanDev/Longshot/issues). To try the game without co-op, set `HOS_COOP=0` before starting `longshot.exe`; if it crashes without co-op too, it is Longshot's problem, not co-op's.
+- **A Steam Controller (or another pad Steam Input runs) does nothing in play, or the camera only swings around:** started outside Steam while Steam is open, Steam turns the pad into a mouse and keyboard (its Desktop layout), so the menus seem to work and play does not. Add `Start Squadala.bat` to Steam (**Games > Add a Non-Steam Game to My Library**), start it from Steam, and set its controller layout (the game's page in Steam > **Controller**) to a gamepad layout. If you picked a pad in the Multiplayer tab's **Settings > Controller**, set it back to **Auto**.
 - **Host or Join says a router blocks the way in**, or friends cannot reach you: the Host screen says what to do (the answer code, UPnP, **Same network**, **VPN**); [play-online.md](play-online.md) has more.
 
 ## Built Longshot yourself?
+
+**You do not need your own Longshot build, and you never start `longshot.exe` yourself:** the kit builds its own game (in `hookshotgame`, with co-op inside) and **Start Squadala.bat** is the only way to start it. A Longshot you built or downloaded has no co-op, so it cannot see your friends. The kit's own `longshot.exe` started by hand has co-op but misses what the start file adds (the puppet pack, your settings, the update check): the game's chat then says it was not started with Start Squadala.bat.
 
 The kit never plays a Longshot you built with Longshot's own builder, and moving that game into the kit folder does nothing: co-op needs its own build of the Longshot release the kit is made for (`hookshot\PIN`, now v3.0.0-rc.6), with co-op's changes in its source. A nightly or dev build is another version, so it cannot be used either.
 
@@ -159,5 +162,7 @@ gh attestation verify Squadala-<version>-windows.zip --repo daurosk/oot-remake-m
 It must say the verification succeeded. If it fails, do not use the zip, and tell us ([Reporting a problem](#reporting-a-problem)).
 
 ## Reporting a problem
+
+After the game crashes, the next title screen asks once: "The game crashed last time. Please send /bugreport on Discord with the zip of collect-logs.cmd." Any button closes it (the cursor is back on the title's first button, as before the page came up), and it does not come back for that crash (it is never shown for a game that was only closed). To turn it off, set `LICHII_COOP_PROBLEM_ASK=0` in `coop-options.ini`.
 
 Close the game and double-click `scripts\collect-logs.cmd` in the kit. It makes `coop-logs-<date>.zip` in the kit folder: the game's log, the co-op settings, the server logs, the build's log and the kit's version. With Nucleus split screen, every player's game log is in it (under `nucleus`). Then, on the [Squadala! Discord](https://discord.gg/GwtRKAqng5), type **`/bugreport`**, describe what you did and what went wrong, and attach that zip; the bot answers with your report's number. You may also describe it on the repo's [issue page](https://github.com/daurosk/oot-remake-multiplayer/issues) (give the report number there), but never attach the zip to a public issue. Addresses, your Windows user name, your PC name and any session password are masked in it; still, never paste addresses or log lines with addresses into a public issue.

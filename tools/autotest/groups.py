@@ -234,9 +234,8 @@ def prepare(planned, kit_root, dry=False, say=print, restore=None):
     for s, _, _ in planned:
         for side, folder in (("A", s["a"]), ("B", s["b"])):
             base = os.path.join(kit_root, "hookshot-" + side)
-            if restore is not None and not restore(folder, dry):
-                say("%s: no cached game (tools/hookshot/hs.py build or cache store first)" % folder)
-                ok = False
+            # (the base pair's files first: its mods decide which game the folder needs, a code mod's build or not:
+            # hs.py cache_restore keys on them, charsel-tab-0119)
             for name in COPY_FROM_BASE:
                 src, dst = os.path.join(base, name), os.path.join(folder, name)
                 if not os.path.exists(src) or os.path.exists(dst):
@@ -245,6 +244,9 @@ def prepare(planned, kit_root, dry=False, say=print, restore=None):
                 if not dry:
                     os.makedirs(folder, exist_ok=True)
                     (shutil.copytree if os.path.isdir(src) else shutil.copy2)(src, dst)
+            if restore is not None and not restore(folder, dry):
+                say("%s: no cached game (tools/hookshot/hs.py build or cache store first)" % folder)
+                ok = False
     return ok
 
 

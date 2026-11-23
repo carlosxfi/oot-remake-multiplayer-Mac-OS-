@@ -2,6 +2,7 @@
 #include "coop_look_menu.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 #include "coop_colors.h"
@@ -14,9 +15,11 @@ using CoopLook::PartInfo;
 
 namespace {
 
-constexpr int kStep = 8;   // a press on Red, Green or Blue
+// 0.11.9 (the owner: any colour, not a palette): the mixer is hue, saturation and brightness, the whole range.
+constexpr int kHueStep = 10;    // degrees a press (wraps round)
+constexpr int kLevelStep = 5;   // percent a press on Saturation or Brightness
 
-enum class What { kHeading, kPart, kAllGame, kRed, kGreen, kBlue, kPreset, kGameOwn, kDone };
+enum class What { kHeading, kPart, kAllGame, kHue, kSaturation, kBrightness, kPreset, kGameOwn, kDone, kNote };
 
 // The game's own colours, near enough for the picture (the textures' averages).
 std::uint32_t GameColour(Part part) {
@@ -38,6 +41,9 @@ std::uint32_t GameColour(Part part) {
     case Part::biggoron_hilt: return 0x344F93;
     case Part::boots: return 0x634D38;
     case Part::gauntlets: return 0xAAAAAA;
+    case Part::cap_trim: return 0x4C8C3C;   // (unset it is the tunic's: Shown)
+    case Part::eyes: return 0x3C6EC8;       // (Link's blue)
+    case Part::hair: return 0xD8A848;       // (Link's blond)
     }
     return 0x808080;
 }
@@ -63,12 +69,19 @@ const char* Note(Part part) {
     case Part::biggoron_hilt: return "The blue grip.";
     case Part::boots: return "The leather of every pair: the Kokiri, Hover and Iron Boots (young Link's belts too).";
     case Part::gauntlets: return "The metal of the Silver and the Golden Gauntlets.";
+    case Part::cap_trim:
+        return "The cap's own trims: young Link's headband and knot, adult Link's hood trims (the cap's cloth is the tunic's). The other players see it on you too.";
+    case Part::eyes: return "The colour of the eyes, on your Link and seen by the other players.";
+    case Part::hair: return "The colour of the hair and the brows, on your Link and seen by the other players.";
     }
     return "";
 }
 
-std::string ValueText(const std::optional<std::uint32_t>& colour) {
-    return colour ? CoopLook::ColourText(colour) : CoopI18n::Tr("Game's own");
+// What an unset part shows: the game's own colour; the Cap trim follows the tunic.
+const char* Unset(Part part) { return part == Part::cap_trim ? "As the tunic" : "Game's own"; }
+
+std::string ValueText(Part part, const std::optional<std::uint32_t>& colour) {
+    return colour ? CoopLook::ColourText(colour) : CoopI18n::Tr(Unset(part));
 }
 
 std::string Title(Part part) {
@@ -147,6 +160,10 @@ std::vector<Drawn> Doll(const CoopLook::Look& look, Part tunic, Part shield, Par
     add(std::nullopt, kHair, {{0.41f, 0.145f}, {0.59f, 0.145f}, {0.595f, 0.185f}, {0.405f, 0.185f}});
     add(tunic, t, {{0.40f, 0.155f}, {0.45f, 0.075f}, {0.56f, 0.065f}, {0.61f, 0.155f}});            // cap
     add(tunic, t, {{0.405f, 0.12f}, {0.44f, 0.15f}, {0.30f, 0.32f}, {0.27f, 0.30f}});               // its tail
+    if (tunic == Part::tunic) {   // the Kokiri cap's trim: the band round its bottom
+        add(Part::cap_trim, Shown(look, Part::cap_trim),
+            {{0.40f, 0.145f}, {0.61f, 0.145f}, {0.605f, 0.17f}, {0.405f, 0.17f}});
+    }
     add(Part::gauntlets, Shown(look, Part::gauntlets), {{0.29f, 0.445f}, {0.37f, 0.455f}, {0.365f, 0.51f}, {0.28f, 0.50f}});
     add(Part::gauntlets, Shown(look, Part::gauntlets), {{0.63f, 0.455f}, {0.71f, 0.445f}, {0.72f, 0.50f}, {0.635f, 0.51f}});
 
@@ -184,6 +201,67 @@ std::vector<Drawn> Doll(const CoopLook::Look& look, Part tunic, Part shield, Par
 
 }  // namespace
 
+Hsv ToHsv(std::uint32_t rgb) {
+    const int r = static_cast<int>((rgb >> 16) & 0xFF), g = static_cast<int>((rgb >> 8) & 0xFF),
+              b = static_cast<int>(rgb & 0xFF);
+    const int hi = std::max({r, g, b}), lo = std::min({r, g, b}), d = hi - lo;
+    Hsv out;
+    out.v = (hi * 100 + 127) / 255;
+    out.s = hi == 0 ? 0 : (d * 100 + hi / 2) / hi;
+    if (d == 0) return out;
+    double h = hi == r ? std::fmod(static_cast<double>(g - b) / d, 6.0) : hi == g ? static_cast<double>(b - r) / d + 2.0
+                                                                                  : static_cast<double>(r - g) / d + 4.0;
+    h *= 60.0;
+    if (h < 0) h += 360.0;
+    out.h = static_cast<int>(std::lround(h)) % 360;
+    return out;
+}
+
+std::uint32_t ToRgb(const Hsv& c) {
+    const double h = ((c.h % 360) + 360) % 360, s = std::clamp(c.s, 0, 100) / 100.0, v = std::clamp(c.v, 0, 100) / 100.0;
+    const double chroma = v * s, x = chroma * (1 - std::fabs(std::fmod(h / 60.0, 2.0) - 1)), m = v - chroma;
+    double r = 0, g = 0, b = 0;
+    if (h < 60) r = chroma, g = x;
+    else if (h < 120) r = x, g = chroma;
+    else if (h < 180) g = chroma, b = x;
+    else if (h < 240) g = x, b = chroma;
+    else if (h < 300) r = x, b = chroma;
+    else r = chroma, b = x;
+    const auto byte = [m](double t) { return static_cast<std::uint32_t>(std::lround(std::clamp(t + m, 0.0, 1.0) * 255)); };
+    return (byte(r) << 16) | (byte(g) << 8) | byte(b);
+}
+
+const std::vector<Group>& Groups() {
+    // (0.11.9: Link's own colours first, his hair and eyes among them)
+    static const std::vector<Group> kGroups = {
+        // (no Hair row: the lane run showed the hair parameters' tint too weak on Link; never a row that does nothing)
+        {"Link", {Part::eyes, Part::tunic, Part::cap_trim, Part::goron_tunic, Part::zora_tunic}},
+        {"Shields", {Part::hylian_frame, Part::hylian_face, Part::hylian_emblem, Part::mirror_rim, Part::mirror_face,
+                     Part::deku_shield}},
+        {"Swords", {Part::kokiri_blade, Part::kokiri_hilt, Part::master_blade, Part::master_hilt, Part::biggoron_blade,
+                    Part::biggoron_hilt}},
+        {"Boots and gauntlets", {Part::boots, Part::gauntlets}},
+    };
+    return kGroups;
+}
+
+std::string PagedName(Part part) {
+    switch (part) {
+    case Part::tunic: return "Kokiri Tunic";
+    case Part::cap_trim: return "Cap Trim";
+    case Part::goron_tunic: return "Goron Tunic";
+    case Part::zora_tunic: return "Zora Tunic";
+    case Part::boots: return "Boots";
+    case Part::gauntlets: return "Gauntlets";
+    case Part::deku_shield: return "Deku Shield";
+    case Part::eyes: return "Eye Colour";
+    case Part::hair: return "Hair Colour";
+    default: break;
+    }
+    const PartInfo& info = CoopLook::InfoOf(part);
+    return std::string(info.item) + " " + info.name;   // ("Hylian Shield Frame", "Master Sword Hilt")
+}
+
 const std::vector<std::string>& Presets() {
     static const std::vector<std::string> kPresets = {"",     "red",    "orange", "yellow", "green", "cyan",
                                                       "blue", "purple", "pink",   "white",  "black"};
@@ -191,6 +269,9 @@ const std::vector<std::string>& Presets() {
 }
 
 std::uint32_t Shown(const CoopLook::Look& look, Part part) {
+    if (part == Part::cap_trim && !look[part]) {
+        return Shown(look, Part::tunic);   // the cap follows the tunic
+    }
     return look[part] ? (*look[part] & 0xFFFFFFu) : GameColour(part);
 }
 
@@ -205,15 +286,17 @@ std::vector<Page::Line> Page::Lines() const {
     std::vector<Line> out;
     if (editing_) {
         const Part p = *editing_;
-        const std::uint32_t c = Shown(look_, p);
         out.push_back({{Title(p), "", 3}, What::kHeading, p, ""});
-        const char* names[3] = {"Red", "Green", "Blue"};
-        const What whats[3] = {What::kRed, What::kGreen, What::kBlue};
-        for (int i = 0; i < 3; ++i) {
-            const int v = static_cast<int>((c >> (16 - 8 * i)) & 0xFF);
-            out.push_back({{names[i], std::to_string(v), 1, v > 0, v < 255}, whats[i], p,
-                           "Left and Right: less or more of it, " + std::to_string(kStep) + " a press (0 to 255)."});
-        }
+        // (any colour: hue round the wheel, then how strong and how bright; the picture and Link show it at once)
+        out.push_back({{"Hue", std::to_string(hsv_.h) + " degrees", 1, true, true}, What::kHue, p,
+                       "Left and Right: round the colour wheel, " + std::to_string(kHueStep) +
+                           " degrees a press (red, yellow, green, cyan, blue, magenta, red)."});
+        out.push_back({{"Saturation", std::to_string(hsv_.s) + "%", 1, hsv_.s > 0, hsv_.s < 100}, What::kSaturation, p,
+                       "Left and Right: from grey (0%) to the full colour (100%), " + std::to_string(kLevelStep) +
+                           "% a press."});
+        out.push_back({{"Brightness", std::to_string(hsv_.v) + "%", 1, hsv_.v > 0, hsv_.v < 100}, What::kBrightness, p,
+                       "Left and Right: from black (0%) to the brightest (100%), " + std::to_string(kLevelStep) +
+                           "% a press."});
         std::string preset = "Mixed";
         for (const std::string& name : Presets()) {
             if (!name.empty() && look_[p] && CoopColors::Parse(name) == look_[p]) {
@@ -221,11 +304,31 @@ std::vector<Page::Line> Page::Lines() const {
             }
         }
         if (!look_[p]) {
-            preset = "Game's own";
+            preset = Unset(p);
         }
         out.push_back({{"Preset", preset, 1, true, true}, What::kPreset, p, "Left and Right: the preset colours."});
         out.push_back({{"Game's own colour", "", 0}, What::kGameOwn, p, "This part back to the game's own colour."});
         out.push_back({{"Done", "", 0}, What::kDone, p, "Back to the list of parts."});
+        return out;
+    }
+    if (paged_) {
+        const auto offered = Offered();
+        if (offered.empty()) {
+            out.push_back({{"Customize", "", 3}, What::kHeading, Part::tunic, ""});
+            out.push_back({{kNoColourOptions, "", 4}, What::kNote, Part::tunic, ""});
+            return out;
+        }
+        const std::size_t shown = std::min(group_, offered.size() - 1);
+        const Group& g = Groups()[offered[shown]];
+        out.push_back({{std::string(g.name) + " (page " + std::to_string(shown + 1) + " of " +
+                            std::to_string(offered.size()) + ")",
+                        "", 3},
+                       What::kHeading, g.parts[0], ""});
+        for (const Part p : g.parts) {
+            out.push_back({{PagedName(p), ValueText(p, look_[p]), 1, true, true}, What::kPart, p,
+                           CoopI18n::Tr(Note(p)) + " " +
+                               CoopI18n::Tr("Left and Right try the colours; A picks any colour of your own.")});
+        }
         return out;
     }
     std::string item;
@@ -240,9 +343,10 @@ std::vector<Page::Line> Page::Lines() const {
         // once they are Chinese).
         const std::string note = CoopI18n::Tr(Note(info.part));
         const std::string how = CoopI18n::Tr(
-            "Left and Right try the colours; Confirm mixes your own. Your Link wears it when you close the menu "
-            "(the other players see only the tunic's colour for now).");
-        out.push_back({{info.name, ValueText(look_[info.part]), 1, true, true}, What::kPart, info.part, note + " " + how});
+            "Left and Right try the colours; Confirm picks any colour of your own. Your Link wears it when you close "
+            "the menu. The other players see your gear in this colour, and your tunic in the nearest of the ten tunic colours.");
+        out.push_back(
+            {{info.name, ValueText(info.part, look_[info.part]), 1, true, true}, What::kPart, info.part, note + " " + how});
     }
     out.push_back({{"All parts to the game's own", "", 0}, What::kAllGame, Part::tunic,
                    "Every part in the game's own colours again (the tunic: your player number's colour for the others)."});
@@ -251,7 +355,44 @@ std::vector<Page::Line> Page::Lines() const {
 
 bool Page::Selectable(std::size_t row) const {
     const auto lines = Lines();
-    return row < lines.size() && lines[row].what != What::kHeading;
+    return row < lines.size() && lines[row].what != What::kHeading && lines[row].what != What::kNote;
+}
+
+void Page::SetPaged(bool on) {
+    paged_ = on;
+    group_ = 0;
+    selected_ = 1;
+}
+
+void Page::SetCharacter(std::uint16_t character, bool gear_shows) {
+    if (character == character_ && gear_shows == gear_shows_) return;
+    character_ = character, gear_shows_ = gear_shows;
+    editing_.reset();
+    group_ = 0;
+    selected_ = 1;
+}
+
+std::vector<std::size_t> Page::Offered() const {
+    if (character_ == 0) return {0, 1, 2, 3};   // Link: every part
+    if (gear_shows_) return {1, 2};          // a character: its held gear only, once shown to work
+    return {};
+}
+
+std::size_t Page::GroupShown() const {
+    const auto offered = Offered();
+    return offered.empty() ? 0 : offered[std::min(group_, offered.size() - 1)];
+}
+
+std::size_t Page::GroupsOffered() const {
+    return Offered().size();
+}
+
+void Page::TurnPage(int step) {
+    const std::size_t n = Offered().size();
+    if (!paged_ || editing_ || n == 0) return;
+    group_ = (group_ + n + static_cast<std::size_t>(step > 0 ? 1 : n - 1)) % n;
+    selected_ = 1;
+    Focus(Lines()[1].part);
 }
 
 void Page::Open(const CoopLook::Look& look) {
@@ -268,7 +409,9 @@ void Page::Open(const CoopLook::Look& look) {
 }
 
 void Page::Focus(Part part) {
-    if (IsTunic(part)) {
+    if (part == Part::cap_trim) {
+        tunic_ = Part::tunic;   // (the trim is on the Kokiri cap)
+    } else if (IsTunic(part)) {
         tunic_ = part;
     } else if (IsShield(part)) {
         shield_ = part;
@@ -282,7 +425,7 @@ void Page::Move(int step) {
     const std::size_t n = lines.size();
     for (std::size_t tries = 0; tries < n; ++tries) {
         selected_ = step > 0 ? (selected_ + 1) % n : (selected_ + n - 1) % n;
-        if (lines[selected_].what != What::kHeading) {
+        if (lines[selected_].what != What::kHeading && lines[selected_].what != What::kNote) {
             Focus(lines[selected_].part);
             return;
         }
@@ -303,15 +446,20 @@ void Page::Change(std::size_t row, int step) {
     }
     const Line& l = lines[row];
     switch (l.what) {
-    case What::kPart:
-    case What::kPreset: Set(l.part, NextPreset(look_[l.part], step)); break;
-    case What::kRed:
-    case What::kGreen:
-    case What::kBlue: {
-        const int shift = l.what == What::kRed ? 16 : l.what == What::kGreen ? 8 : 0;
-        const std::uint32_t c = Shown(look_, l.part);
-        const int v = std::clamp(static_cast<int>((c >> shift) & 0xFF) + step * kStep, 0, 255);
-        Set(l.part, (c & ~(0xFFu << shift)) | (static_cast<std::uint32_t>(v) << shift));
+    case What::kPart: Set(l.part, NextPreset(look_[l.part], step)); break;
+    case What::kPreset:
+        Set(l.part, NextPreset(look_[l.part], step));
+        hsv_ = ToHsv(Shown(look_, l.part));   // (the sliders follow the preset chosen)
+        break;
+    case What::kHue:
+    case What::kSaturation:
+    case What::kBrightness: {
+        // (kept as hue, saturation and brightness while the mixer is open: a grey keeps its hue, and no press is
+        // lost to rounding through red, green and blue)
+        if (l.what == What::kHue) hsv_.h = ((hsv_.h + step * kHueStep) % 360 + 360) % 360;
+        if (l.what == What::kSaturation) hsv_.s = std::clamp(hsv_.s + step * kLevelStep, 0, 100);
+        if (l.what == What::kBrightness) hsv_.v = std::clamp(hsv_.v + step * kLevelStep, 0, 100);
+        Set(l.part, ToRgb(hsv_));
         break;
     }
     default: break;
@@ -328,15 +476,19 @@ void Page::Decide(std::size_t row) {
     case What::kPart:
         list_selected_ = row;
         editing_ = l.part;
+        hsv_ = ToHsv(Shown(look_, l.part));   // (from the colour it shows: its own, the game's, or the tunic's)
         Focus(l.part);
-        selected_ = 1;   // Red
+        selected_ = 1;   // Hue
         break;
     case What::kAllGame:
         for (const PartInfo& info : CoopLook::Parts()) {
             Set(info.part, std::nullopt);
         }
         break;
-    case What::kGameOwn: Set(l.part, std::nullopt); break;
+    case What::kGameOwn:
+        Set(l.part, std::nullopt);
+        hsv_ = ToHsv(Shown(look_, l.part));
+        break;
     case What::kDone:
         editing_.reset();
         selected_ = list_selected_;
@@ -352,6 +504,13 @@ bool Page::Press(Input input) {
     case Input::kLeft: Change(selected_, -1); return true;
     case Input::kRight: Change(selected_, 1); return true;
     case Input::kDecide: Decide(selected_); return true;
+    case Input::kPagePrev: TurnPage(-1); return true;
+    case Input::kPageNext: TurnPage(1); return true;
+    case Input::kResetAll:
+        if (!editing_) {
+            for (const PartInfo& info : CoopLook::Parts()) Set(info.part, std::nullopt);
+        }
+        return true;
     case Input::kBack:
         if (editing_) {
             editing_.reset();

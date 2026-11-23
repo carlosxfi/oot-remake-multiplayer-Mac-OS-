@@ -397,8 +397,9 @@ TEST_CASE("game items: the store adds count deltas") {
   // A total is written as it came: the host's value is the truth.
   CHECK(store.write(i(kForestKeys, 4)));
   CHECK(keys(w) == 4);
-  // A delta on anything but a count, or a count the game lacks, is refused.
-  CHECK_FALSE(store.write(delta(kHookshot, 1)));
+  // A delta on anything but a count, or a count the game lacks, is refused; a max-rule int (the Hookshot's stock)
+  // takes a gain only (row 218, heart containers), never a lowering.
+  CHECK_FALSE(store.write(delta(kHookshot, -1)));
   CHECK_FALSE(store.write(delta(kWorldInt, 1)));
   CHECK_FALSE(store.write(delta(kGoldTokens, 1)));  // not in this fake game
   CHECK(store.stats().refused == 3);

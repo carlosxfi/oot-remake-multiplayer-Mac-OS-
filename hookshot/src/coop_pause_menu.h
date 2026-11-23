@@ -16,6 +16,7 @@
 #include <string_view>
 #include <vector>
 
+#include "coop/protocol/difficulty.hpp"
 #include "coop_look.h"
 #include "coop_look_menu.h"
 #include "coop_title_menu.h"
@@ -44,6 +45,26 @@ std::vector<std::string> MicChoices(const std::vector<std::string>& listed, cons
 // ("..." at its end), with " (not connected)" when it is not listed.
 constexpr std::size_t kMicChars = 28;
 std::string MicWords(const std::string& chosen, const std::vector<std::string>& listed);
+// The most bytes one of the title's own buttons shows (CoopTitleNative::RowText cuts a longer row, "..." at its end).
+constexpr std::size_t kTitleRowBytes = 40;
+// A game's name on a title row that has `rest` bytes after it ("1/4  Public", " asks for a password"), so the row's own
+// words are never the part cut: "room (host)" when it fits, else without " (host)", else the name cut, "..." at its end.
+std::string TitleGameName(const std::string& name, const std::string& host, std::size_t rest);
+// The Host page's Difficulty row (docs/play-online.md "Difficulty"): Automatic, Easy, Normal, Hard, Custom, in
+// that order (0-4), as the host's choice shows it, and the choice at one of them. Custom from another starts at the
+// values in force, so the sliders open where the game is.
+// (protocol types only here: coop_difficulty.h uses std::max, which a file with windows.h before this one breaks)
+constexpr int kDifficultyRows = 5;
+int DifficultyIndex(const coop::protocol::DifficultyChoice& choice);
+coop::protocol::DifficultyChoice DifficultyAt(const coop::protocol::DifficultyChoice& now,
+                                              const coop::protocol::DifficultyValues& in_force, int index);
+// The session's difficulty as CoopDifficulty::Get says it (its State, field for field).
+struct DifficultyState {
+    bool connected = false;   // in a session, and the server has said its difficulty
+    bool can_edit = false;    // we host
+    coop::protocol::DifficultyChoice choice;
+    coop::protocol::DifficultyValues values;
+};
 
 struct Request {
     // kHost: start the server and join it. kJoin: `text` is the code or the
@@ -66,7 +87,12 @@ struct Request {
                       kController, kKeyboard, kLookParts, kCopyVpn,
                       kNgPlus,     // (Navi) kNgPlus: `text` is the New Game+ level chosen (coop_ngplus.h)
                       kSaveSet,    // (Navi) kSaveSet: `text` "multiplayer" or "solo" (CoopSave::ChooseSaveSet)
-                      kSetPassword, kAllow, kDeny, kRefreshFound };
+                      kSetPassword, kAllow, kDeny, kRefreshFound,
+                      // kChat: `text` is a chat command line ("/pvp on", "/dbno time 60"), sent as the chat box sends
+                      // it (CoopHook::SendChat), so a host row and the command are one path and the chat line says
+                      // what changed; the server takes it from the host only.
+                      kChat,
+                      kDifficulty };   // kDifficulty: `text` the host's new choice (CoopDifficulty::FormatChoice)
     Kind kind = Kind::kHost;
     std::string text;
 };
@@ -91,6 +117,12 @@ struct Session {
     std::vector<std::string> lines;   // what it is doing or what went wrong, in plain words
     std::string password;      // the host's join password while it hosts ("" none): shown on A, never logged
     std::vector<std::string> asking;  // who asks to join this host now, oldest first (CoopLobby::Asking)
+    // The session's rules in force (the server's, as CoopPvp::On and CoopDbno::Current hear them), for the host rows
+    // of Co-op settings; `rules` false: not heard yet (not in a session), the rows show what the next Host uses.
+    bool rules = false;
+    bool pvp = false;
+    bool dbno = true;
+    int dbno_bleed_s = 45, dbno_revive_tenths = 50, dbno_revive_life = 12;
 
     bool operator==(const Session&) const = default;
 };
@@ -172,9 +204,18 @@ public:
     void SetNgPlus(int level, int unlocked, int hearts);
     // (Navi) The Settings page's Saves row: solo or multiplayer saves (CoopSave::MultiplayerSaves).
     void SetSaveSet(bool multiplayer);
+    // The session's difficulty (CoopDifficulty::Get) and its players: the Settings page's Difficulty rows, among
+    // the host's rows (the host changes it there; everyone else sees it, dimmed).
+    void SetDifficulty(const DifficultyState& state, int players);
     // Character Select (coop_char_colours.h ShownCharacter): this game shows a character, not Link, so the
     // Customize page says Link's colours wait for Link (#308's live display; the character keeps its own).
     void SetCharacter(bool picked) { character_ = picked; }
+    // Character Select's code is in the game (coop_pause_tab.h SnailCodeBuiltIn): his Customize screen, with co-op's
+    // rows (coop_snail_custom.h), is the one home of Link's look (the owner, 0.11.9: "one home per thing"). The Customize
+    // page keeps Your name and says where the colours are; the main page's Customize Link row says it too.
+    void SetSnailHome(bool on) { snail_home_ = on; }
+    bool SnailHome() const { return snail_home_; }
+    static constexpr const char* kSnailHomeNote = "Link's colours are on the Characters tab: pick Link, then Customize.";
     static constexpr const char* kCharacterNote =
         "A Character Select character is picked: it keeps its own colours (X on its Characters page); these colours show on Link when you pick Link again.";
     // The Find a game page's list (the Join page's first row): the games on this network or the relay's public
@@ -190,6 +231,7 @@ public:
         int count = 0, max = 0;    // its players and the most it takes (the sort, the filter)
         bool same_version = true;
         bool is_public = false;    // a public game (CoopRoomList::Room::is_public): joined at once, no password
+        bool online = false;       // the title's list (both kinds): a relay room (else a game on this network)
         bool operator==(const Found&) const = default;
     };
     void SetFound(std::vector<Found> games, std::string state);
@@ -197,6 +239,18 @@ public:
     // Password row chosen, saying the game needs the host's password. Nothing is tried.
     void PrefillJoin(const std::string& room);
     bool find_online() const { return find_online_; }
+    // The title's own pages (CoopPause::OpenNative; docs/hookshot.md "The title menu"): Join opens straight on the
+    // list of games, this network's and the relay's public ones in one (the module hands both, Found::online), with
+    // "Enter a code or address" after the games and no filter rows; that row's page (the Join page) has Paste a code,
+    // Type an address, its Password once an address is in, and Join; a picked game that needs a password shows a
+    // page of its password and Join. Host opens on its choices (Who can join first) and hosts on Start hosting only.
+    // B goes back one page. Off: the overlay's and the pause tab's pages, unchanged.
+    void SetTitle(bool on);
+    bool title() const { return title_; }
+    // B here leaves the pages (the caller's Multiplayer rows again): Press(kBack) would go to the first page.
+    bool BackLeaves() const;
+    // The Find page's list asked again (its Refresh row; the title's Y).
+    void RefreshFound();
     const std::string& find_search() const { return find_search_; }
     // The Customize page's picture of Link (hos_coop_menu_picture.h); empty
     // on the other pages.
@@ -212,6 +266,8 @@ public:
     const std::string& join_port() const { return join_port_; }
     const Session& session() const { return session_; }
     View view() const;
+    // Co-op settings' first host row (Game): where the pause tab's Host settings row opens the page (0 elsewhere).
+    std::size_t HostRulesRow() const;
 
 private:
     enum class Act {
@@ -223,11 +279,17 @@ private:
         kSameNetwork, kGameKind,
         kOpenCustomize, kNgPlus, kSaveSet,
         kOpenFind, kFindList, kFindSearch, kFindGame, kFindFilter, kFindSort, kFindRefresh,
-        kShowPassword, kNewPassword, kLetIn, kRefuse, kListRoom, kAutoRejoin, kOriginal, kHudSize
+        kShowPassword, kNewPassword, kLetIn, kRefuse, kListRoom, kAutoRejoin, kOriginal,
+        kApproveJoins, kPvp, kDbno, kDbnoTime, kDbnoHold, kDbnoHearts,
+        kDifficulty, kDifficultyLife, kDifficultyDamage, kDifficultyCount
     };
     struct Line;   // a row, what it does and its help
     std::vector<Line> Lines() const;
     void LauncherLines(std::vector<Line>& out) const;
+    void TitleListLines(std::vector<Line>& out, bool off) const;
+    void TitleCodeLines(std::vector<Line>& out, bool off) const;
+    void TitleHostLines(std::vector<Line>& out, bool host, bool guest) const;
+    void HostRuleLines(std::vector<Line>& out, bool guest) const;
     bool Selectable(const Line& line) const;
     void Go(Page page, Act select = Act::kNone);
     void Clamp();
@@ -267,7 +329,17 @@ private:
     std::optional<std::vector<std::string>> microphones_;
     int ngplus_level_ = 0, ngplus_unlocked_ = 0, ngplus_hearts_ = 0;   // (Navi) New Game+ (SetNgPlus)
     bool mp_saves_ = false;   // (Navi) the Saves row (SetSaveSet)
+    DifficultyState difficulty_;   // SetDifficulty
+    int difficulty_players_ = 0;
+    std::optional<coop::protocol::DifficultyChoice> difficulty_wish_;   // the host's change, until the server says it
+    coop::protocol::DifficultyChoice DifficultyShown() const;
+    coop::protocol::DifficultyValues DifficultyValuesShown() const;
+    void DifficultyLines(std::vector<Line>& out) const;
     bool character_ = false;  // SetCharacter
+    bool snail_home_ = false;  // SetSnailHome
+    bool title_ = false;      // SetTitle
+    std::string picked_;      // the title: the game picked on the list that asks for a password ("": none)
+    std::string picked_host_; // (its host, so a long name gives way on the page's note: TitleGameName)
     bool find_online_ = true;                 // the Find a game page lists the relay's rooms (else this network's)
     std::string find_search_, search_before_; // its search, as typed
     int find_filter_ = 0, find_sort_ = 0;      // its filter and order (CoopBrowse)

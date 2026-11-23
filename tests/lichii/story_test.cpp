@@ -747,3 +747,103 @@ TEST_CASE("story: the Water Temple door never sets SageOfWater back below what w
         }
     }
 }
+
+TEST_CASE("story: Saria's gift is named by its hashes (rows 195/204)") {
+    REQUIRE(CoopStory::Gifts().size() <= CoopStory::kGiftsMax);
+    const auto& saria = CoopStory::Gifts()[0];
+    const std::vector<std::string> played{"HavePlayedEvent.KokiriForest_ArriveLostWood",
+                                          "HavePlayedEvent.Dm_Kokiri_0150", "HavePlayedEvent.Dm_Kokiri_0155"};
+    REQUIRE(saria.played.size() == played.size());
+    for (std::size_t i = 0; i < played.size(); ++i) {
+        CHECK_MESSAGE(saria.played[i] == host::flag_hash(played[i]), played[i]);
+        // each is a shared story flag: the reason the gift can be spent without its scene here
+        CHECK_MESSAGE(CoopStory::Find(saria.played[i]) != nullptr, played[i]);
+    }
+    CHECK(saria.count == host::flag_hash("PouchData.Item_Ocarina_Fairy.StockNum"));
+    CHECK(saria.count == host::ocarina::kFairy);
+    REQUIRE(saria.held.size() == 2);
+    CHECK(saria.held[0] == host::ocarina::kFairy);
+    CHECK(saria.held[1] == host::ocarina::kTime);
+    CHECK(std::string_view(saria.item) == host::ocarina::kFairyName);
+}
+
+TEST_CASE("story: Saria's gift spent with no ocarina is due, never with one held or unread (rows 195/204)") {
+    const auto& saria = CoopStory::Gifts()[0];
+    std::map<std::uint32_t, bool> bools;
+    std::map<std::uint32_t, std::int32_t> ints{{host::ocarina::kFairy, 0}, {host::ocarina::kTime, 0}};
+    const auto due = [&] {
+        return CoopStory::GiftDue(
+            saria,
+            [&](std::uint32_t h) -> std::optional<bool> {
+                const auto it = bools.find(h);
+                return it == bools.end() ? std::nullopt : std::optional<bool>(it->second);
+            },
+            [&](std::uint32_t h) -> std::optional<std::int32_t> {
+                const auto it = ints.find(h);
+                return it == ints.end() ? std::nullopt : std::optional<std::int32_t>(it->second);
+            });
+    };
+    for (const auto h : saria.played) bools[h] = false;
+    CHECK_FALSE(due());  // the bridge scene still to come: Saria gives it herself
+    // Each played flag alone spends it: the timeline joined alone (Dm_Kokiri_0150, no gift), the setting or the gift
+    // scene shared in from another game whose share of the item never came.
+    for (const auto h : saria.played) {
+        for (const auto o : saria.played) bools[o] = o == h;
+        CHECK(due());
+    }
+    ints[host::ocarina::kFairy] = 1;
+    CHECK_FALSE(due());  // got it (from Saria or shared): nothing to give
+    ints[host::ocarina::kFairy] = 0;
+    ints[host::ocarina::kTime] = 1;
+    CHECK_FALSE(due());  // the Ocarina of Time is better: never a fairy one beside it
+    ints.erase(host::ocarina::kTime);
+    CHECK_FALSE(due());  // a count not read (a load): left alone
+    ints[host::ocarina::kTime] = 0;
+    bools.clear();
+    CHECK_FALSE(due());  // played flags not read: left alone
+}
+
+TEST_CASE("story: Saria's played flags from others wait until an ocarina is ours (rows 195/204, the cause)") {
+    const auto& saria = CoopStory::Gifts()[0];
+    for (const auto h : saria.played) CHECK(CoopStory::GiftOf(h) == std::optional<std::size_t>(0));
+    CHECK_FALSE(CoopStory::GiftOf(host::flag_hash("HavePlayedEvent.Dm_Kokiri_0140")));
+    CHECK_FALSE(CoopStory::GiftOf(host::ocarina::kFairy));
+
+    std::array<bool, CoopStory::kGiftsMax> held{};
+    for (const auto h : saria.played) CHECK(CoopStory::GiftHolds(h, held));  // no ocarina here: wait
+    CHECK_FALSE(CoopStory::GiftHolds(host::flag_hash("HavePlayedEvent.Dm_Kokiri_0140"), held));  // others pass
+    held[0] = true;
+    for (const auto h : saria.played) CHECK_FALSE(CoopStory::GiftHolds(h, held));  // the shared ocarina came
+
+    std::map<std::uint32_t, std::int32_t> ints;
+    const auto read = [&](std::uint32_t h) -> std::optional<std::int32_t> {
+        const auto it = ints.find(h);
+        return it == ints.end() ? std::nullopt : std::optional<std::int32_t>(it->second);
+    };
+    CHECK_FALSE(CoopStory::GiftHeld(saria, read).has_value());  // unread (a load): the hold keeps waiting
+    ints = {{host::ocarina::kFairy, 0}, {host::ocarina::kTime, 0}};
+    CHECK(CoopStory::GiftHeld(saria, read) == std::optional<bool>(false));
+    ints[host::ocarina::kFairy] = 1;
+    CHECK(CoopStory::GiftHeld(saria, read) == std::optional<bool>(true));
+    ints = {{host::ocarina::kTime, 1}};  // the fairy count unread, the Ocarina of Time held: held
+    CHECK(CoopStory::GiftHeld(saria, read) == std::optional<bool>(true));
+}
+
+TEST_CASE("story: the Ocarina of Time's scene waits for its item, never mended (rows 195/204 sweep)") {
+    REQUIRE(CoopStory::Gifts().size() == 2);
+    CHECK(CoopStory::Gifts()[0].mend);
+    const auto& time = CoopStory::Gifts()[1];
+    CHECK_FALSE(time.mend);  // the randomizer's progressive ocarina: hold only
+    REQUIRE(time.played.size() == 1);
+    CHECK(time.played[0] == host::flag_hash("HavePlayedEvent.HyruleField_DoorOfTime_GetOcarinaOfTime"));
+    CHECK(CoopStory::Find(time.played[0]) != nullptr);
+    CHECK(time.count == host::ocarina::kTime);
+    REQUIRE(time.held.size() == 1);
+    CHECK(time.held[0] == host::ocarina::kTime);
+    std::array<bool, CoopStory::kGiftsMax> held{};
+    held[0] = true;  // the Fairy Ocarina is no Ocarina of Time
+    CHECK(CoopStory::GiftHolds(time.played[0], held));
+    held[1] = true;
+    CHECK_FALSE(CoopStory::GiftHolds(time.played[0], held));
+    for (const auto h : CoopStory::Gifts()[0].played) CHECK_FALSE(CoopStory::GiftHolds(h, held));
+}

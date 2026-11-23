@@ -76,6 +76,16 @@ constexpr std::array<std::string_view, 6> kNotShared{
 // Room_13_PlayerPosCheck; Spirit Temple Room 02 PlayerPosChange1/1_2/2/2_2, Room16_PlayerPosCheck; Water
 // Temple Room00_Switch_NearThePlatform/NearTheShutter; Ice Cavern Room01Demo_Far. Room state that a graph also
 // sets both ways (switches, fires, air walls, lifts, Ruto's reactions) stays shared.
+// The Water Temple's Dark Link rooms (room survey, 2026-11-21): the event WaterTemple_DarkLink_DoorMovement sets
+// WaterTemple_Room23_DeleteBackRoom / _DeleteFrontRoom / _ResetDeletedRoom, WaterTemple_SwitchDarkLinkDome and
+// WaterTemple_Room22_CreateDome true then false while ONE player passes the room 22/23 doors, and the room graph
+// WaterTemple_Map_Room_22 hides and shows the rooms and makes or deletes the dome (Land_WaterTemple_DarkLinkDome_A_01,
+// its water plane) live from them: shared, another player in those rooms could have the floor or the room taken
+// from under them. Each player's own passage, so left out.
+// The Shadow Temple's ShadowTemple_Level_PaddelShip_Elevator_AbyssTriggered (room survey): set true and false by
+// the lifts' ActorLogicUpDownLift.IsCrushPlayer (Obj_ShadowTemple_MoveFloor_A_03 / _A_04): "a lift crushed this
+// player". The boat's graph feeds it to the boat's IsSinking and RespawnTrigger: shared, one player crushed could
+// sink or reset another's boat ride. Left out.
 constexpr std::array kFlags = std::to_array<Flag>({
     {0xfff1ad87, false, "BottomOfTheWell_BubbleAppear"},
     {0x0b5b3b0c, false, "BottomOfTheWell_CoffinRoomCheck"},
@@ -746,7 +756,6 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0x89f4bbd4, false, "ShadowTemple_Gimmick_LooK_DepartureDemo"},
     {0x1a9e9201, false, "ShadowTemple_Gimmick_Open_MainGate_Adult"},
     {0x19b25999, false, "ShadowTemple_Gimmick_Open_MainGate_Child"},
-    {0x1e507a76, false, "ShadowTemple_Level_PaddelShip_Elevator_AbyssTriggered"},
     {0xdc1ce336, false, "ShadowTemple_Level_Room_00_HasRead_Sign_01"},
     {0x0cbbc286, false, "ShadowTemple_Level_Room_00_WindON"},
     {0xad89f015, false, "ShadowTemple_Level_Room_01_Clear_A"},
@@ -996,14 +1005,9 @@ constexpr std::array kFlags = std::to_array<Flag>({
     {0x177adc78, false, "WaterTemple_Room21_GetSmallKey"},
     {0xe0c137ad, false, "WaterTemple_Room21_OpenShutterBySwitch"},
     {0xf8561347, false, "WaterTemple_Room22_Cleared"},
-    {0x26454f8d, false, "WaterTemple_Room22_CreateDome"},
     {0x9a483cf7, false, "WaterTemple_Room23_Cleared"},
-    {0x29a8b765, false, "WaterTemple_Room23_DeleteBackRoom"},
-    {0x7aa5d6b6, false, "WaterTemple_Room23_DeleteFrontRoom"},
     {0xfa2798b1, false, "WaterTemple_Room23_LightSwitch"},
-    {0xa985764e, false, "WaterTemple_Room23_ResetDeletedRoom"},
     {0xd6991798, false, "WaterTemple_SkipWaterChange"},
-    {0x469d27f2, false, "WaterTemple_SwitchDarkLinkDome"},
     {0xa16f6696, false, "WaterTemple_WaterLevelChange01"},
     {0x2a8640b7, false, "WaterTemple_WaterLevelChange02"},
     {0xa4456820, false, "WaterTemple_WaterLevelChange03"},

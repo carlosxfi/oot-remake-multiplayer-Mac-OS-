@@ -14,6 +14,7 @@
 namespace CoopCallerOrders {
 
 inline constexpr int kSpawn = 10;         // spawn copies (coop_spawn.cpp)
+inline constexpr int kShotReflect = 11;   // row 177: shots another player sent back (coop_spawn.cpp, coop_shot_reflect.h)
 inline constexpr int kFairy = 20;         // fairies (coop_fairy.h)
 inline constexpr int kMover = 30;         // the objects' mover (coop_objects.cpp)
 inline constexpr int kDrops = 40;         // drops, after the mover (coop_drops.cpp)
@@ -36,7 +37,7 @@ inline constexpr int kPvpShield = 67;     // phase 4: the _Pvp copies' Life invi
 inline constexpr int kTestDress = 68;     // test only: `dress` asks the game's own equip for our Link (coop_hook.cpp)
 inline constexpr int kKeptShield = 69;    // row 160 (b): kept kills' copies held unhittable (coop_objects.cpp)
 
-inline constexpr std::array kAll{kSpawn,     kFairy,       kMover,     kDrops,   kGrass,        kTime,
+inline constexpr std::array kAll{kSpawn,     kShotReflect, kFairy,       kMover,     kDrops,   kGrass,        kTime,
                                  kBossTable, kLiftRide,    kDbnoBody,  kSwitchShare, kBossRooms, kEventResult, kEyeSwitch,
                                  kLiveEvents, kTeleportEvent, kScrubs, kCounters, kStory,      kOcarinaEquip, kPvpShield,
                                  kTestDress, kKeptShield};

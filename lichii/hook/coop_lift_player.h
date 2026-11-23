@@ -311,8 +311,8 @@ public:
         std::optional<proto::LiftAnswer> freed;    // the lift ended here: tell the lifter
     };
 
-    // A LIFT_ASK; `lifter_at` is the lifter's Link as presence has it in our scene (unset: not known, or
-    // another scene: refused too_far).
+    // A LIFT_ASK; `lifter_at` is the lifter's Link as presence has it in our place, either era (unset: not known, or
+    // another place: refused too_far).
     proto::LiftAnswer Ask(const proto::LiftAsk& m, const Local& local, const std::optional<Vec3>& lifter_at,
                           std::uint64_t now_us) {
         proto::LiftAnswer a{proto::kPlayerSelf, m.player_number, proto::LiftRefusal::none};

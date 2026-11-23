@@ -94,7 +94,7 @@ struct World {
             }
             if (at == fail_at) return 3;
             // generate <preset or string> <seed> <out.ootrr> [--spoiler <file>]: the seed file (JSON, its "settings"
-            // the OOTRR1- string) and, when asked, the spoiler log, as OOTRR 0.6.1, 0.6.2 and 0.7.0 to 0.8.0 write them.
+            // the OOTRR1- string) and, when asked, the spoiler log, as OOTRR 0.6.1, 0.6.2 and 0.7.0 to 0.8.1 write them.
             if (args.size() >= 4 && args[0] == "generate") {
                 const std::string s = args[1].rfind("OOTRR", 0) == 0 ? args[1] : "OOTRR1-P" + args[1];
                 Put(CoopMods::FromUtf8(args[3]), "{\n  \"format\": \"ootrr-seed\",\n  \"seed\": \"" + args[2] +
@@ -1642,7 +1642,7 @@ TEST_CASE("rando: a seed file that places shop items (coop_shop_sale.h)") {
 }
 
 TEST_CASE("rando: the settings string of a seed file") {
-    // As OOTRR 0.6.1 writes it (generate default abc); 0.6.2 and 0.7.0 to 0.8.0 write the same layout (settings/seed.rs is unchanged).
+    // As OOTRR 0.6.1 writes it (generate default abc); 0.6.2 and 0.7.0 to 0.8.1 write the same layout (settings/seed.rs is unchanged).
     CHECK(SeedSettings("{\n  \"format\": \"ootrr-seed\",\n  \"version\": 1,\n  \"generator\": \"ootrr-core 0.6.1\",\n"
                        "  \"seed\": \"abc\",\n  \"settings\": \"OOTRR1-EYAQCTABAFQACAMOJY\",\n  \"placements\": {}\n}\n") ==
           "OOTRR1-EYAQCTABAFQACAMOJY");
@@ -1819,6 +1819,31 @@ TEST_CASE("rando: a run whose actor table lacks the pack's rows holds the pack a
         rando.Wait();
         CHECK_FALSE(rando.RowsMissing());
     }
+}
+
+TEST_CASE("rando: a seed the kit merged other mods' saved values and archives into (report 206)") {
+    World w;
+    const fs::path seed = w.mods / "randomizer-S2";
+    const fs::path list = fs::path("romfs") / "GameData" / "GameDataList.Product.110.byml.zs";
+    const fs::path mals = fs::path("romfs") / "Mals" / "USen.Product.110.sarc.zs";
+    Put(seed / list, "own list");
+    Put(seed / mals, "own messages");
+    const std::string own = SeedFilesHash(seed);
+    // The kit's start: both rewritten, the seed's own kept beside with their stamps.
+    Put(seed / list, "merged list");
+    Put(seed / "_coop-gamedata" / list.filename(), "own list");
+    Put(seed / "_coop-gamedata" / (list.filename().string() + ".txt"), "coop-gamedata 1");
+    Put(seed / mals, "merged messages");
+    Put(seed / "_coop-archives" / "Mals" / mals.filename(), "own messages");
+    Put(seed / "_coop-archives" / "Mals" / (mals.filename().string() + ".txt"), "coop-members 1");
+    CHECK(SeedFilesHash(seed) == own);  // the same seed for the other players, whatever mods this game merged in
+    // A refresh replaced its size table: its own files go back (no actor table kept: 0 rows), the kept folders go.
+    CHECK(PutBackKeptRows(seed) == 0);
+    CHECK(Get(seed / list) == "own list");
+    CHECK(Get(seed / mals) == "own messages");
+    CHECK_FALSE(fs::exists(seed / "_coop-gamedata"));
+    CHECK_FALSE(fs::exists(seed / "_coop-archives"));
+    CHECK(SeedFilesHash(seed) == own);
 }
 
 TEST_CASE("rando: a refreshed seed gets its own actor tables back and loses the kit mark") {

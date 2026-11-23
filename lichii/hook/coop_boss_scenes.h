@@ -77,7 +77,7 @@ struct Boss {
     std::array<std::string_view, 2> outro_asks{};
 };
 
-inline constexpr std::size_t kBossCount = 10;
+inline constexpr std::size_t kBossCount = 13;  // 10 bosses and 3 mid-fight stage changes
 static_assert(kBossCount <= coop::protocol::kMaxSceneBoss + 1u);
 
 // The ten bosses, by BOSS_SCENE's boss index (0 to 7: CoopBoss::Rooms() order).

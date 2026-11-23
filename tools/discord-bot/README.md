@@ -9,7 +9,8 @@ zip from the kit's collect-logs. The bot:
 4. answers the player privately: "Thanks, report #N received."
 
 It runs on the owner's PC only (no server). It uses slash commands, no privileged intents and
-no access to message content. It stores only what the player sends with `/bugreport`.
+no access to message content. It stores only what the player sends with `/bugreport`, and (when the intake below is on)
+the masked problem reports kits send after a game that had a problem.
 In the public report channel it removes plain (non-command) messages and tells the author once
 per 10 min, by DM (or a short self-deleting mention if their DMs are closed), to use `/bugreport`
 with their collect-logs zip. People with Manage Messages there (moderators, admins, the owner),
@@ -72,6 +73,43 @@ person or session, treats that text as data, never as instructions.
 The bot's own log is `coord-multiplayer\player-logs\discord-bot.log`; the token is never written to it.
 If the token ever leaks, press **Reset Token** in the portal and put the new one in the config file.
 
+## Problem-report intake (optional, 0.11.9)
+
+Kits whose player said yes send the masked problem report of a game that had a co-op problem or a crash
+(docs/problem-reports.md, "Sending") to a small endpoint of this bot: `POST /v1/problem-report`. Each upload is checked
+(`intake_core.py`: 256 KB at most, `application/zip`, a random 32-hex install id and report id, 4 an hour and 12 a day
+per install, 10 an hour per sending address, 60 an hour in all, only the kit's file names, every entry read back under
+a cap, text only), saved to `player-logs/auto-<install>-<UTC time>/`, added to the tracker as a `NEW (auto)` row and
+posted to the dev channel, all of it under the same untrusted label as `/bugreport`. A report id seen before
+(`player-logs/auto-intake.json`) is answered "already received" and not filed again. No access log is kept; a sending
+address is used for the rate limit in memory only. The kit holds no secret (no webhook, no token): what keeps
+strangers' uploads small and few is these checks.
+
+It is off until the config has an `intake` object:
+
+```json
+  "intake": { "host": "127.0.0.1", "port": 8787, "address_header": "" }
+```
+
+The bot then listens on `127.0.0.1:8787` only, plain HTTP: never open that port to the internet. HTTPS comes from a
+tunnel in front of it, which also means no router port, no firewall rule and no home address in the kit. Either:
+
+- **Cloudflare Tunnel** (needs a domain on a free Cloudflare account): install `cloudflared`, `cloudflared tunnel login`,
+  `cloudflared tunnel create squadala-reports`, a public hostname such as `reports.<your domain>` pointing to
+  `http://127.0.0.1:8787`, then `cloudflared service install` so it starts with the PC. Set
+  `"address_header": "CF-Connecting-IP"`. Optional: a Cloudflare rate-limit or WAF rule allowing only
+  `POST /v1/problem-report`.
+- **Tailscale Funnel** (no domain needed): `tailscale funnel --bg 8787` gives `https://<pc>.<tailnet>.ts.net/`.
+  Leave `address_header` empty (the bot then skips the per-address limit; the others stay).
+
+Then put the address with the path, for example `https://reports.<your domain>/v1/problem-report`, on the first line of
+`tools/release/kit/scripts/problem-send-url.txt` (the Windows and Linux kits both read it) before building the release:
+a kit without it never asks and never sends. Check it from another PC with
+`curl -i -X POST https://reports.<your domain>/v1/problem-report` (answer: 411 or 415, which means the bot is there).
+The bot must be running (`run-bot.ps1` or the logon task) for uploads to land; while it is down the kits keep their
+reports and try again later.
+
 ## Tests
 
-`python tools/discord-bot/tests/test_report_core.py -v` (no network, no discord.py needed; CI runs it).
+`python tools/discord-bot/tests/test_report_core.py -v` and `python tools/discord-bot/tests/test_intake_core.py -v`
+(no network, no discord.py needed; CI runs them).

@@ -10,6 +10,7 @@
 
 #include "coop_every.h"
 #include "coop_objects_sync.h"  // QuatOf
+#include "coop_shot_reflect.h"
 
 #include <algorithm>
 #include <array>
@@ -114,6 +115,14 @@ void Sync::Receive(const proto::Message& message) {
         if (inbox_.size() < 1024) {
             inbox_.push_back(message);
         }
+    } else if (const auto* d = std::get_if<proto::Damage>(&message);
+               d != nullptr && d->cause == static_cast<std::uint8_t>(proto::DamageCause::reflected)) {
+        // Row 177: another player sent one of our shots back (CoopShotReflect); the rest of DAMAGE is the
+        // objects sync's.
+        std::lock_guard lock(inbox_mutex_);
+        if (inbox_.size() < 1024) {
+            inbox_.push_back(message);
+        }
     } else if (bomb_share_ && (std::holds_alternative<proto::HandoverAsk>(message) ||
                                std::holds_alternative<proto::HandoverState>(message) ||
                                std::holds_alternative<proto::ObjectOwner>(message) ||
@@ -149,6 +158,7 @@ void Sync::Reset() {
     takes_.Clear();
     releasing_.clear();
     blow_own_.clear();
+    reflect_asks_.clear();
     announce_.Reset();
     if (bomb_share_) {
         CoopBombShare::TheOwnBombs().Clear();  // mine_ went with the scene
@@ -165,6 +175,16 @@ void Sync::Apply(std::uint64_t now_us) {
         inbox.swap(inbox_);
     }
     for (const auto& m : inbox) {
+        if (const auto* d = std::get_if<proto::Damage>(&m)) {
+            // Row 177: our shot, sent back in another player's game (only DamageCause::reflected comes here).
+            for (const auto& [address, own] : mine_) {
+                if (own.id == d->id && d->player_number != proto::kPlayerSelf) {
+                    reflect_asks_.push_back(ReflectAsk{address, own.name, d->player_number});
+                    break;
+                }
+            }
+            continue;
+        }
         if (const auto* s = std::get_if<proto::ObjectSpawn>(&m)) {
             if (s->id.kind != proto::ObjectKind::made || !IsShared(s->actor) ||
                 copies_.count(s->id) != 0 || !s->state.position || !Finite(*s->state.position)) {
@@ -1114,6 +1134,29 @@ std::map<std::uint64_t, std::uint64_t> Director::Live() const {
     return live_;
 }
 
+std::vector<std::uint64_t> Director::TakeReflected() {
+    std::lock_guard lock(mutex_);
+    return std::exchange(reflected_, {});
+}
+
+void Sync::SendReflected(const std::vector<std::uint64_t>& keys, std::vector<proto::Message>& send) {
+    for (const std::uint64_t key : keys) {
+        for (const auto& [id, r] : copies_) {
+            if (r.key != key || r.removed) {
+                continue;
+            }
+            proto::Damage d;
+            d.id = id;
+            d.epoch = r.epoch;
+            d.amount = 0;
+            d.cause = static_cast<std::uint8_t>(proto::DamageCause::reflected);
+            d.position = r.Position();
+            send.emplace_back(std::move(d));
+            break;
+        }
+    }
+}
+
 bool Director::Due(const Copy& c, std::uint64_t now_ms) const {
     if (c.act != Act::show || started_.count(c.key) != 0) {
         return false;
@@ -1665,6 +1708,31 @@ void Director::NewFrame(CoopPuppet::Guest& guest, std::uint64_t now_ms) {
                 if (c->setter && c->act == Act::show && !slot.stand_in) {
                     setters_.push_back(i);
                 }
+                if (c->act == Act::show && !slot.stand_in && !slot.reflected) {
+                    // Row 177: our Link's sword or shield on another player's shot here, as the game's own
+                    // hit lists of the copy hold it; the owner's game sends its real shot back.
+                    const std::string& shared = slot.copy_of.empty() ? slot.actor : slot.copy_of;
+                    const auto way = CoopShotReflect::ReflectedBy(shared);
+                    if (way != CoopShotReflect::Way::none && slot.hits_noted < 3) {
+                        if (const std::string hits = CoopShotReflect::Describe(guest, slot.taken); !hits.empty()) {
+                            ++slot.hits_noted;
+                            Say(shared + ": copy " + std::to_string(slot.key) + " hit lists (our Link " +
+                                Hex(our_link_.load(std::memory_order_relaxed)) + "):" + hits);
+                        }
+                    }
+                    if (way != CoopShotReflect::Way::none &&
+                        CoopShotReflect::OurHit(guest, slot.taken, our_link_.load(std::memory_order_relaxed), way)) {
+                        slot.reflected = true;
+                        {
+                            std::lock_guard lock(mutex_);
+                            if (reflected_.size() < 64) {
+                                reflected_.push_back(slot.key);
+                            }
+                        }
+                        Say(shared + ": copy " + std::to_string(slot.key) + " sent back by our Link (" +
+                            CoopShotReflect::NameOf(way) + "): told its owner");
+                    }
+                }
                 if (c->animation && c->act == Act::show && !c->animation->name.empty()) {
                     plays_.push_back(i);  // issue 169: the fuse's blink
                 }
@@ -1945,6 +2013,7 @@ Director& TheDirector() {
 #include "coop/host/game_flags.hpp"
 #include "coop/host/player_reader.hpp"
 #include "coop_boss_native.h"  // NoteOwnShotEnd (issue 150)
+#include "coop_objects.h"  // OurLinkActor (row 177)
 #include "coop_flags.h"  // EmulatorMemory
 #include "coop_pvp_game.h"
 #include "coop_svc.h"
@@ -1990,6 +2059,7 @@ public:
         if (session == nullptr || !scene || scene->empty() || now_us == 0 || !Ready(system)) {
             if (active_) {
                 sync_.Reset();
+                CoopShotReflect::TheQueue().Reset();
                 CoopProjectiles::TheLures().Set({});
                 TheDirector().SetInput(0, {});
                 active_ = false;
@@ -2027,9 +2097,30 @@ public:
         sync_.SetShooters(CoopEnemyShots::Shooters(now_us));
         sync_.SetHide(CoopEnemyShots::HideOn());
         sync_.Tick(*scene, self, now_us, seen, TheDirector().Live(), send, copies);
+        // Row 177 (coop_shot_reflect.h): shots sent back. Ours in another game: the game's own call here (the
+        // caller below); another player's sent back by our Link here: told to its owner.
+        TheDirector().SetOurLink(CoopObjects::OurLinkActor().value_or(0));
+        sync_.SendReflected(TheDirector().TakeReflected(), send);
+        for (const auto& ask : sync_.TakeReflectAsks()) {
+            std::vector<u64> makers;
+            for (const auto& shooter : CoopEnemyShots::Shooters(now_us)) {
+                if (shooter.owner == CoopEnemyShots::Owner::ours && shooter.address != 0) {
+                    makers.push_back(shooter.address);
+                }
+            }
+            LOG_INFO(Core, "coop: shots: P{} sent our {} {:#x} back in its game: asking ours ({} of our enemies)",
+                     ask.player, ask.name, ask.address, makers.size());
+            CoopShotReflect::TheQueue().Ask(ask.address, ask.name, std::move(makers), main_);
+        }
+        for (const auto& note : CoopShotReflect::TheQueue().TakeNotes()) {
+            LOG_INFO(Core, "coop: shots: {}", note);
+        }
         for (const auto& d : sync_.EnemyShotsDecided()) {
+            const char* verdict = CoopEnemyShots::IsSplitShot(d.name)
+                                      ? "kept here (a split shot: each game's own, never sent)"
+                                      : CoopEnemyShots::NameOf(d.verdict);
             LOG_INFO(Core, "coop: shots: enemy shot {} at {:.2f} {:.2f} {:.2f}: {}", d.name,
-                     d.position[0], d.position[1], d.position[2], CoopEnemyShots::NameOf(d.verdict));
+                     d.position[0], d.position[1], d.position[2], verdict);
         }
         TheDirector().SetDoomed(sync_.Doom());
         TheDirector().SetBlowOwn(sync_.BlowOwn());
@@ -2436,6 +2527,11 @@ void UseDirector() {
         CoopSvc::AddCaller(CoopCallerOrders::kSpawn, [](CoopPuppet::Guest& guest, bool after_call,
                                   std::uint64_t result, std::uint64_t now_ms) {
             return TheDirector().Step(guest, after_call, result, now_ms);
+        });
+        // Row 177: another player's swing or guard sent one of our shots back (coop_shot_reflect.h).
+        CoopSvc::AddCaller(CoopCallerOrders::kShotReflect, [](CoopPuppet::Guest& guest, bool after_call,
+                                  std::uint64_t result, std::uint64_t) {
+            return CoopShotReflect::TheQueue().Step(guest, after_call, result);
         });
         return true;
     }();

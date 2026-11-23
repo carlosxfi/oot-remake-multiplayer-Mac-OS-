@@ -16,6 +16,7 @@
 
 #include "coop/protocol/codec.hpp"
 #include "coop_objects_sync.h"
+#include "coop_pickups.h"
 #include "coop_world.h"
 
 namespace proto = coop::protocol;
@@ -1045,7 +1046,8 @@ TEST_CASE("doors: both opened the lock at once: the higher player number gives i
 TEST_CASE("world: movables, grass actors and the new breakables by name") {
     for (const char* name : {"Obj_MovableBox_A_01", "Obj_ForestTemple_MovableBox_A_03",
                              "Obj_LonLonRanch_MovableBox_A_01", "Obj_SliderBox_A_01",
-                             "Obj_AmosStatue_A_01", "Obj_Kokiri_RollingRock_A_01", "Obj_RollingRock_A_05",
+                             "Obj_AmosStatue_A_01", "Obj_Goron_Statue_A_01", "Obj_Kokiri_RollingRock_A_01",
+                             "Obj_RollingRock_A_05",
                              "Obj_Firetemple_RollingRock_A_01", "Obj_Tombstone_A_01",
                              "Obj_Graveyard_Tombstone_A_01", "Obj_Graveyard_Tombstone_A_02"}) {
         CAPTURE(name);
@@ -1124,6 +1126,27 @@ TEST_CASE("world: another player's break takes our copy's life, then the copy if
     }
     Walk(w, 11100 * kMs, {Thing(0x100, 0x11, 0, "Obj_Pot_A_01"), Thing(0x200, 0x22, 5, "Obj_BrokenBox_A_01")});
     CHECK(w.Removes() == std::vector<std::uint64_t>{0x200});
+}
+
+TEST_CASE("world: another player's break of a seed's one-time pot deletes ours, no second drop (row 219)") {
+    CoopPickups::OneTime list;
+    list.holders = {0x11};
+    CoopPickups::SetOneTime(list);
+    WorldSync w;
+    const auto both = [] {
+        return std::vector<Seen>{Thing(0x100, 0x11, 1, "Obj_Pot_A_01"), Thing(0x200, 0x22, 1, "Obj_Pot_A_01")};
+    };
+    Walk(w, 1000 * kMs, both());
+    Walk(w, 5000 * kMs, both());
+    w.Receive(BreakOf(0x11));
+    w.Receive(BreakOf(0x22));
+    const auto out = Walk(w, 5100 * kMs, both());
+    // The seed's pot is not broken here (its life 0 would drop the item again): deleted. A plain pot as before.
+    REQUIRE(out.lives.size() == 1);
+    CHECK(out.lives[0].address == 0x200);
+    CHECK(out.send.empty());
+    CHECK(w.Removes() == std::vector<std::uint64_t>{0x100});
+    CoopPickups::SetOneTime({});
 }
 
 TEST_CASE("world: a grass tuft cut by another player is deleted when life 0 leaves it standing") {
@@ -1961,6 +1984,17 @@ TEST_CASE("world: lying small keys, shifters and hammer switches by name (breaka
     CHECK(CoopWorld::IsShifter("Obj_InsideTheDekuTree_FallingFloor_A_01"));
     CHECK(CoopWorld::IsShifter("Obj_InsideTheDekuTree_FallingFloor_A_02"));
     CHECK_FALSE(CoopWorld::IsShifter("Obj_ShadowTemple_FallingFloor_A_01"));
+    // Capstans (block survey): turned by a pushed bar, shared as shifters, never held for the next push.
+    for (const char* name : {"Obj_SpiritTemple_CapstanMirror_A_01", "Obj_ShadowTemple_Statue_A_01"}) {
+        CAPTURE(name);
+        CHECK(CoopWorld::IsCapstan(name));
+        CHECK(CoopWorld::IsShifter(name));
+        CHECK(CoopWorld::IsWorldObject(name));
+        CHECK_FALSE(CoopWorld::HoldsPlace(name));
+        CHECK_FALSE(CoopWorld::IsFallTaken(name));
+    }
+    CHECK_FALSE(CoopWorld::IsCapstan("Obj_ForestTemple_PivotedFloor_A_01"));  // by its flag (coop_pivot.h)
+    CHECK_FALSE(CoopWorld::IsShifter("Obj_ForestTemple_PivotedFloor_A_01"));
     for (const char* name : {"Obj_InsideTheDekuTree_FallingFloor_A_01", "Obj_InsideTheDekuTree_FallingFloor_A_02",
                              "Obj_InsideTheDekuTree_InteractiveSpiderWebParts_A_01",
                              "Obj_InsideTheDekuTree_InteractiveSpiderWebParts_A_02"}) {
@@ -2784,6 +2818,7 @@ TEST_CASE("world: only push blocks get a rest fix, not an Armos statue (issue 14
     CHECK(CoopWorld::IsPushBlock("Obj_MovableBox_A_01"));
     CHECK(CoopWorld::IsPushBlock("Obj_SliderBox_A_01"));
     CHECK_FALSE(CoopWorld::IsPushBlock("Obj_AmosStatue_A_01"));
+    CHECK_FALSE(CoopWorld::IsPushBlock("Obj_Goron_Statue_A_01"));  // its moves shared, no rest fix (like Armos)
     CHECK_FALSE(CoopWorld::IsPushBlock("Obj_MovableBox_BasePosAnchor"));
     for (const char* name : {"Obj_AmosStatue_A_01", "Obj_SliderBox_A_01"}) {
         CAPTURE(name);
@@ -3167,4 +3202,23 @@ TEST_CASE("world: row 166: an untouched block's node runs its start again unless
     PutFloats(d, kNode + CoopWorld::BlockNode::kTarget, {-51.06f, 79.27f, 45.6f});
     PutFloats(d, kNode + CoopWorld::BlockNode::kStart, {-51.06f, 79.27f, 45.6f});
     CHECK(CoopWorld::NodeRestWords(d.Reader(), kNode, from, to, true).writes.empty());
+}
+
+TEST_CASE("world: our Link at a block another player still moves is said once every 10 s (push diagnostics)") {
+    WorldSync w;
+    const proto::Vec3 at_it{1.5f, 2.0f, 3.0f};
+    Walk(w, 1000 * kMs, {Thing(0x100, 0x50, std::nullopt, kBox)}, at_it);
+    w.Receive(MoveOf(0x50, 2000 * kMs, 1.2f));
+    auto out = Walk(w, 2050 * kMs, {Thing(0x100, 0x50, std::nullopt, kBox, {1.2f, 2.0f, 3.0f})}, at_it);
+    CHECK(Said(out, "our Link is at it while it follows another player's move (theirs is live)"));
+    w.Receive(MoveOf(0x50, 2100 * kMs, 1.4f));
+    out = Walk(w, 2150 * kMs, {Thing(0x100, 0x50, std::nullopt, kBox, {1.4f, 2.0f, 3.0f})}, at_it);
+    CHECK_FALSE(Said(out, "our Link is at it"));  // once every 10 s
+    // Far from it: never said.
+    WorldSync far;
+    Walk(far, 1000 * kMs, {Thing(0x100, 0x50, std::nullopt, kBox)}, proto::Vec3{20.0f, 2.0f, 3.0f});
+    far.Receive(MoveOf(0x50, 2000 * kMs, 1.2f));
+    CHECK_FALSE(Said(Walk(far, 2050 * kMs, {Thing(0x100, 0x50, std::nullopt, kBox, {1.2f, 2.0f, 3.0f})},
+                          proto::Vec3{20.0f, 2.0f, 3.0f}),
+                     "our Link is at it"));
 }

@@ -10,6 +10,7 @@
 
 #include "coop_lift_player_game.h"
 
+#include "coop/protocol/scene_place.hpp"
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -273,7 +274,8 @@ void Frame(const std::optional<std::string>& scene, const std::optional<coop::ho
         for (const auto& a : asks) {
             std::optional<Vec3> lifter_at;
             for (const auto& r : Remotes()) {
-                if (scene && r.number == a.player_number && r.scene == scene) {
+                // Either era of one place: both games draw the other's copy there (row 221).
+                if (scene && r.number == a.player_number && r.scene && coop::protocol::same_place(*r.scene, *scene)) {
                     lifter_at = Vec3{r.position[0], r.position[1], r.position[2]};
                 }
             }

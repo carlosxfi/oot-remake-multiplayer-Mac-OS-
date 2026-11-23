@@ -1361,7 +1361,7 @@ TEST_CASE("flag watcher: a one-way value the game lowers again at once is left t
   floors(0b10000);
   w.frame(store);
   CHECK(game_store.get(kDekuFloors) == 0b11100u);  // undone once: put back once more
-  CHECK(w.take_hud_refresh());                       // every put-back, not only the key's first (review)
+  CHECK_FALSE(w.take_hud_refresh());                 // row 183: the HUD had this value already: no redraw
   CHECK(w.stats().one_way_restores == 2);
   CHECK(w.take_one_way_left().empty());
   floors(0b10000);
@@ -1398,14 +1398,15 @@ TEST_CASE("flag watcher: a one-way value the game lowers again at once is left t
   // left again after kMaxQuickUndos, and owed again for the next load.
   floors(0b10010);
   w.frame(store);
-  CHECK(game_store.get(kDekuFloors) == 0b11110u);  // a later one-off drop: put back
+  CHECK(game_store.get(kDekuFloors) == 0b11110u);  // the first drop after the owed put-back: put back once more
+  CHECK_FALSE(w.take_hud_refresh());                 // (the same value the window's refresh gave)
   floors(0b10010);
-  w.frame(store);
+  w.frame(store);  // row 183: the owed put-back counts too: the second drop leaves it
   floors(0b10010);
   w.frame(store);
   CHECK(game_store.get(kDekuFloors) == 0b10010u);
   CHECK(w.stats().one_way_left == 2);
-  CHECK(w.stats().one_way_restores == 5);
+  CHECK(w.stats().one_way_restores == 4);
 }
 
 TEST_CASE("flag watcher: a floor another player enters after a key was left is owed too (row 140 review)") {
@@ -1466,7 +1467,7 @@ TEST_CASE("flag watcher: floors left to the game are not owed into another save 
   CHECK(w.stats().one_way_owed == 0);
 }
 
-TEST_CASE("flag watcher: one-off drops far apart are each put back (row 140 keeps issue 146)") {
+TEST_CASE("flag watcher: a drop at each room load is put back in each room (row 140 keeps issue 146)") {
   FakeStore game_store = dungeon_game();
   ItemFlagStore store(game_store);
   FlagWatcher w(SharedFlags({kDekuMap}), FlagRole::player);
@@ -1474,13 +1475,67 @@ TEST_CASE("flag watcher: one-off drops far apart are each put back (row 140 keep
   game_store.set(kDekuMap, 1);
   w.frame(store);
   for (int n = 0; n < 5; ++n) {
+    w.set_loading(true);  // the next room
+    w.frame(store);
+    w.set_loading(false);
+    for (int i = 0; i < FlagWatcher::kSettleFrames + 10; ++i) w.frame(store);
     game_store.set(kDekuMap, 0);
     w.frame(store);
     CHECK(game_store.get(kDekuMap) == 1);
+    CHECK(w.take_hud_refresh());  // once in each room
     for (int i = 0; i < 3; ++i) w.frame(store);
   }
   CHECK(w.stats().one_way_restores == 5);
   CHECK(w.stats().one_way_left == 0);
+}
+
+TEST_CASE("flag watcher: a map, compass or floors the game keeps lowering in one room stop flickering (row 183)") {
+  // proyectskye: after the map was picked up it flickered "like equipping and unequipping". The game lowered the
+  // map a few frames after each put-back, later than the old 2-pass window, so it was put back and the HUD redrawn
+  // forever. Now every drop after a put-back counts until the next load: put back kMaxQuickUndos times, one HUD
+  // refresh for the value, then the game's own until the next room, where it is owed back once.
+  // (The boss key is not one-way: the game takes it at the boss door, so it is never put back; not a case here.)
+  constexpr FlagKey kDekuBossKey{0xf6995ceeu, 0};  // DungeonInfo.InsideTheDekuTree.IsGetBossKey
+  constexpr FlagKey kDekuFloors{0x5c6c21c1u, 0};   // DungeonInfo.InsideTheDekuTree.EnteredFloorBit
+  {
+    FakeStore game_store = dungeon_game();
+    CHECK_FALSE(ItemFlagStore(game_store).is_one_way(kDekuBossKey));
+  }
+  for (const FlagKey key : {kDekuMap, kDekuCompass, kDekuFloors}) {
+    CAPTURE(key.hash);
+    const bool bits = key.hash == kDekuFloors.hash;
+    const std::uint32_t got = bits ? 0b0110u : 1u, lowered = bits ? 0b0100u : 0u;
+    FakeStore game_store = dungeon_game();
+    const auto put = [&](std::uint32_t v) {
+      game_store.values[key] = entry(key, v, bits ? proto::FlagKind::uint32 : proto::FlagKind::boolean);
+    };
+    put(bits ? 0b0100u : 0u);
+    ItemFlagStore store(game_store);
+    REQUIRE(store.is_one_way(key));
+    FlagWatcher w(SharedFlags({key}), FlagRole::player);
+    w.frame(store);
+    put(got);
+    w.frame(store);
+    int refreshes = 0;
+    for (int n = 0; n < 40; ++n) {  // lowered 6 frames after each put-back: well past the old window
+      put(lowered);
+      w.frame(store);
+      if (w.take_hud_refresh()) ++refreshes;
+      for (int i = 0; i < 5; ++i) w.frame(store);
+    }
+    CHECK(w.stats().one_way_restores == FlagWatcher::kMaxQuickUndos);
+    CHECK(w.stats().one_way_left == 1);
+    CHECK(refreshes == 1);
+    CHECK(game_store.get(key) == lowered);
+    // The next room: owed back once, with one refresh, and the count starts again.
+    w.set_loading(true);
+    w.frame(store);
+    w.set_loading(false);
+    for (int i = 0; i < FlagWatcher::kSettleFrames + 10; ++i) w.frame(store);
+    CHECK(game_store.get(key) == got);
+    CHECK(w.stats().one_way_owed == 1);
+    CHECK(w.take_hud_refresh());
+  }
 }
 
 TEST_CASE("flag watcher: the key of a write that keeps failing is counted and said once (row 140)") {

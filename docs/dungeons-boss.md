@@ -81,6 +81,8 @@ A player test (Gohma): the boss only ever followed and attacked player 1, its ow
 
 **After a hand-over (on by default since branch `enemy-sync`, not proven).** The new owner's boss was a copy whose own AI phase may differ from the pose it was held to (on the floor while the pose was on the ceiling): it froze or walked in the air. The AI state (AINB) is not known, so it is not copied. An enemy that becomes ours gets bit 23 of actor +0x4a8 (set by the Mover's setter every frame, docs/world.md) cleared once, in case the game leaves it set and holds the body. This is not only a boss question: Hyrule Field moves the owner of the Peahat and other enemies often (chase, wake and distance rules), and a Peahat that never woke for either player (issue 157) fits the same frozen body, so the clear is on for every enemy that comes to us from another owner. `LICHII_COOP_OBJECTS_RELEASE=0` turns it off. The 5 s log line `release: N that became ours had bit 23 set (cleared), M had it clear, K skipped (over 64 in a frame)` says how often the bit was really left set: if N stays 0 in a run with hand-overs, the bit is not the cause.
 
+**No hand-over in a boss's finish (server, `Session::keeps_finish`; tracker row 215).** In the owner's 0.11.8 playtest, three players' Ganon at life 0 went P2 → P1 → P4 → P2 → P1 during his finish: each copy's hit (the stab attempts) asked him over to its hitter. Each new owner's verbs then drove the other games' copies out of their own finish, and nobody could stab him. The cause was that no rule checked for a dying boss except boss turns (`next_turn`). Now every rule that moves an object asks through `ask_handover` (the hitter, boss turns, the near player, the chase and distance rules out of a fight, an unfit owner, an unready owner, a group member to its root), and that one place refuses to move a boss root, or any part of its group, while its owner's last state says life 0 or a death animation (`anim::IsDeath`). An answer to an ask made while the boss was alive, which comes back at life 0, is refused the same way in `finish_handover`. A part may still go to its dying boss's own owner (the group stays together), and a part's own death (a Bongo Bongo hand, a Barinade arm) does not hold its boss. The check reads the boss's current life, not a flag that stays set, so a boss whose next phase refills its life in the same actor (Ganondorf, Twinrova) is handed over as before once it lives again. Only an owner that leaves or unloads the boss gives it on (`drop_presence`), because no other game is running it then. This covers every boss the game flags (Gohma, King Dodongo, Barinade, Phantom Ganon, Volvagia, Morpha, Bongo Bongo, Twinrova with Koume and Kotake, Ganondorf, Ganon) and any mid-boss with the boss flag. Log: `boss finish: <actor> in <scene> at life 0 stays with player N (not to player M): no hand-over until it is gone (row 215)`, once per finish; stat `boss_finish_kept`. Tested in `tests/server/session_test.cpp` (row 215 cases).
+
 ## One owner for the fight, the eye guard copied (branch gohma-sync, issue 150)
 
 A player test (2026-11-12): "Ghoma can enter stun state but have its eye guarded for one player while its eye is not guarded for another, this means only one player can attack it. Ghomas animations and height are all over the place."
@@ -519,6 +521,85 @@ reload brought the fight back with no container to win (#241, row 52).
   works; A reloads: still beaten. Dodongo and Volvagia: their arena floor (`BossGroundChange`) is not in the set
   (NotShared, the stale mend clears it); an absent player's beaten room must still show a floor that works. A player still inside the dungeon (not in the room) at the kill gets the set only
   once they leave its scene; until then, as before, nobody is pulled into that room again.
+
+## Boss turns: every player fights the boss (2026-11-21)
+**Seen.** In two-player runs and a player's report, Phantom Ganon went for one player the whole fight, and only that
+player played his ball rally. The boss's AI runs in its owner's game alone, and it fights that game's Link. Other
+players' puppets are perceived (above), but a target sticks once chosen, and a puppet has no body: the ball passes
+through it in the owner's game, and in the puppet's own game the ball is a copy that its sword cannot send back.
+
+**What changed (server, `Session::next_turn`).** A boss in its fight takes turns. Once one owner has had it for
+`boss_turn_us` (20 s, from the fight's start or the last change of owner), the server asks it over to the next player
+by player number, round and round (1, 2, 3, 4, 1 ...). That player's game then runs the boss, and its AI goes for
+that player's Link: the ball rally, the charges and the breath are played with each player in turn, with the real
+hit and reflection in that player's own game. The turn goes only to a player whose game has it loaded, has played its
+intro (`unready` is not set), is up and playing (not paused, downed, dead or in an event) and stands within
+`boss_turn_m` (40 m) of it. It waits for a calm moment: no hit passed on for `boss_turn_quiet_us` (3 s), the owner not
+hitting it (`boss_owner_hit_hold_us`), its life above 0, and its owner's animation no death and no cutscene. A shot of
+the owner's game still in the air does not hold it (2026-11-21: that hold, `boss_turn_shot_us`, met the attack-end
+edge right after every shooting attack, and Phantom Ganon got no turn at all in the proof run); his rally ball is a
+split shot, each game's own ([boss-multiplayer.md](boss-multiplayer.md)). A hand-over carries the boss's state as
+every other one does (native boss sync, the life with every hit in it). `boss_turn_us` 0 turns it off. Counted in
+the server's `enemies:` line as `boss turns`.
+
+**Only at the end of the boss's own attack (boss-turns-0119, the gates from boss-0119).** Geno's rule above is the
+one turn rule; it now also waits for the boss's own attack edge, read in the owner's game:
+- *The attack, the game's own.* The owner's walk reads the attributes of the boss's five action slots' verbs from its
+  BSA, as the game's own "has action verb attribute" method does (main+0x507be0: verbs at BSA +0x54, the verb table at
+  +0x1a40, 16-byte entries, 282 verbs, bits at +8). Attack is attribute bit 0, Interrupt (the reaction moves that cut
+  a move) bit 1, in all 33 ActionVerbAttributesSettings of the bosses, mid-bosses, Iron Knuckles, Dead Hand and the
+  shooters (checked offline in boss-target-0118: Attack on 23 verbs, Interrupt on 47, no mismatch). Each sample of a
+  boss carries `object_state::attack_read`, and `attacking` while its attack sequence runs ([protocol.md](protocol.md)).
+- *A reaction never ends a turn (`addr::InAttackSequence`, per actor).* After an Interrupt the sequence stays on until
+  the boss's own next attack, and falls where that attack ends. Phantom Ganon's SmallDamage (verb 134) runs on into
+  'Run' (verb 40, no attribute), the reaction's tail: handed over there, the new owner's game started Run over and
+  nothing ended it (lane runs 20261120-180245, -184021).
+- *The server (`Session::note_attack`, `next_turn`).* The turn passes only within `boss_turn_edge_us` (1 s) of the
+  owner's sample where the bit fell, after the 20 s and with every calm rule above, and never in a stun animation
+  (`anim::IsStun`: Stun, Down, Fall, Faint). An edge missed for a hit waits for the next attack's end. An edge is read
+  only within one owner's epoch: the old owner's last "attacking" is never the new owner's end. An owner whose samples
+  never say `attack_read` (an older build) keeps its boss, so a boss is never handed over blind. Nor is a turn given TO
+  an older build: a game takes turns only when its presence lists the boss with `object_presence::takes_turns`
+  (boss-turns-older-0119), else it would keep the boss for the rest of the fight; the next game by number gets it. A phase with no
+  attack (Phantom Ganon in his paintings, Gohma on the ceiling, Volvagia burrowed) never gives a turn.
+- *The new owner goes on (`CoopBossNative::PlanMadeOurs`).* Handed over between moves, the copy's own brain asked the
+  move its body runs: nothing is asked again, its AI goes on from that phase and move. Mid-move (a forced hand-over:
+  owner downed or gone) the row 178 start-over or the row 149 re-choice, as before.
+- *Every boss fights the Player only* while turns are on (`LICHII_COOP_BOSS_TURNS`, on unless "0";
+  `Table::PlayerOnlyBoss`): a boss whose perception picked a puppet gets no attack permission, never attacks, so never
+  reaches an attack end. Each game's boss fights its own Link; the turns bring it to each player.
+- *The stall count goes on (`Table::Hold`)* through the re-choice's own short move, so a boss stuck after a forced
+  hand-over reaches 3 re-choices and the server's stall rule frees its fight lock (row 149).
+- Each turn is logged by the server: `boss turns: <actor> of player N: its attack ended: to player M (turn K)`.
+- Solo or idle: no other fit player, no turn; the hook reads attacks only to send them.
+
+**Every boss checked for the edge and for a phase change in a turn.** The edge is the generic read above (the same
+two bits in every setting), so no boss needs a list of its own moves. A phase change comes from a hit (its reaction
+is Interrupt, latched to the next attack's end, and the 3 s quiet), an event (event animation, busy owner) or a stun
+(stun animation); each holds the turn. The phases with no attack (the list boss-target-0118 found) give no
+turn at all. Read from the code and the earlier runs; only Phantom Ganon has had lane runs:
+- Gohma (eggs, larvae follow her): ceiling wait, no attack: no turn. Before her fight: never stuck (row 189).
+- King Dodongo (roll centre a part): his roll, no attack: no turn until an attack ends after it.
+- Barinade (tentacles, jellyfish parts): the jellyfish phase, no attack: no turn.
+- Phantom Ganon: inside his paintings, no attack: no turn; the ball rally (the shot rule too); SmallDamage's tail.
+- Volvagia: burrowed, no attack: no turn.
+- Morpha: in her water, no attack: no turn.
+- Bongo Bongo (hands are parts, they follow the root): the hands' phase, no attack on the root: no turn.
+- Twinrova (Koume, Kotake as parts): in the air, no attack: no turn; the merge is an event.
+- Ganondorf: in the air, no attack: no turn; ball rally as Phantom Ganon's. No ready gate (no `CoopBoss::Room`).
+- Ganon: no ready gate; never at life 0, in a death, an event or a stun animation.
+- Mid-bosses (Dark Link, Iron Knuckle, Flare Dancer, Big Octo, Lizalfos, Gerudo Thief, Poe sisters, Dead Hand): the
+  same read (Dark Link has 286 verbs: his top 4 read entry 0, as the game itself does).
+
+**Tests.** `tests/server/session_test.cpp`: "boss turns" (three players, round by number; a calm moment, near, up and
+ready; a shot in the air does not hold it; each at an attack's end), "boss-turns-0119" (no turn in a phase with no attack, waits for
+the attack's end, a stale edge, no attack read, a stun, the old owner's attack). `tests/lichii/boss_native_test.cpp`
+(the attribute word, the attack sequence after a reaction, PlanMadeOurs, the stall count), `objects_test.cpp` (the
+sample bits).
+
+**Not proven in game.** That every boss's AI takes a turn well from a copy's state (the phase jumps seen when the
+near rule moved bosses before native boss sync), and that 20 s is a good length. Check: two players fight Phantom
+Ganon; each gets his ball in turn and can send it back; Volvagia, Morpha and Twinrova go for each player in turn.
 
 ## A boss stuck in one move (tracker row 149, 0.11.6)
 

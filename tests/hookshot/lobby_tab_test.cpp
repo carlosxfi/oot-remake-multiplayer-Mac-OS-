@@ -306,6 +306,41 @@ TEST_CASE("lobby tab: co-op started but not in the session yet says so, not 'not
     l.waiting = "Your friend's game turned this one away: the session is full.";
     t.Set(l);
     CHECK(t.view().rows[1].name == l.waiting);
+    CHECK(t.view().rows[2].name == "The players show here once this game is in the session.");
+    l.waiting_next = "Ask the host to choose Host (Multiplayer tab, or the title screen). Keep this page open: it joins "
+                     "by itself.";
+    t.Set(l);
+    CHECK(t.view().rows[2].name == l.waiting_next);
+}
+
+TEST_CASE("lobby tab: a join with no host to answer says so, not 'Co-op is starting...' forever (row 208)") {
+    // (hos_coop_host.h: 0 idle, 1 starting, 2 hosting, 3 joining, 4 waiting for the host, 5 connected, 6 failed)
+    CHECK(WaitingText(0, "", false, 0) == Waiting{});
+    CHECK(WaitingText(6, "", false, 99999) == Waiting{});
+    // Our own hosting: as before.
+    CHECK(WaitingText(1, "", false, 0).line == "Co-op is starting...");
+    CHECK(WaitingText(2, "", false, kNoAnswerMs * 3).line == "Co-op is starting...");
+    CHECK(WaitingText(2, "", false, 0).next.empty());
+    // Joining: first looking, then (no session after kNoAnswerMs) the host has not answered: Host first.
+    CHECK(WaitingText(3, "", false, 0).line == "Looking for the host's game...");
+    CHECK(WaitingText(5, "", false, kNoAnswerMs - 1).line == "Joining the host's game...");
+    for (const int state : {3, 5}) {
+        const Waiting w = WaitingText(state, "", false, kNoAnswerMs);
+        CHECK(w.line == "The host's game has not answered yet.");
+        CHECK(w.next ==
+              "Ask the host to choose Host (Multiplayer tab, or the title screen). Keep this page open: it joins by itself.");
+    }
+    // The host's PC did not answer directly: at once, with the ANSWER CODE.
+    const Waiting answer = WaitingText(4, "ANSWER-1234", false, 0);
+    CHECK(answer.line == "The host's game has not answered yet.");
+    CHECK(answer.next == "Ask the host to choose Host (Multiplayer tab, or the title screen). If they host already, "
+                         "send them this answer code: ANSWER-1234");
+    // Held by the host's approval (approve_joins): the host has to let us in, whatever the state and time.
+    for (const int state : {3, 4, 5}) {
+        const Waiting held = WaitingText(state, "ANSWER-1234", true, kNoAnswerMs * 2);
+        CHECK(held.line == "The host has to let you in.");
+        CHECK(held.next == "They answer with /allow in their chat. This page joins by itself once they do.");
+    }
 }
 
 TEST_CASE("lobby tab: in the session before a file is loaded, the players show with a line to load one") {

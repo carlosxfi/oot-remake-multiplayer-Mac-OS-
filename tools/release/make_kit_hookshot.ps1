@@ -62,7 +62,7 @@ function Get-Sha([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SH
 # What goes in. Files listed here and nowhere else, so a review sees the whole kit in one place.
 $KitTop = @('Start Squadala.bat', 'README.txt', 'Revert.bat', 'start-server.cmd', 'make-puppet-pack.cmd', 'coop-options.ini', 'NVIDIA DLSS.bat')
 $KitScripts = @('start.ps1', 'start-checks.ps1', 'play.ps1', 'coop-ini.ps1', 'kit-paths.ps1', 'hosting.ps1', 'relay-join.ps1',
-    'invite.ps1', 'hookshot-build.ps1', 'apply_patch.py', 'discord_status.py', 'update.ps1', 'start-server.ps1', 'collect-logs.ps1', 'collect-logs.cmd', 'problem-report.ps1', 'problem-report.cmd',
+    'invite.ps1', 'hookshot-build.ps1', 'apply_patch.py', 'discord_status.py', 'update.ps1', 'start-server.ps1', 'collect-logs.ps1', 'collect-logs.cmd', 'problem-report.ps1', 'problem-report.cmd', 'problem-send.ps1', 'problem-send-url.txt',
     'log-mask.ps1', 'windows-checks.ps1', 'console-mode.ps1')
 $KitDocs = @(@('setup.md', 'SETUP.md'), @('known-issues.md', 'KNOWN-ISSUES.md'))
 # Never in this kit (emulator kits only); make_kit_hookshot refuses a kit that has one.

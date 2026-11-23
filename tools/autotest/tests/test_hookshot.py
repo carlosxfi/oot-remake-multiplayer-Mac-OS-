@@ -861,6 +861,8 @@ class RunTest(unittest.TestCase):
             self.assertEqual([p.env.get("ONLY_B") for p in started], [None, "1"])
             self.assertEqual([p.env["BOTH"] for p in started], ["1", "1"])
             self.assertEqual([p.env["LICHII_COOP_TEST_OWN_SAVE"] for p in started], ["1", "1"])   # each game its own save
+            # no crash ask on the title to take the load's A presses (TEST_GAME_DEFAULTS; smoke hs-players, kit-0119)
+            self.assertEqual([p.env["LICHII_COOP_PROBLEM_ASK"] for p in started], ["0", "0"])
             ga, gb = fakes.values()
             for g in (ga, gb):
                 shots = [os.path.basename(r["path"]) for r in g.cmds("shot")]

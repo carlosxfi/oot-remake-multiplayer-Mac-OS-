@@ -214,7 +214,20 @@ TEST_CASE("title menu: Host and Join in plain words, nothing about ports or pass
     j.answer = "QWERT-YUPAS";
     s = PlainStatus(j);
     CHECK(s[0] == "Your friend's router blocks the way in.");
+    CHECK(s[1] == "Send your friend this answer code; they press \"Paste friend's answer\" on their Host page:");
     CHECK(s[2] == "QWERT-YUPAS");
+    // Row 209: still no way in after the helper's wait. That can be a host who has not pasted yet, so the answer code
+    // and where to paste it stay on the page; the VPN is for when a paste did not help (review-ui-tabs-0119).
+    j.problem = HOS_COOP_PROBLEM_NO_WAY;
+    s = PlainStatus(j);
+    REQUIRE(s.size() == 4);
+    CHECK(s[0] == "Your friend's router blocks the way in.");
+    CHECK(s[1] == "Send your friend this answer code; they press \"Paste friend's answer\" on their Host page:");
+    CHECK(s[2] == "QWERT-YUPAS");
+    CHECK(s[3].rfind("If they pasted it and nothing happens", 0) == 0);
+    CHECK(s[3].find("Radmin VPN or Tailscale") != std::string::npos);
+    CHECK(s[3].find("\"VPN\" on their Host page") != std::string::npos);
+    j.problem = HOS_COOP_PROBLEM_NONE;
     for (const auto& st : {HOS_COOP_STARTING, HOS_COOP_HOSTING, HOS_COOP_JOINING, HOS_COOP_WAIT_HOST, HOS_COOP_CONNECTED,
                            HOS_COOP_FAILED}) {
         for (const bool host : {true, false}) {
@@ -883,17 +896,23 @@ TEST_CASE("title menu: Skip title screen is free solo and held while co-op does 
     CHECK(std::string(SkipTitleHold(join)) == "co-op is joining");
 }
 
-TEST_CASE("title menu: approve_joins (the host's) is read from coop-options.ini, off without a line, never rewritten") {
+TEST_CASE("title menu: approve_joins (the host's) is read from coop-options.ini, off without a line, kept as written") {
     CHECK_FALSE(Options::Read("", "").approve_joins);
     CHECK_FALSE(Options::Read("", "# approve_joins = on\r\n").approve_joins);
     CHECK_FALSE(Options::Read("", "approve_joins = off\r\n").approve_joins);
     CHECK(Options::Read("", "approve_joins = on\r\n").approve_joins);
-    // No row edits it: the line stays as the player wrote it.
-    const Options o = Options::Read("", "approve_joins = yes\r\n");
+    // Unchanged, the line stays as the player wrote it; Co-op settings' Approve joins row writes a change.
+    Options o = Options::Read("", "approve_joins = yes\r\n");
     CHECK(o.approve_joins);
     std::string coop, options = "approve_joins = yes\r\n";
     o.Write(coop, options);
     CHECK(IniGet(options, "approve_joins") == "yes");
+    o.approve_joins = false;
+    o.Write(coop, options);
+    CHECK_FALSE(Options::Read("", options).approve_joins);
+    o.approve_joins = true;
+    o.Write(coop, options);
+    CHECK(IniGet(options, "approve_joins") == "on");
 }
 
 TEST_CASE("title menu: auto_rejoin is off unless coop-options.ini turns it on, and the page's row writes it") {
@@ -933,15 +952,15 @@ TEST_CASE("title menu: Start, Multiplayer, Options on the game's three, Multipla
     CHECK(std::string(l.rows[1].label) == "0105");
     CHECK(l.rows[1].action == TitleDo::kGame);
     CHECK(l.rows[2].action == TitleDo::kMultiplayer);
-    // The submenu: the game's fourth slot shown, all four the module's, the cursor on Host.
+    // The submenu: the game's fourth slot shown, all four the module's, the cursor on Join (first).
     for (const bool any : {true, false}) {
         for (const bool one : {true, false}) {
             l = MenuFor(any, true, one);
             CHECK(l.btn_num_frame == 4);
             CHECK(l.count == 4);
             CHECK(l.focus == 0);
-            CHECK(l.rows[0].action == TitleDo::kHost);
-            CHECK(l.rows[1].action == TitleDo::kJoin);
+            CHECK(l.rows[0].action == TitleDo::kJoin);
+            CHECK(l.rows[1].action == TitleDo::kHost);
             CHECK(l.rows[2].action == TitleDo::kSettings);
             CHECK(l.rows[3].action == TitleDo::kBack);
         }

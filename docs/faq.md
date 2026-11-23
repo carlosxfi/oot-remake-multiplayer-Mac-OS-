@@ -31,6 +31,10 @@ In the kit: `hookshot\game\bin\user\save\`. They are your own and stay on your P
 
 We never ship save files, keys, firmware or the game in a release or in this repository: each player uses their own.
 
+## I started longshot.exe and cannot see my friend
+
+Always start with **Start Squadala.bat** (`bash start-squadala.sh` on Linux), never `longshot.exe`. You do not need your own Longshot build: the kit builds its own game, in its `hookshotgame` folder, with co-op inside. A Longshot you built or downloaded yourself has no co-op at all, so it cannot see anyone. The kit's own `longshot.exe` started by hand has co-op, but not what the start file adds (the puppet pack that gives the others their Link and colours, your settings, the update check), so the game's chat says "This game was not started with Start Squadala.bat" and the others may show as names only. Close the game and start the kit with Start Squadala.bat (the **Play OoT Co-op** shortcut on your desktop does the same). Your saves are not touched either way.
+
 ## Start Squadala.bat or Start OoT Co-op.bat?
 
 `Start Squadala.bat` (`bash start-squadala.sh` on Linux). It is the only start file from 0.11.4 on; `Start OoT Co-op.bat` (`start-oot-coop.sh`) was its old name. When your kit updates to 0.11.4, your desktop and Start menu shortcuts, the Linux menu entry and your Steam entry are moved over to the new name and the old file goes. If Steam was open at the time, restart it once.

@@ -227,16 +227,18 @@ class FlagWatcher {
   std::vector<OneWayRestore> take_one_way_restores() { return std::exchange(one_way_restored_, {}); }
   // Row 140 (flag-oneway-c): the game itself writes some one-way values from its own copy (the HUD screen's floors,
   // written back to EnteredFloorBit while Link is in the dungeon), so a put-back the game lowers again on the next
-  // read is a fight we never win (49,223 put-backs in one host's session). A drop within kUndoPasses diff passes of
-  // our last put-back counts as undone; after kMaxQuickUndos of those in a row the key is the game's own until the
-  // next load window (set_loading): not put back, not sent (the group keeps its value). One-off drops (issue 146)
-  // are still put back.
-  static constexpr std::uint64_t kUndoPasses = 2;
+  // read is a fight we never win (49,223 put-backs in one host's session). Row 183 (a map that flickered "like
+  // equipping and unequipping" after it was picked up): counting only drops within 2 diff passes let a game that
+  // lowers the value a little later than that win forever, each put-back with a HUD refresh. So every drop of a
+  // value we put back counts, however long after, until the next load window (a room or scene load clears the
+  // count: issue 146's drop at a room change is still put back in each room); after kMaxQuickUndos the key is the
+  // game's own until that window (set_loading): not put back, not sent (the group keeps its value), owed after it.
   static constexpr int kMaxQuickUndos = 2;
   std::vector<FlagKey> take_one_way_left() { return std::exchange(one_way_left_, {}); }
   // Row 140 (review of flag-oneway-c): the game lowers these from the HUD screen's own copy, which reads the flag in
   // only at its init and refresh, so a put-back must reach that copy or it is lowered again. True when a one-way
-  // dungeon value was put back since the last call (every put-back, not only a key's first): the hook asks the
+  // dungeon value was put back since the last call with a value the HUD was not given yet in this load window (row
+  // 183: the same value again changes nothing for the HUD, and each refresh redraws it: the flicker): the hook asks the
   // game's own HUD refresh on the same frame (CoopMapRefresh WantNow). A value left to the game is put back once more
   // when the next room or scene load window ends (not after a save load: another save's floors are not this one's),
   // with that refresh, so the other player's floors reach the copy after a room load at the latest.
@@ -582,7 +584,7 @@ class FlagWatcher {
   std::set<FlagKey> one_way_told_;           // keys take_one_way_restores gave once
   struct PutBack {
     std::uint64_t pass = 0;  // diff pass of our last put-back
-    int undone = 0;          // drops right after it, in a row
+    int undone = 0;          // drops after it since the load window began (row 183: however long after)
   };
   std::map<FlagKey, PutBack> put_back_;   // row 140: one-way put-backs
   std::set<FlagKey> game_owned_;          // row 140: left to the game until the next load window
@@ -590,6 +592,8 @@ class FlagWatcher {
   std::map<FlagKey, protocol::FlagEntry> owed_;     // row 140: left to the game: the group's value, put back after a room load
   bool owed_due_ = false;                 // a room or scene load window ended (no save load): put owed_ back
   bool hud_refresh_ = false;              // take_hud_refresh
+  std::map<FlagKey, std::uint32_t> hud_given_;  // row 183: the value each HUD item's refresh was asked for, this window
+  void ask_hud(FlagKey key, std::uint32_t value);
   // Row 140: puts owed_ back (ORed with the game's floors), each once, after a room or scene load window.
   void put_owed(FlagStore& store);
   std::vector<KeepsFailing> keeps_failing_;  // row 140: note_write_failure, kFailureSayAt

@@ -528,8 +528,14 @@ function Update-KitStartLinks([string]$KitDir) {
     }
     $shell = $null
     $leaf = Split-Path -Leaf $root
+    # Bounded (0.11.9): a Desktop holding project folders took 30 s to walk with -Recurse, which made -Status miss
+    # play.ps1's 15 s. Shortcuts sit at most 2 folders down (Start menu\Programs\Folder\x.lnk), and the whole scan stops
+    # after 8 s whatever is left.
+    $deadline = [DateTime]::UtcNow.AddSeconds($(if ($env:OOT_COOP_LINKS_SECONDS) { [double]$env:OOT_COOP_LINKS_SECONDS } else { 8 }))
     foreach ($d in Get-KitShortcutDirs) {
-        foreach ($f in @(Get-ChildItem -LiteralPath $d -Filter '*.lnk' -File -Recurse -ErrorAction SilentlyContinue)) {
+        if ([DateTime]::UtcNow -gt $deadline) { break }
+        foreach ($f in @(Get-ChildItem -LiteralPath $d -Filter '*.lnk' -File -Recurse -Depth 3 -ErrorAction SilentlyContinue)) {
+            if ([DateTime]::UtcNow -gt $deadline) { break }
             try {
                 # (only a shortcut that names this kit's folder is opened: the Start menu holds hundreds)
                 $raw = [System.IO.File]::ReadAllBytes($f.FullName)
@@ -1066,7 +1072,8 @@ function Invoke-KitUpdate {
     if (-not $unfinished) { Update-KitOptions $dir | Out-Null }
     # Shortcuts to a start file that is gone (the old "Start OoT Co-op.bat" after an update by an older updater) follow
     # the kit's start file (said with -Tidy; -Status prints only its one line).
-    if (-not $unfinished) {
+    # -Status does it after its line is printed (below): the line must not wait for the shortcut scan.
+    if (-not $unfinished -and -not $Status) {
         $links = @(Update-KitStartLinks $dir)
         if ($Tidy) { foreach ($l in $links) { Write-Host $l } }
     }
@@ -1077,12 +1084,17 @@ function Invoke-KitUpdate {
 
     if ($Status) {
         # Straight to stdout: a function's own output would become its return value.
-        if ($unfinished) { [Console]::Out.WriteLine('unfinished'); return 0 }
+        # (flushed before the shortcut scan: play.ps1 reads this line even when it stops the scan at its time limit)
+        if ($unfinished) { [Console]::Out.WriteLine('unfinished'); [Console]::Out.Flush(); return 0 }
+        $line = ''
         try { $newest = Select-KitRelease (Read-KitReleaseList $list) } catch {
-            [Console]::Out.WriteLine('failed ' + (Get-KitErrorText $_))
-            return 0
+            $line = 'failed ' + (Get-KitErrorText $_)
         }
-        if ($newest -and (& $wanted $newest.Tag)) { [Console]::Out.WriteLine("newer $($newest.Tag)") }
+        if (-not $line -and $newest -and (& $wanted $newest.Tag)) { $line = "newer $($newest.Tag)" }
+        # (nothing to say is a line too, 'current': a check cut off after this point is an answer, not a silence)
+        [Console]::Out.WriteLine($(if ($line) { $line } else { 'current' }))
+        [Console]::Out.Flush()
+        [void](Update-KitStartLinks $dir)
         return 0
     }
     if ($Check) {

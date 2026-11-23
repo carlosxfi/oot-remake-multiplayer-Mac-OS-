@@ -31,6 +31,7 @@ void OneWayKeeper::reset() {
   wait_.clear();
   put_.clear();
   refused_.clear();
+  hud_given_.clear();
   ++stats_.resets;
 }
 
@@ -42,6 +43,9 @@ std::vector<FlagKey> OneWayKeeper::frame(FlagStore& store, bool in_play, const s
     // no scene at all is the title screen: a save is being loaded.
     no_scene_ = scene ? 0 : no_scene_ + static_cast<int>(step);
     if (no_scene_ >= kTitleFrames) save_load_ = true;
+    // Row 183: a room or scene load reads the game's copies (the HUD's) in again: the count starts again.
+    put_.clear();
+    hud_given_.clear();
     return restored;
   }
   no_scene_ = 0;
@@ -53,6 +57,7 @@ std::vector<FlagKey> OneWayKeeper::frame(FlagStore& store, bool in_play, const s
     wait_.clear();
     put_.clear();
     refused_.clear();
+    hud_given_.clear();
     ++stats_.save_loads;
     save_load_seen_ = true;
   }
@@ -81,8 +86,7 @@ std::vector<FlagKey> OneWayKeeper::frame(FlagStore& store, bool in_play, const s
     // Given here, 0 now, in its dungeon, no save load between: the game
     // took it back.
     const auto pb = put_.find(k.key);
-    const bool quick = pb != put_.end() && now_ - pb->second.at <= kWriteWait + kUndoTicks;
-    const int undone = quick ? pb->second.undone + 1 : 0;
+    const int undone = pb != put_.end() ? pb->second.undone + 1 : 0;   // row 183: however long after our write
     if (undone >= kMaxQuickUndos || refused_[k.key] >= kMaxRefused) {
       // Row 140: the game lowered it again right after our write, kMaxQuickUndos times in a row (or refuses the
       // write): its own value until it gives it again.
@@ -100,6 +104,7 @@ std::vector<FlagKey> OneWayKeeper::frame(FlagStore& store, bool in_play, const s
       refused_.erase(k.key);
       restored.push_back(k.key);
       wait_[k.key] = kWriteWait;
+      if (hud_given_.insert(k.key).second) hud_refresh_ = true;   // row 183: once per flag per load
     } else {
       ++stats_.failures;
       ++refused_[k.key];  // left on the next frame at kMaxRefused (row 140)

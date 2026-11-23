@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "coop/protocol/messages.hpp"
+#include "coop/protocol/scene_place.hpp"
 
 namespace coop::host {
 
@@ -38,24 +39,15 @@ inline bool same_scene(const std::optional<std::string_view>& a,
   return a && b && !a->empty() && *a == *b;
 }
 
-// The place a scene shows, without the era: "Graveyard_Adult" and
-// "Graveyard_Child" are the same graveyard seven years apart. Only a trailing
-// "_Child" or "_Adult" is dropped.
-inline std::string_view place_of(std::string_view scene) {
-  for (const std::string_view era : {std::string_view("_Child"), std::string_view("_Adult")}) {
-    if (scene.size() > era.size() && scene.substr(scene.size() - era.size()) == era) {
-      return scene.substr(0, scene.size() - era.size());
-    }
-  }
-  return scene;
-}
+// The place a scene shows, without the era (coop/protocol/scene_place.hpp, shared with the server).
+inline std::string_view place_of(std::string_view scene) { return protocol::place_of(scene); }
 
 // True when both scenes are known and show the same place, in either era: a
 // child and an adult player in the two Graveyards see each other's puppet.
 // Shared objects and flags still need the same scene (same_scene).
 inline bool same_place(const std::optional<std::string_view>& a,
                        const std::optional<std::string_view>& b) {
-  return a && b && !a->empty() && place_of(*a) == place_of(*b);
+  return a && b && protocol::same_place(*a, *b);
 }
 
 // The "in cutscene" bit of a PLAYER_STATUS flags byte. The sender sets it

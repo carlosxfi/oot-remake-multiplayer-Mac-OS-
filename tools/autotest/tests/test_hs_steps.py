@@ -383,6 +383,22 @@ class HookshotGamesTest(unittest.TestCase):
         self.g.close("B")
         self.g.finish()
 
+    def test_each_start_gets_the_test_defaults_a_switch_wins(self):
+        # Its own save and no crash ask on the title (a crash record of an earlier run took the load's A presses:
+        # smoke hs-players, kit-0119); the same pairs as hookshot.py's, and a run's switch still wins.
+        import hookshot
+        self.assertEqual(hs.TEST_GAME_DEFAULTS, hookshot.TEST_GAME_DEFAULTS)
+        seen, popen = [], hs.subprocess.Popen
+        hs.subprocess.Popen = lambda args, **k: seen.append(k["env"]) or popen(args, **k)
+        try:
+            self.g.start("A", "", wait=False)
+            self.g.env = ["LICHII_COOP_PROBLEM_ASK=1"]
+            self.g.start("B", "", wait=False)
+        finally:
+            hs.subprocess.Popen = popen
+        self.assertEqual([e["LICHII_COOP_PROBLEM_ASK"] for e in seen], ["0", "1"])
+        self.assertEqual([e["LICHII_COOP_TEST_OWN_SAVE"] for e in seen], ["1", "1"])
+
     def test_log_is_the_captured_output_when_the_game_writes_no_file(self):
         # Hookshot writes longshot_log.txt only when its stderr goes nowhere; here stderr is game-out-<x>-<n>.txt.
         self.g.start("A", "", wait=False)

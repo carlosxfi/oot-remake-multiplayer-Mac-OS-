@@ -157,6 +157,7 @@ void Decide() {
 
 void NoteSaveDirLocked(const fs::path& dir);
 bool RemountLocked(const fs::path& dir);
+void FixSlotsLocked();
 save::WriteResult WriteSlotTo(const fs::path& dir, const save::SaveSlot& slot, bool played_from = true);
 void PendingFrame();
 void AskAtTitle();
@@ -342,7 +343,76 @@ bool RemountLocked(const fs::path& dir) {
     NoteSaveDirLocked(dir);
     g_list_stale = true;
     LOG_INFO(Core, "coop: save: the save folder is now {}: the game re-reads its save list on the title", dir.string());
+    FixSlotsLocked();   // (rows 239/240/241: the folder switched to, before its list is offered)
     return true;
+}
+
+SaveFixFn g_save_fix;   // SetSaveFix (g_mutex)
+
+// Rows 239/240/241: the host's save put right before it is written, so the game never reads a pick it has no model for.
+save::SaveSlot FixedSlotLocked(const save::SaveSlot& slot) {
+    save::SaveSlot out = slot;
+    if (!g_save_fix) return out;
+    for (auto& f : out.files) {
+        if (f.name != "progress.sav") continue;
+        if (const std::string line = g_save_fix(f.bytes); !line.empty()) {
+            LOG_INFO(Core, "coop: save: the host's save: {}", line);
+        }
+    }
+    return out;
+}
+
+// Rows 239/240/241: every slot of the folder the game plays from, each time the title comes up (the player's own saves,
+// a save set switched to, a host's save written before this fix). Only a slot that changes is written, whole, through a
+// temporary file.
+void FixSlotsLocked() {
+    if (!g_save_fix || g_dir.empty()) return;
+    std::error_code ec;
+    for (fs::directory_iterator it(g_dir, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code dec;
+        if (!it->is_directory(dec)) continue;
+        const fs::path file = it->path() / "progress.sav";
+        std::FILE* in = nullptr;
+#ifdef _MSC_VER
+        if (_wfopen_s(&in, file.c_str(), L"rb") != 0) in = nullptr;
+#else
+        in = std::fopen(file.c_str(), "rb");
+#endif
+        if (in == nullptr) continue;
+        std::vector<std::uint8_t> bytes;
+        std::uint8_t buf[65536];
+        for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, in)) > 0;) bytes.insert(bytes.end(), buf, buf + n);
+        std::fclose(in);
+        const std::string line = g_save_fix(bytes);
+        if (line.empty()) continue;
+        // (the slot as it was, once: progress.sav.coop-pick-backup beside it, never written over by a later fix)
+        const fs::path backup = it->path() / "progress.sav.coop-pick-backup";
+        std::error_code bec;
+        if (!fs::exists(backup, bec)) fs::copy_file(file, backup, bec);
+        if (bec) {
+            LOG_WARNING(Core, "coop: save: {}: no backup could be made ({}): left as it is",
+                        it->path().filename().string(), bec.message());
+            continue;
+        }
+        const fs::path tmp = it->path() / "progress.sav.coop-tmp";
+        std::FILE* out = nullptr;
+#ifdef _MSC_VER
+        if (_wfopen_s(&out, tmp.c_str(), L"wb") != 0) out = nullptr;
+#else
+        out = std::fopen(tmp.c_str(), "wb");
+#endif
+        bool ok = out != nullptr && std::fwrite(bytes.data(), 1, bytes.size(), out) == bytes.size();
+        if (out != nullptr) ok = std::fclose(out) == 0 && ok;
+        std::error_code rec;
+        if (ok) fs::rename(tmp, file, rec);
+        if (!ok || rec) {
+            fs::remove(tmp, rec);
+            LOG_WARNING(Core, "coop: save: {}: {} (could not be written: the game may not show the world with it)",
+                        it->path().filename().string(), line);
+            continue;
+        }
+        LOG_INFO(Core, "coop: save: {}: {}", it->path().filename().string(), line);
+    }
 }
 
 #if defined(__APPLE__) && defined(COOP_HOOKSHOT)
@@ -419,7 +489,8 @@ bool WriteInventory(const personal::Counts& counts) {
 
 // Under g_mutex: the host's slot written whole into the co-op folder `dir`.
 // `played_from`: the game already plays from `dir` (else Success is said once it is switched to: PendingFrame).
-save::WriteResult WriteSlotTo(const fs::path& dir, const save::SaveSlot& slot, bool played_from) {
+save::WriteResult WriteSlotTo(const fs::path& dir, const save::SaveSlot& slot_in, bool played_from) {
+    const save::SaveSlot slot = FixedSlotLocked(slot_in);
     const auto* incoming = &slot;
 #if defined(__APPLE__) && defined(COOP_HOOKSHOT)
     g_profile_mounted = false;
@@ -678,12 +749,18 @@ std::string ApplySaveSetLocked() {
 
 }  // namespace
 
+void SetSaveFix(SaveFixFn fix) {
+    std::lock_guard lock(g_mutex);
+    g_save_fix = std::move(fix);
+}
+
 void NoteTitle(bool title_up) {
     if (title_up) {
         g_game_over_ms.store(0, std::memory_order_relaxed);  // Game Over's Quit Game: the next load is the player's pick
     }
     std::lock_guard lock(g_mutex);
     if (title_up && !g_title_up) {
+        FixSlotsLocked();      // (rows 239/240/241: before the player can load one of them)
         g_played.on_title();   // (a new pick follows: a file, or New Game)
         g_title_seen = true;
         if (std::exchange(g_guest_played, false)) g_title_ask = true;   // (decided by the next OnFrame: TitleResync)

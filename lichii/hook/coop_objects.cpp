@@ -96,6 +96,8 @@
 #include "core/loader/loader.h"
 #include "core/memory.h"
 #include "coop/host/game_flags.hpp"
+#include "coop_hook.h"
+#include "coop_pivot.h"
 #include "coop/host/game_items.hpp"
 #include "coop/host/session.hpp"
 #include "coop/net/client.hpp"
@@ -332,6 +334,50 @@ constexpr u64 kLastHitId = 0x1b18;
   // the copy's own AI took over: play again at most this often
 constexpr u64 kDriftLogUs = 5'000'000;
 constexpr u64 kActorComponents = 0x270;
+
+namespace {
+// Boss turns debug (always on, capped: no switch): each boss's attack starting or ending in our walk, with its five action
+// slots' verbs and their attribute bits; at most kMaxAttackNotes lines (plain enemies: their first 20 edges).
+void NoteAttackEdge(u64 actor, const std::string& name, bool attacking, const std::array<s32, 5>& verbs, u64 bits) {
+    static std::mutex m;
+    static std::map<u64, bool> last;
+    static std::size_t notes = 0, plain_notes = 0;
+    constexpr std::size_t kMaxAttackNotes = 400;
+    std::lock_guard lock(m);
+    if (last.size() >= 512) {
+        last.clear();  // (actors come and go with scenes: kept small; review-charsel-0118 m2)
+    }
+    auto [it, fresh] = last.try_emplace(actor, attacking);
+    if (!fresh && it->second == attacking) {
+        return;
+    }
+    it->second = attacking;
+    const bool boss = CoopObjects::IsBossOrPart(name);
+    if (notes >= kMaxAttackNotes || (!boss && plain_notes >= 20)) {
+        return;
+    }
+    ++notes;
+    if (!boss) {
+        ++plain_notes;
+    }
+    LOG_INFO(Core, "coop: bosses: turns: {} {:#x} {} (action verbs {} {} {} {} {}, attributes {:#x})", name, actor,
+             fresh ? (attacking ? "first read: attacking" : "first read: between moves")
+                   : (attacking ? "attack starts" : "attack ends"),
+             verbs[0], verbs[1], verbs[2], verbs[3], verbs[4], bits);
+}
+// Boss turns: each boss's attack sequence over our walks (CoopBossNative::addr::InAttackSequence: after a
+// reaction it stays on until its own next attack), kept by actor.
+bool InAttackSequenceOf(u64 actor, u64 bits, bool boss) {
+    namespace ba = CoopBossNative::addr;
+    static std::mutex m;
+    static std::map<u64, ba::AttackSequence> sequences;
+    std::lock_guard lock(m);
+    if (sequences.size() >= 512) {
+        sequences.clear();  // (actors come and go with scenes: kept small)
+    }
+    return ba::InAttackSequence(sequences[actor], bits, boss);
+}
+}  // namespace
 // LICHII_COOP_OBJECTS_AI_HOLD=1 or 2 (off by default; docs/objects.md
 // "Holding a copy's AI", coop_hold.h): the BSA component is table +0xb0
 // (0xcad060), and bit 0 of its u16 at +0xc4 is what QueryBsaIsBrainSkip (run
@@ -496,6 +542,9 @@ struct Actor {
     u64 hash = 0;
     std::optional<std::array<s32, 4>> life;  // life, max, copy of life, copy of max
     unsigned missed = 0;
+    float yaw_said = NAN;  // turning floors: the yaw last logged (degrees)
+    bool turn_seen = false;
+    std::string anim_said;  // the scream probe: the animation last logged
 };
 
 class Reader {
@@ -668,6 +717,18 @@ public:
         want_ms_ = CoopFrameClock::PresentAgeUs() != 0 ? CoopFrameClock::PresentAtMs() : SteadyMs();
     }
 
+    // The basement's turning floor (coop_pivot.h): turned to `t` from the next game frame on, one write a frame
+    // through the game's set-matrix call (its collision turns with it) until the turn is done.
+    void TurnFloor(u64 main, u64 actor, const std::array<float, 3>& at, const CoopPivot::Turn& t) {
+        std::lock_guard lock(mutex_);
+        main_ = main;
+        floor_ = FloorTurn{actor, at, t};
+    }
+    void StopFloor() {
+        std::lock_guard lock(mutex_);
+        floor_.reset();
+    }
+
     // deku-visuals-b (issue 147): run the game's own push-node start on a
     // block another game moved (CoopWorld::BlockNode::kStart_fn), on the
     // next game frame, after that frame's pose writes. `node` is checked by
@@ -808,6 +869,7 @@ public:
                 WriteHolds(guest);
             }
             work_ = poses_;
+            floor_due_ = floor_.has_value();
             std::erase_if(follow_, [this](const auto& f) {  // jitter-b: copies no longer followed
                 return std::none_of(work_.begin(), work_.end(),
                                     [&f](const Pose& p) { return p.actor == f.first && p.velocity; });
@@ -1043,6 +1105,27 @@ public:
             c.x[0] = a;
             c.x[1] = 0;
             return c;
+        }
+        // The turning floor (coop_pivot.h), once a frame while a turn is driven: its 3x3 for the turn's yaw now,
+        // its own place kept; the last write is the turn's end.
+        if (floor_due_) {
+            floor_due_ = false;
+            const FloorTurn f = *floor_;
+            const u64 now = SteadyMs();
+            if (f.turn.Done(now)) {
+                floor_.reset();
+            }
+            if (main_ != 0 && Alive(guest, f.actor)) {
+                const float yaw = f.turn.At(now) * 0.01745329f;
+                const float sn = std::sin(yaw), cs = std::cos(yaw);
+                const std::array<float, 12> m{f.at[0], f.at[1], f.at[2], cs, 0.0f, sn, 0.0f, 1.0f, 0.0f, -sn, 0.0f, cs};
+                guest.Write(f.actor + kActorPosition, m.data(), sizeof(m));
+                CoopPuppet::Call c;
+                c.function = main_ + kSetMatrix;
+                c.x[0] = f.actor;
+                c.x[1] = 0;
+                return c;
+            }
         }
         // Poses last: the cave makes at most CoopSvc::kCallsPerFrame calls a
         // frame for everyone, and a scene may hold more copies than are left.
@@ -1397,6 +1480,13 @@ private:
     CoopHitReplay::Replayer replayer_;  // the hit replay: its own locks (Step runs it under mutex_)
     u64 main_ = 0;
     std::vector<Pose> poses_;
+    struct FloorTurn {
+        u64 actor = 0;
+        std::array<float, 3> at{};
+        CoopPivot::Turn turn;
+    };
+    std::optional<FloorTurn> floor_;  // the turning floor's turn being driven (coop_pivot.h)
+    bool floor_due_ = false;          // this game frame's write not made yet
     std::unordered_map<u64, CoopFollow::Follower> follow_;  // jitter-b: by actor
     std::unordered_map<u64, coop::protocol::Vec3> drawn_;    // issue 239: the Follower's last place, by actor
     std::unordered_map<u64, coop::protocol::Vec3> steps_;    // issue 239: its last step
@@ -1749,6 +1839,79 @@ public:
             Reader r(system.ApplicationMemory());
             Walk(r);
         }
+        Pivot(system);
+    }
+
+    // The Forest Temple basement's turning floor (coop_pivot.h): found once a second while we are in the temple
+    // and it is not known; each scan its yaw and the shared direction go to the follower, whose turns the Mover
+    // drives. On unless LICHII_COOP_PIVOT=0.
+    void Pivot(Core::System& system) {
+        static const bool on = EnvOnUnlessZero("LICHII_COOP_PIVOT");
+        if (!on || main_ == 0) {
+            return;
+        }
+        const u64 now_ms = static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                 std::chrono::steady_clock::now().time_since_epoch())
+                                                 .count());
+        const auto forget = [this] {
+            if (pivot_actor_ != 0) {
+                pivot_actor_ = 0;
+                pivot_.Reset();
+                pivot_dir_said_.reset();
+                TheMover().StopFloor();
+            }
+        };
+        if (!CoopHook::CurrentMapView(pivot_view_) || pivot_view_.scene != "ForestTemple") {
+            forget();
+            return;
+        }
+        Reader r(system.ApplicationMemory());
+        if (pivot_actor_ != 0) {
+            const auto state = r.Get<u32>(pivot_actor_ + kActorState);
+            if (!state || (*state != kStateAlive && *state != kStateAsleep) || r.Name(pivot_actor_) != CoopPivot::kActor) {
+                forget();
+            }
+        }
+        if (pivot_actor_ == 0) {
+            if (now_ms < pivot_look_ms_) {
+                return;
+            }
+            pivot_look_ms_ = now_ms + 1000;
+            std::vector<u64> list;
+            if (!List(r, list)) {
+                return;
+            }
+            for (const u64 a : list) {
+                if (r.Name(a) == CoopPivot::kActor) {
+                    pivot_actor_ = a;
+                    break;
+                }
+            }
+            if (pivot_actor_ == 0) {
+                return;
+            }
+            LOG_INFO(Core, "coop: pivot: the turning floor {:#x} found (turned to the shared direction from now on)",
+                     pivot_actor_);
+        }
+        const auto m = r.Get<std::array<float, 9>>(pivot_actor_ + kActorRotation);
+        const auto at = r.Get<std::array<float, 3>>(pivot_actor_ + kActorPosition);
+        if (!m || !at) {
+            return;
+        }
+        const float yaw = std::atan2((*m)[2], (*m)[8]) * 57.29578f;
+        CoopHook::EmulatorMemory memory(system.ApplicationMemory(), main_);
+        const auto dir = coop::host::GameFlags(memory).get_int(CoopPivot::kFlagHash);
+        if (dir != pivot_dir_said_) {
+            LOG_INFO(Core, "coop: pivot: the direction flag reads {} (yaw {:.1f}; our floor at {:.1f})",
+                     dir ? std::to_string(*dir) : std::string("nothing"),
+                     dir ? CoopPivot::YawOfDir(*dir) : 0.0f, yaw);
+            pivot_dir_said_ = dir;
+        }
+        if (const auto t = pivot_.Look(now_ms, yaw, dir)) {
+            TheMover().TurnFloor(main_, pivot_actor_, *at, *t);
+            LOG_INFO(Core, "coop: pivot: our floor turned from {:.1f} to {:.1f} (direction {}) over {} ms", t->from,
+                     t->to, dir.value_or(0), t->ms);
+        }
     }
 
     // Present thread, after the session's frame. Not connected, or no scene:
@@ -1930,6 +2093,7 @@ public:
         {
             std::lock_guard lock(g_unready_mutex);
             sync_.SetUnready(g_unready);
+            sync_.SetTakesTurns(CoopBossNative::TheTable().TurnsOn());
             sync_.SetDying(g_dying);
         }
         sync_.Tick(*scene, self, server_now_us, seen, send, writes);
@@ -2058,6 +2222,11 @@ public:
                         owner = root_owner;
                     }
                 }
+                if (owner && *owner != 0 && *owner != self &&
+                    (sync_.GoneWithoutDeath(s.address) ||
+                     (sync_.OwnerSaysDead(s.address) && sync_.GoesWithoutDeath(s.address, share_now_us_)))) {
+                    continue;  // report 200: its owner killed our copy of their encounter: no death run here, it goes
+                }
                 if (owner && *owner != 0) {
                     const bool owner_dead = sync_.OwnerSaysDead(s.address);
                     const bool plain = !IsBossOrPart(s.name);  // (seen with a BSA only under LICHII_COOP_ENEMY_BRAIN)
@@ -2068,7 +2237,7 @@ public:
                                            s.name, *owner, s.life_component, owner_dead, plain,
                                            plain && CoopBossNative::PlainDeath(life, owner_dead),
                                            s.animation ? s.animation->name : std::string{}, life,
-                                           s.position};
+                                           s.position, s.attacking};
                     list.push_back(std::move(b));
                 }
             }
@@ -2301,6 +2470,23 @@ public:
                                               *node, fix.from, fix.to, fix.untouched)
                                         : CoopWorld::RestScan{};
                 if (node && !stale.busy) {
+                    // Puzzle diagnostics (a player report: a block puzzle solved for one player only): where the
+                    // block rests against its goal (node +0x4c, its link Gimmick_AnswerPosAnchor) and what its
+                    // IsOnAnswerPos port (+0x1f0, docs/world.md) holds here. Read only.
+                    float goal[3] = {NAN, NAN, NAN};
+                    for (int i = 0; i < 3; ++i) {
+                        if (const auto w = r.Get<u32>(*node + CoopWorld::BlockNode::kGoal + 4u * i)) {
+                            std::memcpy(&goal[i], &*w, 4);
+                        }
+                    }
+                    if (std::isfinite(goal[0]) && std::isfinite(goal[2])) {
+                        const float dx = fix.to[0] - goal[0], dz = fix.to[2] - goal[2];
+                        const auto port = r.Get<u64>(*node + 0x1f0);
+                        LOG_INFO(Core, "coop: world: {:016x} {} rests {:.2f} m from its answer spot ({:.2f} {:.2f}); "
+                                       "its on-answer port reads {:#x}",
+                                 fix.hash, fix.name, std::sqrt(dx * dx + dz * dz), goal[0], goal[2],
+                                 port.value_or(0));
+                    }
                     if (!stale.writes.empty()) {
                         TheMover().StartBlockNode(*node, fix.address, fix.from, fix.to, fix.untouched);
                         LOG_INFO(Core, "coop: world: {:016x} {} push node {:x}: its own start "
@@ -3924,7 +4110,8 @@ private:
                         ReadPvpCopies(r, a);  // PvP on real bodies (coop_pvp_native_game.cpp)
                     }
                     if (known.first == "Player_Child" || known.first == "Player_Adult") {
-                        GiveDbno(r, a, value->first + 8, life);  // down but not out (coop_dbno_game.h)
+                        GiveDbno(r, a, value->first + 8, life,
+                                 known.first == "Player_Adult");  // down but not out (coop_dbno_game.h)
                     }
                     // On by default (=0 turns it off): a MaxLife raised by
                     // another player is put into the component the hearts are
@@ -4093,6 +4280,31 @@ private:
                         if (own_hit_life) {
                             (void)NewOwnHitAt(r, a, *own_hit_life, s.position, own_hit_took_life);
                         }  // our own hit: its own reaction runs (NoteOwnHit) unless it took life (NoteOwnDamage)
+                    }
+                }
+                if (IsBossOrPart(s.name) || OnBrainPath(s.name)) {
+                    // Boss turns (Session::next_turn): its attack as its own game says (the attributes of
+                    // its current action verbs, Attack), sent in our samples so the server hands it on between attacks.
+                    if (const auto table = r.Ptr(a + kActorComponents)) {
+                        if (const auto bsa = r.Ptr(*table + CoopBossNative::addr::kComponentBsa); bsa && *bsa != 0) {
+                            namespace ba = CoopBossNative::addr;
+                            std::uint64_t bits = 0;
+                            std::array<s32, ba::kBsaActionSlots> verbs{};
+                            bool read = true;
+                            for (std::size_t slot = 0; slot < ba::kBsaActionSlots && read; ++slot) {
+                                const auto verb = r.Get<s32>(ba::ActionVerbAt(*bsa, slot));
+                                const auto word = verb ? r.Get<u64>(ba::ActionAttributesAt(*bsa, *verb)) : std::nullopt;
+                                read = verb && word;
+                                if (read) {
+                                    verbs[slot] = *verb;
+                                    bits |= *word;
+                                }
+                            }
+                            if (read) {
+                                s.attacking = InAttackSequenceOf(a, bits, IsBossOrPart(s.name));
+                                NoteAttackEdge(a, s.name, *s.attacking, verbs, bits);
+                            }
+                        }
                     }
                 }
                 if (IsBossOrPart(s.name)) {
@@ -4463,7 +4675,7 @@ private:
     // Down but not out (coop_dbno_game.h): our Link's Life component for the
     // Life step's guard, and the life the rules ask for (a revive, a downed
     // Link's quarter heart, out), written as PvP's fallback does.
-    void GiveDbno(Reader& r, u64 link, u64 life_at, s32 life) {
+    void GiveDbno(Reader& r, u64 link, u64 life_at, s32 life, bool adult) {
         const auto table = r.Ptr(link + kActorComponents);
         const auto component = table ? r.Ptr(*table + kComponentLife) : std::nullopt;
         CoopDbno::SetOurLifeComponent(component.value_or(0));
@@ -4471,7 +4683,7 @@ private:
         // caller that asks the game.
         const auto bsa = table ? r.Ptr(*table + CoopDbno::Body::addr::kComponentBsa) : std::nullopt;
         const auto emitter = table ? r.Ptr(*table + CoopDbno::Body::addr::kComponentEmitter) : std::nullopt;
-        CoopDbno::SetOurComponents(bsa.value_or(0), emitter.value_or(0));
+        CoopDbno::SetOurComponents(bsa.value_or(0), emitter.value_or(0), adult, link);
         static const bool body_caller = [] {
             // A downed teammate's puppet (issue 150): its actor, from the puppet director's slots (the same
             // calc-thread caller chain, so its slots are not changing meanwhile).
@@ -4819,6 +5031,13 @@ private:
             return;
         }
         const s32 old = r.Get<s32>(value->first + 8).value_or(-1);
+        // Report 200: another player's kill of our copy of their encounter (the Gerudo jail guard's death runs our
+        // game's own defeat event, which warps our Link to the cell): never given, the copy goes without a death
+        // (CoopObjects::CopyGoesWithoutDeath).
+        const bool lethal = !w.heal && !w.test_kill && (w.life <= 0 || (w.hurt > 0 && old >= 0 && w.hurt >= old));
+        if (lethal && sync_.GoesWithoutDeath(w.address, share_now_us_)) {
+            return;
+        }
         // An enemy (a boss too, or an actor we cannot name) is never written (the owner's native rule): its life
         // changes only through its game's own damage step (the replayed hit) or its own Life step (patch 0007);
         // else the change is lost. RouteLife decides (objects_test); this reads the game for it and acts.
@@ -5638,7 +5857,14 @@ private:
             if (IsShared(actor.name)) {  // enemies and breakables
                 Life(r, a, actor);
             }
+            if (actor.name.find("PivotedFloor") != std::string::npos) {
+                TurnNote(r, a, actor);
+            }
+            if (actor.name.starts_with("Enemy_ReDead") || actor.name.starts_with("Enemy_Gibdo")) {
+                ScreamNote(r, a, actor);
+            }
         }
+        LinkHitNote(r);
         for (auto it = actors_.begin(); it != actors_.end();) {
             if (seen.contains(it->first) || ++it->second.missed < 2) {
                 ++it;
@@ -5649,6 +5875,89 @@ private:
             it = actors_.erase(it);
         }
         first_ = false;
+    }
+
+    // The Forest Temple basement's turning floor (Obj_ForestTemple_PivotedFloor_A_01, docs/dungeon.md "The
+    // turning floor"): its yaw from its 3x3 (+0x328), said when it has turned 5 degrees or more since the last
+    // line, with the time, so a push's turn (its steps and how long one takes) can be read from the log. Read only.
+    void TurnNote(Reader& r, u64 a, Actor& actor) {
+        const auto m = r.Get<std::array<float, 9>>(a + kActorRotation);
+        if (!actor.turn_seen) {
+            actor.turn_seen = true;
+            if (m) {
+                LOG_INFO(Core, "coop: objects: {} {:#x} first turn read: 3x3 {:.3f} {:.3f} {:.3f} / {:.3f} {:.3f} {:.3f} / "
+                               "{:.3f} {:.3f} {:.3f}",
+                         actor.name, a, (*m)[0], (*m)[1], (*m)[2], (*m)[3], (*m)[4], (*m)[5], (*m)[6], (*m)[7], (*m)[8]);
+            } else {
+                LOG_INFO(Core, "coop: objects: {} {:#x} first turn read: its 3x3 cannot be read", actor.name, a);
+            }
+        }
+        if (!m || !std::isfinite((*m)[2]) || !std::isfinite((*m)[8])) {
+            return;
+        }
+        const float yaw = std::atan2((*m)[2], (*m)[8]) * 57.29578f;
+        float moved = std::isnan(actor.yaw_said) ? 180.0f : std::fabs(yaw - actor.yaw_said);
+        moved = std::min(moved, 360.0f - moved);
+        if (moved < 5.0f) {
+            return;
+        }
+        actor.yaw_said = yaw;
+        LOG_INFO(Core, "coop: objects: {} {:#x} yaw {:.1f} at {} ms", actor.name, a, yaw,
+                 CoopEvery::NowUs() / 1000);
+    }
+
+    // Redead scream probe (enemy survey, 2026-11-21: the scream freezes only the owner's Link): a Redead's or
+    // Gibdo's animation as it changes, and every new hit our Link takes (who, how much, the hit's kind words
+    // +0x250.., our Link's animation), so a scream's freeze can be told apart: a hit with its own kind, or none.
+    // Debug walk only. Read only.
+    void ScreamNote(Reader& r, u64 a, Actor& actor) {
+        const auto anim = Animation(r, a);
+        const std::string name = anim ? anim->name : std::string();
+        if (name == actor.anim_said) {
+            return;
+        }
+        actor.anim_said = name;
+        const u64 link = TheLinkActor().load();
+        float apart = -1.0f;
+        if (link != 0) {
+            const auto la = r.Get<std::array<float, 3>>(link + kActorPosition);
+            const auto ea = r.Get<std::array<float, 3>>(a + kActorPosition);
+            if (la && ea) {
+                const float dx = (*la)[0] - (*ea)[0], dz = (*la)[2] - (*ea)[2];
+                apart = std::sqrt(dx * dx + dz * dz);
+            }
+        }
+        LOG_INFO(Core, "coop: scream: {} {:#x} plays '{}' (our Link {:.1f} m away)", actor.name, a, name, apart);
+    }
+
+    void LinkHitNote(Reader& r) {
+        const u64 link = TheLinkActor().load();
+        if (link == 0) {
+            return;
+        }
+        const auto table = r.Ptr(link + kActorComponents);
+        const auto life = table ? r.Ptr(*table + kComponentLife) : std::nullopt;
+        const auto id = life ? r.Get<u32>(*life + kLastHitId) : std::nullopt;
+        if (!id || *id == link_hit_said_) {
+            return;
+        }
+        const bool first = link_hit_said_ == 0xffffffffu;
+        link_hit_said_ = *id;
+        if (first) {
+            return;
+        }
+        const auto rec = r.Get<coop::protocol::HitRecord>(*life + kHitRecord);
+        const u64 attacker = r.Get<u64>(*life + kHitRecord).value_or(0);
+        std::string words;
+        if (rec) {
+            for (std::size_t i = 0; i < kPvpKindWords; ++i) {
+                words += fmt::format("{}{:08x}", i ? " " : "", (*rec)[CoopHitReplay::kRecKind + i]);
+            }
+        }
+        const auto anim = Animation(r, link);
+        LOG_INFO(Core, "coop: scream: our Link took hit {:#x} from {} ({:#x}), {} quarters, kind [{}], Link plays '{}'",
+                 *id, attacker != 0 ? r.Name(attacker) : std::string("nobody"), attacker,
+                 r.Get<s32>(*life + kLifeHurt).value_or(0), words, anim ? anim->name : std::string());
     }
 
     void LogPose(Reader& r, const char* what, u64 a, const Actor& actor) {
@@ -5729,6 +6038,12 @@ private:
     u64 drift_at_ = 0;
     bool boss_own_said_ = false;  // row 130: the last 'boss copies run their own' line logged
     CoopEvery::Every scan_{CoopEvery::kTwoFramesUs};
+    CoopPivot::Follower pivot_;
+    u32 link_hit_said_ = 0xffffffffu;  // the scream probe: our Link's last hit id seen
+    u64 pivot_actor_ = 0;
+    u64 pivot_look_ms_ = 0;
+    std::optional<std::int32_t> pivot_dir_said_;
+    CoopHook::MapView pivot_view_;
     CoopEvery::Every cheat_every_{CoopEvery::kSecondUs};
     CoopCheatItems::State cheat_state_;
     CoopEvery::Every share_every_{CoopEvery::kTwoFramesUs};
@@ -6091,11 +6406,11 @@ void NoteBosses(const std::vector<Seen>& seen, const std::vector<std::pair<u64, 
     }
     for (const Seen& s : g_bosses) {
         // Every boss body's death as our walk reads it (the LANE1 checks look for this line in each game).
-        const auto was = g_boss_lives.find(s.name);
-        if (s.life && s.life->life <= 0 && (was == g_boss_lives.end() || was->second.life > 0)) {
+        // Once per body: by its own last reading (row 191: several eggs share the name).
+        const BossLifeSeen* was = BossLifeOf(g_boss_lives, s.name, s.address);
+        if (s.life && s.life->life <= 0 && (was == nullptr || was->life > 0)) {
             LOG_INFO(Core, "coop: bosses: {} {:#x} read at life 0 here ({}): its death", s.name, s.address,
-                     was == g_boss_lives.end() ? std::string("first reading")
-                                               : "from " + std::to_string(was->second.life));
+                     was == nullptr ? std::string("first reading") : "from " + std::to_string(was->life));
         }
     }
     NoteBossLives(g_bosses, g_boss_lives);

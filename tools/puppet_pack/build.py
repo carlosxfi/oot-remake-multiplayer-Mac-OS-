@@ -36,7 +36,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "puppet_pack"  # noqa: A001
 
-from . import ainb, asb_carry, byml, dumpcheck, dungeon_rooms, hud, look_items, look_live, look_metal, map_captures, nup, pause_menu, rstb, sarc, skin, title_menu, tunic, tunic_extra, ui_pack, zs  # noqa: E402
+from . import ainb, asb_carry, byml, dumpcheck, dungeon_rooms, hud, look_cap, look_items, look_live, look_metal, map_captures, nup, pause_menu, rstb, sarc, skin, title_menu, tunic, tunic_extra, ui_pack, zs  # noqa: E402
 
 TITLE_ID = "0400486024DEC000"
 DEFAULT_MOD_NAME = "coop-puppet"
@@ -296,6 +296,26 @@ def character_project(variant, file):
     return f"Player_{variant}_C{file:03d}"
 
 
+def mod_list_off(mods_root, name):
+    """The Mods tab's list (mods/coop-mods.list, "coop-mods 1") names `name` (its path under mods with '/') off: the
+    first row for it, letters without case (as Longshot reads it). No list or no row: on (C #58: a mod switched off
+    loads no models, so its characters get no puppets)."""
+    fold = lambda t: "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in t.replace("\\", "/"))
+    try:
+        with open(os.path.join(mods_root, "coop-mods.list"), "rb") as f:
+            lines = f.read().decode("utf-8", "replace").split("\n")
+    except OSError:
+        return False
+    if lines[0].rstrip("\r") != "coop-mods 1":
+        return False
+    for line in lines[1:]:
+        line = line.rstrip("\r")
+        for state in ("on ", "off "):
+            if line.startswith(state) and fold(line[len(state):]) == fold(name):
+                return state == "off "
+    return False
+
+
 def find_characters(mod_dir, log=print):
     """The Character Select mod among the mods the pack is made into: {"mod": its folder, "files":
     {file number: [variants it has a model for]}, "heaps": {variant: {field: bytes}}, "numbers": {file:
@@ -318,6 +338,10 @@ def find_characters(mod_dir, log=print):
                 with open(path, encoding="utf-8") as f:
                     doc = json.load(f)
                 if doc.get("mod") != CHARACTERS_MOD or doc.get("format") != CHARACTERS_FORMAT:
+                    continue
+                if len(roots) > 1 and mod_list_off(roots[1], (f"contents/{os.path.basename(root)}/{name}"
+                                                             if root == roots[0] else name)):
+                    log(f"characters: {name} is switched off in the Mods tab: no character puppets from it")
                     continue
                 files, numbers = {}, {}
                 for row in doc["characters"]:
@@ -1301,6 +1325,9 @@ def write_tunics(romfs, out_romfs, dicts, table, colors, log=print, self_dir=Non
         except tunic.TunicError as e:
             raise BuildError(f"{tile_rel}: {e}")
         look = [(tunic.TILE, tile if own is None else own)]
+        # (0.11.9, exact puppet tunics: the puppets' copy as the pack writes it, to be found in memory and repainted
+        # live in its wearer's exact colour; the same textures, in the same order, as green.bin's)
+        pup = [(name, data)]
         if own is not None and self_dir and c != "green":
             # Same size as the game's tile once unpacked: its size-table entry stands. (Packs
             # before colour-agree put this one over the game's tile; the kit now uses self_files.)
@@ -1341,6 +1368,7 @@ def write_tunics(romfs, out_romfs, dicts, table, colors, log=print, self_dir=Non
                 own_rel = strip_zs(f"Tex/{own_name}.bntx.zs")
                 own_sizes[own_rel] = max(own_sizes.get(own_rel, 0), (size or len(own_dark) + PACK_SIZE_MARGIN)
                                          if c == "green" else tile_size or len(own_dark) + PACK_SIZE_MARGIN)
+            pup.append((tunic.dark_name(c), ddata))
             if look_dir:
                 # In memory: the game's ASTC dark tile (green), else the BC3 copy your own Link
                 # wears for that colour; without those, the ASTC one recoloured in place.
@@ -1363,6 +1391,7 @@ def write_tunics(romfs, out_romfs, dicts, table, colors, log=print, self_dir=Non
             except tunic.TunicError as e:
                 raise BuildError(f"{e_rel}: {e}")
             look.append((name, e_own))
+            pup.append((tunic_extra.extra_name(name, c), e_pup))
             if own_set:
                 # Same size and layout as the game's file.
                 own_name = tunic_extra.extra_name(name, c, tunic.SELF_LETTER)
@@ -1412,6 +1441,9 @@ def write_tunics(romfs, out_romfs, dicts, table, colors, log=print, self_dir=Non
         if look_dir:
             write(os.path.join(look_dir, f"{c}.bin"), look_live.pack(look))
             look_files[c] = f"{look_live.DIR}/{c}.bin"
+            if c != "green":   # (the plain puppet's tunic is the game's own: never repainted)
+                write(os.path.join(look_dir, f"puppet-{c}.bin"), look_live.pack(pup))
+                look_files[f"puppet-{c}"] = f"{look_live.DIR}/puppet-{c}.bin"
         out[c] = paths
         log(f"tunic {c}: {tunic.tile_name(c)} and {len(models)} models")
     if look_dir and out and "green" not in out:
@@ -1458,7 +1490,9 @@ def write_look_items(romfs, out_romfs, dicts, table, ai_rows, gai_rows, slots, l
         if not models:
             log(f"look items: no Model/{project}.* in this romfs, {item} left out")
             continue
-        for slot in range(1, slots * look_items.COPIES_PER_SLOT + 1):  # (each slot's two copies)
+        # (each slot's two copies, then one more, the neutral copy (row 198): the game's colours, marked, never
+        # painted, worn by a puppet with no slot of its own, so it never wears the game's item your colour is drawn on)
+        for slot in range(1, slots * look_items.COPIES_PER_SLOT + 2):
             actor = look_items.actor_name(item, slot)
             pack, ap, info = look_items.copy_pack(members, item, slot)
             dst = f"Pack/Actor/{actor}.pack.zs"
@@ -1467,11 +1501,13 @@ def write_look_items(romfs, out_romfs, dicts, table, ai_rows, gai_rows, slots, l
             ap_size = table.get(look_items.actor_param_path(item)) or 0
             table.add_new(look_items.actor_param_path(actor), max(ap_size, len(ap) + PACK_SIZE_MARGIN))
             table.add_new(look_items.model_info_path(actor), chain_entry(table, info_chain, info))
-            # Row 184: the copy's own AnimationParam (retargeted clips), sized as the item's.
+            # Row 184: the copy's own AnimationParam (retargeted clips), with room for each IsRetarget it adds
+            # (row 198: sized as the item's, the game refused to make the shield copies).
             anim = look_items.copy_animation_param(members, item, actor)
             if anim is not None:
                 anim_size = table.get(look_items.item_animation_param(members, item)[0]) or 0
-                table.add_new(anim[0], max(anim_size, len(anim[1]) + PACK_SIZE_MARGIN))
+                table.add_new(anim[0], look_items.copy_animation_param_entry(members, item, anim_size, anim[1],
+                                                                             PACK_SIZE_MARGIN))
             new_ai.append(look_items.info_row(ai_rows[item], item, slot))
             new_gai.append(dict(gai_rows.get(item, {}), __RowId=actor))
             paths = [dst]
@@ -1504,7 +1540,8 @@ def write_look_items(romfs, out_romfs, dicts, table, ai_rows, gai_rows, slots, l
         log(f"look items: {len(made)} items x {slots} slots x {look_items.COPIES_PER_SLOT} copies ({len(files)} files): "
             "puppets in their own gear colours")
     copies = slots * look_items.COPIES_PER_SLOT
-    return {"slots": slots, "copies": copies, "actors": made, "files": files} if made else None, new_ai, new_gai
+    return ({"slots": slots, "copies": copies, "neutral": copies + 1, "actors": made, "files": files} if made else None,
+            new_ai, new_gai)
 
 
 def write_blade_items(romfs, out_romfs, dicts, table, ai_rows, gai_rows, copies, log=print):
@@ -1547,23 +1584,40 @@ def write_blade_items(romfs, out_romfs, dicts, table, ai_rows, gai_rows, copies,
             ap_size = table.get(look_items.actor_param_path(item)) or 0
             table.add_new(look_items.actor_param_path(actor), max(ap_size, len(ap) + PACK_SIZE_MARGIN))
             table.add_new(look_items.model_info_path(actor), chain_entry(table, info_chain, info))
-            # Row 184: the copy's own AnimationParam (retargeted clips), sized as the item's.
+            # Row 184: the copy's own AnimationParam (retargeted clips), with room for each IsRetarget it adds
+            # (row 198: sized as the item's, the game refused to make the shield copies).
             anim = look_items.copy_animation_param(members, item, actor)
             if anim is not None:
                 anim_size = table.get(look_items.item_animation_param(members, item)[0]) or 0
-                table.add_new(anim[0], max(anim_size, len(anim[1]) + PACK_SIZE_MARGIN))
+                table.add_new(anim[0], look_items.copy_animation_param_entry(members, item, anim_size, anim[1],
+                                                                             PACK_SIZE_MARGIN))
             new_ai.append(look_items.info_row_as(ai_rows[item], actor, copy_project))
             new_gai.append(dict(gai_rows.get(item, {}), __RowId=actor))
             files.append(dst)
             if (project, n) in projects_done:
                 continue   # (the Giant's Knife on the Biggoron's: its models are there already)
             projects_done.add((project, n))
+            named = set()
             for m in models:
                 raw = read(os.path.join(mdir, m))
                 m_dst = f"Model/{copy_project}{m[len(project):]}"
-                write(os.path.join(out_romfs, m_dst), raw)
-                table.add_new(strip_zs(m_dst), table.get(strip_zs(f"Model/{m}")) or len(dicts.decompress(raw)))
+                # (row 198: its own gear textures, marked, never the game's that your Link's colour is drawn over)
+                data, names = look_items.blade_model_for(dicts.decompress(raw), n)
+                named.update(names)
+                write(os.path.join(out_romfs, m_dst), recompress(dicts, raw, data, level=3) if names else raw)
+                table.add_new(strip_zs(m_dst), table.get(strip_zs(f"Model/{m}")) or len(data))
                 files.append(m_dst)
+            for g in sorted(named):
+                t_rel = f"Tex/{g}.bntx.zs"
+                t_path = os.path.join(romfs, t_rel)
+                if not os.path.isfile(t_path):
+                    continue
+                t_raw = read(t_path)
+                t_data = look_items.blade_texture_for(dicts.decompress(t_raw), g, n)
+                t_dst = f"Tex/{look_items.blade_tex_name(g, n)}.bntx.zs"
+                write(os.path.join(out_romfs, t_dst), recompress(dicts, t_raw, t_data))
+                table.add_new(strip_zs(t_dst), table.get(strip_zs(t_rel)) or len(t_data) + PACK_SIZE_MARGIN)
+                files.append(t_dst)
         made.append(item)
     if made:
         log(f"wearer copies: {len(made)} items ({', '.join(made)}) x {copies} player numbers, "
@@ -1945,6 +1999,16 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
             if metal_blob is not None:
                 write(os.path.join(mod_dir, look_live.DIR, look_metal.FILE), metal_blob)
                 look_files["metal"] = f"{look_live.DIR}/{look_metal.FILE}"
+        # The blocks of the tunic's textures that only the cap uses (the Customize page's Cap trim,
+        # look_cap), beside green.bin, which holds their texels.
+        if "green" in look_files:
+            def read_model(variant):
+                p = os.path.join(romfs, *look_cap.model_path(variant).split("/"))
+                return dicts.decompress(read(p)) if os.path.isfile(p) else None
+            cap_blob = look_cap.cap(read_tex, read_model, log)
+            if cap_blob is not None:
+                write(os.path.join(mod_dir, look_live.DIR, look_cap.FILE), cap_blob)
+                look_files["cap"] = f"{look_live.DIR}/{look_cap.FILE}"
     look_item_files = None
     look_slots = max(0, min(look_slots, look_items.MAX_SLOTS))
     if tunics and look_slots > 0:

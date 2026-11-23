@@ -1,8 +1,9 @@
 # OoT Character Select by snaildev99 (github.com/snaildev99/OoT-Character-Select): play as the game's other
-# characters. The kit carries none of its files. At a start, the kit asks once whether to get it (yes after 15 s,
-# coop-options.ini character_select). On yes it downloads Snail's own release and his characters.json from his GitHub
-# pages onto this PC, checks each SHA-256 below, and puts the mod into the game's mods folder, switched on (the Mods
-# tab switches it off). Snail is the mod's author and distributor: its code is MIT (his LICENSE); The Legend of
+# characters. The kit carries none of its files. Every kit downloads Snail's own release and his characters.json from
+# his GitHub pages onto this PC, checks each SHA-256 below, and puts the mod into the game's mods folder, switched on
+# (the Mods tab switches it off): his Characters page always; his NPC characters only when the player says yes (asked
+# once, no after 15 s; N at a later start or coop-options.ini character_select changes it). His Customize code is left
+# out of his code patch (co-op's own Customize fills his screen). Snail is the mod's author and distributor: its code is MIT (his LICENSE); The Legend of
 # Zelda: Ocarina of Time and its characters belong to Nintendo.
 # Move release= and the lines below together. overlay_*: characters.json (the list the puppet pack reads), from his
 # fork at a fixed commit. ips_*: a newer code patch of his (the puppets' colour routine), left empty until he

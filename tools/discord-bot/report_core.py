@@ -156,6 +156,8 @@ def load_config(path):
         "dev_channel_id": snowflake("dev_channel_id", True),
         "report_channel_id": snowflake("report_channel_id", False),
         "coord_dir": Path(coord),
+        # The optional problem-report endpoint (intake_core.load_intake_config reads it).
+        "intake_raw": raw.get("intake"),
     }
 
 

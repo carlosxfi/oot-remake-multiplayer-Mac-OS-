@@ -713,6 +713,20 @@ struct Host {
 // accessory (kind 14), not as hand armor (docs/puppet.md).
 inline constexpr std::string_view kChildBraceletPrefix = "Armor_Child_Gauntlet_";
 
+// The only head pieces a puppet wears: the masks, `Armor_Child_Mask_*` (the
+// game's ten; there are no adult masks, and the base `Armor_Mask_Base` is none).
+// PlayerStatus.EquipHeadArmor also names the Lens of Truth once a player has
+// it: `Armor_GlassTruth`, the age-less base actor whose model is the ADULT
+// glasses with no animation or physics for their hanging lenses. The game
+// never draws that name on Link (it wears Armor_Child_/Adult_GlassTruth only
+// while the Lens is in use). Worn and shown on a puppet it drew the adult
+// glasses' unposed mesh as orange spikes from the head and shoulders and a
+// long streak along the ground on every puppet (row 197; 0.11.6 to 0.11.8).
+constexpr bool is_drawn_head(std::string_view name) {
+  constexpr std::string_view kPrefix = "Armor_Child_Mask_";
+  return name.size() > kPrefix.size() && name.starts_with(kPrefix);
+}
+
 // What a player wears and holds (docs/puppet.md, "Equipment"). Each name is
 // the game's actor name of that piece, for example "Weapon_Sword_Kokiri" or
 // "Armor_Adult_Goron"; an empty name is nothing in that slot. A field that is
@@ -857,6 +871,13 @@ inline constexpr std::uint8_t asleep = 1u << 2;
 // game logic (an Enemy_: a Deku Scrub) then keeps that logic; only the
 // event's result reaches it (its flags). An older build ignores the bit.
 inline constexpr std::uint8_t in_event = 1u << 3;
+// Boss turns (0.11.8): the owner's enemy is in an attack, read from its game's own action verb attribute Attack
+// (the attributes of its BSA's current action verbs, as the game's own method main+0x507be0 reads them). The server
+// hands the enemy to the next player at an attack end (Session::next_turn). An older build ignores the bit.
+inline constexpr std::uint8_t attacking = 1u << 4;
+// The sender reads attacks (the bit above means something): set on every sample of an enemy whose BSA it reads.
+// Turns only for enemies whose owner sets it, so an older owner's boss keeps its one owner.
+inline constexpr std::uint8_t attack_read = 1u << 5;
 }  // namespace object_state
 
 // Issue 150 (protocol 10): one more AS slot of the owner's actor than slot 0
@@ -955,6 +976,16 @@ inline constexpr std::uint8_t targeting = 1u << 2;  // targeting our player
 // pre-battle phase (Gohma on the ceiling), so it must not own the boss; its AI
 // would hold every game's boss there.
 inline constexpr std::uint8_t unready = 1u << 3;
+// Boss turns (boss-turns-older-0119): this game reads its bosses' attacks (object_state::attack_read in its
+// samples when it owns one) and takes turns. An older build never sets it: the server gives it no turn, as a
+// boss it owned would never send an attack end and keep its one owner for the rest of the fight.
+inline constexpr std::uint8_t takes_turns = 1u << 4;
+// Row 212 (gerudo-212): this game's own level logic made this encounter (not a copy of another game's) and answers
+// its death with its own defeat event: Gerudo Fortress's cell guards (GerudoFortress_Common_Level_CarpenterSet_0N:
+// SageOfSpirit_RescueCarpenter, Player_Event EventPlayerWarpToTargetActor, GerudoThiefDropKey). The server keeps
+// such an object with a game that sets this bit (OBJECT_OWNER never moves it to one that does not), so the death,
+// the key and the carpenter freed run in a game whose logic made the fight. An older server ignores the bit.
+inline constexpr std::uint8_t own_logic = 1u << 5;
 }  // namespace object_presence
 
 struct ObjectPresence {
@@ -1061,6 +1092,10 @@ enum class DamageCause : std::uint8_t {
   // The hitter's copy of an enemy whose life cannot be read died in its game (its own death
   // animation as it left): no life drop to send, so the kill itself goes (amount 1).
   killed = 13,
+  // Row 177 (docs/objects.md, "Shots sent back"): the sender's Link sent the owner's shot (a made projectile,
+  // an enemy's light ball, rock or nut) back on its copy, by the hit the game sends that shot back with; the
+  // owner's game sends its real one back. Amount 0. Older modules take it as a hit of 0 on an unknown object.
+  reflected = 14,
 };
 
 // DAMAGE: life lost on a copy, for the owner to take off. Amount 0 or more.

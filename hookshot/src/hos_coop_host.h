@@ -83,8 +83,10 @@ enum {
     HOS_COOP_PROBLEM_CLIENT_FAILED = 13,     /* this game's co-op did not start (the log says why) */
     HOS_COOP_PROBLEM_INTERNAL = 14,          /* the host thread stopped on an error (the log says which) */
     HOS_COOP_PROBLEM_SYMMETRIC_NAT = 15,     /* a hint: friends may not get through this router (still hosting) */
-    HOS_COOP_PROBLEM_RELAY_JOIN = 16         /* the relay did not let this game in: no such code or room, too many
+    HOS_COOP_PROBLEM_RELAY_JOIN = 16,        /* the relay did not let this game in: no such code or room, too many
                                                 tries, a full host, or no answer */
+    HOS_COOP_PROBLEM_NO_WAY = 17             /* joining, still WAIT_HOST: no way through the routers was found after
+                                                the helper's wait (both strict, or CGNAT): a VPN network is the way */
 };
 
 typedef struct HosCoopStatus {

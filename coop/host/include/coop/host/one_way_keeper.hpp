@@ -48,12 +48,12 @@ class OneWayKeeper {
   static constexpr int kTitleFrames = 90;
   // Ticks a written-back flag may still read 0 before it counts as dropped again.
   static constexpr int kWriteWait = 30;
-  // Row 140 (flag-oneway-c), the same rule as FlagWatcher's: a drop within kUndoTicks of our write landing (or of
-  // its kWriteWait running out) counts as the game undoing it at once from its own copy; after kMaxQuickUndos of
-  // those in a row (or kMaxRefused refused writes in a row) the flag is left to the game until it gives it again
-  // (0 -> 1) or a save loads, instead of being written back every kWriteWait ticks for the rest of the dungeon. A drop
-  // that comes later (the issue-146 kind, e.g. once per room change) resets the count: it is put back every time.
-  static constexpr int kUndoTicks = 30;
+  // Row 140 (flag-oneway-c), the same rule as FlagWatcher's: a drop after our write counts as the game undoing it
+  // from its own copy; after kMaxQuickUndos of those (or kMaxRefused refused writes in a row) the flag is left to the
+  // game until it gives it again (0 -> 1) or a save loads, instead of being written back for the rest of the dungeon.
+  // Row 183: every drop counts however long after our write (a game lowering it a little later each time won forever,
+  // a HUD refresh each time: the map flickered), until a room or scene load, which starts the count again: the
+  // issue-146 kind (a drop at a room change) is still put back in each room.
   static constexpr int kMaxQuickUndos = 2;
   static constexpr int kMaxRefused = 60;
 
@@ -86,6 +86,9 @@ class OneWayKeeper {
   };
   // Row 140: the flags left to the game since the last call (for the log).
   std::vector<FlagKey> take_left() { return std::exchange(left_, {}); }
+  // Row 183: a write-back the HUD was not given yet since the last load (the hook asks the game's HUD refresh); the
+  // same flag written back again in that room changes nothing for the HUD, and each refresh redraws it.
+  bool take_hud_refresh() { return std::exchange(hud_refresh_, false); }
   const Stats& stats() const { return stats_; }
 
  private:
@@ -99,9 +102,11 @@ class OneWayKeeper {
   std::map<FlagKey, int> wait_;   // written back: ticks left for the write to land
   struct PutBack {
     int at = 0;      // tick of our last write (now_)
-    int undone = 0;  // drops right after it, in a row
+    int undone = 0;  // drops after it since the last load (row 183: however long after)
   };
-  std::map<FlagKey, PutBack> put_;  // row 140: our write-backs since the save load (or the game's last give)
+  std::map<FlagKey, PutBack> put_;  // row 140: our write-backs since the last load (or the game's last give)
+  std::set<FlagKey> hud_given_;     // row 183: written back with a HUD refresh since the last load
+  bool hud_refresh_ = false;        // take_hud_refresh
   std::map<FlagKey, int> refused_;  // row 140: refused writes in a row
   std::vector<FlagKey> left_;     // take_left
   GameTicks ticks_;

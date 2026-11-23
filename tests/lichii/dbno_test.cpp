@@ -499,6 +499,19 @@ TEST_CASE("dbno: only a teammate who is up, here and beside him revives") {
     }
 }
 
+TEST_CASE("dbno: a teammate beside him in the other era's scene of his place revives (row 221)") {
+    Game g;
+    g.scene = "Graveyard_Child";
+    g.team = {Mate(1, {1, 0, 0}, State::up, "Graveyard_Adult")};
+    g.Down();
+    CHECK(g.RunHeld(kS, 1).reviver == 1);
+    Game h;
+    h.scene = "Graveyard_Child";
+    h.team = {Mate(1, {1, 0, 0}, State::up, "Kakariko_Adult")};
+    h.Down();
+    CHECK(h.RunHeld(kS, 1).reviver == 0);
+}
+
 TEST_CASE("dbno: two revivers: whoever began goes on, then the lower number") {
     Game g;
     g.team = {Mate(1), Mate(3)};
@@ -717,6 +730,16 @@ TEST_CASE("dbno reviver: nobody in reach, another scene, or not able: no target 
     CHECK(r.Frame(kS, false, true, {0, 0, 0}, scene, near).target == 0);  // we are down, or in a cutscene
     CHECK(r.Frame(kS, true, true, {0, 0, 0}, std::nullopt, near).target == 0);
     CHECK_FALSE(r.Frame(kS, true, true, {0, 0, 0}, scene, {}).send);
+}
+
+TEST_CASE("dbno reviver: a downed player in the other era's scene of our place is a target (row 221)") {
+    CoopDbno::Reviver r;
+    const std::optional<std::string> scene = "Graveyard_Adult";
+    const std::vector<CoopDbno::Fallen> child{{2, "Graveyard_Child", {1, 0, 0}}};
+    CHECK(r.Frame(kS, true, true, {0, 0, 0}, scene, child).target == 2);
+    CoopDbno::Reviver q;
+    const std::vector<CoopDbno::Fallen> elsewhere{{2, "Kakariko_Child", {1, 0, 0}}};
+    CHECK(q.Frame(kS, true, true, {0, 0, 0}, scene, elsewhere).target == 0);
 }
 
 TEST_CASE("dbno reviver: the nearest is the target, it stays ours a little past the reach, a change lets go first") {
@@ -993,6 +1016,17 @@ TEST_CASE("dbno spectate: respawn hearts are capped at the player's own") {
     g.Run(CoopDbno::kSpectateMinUs + 2 * kFrame);
     CHECK(g.machine.Now() == State::up);
     CHECK(g.life == 8);
+}
+
+TEST_CASE("dbno spectate: the first pick takes the other era's scene of our place as ours (row 221)") {
+    Game g;
+    g.scene = "Graveyard_Child";
+    g.position = {0, 0, 0};
+    g.team = {Threatened(Mate(2, {40, 0, 0}, State::up, "Graveyard_Child"), CoopDbno::Threat::enemy),
+              Threatened(Mate(4, {10, 0, 0}, State::up, "Graveyard_Adult"), CoopDbno::Threat::enemy),
+              Threatened(Mate(5, {3, 0, 0}, State::up, "Kakariko_Child"), CoopDbno::Threat::enemy)};
+    Spectate(g);
+    CHECK(g.Step().watching == 4);  // nearest up in our place (5 is in another place)
 }
 
 TEST_CASE("dbno spectate: the first pick is the nearest in our scene, and A goes round the players still up") {

@@ -43,6 +43,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WINDOWS = os.name == "nt"
 WANT_TRY = ("welcomed", "refused", "none")
 JOINED = "coop: welcomed as player"
+# hookshot.py TEST_GAME_DEFAULTS (the same pairs; tests/test_hs_steps.py checks): each game its own save, and no
+# "The game crashed last time" page on the title to take the load's A presses.
+TEST_GAME_DEFAULTS = (("LICHII_COOP_TEST_OWN_SAVE", "1"), ("LICHII_COOP_PROBLEM_ASK", "0"))
 LIVE = re.compile(r"coop: objects: ([+-]) (CoopPuppet_\w+|Dm_Npc_Navi) (0x[0-9a-f]+)")
 
 
@@ -469,8 +472,9 @@ class HookshotGames:
         env = dict(os.environ, HOS_CONTROL=sock, HOS_CONTROL_MEM="ro", LICHII_COOP_TEST_COMMANDS=self.commands[x],
                    LICHII_COOP_SERVER="127.0.0.1:%d" % self.port, LICHII_COOP_NAME=x)   # "A", "B": /teleport B
         env.pop("LICHII_COOP_PASSWORD", None)
-        # Each game plays the save its scenario put in (the joiner would load the host's): a switch can undo it.
-        env.setdefault("LICHII_COOP_TEST_OWN_SAVE", "1")
+        # Its own save, no crash ask on the title (TEST_GAME_DEFAULTS, as hookshot.py's): a switch can undo it.
+        for k, v in TEST_GAME_DEFAULTS:
+            env.setdefault(k, v)
         if password:
             env["LICHII_COOP_PASSWORD"] = password
         for kv in self.head["switches"] + self.env:

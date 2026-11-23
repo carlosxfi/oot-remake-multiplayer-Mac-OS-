@@ -172,6 +172,10 @@ jobs:
         run: python tools/netsim/tests/test_netsim.py -v
       - name: Discord bug-report bot tests
         run: python tools/discord-bot/tests/test_report_core.py -v
+      - name: Problem-report intake tests (the bot's upload endpoint)
+        run: python tools/discord-bot/tests/test_intake_core.py -v
+      - name: Linux kit problem reports (problem_report.py) tests
+        run: python tools/release/tests/test_problem_report_py.py -v
       - name: Content guard tests (test names with ';')
         run: python tools/tests/test_check_content.py -v
       - name: Study tools tests (main reader, vtables, callers)
@@ -292,12 +296,16 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/launch_test.ps1
       - name: Kit mod check tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/mods_test.ps1
+      - name: Kit mod restart tests
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/mod_restart_test.ps1
       - name: Kit path question tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/paste_test.ps1
       - name: Kit log masking tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/log_mask_test.ps1
       - name: Kit problem report tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/problem_report_test.ps1
+      - name: Kit problem report sending tests
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/problem_send_test.ps1
       - name: Kit dependency licence tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/kit_deps_test.ps1
       - name: CI runner hook tests
@@ -434,12 +442,15 @@ jobs:
       # the emulator, and the jobs that build those (windows, linux-longshot, linux-emulator)
       # run on main, integrate-*, tags and pull requests only. This step is the one that
       # compiles it on every other push, so a worker branch sees its own compile errors
-      # before the integrator's build. Without -Werror: the hook is held to the emulator's
-      # warnings (lichii/hook/core.cmake), not ours.
+      # before the integrator's build. COOP_HOOK_STRICT=ON gives the lichii/hook files the emulator's
+      # GCC flags (-O3, -Werror=all/extra: hookshot/CMakeLists.txt), so what fails linux-emulator fails here.
+      # The compiler is g++-13, the one linux-emulator builds with (ubuntu-24.04): ubuntu-latest's default g++ (15.2) does not
+      # raise the -Wstringop-truncation that 13.3 raises (0.11.8), so the default would pass what the emulator refuses.
       - name: Compile the hook code (the Hookshot module)
         if: matrix.job == 'gcc'
         run: |
-          cmake -S . -B build-hook -DCMAKE_BUILD_TYPE=Release -DCOOP_BUILD_HOOKSHOT=ON -DCOOP_BUILD_TESTS=OFF \
+          command -v g++-13 >/dev/null || sudo apt-get install -y -q g++-13
+          cmake -S . -B build-hook -DCMAKE_C_COMPILER=gcc-13 -DCMAKE_CXX_COMPILER=g++-13 -DCMAKE_BUILD_TYPE=Release -DCOOP_BUILD_HOOKSHOT=ON -DCOOP_BUILD_TESTS=OFF -DCOOP_HOOK_STRICT=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DFETCHCONTENT_SOURCE_DIR_ENET="$GITHUB_WORKSPACE/.deps/enet" \
             -DFETCHCONTENT_SOURCE_DIR_MONOCYPHER="$GITHUB_WORKSPACE/.deps/monocypher"

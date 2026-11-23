@@ -81,6 +81,9 @@ struct Seen {
     // our game last set them (sent in its samples).
     std::uint64_t bsa_component = 0;
     std::optional<coop::protocol::BossBsa> bsa;
+    // Boss turns (0.11.8): an enemy's attack as its own game says (CoopBossNative::AttackFlagsAt: its BSA's current
+    // action verb attribute Attack). nullopt: not read (no BSA, not an enemy).
+    std::optional<bool> attacking;
     // Where a boss copy's own new hit landed (its game's hit record, +0x27c; IsBoss only, never one we replayed,
     // checked near the boss): sent with our DAMAGE so the owner's replay lands there (boss-intro).
     std::optional<coop::protocol::Vec3> hit_at{};
@@ -228,7 +231,7 @@ struct LifeWrite {
 
 // Shared: enemies, animals (a cucco is Animal_Cucco), townspeople (Npc_, but
 // not Navi, held equipment or invisible helpers) and the breakable world
-// objects (coop_world.h). Not the order-puzzle actors (IsOwnPuzzle).
+// objects (coop_world.h). Not the order-puzzle actors (IsOwnPuzzle) or the followers (IsOwnFollower).
 bool IsShared(std::string_view name);
 
 // A puzzle or minigame each game runs on its own (issues 149, 151): the Scrub Brothers
@@ -237,6 +240,12 @@ bool IsShared(std::string_view name);
 // solve or the prize is shared (docs/dungeon.md, docs/items.md). The pond's
 // fish are shared (IsFish).
 bool IsOwnPuzzle(std::string_view name);
+
+// Row 214: an actor whose own AI goes with the local Link (waits for it, runs ahead of it, comes to it, is
+// carried by it): the Ganon's Castle escape's Zelda (Npc_Hylia_Zelda_Adult*), child Ruto, the dogs, Epona
+// and the ranch horses. Each game runs its own, never shared, so no owner's escort is put over a game whose
+// own Link and story flags are elsewhere, and a leave, a join or an owner change mid-escort moves nothing.
+bool IsOwnFollower(std::string_view name);
 
 // Issue 151 (fishing-2, fishing-3): a fish (Animal_Fish_*). Shared like any animal, with
 // one owner game; the lure rules in Sync (SetLures, FISH_LURE) move a fish to the game
@@ -293,8 +302,13 @@ struct BossLifeSeen {
     std::int32_t life = 0;
     bool removed = false;  // a delete request for `address` came after that reading
 };
-using BossLives = std::map<std::string, BossLifeSeen, std::less<>>;
+// One reading per body: a name may have several bodies at once (Gohma's eggs, a boss's two hands), each read by
+// its own address. (Row 191: kept by name alone, two eggs took turns in the one reading, and the dead one logged
+// "read at life 0 here (from 1): its death" on every walk until it was deleted, as if it had been revived.)
+using BossLives = std::map<std::string, std::vector<BossLifeSeen>, std::less<>>;
 void NoteBossLives(const std::vector<Seen>& walk, BossLives& last);
+// The last reading of the body `name` at `address`; nullptr: never read.
+const BossLifeSeen* BossLifeOf(const BossLives& last, std::string_view name, std::uint64_t address);
 void NoteBossRemoved(std::uint64_t address, BossLives& last);
 std::optional<bool> BossAliveKept(const std::vector<Seen>& walk, std::span<const std::string_view> bodies,
                                   const BossLives& last);
@@ -411,6 +425,41 @@ bool IsAnnounced(std::string_view name);
 bool IsLateEncounter(std::string_view name);
 inline constexpr float kEncounterNearM = 40.0f;
 inline constexpr std::uint64_t kEncounterWaitUs = 1'500'000;
+// Player report 200 (Gerudo Fortress): an encounter is the game's whose logic made it. A copy of it in another game
+// stands for the owner's enemy; its death there runs that game's own consequences of an encounter that game never
+// began. The jail guard (Enemy_MiddleBoss_GerudoThief*) is the case: the cell's logic
+// (GerudoFortress_Common_Level_CarpenterSet_0N, its Dead and Logic_Alive plugs) answers the guard's death with the
+// defeat event (SageOfSpirit_RescueCarpenter GerudoFortress_DestroyGerudoThief0N: Player_Event
+// EventPlayerWarpToTargetActor, GerudoThiefDropKey, the cell's camera), with the Player of that game as its
+// performer. The owner's killing blow was replayed on every copy (row 177: with that game's Link as the attacker), so
+// a player in the outdoor prison had their Link warped into the cell's room below (under the map), and a player
+// standing in the room was warped to the defeat spot too. So outside a dungeon such a copy never dies by its own
+// death (CopyGoesWithoutDeath): when its owner says it died it is deleted, as a copy its owner deleted, and the
+// encounter's result comes by the shared flags (DestroyGerudoThief_*, the cell key, the rescue: report 99); its look
+// follows the owner's own death animation until then. Of every event flow in the romfs, the defeat and rescue
+// entries that warp the Player are the Gerudo rescue's (above, its appear, lose and prison entries) and the boss
+// fights' (Get_Stone*_DefeatBoss, SageOf*_DefeatBoss, Defeat_Ganon: the boss sync's). In a dungeon nothing changes:
+// its rooms keep their own kill counters and shutters, which may count a copy's death (not checked).
+bool CopyGoesWithoutDeath(std::string_view name, bool dungeon);
+// Row 212 (the owner's 0.11.8 playtest, gerudo-212): the same root through an owner change. The server's rules (an
+// owner busy or paused, a boss turn, the hitter, the near rule) handed player 2's cell guard to player 1, whose game
+// only had a copy: "now ours", so report 200's rule (a copy goes without a death) no longer held, the copy died as
+// player 1's own and player 1's cell logic ran the defeat event, the key drop and the carpenter's rescue for a fight
+// player 2 made. An encounter whose death our level logic answers with its own defeat event, and that our logic made
+// (not a copy), is listed with object_presence::own_logic: the server never gives it to a game that only has a copy.
+// Of the romfs's defeat and rescue entries that warp the Player (above), outside the boss fights only the Gerudo
+// Fortress cells' are such an encounter: Enemy_MiddleBoss_GerudoThief_0N in GerudoFortress_* (CarpenterSet_01..04;
+// DreamWorld's GerudoThiefStage is a boss stage: the boss sync's, unchanged).
+bool OwnLogicEncounter(std::string_view name, std::string_view scene);
+// Row 212: an actor each game runs on its own in this scene. Gerudo Fortress's four carpenters
+// (Npc_Hylia_013.._016_Adult, cell N holds Npc_Hylia_01(2+N)_Adult): each cell's logic
+// (GerudoFortress_Common_Level_CarpenterSet_0N) drives its carpenter from that game's own Found_*,
+// AppearGerudoThief_*, CloseShutter_* and the rescue (Dm_Gerudo_0020 with its settings, per game since report
+// 200), so a shared one put one game's carpenter (its pose, its owner's event: 'bound by the event' in the
+// rescuer's game) over another game's carpenter at another step. The rescue's results are shared flags
+// (report 99: DestroyGerudoThief_*, the keys, Saved_*, IsAfterHelpCarpenter_*, WarpPoint0N_ClearEvent), so each
+// game's own carpenter follows them natively. Elsewhere (Gerudo Valley's tent, Kakariko) they stay shared.
+bool IsOwnInScene(std::string_view name, std::string_view scene);
 inline constexpr std::uint64_t kEncounterStaleUs = 5'000'000;
 
 // An enemy animation that plays as it dies ("Die", "Dead_Fall",
@@ -493,6 +542,16 @@ bool IsBossPart(std::string_view name);
 // A boss or one of its parts named as one (what IsBoss was before row 149): the rules every boss actor shares
 // (its life, its hits, its slots and animations, its own native boss sync entry).
 bool IsBossOrPart(std::string_view name);
+// Pair/pack survey: the family of enemies that fight together by messages between their AIs ("lizalfos" for
+// Lizalfos and Dinolfos, "stalfos", "wolfos"; empty: none). GroupsOf puts one family within kPackReach in one group
+// (root: the lowest id), so the pack has one owner and its teamwork runs in one game; never the boss bit (plain enemies).
+std::string_view PackFamily(std::string_view name);
+inline constexpr float kPackReach = 25.0f;
+// An enemy that keeps its target (no attack read sent, so no turns): Anubis, which mirrors its target.
+bool KeepsTarget(std::string_view name);
+// Boss turns (0.11.8): a sample's object_state bits for an enemy's attack as its game read it (Seen::attacking):
+// attack_read whenever it was read, attacking with it while the attack runs; 0 when not read.
+std::uint8_t AttackBits(std::optional<bool> attacking);
 // Row 149: the root a boss part follows in a walk (PartOf's roots in order, the nearest in reach; on a tie the
 // the first in the walk), as GroupsOf picks it; nothing for no boss part or no root in the walk. `names` and `places`
 // are the walk's, one per actor.
@@ -960,6 +1019,9 @@ public:
     // here): listed with object_presence::unready, so the server keeps them
     // with a game whose boss is fighting.
     void SetUnready(std::vector<std::string> names) { unready_ = std::move(names); }
+    // Boss turns: our game reads its bosses' attacks and takes turns (LICHII_COOP_BOSS_TURNS on): every boss
+    // or part is listed with object_presence::takes_turns.
+    void SetTakesTurns(bool on) { takes_turns_ = on; }
     // The boss actors whose death has begun (the boss glue; player report #105). A hit such a boss's game did
     // not take (its owner's killing hit, refused outside Gohma's weak point) is given to its Life step as its
     // life after the wait, as for any other enemy: its death plays out here (CoopBossNative lets it die).
@@ -1152,6 +1214,13 @@ public:
     // The owner of the copy at `address` said it died: its life 0 in the owner's samples, or its
     // ObjectRemove dead (one boss death for everyone: the copy's Life step lets it die then).
     bool OwnerSaysDead(std::uint64_t address) const;
+    // Report 200: the copy at `address` (a director's copy of another player's late encounter) is to die now, and
+    // it is one that never dies by its own death here (CopyGoesWithoutDeath): it goes so from now on (deleted
+    // with the dead ones, never given its killing life, left out of the boss sync; its kill stays remembered for an
+    // own one of ours, report 99). True for one that goes so. Row 219: also a placed copy of a seed's one-time
+    // flying pot (CoopPickups::IsOneTimeHolder): its death here would drop its item a second time.
+    bool GoesWithoutDeath(std::uint64_t address, std::uint64_t now_us);
+    bool GoneWithoutDeath(std::uint64_t address) const;
     std::uint8_t OwnerOf(const coop::protocol::ObjectId& id) const;
     std::size_t HurtsTaken() const { return hurt_taken_; }
     // Falls counted as our own hit while a replay waited (Seen::own_hit), not as the replay landing.
@@ -1186,6 +1255,7 @@ private:
         std::optional<coop::protocol::Animation> animation;
         std::vector<coop::protocol::SlotAnimation> slots;  // issue 150: a boss's, as last read
         std::optional<coop::protocol::BossBsa> bsa;         // native boss sync: ours, as last read
+        std::optional<bool> attacking;                       // boss turns: its game's Attack attribute (Seen)
         std::optional<coop::protocol::BossBsa> bsa_in;      // native boss sync: a copy's, the owner's latest
         bool boss_native = false;  // a bsa came for it once: its AI runs (never held), across owners
         coop::protocol::Vec3 velocity{};
@@ -1318,6 +1388,7 @@ private:
         std::optional<std::int32_t> owner_life;  // its owner's last life, from the owner's samples (KeepBossLives)
         bool death_given = false;      // a dying copy boss's remaining life went to its own Life step (once)
         bool dead_now = false;  // a kill from before we came: deleted at once
+        bool quiet_gone = false;  // report 200: its owner killed it away from our Link's fight: deleted, no death
         // enemy-sync-3 (issue 133): our enemy, killed by another game's hit
         // that our game did not take, already said dead (OBJECT_REMOVE).
         bool dead_said = false;
@@ -1642,6 +1713,7 @@ private:
     std::set<std::uint64_t> dead_;    // copies whose owner said dead kDeadGraceUs ago
     bool wake_ = true;
     std::vector<std::string> unready_;
+    bool takes_turns_ = false;  // SetTakesTurns
     std::vector<std::string> dying_;  // SetDying
     unsigned dying_finished_ = 0;     // DyingFinished
     std::size_t hurt_taken_ = 0;   // hurts the game took as asked

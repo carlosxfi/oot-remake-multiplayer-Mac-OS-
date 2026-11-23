@@ -22,6 +22,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "coop/protocol/messages.hpp"
@@ -249,6 +250,18 @@ public:
     // One of ours that left the list, and how it moved (issue 158: whether
     // a slingshot seed's place moves in flight, or the game keeps it at the
     // sling). For the log.
+    // Row 177 (coop_shot_reflect.h). Our shots another player sent back since the last take (filled by Tick from
+    // DAMAGE cause reflected): the owner's game sends each back with the game's own call.
+    struct ReflectAsk {
+        std::uint64_t address = 0;  // our shot's actor
+        std::string name;
+        std::uint8_t player = 0;    // who sent it back
+    };
+    std::vector<ReflectAsk> TakeReflectAsks() { return std::exchange(reflect_asks_, {}); }
+    // The copies (Copy::key) our Link sent back in our game (Director::TakeReflected): one DAMAGE cause
+    // reflected each to the shot's owner. Present thread, after Tick.
+    void SendReflected(const std::vector<std::uint64_t>& keys, std::vector<coop::protocol::Message>& send);
+
     struct Flight {
         coop::protocol::ObjectId id;
         std::string name;
@@ -409,6 +422,7 @@ private:
     };
     std::map<std::uint64_t, Local> local_;
     std::vector<CoopEnemyShots::Shooter> shooters_;
+    std::vector<ReflectAsk> reflect_asks_;
     bool hide_ = true;
     std::vector<Doomed> doom_;
     std::vector<Decided> decided_;
@@ -512,6 +526,10 @@ public:
     // Present thread: the stand-ins the installed puppet pack has
     // (StandInsIn). None (the default): every copy is the game's own actor.
     void SetStandIns(std::set<std::string> names);
+    // Row 177: our Link's actor (CoopObjects::OurLinkActor; 0 none), and the keys of the shot copies it sent back
+    // since the last take (CoopShotReflect::OurHit on the copy's own hit lists), each once.
+    void SetOurLink(std::uint64_t link) { our_link_.store(link, std::memory_order_relaxed); }
+    std::vector<std::uint64_t> TakeReflected();
     // A stand-in that failed this many times in a row (create failed, timed
     // out or dropped, or no actor taken) is not asked for again this session.
     static constexpr int kStandInTries = 3;
@@ -537,6 +555,8 @@ private:
         bool effects = false;   // the EffectStandIn: it has the shootable's ELink user
         bool emitted = false;   // Copy::effect was played (or could not be) once
         std::string copy_of;  // the shared actor's name (Copy::actor)
+        bool reflected = false;  // row 177: our Link sent this shot copy back (said once)
+        int hits_noted = 0;      // row 177: its hit lists logged (at most 3 times, when not empty)
     };
     enum class Pending { none, malloc, create, take, drop, remove, search, emit };
 
@@ -602,6 +622,8 @@ private:
     std::set<std::string> no_stand_in_;
     std::vector<Doomed> doomed_;                     // guarded
     std::vector<Doomed> blow_own_;                   // guarded
+    std::vector<std::uint64_t> reflected_;           // guarded (row 177)
+    std::atomic<std::uint64_t> our_link_{0};
     std::map<std::uint64_t, std::uint64_t> done_doomed_;  // address to when deleted (ms)
     std::size_t deleted_ = 0;                        // guarded
     std::optional<CoopPuppet::Call> NextDoomed(CoopPuppet::Guest& guest, std::uint64_t now_ms);

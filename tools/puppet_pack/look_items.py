@@ -77,6 +77,41 @@ def blade_name(item, number):
     return f"{item}_Blade{number}"
 
 
+# Row 198 (0.11.9): a wearer copy's model named the game's own gear textures, so the puppet's sword was drawn with
+# the very texture your own Link's colour is drawn over (the game loads a texture once, by its name), and its texels
+# were the game's (your Link's wardrobe finds its textures by them). Each wearer copy now names gear textures of its
+# own, `Mt_` -> `W<a..p>_` (as long; one letter a player number), their texels marked BLADE_MARK_BASE + the number:
+# never a look copy's 1..8, a boots colour's letter, or the tunic's marks. Painted by nobody: the game's colours.
+BLADE_MARK_BASE = 0x80
+
+
+def blade_tex_name(name, number):
+    """A wearer copy's name of a gear texture: `Mt_` -> `W<letter>_` (as long), a for number 1 to p for 16."""
+    if not name.startswith(PREFIX) or not 1 <= number <= BLADE_COPIES:
+        raise TunicError(f"{name}: no wearer copy name for number {number}")
+    return f"W{chr(ord('a') + number - 1)}_" + name[len(PREFIX):]
+
+
+def blade_mark(number):
+    """The mark of a wearer copy's gear textures (look_live.mark): BLADE_MARK_BASE + its number."""
+    if not 1 <= number <= BLADE_COPIES:
+        raise TunicError(f"no wearer copy mark for number {number}")
+    return BLADE_MARK_BASE + number
+
+
+def blade_model_for(model, number):
+    """A wearer copy's model naming its own gear textures; (bytes, the gear names it names)."""
+    named = [g for g in GEAR if (g.encode() + b"\0") in model]
+    for g in named:
+        model = rename(model, g, blade_tex_name(g, number), at_least=1)
+    return model, named
+
+
+def blade_texture_for(bntx, name, number):
+    """The game's gear texture under a wearer copy's name, its texels marked with the copy's mark."""
+    return mark_bntx(rename(bntx, name, blade_tex_name(name, number), at_least=1), blade_mark(number))
+
+
 def actor_components(members, item):
     """The item's ActorParam components with its $parents (from its pack) merged in; None when
     the pack lacks its ActorParam or a parent."""
@@ -261,6 +296,16 @@ def item_animation_param(members, item):
     return path, byml.loads(members[path])
 
 
+# Row 198 (gear-colour-198-3, lane gc198-l5b 2026-11-21): a copy with its own IsRetarget AnimationParam is still not
+# made by the game, even sized with RETARGET_ROOM (the b0654d0b pack: entry 5408 for 172 bytes; both games logged
+# 'shield copy Weapon_Shield_Hylian_Look1 was not made by the game'). The only difference from the last pack whose
+# shield copies were made (lane2 fresh-pg0118-8) is that param. A refused copy leaves the puppet in the game's own
+# shield, drawn in the viewer's colours, so the copies take the item's AnimationParam again: their colours are their
+# owner's, and row 184 (the shield's clips do not move a copy: it hangs turned on a puppet's back) is open again.
+# True gives the copies row 184's param back (a pack to try it with).
+COPY_RETARGET = False
+
+
 def copy_animation_param(members, item, actor):
     """Row 184: (member path, bytes) of a copy's own AnimationParam, or None when it needs none.
     A copy names a model project of its own (`<item>_Look<k>`, a blade copy's), and the game binds an
@@ -269,7 +314,10 @@ def copy_animation_param(members, item, actor):
     plays the adult's clips so). Without it the copy's own clips never move it (the child's Hylian
     Shield hung turned on a puppet's back, 0.11.7). So the copy's AnimationParam is the item's with
     IsRetarget true on every resource; the item's own file is not touched. An AnimationParam with no
-    resources (the swords') or with a `$parent` (not seen in the coloured items) gives None."""
+    resources (the swords') or with a `$parent` (not seen in the coloured items) gives None, and so does every
+    copy while COPY_RETARGET is off (row 198: the game refuses a copy with this param)."""
+    if not COPY_RETARGET:
+        return None
     found = item_animation_param(members, item)
     if found is None:
         return None
@@ -280,6 +328,25 @@ def copy_animation_param(members, item, actor):
     out = dict(doc)
     out["AnimationResources"] = [dict(r, IsRetarget=True) if isinstance(r, dict) else r for r in res]
     return animation_param_path(actor), byml.dumps(out)
+
+
+# Row 198 (0.11.9): the game parses a param in a heap of its size-table entry, and an AnimationParam's entry grows with
+# its fields: the game's own (rsizetable 111) take 5344 bytes for one resource with no IsRetarget and 5376 with it,
+# 5464 / 5528 for two resources (0x20 a resource that has the field). Row 184's copies were sized as the item's
+# (5344), 0x20 short: the game refused to make the copy (its equip call still returned 1) and the puppet kept the
+# game's own shield, whose textures your own colours are drawn over (your Customize colours on the other players'
+# puppets). Each IsRetarget a copy adds gets this much room, twice the game's.
+RETARGET_ROOM = 0x40
+
+
+def copy_animation_param_entry(members, item, item_entry, data, margin):
+    """The size-table entry of a copy's AnimationParam (copy_animation_param's `data`): the item's entry
+    `item_entry` with RETARGET_ROOM for each resource the copy gave IsRetarget, or the file's bytes and `margin`
+    when that is more."""
+    found = item_animation_param(members, item)
+    res = found[1].get("AnimationResources") if found else None
+    added = sum(1 for r in res if isinstance(r, dict) and "IsRetarget" not in r) if isinstance(res, list) else 0
+    return max(item_entry + RETARGET_ROOM * added, len(data) + margin)
 
 
 def info_row(row, item, slot):

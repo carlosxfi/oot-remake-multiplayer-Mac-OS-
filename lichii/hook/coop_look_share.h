@@ -63,6 +63,10 @@ inline constexpr std::uint16_t kCharacterMax = 0x0FFF;
 // in the order of kCustomFlags (the mod's GameData Ints that hold them). Sent only with a character and
 // only when one of them is set; taken out of the parts on arrival (CustomOf has it).
 inline constexpr std::uint8_t kCustomPart = 62;
+// 0.11.9 (the owner: one customizer, co-op's own): the indexes of the mod's option Ints (kCustomFlags) the module sets
+// back to 0, the model's own, from the values read: every one read and not 0. With all held at 0 the mod's code
+// paints nothing of its own, and part 62 is never sent by a 0.11.9 game.
+std::vector<std::size_t> OptionsToHold(const std::array<std::optional<std::int32_t>, 6>& values);
 inline constexpr std::array<const char*, 6> kCustomFlags = {
     "CharacterMenu_CustomHair",    "CharacterMenu_CustomEyes",     "CharacterMenu_CustomGear",
     "CharacterMenu_CustomClothes", "CharacterMenu_CustomClothes2", "CharacterMenu_CustomClothes3"};
@@ -110,7 +114,8 @@ public:
     // slot is still that player's.
     void Done(const Job& job, std::uint64_t now_ms);
     // The copy player `number`'s puppet wears (1 to kSlots * kCopiesPerSlot):
-    // nothing before one is painted for them.
+    // from the moment the slot is theirs (row 198: before its first paint, the
+    // copy that paint is for); nothing only without a slot.
     std::optional<std::size_t> CopyOf(std::uint8_t number) const;
     // Slots are given only where the puppets' copies are painted (Hookshot's
     // module): off, every slot is freed.
