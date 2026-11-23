@@ -33,6 +33,11 @@ state="$HOME/Library/Application Support/OOT Co-op"
 pack="$state/mods/contents/0400486024DEC000/coop-puppet"
 mkdir -p "$pack" "$HOME/Applications"
 cp "$overlay/../coop_puppet.json" "$pack/"
+if [ -f "$overlay/../coop_maps.txt" ]; then
+  cp "$overlay/../coop_maps.txt" "$pack/"
+else
+  rm -f "$pack/coop_maps.txt"
+fi
 launcher="$HOME/Applications/OOT Co-op.app"
 if [ -e "$launcher" ] && [ ! -f "$launcher/Contents/Resources/oot-coop-launch.sh" ]; then
   installed_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$launcher/Contents/Info.plist" 2>/dev/null || true)
