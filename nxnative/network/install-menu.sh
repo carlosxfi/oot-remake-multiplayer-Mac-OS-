@@ -109,6 +109,13 @@ export DM_ROMFS_OVERLAY="$overlay" COOP_NXNATIVE_PUPPET_PREFLIGHT=1
 export COOP_NXNATIVE_MENU=1 COOP_NXNATIVE_SHARED_MODULE="$module" COOP_NXNATIVE_SHARED_DIR="$state"
 export HOS_COOP_MENU=1 LICHII_COOP_PUPPET=1 LICHII_COOP_HOST_SAVE=0
 export HOS_COOP_MODS_CODE=0 HOS_COOP_NULL_READS=0
+# Apply the saved Kokiri colour before nxnative opens the ROMFS. Live texture
+# overrides are supplied by Longshot and are unavailable in this nxnative host.
+unset LICHII_COOP_SELF_TUNIC
+if self_tunic=$(/usr/bin/python3 -I "$here/../../tools/puppet_pack/self_tunic.py" \
+    --pack "$overlay/.." --coop-ini "$state/coop.ini") && [ -n "$self_tunic" ]; then
+  export LICHII_COOP_SELF_TUNIC="$self_tunic"
+fi
 unset COOP_NXNATIVE_PAUSE_PACK
 if /usr/bin/plutil -extract pause_menu.0 raw -o - "$overlay/../coop_puppet.json" >/dev/null 2>&1; then
   export COOP_NXNATIVE_PAUSE_PACK=1
