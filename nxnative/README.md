@@ -317,3 +317,23 @@ rupee pickup, an enemy defeat, and a loading zone together. Check player
 lists on each platform and record any missing pages or other differences.
 After 15–20 minutes, collect a `/bugreport` from each client where available.
 For a Mac run without in-game chat, keep the nxnative game log instead.
+
+### In-window multiplayer playtest
+
+On the `macos-playtest-hud` branch, use **Multiplayer → Host or Join** or
+press **⌘⇧M** to open the Mac panel inside the game window. Use **Close** or
+**Esc** to return focus to the game. The player list appears once peers are
+in the session. Each row shows a remote nickname and current/max hearts.
+A dash means the peer has yet to send health data.
+
+With a Windows host, check that remote health changes when a peer takes
+damage or heals, and that their row goes away when they leave. Try the
+panel with the game window resized and in fullscreen. Record any focus
+problems, and whether Finder joining still stalls. The panel is operated
+with the mouse and keyboard. Overhead name tags are a future step.
+
+### Native pause menu playtest
+
+The `macos-playtest-pause-menu` branch uses the game's **System → Multiplayer**
+entry with a patched nxnative app and the local pause-menu asset pack.
+See [the runtime setup and playtest checklist](runtime/README.md).

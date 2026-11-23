@@ -1,0 +1,98 @@
+diff --git a/dm/host/hle_fs.c b/dm/host/hle_fs.c
+index befbfaaf..ce1619e9 100644
+--- a/dm/host/hle_fs.c
++++ b/dm/host/hle_fs.c
+@@ -53,6 +53,7 @@ typedef struct {
+     int ro;
+     int aoc;                         // add-on content: Unmount releases the name (mount_aoc)
+     int released;                    // an add-on content entry after its Unmount: kept for open handles and a later mount of its image, matched by no name (mnt_is)
++    int coop_save_override;          // co-op save sets do not trigger solo cloud sync
+     int txn_root;                    // canonical mount entry for this backing transaction, or -1
+     _Atomic int poison;              // failure state belongs to this backing, not to the process
+     _Atomic uint64_t first_write_ns;
+@@ -915,6 +916,76 @@ static int user_save_dir(char *dd, size_t cap, const char *save, int user) {
+     }
+     return 0;
+ }
++// Called with the path lock held. Only the primary account's transaction
++// and its co-op siblings can be selected by the co-op module.
++static int coop_save_mount(char *solo, size_t cap) {
++    const char *save = getenv("DM_SAVE");
++    if (!save || user_save_dir(solo, cap, save, 0)) return -1;
++    char coop[1024], mp[1024], mp_coop[1024];
++    if (snprintf(coop, sizeof coop, "%s-coop", solo) >= (int)sizeof coop ||
++        snprintf(mp, sizeof mp, "%s-mp", solo) >= (int)sizeof mp ||
++        snprintf(mp_coop, sizeof mp_coop, "%s-mp-coop", solo) >= (int)sizeof mp_coop) return -1;
++    for (int i = 0; i < g_nmnt; ++i) {
++        const char *root = g_mnt[i].commit;
++        if (g_mnt[i].txn_root == i && (!strcmp(root, solo) || !strcmp(root, coop) ||
++                                     !strcmp(root, mp) || !strcmp(root, mp_coop))) return i;
++    }
++    return -1;
++}
++
++__attribute__((visibility("default")))
++int hos_coop_fs_save_root(char *out, size_t size) {
++    if (!out || !size) return 0;
++    PATH_LOCK();
++    char solo[1024];
++    const int txn = coop_save_mount(solo, sizeof solo);
++    return txn >= 0 && strlcpy(out, g_mnt[txn].commit, size) < size;
++}
++
++__attribute__((visibility("default")))
++int hos_coop_fs_save_remount(const char *target) {
++    if (!target) return 0;
++    PATH_LOCK();
++    char solo[1024];
++    const int txn = coop_save_mount(solo, sizeof solo);
++    if (txn < 0) return 0;
++    size_t len = strlen(solo);
++    if (strncmp(target, solo, len)) return 0;
++    const char *suffix = target + len;
++    if (*suffix && strcmp(suffix, "-coop") && strcmp(suffix, "-mp") && strcmp(suffix, "-mp-coop")) return 0;
++
++    pthread_rwlock_wrlock(&g_txn_lock[txn]);
++    pthread_rwlock_t *guard __attribute__((cleanup(txn_unlock))) = &g_txn_lock[txn];
++    if (atomic_load(&g_mnt[txn].poison) || atomic_load(&g_mnt[txn].first_write_ns)) return 0;
++    for (int fd = 0; fd < 65536; ++fd)
++        if (atomic_load(&g_ftxn[fd]) == txn + 1) return 0;
++
++    // Prepare the new work tree before changing any mount pointers. The
++    // committed saves are never renamed or removed by a remount.
++    char work[1024], staging[1100], clone[1200];
++    if (snprintf(work, sizeof work, "%s.work", target) >= (int)sizeof work ||
++        snprintf(staging, sizeof staging, "%s.remount.XXXXXX", target) >= (int)sizeof staging) return 0;
++    struct stat st;
++    if (lstat(target, &st) || !S_ISDIR(st.st_mode) || !mkdtemp(staging)) return 0;
++    snprintf(clone, sizeof clone, "%s/work", staging);
++    int ok = !clonefile(target, clone, 0);
++    if (ok) {
++        if (!lstat(work, &st)) ok = S_ISDIR(st.st_mode) && !renamex_np(clone, work, RENAME_SWAP);
++        else ok = errno == ENOENT && !rename(clone, work);
++    }
++    rm_tree(staging);
++    if (!ok) return 0;
++
++    for (int i = 0; i < g_nmnt; ++i) {
++        if (g_mnt[i].txn_root != txn) continue;
++        strlcpy(g_mnt[i].commit, target, sizeof g_mnt[i].commit);
++        strlcpy(g_mnt[i].dir, work, sizeof g_mnt[i].dir);
++    }
++    g_mnt[txn].coop_save_override = *suffix != 0;
++    LOG("co-op: save transaction remounted on the %s save", *suffix ? suffix + 1 : "solo");
++    return 1;
++}
++
+ static Result mount_own_save_ro(const char *name, int user) {
+     const char *d = getenv("DM_SAVE");
+     if (!d || !*d) { LOG("[RED] fs read-only mount of this game's save data %s: DM_SAVE is not set, answered as no save data", name); return 0x7d402u; }   // fs ResultTargetNotFound
+@@ -1020,7 +1091,7 @@ static Result commit_mount_locked(int i, int *notify_error) {
+     static int n; if (r == RES_OK) { uint64_t tc2 = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+         LOG("save commit #%d: %s swapped atomically into %s (%d save writes so far) (clone + swap %llu us, since this transaction's first write %llu us)", ++n, g_mnt[i].dir, g_mnt[i].commit, atomic_load(&g_save_writes),
+             (unsigned long long)((tc2 - tc1) / 1000), (unsigned long long)(tw0 ? (tc2 - tw0) / 1000 : 0)); atomic_fetch_add(&g_save_commits, 1);
+-        save_sync_committed();   // wakes the cloud sender, which clones the committed save through dm_fs_clone_committed above (save_sync.h)
++        if (!g_mnt[txn].coop_save_override) save_sync_committed();   // wakes the cloud sender, which clones the committed save through dm_fs_clone_committed above (save_sync.h)
+     }
+     return r;
+ }

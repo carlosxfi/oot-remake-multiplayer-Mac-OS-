@@ -1021,7 +1021,9 @@ void FlagWatcher::add(FlagStore& store, const FlagEntry& delta) {
 const std::vector<FlagKey>& FlagWatcher::diff_keys() {
   audit_from_ = static_cast<std::size_t>(-1);
   const std::vector<FlagKey>& list = shared_.keys();
+#ifndef __APPLE__
   if (!events_) return list;
+#endif
   // The whole list: the first time (the baseline), when a flag joined the
   // list, in a load window (a save load or a room load moves many flags, and
   // the rules of the window look at each), and when events were lost.
@@ -1042,12 +1044,17 @@ const std::vector<FlagKey>& FlagWatcher::diff_keys() {
     if (!wrote_.contains(key) && shared_.contains(key)) visit_.push_back(key);
   }
   wrote_.clear();
-  audit_from_ = visit_.size();
+  if (events_) audit_from_ = visit_.size();
   if (!list.empty()) {
-    const std::size_t slice = (list.size() + kAuditFrames - 1) / kAuditFrames;
+    // Without flag-write hooks, nxnative polls every key over eight gameplay
+    // frames. Initial scans and loading windows still read the full list.
+    constexpr std::size_t kPollingFrames = 8;
+    const std::size_t frames = events_ ? kAuditFrames : kPollingFrames;
+    const std::size_t slice = (list.size() + frames - 1) / frames;
     for (std::size_t i = 0; i < slice; ++i) {
       audit_next_ = audit_next_ >= list.size() ? 0 : audit_next_;
-      visit_.push_back(list[audit_next_++]);
+      const FlagKey key = list[audit_next_++];
+      if (events_ || !restate_.contains(key)) visit_.push_back(key);
     }
   }
   return visit_;

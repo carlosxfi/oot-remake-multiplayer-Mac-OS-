@@ -110,7 +110,8 @@ std::optional<std::uint32_t> find(GameMemory& m, std::uint64_t mgr, const Table&
 }
 
 // The record index of `key`, by binary search as 0x838960 does.
-std::optional<std::uint32_t> find_key(GameMemory& m, std::uint64_t mgr, std::uint64_t key) {
+std::optional<std::uint32_t> find_key(GameMemory& m, std::uint64_t mgr, std::uint64_t key,
+                                     std::unordered_map<std::uint64_t, std::uint64_t>* probes = nullptr) {
   if (key == 0) return std::nullopt;
   const auto count = read_u32(m, mgr + kKeyCount);
   const auto records = read_ptr(m, mgr + kKeyRecords);
@@ -118,7 +119,16 @@ std::optional<std::uint32_t> find_key(GameMemory& m, std::uint64_t mgr, std::uin
   std::int64_t lo = 0, hi = static_cast<std::int64_t>(*count) - 1;
   while (lo <= hi) {
     const std::int64_t mid = (lo + hi) / 2;
-    const auto k = read_u64(m, *records + kKeyRecordSize * mid);
+    const auto address = *records + kKeyRecordSize * mid;
+    std::optional<std::uint64_t> k;
+    if (probes) {
+      const auto cached = probes->find(address);
+      if (cached != probes->end()) k = cached->second;
+    }
+    if (!k) {
+      k = read_u64(m, address);
+      if (k && probes) probes->emplace(address, *k);
+    }
     if (!k) return std::nullopt;
     if (*k == key) return static_cast<std::uint32_t>(mid);
     if (*k < key) lo = mid + 1; else hi = mid - 1;
@@ -357,7 +367,7 @@ std::optional<std::uint32_t> GameFlags::get_enum(std::uint32_t hash) {
 std::optional<bool> GameFlags::get_key64(std::uint64_t key) {
   const auto mgr = manager(memory_);
   if (!mgr) return std::nullopt;
-  const auto index = find_key(memory_, *mgr, key);
+  const auto index = find_key(memory_, *mgr, key, reuse_key_lookups_ ? &key_probes_ : nullptr);
   if (!index) return std::nullopt;
   if (const auto w = waiting(GameFlagType::key64, key)) return (*w & 0xff) != 0;
   if (const auto q = queued(memory_, *mgr, kKeyQueueCap, kKeyQueueBuf, kKeyQueueWord, 8, *index))
@@ -595,7 +605,7 @@ bool GameFlags::set_key64(WritableGameMemory& m, std::uint64_t key, bool value) 
 }
 
 std::optional<protocol::FlagEntry> GameFlagStore::read(FlagKey key) {
-  GameFlags flags(memory_);
+  auto& flags = flags_;
   protocol::FlagEntry e{key, protocol::FlagKind::boolean, 0};
   if (key.kind == FlagKeyKind::key64) {
     if (key.table != 0) return std::nullopt;  // the game has one table

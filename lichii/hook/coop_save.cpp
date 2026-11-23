@@ -863,6 +863,15 @@ void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
         g_guest.unwritten = *slot;
         return;
     }
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+    // nxnative reads from a transaction work tree. A received snapshot must
+    // wait at the title so the committed folder and work tree switch together.
+    if (g_remount && save::is_coop_dir(g_dir)) {
+        g_pending = g_dir;
+        g_guest.unwritten = *slot;
+        return;
+    }
+#endif
     WriteSlot(*slot);
 }
 

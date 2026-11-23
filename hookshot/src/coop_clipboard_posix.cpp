@@ -62,6 +62,7 @@ enum class Ran {
 constexpr int kDeadlineMs = 3000;
 
 // The game's open descriptors from 3 up, to be closed in the tool (Linux: /proc/self/fd; else all up to max_fd).
+#ifndef __APPLE__
 std::vector<int> OpenDescriptors(long max_fd) {
     std::vector<int> fds;
 #ifdef __linux__
@@ -82,6 +83,7 @@ std::vector<int> OpenDescriptors(long max_fd) {
     }
     return fds;
 }
+#endif
 
 // `sh -c cmd` with `in`, `out` and `err` as its standard descriptors, none of the game's others, in a process group
 // of its own (so a late tool is killed with what it started) and no blocked signals. posix_spawn, not fork: a fork
@@ -100,14 +102,21 @@ pid_t Spawn(const char* cmd, int in, int out, int err, long max_fd) {
     bool ok = posix_spawn_file_actions_adddup2(&actions, in, 0) == 0 &&
               posix_spawn_file_actions_adddup2(&actions, out, 1) == 0 &&
               posix_spawn_file_actions_adddup2(&actions, err, 2) == 0;
-    // (closing one that is not open is no error in posix_spawn's closes)
+    short flags = POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK;
+#ifdef __APPLE__
+    // Darwin can reject spawn actions that close descriptors which were never open.
+    // Keep only the descriptors explicitly duplicated to stdin, stdout and stderr.
+    (void)max_fd;
+    flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
+#else
     for (const int fd : OpenDescriptors(max_fd)) {
         ok = ok && posix_spawn_file_actions_addclose(&actions, fd) == 0;
     }
+#endif
     sigset_t none;
     sigemptyset(&none);
     ok = ok && posix_spawnattr_setpgroup(&attr, 0) == 0 && posix_spawnattr_setsigmask(&attr, &none) == 0 &&
-         posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK) == 0;
+         posix_spawnattr_setflags(&attr, flags) == 0;
     pid_t pid = -1;
     if (ok) {
         char sh[] = "sh";
@@ -144,8 +153,8 @@ Ran Run(bool copy, const std::string& input, std::string* out) {
     }
 #ifdef __APPLE__
     const char* cmd = copy
-        ? "command -v pbcopy >/dev/null 2>&1 || exit 127; exec pbcopy"
-        : "command -v pbpaste >/dev/null 2>&1 || exit 127; exec pbpaste";
+        ? "exec /usr/bin/pbcopy"
+        : "exec /usr/bin/pbpaste";
 #else
     char cmd[1024];
     if (copy) {
