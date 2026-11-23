@@ -1273,8 +1273,14 @@ void LookPages(void* ctx, bool calls, const Facts& f, std::uint64_t gen) {
     g_system_pane = FindOwnPane(ctx, f.layout, "Pa_System_00");
     // (0.11.9, the owner: one home per thing: co-op's pages are the - menu's tabs, so the + menu has no Multiplayer
     // page and System no Multiplayer or Customize Link button; Longshot Settings is System's one page of ours)
+#ifdef __APPLE__
+    // The nxnative pack exposes multiplayer from the System page.
+    g_coop_pane = FindOwnPane(ctx, f.layout, "Pa_Coop_00");
+    g_pages_ok = IsPart(g_system_pane) && IsPart(g_coop_pane);
+#else
     g_coop_pane = 0;
     g_pages_ok = IsPart(g_system_pane);
+#endif
     g_settings_pane = FindOwnPane(ctx, f.layout, "Pa_Settings_00");
     if (!IsPart(g_settings_pane)) g_settings_pane = 0;
     // System's two buttons of ours and the same two in our pages, the pages' own rows, and System's own lower buttons
@@ -1289,7 +1295,12 @@ void LookPages(void* ctx, bool calls, const Facts& f, std::uint64_t gen) {
         g_settings_button = button("Pa_System_00", "Pa_Button_05");
         g_settings_button_coop = button("Pa_Coop_00", "Pa_Button_05");
         g_settings_button_set = button("Pa_Settings_00", "Pa_Button_05");
-        // (an older pack's Multiplayer and Customize Link buttons, Pa_Button_06 and 07: hidden, as the pack stores them)
+#ifdef __APPLE__
+        g_mp_button = button("Pa_System_00", "Pa_Button_06");
+        g_mp_button_coop = button("Pa_Coop_00", "Pa_Button_06");
+        g_cl_button = button("Pa_System_00", "Pa_Button_07");
+        g_cl_button_coop = button("Pa_Coop_00", "Pa_Button_07");
+#endif
         g_mp_button_set = button("Pa_Settings_00", "Pa_Button_06");
         g_cl_button_set = button("Pa_Settings_00", "Pa_Button_07");
         for (int r = 0; r < kRows; ++r) {
@@ -1569,7 +1580,7 @@ int OurSystemButtonFocused() {
         const auto box = CoopModScreens::HitBox(read, b);
         if (state == 0 || (state & 0xfe) == 4 || !box) continue;
         const std::string name = CoopModScreens::ButtonName(read, b);
-        if (name == "Pa_Button_06" && g_mp_button != 0) mp = true, mp_box = box;   // (0.11.9: never; an old pack's)
+        if (name == "Pa_Button_06" && g_mp_button != 0) mp = true, mp_box = box;
         if (name == "Pa_Button_05" && g_page.SettingsUsable()) ls = true, ls_box = box;
         if (name == "Pa_Button_07" && g_cl_button != 0) cl = true, cl_box = box;
     }
@@ -3186,7 +3197,11 @@ void OnScreen(void* ctx, std::uint64_t screen) noexcept {
             // (B is ours in a view of the Multiplayer page, and in the Settings page's list)
             g_page.SetSubView(g_page.Which() == 1 ? g_set_row.load() >= 0 : ViewShown() != View::kMain);
             if (f.kind == Kind::kPages) LookPages(ctx, calls, f, gen);
+#ifdef __APPLE__
+            if (f.kind != Kind::kBlocker) g_page.SetUsable(CanCall() && g_pages_ok && g_mp_button != 0);
+#else
             if (f.kind != Kind::kBlocker) g_page.SetUsable(CanCall() && g_pages_ok && g_settings_button != 0);
+#endif
             if (f.kind != Kind::kBlocker) {   // (Longshot Settings: its page, System's button and Longshot's settings)
                 g_page.SetSettingsUsable(g_page.Usable() && g_settings_pane != 0 && g_settings_button != 0 &&
                                          CoopLongshotSettings::Available());

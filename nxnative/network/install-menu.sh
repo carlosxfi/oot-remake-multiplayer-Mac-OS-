@@ -143,7 +143,7 @@ export HOS_COOP_MODS_CODE=0 HOS_COOP_NULL_READS=0
 # overrides are supplied by Longshot and are unavailable in this nxnative host.
 unset LICHII_COOP_SELF_TUNIC
 if self_tunic=$(/usr/bin/python3 -I "$here/../../tools/puppet_pack/self_tunic.py" \
-    --pack "$overlay/.." --coop-ini "$state/coop.ini") && [ -n "$self_tunic" ]; then
+    --preset --pack "$overlay/.." --coop-ini "$state/coop.ini") && [ -n "$self_tunic" ]; then
   export LICHII_COOP_SELF_TUNIC="$self_tunic"
 fi
 unset COOP_NXNATIVE_PAUSE_PACK

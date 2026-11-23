@@ -183,8 +183,9 @@ def main(argv=None):
     ap.add_argument("--options", help="the kit's coop-options.ini")
     ap.add_argument("--coop-ini", help="the game's coop.ini")
     ap.add_argument("--tunics", default=os.environ.get("LICHII_COOP_TUNICS", ""), help="LICHII_COOP_TUNICS")
+    ap.add_argument("--preset", action="store_true", help="put the selected preset in the ROMFS for nxnative")
     a = ap.parse_args(argv)
-    got = put(a.pack, start_color(a.color, a.options, a.coop_ini, a.tunics))
+    got = put(a.pack, start_color(a.color, a.options, a.coop_ini, a.tunics), painted=not a.preset)
     if got:
         print(got)
     return 0
