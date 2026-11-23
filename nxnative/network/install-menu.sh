@@ -137,6 +137,8 @@ directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 unset LICHII_COOP_SERVER LICHII_COOP_PORT LICHII_COOP_PASSWORD
 export DM_ROMFS_OVERLAY="$overlay" COOP_NXNATIVE_PUPPET_PREFLIGHT=1
 export COOP_NXNATIVE_MENU=1 COOP_NXNATIVE_SHARED_MODULE="$module" COOP_NXNATIVE_SHARED_DIR="$state"
+# Identify the supported Mac launcher to the shared startup check.
+export OOT_COOP_KIT_START=1
 export HOS_COOP_MENU=1 LICHII_COOP_PUPPET=1 LICHII_COOP_HOST_SAVE=0
 export HOS_COOP_MODS_CODE=0 HOS_COOP_NULL_READS=0
 # Apply the saved Kokiri colour before nxnative opens the ROMFS. Live texture
