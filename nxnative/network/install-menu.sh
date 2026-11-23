@@ -141,6 +141,14 @@ export COOP_NXNATIVE_MENU=1 COOP_NXNATIVE_SHARED_MODULE="$module" COOP_NXNATIVE_
 export OOT_COOP_KIT_START=1
 export HOS_COOP_MENU=1 LICHII_COOP_PUPPET=1 LICHII_COOP_HOST_SAVE=0
 export HOS_COOP_MODS_CODE=0 HOS_COOP_NULL_READS=0
+unset COOP_NXNATIVE_CHARACTER_SELECT
+if /usr/bin/grep -Fqx "$(printf '# COOP_CHARACTER_SELECT\t1')" "$app/Contents/Resources/dm/main.fixups.tsv" 2>/dev/null; then
+  if ! /usr/bin/plutil -extract characters.mod raw -o - "$overlay/../coop_puppet.json" >/dev/null 2>&1; then
+    echo 'Character Select is in the game executable. Choose a prepared ROMFS overlay and puppet pack with its character assets.' >&2
+    exit 1
+  fi
+  export COOP_NXNATIVE_CHARACTER_SELECT=1
+fi
 # Apply the saved Kokiri colour before nxnative opens the ROMFS. Live texture
 # overrides are supplied by Longshot and are unavailable in this nxnative host.
 unset LICHII_COOP_SELF_TUNIC

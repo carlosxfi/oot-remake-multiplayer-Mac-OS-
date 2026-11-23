@@ -272,6 +272,14 @@ const std::string& ExefsList() {
                 std::fclose(f);
             }
         }
+#ifdef __APPLE__
+        // The nxnative launcher checks the signed app's rewrite metadata and puppet manifest.
+        if (const char* enabled = std::getenv("COOP_NXNATIVE_CHARACTER_SELECT");
+            enabled && std::string_view(enabled) == "1") {
+            if (!t.empty() && t.back() != '\n') t += '\n';
+            t += "OoT Character Select\tnxnative\t-\tcode\tapplied at build time\n";
+        }
+#endif
         return t;
     }();
     return text;
