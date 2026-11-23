@@ -2228,6 +2228,10 @@ COOP_HOOKSHOT_EXPORT void hos_coop_game_screen(void* ctx, uint64_t screen) noexc
             CoopMapPage::ObserveMacScreen(ctx, g_api, screen);
 #endif
             CoopPauseTab::OnScreen(ctx, screen);
+#ifdef __APPLE__
+            // The pause screen can update while nxnative's gameplay callback is idle.
+            CoopLook::PreviewWhilePaused();
+#endif
             try {
                 // (not while our Multiplayer page is in front: the screen behind it is not the player's, and a mod's
                 // choose_focused would press the game's button under our page)

@@ -257,6 +257,16 @@ void ApplyOnUnpause() {
     g_to_apply = true;
 }
 
+#ifdef __APPLE__
+void PreviewWhilePaused() {
+    std::lock_guard lock(g_mutex);
+    if (!g_to_apply && g_to_preview && g_preview) {
+        g_to_preview = false;
+        g_preview(g_choice.Shown());
+    }
+}
+#endif
+
 void Frame() {
     std::optional<Look> look;
     Apply apply;
