@@ -350,6 +350,8 @@ namespace personal = CoopPersonalInventory;
 fs::path g_profile_path;
 std::optional<personal::Counts> g_profile_counts;
 bool g_profile_mounted = false;
+std::optional<personal::Counts> g_profile_pending;
+unsigned g_profile_restore_attempts = 0;
 
 // Keep a profile locked until exit so two game processes cannot overwrite it.
 struct ProfileLock {
@@ -421,13 +423,16 @@ save::WriteResult WriteSlotTo(const fs::path& dir, const save::SaveSlot& slot, b
     const auto* incoming = &slot;
 #if defined(__APPLE__) && defined(COOP_HOOKSHOT)
     g_profile_mounted = false;
+    g_profile_pending.reset();
+    g_profile_restore_attempts = 0;
+    personal::Counts applied{};
     auto restored = save::SaveSlot{};
     const bool use_profile = g_remount && !played_from && save::is_coop_dir(dir) && OpenProfile(dir);
     bool profile_ready = use_profile;
     if (use_profile && g_profile_counts) {
         restored = slot;
         profile_ready = !restored.files.empty() && restored.files.front().name == "progress.sav" &&
-                        personal::Restore(restored.files.front().bytes, *g_profile_counts);
+                        personal::Restore(restored.files.front().bytes, *g_profile_counts, &applied);
         if (profile_ready) {
             incoming = &restored;
             LOG_INFO(Core, "coop: inventory restored into the incoming host save");
@@ -442,6 +447,7 @@ save::WriteResult WriteSlotTo(const fs::path& dir, const save::SaveSlot& slot, b
         g_guest.ready = true;
 #if defined(__APPLE__) && defined(COOP_HOOKSHOT)
         g_profile_mounted = profile_ready;
+        if (profile_ready && g_profile_counts) g_profile_pending = applied;
 #endif
         LOG_INFO(Core, "coop: save: the host's save written to {}", dir.string());
         if (played_from) Say(g_lines.on_ready(g_in_game));
@@ -515,6 +521,25 @@ void CheckpointInventory(coop::host::WritableGameMemory& memory) {
         const auto count = flags.get_int(personal::stock[i]);
         if (!count || *count < 0 || *count > 10000) return;
         counts[i] = static_cast<std::uint32_t>(*count);
+    }
+    if (g_profile_pending) {
+        if (counts != *g_profile_pending) {
+            if (g_profile_restore_attempts++ < 4) {
+                for (std::size_t i = 0; i < counts.size(); ++i) {
+                    if (counts[i] != (*g_profile_pending)[i]) {
+                        coop::host::GameFlags::set_int(memory, personal::stock[i],
+                            static_cast<std::int32_t>((*g_profile_pending)[i]));
+                    }
+                }
+            } else {
+                LOG_WARNING(Core, "coop: inventory restoration could not be confirmed; keeping the profile on disk");
+                g_profile_mounted = false;
+            }
+            return;
+        }
+        LOG_INFO(Core, "coop: inventory restoration confirmed in gameplay");
+        g_profile_pending.reset();
+        return;
     }
     if (counts != g_profile_counts && WriteInventory(counts)) g_profile_counts = counts;
 }

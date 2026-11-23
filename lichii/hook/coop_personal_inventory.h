@@ -15,7 +15,7 @@ inline constexpr std::array capacity{0xae8cc742u, 0x418db791u, 0xe753508bu,
                                      0x735b00f7u, 0x457616b0u, 0xe0010a50u};
 using Counts = std::array<std::uint32_t, stock.size()>;
 
-inline bool Restore(std::span<std::uint8_t> bytes, const Counts& counts) {
+inline bool Restore(std::span<std::uint8_t> bytes, const Counts& counts, Counts* applied = nullptr) {
     const auto word = [&](std::size_t at) {
         std::uint32_t result = 0;
         for (unsigned i = 0; i < 4; ++i) result |= std::uint32_t(bytes[at + i]) << (8 * i);
@@ -40,6 +40,7 @@ inline bool Restore(std::span<std::uint8_t> bytes, const Counts& counts) {
             }
             for (std::size_t i = 0; i < counts.size(); ++i) {
                 const auto count = std::min(counts[i], word(limits[i]));
+                if (applied) (*applied)[i] = count;
                 for (unsigned b = 0; b < 4; ++b) {
                     bytes[positions[i] + b] = static_cast<std::uint8_t>(count >> (8 * b));
                 }

@@ -1869,7 +1869,9 @@ TEST_CASE("A co-op profile restores personal counts into a copy of the host save
 
     auto guest = host;
     const Counts profile{29, 0, 41, 1, 2, 3};
-    REQUIRE(Restore(guest, profile));
+    Counts applied{};
+    REQUIRE(Restore(guest, profile, &applied));
+    CHECK((applied == Counts{29, 0, 30, 1, 2, 3}));
     CHECK(host[seeds] == 30);
     CHECK(guest[seeds] == 29);
     CHECK(guest[seeds + 8] == 0);
