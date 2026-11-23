@@ -896,6 +896,29 @@ void SetMapOptions(bool players, bool names) {
     g_map_names.store(names);
 }
 
+#ifdef __APPLE__
+std::string MacChatText() {
+    std::optional<CoopDraw::ChatBoxView> box;
+    {
+        std::lock_guard lock(g_box_mutex);
+        if (g_box.open()) box = CoopDraw::ChatBoxView{g_box.text(), g_box.failed()};
+    }
+    const auto lines = CoopDraw::ShownChat(CoopHook::ChatLines(), box.has_value());
+    std::string text;
+    const auto first = lines.size() > 5 ? lines.size() - 5 : 0;
+    for (auto i = first; i < lines.size(); ++i) {
+        if (!text.empty()) text += '\n';
+        text += lines[i].text;
+    }
+    if (box) {
+        if (!text.empty()) text += '\n';
+        if (box->failed) text += "Could not send.\n";
+        text += "> " + box->text;
+    }
+    return text;
+}
+#endif
+
 CoopDraw::Scene DrawScene() {
     CoopDraw::Scene s;
     s.title = CoopTitle::View();
@@ -2102,6 +2125,20 @@ COOP_HOOKSHOT_EXPORT int hos_coop_char(uint32_t ch) {
         return CoopHookshot::TypeChar(ch) ? 1 : 0;
     });
 }
+#ifdef __APPLE__
+COOP_HOOKSHOT_EXPORT void hos_coop_mac_chat(char* out, std::size_t cap) {
+    if (!out || !cap) return;
+    out[0] = '\0';
+    static CoopBoundary::Site site{"hos_coop_mac_chat"};
+    CoopExportGuard::Guard(site, [&] {
+        const auto text = CoopHookshot::MacChatText();
+        auto size = std::min(text.size(), cap - 1);
+        while (size < text.size() && (static_cast<unsigned char>(text[size]) & 0xc0) == 0x80) --size;
+        std::memcpy(out, text.data(), size);
+        out[size] = '\0';
+    });
+}
+#endif
 COOP_HOOKSHOT_EXPORT int hos_coop_keys_taken(void) {
     static CoopBoundary::Site site{"hos_coop_keys_taken"};
     return CoopExportGuard::Guard(site, static_cast<int>(0), [&]() -> int {

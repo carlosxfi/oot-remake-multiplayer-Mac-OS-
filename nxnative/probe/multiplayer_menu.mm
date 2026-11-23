@@ -5,6 +5,7 @@
 #include <array>
 #include <arpa/inet.h>
 #include <cstdint>
+#include <cstdio>
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <ifaddrs.h>
@@ -23,6 +24,9 @@ struct SessionApi {
   hos_coop_status_fn status;
   void (*client_status)(char*, std::uint32_t);
   hos_coop_mac_peers_fn peers;
+  int (*key)(std::uint32_t, int);
+  int (*character)(std::uint32_t);
+  void (*chat)(char*, std::size_t);
 };
 
 NSString* lan_addresses(std::uint16_t port) {
@@ -78,6 +82,7 @@ NSString* heart_count(std::uint16_t quarters) {
 @interface NxnativeMultiplayerMenu : NSObject
 - (instancetype)initWithApi:(SessionApi)api;
 - (void)installWithPanel:(bool)showPanel;
+- (BOOL)handleKey:(NSEvent*)event;
 @end
 
 @implementation NxnativeMultiplayerMenu {
@@ -86,6 +91,8 @@ NSString* heart_count(std::uint16_t quarters) {
   NSVisualEffectView* _panel;
   NxnativePeersView* _peers;
   NSTextField* _peerLabel;
+  NxnativePeersView* _chat;
+  NSTextField* _chatLabel;
   __weak NSView* _hudContainer;
   __weak NSResponder* _beforePanel;
   NSTextField* _name;
@@ -117,18 +124,57 @@ NSString* heart_count(std::uint16_t quarters) {
     if (showPanel) [self attachToGameMenu];
     if (self->_panel.window) [self refresh];
     [self refreshPeers];
+    [self refreshChat];
   }];
   [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
-  if (!showPanel) return;
-  [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent*(NSEvent* event) {
-    const auto modifiers = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-    if (!modifiers && [event.charactersIgnoringModifiers isEqualToString:@"\033"] &&
-        self->_panel.window && event.window == self->_panel.window) {
-      [self closePanel:nil];
-      return nil;
+  using KeyFilter = int (*)(void*, void*);
+  using SetKeyFilter = void (*)(KeyFilter, void*);
+  const auto setFilter = reinterpret_cast<SetKeyFilter>(dlsym(RTLD_DEFAULT, "dm_coop_set_key_filter"));
+  if (setFilter && _api.key && _api.character && _api.chat) {
+    setFilter([](void* context, void* event) -> int {
+      auto* menu = (__bridge NxnativeMultiplayerMenu*)context;
+      return [menu handleKey:(__bridge NSEvent*)event] ? 1 : 0;
+    }, (__bridge void*)self);
+    std::fprintf(stderr, "[coop-nxnative] chat keyboard bridge installed\n");
+  } else {
+    std::fprintf(stderr, "[coop-nxnative] chat keyboard bridge unavailable\n");
+    if (showPanel) {
+      [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent*(NSEvent* event) {
+        if (_panel.window && event.window == _panel.window && [self handleKey:event]) return nil;
+        return event;
+      }];
     }
-    return event;
-  }];
+  }
+}
+
+- (BOOL)handleKey:(NSEvent*)event {
+  const auto modifiers = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+  if (!modifiers && [event.charactersIgnoringModifiers isEqualToString:@"\033"] &&
+      _panel.window && event.window == _panel.window) {
+    [self closePanel:nil];
+    return YES;
+  }
+  NSWindow* window = NSApp.mainWindow ?: NSApp.keyWindow;
+  if (!_api.key || !_api.character || !_api.chat ||
+      !window || event.window != window || _panel.window == window ||
+      [window.firstResponder isKindOfClass:NSTextView.class] ||
+      (modifiers & (NSEventModifierFlagCommand | NSEventModifierFlagControl))) return NO;
+  const unichar ch = event.charactersIgnoringModifiers.length
+      ? [event.charactersIgnoringModifiers characterAtIndex:0] : 0;
+  std::uint32_t key = ch;
+  if (ch >= 'a' && ch <= 'z') key = ch - 'a' + 'A';
+  else if (ch == 127) key = 8;
+  else if (ch == 3) key = 13;
+  else if (ch >= NSF1FunctionKey && ch <= NSF12FunctionKey) key = 0x70 + ch - NSF1FunctionKey;
+  else if (ch < 0x20 && ch != 8 && ch != 13 && ch != 27) key = 0;
+  else if (ch >= 0x80) key = 0;
+  if (!_api.key(key, event.isARepeat)) return NO;
+  for (NSUInteger i = 0; i < event.characters.length; ++i) {
+    const unichar c = [event.characters characterAtIndex:i];
+    if (c >= 0x20 && c < 0x7f) _api.character(c);
+  }
+  [self refreshChat];
+  return YES;
 }
 
 - (void)attachToGameMenu {
@@ -208,6 +254,46 @@ NSString* heart_count(std::uint16_t quarters) {
     ]];
   }
   _peers.hidden = NO;
+}
+
+- (void)refreshChat {
+  NSWindow* window = NSApp.mainWindow ?: NSApp.keyWindow;
+  NSView* content = window.isVisible && _panel.window != window ? window.contentView : nil;
+  if (_chat.superview != content) [_chat removeFromSuperview];
+  if (!content || !_api.chat) return;
+
+  std::array<char, 4096> snapshot{};
+  _api.chat(snapshot.data(), snapshot.size());
+  NSString* text = [NSString stringWithUTF8String:snapshot.data()] ?: @"";
+  if (!text.length) {
+    _chat.hidden = YES;
+    return;
+  }
+  if (!_chat) {
+    _chat = [[NxnativePeersView alloc] initWithFrame:NSZeroRect];
+    style_material(_chat, NSVisualEffectMaterialHUDWindow);
+    _chatLabel = [NSTextField wrappingLabelWithString:@""];
+    _chatLabel.maximumNumberOfLines = 10;
+    _chatLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [_chat addSubview:_chatLabel];
+    [NSLayoutConstraint activateConstraints:@[
+      [_chatLabel.leadingAnchor constraintEqualToAnchor:_chat.leadingAnchor constant:12],
+      [_chatLabel.trailingAnchor constraintEqualToAnchor:_chat.trailingAnchor constant:-12],
+      [_chatLabel.topAnchor constraintEqualToAnchor:_chat.topAnchor constant:8],
+      [_chatLabel.bottomAnchor constraintEqualToAnchor:_chat.bottomAnchor constant:-8],
+    ]];
+  }
+  if (![_chatLabel.stringValue isEqualToString:text]) _chatLabel.stringValue = text;
+  if (!_chat.superview) {
+    [content addSubview:_chat positioned:NSWindowAbove relativeTo:nil];
+    [NSLayoutConstraint activateConstraints:@[
+      [_chat.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:18],
+      [_chat.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-36],
+      [_chat.widthAnchor constraintLessThanOrEqualToConstant:420],
+      [_chat.trailingAnchor constraintLessThanOrEqualToAnchor:content.trailingAnchor constant:-18],
+    ]];
+  }
+  _chat.hidden = NO;
 }
 
 - (void)show:(id)sender {
@@ -437,6 +523,9 @@ void install_multiplayer_menu(void* module, bool show_panel) {
       reinterpret_cast<hos_coop_status_fn>(dlsym(module, "hos_coop_status")),
       reinterpret_cast<void (*)(char*, std::uint32_t)>(dlsym(module, "hos_coop_client_status")),
       reinterpret_cast<hos_coop_mac_peers_fn>(dlsym(module, "hos_coop_mac_peers")),
+      reinterpret_cast<int (*)(std::uint32_t, int)>(dlsym(module, "hos_coop_key")),
+      reinterpret_cast<int (*)(std::uint32_t)>(dlsym(module, "hos_coop_char")),
+      reinterpret_cast<void (*)(char*, std::size_t)>(dlsym(module, "hos_coop_mac_chat")),
   };
   if (!api.host || !api.join || !api.leave || !api.status) return;
   dispatch_async(dispatch_get_main_queue(), ^{

@@ -610,7 +610,11 @@ std::array<std::uint64_t, kLinePanes> g_list_arrows{};
 std::array<int, kLinePanes> g_list_arrows_vis{};
 // Settings and look: the list moved left, beside the page's rows, so the menu's Link stands on the right (a tester: the
 // model on the right, the options on the left, not so wide). In the layout's units (3840 across).
+#ifdef __APPLE__
+constexpr float kMenuListShift = -200.0f;   // Leave room for the sidebar and Link's preview.
+#else
 constexpr float kMenuListShift = -400.0f;   // (-520 overlapped the rows' panel, a tester)
+#endif
 std::atomic<int> g_menu_per_page{kCells};   // (seven with the pack's eighth list row)
 
 // The rows with nothing on them not shown; the game's cursor on one goes on to the nearest shown (RowSkip, OnPad).
