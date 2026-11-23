@@ -854,6 +854,16 @@ void Act(const Request& r) {
     switch (r.kind) {
     case Request::Kind::kHost: Host(); break;
     case Request::Kind::kJoin: Join(r.text); break;
+    case Request::Kind::kJoinClipboard:
+        PasteThen([session = g_session](std::optional<std::string> clip) {
+            if (session != g_session || g_menu.page() != CoopPauseMenu::Page::kJoin || g_menu.typing()) return;
+            if (!clip || CoopTitleMenu::OneLine(*clip).empty()) {
+                g_menu.SetNote({clip ? "Copy the host's invite or join line first." : kClipboardUnread});
+                return;
+            }
+            Join(CoopTitleMenu::OneLine(*clip));
+        });
+        break;
     case Request::Kind::kLeave: Leave(); break;
     case Request::Kind::kSave: Save(); break;
     case Request::Kind::kLook: {
