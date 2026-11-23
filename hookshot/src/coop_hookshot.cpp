@@ -2150,7 +2150,7 @@ COOP_HOOKSHOT_EXPORT void hos_coop_mac_draw_markers(const HosCoopDraw* draw) {
         const auto menu = CoopMapPage::MenuState();
         CoopDraw::Scene scene;
         if (!(menu && menu->menu_open)) scene.markers = CoopHook::CurrentMarkers();
-        scene.map = CoopHookshot::MapScene(scene.markers.has_value(), 0);
+        scene.map = CoopHookshot::MapScene(menu && menu->HudRuns(), 0);
         CoopDraw::DrawMacMarkers(*draw, scene);
     });
 }
