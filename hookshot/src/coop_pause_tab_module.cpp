@@ -611,7 +611,10 @@ std::array<int, kLinePanes> g_list_arrows_vis{};
 // Settings and look: the list moved left, beside the page's rows, so the menu's Link stands on the right (a tester: the
 // model on the right, the options on the left, not so wide). In the layout's units (3840 across).
 #ifdef __APPLE__
-constexpr float kMenuListShift = -340.0f;   // Leave room for the sidebar and Link's preview.
+// Match ROW_X in tools/puppet_pack/pause_menu.py. The game can reuse panes
+// across openings, so reading their current x can capture our previous shift.
+constexpr float kMacListHome = 540.0f;
+constexpr float kMenuListShift = -340.0f;
 #else
 constexpr float kMenuListShift = -400.0f;   // (-520 overlapped the rows' panel, a tester)
 #endif
@@ -651,7 +654,11 @@ void LiveCells(void* ctx, std::uint64_t layout, std::uint64_t gen, const Session
             if (i == 0) g_head_pane_at = g_list_panes[k];
             g_list_vis[k] = -1, g_list_alpha[k] = -1, g_list_box_vis[k] = -1, g_list_box[k] = {};
             g_list_arrows[k] = 0, g_list_arrows_vis[k] = 0;
+#ifdef __APPLE__
+            g_list_home[k] = kMacListHome;
+#else
             g_list_home[k] = IsPart(pane) ? Read<float>(pane + 0x6c) : 0.0f;
+#endif
             if (!IsPart(pane)) continue;
             if (i < kListRows) ++found;
             // (inside the row: the value's arrows and the check mark an Options row has, never ours; its value box)
