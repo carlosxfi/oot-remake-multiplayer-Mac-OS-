@@ -20,6 +20,8 @@ class Client;
 struct Event;
 }  // namespace coop::net
 
+namespace coop::host { class WritableGameMemory; }
+
 namespace CoopSave {
 
 // Whether this game uses the co-op save folder. Where the folder is fixed when
@@ -35,6 +37,9 @@ void SetSwitch(std::function<std::string()> root, std::function<bool(const std::
 
 // Each frame: whether Link is in the game (a loaded save): no switch then.
 void NoteInGame(bool in_game);
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+void CheckpointInventory(coop::host::WritableGameMemory& memory);
+#endif
 // Player report 120, Hookshot's patch 0025 (hos_coop_fs_save_slot_opened): the count of opens of a slot's
 // progress.sav on the account save, the last one's slot folder and whether it was a write, so the host sends the slot
 // its game plays (save::PlayedSlot). Unset (the emulator, an older Hookshot): the newest slot on disk, as before.

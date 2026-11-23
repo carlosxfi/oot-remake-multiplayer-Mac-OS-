@@ -18,6 +18,16 @@
 
 #include <fmt/format.h>
 
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#include <fstream>
+
+#include "coop/host/game_flags.hpp"
+#include "coop_personal_inventory.h"
+#endif
+
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 
@@ -335,13 +345,104 @@ bool RemountLocked(const fs::path& dir) {
     return true;
 }
 
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+namespace personal = CoopPersonalInventory;
+fs::path g_profile_path;
+std::optional<personal::Counts> g_profile_counts;
+bool g_profile_mounted = false;
+
+// Keep a profile locked until exit so two game processes cannot overwrite it.
+struct ProfileLock {
+    int fd = -1;
+    ~ProfileLock() { if (fd >= 0) close(fd); }
+};
+ProfileLock g_profile_lock;
+
+bool OpenProfile(const fs::path& coop_dir) {
+    if (!g_profile_path.empty()) return true;
+    const char* raw = std::getenv("COOP_NXNATIVE_INVENTORY_PROFILE");
+    const std::string_view name = raw ? raw : "";
+    if (name.empty() || name.size() > 48 || name.find_first_not_of(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_") != std::string_view::npos) return false;
+
+    const auto dir = coop_dir.parent_path() / "coop-inventory";
+    const auto path = dir / (std::string(name) + ".txt");
+    std::error_code error;
+    fs::create_directories(dir, error);
+    if (error) return false;
+    const int fd = open((path.string() + ".lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    if (fd < 0) return false;
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        close(fd);
+        LOG_WARNING(Core, "coop: inventory profile is already in use");
+        return false;
+    }
+    if (fs::exists(path, error)) {
+        std::ifstream file(path);
+        std::string version;
+        personal::Counts counts{};
+        file >> version;
+        for (auto& count : counts) file >> count;
+        if (!file || version != "OOTINV1" || (file >> std::ws).peek() != EOF ||
+            std::any_of(counts.begin(), counts.end(), [](auto count) { return count > 10000; })) {
+            close(fd);
+            LOG_WARNING(Core, "coop: inventory profile could not be read");
+            return false;
+        }
+        g_profile_counts = counts;
+    }
+    if (error) {
+        close(fd);
+        return false;
+    }
+    g_profile_lock.fd = fd;
+    g_profile_path = path;
+    return true;
+}
+
+bool WriteInventory(const personal::Counts& counts) {
+    const auto temporary = g_profile_path.string() + ".tmp";
+    std::ofstream file(temporary, std::ios::trunc);
+    file << "OOTINV1\n";
+    for (const auto count : counts) file << count << '\n';
+    file.close();
+    if (!file || std::rename(temporary.c_str(), g_profile_path.c_str()) != 0) {
+        std::remove(temporary.c_str());
+        LOG_WARNING(Core, "coop: inventory profile could not be saved");
+        return false;
+    }
+    return true;
+}
+#endif
+
 // Under g_mutex: the host's slot written whole into the co-op folder `dir`.
 // `played_from`: the game already plays from `dir` (else Success is said once it is switched to: PendingFrame).
 save::WriteResult WriteSlotTo(const fs::path& dir, const save::SaveSlot& slot, bool played_from) {
-    const auto result = save::write_coop_save(dir, slot, save::own_dir_of(dir));
+    const auto* incoming = &slot;
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+    g_profile_mounted = false;
+    auto restored = save::SaveSlot{};
+    const bool use_profile = g_remount && !played_from && save::is_coop_dir(dir) && OpenProfile(dir);
+    bool profile_ready = use_profile;
+    if (use_profile && g_profile_counts) {
+        restored = slot;
+        profile_ready = !restored.files.empty() && restored.files.front().name == "progress.sav" &&
+                        personal::Restore(restored.files.front().bytes, *g_profile_counts);
+        if (profile_ready) {
+            incoming = &restored;
+            LOG_INFO(Core, "coop: inventory restored into the incoming host save");
+        } else {
+            LOG_WARNING(Core, "coop: inventory profile skipped: host save fields could not be validated");
+        }
+    }
+#endif
+    const auto result = save::write_coop_save(dir, *incoming, save::own_dir_of(dir));
     switch (result) {
     case save::WriteResult::written:
         g_guest.ready = true;
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+        g_profile_mounted = profile_ready;
+#endif
         LOG_INFO(Core, "coop: save: the host's save written to {}", dir.string());
         if (played_from) Say(g_lines.on_ready(g_in_game));
         break;
@@ -397,6 +498,27 @@ void NoteInGame(bool in_game) {
     if (in_game && g_guest_live) g_guest_played = true;   // (the title's ask, TitleResync)
     Say(g_lines.on_in_game(in_game));
 }
+
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+void CheckpointInventory(coop::host::WritableGameMemory& memory) {
+    std::lock_guard lock(g_mutex);
+    if (!g_profile_mounted || !g_guest.ready || !g_guest_live || !g_in_game ||
+        !save::is_coop_dir(g_dir)) return;
+    const auto now = std::chrono::steady_clock::now();
+    static auto next = now;
+    if (now < next) return;
+    next = now + std::chrono::milliseconds(250);
+
+    coop::host::GameFlags flags(memory);
+    personal::Counts counts{};
+    for (std::size_t i = 0; i < counts.size(); ++i) {
+        const auto count = flags.get_int(personal::stock[i]);
+        if (!count || *count < 0 || *count > 10000) return;
+        counts[i] = static_cast<std::uint32_t>(*count);
+    }
+    if (counts != g_profile_counts && WriteInventory(counts)) g_profile_counts = counts;
+}
+#endif
 
 bool HostSaveReady() {
     std::lock_guard lock(g_mutex);

@@ -41,5 +41,6 @@ Open a Windows host session with a saved file, then join from the Mac title scre
 
 ### Personal inventory on rejoin
 
-- [ ] Preserve each returning player's ammo and other personal inventory for the same co-op game. The host's latest save still supplies shared progress. Keep personal inventory separate from solo saves and from other hosts or save slots.
-- [ ] Regression test: start with 30 slingshot seeds, spend one on the Mac, leave and rejoin the same Windows game, and verify the Mac returns with 29 while Windows still has 30. Repeat after quitting and relaunching the Mac app.
+The Mac launcher asks for an optional profile name before launch. Use the same name for the same campaign and a different name for a different host or save slot. Join from the title and load the host's save. The Mac checkpoints seeds, arrows, bombs, nuts, sticks and rupees while the guest is playing the co-op save. On a later join with the same profile, it restores those counts into the local copy of the host's save, up to the capacities in that save. The first join uses the host's starting counts. The profile is stored beside the game's save folders in `coop-inventory`. Shared progress and the host's inventory still follow the existing co-op rules.
+
+To test, start both players at 30 seeds. On the Mac, enter a new profile name, join from the title, spend one seed and wait a second. Leave and rejoin, then repeat after fully quitting the Mac app. The Mac should have 29 and the host should have 30 both times. Try a different profile and confirm it starts with the host's counts. Launch with no profile and verify the original Mac solo save.

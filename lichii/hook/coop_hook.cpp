@@ -1352,6 +1352,12 @@ public:
             CoopSave::OnFrame(c, report.host_reset);
             return 0;
         });
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+        if (memory && reading && report.connected && !report.hosting &&
+            !report.holding && !report.window_for && !report.host_reset && !report.save_load) {
+            CoopSave::CheckpointInventory(*memory);
+        }
+#endif
         if (auto line = CoopSave::TakeNotice(); !line.empty()) {
             LOG_INFO(Core, "coop: notice: {}", line);
             chat_.Add(std::move(line), true);

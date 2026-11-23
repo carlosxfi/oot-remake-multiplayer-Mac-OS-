@@ -71,7 +71,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 cat > "$staging/launcher.m" <<'SOURCE'
-#import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 
 int main(void) {
     @autoreleasepool {
@@ -81,9 +81,34 @@ int main(void) {
             return 1;
         }
 
+        [NSApplication sharedApplication];
+        [NSApp activateIgnoringOtherApps:YES];
+        NSAlert *picker = [[NSAlert alloc] init];
+        picker.messageText = @"Co-op inventory profile";
+        picker.informativeText = @"Enter the same name each time you join this playthrough. Leave it blank to play without a profile. Use up to 48 letters, digits, spaces, hyphens or underscores.";
+        NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 320, 24)];
+        field.stringValue = [NSUserDefaults.standardUserDefaults stringForKey:@"InventoryProfile"] ?: @"";
+        picker.accessoryView = field;
+        picker.window.initialFirstResponder = field;
+        [picker addButtonWithTitle:@"Play"];
+        [picker addButtonWithTitle:@"Cancel"];
+        NSString *profile;
+        NSCharacterSet *invalid = [[NSCharacterSet characterSetWithCharactersInString:
+            @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_"] invertedSet];
+        for (;;) {
+            if ([picker runModal] != NSAlertFirstButtonReturn) return 0;
+            profile = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            if (profile.length <= 48 && [profile rangeOfCharacterFromSet:invalid].location == NSNotFound) break;
+            picker.informativeText = @"Use up to 48 letters, digits, spaces, hyphens or underscores.";
+        }
+        [NSUserDefaults.standardUserDefaults setObject:profile forKey:@"InventoryProfile"];
+        NSMutableDictionary *environment = [NSProcessInfo.processInfo.environment mutableCopy];
+        environment[@"COOP_NXNATIVE_INVENTORY_PROFILE"] = profile;
+
         NSTask *game = [[NSTask alloc] init];
         game.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
         game.arguments = @[script.path];
+        game.environment = environment;
         NSError *error = nil;
         if (![game launchAndReturnError:&error]) {
             NSLog(@"OOT Co-op could not start: %@", error.localizedDescription);
@@ -94,7 +119,7 @@ int main(void) {
     }
 }
 SOURCE
-/usr/bin/xcrun clang -fobjc-arc -framework Foundation "$staging/launcher.m" \
+/usr/bin/xcrun clang -fobjc-arc -framework AppKit "$staging/launcher.m" \
   -o "$bundle/Contents/MacOS/oot-coop-launcher"
 printf '%s\n' "$here" "$app" "$overlay" "$module" "$state" > "$resources/oot-coop-paths"
 cat > "$resources/oot-coop-launch.sh" <<'LAUNCH'
