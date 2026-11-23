@@ -1597,6 +1597,178 @@ constexpr std::array kKeys = std::to_array<Key>({
     {0xe39111d696b26523, "WaterTemple", "Obj_WaterTemple_CrackWall_A_01"},
 });
 
+// Row 220 (Bean, a randomizer seed: "completed puzzles reset"): every placement OUTSIDE the dungeons' Banc folders
+// whose Hash is a Bool64bitKey of GameDataList with ResetTypeValue 24 and no ExtraByte (the saved type, as kKeys),
+// read from the romfs of build e0f3ccfaf50065ae: 951 such placed keys, of which kKeys has the dungeons' 500, CoopChests
+// the chests, CoopPickups the pickups (Gold Skulltulas, hearts, rupees, Deku items). Left out, each one player's own:
+// DreamWorld (Boss Rush and the battle arenas, 21), the Market shooting gallery's targets (3) and the Gerudo horseback
+// archery targets (5). The rest (158) were shared by no list: a boulder blown up, thrown away or cut through, a cracked
+// wall, a grotto's cover, a web or red ice stayed done only in the game that did it, so it was back for every other
+// player, and for that player too once its game loaded the host's save (a guest's reload, rejoin or host swap
+// replaces the co-op folder's save with the host's: docs/flags.md "The host's save file"). OOTRR 0.8.1 changes none
+// of these placements (its shuffled rocks are Obj_LiftRock_A and grass, pot_slice/rocks.rs: the seed's one-time
+// holders, row 219).
+constexpr std::array kWorldKeys = std::to_array<Key>({
+    {0x1d47aa1f7c19c1af, "DeathMountainCrater", "Obj_BrokenRock_A_01"},
+    {0x4cac80397bbecca9, "DeathMountainCrater", "Obj_BrokenRock_A_01"},
+    {0x8ed1ec3d9e85ff3a, "DeathMountainCrater", "Obj_BrokenRock_A_01"},
+    {0x4b2c5cae1d92c756, "DeathMountainCrater", "Obj_BrokenRock_A_02"},
+    {0x7875888c9e2007d5, "DeathMountainCrater", "Obj_BrokenRock_A_02"},
+    {0x9f46d72f3c85f5fb, "DeathMountainCrater", "Obj_BrokenRock_A_02"},
+    {0xae841f1c13a0d4aa, "DeathMountainCrater", "Obj_BrokenRock_A_02"},
+    {0xc22be353cfe596c1, "DeathMountainCrater", "Obj_BrokenRock_A_02"},
+    {0xd0c887c2f6964c47, "DeathMountainCrater", "Obj_BrokenRock_A_02"},
+    {0xf218f5640ec84a20, "DeathMountainCrater", "Obj_BrokenRock_A_02"},
+    {0xfa39cd01a16ce7d4, "DeathMountainCrater", "WallCrack"},
+    {0x8d015cb6de42a46f, "DeathMountainTrail", "Land_Kokiri_HidingHoleCover_A_01"},
+    {0x058bdaa37f36ff70, "DeathMountainTrail", "Obj_BrokenRock_A_01"},
+    {0x2f420d0c53e13b3e, "DeathMountainTrail", "Obj_BrokenRock_A_01"},
+    {0x77137969dab0a80b, "DeathMountainTrail", "Obj_BrokenRock_A_01"},
+    {0xcff217d47a196d84, "DeathMountainTrail", "Obj_BrokenRock_A_01"},
+    {0x508a9bd597e45454, "DeathMountainTrail", "Obj_BrokenRock_A_02"},
+    {0x7c35a7b1287cd69d, "DeathMountainTrail", "Obj_BrokenRock_A_02"},
+    {0x8324a99325078f72, "DeathMountainTrail", "Obj_BrokenRock_A_02"},
+    {0x864dadcda29f736d, "DeathMountainTrail", "Obj_BrokenRock_A_02"},
+    {0xd389d05aafff0ef5, "DeathMountainTrail", "Obj_BrokenRock_A_02"},
+    {0xfc18cca7550014e7, "DeathMountainTrail", "Obj_BrokenRock_A_02"},
+    {0x8a4e791b05223269, "DeathMountainTrail", "Obj_DeathMtTrail_BrokenRock_A_01"},
+    {0x1635ef3b4ff75552, "DeathMountainTrail", "WallCrack"},
+    {0x8aae39d8b9c2b898, "DeathMountainTrail", "WallCrack"},
+    {0xb2997cb052e47e38, "DeathMountainTrail", "WallCrack"},
+    {0x71ae9231242cf94e, "DesertColossus", "Obj_DesertColossus_CrackWall_A_01"},
+    {0x9044ab2aaba48725, "DesertColossus", "Obj_LiftRock_B_01"},
+    {0xad259959584f52b5, "DesertColossus", "Obj_LiftRock_B_01"},
+    {0xb1e12cabf117da18, "GerudoValley", "Land_Gerudo_HidingHoleCover_A_02"},
+    {0x0612505fed3cbe10, "GerudoValley", "Obj_BrokenRock_A_01"},
+    {0x0342fec297885622, "GerudoValley", "Obj_BrokenRock_A_02"},
+    {0x117f8938a60fe4a4, "GerudoValley", "Obj_BrokenRock_A_02"},
+    {0x60376d201ee75fb5, "GerudoValley", "Obj_BrokenRock_A_02"},
+    {0x69cc6ee132efe507, "GerudoValley", "Obj_BrokenRock_A_02"},
+    {0x9a10c220b92b780a, "GerudoValley", "Obj_BrokenRock_A_02"},
+    {0xb7789b349cd86585, "GerudoValley", "Obj_BrokenRock_A_02"},
+    {0xe29c7a3838caf250, "GerudoValley", "Obj_BrokenRock_A_02"},
+    {0xe2c41c8ce5ce64b1, "GerudoValley", "Obj_BrokenRock_A_02"},
+    {0x74c71a421d022361, "GerudoValley", "Obj_LiftRock_B_01"},
+    {0xddabd3e497d6b18d, "GerudoValley", "Obj_LiftRock_B_01"},
+    {0x04dc3a02afbf63da, "GoronCity", "Obj_BrokenRock_A_01"},
+    {0x07e40dfca5c236d7, "GoronCity", "Obj_BrokenRock_A_01"},
+    {0x0fe350e4e5c3dae7, "GoronCity", "Obj_BrokenRock_A_01"},
+    {0x126895c8f0d5508b, "GoronCity", "Obj_BrokenRock_A_01"},
+    {0x14ba469c5f22e17e, "GoronCity", "Obj_BrokenRock_A_01"},
+    {0x29c50a0ffec0bf79, "GoronCity", "Obj_BrokenRock_A_01"},
+    {0x33a46e5a087522d5, "GoronCity", "Obj_BrokenRock_A_01"},
+    {0x56606bc38a814cd5, "GoronCity", "Obj_BrokenRock_A_01"},
+    {0xba064fce3e905a68, "GoronCity", "Obj_BrokenRock_A_01"},
+    {0xbeda16fd2f762bc9, "GoronCity", "Obj_BrokenRock_A_01"},
+    {0xd99260a93a08944b, "GoronCity", "Obj_BrokenRock_A_01"},
+    {0xe5d4a5f3b73cb4c8, "GoronCity", "Obj_BrokenRock_A_01"},
+    {0xeaf25258caabb3b4, "GoronCity", "Obj_BrokenRock_A_01"},
+    {0x1ebae2b45a56e408, "GoronCity", "Obj_BrokenRock_A_02"},
+    {0x2623441fab194c5a, "GoronCity", "Obj_BrokenRock_A_02"},
+    {0x3164b8d55b7e27f4, "GoronCity", "Obj_BrokenRock_A_02"},
+    {0x609289a0de3d337b, "GoronCity", "Obj_BrokenRock_A_02"},
+    {0xab64a08d7481387f, "GoronCity", "Obj_BrokenRock_A_02"},
+    {0xc8c10ddba8523234, "GoronCity", "Obj_BrokenRock_A_02"},
+    {0x751d254f812d5cfb, "GoronCity", "Obj_Goron_BrokenRock_A_01"},
+    {0x784dacc398d8b905, "GoronCity", "Obj_Goron_BrokenRock_A_01"},
+    {0x00283696acc3dd10, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x0089627b3bafb8fc, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x07907fe8a7a18654, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x11a1e3d49563fb64, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x1a98fc998225555b, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x219ddf9904841c81, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x24b315f1b45ddbf2, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x2797a4187ca1f6af, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x27d0bde84a3a97b3, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x2e16955b5f7e9b63, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x40a3aac50d551a7d, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x5a2f59ad62347360, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x5e2aeb769eda5e2a, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x68dd81558336472b, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x694deba57dac574b, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x6c101162004359e9, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x8823e8ecb800df34, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x962ccc0ba7ec5366, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x9ce5fc914f0d6314, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x9f62144642b8acb4, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x9f7d0ebfa5357dbb, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xa17f86ea54707cc3, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xa1eb4d1370b8a187, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xaaf69438f90ce144, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xad5aea39afb819b3, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xafbe8b47ee359c52, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xb3e5f086be10ff32, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xc1c2dc594de6e3ce, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xca531c7c24261f5f, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xd4a7dd88678e00b4, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xdb02c81c089f2d11, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xe07a413cd470490f, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xf1b3d74d9d9e736b, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xf394c8e067e267d7, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xf668f60c96acd420, "GoronCity", "Obj_LiftRock_B_01"},
+    {0xfa016609a907eb66, "GoronCity", "Obj_LiftRock_B_01"},
+    {0x366a98c0128242cd, "GoronCity", "WallCrack"},
+    {0x78d7ea19a3aaa20a, "GoronCity", "WallCrack"},
+    {0xb166ecc1550d18fb, "GoronCity", "WallCrack"},
+    {0xc20bc61a21c3865c, "GoronCity", "WallCrack"},
+    {0xc24555c75bb5a521, "GoronCity", "WallCrack"},
+    {0x0d23bcff35eca9ea, "Graveyard", "Obj_EnemyCounter_A_01"},
+    {0x13a9f27541d398a3, "Graveyard", "Obj_EnemyCounter_A_01"},
+    {0x4586d3a35851f848, "Graveyard", "Obj_EnemyCounter_A_01"},
+    {0xbed783bdd371c953, "Graveyard", "Obj_EnemyCounter_A_01"},
+    {0x81fda69c6b788b5b, "Graveyard", "WallCrack"},
+    {0xb56e92d79d1a3d33, "HyruleCastle", "Land_Kokiri_HidingHoleCover_A_01"},
+    {0x5952919c0ffe7385, "HyruleCastle", "WallCrack"},
+    {0x7b7f3eb6adcd3e11, "HyruleCastle", "WallCrack"},
+    {0x94b9ef860b70c8dd, "HyruleCastle", "WallCrack"},
+    {0x9d755247d4b22b04, "HyruleCastle", "WallCrack"},
+    {0x2031e5ac12ff9ab4, "HyruleField", "Land_HrlField_HidingHoleCover_A_01"},
+    {0x26ab0c5fdb6fa972, "HyruleField", "Land_HrlField_HidingHoleCover_A_01"},
+    {0x38fa1b94d2fa144b, "HyruleField", "Land_HrlField_HidingHoleCover_A_01"},
+    {0x4b62cc6b0208590a, "HyruleField", "Land_HrlField_HidingHoleCover_A_01"},
+    {0x58abbf67f2c19021, "HyruleField", "Land_HrlField_HidingHoleCover_A_01"},
+    {0x2c02e3c611573e3e, "HyruleField", "Land_HrlField_HidingHoleCover_A_02"},
+    {0xcb662047de39b748, "HyruleField", "Land_Kokiri_HidingHoleCover_A_01"},
+    {0xfeca60ce030fb4d8, "HyruleField", "Land_Kokiri_HidingHoleCover_A_01"},
+    {0x01bdf91cfeaac117, "HyruleField", "Obj_BrokenRock_A_01"},
+    {0x4728449edbf063c6, "HyruleField", "Obj_BrokenRock_A_01"},
+    {0xd892fd591bd53c0b, "HyruleField", "Obj_BrokenRock_A_01"},
+    {0x012c2c12f10ca88b, "HyruleField", "Obj_InsideTheDekuTree_InteractiveSpiderWebParts_A_02"},
+    {0x05a4eaf7563af857, "HyruleField", "Obj_InsideTheDekuTree_InteractiveSpiderWebParts_A_02"},
+    {0x230027f6739022bc, "HyruleField", "Obj_InsideTheDekuTree_InteractiveSpiderWebParts_A_02"},
+    {0x38e243800ef76280, "HyruleField", "Obj_InsideTheDekuTree_InteractiveSpiderWebParts_A_02"},
+    {0x60daddd9532a28ee, "HyruleField", "Obj_InsideTheDekuTree_InteractiveSpiderWebParts_A_02"},
+    {0x7b3e36fbea7a7bc4, "HyruleField", "Obj_InsideTheDekuTree_InteractiveSpiderWebParts_A_02"},
+    {0x2016a1ad3261af2a, "HyruleField", "Obj_InsideTheDekuTree_SpiderWeb_A_02"},
+    {0x2a38563132fb5f13, "HyruleField", "Obj_InsideTheDekuTree_SpiderWeb_A_02"},
+    {0x4436641fbd8c15fd, "HyruleField", "Obj_InsideTheDekuTree_SpiderWeb_A_02"},
+    {0x83f13df6743e6b2f, "HyruleField", "Obj_InsideTheDekuTree_SpiderWeb_A_02"},
+    {0x8f57c893be6e5553, "HyruleField", "Obj_InsideTheDekuTree_SpiderWeb_A_02"},
+    {0xd9f1cdc0734ed964, "HyruleField", "Obj_InsideTheDekuTree_SpiderWeb_A_02"},
+    {0xaf05db5628ab40eb, "KakarikoVillage", "Land_Kakariko_HidingHoleCover_A_01"},
+    {0x05687269aff9adfa, "KokiriForest", "Land_Kokiri_HidingHoleCover_A_01"},
+    {0x484575d41e9d6ffd, "LostWood", "Obj_BrokenRock_A_01"},
+    {0x8754a9391cc3e0e7, "LostWood", "Obj_BrokenRock_A_01"},
+    {0xb3de5fdd79d40d6e, "LostWood", "Obj_BrokenRock_A_01"},
+    {0x755d1ab3b56fae71, "SacredForestMeadow", "Land_Kokiri_HidingHoleCover_A_01"},
+    {0xd080b6047e79c369, "SacredForestMeadow", "Land_SacredForest_HidingHoleCover_A_02"},
+    {0x387acb0477ac9bfc, "SacredForestMeadow", "Obj_EnemyCounter_A_08"},
+    {0xbc99d6027c19bce1, "ZoraDomain", "Land_Zora_HidingHoleCover_A_01"},
+    {0x2e5e979511117605, "ZoraDomain", "Obj_RedIce_A_02"},
+    {0x4d1752c8637f713a, "ZoraDomain", "Obj_RedIce_A_02"},
+    {0x3924363eee8d659a, "ZoraFountain", "Obj_LiftRock_B_01"},
+    {0x6d3a2c8d6b9a4315, "ZoraFountain", "Obj_LiftRock_B_01"},
+    {0x70cccfd5c72c8b32, "ZoraFountain", "Obj_LiftRock_B_01"},
+    {0x9a9fd0a33810aa87, "ZoraFountain", "Obj_LiftRock_B_01"},
+    {0xd7bfd6493bebd938, "ZoraFountain", "Obj_LiftRock_B_01"},
+    {0xef267a201cae1164, "ZoraFountain", "Obj_LiftRock_B_01"},
+    {0xd9fa55c621c7fce8, "ZoraFountain", "WallCrack"},
+    {0x4c2d16f5651197eb, "ZoraRiver", "Land_Kokiri_HidingHoleCover_A_01"},
+    {0x5c8fa6336e29bd4a, "ZoraRiver", "Obj_BrokenRock_A_01"},
+    {0xd1c0abcdc64a7f3b, "ZoraRiver", "Obj_BrokenRock_A_01"},
+    {0xe5a32b36954cb09c, "ZoraRiver", "Obj_BrokenRock_A_01"},
+});
+
 bool EnvOff(const char* name) {
 #ifdef _WIN32
     char* value = nullptr;
@@ -1795,6 +1967,10 @@ std::span<const Key> Keys() {
     return kKeys;
 }
 
+std::span<const Key> WorldKeys() {
+    return kWorldKeys;
+}
+
 std::size_t Merge(std::optional<coop::host::SharedFlags>& shared, bool on) {
     if (!on) {
         return 0;
@@ -1814,6 +1990,9 @@ std::size_t Merge(std::optional<coop::host::SharedFlags>& shared, bool on) {
         keys.push_back(coop::host::FlagKey(f.hash, std::uint16_t{0}));
     }
     for (const Key& k : kKeys) {
+        keys.push_back(coop::host::FlagKey::key64_flag(k.key));
+    }
+    for (const Key& k : kWorldKeys) {  // row 220: the overworld's and grottos' obstacles that stay done
         keys.push_back(coop::host::FlagKey::key64_flag(k.key));
     }
     shared = coop::host::SharedFlags(std::move(keys));  // sorts, drops repeats

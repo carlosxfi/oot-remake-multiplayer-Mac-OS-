@@ -197,6 +197,16 @@ class Session {
   FlagStats flag_stats() const { return watcher_ ? watcher_->stats() : FlagStats{}; }
   // FlagWatcher::share_pickup_named (a named Bool, the pickup rule).
   bool share_pickup_named(FlagKey key) { return watcher_ && watcher_->share_pickup_named(key); }
+  // Emulator thread only: FlagWatcher::share_containers (row 218, heart containers add up).
+  bool share_containers(FlagKey key) { return watcher_ && watcher_->share_containers(key); }
+  // Emulator thread only: FlagWatcher::group_int (row 218: the group's maximum life as we know it).
+  std::optional<std::int32_t> group_int(FlagKey key) const {
+    return watcher_ ? watcher_->group_int(key) : std::nullopt;
+  }
+  // Emulator thread only: FlagWatcher::note_group_at_least (row 218, the boss's one container).
+  void note_group_at_least(FlagKey key, std::int32_t value) {
+    if (watcher_) watcher_->note_group_at_least(key, value);
+  }
   // Emulator thread only: FlagWatcher::take_written_for_others (empty when
   // flags are not shared).
   std::vector<FlagWatcher::OneWayRestore> take_one_way_restores() {

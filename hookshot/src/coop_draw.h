@@ -210,6 +210,9 @@ struct Scene {
 };
 
 // Anything to draw.
+#ifdef __APPLE__
+void DrawMacMarkers(const HosCoopDraw& draw, const Scene& scene);
+#endif
 bool Wanted(const Scene& scene);
 
 // Draws the markers (scaled from the game's scene target to the picture),

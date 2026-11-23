@@ -1409,7 +1409,9 @@ void Frame(void* ctx, int site) {
         RunCalls(ctx);
         RequestHostAutoSave(ctx);   // (only when a guest's ask opened a round: CoopSave::TakeSaveRequest)
         LogBossNative();
+#ifndef __APPLE__
         CoopMapPage::Frame(ctx, g_api);   // the Map page's panes, found once while the game plays
+#endif
         if (const auto menu = CoopMapPage::MenuState()) {  // minimap-b: the drop log's menu state (patch 0018)
             coop::host::map_drop_log().set_menu(menu->menu_open, menu->map_page);
         }
@@ -2139,6 +2141,20 @@ COOP_HOOKSHOT_EXPORT void hos_coop_mac_chat(char* out, std::size_t cap) {
     });
 }
 #endif
+#ifdef __APPLE__
+COOP_HOOKSHOT_EXPORT void hos_coop_mac_draw_markers(const HosCoopDraw* draw) {
+    if (!draw || draw->width <= 0 || draw->height <= 0 || !draw->circle ||
+        !draw->triangle || !draw->text || !draw->text_width) return;
+    static CoopBoundary::Site site{"hos_coop_mac_draw_markers"};
+    CoopExportGuard::Guard(site, [&] {
+        const auto menu = CoopMapPage::MenuState();
+        CoopDraw::Scene scene;
+        if (!(menu && menu->menu_open)) scene.markers = CoopHook::CurrentMarkers();
+        scene.map = CoopHookshot::MapScene(scene.markers.has_value(), 0);
+        CoopDraw::DrawMacMarkers(*draw, scene);
+    });
+}
+#endif
 COOP_HOOKSHOT_EXPORT int hos_coop_keys_taken(void) {
     static CoopBoundary::Site site{"hos_coop_keys_taken"};
     return CoopExportGuard::Guard(site, static_cast<int>(0), [&]() -> int {
@@ -2208,6 +2224,9 @@ COOP_HOOKSHOT_EXPORT void hos_coop_game_screen(void* ctx, uint64_t screen) noexc
     static CoopBoundary::Site site{"hos_coop_game_screen"};
     CoopExportGuard::Guard(site, [&] {
         if (g_on) {
+#ifdef __APPLE__
+            CoopMapPage::ObserveMacScreen(ctx, g_api, screen);
+#endif
             CoopPauseTab::OnScreen(ctx, screen);
             try {
                 // (not while our Multiplayer page is in front: the screen behind it is not the player's, and a mod's

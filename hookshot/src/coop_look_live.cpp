@@ -115,6 +115,11 @@ private:
 
 // The puppet pack where Build-Hookshot-Coop.bat puts it (hookshot-build.ps1).
 fs::path LookDir() {
+#ifdef __APPLE__
+    if (const char* overlay = std::getenv("DM_ROMFS_OVERLAY"); overlay && *overlay) {
+        return fs::path(overlay).parent_path() / "coop_look";
+    }
+#endif
     return CoopRuntime::GameDir() / "mods" / "contents" / "0400486024DEC000" / "coop-puppet" / "coop_look";
 }
 

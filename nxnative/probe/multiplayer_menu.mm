@@ -12,6 +12,7 @@
 #include <net/if.h>
 
 #include "../../hookshot/src/hos_coop_host.h"
+#include "../../hookshot/src/hos_coop_draw.h"
 #include "../../hookshot/src/hos_coop_mac_peers.h"
 #include "multiplayer_menu.hpp"
 
@@ -27,6 +28,7 @@ struct SessionApi {
   int (*key)(std::uint32_t, int);
   int (*character)(std::uint32_t);
   void (*chat)(char*, std::size_t);
+  hos_coop_draw_fn markers;
 };
 
 NSString* lan_addresses(std::uint16_t port) {
@@ -67,6 +69,13 @@ NSString* heart_count(std::uint16_t quarters) {
                                    fractions[quarters % 4]];
 }
 
+NSColor* marker_color(std::uint32_t rgba) {
+  return [NSColor colorWithSRGBRed:(rgba & 255) / 255.0
+                             green:((rgba >> 8) & 255) / 255.0
+                              blue:((rgba >> 16) & 255) / 255.0
+                             alpha:(rgba >> 24) / 255.0];
+}
+
 }  // namespace
 
 @interface NxnativePeersView : NSVisualEffectView
@@ -76,6 +85,55 @@ NSString* heart_count(std::uint16_t quarters) {
 - (NSView*)hitTest:(NSPoint)point {
   (void)point;
   return nil;
+}
+@end
+
+@interface NxnativeMarkerView : NSView
+@property(nonatomic, assign) hos_coop_draw_fn drawMarkers;
+@end
+
+@implementation NxnativeMarkerView
+- (BOOL)isFlipped { return YES; }
+- (NSView*)hitTest:(NSPoint)point { (void)point; return nil; }
+- (void)drawRect:(NSRect)dirtyRect {
+  (void)dirtyRect;
+  if (!_drawMarkers) return;
+  HosCoopDraw draw{};
+  draw.width = self.bounds.size.width;
+  draw.height = self.bounds.size.height;
+  draw.circle = [](void*, float x, float y, float radius, std::uint32_t color, float thickness) {
+    auto* path = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x-radius, y-radius, 2*radius, 2*radius)];
+    [marker_color(color) set];
+    if (thickness > 0) {
+      path.lineWidth = thickness;
+      [path stroke];
+    } else {
+      [path fill];
+    }
+  };
+  draw.triangle = [](void*, float x0, float y0, float x1, float y1, float x2, float y2, std::uint32_t color) {
+    auto* path = [NSBezierPath bezierPath];
+    [path moveToPoint:NSMakePoint(x0, y0)];
+    [path lineToPoint:NSMakePoint(x1, y1)];
+    [path lineToPoint:NSMakePoint(x2, y2)];
+    [path closePath];
+    [marker_color(color) setFill];
+    [path fill];
+  };
+  draw.text = [](void*, float x, float y, float size, std::uint32_t color, const char* text) {
+    NSString* label = [NSString stringWithUTF8String:text];
+    [label drawAtPoint:NSMakePoint(x, y) withAttributes:@{
+      NSFontAttributeName: [NSFont systemFontOfSize:size weight:NSFontWeightSemibold],
+      NSForegroundColorAttributeName: marker_color(color)
+    }];
+  };
+  draw.text_width = [](void*, float size, const char* text) {
+    NSString* label = [NSString stringWithUTF8String:text];
+    return static_cast<float>([label sizeWithAttributes:@{
+      NSFontAttributeName: [NSFont systemFontOfSize:size weight:NSFontWeightSemibold]
+    }].width);
+  };
+  _drawMarkers(&draw);
 }
 @end
 
@@ -92,6 +150,7 @@ NSString* heart_count(std::uint16_t quarters) {
   NxnativePeersView* _peers;
   NSTextField* _peerLabel;
   NxnativePeersView* _chat;
+  NxnativeMarkerView* _markers;
   NSTextField* _chatLabel;
   __weak NSView* _hudContainer;
   __weak NSResponder* _beforePanel;
@@ -127,6 +186,25 @@ NSString* heart_count(std::uint16_t quarters) {
     [self refreshChat];
   }];
   [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
+  if (_api.markers) {
+    auto* markerTimer = [NSTimer timerWithTimeInterval:1.0 / 30.0 repeats:YES block:^(NSTimer*) {
+      NSWindow* window = NSApp.mainWindow ?: NSApp.keyWindow;
+      NSView* content = window.isVisible ? window.contentView : nil;
+      if (self->_markers.superview != content) {
+        [self->_markers removeFromSuperview];
+        if (content) {
+          self->_markers = [[NxnativeMarkerView alloc] initWithFrame:content.bounds];
+          self->_markers.drawMarkers = self->_api.markers;
+          self->_markers.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+          [content addSubview:self->_markers positioned:NSWindowAbove relativeTo:nil];
+        }
+      }
+      self->_markers.hidden = self->_panel.window == window;
+      if (!self->_markers.hidden) self->_markers.needsDisplay = YES;
+    }];
+    [NSRunLoop.mainRunLoop addTimer:markerTimer forMode:NSRunLoopCommonModes];
+  }
+
   using KeyFilter = int (*)(void*, void*);
   using SetKeyFilter = void (*)(KeyFilter, void*);
   const auto setFilter = reinterpret_cast<SetKeyFilter>(dlsym(RTLD_DEFAULT, "dm_coop_set_key_filter"));
@@ -526,6 +604,7 @@ void install_multiplayer_menu(void* module, bool show_panel) {
       reinterpret_cast<int (*)(std::uint32_t, int)>(dlsym(module, "hos_coop_key")),
       reinterpret_cast<int (*)(std::uint32_t)>(dlsym(module, "hos_coop_char")),
       reinterpret_cast<void (*)(char*, std::size_t)>(dlsym(module, "hos_coop_mac_chat")),
+      reinterpret_cast<hos_coop_draw_fn>(dlsym(module, "hos_coop_mac_draw_markers")),
   };
   if (!api.host || !api.join || !api.leave || !api.status) return;
   dispatch_async(dispatch_get_main_queue(), ^{

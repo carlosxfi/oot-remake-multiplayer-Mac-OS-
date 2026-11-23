@@ -329,7 +329,7 @@ How flags move:
 
 #### Counts
 
-Small keys, Gold Skulltula tokens and heart pieces are counts ([items.md](items.md)): two players can gain or spend at once, and an absolute value would lose one of the two (the host spends a key, 2 → 1, while a player gets one, 2 → 3; the host cannot tell that the 3 started from 2). So a player sends a count's change, not its value:
+Small keys, Gold Skulltula tokens and heart pieces are counts ([items.md](items.md)): two players can gain or spend at once, and an absolute value would lose one of the two (the host spends a key, 2 → 1, while a player gets one, 2 → 3; the host cannot tell that the 3 started from 2). So a player sends a count's change, not its value. Heart containers (`PlayerStatus.MaxLife`, a max-rule int) use the same delta for a rise of a player's own game past the group's maximum (row 218, [items.md](items.md) "Heart containers add up"); the host's build adds a positive delta to it and refuses a negative one:
 
 - A player's build sends a count change as kind 4, count delta: the s32 change since the last value its game had (+1 got, −1 used). Only a named flag carries one, and only in `FLAG_SET`; a `FLAG_STATE` or `FLAG_SNAPSHOT` with kind 4 is refused, so the server's table only ever holds totals. The server relays it to the host like any `FLAG_SET`.
 - The host's build adds the delta to its game's value (never below 0) and sends the new total as `FLAG_STATE`, kind 1, which every player applies. It sends the total even when it did not change (the host spent what the player got), since the player waits for it. Its client does not answer a delta itself: it hands it to the game, whose flag watcher sends the total the same frame.

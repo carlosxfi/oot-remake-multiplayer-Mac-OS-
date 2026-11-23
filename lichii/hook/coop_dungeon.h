@@ -91,6 +91,13 @@ struct Key {
 // one-time: once 1 in any game, 1 in all (shared as pickups, docs/dungeon.md).
 std::span<const Key> Keys();
 
+// Row 220 (puzzles reset): the same saved (ResetTypeValue 24) keys placed OUTSIDE the dungeons, the overworld's and
+// the grottos' obstacles that stay done: boulders blown up or thrown away, cracked walls, grotto covers, the Hyrule
+// Field grottos' webs, Zora's Domain's red ice, a grotto's or the Graveyard's room of enemies beaten. Not pickups
+// (CoopPickups), chests (CoopChests), Boss Rush (DreamWorld) or the minigames' targets: each player's own. One-time,
+// as Keys(): `dungeon` is the area (Banc folder) here.
+std::span<const Key> WorldKeys();
+
 // Adds the dungeon flags and keys to `shared` when `on`, making the list when there is
 // none. Flags already there are kept once. Returns how many it added.
 std::size_t Merge(std::optional<coop::host::SharedFlags>& shared, bool on);

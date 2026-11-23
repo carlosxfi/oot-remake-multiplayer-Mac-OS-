@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <mutex>
@@ -22,6 +23,7 @@
 #include "coop_hud_layout.h"
 #include "coop_pause_files.h"
 #include "coop_runtime.h"
+#include "coop_pause_tab.h"
 
 namespace CoopMapPage {
 namespace {
@@ -186,10 +188,49 @@ void Probe(const Menu& menu) {
 
 }  // namespace
 
+#ifdef __APPLE__
+namespace {
+using MacClock = std::chrono::steady_clock;
+std::mutex g_mac_screen_mutex;
+std::uint64_t g_mac_hud = 0;
+MacClock::time_point g_mac_hud_seen{}, g_mac_menu_seen{};
+constexpr auto kMacScreenTimeout = std::chrono::milliseconds(150);
+}
+
+void ObserveMacScreen(void* ctx, const HosCoopApi* api, std::uint64_t screen) {
+    const auto vtable = Read64(screen);
+    const auto base = CoopRuntime::MainBase();
+    if (vtable < base) return;
+    const auto offset = vtable - base;
+    const auto now = MacClock::now();
+    if (offset == CoopPauseTab::kHudVtable) {
+        {
+            std::lock_guard lock(g_mac_screen_mutex);
+            g_mac_hud = screen;
+            g_mac_hud_seen = now;
+        }
+        Frame(ctx, api);
+    } else if (CoopPauseTab::KindOf(offset) == CoopPauseTab::Kind::kStrip) {
+        std::lock_guard lock(g_mac_screen_mutex);
+        g_mac_menu_seen = now;
+    }
+}
+#endif
+
 std::optional<Menu> MenuState() {
     const auto fn = FindMenuState();
     if (fn == nullptr) {
+#ifdef __APPLE__
+        std::lock_guard lock(g_mac_screen_mutex);
+        const auto now = MacClock::now();
+        const auto age = now - g_mac_hud_seen;
+        const bool hud_live = g_mac_hud && age < kMacScreenTimeout;
+        Menu menu{now - g_mac_menu_seen < kMacScreenTimeout, false, hud_live ? g_mac_hud : 0, 0};
+        if (hud_live) menu.hud_ran_ns_ago = std::chrono::duration_cast<std::chrono::nanoseconds>(age).count();
+        return menu;
+#else
         return std::nullopt;
+#endif
     }
     HosCoopMenuState s{};
     s.size = sizeof s;

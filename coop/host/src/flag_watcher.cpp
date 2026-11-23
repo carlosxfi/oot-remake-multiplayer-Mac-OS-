@@ -167,6 +167,23 @@ bool FlagWatcher::keeps_own(FlagStore& store, const FlagEntry& entry) {
   return true;
 }
 
+bool FlagWatcher::share_containers(FlagKey key) {
+  if (key.kind != FlagKeyKind::named || !shared_.contains(key)) return false;
+  return containers_.insert(key).second;
+}
+
+std::optional<std::int32_t> FlagWatcher::group_int(FlagKey key) const {
+  const auto g = group_.find(key);
+  if (g == group_.end() || g->second.kind != protocol::FlagKind::int32) return std::nullopt;
+  return static_cast<std::int32_t>(as_int(g->second.value));
+}
+
+void FlagWatcher::note_group_at_least(FlagKey key, std::int32_t value) {
+  const auto known = group_int(key);
+  if (known && *known >= value) return;
+  note_group(FlagEntry{key, protocol::FlagKind::int32, as_bits(value)}, nullptr);
+}
+
 bool FlagWatcher::share_pickup(FlagKey key) {
   if (key.kind != FlagKeyKind::key64 || !pickups_.insert(key).second) return false;
   shared_.add(key);
@@ -987,7 +1004,7 @@ void FlagWatcher::note_received(const FlagKey& key, const FlagEntry& before, con
 
 void FlagWatcher::add(FlagStore& store, const FlagEntry& delta) {
   const FlagKey key = key_of(delta);
-  if (!store.is_count(key)) {
+  if (!store.is_count(key) && !containers_.contains(key)) {
     ++stats_.not_shared;
     return;
   }
@@ -1382,6 +1399,27 @@ void FlagWatcher::diff(FlagStore& store, Table& changes) {
       Guard& guard = guards_[s->second];
       if (guard.credit == 0) guard.credit_since = frames_;
       ++guard.credit;  // taken in our own game: a gain of its count is real
+    }
+    if (role_ == FlagRole::player && containers_.contains(key) && !restate_.contains(key) &&
+        !max_caps_.contains(key) && doubled_ == 0 && before.kind == protocol::FlagKind::int32 &&
+        now->kind == protocol::FlagKind::int32 && as_int(now->value) > as_int(before.value)) {
+      // Row 218 (share_containers): a heart container adds up as a heart piece does. Only the part above the
+      // group's maximum is ours: up to it, our game got the group's hearts back (the object walk raised its live
+      // copy after the game had written its own lower max back), which is no pickup.
+      const std::int64_t floor = (std::max)(std::int64_t{as_int(before.value)},
+                                            std::int64_t{group_int(key).value_or(static_cast<std::int32_t>(
+                                                as_int(before.value)))});
+      if (as_int(now->value) <= floor) {
+        ++stats_.container_catch_ups;
+        pending_.erase(key);
+        continue;
+      }
+      ++stats_.changes_sent;
+      ++stats_.container_deltas;
+      changes[key] = FlagEntry{key, protocol::FlagKind::count_delta, as_bits(as_int(now->value) - floor)};
+      note_group(*now, &before);  // the group has it once the host adds it: a later catch-up to it is no pickup
+      pending_.erase(key);
+      continue;
     }
     ++stats_.changes_sent;
     if (store.is_count(key) && before.kind == protocol::FlagKind::int32 &&
