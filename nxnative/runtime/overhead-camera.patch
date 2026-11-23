@@ -1,0 +1,32 @@
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -16222,7 +16222,10 @@
+ 
+ static void coop_capture_camera(void) {
+     dm_camera_wanted_fn wanted = atomic_load(&g_coop_camera_wanted);
+-    if (!wanted || !g_pass.hd || g_pass.cfmt[0] != MTLPixelFormatRG11B10Float) return;
++    // The camera block validates the projection and target size. Metal may
++    // use a different color format for the scene than the Windows backend.
++    if (!wanted || !g_pass.hd || !g_pass.cfmt[0] ||
++        g_pass.tw < 640 || g_pass.th < 360) return;
+     uint64_t frame = atomic_load(&g_cur_frame);
+     float width = g_pass.tw, height = g_pass.th;
+     if (!wanted(frame, width, height)) return;
+@@ -16238,6 +16241,17 @@
+         const uint8_t *bytes = [(__bridge id<MTLBuffer>)buffer contents];
+         if (!bytes) return;
+         memcpy(block, bytes + offset, sizeof block);
++    }
++    const int perspective = block[0xa8 / 4] == -1.0f && block[0xac / 4] == 0.0f;
++    const int extent_matches = block[0x120 / 4] == width && block[0x124 / 4] == height;
++    if (!perspective || !extent_matches) {
++        static unsigned rejected;
++        if (rejected < 4) {
++            ++rejected;
++            MLOG("coop camera rejected: target %.0fx%.0f format %u, block extent %.0fx%.0f, perspective %d",
++                 width, height, g_pass.cfmt[0], block[0x120 / 4], block[0x124 / 4], perspective);
++        }
++        return;
+     }
+     g_coop_camera_publish(frame, block, width, height);
+ }
