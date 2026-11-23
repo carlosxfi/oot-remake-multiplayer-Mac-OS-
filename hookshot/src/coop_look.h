@@ -171,6 +171,9 @@ void ApplyOnUnpause();
 // for (Init's `apply`), else shows one chosen since the last frame (Init's
 // `preview`).
 void Frame();
+#ifdef __APPLE__
+void PreviewWhilePaused();
+#endif
 
 
 // The Hookshot module's look (coop_look_live.cpp): Start, after the kit's

@@ -23,6 +23,7 @@
 #ifdef __APPLE__
 #include "game_call.hpp"
 #include "../../hookshot/src/coop_pause_tab.h"
+#include "../../hookshot/src/hos_coop_draw.h"
 #include "multiplayer_menu.hpp"
 #include "../../lichii/hook/coop_colors.h"
 #include <filesystem>
@@ -350,6 +351,10 @@ bool install_native_pause_menu(void* module, std::uint64_t base, RegisterPad reg
     for (std::size_t j = 0; j < i; ++j) put(slot(j), original);
     return false;
   }
+  const auto hud_slot = base + CoopPauseTab::kHudVtable + kUpdateSlot * sizeof(std::uint64_t);
+  std::uint64_t hud_update = 0;
+  const bool hud_hook = read_at(hud_slot, hud_update) && hud_update == original && put(hud_slot, wrapper);
+  std::fprintf(stderr, "[coop-nxnative] minimap HUD bridge %s\n", hud_hook ? "installed" : "unavailable");
   native_menu_active.store(true, std::memory_order_release);
   return true;
 }
@@ -422,6 +427,14 @@ bool start_shared_module(const char* path, std::uint64_t base) {
     return false;
   }
   shared_frame.store(frame, std::memory_order_release);
+  using SetCamera = void (*)(hos_coop_camera_wanted_fn, hos_coop_camera_fn);
+  const auto set_camera = reinterpret_cast<SetCamera>(dlsym(RTLD_DEFAULT, "dm_coop_set_camera"));
+  const auto camera_wanted = reinterpret_cast<hos_coop_camera_wanted_fn>(dlsym(module, "hos_coop_camera_wanted"));
+  const auto camera_publish = reinterpret_cast<hos_coop_camera_fn>(dlsym(module, "hos_coop_camera"));
+  if (set_camera && camera_wanted && camera_publish) {
+    set_camera(camera_wanted, camera_publish);
+    std::fprintf(stderr, "[coop-nxnative] camera capture bridge installed\n");
+  }
   if (want_menu) {
     const bool native_menu = try_native_menu && install_native_pause_menu(module, base, register_pad);
     if (native_menu) {

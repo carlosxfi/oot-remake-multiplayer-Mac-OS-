@@ -5,12 +5,14 @@
 #include <array>
 #include <arpa/inet.h>
 #include <cstdint>
+#include <cstdio>
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <ifaddrs.h>
 #include <net/if.h>
 
 #include "../../hookshot/src/hos_coop_host.h"
+#include "../../hookshot/src/hos_coop_draw.h"
 #include "../../hookshot/src/hos_coop_mac_peers.h"
 #include "multiplayer_menu.hpp"
 
@@ -23,6 +25,10 @@ struct SessionApi {
   hos_coop_status_fn status;
   void (*client_status)(char*, std::uint32_t);
   hos_coop_mac_peers_fn peers;
+  int (*key)(std::uint32_t, int);
+  int (*character)(std::uint32_t);
+  void (*chat)(char*, std::size_t);
+  hos_coop_draw_fn markers;
 };
 
 NSString* lan_addresses(std::uint16_t port) {
@@ -63,6 +69,13 @@ NSString* heart_count(std::uint16_t quarters) {
                                    fractions[quarters % 4]];
 }
 
+NSColor* marker_color(std::uint32_t rgba) {
+  return [NSColor colorWithSRGBRed:(rgba & 255) / 255.0
+                             green:((rgba >> 8) & 255) / 255.0
+                              blue:((rgba >> 16) & 255) / 255.0
+                             alpha:(rgba >> 24) / 255.0];
+}
+
 }  // namespace
 
 @interface NxnativePeersView : NSVisualEffectView
@@ -75,9 +88,59 @@ NSString* heart_count(std::uint16_t quarters) {
 }
 @end
 
+@interface NxnativeMarkerView : NSView
+@property(nonatomic, assign) hos_coop_draw_fn drawMarkers;
+@end
+
+@implementation NxnativeMarkerView
+- (BOOL)isFlipped { return YES; }
+- (NSView*)hitTest:(NSPoint)point { (void)point; return nil; }
+- (void)drawRect:(NSRect)dirtyRect {
+  (void)dirtyRect;
+  if (!_drawMarkers) return;
+  HosCoopDraw draw{};
+  draw.width = self.bounds.size.width;
+  draw.height = self.bounds.size.height;
+  draw.circle = [](void*, float x, float y, float radius, std::uint32_t color, float thickness) {
+    auto* path = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x-radius, y-radius, 2*radius, 2*radius)];
+    [marker_color(color) set];
+    if (thickness > 0) {
+      path.lineWidth = thickness;
+      [path stroke];
+    } else {
+      [path fill];
+    }
+  };
+  draw.triangle = [](void*, float x0, float y0, float x1, float y1, float x2, float y2, std::uint32_t color) {
+    auto* path = [NSBezierPath bezierPath];
+    [path moveToPoint:NSMakePoint(x0, y0)];
+    [path lineToPoint:NSMakePoint(x1, y1)];
+    [path lineToPoint:NSMakePoint(x2, y2)];
+    [path closePath];
+    [marker_color(color) setFill];
+    [path fill];
+  };
+  draw.text = [](void*, float x, float y, float size, std::uint32_t color, const char* text) {
+    NSString* label = [NSString stringWithUTF8String:text];
+    [label drawAtPoint:NSMakePoint(x, y) withAttributes:@{
+      NSFontAttributeName: [NSFont systemFontOfSize:size weight:NSFontWeightSemibold],
+      NSForegroundColorAttributeName: marker_color(color)
+    }];
+  };
+  draw.text_width = [](void*, float size, const char* text) {
+    NSString* label = [NSString stringWithUTF8String:text];
+    return static_cast<float>([label sizeWithAttributes:@{
+      NSFontAttributeName: [NSFont systemFontOfSize:size weight:NSFontWeightSemibold]
+    }].width);
+  };
+  _drawMarkers(&draw);
+}
+@end
+
 @interface NxnativeMultiplayerMenu : NSObject
 - (instancetype)initWithApi:(SessionApi)api;
 - (void)installWithPanel:(bool)showPanel;
+- (BOOL)handleKey:(NSEvent*)event;
 @end
 
 @implementation NxnativeMultiplayerMenu {
@@ -86,6 +149,9 @@ NSString* heart_count(std::uint16_t quarters) {
   NSVisualEffectView* _panel;
   NxnativePeersView* _peers;
   NSTextField* _peerLabel;
+  NxnativePeersView* _chat;
+  NxnativeMarkerView* _markers;
+  NSTextField* _chatLabel;
   __weak NSView* _hudContainer;
   __weak NSResponder* _beforePanel;
   NSTextField* _name;
@@ -117,18 +183,76 @@ NSString* heart_count(std::uint16_t quarters) {
     if (showPanel) [self attachToGameMenu];
     if (self->_panel.window) [self refresh];
     [self refreshPeers];
+    [self refreshChat];
   }];
   [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
-  if (!showPanel) return;
-  [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent*(NSEvent* event) {
-    const auto modifiers = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-    if (!modifiers && [event.charactersIgnoringModifiers isEqualToString:@"\033"] &&
-        self->_panel.window && event.window == self->_panel.window) {
-      [self closePanel:nil];
-      return nil;
+  if (_api.markers) {
+    auto* markerTimer = [NSTimer timerWithTimeInterval:1.0 / 30.0 repeats:YES block:^(NSTimer*) {
+      NSWindow* window = NSApp.mainWindow ?: NSApp.keyWindow;
+      NSView* content = window.isVisible ? window.contentView : nil;
+      if (self->_markers.superview != content) {
+        [self->_markers removeFromSuperview];
+        if (content) {
+          self->_markers = [[NxnativeMarkerView alloc] initWithFrame:content.bounds];
+          self->_markers.drawMarkers = self->_api.markers;
+          self->_markers.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+          [content addSubview:self->_markers positioned:NSWindowAbove relativeTo:nil];
+        }
+      }
+      self->_markers.hidden = self->_panel.window == window;
+      if (!self->_markers.hidden) self->_markers.needsDisplay = YES;
+    }];
+    [NSRunLoop.mainRunLoop addTimer:markerTimer forMode:NSRunLoopCommonModes];
+  }
+
+  using KeyFilter = int (*)(void*, void*);
+  using SetKeyFilter = void (*)(KeyFilter, void*);
+  const auto setFilter = reinterpret_cast<SetKeyFilter>(dlsym(RTLD_DEFAULT, "dm_coop_set_key_filter"));
+  if (setFilter && _api.key && _api.character && _api.chat) {
+    setFilter([](void* context, void* event) -> int {
+      auto* menu = (__bridge NxnativeMultiplayerMenu*)context;
+      return [menu handleKey:(__bridge NSEvent*)event] ? 1 : 0;
+    }, (__bridge void*)self);
+    std::fprintf(stderr, "[coop-nxnative] chat keyboard bridge installed\n");
+  } else {
+    std::fprintf(stderr, "[coop-nxnative] chat keyboard bridge unavailable\n");
+    if (showPanel) {
+      [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent*(NSEvent* event) {
+        if (_panel.window && event.window == _panel.window && [self handleKey:event]) return nil;
+        return event;
+      }];
     }
-    return event;
-  }];
+  }
+}
+
+- (BOOL)handleKey:(NSEvent*)event {
+  const auto modifiers = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+  if (!modifiers && [event.charactersIgnoringModifiers isEqualToString:@"\033"] &&
+      _panel.window && event.window == _panel.window) {
+    [self closePanel:nil];
+    return YES;
+  }
+  NSWindow* window = NSApp.mainWindow ?: NSApp.keyWindow;
+  if (!_api.key || !_api.character || !_api.chat ||
+      !window || event.window != window || _panel.window == window ||
+      [window.firstResponder isKindOfClass:NSTextView.class] ||
+      (modifiers & (NSEventModifierFlagCommand | NSEventModifierFlagControl))) return NO;
+  const unichar ch = event.charactersIgnoringModifiers.length
+      ? [event.charactersIgnoringModifiers characterAtIndex:0] : 0;
+  std::uint32_t key = ch;
+  if (ch >= 'a' && ch <= 'z') key = ch - 'a' + 'A';
+  else if (ch == 127) key = 8;
+  else if (ch == 3) key = 13;
+  else if (ch >= NSF1FunctionKey && ch <= NSF12FunctionKey) key = 0x70 + ch - NSF1FunctionKey;
+  else if (ch < 0x20 && ch != 8 && ch != 13 && ch != 27) key = 0;
+  else if (ch >= 0x80) key = 0;
+  if (!_api.key(key, event.isARepeat)) return NO;
+  for (NSUInteger i = 0; i < event.characters.length; ++i) {
+    const unichar c = [event.characters characterAtIndex:i];
+    if (c >= 0x20 && c < 0x7f) _api.character(c);
+  }
+  [self refreshChat];
+  return YES;
 }
 
 - (void)attachToGameMenu {
@@ -208,6 +332,46 @@ NSString* heart_count(std::uint16_t quarters) {
     ]];
   }
   _peers.hidden = NO;
+}
+
+- (void)refreshChat {
+  NSWindow* window = NSApp.mainWindow ?: NSApp.keyWindow;
+  NSView* content = window.isVisible && _panel.window != window ? window.contentView : nil;
+  if (_chat.superview != content) [_chat removeFromSuperview];
+  if (!content || !_api.chat) return;
+
+  std::array<char, 4096> snapshot{};
+  _api.chat(snapshot.data(), snapshot.size());
+  NSString* text = [NSString stringWithUTF8String:snapshot.data()] ?: @"";
+  if (!text.length) {
+    _chat.hidden = YES;
+    return;
+  }
+  if (!_chat) {
+    _chat = [[NxnativePeersView alloc] initWithFrame:NSZeroRect];
+    style_material(_chat, NSVisualEffectMaterialHUDWindow);
+    _chatLabel = [NSTextField wrappingLabelWithString:@""];
+    _chatLabel.maximumNumberOfLines = 10;
+    _chatLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [_chat addSubview:_chatLabel];
+    [NSLayoutConstraint activateConstraints:@[
+      [_chatLabel.leadingAnchor constraintEqualToAnchor:_chat.leadingAnchor constant:12],
+      [_chatLabel.trailingAnchor constraintEqualToAnchor:_chat.trailingAnchor constant:-12],
+      [_chatLabel.topAnchor constraintEqualToAnchor:_chat.topAnchor constant:8],
+      [_chatLabel.bottomAnchor constraintEqualToAnchor:_chat.bottomAnchor constant:-8],
+    ]];
+  }
+  if (![_chatLabel.stringValue isEqualToString:text]) _chatLabel.stringValue = text;
+  if (!_chat.superview) {
+    [content addSubview:_chat positioned:NSWindowAbove relativeTo:nil];
+    [NSLayoutConstraint activateConstraints:@[
+      [_chat.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:18],
+      [_chat.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-36],
+      [_chat.widthAnchor constraintLessThanOrEqualToConstant:420],
+      [_chat.trailingAnchor constraintLessThanOrEqualToAnchor:content.trailingAnchor constant:-18],
+    ]];
+  }
+  _chat.hidden = NO;
 }
 
 - (void)show:(id)sender {
@@ -437,6 +601,10 @@ void install_multiplayer_menu(void* module, bool show_panel) {
       reinterpret_cast<hos_coop_status_fn>(dlsym(module, "hos_coop_status")),
       reinterpret_cast<void (*)(char*, std::uint32_t)>(dlsym(module, "hos_coop_client_status")),
       reinterpret_cast<hos_coop_mac_peers_fn>(dlsym(module, "hos_coop_mac_peers")),
+      reinterpret_cast<int (*)(std::uint32_t, int)>(dlsym(module, "hos_coop_key")),
+      reinterpret_cast<int (*)(std::uint32_t)>(dlsym(module, "hos_coop_char")),
+      reinterpret_cast<void (*)(char*, std::size_t)>(dlsym(module, "hos_coop_mac_chat")),
+      reinterpret_cast<hos_coop_draw_fn>(dlsym(module, "hos_coop_mac_draw_markers")),
   };
   if (!api.host || !api.join || !api.leave || !api.status) return;
   dispatch_async(dispatch_get_main_queue(), ^{

@@ -419,6 +419,10 @@ std::vector<Menu::Line> Menu::Lines() const {
                                "Joins the last game you were in, with the same code. It works while your friend is still "
                                "hosting that game."});
             }
+#ifdef __APPLE__
+            out.push_back({Action("Paste code and join", "Join", off), Act::kJoinClipboard,
+                           "Join using the invite or same-network line on the clipboard."});
+#endif
             // (the games on this network and the relay's public rooms: one picked fills the rows below. After the
             // last game again, which stays the first row: one press)
             out.push_back({PageRow("Browse games", find_online_ ? "Public games" : "This network", off), Act::kOpenFind,
@@ -1360,6 +1364,9 @@ void Menu::Decide(Act act) {
         typing_ = true;
         typing_act_ = Act::kHostPort;
         typing_fresh_ = true;
+        break;
+    case Act::kJoinClipboard:
+        request_ = Request{Request::Kind::kJoinClipboard, {}};
         break;
     case Act::kJoinNow:
         request_ = Request{Request::Kind::kJoin, join_};

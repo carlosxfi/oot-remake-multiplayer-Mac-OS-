@@ -1,0 +1,283 @@
+diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
+index 7191c72..4434282 100644
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -3090,7 +3090,7 @@ void mtl_tex_init(const tex_t *t) {
+ // Host record of a packaged texture: the current MTLTexture, the upload stamp, and the global write generation at the last check
+ // spare: the texture the last re-upload replaced, kept resident and written by the next re-upload once the GPU has passed spare_fence (a texture the CPU rewrites every frame, a movie frame,
+ // alternates between two textures instead of allocating one per frame: Link's Awakening's title movie made and freed an 8 MB texture a frame)
+-@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, sub, own, lost_gen; const void *span; int sparse, vbase, part; uint8_t *edge[2]; uint32_t edge_n[2], stored; id ps; id<MTLBuffer> eb; uint64_t *ph, up_frame, up_sub; uint32_t nph, missed; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
++@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; NSData *coop_texels; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, sub, own, lost_gen; const void *span; int sparse, vbase, part; uint8_t *edge[2]; uint32_t edge_n[2], stored; id ps; id<MTLBuffer> eb; uint64_t *ph, up_frame, up_sub; uint32_t nph, missed; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
+ // sparse: in a sparse virtual pool, read through its page table (hle_nvn.c nvn_sparse_*), vgen the page table's generation at the upload and vseen at the last look; view: what it is bound as (sparse_view)
+ // ps: its placement sparse texture (NvSparse, sparse_make), which tex is: mapped and uploaded tile by tile (sparse_sync)
+ // edge: the uploaded bytes of the storage's first and last host pages where other data shares them (pkg_edges_take); in eb from the first GPU store into its storage on (pkg_edges_gpu),
+@@ -3753,7 +3753,7 @@ static void up_copy_add(id<MTLTexture> src, MTLSize size, id<MTLTexture> dst, NS
+ static void up_blit_add(id<MTLBuffer> src, size_t off, size_t row, size_t image, MTLSize size,
+                         id<MTLTexture> dst, NSUInteger slice, NSUInteger level) { up_blit_add_at(src, off, row, image, size, dst, slice, level, MTLOriginMake(0, 0, 0)); }
+
+-static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, MTLTextureUsage keep, id<MTLTexture> prev, const void *span, uint64_t since, unsigned *taken);
++static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, MTLTextureUsage keep, id<MTLTexture> prev, const void *span, uint64_t since, unsigned *taken, NSData *override);
+ static int g_direct_upload_on = -1; static uint64_t g_direct_uploads, g_direct_dispatches;
+ static int direct_upload_on(void) { if (g_direct_upload_on < 0) { const char *e=getenv("DM_NVN_DIRECT_UPLOAD"); g_direct_upload_on=!e||atoi(e); } return g_direct_upload_on; }
+ int nvn_host_readable(uint64_t a, uint64_t n);   // hle_nvn.c: guest memory and sparse pools
+@@ -3877,7 +3877,7 @@ int nvn_sparse_since(const void *pool, uint64_t a, uint64_t n, uint64_t gen, uin
+ static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, MTLTextureUsage keep, id<MTLTexture> prev, const void *span, uint64_t since, unsigned *taken) {
+     struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
+     if (taken) *taken = 0;
+-    id<MTLTexture> r = pkg_upload_(t, stamp, reuse, keep, prev, span, since, taken);
++    id<MTLTexture> r = pkg_upload_(t, stamp, reuse, keep, prev, span, since, taken, nil);
+     clock_gettime(CLOCK_MONOTONIC, &b); uint64_t d_ = (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + b.tv_nsec - a.tv_nsec);
+     atomic_fetch_add(&g_upload_ns, d_); g_up_total_ns += d_;
+     return r;
+@@ -3987,13 +3987,13 @@ static int tex_cpu_wait(const tex_t *t) {
+     if (!g_cb && (gw_live(lo, hi) || nvn_sparse_gen())) { mtl_finish_gpu_at(WS_UPALLOC); return 1; }
+     return 0;
+ }
+-static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, MTLTextureUsage keep, id<MTLTexture> prev, const void *span, uint64_t since, unsigned *taken) {
++static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, MTLTextureUsage keep, id<MTLTexture> prev, const void *span, uint64_t since, unsigned *taken, NSData *override) {
+     MTLTextureDescriptor *d = tex_desc(t, 1);
+     if (!d) return nil;
+     d.usage |= keep & (MTLTextureUsageRenderTarget | MTLTextureUsagePixelFormatView);
+     int rb_shift = rb_packed_shift(t->d.format);   // the RGB565 family is repacked into Metal's order on the CPU (rb_packed_shift)
+     int linear = (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) != 0;   // linear storage no view could take (linear_fit): its rows are copied on the CPU
+-    int direct = !linear && !rb_shift && stamp && direct_upload_on() && g_nvn_deswz_gpu && !(t->pool && nvn_sparse_pool(t->pool)) && nvn_deswz_gpu_direct_supported(&t->d);
++    int direct = !override && !linear && !rb_shift && stamp && direct_upload_on() && g_nvn_deswz_gpu && !(t->pool && nvn_sparse_pool(t->pool)) && nvn_deswz_gpu_direct_supported(&t->d);
+     if (direct) d.usage |= MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView;
+     id<MTLTexture> mt = reuse && reuse.pixelFormat == d.pixelFormat && reuse.width == d.width && reuse.height == d.height && reuse.mipmapLevelCount == d.mipmapLevelCount && reuse.textureType == d.textureType
+                         && (reuse.usage & d.usage) == d.usage
+@@ -4027,7 +4027,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
+     void *mb; uint64_t mo;
+     // A texture in a large pool (BIG_MIN) or one that holds only textures is read through a buffer of its own, held by the upload batch: a one-time read must not leave that memory wired for good
+     id<MTLBuffer> upsrc = nil; unsigned src_batch = 0;   // the upload batch that holds upsrc (g_up_seq)
+-    if (!linear && !rb_shift && !sparse && g_nvn_deswz_gpu) { up_begin(); upsrc = up_big_src((uint64_t)t->mem, t->L.size, &mo, 1); src_batch = g_up_seq; if (upsrc) mb = (__bridge void *)upsrc; }
++    if (!override && !linear && !rb_shift && !sparse && g_nvn_deswz_gpu) { up_begin(); upsrc = up_big_src((uint64_t)t->mem, t->L.size, &mo, 1); src_batch = g_up_seq; if (upsrc) mb = (__bridge void *)upsrc; }
+     // A sparse pool's texture is gathered on the GPU through its page table (sp_pages_gpu), but on the CPU for DM_NVN_ZBLOCK, which counts its blocks there
+     uint64_t *spt = NULL, spn = 0;
+     t_tex_upload_lookup = 1;
+@@ -4037,9 +4037,9 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
+         up_begin(); src_batch = g_up_seq;
+         if (!sp_pages_gpu(t->pool, (uint64_t)(uintptr_t)t->mem, t->L.size, spt, 0)) { free(spt); spt = NULL; }
+     }
+-    int use_gpu = !linear && !rb_shift && g_nvn_deswz_gpu && (sparse ? spt != NULL : upsrc || mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo));
++    int use_gpu = !override && !linear && !rb_shift && g_nvn_deswz_gpu && (sparse ? spt != NULL : upsrc || mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo));
+     t_tex_upload_lookup = 0;
+-    if (g_nvn_deswz_gpu && !use_gpu && !sparse && !rb_shift && !linear) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU");
++    if (!override && g_nvn_deswz_gpu && !use_gpu && !sparse && !rb_shift && !linear) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU");
+     if (use_gpu) {
+         // The GPU reads the memory pool at execution time, which is closer to a real Switch than a snapshot at CPU upload time; the dirty-page stamp is still taken before encoding, and later writes still trigger a re-upload.
+         up_begin();
+@@ -4109,6 +4109,13 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
+         if (!(part = malloc(t->L.size ? t->L.size : 1))) MDIE("sparse texture copy of %llu bytes failed", (unsigned long long)t->L.size);
+         sp_store_wait(t); nvn_sparse_copy(t->pool, part, (uint64_t)(uintptr_t)t->mem, t->L.size); src = part;
+     }
++    if (override) {
++        part = malloc(t->L.size);
++        if (!part) MDIE("texture override staging allocation failed");
++        memcpy(part, src, t->L.size);
++        memcpy(part, override.bytes, override.length);
++        src = part;
++    }
+     up_begin();
+     id<MTLBuffer> stg = [g_dev newBufferWithLength:total ? total : 16 options:MTLResourceStorageModeShared];
+     res_add(stg); [g_up_keep addObject:stg];
+@@ -5352,6 +5359,27 @@ static void *tex_mtl_resolve(const tex_t *ct, int *in_storage, id<MTLTexture> __
+         }
+     }
+     id have = tex_get(t->serial);
++    NvPkg *painted = [have isKindOfClass:[NvPkg class]] ? have : nil;
++    NSData *replacement = own_coop_texels(t->serial);
++    if (replacement || (painted && painted->coop_texels)) {
++        if (off || (painted && painted->coop_texels == replacement)) {
++            if (off && in_storage) { *in_storage = 1; return NULL; }
++            return tex_mtl_result(tex_made(t), owned);
++        }
++        if (!t->pool || nvn_sparse_pool(t->pool) || replacement.length > t->L.size)
++            return tex_mtl_result(tex_made(t), owned);
++        NvPkg *fresh = [NvPkg new];
++        fresh->tex = pkg_upload_(t, &fresh->stamp, nil, 0, nil, NULL, 0, NULL, replacement);
++        if (!fresh->tex) return tex_mtl_result(tex_made(t), owned);
++        fresh->coop_texels = replacement;
++        fresh->lost_gen = atomic_load(&g_up_lost_gen);
++        fresh->span = nvn_dirty_span(t->mem, t->L.size);
++        fresh->seen = fresh->stamp;
++        pkg_hash_take(fresh, t);
++        pkg_edges_take(fresh, t);
++        tex_put(t->serial, fresh);
++        return tex_mtl_result(fresh->tex, owned);
++    }
+     if (!packaged && !have && DM_GAME_TEX_DIRTY_UPLOAD && t->mem && on_sub_thread()) { int nvn_ft_written(const tex_t *); packaged = nvn_ft_written(t); }   // first use of a texture the CPU wrote since init without a flush (hle_nvn.c)
+     if (!packaged && !have && on_sub_thread() && tex_cpu_content(t)) { mtl_tex_cpu_written(t); packaged = 1; }   // storage the CPU wrote before its first use (tex_cpu_content)
+     if (!packaged && !have && on_sub_thread() && linear_storage_ok(t)) {   // a linear texture no view on its buffer can take (iOS wants 64-byte rows; Axiom Verge's 8x8 RGBA8 linear textures have 32): uploaded, and again after CPU writes
+@@ -16179,6 +16207,41 @@ static int rt_has_depth(void) {
+     return nvn_fmt_to_mtl((int)nf, &pf, NULL) && (pf == MTLPixelFormatDepth16Unorm || pf == MTLPixelFormatDepth32Float || pf == MTLPixelFormatDepth32Float_Stencil8);
+ }
+ static void draw(const p_draw *dw, const p_draw_idx *di) { cp_stamp start = cp_begin(); if (dw && dw->prim == DM_PRIM_MESH_TASKS) mesh_tasks_draw(dw); else draw_(dw, di); cp_end(5, start); }
++// Optional camera capture for a co-op overlay. The callbacks are installed
++// once and remain valid for the lifetime of the process.
++typedef int (*dm_camera_wanted_fn)(uint64_t, float, float);
++typedef void (*dm_camera_publish_fn)(uint64_t, const float *, float, float);
++static _Atomic(dm_camera_wanted_fn) g_coop_camera_wanted;
++static dm_camera_publish_fn g_coop_camera_publish;
++
++__attribute__((visibility("default")))
++void dm_coop_set_camera(dm_camera_wanted_fn wanted, dm_camera_publish_fn publish) {
++    g_coop_camera_publish = publish;
++    atomic_store(&g_coop_camera_wanted, publish ? wanted : NULL);
++}
++
++static void coop_capture_camera(void) {
++    dm_camera_wanted_fn wanted = atomic_load(&g_coop_camera_wanted);
++    if (!wanted || !g_pass.hd || g_pass.cfmt[0] != MTLPixelFormatRG11B10Float) return;
++    uint64_t frame = atomic_load(&g_cur_frame);
++    float width = g_pass.tw, height = g_pass.th;
++    if (!wanted(frame, width, height)) return;
++    const p_bind_buf *binding = &S.ubo[0][3];
++    float block[0x130 / sizeof(float)];
++    if (!binding->addr || binding->size < sizeof block) return;
++    int kind;
++    if (!pend_read(binding->addr, sizeof block, block, &kind)) {
++        void *buffer;
++        uint64_t offset;
++        if (pend_hits(binding->addr, sizeof block) ||
++            !mtl_addr(binding->addr, sizeof block, &buffer, &offset)) return;
++        const uint8_t *bytes = [(__bridge id<MTLBuffer>)buffer contents];
++        if (!bytes) return;
++        memcpy(block, bytes + offset, sizeof block);
++    }
++    g_coop_camera_publish(frame, block, width, height);
++}
++
+ static void draw_(const p_draw *dw, const p_draw_idx *di) {
+     g_draw_binst = (uint32_t)(dw ? dw->base_instance : di ? di->base_instance : 0);   // c0 + 0x644 of the stages that read the driver segment (encode_args)
+     if (passdump()) { NvProg *p = g_geo_program ? g_geo_program : S.prog ? prog_get(S.prog) : nil;
+@@ -16432,6 +16495,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
+     else if (g_vis_counting) {   // no report can see this draw (vis_need_scan)
+         if (!g_vis_unseen++) MLOG("occlusion queries: draws between a samples-passed report and the next reset are not counted (first in pass %llu; DM_NVN_VIS_NEED)", g_stat_pass);
+         if (g_enc_vis) { enc_r_visibility(en, MTLVisibilityResultModeDisabled, 0); g_enc_vis = 0; } }
++    coop_capture_camera();
+     g_stat_draw++;
+     if (enc_label_on() && !g_el_draws++ && pr->sh[1]) { memcpy(g_el_key, pr->sh[1]->key, 8); g_el_key[8] = 0; }
+     if (passdump()) {   // Characteristics of a render pass's first draw (to judge whether the load can be omitted: full screen, no blending, writes all channels, does not depend on depth); with DM_NVN_PASSDUMP_ALL every draw is recorded
+diff --git a/dm/gfx/nvn/nvn_owner.h b/dm/gfx/nvn/nvn_owner.h
+index 6a36b65..9ba6c86 100644
+--- a/dm/gfx/nvn/nvn_owner.h
++++ b/dm/gfx/nvn/nvn_owner.h
+@@ -129,6 +129,7 @@ int own_holds_locked(const void *o);   // an entry, a pin or the sharing table h
+ int own_gone_take_locked(const void *const **list, unsigned *n);
+
+ // Live texture objects. Caller holds g_smu
++NSData *own_coop_texels(uint64_t serial);
+ void own_tex_live_put_locked(const tex_t *t);   // mtl_tex_init
+ int own_tex_live_locked(uint64_t serial);
+ int own_tex_live(uint64_t serial);
+diff --git a/dm/gfx/nvn/nvn_owner.m b/dm/gfx/nvn/nvn_owner.m
+index e5b85e8..4b627b6 100644
+--- a/dm/gfx/nvn/nvn_owner.m
++++ b/dm/gfx/nvn/nvn_owner.m
+@@ -267,7 +267,87 @@ id own_ext_take(uint64_t k) {   // not retired through the deferred-release queu
+     return o;
+ }
+
++// Texture overrides are owned by a live texture serial, under g_smu.
++typedef struct {
++    uint64_t address, size, serial;
++    uint32_t width, height, levels, format;
++} CoopTexture;
++static NSMutableDictionary<NSNumber *, NSData *> *g_coop_texels;
++static _Atomic unsigned g_coop_override_count;
++static uint64_t g_coop_texture_generation;
++
++static int coop_texture_sample(const void *ptr, tex_t *out) {
++    vm_size_t got = 0;
++    return ptr && vm_read_overwrite(mach_task_self(), (vm_address_t)(uintptr_t)ptr,
++        sizeof *out, (vm_address_t)(uintptr_t)out, &got) == KERN_SUCCESS &&
++        got == sizeof *out && out->magic == MAGIC('T', 'E', 'X', 0) &&
++        out->mem && out->L.size && out->L.size <= (32u << 20) &&
++        out->d.target == NVN_TEXTURE_TARGET_2D && out->d.samples <= 1 &&
++        !(out->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET |
++                          NVN_TEXTURE_FLAGS_IMAGE | NVN_TEXTURE_FLAGS_COMPRESSIBLE));
++}
++
++__attribute__((visibility("default")))
++int hos_coop_textures(uint64_t min, uint64_t max, CoopTexture *out, int cap, uint64_t *generation) {
++    pthread_mutex_lock(&g_smu);
++    int count = 0;
++    if (generation) *generation = g_coop_texture_generation;
++    if (min > max) {
++        pthread_mutex_unlock(&g_smu);
++        return 0;
++    }
++    for (uint32_t i = 0; i < g_tex_live.cap; ++i) {
++        tex_t t;
++        if (!coop_texture_sample(g_tex_live.vals[i], &t) ||
++            t.L.size < min || t.L.size > max) continue;
++        if (out && count < cap)
++            out[count] = (CoopTexture){(uint64_t)(uintptr_t)t.mem, t.L.size, t.serial,
++                                      t.d.width, t.d.height, t.d.levels, t.d.format};
++        ++count;
++    }
++    pthread_mutex_unlock(&g_smu);
++    return count;
++}
++
++__attribute__((visibility("default")))
++int hos_coop_texture_override(uint64_t address, uint64_t serial, const void *bytes, uint64_t size) {
++    pthread_mutex_lock(&g_smu);
++    tex_t t;
++    const int ok = coop_texture_sample(nvn_hm_get(&g_tex_live, &serial), &t) &&
++                   t.serial == serial && address == (uint64_t)(uintptr_t)t.mem &&
++                   size && size <= t.L.size;
++    if (ok) {
++        if (bytes) {
++            if (!g_coop_texels) g_coop_texels = [NSMutableDictionary dictionary];
++            g_coop_texels[@(serial)] = [NSData dataWithBytes:bytes length:size];
++        } else {
++            [g_coop_texels removeObjectForKey:@(serial)];
++        }
++        atomic_store(&g_coop_override_count, (unsigned)g_coop_texels.count);
++        own_note(serial);
++    }
++    pthread_mutex_unlock(&g_smu);
++    return ok;
++}
++
++NSData *own_coop_texels(uint64_t serial) {
++    if (!atomic_load(&g_coop_override_count)) return nil;
++    pthread_mutex_lock(&g_smu);
++    NSData *bytes = g_coop_texels[@(serial)];
++    pthread_mutex_unlock(&g_smu);
++    return bytes;
++}
++
++static void coop_texture_ended(uint64_t serial) {
++    ++g_coop_texture_generation;
++    if (g_coop_texels.count) {
++        [g_coop_texels removeObjectForKey:@(serial)];
++        atomic_store(&g_coop_override_count, (unsigned)g_coop_texels.count);
++    }
++}
++
+ void own_tex_live_put_locked(const tex_t *t) {
++    ++g_coop_texture_generation;
+     nvn_hm_put(&g_tex_live, &t->serial, (void *)t);
+     pool_tex_del(t->serial);
+     if (!t->pool) return;
+@@ -288,7 +368,9 @@ int own_tex_end_locked(tex_t *t) {
+         if (vm_read_overwrite(mach_task_self(), (vm_address_t)(uintptr_t)own, sizeof seen, (vm_address_t)(uintptr_t)&seen, &got) == KERN_SUCCESS && got == sizeof seen && seen.magic == MAGIC('T', 'E', 'X', 0) && seen.serial == t->serial) return -1;
+     }
+     pool_tex_del(t->serial);
+-    return nvn_hm_del(&g_tex_live, &t->serial) != NULL;
++    const int ended = nvn_hm_del(&g_tex_live, &t->serial) != NULL;
++    if (ended) coop_texture_ended(t->serial);
++    return ended;
+ }
+
+ static void tex_pin_set(tex_pin *pin, id object) {   // g_smu held
+@@ -502,6 +584,7 @@ uint32_t own_pool_finalize_locked(const void *pool, CFSetRef also) {
+     uint64_t dropped = 0;
+     for (CFIndex j = 0; j < nm; j++) {
+         uint64_t serial = (uint64_t)(uintptr_t)ms[j]; nvn_hm_del(&g_tex_pool, &serial);
++        coop_texture_ended(serial);
+         id o = hm_get_id(&g_by_serial, &serial); if (!o) continue;
+         gone_add(gone, o); live_del_locked(serial); dropped++;
+     }

@@ -59,6 +59,8 @@ struct FlagStats {
   std::uint64_t pickup_resets = 0;     // a pickup's 0, ours or incoming: not passed on
   std::uint64_t max_drops_kept = 0;    // a max-rule value our game lowered: ours, not sent
   std::uint64_t max_caps_kept = 0;     // a rise of our own past cap_max's cap: put back, not sent
+  std::uint64_t container_deltas = 0;  // row 218: a heart container rise of our own sent as a change (share_containers)
+  std::uint64_t container_catch_ups = 0;  // row 218: a rise back up to the group's maximum (not a pickup): not sent
   std::uint64_t max_caps_left = 0;     // row 181: a capped rise left to the game after kMaxCapTries put-backs (not sent)
   std::uint64_t reset_holds_kept = 0;  // rows 136/137: the game's write-back of a value the host's save lowered
   std::uint64_t read_failures = 0;
@@ -147,6 +149,28 @@ class FlagWatcher {
   // to 0 through the session (a key that the game resets on a scene change
   // must not put the pickup back for the others). False: already a pickup.
   bool share_pickup(FlagKey key);
+  // Row 218 (heart containers given to only some players): a max-rule int32
+  // (PlayerStatus.MaxLife) whose rises add up across players as a heart
+  // piece's count does, while the store still merges it by the highest value
+  // (so drops, caps and reset holds stay as they are). A player sends a rise
+  // of its own game past the group's maximum (group_int) as a count delta of
+  // the part above it; the host adds it (add(), ItemFlagStore) and sends its
+  // total. So two containers taken at once in two games give two, not one (an
+  // absolute maximum kept only the higher). A rise up to the group's maximum
+  // is our game catching up (its live copy given the group's hearts again),
+  // not a pickup: not sent. While a cap is set (a beaten boss's area: the
+  // boss's one container is a BOSS_HEART claim) or a reopened chest's gain is
+  // expected (expect_doubled_gain), a rise goes out as its value, as before,
+  // so the max rule makes two pickups of the same container one. A host's own
+  // rise goes out as its total. Must be shared already; false otherwise.
+  bool share_containers(FlagKey key);
+  // The group's maximum of a max-rule int as this game last knew it (written
+  // from the group, sent by us, or the host's save/snapshot), or nothing.
+  std::optional<std::int32_t> group_int(FlagKey key) const;
+  // The boss's one heart container (BOSS_HEART answer, coop_boss_scenes.h):
+  // the hook writes the server's value into our game itself; the group has it,
+  // so our game's rise to it is a catch-up, never a change of ours.
+  void note_group_at_least(FlagKey key, std::int32_t value);
   // A named Bool that the game itself sets back to 0 (a room's own switch
   // state, reset when the room is left: docs/dungeon.md "Live dungeon
   // actions"): shared one way like a pickup (a 1 is sent and written, a 0 is
@@ -543,6 +567,7 @@ class FlagWatcher {
   SharedFlags shared_;
   FlagRole role_;
   std::set<FlagKey> pickups_;  // one-way 64-bit keys
+  std::set<FlagKey> containers_;  // row 218: max-rule ints whose rises add up (share_containers)
   std::set<FlagKey> one_way_;  // one-way named flags, no load write-back (share_one_way)
   std::set<FlagKey> down_only_;  // share_down_only
   std::set<FlagKey> up_only_;    // share_up_only

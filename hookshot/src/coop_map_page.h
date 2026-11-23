@@ -79,6 +79,9 @@ struct Menu {
     bool HudRuns() const { return hud_screen != 0 && hud_ran_ns_ago >= 0 && hud_ran_ns_ago < 100'000'000; }
 };
 // None: the exe has no patch 0018. Any thread.
+#ifdef __APPLE__
+void ObserveMacScreen(void* ctx, const HosCoopApi* api, std::uint64_t screen);
+#endif
 std::optional<Menu> MenuState();
 // Rows 63/76: asks patch 0018's hos_coop_hud_refresh (the HUD screen's own refresh at its next update) and logs the
 // HUD copy before, and after once the refresh has run. False when this Longshot has no such export.

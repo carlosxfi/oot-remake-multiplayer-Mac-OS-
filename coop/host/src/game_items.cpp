@@ -850,11 +850,11 @@ bool ItemFlagStore::write(const protocol::FlagEntry& entry) {
   const bool named = key.kind == protocol::FlagKeyKind::named && key.index == 0;
   const ItemFlag* item = named ? find_item(key.hash) : nullptr;
   if (entry.kind == protocol::FlagKind::count_delta) {
-    // A change, not a value: added to what the game holds, which must be known.
-    const auto now = item != nullptr && item->rule == ItemRule::count &&
-                             item->kind == protocol::FlagKind::int32
-                         ? inner_.read(key)
-                         : std::nullopt;
+    // A change, not a value: added to what the game holds, which must be known. A max-rule int takes a gain only
+    // (row 218: a heart container another player took, FlagWatcher::share_containers); it never goes down by one.
+    const bool takes = item != nullptr && item->kind == protocol::FlagKind::int32 &&
+                       (item->rule == ItemRule::count || (item->rule == ItemRule::max && as_int(entry.value) > 0));
+    const auto now = takes ? inner_.read(key) : std::nullopt;
     if (!now || now->kind != protocol::FlagKind::int32) {
       ++stats_.refused;
       return false;

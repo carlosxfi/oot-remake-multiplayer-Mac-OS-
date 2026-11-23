@@ -1,0 +1,59 @@
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -16229,31 +16229,34 @@
+     uint64_t frame = atomic_load(&g_cur_frame);
+     float width = g_pass.tw, height = g_pass.th;
+     if (!wanted(frame, width, height)) return;
+-    const p_bind_buf *binding = &S.ubo[0][3];
+-    float block[0x130 / sizeof(float)];
+-    if (!binding->addr || binding->size < sizeof block) return;
+-    int kind;
+-    if (!pend_read(binding->addr, sizeof block, block, &kind)) {
+-        void *buffer;
+-        uint64_t offset;
+-        if (pend_hits(binding->addr, sizeof block) ||
+-            !mtl_addr(binding->addr, sizeof block, &buffer, &offset)) return;
+-        const uint8_t *bytes = [(__bridge id<MTLBuffer>)buffer contents];
+-        if (!bytes) return;
+-        memcpy(block, bytes + offset, sizeof block);
+-    }
+-    const int perspective = block[0xa8 / 4] == -1.0f && block[0xac / 4] == 0.0f;
+-    const int extent_matches = block[0x120 / 4] == width && block[0x124 / 4] == height;
+-    if (!perspective || !extent_matches) {
+-        static unsigned rejected;
+-        if (rejected < 4) {
+-            ++rejected;
+-            MLOG("coop camera rejected: target %.0fx%.0f format %u, block extent %.0fx%.0f, perspective %d",
+-                 width, height, g_pass.cfmt[0], block[0x120 / 4], block[0x124 / 4], perspective);
++    // Try the original camera slot first. Metal shader bindings can differ.
++    static const unsigned slots[] = {3, 0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
++    for (unsigned i = 0; i < sizeof slots / sizeof slots[0]; ++i) {
++        const p_bind_buf *binding = &S.ubo[0][slots[i]];
++        float block[0x130 / sizeof(float)];
++        if (!binding->addr || binding->size < sizeof block) continue;
++        int kind;
++        if (!pend_read(binding->addr, sizeof block, block, &kind)) {
++            void *buffer;
++            uint64_t offset;
++            if (pend_hits(binding->addr, sizeof block) ||
++                !mtl_addr(binding->addr, sizeof block, &buffer, &offset)) continue;
++            const uint8_t *bytes = [(__bridge id<MTLBuffer>)buffer contents];
++            if (!bytes) continue;
++            memcpy(block, bytes + offset, sizeof block);
+         }
++        if (block[0xa8 / 4] != -1.0f || block[0xac / 4] != 0.0f ||
++            block[0x120 / 4] != width || block[0x124 / 4] != height) continue;
++        static int reported;
++        if (!reported) { reported = 1; MLOG("coop camera matched: vertex slot %u, %.0fx%.0f", slots[i], width, height); }
++        g_coop_camera_publish(frame, block, width, height);
+         return;
+     }
+-    g_coop_camera_publish(frame, block, width, height);
++    static unsigned rejected;
++    if (rejected < 4) {
++        ++rejected;
++        MLOG("coop camera rejected: no matching vertex uniform at %.0fx%.0f", width, height);
++    }
+ }
+ 
+ static void draw_(const p_draw *dw, const p_draw_idx *di) {

@@ -1,3 +1,7 @@
+#ifdef __APPLE__
+#include <atomic>
+#include <cstdio>
+#endif
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "coop_look_tunic.h"
 
@@ -40,7 +44,16 @@ bool Same(const Textures& memory, std::uint64_t address, const std::vector<std::
     std::vector<std::uint8_t> piece(std::min(kPiece, size));
     for (std::size_t at = 0; at < size; at += piece.size()) {
         const std::size_t n = std::min(piece.size(), size - at);
-        if (!memory.Read(address + at, piece.data(), n) || std::memcmp(piece.data(), texels.data() + at, n) != 0) {
+        if (!memory.Read(address + at, piece.data(), n)) return false;
+        if (std::memcmp(piece.data(), texels.data() + at, n) != 0) {
+#ifdef __APPLE__
+            static std::atomic<unsigned> reported{0};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+                const auto mismatch = std::mismatch(piece.begin(), piece.begin() + n, texels.begin() + at);
+                std::fprintf(stderr, "[coop-nxnative] texture comparison: first differing offset %zu of %zu\n",
+                             at + static_cast<std::size_t>(mismatch.first - piece.begin()), size);
+            }
+#endif
             return false;
         }
     }

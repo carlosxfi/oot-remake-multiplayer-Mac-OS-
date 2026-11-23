@@ -37,6 +37,8 @@
 namespace CoopPauseTab {
 
 // The game's screens, by their class's vtable (offsets in main, build e0f3ccfaf50065ae; docs/game-ui.md).
+// HUD screen from the map-state bridge, relative to main at 0x80020000.
+inline constexpr std::uint64_t kHudVtable = 0x4be8300;
 inline constexpr std::uint64_t kPagesVtable = 0x4bebaa8;   // main+: UIPlusMenuScreen (PlusMenu_00, the four pages)
 inline constexpr std::uint64_t kStripVtable = 0x4be8aa0;   // main+: UIMenuOverlayScreen (MenuOverlay_00, the tabs)
 // Screens that open over the System page or end the game: while one opens, shows or closes, our page is not shown.

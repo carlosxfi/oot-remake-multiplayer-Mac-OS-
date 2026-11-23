@@ -62,7 +62,7 @@ struct Request {
     // page (coop_look_menu.h); worn when the menu closes. kSetPassword: `text` is the host's new join password
     // (CoopHostMenu::Menu::SetPassword; never logged). kAllow / kDeny: the oldest player asking to join let in or
     // turned away (the chat's /allow, /deny); `text` is their name. kRefreshFound: the Find page's list asked again.
-    enum class Kind { kHost, kJoin, kLeave, kSave, kLook, kPaste, kCopyInvite, kPasteAnswer, kCopyAnswer, kCopyLan,
+    enum class Kind { kHost, kJoin, kJoinClipboard, kLeave, kSave, kLook, kPaste, kCopyInvite, kPasteAnswer, kCopyAnswer, kCopyLan,
                       kController, kKeyboard, kLookParts, kCopyVpn,
                       kNgPlus,     // (Navi) kNgPlus: `text` is the New Game+ level chosen (coop_ngplus.h)
                       kSaveSet,    // (Navi) kSaveSet: `text` "multiplayer" or "solo" (CoopSave::ChooseSaveSet)
@@ -218,7 +218,7 @@ private:
         kNone,
         kOpenHost, kOpenJoin, kOpenLocal, kOpenSettings, kOpenCommands, kCommand,
         kStartHost, kHostPort, kCopyInvite, kPasteAnswer, kCopyAnswer, kCopyLan, kCopyVpn, kLeave,
-        kRejoin, kCode, kClearCode, kJoinIp, kJoinPort, kJoinPassword, kJoinNow, kRelay, kRoom,
+        kRejoin, kCode, kClearCode, kJoinIp, kJoinPort, kJoinPassword, kJoinNow, kJoinClipboard, kRelay, kRoom,
         kName, kLook, kPlayers, kVoice, kMic, kVoiceMode, kChatKey, kController, kKeyboard, kMapPlayers, kMapNames,
         kSameNetwork, kGameKind,
         kOpenCustomize, kNgPlus, kSaveSet,

@@ -949,6 +949,13 @@ bool LookFontFits() {
     return lang == nullptr || lang->entries == nullptr;
 }
 
+#ifdef __APPLE__
+void DrawMacMarkers(const HosCoopDraw& draw, const Scene& scene) {
+    if (scene.markers) DrawMarkers(draw, *scene.markers, scene, nullptr);
+    if (scene.map) DrawMap(draw, *scene.map, nullptr);
+}
+#endif
+
 bool Wanted(const Scene& s) {
     if (s.title && !s.title->prompt.empty()) {
         return true;

@@ -241,7 +241,7 @@ TEST_CASE("dungeon: Merge adds to the list, makes one when there is none, or doe
 
     const std::size_t all =
         CoopDungeon::Flags().size() + CoopDungeon::LiveFlags().size() + CoopDungeon::AutogenFlags().size() +
-        CoopDungeon::Keys().size();
+        CoopDungeon::Keys().size() + CoopDungeon::WorldKeys().size();
     const std::size_t n = CoopDungeon::Merge(none, true);
     REQUIRE(none.has_value());
     CHECK(n == all);
@@ -293,6 +293,43 @@ TEST_CASE("dungeon: the placement keys are one each, and only things that stay d
     CHECK(per_dungeon.size() == 13);
     CHECK(per_dungeon["InsideTheDekuTree"] == 37);
     CHECK(per_dungeon["DodongoCavern"] == 36);
+}
+
+TEST_CASE("dungeon: row 220: the overworld's obstacles that stay done are shared, each player's own are not") {
+    std::set<std::uint64_t> dungeon;
+    for (const auto& k : CoopDungeon::Keys()) dungeon.insert(k.key);
+    std::set<std::uint64_t> seen;
+    std::map<std::string, std::size_t> kinds;
+    for (const auto& k : CoopDungeon::WorldKeys()) {
+        CHECK(k.key != 0);
+        CHECK_MESSAGE(seen.insert(k.key).second, k.actor);
+        CHECK_MESSAGE(!dungeon.contains(k.key), k.actor);
+        const std::string scene = k.dungeon;
+        const std::string actor = k.actor;
+        CHECK_MESSAGE(!CoopDungeon::IsDungeonScene(scene), scene);
+        CHECK_MESSAGE(scene != "DreamWorld", actor);  // Boss Rush and the battle arenas: each player's own
+        CHECK_MESSAGE(actor.find("HitTarget") == std::string::npos, actor);  // the Market's shooting gallery
+        CHECK_MESSAGE(actor.find("ArcheryTarget") == std::string::npos, actor);  // horseback archery
+        CHECK_MESSAGE(actor.find("TBox") == std::string::npos, actor);  // chests: CoopChests
+        CHECK_MESSAGE(!actor.starts_with("Obj_Rupee"), actor);  // pickups: CoopPickups
+        CHECK_MESSAGE(actor.find("Heart") == std::string::npos, actor);
+        CHECK_MESSAGE(actor != "Enemy_Skulltula_Gold", actor);
+        ++kinds[actor.substr(0, actor.rfind('_'))];
+    }
+    CHECK(CoopDungeon::WorldKeys().size() == 158);
+    CHECK(kinds["Obj_BrokenRock_A"] == 57);
+    CHECK(kinds["Obj_LiftRock_B"] == 46);
+    CHECK(kinds["WallCrack"] == 15);
+    CHECK(kinds["Obj_EnemyCounter_A"] == 5);
+    bool cover = false, rock = false, counter = false;
+    for (const auto& k : CoopDungeon::WorldKeys()) {
+        cover |= k.key == 0x2031e5ac12ff9ab4ull && std::string(k.actor) == "Land_HrlField_HidingHoleCover_A_01";
+        rock |= k.key == 0x8a4e791b05223269ull && std::string(k.actor) == "Obj_DeathMtTrail_BrokenRock_A_01";
+        counter |= k.key == 0x0d23bcff35eca9eaull && std::string(k.dungeon) == "Graveyard";
+    }
+    CHECK(cover);
+    CHECK(rock);
+    CHECK(counter);
 }
 
 TEST_CASE("dungeon: the Deku Tree's and Dodongo's Cavern's chests are in the list") {
@@ -371,6 +408,49 @@ TEST_CASE("dungeon: a chest opened in one game opens in the other and never clos
     wb.receive(proto::Message{proto::FlagState{2, {{chest, proto::FlagKind::boolean, 0}}}});
     wb.frame(b);
     CHECK(b.values[chest].value == 1);
+}
+
+TEST_CASE("dungeon: row 220: a boulder blown up in one game is gone in the other and stays gone") {
+    namespace proto = coop::protocol;
+    std::optional<host::SharedFlags> list;
+    CoopDungeon::Merge(list, true);
+    REQUIRE(list.has_value());
+    const auto rock = host::FlagKey::key64_flag(0x8a4e791b05223269ull);  // Death Mountain Trail's big boulder
+    REQUIRE(list->contains(rock));
+
+    Game a;
+    Game b;
+    a.set(rock, 0);
+    b.set(rock, 0);
+    host::FlagWatcher wa(*list, host::FlagRole::player);
+    host::FlagWatcher wb(*list, host::FlagRole::player);
+    for (host::FlagWatcher* w : {&wa, &wb}) {  // as the hook does with pickups on
+        for (const auto& k : CoopDungeon::WorldKeys()) w->share_pickup(host::FlagKey::key64_flag(k.key));
+    }
+    wa.frame(a);
+    wb.frame(b);
+
+    a.set(rock, 1);
+    const auto out = wa.frame(a);
+    REQUIRE(out.size() == 1);
+    proto::Message m;
+    REQUIRE(proto::decode(out[0].bytes, m) == proto::Error::none);
+    const auto* set = std::get_if<proto::FlagSet>(&m);
+    REQUIRE(set);
+    REQUIRE(set->flags.size() == 1);
+    CHECK(set->flags[0].key == rock);
+    wb.receive(proto::Message{proto::FlagState{1, set->flags}});
+    wb.frame(b);
+    CHECK(b.values[rock].value == 1);
+
+    // B's game reads 0 for a moment (a scene load): not sent; and a 0 coming in is never written over its 1.
+    b.set(rock, 0);
+    CHECK(wb.frame(b).empty());
+    b.set(rock, 1);
+    wb.frame(b);
+    wb.receive(proto::Message{proto::FlagState{2, {{rock, proto::FlagKind::boolean, 0}}}});
+    wb.frame(b);
+    CHECK(b.values[rock].value == 1);
 }
 
 TEST_CASE("dungeon: the Deku torch plate's unnamed autogen bool is shared (deku-test, torch flame)") {

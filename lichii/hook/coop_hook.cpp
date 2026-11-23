@@ -530,6 +530,9 @@ public:
             for (const auto& k : CoopDungeon::Keys()) {
                 session_->share_pickup(coop::protocol::FlagKey::key64_flag(k.key));
             }
+            for (const auto& k : CoopDungeon::WorldKeys()) {  // row 220: overworld obstacles that stay done
+                session_->share_pickup(coop::protocol::FlagKey::key64_flag(k.key));
+            }
         }
         // On unless LICHII_COOP_LIVE_EVENTS=0 (dungeon-switches): another
         // player's gimmick event plays here too when our Link comes near it.
@@ -687,6 +690,8 @@ public:
             session_->guard_count(coop::protocol::FlagKey(coop::host::kGoldTokenCount, std::uint16_t{0}),
                                   skulltulas);
         }
+        // Row 218: heart containers add up across players as heart pieces do (FlagWatcher::share_containers).
+        session_->share_containers(coop::protocol::FlagKey{0xfbe01da1u, 0});
         thread_ = std::thread([this] { Run(); });
         return true;
     }
@@ -1549,9 +1554,21 @@ public:
         }
         if (game_store) {  // issue 88: what the session left in MaxLife (docs/items.md)
             const auto max_life = game_store->read(coop::protocol::FlagKey{0xfbe01da1u, 0});
-            CoopObjects::SetMaxLife(max_life && max_life->kind == coop::protocol::FlagKind::int32
-                                        ? std::optional<std::int32_t>(static_cast<std::int32_t>(max_life->value))
-                                        : std::nullopt);
+            // Row 218: our Link's hearts follow the group's maximum as we know it, not only the flag: when our game
+            // wrote its own lower max back before the object walk raised Link (a container another player took),
+            // the drop is ours alone and the flag stays low, and that container was lost to this player for good.
+            // Not while a hold lowers it (rows 136/137, 181): that hold's value wins.
+            std::optional<std::int32_t> walk_max =
+                max_life && max_life->kind == coop::protocol::FlagKind::int32
+                    ? std::optional<std::int32_t>(static_cast<std::int32_t>(max_life->value))
+                    : std::nullopt;
+            if (session_ && walk_max && !session_->held_lower(coop::protocol::FlagKey{0xfbe01da1u, 0})) {
+                if (const auto group = session_->group_int(coop::protocol::FlagKey{0xfbe01da1u, 0});
+                    group && *group > *walk_max) {
+                    walk_max = group;
+                }
+            }
+            CoopObjects::SetMaxLife(walk_max);
             // Boss cutscenes (coop_boss_scenes.h): the one shared heart container sees our maximum and may set it.
             const bool known = max_life && max_life->kind == coop::protocol::FlagKind::int32;
             CoopBoss::SetMaxLife(known ? std::optional<std::int32_t>(static_cast<std::int32_t>(max_life->value))
@@ -1568,6 +1585,9 @@ public:
             if (const auto to = CoopBoss::TakeMaxLifeWrite(); to && known) {
                 auto set = *max_life;
                 set.value = static_cast<std::uint32_t>(*to);
+                // Row 218: the group has this container (the server's answer): our game's rise to it is no pickup
+                // of ours, so it is never sent as a change on top (one container, not two).
+                if (session_) session_->note_group_at_least(coop::protocol::FlagKey{0xfbe01da1u, 0}, *to);
                 const bool ok = game_store->write(set);
                 LOG_INFO(Core, "coop: boss: our maximum life {} -> {} (the boss's one heart container){}",
                          static_cast<std::int32_t>(max_life->value), *to, ok ? "" : ": the write failed");
