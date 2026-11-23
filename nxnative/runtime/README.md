@@ -38,3 +38,8 @@ Apply [host-save-remount.patch](host-save-remount.patch) to the same pinned nxna
 Open a Windows host session with a saved file, then join from the Mac title screen. Wait for the host-save ready notice before loading a file. Verify the guest loads the host's location and heart capacity, then quit, relaunch without joining, and verify the Mac's original slot. The guest uses a sibling `save-coop` folder. In-session host-save refreshes wait until the next title screen on Mac.
 
 **Windows → Mac host-save transfer passed.** Joining from the Mac title screen received the Windows save, mounted the separate `save-coop` folder, and automatically loaded the newest slot. The guest reported the host’s inventory and four heart slots. The original Mac solo save was still available after relaunch. After rejoining Windows, the guest’s slingshot ammo returned to 30 after previously spending one shot. This is consistent with loading a fresh host snapshot. Ammo remains per player during the session. One-step paste and join on the title screen is still pending.
+
+### Personal inventory on rejoin
+
+- [ ] Preserve each returning player's ammo and other personal inventory for the same co-op game. The host's latest save still supplies shared progress. Keep personal inventory separate from solo saves and from other hosts or save slots.
+- [ ] Regression test: start with 30 slingshot seeds, spend one on the Mac, leave and rejoin the same Windows game, and verify the Mac returns with 29 while Windows still has 30. Repeat after quitting and relaunching the Mac app.
