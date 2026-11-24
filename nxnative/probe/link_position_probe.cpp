@@ -22,6 +22,9 @@
 #include "remote_peer.hpp"
 #ifdef __APPLE__
 #include "game_call.hpp"
+#include "world_function_bridge.hpp"
+#include "../../hookshot/src/hos_coop_bosses.h"
+#include "../../hookshot/src/hos_coop_sound.h"
 #include "../../hookshot/src/coop_pause_tab.h"
 #include "../../hookshot/src/hos_coop_boss_orders.h"
 #include "../../hookshot/src/hos_coop_draw.h"
@@ -436,6 +439,87 @@ std::uint64_t install_world_slots(std::uint64_t base, std::span<const WorldSlot>
   return mask;
 }
 
+struct WorldFunction {
+  unsigned id;
+  std::uint64_t offset;
+  std::array<std::uint32_t, 4> instructions;
+};
+
+constexpr std::array kWorldFunctions{
+    WorldFunction{HOS_COOP_WRAP_FLAG_APPLY, 0xb99980, {0xd503237f, 0xd10243ff, 0xfd0013e8, 0xa9037bfd}},
+    WorldFunction{HOS_COOP_WRAP_TIME_SET, 0xeee640, {0xd503237f, 0xa9bd7bfd, 0xf9000bfc, 0xa9024ff4}},
+    WorldFunction{HOS_COOP_WRAP_EVENT_REQUEST, 0xd7a820, {0xb940b808, 0x37580808, 0xd503237f, 0xd10103ff}},
+    WorldFunction{HOS_COOP_WRAP_BRAIN_VERB, 0x6733b0, {0xd503237f, 0xa9bd7bfd, 0xf9000bf5, 0xa9024ff4}},
+    WorldFunction{HOS_COOP_WRAP_ACTION_VERB, 0xc08f0, {0xd503237f, 0xd10743ff, 0xa9187bfd, 0xf900cbfc}},
+    WorldFunction{HOS_COOP_WRAP_SOUND_EMIT, 0x440630, {0xd503237f, 0xa9bb7bfd, 0xa90167fa, 0xa9025ff8}},
+};
+
+using DirectWorldMethod = std::uint64_t (*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
+                                            std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
+                                            double, double, double, double, double, double, double, double);
+std::array<std::atomic<DirectWorldMethod>, kWorldFunctions.size()> original_world_functions{};
+
+template<std::size_t Index>
+std::uint64_t dispatch_world_function(std::uint64_t x0, std::uint64_t x1, std::uint64_t x2, std::uint64_t x3,
+                                      std::uint64_t x4, std::uint64_t x5, std::uint64_t x6, std::uint64_t x7,
+                                      double d0, double d1, double d2, double d3,
+                                      double d4, double d5, double d6, double d7) {
+  constexpr unsigned id = kWorldFunctions[Index].id;
+  const auto original = original_world_functions[Index].load(std::memory_order_acquire);
+  const auto wrap = (enabled_world_methods.load(std::memory_order_acquire) & (std::uint64_t{1} << id))
+      ? world_method_event.load(std::memory_order_relaxed) : nullptr;
+  std::array<std::uint64_t, 32> registers{x0, x1, x2, x3, x4, x5, x6, x7};
+  if (!wrap || !wrap(id, 0, registers.data(), &shared_api)) {
+    registers[0] = original(registers[0], registers[1], registers[2], registers[3],
+                            registers[4], registers[5], registers[6], registers[7], d0, d1, d2, d3, d4, d5, d6, d7);
+  }
+  if (wrap) wrap(id, 1, registers.data(), &shared_api);
+  return registers[0];
+}
+
+std::uint64_t install_world_functions(std::uint64_t base) {
+  using namespace coop_nxnative;
+  const char* enabled = std::getenv("COOP_NXNATIVE_WORLD_FUNCTIONS");
+  if (!enabled || std::strcmp(enabled, "1") != 0) return 0;
+  constexpr std::array<DirectWorldMethod, kWorldFunctions.size()> wrappers{
+      dispatch_world_function<0>, dispatch_world_function<1>, dispatch_world_function<2>,
+      dispatch_world_function<3>, dispatch_world_function<4>, dispatch_world_function<5>,
+  };
+
+  std::uint64_t mask = 0;
+  for (std::size_t i = 0; i < kWorldFunctions.size(); ++i) {
+    const auto& function = kWorldFunctions[i];
+    const auto cave = kWorldFunctionCave + i * kWorldFunctionBytes;
+    auto expected = function.instructions;
+    std::array<std::uint32_t, 4> actual{};
+    std::array<std::uint32_t, kWorldFunctionBytes / sizeof(std::uint32_t)> padding{};
+    if (!read_at(base + function.offset, actual) || !read_at(base + cave, padding)) continue;
+    // nxnative may remove pointer-authentication instructions before loading.
+    for (std::size_t w = 0; w < actual.size(); ++w) {
+      if (expected[w] == 0xd503237f && actual[w] == 0xd503201f) expected[w] = actual[w];
+    }
+    if (actual != expected || !std::all_of(padding.begin(), padding.end(), [](std::uint32_t word) {
+      return word == 0 || word == 0xd503201f;
+    })) continue;
+
+    const auto bytes = make_world_function_cave(cave, function.offset, actual.front(),
+                                                reinterpret_cast<std::uint64_t>(wrappers[i]));
+    const auto branch = arm64_branch(function.offset, cave, false);
+    if (!branch || !write_code(base + cave, bytes)) continue;
+    original_world_functions[i].store(reinterpret_cast<DirectWorldMethod>(base + cave + 16),
+                                     std::memory_order_release);
+    const auto entry = base + function.offset;
+    if (!with_writable_alias(entry, sizeof(*branch), [&](void* alias) {
+      __atomic_store_n(static_cast<std::uint32_t*>(alias), *branch, __ATOMIC_RELEASE);
+      sys_icache_invalidate(reinterpret_cast<void*>(entry), sizeof(*branch));
+    })) continue;
+    mask |= std::uint64_t{1} << function.id;
+  }
+  std::fprintf(stderr, "[coop-nxnative] direct world bridge mask %#llx\n",
+               static_cast<unsigned long long>(mask));
+  return mask;
+}
+
 void install_world_bridges(void* module, std::uint64_t base) {
   const auto wrap = reinterpret_cast<hos_coop_wrap_fn>(dlsym(module, "hos_coop_wrap"));
   const auto world = reinterpret_cast<hos_coop_world_fn>(dlsym(module, "hos_coop_world"));
@@ -449,7 +533,7 @@ void install_world_bridges(void* module, std::uint64_t base) {
   constexpr std::array<WorldMethod, 1> boss_wrappers{dispatch_world_method<HOS_COOP_WRAP_BOSS_ORDER>};
   const auto save_mask = install_world_slots(base, kSaveWorldSlots, save_wrappers);
   const auto boss_mask = install_world_slots(base, std::span{&kBossOrderSlot, 1}, boss_wrappers);
-  const auto mask = save_mask | boss_mask;
+  const auto mask = save_mask | boss_mask | install_world_functions(base);
   const bool enabled = mask && world(HOS_COOP_WORLD_HELLO, HOS_COOP_WORLD_VERSION, mask);
   if (enabled) {
     world_method_event.store(wrap, std::memory_order_relaxed);

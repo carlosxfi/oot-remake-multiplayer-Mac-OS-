@@ -71,4 +71,13 @@ Use the Mac build from PR #12 and Squadala v0.11.12 on Windows. Use an expendabl
 4. **Combat and handoffs.** Watch a guest equip and aim a bow or slingshot. Enter a boss intro while another player is already in the arena. Check a handoff during King Dodongo's roll, Barinade's jellyfish deaths, and Twinrova's attacks and fusion. Check the Mac log for the bow guard and Twinrova bridge startup messages.
 5. **Shared world.** Try a two-player switch, a block push, and a scene transition while another player pauses. Check time of day after the host resumes and lobby recovery after a disconnect.
 
-The save bridge falls back to the existing load-window detection if any sequence method fails validation. Character Select's pick is reapplied on calc frames while the load hold is active. Direct world hooks such as the event-request and boss action interception still require nxnative implementations.
+The save bridge falls back to the existing load-window detection if any sequence method fails validation. Character Select's pick is reapplied on calc frames while the load hold is active and the flag-applier hook is unavailable.
+
+For the combined test, enable the experimental direct function hooks when starting the installed launcher script. Replace `corgidad` if the test uses another profile.
+
+```sh
+COOP_NXNATIVE_WORLD_FUNCTIONS=1 COOP_NXNATIVE_INVENTORY_PROFILE=corgidad \
+  /bin/sh "$HOME/Applications/OOT Co-op.app/Contents/Resources/oot-coop-launch.sh"
+```
+
+The probe logs a direct world bridge mask. The expected mask is `0x100003e` for flag application, time changes, event requests, boss brain and action verbs, and sound emission. A function whose instructions or code padding do not match keeps its original path. Check time changes, boss transitions and remote sounds in the same run.
