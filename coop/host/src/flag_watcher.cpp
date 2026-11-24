@@ -1163,8 +1163,14 @@ const std::vector<FlagKey>& FlagWatcher::diff_keys() {
   if (!list.empty()) {
     // Without flag-write hooks, nxnative polls every key over eight gameplay
     // frames. Initial scans and loading windows still read the full list.
-    constexpr std::size_t kPollingFrames = 8;
-    const std::size_t frames = events_ ? kAuditFrames : kPollingFrames;
+    static const std::size_t polling_frames = [] {
+#ifdef __APPLE__
+      const char* setting = std::getenv("COOP_FLAG_POLL_FRAMES");
+      if (setting && std::string_view(setting) == "16") return std::size_t{16};
+#endif
+      return std::size_t{8};
+    }();
+    const std::size_t frames = events_ ? kAuditFrames : polling_frames;
     const std::size_t slice = (list.size() + frames - 1) / frames;
     for (std::size_t i = 0; i < slice; ++i) {
       audit_next_ = audit_next_ >= list.size() ? 0 : audit_next_;
