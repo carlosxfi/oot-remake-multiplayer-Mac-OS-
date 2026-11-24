@@ -25,6 +25,7 @@
 #include "../../hookshot/src/coop_pause_tab.h"
 #include "../../hookshot/src/hos_coop_boss_orders.h"
 #include "../../hookshot/src/hos_coop_draw.h"
+#include "../../hookshot/src/hos_coop_save_load.h"
 #include "../../hookshot/src/hos_coop_world.h"
 #include "multiplayer_menu.hpp"
 #include "../../lichii/hook/coop_colors.h"
@@ -379,38 +380,85 @@ bool install_native_pause_menu(void* module, std::uint64_t base, RegisterPad reg
   return true;
 }
 
-// Twinrova's receive method is called on the game's thread. Replays enter the
-// original method by address, so they never feed back into the capture hook.
-using BossReceive = std::uint64_t (*)(std::uint64_t, std::uint64_t);
-std::atomic<BossReceive> original_boss_receive{nullptr};
-std::atomic<hos_coop_wrap_fn> boss_order_event{nullptr};
+// Save sequence methods and Twinrova's receiver are reached through their
+// vtables. Direct calls by the module still reach the original game methods.
+using WorldMethod = std::uint64_t (*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
+                                      std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
 
-std::uint64_t receive_boss_order(std::uint64_t node, std::uint64_t message) {
-  if (const auto wrap = boss_order_event.load(std::memory_order_acquire)) {
-    std::array<std::uint64_t, 32> registers{node, message};
-    if (wrap(HOS_COOP_WRAP_BOSS_ORDER, 0, registers.data(), &shared_api)) return registers[0];
+struct WorldSlot {
+  unsigned id;
+  std::uint64_t table;
+  unsigned slot;
+  std::uint64_t original;
+};
+
+constexpr std::array kSaveWorldSlots{
+    WorldSlot{HOS_COOP_WRAP_SAVE_LOADED, 0x4bb4558, 39, 0x32d8690},
+    WorldSlot{HOS_COOP_WRAP_SAVE_LOAD_START, 0x4ba6cf8, 29, 0x32c1db0},
+    WorldSlot{HOS_COOP_WRAP_TEMP_LOAD_START, 0x4ba6e40, 29, 0x32c2080},
+    WorldSlot{HOS_COOP_WRAP_GAME_OVER_SAVE, 0x4ba4a28, 29, 0x32bbce0},
+};
+constexpr WorldSlot kBossOrderSlot{HOS_COOP_WRAP_BOSS_ORDER, 0x49a8568, 39, 0x2723f80};
+
+std::array<std::atomic<WorldMethod>, HOS_COOP_WRAP_BOSS_ORDER + 1> original_world_methods{};
+std::atomic<hos_coop_wrap_fn> world_method_event{nullptr};
+std::atomic<std::uint64_t> enabled_world_methods{0};
+
+template<unsigned Id>
+std::uint64_t dispatch_world_method(std::uint64_t x0, std::uint64_t x1, std::uint64_t x2, std::uint64_t x3,
+                                    std::uint64_t x4, std::uint64_t x5, std::uint64_t x6, std::uint64_t x7) {
+  const auto original = original_world_methods[Id].load(std::memory_order_acquire);
+  if (enabled_world_methods.load(std::memory_order_acquire) & (std::uint64_t{1} << Id)) {
+    const auto wrap = world_method_event.load(std::memory_order_relaxed);
+    std::array<std::uint64_t, 32> registers{x0, x1, x2, x3, x4, x5, x6, x7};
+    if (wrap(Id, 0, registers.data(), &shared_api)) return registers[0];
   }
-  return original_boss_receive.load(std::memory_order_acquire)(node, message);
+  return original(x0, x1, x2, x3, x4, x5, x6, x7);
 }
 
-bool install_boss_order_bridge(void* module, std::uint64_t base) {
-  constexpr std::uint64_t kReceiverVtable = 0x49a8568;
-  constexpr std::uint64_t kReceiverMethod = 0x2723f80;
-  constexpr std::uint64_t kReceiverSlot = 39;
-  const auto slot = base + kReceiverVtable + kReceiverSlot * sizeof(std::uint64_t);
+std::uint64_t install_world_slots(std::uint64_t base, std::span<const WorldSlot> slots,
+                                  std::span<const WorldMethod> wrappers) {
+  const auto address = [base](const WorldSlot& s) { return base + s.table + s.slot * sizeof(std::uint64_t); };
+  for (const auto& s : slots) {
+    std::uint64_t current = 0;
+    if (!read_at(address(s), current) || current != base + s.original) return 0;
+    original_world_methods[s.id].store(reinterpret_cast<WorldMethod>(current), std::memory_order_release);
+  }
+
+  std::uint64_t mask = 0;
+  for (std::size_t i = 0; i < slots.size(); ++i) {
+    if (!with_writable_alias(address(slots[i]), sizeof(std::uint64_t), [&](void* alias) {
+      __atomic_store_n(static_cast<std::uint64_t*>(alias),
+                       reinterpret_cast<std::uint64_t>(wrappers[i]), __ATOMIC_RELEASE);
+    })) return 0;  // A partially installed group still forwards to the game.
+    mask |= std::uint64_t{1} << slots[i].id;
+  }
+  return mask;
+}
+
+void install_world_bridges(void* module, std::uint64_t base) {
   const auto wrap = reinterpret_cast<hos_coop_wrap_fn>(dlsym(module, "hos_coop_wrap"));
   const auto world = reinterpret_cast<hos_coop_world_fn>(dlsym(module, "hos_coop_world"));
-  std::uint64_t current = 0;
-  if (!wrap || !world || !read_at(slot, current) || current != base + kReceiverMethod) return false;
-  original_boss_receive.store(reinterpret_cast<BossReceive>(current), std::memory_order_release);
-  if (!with_writable_alias(slot, sizeof(current), [](void* alias) {
-    __atomic_store_n(static_cast<std::uint64_t*>(alias),
-                     reinterpret_cast<std::uint64_t>(&receive_boss_order), __ATOMIC_RELEASE);
-  })) return false;
-  if (!world(HOS_COOP_WORLD_HELLO, HOS_COOP_WORLD_VERSION, std::uint64_t{1} << HOS_COOP_WRAP_BOSS_ORDER))
-    return false;  // The installed forwarder still calls the original.
-  boss_order_event.store(wrap, std::memory_order_release);
-  return true;
+  if (!wrap || !world) return;
+  constexpr std::array<WorldMethod, 4> save_wrappers{
+      dispatch_world_method<HOS_COOP_WRAP_SAVE_LOADED>,
+      dispatch_world_method<HOS_COOP_WRAP_SAVE_LOAD_START>,
+      dispatch_world_method<HOS_COOP_WRAP_TEMP_LOAD_START>,
+      dispatch_world_method<HOS_COOP_WRAP_GAME_OVER_SAVE>,
+  };
+  constexpr std::array<WorldMethod, 1> boss_wrappers{dispatch_world_method<HOS_COOP_WRAP_BOSS_ORDER>};
+  const auto save_mask = install_world_slots(base, kSaveWorldSlots, save_wrappers);
+  const auto boss_mask = install_world_slots(base, std::span{&kBossOrderSlot, 1}, boss_wrappers);
+  const auto mask = save_mask | boss_mask;
+  const bool enabled = mask && world(HOS_COOP_WORLD_HELLO, HOS_COOP_WORLD_VERSION, mask);
+  if (enabled) {
+    world_method_event.store(wrap, std::memory_order_relaxed);
+    enabled_world_methods.store(mask, std::memory_order_release);
+  }
+  std::fprintf(stderr, "[coop-nxnative] native save lifecycle bridge %s\n",
+               enabled && save_mask ? "installed" : "unavailable");
+  std::fprintf(stderr, "[coop-nxnative] Twinrova order bridge %s\n",
+               enabled && boss_mask ? "installed" : "unavailable");
 }
 
 bool start_shared_module(const char* path, std::uint64_t base) {
@@ -480,8 +528,7 @@ bool start_shared_module(const char* path, std::uint64_t base) {
     std::fprintf(stderr, "[coop-nxnative] shared module start refused\n");
     return false;
   }
-  const bool boss_orders = install_boss_order_bridge(module, base);
-  std::fprintf(stderr, "[coop-nxnative] Twinrova order bridge %s\n", boss_orders ? "installed" : "unavailable");
+  install_world_bridges(module, base);
   shared_frame.store(frame, std::memory_order_release);
   using SetCamera = void (*)(hos_coop_camera_wanted_fn, hos_coop_camera_fn);
   const auto set_camera = reinterpret_cast<SetCamera>(dlsym(RTLD_DEFAULT, "dm_coop_set_camera"));

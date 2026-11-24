@@ -1760,6 +1760,14 @@ void Frame(void* ctx, int site) {
     }
     const FrameWork w = WorkAt(site, g_present_seen.load());
     if (w.on_frame) {
+#ifdef __APPLE__
+        // nxnative sees the sequence's load completion before the player is made.
+        // Recheck the held pick on calc frames if the flag-applier wrap is absent.
+        if (CoopSave::NativeSaveLoads() && !WrapIn(HOS_COOP_WRAP_FLAG_APPLY)) {
+            CoopHook::EmulatorMemory memory(g_system.ApplicationMemory(), CoopRuntime::MainBase());
+            CoopCharAges::AtFlagsApplied(memory);
+        }
+#endif
         CoopHook::OnFrame(g_system);
     }
     if (w.calls && ctx != nullptr) {
