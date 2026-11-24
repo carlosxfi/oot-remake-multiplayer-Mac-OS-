@@ -159,6 +159,29 @@ bool write_code(std::uint64_t address, std::span<const std::uint8_t> bytes) {
   });
 }
 
+// Character Select occupies the original co-op caves through the end of
+// the text padding. Keep the entire range reserved when that mod is loaded.
+template<std::size_t Bytes>
+std::optional<std::uint64_t> find_hook_padding(std::uint64_t base, std::uint64_t preferred) {
+  constexpr std::uint64_t start = 0x3c461d0;  // Unpatched text end, build 1.1.1.
+  const auto end = std::getenv("COOP_NXNATIVE_CHARACTER_SELECT")
+      ? coop_nxnative::kCalcCaveOffset : 0x3c47000;
+  const auto free = [&](std::uint64_t offset) {
+    if (offset < start || offset + Bytes > end) return false;
+    std::array<std::uint32_t, Bytes / sizeof(std::uint32_t)> words{};
+    if (!read_at(base + offset, words)) return false;
+    for (const auto word : words) {
+      if (word != 0 && word != 0xd503201f) return false;
+    }
+    return true;
+  };
+  if (free(preferred)) return preferred;
+  for (auto offset = start; offset + Bytes <= end; offset += 8) {
+    if (free(offset)) return offset;
+  }
+  return std::nullopt;
+}
+
 bool install_puppet_guard(std::uint64_t base) {
   using namespace coop_nxnative;
   std::array<std::uint32_t, kPuppetGuardOriginal.size()> original{};
@@ -167,12 +190,14 @@ bool install_puppet_guard(std::uint64_t base) {
     return false;
   }
 
-  const auto cave = make_puppet_guard();
-  const auto hook = arm64_branch(kPuppetGuardSite, kPuppetGuardCave, false).value();
+  const auto offset = find_hook_padding<sizeof(make_puppet_guard())>(base, kPuppetGuardCave);
+  if (!offset) return false;
+  const auto cave = make_puppet_guard(*offset);
+  const auto hook = arm64_branch(kPuppetGuardSite, *offset, false).value();
   const auto code = [](const auto& value) {
     return std::span(reinterpret_cast<const std::uint8_t*>(&value), sizeof(value));
   };
-  if (!write_code(base + kPuppetGuardCave, code(cave)) ||
+  if (!write_code(base + *offset, code(cave)) ||
       !write_code(base + kPuppetGuardSite, code(hook))) {
     std::fprintf(stderr, "[coop-nxnative] puppet guard refused: could not install patch\n");
     return false;
@@ -184,18 +209,15 @@ bool install_puppet_guard(std::uint64_t base) {
 bool install_bow_guard(std::uint64_t base) {
   using namespace coop_nxnative;
   std::array<std::uint32_t, kBowGuardOriginal.size()> original{};
-  std::array<std::uint32_t, 4> padding{};
-  if (!read_at(base + kBowGuardSite - 4, original) || original != kBowGuardOriginal ||
-      !read_at(base + kBowGuardCave, padding) ||
-      !std::all_of(padding.begin(), padding.end(), [](std::uint32_t word) {
-        return word == 0 || word == 0xd503201f;
-      })) return false;
-  const auto cave = make_bow_guard();
-  const auto hook = arm64_branch(kBowGuardSite, kBowGuardCave, false).value();
+  if (!read_at(base + kBowGuardSite - 4, original) || original != kBowGuardOriginal) return false;
+  const auto offset = find_hook_padding<sizeof(make_bow_guard())>(base, kBowGuardCave);
+  if (!offset) return false;
+  const auto cave = make_bow_guard(*offset);
+  const auto hook = arm64_branch(kBowGuardSite, *offset, false).value();
   const auto code = [](const auto& value) {
     return std::span(reinterpret_cast<const std::uint8_t*>(&value), sizeof(value));
   };
-  return write_code(base + kBowGuardCave, code(cave)) &&
+  return write_code(base + *offset, code(cave)) &&
       write_code(base + kBowGuardSite, code(hook));
 }
 
@@ -206,11 +228,17 @@ bool install_calc_bridge(std::uint64_t base) {
     std::fprintf(stderr, "[coop-nxnative] calc bridge refused: game hook bytes do not match build 1.1.1\n");
     return false;
   }
+  const auto offset = find_hook_padding<sizeof(coop_nxnative::make_calc_cave(0))>(
+      base, coop_nxnative::kCalcCaveOffset);
+  if (!offset) {
+    std::fprintf(stderr, "[coop-nxnative] calc bridge refused: no free text padding\n");
+    return false;
+  }
   const auto cave = coop_nxnative::make_calc_cave(
-      reinterpret_cast<std::uint64_t>(&coop_nxnative_calc_frame));
+      reinterpret_cast<std::uint64_t>(&coop_nxnative_calc_frame), *offset);
   const auto hook = coop_nxnative::arm64_branch(
-      coop_nxnative::kCalcHookOffset, coop_nxnative::kCalcCaveOffset, true);
-  if (!hook || !write_code(base + coop_nxnative::kCalcCaveOffset, cave)) {
+      coop_nxnative::kCalcHookOffset, *offset, true);
+  if (!hook || !write_code(base + *offset, cave)) {
     std::fprintf(stderr, "[coop-nxnative] calc bridge refused: could not install its code cave\n");
     return false;
   }
@@ -489,18 +517,17 @@ std::uint64_t install_world_functions(std::uint64_t base) {
   std::uint64_t mask = 0;
   for (std::size_t i = 0; i < kWorldFunctions.size(); ++i) {
     const auto& function = kWorldFunctions[i];
-    const auto cave = kWorldFunctionCave + i * kWorldFunctionBytes;
+    const auto offset = find_hook_padding<kWorldFunctionBytes>(base, kWorldFunctionCave + i * kWorldFunctionBytes);
+    if (!offset) continue;
+    const auto cave = *offset;
     auto expected = function.instructions;
     std::array<std::uint32_t, 4> actual{};
-    std::array<std::uint32_t, kWorldFunctionBytes / sizeof(std::uint32_t)> padding{};
-    if (!read_at(base + function.offset, actual) || !read_at(base + cave, padding)) continue;
+    if (!read_at(base + function.offset, actual)) continue;
     // nxnative may remove pointer-authentication instructions before loading.
     for (std::size_t w = 0; w < actual.size(); ++w) {
       if (expected[w] == 0xd503237f && actual[w] == 0xd503201f) expected[w] = actual[w];
     }
-    if (actual != expected || !std::all_of(padding.begin(), padding.end(), [](std::uint32_t word) {
-      return word == 0 || word == 0xd503201f;
-    })) continue;
+    if (actual != expected) continue;
 
     const auto bytes = make_world_function_cave(cave, function.offset, actual.front(),
                                                 reinterpret_cast<std::uint64_t>(wrappers[i]));
