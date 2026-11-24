@@ -17,11 +17,8 @@ std::optional<std::uint16_t> PortFrom(std::string_view value) {
 }
 
 double IdleFrom(std::string_view value) {
-    double s = 0;
-    const char* end = value.data() + value.size();
-    const auto r = std::from_chars(value.data(), end, s);
-    if (value.empty() || r.ec != std::errc{} || r.ptr != end || !(s >= 0) || s > 86400) return kDefaultIdleS;
-    return s;
+    const auto seconds = CoopModJson::ParseNumber(value);
+    return seconds && *seconds >= 0 && *seconds <= 86400 ? *seconds : kDefaultIdleS;
 }
 
 bool ValidTag(std::string_view tag) {
