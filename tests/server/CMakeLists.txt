@@ -20,6 +20,7 @@ target_link_libraries(coop_server_tests PRIVATE coop_server_lib doctest::doctest
 if(MSVC)
   target_compile_options(coop_server_tests PRIVATE /bigobj)
 endif()
+target_compile_definitions(coop_server_tests PRIVATE COOP_SERVER_TEST_MAIN)
 doctest_discover_tests(coop_server_tests)
 
 # The real program starts, listens on a free port and stops by itself. Every test that starts a listener gives
