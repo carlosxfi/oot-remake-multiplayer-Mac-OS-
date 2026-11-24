@@ -1,4 +1,5 @@
 #include "coop/host/flag_watcher.hpp"
+#include "coop/host/frame_trace.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -22,11 +23,13 @@ struct FlagScanTiming {
   using Clock = std::chrono::steady_clock;
 
   explicit FlagScanTiming(bool full, std::size_t keys)
-      : full_(full), keys_(keys), start_(enabled() ? Clock::now() : Clock::time_point{}) {}
+      : full_(full), keys_(keys), start_((enabled() || FrameTrace::active) ? Clock::now() : Clock::time_point{}) {}
 
   ~FlagScanTiming() {
+    if (start_ == Clock::time_point{}) return;
+    const double ms = FrameTrace::since_ms(start_);
+    if (FrameTrace::active) FrameTrace::active->flag_scan_ms += ms;
     if (!enabled()) return;
-    const double ms = std::chrono::duration<double, std::milli>(Clock::now() - start_).count();
     struct Totals {
       unsigned scans = 0;
       std::size_t keys = 0;

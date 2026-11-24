@@ -13,6 +13,9 @@
 // - settings: coop.ini beside longshot.exe, then the LICHII_COOP_* variables,
 //   as in the emulator (the kit's launcher sets them from coop-options.ini).
 #include "coop_hookshot.h"
+#include "coop/host/frame_trace.hpp"
+
+#include <cstdio>
 
 #include <algorithm>
 #include <cctype>
@@ -142,6 +145,11 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#include <sys/time.h>
+#include <unistd.h>
+#endif
 
 #include "coop_clipboard_posix.h"
 #endif
@@ -1768,7 +1776,10 @@ void Frame(void* ctx, int site) {
             CoopCharAges::AtFlagsApplied(memory);
         }
 #endif
+        auto* trace = coop::host::FrameTrace::active;
+        const auto start = trace ? coop::host::FrameTrace::Clock::now() : coop::host::FrameTrace::Clock::time_point{};
         CoopHook::OnFrame(g_system);
+        if (trace) trace->sync_ms += coop::host::FrameTrace::since_ms(start);
     }
     if (w.calls && ctx != nullptr) {
         RunFlagSetters(ctx);
@@ -1780,10 +1791,15 @@ void Frame(void* ctx, int site) {
                                                                .count());
             if (CoopMapRefresh::TheRefresher().Due(now_ms)) CoopMapPage::AskHudRefresh();
         }
+        auto* trace = coop::host::FrameTrace::active;
+        const auto puppet_start = trace ? coop::host::FrameTrace::Clock::now() : coop::host::FrameTrace::Clock::time_point{};
         RunCalls(ctx);
         RequestHostAutoSave(ctx);   // (only when a guest's ask opened a round: CoopSave::TakeSaveRequest)
+        if (trace) trace->puppet_and_save_ms += coop::host::FrameTrace::since_ms(puppet_start);
+        const auto ui_start = trace ? coop::host::FrameTrace::Clock::now() : coop::host::FrameTrace::Clock::time_point{};
         NativeStep(ctx);            // chat in the game's own message window and banner (coop_native_ui.h)
         NativeTags(ctx);            // the name tags on the game's balloons (coop_native_tags.h)
+        if (trace) trace->native_ui_ms += coop::host::FrameTrace::since_ms(ui_start);
         LogBossNative();
         LogBossOrders();
 #ifndef __APPLE__
@@ -2561,6 +2577,24 @@ COOP_HOOKSHOT_EXPORT int hos_coop_start(const HosCoopApi* api) {
         return 1;
     });
 }
+#ifdef __APPLE__
+namespace {
+
+// Match the host's NVN timeline, whose zero is the process creation time.
+std::optional<double> CoopProcessAgeMs() {
+    struct kinfo_proc info{};
+    std::size_t size = sizeof(info);
+    int mib[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
+    timeval wall{};
+    if (gettimeofday(&wall, nullptr) != 0 || sysctl(mib, 4, &info, &size, nullptr, 0) != 0 ||
+        size != sizeof(info)) return std::nullopt;
+    const auto& start = info.kp_proc.p_starttime;
+    return (wall.tv_sec - start.tv_sec) * 1000.0 + (wall.tv_usec - start.tv_usec) / 1000.0;
+}
+
+}  // namespace
+#endif
+
 COOP_HOOKSHOT_EXPORT void hos_coop_frame(void* ctx, int site) {
     static CoopBoundary::Site guard_site{"hos_coop_frame"};
     using Clock = std::chrono::steady_clock;
@@ -2568,10 +2602,41 @@ COOP_HOOKSHOT_EXPORT void hos_coop_frame(void* ctx, int site) {
         const char* setting = std::getenv("COOP_FRAME_TIMING");
         return setting && std::string_view(setting) == "1";
     }();
-    const auto start = timing ? Clock::now() : Clock::time_point{};
+#ifdef __APPLE__
+    static std::FILE* const trace_file = []() -> std::FILE* {
+        const char* path = std::getenv("COOP_FRAME_TSV");
+        if (!path || !*path) return nullptr;
+        auto* file = std::fopen(path, "w");
+        if (!file) {
+            LOG_WARNING(Core, "coop: could not open the frame timing trace");
+            return nullptr;
+        }
+        std::fputs("start_ms\tcallback_ms\tsync_ms\tflag_scan_ms\tpuppet_and_save_ms\tnative_ui_ms\n", file);
+        return file;
+    }();
+    using Trace = coop::host::FrameTrace;
+    Trace trace;
+    const bool record = trace_file && site == HOS_COOP_SITE_FRAME && !Trace::active;
+    static const auto anchor = trace_file ? CoopProcessAgeMs() : std::optional<double>{};
+    static const auto anchor_time = Clock::now();
+    const bool capture = record && anchor.has_value();
+    if (capture) Trace::active = &trace;
+#else
+    constexpr bool capture = false;
+#endif
+    const auto start = timing || capture ? Clock::now() : Clock::time_point{};
     CoopExportGuard::Guard(guard_site, [&] {
         CoopHookshot::Frame(ctx, site);
     });
+#ifdef __APPLE__
+    if (capture) {
+        Trace::active = nullptr;
+        const double ms = Trace::since_ms(start);
+        const double start_ms = *anchor + std::chrono::duration<double, std::milli>(start - anchor_time).count();
+        std::fprintf(trace_file, "%.3f\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f\n",
+                     start_ms, ms, trace.sync_ms, trace.flag_scan_ms, trace.puppet_and_save_ms, trace.native_ui_ms);
+    }
+#endif
     if (timing) {
         struct Totals {
             unsigned calls = 0;
