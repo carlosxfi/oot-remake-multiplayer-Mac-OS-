@@ -89,14 +89,29 @@ std::optional<std::uint32_t> waiting(GameFlagType type, std::uint64_t id) {
   return calls ? calls->pending(type, id) : std::nullopt;
 }
 
+std::uint64_t metadata_word(std::span<const std::uint8_t> bytes) {
+  std::uint64_t value = 0;
+  for (std::size_t i = 0; i < bytes.size(); ++i)
+    value |= static_cast<std::uint64_t>(bytes[i]) << (8 * i);
+  return value;
+}
+
 // The entry index of `hash` in table `t`, as 0x833920 probes it.
 std::optional<std::uint32_t> find(GameMemory& m, std::uint64_t mgr, const Table& t,
                                   std::uint32_t hash) {
   if (hash == 0) return std::nullopt;
-  const auto slots = read_ptr(m, mgr + t.slots);
-  const auto cap = read_u32(m, mgr + t.capacity);
-  const auto count = read_u32(m, mgr + t.count);
-  if (!slots || !cap || !count || *cap == 0) return std::nullopt;
+  // The descriptor spans count through capacity for each hashed table.
+  std::array<std::uint8_t, 32> descriptor{};
+  const bool batched = m.read(mgr + t.count, descriptor);
+  const auto bytes = std::span(descriptor);
+  const auto slots = batched ? std::optional(metadata_word(bytes.subspan(t.slots - t.count, 8)))
+                             : read_ptr(m, mgr + t.slots);
+  const auto cap = batched ? std::optional(static_cast<std::uint32_t>(
+                                metadata_word(bytes.subspan(t.capacity - t.count, 4))))
+                           : read_u32(m, mgr + t.capacity);
+  const auto count = batched ? std::optional(static_cast<std::uint32_t>(metadata_word(bytes.first(4))))
+                             : read_u32(m, mgr + t.count);
+  if (!slots || *slots == 0 || !cap || !count || *cap == 0) return std::nullopt;
   const std::uint32_t start = hash % *cap;
   std::uint32_t i = start;
   do {
@@ -150,10 +165,17 @@ std::optional<std::uint32_t> find_key(GameMemory& m, std::uint64_t mgr, std::uin
 std::optional<std::uint32_t> queued(GameMemory& m, std::uint64_t mgr, std::uint64_t cap_at,
                                     std::uint64_t buf_at, std::uint64_t word_at,
                                     std::uint64_t slot_size, std::uint32_t id) {
-  const auto cap = read_u32(m, mgr + cap_at);
-  const auto buf = read_ptr(m, mgr + buf_at);
-  const auto word = read_u32(m, mgr + word_at);
-  if (!cap || !buf || !word) return std::nullopt;
+  std::array<std::uint8_t, 20> header{};
+  const bool batched = m.read(mgr + cap_at, header);
+  const auto bytes = std::span(header);
+  const auto cap = batched ? std::optional(static_cast<std::uint32_t>(metadata_word(bytes.first(4))))
+                           : read_u32(m, mgr + cap_at);
+  const auto buf = batched ? std::optional(metadata_word(bytes.subspan(buf_at - cap_at, 8)))
+                           : read_ptr(m, mgr + buf_at);
+  const auto word = batched ? std::optional(static_cast<std::uint32_t>(
+                                 metadata_word(bytes.subspan(word_at - cap_at, 4))))
+                            : read_u32(m, mgr + word_at);
+  if (!cap || !buf || *buf == 0 || !word) return std::nullopt;
   std::uint32_t taken = *word & kTakenMask;
   if (taken > *cap) taken = *cap;
   for (std::uint32_t i = taken; i-- > 0;) {
