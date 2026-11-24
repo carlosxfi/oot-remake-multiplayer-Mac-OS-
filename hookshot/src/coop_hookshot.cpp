@@ -2563,9 +2563,38 @@ COOP_HOOKSHOT_EXPORT int hos_coop_start(const HosCoopApi* api) {
 }
 COOP_HOOKSHOT_EXPORT void hos_coop_frame(void* ctx, int site) {
     static CoopBoundary::Site guard_site{"hos_coop_frame"};
+    using Clock = std::chrono::steady_clock;
+    static const bool timing = [] {
+        const char* setting = std::getenv("COOP_FRAME_TIMING");
+        return setting && std::string_view(setting) == "1";
+    }();
+    const auto start = timing ? Clock::now() : Clock::time_point{};
     CoopExportGuard::Guard(guard_site, [&] {
         CoopHookshot::Frame(ctx, site);
     });
+    if (timing) {
+        struct Totals {
+            unsigned calls = 0;
+            unsigned over_budget = 0;
+            double sum_ms = 0;
+            double max_ms = 0;
+            Clock::time_point first;
+        };
+        static thread_local Totals totals{};
+        const auto end = Clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(end - start).count();
+        if (totals.calls == 0) totals.first = start;
+        ++totals.calls;
+        totals.over_budget += ms > 1000.0 / 60.0;
+        totals.sum_ms += ms;
+        totals.max_ms = std::max(totals.max_ms, ms);
+        if (totals.calls == 300) {
+            const double seconds = std::chrono::duration<double>(end - totals.first).count();
+            LOG_INFO(Core, "[coop-frame-timing] calls={} span_s={:.3f} mean_ms={:.3f} max_ms={:.3f} over_60fps_budget={}",
+                     totals.calls, seconds, totals.sum_ms / totals.calls, totals.max_ms, totals.over_budget);
+            totals = {};
+        }
+    }
 }
 COOP_HOOKSHOT_EXPORT uint32_t hos_coop_hold(uint64_t component, uint32_t bits) {
     static CoopBoundary::Site site{"hos_coop_hold"};
