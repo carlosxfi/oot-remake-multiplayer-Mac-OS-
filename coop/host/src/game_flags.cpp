@@ -100,10 +100,16 @@ std::optional<std::uint32_t> find(GameMemory& m, std::uint64_t mgr, const Table&
   const std::uint32_t start = hash % *cap;
   std::uint32_t i = start;
   do {
-    const auto h = read_u32(m, *slots + 8ull * i);
+    const auto address = *slots + 8ull * i;
+    // A slot holds the hash and entry index together. Keep narrow reads
+    // available for memory backends that cannot read the full slot.
+    const auto slot = read_u64(m, address);
+    const auto h = slot ? std::optional(static_cast<std::uint32_t>(*slot))
+                        : read_u32(m, address);
     if (!h || *h == 0) return std::nullopt;
     if (*h == hash) {
-      const auto index = read_u32(m, *slots + 8ull * i + 4);
+      const auto index = slot ? std::optional(static_cast<std::uint32_t>(*slot >> 32))
+                              : read_u32(m, address + 4);
       if (!index || *index >= *count) return std::nullopt;
       return *index;
     }

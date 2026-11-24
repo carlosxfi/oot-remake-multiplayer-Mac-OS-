@@ -24,7 +24,10 @@ namespace protocol = coop::protocol;
 class Writable final : public coop::host::WritableGameMemory {
  public:
   std::uint64_t main_base() const override { return mem.main_base(); }
-  bool read(std::uint64_t a, std::span<std::uint8_t> out) override { return mem.read(a, out); }
+  bool read(std::uint64_t a, std::span<std::uint8_t> out) override {
+    if (on_read) on_read(a, out.size());
+    return mem.read(a, out);
+  }
   bool write(std::uint64_t a, std::span<const std::uint8_t> data) override {
     std::vector<std::uint8_t> probe(data.size());
     if (!mem.read(a, probe)) return false;
@@ -38,6 +41,7 @@ class Writable final : public coop::host::WritableGameMemory {
     if (v && after_cas) after_cas();
     return v;
   }
+  std::function<void(std::uint64_t, std::size_t)> on_read;
   FakeMemory mem;
   std::function<void()> after_cas;
 };
@@ -141,6 +145,17 @@ TEST_CASE("game flags: reads Bool, Int, BoolArray and 64-bit keys from the table
   CHECK(f.get_key64(0x8c44828386468bfull) == true);
   CHECK(f.get_key64(5) == false);
   CHECK_FALSE(f.get_key64(6));
+}
+
+TEST_CASE("game flags: a matching hash slot is read in one memory call") {
+  auto w = game();
+  const auto slot = kBoolSlots + 8 * (0x11 % kCap);
+  unsigned reads = 0;
+  w.on_read = [&](std::uint64_t address, std::size_t) {
+    if (address >= slot && address < slot + 8) ++reads;
+  };
+  CHECK(GameFlags(w).get_bool(0x11) == false);
+  CHECK(reads == 1);
 }
 
 TEST_CASE("game flags: nothing before the manager is up or on bad memory") {
