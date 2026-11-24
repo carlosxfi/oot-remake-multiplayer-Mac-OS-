@@ -40,14 +40,16 @@ void Sharer::Forget(std::uint8_t player) {
     for (auto& kv : states_) kv.second.remote.erase(player);
 }
 
-bool Sharer::RemoteOn(State& s, std::uint64_t now_ms) {
+bool Sharer::RemoteOn(State& s, std::uint64_t now_ms, const std::set<std::uint8_t>& away) {
     std::erase_if(s.remote, [now_ms](const auto& r) { return !r.second.on || now_ms > r.second.until_ms; });
-    return !s.remote.empty();
+    // Row 164 follow-up: a presser whose world stands still is kept (its press comes back with it) but not held: its
+    // switch's own timer stands still, so holding ours would keep the door or mover open the whole pause.
+    return std::any_of(s.remote.begin(), s.remote.end(), [&away](const auto& r) { return !away.contains(r.first); });
 }
 
 std::vector<Hold> Sharer::Tick(const std::string& scene, const std::vector<Seen>& seen, bool others_here,
-                               std::uint64_t now_ms, std::vector<coop::protocol::SwitchState>& send,
-                               std::vector<std::string>& notes) {
+                               std::uint8_t self, std::uint64_t now_ms, std::vector<coop::protocol::SwitchState>& send,
+                               std::vector<std::string>& notes, const std::set<std::uint8_t>& away) {
     std::lock_guard lock(mutex_);
     if (scene != scene_) {
         // A new scene: nothing of the old one is held or owed. A press of this scene received before our first walk
@@ -74,7 +76,7 @@ std::vector<Hold> Sharer::Tick(const std::string& scene, const std::vector<Seen>
         }
         s.seen_tick = tick_;
         const bool armed = v.armed && *s.load_on;
-        const bool remote_on = RemoteOn(s, now_ms);
+        const bool remote_on = RemoteOn(s, now_ms, away);
         // g3-objects: a plug that also raises our event asker is held only once that asker cannot fire (armed);
         // until then another player's press is not ours to hold, and our own plug is still our own.
         const bool remote = remote_on && armed;
@@ -87,6 +89,7 @@ std::vector<Hold> Sharer::Tick(const std::string& scene, const std::vector<Seen>
         if (s.held && !remote) {
             s.held = false;
             s.told_held = false;
+            s.told_lead = false;
             s.echo_until_ms = now_ms + kEchoMs;  // the switch's AI puts its own 0 back
             char text[64];
             std::snprintf(text, sizeof text, ": another player's is off: let go after %.1f s held",
@@ -101,6 +104,33 @@ std::vector<Hold> Sharer::Tick(const std::string& scene, const std::vector<Seen>
                 s.told_held = true;
                 notes.push_back("switch share: " + Describe(*v.line) +
                                 ": another player's is on: ours held on, its own logic runs");
+            }
+            // Row 244: our press, sent before this hold, is resent while we hold when ours is the lowest number of
+            // the pressers, so two players on one switch never both go quiet (header).
+            // (Row 164 follow-up: a presser whose world stands still sends nothing, so it is no lower number here.)
+            std::uint8_t lowest = 0;
+            for (const auto& r : s.remote) {
+                if (!away.contains(r.first)) {
+                    lowest = r.first;
+                    break;
+                }
+            }
+            const bool lead = self != 0 && lowest > self;
+            if (s.sent_on && lead && others_here && now_ms >= s.last_send_ms + kResendMs) {
+                coop::protocol::SwitchState m;
+                m.scene = scene;
+                m.name = std::string(v.line->name);
+                m.place = v.line->place;
+                m.plug = PlugKey(v.line->plug);
+                m.on = true;
+                send.push_back(std::move(m));
+                s.last_send_ms = now_ms;
+                if (!s.told_lead) {
+                    s.told_lead = true;
+                    notes.push_back("switch share: " + Describe(*v.line) +
+                                    ": another player presses it too: ours is resent while held (the lowest number "
+                                    "of the pressers sends)");
+                }
             }
             continue;  // what our plug says now is our hold, not a press of ours
         }

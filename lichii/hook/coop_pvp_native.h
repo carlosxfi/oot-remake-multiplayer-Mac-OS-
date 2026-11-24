@@ -32,6 +32,7 @@
 #include <string_view>
 
 #include "coop/protocol/messages.hpp"
+#include "coop/protocol/scene_place.hpp"
 #include "coop_pvp.h"
 
 namespace CoopPvpNative {
@@ -229,7 +230,7 @@ inline bool KeptOff(const StrikeView& v) {
     const auto& l = v.local;
     const auto& a = v.attacker;
     return v.downed || !l.life || *l.life <= 0 || l.event || CoopPvp::Guarded(l.status) || !l.scene ||
-           !a.known || CoopPvp::Guarded(a.status) || !a.scene || *a.scene != *l.scene;
+           !a.known || CoopPvp::Guarded(a.status) || !a.scene || !coop::protocol::same_place(*a.scene, *l.scene);
 }
 
 // The checks after the seq: nothing when the strike passes (the game's hit

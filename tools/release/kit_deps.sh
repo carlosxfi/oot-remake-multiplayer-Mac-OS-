@@ -1,5 +1,5 @@
 # The source folder of a dependency CMake's FetchContent gave a build, and its licence text, for the Linux kit scripts
-# (make_kit_linux.sh, make_kit.sh; tools/release/kit_deps.ps1 is the same for the Windows ones). Sourced, not run.
+# (make_kit_linux.sh; tools/release/kit_deps.ps1 is the same for the Windows ones). Sourced, not run.
 # Read from the build's CMakeCache.txt, as CMake itself decides it:
 #   1. FETCHCONTENT_SOURCE_DIR_<NAME> (a source given from outside: an offline configure, -DFETCHCONTENT_SOURCE_DIR_FMT=...);
 #   2. else <FETCHCONTENT_BASE_DIR>/<name>-src (FetchContent's own download; the base is <build>/_deps unless set).

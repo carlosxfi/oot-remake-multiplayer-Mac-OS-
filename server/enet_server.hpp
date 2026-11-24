@@ -89,6 +89,19 @@ class EnetServer {
   // relay guest and the host's own game share 127.0.0.1. Tests turn it on.
   void remember_loopback_small_paths(bool on) { remember_loopback_ = on; }
 
+  // What ENet holds to send to the players (coop/net/enet_waiting.hpp outgoing_bytes, row 260), as of the last
+  // round: the sum, the largest one peer's, unreliable messages not queued to a slow peer (net::kSlowPeerBytes),
+  // and players dropped because too much waited for them (net::kMaxOutgoingBytes).
+  struct Queues {
+    std::size_t peers = 0;
+    std::size_t outgoing_bytes = 0;
+    std::size_t largest_outgoing = 0;
+    std::size_t waiting_bytes = 0;  // what they sent that ENet still holds
+    std::uint64_t unreliable_skipped = 0;
+    std::uint64_t backlog_drops = 0;
+  };
+  Queues queues() const;
+
   // Sealed packets that did not open (wrong key, changed, replayed) and
   // plain ones on an encrypted connection: dropped unread.
   std::uint64_t unsealed_drops() const { return unsealed_drops_; }
@@ -105,6 +118,8 @@ class EnetServer {
   // Ends `peer`'s connection with kDisconnectSmallDatagrams (no DISCONNECT
   // event follows) and tells the session; `why` goes into its drop line.
   void send_small(ENetPeer* peer, const std::string& why);
+  // Ends `peer`'s connection at once with `code` and tells the session (`why` in its drop line).
+  void drop_now(ENetPeer* peer, enet_uint32 code, const std::string& why);
   // Opens (on an encrypted connection) and gives a player's packet to the session.
   void receive_now(ConnectionId id, std::uint8_t channel, std::span<const std::uint8_t> bytes);
   // Hands `bytes` (sealed already when the connection is) to ENet.
@@ -122,8 +137,11 @@ class EnetServer {
     enet_uint32 round_trip_ms = 0;
     enet_uint32 loss_percent = 0;
     std::size_t waiting_bytes = 0;
+    std::size_t outgoing_bytes = 0;  // and what we queued since (send_now)
   };
   std::map<ConnectionId, LinkSeen> links_;
+  std::uint64_t unreliable_skipped_ = 0;
+  std::uint64_t backlog_drops_ = 0;
   ConnectionId next_id_ = 1;
   std::uint64_t mended_bytes_ = 0;
   std::uint64_t small_path_drops_ = 0;

@@ -1,4 +1,4 @@
-From 6b78cc37904108b474cafe4ab9a96e6b4fe5df19 Mon Sep 17 00:00:00 2001
+From fa9f00b48a631fc68dfcbc77dd343fc7f17cb114 Mon Sep 17 00:00:00 2001
 From: daurosk <354202035+daurosk@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 23:28:22 -0900
 Subject: [PATCH] Co-op title: Skip title screen chooses natively, presses
@@ -35,7 +35,7 @@ after 120 s. Each choice and each stop is logged with its reason.
  create mode 100644 host/hos_skip_title.h
 
 diff --git a/host/coop_bridge.c b/host/coop_bridge.c
-index 6bf35e1..957c34e 100644
+index 6bf35e14..957c34e8 100644
 --- a/host/coop_bridge.c
 +++ b/host/coop_bridge.c
 @@ -85,6 +85,7 @@ static hos_coop_mouse_fn coop_mouse;   /* (optional: the cheats panel's clicks,
@@ -68,7 +68,7 @@ index 6bf35e1..957c34e 100644
      if (__atomic_load_n(&state, __ATOMIC_ACQUIRE) == 2 && coop_title) coop_title(c, screen, event);
 diff --git a/host/hos_skip_title.h b/host/hos_skip_title.h
 new file mode 100644
-index 0000000..23e5c98
+index 00000000..23e5c98a
 --- /dev/null
 +++ b/host/hos_skip_title.h
 @@ -0,0 +1,64 @@
@@ -137,7 +137,7 @@ index 0000000..23e5c98
 +}
 +#endif
 diff --git a/host/oot_autoload.c b/host/oot_autoload.c
-index 4110c56..381042c 100644
+index 4110c56c..381042c3 100644
 --- a/host/oot_autoload.c
 +++ b/host/oot_autoload.c
 @@ -9,6 +9,8 @@
@@ -355,7 +355,7 @@ index 4110c56..381042c 100644
 +    __atomic_store_n(&screen_busy, 0, __ATOMIC_RELEASE);
  }
 diff --git a/host/oot_autoload.h b/host/oot_autoload.h
-index 557c6e9..0598e4a 100644
+index 557c6e9f..0598e4a6 100644
 --- a/host/oot_autoload.h
 +++ b/host/oot_autoload.h
 @@ -8,8 +8,14 @@
@@ -375,25 +375,22 @@ index 557c6e9..0598e4a 100644
  /* (tests) forget the run's state, as after a restart. */
  void hos_oot_autoload_reset(void);
 diff --git a/host/oot_menu.c b/host/oot_menu.c
-index 5708918..acf8bc1 100644
+index e58f73d7..0eb57207 100644
 --- a/host/oot_menu.c
 +++ b/host/oot_menu.c
-@@ -13,6 +13,7 @@
-    and hands it to the focus manager (*(screen+32)+96, its vtable +48), when the manager takes the player's input.
-    HOS_MENU_TRACE=1: the focus changes, the screens and what the mouse does logged. */
- #include "hos.h"
+@@ -27,6 +27,7 @@ static void sprint_menu_tick(uint64_t screen) {
+         vt == g_module_base + 0x84c07798ULL || vt == g_module_base + 0x84c04a18ULL)
+         __atomic_store_n(&sprint_menu_seen, 1, __ATOMIC_RELAXED);
+ }
 +#include "oot_autoload.h"   /* (patch 0028: hos_oot_autoload_screen) */
  #ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
  #include "../gpu/vk/compat/longshot_env.h"
  #endif
-@@ -796,6 +797,7 @@ static Seen *screen_seen(uint64_t screen, int64_t now) {
- 
+@@ -835,6 +836,7 @@ static Seen *screen_seen(uint64_t screen, int64_t now) {
  void hos_oot_menu_tick(Ctx *c, uint64_t screen) {
      if (!screen) return;
+     sprint_menu_tick(screen);
 +    hos_oot_autoload_screen(c, screen);   /* (patch 0028: Skip title screen's choice, before the screen's own update) */
      if (trace < 0) trace = env_on("HOS_MENU_TRACE");
      const int64_t now = hos_now_ns();
      AcquireSRWLockExclusive(&seen_lock);
--- 
-
-

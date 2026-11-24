@@ -12,6 +12,7 @@
 // view_mutex. OnFrame never holds two at once.
 
 #include "coop_hook.h"
+#include "coop/protocol/scene_place.hpp"
 #include "coop_caller_orders.h"
 #include "coop_version.h" // LICHII_COOP_VERSION, written on each build (cmake/coop_version.cmake)
 
@@ -67,6 +68,7 @@
 #include "coop_pvp_native_game.h"
 #include "coop_lobby_game.h"
 #include "coop_dbno_game.h"
+#include "coop_hallway.h"
 #include "coop_mod_share.h"
 #include "coop_pack_notice.h"
 #include "coop_name_privacy.h"
@@ -81,6 +83,9 @@
 #ifdef COOP_HOOKSHOT
 #include "coop_flag_native.h"
 #include "coop_map_page.h"  // patch 0018's menu state: PLAYER_STATUS in_menu/paused (Read)
+#include "coop_pause_files.h"   // CoopFiles::CoopIni: the game folder (StuckLoadFrame's record)
+#include "coop_problem_ask.h"   // the stuck load's record, asked about on the next title
+#include "coop_stuck_load.h"    // black-01112: a load that never ends
 #endif
 #include "coop_save.h"
 #include "coop_game_build.h"
@@ -108,6 +113,7 @@
 #include "coop_objects.h"
 #include "coop_link_sound.h"
 #include "coop_char_colours.h"
+#include "coop_charsel_tidy.h"
 #include "coop_look_share.h"
 #include "coop_ocarina_sound.h"
 #include "coop_pose.h"
@@ -123,14 +129,23 @@
 #include "coop_sites.h"
 #include "coop_svc.h"
 #include "coop_map_refresh.h"
+#include "coop_life_gauge.h"
 #include "coop_time.h"
 #include "coop_testinput.h"
 #include "coop_boundary.h"
 #include "coop_world.h"
+#include "coop_char_ages.h"
+#include "coop_char_slots.h"
+#include "coop_puppet_config.h"
 
 namespace CoopHook {
 bool StartMapRefresh();  // rows 63/76: the game's HUD refresh after co-op writes a dungeon item (below)
 namespace {
+
+// Rows 239/240/241 (PickGuardFrame, below): a pick put back since the session's chat last said it.
+std::atomic<bool> g_pick_said{false};
+// black-01112 (coop_stuck_load.h): a scene load ran CoopStuckLoad::kStuckMs; a session's Frame says so in the chat once.
+std::atomic<bool> g_stuck_said{false};
 
 // The game and build the addresses in coop/host are for.
 constexpr u64 kOcarinaProgramId = 0x0400486024DEC000ULL;
@@ -308,7 +323,11 @@ struct MendClocks {
     std::array<std::uint64_t, CoopStory::kStepFloors> floors{};  // row 145
     std::uint64_t effects = 0;
     CoopStory::EffectsGiven given;  // once per flag per load (review of owl-time)
+    std::array<std::uint64_t, CoopStory::kGiftsMax> gifts{};  // rows 195/204: hold clocks
+    std::array<bool, CoopStory::kGiftsMax> gift_given{};      // once per load
     void NewLoad() {  // the title or a load: nothing to read yet
+        gifts = {};
+        gift_given = {};
         mends = {};
         mended = {};
         set_back_said = {};
@@ -324,6 +343,50 @@ std::string FlagKeyText(const coop::host::FlagKey& key, const coop::host::ItemFl
     if (key.index != 0) text += fmt::format("[{}]", key.index);
     if (item != nullptr) text += fmt::format(" {}", item->name);
     return text;
+}
+
+// Rows 195/204 (CoopStory::Gifts): a one-time gift whose scene is played here (the flag shared in, or set by a start
+// that never reached the gift) while the item is not in the pouch: Saria's bridge scene gone with no Fairy Ocarina.
+// Given as the gift's own get writes it: the count and IsGet, the ocarina's Bools and PlayerStatus.EquipOcarina (the
+// full set a playable ocarina holds, docs/items.md), each through the game's own setter; in a session the item mend
+// then asks the game to equip it (rows 93/103), alone it is in Link's hands from the next load. Only outside events
+// (`idle`), so the scene this game plays itself gives its own first, after the same hold, once per load.
+void MendGifts(EmulatorMemory& memory, coop::host::GameFlags& flags, MendClocks& clocks, bool idle,
+               std::uint64_t now_us, std::uint64_t hold_us) {
+    namespace oc = coop::host::ocarina;
+    const auto gifts = CoopStory::Gifts();
+    for (std::size_t i = 0; i < gifts.size() && i < CoopStory::kGiftsMax; ++i) {
+        const auto& gift = gifts[i];
+        auto& since = clocks.gifts[i];
+        const bool due = gift.mend && idle && !clocks.gift_given[i] &&
+                         CoopStory::GiftDue(gift, [&](std::uint32_t h) { return flags.get_bool(h); },
+                                            [&](std::uint32_t h) { return flags.get_int(h); });
+        if (!due) {
+            since = 0;
+            continue;
+        }
+        if (since == 0) {
+            since = now_us;
+            continue;
+        }
+        if (now_us - since < hold_us || !coop::host::GameFlags::set_int(memory, gift.count, 1)) continue;
+        since = 0;
+        clocks.gift_given[i] = true;
+        if (gift.count == oc::kFairy) {
+            for (const std::uint32_t hash : coop::host::ocarina_bools_mend(
+                     1, 0, [&](std::uint32_t h) { return flags.get_bool(h); })) {
+                coop::host::GameFlags::set_bool(memory, hash, true);
+            }
+            const auto current = flags.get_string64(oc::kEquip);
+            if (current) {
+                if (const auto want = coop::host::ocarina_equip_mend(1, 0, *current)) {
+                    coop::host::GameFlags::set_string64(memory, oc::kEquip, *want);
+                }
+            }
+        }
+        LOG_INFO(Core, "coop: story: {} was played here but {} was not in the pouch: given (rows 195/204)",
+                 gift.where, gift.item);
+    }
 }
 
 void MendStory(EmulatorMemory& memory, MendClocks& clocks, bool idle) {
@@ -384,6 +447,7 @@ void MendStory(EmulatorMemory& memory, MendClocks& clocks, bool idle) {
                      at.value_or(0), *raise, floor.what);
         }
     }
+    MendGifts(memory, flags, clocks, idle, now_us, kHoldUs);
     std::array<const CoopStory::Effect*, CoopStory::kEffectsMax> due{};
     const std::size_t n = idle ? CoopStory::EffectsDue([&](std::uint32_t h) { return flags.get_bool(h); }, due) : 0;
     if (n == 0) {
@@ -534,6 +598,27 @@ public:
                 session_->share_pickup(coop::protocol::FlagKey::key64_flag(k.key));
             }
         }
+        // Row 219 (#84): every one-time placement of the game as served (the kit's start lists them, a seed's
+        // one-time pots too), shared from the start: the host's snapshot then carries one taken before a save +
+        // reload, and a copy another game still has loaded goes (CoopPickups::IsOneTime).
+        CoopPickups::SetOneTime({});
+        if (const std::string file = EnvString("LICHII_COOP_ONE_TIME_KEYS"); pickups_ && !file.empty()) {
+            std::string note;
+            if (const auto list = CoopPickups::LoadOneTime(file, note)) {
+                for (const std::uint64_t key : list->pickups) {
+                    session_->share_pickup(coop::protocol::FlagKey::key64_flag(key));
+                }
+                for (const std::uint64_t key : list->holders) {
+                    session_->share_pickup(coop::protocol::FlagKey::key64_flag(key));
+                }
+                CoopPickups::SetOneTime(*list);
+                LOG_INFO(Core, "coop: flags: {} one-time pickups and {} one-time holders shared from {}",
+                         list->pickups.size(), list->holders.size(), file);
+            }
+            if (!note.empty()) {
+                LOG_INFO(Core, "coop: flags: {}", note);
+            }
+        }
         // On unless LICHII_COOP_LIVE_EVENTS=0 (dungeon-switches): another
         // player's gimmick event plays here too when our Link comes near it.
         live_events_ = EnvString("LICHII_COOP_LIVE_EVENTS") != "0";
@@ -599,6 +684,7 @@ public:
             c.x[1] = *kind;
             return c;
         });
+        AddLifeGaugeCaller();  // row 238: the HUD's hearts and magic show what co-op wrote (coop_life_gauge.h)
         if (live_events_) {
             {
                 // G1: the events this requester asks for (a held live event, a shared scene joined)
@@ -969,8 +1055,18 @@ public:
                 }
             }
             shop_view.emplace(*quests);
+            // Rows 195/204 (CoopStory::GiftHolds): Saria's played flags from others wait while no ocarina is ours.
+            std::array<bool, CoopStory::kGiftsMax> gifts_held{};
+            {
+                coop::host::GameFlags gflags(*memory);
+                const auto gifts = CoopStory::Gifts();
+                for (std::size_t g = 0; g < gifts.size() && g < CoopStory::kGiftsMax; ++g) {
+                    gifts_held[g] = CoopStory::GiftHeld(gifts[g], [&](std::uint32_t h) { return gflags.get_int(h); })
+                                        .value_or(false);
+                }
+            }
             hold.emplace(*shop_view, [link, scene, talk, near, sale_here, sale_scene, sale_on, shop_on, gift_on,
-                                   result_hold](coop::protocol::FlagKey key) {
+                                   result_hold, gifts_held](coop::protocol::FlagKey key) {
                 if (key.kind == coop::protocol::FlagKeyKind::key64) {
                     // Row 98(2) trigger guards: a shared key that would raise our asker's trigger (a silver rupee
                     // counter's key, its last token, an ice block) waits until our game has played the event.
@@ -978,6 +1074,9 @@ public:
                 }
                 if (key.kind != coop::protocol::FlagKeyKind::named || key.index != 0) {
                     return false;
+                }
+                if (CoopStory::On() && CoopStory::GiftHolds(key.hash, gifts_held)) {
+                    return true;  // rows 195/204: a gift scene played elsewhere lands once its item is ours
                 }
                 if (talk.Holds(key.hash) || CoopScrubTalk::NearHolds(near, key.hash)) {
                     return true;
@@ -1043,6 +1142,7 @@ public:
         }
         const auto report = session_->frame(reading, hold ? &*hold : nullptr);
         CoopMapRefresh::TheRefresher().SetInPlay(reading.has_value());  // rows 63/76: no refresh off play (session)
+        CoopLifeGauge::TheRefresher().SetInPlay(reading.has_value());  // row 238: nor of the HUD gauges
         if (memory) {  // minimap-b: the current dungeon's map or compass going 1 -> 0, logged with its context
             WatchMapDrops(*memory, reading.has_value(),
                           reading ? reading->scene : coop::host::PlayerReader(*memory).read_scene(),
@@ -1352,6 +1452,12 @@ public:
             CoopSave::OnFrame(c, report.host_reset);
             return 0;
         });
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+        if (memory && reading && report.connected && !report.hosting &&
+            !report.holding && !report.window_for && !report.host_reset && !report.save_load) {
+            CoopSave::CheckpointInventory(*memory);
+        }
+#endif
         if (auto line = CoopSave::TakeNotice(); !line.empty()) {
             LOG_INFO(Core, "coop: notice: {}", line);
             chat_.Add(std::move(line), true);
@@ -1383,7 +1489,7 @@ public:
         for (const auto& k : session_->take_one_way_left()) {  // row 140 (flag-oneway-c)
             const auto* item = coop::host::find_item(k.hash);
             LOG_INFO(Core,
-                     "coop: flags: {} ({:#010x}): the game lowered it again right after our put-back ({} times): its "
+                     "coop: flags: {} ({:#010x}): the game lowered it again after our put-back ({} times): its "
                      "own value until the next load, not put back or sent (row 140)",
                      item != nullptr ? item->name : std::string_view("?"), k.hash,
                      coop::host::FlagWatcher::kMaxQuickUndos);
@@ -1554,6 +1660,12 @@ public:
         }
         if (game_store) {  // issue 88: what the session left in MaxLife (docs/items.md)
             const auto max_life = game_store->read(coop::protocol::FlagKey{0xfbe01da1u, 0});
+            {  // row 238: the HUD gauges' refresh waits (a little) until MaxLife and our Link's own max agree
+                const auto link = CoopObjects::OurLife();
+                CoopLifeGauge::TheRefresher().SetSettled(
+                    !max_life || max_life->kind != coop::protocol::FlagKind::int32 || !link ||
+                    static_cast<std::int32_t>(max_life->value) == link->max);
+            }
             // Row 218: our Link's hearts follow the group's maximum as we know it, not only the flag: when our game
             // wrote its own lower max back before the object walk raised Link (a container another player took),
             // the drop is ours alone and the flag stays low, and that container was lost to this player for good.
@@ -1582,6 +1694,9 @@ public:
             // higher max back.
             CoopObjects::SetMaxLifeLowerTo(session_ ? session_->held_lower(coop::protocol::FlagKey{0xfbe01da1u, 0})
                                                     : std::nullopt);
+            if (const auto seen = CoopObjects::TakeMaxLifeLowerDone(); seen && session_) {
+                session_->lowered_done(coop::protocol::FlagKey{0xfbe01da1u, 0}, *seen);  // row 238
+            }
             if (const auto to = CoopBoss::TakeMaxLifeWrite(); to && known) {
                 auto set = *max_life;
                 set.value = static_cast<std::uint32_t>(*to);
@@ -1664,33 +1779,64 @@ public:
                                     ? std::optional<std::string>(reading->animation->name)
                                     : std::nullopt,
                                 report.connected ? session_.get() : nullptr);
+        // Character Select's page flags left set by a swap cut short (row 202, coop_charsel_tidy.h): put back to 0 on
+        // the frame his page reads closed (menu up or not), or half a second after the menu closed when his page flag
+        // itself was left set. Without the mod the flags do not exist: nothing.
+        if (view.game) {
+            static CoopCharselTidy::Tidy charsel_tidy;
+            EmulatorMemory tidy_memory(system.ApplicationMemory(), base_);
+            const auto lines = charsel_tidy.Frame(
+                reading ? reading->in_menu : std::nullopt,
+                [&](const CoopCharselTidy::Flag& f) -> std::optional<std::int32_t> {
+                    const std::uint32_t hash = coop::host::flag_hash(f.name);
+                    if (f.is_bool) {
+                        const auto b = coop::host::GameFlags(tidy_memory).get_bool(hash);
+                        return b ? std::optional<std::int32_t>(*b ? 1 : 0) : std::nullopt;
+                    }
+                    return coop::host::GameFlags(tidy_memory).get_int(hash);
+                },
+                [&](const CoopCharselTidy::Flag& f, std::int32_t v) {
+                    const std::uint32_t hash = coop::host::flag_hash(f.name);
+                    return f.is_bool ? coop::host::GameFlags::set_bool(tidy_memory, hash, v != 0)
+                                     : coop::host::GameFlags::set_int(tidy_memory, hash, v);
+                });
+            for (const auto& line : lines) LOG_INFO(Core, "coop: {}", line);
+        }
         // The character picked in the Character Select mod, when that mod is installed (coop_look_share.h): its
         // saved Int, read twice a second while a game runs. No such flag (no mod): Link.
+        // 0.11.9 (coop_char_slots.h): the pick read EVERY frame and one whose model is not installed (Snail's NPC
+        // characters not downloaded, or a save stored with one) put back at once, before the mod's model / cloth / voice
+        // hooks build a path from it; one chat line. Another player's such pick: their puppet is Link (Planner::ActorFor
+        // finds no file); one line per player number.
+        {
+            // Our own pick: PickGuardFrame (every frame of the module, co-op on or off, the title too). Here: its chat
+            // line in a session, and the others' picks.
+            static CoopCharSlots::Others other_slots;
+            static std::map<std::uint16_t, std::uint16_t> slot_files;
+            static std::uint32_t slot_tick = 0;
+            if (g_pick_said.exchange(false)) chat_.Add(CoopCharSlots::MissingLine(true), true);
+            if (g_stuck_said.exchange(false)) {   // black-01112 (StuckLoadFrame)
+                chat_.Add("The game has been loading for 2 minutes. If the screen stays black, close the game and "
+                          "send /bugreport on Discord with the zip of collect-logs.cmd.",
+                          true);
+            }
+            if (view.game && report.connected) {
+                if (slot_tick++ % 600 == 0) slot_files = CoopPuppetConfig::CharacterFiles();   // (the pack's, every 10 s)
+                for (std::uint8_t n = 1; n < CoopCharSlots::Others::kNumbers; ++n) {
+                    if (other_slots.Tell(n, CoopLookShare::CharacterOf(n), slot_files)) {
+                        chat_.Add(CoopCharSlots::MissingLine(false, "Player " + std::to_string(n)), true);
+                    }
+                }
+            }
+        }
         static std::uint32_t character_tick = 0;
         if (view.game && character_tick++ % 30 == 0) {
             static const std::uint32_t picked_hash = coop::host::flag_hash("CharacterMenu_SelectedCharacter");
             EmulatorMemory flag_memory(system.ApplicationMemory(), base_);
             const auto picked = coop::host::GameFlags(flag_memory).get_int(picked_hash);
-            // ... and that mod's Customize options for it (kCustomFlags: an Int each, 0 to 15; 0 is the model's own).
-            static const auto custom_hashes = [] {
-                std::array<std::uint32_t, CoopLookShare::kCustomFlags.size()> out{};
-                for (std::size_t i = 0; i < out.size(); ++i) {
-                    out[i] = coop::host::flag_hash(CoopLookShare::kCustomFlags[i]);
-                }
-                return out;
-            }();
-            std::uint32_t custom = 0;
-            for (std::size_t i = 0; i < custom_hashes.size(); ++i) {
-                const auto v = coop::host::GameFlags(flag_memory).get_int(custom_hashes[i]);
-                if (v && *v > 0 && *v <= 15) {
-                    custom |= static_cast<std::uint32_t>(*v) << (4 * i);
-                }
-            }
-            // What the mod's own code puts on every player-like model, puppets too (coop_char_colours.h Wardrobe).
-            CoopCharColours::TheWardrobe().SetViewer(custom);
-            CoopCharColours::SetShownCharacter(picked && *picked > 0 && *picked <= CoopLookShare::kCharacterMax
-                                                   ? static_cast<std::uint16_t>(*picked)
-                                                   : std::uint16_t{0});
+            // (The mod's own options held at 0, ModPresent and ShownCharacter: OwnCharacterFrame, every 30th frame of
+            // the module, co-op on or off. Here: the pick sent to the others.)
+            const std::uint32_t custom = 0;   // (none of the mod's own: nothing of them goes to the others)
             // A guest on the host's save sends its own pick and options, not the host's (CoopLookShare::OwnPick).
             using CoopLookShare::OwnPick;
             static OwnPick own_pick;
@@ -1740,7 +1886,9 @@ public:
         if (!reading) CoopTime::Loading(report.server_now_us);  // issue 159: a reload, a death
         CoopTime::Frame(system, view.game ? base_ : 0, report.connected ? session_.get() : nullptr,
                         report.server_now_us,
-                        reading && reading->event_running.value_or(false));  // issue 192: no nudge in a cutscene
+                        reading && reading->event_running.value_or(false),  // issue 192: no nudge in a cutscene
+                        // Row 164 follow-up: our game paused (a menu in front, no event), for the host's catch-up.
+                        reading && reading->in_menu.value_or(false) && !reading->event_running.value_or(false));
         // Boss rooms together (docs/dungeons-boss.md). Issue 148: the room's
         // "shut in" flag says when we are past its door.
         std::optional<bool> boss_shut_in;
@@ -1792,6 +1940,15 @@ public:
                         report.server_now_us);
         for (auto& line : CoopDbno::TakeLines()) {
             chat_.Add(std::move(line), true);
+        }
+        // The Forest Temple's twisting hallway (coop_hallway.h): a refused turn says who is in the way, to us
+        // and (as our chat) to them.
+        for (auto& line : CoopHallway::TakeOurLines()) {
+            LOG_INFO(Core, "coop: hallway: {}", line);
+            chat_.Add(std::move(line), true);
+        }
+        for (const auto& line : CoopHallway::TakeChatLines()) {
+            LOG_INFO(Core, "coop: hallway: said to the players inside: {}{}", line, SendChat(line) ? "" : " (not sent)");
         }
         // The Lobby (docs/play-online.md "Lobby"): the tab's host actions go out.
         CoopLobby::Frame(report.connected ? session_.get() : nullptr);
@@ -1901,6 +2058,9 @@ public:
         if (CoopDbno::OnChat(text, *session_)) {
             return true;  // /dbno: the same
         }
+        if (CoopDifficulty::OnChat(text, *session_)) {
+            return true;  // /difficulty: the same
+        }
         if (CoopLobby::OnChat(text, *session_)) {
             return true;  // /kick, /ban, /mute, /unmute, /allow, /deny (the Lobby): the same
         }
@@ -1989,6 +2149,90 @@ public:
     }
 
 private:
+    // Row 238 (coop_life_gauge.h): after co-op wrote life, max life or magic (any Int write of the flag setter, the
+    // object walk's writes to our Link), the game's own refresh action's work, in its order: the HUD found by its
+    // hash, then the heart gauge's refresh and the magic gauge's. Logs the heart gauge's own max before and after.
+    // LICHII_COOP_LIFE_GAUGE=0 turns it off.
+    void AddLifeGaugeCaller() {
+        if (EnvString("LICHII_COOP_LIFE_GAUGE") == "0") {
+            LOG_INFO(Core, "coop: life gauge refresh off (LICHII_COOP_LIFE_GAUGE=0)");
+            return;
+        }
+        coop::host::GameFlags::on_int_written([](std::uint32_t hash, std::int32_t) {
+            if (CoopLifeGauge::Shown(hash)) CoopLifeGauge::TheRefresher().Want(SteadyMs());
+        });
+        struct Step {
+            int at = 0;             // 0: nothing asked; 1: the HUD asked; 2: hearts refreshed; 3: magic refreshed
+            std::uint64_t hud = 0;  // the HUD object (this frame only)
+            std::int32_t max_before = -1;
+        };
+        CoopSvc::AddCaller(CoopCallerOrders::kLifeGauge, [this, s = Step{}](CoopPuppet::Guest& guest, bool after_call,
+                                                                              std::uint64_t result, std::uint64_t) mutable
+                                                             -> std::optional<CoopPuppet::Call> {
+            namespace lg = CoopLifeGauge::addr;
+            const auto u64_at = [&guest](std::uint64_t at) {
+                std::uint64_t v = 0;
+                return at != 0 && guest.Read(at, &v, sizeof v) ? v : 0;
+            };
+            const auto s32_at = [&guest](std::uint64_t at) {
+                std::int32_t v = -1;
+                return guest.Read(at, &v, sizeof v) ? v : -1;
+            };
+            CoopPuppet::Call c;
+            if (!after_call) {
+                // The last frame's calls ran out before this chain ended (CoopSvc::kCallsPerFrame): asked again.
+                if (s.at != 0) CoopLifeGauge::TheRefresher().Want(SteadyMs());
+                s = {};
+                if (base_ == 0 || !CoopLifeGauge::TheRefresher().Due(SteadyMs())) return std::nullopt;
+                const std::uint64_t registry = u64_at(u64_at(base_ + lg::kHudRegistry));
+                if (registry == 0) {
+                    LOG_INFO(Core, "coop: life gauge: no HUD registry now: not refreshed");
+                    return std::nullopt;
+                }
+                s.at = 1;
+                c.function = base_ + lg::kFindByHash;
+                c.x[0] = registry;
+                c.x[1] = lg::kHudHash;
+                return c;
+            }
+            if (s.at == 1) {
+                s.hud = result;
+                const std::uint64_t hearts = u64_at(s.hud + lg::kHudHearts);
+                if (s.hud == 0 || hearts == 0) {
+                    LOG_INFO(Core, "coop: life gauge: the HUD has no heart gauge now: not refreshed");
+                    s = {};
+                    return std::nullopt;
+                }
+                s.max_before = s32_at(hearts + lg::kGaugeMax);
+                s.at = 2;
+                c.function = base_ + lg::kHeartsRefresh;
+                c.x[0] = hearts;
+                return c;
+            }
+            if (s.at == 2) {
+                s.at = 3;
+                if (const std::uint64_t magic = u64_at(s.hud + lg::kHudMagic)) {
+                    c.function = base_ + lg::kMagicRefresh;
+                    c.x[0] = magic;
+                    return c;
+                }
+            }
+            if (s.at == 3) {
+                const std::uint64_t hearts = u64_at(s.hud + lg::kHudHearts);
+                float shown = 0.0f;
+                if (hearts == 0 || !guest.Read(hearts + lg::kGaugeShownMax, &shown, sizeof shown)) shown = -1.0f;
+                const auto link = CoopObjects::OurLife();
+                LOG_INFO(Core,
+                         "coop: life gauge: the game's refresh ran: HUD max {} -> {} (shown {}), life {}; our Link's "
+                         "life {} of {} (quarter hearts)",
+                         s.max_before, hearts ? s32_at(hearts + lg::kGaugeMax) : -1, shown,
+                         hearts ? s32_at(hearts + lg::kGaugeLife) : -1, link ? link->life : -1, link ? link->max : -1);
+            }
+            s = {};
+            return std::nullopt;
+        });
+    }
+
     std::optional<std::optional<std::uint32_t>> TakeColor() {
         std::lock_guard lock(color_mutex_);
         return std::exchange(color_change_, std::nullopt);
@@ -2201,8 +2445,44 @@ private:
 #ifdef COOP_HOOKSHOT
             if (const auto menu = CoopMapPage::MenuState()) {
                 reading->in_menu = menu->menu_open;
+                // Row 164 follow-up (PR #316, pr-navi-01112): the quick-switch item menu (UIShortCutScreen) stops the
+                // world as the pause menu does but has no focused button, so menu_open never names it: read from
+                // the running screens (CoopMapPage::QuickSwitchOpen). A menu in front: in_menu, and paused out of
+                // our events (status_bits).
+                const bool quick = !menu->menu_open && CoopMapPage::QuickSwitchOpen(*menu).value_or(false);
+                if (quick) {
+                    reading->in_menu = true;
+                }
+                if (quick != quick_switch_) {
+                    LOG_INFO(Core, "coop: status: the quick-switch item menu {}",
+                             quick ? "is open: in a menu, paused for the others" : "closed");
+                    quick_switch_ = quick;
+                }
             }
 #endif
+            // PR #316's WorldStill (coop/host/sampler.hpp): our world read as standing still from our Link's held
+            // animation frame. Opt-in only, LICHII_COOP_STILL=1 (pr-navi-01112): many moves hold a frame while the
+            // world runs (aiming, a ledge, a ladder, frozen in ice, held by a Like-Like, a shock), and as `paused`
+            // each would hand a boss away after fight_owner_paused_us. The quick-switch menu is read above.
+            static const bool still_on = coop::host::world_still_on(std::getenv("LICHII_COOP_STILL"));
+            if (still_on) {
+                const bool was = world_still_.still();
+                // pr-navi-01112: our Link lifted by another player's (native puppets phase 3) is not judged: its
+                // reading plays the carried pose ('Eaten' at frame 0, CarriedPose above), which stands still
+                // whenever its carrier does, while our world runs.
+                const bool carried = CoopLiftPlayerGame::Carried();
+                reading->world_still = world_still_.step(
+                    carried || !reading->animation ? nullptr : &*reading->animation, reading->position,
+                    reading->event_running.value_or(false), CoopEvery::NowUs());
+                if (reading->world_still != was && !reading->in_menu.value_or(false)) {
+                    LOG_INFO(Core, "coop: status: our world {} (Link's '{}' at frame {:.1f}): {}",
+                             reading->world_still ? "stands still with no menu named" : "runs again",
+                             reading->animation ? reading->animation->name : std::string(),
+                             reading->animation ? reading->animation->frame : 0.0f,
+                             reading->world_still ? "paused for the others (the quick-switch menu or a stall)"
+                                                  : "playing");
+                }
+            }
         }
         return reading;
     }
@@ -2454,7 +2734,11 @@ private:
             chat_.Add("reconnected as player " + std::to_string(event.welcome.player_number), true);
             break;
         case EventKind::disconnected:
-            chat_.Add("connection lost, reconnecting", true);
+            // Row 260: dropped because too much waited to go (a line far slower than the game's traffic): said so.
+            chat_.Add(event.drop_reason == coop::net::DropReason::backlog
+                          ? "connection too slow for the game's traffic, reconnecting"
+                          : "connection lost, reconnecting",
+                      true);
             break;
         case EventKind::refused:
             chat_.Add("server " + note_, true);
@@ -2531,7 +2815,8 @@ private:
             }
             const auto& s = *it->second;
             text += ": " + s.scene.value_or("?");
-            const bool same = s.scene && frame.scene && *s.scene == *frame.scene;
+            // Either era of one place counts (row 221).
+            const bool same = s.scene && frame.scene && coop::protocol::same_place(*s.scene, *frame.scene);
             if (same && frame.position) {
                 const auto& a = s.position;
                 const auto& b = *frame.position;
@@ -2564,6 +2849,8 @@ private:
     bool queue_sizes_logged_ = false;  // the game's flag queue sizes, logged once
     // Kept across frames: a drawn sword shows in the game's memory for a moment only.
     coop::host::PlayerReader::DrawnState drawn_state_{};
+    coop::host::WorldStill world_still_;  // row 164 follow-up: our world standing still with no menu named
+    bool quick_switch_ = false;           // the quick-switch item menu was open at the last reading (its log line)
     bool sharing_ = false;  // a flag list is shared; set by Begin
     CoopBoss::StaleBossFlags stale_boss_;  // issue 148: shut boss doors from older builds
     bool boss_alive_due_ = false;          // row 159: BOSS_ALIVE to send after our own save load (host)
@@ -3336,7 +3623,7 @@ void KeepMapsAlone(EmulatorMemory& memory, bool in_play, const std::optional<std
     const coop::host::MapDropBecause because("the solo keeper (minimap-b)");
     const auto restored = keeper.frame(flags, in_play, coop::host::view_of(scene));
     if (keeper.take_save_load()) coop::host::map_drop_log().note("save load (no scene for a while: the title)");
-    if (!restored.empty() && StartMapRefresh()) CoopMapRefresh::TheRefresher().WantNow(SteadyMs());  // row 140
+    if (keeper.take_hud_refresh() && StartMapRefresh()) CoopMapRefresh::TheRefresher().WantNow(SteadyMs());  // rows 140, 183
     for (const auto key : restored) {
         const auto* item = coop::host::find_item(key.hash);
         LOG_INFO(Core, "coop: items: {} went back to 0 with no session: written back (minimap-b guard; restores {})",
@@ -3344,7 +3631,7 @@ void KeepMapsAlone(EmulatorMemory& memory, bool in_play, const std::optional<std
     }
     for (const auto key : keeper.take_left()) {  // row 140 (flag-oneway-c)
         const auto* item = coop::host::find_item(key.hash);
-        LOG_INFO(Core, "coop: items: {} went back to 0 right after each of {} write-backs with no session: left to the game "
+        LOG_INFO(Core, "coop: items: {} went back to 0 after each of {} write-backs with no session: left to the game "
                        "until it gives it again (row 140)",
                  item != nullptr ? item->name : std::string_view("?"), coop::host::OneWayKeeper::kMaxQuickUndos);
     }
@@ -3449,6 +3736,8 @@ void LocalFrameOff(Core::System& system, bool writes) {
         WatchMapDrops(memory, facts.position.has_value(), scene, facts.position);
         KeepMapsAlone(memory, facts.position.has_value(), scene);
         CoopMapRefresh::TheRefresher().SetInPlay(facts.position.has_value());  // rows 63/76: no refresh off play (alone)
+        CoopLifeGauge::TheRefresher().SetInPlay(facts.position.has_value());  // row 238: nor of the HUD gauges
+        CoopLifeGauge::TheRefresher().SetSettled(true);  // (the flag is not read alone)
         static MendClocks mend_since_us{};
         if (facts.position.has_value()) {
             MendStory(memory, mend_since_us, solo_running_known.has_value() && !*solo_running_known);  // issue 84,
@@ -3484,7 +3773,323 @@ void OnFrame(Core::System& system) {
 }
 
 namespace {
+// A Character Select pick per age (coop_char_ages.h): the two picks, kept in coop-character-ages.txt beside coop.ini.
+std::mutex g_char_ages_mutex;
+std::filesystem::path CharAgesFile() {
+    return Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir) / "coop-character-ages.txt";
+}
+CoopCharAges::Picks& CharAges() {   // (with g_char_ages_mutex)
+    static CoopCharAges::Picks picks = [] {
+        std::ifstream in(CharAgesFile());
+        std::string line;
+        std::getline(in, line);
+        return CoopCharAges::Picks(CoopCharAges::Parse(line).value_or(CoopCharAges::Stored{}));
+    }();
+    return picks;
+}
+void SaveCharAges(const CoopCharAges::Stored& s) {
+    std::ofstream(CharAgesFile(), std::ios::trunc) << CoopCharAges::Format(s);
+}
+
+// What the game thread's wraps read (AtSaveLoaded): a copy of the picks and of the installed models, so a wrap never
+// waits on g_char_ages_mutex (held over a file write) nor reads a file.
+struct CharAgesView {
+    CoopCharAges::Stored stored;
+    std::optional<std::map<std::uint16_t, std::uint16_t>> files;
+};
+std::mutex g_char_view_mutex;
+CharAgesView g_char_view;   // (g_char_view_mutex)
+void PublishCharAges(const CoopCharAges::Stored& stored) {
+    std::lock_guard lock(g_char_view_mutex);
+    g_char_view.stored = stored;
+}
+void PublishCharFiles(const std::optional<std::map<std::uint16_t, std::uint16_t>>& files) {
+    std::lock_guard lock(g_char_view_mutex);
+    g_char_view.files = files;
+}
+CharAgesView CharAgesViewNow() {
+    std::lock_guard lock(g_char_view_mutex);
+    return g_char_view;
+}
+
+// The pick held through a save load (coop_char_ages.h LoadHold): the game's threads (wraps 6 and 1) and the frame.
+std::mutex g_char_hold_mutex;
+CoopCharAges::LoadHold g_char_hold;    // (g_char_hold_mutex)
+std::atomic<bool> g_char_held{false};  // g_char_hold.held(), for the applier's wrap without the lock
+const std::uint32_t kPickHash = coop::host::flag_hash("CharacterMenu_SelectedCharacter");
+const std::uint32_t kChildhoodHash = coop::host::flag_hash("Sequence_IsChildhood");
+
+std::int64_t CharNowMs() {
+    return static_cast<std::int64_t>(SteadyMs());
+}
+
+// The age's pick, written in place (live value) and queued for the game's own setter (its saved copy and save mask).
+bool WriteCharPickNow(coop::host::WritableGameMemory& memory, std::int32_t pick) {
+    if (!coop::host::GameFlags::set_int_now(memory, kPickHash, pick)) return false;
+    coop::host::GameFlags::set_int(memory, kPickHash, pick);   // (the same value: the applier keeps it, as the game would)
+    return true;
+}
+
+// His page up, and its camera, slide or field swap still running (the player picks: the mod's value is his choice).
+struct CharPageState {
+    bool page_open = false;
+    bool swap_busy = false;
+};
+CharPageState CharPageNow(coop::host::GameFlags& flags) {
+    static const std::uint32_t page_hash = coop::host::flag_hash("CharacterMenu_IsPageOpen");
+    static const std::uint32_t camera_hash = coop::host::flag_hash("CharacterMenu_KeepUICamera");
+    static const std::uint32_t swap_hash = coop::host::flag_hash("CharacterMenu_FieldSwapPending");
+    static const std::uint32_t slide_hash = coop::host::flag_hash("CharacterMenu_Slide");
+    static const std::uint32_t slide_out_hash = coop::host::flag_hash("CharacterMenu_SlideOut");
+    CharPageState out;
+    out.page_open = flags.get_bool(page_hash).value_or(false);
+    out.swap_busy = flags.get_bool(camera_hash).value_or(false) || flags.get_bool(swap_hash).value_or(false) ||
+                    flags.get_int(slide_hash).value_or(0) != 0 || flags.get_int(slide_out_hash).value_or(0) != 0;
+    return out;
+}
+
+// Each module frame after the pick guard: the age's pick written into the mod's value when it is not the shown one.
+void CharAgesFrame(EmulatorMemory& memory, std::optional<std::int32_t> pick,
+                   const std::optional<std::map<std::uint16_t, std::uint16_t>>& files) {
+    CoopCharAges::Input in;
+    in.pick = pick;
+    {   // Off (the default) and no save-load hold: Frame only forgets the last pick seen; no flag is read
+        std::lock_guard lock(g_char_ages_mutex);
+        if (!CharAges().stored().on && !g_char_held.load(std::memory_order_relaxed)) {
+            CharAges().Frame(in, files);
+            return;
+        }
+    }
+    coop::host::GameFlags flags(memory);
+    in.childhood = flags.get_bool(kChildhoodHash);
+    const CharPageState page = CharPageNow(flags);
+    in.page_open = page.page_open;
+    in.swap_busy = page.swap_busy;
+    in.title = CoopSave::TitleUp();
+    CoopCharAges::Step step;
+    CoopCharAges::Stored stored;
+    static bool published = false;
+    {   // (the file is written under the lock too: the menu's SetOn and SetPick write it from another thread)
+        std::lock_guard lock(g_char_ages_mutex);
+        step = CharAges().Frame(in, files);
+        stored = CharAges().stored();
+        if (step.stored_changed) SaveCharAges(stored);
+    }
+    if (step.stored_changed || !std::exchange(published, true)) PublishCharAges(stored);
+    {   // The save load's hold: stopped by his page or swap (the player picks), a pick learnt, or another pick wanted
+        // for the age now (an age change); said once.
+        std::optional<CoopCharAges::LoadHold::Summary> said;
+        {
+            std::lock_guard lock(g_char_hold_mutex);
+            if (step.stored_changed) g_char_hold.Stop();
+            g_char_hold.Follow(stored, in.childhood, files, in.page_open || in.swap_busy);
+            g_char_hold.Expire(CharNowMs());
+            g_char_held.store(g_char_hold.held(), std::memory_order_relaxed);
+            said = g_char_hold.TakeSummary();
+        }
+        if (said) {
+            LOG_INFO(Core, "coop: characters: save load: pick {} held through {} flag applier passes, the game put "
+                           "{} back {} times; ended by {}",
+                     said->want, said->passes, said->game_value ? std::to_string(*said->game_value) : std::string("-"),
+                     said->put_back, CoopCharAges::EndName(said->end));
+        }
+    }
+    if (step.stored_changed) {
+        LOG_INFO(Core, "coop: characters: by age: child {}, adult {}", stored.child.value_or(-1),
+                 stored.adult.value_or(-1));
+    }
+    if (step.write && coop::host::GameFlags::set_int(memory, kPickHash, *step.write)) {
+        {
+            std::lock_guard lock(g_char_ages_mutex);
+            CharAges().Wrote(*step.write);
+        }
+        if (step.say) {
+            LOG_INFO(Core, "coop: characters: age {}: pick {} -> {} (shown when the game makes the player again: an "
+                           "age change or a save load)",
+                     in.childhood.value_or(true) ? "child" : "adult", pick.value_or(0), *step.write);
+        }
+    }
+    // Which pick our Link was made with: each new Link actor the object walk sees (a save load, an age change, his
+    // swap), the mod's live value then. The first picture's model is the one made from it.
+    static std::uint64_t last_link = 0;
+    if (const auto link = CoopObjects::OurLinkActor(); link && *link != last_link) {
+        last_link = *link;
+        if (stored.on) {
+            LOG_INFO(Core, "coop: characters: our Link made ({:#x}, {}): the mod's pick {} at its first frame seen, "
+                           "wanted {}",
+                     *link, in.childhood.value_or(true) ? "child" : "adult",
+                     flags.get_int_live(kPickHash).value_or(-1),
+                     CoopCharAges::Wanted(stored, in.childhood, files).value_or(-1));
+        }
+    }
+}
+
+// Rows 239/240/241 (coop_char_slots.h): our own Character Select pick, every frame of the module, co-op on or off, on
+// the title too, so no save load (title Continue or Load, System Load, Game Over's Try Again, a host's save after a
+// join) starts from a pick whose model is not here. 0.11.9 ran it only in a session and only in play: a solo game
+// never had it, and a guest had it from the load's first frame. Also registers the save files' fix (FixSavePick) on
+// the module's first frame, before the first title.
+// npc-customize-2 (solo): your own Character Select pick and the mod's own Customize options, every 30th frame of the
+// module, co-op on or off (0.11.11 read them only in a session's Update, so a solo game's Customize screen, its
+// menu model and your own model took a picked character for Link and the mod's options were not held).
+static void OwnCharacterFrame(EmulatorMemory& memory, std::optional<std::int32_t> pick) {
+    // The mod's Customize options for the pick (kCustomFlags: an Int each, 0 to 15; 0 is the model's own).
+    static const auto custom_hashes = [] {
+        std::array<std::uint32_t, CoopLookShare::kCustomFlags.size()> out{};
+        for (std::size_t i = 0; i < out.size(); ++i) {
+            out[i] = coop::host::flag_hash(CoopLookShare::kCustomFlags[i]);
+        }
+        return out;
+    }();
+    // 0.11.9 (the owner: ONE customizer, co-op's own): the mod's own Customize options are held at 0, the
+    // model's own colours, so its code never paints over ours (its per-frame dresser changes only what an
+    // option sets; at 0 it reads and goes on; its Customize screen puts the model's own back for an option at 0).
+    std::array<std::optional<std::int32_t>, CoopLookShare::kCustomFlags.size()> values{};
+    for (std::size_t i = 0; i < custom_hashes.size(); ++i) {
+        values[i] = coop::host::GameFlags(memory).get_int(custom_hashes[i]);
+    }
+    std::size_t cleared = 0;
+    for (const std::size_t i : CoopLookShare::OptionsToHold(values)) {
+        if (coop::host::GameFlags::set_int(memory, custom_hashes[i], 0)) ++cleared;
+    }
+    static bool said_held = false;
+    if (cleared != 0 && !said_held) {
+        said_held = true;
+        LOG_INFO(Core, "coop: characters: Character Select's own Customize options set back to the model's own "
+                       "({} of them): co-op's look is the one customizer", cleared);
+    }
+    // What the mod's own code puts on every player-like model, puppets too (coop_char_colours.h Wardrobe).
+    CoopCharColours::TheWardrobe().SetViewer(0);
+    CoopCharColours::NoteOwnPick(pick, CoopLookShare::kCharacterMax);
+}
+
+void PickGuardFrame(Core::System& system) {
+    static const std::uint32_t pick_hash = coop::host::flag_hash("CharacterMenu_SelectedCharacter");
+    static const bool save_fix_set = [] {
+        CoopSave::SetSaveFix([](std::vector<std::uint8_t>& progress) -> std::string {
+            const auto files = CoopPuppetConfig::KnownCharacterFiles();
+            if (!files) return {};   // (NPC models there but no pack to name them: a pick is kept)
+            const auto fix = CoopCharSlots::FixSavePick(progress.data(), progress.size(), pick_hash, *files);
+            if (!fix.changed) return {};
+            return fmt::format("Character Select pick {} has no model here (NPC characters not downloaded): stored "
+                               "as Link in the save, so the world loads",
+                               fix.was.value_or(0));
+        });
+        return true;
+    }();
+    (void)save_fix_set;
+    static Kernel::KProcess* seen = nullptr;
+    static u64 base = 0;
+    static CoopCharSlots::Own own;
+    static std::optional<std::map<std::uint16_t, std::uint16_t>> files;
+    static std::uint32_t tick = 0;
+    auto* process = system.ApplicationProcess();
+    if (process == nullptr || system.GetApplicationProcessProgramID() != kOcarinaProgramId ||
+        CoopGameBuild::Find(Hex(system.GetApplicationProcessBuildID(), 8)) == nullptr) {
+        return;
+    }
+    if (process != seen) {
+        seen = process;
+        base = Coop::MainOf(system, process);
+        tick = 0;
+    }
+    if (base == 0) return;
+    if (tick % 30 == 0) {   // (your own pick for the Customize screen and the dressers, solo too)
+        EmulatorMemory memory(system.ApplicationMemory(), base);
+        OwnCharacterFrame(memory, coop::host::GameFlags(memory).get_int(pick_hash));
+    }
+    if (tick++ % 600 == 0) {   // (the pack's or the mod's, every 10 s)
+        files = CoopPuppetConfig::KnownCharacterFiles();
+        PublishCharFiles(files);
+    }
+    EmulatorMemory memory(system.ApplicationMemory(), base);
+    const auto pick = coop::host::GameFlags(memory).get_int(pick_hash);
+    if (!files) {   // (NPC models but no pack to name them: a pick is kept; the age picks still run)
+        CharAgesFrame(memory, pick, files);
+        return;
+    }
+    const auto step = own.Check(pick, *files);
+    if (step.set && coop::host::GameFlags::set_int(memory, pick_hash, *step.set) && step.say) {
+        LOG_INFO(Core, "coop: characters: pick {} has no model here (NPC characters not downloaded): back to {}{}",
+                 pick.value_or(0), *step.set, CoopSave::TitleUp() ? " (on the title, before a load)" : "");
+        g_pick_said = true;
+    }
+    if (!step.set) CharAgesFrame(memory, pick, files);
+}
+
+#ifdef COOP_HOOKSHOT
+// black-01112 (coop_stuck_load.h): every frame of the module, co-op on or off. The game's own scene load
+// (Sequence_IsLoadingBanc) still on after kStuckMs: one log line, a record in bug-reports/coop-stuck (the next title
+// asks for /bugreport: coop_title.cpp LookForAsk), one chat line in a session. Read every 6th frame (100 ms).
+void StuckLoadFrame(Core::System& system) {
+    static const std::uint32_t loading_hash = coop::host::flag_hash("Sequence_IsLoadingBanc");
+    static CoopStuckLoad::Watch watch;
+    static Kernel::KProcess* seen = nullptr;
+    static u64 base = 0;
+    static std::uint32_t tick = 0;
+    static std::string record;   // the record this run made (taken back when the load ends after all)
+    auto* process = system.ApplicationProcess();
+    if (process == nullptr || system.GetApplicationProcessProgramID() != kOcarinaProgramId ||
+        CoopGameBuild::Find(Hex(system.GetApplicationProcessBuildID(), 8)) == nullptr) {
+        return;
+    }
+    if (process != seen) {
+        seen = process, base = Coop::MainOf(system, process), tick = 0;
+        watch = {};
+    }
+    if (base == 0 || tick++ % 6 != 0) return;
+    EmulatorMemory memory(system.ApplicationMemory(), base);
+    CoopStuckLoad::Sample sample;
+    sample.title_up = CoopSave::TitleUp();
+    sample.loading = coop::host::GameFlags(memory).get_bool(loading_hash).value_or(false);
+    sample.link = !sample.title_up && !sample.loading && coop::host::PlayerReader(memory).read().has_value();
+    const std::uint64_t now = SteadyMs();
+    switch (watch.Frame(sample, now)) {
+    case CoopStuckLoad::Step::stuck: {
+        const std::int64_t now_s = std::chrono::duration_cast<std::chrono::seconds>(
+                                       std::chrono::system_clock::now().time_since_epoch())
+                                       .count();
+        record = CoopProblemAsk::StuckName(now_s);
+        const std::string line =
+            fmt::format("a scene load (the game's Sequence_IsLoadingBanc) has run {} s and not ended: the game waits "
+                        "for something that does not come (row 242: a mod's file naming a file no folder has). "
+                        "Longshot's 'fs: ... not found' lines above name the missing files",
+                        watch.LoadMs() / 1000);
+        const bool kept = CoopProblemAsk::WriteStuck(CoopFiles::CoopIni().parent_path(), record, line + "\n");
+        LOG_WARNING(Core, "coop: stuck load: {}; {}", line,
+                    kept ? "the next title asks for /bugreport (bug-reports\\coop-stuck\\" + record + ")"
+                         : std::string("its record could not be written"));
+        if (Get() != nullptr) g_stuck_said = true;   // (a session's chat; solo: the log and the next title)
+        break;
+    }
+    case CoopStuckLoad::Step::ended:
+        LOG_INFO(Core, "coop: stuck load: it ended after all (Link is in the world): its record goes");
+        if (!record.empty()) CoopProblemAsk::RemoveStuck(CoopFiles::CoopIni().parent_path(), record);
+        record.clear();
+        break;
+    case CoopStuckLoad::Step::unclear:
+        LOG_INFO(Core, "coop: stuck load: no Link for {} s, with no scene load and no title (a cutscene, a movie or "
+                       "the staff roll; a black screen here is not a load): logged only",
+                 CoopStuckLoad::kStuckMs / 1000);
+        break;
+    case CoopStuckLoad::Step::none:
+        break;
+    }
+}
+#endif
+
 void OnFrameBody(Core::System& system) {
+    PickGuardFrame(system);
+#ifdef COOP_HOOKSHOT
+    {   // (its own guard: a throw costs only this check, not the frame's co-op)
+        static CoopBoundary::Site site{"CoopHook::StuckLoadFrame"};
+        CoopBoundary::Run(site, [&] { StuckLoadFrame(system); },
+                          [](const char* where, const char* what, std::uint64_t n) {
+                              LOG_ERROR(Core, "coop: {} threw ({}, {} so far): the stuck-load check skipped this "
+                                              "frame", where, what, n);
+                          });
+    }
+#endif
     CoopObjects::OnFrame(system);
     {   // player report 120: the slot our game plays (Hookshot's patch 0025; solo too). Its own guard: a slot folder
         // that throws (a path the PC's code page cannot hold, no memory) costs only the slot, not the frame's co-op.
@@ -3681,3 +4286,85 @@ std::vector<PlayerRow> PlayerList() {
 }
 
 } // namespace CoopHook
+
+namespace CoopCharAges {
+Stored Current() {
+    std::lock_guard lock(CoopHook::g_char_ages_mutex);
+    return CoopHook::CharAges().stored();
+}
+void SetOn(bool on) {
+    Stored now;
+    {
+        std::lock_guard lock(CoopHook::g_char_ages_mutex);
+        CoopHook::CharAges().SetOn(on);
+        now = CoopHook::CharAges().stored();
+        CoopHook::SaveCharAges(now);
+    }
+    CoopHook::PublishCharAges(now);
+}
+void SetPick(bool child, std::int32_t n) {
+    Stored now;
+    {
+        std::lock_guard lock(CoopHook::g_char_ages_mutex);
+        CoopHook::CharAges().SetPick(child, n);
+        now = CoopHook::CharAges().stored();
+        CoopHook::SaveCharAges(now);
+    }
+    CoopHook::PublishCharAges(now);
+}
+
+// Wrap 6 (the save is in; the area load that makes the player comes after): the pick for the save's age, in place.
+void AtSaveLoaded(coop::host::WritableGameMemory& memory) {
+    const CoopHook::CharAgesView view = CoopHook::CharAgesViewNow();
+    if (!view.stored.on) return;
+    coop::host::GameFlags flags(memory);
+    const auto childhood = flags.get_bool(CoopHook::kChildhoodHash);
+    const auto live = flags.get_int_live(CoopHook::kPickHash);
+    const auto want = Wanted(view.stored, childhood, view.files);
+    std::optional<std::int32_t> write;
+    {
+        std::lock_guard lock(CoopHook::g_char_hold_mutex);
+        write = CoopHook::g_char_hold.Loaded(want, live, CoopHook::CharNowMs());
+        CoopHook::g_char_held.store(CoopHook::g_char_hold.held(), std::memory_order_relaxed);
+    }
+    const char* age = !childhood ? "age unknown" : *childhood ? "child" : "adult";
+    if (!want) {
+        LOG_INFO(Core, "coop: characters: save load ({}): no pick for this age, the save's {} kept", age,
+                 live.value_or(-1));
+        return;
+    }
+    const bool ok = write && CoopHook::WriteCharPickNow(memory, *write);
+    LOG_INFO(Core, "coop: characters: save load ({}): the save's pick {}, wanted {}: {}; read back {}", age,
+             live.value_or(-1), *want, !write ? "already there" : ok ? "written in place" : "NOT written",
+             flags.get_int_live(CoopHook::kPickHash).value_or(-1));
+}
+
+// Wrap 1, phase 1 (the game's flag applier ran): while held, a value the game put back is written in place again,
+// as long as it is still the pick wanted for Link's age now and the player is not picking on his page (an age change
+// or his page ends the hold here, on the game's thread, before the frame sees it: no pass writes the other age's
+// pick, nor the held pick over the one the player just picked).
+void AtFlagsApplied(coop::host::WritableGameMemory& memory) {
+    if (!CoopHook::g_char_held.load(std::memory_order_relaxed)) return;
+    const CoopHook::CharAgesView view = CoopHook::CharAgesViewNow();
+    coop::host::GameFlags flags(memory);
+    const auto childhood = flags.get_bool(CoopHook::kChildhoodHash);
+    const auto live = flags.get_int_live(CoopHook::kPickHash);
+    const CoopHook::CharPageState page = CoopHook::CharPageNow(flags);
+    std::optional<std::int32_t> write;
+    bool first = false;
+    {
+        std::lock_guard lock(CoopHook::g_char_hold_mutex);
+        CoopHook::g_char_hold.Follow(view.stored, childhood, view.files, page.page_open || page.swap_busy);
+        write = CoopHook::g_char_hold.Applied(live, CoopHook::CharNowMs());
+        CoopHook::g_char_held.store(CoopHook::g_char_hold.held(), std::memory_order_relaxed);
+        first = write && CoopHook::g_char_hold.put_backs() == 1;   // (once per hold: each load says its first)
+    }
+    if (write) {
+        const bool ok = CoopHook::WriteCharPickNow(memory, *write);
+        if (first) {   // (the hold's summary says how many; this says the first, the moment it happens)
+            LOG_INFO(Core, "coop: characters: save load: the game's flag applier put {} back over the pick {}: {}",
+                     live.value_or(-1), *write, ok ? "written in place again" : "NOT written");
+        }
+    }
+}
+} // namespace CoopCharAges

@@ -2,9 +2,10 @@
 #include "coop_map_page.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
-#include <cmath>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <mutex>
@@ -24,6 +25,7 @@
 #include "coop_pause_files.h"
 #include "coop_runtime.h"
 #include "coop_pause_tab.h"
+#include "coop_screen_panes.h"
 
 namespace CoopMapPage {
 namespace {
@@ -71,6 +73,15 @@ struct Found {
 Found g_field, g_dungeon;
 Found g_mini_dungeon, g_mini_field, g_mini_window, g_mini_field_window, g_mini_root;  // the HUD minimap's (HUD screen only)
 std::atomic<std::uint64_t> g_searched_hud{0}, g_searched_panel{0};
+// (each a new one of its screen: another screen or layout address, or a gap in Frame's updates, row 262 / review-01112-e:
+// a screen freed and made again at the same address had kept the old one's panes, never searched again. Frame's thread)
+CoopScreen::ScreenInstance g_hud_at, g_panel_at;
+
+std::uint64_t NowMs() {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count());
+}
 
 // A pane is used only while the screen it came from is one of the screens that run now (a new screen: its
 // old panes may be freed).
@@ -240,10 +251,30 @@ std::optional<Menu> MenuState() {
     Menu m{s.menu_open != 0, s.map_page != 0, s.hud_screen, s.panel_screen};
     if (s.size >= offsetof(HosCoopMenuState, screen_count)) m.hud_ran_ns_ago = s.hud_ran_ns_ago, m.hud_refreshes = s.hud_refreshes;
     if (s.size >= sizeof s) {  // (row 141: the running screens)
+        m.screens_known = true;
         m.screen_count = (std::min<std::uint32_t>)(s.screen_count, static_cast<std::uint32_t>(m.screens.size()));
         std::copy(s.screens, s.screens + m.screen_count, m.screens.begin());
     }
     return m;
+}
+
+std::optional<bool> QuickSwitchOpen(const Menu& menu) {
+    if (!menu.screens_known) {
+        return std::nullopt;
+    }
+    const std::uint64_t main = CoopRuntime::MainBase();
+    for (std::uint32_t i = 0; i < menu.screen_count && i < menu.screens.size(); ++i) {
+        const std::uint64_t screen = menu.screens[i];
+        const std::uint64_t vtable = screen != 0 ? Read64(screen) : 0;
+        if (main == 0 || vtable < main || vtable - main != kShortCutVtable) {
+            continue;
+        }
+        std::uint8_t state = 0;
+        if (CoopRuntime::Read(screen + kScreenStateAt, &state, 1) && ShortCutShows(vtable - main, state)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 namespace {
@@ -280,13 +311,17 @@ namespace {
 // Row 141: the player status screen (PlayerStatus_00) and its HUD panes; the screens already looked in.
 std::atomic<std::uint64_t> g_status_screen{0};
 Found g_status_dpad, g_status_hearts, g_status_magic, g_status_agony;
-std::array<std::uint64_t, 24> g_status_looked{};
+std::uint64_t g_status_layout = 0;   // its layout as it was found in
+// The running screens looked in for the d-pad pane: each looked at again at each new one of it (another screen or layout,
+// a gap in its running), for a second while its pane may still come (row 262 / review-01112-e: a screen was skipped
+// whenever it had been looked in at the update before, so one made again at a gone one's address, or whose pane came a
+// frame late, was never looked in again).
+CoopScreen::ScreenPanes g_status_panes;
 bool g_status_told = false;
 
 void ForgetStatus() {
     for (Found* f : {&g_status_dpad, &g_status_hearts, &g_status_magic, &g_status_agony}) f->pane = 0, f->from = 0;
-    g_status_screen = 0;
-    g_status_looked = {};  // (a new screen may come at a gone one's address)
+    g_status_screen = 0, g_status_layout = 0;
 }
 
 // Looks in each running screen not looked in before for the d-pad pane, only in a layout of the same kind as the HUD
@@ -296,6 +331,9 @@ void SearchStatus(void* ctx, const HosCoopApi* api, const Menu& menu) {
     if (had != 0 && !menu.Runs(had)) {
         ForgetStatus();
         LOG_INFO(Core, "coop: hud: the player status screen {:#x} no longer runs: forgotten", had);
+    } else if (had != 0 && Read64(had + kScreenLayout) != g_status_layout) {
+        ForgetStatus();   // (another screen made at its address: its panes are not the ones found)
+        LOG_INFO(Core, "coop: hud: the player status screen {:#x} has another layout now: forgotten", had);
     }
     if (g_status_screen.load() != 0 || menu.hud_screen == 0 || menu.screen_count == 0) {
         return;
@@ -305,19 +343,24 @@ void SearchStatus(void* ctx, const HosCoopApi* api, const Menu& menu) {
     if (layout_kind == 0) {
         return;
     }
-    std::array<std::uint64_t, 24> looked{};
-    for (std::uint32_t i = 0; i < menu.screen_count && i < looked.size(); ++i) {
+    const std::uint64_t now = NowMs();
+    for (std::uint32_t i = 0; i < menu.screen_count && i < menu.screens.size(); ++i) {
         const std::uint64_t screen = menu.screens[i];
-        looked[i] = screen;
-        if (screen == 0 || screen == menu.hud_screen || screen == menu.panel_screen ||
-            std::find(g_status_looked.begin(), g_status_looked.end(), screen) != g_status_looked.end()) {
+        if (screen == 0 || screen == menu.hud_screen || screen == menu.panel_screen) {
             continue;
         }
         const std::uint64_t layout = Read64(screen + kScreenLayout);
         if (layout == 0 || Read64(layout) != layout_kind) {
             continue;
         }
-        const std::uint64_t dpad = FindPane(ctx, api, layout, kStatusDpadPane);
+        std::uint64_t dpad = 0;
+        if (!g_status_panes.Update(layout, screen, true, now, [&] {
+                dpad = FindPane(ctx, api, layout, kStatusDpadPane);
+                return dpad != 0;
+            })) {
+            continue;
+        }
+        if (dpad == 0) dpad = FindPane(ctx, api, layout, kStatusDpadPane);   // (taken before, not looked at now)
         if (dpad == 0) {
             continue;
         }
@@ -326,13 +369,12 @@ void SearchStatus(void* ctx, const HosCoopApi* api, const Menu& menu) {
         const std::uint64_t agony = FindPane(ctx, api, layout, kStatusAgonyPane);
         g_status_dpad.pane = dpad, g_status_hearts.pane = hearts, g_status_magic.pane = magic, g_status_agony.pane = agony;
         for (Found* f : {&g_status_dpad, &g_status_hearts, &g_status_magic, &g_status_agony}) f->from = screen;
-        g_status_screen = screen;
+        g_status_screen = screen, g_status_layout = layout;
         LOG_INFO(Core, "coop: hud: the player status screen {:#x} (layout {:#x}): {} {:#x}, {} {:#x}, {} {:#x}, {} {:#x}",
                  screen, layout, kStatusDpadPane, dpad, kStatusHeartsPane, hearts, kStatusMagicPane, magic,
                  kStatusAgonyPane, agony);
         break;
     }
-    g_status_looked = looked;
     if (g_status_screen.load() == 0 && !g_status_told) {
         g_status_told = true;
         LOG_INFO(Core, "coop: hud: no running screen has {} yet ({} screens): the player list starts at the fixed top "
@@ -390,13 +432,17 @@ void Frame(void* ctx, const HosCoopApi* api) {
         g_refresh_pending = false;
         LOG_INFO(Core, "coop: map refresh: run at the HUD screen's update; its copy now {}", HudCopy(menu->hud_screen));
     }
-    if (menu->hud_screen != 0 && menu->hud_screen != g_searched_hud.load()) {
+    const std::uint64_t now = NowMs();
+    const auto anew = [&](CoopScreen::ScreenInstance& at, std::uint64_t screen) {
+        return screen != 0 && at.Next(screen, Read64(screen + kScreenLayout), true, now);
+    };
+    if (anew(g_hud_at, menu->hud_screen)) {
         const std::uint64_t old = g_searched_hud.exchange(menu->hud_screen);
         Forget(g_field, old), Forget(g_dungeon, old);
         for (Found* f : {&g_mini_dungeon, &g_mini_field, &g_mini_window, &g_mini_field_window, &g_mini_root}) Forget(*f, old);
         Search(ctx, api, menu->hud_screen, "HUD");
     }
-    if (menu->panel_screen != 0 && menu->panel_screen != g_searched_panel.load()) {
+    if (anew(g_panel_at, menu->panel_screen)) {
         const std::uint64_t old = g_searched_panel.exchange(menu->panel_screen);
         Forget(g_field, old), Forget(g_dungeon, old);
         Search(ctx, api, menu->panel_screen, "panel's");

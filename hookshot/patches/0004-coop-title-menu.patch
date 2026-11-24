@@ -1,4 +1,4 @@
-From 1fe058e341268c494ad2df9e5d9ddbde814d5345 Mon Sep 17 00:00:00 2001
+From 0dd9a15b8f6d9fc3fc15794e41e5218c8402956c Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Thu, 12 Nov 2026 13:18:16 -0900
 Subject: [PATCH] Co-op title menu: the title screen's hooks, the pad first,
@@ -27,7 +27,7 @@ older module works as before.
  create mode 100644 nx2/coop_title_hooks.py
 
 diff --git a/host/coop_bridge.c b/host/coop_bridge.c
-index 63de418..edae1a3 100644
+index 63de418a..edae1a3d 100644
 --- a/host/coop_bridge.c
 +++ b/host/coop_bridge.c
 @@ -65,6 +65,7 @@ static int bridge_call(void *ctx, const HosCoopCall *k, uint64_t *x0) {
@@ -92,7 +92,7 @@ index 63de418..edae1a3 100644
  void hos_coop_present(void) {
      if (__atomic_load_n(&state, __ATOMIC_ACQUIRE) == 2) coop_frame(NULL, HOS_COOP_SITE_PRESENT);
 diff --git a/host/hos_coop_api.h b/host/hos_coop_api.h
-index 9e2075c..bc47834 100644
+index 9e2075c4..bc47834c 100644
 --- a/host/hos_coop_api.h
 +++ b/host/hos_coop_api.h
 @@ -51,6 +51,11 @@ typedef struct HosCoopApi {
@@ -125,20 +125,20 @@ index 9e2075c..bc47834 100644
  
  #endif
 diff --git a/host/nn_hid.c b/host/nn_hid.c
-index 66eb153..893b188 100644
+index 2f401d30..6e41f42c 100644
 --- a/host/nn_hid.c
 +++ b/host/nn_hid.c
-@@ -1213,6 +1213,8 @@ static void npad_states(Ctx *c) {
-     if (connected) buttons = hos_title_input(buttons);
+@@ -1670,6 +1670,8 @@ static void npad_states(Ctx *c) {
+     if (connected && !played) buttons = hos_title_input(buttons);
      uint64_t hos_frame_step_buttons(uint64_t buttons);   /* nn_vi.c: the frame step of the wheel and quick menus */
-     if (connected) buttons = hos_frame_step_buttons(buttons);
+     if (connected && !played) buttons = hos_frame_step_buttons(buttons);
 +    uint64_t hos_coop_pad_filter(uint64_t buttons, int32_t stick[4]);   /* (oot-remake-multiplayer, coop_bridge.c: the title menu) */
-+    if (connected) buttons = hos_coop_pad_filter(buttons, stick);
-     int64_t s = ++sampling;
-     const uint64_t word = oc_pad_word(buttons);   /* (while the game waits for a note button, the five are the controls: oc_notes) */
-     if (connected) __atomic_store_n(&hos_coop_pad, word, __ATOMIC_RELAXED);
++    if (connected && !played) buttons = hos_coop_pad_filter(buttons, stick);
+     /* (no stick direction bits 16-23 in the state: the game's own controllers take bits 16-19 as the D-pad, so the left
+        stick pushed forward, bit 17, held one and A pressed while running forward did not roll. They work out the
+        sticks' directions from the axes themselves) */
 diff --git a/nx2/coop_hooks.py b/nx2/coop_hooks.py
-index 52a19bc..cd87977 100644
+index 52a19bc9..cd87977f 100644
 --- a/nx2/coop_hooks.py
 +++ b/nx2/coop_hooks.py
 @@ -62,4 +62,6 @@ def install(lifter, img, build_id):
@@ -150,7 +150,7 @@ index 52a19bc..cd87977 100644
      return len(FRAME_SITES) + 1
 diff --git a/nx2/coop_title_hooks.py b/nx2/coop_title_hooks.py
 new file mode 100644
-index 0000000..07f6e8f
+index 00000000..07f6e8f5
 --- /dev/null
 +++ b/nx2/coop_title_hooks.py
 @@ -0,0 +1,48 @@

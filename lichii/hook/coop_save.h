@@ -14,11 +14,14 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace coop::net {
 class Client;
 struct Event;
 }  // namespace coop::net
+
+namespace coop::host { class WritableGameMemory; }
 
 namespace CoopSave {
 
@@ -35,6 +38,15 @@ void SetSwitch(std::function<std::string()> root, std::function<bool(const std::
 
 // Each frame: whether Link is in the game (a loaded save): no switch then.
 void NoteInGame(bool in_game);
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+void CheckpointInventory(coop::host::WritableGameMemory& memory);
+#endif
+// Rows 239/240/241 (coop_char_slots.h FixSavePick): puts a slot's progress.sav right before the game can read it (a
+// Character Select pick whose model is not here becomes Link); returns a line for the log, "" when nothing changed.
+// Run on the host's save a guest writes, and on every slot of the folder the game plays from each time the title comes
+// up. Unset: nothing.
+using SaveFixFn = std::function<std::string(std::vector<std::uint8_t>& progress)>;
+void SetSaveFix(SaveFixFn fix);
 // Player report 120, Hookshot's patch 0025 (hos_coop_fs_save_slot_opened): the count of opens of a slot's
 // progress.sav on the account save, the last one's slot folder and whether it was a write, so the host sends the slot
 // its game plays (save::PlayedSlot). Unset (the emulator, an older Hookshot): the newest slot on disk, as before.

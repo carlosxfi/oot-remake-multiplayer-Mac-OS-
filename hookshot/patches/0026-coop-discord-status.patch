@@ -1,4 +1,4 @@
-From f5780211ab37c9fc15c452d23f086f32f0813947 Mon Sep 17 00:00:00 2001
+From 0e1101e0ecb813ffcaf3ebce0cb93b105960bbe7 Mon Sep 17 00:00:00 2001
 From: daurosk <354202035+daurosk@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 12:42:25 -0900
 Subject: [PATCH] Co-op Discord status: always Squadala!'s, the module's line
@@ -34,10 +34,10 @@ status when the pipe closes.
  create mode 100644 host/hos_discord_activity.h
 
 diff --git a/host/discord_rpc.c b/host/discord_rpc.c
-index 68372a5..94b1eeb 100644
+index 37a863a9..38328345 100644
 --- a/host/discord_rpc.c
 +++ b/host/discord_rpc.c
-@@ -17,9 +17,21 @@
+@@ -17,12 +17,24 @@
  
     The protocol is Discord's documented IPC (discord-rpc's rpc_connection.h): a frame is <opcode u32 LE><length u32 LE><JSON>,
     Handshake 0, Frame 1, Close 2, Ping 3, Pong 4. The handshake {"v":1,"client_id":...} is answered by a Ready frame; a
@@ -56,11 +56,14 @@ index 68372a5..94b1eeb 100644
 +   the pipe closes. */
  #include "hos_paths.h"   /* (first: windows.h on Windows) */
  #include "options_path.h"
+ #ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
+ #include "../gpu/vk/compat/longshot_env.h"
+ #endif
 +#include <stddef.h>   /* (patch 0026: offsetof) */
  #include <stdint.h>
  #include <stdio.h>
  #include <stdlib.h>
-@@ -29,6 +41,7 @@
+@@ -32,6 +44,7 @@
  #ifdef _WIN32
  #include <windows.h>
  #else
@@ -68,7 +71,7 @@ index 68372a5..94b1eeb 100644
  #include <errno.h>
  #include <poll.h>
  #include <pthread.h>
-@@ -41,8 +54,11 @@
+@@ -44,8 +57,11 @@
  #include "discord_activity.h"
  #include "oot_area_names.h"
  #include "oot_heart_containers.h"
@@ -80,7 +83,7 @@ index 68372a5..94b1eeb 100644
  
  void hos_log(const char *fmt, ...);
  int rx_option(int id, int otherwise);
-@@ -149,9 +165,30 @@ static int valid_app_id(const char *s) {
+@@ -152,9 +168,30 @@ static int valid_app_id(const char *s) {
  /* the application id: HOS_DISCORD_APP_ID, then longshot_options.ini's discord_app_id=, then the default; and the status's
     texts, its discord_*= lines (host/discord_activity.c) */
  static DiscordSettings settings;
@@ -111,7 +114,7 @@ index 68372a5..94b1eeb 100644
      FILE *f = fopen(hos_options_file(), "r");   /* (host/options_path.c) */
      if (f) {
          char line[600];
-@@ -161,6 +198,7 @@ static void read_app_id(char *out, size_t cap) {
+@@ -164,6 +201,7 @@ static void read_app_id(char *out, size_t cap) {
                  if (valid_app_id(line + 15)) snprintf(out, cap, "%s", line + 15);
              } else {
                  discord_settings_line(&settings, line);
@@ -119,7 +122,7 @@ index 68372a5..94b1eeb 100644
              }
          }
          fclose(f);
-@@ -168,7 +206,34 @@ static void read_app_id(char *out, size_t cap) {
+@@ -171,7 +209,34 @@ static void read_app_id(char *out, size_t cap) {
      const char *e = getenv("HOS_DISCORD_APP_ID");
      if (e && valid_app_id(e)) snprintf(out, cap, "%s", e);
      if (*out && !valid_app_id(out)) *out = 0;
@@ -154,7 +157,7 @@ index 68372a5..94b1eeb 100644
  
  /* ---- frames ---- */
  static void le32(uint8_t *at, uint32_t v) { at[0] = (uint8_t)v, at[1] = (uint8_t)(v >> 8), at[2] = (uint8_t)(v >> 16), at[3] = (uint8_t)(v >> 24); }
-@@ -231,6 +296,21 @@ static Ipc connect_client(const char *app_id) {
+@@ -234,6 +299,21 @@ static Ipc connect_client(const char *app_id) {
  /* the activity (host/discord_activity.c): in a map the place Link is, elsewhere "Longshot" and the release; the start of
     play for the elapsed time; the application's art. json is the activity with nonce 0, for telling a change */
  static void activity_now(unsigned nonce, long long started, char *json, size_t cap) {
@@ -176,7 +179,7 @@ index 68372a5..94b1eeb 100644
      char version[64], build[64], commit[64], release[64], map[96] = "", area[128] = "";
      discord_version_parts(hos_version(), version, build, commit, release, sizeof version);
      const int known = hos_oot_current_map(map, sizeof map);
-@@ -325,6 +405,7 @@ static void presence_main(void) {
+@@ -328,6 +408,7 @@ static void presence_main(void) {
          if (ipc != IPC_NONE && now_ms() >= look_at) {   /* (what it says now: a change goes out within 15 s) */
              look_at = now_ms() + 2000;
              hos_oot_heart_containers_load();   /* (once, here and not on the game's thread: a few map files read) */
@@ -186,7 +189,7 @@ index 68372a5..94b1eeb 100644
              if (strcmp(now_json, sent) && now_ms() >= sent_at + 15000) send_at = 0;
 diff --git a/host/hos_discord_activity.h b/host/hos_discord_activity.h
 new file mode 100644
-index 0000000..5b363d6
+index 00000000..5b363d6b
 --- /dev/null
 +++ b/host/hos_discord_activity.h
 @@ -0,0 +1,137 @@

@@ -18,6 +18,16 @@
 
 #include <fmt/format.h>
 
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#include <fstream>
+
+#include "coop/host/game_flags.hpp"
+#include "coop_personal_inventory.h"
+#endif
+
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 
@@ -147,6 +157,7 @@ void Decide() {
 
 void NoteSaveDirLocked(const fs::path& dir);
 bool RemountLocked(const fs::path& dir);
+void FixSlotsLocked();
 save::WriteResult WriteSlotTo(const fs::path& dir, const save::SaveSlot& slot, bool played_from = true);
 void PendingFrame();
 void AskAtTitle();
@@ -332,17 +343,221 @@ bool RemountLocked(const fs::path& dir) {
     NoteSaveDirLocked(dir);
     g_list_stale = true;
     LOG_INFO(Core, "coop: save: the save folder is now {}: the game re-reads its save list on the title", dir.string());
+    FixSlotsLocked();   // (rows 239/240/241: the folder switched to, before its list is offered)
     return true;
 }
 
+SaveFixFn g_save_fix;   // SetSaveFix (g_mutex)
+
+// Rows 239/240/241: the host's save put right before it is written, so the game never reads a pick it has no model for.
+save::SaveSlot FixedSlotLocked(const save::SaveSlot& slot) {
+    save::SaveSlot out = slot;
+    if (!g_save_fix) return out;
+    for (auto& f : out.files) {
+        if (f.name != "progress.sav") continue;
+        if (const std::string line = g_save_fix(f.bytes); !line.empty()) {
+            LOG_INFO(Core, "coop: save: the host's save: {}", line);
+        }
+    }
+    return out;
+}
+
+// Rows 239/240/241: every slot of the folder the game plays from, each time the title comes up (the player's own saves,
+// a save set switched to, a host's save written before this fix). Only a slot that changes is written, whole, through a
+// temporary file.
+void FixSlotsLocked() {
+    if (!g_save_fix || g_dir.empty()) return;
+    std::error_code ec;
+    for (fs::directory_iterator it(g_dir, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code dec;
+        if (!it->is_directory(dec)) continue;
+        const fs::path file = it->path() / "progress.sav";
+        std::FILE* in = nullptr;
+#ifdef _WIN32  // (a Windows path is wide with MSVC and llvm-mingw alike: _WIN32, as ReadSaveSetLocked)
+        if (_wfopen_s(&in, file.c_str(), L"rb") != 0) in = nullptr;
+#else
+        in = std::fopen(file.c_str(), "rb");
+#endif
+        if (in == nullptr) continue;
+        std::vector<std::uint8_t> bytes;
+        std::uint8_t buf[65536];
+        for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, in)) > 0;) bytes.insert(bytes.end(), buf, buf + n);
+        std::fclose(in);
+        const std::string line = g_save_fix(bytes);
+        if (line.empty()) continue;
+        // (the slot as it was, once: progress.sav.coop-pick-backup beside it, never written over by a later fix)
+        const fs::path backup = it->path() / "progress.sav.coop-pick-backup";
+        std::error_code bec;
+        if (!fs::exists(backup, bec)) fs::copy_file(file, backup, bec);
+        if (bec) {
+            LOG_WARNING(Core, "coop: save: {}: no backup could be made ({}): left as it is",
+                        it->path().filename().string(), bec.message());
+            continue;
+        }
+        const fs::path tmp = it->path() / "progress.sav.coop-tmp";
+        std::FILE* out = nullptr;
+#ifdef _WIN32
+        if (_wfopen_s(&out, tmp.c_str(), L"wb") != 0) out = nullptr;
+#else
+        out = std::fopen(tmp.c_str(), "wb");
+#endif
+        bool ok = out != nullptr && std::fwrite(bytes.data(), 1, bytes.size(), out) == bytes.size();
+        if (out != nullptr) ok = std::fclose(out) == 0 && ok;
+        std::error_code rec;
+        if (ok) fs::rename(tmp, file, rec);
+        if (!ok || rec) {
+            fs::remove(tmp, rec);
+            LOG_WARNING(Core, "coop: save: {}: {} (could not be written: the game may not show the world with it)",
+                        it->path().filename().string(), line);
+            continue;
+        }
+        LOG_INFO(Core, "coop: save: {}: {}", it->path().filename().string(), line);
+    }
+}
+
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+namespace personal = CoopPersonalInventory;
+fs::path g_profile_path;
+std::optional<personal::Counts> g_profile_counts;
+// Bottle validity belongs to shared progress; only the contents go into a profile.
+constexpr std::array kBottleItems{0x7d48df76u, 0x1edd164au, 0xb80c70a8u, 0xe4c1b1fcu, 0x365e1953u};
+constexpr std::array kBottleValid{0xf39ce410u, 0x000ff6eau, 0xf63b1194u, 0xb7f052ceu, 0xe27b136du};
+using Bottles = std::array<std::optional<std::uint32_t>, kBottleItems.size()>;
+Bottles g_profile_bottles{};
+Bottles g_pending_bottles{};
+bool g_profile_mounted = false;
+std::optional<personal::Counts> g_profile_pending;
+unsigned g_profile_restore_attempts = 0;
+
+// Keep a profile locked until exit so two game processes cannot overwrite it.
+struct ProfileLock {
+    int fd = -1;
+    ~ProfileLock() { if (fd >= 0) close(fd); }
+};
+ProfileLock g_profile_lock;
+
+bool OpenProfile(const fs::path& coop_dir) {
+    if (!g_profile_path.empty()) return true;
+    const char* raw = std::getenv("COOP_NXNATIVE_INVENTORY_PROFILE");
+    const std::string_view name = raw ? raw : "";
+    if (name.empty() || name.size() > 48 || name.find_first_not_of(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_") != std::string_view::npos) return false;
+
+    const auto dir = coop_dir.parent_path() / "coop-inventory";
+    const auto path = dir / (std::string(name) + ".txt");
+    std::error_code error;
+    fs::create_directories(dir, error);
+    if (error) return false;
+    const int fd = open((path.string() + ".lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    if (fd < 0) return false;
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        close(fd);
+        LOG_WARNING(Core, "coop: inventory profile is already in use");
+        return false;
+    }
+    if (fs::exists(path, error)) {
+        std::ifstream file(path);
+        std::string version;
+        personal::Counts counts{};
+        file >> version;
+        for (auto& count : counts) file >> count;
+        Bottles bottles{};
+        if (version == "OOTINV2") {
+            for (auto& bottle : bottles) {
+                std::int64_t value = -1;
+                file >> value;
+                if (value < -1 || value > UINT32_MAX) file.setstate(std::ios::failbit);
+                if (value >= 0 && file) bottle = static_cast<std::uint32_t>(value);
+            }
+        }
+        if (!file || (version != "OOTINV1" && version != "OOTINV2") ||
+            (file >> std::ws).peek() != EOF ||
+            std::any_of(counts.begin(), counts.end(), [](auto count) { return count > 10000; })) {
+            close(fd);
+            LOG_WARNING(Core, "coop: inventory profile could not be read");
+            return false;
+        }
+        g_profile_counts = counts;
+        g_profile_bottles = bottles;
+    }
+    if (error) {
+        close(fd);
+        return false;
+    }
+    g_profile_lock.fd = fd;
+    g_profile_path = path;
+    return true;
+}
+
+bool WriteInventory(const personal::Counts& counts, const Bottles& bottles) {
+    const auto temporary = g_profile_path.string() + ".tmp";
+    std::ofstream file(temporary, std::ios::trunc);
+    file << "OOTINV2\n";
+    for (const auto count : counts) file << count << '\n';
+    for (const auto bottle : bottles) file << (bottle ? static_cast<std::int64_t>(*bottle) : -1) << '\n';
+    file.close();
+    if (!file || std::rename(temporary.c_str(), g_profile_path.c_str()) != 0) {
+        std::remove(temporary.c_str());
+        LOG_WARNING(Core, "coop: inventory profile could not be saved");
+        return false;
+    }
+    return true;
+}
+#endif
+
 // Under g_mutex: the host's slot written whole into the co-op folder `dir`.
 // `played_from`: the game already plays from `dir` (else Success is said once it is switched to: PendingFrame).
-save::WriteResult WriteSlotTo(const fs::path& dir, const save::SaveSlot& slot, bool played_from) {
-    const auto result = save::write_coop_save(dir, slot, save::own_dir_of(dir));
+save::WriteResult WriteSlotTo(const fs::path& dir, const save::SaveSlot& slot_in, bool played_from) {
+    const save::SaveSlot slot = FixedSlotLocked(slot_in);
+    const auto* incoming = &slot;
+    bool retain_guest_values = true;
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+    g_profile_mounted = false;
+    g_profile_pending.reset();
+    g_pending_bottles = {};
+    g_profile_restore_attempts = 0;
+    personal::Counts applied{};
+    auto restored = save::SaveSlot{};
+    const bool use_profile = g_remount && !played_from && save::is_coop_dir(dir) && OpenProfile(dir);
+    bool profile_ready = use_profile;
+    retain_guest_values = !g_remount;
+    if (use_profile && g_profile_counts) {
+        restored = slot;
+        profile_ready = !restored.files.empty() && restored.files.front().name == "progress.sav" &&
+                        personal::Restore(restored.files.front().bytes, *g_profile_counts, &applied);
+        if (profile_ready) {
+            auto& progress = restored.files.front().bytes;
+            for (std::size_t i = 0; i < kBottleItems.size(); ++i) {
+                if (!g_profile_bottles[i]) continue;
+                const save::OwnValue value{kBottleItems[i], *g_profile_bottles[i]};
+                if (save::put_own_values(progress, std::span{&value, 1}) == 1)
+                    g_pending_bottles[i] = value.value;
+            }
+            incoming = &restored;
+            LOG_INFO(Core, "coop: inventory restored into the incoming host save");
+        } else {
+            LOG_WARNING(Core, "coop: inventory profile skipped: host save fields could not be validated");
+        }
+    }
+#endif
+    int own_kept = -1;
+    const auto result = save::write_coop_save(dir, *incoming, save::own_dir_of(dir),
+                                             &own_kept, retain_guest_values);
     switch (result) {
     case save::WriteResult::written:
         g_guest.ready = true;
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+        g_profile_mounted = profile_ready;
+        if (profile_ready && g_profile_counts) g_profile_pending = applied;
+#endif
         LOG_INFO(Core, "coop: save: the host's save written to {}", dir.string());
+        // (row 249: rupees, ammo, bottles, life and magic are each player's own)
+        if (own_kept < 0) {
+            LOG_INFO(Core, "coop: save: no values of our own kept yet (a first join here): the host's rupees, ammo and "
+                           "bottles are where ours start");
+        } else {
+            LOG_INFO(Core, "coop: save: our own {} rupees/ammo/bottles/life/magic values kept in it", own_kept);
+        }
         if (played_from) Say(g_lines.on_ready(g_in_game));
         break;
     case save::WriteResult::not_coop:
@@ -397,6 +612,71 @@ void NoteInGame(bool in_game) {
     if (in_game && g_guest_live) g_guest_played = true;   // (the title's ask, TitleResync)
     Say(g_lines.on_in_game(in_game));
 }
+
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+void CheckpointInventory(coop::host::WritableGameMemory& memory) {
+    std::lock_guard lock(g_mutex);
+    if (!g_profile_mounted || !g_guest.ready || !g_guest_live || !g_in_game ||
+        !save::is_coop_dir(g_dir)) return;
+    const auto now = std::chrono::steady_clock::now();
+    static auto next = now;
+    if (now < next) return;
+    next = now + std::chrono::milliseconds(250);
+
+    coop::host::GameFlags flags(memory);
+    personal::Counts counts{};
+    for (std::size_t i = 0; i < counts.size(); ++i) {
+        const auto count = flags.get_int(personal::stock[i]);
+        if (!count || *count < 0 || *count > 10000) return;
+        counts[i] = static_cast<std::uint32_t>(*count);
+    }
+    Bottles bottles{};
+    for (std::size_t i = 0; i < bottles.size(); ++i) {
+        const auto valid = flags.get_bool(kBottleValid[i]);
+        if (!valid) return;
+        if (*valid) {
+            bottles[i] = flags.get_uint(kBottleItems[i]);
+            if (!bottles[i]) return;
+        }
+    }
+    if (g_profile_pending) {
+        bool matches = counts == *g_profile_pending;
+        for (std::size_t i = 0; i < bottles.size(); ++i) {
+            if (g_pending_bottles[i] && bottles[i] != g_pending_bottles[i]) matches = false;
+        }
+        if (!matches) {
+            if (g_profile_restore_attempts++ < 4) {
+                for (std::size_t i = 0; i < counts.size(); ++i) {
+                    if (counts[i] != (*g_profile_pending)[i]) {
+                        coop::host::GameFlags::set_int(memory, personal::stock[i],
+                            static_cast<std::int32_t>((*g_profile_pending)[i]));
+                    }
+                }
+                for (std::size_t i = 0; i < bottles.size(); ++i) {
+                    if (bottles[i] && g_pending_bottles[i] && bottles[i] != g_pending_bottles[i]) {
+                        coop::host::GameFlags::set_uint(memory, kBottleItems[i], *g_pending_bottles[i]);
+                    }
+                }
+            } else {
+                LOG_WARNING(Core, "coop: inventory restoration could not be confirmed; keeping the profile on disk");
+                g_profile_mounted = false;
+            }
+            return;
+        }
+        LOG_INFO(Core, "coop: inventory restoration confirmed in gameplay");
+        g_profile_pending.reset();
+        return;
+    }
+    // A host save without a particular bottle cannot erase its saved contents.
+    for (std::size_t i = 0; i < bottles.size(); ++i) {
+        if (!bottles[i]) bottles[i] = g_profile_bottles[i];
+    }
+    if ((counts != g_profile_counts || bottles != g_profile_bottles) && WriteInventory(counts, bottles)) {
+        g_profile_counts = counts;
+        g_profile_bottles = bottles;
+    }
+}
+#endif
 
 bool HostSaveReady() {
     std::lock_guard lock(g_mutex);
@@ -531,12 +811,18 @@ std::string ApplySaveSetLocked() {
 
 }  // namespace
 
+void SetSaveFix(SaveFixFn fix) {
+    std::lock_guard lock(g_mutex);
+    g_save_fix = std::move(fix);
+}
+
 void NoteTitle(bool title_up) {
     if (title_up) {
         g_game_over_ms.store(0, std::memory_order_relaxed);  // Game Over's Quit Game: the next load is the player's pick
     }
     std::lock_guard lock(g_mutex);
     if (title_up && !g_title_up) {
+        FixSlotsLocked();      // (rows 239/240/241: before the player can load one of them)
         g_played.on_title();   // (a new pick follows: a file, or New Game)
         g_title_seen = true;
         if (std::exchange(g_guest_played, false)) g_title_ask = true;   // (decided by the next OnFrame: TitleResync)

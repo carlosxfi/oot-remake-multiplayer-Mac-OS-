@@ -10,6 +10,7 @@
 #include <enet/enet.h>
 
 #include "common/logging.h"
+#include "coop/net/bind_guard.hpp"
 #include "coop/protocol/messages.hpp"
 #include "coop_i18n.h"
 #include "coop_pause_tab.h"
@@ -109,7 +110,7 @@ void Ask(std::string relay) {
             const std::string kits = KitsRelayName();
             // (proofs only from the kit's own relay: the official game is listed nowhere else)
             const bool ask_proofs = asked == kits && SteadyMs() >= g_proofs_silent_until_ms.load();
-            if (const auto list = relay_ns::list_rooms_on_relay(at, [] { return g_stop.load(); }, ask_proofs)) {
+            if (const auto list = relay_ns::list_rooms_on_relay(at, [] { return g_stop.load(); }, ask_proofs, coop::net::test_bind())) {
                 if (ask_proofs && !list->rooms.empty() && !list->proofs_answered && !g_stop.load()) {
                     g_proofs_silent_until_ms = SteadyMs() + kProofsRetryMs;
                 }

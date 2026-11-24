@@ -42,6 +42,24 @@ TEST_CASE("command line: defaults, flags and mistakes") {
   }
 }
 
+TEST_CASE("command line: --relay-max-per-address needs --relay and a number from 1 to 64 (row 264)") {
+  std::string error;
+  auto none = parse_command_line({"--relay"}, error);
+  REQUIRE(none.has_value());
+  CHECK(none->relay_max_per_address == 0u);
+  auto nine = parse_command_line({"--relay", "--relay-max-per-address", "9"}, error);
+  REQUIRE(nine.has_value());
+  CHECK(nine->relay_max_per_address == 9u);
+  for (std::vector<std::string> bad : std::vector<std::vector<std::string>>{
+           {"--relay", "--relay-max-per-address"}, {"--relay", "--relay-max-per-address", "0"},
+           {"--relay", "--relay-max-per-address", "65"}, {"--relay", "--relay-max-per-address", "x"},
+           {"--relay-max-per-address", "9"}}) {
+    error.clear();
+    CHECK(!parse_command_line(bad, error).has_value());
+    CHECK(!error.empty());
+  }
+}
+
 TEST_CASE("command line: --relay-room needs --relay-via and a room name (issue 261)") {
   std::string error;
   auto named = parse_command_line({"--relay-via", "relay.example.net", "--relay-room", " Forest-Gang "}, error);

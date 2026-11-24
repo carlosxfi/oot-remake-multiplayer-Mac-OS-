@@ -1,6 +1,6 @@
 # Updates a co-op kit to the newest release, keeping everything of the player's.
 #
-# Update.bat runs this (make_kit.ps1 puts this whole script inside Update.bat, so the one
+# Update.bat runs this (make_kit_hookshot.ps1 puts this whole script inside Update.bat, so the one
 # file also works dropped into an old kit that has no updater yet).
 #
 #   update.ps1 [-Kit <kit folder>] [-Yes]   update this kit (asks before it starts, unless -Yes)
@@ -379,7 +379,7 @@ function Merge-KitOptionsWith([string]$NewKit, [string[]]$Mine, [string[]]$New, 
     return ,(Merge-KitOptions $Mine $New $Version)
 }
 
-# The kit's own copy of the options a fresh kit has (make_kit.ps1).
+# The kit's own copy of the options a fresh kit has (make_kit_hookshot.ps1).
 $OptionsDefault = 'scripts\coop-options.default.ini'
 
 # Adds to the kit's coop-options.ini every key scripts\coop-options.default.ini has and it
@@ -528,8 +528,14 @@ function Update-KitStartLinks([string]$KitDir) {
     }
     $shell = $null
     $leaf = Split-Path -Leaf $root
+    # Bounded (0.11.9): a Desktop holding project folders took 30 s to walk with -Recurse, which made -Status miss
+    # play.ps1's 15 s. Shortcuts sit at most 2 folders down (Start menu\Programs\Folder\x.lnk), and the whole scan stops
+    # after 8 s whatever is left.
+    $deadline = [DateTime]::UtcNow.AddSeconds($(if ($env:OOT_COOP_LINKS_SECONDS) { [double]$env:OOT_COOP_LINKS_SECONDS } else { 8 }))
     foreach ($d in Get-KitShortcutDirs) {
-        foreach ($f in @(Get-ChildItem -LiteralPath $d -Filter '*.lnk' -File -Recurse -ErrorAction SilentlyContinue)) {
+        if ([DateTime]::UtcNow -gt $deadline) { break }
+        foreach ($f in @(Get-ChildItem -LiteralPath $d -Filter '*.lnk' -File -Recurse -Depth 3 -ErrorAction SilentlyContinue)) {
+            if ([DateTime]::UtcNow -gt $deadline) { break }
             try {
                 # (only a shortcut that names this kit's folder is opened: the Start menu holds hundreds)
                 $raw = [System.IO.File]::ReadAllBytes($f.FullName)
@@ -1066,7 +1072,8 @@ function Invoke-KitUpdate {
     if (-not $unfinished) { Update-KitOptions $dir | Out-Null }
     # Shortcuts to a start file that is gone (the old "Start OoT Co-op.bat" after an update by an older updater) follow
     # the kit's start file (said with -Tidy; -Status prints only its one line).
-    if (-not $unfinished) {
+    # -Status does it after its line is printed (below): the line must not wait for the shortcut scan.
+    if (-not $unfinished -and -not $Status) {
         $links = @(Update-KitStartLinks $dir)
         if ($Tidy) { foreach ($l in $links) { Write-Host $l } }
     }
@@ -1077,12 +1084,17 @@ function Invoke-KitUpdate {
 
     if ($Status) {
         # Straight to stdout: a function's own output would become its return value.
-        if ($unfinished) { [Console]::Out.WriteLine('unfinished'); return 0 }
+        # (flushed before the shortcut scan: play.ps1 reads this line even when it stops the scan at its time limit)
+        if ($unfinished) { [Console]::Out.WriteLine('unfinished'); [Console]::Out.Flush(); return 0 }
+        $line = ''
         try { $newest = Select-KitRelease (Read-KitReleaseList $list) } catch {
-            [Console]::Out.WriteLine('failed ' + (Get-KitErrorText $_))
-            return 0
+            $line = 'failed ' + (Get-KitErrorText $_)
         }
-        if ($newest -and (& $wanted $newest.Tag)) { [Console]::Out.WriteLine("newer $($newest.Tag)") }
+        if (-not $line -and $newest -and (& $wanted $newest.Tag)) { $line = "newer $($newest.Tag)" }
+        # (nothing to say is a line too, 'current': a check cut off after this point is an answer, not a silence)
+        [Console]::Out.WriteLine($(if ($line) { $line } else { 'current' }))
+        [Console]::Out.Flush()
+        [void](Update-KitStartLinks $dir)
         return 0
     }
     if ($Check) {
@@ -1290,8 +1302,33 @@ function Invoke-KitGameRepair([string]$KitDir) {
     }
 }
 
+# The window's lines into the start log (player report 266; kit-paths.ps1 Start-KitStartLog, which this copy cannot
+# dot-source: it runs from a copy in TEMP while the kit's own files are replaced): appended to the file of the start
+# that runs this (OOT_COOP_START_LOG, play.ps1 stopped its own meanwhile), or, from Update.bat, a new
+# <kit>\hookshot\logs\start-log.txt with the one before kept as start-log.1.txt. Not for -Check, -Status or -Tidy (a
+# start's quiet look while its own log is open). Never stops the update.
+function Start-KitUpdateLog([string]$KitDir) {
+    try {
+        $log = $env:OOT_COOP_START_LOG
+        if (-not $log) {
+            if (-not $KitDir -or -not (Test-Path -LiteralPath (Join-Path $KitDir 'hookshot') -PathType Container)) { return $false }
+            $logDir = Join-Path $KitDir 'hookshot\logs'
+            $log = Join-Path $logDir 'start-log.txt'
+            New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+            if (Test-Path -LiteralPath $log) { Move-Item -LiteralPath $log -Destination (Join-Path $logDir 'start-log.1.txt') -Force -ErrorAction Stop }
+        }
+        Start-Transcript -LiteralPath $log -Append -Force -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 if (-not $NoRun) {
-    if (-not ($Check -or $Status -or $Tidy)) { [void](Disable-KitQuickEdit) }
+    if (-not ($Check -or $Status -or $Tidy)) {
+        [void](Disable-KitQuickEdit)
+        [void](Start-KitUpdateLog $(if ($Kit) { $Kit } else { Split-Path -Parent $PSScriptRoot }))
+    }
     try {
         $code = Invoke-KitUpdate
         # (not for play.ps1's -Launch, whose new play.ps1 does the same step next, nor going back: the older kit's start does)

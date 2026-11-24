@@ -179,6 +179,12 @@ def problems(n, kit=None, now=None, busy=running_in):
         if not hs.find_exe(folder):
             out.append("%s: no game (lanes.py setup)" % folder)
             continue
+        try:
+            mismatch = hs.code_mods_mismatch(os.path.dirname(hs.find_exe(folder)))
+        except hs.Fail as e:
+            mismatch = str(e)
+        if mismatch:
+            out.append(mismatch)
         if not os.path.isfile(os.path.join(hs.warm_dir(folder), "longshot_pipelines.bin.built")):
             out.append("%s: not warmed (no longshot_pipelines.bin.built: the first start prepares every shader)" % folder)
         for top, dirs, files in os.walk(folder):

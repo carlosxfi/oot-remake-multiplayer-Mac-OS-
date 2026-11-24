@@ -32,6 +32,16 @@ constexpr std::array<Boss, kBossCount> kBosses{{
      {"InsideGanonCastle_Dungeon_BossDie_1"}},
     // (Ganon's first half asks InsideGanonCastle_Dungeon_Boss_GetMasterSword at 1% life: mid-fight, not its death)
     {"Ganon", "Dm_FinalBattle_BossIn", "Dm_FinalBattle_BossOut", -1, {}, {"InsideGanonCastle_Dungeon_BossDie_2"}},
+    // Mid-fight cutscenes that make the next stage (2026-11-21): shared as an "intro" of their own, with no room
+    // (nobody is moved: the area is near the starter). Koume and Kotake dead, the game asks SageOfSpirit_BossChange,
+    // whose flow makes the merged Twinrova: in a two-game run only one game asked it, and the other never had a
+    // Twinrova (her shots came out of nowhere there). Ganon's first half asks the Master Sword moment at 1% life.
+    // An older game ignores a boss number it does not know.
+    {"Twinrova (the sisters merge)", "SageOfSpirit_BossChange", "", -1, {}, {}},
+    {"Ganon (the sword falls)", "InsideGanonCastle_Dungeon_Boss_GetMasterSword", "", -1, {}, {}},
+    // Enemy survey: Ganon's second half asks InsideGanonCastle_Dungeon_BossBind0 (Zelda binds him for the last
+    // blow): played in one game only, the other's Ganon was never bound.
+    {"Ganon (bound for the last blow)", "InsideGanonCastle_Dungeon_BossBind0", "", -1, {}, {}},
 }};
 
 const CoopBoss::Room* RoomOf(const Boss& b) {
@@ -67,6 +77,9 @@ std::span<const Boss> Bosses() {
 }
 
 std::optional<std::pair<std::uint8_t, Kind>> OfEvent(std::string_view name) {
+    if (name.empty()) {
+        return std::nullopt;  // (a mid-fight stage change has no death: its empty name is no event)
+    }
     for (std::size_t i = 0; i < kBosses.size(); ++i) {
         const Boss& b = kBosses[i];
         const auto asks = [&](const std::array<std::string_view, 2>& list) {
@@ -139,6 +152,10 @@ void Director::Reset() {
 std::int32_t Director::Base(const Local& local) const {
     // Last tick's reading (before anything this tick), else this tick's; 0: unread.
     return max_life_.value_or(local.max_life.value_or(0));
+}
+
+bool Director::DeathBegunHere(std::uint8_t boss, const Local& local) const {
+    return boss < fights_.size() && fights_[boss].phase >= Phase::outro && Here(boss, local);
 }
 
 bool Director::Here(std::uint8_t b, const Local& local) const {

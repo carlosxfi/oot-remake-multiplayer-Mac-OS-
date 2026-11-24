@@ -90,6 +90,22 @@ std::string Describe(const Choice& choice, const Values& values, std::size_t pla
 std::string FormatChoice(const Choice& choice);
 std::optional<Choice> ParseChoice(std::string_view text);
 
+// /difficulty in the chat (docs/play-online.md "Difficulty"): alone, the values
+// in force; the host's /difficulty auto|easy|normal|hard, or /difficulty custom
+// <life> <damage> <enemies> (percent, steps of 25 within the sliders' ends).
+// Nothing when the text is not /difficulty ("/difficultyx" is chat).
+struct Command {
+    enum class Kind : std::uint8_t { show, change, bad };
+    Kind kind = Kind::show;
+    bool auto_scale = false;            // change: the automatic scaler on
+    Preset preset = Preset::normal;     // change, not automatic
+    Values custom;                      // change, Preset::custom
+};
+std::optional<Command> ParseCommand(std::string_view text);
+// The host's choice after the command `change` on `now` (a preset keeps the
+// custom values; the automatic scaler keeps the preset for when it goes off).
+Choice Applied(const Choice& now, const Command& change);
+
 // ---------------------------------------------------------------------------
 // The rules the game's side applies
 // ---------------------------------------------------------------------------
@@ -401,7 +417,7 @@ public:
     // Where they stand and which get none comes from the original's area's
     // placement data (PlanArea), decided once per area and visit, at the
     // count then: a higher count later in the visit adds none (its next visit
-    // has them). An original the data does not have gets none (NoSpot).
+    // has them). An original the data does not have (a mod's added placement) gets none and no fold.
     std::size_t Plan(std::string_view scene, const std::vector<Original>& walk, std::uint16_t count_pct,
                      bool boss_here, std::uint64_t now_ms);
     // The placed enemy with `hash` gets no copies for want of ground: its life and hits are folded instead.
@@ -550,5 +566,8 @@ void Frame(coop::host::Session* session);
 
 // The chat notices since the last call (for the chat box).
 std::vector<std::string> TakeLines();
+// The chat's /difficulty (ParseCommand): true when the text was one, answered
+// in the chat (TakeLines); the host's change goes out as Set does.
+bool OnChat(std::string_view text, coop::host::Session& session);
 
 } // namespace CoopDifficulty

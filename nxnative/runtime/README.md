@@ -41,5 +41,43 @@ Open a Windows host session with a saved file, then join from the Mac title scre
 
 ### Personal inventory on rejoin
 
-- [ ] Preserve each returning player's ammo and other personal inventory for the same co-op game. The host's latest save still supplies shared progress. Keep personal inventory separate from solo saves and from other hosts or save slots.
-- [ ] Regression test: start with 30 slingshot seeds, spend one on the Mac, leave and rejoin the same Windows game, and verify the Mac returns with 29 while Windows still has 30. Repeat after quitting and relaunching the Mac app.
+The Mac launcher asks for an optional profile name before launch. Use the same name for the same campaign and a different name for a different host or save slot. Join from the title and load the host's save. The Mac checkpoints seeds, arrows, bombs, nuts, sticks, rupees and bottle contents while the guest is playing the co-op save. On a later join with the same profile, it restores those counts into the local copy of the host's save, up to the capacities in that save. It restores bottle contents only where the host save has the bottle. The first join uses the host's starting values. Existing inventory profiles are read and upgraded when written. The profile is stored beside the game's save folders in `coop-inventory`. Shared progress and the host's inventory still follow the existing co-op rules.
+
+To test, start both players at 30 seeds. On the Mac, enter a new profile name, join from the title, spend one seed and wait a second. Leave and rejoin, then repeat after fully quitting the Mac app. The Mac should have 29 and the host should have 30 both times. Try a different profile and confirm it starts with the host's counts. Launch with no profile and verify the original Mac solo save.
+
+### Character Select on Mac
+
+Apply `character-select.patch` to the pinned nxnative source used for the Mac game build. The patch accepts IPS32 writes in section padding between read-only and writable data, as used by Character Select. Set
+`DM_COOP_CHARACTER_SELECT_IPS` to the absolute path of the compatible IPS32 prepared by the Windows
+co-op kit (its copy with the conflicting customizer code removed), then run the normal nxnative Mac
+app build. Keep the IPS's original build-ID filename. The rewriter checks that ID against the game's
+main NSO, applies the patch before translation and includes the IPS in the rewrite cache key. The
+result carries a capability marker in its packaged fixup metadata. A regular build without the
+environment variable uses the original game code.
+
+Install the resulting app with a **prepared combined ROMFS overlay** containing the Character
+Select assets and the Mac co-op pack built with its character catalog. The installer uses that
+overlay at launch, and the launch script checks the app's marker and the pack's character manifest
+before advertising Character Select to the co-op module. It does not download the mod or assemble
+the combined overlay. This path needs a live Mac test before use as a release build.
+
+## Combined macOS v0.11.12 playtest
+
+Use the Mac build from PR #12 and Squadala v0.11.12 on Windows. Use an expendable save and start with one Mac and one Windows player. Bring in a third player for the handoff and rejoin cases.
+
+1. **Join and rejoin.** Join with an existing named Mac profile. Spend ammo, change the contents of an owned bottle, and pick up a Heart Container. Check both clients' maximum hearts. Return to title and rejoin. Repeat after quitting the Mac game. Verify the named profile's values and check that a different profile starts from the host save.
+2. **Load lifecycle.** Check Continue, loading a different slot, Game Over → Try Again, and Game Over → Quit Game. In the Mac log, look for `native save lifecycle bridge installed`. Repeat a load with Character Select enabled and distinct child and adult picks. Check the loaded character and changes across an age transition.
+3. **Menus and appearance.** Check the tunic preview, local model, and remote model. Open the public lobby list with enough games for two pages. Check chat, overhead names, DBNO notices, and Return to Title with a controller.
+4. **Combat and handoffs.** Watch a guest equip and aim a bow or slingshot. Enter a boss intro while another player is already in the arena. Check a handoff during King Dodongo's roll, Barinade's jellyfish deaths, and Twinrova's attacks and fusion. Check the Mac log for the bow guard and Twinrova bridge startup messages.
+5. **Shared world.** Try a two-player switch, a block push, and a scene transition while another player pauses. Check time of day after the host resumes and lobby recovery after a disconnect.
+
+The save bridge falls back to the existing load-window detection if any sequence method fails validation. Character Select's pick is reapplied on calc frames while the load hold is active and the flag-applier hook is unavailable.
+
+For the combined test, enable the experimental direct function hooks when starting the installed launcher script. Replace `corgidad` if the test uses another profile.
+
+```sh
+COOP_NXNATIVE_WORLD_FUNCTIONS=1 COOP_NXNATIVE_INVENTORY_PROFILE=corgidad \
+  /bin/sh "$HOME/Applications/OOT Co-op.app/Contents/Resources/oot-coop-launch.sh"
+```
+
+The probe logs a direct world bridge mask. The expected mask is `0x100003e` for flag application, time changes, event requests, boss brain and action verbs, and sound emission. A function whose instructions or code padding do not match keeps its original path. Check time changes, boss transitions and remote sounds in the same run.

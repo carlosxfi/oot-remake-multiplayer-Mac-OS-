@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -29,10 +30,11 @@ struct Game {
     std::vector<proto::SwitchState> sent;
     std::vector<Hold> holds;
     std::vector<std::string> notes;
+    std::set<std::uint8_t> away;  // the players whose world stands still (PLAYER_STATUS paused or loading)
 
     void Tick(std::uint64_t now_ms, bool others = true, const std::string& scene = kScene) {
         std::vector<proto::SwitchState> out;
-        holds = sharer.Tick(scene, {Seen{Plate(), 0x1000, on, true}}, others, now_ms, out, notes);
+        holds = sharer.Tick(scene, {Seen{Plate(), 0x1000, on, true}}, others, self, now_ms, out, notes, away);
         for (auto& m : out) {
             m.player_number = self;  // the server's relay writes the sender
             sent.push_back(m);
@@ -59,6 +61,34 @@ TEST_CASE("switch share: the generated lines are the timed switches no CoopEyeSw
     CHECK(CoopRoomObjects::SwitchPlugsOf("ForestTemple", "Obj_StepSwitch_A_01", {17.2f, 112.3f, -23.0f}).empty());
     CHECK(CoopRoomObjects::SharedSwitchName("Obj_SwitchHit_A_06"));
     CHECK_FALSE(CoopRoomObjects::SharedSwitchName("Obj_DiveSwitch_A_01"));  // a CoopEyeSwitch line only
+}
+
+TEST_CASE("switch share: a presser whose world stands still is not held, and is again when back (row 164 follow-up)") {
+    Game a;
+    Game b;
+    b.self = 2;
+    std::uint64_t t = 1000;
+    a.on = true;
+    a.Tick(t += 100);
+    REQUIRE(a.sent.size() == 1);
+    b.sharer.Receive(a.sent[0], t);
+    b.Tick(t += 100);
+    REQUIRE(b.holds.size() == 1);  // A stands on the plate: B's held
+    // A opens the pause or quick-switch menu: its own timer stands still, B's plate is let go at once (not after
+    // kRemoteHoldMs), so B's own timer runs as when A steps off.
+    b.away = {1};
+    b.Tick(t += 100);
+    CHECK(b.holds.empty());
+    b.Tick(t += 1000);
+    CHECK(b.holds.empty());
+    // A is back, still on the plate: held again, with no new press needed within kRemoteHoldMs.
+    b.away.clear();
+    b.Tick(t += 100);
+    CHECK(b.holds.size() == 1);
+    // Another player away changes nothing for A's press.
+    b.away = {3};
+    b.Tick(t += 100);
+    CHECK(b.holds.size() == 1);
 }
 
 TEST_CASE("switch share: our press is sent, held on the other game's switch while on, let go when off") {
@@ -253,7 +283,7 @@ TEST_CASE("switch share: a plug that also raises our event asker is held only on
         };
         // Not armed: nothing held, nothing sent (our plug is 0), the wait is logged once.
         for (int i = 0; i < 5; ++i) {
-            const auto holds = b.Tick(l.scene, seen(false, false), true, t += 100, out, notes);
+            const auto holds = b.Tick(l.scene, seen(false, false), true, 2, t += 100, out, notes);
             CHECK(holds.empty());
         }
         CHECK(out.empty());
@@ -261,17 +291,17 @@ TEST_CASE("switch share: a plug that also raises our event asker is held only on
         if (at_load) {
             // The load guard came live: our asker still exists (it is deleted only at a load): still no hold.
             b.Receive(on, t);
-            CHECK(b.Tick(l.scene, seen(false, true), true, t += 100, out, notes).empty());
-            b.Tick(l.scene, {}, true, t += 100, out, notes);  // the room reloads: a walk without the switch
+            CHECK(b.Tick(l.scene, seen(false, true), true, 2, t += 100, out, notes).empty());
+            b.Tick(l.scene, {}, true, 2, t += 100, out, notes);  // the room reloads: a walk without the switch
         }
         // The guard flag came (our asker is gone or its trigger is false): the hold runs the room objects only.
         b.Receive(on, t);
-        auto holds = b.Tick(l.scene, seen(false, true), true, t += 100, out, notes);
+        auto holds = b.Tick(l.scene, seen(false, true), true, 2, t += 100, out, notes);
         REQUIRE(holds.size() == 1);
         CHECK(holds[0] == Hold{0x2000, PlugKey(l.plug)});
         CHECK(Has(notes, "ours held on"));
         // Our plug now 1 from that hold is not sent back as a press of ours.
-        holds = b.Tick(l.scene, seen(true, true), true, t += 100, out, notes);
+        holds = b.Tick(l.scene, seen(true, true), true, 2, t += 100, out, notes);
         CHECK(out.empty());
     }
 }
@@ -303,11 +333,11 @@ struct DekuD {
     // One walk: our switch at `address`, the load guard on in our game now or not.
     bool Held(bool flag_on, std::uint64_t address = 0x2000) {
         Press();
-        return !b.Tick("InsideTheDekuTree", {Seen{line, address, false, true, flag_on}}, true, t += 100, out, notes)
+        return !b.Tick("InsideTheDekuTree", {Seen{line, address, false, true, flag_on}}, true, 2, t += 100, out, notes)
                     .empty();
     }
     // One walk of this room without the switch (its room unloaded, or the game is reloading).
-    void Gone() { b.Tick("InsideTheDekuTree", {}, true, t += 100, out, notes); }
+    void Gone() { b.Tick("InsideTheDekuTree", {}, true, 2, t += 100, out, notes); }
 };
 }  // namespace
 
@@ -346,7 +376,7 @@ TEST_CASE("switch share: a new scene forgets the load guard's latch") {
     CHECK_FALSE(d.Held(false));
     std::vector<proto::SwitchState> out;
     std::vector<std::string> notes;
-    d.b.Tick("KokiriForest", {}, true, d.t += 50, out, notes);  // another scene, then back
+    d.b.Tick("KokiriForest", {}, true, 2, d.t += 50, out, notes);  // another scene, then back
     CHECK(d.Held(true));
 }
 
@@ -372,16 +402,16 @@ TEST_CASE("switch share: a remote press that ends while not armed logs the next 
     };
     const std::vector<Seen> unarmed{Seen{found[0], 0x2000, false, true, false}};  // its load guard off at the load
     b.Receive(on, t);
-    b.Tick("InsideTheDekuTree", unarmed, true, t += 100, out, notes);
-    b.Tick("InsideTheDekuTree", unarmed, true, t += 100, out, notes);
+    b.Tick("InsideTheDekuTree", unarmed, true, 2, t += 100, out, notes);
+    b.Tick("InsideTheDekuTree", unarmed, true, 2, t += 100, out, notes);
     CHECK(waits() == 1);
     proto::SwitchState off = on;
     off.on = false;
     b.Receive(off, t);
-    b.Tick("InsideTheDekuTree", unarmed, true, t += 100, out, notes);
+    b.Tick("InsideTheDekuTree", unarmed, true, 2, t += 100, out, notes);
     CHECK(waits() == 1);
     b.Receive(on, t);
-    b.Tick("InsideTheDekuTree", unarmed, true, t += 100, out, notes);
+    b.Tick("InsideTheDekuTree", unarmed, true, 2, t += 100, out, notes);
     CHECK(waits() == 2);
 }
 
@@ -392,9 +422,85 @@ TEST_CASE("switch share: a guarded line not armed is still our own: our press is
     Sharer a;
     std::vector<proto::SwitchState> out;
     std::vector<std::string> notes;
-    const auto holds = a.Tick("InsideTheDekuTree", {Seen{found[0], 0x3000, true, true, false}}, true, 1000, out, notes);
+    const auto holds = a.Tick("InsideTheDekuTree", {Seen{found[0], 0x3000, true, true, false}}, true, 2, 1000, out, notes);
     CHECK(holds.empty());
     REQUIRE(out.size() == 1);
     CHECK(out[0].on);
     CHECK(out[0].plug == PlugKey("OnState"));
+}
+
+TEST_CASE("switch share: two players on one switch keep a third game's hold (row 244)") {
+    // piscesgamer97 (0.11.9, Dodongo's Cavern): two others stood on the moving-ground plate; each game held it for
+    // the other and sent nothing, so the third game let go every ~5 s and the plate's logic ran again.
+    std::array<Game, 3> g;
+    for (std::uint8_t i = 0; i < 3; ++i) g[i].self = static_cast<std::uint8_t>(i + 1);
+    std::array<bool, 3> pressing{true, true, false};
+    std::array<bool, 3> held{};  // our hold keeps the plug 1 from the first set until we let go
+    std::array<std::size_t, 3> delivered{};
+    std::array<std::size_t, 3> let_go{};
+    std::uint64_t t = 1000;
+    const auto count = [](const Game& x, const char* text) {
+        std::size_t n = 0;
+        for (const auto& line : x.notes) n += line.find(text) != std::string::npos ? 1 : 0;
+        return n;
+    };
+    const auto step = [&] {
+        t += 100;
+        for (std::size_t i = 0; i < 3; ++i) {
+            g[i].on = pressing[i] || held[i];
+            g[i].Tick(t);
+            if (!g[i].holds.empty()) held[i] = true;
+            const std::size_t n = count(g[i], "let go after");
+            if (n != let_go[i]) held[i] = false;
+            let_go[i] = n;
+        }
+        for (std::size_t i = 0; i < 3; ++i) {
+            for (; delivered[i] < g[i].sent.size(); ++delivered[i]) {
+                for (std::size_t j = 0; j < 3; ++j) {
+                    if (j != i) g[j].sharer.Receive(g[i].sent[delivered[i]], t);
+                }
+            }
+        }
+    };
+    // Both press in the same walk: both sent before either heard the other.
+    step();
+    CHECK(Has(g[0].notes, "our player's press: sent"));
+    CHECK(Has(g[1].notes, "our player's press: sent"));
+    for (int i = 0; i < 300; ++i) {  // 30 s
+        step();
+        CHECK(held[2]);
+    }
+    CHECK(count(g[2], "let go after") == 0);
+    CHECK(Has(g[0].notes, "ours is resent while held"));
+    CHECK_FALSE(Has(g[1].notes, "ours is resent while held"));
+    // The lowest number steps off: the other still presses, so the third game is held again after a short handover.
+    pressing[0] = false;
+    for (int i = 0; i < 100; ++i) step();
+    CHECK(held[2]);
+    const std::size_t lapses = count(g[2], "let go after");
+    for (int i = 0; i < 200; ++i) step();
+    CHECK(count(g[2], "let go after") == lapses);  // steady again: no lapse every ~5 s
+    // Both off: nothing latches; every game lets go and stays let go.
+    pressing[1] = false;
+    for (int i = 0; i < 150; ++i) step();
+    for (std::size_t i = 0; i < 3; ++i) CHECK_FALSE(held[i]);
+    const std::size_t sent = g[0].sent.size() + g[1].sent.size() + g[2].sent.size();
+    for (int i = 0; i < 100; ++i) step();
+    CHECK(g[0].sent.size() + g[1].sent.size() + g[2].sent.size() == sent);
+}
+
+TEST_CASE("switch share: without our number (0) nothing is resent while held, as before") {
+    Game a;
+    a.self = 0;
+    std::uint64_t t = 1000;
+    a.on = true;
+    a.Tick(t);
+    REQUIRE(a.sent.size() == 1);
+    proto::SwitchState on = a.sent[0];
+    on.player_number = 2;
+    for (int i = 0; i < 50; ++i) {
+        a.sharer.Receive(on, t);
+        a.Tick(t += 100);
+    }
+    CHECK(a.sent.size() == 1);
 }

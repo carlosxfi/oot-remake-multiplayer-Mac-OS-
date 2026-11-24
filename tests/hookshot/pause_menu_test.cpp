@@ -4,11 +4,13 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <string>
 #include <vector>
 
 #include "coop/protocol/join_password.hpp"
 #include "coop_colors.h"
+#include "coop_difficulty.h"
 #include "coop_pause_menu.h"
 #include "hos_coop_menu.h"
 
@@ -36,10 +38,15 @@ std::string SelectedValue(const Menu& m) {
 }
 
 void SelectRow(Menu& m, const std::string& name) {
-    for (int i = 0; i < 20 && Selected(m) != name; ++i) {
+    for (int i = 0; i < 40 && Selected(m) != name; ++i) {
         m.Press(Input::kDown);
     }
     REQUIRE(Selected(m) == name);
+}
+
+bool Has(const Menu& m, const std::string& name) {
+    const auto names = Names(m);
+    return std::find(names.begin(), names.end(), name) != names.end();
 }
 
 Session Hosting(int players, std::string code = "ABCDE-FGHJK") {
@@ -75,7 +82,11 @@ TEST_CASE("pause tab: the first page is Host, Join, Local co-op, Settings and Co
     Menu m;
     m.Show(CoopTitleMenu::Options{});
     CHECK(m.page() == Page::kMain);
+#ifdef __APPLE__
+    CHECK(Names(m) == std::vector<std::string>{"Host a game", "Join a game", "Settings", "Customize Link", "Commands"});
+#else
     CHECK(Names(m) == std::vector<std::string>{"Host a game", "Join a game", "Local co-op", "Settings", "Customize Link", "Commands"});
+#endif
     CHECK(Selected(m) == "Host a game");
     m.Press(Input::kUp);   // round the ends
     CHECK(Selected(m) == "Commands");
@@ -378,6 +389,63 @@ TEST_CASE("pause tab: Browse games: a public game joins in one press with no pas
     CHECK(m.NoteLines()[0].find("needs the host's password") != std::string::npos);
 }
 
+TEST_CASE("pause tab: Find a game pages its games by kFindPerPage under a Page row, round both ways (row 264)") {
+    Menu m;
+    CoopTitleMenu::Options o;
+    o.relay = "relay.example.net:27530";
+    m.Show(o);
+    m.Open(Page::kJoin);
+    SelectRow(m, "Browse games");
+    m.Press(Input::kDecide);
+    REQUIRE(m.page() == Page::kFind);
+    const auto nm = [](int i) { return std::string("room-") + (i < 10 ? "0" : "") + std::to_string(i); };
+    const auto rooms = [&](int n) {
+        std::vector<Menu::Found> out;
+        for (int i = 0; i < n; ++i) {
+            out.push_back({nm(i), "1/32", nm(i), 0, true, "Host", 31 - i, 32, true, false});   // (most players first)
+        }
+        return out;
+    };
+    m.SetFound(rooms(kFindPerPage), "");   // (one page: no Page row)
+    std::vector<std::string> names = Names(m);
+    CHECK(std::find(names.begin(), names.end(), "Page") == names.end());
+    CHECK(names.size() == 5u + kFindPerPage);
+    m.SetFound(rooms(2 * kFindPerPage + 3), "");   // (three pages)
+    names = Names(m);
+    REQUIRE(names.size() == 6u + kFindPerPage);
+    CHECK(names[5] == "Page");   // (right under Refresh, before the games)
+    CHECK(m.view().rows[5].value == "1/3");
+    CHECK(m.view().rows[5].kind == CoopPauseMenu::RowKind::kChoice);
+    CHECK(names[6] == "room-00");
+    SelectRow(m, "Page");
+    m.Press(Input::kRight);
+    CHECK(m.view().rows[5].value == "2/3");
+    CHECK(Selected(m) == "Page");   // (the cursor stays on it)
+    CHECK(Names(m)[6] == nm(kFindPerPage));
+    m.Press(Input::kDecide);   // (A: the page after)
+    CHECK(m.view().rows[5].value == "3/3");
+    CHECK(Names(m).size() == 6u + 3u);   // (the last page's three)
+    m.Press(Input::kRight);   // (round: the first)
+    CHECK(m.view().rows[5].value == "1/3");
+    m.Press(Input::kLeft);    // (round: the last)
+    CHECK(m.view().rows[5].value == "3/3");
+    // A game on the last page fills the Join page with its own room.
+    SelectRow(m, nm(2 * kFindPerPage + 2));
+    m.Press(Input::kDecide);
+    CHECK(m.page() == Page::kJoin);
+    CHECK(m.join_text() == nm(2 * kFindPerPage + 2) + "@relay.example.net:27530");
+    // Back on the list: it opens on its first page again; Sort starts it there too.
+    SelectRow(m, "Browse games");
+    m.Press(Input::kDecide);
+    m.SetFound(rooms(2 * kFindPerPage + 3), "");
+    CHECK(m.view().rows[5].value == "1/3");
+    SelectRow(m, "Page");
+    m.Press(Input::kRight);
+    SelectRow(m, "Sort");
+    m.Press(Input::kRight);
+    CHECK(m.view().rows[5].value == "1/3");
+}
+
 TEST_CASE("pause tab: Find a game lists what is heard, searches the relay's rooms, and a pick fills the Join page") {
     Menu m;
     CoopTitleMenu::Options o;
@@ -523,6 +591,7 @@ TEST_CASE("pause tab: co-op that came with the game's start is shown, not starte
     CHECK(m.page() == Page::kSettings);
 }
 
+#ifndef __APPLE__
 TEST_CASE("pause tab: Local co-op lists the experimental split screen steps") {
     Menu m;
     m.Show(CoopTitleMenu::Options{});
@@ -542,6 +611,8 @@ TEST_CASE("pause tab: Local co-op lists the experimental split screen steps") {
     CHECK(m.Press(Input::kBack));
     CHECK(Selected(m) == "Local co-op");
 }
+
+#endif
 
 TEST_CASE("pause tab: Commands lists the chat key and every chat command, each with its help") {
     CoopTitleMenu::Options o;
@@ -595,8 +666,9 @@ TEST_CASE("pause tab: Settings: name, Link's look, players and voice chat (off u
     m.Open(Page::kSettings);
     CHECK(Names(m) == std::vector<std::string>{"Your name", "Link's look", "Players when you host",
                                                "Port when you host", "Relay", "Room name", "List my room", "Auto-rejoin",
-                                               "Password on this network",
-                                               "Proximity voice chat", "Chat key", "Show players on map", "Names on map", "Player list", "New Game+",
+                                               "Password on this network", "Game", "Approve joins", "PvP",
+                                               "Down but not out", "Difficulty",
+                                               "Proximity voice chat", "Chat key", "Show players on map", "Names on map", "New Game+",
                                                "Saves", "Original game"});   // (no patch 0015: no input rows)
     View v = m.view();
     CHECK(v.rows[0].value == "Saria");
@@ -606,9 +678,13 @@ TEST_CASE("pause tab: Settings: name, Link's look, players and voice chat (off u
     CHECK(v.rows[5].value == "None");   // (no room name)
     CHECK_FALSE(v.rows[6].on);   // (List my room: off unless turned on)
     CHECK_FALSE(v.rows[7].on);   // (Auto-rejoin too)
-    CHECK(v.rows[8].value == "Needed");   // (the password on this network: needed unless chosen)
-    CHECK(v.rows[9].kind == RowKind::kToggle);
-    CHECK_FALSE(v.rows[9].on);   // the default
+    CHECK(v.rows[8].value == "Not needed");   // (the password on this network: not needed unless chosen, row 251)
+    CHECK(v.rows[9].value == "Private game");   // (the host rows: what the next Host uses)
+    CHECK_FALSE(v.rows[10].on);   // (Approve joins: off unless turned on)
+    CHECK_FALSE(v.rows[11].on);   // (PvP too)
+    CHECK(v.rows[12].fixed);      // (Down but not out: the session's, so not in one it waits, dimmed)
+    CHECK(v.rows[14].kind == RowKind::kToggle);
+    CHECK_FALSE(v.rows[14].on);   // the default
     // the name, typed
     m.Press(Input::kDecide);
     CHECK(m.typing());
@@ -680,10 +756,10 @@ TEST_CASE("pause tab: Settings: players on the map and their names, on unless tu
     m.Show(CoopTitleMenu::Options{});
     m.Open(Page::kSettings);
     View v = m.view();
-    REQUIRE(v.rows.size() == 17);   // (the port, relay, room, network password and chat key rows before them, New Game+, Saves and Original game after)
-    CHECK(v.rows[11].kind == RowKind::kToggle);
-    CHECK(v.rows[11].on);
-    CHECK(v.rows[12].on);
+    REQUIRE(v.rows.size() == 21);   // (the port, relay, room, network password, host rows and chat key rows before them, New Game+, Saves and Original game after)
+    CHECK(v.rows[16].kind == RowKind::kToggle);
+    CHECK(v.rows[16].on);
+    CHECK(v.rows[17].on);
     SelectRow(m, "Show players on map");
     m.Press(Input::kLeft);
     CHECK_FALSE(m.options().map_players);
@@ -699,32 +775,38 @@ TEST_CASE("pause tab: Settings: players on the map and their names, on unless tu
     CHECK(m.options().map_names);
 }
 
-TEST_CASE("pause tab: Settings: the password on this network, needed unless chosen, saved") {
+TEST_CASE("pause tab: Settings: the password on this network, not needed unless chosen (row 251), saved") {
     Menu m;
     m.Show(CoopTitleMenu::Options{});
     m.Open(Page::kSettings);
     SelectRow(m, "Password on this network");
-    CHECK(m.view().rows[static_cast<std::size_t>(m.view().selected)].value == "Needed");   // (the default)
+    CHECK(m.view().rows[static_cast<std::size_t>(m.view().selected)].value == "Not needed");   // (the default)
     m.Press(Input::kDecide);
-    CHECK(m.options().same_network_open);
-    CHECK(m.TakeRequest()->kind == Request::Kind::kSave);
-    CHECK(m.view().rows[static_cast<std::size_t>(m.view().selected)].value == "Not needed");
-    m.Press(Input::kLeft);   // (two choices: either way flips it)
     CHECK_FALSE(m.options().same_network_open);
-    // coop-options.ini: same_network_open = on while it is not needed, no line otherwise; a file without the line
-    // (every older one) and an older same_network_password line keep it needed.
-    CHECK_FALSE(CoopTitleMenu::Options::Read("", "").same_network_open);
+    CHECK(m.TakeRequest()->kind == Request::Kind::kSave);
+    CHECK(m.view().rows[static_cast<std::size_t>(m.view().selected)].value == "Needed");
+    m.Press(Input::kLeft);   // (two choices: either way flips it)
+    CHECK(m.options().same_network_open);
+    // coop-options.ini: one line, the kit's own (Host.bat reads it too): same_network_password = on while this
+    // network needs the password, none otherwise. A file without it (every older one, and the kit's, where the line
+    // is commented out) lets the network in; an older build's line hand-set to off keeps the password.
+    CHECK(CoopTitleMenu::Options::Read("", "").same_network_open);
+    CHECK(CoopTitleMenu::Options::Read("", "# same_network_password = on\n").same_network_open);
     CHECK_FALSE(CoopTitleMenu::Options::Read("", "same_network_password = on\n").same_network_open);
+    CHECK(CoopTitleMenu::Options::Read("", "same_network_password = off\n").same_network_open);
+    CHECK(CoopTitleMenu::Options::Read("", "same_network_open = on\n").same_network_open);
+    CHECK_FALSE(CoopTitleMenu::Options::Read("", "same_network_open = off\n").same_network_open);
     CoopTitleMenu::Options o;
-    o.same_network_open = true;
-    std::string coop_ini, options_ini;
-    o.Write(coop_ini, options_ini);
-    CHECK(options_ini.find("same_network_open = on") != std::string::npos);
-    CHECK(CoopTitleMenu::Options::Read(coop_ini, options_ini).same_network_open);
     o.same_network_open = false;
+    std::string coop_ini, options_ini = "same_network_open = on\n";
     o.Write(coop_ini, options_ini);
-    CHECK(options_ini.find("# same_network_open = on") != std::string::npos);   // (commented out, as IniUnset does)
+    CHECK(options_ini.find("same_network_password = on") != std::string::npos);
+    CHECK(options_ini.find("# same_network_open = on") != std::string::npos);   // (the older line commented out)
     CHECK_FALSE(CoopTitleMenu::Options::Read(coop_ini, options_ini).same_network_open);
+    o.same_network_open = true;
+    o.Write(coop_ini, options_ini);
+    CHECK(options_ini.find("# same_network_password = on") != std::string::npos);   // (commented out, as IniUnset does)
+    CHECK(CoopTitleMenu::Options::Read(coop_ini, options_ini).same_network_open);
 }
 
 TEST_CASE("pause tab: a name the server would refuse is not kept") {
@@ -752,13 +834,13 @@ TEST_CASE("pause tab: the mouse selects a row and clicks a value's halves") {
     Menu m;
     m.Show(CoopTitleMenu::Options{});
     m.Open(Page::kSettings);
-    m.Select(9);
+    m.Select(14);
     CHECK(Selected(m) == "Proximity voice chat");
-    m.Click(9, 1);   // the On half
+    m.Click(14, 1);   // the On half
     CHECK(m.options().voice);
-    m.Click(9, -1);
+    m.Click(14, -1);
     CHECK_FALSE(m.options().voice);
-    m.Click(9, 0);   // the name: selected only
+    m.Click(14, 0);   // the name: selected only
     CHECK_FALSE(m.options().voice);
     m.Click(0, 0);   // an action: as A
     CHECK(m.typing());
@@ -846,9 +928,10 @@ TEST_CASE("pause tab: Settings: Controller and Keyboard rows when this Hookshot 
     CHECK(Selected(m) == "Chat key");   // (the rows came under it: the same row stays chosen)
     CHECK(Names(m) == std::vector<std::string>{"Your name", "Link's look", "Players when you host",
                                                "Port when you host", "Relay", "Room name", "List my room", "Auto-rejoin",
-                                               "Password on this network",
+                                               "Password on this network", "Game", "Approve joins", "PvP",
+                                               "Down but not out", "Difficulty",
                                                "Proximity voice chat", "Chat key", "Controller",
-                                               "Keyboard and mouse", "Show players on map", "Names on map", "Player list",
+                                               "Keyboard and mouse", "Show players on map", "Names on map",
                                                "New Game+", "Saves", "Original game"});
     SelectRow(m, "Controller");
     View v = m.view();
@@ -874,7 +957,7 @@ TEST_CASE("pause tab: Settings: Controller and Keyboard rows when this Hookshot 
     CHECK(r->kind == Request::Kind::kKeyboard);
     // gone again (the module found no patch 0015): the selection stays on a row there is
     m.SetInputRows({}, {});
-    CHECK(Names(m).size() == 17);   // (with the port, the relay and room rows, the network password, two map rows, New Game+, Saves and Original game)
+    CHECK(Names(m).size() == 21);   // (with the port, the relay and room rows, the network password, the host rows, two map rows, New Game+, Saves and Original game)
     CHECK_FALSE(Selected(m).empty());
 }
 
@@ -1661,4 +1744,545 @@ TEST_CASE("pause tab: Customize Link with a Character Select character picked sa
     CHECK(m.view().rows[0].name == "Your name");   // the rows stay as they are
     m.SetCharacter(false);
     CHECK(m.view().help == own);
+}
+
+TEST_CASE("pause tab: with Character Select's code in the game, Link's colours have one home: his Customize screen") {
+    Menu m;
+    m.Show(CoopTitleMenu::Options{});
+    m.SetSnailHome(true);
+    // The main page's row says where, and still opens the page (Your name stays there).
+    SelectRow(m, "Customize Link");
+    CHECK(RowNamed(m.view(), "Customize Link")->value == "Characters tab");
+    CHECK(m.view().help == Menu::kSnailHomeNote);
+    m.Press(Input::kDecide);
+    REQUIRE(m.page() == Page::kCustomize);
+    View v = m.view();
+    REQUIRE(v.rows.size() == 2);   // Your name, and the note: no part rows, no second place for the colours
+    CHECK(v.rows[0].name == "Your name");
+    CHECK(v.rows[1].kind == RowKind::kNote);
+    CHECK(v.rows[1].name == Menu::kSnailHomeNote);
+    CHECK(v.selected == 0);
+    // The pad stays on Your name; nothing reaches the hidden part rows.
+    m.Press(Input::kDown);
+    m.Press(Input::kRight);
+    m.Press(Input::kUp);
+    CHECK(m.view().rows.size() == 2);
+    CHECK(m.view().selected == 0);
+    CHECK_FALSE(m.TakeRequest().has_value());
+    m.Select(1);
+    m.Click(1, 1);
+    CHECK(m.view().rows.size() == 2);
+    CHECK_FALSE(m.TakeRequest().has_value());
+    m.Press(Input::kBack);
+    CHECK(m.page() == Page::kMain);
+    // The Settings page has no tunic row of its own then.
+    m.Open(Page::kSettings);
+    CHECK(RowNamed(m.view(), "Link's look") == nullptr);
+    CHECK(RowNamed(m.view(), "Your name") != nullptr);
+    // Without his code: our page is the home, as before.
+    m.SetSnailHome(false);
+    CHECK(RowNamed(m.view(), "Link's look") != nullptr);
+    m.Open(Page::kMain);
+    CHECK(RowNamed(m.view(), "Customize Link")->value == "Colours");
+}
+
+TEST_CASE("pause tab: Settings: A, Left and Right on Original game (d501ce95: A did nothing on Original)") {
+    Menu m;
+    m.Show(CoopTitleMenu::Options{});
+    m.Open(Page::kSettings);
+    REQUIRE(RowNamed(m.view(), "Original game") != nullptr);
+    CHECK(RowNamed(m.view(), "Original game")->kind == RowKind::kToggle);
+    CHECK_FALSE(RowNamed(m.view(), "Original game")->on);   // (off unless turned on)
+    SelectRow(m, "Original game");
+    CHECK(m.view().help.find("as it came") != std::string::npos);
+    m.Press(Input::kDecide);   // A flips it, as Left and Right set it
+    CHECK(m.options().original_game);
+    CHECK(m.TakeRequest()->kind == Request::Kind::kSave);
+    CHECK(RowNamed(m.view(), "Original game")->on);
+    m.Press(Input::kDecide);
+    CHECK_FALSE(m.options().original_game);
+    CHECK(m.TakeRequest()->kind == Request::Kind::kSave);
+    m.Press(Input::kRight);
+    CHECK(m.options().original_game);
+    CHECK(m.TakeRequest()->kind == Request::Kind::kSave);
+    m.Press(Input::kLeft);
+    CHECK_FALSE(m.options().original_game);
+    CHECK(m.TakeRequest()->kind == Request::Kind::kSave);
+    CHECK(RowNamed(m.view(), "Player list") == nullptr);   // (0.11.8's drawn player list size: removed)
+}
+
+TEST_CASE("pause tab: Settings: Original game, A flips it and asks for a save") {
+    Menu m;
+    m.Show(CoopTitleMenu::Options{});
+    m.Open(Page::kSettings);
+    SelectRow(m, "Original game");
+    CHECK_FALSE(m.options().original_game);
+    m.Press(Input::kDecide);
+    CHECK(m.options().original_game);
+    const auto r = m.TakeRequest();
+    REQUIRE(r.has_value());
+    CHECK(r->kind == Request::Kind::kSave);
+}
+
+TEST_CASE("pause tab: the title's Join opens on one list of both kinds, Enter a code after the games, B one step back") {
+    Menu m;
+    CoopTitleMenu::Options o;
+    o.relay = "relay.example.net:27530";
+    m.Show(o);
+    m.SetTitle(true);
+    m.Open(Page::kJoin);
+    REQUIRE(m.page() == Page::kFind);
+    auto r = m.TakeRequest();
+    REQUIRE(r.has_value());
+    CHECK(r->kind == Request::Kind::kRefreshFound);   // (both lists asked at once)
+    // None heard yet: "Looking for games...", the selection on Enter a code or address; no filter rows.
+    CHECK(Names(m) == std::vector<std::string>{"Looking for games...", "Enter a code or address"});
+    CHECK(Selected(m) == "Enter a code or address");
+    CHECK(m.BackLeaves());
+    // Both kinds, this network's first; a full one dimmed (fixed) and not pickable.
+    Menu::Found lan{"Saria's game", "1/4", "192.168.1.5", 0, true, "Saria", 1, 4, true, false, false};
+    Menu::Found pub{"forest-4821 (dauro)", "2/4", "forest-4821", 0, true, "dauro", 2, 4, true, true, true};
+    Menu::Found priv{"kokiri (Mido)", "3/4", "kokiri", 0, true, "Mido", 3, 4, true, false, true};
+    Menu::Found full{"lost-woods (Link2)", "Full", "lost-woods", 0, false, "Link2", 4, 4, true, true, true};
+    m.SetFound({lan, pub, priv, full}, "");
+    const View v = m.view();
+    REQUIRE(v.rows.size() == 5);
+    CHECK(v.rows[0].value == "1/4  This network");
+    CHECK(v.rows[1].value == "2/4  Public");
+    CHECK(v.rows[2].value == "3/4  Public, password");
+    CHECK(v.rows[3].value == "Full");
+    CHECK(v.rows[3].fixed);
+    CHECK(v.rows[4].name == "Enter a code or address");
+    // A public game joins at once.
+    SelectRow(m, "forest-4821 (dauro)");
+    m.Press(Input::kDecide);
+    r = m.TakeRequest();
+    REQUIRE(r.has_value());
+    CHECK(r->kind == Request::Kind::kJoin);
+    // A game with a password: its page, the password and Join; B: the list again.
+    m.Open(Page::kJoin);
+    (void)m.TakeRequest();
+    m.SetFound({lan, pub, priv, full}, "");
+    SelectRow(m, "kokiri (Mido)");
+    m.Press(Input::kDecide);
+    CHECK(m.page() == Page::kJoin);
+    CHECK(Names(m) == std::vector<std::string>{"kokiri (Mido) asks for a password", "Password", "Join"});
+    CHECK(Selected(m) == "Password");
+    CHECK_FALSE(m.BackLeaves());
+    m.Press(Input::kBack);
+    CHECK(m.page() == Page::kFind);
+    CHECK(m.BackLeaves());
+    // Enter a code or address: Paste a code (the clipboard, no typing), Type an address, Join; Password once an
+    // address is in.
+    SelectRow(m, "Enter a code or address");
+    m.Press(Input::kDecide);
+    CHECK(m.page() == Page::kJoin);
+    CHECK(Names(m) == std::vector<std::string>{"Paste a code", "Type an address", "Join"});
+    SelectRow(m, "Paste a code");
+    m.Press(Input::kDecide);
+    CHECK_FALSE(m.typing());
+    r = m.TakeRequest();
+    REQUIRE(r.has_value());
+    CHECK(r->kind == Request::Kind::kPaste);
+    m.Paste("192.168.1.9");
+    CHECK(Selected(m) == "Join");
+    m.Press(Input::kBack);
+    CHECK(m.page() == Page::kFind);
+    // Off the title: the overlay's Join page as before.
+    m.SetTitle(false);
+    m.Open(Page::kJoin);
+    CHECK(m.page() == Page::kJoin);
+    CHECK(Names(m)[0] == "Browse games");
+}
+
+TEST_CASE("pause tab: a title row's game name gives way, never its players, kind or words (title-join-shots)") {
+    using CoopPauseMenu::TitleGameName;
+    using CoopPauseMenu::kTitleRowBytes;
+    // Fits: as it is.
+    CHECK(TitleGameName("kokiri (Mido)", "Mido", 2 + std::string("3/4  Public").size()) == "kokiri (Mido)");
+    // The relay's own public room was cut at its end on the run's list ("...: 0/16..."): the host's name goes first.
+    const std::string value = "0/16  Public";
+    CHECK(TitleGameName("Squadala public game (squadala)", "squadala", 2 + value.size()) == "Squadala public game");
+    // Still too long: the room cut, "..." at its end, the whole row within a button.
+    const std::string cut = TitleGameName("a-very-long-room-name-here-and-more (someone)", "someone", 2 + value.size());
+    CHECK(cut.size() + 2 + value.size() <= kTitleRowBytes);
+    CHECK(cut.substr(cut.size() - 3) == "...");
+    // Never inside a letter of more bytes.
+    std::string letters;
+    for (int i = 0; i < 15; ++i) letters += "\xe7\x8e\xa9";   // (15 letters of 3 bytes)
+    const std::string zh = TitleGameName(letters, "", 2 + value.size());
+    CHECK((zh.size() - 3) % 3 == 0);
+
+    // On the list and on the password page: the name the list showed (the room's join name can differ), and
+    // "asks for a password" whole.
+    Menu m;
+    CoopTitleMenu::Options o;
+    o.relay = "relay.example.net:27530";
+    m.Show(o);
+    m.SetTitle(true);
+    m.Open(Page::kJoin);
+    (void)m.TakeRequest();
+    Menu::Found big{"Squadala public game (squadala)", "0/16", "squadala-public", 0, true, "squadala", 0, 16, true, true,
+                    true};
+    Menu::Found priv{"kokiri (Mido)", "3/4", "test-kokiri", 0, true, "Mido", 3, 4, true, false, true};
+    Menu::Found longpriv{"the-longest-room-name-24 (SomeoneLong)", "1/4", "the-longest-room-name-24", 0, true,
+                         "SomeoneLong", 1, 4, true, false, true};
+    m.SetFound({big, priv, longpriv}, "");
+    CHECK(Names(m)[0] == "Squadala public game");
+    CHECK(m.view().rows[0].value == "0/16  Public");
+    SelectRow(m, "kokiri (Mido)");
+    m.Press(Input::kDecide);
+    CHECK(Names(m)[0] == "kokiri (Mido) asks for a password");
+    m.Press(Input::kBack);
+    m.SetFound({big, priv, longpriv}, "");
+    CHECK(Names(m)[2] == "the-longest-ro...");   // (its "1/4  Public, password" whole)
+    SelectRow(m, "the-longest-ro...");
+    m.Press(Input::kDecide);
+    CHECK(Names(m)[0] == "the-longest-room-... asks for a password");
+    CHECK(Names(m)[0].size() <= kTitleRowBytes);
+}
+
+TEST_CASE("pause tab: the title's Host opens on its choices, hosts on Start hosting, then shows the code and password") {
+    Menu m;
+    CoopTitleMenu::Options o;
+    m.Show(o);
+    m.SetTitle(true);
+    m.Open(Page::kHost);
+    CHECK_FALSE(m.TakeRequest().has_value());   // (not hosted on opening)
+    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Start hosting"});
+    CHECK(SelectedValue(m) == "Private");
+    // (Who can join is the title's toggle: its two cells, Private chosen; no other row has cells)
+    CHECK(m.view().rows[0].cells == std::array<std::string, 2>{"Private", "Public"});
+    CHECK(m.view().rows[0].cell == 0);
+    CHECK(m.view().rows[1].cell == -1);
+    CHECK(m.view().rows[2].cell == -1);
+    m.Press(Input::kRight);   // (Anyone: the room name row)
+    (void)m.TakeRequest();
+    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Room name", "Start hosting"});
+    CHECK(m.view().rows[0].cell == 1);
+    CHECK(SelectedValue(m) == "Public");
+    m.Press(Input::kDecide);   // (A flips it back, as the left and right do)
+    (void)m.TakeRequest();
+    CHECK(m.view().rows[0].cell == 0);
+    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Start hosting"});
+    m.Press(Input::kRight);
+    (void)m.TakeRequest();
+    CHECK(m.view().rows[0].cell == 1);
+    m.Press(Input::kLeft);
+    (void)m.TakeRequest();
+    SelectRow(m, "Start hosting");
+    m.Press(Input::kDecide);
+    auto r = m.TakeRequest();
+    REQUIRE(r.has_value());
+    CHECK(r->kind == Request::Kind::kHost);
+    Session s = Hosting(1, "ABCD-EFGH-IJKL");
+    s.password = "1234567890";
+    m.SetSession(s);
+    const std::vector<std::string> names = Names(m);
+    REQUIRE(names.size() >= 4);
+    CHECK(names[0] == "Code");
+    CHECK(names[1] == "Password");
+    CHECK(names.back() == "Stop hosting");
+    CHECK(m.BackLeaves());   // (Back keeps hosting: the Multiplayer rows)
+    // A public game: its room and players, no code.
+    s.public_game = true;
+    s.password.clear();
+    m.SetSession(s);
+    const std::vector<std::string> pub = Names(m);
+    CHECK(pub[0].rfind("Room", 0) == 0);
+    CHECK(std::find(pub.begin(), pub.end(), std::string("Code")) == pub.end());
+}
+
+// --- Co-op settings' host rows (menu-parity-0119; row 226's audit: PvP, down but not out, join approval and the
+// game's kind had no row in the native menu) ---
+
+TEST_CASE("pause tab: Co-op settings' host rows, not in a session: what the next Host uses, each saved") {
+    Menu m;
+    m.Show(CoopTitleMenu::Options{});
+    m.Open(Page::kSettings);
+    CHECK(m.HostRulesRow() == 9);   // (Game: the Host view's Host settings opens the page there)
+    SelectRow(m, "Game");
+    m.Press(Input::kDecide);
+    CHECK(m.options().public_game);
+    CHECK(m.TakeRequest()->kind == Request::Kind::kSave);
+    m.Press(Input::kDecide);
+    CHECK_FALSE(m.options().public_game);
+    (void)m.TakeRequest();
+    SelectRow(m, "Approve joins");
+    m.Press(Input::kDecide);
+    CHECK(m.options().approve_joins);
+    CHECK(m.TakeRequest()->kind == Request::Kind::kSave);
+    SelectRow(m, "PvP");
+    m.Press(Input::kRight);
+    CHECK(m.options().pvp);
+    CHECK(m.TakeRequest()->kind == Request::Kind::kSave);   // (no session: no chat line, the next Host's)
+    CHECK(RowNamed(m.view(), "PvP")->on);
+    // Down but not out: the session's rules, so dimmed until one runs; a press says why and asks nothing.
+    SelectRow(m, "Down but not out");
+    CHECK(RowNamed(m.view(), "Down but not out")->fixed);
+    m.Press(Input::kDecide);
+    CHECK_FALSE(m.TakeRequest().has_value());
+    CHECK_FALSE(m.NoteLines().empty());
+    const auto names = Names(m);
+    CHECK(std::find(names.begin(), names.end(), "Bleed-out time") == names.end());
+    m.Open(Page::kCommands);
+    CHECK(m.HostRulesRow() == 0);   // (another page)
+}
+
+TEST_CASE("pause tab: Co-op settings' host rows while hosting: the rules in force, changed by their chat commands") {
+    Menu m;
+    m.Show(CoopTitleMenu::Options{});
+    Session s = Hosting(2);
+    s.rules = true;
+    s.pvp = false;
+    s.dbno = true;
+    s.dbno_bleed_s = 45, s.dbno_revive_tenths = 50, s.dbno_revive_life = 12;
+    m.SetSession(s);
+    m.Open(Page::kSettings);
+    View v = m.view();
+    REQUIRE(RowNamed(v, "Bleed-out time") != nullptr);
+    CHECK(RowNamed(v, "Bleed-out time")->value == "45 s");
+    CHECK(RowNamed(v, "Revive hold")->value == "5 s");
+    CHECK(RowNamed(v, "Revive hearts")->value == "3");
+    CHECK_FALSE(RowNamed(v, "Down but not out")->fixed);
+    CHECK(RowNamed(v, "Down but not out")->on);
+    const auto chat = [&m](Input in) {
+        m.Press(in);
+        const auto r = m.TakeRequest();
+        REQUIRE(r.has_value());
+        CHECK(r->kind == Request::Kind::kChat);
+        return r->text;
+    };
+    SelectRow(m, "PvP");
+    CHECK(chat(Input::kDecide) == "/pvp on");
+    CHECK(m.options().pvp);   // (and the next Host's: the module saves it)
+    SelectRow(m, "Bleed-out time");
+    CHECK(chat(Input::kRight) == "/dbno time 50");
+    CHECK(chat(Input::kLeft) == "/dbno time 40");
+    SelectRow(m, "Revive hold");
+    CHECK(chat(Input::kLeft) == "/dbno hold 4.5");
+    CHECK(chat(Input::kRight) == "/dbno hold 5.5");
+    SelectRow(m, "Revive hearts");
+    CHECK(chat(Input::kRight) == "/dbno hearts 3.5");
+    SelectRow(m, "Down but not out");
+    CHECK(chat(Input::kDecide) == "/dbno off");
+    // At the ends they go round, as the other choices do.
+    s.dbno_bleed_s = 240, s.dbno_revive_tenths = 5, s.dbno_revive_life = 80;
+    m.SetSession(s);
+    SelectRow(m, "Bleed-out time");
+    CHECK(chat(Input::kRight) == "/dbno time 10");
+    SelectRow(m, "Revive hold");
+    CHECK(chat(Input::kLeft) == "/dbno hold 10");
+    SelectRow(m, "Revive hearts");
+    CHECK(chat(Input::kRight) == "/dbno hearts 0.5");
+    // Off: its values do nothing, so they go.
+    s.dbno = false;
+    m.SetSession(s);
+    const auto names = Names(m);
+    CHECK(std::find(names.begin(), names.end(), "Bleed-out time") == names.end());
+    CHECK_FALSE(RowNamed(m.view(), "Down but not out")->on);
+}
+
+TEST_CASE("pause tab: Co-op settings' host rows in a friend's game: the host's rules dimmed, our next Host's kept") {
+    Menu m;
+    CoopTitleMenu::Options o;
+    o.pvp = false;
+    m.Show(o);
+    Session s = Joined();
+    s.rules = true;
+    s.pvp = true;   // (the host turned it on: shown, not our file's off)
+    m.SetSession(s);
+    m.Open(Page::kSettings);
+    const View v = m.view();
+    for (const char* name : {"PvP", "Down but not out", "Bleed-out time", "Revive hold", "Revive hearts"}) {
+        REQUIRE(RowNamed(v, name) != nullptr);
+        CHECK(RowNamed(v, name)->fixed);
+    }
+    // The game's kind and the approval: our own next Host's (a guest never hears the host's), still ours to change.
+    for (const char* name : {"Game", "Approve joins"}) {
+        REQUIRE(RowNamed(v, name) != nullptr);
+        CHECK_FALSE(RowNamed(v, name)->fixed);
+        SelectRow(m, name);
+        CHECK(m.view().help.find("next game you host") != std::string::npos);
+        m.Press(Input::kDecide);
+        const auto r = m.TakeRequest();
+        REQUIRE(r.has_value());
+        CHECK(r->kind == Request::Kind::kSave);
+    }
+    CHECK(m.options().public_game);
+    CHECK(m.options().approve_joins);
+    CHECK(RowNamed(v, "PvP")->on);
+    for (const char* name : {"PvP", "Down but not out", "Revive hold"}) {
+        SelectRow(m, name);
+        for (const Input in : {Input::kDecide, Input::kLeft, Input::kRight}) {
+            m.Press(in);
+            CHECK_FALSE(m.TakeRequest().has_value());
+        }
+        CHECK(m.view().help.find("Only the host") != std::string::npos);
+    }
+    CHECK_FALSE(m.options().pvp);   // (a guest's file untouched)
+}
+
+TEST_CASE("pause tab: Difficulty rows: Automatic, Easy, Normal, Hard, Custom as the host's choice") {
+    using CoopDifficulty::Choice;
+    using CoopDifficulty::Preset;
+    Choice c;   // (the server's start: automatic)
+    CHECK(DifficultyIndex(c) == 0);
+    c.auto_scale = false;
+    CHECK(DifficultyIndex(c) == 2);   // (normal)
+    const CoopDifficulty::Values hard = coop::protocol::preset_difficulty(Preset::hard);
+    // Each row's choice, and round both ways.
+    CHECK(DifficultyAt(c, hard, 0).auto_scale);
+    CHECK(DifficultyAt(c, hard, 1).preset == Preset::easy);
+    CHECK_FALSE(DifficultyAt(c, hard, 1).auto_scale);
+    CHECK(DifficultyAt(c, hard, 3).preset == Preset::hard);
+    CHECK(DifficultyAt(c, hard, 5).auto_scale);    // (past Custom: Automatic)
+    CHECK(DifficultyAt(c, hard, -1).preset == Preset::custom);
+    // Custom from Hard starts at Hard's values (the sliders open where the game is).
+    const Choice custom = DifficultyAt(DifficultyAt(c, hard, 3), hard, 4);
+    CHECK(custom.preset == Preset::custom);
+    CHECK(custom.custom.hp_pct == 200);
+    CHECK(custom.custom.damage_pct == 150);
+    CHECK(custom.custom.count_pct == 150);
+    for (int i = 0; i < kDifficultyRows; ++i) {
+        CHECK(DifficultyIndex(DifficultyAt(c, hard, i)) == i);
+    }
+}
+
+TEST_CASE("pause tab: Settings: Difficulty: the host changes it, the sliders under Custom, guests and solo see it") {
+    using CoopDifficulty::Preset;
+    DifficultyState st;
+    st.connected = true;
+    st.can_edit = true;
+    st.choice.auto_scale = false;   // the host chose Normal
+    st.values = {};
+    Menu m;
+    m.Show(CoopTitleMenu::Options{});
+    m.SetSession(Hosting(2));
+    m.SetDifficulty(st, 2);
+    m.Open(Page::kSettings);
+    const auto names = Names(m);
+    const auto pw = std::find(names.begin(), names.end(), "Password on this network");
+    REQUIRE(pw != names.end());
+    CHECK(std::find(pw, names.end(), "Difficulty") != names.end());   // (among the host's rows, after the network password)
+    REQUIRE(RowNamed(m.view(), "Difficulty") != nullptr);
+    CHECK(RowNamed(m.view(), "Difficulty")->value == "Normal");
+    CHECK(RowNamed(m.view(), "Difficulty")->kind == RowKind::kChoice);
+    CHECK_FALSE(RowNamed(m.view(), "Difficulty")->fixed);
+    CHECK(RowNamed(m.view(), "Enemy life") == nullptr);   // (not Custom)
+    SelectRow(m, "Difficulty");
+    CHECK(m.view().help.find("life 100%, damage 100%, enemies 100%") != std::string::npos);
+    m.Press(Input::kRight);   // Normal -> Hard
+    auto r = m.TakeRequest();
+    REQUIRE(r);
+    CHECK(r->kind == Request::Kind::kDifficulty);
+    auto asked = CoopDifficulty::ParseChoice(r->text);
+    REQUIRE(asked);
+    CHECK(asked->preset == Preset::hard);
+    CHECK_FALSE(asked->auto_scale);
+    CHECK(SelectedValue(m) == "Hard");   // (shown until the server says it)
+    m.SetDifficulty(st, 2);              // (the server has not said it yet: still Hard)
+    CHECK(SelectedValue(m) == "Hard");
+    m.Press(Input::kRight);              // Hard -> Custom, at Hard's values
+    r = m.TakeRequest();
+    REQUIRE(r);
+    asked = CoopDifficulty::ParseChoice(r->text);
+    REQUIRE(asked);
+    CHECK(asked->preset == Preset::custom);
+    CHECK(asked->custom.hp_pct == 200);
+    // The server says it: the three sliders show its values.
+    st.choice = *asked;
+    st.values = coop::protocol::clamp_difficulty(asked->custom);
+    m.SetDifficulty(st, 2);
+    const View v = m.view();
+    for (const char* name : {"Difficulty", "Enemy life", "Enemy damage", "Enemies"}) {
+        INFO(name);
+        REQUIRE(RowNamed(v, name) != nullptr);
+        CHECK(Fits(*RowNamed(v, name)));
+    }
+    CHECK(RowNamed(v, "Enemy life")->value == "200%");
+    CHECK(RowNamed(v, "Enemies")->value == "150%");
+    SelectRow(m, "Enemy life");
+    m.Press(Input::kLeft);   // 200 -> 175
+    r = m.TakeRequest();
+    REQUIRE(r);
+    asked = CoopDifficulty::ParseChoice(r->text);
+    REQUIRE(asked);
+    CHECK(asked->custom.hp_pct == 175);
+    CHECK(asked->custom.damage_pct == 150);
+    CHECK(SelectedValue(m) == "175%");
+    SelectRow(m, "Enemies");
+    for (int i = 0; i < 10; ++i) {   // (to its end, 300%: no request past it)
+        m.Press(Input::kRight);
+        (void)m.TakeRequest();
+    }
+    CHECK(SelectedValue(m) == "300%");
+    m.Press(Input::kRight);
+    CHECK_FALSE(m.TakeRequest());
+
+    // A guest: the host's choice, dimmed, nothing asked.
+    DifficultyState guest = st;
+    guest.can_edit = false;
+    Menu g;
+    g.Show(CoopTitleMenu::Options{});
+    g.SetSession(Joined());
+    g.SetDifficulty(guest, 2);
+    g.Open(Page::kSettings);
+    REQUIRE(RowNamed(g.view(), "Difficulty") != nullptr);
+    CHECK(RowNamed(g.view(), "Difficulty")->fixed);
+    CHECK(RowNamed(g.view(), "Difficulty")->value == "Custom");
+    CHECK(RowNamed(g.view(), "Enemy life") == nullptr);
+    SelectRow(g, "Difficulty");
+    CHECK(g.view().help.find("Only the host can change it") != std::string::npos);
+    CHECK(g.view().help.find("life 200%") != std::string::npos);
+    g.Press(Input::kRight);
+    g.Press(Input::kDecide);
+    CHECK_FALSE(g.TakeRequest());
+
+    // Solo (co-op idle): the row says who chooses it; nothing asked.
+    Menu s;
+    s.Show(CoopTitleMenu::Options{});
+    s.Open(Page::kSettings);
+    REQUIRE(RowNamed(s.view(), "Difficulty") != nullptr);
+    CHECK(RowNamed(s.view(), "Difficulty")->fixed);
+    SelectRow(s, "Difficulty");
+    CHECK(s.view().help.find("The host chooses it") != std::string::npos);
+    s.Press(Input::kRight);
+    CHECK_FALSE(s.TakeRequest());
+}
+
+TEST_CASE("pause tab: Settings: Character by age shows only with the mod, then the two rows pick round the list") {
+    Menu m;
+    m.Show(CoopTitleMenu::Options{});
+    m.Open(Page::kSettings);
+    CHECK(Has(m, "Character by age") == false);   // (no mod: no rows)
+    m.SetCharacterAges(true, false, -1, -1, {{0, "Link"}, {2, "Saria"}, {8, "Zelda"}});
+    SelectRow(m, "Character by age");
+    CHECK(Has(m, "As a child") == false);   // (off: the two rows are hidden)
+    m.Press(Input::kDecide);
+    auto r = m.TakeRequest();
+    REQUIRE(r);
+    CHECK(r->kind == Request::Kind::kCharAges);
+    CHECK(r->text == "on");
+    m.SetCharacterAges(true, true, -1, 2, {{0, "Link"}, {2, "Saria"}, {8, "Zelda"}});
+    SelectRow(m, "As a child");
+    CHECK(SelectedValue(m) == "Not set");
+    m.Press(Input::kRight);   // (not set counts as the first: Link, so the next is Saria)
+    r = m.TakeRequest();
+    REQUIRE(r);
+    CHECK(r->kind == Request::Kind::kCharAges);
+    CHECK(r->text == "child=2");
+    CHECK(SelectedValue(m) == "Saria");
+    m.Press(Input::kLeft);
+    CHECK(m.TakeRequest()->text == "child=0");
+    CHECK(SelectedValue(m) == "Link");
+    m.Press(Input::kLeft);   // (round: Link back to the last)
+    CHECK(m.TakeRequest()->text == "child=8");
+    SelectRow(m, "As an adult");
+    CHECK(SelectedValue(m) == "Saria");
+    m.Press(Input::kRight);
+    CHECK(m.TakeRequest()->text == "adult=8");
+    SelectRow(m, "Character by age");
+    m.Press(Input::kLeft);
+    CHECK(m.TakeRequest()->text == "off");
 }

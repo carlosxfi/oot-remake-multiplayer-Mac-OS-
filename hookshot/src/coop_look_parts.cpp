@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "coop_look_parts.h"
 
+#include "coop/protocol/messages.hpp"
+
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -52,9 +55,17 @@ const std::vector<GearTexture>& Gear() {
     return kGear;
 }
 
+namespace {
+// The parts the gear wardrobe paints (the tunic and the Cap trim are the tunic wardrobe's; the eyes are no texture:
+// the model's own parameter, CoopCharColours).
+bool IsGear(Part p) {
+    return p != Part::tunic && p != Part::cap_trim && p != Part::eyes && p != Part::hair && !CoopLook::IsCharacterPart(p);
+}
+}  // namespace
+
 bool AnyGear(const CoopLook::Look& look) {
     for (const CoopLook::PartInfo& info : CoopLook::Parts()) {
-        if (info.part != Part::tunic && look[info.part]) {
+        if (IsGear(info.part) && look[info.part]) {
             return true;
         }
     }
@@ -67,7 +78,7 @@ std::string Name(const CoopLook::Look& look) {
     }
     std::string name = kBase;
     for (const CoopLook::PartInfo& info : CoopLook::Parts()) {
-        if (info.part == Part::tunic) {
+        if (!IsGear(info.part)) {
             continue;
         }
         char piece[8] = "-";
@@ -185,6 +196,204 @@ CoopLookTunic::Texels Painted(const CoopLookTunic::Texels& gear, const CoopLook:
         }
         if (!rules.empty()) {
             CoopLookPaint::Recolour(entry->format, t.texels, t.texels, rules);
+        }
+    }
+    return out;
+}
+
+const std::vector<TunicTexture>& TunicTextures() {
+    // Formats as the game's files have them (green.bin holds those texels).
+    static const std::vector<TunicTexture> kTunic = {
+        {kTunicTile, Format::bc3, T::Takes::all},   // hat and upper body, both ages
+        // The child's tunic body: the game's is ASTC 5x4 and some 0.64 as bright as the tile; shaded against
+        // the tile it stays that much darker (the pack's own colour files hold a BC3 copy of the tile instead).
+        {"Angin_Tile_A_Dark_Alb", Format::astc, T::Takes::all},
+        {"Mt_Vest_Player_Adult_Alb", Format::astc, T::Takes::green},        // lower tunic and back
+        {"Mt_Angin_Acs_Player_Adult_Alb", Format::bc1, T::Takes::green},    // rope and hood parts
+        {"Mt_Cloth_Parts_Player_Child_Alb", Format::astc, T::Takes::green}, // cap knot, headband, collar
+        {"Mt_Vest_Player_Child_Alb", Format::astc, T::Takes::green},        // the string at the back
+        {"Mt_PantsParts_Player_Child_Alb", Format::bc1, T::Takes::green},   // straps
+    };
+    return kTunic;
+}
+
+namespace {
+constexpr std::string_view kTunicPrefix = "tunic-";
+constexpr std::string_view kCapInfix = "-cap-";
+constexpr std::string_view kGameGreen = "green";
+
+std::string Hex(std::uint32_t colour) {
+    char piece[8];
+    std::snprintf(piece, sizeof piece, "%06X", static_cast<unsigned>(colour & 0xFFFFFFu));
+    return piece;
+}
+
+// Six upper-case hex digits (as Hex writes them).
+std::optional<std::uint32_t> HexOf(std::string_view text) {
+    if (text.size() != 6) {
+        return std::nullopt;
+    }
+    std::uint32_t v = 0;
+    for (const char c : text) {
+        const int d = c >= '0' && c <= '9' ? c - '0' : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (d < 0) {
+            return std::nullopt;
+        }
+        v = v << 4 | static_cast<std::uint32_t>(d);
+    }
+    return v;
+}
+}  // namespace
+
+std::string TunicPainting(const std::optional<std::uint32_t>& colour, const std::optional<std::uint32_t>& cap) {
+    // (none, and the preset green: the game's own green, its own texels; painted, the preset's 30D040 was a lime
+    // green brighter than the game's tunic, seen in a test run 2026-11-20)
+    const bool own = !colour || (*colour & 0xFFFFFFu) == coop::protocol::slot_color(3);
+    if (!cap) {
+        return own ? std::string(kTunicBase) : std::string(kTunicPrefix) + Hex(*colour);
+    }
+    return std::string(kTunicPrefix) + (own ? std::string(kGameGreen) : Hex(*colour)) + std::string(kCapInfix) +
+           Hex(*cap);
+}
+
+std::optional<TunicPaint> TunicPaintOf(const std::string& name) {
+    const std::string_view n = name;
+    if (n.substr(0, kTunicPrefix.size()) != kTunicPrefix) {
+        return std::nullopt;
+    }
+    std::string_view rest = n.substr(kTunicPrefix.size());
+    TunicPaint paint;
+    const std::size_t at = rest.find(kCapInfix);
+    if (at != std::string_view::npos) {
+        paint.cap = HexOf(rest.substr(at + kCapInfix.size()));
+        if (!paint.cap) {
+            return std::nullopt;
+        }
+        rest = rest.substr(0, at);
+        if (rest == kGameGreen) {
+            return paint;   // the game's own green, the cap painted
+        }
+    }
+    paint.tunic = HexOf(rest);
+    if (!paint.tunic) {
+        return std::nullopt;
+    }
+    return paint;
+}
+
+std::optional<std::uint32_t> TunicColour(const std::string& name) {
+    if (name.size() != kTunicPrefix.size() + 6 || name.compare(0, kTunicPrefix.size(), kTunicPrefix) != 0) {
+        return std::nullopt;
+    }
+    std::uint32_t v = 0;
+    for (std::size_t i = kTunicPrefix.size(); i < name.size(); ++i) {
+        const char c = name[i];
+        const int d = c >= '0' && c <= '9' ? c - '0' : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (d < 0) {
+            return std::nullopt;   // (TunicPainting writes upper case only)
+        }
+        v = v << 4 | static_cast<std::uint32_t>(d);
+    }
+    return v;
+}
+
+CoopLookTunic::Texels TunicPainted(const CoopLookTunic::Texels& green, std::uint32_t colour) {
+    return TunicPainted(green, TunicPaint{colour, std::nullopt}, nullptr);
+}
+
+std::optional<Cap> ParseCap(const std::vector<std::uint8_t>& file, std::string* why) {
+    const auto fail = [&](const char* w) -> std::optional<Cap> {
+        if (why != nullptr) {
+            *why = w;
+        }
+        return std::nullopt;
+    };
+    constexpr std::size_t kName = 64;
+    static constexpr char kMagic[] = "COOPCAP1";
+    if (file.size() < 12 || std::memcmp(file.data(), kMagic, 8) != 0) {
+        return fail("not a cap file");
+    }
+    const auto u32 = [&](std::size_t at) {
+        std::uint32_t v = 0;
+        std::memcpy(&v, file.data() + at, 4);
+        return v;   // (little-endian hosts only, as the look files)
+    };
+    const std::uint32_t count = u32(8);
+    Cap out;
+    std::size_t at = 12;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        if (file.size() - at < kName + 8) {
+            return fail("the cap file is cut short");
+        }
+        const auto* name = file.data() + at;
+        CapBlocks b;
+        b.texture.assign(name, std::find(name, name + kName, std::uint8_t{0}));
+        b.block = u32(at + kName);
+        const std::uint32_t n = u32(at + kName + 4);
+        at += kName + 8;
+        if (b.block != 8 && b.block != 16) {
+            return fail("a cap entry has no block size");
+        }
+        if ((file.size() - at) / 4 < n) {
+            return fail("the cap file is cut short");
+        }
+        b.offsets.resize(n);
+        for (std::uint32_t k = 0; k < n; ++k) {
+            b.offsets[k] = u32(at + 4 * std::size_t{k});
+        }
+        at += 4 * std::size_t{n};
+        out.push_back(std::move(b));
+    }
+    return out;
+}
+
+std::size_t PaintCap(const Cap& cap, const std::string& name, CoopLookPaint::Format format,
+                     std::span<const std::uint8_t> green, std::vector<std::uint8_t>& texels, std::uint32_t colour,
+                     double base) {
+    const std::size_t step = CoopLookPaint::BlockBytes(format);
+    const std::size_t size = std::min(green.size(), texels.size());
+    const std::span<std::uint8_t> out(texels);
+    std::size_t changed = 0;
+    for (const CapBlocks& b : cap) {
+        if (b.texture != name || b.block != step) {
+            continue;
+        }
+        for (const std::uint32_t at : b.offsets) {
+            if (at % step != 0 || at > size || size - at < step) {
+                continue;
+            }
+            changed += CoopLookPaint::Recolour(format, green.subspan(at, step), out.subspan(at, step),
+                                               {{0, colour & 0xFFFFFFu, T::Takes::green, base}});
+        }
+    }
+    return changed;
+}
+
+CoopLookTunic::Texels TunicPainted(const CoopLookTunic::Texels& green, const TunicPaint& paint, const Cap* cap) {
+    // The tile's average (tunic.py average_luma); with no tile in the file each texture its own.
+    double base = 0;
+    for (const CoopLookTunic::Texture& t : green) {
+        if (t.name == kTunicTile) {
+            base = CoopLookPaint::AverageLuma(Format::bc3, t.texels);
+            break;
+        }
+    }
+    CoopLookTunic::Texels out = green;
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        CoopLookTunic::Texture& t = out[i];
+        for (const TunicTexture& entry : TunicTextures()) {
+            if (t.name != entry.name) {
+                continue;
+            }
+            if (paint.tunic) {
+                CoopLookPaint::Recolour(entry.format, t.texels, t.texels,
+                                        {{0, *paint.tunic & 0xFFFFFFu, entry.takes, base}});
+            }
+            // Then the cap's own blocks, from green's texels: over the tunic's colour.
+            if (paint.cap && cap != nullptr) {
+                PaintCap(*cap, t.name, entry.format, green[i].texels, t.texels, *paint.cap, base);
+            }
+            break;
         }
     }
     return out;
@@ -314,6 +523,87 @@ CoopLookTunic::Texels BootsTexels(const CoopLookTunic::Texels& gear, const Weare
         for (CoopLookTunic::Texture& t : own) {
             t.name = BootsName(t.name, l.letter);
             Mark(t.texels, static_cast<unsigned char>(l.letter));
+            out.push_back(std::move(t));
+        }
+    }
+    return out;
+}
+
+std::string PuppetTunicsName(const TunicPaints& paints) {
+    if (paints.empty()) return kPuppetTunicsBase;
+    std::string name = kPuppetTunicsBase;
+    char hex[8];
+    for (const auto& [colour, paint] : paints) {
+        std::snprintf(hex, sizeof hex, "%06X", static_cast<unsigned>(paint.tunic.value_or(0x30D040u) & 0xFFFFFFu));
+        name += "|" + colour + "=" + hex;
+        if (paint.cap) {
+            std::snprintf(hex, sizeof hex, "%06X", static_cast<unsigned>(*paint.cap & 0xFFFFFFu));
+            name += std::string("+cap") + hex;
+        }
+    }
+    return name;
+}
+
+namespace {
+// The game's own child tunic body: the mean colour of its dark tile's green end colours (its own texture, ASTC),
+// read from `green`; nothing when the file has no such texture or no green in it.
+std::optional<std::uint32_t> GameDarkColour(const CoopLookTunic::Texels& green) {
+    for (const CoopLookTunic::Texture& t : green) {
+        if (t.name != "Angin_Tile_A_Dark_Alb") continue;
+        double sum[3] = {0, 0, 0};
+        std::size_t n = 0;
+        const auto lin = [](double v) { v /= 255.0; return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); };
+        for (const CoopLookPaint::Rgb& c : CoopLookPaint::Ends(Format::astc, t.texels)) {
+            if (!CoopLookPaint::IsGreen(c)) continue;
+            for (int k = 0; k < 3; ++k) sum[k] += lin(c[static_cast<std::size_t>(k)]);
+            ++n;
+        }
+        if (n == 0) return std::nullopt;
+        std::uint32_t out = 0;
+        for (int k = 0; k < 3; ++k) {
+            const double l = sum[k] / static_cast<double>(n);
+            const double v = l <= 0.0031308 ? l * 12.92 : 1.055 * std::pow(l, 1 / 2.4) - 0.055;
+            out = out << 8 | static_cast<std::uint32_t>(std::clamp(v, 0.0, 1.0) * 255.0 + 0.5);
+        }
+        return out;
+    }
+    return std::nullopt;
+}
+}  // namespace
+
+CoopLookTunic::Texels PuppetTunicsTexels(const std::vector<std::pair<std::string, CoopLookTunic::Texels>>& copies,
+                                         const CoopLookTunic::Texels& green, const TunicPaints& paints, const Cap* cap) {
+    CoopLookTunic::Texels out;
+    for (const auto& [colour, texels] : copies) {
+        const auto paint = paints.find(colour);
+        if (paint == paints.end()) {
+            out.insert(out.end(), texels.begin(), texels.end());
+            continue;
+        }
+        // (none, or the preset green 30D040: the game's own green, as the player's own Link wears it (TunicPainting);
+        // painted, 30D040 is a lime lighter than the game's tunic, row 243)
+        const bool own = !paint->second.tunic || (*paint->second.tunic & 0xFFFFFFu) == coop::protocol::slot_color(3);
+        const CoopLookTunic::Texels painted =
+            TunicPainted(green, own ? TunicPaint{std::nullopt, paint->second.cap} : paint->second, cap);   // (the trim too)
+        std::optional<CoopLookTunic::Texels> darker;   // (the dark tile's: the main tile in the darker colour)
+        for (std::size_t i = 0; i < texels.size(); ++i) {
+            CoopLookTunic::Texture t = texels[i];   // (its name and offset: the copy's)
+            if (i < painted.size() && painted[i].texels.size() == t.texels.size()) {
+                t.texels = painted[i].texels;
+            } else if (t.name.find("_Dark_") != std::string::npos && !painted.empty() &&   // (by its name: any order)
+                       texels[0].texels.size() == t.texels.size()) {
+                if (!darker) {
+                    const auto scaled = [](std::uint32_t v) {
+                        return static_cast<std::uint32_t>(static_cast<float>(v & 0xFF) * kDarkScale + 0.5f);
+                    };
+                    const auto darkened = [&](std::uint32_t c) { return scaled(c >> 16) << 16 | scaled(c >> 8) << 8 | scaled(c); };
+                    // (the game's own: its own dark tile's colour, read from green, as it is; else the preset's, scaled)
+                    const std::optional<std::uint32_t> own_dark = own ? GameDarkColour(green) : std::nullopt;
+                    darker = TunicPainted(green, own_dark ? *own_dark
+                                                           : darkened(own ? 0x30D040u : *paint->second.tunic));
+                }
+                if (!darker->empty() && (*darker)[0].texels.size() == t.texels.size()) t.texels = (*darker)[0].texels;
+            }
             out.push_back(std::move(t));
         }
     }

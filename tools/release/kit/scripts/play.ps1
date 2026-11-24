@@ -18,12 +18,17 @@ param(
     [switch]$Hookshot
 )
 $ErrorActionPreference = 'Stop'
+# The marker the co-op module looks for: a game started without it (its own start file by hand) says in the chat to use
+# Start Squadala (player report 225). Every game this script starts inherits it.
+$env:OOT_COOP_KIT_START = '1'
 . (Join-Path $PSScriptRoot 'coop-ini.ps1')
 . (Join-Path $PSScriptRoot 'kit-paths.ps1')
 . (Join-Path $PSScriptRoot 'hosting.ps1')
 . (Join-Path $PSScriptRoot 'relay-join.ps1')
 . (Join-Path $PSScriptRoot 'invite.ps1')
 $kit = Split-Path -Parent $PSScriptRoot
+# (Start Squadala's start log: this script's lines too, when start.ps1 began one, kit-paths.ps1 Start-KitStartLog)
+[void](Start-KitStartLog $kit)
 $emu = Join-Path $kit 'emulator'
 $exe = Join-Path $emu 'lichii.exe'
 $ini = Join-Path $emu 'user\config\coop.ini'
@@ -120,7 +125,12 @@ if (-not $NoUpdate -and (Test-Path $updater)) {
             '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$updater`"", '-Status', '-Kit', "`"$kit`"")
         if ($check.WaitForExit(15000)) { $status = ([System.IO.File]::ReadAllText($out)).Trim() } else {
             $check.Kill()
-            $status = 'failed GitHub did not answer in 15 s'
+            # update.ps1 -Status prints its line before its shortcut scan (0.11.9): a line already in the file is the
+            # answer, and only a silent check is "no answer". (0.11.5-0.11.8 printed it last, after a scan that took
+            # 30 s on a Desktop full of project folders.)
+            $partial = ''
+            try { $partial = ([System.IO.File]::ReadAllText($out)).Trim() } catch { }
+            $status = if ($partial) { $partial } else { 'failed the check did not answer in 15 s' }
         }
     } catch { $status = "failed $($_.Exception.Message)" }
     Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
@@ -144,8 +154,10 @@ if (-not $NoUpdate -and (Test-Path $updater)) {
             # play.ps1 starts the game afterwards.
             $copy = Join-Path ([System.IO.Path]::GetTempPath()) ('oot-coop-update-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
             Copy-Item -LiteralPath $updater -Destination $copy
+            $logWas = Suspend-KitStartLog   # (the update writes the start log itself meanwhile)
             & $ps -NoProfile -ExecutionPolicy Bypass -File $copy -Kit $kit -Launch
             $code = $LASTEXITCODE
+            Resume-KitStartLog $logWas
             Remove-Item -LiteralPath $copy -Force -ErrorAction SilentlyContinue
             if ($code -eq 3) {
                 $next = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'play.ps1'))
@@ -153,6 +165,7 @@ if (-not $NoUpdate -and (Test-Path $updater)) {
                     if ($pair[1]) { $next += $pair }
                 }
                 if ($Hookshot) { $next += '-Hookshot' }
+                [void](Suspend-KitStartLog)   # (the new play.ps1 goes on in the start log)
                 & $ps @next -NoUpdate
                 exit $LASTEXITCODE
             }
@@ -175,23 +188,41 @@ if ($Hookshot) {
     # yet: the step runs after the first build, and the second pass builds the mod's code in (a few minutes).
     $csDone = $false
     $csMods = ''
+    # The size-table merge (Invoke-KitSizeTableMerge: parks the pack's menu files in <pack>\_coop-menus or puts them
+    # back) BEFORE every build-need check, not only before the game starts: the need check puts co-op's Characters
+    # tab's code patch in or out by whether its files are parked (Sync-KitCharselNativePatch), so the game is built
+    # for the menus it will read. The tab's code over parked (the game's own) menu files said MsgNotFound on slot 0,
+    # lost the Map tab and left L dead. After a build (its pack step may make the pack again) the loop merges and
+    # checks once more. The start's own merge after the self-tunic step (Use-KitPuppetPack) still runs: merge_self_models
+    # needs your tunic tile there (row 265). The original game (coop-options.ini original_game) touches no size table.
+    $originalGame = @(Get-Content (Join-Path $kit 'coop-options.ini') -ErrorAction SilentlyContinue |
+        Where-Object { $_ -match '^\s*original_game\s*=\s*(on|1|yes|true)\s*$' }).Count -gt 0
+    function Invoke-KitStartMerge {
+        if (-not $exe -or $originalGame) { return }
+        foreach ($l in @(Invoke-KitSizeTableMerge $kit (Split-Path -Parent $exe))) { Write-Host $l }
+    }
     # A failed or declined build after the step changed the mods folder (review-geno-0118): the folder goes back to what
     # the game was built with (Undo-KitCharacterSelect), and when that leaves nothing to build the game starts as it
     # was. $true: start it. The player's answer stays, so the next start tries again.
     function Restore-KitCharacterSelectStart {
         if (-not $csMods) { return $false }
         try { if (-not (Undo-KitCharacterSelect $kit $csMods)) { return $false } } catch { return $false }
-        Write-Host 'Character Select: the game could not be built with it, so it is taken back out for now and the game starts as it was (the next start tries again; character_select = no in coop-options.ini stops it).' -ForegroundColor Yellow
+        Write-Host 'Character Select: the game could not be built with it, so it is taken back out for now and the game starts as it was (the next start tries again).' -ForegroundColor Yellow
+        Invoke-KitStartMerge   # (his size table gone: the menus may come back, and the tab's code with them)
         $n = Get-KitHookshotNeed $kit
         return (-not $n -or $n -eq 'offline')
     }
-    for ($pass = 1; $pass -le 2; $pass++) {
+    # (passes: the first build when there is no game; Character Select's step and its build; a merge and need check
+    # after each build, until one needs no build)
+    for ($pass = 1; $pass -le 4; $pass++) {
+    $builtNow = $false
     if (-not $csDone -and $exe) {
         $csDone = $true
         $csMods = Join-Path (Split-Path -Parent $exe) 'mods'
         try { [void](Invoke-KitCharacterSelectStep $kit (Split-Path -Parent $exe)) }
         catch { Write-Host "Character Select was not installed: $($_.Exception.Message). The game starts without it." -ForegroundColor Yellow }
     }
+    Invoke-KitStartMerge
     $need = Get-KitHookshotNeed $kit
     if ($need -eq 'offline') {
         # (no internet and only the randomizer's download left: the module step is not run again on every start)
@@ -216,6 +247,7 @@ if ($Hookshot) {
         } else {
             $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
             & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'hookshot-build.ps1')
+            $builtNow = $LASTEXITCODE -eq 0
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "The co-op game could not be brought up to date (above: why). $hsRetry to try again."
                 if (Restore-KitCharacterSelectStart) { $built = $false }
@@ -227,7 +259,7 @@ if ($Hookshot) {
     }
     # (the game is built with the mods folder as it is now: the state kept for an undo goes)
     if ($built -and $csMods) { try { Confirm-KitCharacterSelect $kit $csMods } catch { } }
-    if ($csDone -or -not $exe) { break }
+    if (-not $exe -or ($csDone -and -not $builtNow)) { break }
     }
     if (-not $exe) {
         Write-Host "The co-op game isn't set up yet: none in $hsGame. $(if ($hsOnly) { 'Start ""Start Squadala.bat"" again and let it finish (SETUP.md).' } else { 'Run Build-Hookshot-Coop.bat and let it finish (SETUP.md, ""Play on Hookshot"").' })"
@@ -240,6 +272,48 @@ if ($Hookshot) {
     }
     $emu = Split-Path -Parent $exe
     $ini = Join-Path $emu 'coop.ini'
+}
+# The autotest's kit mode only (OOT_COOP_TEST_KIT): starts the game with its window shown WITHOUT activation
+# (STARTF_USESHOWWINDOW, SW_SHOWNOACTIVATE), as tools/autotest/placement.py does for the games it starts itself, so a
+# test game opening does not take the focus from the window being worked in. Start-Process cannot do that. The
+# environment is this process's (CreateProcess with a null environment block), as Start-Process gives it. The
+# player's own start below stays Start-Process. Returns the process id.
+function Start-KitTestGame([string]$Exe, [string]$Dir) {
+    if (-not ('KitNoActivate' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class KitNoActivate {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct STARTUPINFO {
+        public int cb; public string lpReserved, lpDesktop, lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool CreateProcessW(string app, string cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags,
+        IntPtr env, string dir, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    public static int Start(string exe, string dir) {
+        STARTUPINFO si = new STARTUPINFO();
+        si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+        si.dwFlags = 1;        // STARTF_USESHOWWINDOW
+        si.wShowWindow = 4;    // SW_SHOWNOACTIVATE
+        PROCESS_INFORMATION pi;
+        if (!CreateProcessW(exe, "\"" + exe + "\"", IntPtr.Zero, IntPtr.Zero, false, 0, IntPtr.Zero, dir, ref si, out pi))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return pi.dwProcessId;
+    }
+}
+'@
+    }
+    return [KitNoActivate]::Start($Exe, $Dir)
 }
 # Switches from coop-options.ini (the lines without a '#' in front), as variables for the game: your colour
 # (LICHII_COOP_COLOR, which the pack step below puts on your own Link) among them. A file of the kit is passed
@@ -255,7 +329,8 @@ function Set-KitOptionVariables {
         $tunicNote = ''
         if ($key -eq 'LICHII_COOP_COLOR' -and (Get-Command Get-KitTunic -ErrorAction SilentlyContinue)) {
             $t = Get-KitTunic $value
-            if ($t) { $tunicNote = "   (your tunic: $t, the nearest of the ten tunic colours)" }
+            # (Longshot paints your own Link in the exact colour; the others' copy of you wears the preset)
+            if ($t) { $tunicNote = "   (the tunic the others see: $t, the nearest of the ten tunic colours)" }
         }
         Write-Host "Option: $key=$value$tunicNote"
     }
@@ -279,12 +354,19 @@ if ($Mode -eq 'title') {
         if ($testKit -and $v -in 'LICHII_COOP_SERVER', 'LICHII_COOP_PASSWORD') { continue }
         Remove-Item -Path "env:$v" -ErrorAction SilentlyContinue
     }
+    # -Painted: the module paints your exact tunic colour on green's files (coop_look_live.cpp).
     [void](Use-KitPuppetPack (Join-Path $emu 'mods\contents\0400486024DEC000\coop-puppet\coop_puppet.json') (Join-Path $kit 'tools\puppet_pack') @(
         'Puppet pack: not in the co-op game, so the other players show as names only (the game''s chat says so too).',
-        $(if ($hsOnly) { '  It is made from your game file (the one hookshot\game-files.txt names): put that file back, then start again.' } else { '  Run Build-Hookshot-Coop.bat -Game <your .nup> again (SETUP.md, "Play on Hookshot").' })))
-    foreach ($l in @(Invoke-KitSizeTableMerge $kit $emu)) { Write-Host $l }   # (#48: a seed from OOTRR's website)
+        $(if ($hsOnly) { '  It is made from your game file (the one hookshot\game-files.txt names): put that file back, then start again.' } else { '  Run Build-Hookshot-Coop.bat -Game <your .nup> again (SETUP.md, "Play on Hookshot").' })) -Painted)
+    foreach ($l in @(Invoke-KitSizeTableMerge $kit $emu)) { Write-Host $l }   # (#48: a seed from OOTRR's website; after the self-tunic step: row 265)
     foreach ($l in @(Invoke-KitDiscordStatus $kit $emu)) { Write-Host $l }   # ('Playing Squadala!' on Discord)
-    $game = Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) -PassThru
+    foreach ($l in @(Get-KitSteamInputHint)) { Write-Host $l -ForegroundColor Yellow }   # (player report 202: a Steam Controller outside Steam)
+    if ($testKit) {   # (the autotest's kit mode: no window activation, Start-KitTestGame above)
+        $game = Get-Process -Id (Start-KitTestGame $exe (Split-Path -Parent $exe))
+    } else {
+        $game = Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) -PassThru
+    }
+    if ($game) { try { & (Join-Path $PSScriptRoot 'problem-send.ps1') -Watch $game.Id } catch { } }   # (sending on: after it closes)
     if ($testKit -and $game) { [System.IO.File]::WriteAllText($testKit, "$($game.Id)`n") }
     Write-Host 'Game started. Host or Join in the game''s menu, first tab Multiplayer (controller: Minus and Plus together, or Home;'
     Write-Host 'keyboard: F1; on the title screen Minus alone). Same house: Host, then "Same network". On a VPN: Host, then "VPN".'
@@ -539,6 +621,7 @@ if ($Hookshot) {
     $optionsFile = Join-Path $kit 'coop-options.ini'
     if ((Test-Path $optionsFile) -and @(Get-Content $optionsFile -ErrorAction SilentlyContinue |
             Where-Object { $_ -match '^\s*original_game\s*=\s*(on|1|yes|true)\s*$' }).Count -gt 0) {
+        foreach ($l in @(Get-KitSteamInputHint)) { Write-Host $l -ForegroundColor Yellow }   # (player report 202: a Steam Controller outside Steam)
         Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
         Write-Host 'Original game is on (Co-op settings): the game started as it came, with no co-op and no mods.'
         Write-Host '  To have them back: the F1 menu''s "Original game" tab, then start the game again.'
@@ -547,13 +630,16 @@ if ($Hookshot) {
     # As the emulator below (kit-paths.ps1 Use-KitPuppetPack): the pack hints, your own tunic (#202), the
     # puppets off without a pack. The pack is in mods\contents (Build-Hookshot-Coop.bat installs it), and
     # Hookshot indexes its mod files once at start: this runs before Start-Process.
+    # -Painted: the module paints your exact tunic colour on green's files (coop_look_live.cpp).
     [void](Use-KitPuppetPack (Join-Path $emu 'mods\contents\0400486024DEC000\coop-puppet\coop_puppet.json') (Join-Path $kit 'tools\puppet_pack') @(
         'Puppet pack: not in the co-op game, so the other players show as names only (the game''s chat says so too).',
-        $(if ($hsOnly) { '  It is made from your game file (the one hookshot\game-files.txt names): put that file back, then start again.' } else { '  Run Build-Hookshot-Coop.bat -Game <your .nup> again (SETUP.md, "Play on Hookshot").' })))
-    foreach ($l in @(Invoke-KitSizeTableMerge $kit $emu)) { Write-Host $l }   # (#48: a seed from OOTRR's website)
+        $(if ($hsOnly) { '  It is made from your game file (the one hookshot\game-files.txt names): put that file back, then start again.' } else { '  Run Build-Hookshot-Coop.bat -Game <your .nup> again (SETUP.md, "Play on Hookshot").' })) -Painted)
+    foreach ($l in @(Invoke-KitSizeTableMerge $kit $emu)) { Write-Host $l }   # (#48: a seed from OOTRR's website; after the self-tunic step: row 265)
     foreach ($l in @(Invoke-KitDiscordStatus $kit $emu)) { Write-Host $l }   # ('Playing Squadala!' on Discord)
     $started = Get-Date
+    foreach ($l in @(Get-KitSteamInputHint)) { Write-Host $l -ForegroundColor Yellow }   # (player report 202: a Steam Controller outside Steam)
     $game = Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) -PassThru
+    if ($game) { try { & (Join-Path $PSScriptRoot 'problem-send.ps1') -Watch $game.Id } catch { } }   # (sending on: after it closes)
     Write-Host "Game started. Its log (longshot_log.txt in the game's logs folder) says 'coop: module loaded', then 'coop: connected'."
     exit 0
 }
@@ -585,7 +671,9 @@ if (Test-KitPuppetPackStale $packJson (Join-Path $kit 'tools\puppet_pack')) {
     '  Make it once with make-puppet-pack.cmd (SETUP.md, "The puppet pack").'))
 
 $started = Get-Date
+foreach ($l in @(Get-KitSteamInputHint)) { Write-Host $l -ForegroundColor Yellow }   # (player report 202: a Steam Controller outside Steam)
 $game = Start-Process -FilePath $exe -WorkingDirectory $emu -PassThru
+if ($game) { try { & (Join-Path $PSScriptRoot 'problem-send.ps1') -Watch $game.Id } catch { } }   # (sending on: after it closes)
 Write-Host 'Emulator started. Load the game; the co-op panel is in the top-left corner of the game.'
 
 # Join.bat: watch the emulator's log until the join worked or clearly did not, and then say

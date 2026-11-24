@@ -554,7 +554,7 @@ try {
         Check (@($o8 -match "^\s*#?\s*$key\s*=").Count -eq 1) "beta7 -> beta8: coop-options.ini gains $key once"
     }
     $out = & $ps -NoProfile -ExecutionPolicy Bypass -File "$k7\scripts\update.ps1" -Status -Kit $k7 -Api $list8 2>&1
-    Check (-not (($out | Where-Object { "$_".Trim() }) -join '')) 'beta7 -> beta8: after it, the start check is quiet'
+    Check ((($out | Where-Object { "$_".Trim() }) -join '') -eq 'current') 'beta7 -> beta8: after it, the start check is quiet'
     # Failures say why and how to update by hand.
     $none = Join-Path $e2e 'no-such-list.json'
     $out = & $ps -NoProfile -ExecutionPolicy Bypass -File "$k7\scripts\update.ps1" -Status -Kit $k7 -Api $none 2>&1
@@ -715,7 +715,7 @@ try {
     & $playerKept 'revert, after Revert.bat'
     # 3. The start does not update straight back: only a release newer than the one left, and then it asks.
     $out = & $ps -NoProfile -ExecutionPolicy Bypass -File "$rk\scripts\update.ps1" -Status -Kit $rk -Api $l1 2>&1
-    Check (-not (($out | Where-Object { "$_".Trim() }) -join '')) "revert: the start check is quiet about 0.11.1, the version left [$($out -join '|')]"
+    Check ((($out | Where-Object { "$_".Trim() }) -join '') -eq 'current') "revert: the start check is quiet about 0.11.1, the version left [$($out -join '|')]"
     $out = & $ps -NoProfile -ExecutionPolicy Bypass -File "$rk\scripts\update.ps1" -Check -Kit $rk -Api $l1 2>&1
     Check (($out -join ' ') -match 'You stay on v0\.11\.0 \(you went back from v0\.11\.1\)') "revert: -Check says the kit stays [$($out -join ' ')]"
     $out = & $ps -NoProfile -ExecutionPolicy Bypass -File "$rk\scripts\update.ps1" -Status -Kit $rk -Api $l2 2>&1
@@ -893,6 +893,24 @@ try {
         New-Link "$one\desktop\Play Squadala.lnk" "$k\Start OoT Co-op.bat"
         $st = & $ps -NoProfile -ExecutionPolicy Bypass -File "$k\scripts\update.ps1" -Kit $k -Status -Api $l4 2>&1
         Check (-not (Test-Path "$k\Start OoT Co-op.bat") -and (Get-Link "$one\desktop\Play Squadala.lnk") -ieq "$k\Start Squadala.bat" -and ($st -join '') -notmatch 'shortcut') "one start file: -Status removes a stray Start OoT Co-op.bat after moving its link, and prints only its status [$($st -join ' ')]"
+        # The shortcut scan is bounded (0.11.9, row 196: a Desktop of project folders took 30 s to walk and -Status missed
+        # play.ps1's 15 s): a shortcut 3 folders down is still moved, one 6 folders down is not looked at, and with
+        # no time left (OOT_COOP_LINKS_SECONDS=0) none is.
+        New-Item -ItemType Directory -Force "$one\startmenu\Squadala\a\b\c\d\e" | Out-Null
+        New-Link "$one\startmenu\Squadala\a\b\Shallow.lnk" "$k\Gone.bat"
+        New-Link "$one\startmenu\Squadala\a\b\c\d\e\Deep.lnk" "$k\Gone.bat"
+        $env:OOT_COOP_LINKS_SECONDS = '0'
+        $null = & $ps -NoProfile -ExecutionPolicy Bypass -File "$k\scripts\update.ps1" -Kit $k -Status -Api $l4 2>&1
+        Remove-Item env:OOT_COOP_LINKS_SECONDS
+        Check ((Get-Link "$one\startmenu\Squadala\a\b\Shallow.lnk") -ieq "$k\Gone.bat") 'one start file: -Status with no scan time left moves no shortcut'
+        $null = & $ps -NoProfile -ExecutionPolicy Bypass -File "$k\scripts\update.ps1" -Kit $k -Status -Api $l4 2>&1
+        Check ((Get-Link "$one\startmenu\Squadala\a\b\Shallow.lnk") -ieq "$k\Start Squadala.bat") 'one start file: -Status moves a shortcut 3 folders down'
+        Check ((Get-Link "$one\startmenu\Squadala\a\b\c\d\e\Deep.lnk") -ieq "$k\Gone.bat") 'one start file: -Status does not walk 5 folders down'
+        $upd = [System.IO.File]::ReadAllText($updater)
+        Check ($upd -match "(?s)if \(\`$Status\) \{.*?WriteLine\(.*?'current'.*?Flush\(\).*?Update-KitStartLinks") 'update.ps1 -Status prints its line (flushed) before the shortcut scan'
+        Check ($upd.Contains("else { 'current' }")) 'update.ps1 -Status says current when there is nothing to say (a cut-off check is then an answer, not a silence)'
+        $playTxt = [System.IO.File]::ReadAllText((Join-Path $release 'kit\scripts\play.ps1'))
+        Check ($playTxt -match '\$check\.Kill\(\)[\s\S]{0,700}\$partial') 'play.ps1 keeps a line -Status already printed when it stops a slow check'
         # play.ps1 with -NoUpdate runs -Tidy (the start right after an older updater).
         $play = [System.IO.File]::ReadAllText((Join-Path $release 'kit\scripts\play.ps1'))
         Check ($play -match 'if \(\$NoUpdate -and \(Test-Path \$updater\)\) \{[\s\S]{0,400}-Tidy') 'one start file: play.ps1 -NoUpdate runs update.ps1 -Tidy'

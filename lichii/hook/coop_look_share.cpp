@@ -45,6 +45,14 @@ void Share::SetCustom(std::uint32_t options) {
     due_ = due_ || character_ != 0;   // (with Link nothing of it is sent)
 }
 
+std::vector<std::size_t> OptionsToHold(const std::array<std::optional<std::int32_t>, 6>& values) {
+    std::vector<std::size_t> out;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (values[i] && *values[i] != 0) out.push_back(i);
+    }
+    return out;
+}
+
 std::uint32_t Share::CustomOf(std::uint8_t number) const {
     const auto it = their_custom_.find(number);
     return it == their_custom_.end() ? std::uint32_t{0} : it->second;
@@ -119,7 +127,9 @@ bool Share::OnEvent(const coop::net::Event& event) {
                     continue;
                 }
                 if (it->part == kCustomPart) {
-                    custom = it->colour & 0xFFFFFFu;
+                    // (0.11.9, one customizer: a 0.11.8 game still sends its Character Select options; they are taken
+                    // out of the parts and not kept, so no puppet is dressed by the mod's routine with them)
+                    custom = 0;
                 } else if ((it->colour & 0xFF0000u) == kCharacterMark && (it->colour & 0xFFFFu) <= kCharacterMax) {
                     character = static_cast<std::uint16_t>(it->colour & 0xFFFFu);
                 }
@@ -230,10 +240,14 @@ std::optional<std::size_t> Share::CopyOf(std::uint8_t number) const {
         return std::nullopt;
     }
     const Ready& r = ready_[*slot - 1];
-    if (r.copy == 0 || r.player != number) {
-        return std::nullopt;
+    if (r.copy != 0 && r.player == number) {
+        return r.copy;
     }
-    return r.copy;
+    // (row 198) Not painted for them yet: the copy their first job paints (Jobs: never the one painted last), in
+    // the game's colours or an older look until then, but marked as a copy. Never nothing: the puppet would wear the
+    // game's own item, the very texture your own Link's colour is drawn over.
+    const std::size_t first = kCopiesPerSlot * (*slot - 1) + 1;
+    return r.copy == first ? first + 1 : first;
 }
 
 void Share::EnableSlots(bool on) {

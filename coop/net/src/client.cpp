@@ -10,6 +10,7 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <utility>
@@ -19,6 +20,7 @@
 #include "coop/net/enet_throttle.hpp"
 #include "coop/net/enet_waiting.hpp"
 #include "coop/protocol/codec.hpp"
+#include "coop/protocol/join_password.hpp"
 
 namespace coop::net {
 
@@ -166,6 +168,10 @@ std::string_view refuse_reason_text(proto::RefuseReason reason) {
 }
 
 std::string_view refuse_text(const Event& event) {
+  if (event.same_network_key && event.refuse_reason == proto::RefuseReason::bad_password) {
+    return "this host asks for its join password on its own network too: type the "
+           "password the host sent you, then join again";
+  }
   if (event.reconnecting && event.refuse_reason == proto::RefuseReason::bad_password) {
     return "the host restarted its server (it has a new join password now): ask the host "
            "for the new invite, then start Join.bat again with it";
@@ -372,7 +378,9 @@ void Client::service(std::uint32_t wait_ms) {
           if (to_small) use_small_datagrams();
           if (state_ == State::connecting || state_ == State::handshaking ||
               state_ == State::connected) {
-            end_attempt(to_small ? DropReason::small_path : DropReason::connection_lost);
+            end_attempt(to_small                          ? DropReason::small_path
+                        : event.data == kDisconnectBacklog ? DropReason::backlog
+                                                           : DropReason::connection_lost);
           }
         }
         break;
@@ -417,10 +425,15 @@ void Client::service(std::uint32_t wait_ms) {
     link_.loss_percent = static_cast<std::uint32_t>(
         static_cast<std::uint64_t>(peer_->packetLoss) * 100 / ENET_PEER_PACKET_LOSS_SCALE);
     link_.mtu = peer_->mtu;
+    const std::size_t outgoing = outgoing_bytes(*peer_);
+    link_.outgoing_bytes = static_cast<std::uint32_t>(std::min<std::size_t>(outgoing, 0xffffffffu));
     if ((state_ == State::handshaking || state_ == State::connected) &&
         full_datagrams_lost(path_mark_, *peer_, host_->serviceTime)) {
       use_small_datagrams();
       end_attempt(DropReason::small_path);
+    } else if ((state_ == State::handshaking || state_ == State::connected) && outgoing > kMaxOutgoingBytes) {
+      // Row 260: ENet would hold all we send to a server that takes less, without end; connect again.
+      end_attempt(DropReason::backlog);
     }
   }
   enet_host_flush(host_);
@@ -528,6 +541,7 @@ void Client::on_receive(const std::uint8_t* data, std::size_t size,
       event.kind = EventKind::refused;
       event.refuse_reason = refused->reason;
       event.reconnecting = ever_welcomed_;
+      event.same_network_key = used_same_network_key_;
       push(std::move(event));
     } else if (channel == proto::kChannelProgress &&
                early_.size() < config_.max_early_messages) {
@@ -585,6 +599,7 @@ void Client::on_connected_message(proto::Message message, std::uint8_t channel) 
     Event event;
     event.kind = EventKind::refused;
     event.refuse_reason = refused->reason;
+    event.same_network_key = used_same_network_key_;
     push(std::move(event));
     return;
   }
@@ -794,11 +809,20 @@ void Client::refuse_unencrypted() {
 bool Client::answer_challenge(const proto::JoinChallenge& challenge,
                               std::span<const std::uint8_t> packet) {
   if (!challenge.key_share || !key_pair_) return false;
+  // No password typed and a host on this network: the same-network key (row
+  // 251), for every way a game joins (the menus, coop.ini, the launcher's
+  // variables, a rejoin).
+  unsigned char b[4];
+  std::memcpy(b, &address_host_, 4);   // (ENet's form: the bytes in network order)
+  const std::string password(proto::answer_password(
+      config_.join_password, (std::uint32_t{b[0]} << 24) | (std::uint32_t{b[1]} << 16) |
+                                 (std::uint32_t{b[2]} << 8) | std::uint32_t{b[3]}));
+  used_same_network_key_ = password == proto::kSameNetworkPassword;
   std::optional<proto::TrafficKeys> keys =
-      proto::derive_traffic_keys(*key_pair_, *challenge.key_share, config_.join_password,
+      proto::derive_traffic_keys(*key_pair_, *challenge.key_share, password,
                                  hello_packet_, packet, /*is_server=*/false);
   const proto::JoinProofBytes proof = proto::join_proof(
-      config_.join_password, challenge.nonce, key_pair_->share(), *challenge.key_share);
+      password, challenge.nonce, key_pair_->share(), *challenge.key_share);
   key_pair_.reset();
   hello_packet_.clear();
   if (!keys) return false;
@@ -829,13 +853,20 @@ bool Client::send_packet(std::span<const std::uint8_t> plain, std::uint8_t chann
     if (!sealed) return false;
     bytes = *sealed;
   }
-  ENetPacket* packet =
-      enet_packet_create(bytes.data(), bytes.size(), packet_flags(channel));
+  const std::uint32_t flags = packet_flags(channel);
+  if ((flags & ENET_PACKET_FLAG_RELIABLE) == 0 && link_.outgoing_bytes > kSlowPeerBytes) {
+    // Row 260: a backlog to the server: an unreliable message (the next one replaces it) is not queued.
+    ++link_.unreliable_skipped;
+    return false;
+  }
+  ENetPacket* packet = enet_packet_create(bytes.data(), bytes.size(), flags);
   if (packet == nullptr) return false;
   if (enet_peer_send(peer_, channel, packet) != 0) {
     enet_packet_destroy(packet);
     return false;
   }
+  link_.outgoing_bytes = static_cast<std::uint32_t>(
+      std::min<std::size_t>(std::size_t{link_.outgoing_bytes} + bytes.size(), 0xffffffffu));
   link_.largest_sent = std::max<std::uint32_t>(link_.largest_sent,
                                                static_cast<std::uint32_t>(bytes.size()));
   return true;

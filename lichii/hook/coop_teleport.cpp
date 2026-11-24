@@ -288,6 +288,39 @@ std::string ArrivalEvent(std::string_view scene, std::string_view start) {
     return "Dm_SY_BancChangeArrive";
 }
 
+bool IsKnownScene(std::string_view scene) {
+    if (scene.empty()) {
+        return false;
+    }
+    if (scene == "BossRushIntervalRoom") {  // a Banc scene with no entrance of ours (coop_difficulty_spots.inc)
+        return true;
+    }
+    for (const auto& p : kStartPoints) {
+        if (p.scene == scene) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<std::string> ScenesLike(std::string_view name, std::size_t most) {
+    std::vector<std::string> out;
+    if (name.empty()) {
+        return out;
+    }
+    std::string_view last;
+    for (const auto& p : kStartPoints) {
+        if (out.size() >= most) {
+            break;
+        }
+        if (p.scene != last && p.scene.substr(0, name.size()) == name) {  // (the list keeps a scene's rows together)
+            out.emplace_back(p.scene);
+        }
+        last = p.scene;
+    }
+    return out;
+}
+
 std::optional<std::string> NearestStart(std::string_view scene, const Vec& to) {
     const StartPoint* best = nullptr;
     float best_d = 0.0f;

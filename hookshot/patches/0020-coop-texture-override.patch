@@ -1,4 +1,4 @@
-From 8a060817231272b5ce3ebfaa56f3d6ea9a169d92 Mon Sep 17 00:00:00 2001
+From 1d07bca716a77bf606f717a5daf05d8a0887d65f Mon Sep 17 00:00:00 2001
 From: daurosk <354202035+daurosk@users.noreply.github.com>
 Date: Fri, 13 Nov 2026 20:38:47 -0900
 Subject: [PATCH] Co-op texture overrides: a module may have a texture drawn
@@ -27,10 +27,10 @@ The Link customizer paints Link's gear with it.
  create mode 100644 host/hos_coop_texture.h
 
 diff --git a/gpu/vk/vk_texture.cpp b/gpu/vk/vk_texture.cpp
-index 3d87a4e..c98e9c6 100644
+index 8c16a702..0994247e 100644
 --- a/gpu/vk/vk_texture.cpp
 +++ b/gpu/vk/vk_texture.cpp
-@@ -1060,8 +1060,40 @@ LevelGeo level_geo(const Texture& tex, uint32_t level) {   // (level: the image'
+@@ -1278,8 +1278,40 @@ LevelGeo level_geo(const Texture& tex, uint32_t level) {   // (level: the image'
      return g;
  }
  
@@ -72,7 +72,7 @@ index 3d87a4e..c98e9c6 100644
      uint64_t avail = 0;
      const uint8_t* p = host->gpu_ptr(gpu, &avail);
      // (below 1 TB the GPU address is the guest's: the storage as it was at the submit being replayed, where the game has
-@@ -1089,6 +1121,15 @@ const uint8_t* guest_bytes(uint64_t gpu, uint64_t n, std::vector<uint8_t>& scrat
+@@ -1304,6 +1336,15 @@ const uint8_t* guest_bytes(uint64_t gpu, uint64_t n, std::vector<uint8_t>& scrat
      }
      return scratch.data();
  }
@@ -86,9 +86,9 @@ index 3d87a4e..c98e9c6 100644
 +    return scratch.data();
 +}
  
- void widen_rows(uint8_t* dst, const uint8_t* src, size_t texels, int from, int to) {
-     const int comp = from / 3;
-@@ -1819,12 +1860,15 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
+ /// The alpha an RGB format widened to RGBA gets: one in the format's own encoding (by component size alone, SNORM8 read
+ /// -0.008, UNORM16 0.23 and the integer formats 255, 15360 or 0x3F800000)
+@@ -2215,13 +2256,16 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
      up_route = UP_CPU;
      if (tex.bc) return false;   // (no CPU path into BC3)
      // (the GPU's unswizzle reads guest memory as it is: not where the capture kept the storage as it was at its submit)
@@ -100,13 +100,14 @@ index 3d87a4e..c98e9c6 100644
          return up_route = UP_GPU, true;
      const bool linear = nvn_tex_is_linear(&tex.d);
      int widen_from = 0;
-     widened(tex.d.format ? vk_format(tex.nvn_format).format : tex.format, &widen_from);
+     const VkFormat src_vf = tex.d.format ? vk_format(tex.nvn_format).format : tex.format;
+     widened(src_vf, &widen_from);
 -    if (upload_all_zero(tex, total, dirty, widen_from != 0)) return true;
 +    if (!coop_over && upload_all_zero(tex, total, dirty, widen_from != 0)) return true;
      const int src_bpb = tex.bpb;
      const int out_bpb = tex.astc ? 4 : widen_from ? (widen_from == 3 ? 4 : widen_from == 6 ? 8 : 16) : src_bpb;
      const uint32_t copy_layers = tex.type == VK_IMAGE_TYPE_3D ? 1 : tex.layers;
-@@ -1904,7 +1948,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
+@@ -2301,7 +2345,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                                                    ? std::clamp(std::thread::hardware_concurrency() / 2, 1u, 8u) : 1u;
                      uint64_t avail = 0;
                      const uint8_t* direct = host->gpu_ptr(tex.gpu + from, &avail);
@@ -115,7 +116,7 @@ index 3d87a4e..c98e9c6 100644
                      const uint8_t* src = nullptr;
                      if (gather_parts) {
                      } else if (from < total && total - from >= need) {
-@@ -1912,6 +1956,8 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
+@@ -2309,6 +2353,8 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                      } else {
                          scratch.assign(need, 0);
                          if (from < total) host->gpu_read(tex.gpu + from, scratch.data(), total - from);
@@ -126,7 +127,7 @@ index 3d87a4e..c98e9c6 100644
                      const auto u0 = std::chrono::steady_clock::now();
 diff --git a/host/coop_texture.c b/host/coop_texture.c
 new file mode 100644
-index 0000000..118294a
+index 00000000..118294a5
 --- /dev/null
 +++ b/host/coop_texture.c
 @@ -0,0 +1,196 @@
@@ -328,7 +329,7 @@ index 0000000..118294a
 +}
 diff --git a/host/hos_coop_texture.h b/host/hos_coop_texture.h
 new file mode 100644
-index 0000000..d3be7a1
+index 00000000..d3be7a17
 --- /dev/null
 +++ b/host/hos_coop_texture.h
 @@ -0,0 +1,43 @@
@@ -376,10 +377,10 @@ index 0000000..d3be7a1
 +
 +#endif
 diff --git a/host/nvn_native.c b/host/nvn_native.c
-index 596c8ee..3937bbd 100644
+index e7b8a751..40c22aba 100644
 --- a/host/nvn_native.c
 +++ b/host/nvn_native.c
-@@ -759,6 +759,8 @@ NV(nvnTextureInitialize) {
+@@ -766,6 +766,8 @@ NV(nvnTextureInitialize) {
      const nvn_tex_builder *b = CTB(P(1));
      nvn_tex *o = TX(P(0));
      if (o->magic == NVN_MAGIC('T', 'E', 'X', 0) && o->serial) {   /* initialised again without Finalize */
@@ -388,8 +389,8 @@ index 596c8ee..3937bbd 100644
          live_del(o);
          rx_nvn_texture_released(o);
      }
-@@ -777,6 +779,11 @@ NV(nvnTextureInitialize) {
-     o->serial = new_serial();
+@@ -785,6 +787,11 @@ NV(nvnTextureInitialize) {
+     if (u_ == &detached_descriptor_only) { RET(1); return; }
      live_put(o);
      rx_nvn_texture_created(o);
 +    if (o->gpu && o->gpu < VBASE) {   /* (oot-remake-multiplayer, patch 0020: the textures a module may override) */
@@ -400,7 +401,7 @@ index 596c8ee..3937bbd 100644
      {   /* RX_NVN_WATCH_TEX=<w>x<h> (debugging): who writes the storage of textures that size (a page watch, with call
             stacks: hos_watch_guest_writes), for writes the dirty tracking misses */
          static int on = -1;
-@@ -792,6 +799,8 @@ NV(nvnTextureInitialize) {
+@@ -800,6 +807,8 @@ NV(nvnTextureInitialize) {
  }
  NV(nvnTextureFinalize) {
      nvn_tex *o = TX(P(0));

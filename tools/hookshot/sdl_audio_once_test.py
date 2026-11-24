@@ -177,7 +177,8 @@ def build_and_run(name, sdl_c, src, cc, work):
         r = run([cc, "-o", "harness.exe", *objs, "-luser32", "-lgdi32", "-lshell32", "-lole32", "-ladvapi32"])
         if r.returncode == 0:
             break
-        missing = sorted(set(re.findall(r"undefined symbol: (\w+)", r.stdout + r.stderr)))
+        # (Longshot 3.1: lld names a dllimport reference "__declspec(dllimport) <name>")
+        missing = sorted(set(re.findall(r"undefined symbol: (?:__declspec\(dllimport\) )?(\w+)", r.stdout + r.stderr)))
         if not missing:
             raise SystemExit("sdl_audio_once_test: the harness did not link:\n" + (r.stdout + r.stderr)[-3000:])
         with open(os.path.join(d, "stubs.c"), "a", newline="\n") as f:

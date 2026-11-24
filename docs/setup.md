@@ -85,6 +85,7 @@ The start window says what is wrong and what to do. What it checks:
 - **"Windows refused to let PowerShell write in this kit's folder (access denied)"**: Controlled folder access or another antivirus. The message says where to allow `powershell.exe`.
 - **"Controlled folder access protects <folder>"**: Windows Security's ransomware protection guards that folder (Documents, Desktop and others) and stops the game build writing there, even with real-time protection off. Move the kit to `C:\OoT-Coop`.
 - Whatever Windows said, `logs\windows-checks.txt` in the kit has what the start found. It is in the log zip `scripts\collect-logs.cmd` makes; when that zip cannot be made, it makes `coop-logs-windows-checks.zip` instead.
+- What the start window and the update said is in `hookshot\logs\start-log.txt` (the start before: `start-log.1.txt`), also in that zip (with the user and PC names masked).
 - **"The co-op game this kit built is not in <folder> any more"**: the built game folder was moved or deleted. Moved it? Answer **n**, move it back to that folder and start again. Otherwise answer **Y** and it is built again.
 - **"The co-op module hookshot_coop.dll is missing"**: antivirus took it, as in the line above: restore it, add the exclusion, start again. Building again does not help.
 - **"Files of this kit are missing"**: the unzip did not finish. Unzip the kit again.
@@ -94,9 +95,12 @@ The start window says what is wrong and what to do. What it checks:
 - **Not enough space:** the build warns below about 60 GB free. Free some space, or move the kit to a bigger drive.
 - **Note: another co-op kit is on this PC.** An older kit folder: you can delete it once this one works. The new kit takes your game file from it, so it does not ask again.
 - **The game closes at the start or the screen goes black:** check that your card has mesh shaders (above) and that its driver is up to date. Longshot's own open problems are on [Longshot's page](https://git.magicbean.dev/MagicBeanDev/Longshot/issues). To try the game without co-op, set `HOS_COOP=0` before starting `longshot.exe`; if it crashes without co-op too, it is Longshot's problem, not co-op's.
+- **A Steam Controller (or another pad Steam Input runs) does nothing in play, or the camera only swings around:** started outside Steam while Steam is open, Steam turns the pad into a mouse and keyboard (its Desktop layout), so the menus seem to work and play does not. Add `Start Squadala.bat` to Steam (**Games > Add a Non-Steam Game to My Library**), start it from Steam, and set its controller layout (the game's page in Steam > **Controller**) to a gamepad layout. If you picked a pad in the Multiplayer tab's **Settings > Controller**, set it back to **Auto**.
 - **Host or Join says a router blocks the way in**, or friends cannot reach you: the Host screen says what to do (the answer code, UPnP, **Same network**, **VPN**); [play-online.md](play-online.md) has more.
 
 ## Built Longshot yourself?
+
+**You do not need your own Longshot build, and you never start `longshot.exe` yourself:** the kit builds its own game (in `hookshotgame`, with co-op inside) and **Start Squadala.bat** is the only way to start it. A Longshot you built or downloaded has no co-op, so it cannot see your friends. The kit's own `longshot.exe` started by hand has co-op but misses what the start file adds (the puppet pack, your settings, the update check): the game's chat then says it was not started with Start Squadala.bat.
 
 The kit never plays a Longshot you built with Longshot's own builder, and moving that game into the kit folder does nothing: co-op needs its own build of the Longshot release the kit is made for (`hookshot\PIN`, now v3.0.0-rc.6), with co-op's changes in its source. A nightly or dev build is another version, so it cannot be used either.
 
@@ -111,7 +115,7 @@ Nothing is ever changed in your Longshot's folders. Without a folder, the kit st
 
 Given your Longshot folder (above), the first build copies its save slots (`user\save\<account>\slot_NN`, with `account.sav` and `option.sav`) into the co-op game's `user\save\<account>\`. It only copies: your Longshot's saves stay as they are, and a slot the co-op game has already is never overwritten (it says which it left). The saves are the game's own files, so a save from a nightly should load too when it is the same game version (not tested yet).
 
-Already set up? Copy by hand: close both games, keep a copy of the kit's `hookshot\game\bin\user\save` if it has slots you want, then copy the `slot_NN` folders (and `account.sav`, `option.sav`) from `<your Longshot>\bin\user\save\<account>\` (or `<your Longshot>\user\save\...`) to the same place under the kit's `hookshot\game\bin\`.
+Already set up? Copy by hand: close both games, keep a copy of the kit's `hookshot\game\user\save` if it has slots you want, then copy the `slot_NN` folders (and `account.sav`, `option.sav`) from `<your Longshot>\bin\user\save\<account>\` (or `<your Longshot>\user\save\...`) to the same place under the kit's `hookshot\game\`.
 
 ## The randomizer
 
@@ -132,7 +136,7 @@ With Discord open on the same PC, your Discord profile shows **Playing Squadala!
 
 <a id="co-op-on-hookshot"></a><a id="saves"></a><a id="emulator-setup-for-new-players"></a><a id="4-the-puppet-pack"></a><a id="linux-and-steam-deck"></a>
 
-The co-op keys in the game (chat **T**, player list **F6**, panel **F7**, item cheats **F8**), the chat commands and how saves are shared are the same as in the emulator kits: [setup-emulator.md](setup-emulator.md#co-op-on-hookshot) and [setup-emulator.md, "Saves"](setup-emulator.md#saves). That guide also covers the older emulator kits themselves (keys, firmware, the puppet pack, Linux).
+The co-op keys in the game (chat **T**, player list **F6**; the debug panel **F7** and item cheats **F8** are only in developer builds, not in release kits), the chat commands and how saves are shared are the same as in the emulator kits: [setup-emulator.md](setup-emulator.md#co-op-on-hookshot) and [setup-emulator.md, "Saves"](setup-emulator.md#saves). That guide also covers the older emulator kits themselves (keys, firmware, the puppet pack, Linux).
 
 ## NVIDIA DLSS
 
@@ -159,5 +163,7 @@ gh attestation verify Squadala-<version>-windows.zip --repo daurosk/oot-remake-m
 It must say the verification succeeded. If it fails, do not use the zip, and tell us ([Reporting a problem](#reporting-a-problem)).
 
 ## Reporting a problem
+
+After the game crashes, the next title screen asks once: "The game crashed last time. Please send /bugreport on Discord with the zip of collect-logs.cmd." Any button closes it (the cursor is back on the title's first button, as before the page came up), and it does not come back for that crash (it is never shown for a game that was only closed). A load that never ended (2 minutes of the game's loading with no world, for example a mod missing a file) is asked about the same way: "Loading got stuck last time." To turn it off, set `LICHII_COOP_PROBLEM_ASK=0` in `coop-options.ini`.
 
 Close the game and double-click `scripts\collect-logs.cmd` in the kit. It makes `coop-logs-<date>.zip` in the kit folder: the game's log, the co-op settings, the server logs, the build's log and the kit's version. With Nucleus split screen, every player's game log is in it (under `nucleus`). Then, on the [Squadala! Discord](https://discord.gg/GwtRKAqng5), type **`/bugreport`**, describe what you did and what went wrong, and attach that zip; the bot answers with your report's number. You may also describe it on the repo's [issue page](https://github.com/daurosk/oot-remake-multiplayer/issues) (give the report number there), but never attach the zip to a public issue. Addresses, your Windows user name, your PC name and any session password are masked in it; still, never paste addresses or log lines with addresses into a public issue.

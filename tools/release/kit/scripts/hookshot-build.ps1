@@ -211,6 +211,14 @@ if (-not $Out) {
 $Out = [System.IO.Path]::GetFullPath($Out)
 # What the game in $Out is made from: the tools' stamp, and the mods' code patches it is built with (patches 0034/0035:
 # Get-KitExefsStampLine; nothing more without code mods). The tools folder keeps $stamp.
+# Co-op's own Characters tab's code patch first, in the pack folder the build reads the mods from (in without the
+# Character Select mod's code, out with it: kit-paths.ps1 Sync-KitCharselNativePatch; the pack step writes the same).
+$charselSync = Sync-KitCharselNativePatch $kit (Join-Path $Out 'mods\contents\0400486024DEC000\coop-puppet')
+if ($charselSync -eq 'in') { Write-Host '  Characters tab: co-op''s own (Link) goes into the game''s build' }
+elseif ($charselSync -eq 'out' -and (Test-KitCharselNativeParked (Join-Path $Out 'mods\contents\0400486024DEC000\coop-puppet'))) {
+    Write-Host '  Characters tab: off this start with the menus kept aside (the size table the game reads cannot hold them), its code too'
+}
+elseif ($charselSync -eq 'out') { Write-Host '  Characters tab: Character Select''s own (his mod is in the mods)' }
 $gameWant = $stamp + (Get-KitExefsStampLine $Out)
 $python = Join-Path $tools 'python\python.exe'
 
@@ -229,6 +237,19 @@ function Invoke-PuppetPackStep([string]$exeDir) {
     $mod = Join-Path $exeDir 'mods\contents\0400486024DEC000\coop-puppet'
     $oldMod = Join-Path $exeDir 'mods\coop-puppet'
     if (Test-Path -LiteralPath (Join-Path $oldMod 'coop_puppet.json')) { Remove-Item -LiteralPath $oldMod -Recurse -Force }
+    # (player report 210: the pack was made again at the end of every build and module step, 1 to 4 minutes each, also
+    # when nothing it is made from had changed. Now only when Test-KitPuppetPackStale says so (none, incomplete, another
+    # pack tool, other Character Select characters), and a pack kept from before for exactly these goes back in seconds.
+    # make-puppet-pack.cmd (-PackOnly) always makes it.)
+    $packDir = Join-Path $kit 'tools\puppet_pack'
+    if (-not $PackOnly -and -not (Test-KitPuppetPackStale (Join-Path $mod 'coop_puppet.json') $packDir)) {
+        Write-Host '  puppet pack: up to date (made again only when the pack tool, the Character Select characters or a pack file change)'
+        return $true
+    }
+    if (-not $PackOnly) {
+        $back = Restore-KitPuppetPack $kit $mod $packDir
+        if ($back) { Write-Host $back; return $true }
+    }
     $packFrom = $Game
     if (-not $packFrom) {
         $last = Join-Path $hs 'game-files.txt'
@@ -280,7 +301,12 @@ function Invoke-PuppetPackStep([string]$exeDir) {
         }
     }
     if ($packFrom -and (Test-Path -LiteralPath $packFrom) -and (Test-Path -LiteralPath $packTool)) {
-        Write-Host '  Making the puppet pack (how you see the other players; about a minute) ...'
+        # (why, in one line: Get-PuppetPackHint's reason; and about how long: 1 to 4 minutes, measured 3:19 on a fast PC)
+        $why = if (Test-Path -LiteralPath (Join-Path $mod 'coop_puppet.json')) { Get-PuppetPackHint (Join-Path $mod 'coop_puppet.json') $packDir } else { 'Puppet pack: none yet.' }
+        if ($why) { Write-Host "  $(($why -split '\. ')[0])." }
+        Write-Host '  Making the puppet pack (how you see the other players; 1 to 4 minutes) ...'
+        # (the pack there is kept for later: switching Character Select back puts it back in seconds)
+        $keptPack = if (-not $PackOnly) { Save-KitPuppetPack $kit $mod } else { '' }
         $ErrorActionPreference = 'Continue'
         # The kit's pack command (kit-paths.ps1 Get-KitPackArgs: with the title's rows and the pause menu's tab), the
         # same one the test kits run. As the Linux kit's build.sh.
@@ -290,7 +316,18 @@ function Invoke-PuppetPackStep([string]$exeDir) {
         $made = $true
         $ErrorActionPreference = 'Stop'
         if ($code -eq 0) { Remove-Item -LiteralPath (Join-Path $hs 'pack-asked.txt') -Force -ErrorAction SilentlyContinue }
-        if ($code -ne 0) { Write-Host '  The puppet pack could not be made (the lines above say why): the game starts, and the other players show as names only until it is made. Every start tries again.' -ForegroundColor Yellow }
+        if ($code -ne 0) {
+            # (the pack there before goes back in, so a make that failed, a full disk or a tool error, leaves the pack the game had)
+            if ($keptPack -and (Test-Path -LiteralPath (Join-Path $keptPack 'coop-puppet\coop_puppet.json'))) {
+                if (Test-Path -LiteralPath $mod) { Remove-Item -LiteralPath $mod -Recurse -Force -ErrorAction SilentlyContinue }
+                if (Move-KitFolder (Join-Path $keptPack 'coop-puppet') $mod) {
+                    Remove-Item -LiteralPath $keptPack -Recurse -Force -ErrorAction SilentlyContinue
+                    Write-Host '  The puppet pack could not be made again (the lines above say why): the one from before stays, so the game starts with it. Every start tries again.' -ForegroundColor Yellow
+                    $code = -1
+                }
+            }
+            if ($code -ne -1) { Write-Host '  The puppet pack could not be made (the lines above say why): the game starts, and the other players show as names only until it is made. Every start tries again.' -ForegroundColor Yellow }
+        }
     } else {
         Write-Host '  No puppet pack this time: the other players show as names only.' -ForegroundColor Yellow
     }
@@ -498,15 +535,53 @@ if (-not $Rebuild -and -not $CheckOnly -and $Out -ieq $defaultOut -and -not (Fin
         Write-Host '  The copy starts with that kit''s saves (as they are now); from then on each kit has its own.'
         $outWas = Test-Path -LiteralPath $Out
         New-Item -ItemType Directory -Force -Path $Out | Out-Null
-        & robocopy $from $Out /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XF coop.ini coop-options.ini *.log *_log.txt | Out-Null
+        # (marked first: robocopy may copy coop-built-from.txt before longshot.exe or image.bin, and a copy that stops
+        # half way must not look built: rows 239/240)
+        Start-KitGameWrite $Out 'a copy from another kit'
+        & robocopy $from $Out /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XF coop.ini coop-options.ini *.log *_log.txt $KitGameUnfinishedFile | Out-Null
         if ($LASTEXITCODE -ge 8 -or -not (Find-HookshotExe $Out)) {
             Write-Host "  Copying failed (robocopy $LASTEXITCODE): the game is built here instead." -ForegroundColor Yellow
             # (only a folder this copy made: one that was there before may hold the player's own files)
             if (-not $outWas) { Remove-Item -LiteralPath $Out -Recurse -Force -ErrorAction SilentlyContinue }
         } else {
+            Complete-KitGameWrite $Out
             Write-Host "  Copied to $Out (this kit's own game from now on)."
         }
         $global:LASTEXITCODE = 0
+    }
+}
+# The game built from another stamp than this start wants (player report 210: a mod with code patches switched on or
+# off on the Mods tab, an update, Revert.bat): the build there is kept first (kit-paths.ps1 Save-KitGameVariant, a
+# copy of the files a build makes), and one of exactly this stamp kept from before is put back instead of a build
+# (seconds where a build is 5 to 45 minutes). Switching Character Select off and on again built the game twice.
+$gameStampFile = Join-Path $Out 'coop-built-from.txt'
+$stampWas = if (Test-Path -LiteralPath $gameStampFile) { [System.IO.File]::ReadAllText($gameStampFile) } else { '' }
+if (-not $Rebuild -and -not $CheckOnly -and (Find-HookshotExe $Out) -and $stampWas -and $stampWas -ne $gameWant) {
+    Write-Host ''
+    Write-Host '  Keeping the game as it is built now, for later (about 650 MB, a few seconds) ...'
+    $line = Save-KitGameVariant $kit $Out
+    if ($line) { Write-Host $line }
+    $kept = if ($wantDlss -eq (Test-KitHookshotDlss $Out)) { Find-KitGameVariant $kit $gameWant $wantDlss } else { '' }
+    if ($kept) {
+        Step 'The game: putting back the build made before with these mods (seconds, instead of building it again)'
+        $wasUnfinished = Test-KitGameUnfinished $Out
+        Start-KitGameWrite $Out 'a kept build put back'
+        if (Restore-KitGameVariant $kept $Out) { Complete-KitGameWrite $Out; Write-Host "  Put back into $Out." }
+        else {
+            # (nothing was swapped in: the game is as it was, so an earlier stopped write stays marked and nothing else)
+            if (-not $wasUnfinished) { Complete-KitGameWrite $Out }
+            Write-Host '  It could not be put back (a file in use?): the game is built again instead.' -ForegroundColor Yellow
+        }
+    }
+}
+# Rows 239/240: a build, put back or copy stopped half way (Start-KitGameWrite's marker still there). Its kept build is
+# put back when there is one; otherwise the game is built again below, never started or kept as it is.
+if (-not $Rebuild -and -not $CheckOnly -and (Test-KitGameUnfinished $Out)) {
+    $kept = if ($wantDlss -eq (Test-KitHookshotDlss $Out)) { Find-KitGameVariant $kit $gameWant $wantDlss } else { '' }
+    if ($kept) {
+        Step 'The game: its last build was stopped half way; putting back the build made before with these mods (seconds)'
+        if (Restore-KitGameVariant $kept $Out) { Complete-KitGameWrite $Out; Write-Host "  Put back into $Out." }
+        else { Write-Host '  It could not be put back (a file in use?): the game is built again instead.' -ForegroundColor Yellow }
     }
 }
 # The game built for another Longshot release or commit (a kit gone back to an older version, Revert.bat): when this
@@ -526,7 +601,9 @@ if (-not $Rebuild -and -not $CheckOnly -and (Find-HookshotExe $Out) -and (Test-P
             $xd = @('user', 'save', 'autotest-save', 'mods') | ForEach-Object { Join-Path $from $_ }
             # (its build stamp last: a copy that stops half way leaves the old stamp, and the game is built again)
             $xf = @('hookshot_coop.dll', 'coop.ini', 'coop-options.ini', 'longshot_log.txt', 'longshot_log.old.txt', 'control.json', 'longshot_options.ini', 'language.txt',
-                'coop-built-from.txt') | ForEach-Object { Join-Path $from $_ }
+                'coop-built-from.txt', $KitGameUnfinishedFile) | ForEach-Object { Join-Path $from $_ }
+            # (marked first: a copy that stops half way leaves files of two builds, never started or kept as either)
+            Start-KitGameWrite $Out 'a copy from the game cache'
             & robocopy $from $Out /E /XJD /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XD @xd /XF @xf | Out-Null
             if ($LASTEXITCODE -ge 8 -or -not (Find-HookshotExe $Out)) {
                 Write-Host "  Copying failed (robocopy $LASTEXITCODE): the game is built again instead." -ForegroundColor Yellow
@@ -534,6 +611,7 @@ if (-not $Rebuild -and -not $CheckOnly -and (Find-HookshotExe $Out) -and (Test-P
                 # (a copy without DLSS over a game that had it: NVIDIA's runtimes go too, as make_game.py's place_ngx_runtime does)
                 if (-not $wantDlss) { Remove-Item -LiteralPath (Join-Path $Out 'ngx') -Recurse -Force -ErrorAction SilentlyContinue }
                 Copy-Item -LiteralPath (Join-Path $from 'coop-built-from.txt') -Destination $oldStamp -Force
+                Complete-KitGameWrite $Out
                 Write-Host "  Copied into $Out; your saves and settings there are as they were."
             }
             $global:LASTEXITCODE = 0
@@ -542,7 +620,8 @@ if (-not $Rebuild -and -not $CheckOnly -and (Find-HookshotExe $Out) -and (Test-P
 }
 $gameStamp = Join-Path $Out 'coop-built-from.txt'
 $exe = Find-HookshotExe $Out
-$gameReady = $exe -and (Test-Path -LiteralPath $gameStamp) -and ([System.IO.File]::ReadAllText($gameStamp) -eq $gameWant)
+$gameReady = $exe -and (Test-Path -LiteralPath $gameStamp) -and ([System.IO.File]::ReadAllText($gameStamp) -eq $gameWant) -and
+    -not (Test-KitGameUnfinished $Out)
 
 # Game files that could not be taken, with why: said at the next game question (hookshot\game-rejected.txt).
 $gameRejected = Join-Path $hs 'game-rejected.txt'
@@ -716,7 +795,9 @@ if ($gameReady -and -not $Rebuild -and -not $CheckOnly) {
     if ($free -and $free -lt 60GB -and -not (Test-Path -LiteralPath (Join-Path $work 'sa'))) {
         Write-Host ('Warning: {0:N0} GB free on {1}; the first build wants about 60 GB.' -f ($free / 1GB), $drive) -ForegroundColor Yellow
     }
-    Step 'Building the game (10 to 45 minutes; the PC stays usable)'
+    # (why this build runs and about how long, in one line: player report 210, "a whole long process that takes forever")
+    $why = if (Test-KitGameUnfinished $Out) { 'its last build was stopped before it finished (its window was closed), so it is finished now (5 to 45 minutes).' } else { Get-KitBuildWhyText $stampWas $gameWant }
+    Step "Building the game: $why The PC stays usable."
     $buildLog = Join-Path $hs 'build.log'
     $buildArgs = $gameArgs + @('--out', $Out, '--work', $work, '--language', $Language)
     if ($Jobs) { $buildArgs += @('--jobs', "$Jobs") }
@@ -757,6 +838,9 @@ if ($gameReady -and -not $Rebuild -and -not $CheckOnly) {
             break
         }
     }
+    # (marked first, cleared after the new stamp: closing this window during the build leaves a game that is built again,
+    # never one started with half of its files: rows 239/240)
+    Start-KitGameWrite $Out 'a build'
     $code = Invoke-MakeGame $buildArgs $buildLog
     if ($code -ne 0) {
         # (make_game.py's own words for a failed SDK download are the Builder's, "untick NVIDIA DLSS": the kit's way is -NoDlss)
@@ -766,6 +850,7 @@ if ($gameReady -and -not $Rebuild -and -not $CheckOnly) {
     $exe = Find-HookshotExe $Out
     if (-not $exe) { Fail "The build finished but there is no longshot.exe in $Out. Its log: $buildLog" }
     [System.IO.File]::WriteAllText($gameStamp, $gameWant)
+    Complete-KitGameWrite $Out
 }
 # Where the game is, for Host-Hookshot.bat and Join-Hookshot.bat (play.ps1 -Hookshot).
 # (relative when it is inside the kit, so a copied or moved kit keeps its own game: kit-copy)
@@ -852,6 +937,10 @@ if (-not $PSBoundParameters.ContainsKey('Out') -and -not $Tools -and (Test-Path 
         }
     } catch { Write-Host "  (no desktop shortcut: $($_.Exception.Message))" }
 }
+
+# Problem reports (problem-send.ps1, docs/problem-reports.md): the one-line y/n question at the first setup, when the kit
+# never answered it (Enter, no key in 20 s or no console is no; it asks again at a start). Never stops the build.
+try { & (Join-Path $PSScriptRoot 'problem-send.ps1') -AtStart } catch { }
 
 Write-Host ''
 if (Test-Path -LiteralPath (Join-Path $kit 'Start Squadala.bat')) {

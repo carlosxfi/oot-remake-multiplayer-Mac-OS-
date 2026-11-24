@@ -4,6 +4,7 @@ game files.
     python tools/puppet_pack/tests/test_pause_menu.py
 """
 import os
+import re
 import struct
 import sys
 import tempfile
@@ -63,22 +64,101 @@ def pane(d, name):
     return x, y, panes[parent].name if parent < len(panes) else None, struct.unpack_from("<I", d, p.record + 0x34)[0]
 
 
+class TabTest(unittest.TestCase):
+    def test_the_minus_menus_three_tabs_after_the_fourth_the_game_tabs_left_alone(self):
+        d = overlay()
+        n = pm.add_tab(d)
+        panes, parts = ui_pack.read_layout(n)
+        self.assertEqual(len(panes), len(OVERLAY) + 3)   # the - menu's three (0.11.9: Multiplayer, Lobby, Mods)
+        self.assertEqual(pm.MINUS_TABS, ["Pa_Category_04", "Pa_Category_05", "Pa_Category_06"])   # (no gap: counted)
+        self.assertEqual([p.name for p in panes][len(OVERLAY):], pm.MINUS_TABS)
+        # copies of the fourth tab, one game step apart after it, under the root (the header's (600, -60) added)
+        for i, name in enumerate(pm.MINUS_TABS):
+            x, y, parent, _ = pane(n, name)
+            self.assertEqual((x, y, parent), (700.0 + (i + 1) * 100.0 + 600.0, -70.0 - 60.0, "RootPane"), name)
+        self.assertEqual([p.name for p in parts][-3:], pm.MINUS_TABS)
+        # the game's four, L and R where they were (the strip's animation places them; the module places ours)
+        for name in ["Pa_Category_%02d" % i for i in range(4)] + ["T_BtnL_00", "T_BtnR_00"]:
+            self.assertEqual(pane(n, name), pane(d, name), name)
+        # the order holds: only the root reaches the copies, every other pane ends where it did
+        old = [struct.unpack_from("<I", d, p.record + 0x34)[0] for p in ui_pack.read_layout(d)[0]]
+        new = [struct.unpack_from("<I", n, p.record + 0x34)[0] for p in panes[:len(OVERLAY)]]
+        self.assertEqual(new, [len(OVERLAY) + 3] + old[1:])
+        # each copy is a tab's part, with the game's id for its name (CityHash64), stored hidden: only the co-op
+        # module shows it (bit 0 of the kind word; the source's has it)
+        kind = lambda n, i: struct.unpack_from("<I", n, ui_pack.read_layout(n)[0][i].record + 0x38)[0]
+        for k, name in enumerate(pm.MINUS_TABS):
+            i = len(OVERLAY) + k
+            self.assertEqual(ui_pack._cstr(n, struct.unpack_from("<Q", n, parts[-3 + k].record)[0]), "PaMenuCategory_00")
+            self.assertEqual(panes[i].id, ui_pack.part_id(name))
+            self.assertEqual(kind(n, i), kind(d, 7) & ~1)
+        self.assertTrue(kind(d, 7) & 1)
+
+
+    def test_refusals(self):
+        with self.assertRaises(pm.PauseMenuError):
+            pm.add_tab(pm.add_tab(overlay()))   # the tab is there already
+        three = [p for p in OVERLAY if p[0] != "Pa_Category_03"]
+        with self.assertRaises(pm.PauseMenuError):
+            pm.add_tab(make_layout(three, {k: v for k, v in OVERLAY_PARTS.items() if k != "Pa_Category_03"}))
+        no_r = [p for p in OVERLAY if p[0] != "T_BtnR_00"]
+        no_r = [(n, p - (p > 10)) for n, p in no_r]
+        with self.assertRaises(pm.PauseMenuError):
+            pm.add_tab(make_layout(no_r, OVERLAY_PARTS))
+        # tabs not evenly spaced: the step is not known
+        uneven = [p for p in OVERLAY]
+        uneven.insert(6, ("N_Gap_00", 3))
+        uneven = [(n, p + (p >= 6 and n != "N_Gap_00")) for n, p in uneven]
+        with self.assertRaises(pm.PauseMenuError):
+            pm.add_tab(make_layout(uneven, OVERLAY_PARTS))
+
+
+class MinusPageTest(unittest.TestCase):
+    def test_the_minus_page_a_system_layout_part_where_a_shown_page_sits(self):
+        p = pages()
+        place, size = pm.shown_page(p)
+        # the System page's place once the strip slid to it: N_InOut_00's own place, x 0 under it, its y
+        full = ui_pack.frame_offset(p, "Pa_System_00", "RootPane")
+        strip = ui_pack.frame_offset(p, "Pa_System_00", "N_InOut_00")
+        self.assertEqual(place, (full[0] - strip[0], full[1] + pane(p, "Pa_System_00")[1]))
+        rec = next(q for q in ui_pack.read_layout(p)[0] if q.name == "Pa_System_00").record
+        self.assertEqual(size, struct.unpack_from("<ff", p, rec + 0x2c))
+        d = pm.add_tab(overlay())
+        n = pm.add_minus_page(d, (12.5, -40.0), (2400.0, 1100.0))
+        panes, parts = ui_pack.read_layout(n)
+        self.assertEqual(panes[-1].name, pm.MINUS_PAGE)
+        self.assertEqual(panes[-1].id, ui_pack.part_id(pm.MINUS_PAGE))
+        self.assertEqual(pane(n, pm.MINUS_PAGE)[:3], (12.5, -40.0, "RootPane"))
+        self.assertEqual(struct.unpack_from("<ff", n, panes[-1].record + 0x2c), (2400.0, 1100.0))
+        self.assertEqual(struct.unpack_from("<I", n, panes[-1].record + 0x38)[0] & 1, 0)   # (stored hidden)
+        self.assertEqual(parts[-1].name, pm.MINUS_PAGE)
+        self.assertEqual(ui_pack._cstr(n, struct.unpack_from("<Q", n, parts[-1].record)[0]), "PaSystemMenu_00")
+        self.assertEqual(struct.unpack_from("<QI", n, parts[-1].record + 0x28), (0, 0))   # (no parameters)
+        for name in [q[0] for q in OVERLAY] + pm.MINUS_TABS:
+            self.assertEqual(pane(n, name)[:3], pane(d, name)[:3], name)   # the strip's panes where they were
+        with self.assertRaises(pm.PauseMenuError):
+            pm.add_minus_page(n, place, size)   # (twice)
+        with self.assertRaises(pm.PauseMenuError):
+            pm.shown_page(overlay())   # (no System page)
+
+
 class PageTest(unittest.TestCase):
     def test_the_page_where_a_shown_page_sits(self):
         d = pages()
         n = pm.add_page(d)
         panes, parts = ui_pack.read_layout(n)
-        self.assertEqual([p.name for p in panes[-2:]], ["Pa_Coop_00", "Pa_Settings_00"])
-        self.assertEqual([p.name for p in parts[-2:]], ["Pa_Coop_00", "Pa_Settings_00"])
-        self.assertEqual(pane(n, "Pa_Settings_00")[:3], pane(n, "Pa_Coop_00")[:3])   # (the same place: the module slides)
+        # (0.11.9: Longshot Settings' page only; co-op's pages are the - menu's, no Multiplayer page on +)
+        self.assertEqual([p.name for p in panes[-1:]], ["Pa_Settings_00"])
+        self.assertEqual([p.name for p in parts[-1:]], ["Pa_Settings_00"])
+        self.assertNotIn("Pa_Coop_00", [p.name for p in panes])
         # under N_InOut_00, x 0 (the strip's slide taken off), the System page's y there
-        self.assertEqual(pane(n, "Pa_Coop_00"), (0.0, -70.0 - 30.0, "N_InOut_00", len(PAGES) + 1))
+        self.assertEqual(pane(n, "Pa_Settings_00"), (0.0, -70.0 - 30.0, "N_InOut_00", len(PAGES) + 1))
         self.assertEqual(pane(n, "Pa_System_00"), pane(d, "Pa_System_00"))
         self.assertEqual(ui_pack._cstr(n, struct.unpack_from("<Q", n, parts[-1].record)[0]), "PaSystemMenu_00")
         self.assertEqual(struct.unpack_from("<I", n, panes[-1].record + 0x38)[0] & 1, 0)   # stored hidden
         # N_InOut_00 and its ancestors reach the copies; P_Black_00, the last pane before, as it was
         self.assertEqual([pane(n, p)[3] for p in ("RootPane", "N_All_00", "N_InOut_00", "P_Black_00")],
-                         [len(PAGES) + 2] * 3 + [len(PAGES)])
+                         [len(PAGES) + 1] * 3 + [len(PAGES)])
 
     def test_refusals(self):
         with self.assertRaises(pm.PauseMenuError):
@@ -116,28 +196,69 @@ class RowsTest(unittest.TestCase):
         with self.assertRaises(pm.PauseMenuError):
             pm.add_rows(n)   # (twice)
 
-    def test_systems_two_buttons_of_ours_rows_below_the_last_stored_hidden(self):
+    def test_systems_one_button_of_ours_a_row_below_the_last_stored_hidden(self):
         d = system()
         n = pm.add_system_buttons(pm.add_rows(d))
         panes, parts = ui_pack.read_layout(n)
-        ours = [pm.SETTINGS_BUTTON, pm.MULTIPLAYER_BUTTON, pm.CUSTOMIZE_BUTTON]
-        self.assertEqual([p.name for p in panes[-3:]], ours)
-        self.assertEqual([p.name for p in parts[-3:]], ours)
-        self.assertEqual(panes[-1].id, ui_pack.part_id(pm.CUSTOMIZE_BUTTON))
-        # one and two row steps (Pa_Button_03 to Pa_Button_04) below Pa_Button_04, beside the page's other buttons
+        # (0.11.9: Longshot Settings only; Multiplayer and Customize Link are the - menu's Multiplayer tab now)
+        self.assertEqual([p.name for p in panes[-1:]], [pm.SETTINGS_BUTTON])
+        self.assertEqual([p.name for p in parts[-1:]], [pm.SETTINGS_BUTTON])
+        self.assertNotIn("Pa_Button_06", [p.name for p in panes])
+        self.assertNotIn("Pa_Button_07", [p.name for p in panes])
+        self.assertEqual(panes[-1].id, ui_pack.part_id(pm.SETTINGS_BUTTON))
+        # one row step (Pa_Button_03 to Pa_Button_04) below Pa_Button_04, beside the page's other buttons
         x3, y3, parent3, _ = pane(n, "Pa_Button_03")
         x4, y4, _, _ = pane(n, "Pa_Button_04")
         self.assertEqual(pane(n, pm.SETTINGS_BUTTON)[:3], (x4, y4 + (y4 - y3), parent3))
-        self.assertEqual(pane(n, pm.MULTIPLAYER_BUTTON)[:3], (x4, y4 + 2 * (y4 - y3), parent3))
-        self.assertEqual(pane(n, pm.CUSTOMIZE_BUTTON)[:3], (x4, y4 + 3 * (y4 - y3), parent3))
-        for part in parts[-3:]:
+        for part in parts[-1:]:
             self.assertEqual(ui_pack._cstr(n, struct.unpack_from("<Q", n, part.record)[0]), "PaCommonBtnThin_00")
-        for p in panes[-2:]:
+        for p in panes[-1:]:
             self.assertEqual(struct.unpack_from("<I", n, p.record + 0x38)[0] & 1, 0)   # (stored hidden)
         for name in [p[0] for p in SYSTEM]:
             self.assertEqual(pane(n, name)[:3], pane(d, name)[:3], name)   # the page's own panes where they were
         with self.assertRaises(pm.PauseMenuError):
             pm.add_system_buttons(n)   # (twice)
+
+    def test_the_minus_pages_help_the_games_caption_text_below_the_rows_stored_hidden(self):
+        d = pm.add_system_buttons(pm.add_rows(system()))
+        n = pm.add_help(d)
+        panes, parts = ui_pack.read_layout(n)
+        self.assertEqual((panes[-1].name, parts[-1].name), (pm.HELP, pm.HELP))
+        self.assertEqual(panes[-1].id, ui_pack.part_id(pm.HELP))
+        x, y, parent, _ = pane(n, pm.HELP)
+        sx, sy, sparent, _ = pane(n, pm.HELP_SOURCE)
+        self.assertEqual((x, y, parent), (sx, sy - pm.HELP_BELOW, sparent))   # (in the rows' column, under the last)
+        self.assertEqual(ui_pack._cstr(n, struct.unpack_from("<Q", n, parts[-1].record)[0]), "PaActorCaption_00")
+        self.assertEqual(struct.unpack_from("<ff", n, panes[-1].record + 0x2c), pm.HELP_SIZE)
+        self.assertEqual(struct.unpack_from("<I", n, panes[-1].record + 0x38)[0] & 1, 0)   # (stored hidden)
+        for name in [p[0] for p in SYSTEM]:
+            self.assertEqual(pane(n, name)[:3], pane(d, name)[:3], name)   # the page's own panes where they were
+        self.assertEqual(pm._system_layout(system()), n)   # (the System layout's edit adds it, last)
+        with self.assertRaises(pm.PauseMenuError):
+            pm.add_help(n)   # (twice)
+
+    def test_the_help_fits_above_the_screens_bottom_on_the_games_page(self):
+        # row 139 (ui-fit-139-2): the caption's lines hang down from the help's y; on the game's own page (Pa_Button_04
+        # at y -516) four lines must end above the bottom edge, -1080, where 0.11.10's 300 put the 4th line off it
+        d = pm.add_system_buttons(pm.add_rows(system()))
+        y4 = pane(d, pm.HELP_SOURCE)[1]
+        game = ui_pack.move_panes(d, {pm.HELP_SOURCE: (0.0, -516.0 - y4)})
+        self.assertGreaterEqual(pm.help_bottom(game), pm.SCREEN_BOTTOM + pm.HELP_MARGIN)
+        self.assertLess(-516.0 - 300.0 - pm.HELP_LINES * pm.HELP_LINE, pm.SCREEN_BOTTOM)   # (the old place: off)
+        n = pm.add_help(game)
+        self.assertEqual(pane(n, pm.HELP)[1], -516.0 - pm.HELP_BELOW)
+        self.assertGreater(-516.0 - 90.0, -516.0 - pm.HELP_BELOW)   # (under the last row's bottom edge, not on it)
+        low = ui_pack.move_panes(d, {pm.HELP_SOURCE: (0.0, -800.0 - y4)})
+        with self.assertRaises(pm.PauseMenuError):
+            pm.add_help(low)   # (a page whose last row is so low the help would run off: refused, not shipped)
+
+    def test_the_helps_lines_are_the_modules(self):
+        # pause_menu's HELP_LINES and the module's kHelpLines (CoopPauseTab::HelpText's cut) are the same number
+        header = os.path.join(os.path.dirname(__file__), "..", "..", "..", "hookshot", "src", "coop_pause_tab.h")
+        with open(header, encoding="utf-8") as f:
+            m = re.search(r"kHelpColumns = (\d+), kHelpLines = (\d+);", f.read())
+        self.assertIsNotNone(m)
+        self.assertEqual(int(m.group(2)), pm.HELP_LINES)
 
     def test_another_part_layout_needs_its_size_and_takes_no_parameters(self):
         d = system()
@@ -173,7 +294,9 @@ LANGS = ("EUfr", "JPja", "USen")
 class BuildTest(unittest.TestCase):
     def romfs(self, root, broken=None):
         files = {pm.COMMON_ARCHIVE: sarc.write([(pm.OVERLAY_LAYOUT, overlay()), (pm.PAGES_LAYOUT, pages()),
-                                                (pm.SYSTEM_LAYOUT, system()), ("Other_00.buil", b"other")],
+                                                (pm.SYSTEM_LAYOUT, system()), ("Other_00.buil", b"other"),
+                                                (pm.HELP_LAYOUT + ".buil", b"caption"),   # (the parts' layouts
+                                                (pm.ROW_LAYOUT + ".buil", b"row")],       # ours add: Common's)
                                                data_align=16)}
         for lang in LANGS:
             page = make_msbt([("Pa_System_00-Pa_Button_00-T_Btn_00", "Save")])
@@ -218,28 +341,37 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(set(made), {pm.COMMON_ARCHIVE} | {"Mals/%s.Product.110.sarc.zs" % l for l in LANGS})
         self.assertEqual(set(written), set(made))
         common = dict(sarc.read_entries(written[pm.COMMON_ARCHIVE]))
-        self.assertEqual(common[pm.OVERLAY_LAYOUT], overlay())   # (the tab strip: the game's own)
-        self.assertIn("Pa_Coop_00", [p.name for p in ui_pack.read_layout(common[pm.PAGES_LAYOUT])[0]])
+        self.assertIn("Pa_Category_04", [p.name for p in ui_pack.read_layout(common[pm.OVERLAY_LAYOUT])[0]])
+        self.assertNotIn("Pa_Category_07", [p.name for p in ui_pack.read_layout(common[pm.OVERLAY_LAYOUT])[0]])
+        self.assertIn("Pa_Settings_00", [p.name for p in ui_pack.read_layout(common[pm.PAGES_LAYOUT])[0]])
+        self.assertNotIn("Pa_Coop_00", [p.name for p in ui_pack.read_layout(common[pm.PAGES_LAYOUT])[0]])
         self.assertIn(pm.ROW % 6, [p.name for p in ui_pack.read_layout(common[pm.SYSTEM_LAYOUT])[0]])
         self.assertIn(pm.SETTINGS_BUTTON, [p.name for p in ui_pack.read_layout(common[pm.SYSTEM_LAYOUT])[0]])
-        self.assertIn(pm.MULTIPLAYER_BUTTON, [p.name for p in ui_pack.read_layout(common[pm.SYSTEM_LAYOUT])[0]])
+        self.assertNotIn("Pa_Button_06", [p.name for p in ui_pack.read_layout(common[pm.SYSTEM_LAYOUT])[0]])
         self.assertEqual(common["Other_00.buil"], b"other")
         ours = ui_pack.load_strings("USen")
         msgs = sarc.read(written["Mals/USen.Product.110.sarc.zs"])
         self.assertEqual(msbt.read(msgs[pm.OVERLAY_MSG]).text("SystemMenu"), ["System"])   # (as it was)
+        self.assertEqual(msbt.read(msgs[pm.OVERLAY_MSG]).text("Pa_Category_04-T_Text_00"), ["Multiplayer"])
         page = msbt.read(msgs[pm.PAGES_MSG])
         for i in range(5):
-            label = "Pa_Coop_00-Pa_Button_%02d-T_Btn_00" % i
+            label = "Pa_Settings_00-Pa_Button_%02d-T_Btn_00" % i
             self.assertEqual(page.text(label), [ours[pm.PAGES_MSG][label]])
         self.assertEqual(page.text("Pa_System_00-Pa_Button_00-T_Btn_00"), ["Save"])
         self.assertEqual(page.text("Pa_System_00-Pa_Button_05-T_Btn_00"), ["Longshot Settings"])
-        self.assertEqual(page.text("Pa_System_00-Pa_Button_06-T_Btn_00"), ["Multiplayer"])
         # The module's live texts (coop_pause_tab_module.cpp, kLiveSlots / kLivePlaceholder): Coop_Live_00..47 (the
         # rows' and the browser's cells'), each exactly 64 dots, in the built message file (the module refuses any
         # other text or length).
         for i in range(48):
             label = "Coop_Live_%02d" % i
             self.assertEqual(page.text(label), ["." * 64], label)
+        # (and the - menu's page's, Coop_Minus_00..20: its five rows and its list's eight lines, a name and a value
+        # each, in the strip's own message file: MinusWords, kMinusSlots)
+        strip = msbt.read(msgs[pm.OVERLAY_MSG])
+        for i in range(21):
+            self.assertEqual(strip.text("Coop_Minus_%02d" % i), ["." * 64], i)
+        # (and the selected row's help, Coop_Minus_21: 512 dots, MinusWords' kHelpPlaceholder)
+        self.assertEqual(strip.text("Coop_Minus_21"), ["." * 512])
         self.assertTrue(all(sizes[k] > before[k] for k in before
                             if k not in (pm.OVERLAY_LAYOUT, pm.PAGES_LAYOUT, pm.SYSTEM_LAYOUT)))
         self.assertTrue(sizes[pm.SYSTEM_LAYOUT] > before[pm.SYSTEM_LAYOUT])
@@ -251,13 +383,13 @@ class BuildTest(unittest.TestCase):
             with open(os.path.join(folder, "en.txt"), "w", encoding="utf-8") as f:
                 f.write(en)
             with open(os.path.join(folder, "fr.txt"), "w", encoding="utf-8") as f:
-                f.write("[LayoutMsg/PlusMenu_00.msbt]\nPa_System_00-Pa_Button_06-T_Btn_00 = Multijoueur\n")
+                f.write("[LayoutMsg/PlusMenu_00.msbt]\nPa_System_00-Pa_Button_05-T_Btn_00 = Options Longshot\n")
             made, written, _, _, err = self.run_build(strings=folder)
             self.assertIsNone(err)
             fr = msbt.read(sarc.read(written["Mals/EUfr.Product.110.sarc.zs"])[pm.PAGES_MSG])
-            self.assertEqual(fr.text("Pa_System_00-Pa_Button_06-T_Btn_00"), ["Multijoueur"])
+            self.assertEqual(fr.text("Pa_System_00-Pa_Button_05-T_Btn_00"), ["Options Longshot"])
             en_page = msbt.read(sarc.read(written["Mals/EUfr.Product.110.sarc.zs"])[pm.PAGES_MSG])
-            self.assertEqual(en_page.text("Pa_Coop_00-Pa_Button_04-T_Btn_00"), ["Leave"])   # English kept
+            self.assertEqual(en_page.text("Pa_Settings_00-Pa_Button_04-T_Btn_00"), ["Motion"])   # English kept
 
     def test_the_title_rows_then_the_tab_keep_both_label_sets_and_grow_once(self):
         """title_menu.build then pause_menu.build on one made-up romfs with one ui_pack.PackRun (as build.py
@@ -266,8 +398,11 @@ class BuildTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             src = os.path.join(root, "romfs")
             files = {pm.COMMON_ARCHIVE: sarc.write([(pm.OVERLAY_LAYOUT, overlay()), (pm.PAGES_LAYOUT, pages()),
-                                                    (pm.SYSTEM_LAYOUT, system())], data_align=16),
-                     title_menu.TITLE_ARCHIVE: sarc.write([(title_menu.TITLE_LAYOUT, title_layout())], data_align=16)}
+                                                    (pm.SYSTEM_LAYOUT, system()), (pm.HELP_LAYOUT + ".buil", b"caption"),
+                                                    (pm.ROW_LAYOUT + ".buil", b"row")], data_align=16),
+                     title_menu.TITLE_ARCHIVE: sarc.write([(title_menu.TITLE_LAYOUT, title_layout())], data_align=16),
+                     "RSDB/UIScreen.Product.111.rstbl.byml.zs": __import__("puppet_pack.byml", fromlist=["x"]).dumps(
+                         [{"ArchiveCategory": ["Title"], "Name": "Title_00"}])}
             for lang in LANGS:
                 files["Mals/%s.Product.110.sarc.zs" % lang] = sarc.write(
                     {pm.OVERLAY_MSG: make_msbt([("SystemMenu", "System")]),
@@ -278,7 +413,8 @@ class BuildTest(unittest.TestCase):
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 with open(path, "wb") as f:
                     f.write(data)
-            table = _Table({pm.COMMON_ARCHIVE[:-3]: 100000, title_menu.TITLE_ARCHIVE[:-3]: 50000})
+            table = _Table({pm.COMMON_ARCHIVE[:-3]: 100000, title_menu.TITLE_ARCHIVE[:-3]: 50000,
+                           "RSDB/UIScreen.Product.111.rstbl.byml": 7000})
             for lang in LANGS:
                 table.set("Mals/%s.Product.110.sarc" % lang, 2000)
             before = dict(table.sizes)
@@ -292,9 +428,10 @@ class BuildTest(unittest.TestCase):
             for lang in LANGS:
                 rel = "Mals/%s.Product.110.sarc.zs" % lang
                 msgs = sarc.read(written[rel])
-                self.assertEqual(msbt.read(msgs[title_menu.MSG_FILE]).text("0100"), ["Host"])   # the title's rows
-                self.assertEqual(msbt.read(msgs[pm.PAGES_MSG]).text("Pa_System_00-Pa_Button_06-T_Btn_00"), ["Multiplayer"])
-                self.assertEqual(msbt.read(msgs[pm.PAGES_MSG]).text("Pa_Coop_00-Pa_Button_04-T_Btn_00"), ["Leave"])
+                self.assertEqual(msbt.read(msgs[title_menu.MSG_FILE]).text("0100"), ["Host a game"])   # the title's rows
+                self.assertEqual(msbt.read(msgs[pm.PAGES_MSG]).text("Pa_System_00-Pa_Button_05-T_Btn_00"),
+                                 ["Longshot Settings"])
+                self.assertEqual(msbt.read(msgs[pm.PAGES_MSG]).text("Pa_Settings_00-Pa_Button_04-T_Btn_00"), ["Motion"])
                 grown = len(written[rel]) - len(files[rel])
                 self.assertEqual(table.sizes[rel[:-3]], before[rel[:-3]] + grown + 0x1000)   # once, from the original
             self.assertEqual(table.sizes[pm.COMMON_ARCHIVE[:-3]],
@@ -303,7 +440,7 @@ class BuildTest(unittest.TestCase):
 
     def test_the_last_runs_files_are_not_read(self):
         """The mod's folder holds the last run's files: this step starts from the game's again (a second run made the
-        page twice: "the layout has Pa_Coop_00 already")."""
+        page twice: "the layout has Pa_Settings_00 already")."""
         with tempfile.TemporaryDirectory() as root:
             src, out = os.path.join(root, "romfs"), os.path.join(root, "out")
             self.romfs(src)
@@ -337,7 +474,8 @@ class NupFilesTest(unittest.TestCase):
         class FakeNup:
             files = ["UI/Layout2Archive/Title.Product.100.Nin_Ounce_NVN2.blarc.zs", pm.COMMON_ARCHIVE,
                      "Mals/USen.Product.100.sarc.zs", "Mals/USen.Product.110.sarc.zs", "Mals/EUfr.Product.110.sarc.zs",
-                     "Mals/JPja.Product.100.sarc.zs", "Pack/ZsDic.pack.zs"]
+                     "Mals/JPja.Product.100.sarc.zs", "Pack/ZsDic.pack.zs",
+                     "RSDB/UIScreen.Product.111.rstbl.byml.zs"]
 
             def glob(self, pattern):
                 d, _, name = pattern.rpartition("/")
@@ -345,6 +483,7 @@ class NupFilesTest(unittest.TestCase):
 
         self.assertEqual(build.nup_menu_files(FakeNup()), [
             "UI/Layout2Archive/Title.Product.100.Nin_Ounce_NVN2.blarc.zs", pm.COMMON_ARCHIVE,
+            "RSDB/UIScreen.Product.111.rstbl.byml.zs",
             "Mals/EUfr.Product.110.sarc.zs", "Mals/JPja.Product.100.sarc.zs", "Mals/USen.Product.110.sarc.zs"])
 
 

@@ -33,6 +33,9 @@ if (Test-KitInZip $kit) {
 # 2. One start at a time for this folder.
 $lock = Enter-KitStartLock $kit
 if (-not $lock) { Stop-Start @('Squadala is already starting in another window (it may be building the game). Wait for that window.') }
+# (this window's lines from here on into hookshot\logs\start-log.txt, the start before kept as start-log.1.txt: kit-paths.ps1
+# Start-KitStartLog; play.ps1 and update.ps1 add theirs; collect-logs.ps1 zips both)
+[void](Start-KitStartLog $kit -Fresh)
 
 # 3. Files an antivirus or a broken unzip took.
 $missing = @(Get-KitMissingFiles $kit)
@@ -87,10 +90,11 @@ foreach ($o in $others) {
 $reused = Copy-KitGameFilesFrom $kit $others
 if ($reused) { Write-Host "Your game file (from the other kit): $reused" }
 
-# 5b. Problem reports (problem-report.ps1, docs/problem-reports.md): asked once (default no); with yes, the problems of the
-# sessions since the last report, masked as collect-logs masks them, in coop-report-<date>.zip to send with /report.
-# Nothing is sent from here, and nothing here stops the start.
-try { & (Join-Path $PSScriptRoot 'problem-report.ps1') -AtStart } catch { }
+# 5b. Problem reports (problem-send.ps1, problem-report.ps1, docs/problem-reports.md): asked once (default no, 20 s):
+# send the masked report of a game that had a co-op problem or a crash to the Squadala! team after it closes. With yes,
+# the sessions since the last report are queued and sent in a hidden window (never waited for); with no, the local
+# reports as before (problem-report.cmd on). Nothing here stops the start.
+try { & (Join-Path $PSScriptRoot 'problem-send.ps1') -AtStart } catch { }
 
 # 6. The rest: update, game build, start (play.ps1). The desktop shortcut follows the kit started last. Its name up to
 # v0.11.2, "Play OoT Co-op", becomes "Play Squadala" (when there is no such one yet; else the old one is left as it is).
@@ -111,6 +115,7 @@ try {
 $env:OOT_COOP_KIT = $kit
 $next = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'play.ps1'), '-Mode', 'choose', '-Hookshot')
 if ($NoUpdate) { $next += '-NoUpdate' }
+[void](Suspend-KitStartLog)   # (play.ps1 writes the file itself from here: one writer at a time)
 & $ps @next
 $code = $LASTEXITCODE
 $lock.ReleaseMutex()

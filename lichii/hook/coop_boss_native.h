@@ -79,12 +79,72 @@ inline constexpr std::uint64_t kNoHitValues = 0x28;
 inline constexpr std::uint64_t kNoHitSlots = 0x34;
 inline constexpr std::int32_t kNoHitMaxSlots = 1024;  // (a sanity bound for the read)
 inline constexpr std::uint64_t kBsaBrainVerb = 0x28;      // s32, the current brain verb
+// Boss turns (0.11.8): the attributes of the BSA's current action verbs, as the game's own "has action verb
+// attribute" reads them (main+0x507be0, called by QueryBSAIsLastFrameActionVerbAttributeOn and the other action
+// queries): five s32 action verbs at +0x54 (one per action slot: main, sub, SP, SP2, SP3), each looked up in the
+// action verb table at +0x1a40 (16-byte entries, 282 verbs: the entry of a verb below 282, else the first), the
+// u64 at entry +8; the five words OR-ed. Attribute i is bit i in the order of the actor's
+// ActionVerbAttributesSetting (Attack, murmur3 4009472201, is bit 0: AttributeFlag 1 on every verb whose
+// Attributes list Attack). (The table at +0x1650, 63 entries indexed by the brain verb at +0x28, is the brain
+// verb's: its bit 0 is Battle, murmur3 82424555; lane run 20261120-141109 read that one and held "attacking" on
+// for the whole fight.)
+inline constexpr std::uint64_t kBsaActionVerbs = 0x54;
+inline constexpr std::size_t kBsaActionSlots = 5;
+inline constexpr std::uint64_t kBsaActionAttributes = 0x1a40;
+inline constexpr std::uint64_t kBsaAttributeStride = 0x10;
+inline constexpr std::uint64_t kBsaAttributeBits = 0x8;
+inline constexpr std::uint32_t kActionVerbCount = 282;
+inline constexpr std::uint64_t kAttributeAttack = 1u << 0;
+// Where action slot `slot`'s verb is, and where the attribute bits of action verb `verb` are. A verb outside 0..281
+// (an empty slot) maps to the first entry, exactly as main+0x507be0 does (its csel picks the table's start), so our
+// read ORs the same bits the game's own queries see (review-charsel-0118 m1).
+constexpr std::uint64_t ActionVerbAt(std::uint64_t bsa, std::size_t slot) { return bsa + kBsaActionVerbs + 4 * slot; }
+constexpr std::uint64_t ActionAttributesAt(std::uint64_t bsa, std::int32_t verb) {
+    const auto i = static_cast<std::uint32_t>(verb);
+    return bsa + kBsaActionAttributes + (i < kActionVerbCount ? i * kBsaAttributeStride : 0) + kBsaAttributeBits;
+}
+// Interrupt (murmur3 4112727460) is attribute 1: the reaction moves (a hit, a stun's start) that cut a move.
+inline constexpr std::uint64_t kAttributeInterrupt = 1u << 1;
+// An attack, or a reaction that cut one (Interrupt): one frame's reading, with no memory.
+constexpr bool IsAttack(std::uint64_t bits) { return (bits & (kAttributeAttack | kAttributeInterrupt)) != 0; }
+// Boss turns: a boss's attack sequence over the frames, as its samples send it (object_state::attacking). A turn
+// passes only where this falls, and it falls only where an attack ENDS BY ITSELF (the Attack attribute falls into
+// a plain move: Phantom Ganon's RideJumpAttack 115 into 96, each good turn of run 20261120-184021).
+// A reaction (Interrupt) cuts the sequence: the plain move after it is the reaction's own tail, not a choice of
+// the boss's AI, and the game hands it nothing to end it with in another game. Phantom Ganon hit into verb 134
+// went on into 'Run' (verb 40, attributes 0: his retreat into a painting); handed over there (run
+// 20261120-184021, and at the reaction's start in 20261120-180245) the new owner's game started that Run over
+// and nothing ever ended it. So after a reaction the sequence stays on until the boss's own next attack, and the
+// turn passes at THAT attack's end. `cut` is that memory, kept per actor by the walk.
+// Only a boss (`latch`): a plain enemy's turn may also end on the idle rule (server/boss_turns.hpp idle_us),
+// which needs its quiet time read as quiet.
+struct AttackSequence {
+    bool cut = false;  // a reaction ran since its last attack
+};
+constexpr bool InAttackSequence(AttackSequence& s, std::uint64_t bits, bool latch) {
+    if ((bits & kAttributeAttack) != 0) {
+        s.cut = false;  // its own next attack: the sequence ends where this attack does
+        return true;
+    }
+    if ((bits & kAttributeInterrupt) != 0) {
+        s.cut = latch;
+        return true;
+    }
+    return s.cut;
+}
 inline constexpr std::uint64_t kSetBrainVerb = 0x6733b0;       // main+
 inline constexpr std::uint64_t kRequestActionVerb = 0xc08f0;   // main+
 inline constexpr std::uint64_t kMalloc = 0x14c6c90;            // main+, as coop_puppet.h
 // What kRequestActionVerb returns for a request it took (its main path,
-// main+0xc10f4; 2 and 3 are refusals). A skipped request answers the same.
+// main+0xc10f4). A skipped request answers the same. Its two other answers
+// (row 190, the lifted function): the BSA keeps one record per slot
+// ([bsa + 0x1c0 + 8 * slot], slots 0-4); 2 = the slot has no record
+// (main+0xc0edc); 3 = the record already took a request since the BSA's last
+// update (bit 1 of its byte +0x7c, set by the accept path, cleared by
+// main+0xcb9c0), whatever the verb: one request per slot a frame.
 inline constexpr std::uint64_t kActionTaken = 0;
+inline constexpr std::uint64_t kActionNoSlot = 2;
+inline constexpr std::uint64_t kActionSlotBusy = 3;
 
 // The action request (0x60 bytes, built on the asker's stack).
 inline constexpr std::size_t kRequestSize = 0x60;
@@ -196,7 +256,9 @@ struct Boss {
     // room), on the same path as a boss: one model for every enemy (fable-g4-enemies). What differs:
     // - its Life is never held here: the Sync's own rules share its kills (issue 133), a copy dies of our hit;
     // - `own_death`: its death runs here now (its life is 0 in our game, or its owner's died): the copy runs
-    //   every change of its own from then on, as a boss's named by SetDying;
+    //   every change of its own from then on, as a boss's named by SetDying. A boss body's too (PlainDeath, every
+    //   enemy): a body that dies before its fight's outro (Twinrova's Koume and Kotake, whose own death flow starts
+    //   the fusion event) runs its own death, as the owner's body does;
     // - its own brain asking for another brain verb than the owner's is told (TakeOwnWants): it wants to act
     //   on our Link (the wake and chase rules of the Sync hand it over, and NoteOwnWake lets it run).
     bool plain = false;
@@ -207,7 +269,36 @@ struct Boss {
     std::optional<std::int32_t> life = std::nullopt;
     // Row 178 (the fall guard, Table::kFallBelowStart): its place in our walk (nothing: not read).
     std::optional<coop::protocol::Vec3> position = std::nullopt;
+    // Boss turns: its current action verb's Attack attribute in our game (addr::IsAttack; nothing: not read).
+    std::optional<bool> attacking = std::nullopt;
 };
+
+// Boss turns (Session::next_turn): LICHII_COOP_BOSS_TURNS's text; on unless "0".
+constexpr bool TurnsSwitch(std::string_view value) { return value != "0"; }
+
+// What a copy that becomes ours does (Table::Publish), condition (1) of the boss turns: a hand-over between moves
+// must let the new owner's own brain go on from where the copy stands, not start the phase or the move over.
+enum class MadeOurs : std::uint8_t {
+    resume,        // its own AI goes on: nothing asked again (a turn between moves)
+    restart_move,  // its move starts over as ours (row 178: made ours mid-move)
+    rechoose,      // its brain verb is set again (row 149: its AI never ran its body as a copy)
+};
+// `turns`: the switch; `attacking`: the move its body runs is an attack in our game (nothing: not read);
+// `put_action`: the owner's move was put into it; `own_ask_same`: its own AI asked that same move itself (slot and
+// verb: its own brain is in the move its body runs); `own_node`: its own AI named a node for it.
+// Row 325: only an ATTACK starts over (row 178: Phantom Ganon's rush, else lost). A move that is no attack (a walk, a
+// turn, the tail of a reaction) is the AI's own placing between attacks: started over from where the copy stands it
+// leaves the boss's own cycle (King Dodongo's turn after a roll, started over, rolled him on in his old facing to the
+// far wall; his walk, started over, ended at once; his next roll, aimed at Link from there, went into the lava pit,
+// where no roll ever ends). Its own AI chooses again from what its body does instead (row 149), unless it asked that
+// same move itself (then it goes on).
+constexpr MadeOurs PlanMadeOurs(bool turns, std::optional<bool> attacking, bool put_action, bool own_ask_same,
+                                bool own_node) {
+    if (turns && attacking.has_value() && !*attacking && put_action) {
+        return own_ask_same ? MadeOurs::resume : MadeOurs::rechoose;
+    }
+    return put_action && own_node ? MadeOurs::restart_move : MadeOurs::rechoose;
+}
 
 struct Counts {
     std::uint64_t owner_brain = 0;    // the owner's brain verb changes kept
@@ -222,7 +313,6 @@ struct Counts {
     std::uint64_t action_waiting = 0; // owner's actions waiting for the copy's own node
     std::uint64_t resyncs = 0;        // a copy started again from the owner's state now
     std::uint64_t drift_fixes = 0;    // a copy's brain verb put back after it differed for long
-    std::uint64_t busy = 0;           // a wrap that found the table busy (the game ran its own)
     std::uint64_t minions_stopped = 0; // a copy boss's own minion not made (the owner's comes)
     std::uint64_t copy_own_run = 0;   // a copy's own change run (our event, our hit)
     std::uint64_t copy_own_late = 0;  // a copy's own skipped change made late (event or hit seen after it)
@@ -235,18 +325,36 @@ struct Counts {
     std::uint64_t plain_wants = 0;    // a plain enemy copy's own brain asked another brain verb than its owner's
     std::uint64_t plain_wakes = 0;    // a plain enemy copy's own wake let run (NoteOwnWake)
     std::uint64_t plain_deaths = 0;   // a plain enemy copy whose death began here: its own runs
+    std::uint64_t body_deaths = 0;    // a boss body copy dead here before its outro (Boss::own_death): its own runs
     std::uint64_t owner_stalls = 0;   // row 149: our boss held one move kStallSteps with no life change: re-chosen
     std::uint64_t owner_rechosen = 0; // its brain verb set again by our caller (a stall, or a copy just made ours)
     std::uint64_t owner_restarted = 0; // row 178: a copy made ours mid-move: that move started over as ours
     std::uint64_t owner_fell = 0;      // row 178: our boss fell far below its fight start (the fall guard)
     std::uint64_t moves_kept = 0;     // a resync's action the copy already runs (put in, none of its own since): not asked
+    // Row 190: of our action requests (action_applied, copy_own_late, owner_restarted), the ones the game answered
+    // with kActionSlotBusy (the slot had taken a request that frame) or another refusal. Counted and said. A refusal
+    // is not asked again (the owner's game sends every request it makes, also one its own game answered so), and a
+    // busy slot after one of our own moves taken this frame neither (the owner's second ask of a frame: its own game
+    // answered it the same). Row 211 (shot-reflect-211-4): a busy slot with none of ours taken was the copy's own
+    // request of that frame (a hand-over's first frame: its own AI asked before the owner's verbs came and skip it),
+    // so the owner's move is asked again next frame (action_busy_again), at most kBusyAsks times.
+    std::uint64_t action_slot_busy = 0;
+    std::uint64_t action_busy_again = 0;
+    std::uint64_t action_refused = 0;
 };
 
 class Table {
 public:
+    static constexpr int kBusyAsks = 3;  // row 211: an owner's move answered busy, asked again on this many frames
     // Switches (LICHII_COOP_BOSS_NATIVE, LICHII_COOP_BOSS_ACTIONS): off -> no
     // skip, no apply, nothing kept (the old gohma-sync path alone).
     void SetOn(bool brain, bool actions);
+    // Boss turns (LICHII_COOP_BOSS_TURNS, TurnsSwitch): a copy made ours between moves resumes (PlanMadeOurs), and
+    // every boss fights the Player only (PlayerOnlyBoss names any boss of ours or a copy: every puppet unseen while
+    // one is here; replayed hits name our Link): each player gets the boss in their own game by its turns. Off: only
+    // FightsPlayerOnly's two (Phantom Ganon, Ganondorf), as before.
+    void SetTurns(bool on);
+    bool TurnsOn() const;
     bool BrainOn() const;
     bool ActionsOn() const;
 
@@ -256,9 +364,14 @@ public:
     void Publish(const std::vector<Boss>& bosses);
 
     // The wraps, phase 0 (any game thread). own: the call is our caller's.
-    // True: skip the game's function (a copy's own change). Never blocks:
-    // a busy table lets the game run its own. changed: the game's w2 (the
-    // verb changed), sent with the owner's action and given to the copies.
+    // True: skip the game's function (a copy's own change). changed: the game's w2 (the verb changed), sent with
+    // the owner's action and given to the copies.
+    // They wait for the table: while another thread holds it (the walk's Publish, Receive, our caller's Step),
+    // they once let the game run its own, so a copy's own AI moved its body against the owner's (probe 3 f-19:
+    // Twinrova's copy left the owner's fire attack 121 for its own Fly_Start 4, then the owner's next changed-0
+    // put-in started 121 over from PreAttack, again and again: no shot), and an owner's change went unsent. No
+    // holder calls the game (Step only returns its call, made after the lock is let go; the others read and
+    // write memory), so the wait is short and never on ourselves.
     bool OnBrainVerb(std::uint64_t bsa, std::int32_t verb, bool force, bool own);
     bool OnActionVerb(std::uint64_t bsa, const Request& request, bool changed, bool own);
 
@@ -358,6 +471,12 @@ public:
     // and their Life step is not held (it dies here of its own). The ones
     // skipped just before are made late. An empty list: none (a new fight).
     void SetDying(std::vector<std::string> bodies);
+    // Row 189: the boss bodies whose fight has not begun in our game (the boss glue, every tick: the ones our game
+    // is not ready to own, CoopBoss::Readiness: its intro not played here, its boss still in its wait before the
+    // fight). Ours only as the server's last resort (no game there is ready): the stall check never judges that
+    // wait as a stuck move (Geno's first boss run: Gohma asleep, "stuck, its AI chooses again" twice before
+    // anyone was in her room). A body that lost life in our sight is in its fight whatever the list says.
+    void SetNotBegun(std::vector<std::string> bodies);
 
     // The game's Life step (patch 0007, any game thread), after every other
     // change to the frame's damage `sum`: for a copy boss's Life component
@@ -375,7 +494,7 @@ public:
 
     // A create request (any game thread): true when a boss named `maker` is a
     // copy here that takes its owner's verbs, so its own minion is not made
-    // (the owner's comes as a copy; CoopObjects::MinionMaker). Never blocks.
+    // (the owner's comes as a copy; CoopObjects::MinionMaker). Waits for the table, as the wraps.
     bool CopyMakes(std::string_view maker);
 
     // The copies that run their own changes now (our event and kAfterEventSteps after it, kReactSteps after our
@@ -509,17 +628,25 @@ private:
         // The front change of `due` or `own_late` is in the call Step asked last: it leaves its queue only once
         // that call is made (Step's after_call); a call not made asks it again. A queue cleared meanwhile: none.
         enum class Asking : std::uint8_t { none, due, late } asking = Asking::none;
+        // Row 211: the step one of our owner's moves was taken here (none busy after it is asked again), the step its
+        // front move was answered busy (not asked again in that step) and how often in a row.
+        std::uint64_t taken_step = ~std::uint64_t{0};
+        std::uint64_t busy_step = ~std::uint64_t{0};
+        int busy_asks = 0;
         std::uint64_t react_until = 0;  // (also a new mid-boss copy's start, kStartSteps)
         std::uint64_t seen_since = 0;   // the step it was first seen in our walk (its start's: #238)
         bool held = false;
         // Owner: our event ended: send our brain verb as a change.
         bool record_after_event = false;
         std::uint64_t life_component = 0;  // (Publish's, for SetDying's release)
-        bool dying = false;                // its death has begun (SetDying; a plain one's own_death): its own game runs it
+        bool dying = false;                // its death has begun (SetDying, or Boss::own_death): its own game runs it
+        bool body_dead = false;            // a boss body's Boss::own_death (kept through SetDying)
         bool plain = false;                // (Boss::plain)
         // Owner (row 149): the move it holds now (animation, brain verb, last action verb, life), since which
         // step, the action requests its AI made since, and how often it was re-chosen in this move. `rechoose`:
         // Step sets its brain verb again (a stall, or a copy just made ours whose AI did not run its body).
+        std::optional<std::int32_t> top_life;  // the most life read of it; `hit`: it read less since (row 189)
+        bool hit = false;
         std::string hold_animation;
         std::int32_t hold_brain = 0;
         std::optional<std::int32_t> hold_action;
@@ -528,6 +655,16 @@ private:
         std::uint64_t hold_asks = 0;
         int hold_rechoices = 0;
         bool rechoose = false;
+        // The move last re-chosen as stuck, and how often. The re-choice itself makes its AI ask another move
+        // for a moment before it falls back into the stuck one (Phantom Ganon: 'Run' verb 40, then 96 for 22
+        // frames, then 40 again; run 20261120-184021), which read as a new move and started the count over: "1
+        // of 3" four times, 100 s, and the server's hand-over (after kMaxStallRechoices) never came. Back in this
+        // same move at the same life, the count goes on. A hit that took life forgets it.
+        std::string stall_animation;
+        std::int32_t stall_brain = 0;
+        std::optional<std::int32_t> stall_action;
+        std::optional<std::int32_t> stall_life;
+        int stall_rechoices = 0;
         // Row 178: a copy made ours in the middle of a move (put_action) whose AI did not run its body: that move
         // asked again as ours with kReqStartOver, naming the node its own AI names for it (restart_ask), so its
         // module runs it from its start in our game (its own sub-state, physics and animation events) and its AI
@@ -572,9 +709,12 @@ private:
     std::map<std::uint64_t, Entry> by_bsa_;
     bool brain_on_ = false;
     bool actions_on_ = false;
+    bool turns_ = false;
     bool event_ = false;           // our game runs an event (SetEvent)
     std::vector<std::string> dying_;  // the bodies whose death has begun (SetDying)
     bool Dying(std::string_view name) const;
+    std::vector<std::string> not_begun_;  // the bodies whose fight has not begun here (SetNotBegun)
+    bool NotBegun(std::string_view name) const;
     void Release(std::uint64_t component);  // its held_life_ slot: let die
     std::uint64_t steps_ = 0;      // Step calls (game frames)
     struct ShotEnd {
@@ -610,6 +750,8 @@ private:
     std::uint64_t main_base_ = 0;  // the game the block belongs to
     bool allocating_ = false;
     enum class Pending : std::uint8_t { none, malloc, brain, action, late, rechoose, restart } pending_ = Pending::none;
+    // Row 190: the game's answer to an action request of ours (counted; the first few said).
+    void NoteAnswer(const char* what, std::uint64_t result, bool is_action);
     std::uint64_t pending_bsa_ = 0;  // the copy whose change pending_ is (brain, action, late)
     void Made(bool made);            // pending_bsa_'s asked change: out of its queue (made) or asked again
 };

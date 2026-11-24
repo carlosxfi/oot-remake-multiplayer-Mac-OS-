@@ -28,6 +28,10 @@ namespace CoopPause {
 // leaves Host and Join alone.
 void Init(bool coop_on);
 
+// The game folder's exefs_patches.txt: the mods' code patches the game was built with (read once: another build needs
+// the game started again). The - strip's slot 3 and the home of Link's look follow it (charsel-tab-0119).
+const std::string& ExefsList();
+
 // Each game frame (HOS_COOP_SITE_FRAME), shown or not: what follows from
 // co-op's state (the invite code copied, a connected join remembered and the
 // host's save loaded at the title). At most every 250 ms.
@@ -42,6 +46,10 @@ bool Page(int tab, HosCoopMenuPage* out);
 bool Picture(int tab, HosCoopMenuPicture* out);
 bool Input(int tab, int event, int arg, int arg2);
 int Wanted();
+// What hos_coop_menu_wanted says for Longshot's own menu (patch 0037's HOS_COOP_MENU_WANT_LONGSHOT, gpu/vk/hos_coop_menu.h).
+inline constexpr int kWantLongshotMenu = -3;
+// The pause menu's Longshot Settings button: Longshot's own menu opens at the next menu tick, in front or not.
+void WantLongshotMenu();
 
 // The window's keys and characters (Unicode) while the tab types into a
 // field: true when taken. Hookshot's own keys (F1, Insert) are never taken.
@@ -60,11 +68,18 @@ void OpenNative(CoopPauseMenu::Page page);
 bool NativeInput(int event, int arg = 0, int arg2 = 0);
 CoopPauseMenu::View NativeView();
 bool NativeOpen();
+bool SnailHome();   // (Character Select's Customize screen is Link's colours' home: the Customize Link page has none)
 CoopPauseMenu::Page NativePage();   // (the page the menu shows now)
 void CloseNative();
+// B on the title's page leaves it (the Multiplayer rows again) rather than going back a page (Menu::BackLeaves).
+bool NativeBackLeaves();
+// Y on the title's list of games: asked again (Menu::RefreshFound; nothing on another page).
+void NativeRefresh();
 // Another page of co-op's menu while it shows natively (the pause page's Settings and look): the page only, no files
 // read again (OpenNative read them as it opened).
 void NativeGo(CoopPauseMenu::Page page);
+// Co-op settings shown natively: its first host row selected (Menu::HostRulesRow; the Host view's Host settings).
+void NativeSelectHostRules();
 
 // The pause menu's Multiplayer page (coop_pause_tab.h): its copies, done on the page itself (co-op's menu stays shut): the host's room name (else its relay join code,
 // else its invite code), a waiting guest's answer code, the host's same-network or VPN join line (as the menu's rows).
@@ -127,8 +142,9 @@ bool Rejoin(std::string* host);
 // of it.
 void PasteAnswerNow();
 
-// The autotest's `menu customize|close` step (LICHII_COOP_TEST_COMMANDS only, coop_testinput.h): the menu opened
-// on the Customize page, or closed. Never asked in a player's game (no commands file there).
+// The autotest's `menu customize|close|host` step (LICHII_COOP_TEST_COMMANDS only, coop_testinput.h): the menu
+// opened on the Customize page, or closed, or the game hosts through the Multiplayer page's Host
+// (LICHII_COOP_TEST_HOST, CoopHostMenu::ParseTestHost). Never asked in a player's game (no commands file there).
 bool TestMenu(const std::string& page);
 
 }  // namespace CoopPause

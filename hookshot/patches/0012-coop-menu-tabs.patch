@@ -1,4 +1,4 @@
-From 58c80f231d53f7abf8d26d1ed50488ebb7c4a977 Mon Sep 17 00:00:00 2001
+From 9332506cbd265d99910f097a060f4761ce839a2e Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Fri, 13 Nov 2026 01:34:58 -0900
 Subject: [PATCH] Co-op menu tabs: the module's tabs lead the menu's strip
@@ -18,16 +18,16 @@ cursor and the clicks to the module (coop_tick); back with nothing left on
 the module's side closes the menu, as Esc does. A module without the
 exports: no tabs, the menu as before.
 ---
- gpu/vk/hos_coop_menu.h |  86 ++++++++++++++++
- gpu/vk/vk_coop.cpp     |  71 ++++++++++++++
+ gpu/vk/hos_coop_menu.h |  86 +++++++++++++++
+ gpu/vk/vk_coop.cpp     |  71 ++++++++++++
  gpu/vk/vk_coop.h       |  14 +++
- gpu/vk/vk_menu.cpp     | 217 +++++++++++++++++++++++++++++++++++++----
- 4 files changed, 370 insertions(+), 18 deletions(-)
+ gpu/vk/vk_menu.cpp     | 238 +++++++++++++++++++++++++++++++++++++----
+ 4 files changed, 390 insertions(+), 19 deletions(-)
  create mode 100644 gpu/vk/hos_coop_menu.h
 
 diff --git a/gpu/vk/hos_coop_menu.h b/gpu/vk/hos_coop_menu.h
 new file mode 100644
-index 0000000..6d6bd07
+index 00000000..6d6bd07e
 --- /dev/null
 +++ b/gpu/vk/hos_coop_menu.h
 @@ -0,0 +1,86 @@
@@ -118,7 +118,7 @@ index 0000000..6d6bd07
 +
 +#endif
 diff --git a/gpu/vk/vk_coop.cpp b/gpu/vk/vk_coop.cpp
-index 693d124..d0bc0ea 100644
+index 693d1247..d0bc0ea1 100644
 --- a/gpu/vk/vk_coop.cpp
 +++ b/gpu/vk/vk_coop.cpp
 @@ -4,6 +4,7 @@
@@ -212,7 +212,7 @@ index 693d124..d0bc0ea 100644
 +
  }  // namespace mkwvk::coop
 diff --git a/gpu/vk/vk_coop.h b/gpu/vk/vk_coop.h
-index 59acc4b..17c4cf0 100644
+index 59acc4be..17c4cf0d 100644
 --- a/gpu/vk/vk_coop.h
 +++ b/gpu/vk/vk_coop.h
 @@ -3,6 +3,8 @@
@@ -242,7 +242,7 @@ index 59acc4b..17c4cf0 100644
 +
  }  // namespace mkwvk::coop
 diff --git a/gpu/vk/vk_menu.cpp b/gpu/vk/vk_menu.cpp
-index 6e1c5e1..f97b676 100644
+index 9bf441c4..49ae7b6c 100644
 --- a/gpu/vk/vk_menu.cpp
 +++ b/gpu/vk/vk_menu.cpp
 @@ -15,6 +15,9 @@
@@ -255,32 +255,41 @@ index 6e1c5e1..f97b676 100644
  #include <atomic>
  #include <chrono>
  #include <cmath>
-@@ -2183,6 +2186,24 @@ void outputs_sync() {
- 
- int cur_tab = TAB_GRAPHICS;
- int tab_selected[TAB_FPS_DEV + 1] = {};   // (and the pages' a row opens: Motion, the FPS counter's details)
+@@ -811,6 +814,33 @@ int page_parent(int tab) {
+          : tab == TAB_SIM_TURF     ? TAB_GRAPHICS
+                                    : -1;
+ }
 +// (oot-remake-multiplayer) The co-op module's tabs (vk_coop.h, hos_coop_menu.h), first in the strip: how many it has (asked
-+// at each tick), and the one shown (-1: one of Hookshot's, cur_tab). Their rows, help and what a press does are the module's;
++// at each tick), and the one shown (-1: one of Longshot's, cur_tab). Their rows, help and what a press does are the module's;
 +// the menu draws them with its own cells and hands the presses on (coop_tick)
 +int coop_tabs = 0;
 +int coop_tab = -1;
-+/// The place in the strip of the tab shown: the module's first, then Hookshot's (the Motion page under Controls, the FPS
-+/// counter's details under Gameplay)
++bool tab_shown(int t);
++/// The place in the strip of the tab shown: the module's first, then Longshot's (a page a row opens: under its tab, page_parent)
 +int strip_at() {
-+    return coop_tab >= 0 ? coop_tab
-+                         : coop_tabs + (cur_tab == TAB_MOTION ? TAB_CONTROLS : cur_tab == TAB_FPS_DEV ? TAB_GAMEPLAY : cur_tab);
++    return coop_tab >= 0 ? coop_tab : coop_tabs + (page_parent(cur_tab) >= 0 ? page_parent(cur_tab) : cur_tab);
 +}
 +int strip_count() { return coop_tabs + TAB_COUNT; }
++bool strip_shown(int at) { return at < coop_tabs || tab_shown(at - coop_tabs); }
 +/// The tab at a place in the strip shown (the module is told by coop_tell, HOS_COOP_MENU_SHOW and _HIDE)
 +void show_strip(int at) {
 +    at = (at % strip_count() + strip_count()) % strip_count();
 +    if (at < coop_tabs) coop_tab = at;
 +    else coop_tab = -1, cur_tab = at - coop_tabs;
 +}
- bool is_motion_row(const Row& r) { return r.tab == TAB_CONTROLS && !r.value && !strcmp(r.name, "Motion"); }
- bool is_fps_dev_row(const Row& r) { return r.tab == TAB_GAMEPLAY && !r.value && !strcmp(r.name, "FPS counter details"); }
++/// The next (dir 1) or previous (-1) tab of the strip that shows (Longshot's Mods tab only with mods: tab_shown)
++void step_strip(int dir) {
++    int at = strip_at();
++    for (int i = 0; i < strip_count(); i++) {
++        at = ((at + dir) % strip_count() + strip_count()) % strip_count();
++        if (strip_shown(at)) break;
++    }
++    show_strip(at);
++}
  
-@@ -2297,8 +2318,9 @@ bool menu_refresh = false;
+ // ---- the rows that take a restart: their values at the start (menu_init, the GPU's at menu_set_gpu_count) ----
+ namespace mr = menu_restart;
+@@ -917,8 +947,9 @@ bool menu_refresh = false;
  int marquee_pos = 0, marquee_max = 0;
  int64_t marquee_next = 0;
  constexpr int64_t kMarqueeStep = 150000000LL, kMarqueeRest = 1200000000LL;   // (ns)
@@ -292,26 +301,44 @@ index 6e1c5e1..f97b676 100644
  int hover_tab = -1;
  int drag_row = -1;
  bool mouse_read = false;   // (the menu has read the mouse since it opened)
-@@ -3496,12 +3518,13 @@ double fps_target_ms() {
+@@ -1743,12 +1774,13 @@ double fps_target_ms() {
      return fps_stats::target_ms_for(cap, fifo, fifo ? (display_refresh_mhz() + 500) / 1000 : 0);
  }
  menu_hit::Map hits;      // (the menu's controls as last drawn: the mouse's, menu_tick)
--float scroll_at[TAB_FPS_DEV + 2];   // (the first row shown, eased toward the selection: the options' tabs and the Motion page, then
-+float scroll_at[TAB_FPS_DEV + 3];   // (the first row shown, eased toward the selection: the options' tabs and the Motion page, then
+-float scroll_at[TAB_SIM_TURF + 2];   // (the first row shown, eased toward the selection: the tabs and subpages, then
++float scroll_at[TAB_SIM_TURF + 3];   // (the first row shown, eased toward the selection: the tabs and subpages, then
                                     // the Controls page: kControlsSlot)
- constexpr int kControlsSlot = TAB_FPS_DEV + 1;
--int wheel_rows[TAB_FPS_DEV + 2];   // (the mouse wheel's notches since the last drawing, a slot each: scroll_rows scrolls by them)
--int scrolled_to[TAB_FPS_DEV + 2] = {-1, -1, -1, -1, -1, -1, -1, -1, -1};   // (the selection scroll_rows last brought into view)
--float scroll_want[TAB_FPS_DEV + 2];   // (where scroll_at is going: the wheel moves it, a new selection too)
-+constexpr int kCoopSlot = TAB_FPS_DEV + 2;   // (oot-remake-multiplayer: the co-op module's tab shown)
-+int wheel_rows[TAB_FPS_DEV + 3];   // (the mouse wheel's notches since the last drawing, a slot each: scroll_rows scrolls by them)
-+int scrolled_to[TAB_FPS_DEV + 3] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // (the selection scroll_rows last brought into view)
-+float scroll_want[TAB_FPS_DEV + 3];   // (where scroll_at is going: the wheel moves it, a new selection too)
+ constexpr int kControlsSlot = TAB_SIM_TURF + 1;
+-int wheel_rows[TAB_SIM_TURF + 2];   // (the mouse wheel's notches since the last drawing, a slot each: scroll_rows scrolls by them)
+-int scrolled_to[TAB_SIM_TURF + 2] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // (selection last brought into view)
+-float scroll_want[TAB_SIM_TURF + 2];   // (where scroll_at is going: the wheel moves it, a new selection too)
++constexpr int kCoopSlot = TAB_SIM_TURF + 2;   // (oot-remake-multiplayer: the co-op module's tab shown)
++int wheel_rows[TAB_SIM_TURF + 3];   // (the mouse wheel's notches since the last drawing, a slot each: scroll_rows scrolls by them)
++int scrolled_to[TAB_SIM_TURF + 3] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // (selection last brought into view)
++float scroll_want[TAB_SIM_TURF + 3];   // (where scroll_at is going: the wheel moves it, a new selection too)
  float ease_step = 0;     // (this drawing's share of the way: the time since the last one)
  
  ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
-@@ -4128,26 +4151,104 @@ void row_value_cell(ui::Ctx& c, const Row& r, ImVec2 va, ImVec2 vb, bool selecte
-     }
+@@ -2428,7 +2460,16 @@ bool mods_present() {
+     int e;
+     return can_mods() && host->mod_info(0, &n, &d, &o, &e);
+ }
+-bool tab_shown(int t) { return t != TAB_MODS || mods_present(); }
++/// (oot-remake-multiplayer) the co-op module has a Mods tab of its own: Longshot's steps aside (one home for the mods; the
++/// module's list goes over mods.json at the start, host/mods.c)
++bool coop_has_mods_tab() {
++    for (int i = 0; i < coop_tabs; i++) {
++        const char* n = coop::menu_tab_name(i);
++        if (n && !strcmp(n, "Mods")) return true;
++    }
++    return false;
++}
++bool tab_shown(int t) { return t != TAB_MODS || (mods_present() && !coop_has_mods_tab()); }
+ struct ModLine {
+     char kind;   // 'm' a mod (index: its place), 'h' the heading over a mod's cheats, 's' a cheat file's own heading, 'c' a cheat
+     int index;   // (the cheat's, for 'h', 's' and 'c')
+@@ -2558,28 +2599,107 @@ void draw_mods(ui::Ctx& c, float cx0, float cx1, float hx0, float hx1, bool narr
+     ui::prompt_bar(c, prompt_list, prompts_n);
  }
  
 +/// (oot-remake-multiplayer) A co-op module's tab under the banner (hos_coop_menu.h): its rows in the column with the menu's
@@ -394,43 +421,46 @@ index 6e1c5e1..f97b676 100644
      // the tabs in the banner: dark ink on the tan, the shown one light on a dark inset; the tab keys at their ends (a click there
      // is the previous or the next tab)
 -    float tw[TAB_COUNT], total = 0;
--    for (int i = 0; i < TAB_COUNT; i++) tw[i] = ui::size_of(c.f.heading, 23 * s, tab_titles[i]).x + 56 * s, total += tw[i];
-+    // (oot-remake-multiplayer: the co-op module's tabs first, then Hookshot's; a place in the strip each, strip_at)
++    // (oot-remake-multiplayer: the co-op module's tabs first, then Longshot's; a place in the strip each, strip_at)
 +    const int strip_n = strip_count(), shown_at = strip_at();
 +    std::string coop_names[coop::kMaxMenuTabs];
 +    for (int i = 0; i < coop_tabs; i++) coop_names[i] = coop::menu_tab_name(i);   // (the module's text: copied at once)
 +    auto strip_name = [&](int i) { return i < coop_tabs ? coop_names[i].c_str() : tab_titles[i - coop_tabs]; };
 +    float tw[TAB_COUNT + coop::kMaxMenuTabs], total = 0;
-+    for (int i = 0; i < strip_n; i++) tw[i] = ui::size_of(c.f.heading, 23 * s, strip_name(i)).x + 56 * s, total += tw[i];
+     const float tab_px = 20 * s, tab_pad = 22 * s;   // (the tabs' ink and the room each side of it)
+-    for (int i = 0; i < TAB_COUNT; i++) tw[i] = tab_shown(i) ? ui::size_of(c.f.heading, tab_px, tab_titles[i]).x + 2 * tab_pad : 0, total += tw[i];
++    for (int i = 0; i < strip_n; i++) tw[i] = strip_shown(i) ? ui::size_of(c.f.heading, tab_px, strip_name(i)).x + 2 * tab_pad : 0, total += tw[i];
      float x = (c.w - total) * 0.5f;
      const float ty = hh * 0.5f + s;
      const char* const keys[2] = {c.pad ? "L" : "Q", c.pad ? "R" : "E"};
      for (int i = 0; i < 2; i++) {
-         const float cw = 26 * s, cx = i ? x + total + 22 * s : x - 22 * s - cw;
+         const float cw = 23 * s, cx = i ? x + total + 18 * s : x - 18 * s - cw;
 -        const bool hover = hover_tab == TAB_COUNT + i;
 +        const bool hover = hover_tab == kHoverPrev + i;
-         c.d->AddRectFilled(ImVec2(cx, ty - 13 * s), ImVec2(cx + cw, ty + 13 * s), hover ? ui::kTabInset : ui::kBannerInk, 3 * s);
-         ui::text_mid_centre(c, c.f.strong, 14 * s, cx + cw * 0.5f, ty, ui::kInk, keys[i]);
+         c.d->AddRectFilled(ImVec2(cx, ty - 11.5f * s), ImVec2(cx + cw, ty + 11.5f * s), hover ? ui::kKeyCapHi : ui::kKeyCap, 4 * s);
+         ui::text_mid_centre(c, c.f.strong, 13 * s, cx + cw * 0.5f, ty, ui::kInk, keys[i]);
          hits.add(i ? cx - 10 * s : 0, 0, i ? c.w : cx + cw + 10 * s, hh, i ? menu_hit::kTabNext : menu_hit::kTabPrev, -1);
      }
 -    for (int i = 0; i < TAB_COUNT; i++) {
--        // (the Motion page: under Controls; the FPS counter details: under Gameplay)
--        const bool shown = i == (cur_tab == TAB_MOTION ? TAB_CONTROLS : cur_tab == TAB_FPS_DEV ? TAB_GAMEPLAY : cur_tab);
 +    for (int i = 0; i < strip_n; i++) {
-+        const bool shown = i == shown_at;   // (the Motion page: under Controls; the FPS counter details: under Gameplay)
+         // (the Motion page: under Controls; the FPS counter details: under Gameplay)
+-        if (!tab_shown(i)) continue;   // (the Mods tab without mods)
+-        const bool shown = i == (page_parent(cur_tab) >= 0 ? page_parent(cur_tab) : cur_tab);
++        if (!strip_shown(i)) continue;   // (the Mods tab without mods)
++        const bool shown = i == shown_at;
          if (shown || i == hover_tab) {
-             c.d->AddRectFilled(ImVec2(x, 0), ImVec2(x + tw[i], hh - 3 * s), shown ? ui::kTabInset : ui::alpha(ui::kTabInset, 0.35f));
-             if (shown) {
-@@ -4155,7 +4256,7 @@ void draw_options(ui::Ctx& c) {
-                 c.d->AddLine(ImVec2(x + tw[i] - 1, 0), ImVec2(x + tw[i] - 1, hh - 3 * s), ui::rgba(52, 34, 16), std::max(1.0f, s));
+             // (an inset from a little below the banner's top, its upper corners rounded; the shown one with a gold line under it)
+             const ImVec2 a(x + 2 * s, 7 * s), b(x + tw[i] - 2 * s, hh - 3 * s);
+@@ -2589,7 +2709,7 @@ void draw_options(ui::Ctx& c) {
+                 c.d->AddRectFilled(ImVec2(a.x + 6 * s, b.y - 3 * s), ImVec2(b.x - 6 * s, b.y), ui::kGoldHi, 1.5f * s);
              }
          }
--        ui::text_mid(c, c.f.heading, 23 * s, x + 28 * s, ty, shown ? ui::kInkBright : ui::kBannerInk, tab_titles[i]);
-+        ui::text_mid(c, c.f.heading, 23 * s, x + 28 * s, ty, shown ? ui::kInkBright : ui::kBannerInk, strip_name(i));
+-        ui::text_mid(c, c.f.heading, tab_px, x + tab_pad, ty, shown ? ui::kInkBright : ui::kBannerInk, tab_titles[i]);
++        ui::text_mid(c, c.f.heading, tab_px, x + tab_pad, ty, shown ? ui::kInkBright : ui::kBannerInk, strip_name(i));
          hits.add(x, 0, x + tw[i], hh, menu_hit::kTab, i);
          x += tw[i];
      }
-@@ -4196,6 +4297,10 @@ void draw_options(ui::Ctx& c) {
+@@ -2630,6 +2750,10 @@ void draw_options(ui::Ctx& c) {
          if (fit > 0) ui::text_mid_right(c, c.f.body, fit, right, vy, ui::kBannerInk, ver.c_str());
          if (name_fit > 0) ui::text_mid_right(c, c.f.body, name_fit, right, ty + 9 * s, ui::alpha(ui::kBannerInk, 0.8f), name.c_str());
      }
@@ -441,7 +471,7 @@ index 6e1c5e1..f97b676 100644
      // the rows, in the column; the help beside it
      float cx0, cx1, hx0, hx1;
      bool narrow;
-@@ -6141,7 +6246,7 @@ void game_lang_tick() {
+@@ -4899,7 +5023,7 @@ void game_lang_tick() {
          return -1;
      }();
      if (row < 0 || opts.game_lang == i18n::game_lang_index()) return;
@@ -450,11 +480,10 @@ index 6e1c5e1..f97b676 100644
                          tab_row_to_global(cur_tab, tab_selected[cur_tab]) == row;
      if (on_row) return;
      if (!i18n::set_game_language(opts.game_lang)) {
-@@ -6212,6 +6317,59 @@ void mic_test_tick(bool focused) {
-     mic_test_state = host && host->mic_test ? host->mic_test(mic_testing, opts.microphone_gain, mic_levels) : 0;
-     if (!(mic_test_state & 1)) mic_testing = false;
+@@ -4963,6 +5087,59 @@ void outputs_follow_screen() {
+          dm::ratio_name({sw, sh}).c_str(), added);
  }
-+
+ 
 +/// (oot-remake-multiplayer) The co-op module told which of its tabs shows, when that changes (HOS_COOP_MENU_SHOW and _HIDE):
 +/// one on the menu's options page, not under the compact bar, or none
 +void coop_tell() {
@@ -491,7 +520,7 @@ index 6e1c5e1..f97b676 100644
 +        if (ptr->wheel) wheel_rows[kCoopSlot] += ptr->wheel, changed = true;
 +    }
 +    if (tab_left || tab_right) {
-+        show_strip(strip_at() + (tab_left ? -1 : 1));
++        step_strip(tab_left ? -1 : 1);
 +        changed = true;
 +        return;
 +    }
@@ -507,10 +536,11 @@ index 6e1c5e1..f97b676 100644
 +    }
 +}
 +
++
  void menu_tick() {
      std::lock_guard lk(menu_mu);   // (the control bridge's settings: menu_setting_set)
      share_finish();   // (Save my pipeline list's worker, done)
-@@ -6388,6 +6546,23 @@ void menu_tick() {
+@@ -5171,6 +5348,23 @@ void menu_tick() {
      // ESC alone (the gamepad's back is Esc only while it is open, above). The press that opened it does not go back a page
      // below; with the compact menu key held it opens the compact bar, as Insert and F1 do (tune_mode). No
      // control can be bound to Esc, so nothing in play changes; the window gives the captured mouse back on the close)
@@ -533,8 +563,8 @@ index 6e1c5e1..f97b676 100644
 +    }
      const bool esc_opens = opts.menu_shortcut == 2 && press[5] && !open_now.load();
      if (esc_opens) press[5] = false;
-     const bool home_debug = press[15] && (!open_now.load() || (quick_debug && page == 0));
-@@ -6637,11 +6812,13 @@ void menu_tick() {
+     const bool comparing = open_now.load() && reshade_menu::comparing();
+@@ -5475,11 +5669,13 @@ void menu_tick() {
              else teleport_choice = std::clamp(teleport_step_rows(teleport_choice, rows) + (press[4] - press[3]), 0, kTeleports - 1);
              if (teleport_choice != was) teleport_follow = true, changed = true;
          }
@@ -548,30 +578,30 @@ index 6e1c5e1..f97b676 100644
 +            const int ht = hit.part == menu_hit::kTab ? hit.index : hit.part == menu_hit::kTabPrev ? kHoverPrev
 +                         : hit.part == menu_hit::kTabNext ? kHoverNext : -1;
              if (ht != hover_tab) hover_tab = ht, changed = true;
-             int& sel = tab_selected[cur_tab];
+             int& sel = cur_tab == TAB_MODS ? mods_sel : tab_selected[cur_tab];   // (the Mods tab: its line, draw_mods)
              const bool on_row = hit.part == menu_hit::kRow || hit.part == menu_hit::kSlider;
-@@ -6664,7 +6841,7 @@ void menu_tick() {
+@@ -5502,7 +5698,7 @@ void menu_tick() {
              if ((ptr.pressed & HOS_MOUSE_LEFT) && drag_row < 0) {
                  if (hit.part == menu_hit::kTabPrev) tab_left = true;
                  else if (hit.part == menu_hit::kTabNext) tab_right = true;
 -                else if (hit.part == menu_hit::kTab && hit.index != cur_tab) cur_tab = hit.index, changed = true;
 +                else if (hit.part == menu_hit::kTab && hit.index != strip_at()) show_strip(hit.index), changed = true;
-                 else if (hit.part == menu_hit::kSlider) {
-                     Row& d = rows[tab_row_to_global(cur_tab, hit.index)];
-                     drag_row = hit.index;
-@@ -6704,7 +6881,10 @@ void menu_tick() {
-         // (the tabs: LB and RB, Q and E, or Tab; from the Motion page, as from Controls)
-         if ((tab_left || tab_right) && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS;
-         if ((tab_left || tab_right) && cur_tab == TAB_FPS_DEV) cur_tab = TAB_GAMEPLAY;
--        if (tab_left) cur_tab = (cur_tab + TAB_COUNT - 1) % TAB_COUNT, changed = true;
+                 else if (hit.part == menu_hit::kRow && cur_tab == TAB_MODS) {
+                     if (hit.side) press[hit.side < 0 ? 3 : 4] = true;   // (a switch's halves: Off and On)
+                 } else if (hit.part == menu_hit::kSlider) {
+@@ -5554,7 +5750,10 @@ void menu_tick() {
+         if ((tab_left || tab_right) && cur_tab == TAB_RECORDINGS) cur_tab = TAB_DEBUG;
+         if ((tab_left || tab_right) && cur_tab == TAB_SPEAKER) cur_tab = TAB_AUDIO;
+         if ((tab_left || tab_right) && cur_tab == TAB_SIM_TURF) cur_tab = TAB_GRAPHICS;
+-        if (tab_left || tab_right) {   // (the tabs shown: the Mods tab only with mods)
 +        if ((tab_left || tab_right) && !tune_mode) {   // (oot-remake-multiplayer: through the whole strip, the module's tabs too)
-+            show_strip(strip_at() + (tab_left ? -1 : 1)), changed = true;
-+            if (coop_tab >= 0) std::fill(press, press + K_N, false);   // (on the module's tab now: nothing more for Hookshot's)
-+        } else if (tab_left) cur_tab = (cur_tab + TAB_COUNT - 1) % TAB_COUNT, changed = true;
-         else if (tab_right) cur_tab = (cur_tab + 1) % TAB_COUNT, changed = true;
-         const int tab_count = tab_row_count(cur_tab);
-         int& selected = tab_selected[cur_tab];
-@@ -6786,6 +6966,7 @@ void menu_tick() {
++            step_strip(tab_left ? -1 : 1), changed = true;
++            if (coop_tab >= 0) std::fill(press, press + K_N, false);   // (on the module's tab now: nothing more for Longshot's)
++        } else if (tab_left || tab_right) {   // (the tabs shown: the Mods tab only with mods)
+             do cur_tab = (cur_tab + (tab_left ? TAB_COUNT - 1 : 1)) % TAB_COUNT;
+             while (!tab_shown(cur_tab));
+             changed = true;
+@@ -5634,6 +5833,7 @@ void menu_tick() {
              changed = true;
          }
      }

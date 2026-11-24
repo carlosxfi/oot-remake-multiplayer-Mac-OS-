@@ -1,5 +1,7 @@
 # Setting up the emulator kit (older releases)
 
+> **Retired (0.11.12):** the emulator is no longer built, shipped or supported. This guide is kept only for people still on an old emulator kit; new kits are Hookshot/Longshot only ([setup.md](setup.md)).
+
 This is the guide of the emulator kits (the releases that still ship the Fritchii emulator and `Host.bat` / `Join.bat`); it ships in those kits as `SETUP.md`. The newer kits are Hookshot only: their guide is [setup.md](setup.md).
 This is an early test build of online co-op (the newest is on the [releases page](https://github.com/daurosk/oot-remake-multiplayer/releases)) for the Ocarina of Time remake, on the kit's Fritchii emulator or, as an experiment, on Hookshot. Expect bugs; [known-issues.md](known-issues.md) lists what works and what does not yet. After this page, [play-lan.md](play-lan.md) (same network) or [play-online.md](play-online.md) (over the internet) says how to play together.
 

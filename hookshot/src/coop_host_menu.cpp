@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -14,6 +15,7 @@
 
 #include <enet/enet.h>
 
+#include "coop/net/bind_guard.hpp"
 #include "coop/protocol/join_password.hpp"
 #include "coop/protocol/messages.hpp"
 #include "host_service.hpp"
@@ -74,6 +76,83 @@ int ProblemOf(coop::server::HostProblem p) {
 constexpr std::uint32_t kRoundMs = 5;
 
 } // namespace
+
+std::optional<std::pair<std::uint16_t, std::string>> ParseTestHost(std::string_view text) {
+    const std::size_t colon = text.find(':');
+    if (colon == std::string_view::npos || colon == 0 || colon > 5) return std::nullopt;
+    unsigned port = 0;
+    for (const char c : text.substr(0, colon)) {
+        if (c < '0' || c > '9') return std::nullopt;
+        port = port * 10 + static_cast<unsigned>(c - '0');
+    }
+    const std::string_view password = text.substr(colon + 1);
+    if (port == 0 || port > 65535 || password.empty() || password.size() > 64) return std::nullopt;
+    for (const char c : password) {
+        if (c < 0x21 || c > 0x7e) return std::nullopt;
+    }
+    return std::pair{static_cast<std::uint16_t>(port), std::string(password)};
+}
+
+#ifdef _WIN32
+std::string ProcessMemoryText() {
+    // (kernel32's K32 names and HeapSummary looked up by name: no psapi link, and builds whose headers lack them)
+    struct Counters {   // PROCESS_MEMORY_COUNTERS_EX
+        DWORD cb;
+        DWORD PageFaultCount;
+        SIZE_T PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage,
+            QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage, PrivateUsage;
+    };
+    struct Summary {   // HEAP_SUMMARY
+        DWORD cb;
+        SIZE_T cbAllocated, cbCommitted, cbReserved, cbMaxReserve;
+    };
+    using MemoryInfo = BOOL(WINAPI*)(HANDLE, Counters*, DWORD);
+    using HeapSummaryFn = BOOL(WINAPI*)(HANDLE, DWORD, Summary*);
+    HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+    const auto info = kernel ? reinterpret_cast<MemoryInfo>(
+                                   reinterpret_cast<void*>(GetProcAddress(kernel, "K32GetProcessMemoryInfo")))
+                             : nullptr;
+    const auto summary = kernel ? reinterpret_cast<HeapSummaryFn>(
+                                      reinterpret_cast<void*>(GetProcAddress(kernel, "HeapSummary")))
+                                : nullptr;
+    const auto mb = [](std::uint64_t bytes) { return std::to_string(bytes / (1024 * 1024)) + " MB"; };
+    std::string out = "process:";
+    Counters c{};
+    c.cb = sizeof c;
+    if (info != nullptr && info(GetCurrentProcess(), &c, sizeof c)) {
+        out += " private " + mb(c.PrivateUsage) + ", working set " + mb(c.WorkingSetSize);
+    } else {
+        out += " (memory counters not read)";
+    }
+    Summary h{};
+    h.cb = sizeof h;
+    if (summary != nullptr && summary(GetProcessHeap(), 0, &h)) {
+        out += ", heap allocated " + mb(h.cbAllocated) + ", committed " + mb(h.cbCommitted);
+    }
+    using HandleCount = BOOL(WINAPI*)(HANDLE, PDWORD);
+    const auto count = kernel ? reinterpret_cast<HandleCount>(
+                                    reinterpret_cast<void*>(GetProcAddress(kernel, "GetProcessHandleCount")))
+                              : nullptr;
+    DWORD handles = 0;
+    if (count != nullptr && count(GetCurrentProcess(), &handles)) {
+        out += ", handles " + std::to_string(handles);
+    }
+    return out;
+}
+#else
+std::string ProcessMemoryText() {
+    std::ifstream status("/proc/self/status");
+    std::string line, out = "process:";
+    while (std::getline(status, line)) {
+        if (line.rfind("VmRSS:", 0) == 0 || line.rfind("VmSize:", 0) == 0 || line.rfind("RssAnon:", 0) == 0) {
+            std::string value = line.substr(line.find(':') + 1);
+            value.erase(0, value.find_first_not_of(" 	"));
+            out += " " + line.substr(0, line.find(':')) + " " + value;
+        }
+    }
+    return out == "process:" ? out + " (not read)" : out;
+}
+#endif
 
 void CopyText(char* out, std::size_t size, const std::string& text) {
     if (size == 0) {
@@ -221,6 +300,7 @@ int Menu::HostStart(const HosCoopHostOptions* o) {
         status_ = HosCoopStatus{};
         status_.size = sizeof status_;
         status_.state = HOS_COOP_STARTING;
+        status_.same_network_open = job.same_network_open ? 1 : 0;   // (the lines for this network's players)
         CopyText(status_.password, sizeof status_.password, job.password);
     }
     stop_ = false;
@@ -240,6 +320,8 @@ void Menu::RunHost(HostJob job) {
         coop::server::HostServiceConfig config;
         config.port = job.port;
         config.port_tries = kPortTries;
+        config.bind = coop::net::test_bind();         // (none: all addresses; tests: 127.0.0.1)
+        config.helper_bind = coop::net::test_bind();
         config.session.join_password = job.password;
         config.session.pvp = job.pvp;
         config.session.approve_joins = job.approve_joins;
@@ -265,6 +347,11 @@ void Menu::RunHost(HostJob job) {
         config.counts = false;  // the game's log need not have them every 5 s
         config.log_invite = false;  // it holds the join password; the menu shows it
         config.log = [this](const std::string& text) { Say("coop: host: " + text); };
+        if (const char* test = std::getenv(kTestHostEnv); test != nullptr && ParseTestHost(test)) {
+            // The autotest's in-game host (ParseTestHost): its listener on 127.0.0.1 only, as every test listener.
+            config.bind = 0x7F000001u;
+            Say("coop: host: test host (LICHII_COOP_TEST_HOST): listening on 127.0.0.1 only");
+        }
         coop::server::HostService host(config);
         std::string why;
         if (!host.start(why)) {
@@ -287,9 +374,16 @@ void Menu::RunHost(HostJob job) {
                          "the server runs, but this game's co-op did not start (see the log)");
             }
         }
+        auto memory_said = std::chrono::steady_clock::now();
         while (!stop_) {
             host.set_ngplus(hooks_.ngplus_level ? hooks_.ngplus_level() : 0);   // (Navi) New Game+ (Hooks)
             host.service(kRoundMs);
+            // Row 260: what the host holds, every 30 s (the host's game only; a run reads the trend from the log).
+            if (const auto now = std::chrono::steady_clock::now();
+                now - memory_said >= std::chrono::milliseconds(kMemoryLineMs)) {
+                memory_said = now;
+                Say("coop: host: memory: " + ProcessMemoryText() + "; " + host.memory_line());
+            }
             if (!job.bans_file.empty() && host.session() != nullptr) {   // (a new ban by key: kept for next time)
                 std::vector<std::string> now = host.session()->key_bans();
                 if (now != bans) {
@@ -464,6 +558,7 @@ void Menu::RunJoin(JoinJob job) {
         config.password = job.password;
         config.stun_servers = StunServers();
         config.game_port = hooks_.helper_port;
+        config.bind = coop::net::test_bind();   // (none: all addresses; tests: 127.0.0.1)
         config.direct_ms = hooks_.direct_ms;
         if (hooks_.client_id) {
             if (const std::string id = hooks_.client_id(); !id.empty()) {
@@ -512,6 +607,11 @@ void Menu::RunJoin(JoinJob job) {
                 }
             } else if (state == nat::JoinState::kWaitingForHost) {
                 std::lock_guard lock(mutex_);
+                if (helper.no_way() && status_.problem != HOS_COOP_PROBLEM_NO_WAY) {   // row 209
+                    status_.problem = HOS_COOP_PROBLEM_NO_WAY;
+                    CopyText(status_.message, sizeof status_.message,
+                             "still no way in after 3 minutes: if the host pasted the answer code, both routers are strict or CGNAT: join over a VPN network");
+                }
                 if (status_.state != HOS_COOP_WAIT_HOST) {
                     status_.state = HOS_COOP_WAIT_HOST;
                     CopyText(status_.answer, sizeof status_.answer, helper.answer_code());
@@ -562,7 +662,7 @@ void Menu::RunRelayJoin(RelayJoinJob job_in) {
             return;
         }
         at.port = job.join.relay_port;
-        const auto result = relay::lookup_on_relay(at, job.join, [this] { return stop_.load(); });
+        const auto result = relay::lookup_on_relay(at, job.join, [this] { return stop_.load(); }, coop::net::test_bind());
         if (stop_) {
             return;
         }

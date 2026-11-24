@@ -81,6 +81,8 @@ A player test (Gohma): the boss only ever followed and attacked player 1, its ow
 
 **After a hand-over (on by default since branch `enemy-sync`, not proven).** The new owner's boss was a copy whose own AI phase may differ from the pose it was held to (on the floor while the pose was on the ceiling): it froze or walked in the air. The AI state (AINB) is not known, so it is not copied. An enemy that becomes ours gets bit 23 of actor +0x4a8 (set by the Mover's setter every frame, docs/world.md) cleared once, in case the game leaves it set and holds the body. This is not only a boss question: Hyrule Field moves the owner of the Peahat and other enemies often (chase, wake and distance rules), and a Peahat that never woke for either player (issue 157) fits the same frozen body, so the clear is on for every enemy that comes to us from another owner. `LICHII_COOP_OBJECTS_RELEASE=0` turns it off. The 5 s log line `release: N that became ours had bit 23 set (cleared), M had it clear, K skipped (over 64 in a frame)` says how often the bit was really left set: if N stays 0 in a run with hand-overs, the bit is not the cause.
 
+**No hand-over in a boss's finish (server, `Session::keeps_finish`; tracker row 215).** In the owner's 0.11.8 playtest, three players' Ganon at life 0 went P2 → P1 → P4 → P2 → P1 during his finish: each copy's hit (the stab attempts) asked him over to its hitter. Each new owner's verbs then drove the other games' copies out of their own finish, and nobody could stab him. The cause was that no rule checked for a dying boss except boss turns (`next_turn`). Now every rule that moves an object asks through `ask_handover` (the hitter, boss turns, the near player, the chase and distance rules out of a fight, an unfit owner, an unready owner, a group member to its root), and that one place refuses to move a boss root, or any part of its group, while its owner's last state says life 0 or a death animation (`anim::IsDeath`). An answer to an ask made while the boss was alive, which comes back at life 0, is refused the same way in `finish_handover`. A part may still go to its dying boss's own owner (the group stays together), and a part's own death (a Bongo Bongo hand, a Barinade arm) does not hold its boss. The check reads the boss's current life, not a flag that stays set, so a boss whose next phase refills its life in the same actor (Ganondorf, Twinrova) is handed over as before once it lives again. Only an owner that leaves or unloads the boss gives it on (`drop_presence`), because no other game is running it then. This covers every boss the game flags (Gohma, King Dodongo, Barinade, Phantom Ganon, Volvagia, Morpha, Bongo Bongo, Twinrova with Koume and Kotake, Ganondorf, Ganon) and any mid-boss with the boss flag. Log: `boss finish: <actor> in <scene> at life 0 stays with player N (not to player M): no hand-over until it is gone (row 215)`, once per finish; stat `boss_finish_kept`. Tested in `tests/server/session_test.cpp` (row 215 cases).
+
 ## One owner for the fight, the eye guard copied (branch gohma-sync, issue 150)
 
 A player test (2026-11-12): "Ghoma can enter stun state but have its eye guarded for one player while its eye is not guarded for another, this means only one player can attack it. Ghomas animations and height are all over the place."
@@ -149,7 +151,7 @@ Goal: every boss fight the same in every game, run by the game's own code. Gohma
 
 **Now.** Our own shot's end is the second reading of our hit. coop_spawn's flights of ours (`Item_Bomb`, `Item_Bombchu`, `Item_DekuNut`, `Shootable_DekuSeed`, `NormalArrow`) that ended where they hit or went off (remove reason hit / exploded, the remove's place; the same ends PvP uses) go to `Table::NoteOwnShotEnd`; they are kept 20 frames (`kShotEndKeepSteps`). The objects walk asks `OwnShotNear` for every boss actor it reads whose hit id did not move, and calls `NoteOwnHit(actor, true)` when an end lies within 6 m (`kShotNearBoss`) of it. The rest is boss-fix's: the copy's skipped changes of the last 12 frames are made late (the stun), it runs its own changes for 120 frames, its stun animation sends the `DAMAGE` of 0, and the server hands the boss to the stunner. Copies only: an owner's boss (and solo play, which has no copies) never skips its own AI, so nothing changes there. A wall hit within 6 m only runs the copy's own AI for 2 s, then the owner's state again. Log: `<boss>: our own shot ended at it: the copy runs its own reaction`; the 10 s line's `(N late, M hits by our shots)`.
 
-**Cases sharing the cause** (a stun or opening from a hit that takes no life): Gohma's eye (seed, nut), King Dodongo's bomb or bombchu in the mouth, Bongo Bongo's hands (seed, arrow; each hand is a boss actor of the walk, so this holds where a hand has a BSA of its own, else only within 6 m of his root: not proven), Phantom Ganon and Ganondorf hit by an arrow, Twinrova, Ganon's arrows, mid-bosses' stuns from a nut: covered when the shot ends at the boss. **Not covered by this reading** (no shot end of ours at the boss): a reflected boss shot (Phantom Ganon's and Ganondorf's energy ball, Twinrova's beams on the Mirror Shield: the ball is the owner's shot, a copy in the other games), the boomerang and the hookshot (they come back; not in the hit/exploded ends PvP uses as far as read: Barinade's stem, Morpha's nucleus); those still stun only where their hit moves the hit id (Barinade's and Morpha's take life).
+**Cases sharing the cause** (a stun or opening from a hit that takes no life): Gohma's eye (seed, nut), King Dodongo's bomb or bombchu in the mouth, Bongo Bongo's hands (seed, arrow; each hand is a boss actor of the walk, so this holds where a hand has a BSA of its own, else only within 6 m of his root: not proven), Phantom Ganon and Ganondorf hit by an arrow, Twinrova, Ganon's arrows, mid-bosses' stuns from a nut: covered when the shot ends at the boss. **Not covered by this reading** (no shot end of ours at the boss): a reflected boss shot (Phantom Ganon's and Ganondorf's energy ball, Twinrova's beams on the Mirror Shield: the ball is the owner's shot, a copy in the other games), the boomerang and the hookshot until the row 164 follow-up (they come back, so they never end where they hit). Now their flight keeps its farthest point (`Flight::far_at`), where it turned: where it hit or held. A flight of ours that came back (`CoopSpawn::IsReturnShot`: `Weapon_Boomerang`, `Shootable_Hook`, `Shootable_HookLong`; at least 1 m out) is given to `NoteOwnShotEnd` at that point on the walk it turns (`Sync::ReturnTurns`: it came 0.25 m nearer than its farthest, or its farthest stood for 3 walks, a hookshot's tip held), not when it is gone: it comes back up to a second or more after its hit, past the copy's 12-frame look-back (`kLookBackSteps`) for the stun it skipped. One gone before its turn was read gives it when gone. So a boss copy within 6 m of it runs its own reaction, as for a seed: Barinade's stem and jellyfish, Morpha's nucleus pulled, the Flare Dancer's core. A throw that turned within 6 m of a boss without hitting it only lets the copy run its own AI for 2 s, as a wall hit does. Test: `spawn_test.cpp` (row 164 follow-up). Not proven in a game: that a guest's boomerang stuns Barinade's stem in the owner's game.
 
 **Test.** tests/lichii/boss_native_test.cpp (a shot's end near a copy runs its skipped stun late and counts once; far, NaN, old or on an owner's boss: nothing). In game: autotest `hs-boss-stun-gohma` (B, the copy, seeds her eye; screenshots at `b-stunN` must show her stunned in both games; then A, a copy after the hand-over, does the same).
 
@@ -162,9 +164,21 @@ LANE1 autotest hs-boss-full (runs 20261115-122137 and -130255): in A's game the 
 **Now.**
 - Server (`server/session.cpp`): an unready game never takes a boss by the chase rule or the out-of-fight near rule (as before for the fight-near and hit rules); `best_other` (owner gone or unfit) takes a ready game before an unready one, and an unready one only when no other is left. New rule: a boss whose owner is unready goes to a ready game at once (`boss_to_ready`): a game whose own intro began the fight there is the one whose boss is in the fight.
 - Module (`Table::SetEvent`): after our event a copy still runs its own changes for `kAfterEventSteps` (120 frames, about 2 s) before it takes the owner's state, so that hand-over can come first. Note: `our event is over (its own still runs for a moment)`.
-- *Ready without the intro* (`CoopBoss::Readiness`, coop_boss_game.cpp). A late joiner's game never plays the intro (its copy follows an owner already fighting), so by the flag alone it stayed unready for good and the hit rule refused its stun hand-over. Now a game is also ready once its own boss was seen in the pre-battle phase this visit and then out of it: the body's own animation (AS slot 0, read by the objects walk, `CoopObjects::LastBossPreBattle`): Gohma's `Sleep` / `Pre_Battle_*`. Kept until the room changes. A boss never seen in such an animation is ready by the flag only. Log once: `coop: boss: our boss left its pre-battle phase here: ready to own it without our intro`.
+- *Ready without the intro* (`CoopBoss::Readiness`, coop_boss_game.cpp). A late joiner's game never plays the intro (its copy follows an owner already fighting), so by the flag alone it stayed unready for good and the hit rule refused its stun hand-over. Now a game is also ready once its own boss was seen in the pre-battle phase this visit and then out of it: the body's own animation (AS slot 0, read by the objects walk, `CoopObjects::LastBossPreBattle`): Gohma's `Sleep` / `Pre_Battle_*`. Kept until the room changes. Also ready once our boss has lost life this visit (`CoopObjects::LastBossHurt`, row 164 follow-up): a boss waits at full life, so one below it is in its fight, and our copy follows it. Before, a late arrival at any boss but Gohma (no pre-battle animation is known for the others) stayed unready for the whole fight, and the server refused its stun hand-over. A boss at full life and never seen in such an animation is ready by the flag only. Log once: `coop: boss: our boss left its pre-battle phase here: ready to own it without our intro`.
 - Tested: `tests/server/session_test.cpp` (four `boss-copy-b` cases: chase/near refused while unready, an unready owner hands to a ready game, ready before nearer unready when the owner leaves, a late joiner's stun once ready), `tests/lichii/boss_native_test.cpp` (the event case waits for the grace), `boss_test.cpp` (Readiness, 2 cases), `objects_test.cpp` (BossPreBattle).
 - **Not proven in game.** Check (LANE1, hs-boss-full or hs-boss-fix-gohma): A walks in first and under her; during A's intro no "now ours" in B's log while B logs "not ready to own the boss"; A's copy (if it is one) never asks `BossAppear` twice; after B's own intro (if it plays) "now ours" comes within ~1 s. A late B logs "our boss left its pre-battle phase here" once its copy follows A's fight, and B's seed stun then hands B the boss ("now ours").
+
+## Not everyone skips the intro: the owner still in its intro (tracker row 244, 0.11.9)
+
+**Seen.** piscesgamer97, 0.11.9, public lobby (player-logs/piscesgamer97-20261122-065909): "boss fights seem to desync when everyone doesn't skip the cutscene. Dodongo was still stuck in the pit and Gohma was slightly bugged." In the log the King Dodongo intro was played by some games and skipped by others; the boss changed owner twice during and right after it, and the copy was 16 m from the owner's place when its own intro ended.
+
+**Why (root cause).** A game said it was ready to own the boss (`CoopBoss::Readiness`, object_presence `unready` off) by the save's `HavePlayedEvent.<intro>` flag, or once its boss left its pre-battle pose this visit, never by whether its own game was playing the intro *now*. Both are true in the middle of an intro: a save that saw the intro before (a public lobby mixes saves; a game asked to play the intro again with the others, `Director::Join`, keeps its old flag), and an intro's own animations take Gohma out of `Sleep`/`Pre_Battle_*`. Such an owner's boss is the cutscene's (King Dodongo in his pit, Gohma in her intro animations), and the owner sends nothing of its own events. So every game that skipped got the intro's boss: placed where the intro holds it, no moves, and hits on it refused by the owner's game. The server kept it there: the owner read ready, and a ready owner is never handed to a game for being ready.
+
+**Now.** `Sync::InIntro` (an event of ours in the boss room before the fight, or within `kMinFightUs` after its start: the rest of it, such as Gohma's own `BossAppear`; never while our Link is dead) goes into `Readiness::Step` as `in_intro`: never ready then, and the boss's pose then never counts as "left the pre-battle phase". The server's `boss_to_ready` then hands the boss to a game in the fight at once; while every game is in its intro the owner keeps it, as before. The owner's own game, now a copy, runs its own boss through its intro (`Table::SetEvent`) and takes the new owner's state after it. Log: `not ready to own the boss: our game plays its intro now`, then `ready to own the boss`.
+
+**Cases sharing the cause.** Every boss in the room table (Gohma, King Dodongo, Barinade, Phantom Ganon, Volvagia, Morpha, Bongo Bongo, Twinrova): one reading. Not covered: Ganondorf and Ganon (no room in the table, no readiness), mid-bosses (no intro). Solo or co-op idle: nothing sent.
+
+**Tests.** `tests/lichii/boss_test.cpp` (row 244: Readiness with `in_intro`, Sync::InIntro). **Not proven in game.** Check (LANE1, two games): A skips King Dodongo's intro, B watches it; A's log `ready to own the boss`, B's `not ready ...: our game plays its intro now`; the boss is A's (`now ours`) within a second; A fights him out of the pit while B watches; after B's intro, B's copy follows A. Screenshots on both games.
 
 ## Entering together: a copy's own event held by its owner's motion (tracker row 130, GitHub #173, 0.11.3)
 
@@ -520,6 +534,120 @@ reload brought the fight back with no container to win (#241, row 52).
   (NotShared, the stale mend clears it); an absent player's beaten room must still show a floor that works. A player still inside the dungeon (not in the room) at the kill gets the set only
   once they leave its scene; until then, as before, nobody is pulled into that room again.
 
+## Boss turns: every player fights the boss (2026-11-21)
+**Seen.** In two-player runs and a player's report, Phantom Ganon went for one player the whole fight, and only that
+player played his ball rally. The boss's AI runs in its owner's game alone, and it fights that game's Link. Other
+players' puppets are perceived (above), but a target sticks once chosen, and a puppet has no body: the ball passes
+through it in the owner's game, and in the puppet's own game the ball is a copy that its sword cannot send back.
+
+**What changed (server, `Session::next_turn`).** A boss in its fight takes turns. Once one owner has had it for
+`boss_turn_us` (20 s, from the fight's start or the last change of owner), the server asks it over to the next player
+by player number, round and round (1, 2, 3, 4, 1 ...). That player's game then runs the boss, and its AI goes for
+that player's Link: the ball rally, the charges and the breath are played with each player in turn, with the real
+hit and reflection in that player's own game. The turn goes only to a player whose game has it loaded, has played its
+intro (`unready` is not set), is up and playing (not paused, downed, dead or in an event) and stands within
+`boss_turn_m` (40 m) of it. It waits for a calm moment: no hit passed on for `boss_turn_quiet_us` (3 s), the owner not
+hitting it (`boss_owner_hit_hold_us`), its life above 0, and its owner's animation no death and no cutscene. A shot of
+the owner's game still in the air does not hold it (2026-11-21: that hold, `boss_turn_shot_us`, met the attack-end
+edge right after every shooting attack, and Phantom Ganon got no turn at all in the proof run); his rally ball is a
+split shot, each game's own ([boss-multiplayer.md](boss-multiplayer.md)). A hand-over carries the boss's state as
+every other one does (native boss sync, the life with every hit in it). `boss_turn_us` 0 turns it off. Counted in
+the server's `enemies:` line as `boss turns`.
+
+**Only at the end of the boss's own attack (boss-turns-0119, the gates from boss-0119).** Geno's rule above is the
+one turn rule; it now also waits for the boss's own attack edge, read in the owner's game:
+- *The attack, the game's own.* The owner's walk reads the attributes of the boss's five action slots' verbs from its
+  BSA, as the game's own "has action verb attribute" method does (main+0x507be0: verbs at BSA +0x54, the verb table at
+  +0x1a40, 16-byte entries, 282 verbs, bits at +8). Attack is attribute bit 0, Interrupt (the reaction moves that cut
+  a move) bit 1, in all 33 ActionVerbAttributesSettings of the bosses, mid-bosses, Iron Knuckles, Dead Hand and the
+  shooters (checked offline in boss-target-0118: Attack on 23 verbs, Interrupt on 47, no mismatch). Each sample of a
+  boss carries `object_state::attack_read`, and `attacking` while its attack sequence runs ([protocol.md](protocol.md)).
+- *A reaction never ends a turn (`addr::InAttackSequence`, per actor).* After an Interrupt the sequence stays on until
+  the boss's own next attack, and falls where that attack ends. Phantom Ganon's SmallDamage (verb 134) runs on into
+  'Run' (verb 40, no attribute), the reaction's tail: handed over there, the new owner's game started Run over and
+  nothing ended it (lane runs 20261120-180245, -184021).
+- *The server (`Session::note_attack`, `next_turn`).* The turn passes only within `boss_turn_edge_us` (1 s) of the
+  owner's sample where the bit fell, after the 20 s and with every calm rule above, and never in a stun animation
+  (`anim::IsStun`: Stun, Down, Fall, Faint). An edge missed for a hit waits for the next attack's end. An edge is read
+  only within one owner's epoch: the old owner's last "attacking" is never the new owner's end. An owner whose samples
+  never say `attack_read` (an older build) keeps its boss, so a boss is never handed over blind. Nor is a turn given TO
+  an older build: a game takes turns only when its presence lists the boss with `object_presence::takes_turns`
+  (boss-turns-older-0119), else it would keep the boss for the rest of the fight; the next game by number gets it. A phase with no
+  attack (Phantom Ganon in his paintings, Gohma on the ceiling, Volvagia burrowed) never gives a turn.
+- *A rally ball holds the attack (row 211, shot-reflect-211-4; `CoopObjects::AttackWithRally`,
+  `CoopEnemyShots::IsRallyBall`).* Ganondorf's light ball leaves during BasicAttack (verb 112), and the verb falls into
+  103 (no attribute) while the ball still flies at the player: an attack end by the read above. In the proof run
+  20261123-031042 (B owner) each of the three turns passed there, ball in the air: B sent the ball back, his own Ganon
+  began his volley ('Parry_Ready'), but B's game had just become a copy and A's verbs (no ball in A's game) took it
+  over; no rally ever reached a stun. The ball and his answer to it (the volley, or the stun of a rally won) are one
+  attack. So the owner's walk keeps the boss's `attacking` on while a rally ball of its own (a boss ball a sword sends
+  back: Ganondorf's `_Bullet_LightBall` and `_Bullet_ChargeLightBall`, Phantom Ganon's `_Bullet_LightBall`) is in
+  that walk's actor list (read in `Collect` and handed to the sync, `Sync::SetRallyMakers`: a shot is no shared
+  object, so it is never in the walk's shared list; the first build read that list and the hold never came on, run
+  20261123-045939, where no turn came only because the other player was still loading), and the edge comes when the ball is gone (it hit a Link or a wall; sent back into him it ends in his
+  stun, which holds the turn anyway). Logged once a hold: `<boss>: its own rally ball flies here: its attack goes on,
+  no boss turn (row 211)`. Every other boss shot checked (the kShots / kSplit tables): their makers never answer
+  them (Phantom Ganon's bolt and shockwaves, Ganondorf's shockwave, thunder and spread, Ganon's shots, King Dodongo's
+  fire, Volvagia's rocks, the Moblin club wave, Flare Dancer fire), so a hand-over mid-flight changes nothing: each
+  game keeps its own shot (split) or the shot stays with the game that made it, and they keep the no-hold rule
+  above. Twinrova's beams (sent back by the Mirror Shield) belong to a battle-manager group, which takes no turns (row
+  222). Bongo Bongo, Barinade, Morpha, Gohma and Dark Link fire no shot that outlives an attack.
+- *The copy takes the owner's first move after a hand-over (row 211, `Table::Step`).* At a hand-over's first frame
+  the copy's own AI has already asked its action slot (its own requests are skipped only once the owner's verbs
+  came), so the owner's first move answered 3 (the slot took a request this frame) and was dropped: Ganondorf's
+  copy played BasicAttack's animation without its node, so the copy never fired its own (split) ball, and each game
+  saw only the balls of its own turns (2 per game in ~5 min). A busy answer with none of our moves taken for that
+  boss this frame is now asked again next frame (at most `Table::kBusyAsks`, 3); a busy one after ours was taken
+  this frame (the owner's second ask in a frame, which its own game answered the same) and every other refusal are
+  still not asked again (row 190). Generic: every boss and every brain-path enemy copy. Counted in the
+  `bosses: ours sent` line: `N answered a busy slot, M of them asked again next frame`.
+- *The new owner goes on (`CoopBossNative::PlanMadeOurs`).* Handed over between moves, the copy's own brain asked the
+  move its body runs: nothing is asked again, its AI goes on from that phase and move. Mid-move (a forced hand-over:
+  owner downed or gone, a stun of the copy): an attack starts over (row 178); a move that is no attack (a walk, a
+  turn, a reaction's tail) never does: its AI chooses again from its body (row 149's re-choice; row 325 below).
+- *Every boss fights the Player only* while turns are on (`LICHII_COOP_BOSS_TURNS`, on unless "0";
+  `Table::PlayerOnlyBoss`): a boss whose perception picked a puppet gets no attack permission, never attacks, so never
+  reaches an attack end. Each game's boss fights its own Link; the turns bring it to each player.
+- *The stall count goes on (`Table::Hold`)* through the re-choice's own short move, so a boss stuck after a forced
+  hand-over reaches 3 re-choices and the server's stall rule frees its fight lock (row 149).
+- Each turn is logged by the server: `boss turns: <actor> of player N: its attack ended: to player M (turn K)`.
+- Every owner change of a boss (or a boss group's root) or a battle manager is logged by the server with the rule that made it
+  (row 222 follow-up, review-01111-b): `hand-over: <actor> (group G) player N -> player M: <why>`, for example `its
+  owner is unfit (dead 0 s)`, `its owner's game has not begun the fight (unready: intro or event)`, `a turn: its attack
+  ended`, `a stun by a copy (issue 150)`, `the near rule ...`, `its owner let go of it ...`; ` (the owner did not
+  answer)` is added when the change came without the owner's answer. In the first hs-twinrova-orders run (20261122-111320)
+  the two unlogged hand-overs were read from the games' logs: A still in its intro event (unready) -> B; B dead
+  (`DreamWorld_GameOver`) -> A. Both are those rules, not a bug.
+- Solo or idle: no other fit player, no turn; the hook reads attacks only to send them.
+
+**Every boss checked for the edge and for a phase change in a turn.** The edge is the generic read above (the same
+two bits in every setting), so no boss needs a list of its own moves. A phase change comes from a hit (its reaction
+is Interrupt, latched to the next attack's end, and the 3 s quiet), an event (event animation, busy owner) or a stun
+(stun animation); each holds the turn. The phases with no attack (the list boss-target-0118 found) give no
+turn at all. Read from the code and the earlier runs; only Phantom Ganon has had lane runs:
+- Gohma (eggs, larvae follow her): ceiling wait, no attack: no turn. Before her fight: never stuck (row 189).
+- King Dodongo (roll centre a part): his roll, no attack: no turn until an attack ends after it.
+- Barinade (tentacles, jellyfish parts): the jellyfish phase, no attack: no turn.
+- Phantom Ganon: inside his paintings, no attack: no turn; the ball rally (the shot rule too); SmallDamage's tail.
+- Volvagia: burrowed, no attack: no turn.
+- Morpha: in her water, no attack: no turn.
+- Bongo Bongo (hands are parts, they follow the root): the hands' phase, no attack on the root: no turn.
+- Twinrova (Koume, Kotake as parts): in the air, no attack: no turn; the merge is an event.
+- Ganondorf: in the air, no attack: no turn; ball rally as Phantom Ganon's. No ready gate (no `CoopBoss::Room`).
+- Ganon: no ready gate; never at life 0, in a death, an event or a stun animation.
+- Mid-bosses (Dark Link, Iron Knuckle, Flare Dancer, Big Octo, Lizalfos, Gerudo Thief, Poe sisters, Dead Hand): the
+  same read (Dark Link has 286 verbs: his top 4 read entry 0, as the game itself does).
+
+**Tests.** `tests/server/session_test.cpp`: "boss turns" (three players, round by number; a calm moment, near, up and
+ready; a shot in the air does not hold it; each at an attack's end), "boss-turns-0119" (no turn in a phase with no attack, waits for
+the attack's end, a stale edge, no attack read, a stun, the old owner's attack). `tests/lichii/boss_native_test.cpp`
+(the attribute word, the attack sequence after a reaction, PlanMadeOurs, the stall count), `objects_test.cpp` (the
+sample bits).
+
+**Not proven in game.** That every boss's AI takes a turn well from a copy's state (the phase jumps seen when the
+near rule moved bosses before native boss sync), and that 20 s is a good length. Check: two players fight Phantom
+Ganon; each gets his ball in turn and can send it back; Volvagia, Morpha and Twinrova go for each player in turn.
+
 ## A boss stuck in one move (tracker row 149, 0.11.6)
 
 King Dodongo rolled forever (Rolling_Start, Rolling_Loop_Start, Rolling_Loop, never Rolling_Impact or Rolling_End) on every screen and the fight could not be won (row 138 host log, 0.11.4).
@@ -543,6 +671,122 @@ King Dodongo rolled forever (Rolling_Start, Rolling_Loop_Start, Rolling_Loop, ne
 
 **Tests.** `objects_test` (row 169: told every walk while it plays, never for the owner's stun, also not when the owner is up a walk before the copy, nor for our own boss; the stun names), `boss_native_test` (row 169: own time, a hand-over during it chooses nothing again, counted once; without it the row 149 re-choose stays). **Not proven in game:** two players at King Dodongo, the guest's bomb in his mouth stuns him, the boss goes to the guest and the guest's hits end him (screenshots on both games: the guest's sword hit taking him from `Down` to his death, the host's screen showing the same).
 
+## Battle manager orders: one manager decides for every game (row 222, Twinrova, 0.11.11)
+
+The owner's report: the Twinrova fight got stuck, the sisters held in an attack. Read from the game's own files and
+main (build e0f3ccfa; no game run yet):
+- The fight is run by a third actor, `Enemy_KotakeKoumeBattleManager`, the group's root (Kotake and Koume are its
+  parts). It has no BSA, no Life and no AS, so the native boss sync never covered it. Its AI node
+  `ExecuteKotakeKoumeBattleManagerAI` (vtable main+0x49a8130; update slot 30, main+0x2720960) picks the fight from
+  its own game's Link and tells each sister what to do through the game's message manager (main+0x379740, the
+  manager `[[main+0x4cba700]]`): a 0x18-byte request naming the sister's actor id (`[client+0x3e8]`), type
+  0x70210000 or 0x70210001, and a payload copied from the manager node (+0xb8). Six send sites, all in that node
+  (main+0x27212e0 to main+0x27227c8).
+- Each sister's `ExecuteKotakeKoumeReceiveMessageProc` (vtable main+0x49a8568) takes them in its message handler, slot
+  39, main+0x2723f80 (x0 the node, x1 the message: +0 the sender's id, +4 the type, +0x10 the payload; main+0x2fa43d0
+  copies the 0x16-byte payload into node+0x54). Type 0x70210000 writes the blackboard keys
+  `DungeonBossKotake_CurrentBattleState` (s32), `_CurrentRollType` (s32), `_AttackStartPos` (vec3), `_IsMainMove`
+  (bool; `_IsPreMainMove` gets the old value); 0x70210001 writes `_IsUnderIntervalThreshold`. The sisters' action
+  sequences branch on those keys (`LandBattle.actionseq`). So their battle state came only from these two messages,
+  from each game's own manager: a copy's verbs were the owner's (native boss sync) but its battle state its own
+  manager's, and after a hand-over the new owner's sisters could start an attack that waited for an order their
+  manager never gave.
+
+The fix (`lichii/hook/coop_boss_orders.h`, Hookshot patch 0036, wrap row 10, protocol 16): the handler is wrapped.
+The owner's game lets each order run and keeps it; it goes out in that sister's own samples (component 23
+`orders`, [protocol.md](protocol.md)). A copy game skips its own manager's orders once the owner's first has come and
+puts the owner's into its sister through the same handler, called by our caller (order 46) on the game's calc thread
+with a message block of its own (made once with the game's malloc), each order once and in the owner's order. At a
+start, a hand-over or a gap it takes the owner's newest order of each type. Made ours, our own manager decides from
+then on; but its own orders were skipped while we were a copy, so it believes the sisters took orders they never did
+(its next order could wait for a state it thinks it gave). So its newest skipped order of each type is put into the
+sister first, and sent as ours: the sisters then stand where the manager that now decides thinks they do. Until the
+owner's first order comes (a new copy, an older owner) its own orders run, as before. The copy's
+manager itself still runs (its SyncLife, its damage field); only its orders to the sisters are the owner's.
+`LICHII_COOP_BOSS_ORDERS=0` turns it off. Option C (enemies-01110: the server moves a group whose root is flagged
+`battle_manager` only from an unfit owner) stays the fallback: a game flags the manager only when it does not share
+orders (no patch 0036, or switched off; `PresenceFlagsBattleManager`), and the server keeps the flag once any game
+sent it, so one game without A keeps the group with its owner; with A in every game it hands over as any boss group. Log lines: `coop: bosses: battle orders: ...` (counts every 10 s),
+`...: the owner's came: our own manager's orders are skipped`, `...: its receive node 0x...`.
+
+Other battle managers (checked in the game's files, romfs of the same build): no other actor runs a battle manager.
+`ExecuteGroupBattleManagerAI` (vtable main+0x49a3090) is in main but no actor's AI uses it. Its client side,
+`ExecuteGroupBattleManagerMessageCommunication` (main+0x49a3258, handler slot 39 main+0x26f5cd0), is only in Gohma's
+larvae (`Enemy_Gohma_Larva.utility.root`, blackboard `Enemy_GroupBattleManager_IsEnable`/`_Order`, the
+`LandBattle_GroupBattle` sequence); with no manager no order ever comes, so the larvae fight on their own AI (the
+native sync and Mover as any enemy). Nothing to wrap; a game update that adds a manager would need a row of its own.
+Twinrova merged (`Enemy_DungeonBoss_Twinrova`, phase 2) has no receive node and no manager link: her fight is her own
+AI and action sequences (`LandBattle`, `LandBattle_Climax`), which the native boss sync carries as any boss (she is in
+the boss lists, coop_boss.cpp). The manager's orders matter only in phase 1.
+A new game (the main base changes, or a new process: `Reset`) drops the parts, the message block (the old game's heap)
+and a call in flight, as the boss table's own block.
+The sisters' own messages to each other (`ExecuteEnemyCoopWriteBlackboardReceiveMessage`, types 0x3ddc000e/f) are
+not orders and are left to each game.
+
+**A part cut loose keeps its group's fight (twinrova-01112, proof run 20261123-001227).** At the merge both games remove
+the manager and the sisters, so the server forgets the group's root and Twinrova is a root of her own. The server keeps
+a group's fight lock on its root alone (`mark_fight`, `in_fight`), so she came out with none: "out of a fight" mid-fight,
+and the out-of-fight chase rule (issue 101, `a copy chased its own player`) moved her from player 2 to player 1 while
+her group's owner was player 2. Now `Session::unlink` and `Session::forget` give a member cut loose the root's lock
+(root forgotten, member listed as its own root, member moved to another root, which then takes it on). The rule is the
+server's, for every group (any boss whose root leaves or is regrouped while a part stays); the one seen in a run is
+Twinrova's merge. Test: session_test "row 222 follow-up: a boss part cut loose ...".
+
+Not proven in a game yet: the probe run (two games, hs-twinrova-native) must show the wrap's first-words check pass
+(`coop: bosses: battle manager orders shared (wrapped)`), `battle orders: ours sent N` in the owner's log and
+`N owner's put in, M own skipped` in the copy's, and both games' sisters in the same attack through a forced
+hand-over.
+
+## A boss part another game killed dies in our game too (rows 257/258, Barinade crash, 0.11.12)
+
+**Seen.** #258 (host log, kit 0.11.11; P2 owned Barinade): each of P2's five jellyfish kills was replayed twice on
+the host's copy (`P2's killing blow replayed`, then `a hit the boss's game did not take: its life stays its game's`,
+`dead in its owner's game`, the second replay). Its life stayed 1, and 3 s later (`kDeadGraceUs`) the copy was
+deleted from outside (the 5 s line: `1 deletes`). Barinade's copy never saw a jellyfish die. One summary cycle after
+`copy ... plays 'Phase4_St'` (the owner's verb 125) the game crashed: `exception 0xc0000005 (write 0x100000000000,
+guest 0) at longshot.exe+0x72753`.
+
+**Read from main** (build e0f3ccfa, main base 0x80020000; no game run): guest lr 0x80980a04 = main+0x960a04, in
+main+0x9607f0, a member of the `ModelBind` component (string at main+0x95f60c). It clears the bound bone name: memset
+of its buffer (`[this+0x88]`, length `[this+0x90]` - 1). Its caller main+0x960340 (lr main+0x960494) takes
+`this` from main+0x2637340 (lr main+0x2637380), which reads the component as `[[actor+0x270]+0x18]` (main+0xf55ee0,
+which may be null) and checks nothing. main+0x2637340 is a callback (stored at main+0x4980b78) of the update
+main+0x2636f10 (vtable slot at main+0x4980ad0) of `ExecuteBarinadeJellyfishActionUnstick` (strings at main+0x2637024
+`TargetJellyfishIndex`, main+0x2637104). It is called through main+0x2db8950 (lr main+0x2db89e4) on the jellyfish
+its handle names. So the Unstick of her new phase reached a jellyfish with no ModelBind: `this` 0, buffer 0,
+length 0 - 1 = -1 (crash registers x0 = x1 = x19 = x20 = 0, x2 = x21 = -1). That jellyfish was one we were deleting,
+or had deleted. In the owner's game each jellyfish dies by its own death, which tells Barinade, before her phase
+moves on.
+
+**Now** (module only, `lichii/hook/coop_objects_sync.cpp`):
+- A boss part copy (`IsBossPart`: Barinade's jellyfish and arms, Morpha's tentacle, Bongo Bongo's hands, Gohma's
+  eggs and larvae, King Dodongo's babies, Twinrova's sisters, the mid-bosses' parts) whose replayed killing hit its
+  game refused gets its whole life through its own Life step (`LifeWrite::direct`, never a write), once. The hitter's
+  game judged the kill, so its own death runs here and tells its boss, as it did there. Log: `a killing hit the boss
+  part's game did not take: its life N given to its own Life step (the hitter's game killed it; rows 257/258)`. The
+  5 s line counts it: `(boss part kills to its Life step N)`.
+- Its owner's dead remove then replays no second killing blow.
+- A boss part whose boss is alive here is never deleted from outside after `kDeadGraceUs` (`Sync::HeldByItsBoss`).
+  Its own death ends it. Once its boss is dead here, or not on the walk, the grace delete is the fallback again.
+  A part still held `kHeldSayUs` (10 s) past the grace is said once, a leftover whose own death never ended it:
+  `a boss part dead in its owner's game still here N s on: held by its boss <id> <boss>, not deleted (rows 257/258):
+  <id> <part> life N`.
+- Unchanged: the boss itself (HeldLifeStep, SetDying, `a hit the boss's game did not take` for a refused hit that does
+  not kill), plain enemies (the write and grace path), our own parts (`a hit our boss's game did not take as a replay`).
+
+**Every boss's forced phase.** "The copy takes the owner's state again" (Resync after our hit or event) and the action
+stream put the owner's phase verbs into Barinade's copy at Phase2_St and Phase3_St in the same log with no crash. A
+copy's phase move is the owner's move, and it can only be safe when the copy's parts are what the owner's game had
+when it moved. A part deleted from outside, with no death of its own, is the one difference the copy cannot see. So
+the rule above covers every boss with parts, not one phase gate: Barinade (jellyfish, arms), Morpha (tentacle),
+Bongo Bongo (hands), Gohma (larvae), King Dodongo (babies), Twinrova (sisters), Phantom Ganon (painting riders),
+Ganon, Big Octo, Meg's dummies, Flare Dancer. Bosses without parts (Volvagia, Dark Link's body) were not touched.
+
+**Tests.** `objects_test` (rows 257/258: a refused part kill goes to its Life step once, with no second replay, and is
+not deleted while its boss lives; with no boss here the grace delete still runs; a boss's own refused killing hit is
+still not given). **Not proven in game:** two games, P2 owns Barinade and kills the jellyfish, the host's copy reaches
+Phase4_St with no crash, and the host's log shows `boss part kills to its Life step 5` and no `1 deletes` after each.
+
 ## Not known yet (for the in-game check)
 
 1. Whether the force-set-matrix move into a room of the same scene loads that room's walls and floor, or Link falls through (the dungeon may stream rooms by `DungeonRoomIndex`). If he falls, the fallback is the scene change, which needs an event running.
@@ -550,3 +794,34 @@ King Dodongo rolled forever (Rolling_Start, Rolling_Loop_Start, Rolling_Loop, ne
 3. Whether the force skip of a boss intro leaves the boss in its fight state (the graphs use it for going back to the title).
 4. Whether a moved player's game starts the intro itself, and whether the outro is the first event after the fight (an event in the fight is now checked against the boss's life, step 4; whether the remake removes or zeroes a dead boss actor is not checked).
 5. Whether a boss door's own event (the boss key, the door opening) counts as the intro: it starts before Link is inside the circle, so it should not.
+
+## King Dodongo rolls forever in the lava pit (tracker row 325, GitHub #325, 0.11.11)
+
+**Seen.** IlJokeslI, 0.11.11: King Dodongo stuck rolling mid-arena, the fight could not go on. Reproduced in
+kd-roll-hold-325 (runs 20261123-035842, -043946): KD in `Rolling_Loop` with his place frozen inside the centre lava
+pit (y 72.53, the arena floor 73.4), `ours held 'Rolling_Loop' ... (1/2/3 of 3)` and still rolling.
+
+**Why (root cause).** A forced hand-over mid-move started the move over (row 178) also when it was no attack. Run
+-043946: his turn after a roll (verb 104), started over, became a new roll in his old facing that took him along the
+far wall; his walk (verb 1), started over, ended at once at mid-wall; from there his fire and his roll aimed at Link
+went across the pit, and a roll inside the pit never reaches its end (no wall to hit; the row 149 re-choice does not
+end it). With one game in the session (kd-pit-solo-325, run -051747) every roll followed the walls and ended (18 of
+18). Row 178's start-over is needed for an attack (Phantom Ganon's rush, else lost); a walk or a turn is the AI's own
+placing between attacks and started over from where the copy stands it leaves the boss's own cycle.
+
+**Now** (module only, `CoopBossNative::PlanMadeOurs`). Made ours mid-move in a move that is no attack (its game's
+`addr::IsAttack`, read): its own AI goes on if it asked that move itself, else its brain chooses again (row 149's
+forced brain verb), nothing started over. Log: `made ours mid-move (verb V, no attack): its AI chooses again from its
+body, nothing started over (row 325)`. An attack, or an unread one, starts over as before.
+
+**Cases sharing the cause.** One rule for every boss and mid-boss on the native table (Gohma, King Dodongo,
+Barinade, Phantom Ganon, Volvagia, Morpha, Bongo Bongo, Twinrova, Ganondorf, Ganon and the mid-bosses): any move
+whose action verb is no attack in the new owner's game, e.g. KD's walk (verb 1) and after-roll turn (verb 104), and a
+reaction's tail such as Phantom Ganon's Run (verb 40) after SmallDamage (the same start-over left him running,
+runs 20261120-180245/-184021; the attack-sequence bit already keeps most of it an attack). Not changed: attacks
+(row 178), an unread attack bit, the row 169 own-stun time. Solo or co-op idle: nothing handed over, nothing changed.
+
+**Tests.** `boss_native_test` (row 325: PlanMadeOurs cases; a copy made ours in a turn with its own AI elsewhere gets
+a brain re-choice, mid-attack still the start-over). **Not proven in game.** Check: kd-roll-hold-325 again: no
+`made ours mid-move: its move (slot 0 verb 1|104) starts over`, the row 325 line instead; KD's y stays 73.2-73.5
+(no `diag 325` / roll centre at y 75.03) and every roll ends; screenshots on both games.

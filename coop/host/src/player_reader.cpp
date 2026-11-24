@@ -443,9 +443,7 @@ std::optional<std::string> PlayerReader::read_armor_link_name(std::uint32_t link
 // taken off), as before.
 namespace {
 constexpr std::string_view kChildPiecePrefix = "Armor_Child_";
-bool drawn_head(std::string_view n) {
-  return n.starts_with("Armor_") && n.find("_Mask_") != std::string_view::npos;
-}
+bool drawn_head(std::string_view n) { return protocol::is_drawn_head(n); }
 bool drawn_armor(std::string_view n) {
   return n == "Armor_Adult_Goron" || n == "Armor_Adult_Zora";
 }
@@ -507,6 +505,10 @@ void PlayerReader::wear_from_links(protocol::Equipment& e, bool child) {
       }
     }
   };
+  // A head flag that is no mask (the Lens of Truth's `Armor_GlassTruth`, row
+  // 197) is nothing the game draws on Link, at any age: taken as an empty
+  // flag, so a mask in a link still wins and none sends nothing worn.
+  if (e.head && !e.head->empty() && !drawn_head(*e.head)) e.head = std::string{};
   decide(e.head, drawn_head);
   decide(e.armor, drawn_armor);
   decide(e.boots, drawn_boots);

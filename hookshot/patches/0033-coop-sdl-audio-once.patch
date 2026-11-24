@@ -1,4 +1,4 @@
-From 9bfd9e5a3f05d51911b524e7d0afcf4e311201a2 Mon Sep 17 00:00:00 2001
+From 01ff6bb9953647deb221e3d5d13b882c76201d83 Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Thu, 19 Nov 2026 13:40:11 -0900
 Subject: [PATCH] Co-op voice crash: start SDL's audio once for the microphones
@@ -22,10 +22,10 @@ before; SDL leaves a failed start uncounted.
  1 file changed, 14 insertions(+), 1 deletion(-)
 
 diff --git a/host/hos_sdl.c b/host/hos_sdl.c
-index e5d1bb66..ee8467dc 100644
+index 72c38f26..3b0d9110 100644
 --- a/host/hos_sdl.c
 +++ b/host/hos_sdl.c
-@@ -757,10 +757,20 @@ static struct {
+@@ -894,10 +894,20 @@ static struct {
      void *GetDevices, *DeviceName, *Available, *GetData, *Clear, *Destroy;   /* (SDL3) */
      void *NumDevices, *DeviceName2, *CloseDevice, *LockDevice, *UnlockDevice;   /* (SDL2) */
      int tried, ok;
@@ -46,7 +46,7 @@ index e5d1bb66..ee8467dc 100644
      if (!rec.tried) {
          rec.tried = 1;
          HMODULE m = load_one(version == 3 ? "SDL3.dll" : "SDL2.dll");   /* (the one loaded: the same handle back) */
-@@ -777,7 +787,10 @@ static int rec_ready(void) {
+@@ -914,7 +924,10 @@ static int rec_ready(void) {
          }
          if (!rec.ok) hos_log("sdl: no recording functions: no microphone");
      }
@@ -58,6 +58,3 @@ index e5d1bb66..ee8467dc 100644
  }
  #undef REC_GET
  /* SDL2: the capture callback fills a ring of about a second, the oldest dropped when full; read under the device's lock */
--- 
-2.56.0.windows.4
-

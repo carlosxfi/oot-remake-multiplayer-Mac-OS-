@@ -4,6 +4,7 @@
 // requests do. Only in hookshot_coop.dll (the tests drive Tab itself).
 #include "coop_lobby_tab.h"
 
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <utility>
@@ -74,10 +75,23 @@ Lobby Read(int max_players) {
         HosCoopStatus st{};
         st.size = sizeof st;
         CoopHookshot::HostMenu().Status(&st);
+        // Row 208: how long co-op has been starting (from the first look at a state other than idle or failed).
+        static std::atomic<std::uint64_t> since_ms{0};
+        const bool starting = st.state != HOS_COOP_IDLE && st.state != HOS_COOP_FAILED;
+        const std::uint64_t now = NowMs();
+        std::uint64_t since = since_ms.load();
+        if (!starting) {
+            since_ms.store(0);
+        } else if (since == 0) {
+            since_ms.store(since = now);
+        }
         if (!seen.refused.empty()) {
             l.waiting = CoopTitleMenu::RefusedLine(seen.refused);   // the full reason: the chat and the log
-        } else if (st.state != HOS_COOP_IDLE && st.state != HOS_COOP_FAILED) {
-            l.waiting = "Co-op is starting...";
+        } else if (starting) {
+            st.answer[sizeof st.answer - 1] = '\0';
+            const Waiting w = WaitingText(st.state, st.answer, seen.held, now - since);
+            l.waiting = w.line;
+            l.waiting_next = w.next;
         }
         return l;
     }

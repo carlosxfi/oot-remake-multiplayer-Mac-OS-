@@ -15,7 +15,9 @@
 # 3. tools\hookshot\host_compile_check.py with Longshot's Python: nx2/build.py --standalone --dry-run gives the compiles,
 #    and the ones our patches concern are compiled with -fsyntax-only. Also every .py a patch changes (py_compile).
 # 4. tools\hookshot\sdl_audio_once_test.py: patch 0033's microphones run against a stand-in SDL3.dll (tracker row 156).
-# Exit status 0 only when every file compiled and that run passed.
+# 5. tools\hookshot\coop_save_remount_test.py: patch 0008's save folder switches on Longshot 3.1's staged saves, through
+#    Longshot's own nn::fs harness (tests/test_fs_save_commit.py): own, guest, own, guest, multiplayer saves.
+# Exit status 0 only when every file compiled and those runs passed.
 param(
     [string]$Cache = '',
     [string]$Work = ''
@@ -112,4 +114,8 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # microphone lists, opens and reads, with SDL's audio started once and the open stream valid all along; without 0033
 # (reversed) the same rounds must restart SDL's audio and use a freed stream, as the players' games did
 & $python -I -B (Join-Path $PSScriptRoot 'sdl_audio_once_test.py') $src $patchDir $env:LONGSHOT_MINGW
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+# --- 5: patch 0008 on staged saves (review-01111-b): every save folder stages in its own work copy and is published only
+# into itself; back on the player's own folder after a session as a guest, the own save is written, not the co-op one
+& $python -I -B (Join-Path $PSScriptRoot 'coop_save_remount_test.py') $src $env:LONGSHOT_MINGW
 exit $LASTEXITCODE

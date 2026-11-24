@@ -227,16 +227,18 @@ class FlagWatcher {
   std::vector<OneWayRestore> take_one_way_restores() { return std::exchange(one_way_restored_, {}); }
   // Row 140 (flag-oneway-c): the game itself writes some one-way values from its own copy (the HUD screen's floors,
   // written back to EnteredFloorBit while Link is in the dungeon), so a put-back the game lowers again on the next
-  // read is a fight we never win (49,223 put-backs in one host's session). A drop within kUndoPasses diff passes of
-  // our last put-back counts as undone; after kMaxQuickUndos of those in a row the key is the game's own until the
-  // next load window (set_loading): not put back, not sent (the group keeps its value). One-off drops (issue 146)
-  // are still put back.
-  static constexpr std::uint64_t kUndoPasses = 2;
+  // read is a fight we never win (49,223 put-backs in one host's session). Row 183 (a map that flickered "like
+  // equipping and unequipping" after it was picked up): counting only drops within 2 diff passes let a game that
+  // lowers the value a little later than that win forever, each put-back with a HUD refresh. So every drop of a
+  // value we put back counts, however long after, until the next load window (a room or scene load clears the
+  // count: issue 146's drop at a room change is still put back in each room); after kMaxQuickUndos the key is the
+  // game's own until that window (set_loading): not put back, not sent (the group keeps its value), owed after it.
   static constexpr int kMaxQuickUndos = 2;
   std::vector<FlagKey> take_one_way_left() { return std::exchange(one_way_left_, {}); }
   // Row 140 (review of flag-oneway-c): the game lowers these from the HUD screen's own copy, which reads the flag in
   // only at its init and refresh, so a put-back must reach that copy or it is lowered again. True when a one-way
-  // dungeon value was put back since the last call (every put-back, not only a key's first): the hook asks the
+  // dungeon value was put back since the last call with a value the HUD was not given yet in this load window (row
+  // 183: the same value again changes nothing for the HUD, and each refresh redraws it: the flicker): the hook asks the
   // game's own HUD refresh on the same frame (CoopMapRefresh WantNow). A value left to the game is put back once more
   // when the next room or scene load window ends (not after a save load: another save's floors are not this one's),
   // with that refresh, so the other player's floors reach the copy after a room load at the latest.
@@ -360,6 +362,16 @@ class FlagWatcher {
     return it == cap_holds_.end() ? std::nullopt : std::optional<std::int32_t>(it->second.low);
   }
   static constexpr int kResetQuietFrames = 60;
+  static constexpr int kLowerWaitFrames = 30 * 60;  // row 238: how long a hold waits for the object walk
+  // Row 238: the object walk saw our Link's own max at or under the hold's value (it lowered it, or it was):
+  // the hold may end by its quiet time now. Emulator thread.
+  // `seen` is Link's own max the walk saw (or lowered it to): only a value at or under THIS hold's counts, so an
+  // answer for an earlier, higher hold (replaced since) does not end the wait of the new one.
+  void lowered_done(FlagKey key, std::int32_t seen) {
+    if (const auto it = reset_holds_.find(key); it != reset_holds_.end() && seen <= it->second.low) {
+      it->second.awaiting_walk = false;
+    }
+  }
   static constexpr std::uint64_t kDoubledGainFrames = 5 * 60;
   static constexpr std::int32_t kMaxDoubledGains = 4;
 
@@ -582,7 +594,7 @@ class FlagWatcher {
   std::set<FlagKey> one_way_told_;           // keys take_one_way_restores gave once
   struct PutBack {
     std::uint64_t pass = 0;  // diff pass of our last put-back
-    int undone = 0;          // drops right after it, in a row
+    int undone = 0;          // drops after it since the load window began (row 183: however long after)
   };
   std::map<FlagKey, PutBack> put_back_;   // row 140: one-way put-backs
   std::set<FlagKey> game_owned_;          // row 140: left to the game until the next load window
@@ -590,6 +602,8 @@ class FlagWatcher {
   std::map<FlagKey, protocol::FlagEntry> owed_;     // row 140: left to the game: the group's value, put back after a room load
   bool owed_due_ = false;                 // a room or scene load window ended (no save load): put owed_ back
   bool hud_refresh_ = false;              // take_hud_refresh
+  std::map<FlagKey, std::uint32_t> hud_given_;  // row 183: the value each HUD item's refresh was asked for, this window
+  void ask_hud(FlagKey key, std::uint32_t value);
   // Row 140: puts owed_ back (ORed with the game's floors), each once, after a room or scene load window.
   void put_owed(FlagStore& store);
   std::vector<KeepsFailing> keeps_failing_;  // row 140: note_write_failure, kFailureSayAt
@@ -621,6 +635,7 @@ class FlagWatcher {
     int tries = 0;             // put-backs in this hold (refused or undone by the game)
     int quiet = 0;             // frames the game has kept `low`
     std::uint64_t put_at = 0;  // the frame of the last put-back
+    std::uint64_t made_at = 0;  // row 238: the frame the hold began (a load window's end only clears older ones)
   };
   std::map<FlagKey, CapHold> cap_holds_;  // cap_max, held_lower (row 181)
   struct ResetHold {
@@ -629,7 +644,22 @@ class FlagWatcher {
     int quiet = 0;           // frames the game has kept `low`
     int tries = 0;           // put-backs the game refused or undid
     std::uint64_t put_at = 0;  // the frame of the last put-back
+    // Row 238: a join or a host's save lowered MaxLife and Link's own Life component (the live copy the hearts are
+    // drawn from) has not been seen lowered yet: the hold outlives its quiet time until the object walk says it
+    // saw Link at or under `low` (lowered_done), at most kLowerWaitFrames. Else a game that never wrote its higher
+    // max back (so nothing refreshed the hold) lost it before the walk ran, and showed more hearts than the group.
+    bool awaiting_walk = false;
+    int waited = 0;
+    // Row 238: the frame the hold began. A load window's end clears the holds made BEFORE the window began (the game
+    // made Link again from the flags in it); one made inside it (a reconnect's snapshot, a host's reset arriving
+    // mid-window) came after Link was made, so Link still has the higher max: the hold must outlive the window.
+    std::uint64_t made_at = 0;
   };
+  // Row 238: a max-rule int the group's value was put back over in a load window (a guest's own save with more than the
+  // group has): the value our game had, made a ResetHold when the window has ended (a window's start clears holds).
+  std::map<FlagKey, std::int32_t> window_lowered_;
+  // The one place that arms the hold for a value lowered from `had` to `low` (join, host save, guest's own load).
+  void hold_lowered(const FlagKey& key, std::int32_t low, std::int32_t had);
   std::map<FlagKey, ResetHold> reset_holds_;  // reset_lowered
   // Rows 136/137: a rise of a held key (diff); true when handled (not sent).
   bool hold_reset(FlagStore& store, FlagKey key, const protocol::FlagEntry& before, const protocol::FlagEntry& now,

@@ -265,6 +265,53 @@ void Frame(coop::host::Session* session) {
     }
 }
 
+bool OnChat(std::string_view text, coop::host::Session& session) {
+    const auto command = ParseCommand(text);
+    if (!command) {
+        return false;
+    }
+    std::string line;
+    std::optional<Choice> change;
+    session.with_client([&](coop::net::Client& client) {
+        if (client.state() != coop::net::State::connected) {
+            line = "difficulty: not connected";
+            return;
+        }
+        const State now = Get();
+        if (!now.connected) {
+            line = "difficulty: the server has not said it yet";
+            return;
+        }
+        switch (command->kind) {
+        case Command::Kind::show:
+            // (the same line as a change's, so the chat's languages have it: coop_i18n.cpp's shapes)
+            line = "Difficulty: " + Describe(now.choice, now.values, client.players().size());
+            return;
+        case Command::Kind::bad:
+            line = "difficulty: /difficulty auto, easy, normal or hard, or /difficulty custom <life> <damage> "
+                   "<enemies> (life 25-500, damage 25-400, enemies 100-300, steps of 25)";
+            return;
+        case Command::Kind::change:
+            if (!client.is_host()) {
+                line = "difficulty: only the host can change it";
+                return;
+            }
+            change = Applied(now.choice, *command);
+            return;
+        }
+    });
+    if (change && !Set(*change)) {
+        line = "difficulty: only the host can change it";
+    }
+    // (a change: the server's answer, DIFFICULTY to everyone, puts its line in the chat: OnEvent)
+    if (!line.empty()) {
+        Glue& g = TheGlue();
+        std::lock_guard lock(g.mutex);
+        g.Line(std::move(line));
+    }
+    return true;
+}
+
 std::vector<std::string> TakeLines() {
     Glue& g = TheGlue();
     std::lock_guard lock(g.mutex);

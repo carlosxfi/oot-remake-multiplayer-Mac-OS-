@@ -71,7 +71,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 cat > "$staging/launcher.m" <<'SOURCE'
-#import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 
 int main(void) {
     @autoreleasepool {
@@ -81,9 +81,34 @@ int main(void) {
             return 1;
         }
 
+        [NSApplication sharedApplication];
+        [NSApp activateIgnoringOtherApps:YES];
+        NSAlert *picker = [[NSAlert alloc] init];
+        picker.messageText = @"Co-op inventory profile";
+        picker.informativeText = @"Enter the same name each time you join this playthrough. Leave it blank to play without a profile. Use up to 48 letters, digits, spaces, hyphens or underscores.";
+        NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 320, 24)];
+        field.stringValue = [NSUserDefaults.standardUserDefaults stringForKey:@"InventoryProfile"] ?: @"";
+        picker.accessoryView = field;
+        picker.window.initialFirstResponder = field;
+        [picker addButtonWithTitle:@"Play"];
+        [picker addButtonWithTitle:@"Cancel"];
+        NSString *profile;
+        NSCharacterSet *invalid = [[NSCharacterSet characterSetWithCharactersInString:
+            @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_"] invertedSet];
+        for (;;) {
+            if ([picker runModal] != NSAlertFirstButtonReturn) return 0;
+            profile = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            if (profile.length <= 48 && [profile rangeOfCharacterFromSet:invalid].location == NSNotFound) break;
+            picker.informativeText = @"Use up to 48 letters, digits, spaces, hyphens or underscores.";
+        }
+        [NSUserDefaults.standardUserDefaults setObject:profile forKey:@"InventoryProfile"];
+        NSMutableDictionary *environment = [NSProcessInfo.processInfo.environment mutableCopy];
+        environment[@"COOP_NXNATIVE_INVENTORY_PROFILE"] = profile;
+
         NSTask *game = [[NSTask alloc] init];
         game.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
         game.arguments = @[script.path];
+        game.environment = environment;
         NSError *error = nil;
         if (![game launchAndReturnError:&error]) {
             NSLog(@"OOT Co-op could not start: %@", error.localizedDescription);
@@ -94,7 +119,7 @@ int main(void) {
     }
 }
 SOURCE
-/usr/bin/xcrun clang -fobjc-arc -framework Foundation "$staging/launcher.m" \
+/usr/bin/xcrun clang -fobjc-arc -framework AppKit "$staging/launcher.m" \
   -o "$bundle/Contents/MacOS/oot-coop-launcher"
 printf '%s\n' "$here" "$app" "$overlay" "$module" "$state" > "$resources/oot-coop-paths"
 cat > "$resources/oot-coop-launch.sh" <<'LAUNCH'
@@ -112,13 +137,23 @@ directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 unset LICHII_COOP_SERVER LICHII_COOP_PORT LICHII_COOP_PASSWORD
 export DM_ROMFS_OVERLAY="$overlay" COOP_NXNATIVE_PUPPET_PREFLIGHT=1
 export COOP_NXNATIVE_MENU=1 COOP_NXNATIVE_SHARED_MODULE="$module" COOP_NXNATIVE_SHARED_DIR="$state"
+# Identify the supported Mac launcher to the shared startup check.
+export OOT_COOP_KIT_START=1
 export HOS_COOP_MENU=1 LICHII_COOP_PUPPET=1 LICHII_COOP_HOST_SAVE=0
 export HOS_COOP_MODS_CODE=0 HOS_COOP_NULL_READS=0
+unset COOP_NXNATIVE_CHARACTER_SELECT
+if /usr/bin/grep -Fqx "$(printf '# COOP_CHARACTER_SELECT\t1')" "$app/Contents/Resources/dm/main.fixups.tsv" 2>/dev/null; then
+  if ! /usr/bin/plutil -extract characters.mod raw -o - "$overlay/../coop_puppet.json" >/dev/null 2>&1; then
+    echo 'Character Select is in the game executable. Choose a prepared ROMFS overlay and puppet pack with its character assets.' >&2
+    exit 1
+  fi
+  export COOP_NXNATIVE_CHARACTER_SELECT=1
+fi
 # Apply the saved Kokiri colour before nxnative opens the ROMFS. Live texture
 # overrides are supplied by Longshot and are unavailable in this nxnative host.
 unset LICHII_COOP_SELF_TUNIC
 if self_tunic=$(/usr/bin/python3 -I "$here/../../tools/puppet_pack/self_tunic.py" \
-    --pack "$overlay/.." --coop-ini "$state/coop.ini") && [ -n "$self_tunic" ]; then
+    --preset --pack "$overlay/.." --coop-ini "$state/coop.ini") && [ -n "$self_tunic" ]; then
   export LICHII_COOP_SELF_TUNIC="$self_tunic"
 fi
 unset COOP_NXNATIVE_PAUSE_PACK

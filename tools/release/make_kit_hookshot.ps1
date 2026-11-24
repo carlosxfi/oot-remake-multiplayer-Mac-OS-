@@ -1,7 +1,7 @@
 # Builds the Hookshot-only co-op kit (no emulator): one folder (and a zip of it) a player unzips and starts with
 # "Start Squadala.bat". No emulator, Fritchii or Lichii file goes in: each player builds the Hookshot game on
 # their own PC from their own game (scripts\hookshot-build.ps1), and Host and Join are in the game itself.
-# make_kit.ps1 still makes the emulator kits (the older releases); this script shares its kit scripts.
+# This is the only Windows kit builder: the emulator kit builder (make_kit.ps1) was removed in 0.11.12 with the emulator.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\release\make_kit_hookshot.ps1 -Release <tag>
 #
@@ -47,6 +47,7 @@ $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 . (Join-Path $here 'check_paths.ps1')
 . (Join-Path $here 'kit_text.ps1')
+. (Join-Path $here 'kit_pack.ps1')   # (the puppet pack tool's part: Copy-KitPack, Test-KitPackData)
 . (Join-Path $here 'kit_deps.ps1')   # (the licences of fmt and ENet: where the build's CMakeCache says their sources are)
 function Copy-Text([string]$From, [string]$To) { Copy-KitText $From $To $Port }
 function Invoke-Git([string]$Dir) {
@@ -62,7 +63,7 @@ function Get-Sha([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SH
 # What goes in. Files listed here and nowhere else, so a review sees the whole kit in one place.
 $KitTop = @('Start Squadala.bat', 'README.txt', 'Revert.bat', 'start-server.cmd', 'make-puppet-pack.cmd', 'coop-options.ini', 'NVIDIA DLSS.bat')
 $KitScripts = @('start.ps1', 'start-checks.ps1', 'play.ps1', 'coop-ini.ps1', 'kit-paths.ps1', 'hosting.ps1', 'relay-join.ps1',
-    'invite.ps1', 'hookshot-build.ps1', 'apply_patch.py', 'discord_status.py', 'update.ps1', 'start-server.ps1', 'collect-logs.ps1', 'collect-logs.cmd', 'problem-report.ps1', 'problem-report.cmd',
+    'invite.ps1', 'hookshot-build.ps1', 'apply_patch.py', 'discord_status.py', 'update.ps1', 'start-server.ps1', 'collect-logs.ps1', 'collect-logs.cmd', 'problem-report.ps1', 'problem-report.cmd', 'problem-send.ps1', 'problem-send-url.txt',
     'log-mask.ps1', 'windows-checks.ps1', 'console-mode.ps1')
 $KitDocs = @(@('setup.md', 'SETUP.md'), @('known-issues.md', 'KNOWN-ISSUES.md'))
 # Never in this kit (emulator kits only); make_kit_hookshot refuses a kit that has one.
@@ -149,37 +150,9 @@ Copy-Text (Join-Path $src 'hookshot\OOTRR.txt') (Join-Path $hsKit 'OOTRR.txt')  
 Copy-Text (Join-Path $src 'hookshot\CHARACTER-SELECT.txt') (Join-Path $hsKit 'CHARACTER-SELECT.txt')   # (Snail's mod the start fetches, asked first)
 foreach ($p in $hsPatches) { Copy-Item -LiteralPath $p.FullName -Destination (Join-Path $hsKit "patches\$($p.Name)") }   # (byte for byte)
 
-# The puppet pack tool (hookshot-build.ps1 runs it with Hookshot's own Python): every module build.py imports.
-$packTool = Join-Path $repo 'tools\puppet_pack'
-# (make_kit.ps1's list: its tests and the scene-placing test helper stay out), plus every module build.py imports.
-$packFiles = @('ainb.py', 'build.py', '__init__.py', 'byml.py', 'dumpcheck.py', 'dungeon_rooms.py', 'hud.py', 'nup.py', 'rstb.py',
-    'sarc.py', 'texture.py', 'title_menu.py', 'tunic.py', 'tunic_extra.py', 'zs.py', 'merge_tables.py')   # (merge_tables.py: play.ps1, #48)
-# And every module those import, and theirs (title_menu.py -> ui_pack.py -> msbt.py): one missing from the kit stops
-# build.py at its first import, and the pack is never made on the players' PCs.
-$packSeen = @{}
-$packQueue = [System.Collections.Generic.Queue[string]]::new()
-foreach ($f in $packFiles) { $packQueue.Enqueue($f) }
-while ($packQueue.Count -gt 0) {
-    $f = $packQueue.Dequeue()
-    if ($packSeen.ContainsKey($f)) { continue }
-    $packSeen[$f] = $true
-    if (-not (Test-Path (Join-Path $packTool $f))) { throw "tools\puppet_pack\$f (needed by build.py) is not in the repo" }
-    foreach ($line in (Get-Content (Join-Path $packTool $f))) {
-        $code = $line -replace '#.*$', ''
-        if ($code -match '^\s*from \.(\w+) import ') { $packQueue.Enqueue("$($Matches[1]).py") }
-        elseif ($code -match '^\s*from \. import (.+)$') {
-            foreach ($m in $Matches[1].Split(',')) {
-                $packModule = ($m.Trim() -split '\s+')[0]   # (from . import texture as tx; not $name: the kit's own)
-                if ($packModule) { $packQueue.Enqueue("$packModule.py") }
-            }
-        }
-    }
-}
-foreach ($f in ($packSeen.Keys | Sort-Object)) { Copy-Text (Join-Path $packTool $f) (Join-Path $kit "tools\puppet_pack\$f") }
-# ui_pack.py's words for the game's menus (strings\en.txt and its translations), read where the module is
-foreach ($s in (Get-ChildItem -LiteralPath (Join-Path $packTool 'strings') -Filter '*.txt')) {
-    Copy-Text $s.FullName (Join-Path $kit "tools\puppet_pack\strings\$($s.Name)")
-}
+# The puppet pack tool (hookshot-build.ps1 runs it with Hookshot's own Python): its modules, strings and data folders
+# (kit_pack.ps1, which tests\kit_pack_test.ps1 checks on its own in CI).
+$null = Copy-KitPack $repo $kit $Port
 
 # The Nucleus Co-op handler (split screen on one PC; docs/play-lan.md) and its few steps.
 Copy-Text (Join-Path $repo 'tools\nucleus\OoTCoop.js') (Join-Path $kit 'nucleus\OoTCoop.js')
@@ -235,6 +208,11 @@ $own = @(Get-ChildItem $kit -Recurse -File | ForEach-Object { $_.FullName.Substr
     Where-Object { $_ -notmatch '^(?i)(logs\\|coop-options\.ini$)' } | Sort-Object)
 [System.IO.File]::WriteAllLines((Join-Path $kit 'MANIFEST.txt'), [string[]](@("# Files of $name, for Update.bat. Do not edit.", 'MANIFEST.txt') + $own))
 
+# Self-check (review-01111-a; CI builds only the Linux kit, which checks the same): every file of every pack data folder
+# in the repo (tools\puppet_pack\<name>\data: charsel, coopmenu) is in the kit byte for byte, and strings\*.txt, or no kit is made.
+$dataMiss = @(Test-KitPackData $repo $kit)
+if ($dataMiss.Count -gt 0) { throw "make_kit_hookshot: the kit misses pack data (or it differs): $($dataMiss -join ', ')" }
+Write-Host "Pack data self-check: OK (every tools\puppet_pack\*\data file in the kit, byte for byte)"
 $size = (Get-ChildItem $kit -Recurse -File | Measure-Object Length -Sum).Sum
 Write-Host ('Folder: {0:N1} MB, {1} files' -f ($size / 1MB), ($own.Count + 1))
 if (-not $NoZip) {

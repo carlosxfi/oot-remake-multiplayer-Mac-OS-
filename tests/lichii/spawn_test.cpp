@@ -223,6 +223,94 @@ TEST_CASE("spawn: a seed's flight is summed up when it goes (issue 158)") {
     CHECK(sync.Flights().empty());
 }
 
+TEST_CASE("spawn: a boomerang's flight keeps where it turned, its hit for a boss copy (row 164 follow-up)") {
+    CoopSpawn::Sync sync;
+    std::vector<proto::Message> send;
+    std::vector<Copy> copies;
+    const std::map<std::uint64_t, std::uint64_t> none;
+    std::uint64_t now = 1'000'000;
+    sync.Tick(kScene, 1, now, {}, none, send, copies);
+    // Out to x 6 (the stem), then back to the hand.
+    for (float x : {0.0f, 2.0f, 4.0f, 6.0f, 4.0f, 2.0f, 0.5f}) {
+        now += 33 * kMs;
+        sync.Tick(kScene, 1, now, {Made(0x7100, x, "Weapon_Boomerang")}, none, send, copies);
+    }
+    for (int i = 0; i < 2; ++i) {
+        now += 33 * kMs;
+        sync.Tick(kScene, 1, now, {}, none, send, copies);
+    }
+    REQUIRE(sync.Flights().size() == 1);
+    const auto& f = sync.Flights()[0];
+    CHECK(f.turn_seen);  // read while it flew (below), not again when gone
+    CHECK(CoopSpawn::IsReturnShot(f.name));
+    CHECK(f.far == doctest::Approx(6.0f));
+    CHECK(f.far_at[0] == doctest::Approx(6.0f));
+    CHECK(f.far >= CoopSpawn::kReturnShotMinFarM);
+    CHECK_FALSE(CoopSpawn::IsReturnShot("Shootable_DekuSeed"));  // a seed ends where it hit: its own end counts
+    CHECK(CoopSpawn::IsReturnShot("Shootable_HookLong"));
+}
+
+TEST_CASE("spawn: a boomerang's or hookshot's turn is read on the walk it happens, not when it is gone (row 164 follow-up)") {
+    const std::map<std::uint64_t, std::uint64_t> none;
+    // The boomerang: out to x 6, then the first walk it comes back gives its turn at x 6, once.
+    {
+        CoopSpawn::Sync sync;
+        std::vector<proto::Message> send;
+        std::vector<Copy> copies;
+        std::uint64_t now = 1'000'000;
+        sync.Tick(kScene, 1, now, {}, none, send, copies);
+        std::size_t turns = 0;
+        for (float x : {0.0f, 2.0f, 4.0f, 6.0f}) {
+            now += 33 * kMs;
+            sync.Tick(kScene, 1, now, {Made(0x7100, x, "Weapon_Boomerang")}, none, send, copies);
+            turns += sync.ReturnTurns().size();
+        }
+        CHECK(turns == 0);
+        now += 33 * kMs;
+        sync.Tick(kScene, 1, now, {Made(0x7100, 5.0f, "Weapon_Boomerang")}, none, send, copies);
+        REQUIRE(sync.ReturnTurns().size() == 1);
+        CHECK(sync.ReturnTurns()[0][0] == doctest::Approx(6.0f));
+        for (float x : {3.0f, 1.0f}) {
+            now += 33 * kMs;
+            sync.Tick(kScene, 1, now, {Made(0x7100, x, "Weapon_Boomerang")}, none, send, copies);
+            CHECK(sync.ReturnTurns().empty());
+        }
+    }
+    // The hookshot's tip held in a target at x 5 (stands): its turn after kReturnShotStoodSteps walks.
+    {
+        CoopSpawn::Sync sync;
+        std::vector<proto::Message> send;
+        std::vector<Copy> copies;
+        std::uint64_t now = 1'000'000;
+        sync.Tick(kScene, 1, now, {}, none, send, copies);
+        for (float x : {0.0f, 2.5f, 5.0f}) {
+            now += 33 * kMs;
+            sync.Tick(kScene, 1, now, {Made(0x7200, x, "Shootable_Hook")}, none, send, copies);
+        }
+        std::size_t turns = 0;
+        for (unsigned i = 0; i < CoopSpawn::kReturnShotStoodSteps; ++i) {
+            CHECK(turns == 0);
+            now += 33 * kMs;
+            sync.Tick(kScene, 1, now, {Made(0x7200, 5.0f, "Shootable_Hook")}, none, send, copies);
+            turns += sync.ReturnTurns().size();
+        }
+        CHECK(turns == 1);
+    }
+    // A seed is no return shot: it ends where it hit, its remove counts.
+    {
+        CoopSpawn::Sync sync;
+        std::vector<proto::Message> send;
+        std::vector<Copy> copies;
+        std::uint64_t now = 1'000'000;
+        sync.Tick(kScene, 1, now, {}, none, send, copies);
+        for (float x : {0.0f, 3.0f, 6.0f, 6.0f, 6.0f, 6.0f, 4.0f}) {
+            now += 33 * kMs;
+            sync.Tick(kScene, 1, now, {Made(0x7300, x, "Shootable_DekuSeed")}, none, send, copies);
+            CHECK(sync.ReturnTurns().empty());
+        }
+    }
+}
+
 namespace {
 
 // A nocked seed at x, turned `rotation`.

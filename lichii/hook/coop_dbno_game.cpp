@@ -10,6 +10,8 @@
 // - the Life step (Hookshot patch 0007) asks the guard for our Link only.
 
 #include "coop_dbno_game.h"
+#include "coop/protocol/scene_place.hpp"
+#include "coop_hallway.h"
 
 #include <array>
 #include <atomic>
@@ -94,6 +96,8 @@ struct Glue {
     std::atomic<std::uint64_t> life_component{0};
     std::atomic<std::uint64_t> bsa{0};      // our Link's BSA (the objects walk)
     std::atomic<std::uint64_t> emitter{0};  // our Link's PerceptionEmitter (the objects walk)
+    std::atomic<bool> adult{false};         // our Link is Player_Adult (the objects walk)
+    std::atomic<std::uint64_t> actor{0};    // our Link (the objects walk; the adult's lying pose)
     std::atomic<std::int32_t> life_write{-1};  // raise to this (-1: none); the objects walk writes it
     Lowering take_to;                          // lower to this; the Life step takes it
     std::atomic<PadMode> pad_mode{PadMode::game};
@@ -413,6 +417,8 @@ void Frame(const std::optional<std::string>& scene, const std::optional<coop::ho
                                                            reading->event_whose);
     body.emitter = g.emitter.load(std::memory_order_acquire);
     body.bsa = g.bsa.load(std::memory_order_acquire);
+    body.adult = g.adult.load(std::memory_order_acquire);
+    body.actor = g.actor.load(std::memory_order_acquire);
     body.life = g.life_component.load(std::memory_order_acquire);
     // A teammate who cannot be fought now (downed, spectating, or PLAYER_STATUS away: paused, in a
     // menu, loading, in their own event, dead): their puppet is unseen in our game too (issue 150 with
@@ -420,13 +426,16 @@ void Frame(const std::optional<std::string>& scene, const std::optional<coop::ho
     // Row 178: and every puppet while a boss whose own AI fights the Player only is here
     // (CoopBossNative::Table::FightsPlayerOnly: Phantom Ganon held his phase 2 with a puppet as his target).
     const auto player_only = CoopBossNative::TheTable().PlayerOnlyBoss();
+    std::uint32_t cannot_move = 0;  // coop_hallway.h: such a player never blocks a hallway's turn
     for (const Teammate& t : team) {
         if (auto why = Body::UnseenWhy(t.state == State::downed || t.state == State::spectating, t.status)) {
+            if (t.number < 32) cannot_move |= 1u << t.number;
             body.unseen_puppets.push_back({t.number, std::move(*why)});
         } else if (player_only) {
             body.unseen_puppets.push_back({t.number, "fighting " + *player_only + ", whose AI fights the Player only"});
         }
     }
+    CoopHallway::SetCannotMove(cannot_move);
     Body::TheCrawl().Want(body);
     for (auto& note : Body::TheCrawl().TakeNotes()) {
         LOG_INFO(Core, "coop: dbno: {}", note);
@@ -452,7 +461,8 @@ void Frame(const std::optional<std::string>& scene, const std::optional<coop::ho
     if (!threatened && CoopPvp::On() && reading) {
         std::vector<Vec3> rivals;
         for (const Teammate& t : team) {
-            if (t.state == State::up && t.in_game && t.scene && scene && *t.scene == *scene && t.position) {
+            if (t.state == State::up && t.in_game && t.scene && scene && coop::protocol::same_place(*t.scene, *scene) &&
+                t.position) {
                 rivals.push_back(*t.position);
             }
         }
@@ -468,7 +478,7 @@ void Frame(const std::optional<std::string>& scene, const std::optional<coop::ho
     if (out.state == State::spectating && reading && scene) {
         static const CoopRooms::Table rooms = CoopFairy::RoomTable();
         for (const Teammate& t : team) {
-            if (t.number == out.watching && t.scene && *t.scene == *scene && t.position &&
+            if (t.number == out.watching && t.scene && coop::protocol::same_place(*t.scene, *scene) && t.position &&
                 CoopTeleport::CheckMove(rooms, *scene, CoopTeleport::Vec{in.position[0], in.position[1], in.position[2]},
                                         CoopTeleport::Vec{(*t.position)[0], (*t.position)[1], (*t.position)[2]}) ==
                     CoopTeleport::MoveCheck::ok) {
@@ -614,7 +624,9 @@ std::int32_t LifeStep(std::uint64_t component, std::int32_t life, std::int32_t s
     return Body::Raised(life, sum, Body::TheRaising().Peek());
 }
 
-void SetOurComponents(std::uint64_t bsa, std::uint64_t emitter) {
+void SetOurComponents(std::uint64_t bsa, std::uint64_t emitter, bool adult, std::uint64_t actor) {
+    TheGlue().actor.store(actor, std::memory_order_release);
+    TheGlue().adult.store(adult, std::memory_order_release);
     TheGlue().bsa.store(bsa, std::memory_order_release);
     TheGlue().emitter.store(emitter, std::memory_order_release);
 }

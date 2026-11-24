@@ -1347,6 +1347,22 @@ TEST_CASE("puppet move: the game's setter once a frame when asked for") {
         CHECK(calls[0].x[1] == 0u);
     }
     CheckPosition(g2.guest, kActor + addr::kActorPosition, 4, 5, 6);
+
+    // Row 268: parked (hidden), then held (their cutscene): the setter still runs once a frame in both,
+    // so the physics body follows the place we write and does not pull it back to the parked spot.
+    Target t = At(1, 4, 5, 6);
+    std::uint64_t now = 40;
+    for (const auto show : {CoopPuppet::Show::hide, CoopPuppet::Show::hold, CoopPuppet::Show::hold,
+                            CoopPuppet::Show::show}) {
+        t.show = show;
+        d2.SetInput(Wants({t}));
+        now += 10;
+        calls = Frame(d2, g2, now);
+        REQUIRE(calls.size() == 1);
+        CHECK(calls[0].function == kBase + addr::kSetMatrix);
+        CHECK(calls[0].x[0] == kActor);
+    }
+    CheckPosition(g2.guest, kActor + addr::kActorPosition, 4, 5, 6);
 }
 
 
@@ -2197,6 +2213,23 @@ TEST_CASE("puppet gear: a PLAYER_EQUIP becomes the pieces, the sword hand's own 
     CHECK(GearOf(e)[0] == "Weapon_Sword_Kokiri");
     e.weapon_slot = "Weapon_Sword_DekuStick";  // a stick in the sword hand
     CHECK(GearOf(e)[0] == "Weapon_Sword_DekuStick");
+    // Only a mask is worn on the head (row 197): a 0.11.8 sender's Lens of
+    // Truth flag is taken off, a mask stays, nothing sent stays unknown.
+    CHECK_FALSE(GearOf(e)[kGearHead]);
+    e.head = "Armor_GlassTruth";
+    CHECK(GearOf(e)[kGearHead] == "");
+    e.head = "Armor_Child_GlassTruth";
+    CHECK(GearOf(e)[kGearHead] == "");
+    e.head = "Armor_Adult_Default_Head";
+    CHECK(GearOf(e)[kGearHead] == "");
+    e.head = "Armor_Mask_Base";  // the masks' base actor is no mask
+    CHECK(GearOf(e)[kGearHead] == "");
+    e.head = "Armor_Child_Mask_";
+    CHECK(GearOf(e)[kGearHead] == "");
+    e.head = "Armor_Child_Mask_Truth";
+    CHECK(GearOf(e)[kGearHead] == "Armor_Child_Mask_Truth");
+    e.head = "";
+    CHECK(GearOf(e)[kGearHead] == "");
 }
 
 TEST_CASE("puppet gear: the Ocarina and its belt holder come from PLAYER_EQUIP's ocarina (issue 152)") {

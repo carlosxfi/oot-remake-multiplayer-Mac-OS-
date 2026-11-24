@@ -285,12 +285,13 @@ TEST_CASE("host menu: Join with a room name through a relay: the relay lets this
           "(issue 261)") {
     namespace relay = coop::server::relay;
     EnetLife enet;
-    relay::RelayServer relay_server(0, std::nullopt, relay::RelayConfig{});
+    relay::RelayServer relay_server(0, 0x7F000001u, relay::RelayConfig{});  // (127.0.0.1 only)
     REQUIRE(relay_server.start());
     const std::uint16_t relay_port = relay_server.port();
     relay::RelayLinkConfig lc;
     lc.relay_host = "127.0.0.1";
     lc.relay_port = relay_port;
+    lc.bind = 0x7F000001u;  // (127.0.0.1 only)
     lc.server_port = 1;  // no game server here: only the room is held
     lc.room = "forest-gang";
     std::atomic<bool> room_held{false};  // (set on the serving thread: link.room() is that thread's to read)
@@ -574,4 +575,36 @@ TEST_CASE("host menu: with approve_joins the host's game is asked about a new pl
     riley.stop();
     game.client->stop();
     menu.Leave();
+}
+
+TEST_CASE("host menu: the process memory line reads this process's numbers (row 260)") {
+  const std::string line = CoopHostMenu::ProcessMemoryText();
+  CHECK(line.rfind("process:", 0) == 0);
+#ifdef _WIN32
+  CHECK(line.find(" private ") != std::string::npos);
+  CHECK(line.find(", handles ") != std::string::npos);
+#else
+  CHECK(line.find("VmRSS") != std::string::npos);
+#endif
+  CHECK(CoopHostMenu::kMemoryLineMs == 30'000);
+}
+
+TEST_CASE("host menu: the autotest's in-game host reads PORT:PASSWORD and nothing else (row 260)") {
+  const auto ok = CoopHostMenu::ParseTestHost("27520:autotest-pass");
+  REQUIRE(ok.has_value());
+  CHECK(ok->first == 27520);
+  CHECK(ok->second == "autotest-pass");
+  CHECK(CoopHostMenu::ParseTestHost("1:x").has_value());
+  CHECK(CoopHostMenu::ParseTestHost("65535:" + std::string(64, 'p')).has_value());
+  CHECK_FALSE(CoopHostMenu::ParseTestHost(""));
+  CHECK_FALSE(CoopHostMenu::ParseTestHost("27520"));
+  CHECK_FALSE(CoopHostMenu::ParseTestHost("27520:"));
+  CHECK_FALSE(CoopHostMenu::ParseTestHost(":pass"));
+  CHECK_FALSE(CoopHostMenu::ParseTestHost("0:pass"));
+  CHECK_FALSE(CoopHostMenu::ParseTestHost("65536:pass"));
+  CHECK_FALSE(CoopHostMenu::ParseTestHost("123456:pass"));
+  CHECK_FALSE(CoopHostMenu::ParseTestHost("27x20:pass"));
+  CHECK_FALSE(CoopHostMenu::ParseTestHost("27520:two words"));
+  CHECK_FALSE(CoopHostMenu::ParseTestHost("27520:" + std::string(65, 'p')));
+  CHECK(std::string(CoopHostMenu::kTestHostEnv) == "LICHII_COOP_TEST_HOST");
 }

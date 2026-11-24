@@ -108,6 +108,7 @@ inline constexpr std::int32_t kMaxAsSlots = 8;  // slots synced from slot 0
 // piece in a slot kind, as the game's own GameData path does.
 inline constexpr std::uint64_t kEquip = 0x2df7b20;
 inline constexpr std::uint64_t kActorParts = 0x270;
+inline constexpr std::uint64_t kActorName = 0x260;  // -> the actor's name, a C string
 inline constexpr std::uint64_t kPartsEquipmentUser = 0x200;
 // In hand or put away: 0xe34c40(eu, slot, state) is the game's own change of
 // an equipment slot's state (the shield node 0x2797850 calls it with slot 4,
@@ -275,12 +276,25 @@ constexpr bool GearIsUnsafe(std::string_view name) {
     return name.find("Hookshot") != std::string_view::npos ||
            name.find("Longshot") != std::string_view::npos;
 }
+// Row 198 (0.11.9): a coloured copy the puppet wears (`<item>_Look<k>`, or a
+// wearer copy `<item>_Blade<n>`) that the game did not make: the piece in its
+// equipment slot is another actor (`made`, the game's own item kept from
+// before). The equip call returns 1 all the same: the 0.11.9 pack sized the
+// copies' AnimationParam too small, the game refused every shield copy, and a
+// puppet kept the game's shield, drawn in the viewer's own colours. Said once
+// per piece so a refused copy is seen in the log.
+constexpr bool CopyRefused(std::string_view worn, std::string_view made) {
+    const bool copy = worn.find("_Look") != std::string_view::npos ||
+                      worn.find("_Blade") != std::string_view::npos;
+    return copy && !made.empty() && made != worn;
+}
 // The equipment slot each of them lands in (seen in the game: the sword in
 // slot 0, the shield in slot 4, the slingshot in slot 3); -1: not a piece
 // that is drawn or put away.
 inline constexpr std::array<int, kGearCount> kGearSlots{0, 4, -1, -1, -1, 3, -1, 1, 2, 5, 6, -1, -1};
 
 // A puppet's memory block, from the game's malloc, kept for the whole run.
+
 namespace block {
 inline constexpr std::uint64_t kSize = 0x880;  // to 0x778: coop_puppet_flame.h's key and handle; then kDress
 // Character Select's colours on the puppet (coop_char_colours.h: names and arguments of its calls).
@@ -489,10 +503,12 @@ public:
         std::uint8_t number = 0;
         std::uint64_t actor = 0;
         std::uint64_t cell = 0;
-        std::uint32_t custom = 0;
+        std::uint32_t custom = 0;   // (CoopCharColours::ForModel: a character puppet's parts as the mod's options)
         bool character = false;
         bool mods_routine = false;
         std::string actor_name;   // (a puppet made again as another actor starts anew)
+        std::optional<std::uint32_t> eyes{};   // the player's eye colour, exact (ForModel: part 18 Link, 21 a character)
+        std::optional<std::uint32_t> hair{};   // the player's hair colour (ForModel: part 19 Link, 20 a character)
     };
     std::vector<DressView> DressTargets() const;
     // Any thread: bit n set while puppet n's actor is live in this scene and
@@ -550,6 +566,7 @@ public:
     static constexpr std::uint64_t kHoldCheckMs = 500;
     static constexpr std::uint64_t kRewearMs = 1000;  // at most once a second
     static constexpr std::uint64_t kFarForMs = 100;   // far on two readings this far apart
+    static constexpr std::uint64_t kRefusedForMs = 2000;   // a copy not made on readings this far apart: said
     static constexpr std::uint8_t kRewearTries = 3;   // then given up, with one line
     static constexpr std::uint64_t kTakeOffMs = 1500;  // a slot empty this long: the piece is taken off
     // A create waits until the game has drawn this long without a break,
@@ -640,6 +657,8 @@ private:
         std::uint64_t rewear_ms = 0;        // no new "left behind" check before this
         std::array<std::uint64_t, kGearCount> far_since_ms{};  // first far reading of each piece; 0 near
         std::array<std::uint8_t, kGearCount> rewear_tries{};   // re-wears since the piece was last near
+        std::array<std::uint64_t, kGearCount> refused_since_ms{};  // first reading of a copy not made (CopyRefused)
+        std::array<std::string, kGearCount> refused_said{};         // the copy whose refusal was said
         // A worn piece its player took off: armor (mask, tunic, boots,
         // gauntlets) with the game's own call (addr::kUnequipArmor); a sword
         // or a shield, for which no call is known, or armor the call
@@ -707,6 +726,7 @@ private:
     std::optional<Call> Hold(Slot& slot, const Target& target, Guest& guest,
                              std::uint64_t now_ms);
     void LeftBehind(Slot& slot, Guest& guest, std::uint64_t now_ms);
+    void RefusedCopy(Slot& slot, Guest& guest, std::size_t i, std::uint64_t piece, std::uint64_t now_ms);
     std::optional<Call> Move(Slot& slot, Guest& guest);
     std::optional<Call> SetFrame(Slot& slot, std::uint64_t controller, float frame);
     static std::uint64_t Controller(Guest& guest, std::uint64_t actor);
@@ -809,6 +829,9 @@ struct Remote {
     // PLAYER_EQUIP's colour; unset: the player chose none, and Plan gives the
     // player's slot colour (coop::protocol::slot_color).
     std::optional<std::uint32_t> color;
+    // 0.11.9: the tunic copy given to this player (SetTunicCopies: "Red".."Black", "" the plain puppet), repainted
+    // live in their exact colour; none: the copy nearest their colour, as before.
+    std::optional<std::string> tunic_copy;
     CoopPuppetSound::Wanted ocarina;                 // as Target::ocarina
     std::vector<CoopLinkSound::Sound> sounds;        // received since the last Collect
     // The item copy painted in the player's gear colours
@@ -846,6 +869,7 @@ struct PlannerSettings {
     // (PackLookItems). None: every puppet wears the game's items.
     std::vector<std::string> look_items;
     std::size_t look_copies = 0;
+    std::size_t look_neutral = 0;   // (row 198: LookItems::neutral; 0 none)
     // Wearer copies (coop_puppet.json "blade_items", look_items.is_wearer_item):
     // the items the pack has one copy of per player number (every player item
     // with the game's weapon component: swords, hammer, Deku Stick, bottles,
@@ -916,6 +940,9 @@ std::optional<std::pair<std::uint64_t, std::array<std::uint8_t, 16>>> PackCharac
 struct LookItems {
     std::vector<std::string> actors;
     std::size_t copies = 0;
+    // Row 198: the neutral copy's number ("neutral": the game's colours, marked, never painted), worn by a puppet with
+    // no slot of its own; 0 for a pack made before it.
+    std::size_t neutral = 0;
 };
 // `key`: "look_items", or "blade_items" (the same shape, "copies" per player number).
 LookItems PackLookItems(std::string_view manifest, std::string_view key = "look_items");
@@ -969,7 +996,9 @@ public:
                std::optional<std::uint32_t> own_color = {});
     // The actor for a player of that age and colour: CoopPuppet_<Age>, or
     // CoopPuppet_<Age>_<Colour> (CoopColors::TunicOf) while tunics are on.
-    std::string ActorFor(bool adult, std::optional<std::uint32_t> color = {}, std::uint16_t character = 0) const;
+    // `tunic`: the tunic copy given to the player (Remote::tunic_copy); none: the one nearest `color`.
+    std::string ActorFor(bool adult, std::optional<std::uint32_t> color = {}, std::uint16_t character = 0,
+                         const std::optional<std::string>& tunic = std::nullopt) const;
     void SetTunics(bool on) { settings_.tunics = on; }
     void SetGreenPuppet(bool on) { settings_.green_puppet = on; }
     // Tunic actors that do not work here (Director::FailedTunics): the plain
@@ -1044,6 +1073,10 @@ void OnEvent(const coop::net::Event& event);
 // none or are not known; and ours (SetOwnColor, from the settings). For the
 // co-op window's names (coop_window.cpp). Any thread.
 std::optional<std::uint32_t> PlayerColor(std::uint8_t number);
+// 0.11.9: the tunic copies given out (CoopColors::AssignTunicCopies, by the look worker): each player's puppet wears
+// its copy, the one the worker repaints in their exact colour. Any thread.
+void SetTunicCopies(std::map<std::uint8_t, std::string> copies);
+std::optional<std::string> TunicCopyOf(std::uint8_t number);
 void SetOwnColor(std::optional<std::uint32_t> rgb);
 std::optional<std::uint32_t> OwnColor();
 // The colour to show player `number` in (we are `self`): theirs (ours), else

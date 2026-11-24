@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "coop_dbno_draw.h"
+#include "coop_native_ui.h"
 #include "coop_draw.h"
 #include "coop_hud_layout.h"
 #include "coop_map_page.h"
@@ -81,6 +82,19 @@ CoopDraw::Look GameLook() {
 
 }  // namespace
 
+TEST_CASE("hookshot map page: the quick-switch item menu is UIShortCutScreen opening or open (row 164 follow-up)") {
+    using CoopMapPage::ShortCutShows;
+    CHECK(CoopMapPage::kShortCutVtable == 0x84c0d430ull - 0x80020000ull);  // docs/game-ui.md, main at 0x80020000
+    CHECK(ShortCutShows(CoopMapPage::kShortCutVtable, 1));   // opening
+    CHECK(ShortCutShows(CoopMapPage::kShortCutVtable, 2));   // open
+    CHECK_FALSE(ShortCutShows(CoopMapPage::kShortCutVtable, 0));  // closed
+    CHECK_FALSE(ShortCutShows(CoopMapPage::kShortCutVtable, 3));  // closing: the world runs again
+    CHECK_FALSE(ShortCutShows(0x4be4a18, 2));  // UIChallengeMenuScreen (Threads of Time), the other N_SlideList_00
+    CHECK_FALSE(ShortCutShows(0x4be8300, 2));  // the HUD (UIMapMenuScreen): runs every frame in play
+    CoopMapPage::Menu older;  // an exe whose patch 0018 does not say the running screens: not known
+    CHECK_FALSE(older.screens_known);
+}
+
 TEST_CASE("hookshot draw: IM_COL32 layout") {
     CHECK(CoopDraw::Rgba(0x11, 0x22, 0x33, 0x44) == 0x44332211u);
 }
@@ -126,7 +140,7 @@ TEST_CASE("hookshot draw: chat at the bottom left, oldest first, long lines wrap
         joined += texts[i].text;
     }
     CHECK(joined == std::string(300, 'x'));
-    CHECK(c.Of("rect").size() == texts.size());  // a dark box behind each row
+    CHECK(c.Of("rect").empty());  // no box behind the rows (owner 2026-11-21: nothing drawn but text)
 }
 
 TEST_CASE("hookshot draw: a long notice breaks after a space, and the space is not drawn") {
@@ -210,10 +224,11 @@ TEST_CASE("hookshot draw: name tags scaled from the scene target to the picture"
     CoopDraw::Scene s;
     s.markers = m;
     CoopDraw::Draw(c.d, s);
-    CHECK(c.Of("triangle").size() == 1);  // the edge arrow
-    CHECK(c.Of("circle").size() == 2);    // the dot and its dark rim (no dot for a head tag)
+    // No drawn shapes (B3): no edge arrow, no dot; the edge player gets no text either (it is off screen).
+    CHECK(c.Of("triangle").empty());
+    CHECK(c.Of("circle").empty());
     const auto texts = c.Of("text");
-    REQUIRE(texts.size() == 18);  // two tags, each 8 outline copies + the fill
+    REQUIRE(texts.size() == 9);  // one tag: 8 outline copies + the fill
     const auto& fill = texts[8];
     CHECK(fill.text == "Saria");
     CHECK(fill.px == doctest::Approx(25.2f));  // 3.5% of 720
@@ -255,12 +270,57 @@ TEST_CASE("hookshot draw: the player list while F6 is held, as the co-op window'
     s.players = std::vector<CoopHook::PlayerRow>{me, other};
     CHECK(CoopDraw::Wanted(s));
     CoopDraw::Draw(c.d, s);
-    const auto texts = c.Of("text");
-    REQUIRE(texts.size() == 15);
+    // Each cell outlined (eight dark copies, then the word): no box (ui-audit-01112 B5).
+    const auto all = c.Of("text");
+    REQUIRE(all.size() == 15 * 9);
+    std::vector<Call> texts;
+    for (std::size_t i = 8; i < all.size(); i += 9) {
+        texts.push_back(all[i]);
+    }
     CHECK(texts[0].text == "#");
     CHECK(texts[0].y > 720.0f / 6);              // below a sixth of the height
     CHECK(texts[10].rgba != texts[5].rgba);     // the reconnecting row is dim
-    CHECK(c.Of("rect").size() == 1);
+    CHECK(c.Of("rect").empty());
+    CHECK(c.Of("circle").empty());
+}
+
+TEST_CASE("hookshot draw: the F6 list fits a narrow picture and 16 players, smaller, never past an edge") {
+    // 16 players with long names and places: the list as drawn stays inside the picture.
+    std::vector<CoopHook::PlayerRow> rows;
+    for (std::uint8_t n = 1; n <= 16; ++n) {
+        CoopHook::PlayerRow r;
+        r.number = n;
+        r.name = "A rather long player name " + std::to_string(n);
+        r.self = n == 1;
+        r.state = "connected";
+        r.ms = 100;
+        r.scene = "Lost Woods, Sacred Forest Meadow";
+        rows.push_back(r);
+    }
+    for (const auto& [w, h] : std::vector<std::pair<int, int>>{{1280, 720}, {640, 720}, {800, 1200}, {1920, 1080}}) {
+        Canvas c(w, h);
+        CoopDraw::Scene s;
+        s.players = rows;
+        CoopDraw::Draw(c.d, s);
+        const auto texts = c.Of("text");
+        REQUIRE_FALSE(texts.empty());
+        for (const auto& t : texts) {
+            const float tw = static_cast<float>(t.text.size()) * t.px * 0.5f;   // Canvas's text_width
+            CHECK(t.x >= 0.0f);
+            CHECK(t.x + tw <= static_cast<float>(w) + 0.5f);
+            CHECK(t.y + t.px <= static_cast<float>(h) + 0.5f);
+        }
+        CHECK(c.Of("rect").empty());
+    }
+    // The pure fit: a list that fits keeps its size; one too wide shrinks to the room; never under the least size.
+    const auto measure = [](float px) { return std::vector<float>{px * 10, px * 20}; };
+    const auto fits = CoopDraw::PlayerListAt(1920, 1080, 180, 3, 20, 1.25f, measure);
+    CHECK(fits.px == doctest::Approx(20.0f));
+    const auto narrow = CoopDraw::PlayerListAt(600, 1080, 180, 3, 20, 1.25f, measure);
+    CHECK(narrow.px < 20.0f);
+    CHECK(narrow.width <= 600 - 2 * 16.0f + 0.5f);
+    const auto tiny = CoopDraw::PlayerListAt(50, 60, 10, 16, 20, 1.25f, measure);
+    CHECK(tiny.px == doctest::Approx(CoopDraw::kListLeastPx));
 }
 
 TEST_CASE("hookshot draw: the panel at the top left, and F7 turns it over on each press") {
@@ -280,7 +340,11 @@ TEST_CASE("hookshot draw: the panel at the top left, and F7 turns it over on eac
     CHECK(k.panel);
     k.Update(true, false);
     CHECK(k.list);
+    CHECK(k.list_press);   // F6 went down: the - menu's Players view is asked once (coop_players_open.h)
     CHECK(k.panel);
+    k.Update(true, false);
+    CHECK(k.list);
+    CHECK_FALSE(k.list_press);   // still held: not again
     k.Update(false, true);
     CHECK_FALSE(k.panel);
     CHECK_FALSE(k.list);
@@ -322,6 +386,19 @@ TEST_CASE("hookshot draw: the other players under your hearts in the game look o
     CHECK(hearts[0].rgba == CoopDraw::Rgba(255, 255, 255, 255));
     CHECK(c.Of("rect").empty());
     CHECK(c.font == 0);  // Hookshot's own font again after drawing
+
+    // A long name and place on a narrow window: cut with "..." to the blocks' column, never past the picture.
+    CoopDraw::Scene longer;
+    longer.hud = {{"A very long player name that goes on and on", "Sacred Forest Meadow, by the Lost Woods", {4}, false}};
+    Canvas n(480, 720);
+    CoopDraw::Draw(n.d, longer, GameLook());
+    const auto cut = n.Of("text");
+    REQUIRE_FALSE(cut.empty());
+    for (const auto& t : cut) {
+        CHECK(t.x + static_cast<float>(t.text.size()) * t.px * 0.5f <= 480.0f);
+        CHECK(t.text.size() < 44);
+    }
+    CHECK(std::any_of(cut.begin(), cut.end(), [](const auto& t) { return t.text.find("...") != std::string::npos; }));
 }
 
 TEST_CASE("hookshot draw: game look name tags in the players' colours, over the game's shadow") {
@@ -347,18 +424,13 @@ TEST_CASE("hookshot draw: game look name tags in the players' colours, over the 
     Canvas c(1280, 720);
     CoopDraw::Draw(c.d, s, GameLook());
     const auto texts = c.Of("text");
-    REQUIRE(texts.size() == 18);
+    REQUIRE(texts.size() == 12);  // Saria and you; the edge player P3 gets nothing (B3: no arrows)
     CHECK(texts[5].text == "Saria");
     CHECK(texts[5].rgba == CoopDraw::Lifted(0xFF0000));
     CHECK(texts[5].font == 2);
     CHECK(texts[5].px == doctest::Approx(25.2f * 1.1f));  // the game's font a little bigger
     CHECK(texts[11].rgba == CoopDraw::Rgba(255, 210, 60, 255));  // yourself
-    CHECK(texts[17].text == "P3");
-    CHECK(texts[17].rgba == CoopDraw::Rgba(255, 255, 255, 255));  // nobody known: white
-    // The edge arrow in that player's colour too.
-    const auto arrows = c.Of("triangle");
-    REQUIRE(arrows.size() == 1);
-    CHECK(arrows[0].rgba == CoopDraw::Rgba(255, 255, 255, 255));
+    CHECK(c.Of("triangle").empty());
 }
 
 TEST_CASE("hookshot draw: game look chat, the name in its colour, no boxes, the box without a box") {
@@ -430,7 +502,7 @@ TEST_CASE("hookshot draw: no game look without every piece, or with an older Hoo
     CoopDraw::Scene s;
     s.chat = {{"Saria: hi", false, 1.0f}};
     CoopDraw::Draw(old.d, s, look);
-    CHECK(old.Of("rect").size() == 1);  // the plain look's box
+    CHECK(old.Of("rect").empty());  // the plain look: no box behind the line either
     CHECK(old.Of("text").size() == 1);
 }
 
@@ -459,7 +531,8 @@ TEST_CASE("hookshot draw: the chat box at the bottom left, the lines above it an
     CHECK(texts[0].text == "hello_");               // the box (drawn first), with its caret
     CHECK(texts[2].text == "new");
     CHECK(texts[2].y + texts[2].px < texts[0].y);    // the lines above it
-    CHECK(t.Of("rect").size() == 2 + 2);             // refused: a red frame behind the box, + two line boxes
+    CHECK(t.Of("rect").empty());                     // no box, no red frame, no line boxes: text only
+    CHECK(texts[0].rgba == CoopDraw::Rgba(255, 122, 106, 255));  // refused: red text
 
     Canvas l(1280, 720);
     s.box = CoopDraw::ChatBoxView{std::string(300, 'y'), false};
@@ -529,13 +602,19 @@ TEST_CASE("hookshot draw: a title screen line, with or without the Minus button"
         }
         CHECK(said);
         CHECK(c.Of("circle").empty());   // no button: nothing to press
+        for (const auto& t : c.Of("text")) CHECK(t.text != CoopDraw::kMinusText);
     }
     {
         Canvas c(1280, 720);
         CoopDraw::Scene s;
         s.title = CoopDraw::TitleView{"Multiplayer", true};
         CoopDraw::Draw(c.d, s, GameLook());
-        CHECK(c.Of("circle").size() == 2);   // the Minus button
+        // The Minus button as words, no drawn shapes (B10)
+        CHECK(c.Of("circle").empty());
+        CHECK(c.Of("rect").empty());
+        bool minus = false;
+        for (const auto& t : c.Of("text")) minus |= t.text == CoopDraw::kMinusText;
+        CHECK(minus);
     }
     CoopDraw::Scene none;
     none.title = CoopDraw::TitleView{};
@@ -629,12 +708,14 @@ TEST_CASE("hookshot draw: the title prompt draws its word where TitleAt says, on
     look.regular_metrics = {0.86f, 0.66f};
     CoopDraw::Draw(c.d, s, look);
     const auto b = CoopDraw::TitleAt(1920, 1080, *s.title, look.regular_metrics);
-    const auto circles = c.Of("circle");
-    REQUIRE(circles.size() == 2);
-    CHECK(circles[0].x == doctest::Approx(b.cx));
-    CHECK(circles[0].y == doctest::Approx(b.cy));
-    bool word = false;
+    CHECK(c.Of("circle").empty());
+    bool word = false, minus = false;
     for (const auto& t : c.Of("text")) {
+        if (t.text == CoopDraw::kMinusText && t.rgba == CoopDraw::Rgba(255, 255, 255, 255)) {   // centred on the button
+            minus = true;
+            CHECK(t.x + 3 * t.px * 0.5f / 2 == doctest::Approx(b.cx));
+            CHECK(t.y == doctest::Approx(b.text_top));
+        }
         if (t.text == "Multiplayer" && t.rgba == CoopDraw::Rgba(255, 255, 255, 255)) {   // (the fill, not its shadow)
             word = true;
             CHECK(t.x == doctest::Approx(b.text_x));
@@ -643,43 +724,139 @@ TEST_CASE("hookshot draw: the title prompt draws its word where TitleAt says, on
         }
     }
     CHECK(word);
+    CHECK(minus);
 }
 
 // Down but not out (hookshot/src/coop_dbno_draw.h).
-TEST_CASE("dbno ring: the dots lit follow the revive, the caption says who") {
-    using CoopDbnoDraw::Lit;
-    CHECK(Lit(0.0f) == 0);
-    CHECK(Lit(-1.0f) == 0);
-    CHECK(Lit(0.5f) == CoopDbnoDraw::kDots / 2);
-    CHECK(Lit(0.99f) == CoopDbnoDraw::kDots - 1);
-    CHECK(Lit(1.0f) == CoopDbnoDraw::kDots);
-    CHECK(Lit(7.0f) == CoopDbnoDraw::kDots);
+TEST_CASE("dbno line: the caption says who, the line adds the clock and the revive's share") {
     using View = CoopDbno::View;
     CHECK(CoopDbnoDraw::Caption(View{View::Kind::downed, "", 0, 0, false}) == "You are down");
     CHECK(CoopDbnoDraw::Caption(View{View::Kind::downed, "Saria", 0, 0, false}) == "Saria is reviving you");
     CHECK(CoopDbnoDraw::Caption(View{View::Kind::reviving, "Saria", 0, 0, false}) == "Hold A to revive Saria");
     CHECK(CoopDbnoDraw::Caption(View{View::Kind::reviving, "Saria", 0, 0, true}) == "Reviving Saria");
+    CHECK(CoopDbnoDraw::Progress(0.0f).empty());
+    CHECK(CoopDbnoDraw::Progress(-1.0f).empty());
+    CHECK(CoopDbnoDraw::Progress(0.5f) == "50%");
+    CHECK(CoopDbnoDraw::Progress(0.999f) == "99%");
+    CHECK(CoopDbnoDraw::Progress(1.0f) == "100%");
+    CHECK(CoopDbnoDraw::Progress(7.0f) == "100%");
+    CHECK(CoopDbnoDraw::Line(View{View::Kind::downed, "", 32'000'000, 0.0f, false}) == "You are down  0:32");
+    CHECK(CoopDbnoDraw::Line(View{View::Kind::downed, "Saria", 32'000'000, 0.25f, false}) ==
+          "Saria is reviving you  0:32  25%");
+    CHECK(CoopDbnoDraw::Line(View{View::Kind::reviving, "Saria", 5'000'000, 0.0f, false}) ==
+          "Hold A to revive Saria  0:05");
+    CHECK(CoopDbnoDraw::Line(View{View::Kind::reviving, "Saria", 5'000'000, 0.6f, true}) == "Reviving Saria  0:05  60%");
+    // A share left from a let-go A is not shown while A is not held.
+    CHECK(CoopDbnoDraw::Line(View{View::Kind::reviving, "Saria", 5'000'000, 0.6f, false}) ==
+          "Hold A to revive Saria  0:05");
+    View watch{View::Kind::spectating, "Saria", 0, 0, false};
+    CHECK(CoopDbnoDraw::Line(watch) == "Watching Saria  A: next player");
 }
 
-TEST_CASE("dbno ring: drawn with the clock when the scene has it, and wanted for it alone") {
+TEST_CASE("dbno banner line: always fits the game's banner, the clock / share / next player never cut") {
+    using View = CoopDbno::View;
+    const std::string ascii16 = "Abcdefghijklmnop";                                    // 16 letters, 16 columns
+    std::string wide16;                                                                 // 16 wide letters, 32 columns
+    for (int i = 0; i < 16; ++i) wide16 += "\xE5\xAD\x97";                              // (U+5B57)
+    CHECK(CoopNativeUi::Columns(wide16) == 32);   // (16 wide letters: the zh case)
+    const std::size_t cols = CoopNativeUi::kBannerColumns;
+    for (const char* lang : {"en", "zh-Hans"}) {
+        CoopI18n::ForceLanguage(lang);
+        for (const std::string& name : {std::string("Saria"), ascii16, wide16}) {
+            const std::vector<View> views{
+                View{View::Kind::downed, "", 32'000'000, 0.0f, false},
+                View{View::Kind::downed, name, 32'000'000, 0.6f, false},
+                View{View::Kind::reviving, name, 5'000'000, 0.0f, false},
+                View{View::Kind::reviving, name, 5'000'000, 0.6f, true},
+                View{View::Kind::spectating, name, 0, 0.0f, false, false},
+                View{View::Kind::spectating, name, 0, 0.0f, false, true},
+            };
+            for (const auto& v : views) {
+                const std::string line = CoopDbnoDraw::BannerLine(v, cols);
+                INFO(lang << " " << line);
+                CHECK(CoopNativeUi::Columns(line) <= cols);
+                // One page on the banner as its step cuts it: the whole line, nothing lost.
+                const auto pages = CoopNativeUi::Wrap(CoopNativeUi::Clean(line, CoopNativeUi::kTextBytes), cols, 1);
+                REQUIRE_FALSE(pages.empty());
+                CHECK(pages.front() == line);
+                if (v.kind == View::Kind::spectating) {
+                    CHECK(line.size() >= CoopI18n::Tr("A: next player").size());
+                    CHECK(line.compare(line.size() - CoopI18n::Tr("A: next player").size(), std::string::npos,
+                                       CoopI18n::Tr("A: next player")) == 0);
+                } else {
+                    CHECK(line.find(CoopDbno::Clock(v.left_us)) != std::string::npos);
+                    if (v.progress > 0 && (v.kind == View::Kind::downed ? !v.name.empty() : v.holding)) {
+                        CHECK(line.size() >= 3);
+                        CHECK(line.compare(line.size() - 3, 3, "60%") == 0);
+                    }
+                }
+            }
+        }
+    }
+    CoopI18n::ForceLanguage(nullptr);
+    // A short line is the drawn line, word for word.
+    const View short_one{View::Kind::reviving, "Saria", 5'000'000, 0.6f, true};
+    CHECK(CoopDbnoDraw::BannerLine(short_one, cols) == CoopDbnoDraw::Line(short_one));
+    // Too long: "(out of sight)" goes before the name is cut; the name is cut with "...".
+    const View far{View::Kind::spectating, ascii16, 0, 0.0f, false, true};
+    const std::string far_line = CoopDbnoDraw::BannerLine(far, cols);
+    CHECK(far_line.find("(out of sight)") == std::string::npos);
+    CHECK(far_line.find(ascii16) != std::string::npos);
+    const std::string cut = CoopDbnoDraw::BannerLine(View{View::Kind::downed, wide16, 32'000'000, 0.6f, false}, 30);
+    CHECK(cut.find("...") != std::string::npos);
+    CHECK(CoopNativeUi::Columns(cut) <= 30);
+}
+
+TEST_CASE("dbno banner hold: downed and reviving always, spectating a few seconds after each change") {
+    using View = CoopDbno::View;
+    CoopDbnoDraw::BannerHold h;
+    CHECK(h.Want(View{View::Kind::downed, "", 32'000'000, 0, false}, 0));
+    CHECK(h.Want(View{View::Kind::reviving, "Saria", 5'000'000, 0, true}, 100'000));
+    View watch{View::Kind::spectating, "Saria", 0, 0, false, false};
+    CHECK(h.Want(watch, 1000));
+    CHECK(h.Want(watch, 1000 + CoopDbnoDraw::kSpectateHoldMs - 1));
+    CHECK_FALSE(h.Want(watch, 1000 + CoopDbnoDraw::kSpectateHoldMs));   // let go: notices go on
+    CHECK_FALSE(h.Want(watch, 600'000));
+    watch.name = "Mido";                                               // A: the next player
+    CHECK(h.Want(watch, 600'001));
+    CHECK_FALSE(h.Want(watch, 600'001 + CoopDbnoDraw::kSpectateHoldMs));
+    watch.elsewhere = true;                                            // out of sight now: said again
+    CHECK(h.Want(watch, 700'000));
+    h.Reset();                                                         // up again, later down and watching again
+    watch.elsewhere = false;
+    CHECK(h.Want(watch, 900'000));
+}
+
+TEST_CASE("dbno line: fits the picture's width, smaller on a narrow one, never under 12 px") {
+    // 16:9, a short line: the game look's size.
+    CHECK(CoopDbnoDraw::LinePx(1920, 1080, 20, 300) == doctest::Approx(32.4f));
+    // A narrow picture: the size that makes the line 90% of the width.
+    const float px = CoopDbnoDraw::LinePx(640, 1080, 20, 900);
+    CHECK(px * 900 / 20 <= 0.9f * 640 + 0.01f);
+    CHECK(px >= 12.0f);
+    CHECK(CoopDbnoDraw::LinePx(100, 1080, 20, 5000) == 12.0f);
+    CHECK(CoopDbnoDraw::LinePx(1280, 720, 0, 0) == doctest::Approx(21.6f));
+}
+
+TEST_CASE("dbno line: drawn as text only (no ring, no box), wanted for it alone") {
     CoopDraw::Scene s;
     CHECK_FALSE(CoopDraw::Wanted(s));
     s.dbno = CoopDbno::View{CoopDbno::View::Kind::downed, "", 32'000'000, 0.25f, false};
     CHECK(CoopDraw::Wanted(s));
     Canvas c(1280, 720);
     CoopDraw::Draw(c.d, s);
-    // The backing disc and the ring's dots, a quarter of them lit.
-    CHECK(c.Of("circle").size() == 1 + CoopDbnoDraw::kDots);
-    std::size_t lit = 0;
-    for (const auto& call : c.Of("circle")) {
-        lit += call.rgba == CoopDraw::Rgba(120, 230, 120, 255) ? 1 : 0;
+    CHECK(c.Of("circle").empty());
+    CHECK(c.Of("rect").empty());
+    CHECK(c.Of("triangle").empty());
+    const auto texts = c.Of("text");
+    REQUIRE_FALSE(texts.empty());
+    for (const auto& call : texts) {
+        CHECK(call.text == "You are down  0:32");
     }
-    CHECK(lit == CoopDbnoDraw::kDots / 4);
-    std::vector<std::string> texts;
-    for (const auto& call : c.Of("text")) {
-        texts.push_back(call.text);
-    }
-    CHECK(texts == std::vector<std::string>{"0:32", "You are down"});
+    // Inside the picture.
+    const float w = static_cast<float>(texts.back().text.size()) * texts.back().px * 0.5f;
+    CHECK(texts.back().x >= 0.0f);
+    CHECK(texts.back().x + w <= 1280.0f);
 }
 
 namespace {
@@ -954,37 +1131,49 @@ TEST_CASE("hookshot draw row 141: the blocks start below the game's own HUD as l
     CHECK(more == "+" + std::to_string(15 - names));
 }
 
-TEST_CASE("hookshot draw: the voice icon after a talking or muted player's name, our row over the others") {
+TEST_CASE("hookshot draw: the voice state as words after a name, no drawn shapes, our row over the others") {
     CoopDraw::Scene s;
     s.hud = {{"Mido", "", {}, false}};
+    const auto no_shapes = [](const Canvas& c) {
+        CHECK(c.Of("rect").empty());
+        CHECK(c.Of("circle").empty());
+        CHECK(c.Of("triangle").empty());
+    };
+    const auto name_of = [](const Canvas& c) {   // the name's fill: the last of GameText's six texts
+        const auto t = c.Of("text");
+        return t.empty() ? std::string() : t.back().text;
+    };
     Canvas quiet(1280, 720);
     CoopDraw::Draw(quiet.d, s, GameLook());
-    CHECK(quiet.Of("rect").empty());   // no icon: nothing but the name
+    no_shapes(quiet);
+    CHECK(name_of(quiet) == "Mido");
     s.hud[0].voice = CoopVoice::Icon::talking;
     Canvas talk(1280, 720);
     CoopDraw::Draw(talk.d, s, GameLook());
-    const auto rects = talk.Of("rect");
-    REQUIRE(rects.size() == 6);   // the microphone's three parts, shadow then fill
-    CHECK(rects[0].x > 40.0f + 4 * 25.0f * 0.5f);   // after "Mido" (the fake's width: half the size a byte)
-    CHECK(rects[3].rgba == CoopDraw::Rgba(120, 235, 120, 255));   // lit green
-    CHECK(talk.Of("circle").size() == 1);   // the ring
-    CHECK(talk.Of("triangle").empty());
+    no_shapes(talk);
+    CHECK(name_of(talk) == "Mido (talking)");
     s.hud[0].voice = CoopVoice::Icon::muted;
     Canvas muted(1280, 720);
     CoopDraw::Draw(muted.d, s, GameLook());
-    CHECK(muted.Of("triangle").size() == 2);   // the red bar
-    CHECK(muted.Of("circle").empty());
+    no_shapes(muted);
+    CHECK(name_of(muted) == "Mido (muted)");
     // our own row first, with "You", while voice is on
+    s.hud[0].voice = CoopVoice::Icon::none;
     s.own_voice = CoopVoice::Icon::idle;
     Canvas own(1280, 720);
     CoopDraw::Draw(own.d, s, GameLook());
+    no_shapes(own);
     const auto texts = own.Of("text");
     REQUIRE(texts.size() == 12);
-    CHECK(texts[5].text == "You");
+    CHECK(texts[5].text == "You");   // quiet: no words
     CHECK(texts[5].y == doctest::Approx(CoopHudLayout::BlocksTop(1280, 720)));
     CHECK(texts[11].text == "Mido");
     CHECK(texts[11].y > texts[5].y);
-    CHECK(AlphaOf(own.Of("rect")[3].rgba) == 110);   // quiet: dim
+    s.own_voice = CoopVoice::Icon::talking;
+    Canvas own_talk(1280, 720);
+    CoopDraw::Draw(own_talk.d, s, GameLook());
+    no_shapes(own_talk);
+    CHECK(own_talk.Of("text")[5].text == "You (talking)");
     // nobody else: no row of our own either
     s.hud.clear();
     Canvas alone(1280, 720);

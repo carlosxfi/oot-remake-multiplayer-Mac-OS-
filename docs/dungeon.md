@@ -257,6 +257,69 @@ Issue 177 (player test 2026-11-11): the bridge and the webs vanished in the othe
 Jabu-Jabu's lift (`Obj_InsideJabu_Jabu_ElevatorLift_A_01`) and moving floor (`MoveFloor_A_01`) start on their logic plug `RideOnPlayer`, which their AI sets every frame from a physics contact with a player. Another player's puppet has no physics, so the lift rose in the rider's game only. The logic probe (`LICHII_COOP_LOGIC_PROBE=1`, `lichii/hook/coop_logic_probe.{h,cpp}`, reads only; scenario hs-logic-probe) lists an actor's plugs as the game's set-bool sees them. A plug's key is Murmur3(name) xor 7. Link on the lift sets `RideOnPlayer` (0xa4ab760d) 0 -> 1, stepping off 1 -> 0; `RideOnCharacter` stays 0.
 `CoopLiftRide` (`lichii/hook/coop_lift_ride.{h,cpp}`) calls the game's own set-bool, the execute of the AI node `ExecuteLogicSetBool` (main+0x2727540), on a node block of ours that names our lift and `RideOnPlayer`, value 1. It does so each frame while a fresh player of our scene stands on the lift: within 1.8 m across, 0.5 m below to 2.5 m above its place. It only sets 1, never 0: the lift's AI puts its own 0 back once nobody is on it. It skips a lift that is not present, has no live bool `RideOnPlayer` or is on already. Log: `coop: lift ride: another player is on our lift 0x...: its RideOnPlayer set through the game's set-bool` (once a lift). Open: whether the lift's logic reads our 1 before its AI's next contact check puts 0 back. Scenario hs-lift-ride (B on the lift, A watches its copy) answers it. The Deku Tree slingshot room's ladder and pillar have no such plug (probe), so they stay with the room's live event.
 
+## Twisting hallways (Forest Temple, 2026-11-21)
+
+Each of the Forest Temple's two twisting hallways (`Obj_ForestTemple_TwistedCorridor_A_01` west, `_A_02` east) turns
+when the eye above its door is shot (`Obj_ForestTemple_TwistRelief_A_01` in room 9, `_A_02` in room 23). The hit
+asks the event setting `ForestTemple_Room11_RoomSpin` or `ForestTemple_Room22_RoomSpin` (RSDB EventSetting), whose
+flow plays the twist `Dm_ForestTemple_0005` / `_0007` (`EventTriggerRelocateTwistCorridor`, turning the hallway
+round the player). In co-op the hallway is one for everyone, so it must never turn under another player standing in
+it (a player stuck inside a turned hallway, or turned twice: row 173).
+
+**The rule (`coop_hallway.h`, owner's decision 2026-11-21):** while a player who can move stands inside the hallway on
+the shooter's side, our game's ask of any of those four names is refused at the request (`HOS_COOP_WRAP_EVENT_REQUEST`,
+as a boss's second death is): no turn, no cutscene. The shooter's chat box says "The west hallway can't turn: Saria is
+in it.", and our chat to everyone says "Saria, step out of the west hallway: I want to turn it." (once every 4 s per
+hallway; the eye can be shot again at once). A player who is down, spectating or away (paused, in a menu, loading, in
+their own event, dead: the down-but-not-out code's `UnseenWhy`, the same set enemies do not see) never blocks it.
+
+- Inside is the hallway's trigger box from the map (an Area 5 x 5 x 21 at x -56.43 / 56.57, y 121.67, z -32.89),
+  0.5 wider, y 116 to 132 (the floor at 124.5, the turned floor above). The hallway a shot turns is the one on the
+  shooter's side of the temple (the eyes are at x -56.5 and 56.5).
+- Where the other players are is the last frame's map view (`CoopHook::CurrentMapView`: every player's scene and
+  place, as the map's markers).
+- The corridor's own state flags stay as they are (shared, held until the next load in a game whose player is in
+  the temple, "Held until the room loads").
+- Tests: `tests/lichii/hallway_test.cpp`. In a game: `hs-ft-twist-173` with B inside: A's eye does nothing, both lines.
+- The eye keeps still: it is an on/off animation object (`Obj_Base_OnOffAnim`, its `Twist` and `Twist_Keep` named in
+  its `ASCommand_OnOff`) with no AI of its own, an event member: the turn event plays its twist, so a refused turn
+  leaves it as it was. In a game (run 2026-11-21, `hs-ft-twist-173` with B inside): A's arrow hit the eye, the game
+  asked `ForestTemple_Room11_RoomSpin` 106 times over 2.5 s, every one refused; A's log "coop: hallway: The west
+  hallway can't turn: B is in it." and "said to the players inside: B, step out of the west hallway: I want to turn
+  it."; B's view of the hallway the same before and after. (The eye itself was not in the shots' frame.)
+
+## The turning floor (Forest Temple basement, 2026-11-21)
+
+The basement ring under the main hall (room 27) is one actor, `Obj_ForestTemple_PivotedFloor_A_01` at 0 59.5 -3.5: a
+capstan with two bars (the model's bones `GrabPoint_01` / `_02`, local -9.55 0.65 3.96 and its mirror). A player grabs
+a bar and pushes; each push turns the floor an eighth of a lap (`CapstanParam` `PushPerLap` 8) in about 1.4 s, played by
+its own AI (`AnimeDriven`; the controller rumbles while it turns). Its direction is the int flag
+`ForestTemple_SageOfForest_PivotedFloor_A_01` (its `InitialDirIndexGameDataPath`), which co-op already shared.
+
+- **The problem:** the floor reads the flag only when the room loads. Set under a loaded floor (run `st-pivot`), nothing
+  moved; a real push in A (run `st-pivot3`) turned A's floor while B's, a quarter lap away, stayed where it was: two
+  layouts of the same walls until B left and came back.
+- **What a push does** (run `st-pivot3`, the yaw of the actor's own 3x3 at +0x328 logged): A's yaw 0 to -45 in even
+  steps over 1.4 s, and the flag 0 to 7 as it stopped; a second push -45 to -90 and the flag 6. The yaw is 45 x the
+  direction.
+- **The fix** (`lichii/hook/coop_pivot.h`, glue in `coop_objects.cpp` `Pivot` and the Mover's `TurnFloor`; on unless
+  `LICHII_COOP_PIVOT=0`): each game finds the floor while its player is in the Forest Temple and compares its yaw with
+  the shared direction. When they differ and the floor has rested at one of its eight places for 0.6 s, our game turns
+  its own floor the short way at the game's speed (45 degrees in 1.4 s): once a game frame its 3x3 is written and the
+  game's set-matrix call (the `ExecuteActorForceSetMtx` path, docs/objects.md) hands it to the physics, so the walls'
+  collision turns too. A floor that is moving (our own player's push, however slowly it starts) or stopped part way
+  (a player holding the bar) is never touched.
+- **Players inside** are not waited for (the design: "blocking them in is better, since it's close and an easy
+  unblock"): the walls turn round them, and another push lets them out.
+- **In a game** (run `st-pivot3`, 2026-11-21): A pushed twice; B logged "the direction flag reads 7", "our floor turned
+  from 0.0 to -45.0 (direction 7) over 1400 ms", then the same from -45 to -90 for flag 6; B's yaw went down in the
+  same even steps, and B's view showed the ring's doorway replaced by a window section. A's own pushes were never
+  touched. B's floor AI did not turn it back.
+- **Not checked yet:** a push in the game that followed (B grabbing a bar after its floor was turned for it: its AI
+  may still count from the direction it loaded with), and the AI's `RequestDeathInPassage` (what a turn does to a
+  player standing in a doorway gap) in the game that follows, where the AI does not run the turn.
+- Tests: `tests/lichii/pivot_test.cpp`.
+
 ## Locked doors (branch `locked-doors`)
 
 A small-key door is a door set (`Logic/Module/DungeonDoorSingleWithChainLockSet`, `DungeonSwitchShutter…WithChainLockSet`, placed as `AiGroups`) with a lock actor, `Obj_DoorChainLock_*` (98 placements: Fire 16, Gerudo Training Ground 18, Forest 11, Shadow 10, Spirit 10, Water 9, Well 4, Gerudo Fortress cells 4, Ganon's Castle 3, the rest in the Dream World). The lock's AI (`AI/DoorChainLock.root.ainb`) spends the key (`OneShotDungeonUseSmallKey`), saves "open" in a bool it makes from its placement (`QueryGetIsGenerateAutogenGameDataFromGameBancParam`, `OneShotSetGameDataBool`) and deletes itself (`OneShotDeathRequestDeath`). That bool is no placement key and no name we could hash, so it is not in the shared list; only some rooms also write a named flag (Forest `…_LockOpne`, Spirit `…_Unlocked*`, Ice Cavern, the Well).

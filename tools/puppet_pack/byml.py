@@ -245,7 +245,8 @@ def _key(v):
     return (t, v)
 
 
-def _strtab(items):
+def _strtab(items, en="<"):
+    order = "little" if en == "<" else "big"
     n = len(items)
     blobs = [s.encode("utf-8") + b"\0" for s in items]
     head = 4 + 4 * (n + 1)
@@ -254,11 +255,14 @@ def _strtab(items):
         offs.append(pos)
         pos += len(b)
     offs.append(pos)
-    out = bytes([T_STRTAB]) + n.to_bytes(3, "little") + struct.pack(f"<{n + 1}I", *offs) + b"".join(blobs)
+    out = bytes([T_STRTAB]) + n.to_bytes(3, order) + struct.pack(f"{en}{n + 1}I", *offs) + b"".join(blobs)
     return out + b"\0" * (-len(out) % 4)
 
 
-def dumps(root, version=7):
+def dumps(root, version=7, big=False):
+    """big: big-endian (`BY`), as the game's GameData/GameDataList is; else little-endian (`YB`)."""
+    en = ">" if big else "<"
+    order = "big" if big else "little"
     keys, strs = set(), set()
     _collect(root, keys, strs)
     # Tables sorted by raw bytes: the engine binary-searches them.
@@ -270,12 +274,12 @@ def dumps(root, version=7):
     buf = bytearray(16)
     if keys:
         keys_off = len(buf)
-        buf += _strtab(keys)
+        buf += _strtab(keys, en)
     else:
         keys_off = 0
     if strs:
         strs_off = len(buf)
-        buf += _strtab(strs)
+        buf += _strtab(strs, en)
     else:
         strs_off = 0
 
@@ -311,15 +315,15 @@ def dumps(root, version=7):
             assert got == off
             return off
         if t == T_INT64:
-            buf.extend(struct.pack("<q", v.v))
+            buf.extend(struct.pack(en + "q", v.v))
         elif t == T_UINT64:
-            buf.extend(struct.pack("<Q", v.v))
+            buf.extend(struct.pack(en + "Q", v.v))
         elif t == T_DOUBLE:
-            buf.extend(struct.pack("<d", v.v))
+            buf.extend(struct.pack(en + "d", v.v))
         elif t == T_BINARY:
-            buf.extend(struct.pack("<I", len(v.v)) + v.v)
+            buf.extend(struct.pack(en + "I", len(v.v)) + v.v)
         elif t == T_FILE:
-            buf.extend(struct.pack("<II", len(v.v), v.align) + v.v)
+            buf.extend(struct.pack(en + "II", len(v.v), v.align) + v.v)
         return off
 
     def write_node(v):
@@ -328,55 +332,55 @@ def dumps(root, version=7):
             n = len(v)
             align()
             off = len(buf)
-            hdr = bytes([T_ARRAY]) + n.to_bytes(3, "little") + bytes(_type(x) for x in v)
+            hdr = bytes([T_ARRAY]) + n.to_bytes(3, order) + bytes(_type(x) for x in v)
             hdr += b"\0" * (-len(hdr) % 4)
             buf.extend(hdr)
             slots = len(buf)
             buf.extend(b"\0" * (4 * n))
             for i, x in enumerate(v):
-                struct.pack_into("<I", buf, slots + 4 * i, inline(x))
+                struct.pack_into(en + "I", buf, slots + 4 * i, inline(x))
             return off
         if t == T_DICT:
             items = sorted(v.items(), key=lambda kv: kix[kv[0]])
             n = len(items)
             align()
             off = len(buf)
-            buf.extend(bytes([T_DICT]) + n.to_bytes(3, "little"))
+            buf.extend(bytes([T_DICT]) + n.to_bytes(3, order))
             ents = len(buf)
             buf.extend(b"\0" * (8 * n))
             for i, (k, x) in enumerate(items):
                 e = ents + 8 * i
-                buf[e:e + 3] = kix[k].to_bytes(3, "little")
+                buf[e:e + 3] = kix[k].to_bytes(3, order)
                 buf[e + 3] = _type(x)
-                struct.pack_into("<I", buf, e + 4, inline(x))
+                struct.pack_into(en + "I", buf, e + 4, inline(x))
             return off
         if t == T_HASH32:
             items = sorted(v.items())
             n = len(items)
             align()
             off = len(buf)
-            buf.extend(bytes([T_HASH32]) + n.to_bytes(3, "little"))
+            buf.extend(bytes([T_HASH32]) + n.to_bytes(3, order))
             ents = len(buf)
             buf.extend(b"\0" * (8 * n) + bytes(_type(x) for _, x in items))
             align()
             for i, (h, x) in enumerate(items):
-                struct.pack_into("<II", buf, ents + 8 * i, h, inline(x))
+                struct.pack_into(en + "II", buf, ents + 8 * i, h, inline(x))
             return off
         if t == T_HASH32_REMAP:
             items = sorted(v.items())
             n = len(items)
             align()
             off = len(buf)
-            buf.extend(bytes([T_HASH32_REMAP]) + n.to_bytes(3, "little"))
+            buf.extend(bytes([T_HASH32_REMAP]) + n.to_bytes(3, order))
             ents = len(buf)
             buf.extend(b"\0" * (12 * n) + bytes(_type(x) for _, (x, _i) in items))
             align()
             for i, (h, (x, ix)) in enumerate(items):
-                struct.pack_into("<III", buf, ents + 12 * i, h, inline(x), ix)
+                struct.pack_into(en + "III", buf, ents + 12 * i, h, inline(x), ix)
             return off
         raise BymlError("root must be a container")
 
     root_off = write_node(root) if root is not None else 0
-    struct.pack_into("<2sHIII", buf, 0, b"YB", version, keys_off, strs_off, root_off)
+    struct.pack_into(en + "2sHIII", buf, 0, b"BY" if big else b"YB", version, keys_off, strs_off, root_off)
     align()
     return bytes(buf)

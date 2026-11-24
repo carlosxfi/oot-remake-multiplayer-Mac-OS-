@@ -1,4 +1,4 @@
-From 4d0d52c79177c16b67e57abed41cbab77ea5eb58 Mon Sep 17 00:00:00 2001
+From 5c7202690629029eaf0f90e985ff194672e5e967 Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Mon, 16 Nov 2026 11:37:15 -0900
 Subject: [PATCH] Co-op save slot opens: the slot folder the game opened last,
@@ -13,16 +13,16 @@ exports; patch 0001's nx2/build.py list exports it on Linux): the host
 sends its guests the slot the game loaded and plays, not the newest file
 on disk. Nothing else changes: the open itself is as before.
 ---
- host/nn_fs.c | 33 +++++++++++++++++++++++++++++++++
- 1 file changed, 33 insertions(+)
+ host/nn_fs.c | 40 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 40 insertions(+)
 
 diff --git a/host/nn_fs.c b/host/nn_fs.c
-index 8b0758a..dd5cb83 100644
+index 4b9e4918..5e28c66d 100644
 --- a/host/nn_fs.c
 +++ b/host/nn_fs.c
-@@ -328,6 +328,38 @@ HOS_COOP_FS_EXPORT int hos_coop_fs_save_remount(const char *root) {
-     ReleaseSRWLockExclusive(&mount_lock);
-     return 1;
+@@ -1121,6 +1121,45 @@ HOS_COOP_FS_EXPORT int hos_coop_fs_save_remount(const char *root) {
+     ReleaseSRWLockExclusive(&save_lock);
+     return 0;
  }
 +/* (oot-remake-multiplayer's patch 0025, player report 120) The slot folder (<save root>\slot_NN) whose progress.sav
 +   the game opened last on the account save's mount, read or write (which), and a count of those opens. The host's
@@ -31,15 +31,22 @@ index 8b0758a..dd5cb83 100644
 +static char save_slot_open[HOS_FS_PATH];
 +static unsigned save_slot_opens;
 +static int save_slot_write;   /* the last open was for writing (the game saves into the slot it plays) */
-+static void note_save_slot_open(const char *guest, const char *host, int write) {
++static void note_save_slot_open(const char *guest, const char *host, int write, const Save *save) {
 +    static const char kProgress[] = "progress.sav";
++    char committed[HOS_FS_PATH];
++    /* (Longshot 3.1 opens a staged save's files in its work copy: the slot is named in the committed folder, where the
++       module reads the save root and its slots, published at each Commit) */
++    const size_t w = save ? strlen(save->work) : 0;
++    if (w && !_strnicmp(host, save->work, w) && (host[w] == '\\' || host[w] == '/') &&
++        snprintf(committed, sizeof committed, "%s%s", save->committed, host + w) < (int)sizeof committed)
++        host = committed;
 +    const size_t k = sizeof kProgress - 1, n = strlen(host);
 +    const char *colon = strstr(guest, ":/");
 +    if (!colon || n <= k + 1 || _stricmp(host + n - k, kProgress) || (host[n - k - 1] != '\\' && host[n - k - 1] != '/'))
 +        return;
 +    AcquireSRWLockExclusive(&mount_lock);
-+    const size_t m = strlen(save_mount);
-+    if (m && m == (size_t)(colon - guest) && !strncmp(save_mount, guest, m)) {
++    const size_t m = strlen(coop_save_name);
++    if (m && m == (size_t)(colon - guest) && !strncmp(coop_save_name, guest, m)) {
 +        snprintf(save_slot_open, sizeof save_slot_open, "%.*s", (int)(n - k - 1), host);
 +        save_slot_write = write;
 +        ++save_slot_opens;
@@ -59,11 +66,11 @@ index 8b0758a..dd5cb83 100644
  
  /* nn::fs::IsSaveDataExisting(ApplicationId, account::Uid const&) -> bool */
  HLE(_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE) {
-@@ -469,6 +501,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
-     if (want_write) __atomic_add_fetch(&writes_open, 1, __ATOMIC_RELAXED);
+@@ -1316,6 +1355,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
+     }
      snprintf(fh->path, sizeof fh->path, "%s", g);
      G64(ARG(0)) = new_handle(fh);
-+    note_save_slot_open(g, path, want_write);   /* (patch 0025) */
++    note_save_slot_open(g, path, want_write, save);   /* (patch 0025) */
+     if (save) { ReleaseSRWLockExclusive(&save_lock); if (away) hos_vcore_back(); }
      if (hos_trace || fs_trace()) hos_log("fs: OpenFile(%s)", g);
      RET(0);
- }

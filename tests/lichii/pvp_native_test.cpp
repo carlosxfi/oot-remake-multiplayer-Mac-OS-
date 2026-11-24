@@ -191,6 +191,15 @@ TEST_CASE("pvp native: kept off as today, and while downed") {
     CHECK(Refusal(Strike(), sc.view, kNow) == proto::PvpOutcome::kept_off);
 }
 
+TEST_CASE("pvp native: an attacker in the other era's scene of our place is not kept off (row 221)") {
+    Scene sc;
+    sc.view.local.scene = "Graveyard_Child";
+    sc.view.attacker.scene = "Graveyard_Adult";
+    CHECK_FALSE(Refusal(Strike(), sc.view, kNow));
+    sc.view.attacker.scene = "Kakariko_Adult";  // another place: kept off as before
+    CHECK(Refusal(Strike(), sc.view, kNow) == proto::PvpOutcome::kept_off);
+}
+
 TEST_CASE("pvp native: a repeated or old seq is dropped, and an attacker who comes back starts again") {
     SeqGate g;
     CHECK(g.Take(1, 1));

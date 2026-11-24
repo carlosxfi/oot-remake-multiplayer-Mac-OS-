@@ -56,15 +56,17 @@ add_executable(coop_tests
   lichii/hit_replay_test.cpp
   lichii/fairy_test.cpp
   lichii/map_refresh_test.cpp
+  lichii/life_gauge_test.cpp
   lichii/rooms_test.cpp
   lichii/objects_test.cpp
   lichii/bomb_share_test.cpp
   lichii/lift_player_test.cpp
   lichii/show_delay_test.cpp
   lichii/npc_anim_test.cpp
-  lichii/spawn_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_spawn.cpp
+  lichii/spawn_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_spawn.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_shot_reflect.cpp
   lichii/ride_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_ride.cpp
   lichii/projectiles_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_projectiles.cpp
+  lichii/shot_reflect_test.cpp
   lichii/enemy_shots_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_enemy_shots.cpp
   lichii/drops_test.cpp
   lichii/guard_test.cpp
@@ -106,8 +108,13 @@ add_executable(coop_tests
   lichii/boss_test.cpp
   lichii/boss_beaten_test.cpp
   lichii/boss_native_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_boss_native.cpp
+  lichii/boss_orders_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_boss_orders.cpp
   lichii/boss_scenes_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_boss_scenes.cpp
   lichii/teleport_test.cpp
+  lichii/hallway_test.cpp
+  lichii/pivot_test.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_hallway.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_pivot.cpp
   lichii/pvp_test.cpp
   lichii/pvp_native_test.cpp
   lichii/dbno_test.cpp
@@ -115,6 +122,7 @@ add_executable(coop_tests
   lichii/difficulty_test.cpp
   lichii/ngplus_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_ngplus_rules.cpp
   lichii/live_events_test.cpp
+  lichii/presence_gates_test.cpp
   lichii/logic_probe_test.cpp
   lichii/shared_scenes_test.cpp
   lichii/scrubs_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_scrubs.cpp
@@ -152,6 +160,9 @@ add_executable(coop_tests
   lichii/switch_share_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_switch_share.cpp
   lichii/caller_orders_test.cpp
   lichii/char_colours_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_char_colours.cpp
+  lichii/charsel_tidy_test.cpp
+  lichii/char_slots_test.cpp
+  lichii/char_ages_test.cpp
   lichii/eye_switch_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_eye_switch.cpp
   lichii/event_result_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_event_result.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_ocarina.cpp
@@ -183,12 +194,16 @@ target_sources(coop_tests PRIVATE hookshot/module_test.cpp hookshot/draw_test.cp
   hookshot/hud_dim_test.cpp
   hookshot/discord_activity_test.cpp
   hookshot/skip_title_test.cpp
+  hookshot/native_tags_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_native_tags.cpp
   hookshot/chatbox_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_chatbox.cpp
+  hookshot/players_open_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_players_open.cpp
   hookshot/cheats_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_cheats_panel.cpp
   hookshot/png_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_png.cpp
+  hookshot/native_ui_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_native_ui.cpp
   hookshot/window_brand_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_window_brand.cpp
   hookshot/title_menu_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_title_menu.cpp
   hookshot/pause_menu_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_pause_menu.cpp
+  hookshot/chat_commands_test.cpp
   hookshot/original_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_original.cpp
   hookshot/host_menu_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_host_menu.cpp
   hookshot/input_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_input.cpp
@@ -203,14 +218,20 @@ target_sources(coop_tests PRIVATE hookshot/module_test.cpp hookshot/draw_test.cp
   hookshot/look_paint_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_look_paint.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_look_parts.cpp
   hookshot/look_menu_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_look_menu.cpp
+  hookshot/snail_custom_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_snail_custom.cpp
   hookshot/look_view_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_look_view.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_look_tunic.cpp
   hookshot/texture_override_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_texture.c
   hookshot/lobby_tab_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_lobby_tab.cpp
   hookshot/pause_tab_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_pause_tab.cpp
   hookshot/title_native_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_title_native.cpp
+  hookshot/problem_ask_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_problem_ask.cpp
+  hookshot/stuck_load_test.cpp
+  hookshot/text_fit_test.cpp
+  hookshot/list_pages_test.cpp
   hookshot/auto_rejoin_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_auto_rejoin.cpp
   hookshot/lan_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_lan.cpp
+  hookshot/playtest_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_playtest_core.cpp
   hookshot/browse_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_browse.cpp
   hookshot/longshot_settings_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_longshot_settings.cpp
   hookshot/pad_order_test.cpp
@@ -232,6 +253,8 @@ add_test(NAME coop_test_two_clients COMMAND coop_test --clients 2 --seconds 3 --
 
 # Where the test data files are (source paths are trimmed out of __FILE__, cmake/trim_paths.cmake).
 target_compile_definitions(coop_tests PRIVATE COOP_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+# The drawn debug panels (F7, F8; hookshot/src/coop_debug_panels.h) are tested, so the tests build them in.
+target_compile_definitions(coop_tests PRIVATE COOP_DEBUG_PANELS)
 
 # The sample code mod (hookshot/samples/hello-mod), loaded through the real loader by mod_plugins_test.cpp.
 add_library(coop_sample_mod MODULE ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/samples/hello-mod/hello_mod.c)

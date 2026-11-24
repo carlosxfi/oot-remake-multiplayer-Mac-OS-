@@ -108,6 +108,7 @@ struct Peer {
 coop::server::ServerOptions any_port() {
   coop::server::ServerOptions o;
   o.port = 0;
+  o.bind = 0x7F000001u;  // 127.0.0.1 only: a test listens on no other address
   o.session.join_password = "test-pass";
   return o;
 }

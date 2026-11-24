@@ -11,6 +11,10 @@ message events (without their text) only to remove plain messages typed in the
 public report channel; it logs the author id and the time, nothing else.
 Runs on the owner's PC (run-bot.ps1).
 
+Optionally (config "intake", README "Problem-report intake") it also takes the kits' masked problem reports on a
+small HTTP endpoint on 127.0.0.1, which the owner puts behind an HTTPS tunnel or proxy: each upload is checked
+(intake_core.py), saved, filed as 'NEW (auto)' and posted to the dev channel like a /bugreport.
+
 Usage: python bot.py --config <path to discord-bot.json>
 """
 
@@ -26,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import report_core as core  # noqa: E402
+import intake_core as intake  # noqa: E402
 
 try:
     import discord
@@ -69,6 +74,11 @@ class ReportBot(discord.Client):
         self.delete_forbidden_logged = False
         self.logs_dir = cfg["coord_dir"] / "player-logs"
         self.tracker = cfg["coord_dir"] / "reports" / core.TRACKER_NAME
+        self.intake_cfg = cfg.get("intake")
+        self.intake_limits = intake.Limits()
+        self.intake_seen = intake.SeenIds(self.logs_dir / "auto-intake.json")
+        self.intake_runner = None
+        self.heartbeat_task = None
 
     async def setup_hook(self):
         # The server is the dev channel's server (the config's guild_id, if set, must match).
@@ -83,6 +93,97 @@ class ReportBot(discord.Client):
         self._add_commands(guild)
         synced = await self.tree.sync(guild=guild)
         log.info("commands synced to server %s: %s", self.guild_id, ", ".join(c.name for c in synced))
+        if self.intake_cfg:
+            await self.start_intake()
+
+    async def start_intake(self):
+        """The problem-report endpoint (intake_core.PATH) on the configured address (127.0.0.1 by default)."""
+        from aiohttp import web  # discord.py's own dependency
+
+        app = web.Application(client_max_size=intake.MAX_UPLOAD_BYTES + 1024)
+        app.router.add_route("*", "/{tail:.*}", self.handle_intake)
+        self.intake_runner = web.AppRunner(app, access_log=None)  # no access log: no addresses on disk
+        await self.intake_runner.setup()
+        site = web.TCPSite(self.intake_runner, self.intake_cfg["host"], self.intake_cfg["port"])
+        await site.start()
+        log.info("problem-report intake listening on %s:%d%s", self.intake_cfg["host"], self.intake_cfg["port"],
+                 intake.PATH)
+
+    async def close(self):
+        if self.intake_runner is not None:
+            await self.intake_runner.cleanup()
+        await super().close()
+
+    async def handle_intake(self, request):
+        """One upload: headers, rate, body, zip, then saved and filed (intake_core). The answer is JSON; a refusal
+        says why in a few words. Addresses are used for the rate limit in memory only, never logged or stored."""
+        from aiohttp import web
+
+        def answer(status, **body):
+            headers = {"Cache-Control": "no-store"}
+            if body.get("retry_after"):
+                headers["Retry-After"] = str(body["retry_after"])
+            return web.json_response(body, status=status, headers=headers)
+
+        taken = None
+        try:
+            install, report_id = intake.check_headers(
+                request.method, request.path, request.headers.get("Content-Type"),
+                request.headers.get("Content-Length"), request.headers.get("X-Squadala-Install"),
+                request.headers.get("X-Squadala-Report"))
+            if report_id in self.intake_seen:
+                return answer(200, ok=True, duplicate=True)
+            address = intake.sender_address(self.intake_cfg.get("address_header"), request.headers, request.remote)
+            taken = self.intake_limits.acquire(install, address)
+            try:
+                data = await asyncio.wait_for(request.read(), timeout=20)
+            except asyncio.TimeoutError:
+                raise intake.Refused(408, "too slow")
+            except web.HTTPRequestEntityTooLarge:
+                raise intake.Refused(413, "too big")
+            if len(data) != int(request.headers.get("Content-Length")):
+                raise intake.Refused(400, "body length differs from Content-Length")
+            files = await asyncio.to_thread(intake.check_zip, data)
+            when = dt.datetime.now(dt.timezone.utc)
+            async with self.lock:
+                if report_id in self.intake_seen:
+                    intake.Limits.release(taken)
+                    return answer(200, ok=True, duplicate=True)
+                if core.over_budget(core.dir_size(self.logs_dir), len(data)):
+                    raise intake.Refused(503, "the report box is full; try again later", retry_after=3600)
+                number, folder = intake.save_upload(self.logs_dir, self.tracker, when, install, report_id, data, files)
+                self.intake_seen.add(report_id)
+        except intake.Refused as e:
+            if taken and e.status != 429:
+                intake.Limits.release(taken)
+            if e.status not in (404, 405):
+                log.info("problem-report upload refused (%d: %s)", e.status, e.reason)
+            return answer(e.status, ok=False, error=e.reason, retry_after=e.retry_after)
+        except OSError:
+            if taken:
+                intake.Limits.release(taken)
+            log.exception("saving a problem-report upload failed")
+            return answer(500, ok=False, error="could not save; try again later")
+        rel = f"player-logs/{folder.name}"
+        log.info("auto report #%d from install %s saved to %s (%d bytes)", number, intake.install_tag(install), rel,
+                 len(data))
+        await self.post_auto_to_dev(number, when, install, files, data, rel)
+        return answer(200, ok=True, report=number)
+
+    async def post_auto_to_dev(self, number, when, install, files, data, rel):
+        """As post_to_dev: the upload's problem lines in a code block under the untrusted label, and the zip."""
+        try:
+            channel = self.get_channel(self.cfg["dev_channel_id"]) or await self.fetch_channel(self.cfg["dev_channel_id"])
+            body = f"{core.UNTRUSTED_LABEL}:\n```text\n{intake.dev_post_text(files)}\n```"
+            embed = discord.Embed(title=f"Auto problem report #{number}", description=body, timestamp=when,
+                                  colour=discord.Colour.dark_orange())
+            embed.add_field(name="Install", value=f"`auto-{intake.install_tag(install)}` (a random id)")
+            embed.add_field(name="Kit version", value=intake.report_version(files["problem-report.txt"]) or "?")
+            embed.add_field(name="Saved", value=f"`{rel}`", inline=False)
+            await channel.send(embed=embed, files=[discord.File(io.BytesIO(data), filename=f"report-{number}-auto.zip")])
+        except discord.HTTPException as e:
+            # The report is already saved; the dev post is a copy.
+            log.error("posting auto report #%d to the dev channel failed (%s)", number, type(e).__name__)
 
     async def _channel_guild(self, key):
         """The server id of a configured channel, or None if the bot cannot read it."""
@@ -95,7 +196,21 @@ class ReportBot(discord.Client):
 
     async def on_ready(self):
         log.info("online as %s", self.user)
+        if self.heartbeat_task is None:
+            self.heartbeat_task = asyncio.ensure_future(self._heartbeat_loop())
         self._check_report_channel_rights()
+
+    async def _heartbeat_loop(self):
+        """Every 5 minutes while the gateway is connected: the UTC time into player-logs/discord-bot.heartbeat.
+        The coordinator watchdog logs 'discord bot down' when the file is over 30 minutes old."""
+        path = self.logs_dir / core.HEARTBEAT_NAME
+        while not self.is_closed():
+            if self.is_ready():
+                try:
+                    core.write_heartbeat(path, dt.datetime.now(dt.timezone.utc))
+                except OSError as e:
+                    log.warning("heartbeat write failed (%s)", type(e).__name__)
+            await asyncio.sleep(core.HEARTBEAT_EVERY_SECONDS)
 
     def _check_report_channel_rights(self):
         """Log once at start when the bot cannot remove messages in the report channel."""
@@ -310,6 +425,7 @@ def main():
     args = ap.parse_args()
     try:
         cfg = core.load_config(args.config)
+        cfg["intake"] = intake.load_intake_config(cfg.pop("intake_raw", None))
     except core.ConfigError as e:
         print(f"discord-bot: {e}", file=sys.stderr)
         return 2

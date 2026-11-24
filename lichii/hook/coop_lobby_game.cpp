@@ -198,6 +198,7 @@ void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
         g.dbno.clear();
         g.knocks.Clear();  // the server turns away whoever waited for this game's answer
         g.Copy(client);
+        g.seen.held = false;   // (the wait for the host's answer, if any, ended here)
         g.seen.refused = event.kind == EventKind::refused
                              ? std::string(coop::net::refuse_text(event))
                              : std::string();
@@ -231,6 +232,7 @@ void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
     case EventKind::waiting_for_host:
         // Host approval: our own join waits for the host's answer.
         if (const auto* k = std::get_if<proto::JoinKnock>(&event.message)) {
+            g.seen.held = true;   // (the Lobby tab says so: row 208)
             g.Line(WaitingLine(k->wait_s));
             LOG_INFO(Core, "coop: lobby: waiting for the host to let this game in (up to {} s)", k->wait_s);
         }

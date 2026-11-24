@@ -70,6 +70,8 @@ struct CommandLine {
   // hosts must give; with --relay-via: the one to give).
   std::string relay_key;
   std::string relay_key_env;
+  // --relay-max-per-address N: with --relay, sessions allowed from one address (0: the relay's default, 2).
+  std::size_t relay_max_per_address = 0;
   // --invite: learn this PC's internet address with STUN from the game port,
   // print an invite code (address + join password) and take answer codes
   // typed into the window (punch.hpp). Needs a join password.

@@ -84,8 +84,8 @@ struct Options {
     bool show_players = false;     // LICHII_COOP_SHOW_PLAYERS (the list always shown)
     bool pvp = false;              // pvp (the host's)
     bool approve_joins = false;    // approve_joins (the host's: each new player waits for /allow or /deny); read only
-    bool same_network_open = false;   // same_network_open (the host's: on, players from a private address join
-                                      // without the join password; off, the default, they need it too)
+    bool same_network_open = true;    // the host's: on, the default, players from a private address join without
+                                      // the join password; off (same_network_password = on), they need it too
     bool auto_rejoin = false;      // auto_rejoin (join the last friend's game again by itself: coop_auto_rejoin.h)
     bool original_game = false;    // original_game (from the next start: the game as it came, coop_original.h)
     bool list_room = false;        // list_room (hosting with a relay room: the room on the relay's public list)
@@ -104,7 +104,6 @@ struct Options {
     std::string voice_key = "V";   // LICHII_COOP_VOICE_KEY as the Voice mode row names it (read only)
     std::string voice_mic;         // LICHII_COOP_VOICE_MIC: the voice's microphone by its name ("": the game's)
     bool map_players = true;       // LICHII_COOP_MAP (0: no other players on the minimap and the pause map)
-    std::string hud_size = "auto"; // LICHII_COOP_HUD_SIZE: the player list on the left (auto, full, compact, off)
     bool map_names = true;         // LICHII_COOP_MAP_NAMES (0: their icons without names)
     std::string relay = kDefaultRelay;   // relay (host and join rooms through it, Host.bat's too; kDefaultRelay without a
                                    // line; Co-op Settings' Relay row writes it)
@@ -233,11 +232,16 @@ struct LanSplit {
 };
 // A card without a name (the system did not say) counts as a VPN by its address range (LanLabel), as before.
 LanSplit SplitLan(const std::vector<LocalCard>& cards);
-// The lines each row shows (the first address's join text is on the clipboard when `copied`).
+// The password a friend's line for `address` carries: none when the host lets its own network in without it
+// (same_network_open, the default since row 251) and the address is a private one, as the server decides by the
+// friend's address (coop::server::is_same_network); else `password`.
+std::string_view LanLinePassword(std::string_view address, std::string_view password, bool same_network_open);
+// The lines each row shows (the first address's join text is on the clipboard when `copied`; without the password
+// when LanLinePassword drops it, and the line above says so).
 std::vector<std::string> HomeLines(const std::vector<LanAddress>& home, std::uint16_t port, std::string_view password,
-                                   bool copied);
+                                   bool copied, bool same_network_open = false);
 std::vector<std::string> VpnLines(const std::vector<LanAddress>& vpn, std::uint16_t port, std::string_view password,
-                                  bool copied);
+                                  bool copied, bool same_network_open = false);
 // The Host dialog's first line while hosting with an invite code: the code is the way to host, the rows the others.
 std::string HostHeadline(bool copied);
 
@@ -500,6 +504,8 @@ inline bool PlayersOwn(const TitleMenuRow* row) {
 }
 // The first row of `look` that does `action` (-1: none).
 int RowOf(const TitleMenuLook& look, TitleDo action);
+// The line under Multiplayer's rows for the focused one (the title's hint line, Coop_Live_Hint); nullptr: none.
+const char* MenuHint(TitleDo action);
 // The pack's labels: 0100 Host, 0101 Join, 0102 Co-op Settings (the older packs' rows too), 0103 Start,
 // 0104 Multiplayer, 0105 Options, 0106 Back. (Continue and New Game rows use the game's own 0001 and 0000.)
 inline constexpr std::array<std::pair<const char*, const char*>, 7> kMenuLabels{{{"0100", "Host"},

@@ -24,11 +24,12 @@ inline std::optional<std::uint32_t> arm64_branch(std::uint64_t pc,
          (static_cast<std::uint32_t>(delta >> 2) & 0x03ffffffu);
 }
 
-inline std::array<std::uint8_t, 48> make_calc_cave(std::uint64_t callback) {
+inline std::array<std::uint8_t, 48> make_calc_cave(std::uint64_t callback,
+                                              std::uint64_t cave = kCalcCaveOffset) {
   // Preserve the original call's x0/s0, call a host function on the game's
   // calc thread, then tail-call the instruction the hook replaces.
   std::array<std::uint8_t, 48> out{};
-  const auto tail = arm64_branch(kCalcCaveOffset + 36, kFrameStepOffset, false);
+  const auto tail = arm64_branch(cave + 36, kFrameStepOffset, false);
   const std::array<std::uint32_t, 10> words{
       0xa9be7bfdu,  // stp x29, x30, [sp, #-32]!
       0x910003fdu,  // mov x29, sp

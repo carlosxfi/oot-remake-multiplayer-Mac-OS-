@@ -242,6 +242,15 @@ class RunTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "hookshot-A1", "autotest-save", "new.sav")))
         self.assertFalse(g.prepare(planned, self.tmp, dry=True, say=lambda *_: None, restore=lambda f, d: False))
 
+    def test_prepare_has_the_mods_in_place_before_the_game(self):
+        # (charsel-tab-0119: the cached game a folder gets depends on its mods' code patches, so they come first)
+        planned = g.plan(g.parse_groups("[g1]\nwalk\n"), self.tmp, os.path.join(self.tmp, "R"), "S")
+        write(os.path.join(self.tmp, "hookshot-A", "mods", "OoT Character Select", "exefs", "E0.ips"), "PATCH")
+        seen = []
+        g.prepare(planned, self.tmp, say=lambda *_: None, restore=lambda f, dry: seen.append(
+            os.path.isfile(os.path.join(f, "mods", "OoT Character Select", "exefs", "E0.ips"))) or True)
+        self.assertEqual(seen[0], True)
+
 
 class StepsGroupTest(unittest.TestCase):
     """Steps files in a group (hs_steps.py through run.ps1 -Runtime hookshot)."""

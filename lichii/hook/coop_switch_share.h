@@ -20,6 +20,16 @@
 // open and its own movers move; when the presser's goes off it stops, and the switch's AI puts its own 0 back. A plug
 // that goes 1 while (or just after) we hold it for another player is not sent back (kEchoMs).
 //
+// Row 244 (two players on one switch): a game that holds a plug for another player cannot tell its own press from
+// its hold, so it sent nothing while it held. Two players pressing the same switch each held it for the other and
+// both went quiet; every third game let go after kRemoteHoldMs, both sent again after kEchoMs, and so on: the
+// switch went off and on every ~5 s in every other game (the DC moving ground's timer, the platform raise and its
+// camera ran again each time; piscesgamer97's log, 13 times "let go after 5.1 s held"). Now the game with the
+// lowest player number among the pressers keeps resending its own press while it holds (only a press it had sent
+// before: State::sent_on); the others stay quiet as before. One sender is always left, so the others' holds never
+// lapse; when that player steps off, its hold of the others lapses within kRemoteHoldMs (they are quiet), its plug
+// reads 0 and it sends off.
+//
 // Solo: no other player in the scene, nothing is sent; no SWITCH_STATE received, nothing is held. Reads only.
 // LICHII_COOP_SWITCH_SHARE=0 turns it off; =probe sends and logs but never sets. No emulator code
 // (tests/lichii/switch_share_test.cpp).
@@ -28,6 +38,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <set>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -77,10 +88,13 @@ public:
     void Forget(std::uint8_t player);
 
     // Present thread, each objects walk. `others_here`: another player is in our scene (else nothing is sent).
-    // Fills `send` (our presses) and returns what to hold; notes are log lines.
+    // `self`: our player number (0: not known yet). Fills `send` (our presses) and returns what to hold; notes are
+    // log lines. `away`: the players whose world stands still now (PLAYER_STATUS paused or loading: the pause or
+    // quick-switch menu, a load). Their presses are not held while so (row 164 follow-up): their own switch's timer
+    // stands still with their world, ours would run on held.
     std::vector<Hold> Tick(const std::string& scene, const std::vector<Seen>& seen, bool others_here,
-                           std::uint64_t now_ms, std::vector<coop::protocol::SwitchState>& send,
-                           std::vector<std::string>& notes);
+                           std::uint8_t self, std::uint64_t now_ms, std::vector<coop::protocol::SwitchState>& send,
+                           std::vector<std::string>& notes, const std::set<std::uint8_t>& away = {});
 
     void Clear();
 
@@ -98,6 +112,7 @@ private:
         bool told_held = false;
         bool told_sent = false;
         bool told_waiting = false;  // another player's is on, ours not armed yet (its guard flags)
+        bool told_lead = false;     // row 244: our press resent while we hold it for another (logged once a hold)
         // Seen::load_on at the switch's first sight since its room loaded. Forgotten after a walk without the switch
         // (its room unloaded or reloading) and replaced when the switch is another actor (a new load). Not by time:
         // a pause menu stops the walks mid-visit, and a later sight there is no load.
@@ -107,7 +122,7 @@ private:
         std::uint64_t held_since_ms = 0;  // for the log: how long we held it, how long our press lasted
         std::uint64_t pressed_since_ms = 0;
     };
-    bool RemoteOn(State& s, std::uint64_t now_ms);
+    bool RemoteOn(State& s, std::uint64_t now_ms, const std::set<std::uint8_t>& away);
 
     std::mutex mutex_;
     std::string scene_;

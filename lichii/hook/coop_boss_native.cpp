@@ -206,8 +206,18 @@ void Table::Publish(const std::vector<Boss>& bosses) {
                     e.react_until = std::max(e.react_until, steps_ + kStartSteps);
                     Note(b.name + ": made a copy during its own start (appear): it runs on, then the owner's state");
                 }
-                if (e.role == Role::copy && b.role == Role::owner && e.wanted && !b.plain && !OwnTime(e)) {
-                    if (actions_on_ && e.put_action && e.own_node != 0) {
+                const bool own_ask_same =
+                    e.put_action && e.own_asks.contains({e.put_action->slot, e.put_action->verb});
+                const MadeOurs plan = PlanMadeOurs(turns_, b.attacking, actions_on_ && e.put_action.has_value(),
+                                                   own_ask_same, e.own_node != 0);
+                if (e.role == Role::copy && b.role == Role::owner && e.wanted && !b.plain && !OwnTime(e) &&
+                    plan == MadeOurs::resume) {
+                    // Boss turns, condition (1): handed to us between moves. Its body runs the owner's move (not an
+                    // attack) and its own brain asked that same move, in the owner's brain verb: it goes on from here.
+                    Note(b.name + ": made ours between moves (verb " + std::to_string(e.put_action->verb) +
+                         ", no attack): its own AI goes on, nothing started over (boss turns)");
+                } else if (e.role == Role::copy && b.role == Role::owner && e.wanted && !b.plain && !OwnTime(e)) {
+                    if (plan == MadeOurs::restart_move) {
                         // Row 178: made ours in the middle of the owner's move (Phantom Ganon handed over mid
                         // RushAttack when his owner went down): that move starts over as ours through the game's
                         // own request, named by the node its own AI names for it (before ForgetOwnAsks below).
@@ -219,6 +229,11 @@ void Table::Publish(const std::vector<Boss>& bosses) {
                         e.restart_action = again;
                         Note(b.name + ": made ours mid-move: its move (slot " + std::to_string(again.slot) +
                              " verb " + std::to_string(again.verb) + ") starts over as ours (row 178)");
+                    } else if (turns_ && e.put_action && b.attacking.has_value() && !*b.attacking) {
+                        // Row 325: mid-move, but no attack: its own cycle goes on from its body, nothing started over.
+                        e.rechoose = true;
+                        Note(b.name + ": made ours mid-move (verb " + std::to_string(e.put_action->verb) +
+                             ", no attack): its AI chooses again from its body, nothing started over (row 325)");
                     } else {
                         e.rechoose = true;
                         Note(b.name + ": its AI did not run its body as a copy: it chooses again");
@@ -227,6 +242,7 @@ void Table::Publish(const std::vector<Boss>& bosses) {
                 e.hold_since = steps_;
                 e.hold_asks = 0;
                 e.hold_rechoices = 0;
+                e.stall_rechoices = 0;  // (another game's turn since: judged anew)
                 ForgetOwnAsks(e);  // (row 177 review: learnt again as a copy from its own asks)
                 if (b.role == Role::copy) {
                     e.restart_action.reset();
@@ -291,9 +307,27 @@ void Table::Publish(const std::vector<Boss>& bosses) {
             }
             e.dying = b.own_death;
         } else {
-            e.dying = Dying(b.name);
+            // Probe 3 run 20261123-092928: Twinrova's sisters died here (life 0, their owner's death) mid-fight, no
+            // outro: their copies' own death flow (which starts the fusion event in the game that runs it) was
+            // skipped as any copy change, so neither game fused. A dead body runs its own death, as a plain enemy.
+            const bool was_dying = e.dying;
+            e.body_dead = b.own_death;
+            e.dying = Dying(b.name) || e.body_dead;
             if (e.dying && b.role == Role::copy) {
-                AddDyingLife(b.life_component);
+                if (Dying(b.name)) {
+                    AddDyingLife(b.life_component);  // (the outro's: its next step ends it. A dead body's Life is
+                                                     // free already, its owner's death released it: one that comes
+                                                     // back, a Bongo Bongo hand, a Stalfos, is held again)
+                }
+                if (!was_dying && e.body_dead) {
+                    if (e.wanted && !event_ && steps_ >= e.react_until) {
+                        MakeLate(e);  // its death's first changes, skipped a moment ago
+                    }
+                    ++counts_.body_deaths;
+                    Note(b.name + ": dead here (its life 0 or its owner's death): the copy runs all its own from now on");
+                }
+            } else if (was_dying && !e.dying && b.role == Role::copy) {
+                e.react_until = std::max(e.react_until, steps_ + kAfterEventSteps);  // (a part back from life 0)
             }
             if (b.role == Role::owner) {
                 Hold(e, b);
@@ -345,10 +379,21 @@ void Table::Hold(Entry& e, const Boss& b) {
         e.hold_brain = e.mine.brain_verb;
         e.hold_action = action;
         e.hold_life = b.life;
-        e.hold_rechoices = 0;
+        if (e.stall_rechoices != 0 && b.life != e.stall_life) {
+            e.stall_rechoices = 0;  // a hit since: its fight goes on, nothing stuck is remembered
+        }
+        // Back in the move it was re-chosen out of (the re-choice's own short move between): the count goes on.
+        const bool stuck_again = e.stall_rechoices != 0 && b.animation == e.stall_animation &&
+                                 e.mine.brain_verb == e.stall_brain && action == e.stall_action;
+        e.hold_rechoices = stuck_again ? e.stall_rechoices : 0;
     }
-    if (!same || event_ || e.dying || !StallJudged(b.animation, b.life)) {
-        // A new move, or none to judge (our event's, its death's, a cutscene's, nothing read): counted from now.
+    if (b.life) {
+        e.hit = e.hit || (e.top_life && *b.life < *e.top_life);
+        e.top_life = std::max(e.top_life.value_or(*b.life), *b.life);
+    }
+    if (!same || event_ || e.dying || (NotBegun(b.name) && !e.hit) || !StallJudged(b.animation, b.life)) {
+        // A new move, or none to judge (our event's, its death's, a cutscene's, its wait before the fight, nothing
+        // read): counted from now.
         e.hold_since = steps_;
         e.hold_asks = 0;
         return;
@@ -357,6 +402,11 @@ void Table::Hold(Entry& e, const Boss& b) {
         return;
     }
     ++e.hold_rechoices;
+    e.stall_animation = e.hold_animation;
+    e.stall_brain = e.hold_brain;
+    e.stall_action = e.hold_action;
+    e.stall_life = e.hold_life;
+    e.stall_rechoices = e.hold_rechoices;
     e.hold_since = steps_;
     e.hold_asks = 0;
     e.rechoose = true;
@@ -437,11 +487,7 @@ std::int32_t Table::HeldLifeStep(std::uint64_t component, std::int32_t life, std
 }
 
 bool Table::OnBrainVerb(std::uint64_t bsa, std::int32_t verb, bool force, bool own) {
-    std::unique_lock lock(mutex_, std::try_to_lock);
-    if (!lock.owns_lock()) {
-        ++counts_.busy;  // (racy count, for the log only)
-        return false;
-    }
+    std::lock_guard lock(mutex_);  // (waits: see the header, "The wraps")
     if (!brain_on_) {
         return false;
     }
@@ -477,11 +523,7 @@ bool Table::OnBrainVerb(std::uint64_t bsa, std::int32_t verb, bool force, bool o
 }
 
 bool Table::OnActionVerb(std::uint64_t bsa, const Request& request, bool changed, bool own) {
-    std::unique_lock lock(mutex_, std::try_to_lock);
-    if (!lock.owns_lock()) {
-        ++counts_.busy;
-        return false;
-    }
+    std::lock_guard lock(mutex_);  // (waits: see the header, "The wraps")
     if (!actions_on_) {
         return false;
     }
@@ -609,6 +651,15 @@ void Table::AddDyingLife(std::uint64_t component) {
     }
 }
 
+bool Table::NotBegun(std::string_view name) const {
+    return std::find(not_begun_.begin(), not_begun_.end(), name) != not_begun_.end();
+}
+
+void Table::SetNotBegun(std::vector<std::string> bodies) {
+    std::lock_guard lock(mutex_);
+    not_begun_ = std::move(bodies);
+}
+
 void Table::SetDying(std::vector<std::string> bodies) {
     std::lock_guard lock(mutex_);
     if (bodies == dying_) {
@@ -621,7 +672,7 @@ void Table::SetDying(std::vector<std::string> bodies) {
         }
     }
     for (auto& [bsa, e] : by_bsa_) {
-        const bool now = Dying(e.name);
+        const bool now = Dying(e.name) || e.body_dead;
         if (e.plain || now == e.dying) {
             continue;  // (a plain enemy's death is Publish's own_death)
         }
@@ -777,7 +828,19 @@ bool Table::RunsOwnMoveWhenOurs(std::uint64_t actor) const {
 bool Table::KeepsLinkAsAttacker(std::uint64_t actor) const {
     std::lock_guard lock(mutex_);
     const Entry* e = FindActor(actor);
+    // Every boss keeps our Link (row 178: a puppet in its memory held its attacks; with boss turns every boss
+    // fights only the Player of the game it runs in, and the server's turn aggro counts every player's hits).
     return e != nullptr && !e->plain;
+}
+
+void Table::SetTurns(bool on) {
+    std::lock_guard lock(mutex_);
+    turns_ = on;
+}
+
+bool Table::TurnsOn() const {
+    std::lock_guard lock(mutex_);
+    return turns_;
 }
 
 bool Table::OutOfReach(std::uint64_t actor, const HitGuard& guard) const {
@@ -805,7 +868,11 @@ bool Table::FightsPlayerOnly(std::string_view name) {
 std::optional<std::string> Table::PlayerOnlyBoss() const {
     std::lock_guard lock(mutex_);
     for (const auto& [bsa, e] : by_bsa_) {
-        if (!e.plain && !e.dying && FightsPlayerOnly(e.name)) {
+        // Boss turns (review-charsel-0118 M1): with turns on EVERY boss fights the Player only. A boss whose own
+        // perception picked a puppet never attacks (the attack permission is the Player's), so it would never reach
+        // an attack end and never take a turn. Puppets unseen, each game's boss fights that game's own Link; the
+        // turns hand it to each player in turn.
+        if (!e.plain && !e.dying && (turns_ || FightsPlayerOnly(e.name))) {
             return e.name;
         }
     }
@@ -900,8 +967,8 @@ bool Table::CopyMakes(std::string_view maker) {
     if (maker.empty()) {
         return false;
     }
-    std::unique_lock lock(mutex_, std::try_to_lock);
-    if (!lock.owns_lock() || !brain_on_) {
+    std::lock_guard lock(mutex_);  // (waits: see the header, "The wraps")
+    if (!brain_on_) {
         return false;
     }
     for (const auto& [bsa, e] : by_bsa_) {
@@ -1106,6 +1173,9 @@ bool Table::StepOne(CoopPuppet::Guest& guest, std::uint64_t bsa, Entry& e, std::
             return true;
         }
         const BossAction& action = std::get<BossAction>(d.change.what);
+        if (e.busy_step == steps_) {
+            break;  // row 211: its slot is busy this frame: asked again next frame
+        }
         if (e.own_node == 0) {
             ++counts_.action_waiting;  // (asked again next frame; the changes after it wait too)
             break;
@@ -1199,14 +1269,36 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
             ++counts_.brain_applied;
             Made(true);
             break;
-        case Pending::action:
+        case Pending::action: {
+            NoteAnswer("the owner's move", result, true);
+            Entry* e = Find(pending_bsa_);
+            if (e != nullptr && result == addr::kActionSlotBusy && e->taken_step != steps_ &&
+                e->busy_asks < kBusyAsks) {
+                // Row 211: the copy's own request took the slot this frame, not one of ours: ours next frame.
+                ++e->busy_asks;
+                e->busy_step = steps_;
+                ++counts_.action_busy_again;
+                Made(false);
+                break;
+            }
+            if (e != nullptr) {
+                e->busy_asks = 0;
+                if (result == addr::kActionTaken) {
+                    e->taken_step = steps_;
+                }
+            }
             ++counts_.action_applied;
             Made(true);
             break;
-        case Pending::late:
+        }
+        case Pending::late: {
             ++counts_.copy_own_late;
+            const Entry* e = Find(pending_bsa_);
+            NoteAnswer("its own move made late", result,
+                       e != nullptr && !e->own_late.empty() && std::holds_alternative<BossAction>(e->own_late.front()));
             Made(true);
             break;
+        }
         case Pending::rechoose:
             if (Entry* e = Find(std::exchange(pending_bsa_, 0)); e != nullptr && e->role == Role::owner) {
                 e->rechoose = false;
@@ -1214,6 +1306,7 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
             }
             break;
         case Pending::restart:
+            NoteAnswer("its move started over as ours", result, true);
             if (Entry* e = Find(std::exchange(pending_bsa_, 0)); e != nullptr && e->role == Role::owner) {
                 e->restart_action.reset();
                 ++counts_.owner_restarted;
@@ -1252,6 +1345,21 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
         }
     }
     return std::nullopt;
+}
+
+void Table::NoteAnswer(const char* what, std::uint64_t result, bool is_action) {
+    // (the lock is held; pending_bsa_ still names the boss) Only the action request has an answer (the brain
+    // verb's x0 is not one).
+    if (!is_action || result == addr::kActionTaken) {
+        return;
+    }
+    const bool busy = result == addr::kActionSlotBusy;
+    std::uint64_t& n = busy ? counts_.action_slot_busy : counts_.action_refused;
+    if (++n <= 8) {
+        const Entry* e = Find(pending_bsa_);
+        Note((e != nullptr ? e->name : std::string("a boss")) + ": " + what + " was not taken by the game (" +
+             std::to_string(result) + (busy ? ": its slot had taken a request this frame)" : ")"));
+    }
 }
 
 void Table::Made(bool made) {
@@ -1356,6 +1464,7 @@ void Table::Reset() {
     for (auto& slot : held_life_) {
         slot.store(0, std::memory_order_relaxed);
     }
+    not_begun_.clear();
     dying_.clear();
     shot_ends_.clear();
     stream_notes_ = 0;

@@ -776,3 +776,20 @@ TEST_CASE("teleport: no teleport to a Link of the other age in a place of both a
     REQUIRE(same.Start(2, "Nabooru", here, 0).ask);
     CHECK(same.Accepted(2, Target("SpiritTemple", 5, 1, 6), here, kS, proto::Age::child).move);
 }
+
+TEST_CASE("teleport: IsKnownScene is exact and ScenesLike completes a name given without its age") {
+    CHECK(CoopTeleport::IsKnownScene("Market_Child"));
+    CHECK(CoopTeleport::IsKnownScene("Market_Adult"));
+    CHECK(CoopTeleport::IsKnownScene("InsideTheDekuTree"));
+    CHECK(CoopTeleport::IsKnownScene("BossRushIntervalRoom"));
+    CHECK_FALSE(CoopTeleport::IsKnownScene("Market"));
+    CHECK_FALSE(CoopTeleport::IsKnownScene("market_child"));
+    CHECK_FALSE(CoopTeleport::IsKnownScene(""));
+    const auto like = CoopTeleport::ScenesLike("Market");
+    REQUIRE(like.size() == 2);
+    CHECK(like[0] == "Market_Adult");
+    CHECK(like[1] == "Market_Child");
+    CHECK(CoopTeleport::ScenesLike("Nothing").empty());
+    CHECK(CoopTeleport::ScenesLike("").empty());
+    CHECK(CoopTeleport::ScenesLike("Zora", 3).size() == 3);  // capped
+}

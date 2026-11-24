@@ -47,6 +47,11 @@ void SetMaxLife(std::optional<std::int32_t> quarters);
 // life to that max), so the game stops writing the higher max back. Nothing: no hold (the usual case, and always
 // with co-op idle).
 void SetMaxLifeLowerTo(std::optional<std::int32_t> quarters);
+// Row 238: our Link's own max the walk saw at or under the lower-to value (by lowering it or because it was), once;
+// the flag watcher's hold waits for this, and only a value at or under ITS value counts, before it ends by its quiet
+// time, so a join's or a host's save's lower MaxLife reaches Link even when his component never wrote the higher max
+// back, and an answer for an earlier, higher hold does not end a later one's wait.
+std::optional<std::int32_t> TakeMaxLifeLowerDone();
 // Our Link's hearts filled to his maximum once, on his next read (another player took the boss's heart
 // container, whose pickup fills them: CoopBossScenes::Actions::refill). Any thread.
 void AskRefill();
@@ -81,6 +86,11 @@ inline constexpr std::size_t kPvpKindWords = 11;
 // stays not taken (docs/native-puppets.md 5.5). `quarters` 0: a no-life kind, the game's hit only. Any thread.
 void HurtOurLinkNative(std::int32_t quarters, const std::array<float, 3>& at, const std::array<float, 3>& from,
                        const std::array<std::uint32_t, kPvpKindWords>& kind);
+// Row 230: our own Link's Life step (patch 0007 LIFE_STEP, hookshot/src/coop_hookshot.cpp) saw a new hit id on it,
+// with its incoming hit record (+0x240..+0x2d8, CoopHitReplay::Record) and the frame's damage sum. The step sets and
+// clears our Link's hit id inside one frame, so the walk can never read it there; the next walk takes these.
+// The record's +0x240 word is the hit's sensor, not an actor: the attacker is found by its place (+0x2a0). Any thread.
+void NoteOurLinkStepHit(std::uint32_t id, const std::array<std::uint32_t, 0x98 / 4>& record, std::int32_t sum);
 // Phase 4, every other screen (PVP_RESULT): the landed kind replayed on our `_Pvp` copy `actor` of the victim
 // (CoopPuppet::Director::LivePvpActor), as protocol 14 replays a hit on an enemy copy: its invincible Life shows
 // flash, sparks and sound, nothing is taken. Any thread.

@@ -12,6 +12,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <string>
+#include <vector>
 
 namespace CoopDifficulty {
 namespace {
@@ -173,6 +175,86 @@ std::optional<Choice> ParseChoice(std::string_view text) {
     }
     if (!any || !proto::valid_difficulty(c.custom)) {
         return std::nullopt;
+    }
+    return c;
+}
+
+namespace {
+
+// One value of /difficulty custom: a whole percent on the slider's marks, within its ends.
+std::optional<std::uint16_t> SliderValue(std::string_view s, std::uint16_t least, std::uint16_t most) {
+    const auto v = Percent(s.size() > 1 && s.back() == '%' ? s.substr(0, s.size() - 1) : s);
+    if (!v || *v < least || *v > most || *v % proto::kDifficultyStep != 0) {
+        return std::nullopt;
+    }
+    return v;
+}
+
+std::string LowerWord(std::string_view s) {
+    std::string out(s);
+    for (char& c : out) {
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+std::optional<Command> ParseCommand(std::string_view text) {
+    constexpr std::string_view kWord = "/difficulty";
+    std::string_view t = Trimmed(text);
+    if (t.size() < kWord.size() || LowerWord(t.substr(0, kWord.size())) != kWord) {
+        return std::nullopt;
+    }
+    t.remove_prefix(kWord.size());
+    if (!t.empty() && t.front() != ' ' && t.front() != '\t') {
+        return std::nullopt;  // "/difficultyx": not ours, sent as chat
+    }
+    std::vector<std::string> words;
+    for (t = Trimmed(t); !t.empty(); t = Trimmed(t)) {
+        const auto space = t.find_first_of(" \t");
+        words.push_back(LowerWord(t.substr(0, space)));
+        t = space == std::string_view::npos ? std::string_view{} : t.substr(space);
+    }
+    Command c;
+    if (words.empty()) {
+        return c;  // show
+    }
+    c.kind = Command::Kind::bad;
+    if (words.size() == 1 && (words[0] == "auto" || words[0] == "automatic")) {
+        c.kind = Command::Kind::change;
+        c.auto_scale = true;
+        return c;
+    }
+    for (std::size_t i = 0; i + 1 < kPresetKeys.size(); ++i) {   // (easy, normal, hard; custom takes values)
+        if (words.size() == 1 && words[0] == kPresetKeys[i]) {
+            c.kind = Command::Kind::change;
+            c.preset = static_cast<Preset>(i);
+            return c;
+        }
+    }
+    if (words.size() == 4 && words[0] == "custom") {
+        const auto hp = SliderValue(words[1], proto::kMinHpPct, proto::kMaxHpPct);
+        const auto damage = SliderValue(words[2], proto::kMinDamagePct, proto::kMaxDamagePct);
+        const auto count = SliderValue(words[3], proto::kMinCountPct, proto::kMaxCountPct);
+        if (hp && damage && count) {
+            c.kind = Command::Kind::change;
+            c.preset = Preset::custom;
+            c.custom = proto::clamp_difficulty({*hp, *damage, *count});
+        }
+    }
+    return c;
+}
+
+Choice Applied(const Choice& now, const Command& change) {
+    if (change.auto_scale) {
+        return WithAuto(now, true);
+    }
+    Choice c = WithPreset(now, change.preset);
+    if (change.preset == Preset::custom) {
+        c.custom = change.custom;
     }
     return c;
 }
@@ -523,9 +605,20 @@ bool ScalesAsBoss(std::string_view name) {
     return rule != nullptr && (rule->why == "boss" || rule->why == "mini-boss");
 }
 
+namespace {
+// A placement hash our baked table does not have: a mod added it (OOTRR Difficulty), so it is never folded by kind
+// either: the mod already scaled it (ootrr-diff-compat D1). Hash 0 and all ones are made actors, not placements.
+bool ModAdded(std::uint64_t hash) {
+    return hash != 0 && hash != ~std::uint64_t{0} && !AreaOf(hash).has_value();
+}
+}  // namespace
+
 Kind AttackerKind(std::string_view name, std::uint64_t hash, bool no_spot) {
     if (ScalesAsBoss(name)) {
         return Kind::boss;
+    }
+    if (ModAdded(hash)) {
+        return Kind::enemy;
     }
     return no_spot || TreatmentOf(name, hash) == Treatment::fold ? Kind::folded_enemy : Kind::enemy;
 }
@@ -533,6 +626,9 @@ Kind AttackerKind(std::string_view name, std::uint64_t hash, bool no_spot) {
 Kind LifeKind(std::string_view name, std::uint64_t hash, bool no_spot) {
     if (ScalesAsBoss(name)) {
         return Kind::boss_life;
+    }
+    if (ModAdded(hash)) {
+        return Kind::enemy_life;
     }
     return no_spot || TreatmentOf(name, hash) == Treatment::fold ? Kind::folded_enemy_life : Kind::enemy_life;
 }
@@ -721,9 +817,8 @@ std::size_t Extras::Plan(std::string_view scene, const std::vector<Original>& wa
         }
         const std::optional<Area> area = areas_ ? areas_(o.hash) : std::nullopt;
         if (!area) {
-            if (ExtraCount(o.hash, count_pct) > 0) {
-                no_spot_.insert(o.hash);  // no placement data: no ground known
-            }
+            // A placement our baked data lacks was added by a mod (OOTRR Difficulty: more enemies, hordes): its mod
+            // already scaled it, so it keeps its own weight: no copies, no fold (ootrr-diff-compat D1).
             continue;
         }
         auto plan = plans_.find(area->name);

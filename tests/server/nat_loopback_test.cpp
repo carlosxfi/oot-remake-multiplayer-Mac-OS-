@@ -161,6 +161,7 @@ struct World {
     jc.password = guest_password;
     jc.stun_servers = {stun.address()};
     jc.game_port = 0;
+    jc.bind = 0x7F000001u;  // (127.0.0.1 only)
     jc.direct_ms = probe ? 3000 : 0;
     jc.probe = probe;
     jc.on_answer = [this](const std::string& code) { answer = code; };
@@ -283,6 +284,7 @@ TEST_CASE("host service: the invite code holds this server's address and the pas
   std::vector<std::string> log;
   HostServiceConfig config;
   config.port = 0;
+  config.bind = 0x7F000001u;  // (127.0.0.1 only)
   config.session.join_password = make_password();
   config.invite = true;
   config.stun_servers = {stun.address()};
@@ -342,6 +344,7 @@ TEST_CASE("host service: no STUN answer, no invite code, and the status says why
   EnetLife enet;
   HostServiceConfig config;
   config.port = 0;
+  config.bind = 0x7F000001u;  // (127.0.0.1 only)
   config.session.join_password = make_password();
   config.invite = true;  // and no STUN server at all
   std::uint64_t now = 0;

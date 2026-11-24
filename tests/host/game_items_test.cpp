@@ -15,6 +15,7 @@
 #include "coop/host/game_items.hpp"
 #include "coop/protocol/codec.hpp"
 #include "fake_memory.hpp"
+#include "coop_personal_inventory.h"
 
 namespace {
 
@@ -396,8 +397,9 @@ TEST_CASE("game items: the store adds count deltas") {
   // A total is written as it came: the host's value is the truth.
   CHECK(store.write(i(kForestKeys, 4)));
   CHECK(keys(w) == 4);
-  // A delta on anything but a count, or a count the game lacks, is refused.
-  CHECK_FALSE(store.write(delta(kHookshot, 1)));
+  // A delta on anything but a count, or a count the game lacks, is refused; a max-rule int (the Hookshot's stock)
+  // takes a gain only (row 218, heart containers), never a lowering.
+  CHECK_FALSE(store.write(delta(kHookshot, -1)));
   CHECK_FALSE(store.write(delta(kWorldInt, 1)));
   CHECK_FALSE(store.write(delta(kGoldTokens, 1)));  // not in this fake game
   CHECK(store.stats().refused == 3);
@@ -1837,4 +1839,49 @@ TEST_CASE("items: a spoiled trade item's retry and the timers follow the item (r
   claim.hold("Item_ClaimCheck");
   CHECK(claim.raise("Step10") == step_hash("Step11"));
   CHECK(claim.raise("Step09_01") == step_hash("Step11"));
+}
+
+TEST_CASE("A co-op profile restores personal counts into a copy of the host save") {
+    using namespace CoopPersonalInventory;
+    std::vector<std::uint8_t> host(0x20);
+    auto put = [](auto& bytes, std::size_t at, std::uint32_t word) {
+        for (unsigned i = 0; i < 4; ++i) bytes[at + i] = static_cast<std::uint8_t>(word >> (8 * i));
+    };
+    auto append = [&](std::uint32_t hash, std::uint32_t value) {
+        const auto at = host.size();
+        host.resize(at + 8);
+        put(host, at, hash);
+        put(host, at + 4, value);
+    };
+    put(host, 0, 0x01020304);
+    std::size_t seeds = 0;
+    std::size_t shared = 0;
+    for (unsigned type = 0; type <= 0x20; ++type) {
+        append(0, type);
+        if (type != 2) continue;
+        seeds = host.size() + 4;
+        for (const auto hash : stock) append(hash, 30);
+        for (const auto hash : capacity) append(hash, 30);
+        shared = host.size() + 4;
+        append(0xfbe01da1, 4);
+    }
+    append(0, 0);
+    put(host, 8, static_cast<std::uint32_t>(host.size()));
+
+    auto guest = host;
+    const Counts profile{29, 0, 41, 1, 2, 3};
+    Counts applied{};
+    REQUIRE(Restore(guest, profile, &applied));
+    CHECK((applied == Counts{29, 0, 30, 1, 2, 3}));
+    CHECK(host[seeds] == 30);
+    CHECK(guest[seeds] == 29);
+    CHECK(guest[seeds + 8] == 0);
+    CHECK(guest[seeds + 16] == 30);
+    CHECK(guest[shared] == 4);
+
+    // A missing personal field prevents any changes to the snapshot.
+    put(host, seeds - 4, 0x12345678);
+    guest = host;
+    CHECK_FALSE(Restore(guest, profile));
+    CHECK(guest == host);
 }

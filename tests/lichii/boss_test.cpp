@@ -1106,12 +1106,65 @@ TEST_CASE("boss: a late joiner is ready once its boss leaves the pre-battle phas
     CHECK_FALSE(r.Step(1, false, std::nullopt));
 }
 
+TEST_CASE("boss: never ready while our game plays the intro, whatever the flag says (row 244)") {
+    // piscesgamer97 0.11.9, public lobby: a player who skipped the intro fought a King Dodongo held in his pit by an
+    // owner still watching it. A save that saw the intro before (or a game asked to play it again with the others)
+    // has HavePlayedEvent set already: by the flag alone, ready in the middle of the intro.
+    CoopBoss::Readiness r;
+    CHECK_FALSE(r.Step(1, true, std::nullopt, true));
+    CHECK_FALSE(r.Step(1, true, false, true));
+    CHECK(r.Step(1, true, false, false));  // the intro is over: ready by the flag again
+    // Gohma's intro animations leave her pre-battle pose: in the intro that is no fight (no latch, no news).
+    CoopBoss::Readiness g;
+    CHECK_FALSE(g.Step(0, false, true));
+    CHECK_FALSE(g.Step(0, false, false, true));
+    CHECK_FALSE(g.TakeFoughtNews());
+    CHECK(g.Step(0, false, false));  // after the intro, out of the pose: the fight
+    CHECK(g.TakeFoughtNews());
+    // Seen pre-battle during the intro still counts: out of it in the fight is ready.
+    CoopBoss::Readiness h;
+    CHECK_FALSE(h.Step(0, false, true, true));
+    CHECK(h.Step(0, false, false));
+    CHECK(h.TakeFoughtNews());
+}
+
+TEST_CASE("boss: our game is in the intro from its first event in the room to just after it (row 244)") {
+    Sync s;
+    CHECK_FALSE(s.InIntro(true, 0));  // not in a boss room
+    s.Tick(At("ForestTemple", Forest().arrive), 1 * kS);
+    CHECK_FALSE(s.InIntro(false, 1 * kS));
+    CHECK(s.InIntro(true, 1 * kS));  // waiting: this event is the intro at the next tick
+    s.Tick(At("ForestTemple", Forest().arrive, true), 2 * kS);
+    REQUIRE(s.phase() == Sync::Phase::intro);
+    CHECK(s.InIntro(true, 3 * kS));
+    s.Tick(At("ForestTemple", Forest().arrive, false), 20 * kS);
+    REQUIRE(s.phase() == Sync::Phase::fight);
+    CHECK_FALSE(s.InIntro(false, 21 * kS));
+    CHECK(s.InIntro(true, 21 * kS));         // the rest of it (Gohma's own BossAppear)
+    CHECK_FALSE(s.InIntro(true, 31 * kS));   // an event later in the fight (a grab, its death): no intro
+}
+
 TEST_CASE("boss: never seen pre-battle, a boss is ready by its intro flag only (boss-copy-b)") {
     CoopBoss::Readiness r;
     CHECK_FALSE(r.Step(3, false, false));  // no pre-battle animation known for it: the flag decides
     CHECK_FALSE(r.Step(3, false, false));
     CHECK(r.Step(3, true, false));
     CHECK(r.Step(3, std::nullopt, std::nullopt));  // flag not read: as before, not held back
+}
+
+TEST_CASE("boss: a late arrival is ready once its boss has lost life, with no pre-battle animation known (row 164 follow-up)") {
+    CoopBoss::Readiness r;
+    // King Dodongo (no pre-battle animation known): at full life the flag decides, as before.
+    CHECK_FALSE(r.Step(1, false, false, false, false));
+    CHECK_FALSE(r.Step(1, false, false, false, std::nullopt));
+    CHECK_FALSE(r.TakeFoughtNews());
+    // Life below its maximum: the fight is on, our copy follows it: ready, told once, kept.
+    CHECK(r.Step(1, false, false, false, true));
+    CHECK(r.TakeFoughtNews());
+    CHECK_FALSE(r.TakeFoughtNews());
+    CHECK(r.Step(1, false, false, false, false));  // a refill for its next phase: still ready
+    // Another room starts over.
+    CHECK_FALSE(r.Step(2, false, false, false, false));
 }
 
 TEST_CASE("boss: the boss gone with no reading at life 0 in an event is decided when it ends in the room (row 149)") {

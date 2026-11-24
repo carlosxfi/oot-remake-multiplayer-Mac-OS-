@@ -22,8 +22,14 @@
 #include "remote_peer.hpp"
 #ifdef __APPLE__
 #include "game_call.hpp"
+#include "world_function_bridge.hpp"
+#include "../../hookshot/src/hos_coop_bosses.h"
+#include "../../hookshot/src/hos_coop_sound.h"
 #include "../../hookshot/src/coop_pause_tab.h"
+#include "../../hookshot/src/hos_coop_boss_orders.h"
 #include "../../hookshot/src/hos_coop_draw.h"
+#include "../../hookshot/src/hos_coop_save_load.h"
+#include "../../hookshot/src/hos_coop_world.h"
 #include "multiplayer_menu.hpp"
 #include "../../lichii/hook/coop_colors.h"
 #include <filesystem>
@@ -153,6 +159,29 @@ bool write_code(std::uint64_t address, std::span<const std::uint8_t> bytes) {
   });
 }
 
+// Character Select occupies the original co-op caves through the end of
+// the text padding. Keep the entire range reserved when that mod is loaded.
+template<std::size_t Bytes>
+std::optional<std::uint64_t> find_hook_padding(std::uint64_t base, std::uint64_t preferred) {
+  constexpr std::uint64_t start = 0x3c461d0;  // Unpatched text end, build 1.1.1.
+  const auto end = std::getenv("COOP_NXNATIVE_CHARACTER_SELECT")
+      ? coop_nxnative::kCalcCaveOffset : 0x3c47000;
+  const auto free = [&](std::uint64_t offset) {
+    if (offset < start || offset + Bytes > end) return false;
+    std::array<std::uint32_t, Bytes / sizeof(std::uint32_t)> words{};
+    if (!read_at(base + offset, words)) return false;
+    for (const auto word : words) {
+      if (word != 0 && word != 0xd503201f) return false;
+    }
+    return true;
+  };
+  if (free(preferred)) return preferred;
+  for (auto offset = start; offset + Bytes <= end; offset += 8) {
+    if (free(offset)) return offset;
+  }
+  return std::nullopt;
+}
+
 bool install_puppet_guard(std::uint64_t base) {
   using namespace coop_nxnative;
   std::array<std::uint32_t, kPuppetGuardOriginal.size()> original{};
@@ -161,18 +190,35 @@ bool install_puppet_guard(std::uint64_t base) {
     return false;
   }
 
-  const auto cave = make_puppet_guard();
-  const auto hook = arm64_branch(kPuppetGuardSite, kPuppetGuardCave, false).value();
+  const auto offset = find_hook_padding<sizeof(make_puppet_guard())>(base, kPuppetGuardCave);
+  if (!offset) return false;
+  const auto cave = make_puppet_guard(*offset);
+  const auto hook = arm64_branch(kPuppetGuardSite, *offset, false).value();
   const auto code = [](const auto& value) {
     return std::span(reinterpret_cast<const std::uint8_t*>(&value), sizeof(value));
   };
-  if (!write_code(base + kPuppetGuardCave, code(cave)) ||
+  if (!write_code(base + *offset, code(cave)) ||
       !write_code(base + kPuppetGuardSite, code(hook))) {
     std::fprintf(stderr, "[coop-nxnative] puppet guard refused: could not install patch\n");
     return false;
   }
   std::fprintf(stderr, "[coop-nxnative] puppet guard installed (component chain)\n");
   return true;
+}
+
+bool install_bow_guard(std::uint64_t base) {
+  using namespace coop_nxnative;
+  std::array<std::uint32_t, kBowGuardOriginal.size()> original{};
+  if (!read_at(base + kBowGuardSite - 4, original) || original != kBowGuardOriginal) return false;
+  const auto offset = find_hook_padding<sizeof(make_bow_guard())>(base, kBowGuardCave);
+  if (!offset) return false;
+  const auto cave = make_bow_guard(*offset);
+  const auto hook = arm64_branch(kBowGuardSite, *offset, false).value();
+  const auto code = [](const auto& value) {
+    return std::span(reinterpret_cast<const std::uint8_t*>(&value), sizeof(value));
+  };
+  return write_code(base + *offset, code(cave)) &&
+      write_code(base + kBowGuardSite, code(hook));
 }
 
 bool install_calc_bridge(std::uint64_t base) {
@@ -182,11 +228,17 @@ bool install_calc_bridge(std::uint64_t base) {
     std::fprintf(stderr, "[coop-nxnative] calc bridge refused: game hook bytes do not match build 1.1.1\n");
     return false;
   }
+  const auto offset = find_hook_padding<sizeof(coop_nxnative::make_calc_cave(0))>(
+      base, coop_nxnative::kCalcCaveOffset);
+  if (!offset) {
+    std::fprintf(stderr, "[coop-nxnative] calc bridge refused: no free text padding\n");
+    return false;
+  }
   const auto cave = coop_nxnative::make_calc_cave(
-      reinterpret_cast<std::uint64_t>(&coop_nxnative_calc_frame));
+      reinterpret_cast<std::uint64_t>(&coop_nxnative_calc_frame), *offset);
   const auto hook = coop_nxnative::arm64_branch(
-      coop_nxnative::kCalcHookOffset, coop_nxnative::kCalcCaveOffset, true);
-  if (!hook || !write_code(base + coop_nxnative::kCalcCaveOffset, cave)) {
+      coop_nxnative::kCalcHookOffset, *offset, true);
+  if (!hook || !write_code(base + *offset, cave)) {
     std::fprintf(stderr, "[coop-nxnative] calc bridge refused: could not install its code cave\n");
     return false;
   }
@@ -359,6 +411,167 @@ bool install_native_pause_menu(void* module, std::uint64_t base, RegisterPad reg
   return true;
 }
 
+// Save sequence methods and Twinrova's receiver are reached through their
+// vtables. Direct calls by the module still reach the original game methods.
+using WorldMethod = std::uint64_t (*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
+                                      std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
+
+struct WorldSlot {
+  unsigned id;
+  std::uint64_t table;
+  unsigned slot;
+  std::uint64_t original;
+};
+
+constexpr std::array kSaveWorldSlots{
+    WorldSlot{HOS_COOP_WRAP_SAVE_LOADED, 0x4bb4558, 39, 0x32d8690},
+    WorldSlot{HOS_COOP_WRAP_SAVE_LOAD_START, 0x4ba6cf8, 29, 0x32c1db0},
+    WorldSlot{HOS_COOP_WRAP_TEMP_LOAD_START, 0x4ba6e40, 29, 0x32c2080},
+    WorldSlot{HOS_COOP_WRAP_GAME_OVER_SAVE, 0x4ba4a28, 29, 0x32bbce0},
+};
+constexpr WorldSlot kBossOrderSlot{HOS_COOP_WRAP_BOSS_ORDER, 0x49a8568, 39, 0x2723f80};
+
+std::array<std::atomic<WorldMethod>, HOS_COOP_WRAP_BOSS_ORDER + 1> original_world_methods{};
+std::atomic<hos_coop_wrap_fn> world_method_event{nullptr};
+std::atomic<std::uint64_t> enabled_world_methods{0};
+
+template<unsigned Id>
+std::uint64_t dispatch_world_method(std::uint64_t x0, std::uint64_t x1, std::uint64_t x2, std::uint64_t x3,
+                                    std::uint64_t x4, std::uint64_t x5, std::uint64_t x6, std::uint64_t x7) {
+  const auto original = original_world_methods[Id].load(std::memory_order_acquire);
+  if (enabled_world_methods.load(std::memory_order_acquire) & (std::uint64_t{1} << Id)) {
+    const auto wrap = world_method_event.load(std::memory_order_relaxed);
+    std::array<std::uint64_t, 32> registers{x0, x1, x2, x3, x4, x5, x6, x7};
+    if (wrap(Id, 0, registers.data(), &shared_api)) return registers[0];
+  }
+  return original(x0, x1, x2, x3, x4, x5, x6, x7);
+}
+
+std::uint64_t install_world_slots(std::uint64_t base, std::span<const WorldSlot> slots,
+                                  std::span<const WorldMethod> wrappers) {
+  const auto address = [base](const WorldSlot& s) { return base + s.table + s.slot * sizeof(std::uint64_t); };
+  for (const auto& s : slots) {
+    std::uint64_t current = 0;
+    if (!read_at(address(s), current) || current != base + s.original) return 0;
+    original_world_methods[s.id].store(reinterpret_cast<WorldMethod>(current), std::memory_order_release);
+  }
+
+  std::uint64_t mask = 0;
+  for (std::size_t i = 0; i < slots.size(); ++i) {
+    if (!with_writable_alias(address(slots[i]), sizeof(std::uint64_t), [&](void* alias) {
+      __atomic_store_n(static_cast<std::uint64_t*>(alias),
+                       reinterpret_cast<std::uint64_t>(wrappers[i]), __ATOMIC_RELEASE);
+    })) return 0;  // A partially installed group still forwards to the game.
+    mask |= std::uint64_t{1} << slots[i].id;
+  }
+  return mask;
+}
+
+struct WorldFunction {
+  unsigned id;
+  std::uint64_t offset;
+  std::array<std::uint32_t, 4> instructions;
+};
+
+constexpr std::array kWorldFunctions{
+    WorldFunction{HOS_COOP_WRAP_FLAG_APPLY, 0xb99980, {0xd503237f, 0xd10243ff, 0xfd0013e8, 0xa9037bfd}},
+    WorldFunction{HOS_COOP_WRAP_TIME_SET, 0xeee640, {0xd503237f, 0xa9bd7bfd, 0xf9000bfc, 0xa9024ff4}},
+    WorldFunction{HOS_COOP_WRAP_EVENT_REQUEST, 0xd7a820, {0xb940b808, 0x37580808, 0xd503237f, 0xd10103ff}},
+    WorldFunction{HOS_COOP_WRAP_BRAIN_VERB, 0x6733b0, {0xd503237f, 0xa9bd7bfd, 0xf9000bf5, 0xa9024ff4}},
+    WorldFunction{HOS_COOP_WRAP_ACTION_VERB, 0xc08f0, {0xd503237f, 0xd10743ff, 0xa9187bfd, 0xf900cbfc}},
+    WorldFunction{HOS_COOP_WRAP_SOUND_EMIT, 0x440630, {0xd503237f, 0xa9bb7bfd, 0xa90167fa, 0xa9025ff8}},
+};
+
+using DirectWorldMethod = std::uint64_t (*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
+                                            std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
+                                            double, double, double, double, double, double, double, double);
+std::array<std::atomic<DirectWorldMethod>, kWorldFunctions.size()> original_world_functions{};
+
+template<std::size_t Index>
+std::uint64_t dispatch_world_function(std::uint64_t x0, std::uint64_t x1, std::uint64_t x2, std::uint64_t x3,
+                                      std::uint64_t x4, std::uint64_t x5, std::uint64_t x6, std::uint64_t x7,
+                                      double d0, double d1, double d2, double d3,
+                                      double d4, double d5, double d6, double d7) {
+  constexpr unsigned id = kWorldFunctions[Index].id;
+  const auto original = original_world_functions[Index].load(std::memory_order_acquire);
+  const auto wrap = (enabled_world_methods.load(std::memory_order_acquire) & (std::uint64_t{1} << id))
+      ? world_method_event.load(std::memory_order_relaxed) : nullptr;
+  std::array<std::uint64_t, 32> registers{x0, x1, x2, x3, x4, x5, x6, x7};
+  if (!wrap || !wrap(id, 0, registers.data(), &shared_api)) {
+    registers[0] = original(registers[0], registers[1], registers[2], registers[3],
+                            registers[4], registers[5], registers[6], registers[7], d0, d1, d2, d3, d4, d5, d6, d7);
+  }
+  if (wrap) wrap(id, 1, registers.data(), &shared_api);
+  return registers[0];
+}
+
+std::uint64_t install_world_functions(std::uint64_t base) {
+  using namespace coop_nxnative;
+  const char* enabled = std::getenv("COOP_NXNATIVE_WORLD_FUNCTIONS");
+  if (!enabled || std::strcmp(enabled, "1") != 0) return 0;
+  constexpr std::array<DirectWorldMethod, kWorldFunctions.size()> wrappers{
+      dispatch_world_function<0>, dispatch_world_function<1>, dispatch_world_function<2>,
+      dispatch_world_function<3>, dispatch_world_function<4>, dispatch_world_function<5>,
+  };
+
+  std::uint64_t mask = 0;
+  for (std::size_t i = 0; i < kWorldFunctions.size(); ++i) {
+    const auto& function = kWorldFunctions[i];
+    const auto offset = find_hook_padding<kWorldFunctionBytes>(base, kWorldFunctionCave + i * kWorldFunctionBytes);
+    if (!offset) continue;
+    const auto cave = *offset;
+    auto expected = function.instructions;
+    std::array<std::uint32_t, 4> actual{};
+    if (!read_at(base + function.offset, actual)) continue;
+    // nxnative may remove pointer-authentication instructions before loading.
+    for (std::size_t w = 0; w < actual.size(); ++w) {
+      if (expected[w] == 0xd503237f && actual[w] == 0xd503201f) expected[w] = actual[w];
+    }
+    if (actual != expected) continue;
+
+    const auto bytes = make_world_function_cave(cave, function.offset, actual.front(),
+                                                reinterpret_cast<std::uint64_t>(wrappers[i]));
+    const auto branch = arm64_branch(function.offset, cave, false);
+    if (!branch || !write_code(base + cave, bytes)) continue;
+    original_world_functions[i].store(reinterpret_cast<DirectWorldMethod>(base + cave + 16),
+                                     std::memory_order_release);
+    const auto entry = base + function.offset;
+    if (!with_writable_alias(entry, sizeof(*branch), [&](void* alias) {
+      __atomic_store_n(static_cast<std::uint32_t*>(alias), *branch, __ATOMIC_RELEASE);
+      sys_icache_invalidate(reinterpret_cast<void*>(entry), sizeof(*branch));
+    })) continue;
+    mask |= std::uint64_t{1} << function.id;
+  }
+  std::fprintf(stderr, "[coop-nxnative] direct world bridge mask %#llx\n",
+               static_cast<unsigned long long>(mask));
+  return mask;
+}
+
+void install_world_bridges(void* module, std::uint64_t base) {
+  const auto wrap = reinterpret_cast<hos_coop_wrap_fn>(dlsym(module, "hos_coop_wrap"));
+  const auto world = reinterpret_cast<hos_coop_world_fn>(dlsym(module, "hos_coop_world"));
+  if (!wrap || !world) return;
+  constexpr std::array<WorldMethod, 4> save_wrappers{
+      dispatch_world_method<HOS_COOP_WRAP_SAVE_LOADED>,
+      dispatch_world_method<HOS_COOP_WRAP_SAVE_LOAD_START>,
+      dispatch_world_method<HOS_COOP_WRAP_TEMP_LOAD_START>,
+      dispatch_world_method<HOS_COOP_WRAP_GAME_OVER_SAVE>,
+  };
+  constexpr std::array<WorldMethod, 1> boss_wrappers{dispatch_world_method<HOS_COOP_WRAP_BOSS_ORDER>};
+  const auto save_mask = install_world_slots(base, kSaveWorldSlots, save_wrappers);
+  const auto boss_mask = install_world_slots(base, std::span{&kBossOrderSlot, 1}, boss_wrappers);
+  const auto mask = save_mask | boss_mask | install_world_functions(base);
+  const bool enabled = mask && world(HOS_COOP_WORLD_HELLO, HOS_COOP_WORLD_VERSION, mask);
+  if (enabled) {
+    world_method_event.store(wrap, std::memory_order_relaxed);
+    enabled_world_methods.store(mask, std::memory_order_release);
+  }
+  std::fprintf(stderr, "[coop-nxnative] native save lifecycle bridge %s\n",
+               enabled && save_mask ? "installed" : "unavailable");
+  std::fprintf(stderr, "[coop-nxnative] Twinrova order bridge %s\n",
+               enabled && boss_mask ? "installed" : "unavailable");
+}
+
 bool start_shared_module(const char* path, std::uint64_t base) {
   const char* game_dir = std::getenv("COOP_NXNATIVE_SHARED_DIR");
   if (!game_dir || !*game_dir) {
@@ -426,6 +639,7 @@ bool start_shared_module(const char* path, std::uint64_t base) {
     std::fprintf(stderr, "[coop-nxnative] shared module start refused\n");
     return false;
   }
+  install_world_bridges(module, base);
   shared_frame.store(frame, std::memory_order_release);
   using SetCamera = void (*)(hos_coop_camera_wanted_fn, hos_coop_camera_fn);
   const auto set_camera = reinterpret_cast<SetCamera>(dlsym(RTLD_DEFAULT, "dm_coop_set_camera"));
@@ -839,6 +1053,11 @@ void probe() {
       calc_bridge_installed = install_calc_bridge(base);
       if (calc_bridge_installed && std::getenv("COOP_NXNATIVE_PUPPET_PREFLIGHT")) {
         const bool guarded = install_puppet_guard(base);
+        if (guarded) {
+          const bool bow_guarded = install_bow_guard(base);
+          std::fprintf(stderr, "[coop-nxnative] puppet bow guard %s\n",
+                       bow_guarded ? "installed" : "unavailable");
+        }
 #ifdef COOP_NXNATIVE_NETWORK
         const char* spawn_test = std::getenv("COOP_NXNATIVE_SPAWN_TEST");
         if (want_shared) {

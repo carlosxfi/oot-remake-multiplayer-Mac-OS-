@@ -14,12 +14,14 @@
 namespace CoopCallerOrders {
 
 inline constexpr int kSpawn = 10;         // spawn copies (coop_spawn.cpp)
+inline constexpr int kShotReflect = 11;   // row 177: shots another player sent back (coop_spawn.cpp, coop_shot_reflect.h)
 inline constexpr int kFairy = 20;         // fairies (coop_fairy.h)
 inline constexpr int kMover = 30;         // the objects' mover (coop_objects.cpp)
 inline constexpr int kDrops = 40;         // drops, after the mover (coop_drops.cpp)
 inline constexpr int kGrass = 41;         // the others' field grass cuts (coop_objects.cpp, coop_world.h)
 inline constexpr int kTime = 42;          // the clock, after the objects (coop_time.cpp)
 inline constexpr int kBossTable = 45;     // after the drops, before the boss rooms (coop_boss_native.h)
+inline constexpr int kBossOrders = 46;    // row 222: the owner's battle manager orders into our copies (coop_boss_orders.h)
 inline constexpr int kLiftRide = 47;      // jabu-lifts #65 (coop_lift_ride.h)
 inline constexpr int kDbnoBody = 48;      // down but not out: our downed Link (coop_dbno_body.h)
 inline constexpr int kSwitchShare = 49;   // room-objects: another player's timed switch held on ours
@@ -35,11 +37,12 @@ inline constexpr int kOcarinaEquip = 66;  // rows 93/103: the shared ocarina's e
 inline constexpr int kPvpShield = 67;     // phase 4: the _Pvp copies' Life invincible (coop_objects.cpp)
 inline constexpr int kTestDress = 68;     // test only: `dress` asks the game's own equip for our Link (coop_hook.cpp)
 inline constexpr int kKeptShield = 69;    // row 160 (b): kept kills' copies held unhittable (coop_objects.cpp)
+inline constexpr int kLifeGauge = 70;     // row 238: HUD gauges refreshed after co-op life writes (coop_life_gauge.h)
 
-inline constexpr std::array kAll{kSpawn,     kFairy,       kMover,     kDrops,   kGrass,        kTime,
-                                 kBossTable, kLiftRide,    kDbnoBody,  kSwitchShare, kBossRooms, kEventResult, kEyeSwitch,
+inline constexpr std::array kAll{kSpawn,     kShotReflect, kFairy,       kMover,     kDrops,   kGrass,        kTime,
+                                 kBossTable, kBossOrders, kLiftRide,    kDbnoBody,  kSwitchShare, kBossRooms, kEventResult, kEyeSwitch,
                                  kLiveEvents, kTeleportEvent, kScrubs, kCounters, kStory,      kOcarinaEquip, kPvpShield,
-                                 kTestDress, kKeptShield};
+                                 kTestDress, kKeptShield, kLifeGauge};
 
 constexpr bool Unique() {
     for (std::size_t i = 0; i < kAll.size(); ++i) {

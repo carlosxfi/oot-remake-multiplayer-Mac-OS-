@@ -78,6 +78,15 @@ MoveCheck CheckMove(const CoopRooms::Table& rooms, std::string_view scene, const
 // Nothing for a scene we have no start point of.
 std::optional<std::string> NearestStart(std::string_view scene, const Vec& to);
 
+// Whether `scene` is a scene name the game has, as far as the code knows: every scene of coop_start_points.inc
+// (the entrance scenes) and the boss-rush interval room. Exact match, case and all. The test warp checks it before
+// it writes a scene into the game (a name the game does not have, such as "Market" for Market_Child, crashed a game
+// worker right after the load began, 2026-11-23). A scene the list lacks is a scene to add there, not to let through.
+bool IsKnownScene(std::string_view scene);
+// The known scenes that `name` is the start of (a name given without its age: "Market" gives Market_Adult and
+// Market_Child), for the "did you mean" of an error. At most `most`, in list order.
+std::vector<std::string> ScenesLike(std::string_view name, std::size_t most = 6);
+
 // The arrival event (BootEventName of Dm_SY_BancChangeGo) of the entrance at `start` in `scene`: the one the game's
 // own entrance there names (a few have their own, e.g. Kakariko's Dm_SY_BancChangeArrive_KakarikoVillage_01, as
 // Longshot's teleport table took them from the game), else the plain Dm_SY_BancChangeArrive.

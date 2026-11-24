@@ -1,14 +1,15 @@
 # Problem reports (docs/problem-reports.md): the co-op module's problems from the player's finished game sessions, masked
 # as collect-logs masks them (log-mask.ps1 Protect-LogText: addresses, MAC addresses, the user and PC names, invite codes,
 # passwords), players' names masked too, each problem in one report only, written as logs\coop-report-<date>.zip for the
-# player to send with the /report bot command. Nothing is sent from here: no webhook, no network. Windows only for now.
+# player to send with the /report bot command. Nothing is sent from here: no webhook, no network. Sending them, when the
+# player said yes, is problem-send.ps1's (it makes them with these functions).
 #
 # Opt-in, asked once: start.ps1 calls it with -AtStart, which asks the first time (default no) and remembers the answer in
 # logs\problem-reports.json; with yes, each start makes a zip when the sessions since the last one had a new problem.
 # problem-report.cmd (-Now) makes one at once, whatever the answer (the player asked for it); problem-report.cmd on (or
-# off) changes the answer.
+# off) changes the answer; off turns sending off too. problem-report.cmd send (or nosend) turns sending on or off.
 # Dot-source it for its functions (tools\release\tests\problem_report_test.ps1); run as a script for the above.
-param([Parameter(Position = 0)][ValidateSet('on', 'off')][string]$Turn, [switch]$AtStart, [switch]$Now)
+param([Parameter(Position = 0)][ValidateSet('on', 'off', 'send', 'nosend')][string]$Turn, [switch]$AtStart, [switch]$Now)
 
 # The module's problems: its own warnings and errors, lines that say something failed, was refused, gave up, timed out or
 # was lost, faults the guard caught, and crashes. The words are whole words, as the module writes them (lower case), so a
@@ -129,33 +130,59 @@ function Get-ProblemRunKey([System.IO.Stream]$Stream) {
     finally { $sha.Dispose() }
 }
 
+# The players' names a line gives where the module writes a name (Protect-ProblemNames' patterns), added to $Names.
+function Add-ProblemNames([string]$Line, [System.Collections.Generic.HashSet[string]]$Names) {
+    if ($Line.Contains('player ') -or $Line.Contains("name '")) { [void](Protect-ProblemNames $Line $Names) }
+}
+
+# The players' names in whole logs (the name lines only, nothing kept but the names): for text that is not a log line of
+# a session read now (a crash record after a session read before). A log that cannot be read is skipped.
+function Get-ProblemLogNames([string[]]$Logs, [System.Collections.Generic.HashSet[string]]$Names) {
+    foreach ($log in $Logs) {
+        try {
+            $stream = Open-ProblemLog $log
+            try {
+                $reader = New-Object System.IO.StreamReader($stream, (New-Object System.Text.UTF8Encoding $false), $true)
+                try { while ($null -ne ($line = $reader.ReadLine())) { Add-ProblemNames $line $Names } }
+                finally { $reader.Dispose() }
+            } finally { $stream.Dispose() }
+        } catch { }
+    }
+}
+
 # One session's log: its key and its problems, masked. A session in $Known is not read past its start (Events is $null);
-# the rest is read a line at a time.
+# the rest is read a line at a time. Players' names are masked once the whole session is read, with every name it gave
+# (a problem line before the player's join line too) and those in $Names (other sessions read now); the session's names
+# are added to $Names.
 function Read-ProblemRun([string]$Path, [hashtable]$Mask, [string]$UserName = $env:USERNAME,
-                         [string]$PcName = $env:COMPUTERNAME, [string[]]$Known = @()) {
+                         [string]$PcName = $env:COMPUTERNAME, [string[]]$Known = @(),
+                         [System.Collections.Generic.HashSet[string]]$Names = $null) {
+    if ($null -eq $Names) { $Names = New-Object 'System.Collections.Generic.HashSet[string]' }
     $stream = Open-ProblemLog $Path
     try {
         $key = Get-ProblemRunKey $stream
         if ($Known -contains $key) { return @{ Key = $key; Events = $null } }
-        $names = New-Object 'System.Collections.Generic.HashSet[string]'
-        $events = [ordered]@{}
+        $lines = [ordered]@{}   # each problem line once (address-masked), with its count
         $reader = New-Object System.IO.StreamReader($stream, (New-Object System.Text.UTF8Encoding $false), $true)
         $isProblem = $script:ProblemLineRx
         $isRoutine = $script:ProblemRoutineRx
         try {
             while ($null -ne ($line = $reader.ReadLine())) {
                 # (Test-ProblemLine, inline: a call a line is most of the time on a large log)
-                if (-not $isProblem.IsMatch($line) -or $isRoutine.IsMatch($line)) {
-                    if ($line.Contains('player ') -or $line.Contains("name '")) { [void](Protect-ProblemNames $line $names) }
-                    continue
-                }
-                $masked = Protect-ProblemNames (Protect-LogText $line.Trim() $Mask $UserName $PcName) $names
-                if (Test-ProblemHasAddress $masked) { continue }
-                $fp = Get-ProblemFingerprint $masked
-                if ($events.Contains($fp)) { $events[$fp].Count++ }
-                else { $events[$fp] = @{ Line = $masked.Substring(0, [Math]::Min(300, $masked.Length)); Count = 1 } }
+                if ($line.Contains('player ') -or $line.Contains("name '")) { [void](Protect-ProblemNames $line $Names) }
+                if (-not $isProblem.IsMatch($line) -or $isRoutine.IsMatch($line)) { continue }
+                $t = $line.Trim()
+                if ($lines.Contains($t)) { $lines[$t]++ } elseif ($lines.Count -lt 20000) { $lines[$t] = 1 }
             }
         } finally { $reader.Dispose() }
+        $events = [ordered]@{}
+        foreach ($t in $lines.Keys) {
+            $masked = Protect-ProblemNames (Protect-LogText $t $Mask $UserName $PcName) $Names
+            if (Test-ProblemHasAddress $masked) { continue }
+            $fp = Get-ProblemFingerprint $masked
+            if ($events.Contains($fp)) { $events[$fp].Count += $lines[$t] }
+            else { $events[$fp] = @{ Line = $masked.Substring(0, [Math]::Min(300, $masked.Length)); Count = $lines[$t] } }
+        }
         @{ Key = $key; Events = $events }
     } finally { $stream.Dispose() }
 }
@@ -163,14 +190,17 @@ function Read-ProblemRun([string]$Path, [hashtable]$Mask, [string]$UserName = $e
 # The new problems of the logs not read before, as a zip in $OutDir (coop-report-<date>.zip; the newest
 # $ProblemZipsKept are kept), or $null when there is none. A log that cannot be read is skipped (and tried again next
 # time); the others are still read. The state's runs and sent are brought up to date (the caller writes it).
+# $Names: the players' names met (filled; problem-send.ps1 masks the crash records with them).
 function New-ProblemReport([string[]]$Logs, [hashtable]$State, [string]$OutDir, [string]$Version = '',
-                           [string]$UserName = $env:USERNAME, [string]$PcName = $env:COMPUTERNAME) {
+                           [string]$UserName = $env:USERNAME, [string]$PcName = $env:COMPUTERNAME,
+                           [System.Collections.Generic.HashSet[string]]$Names = $null) {
+    if ($null -eq $Names) { $Names = New-Object 'System.Collections.Generic.HashSet[string]' }
     $mask = New-MaskState
     $new = [ordered]@{}
     $read = @()
     foreach ($log in $Logs) {
         if (-not (Test-Path -LiteralPath $log)) { continue }
-        try { $run = Read-ProblemRun $log $mask $UserName $PcName (@($State.runs) + $read) }
+        try { $run = Read-ProblemRun $log $mask $UserName $PcName (@($State.runs) + $read) $Names }
         catch { continue }
         if ($null -eq $run.Events) { continue }
         $read += $run.Key
@@ -188,7 +218,7 @@ function New-ProblemReport([string[]]$Logs, [hashtable]$State, [string]$OutDir, 
     try {
         $lines = @("Squadala! problem report: $($new.Count) new problem(s) from $($read.Count) session(s)",
             "Kit: $(Protect-LogText $Version $mask $UserName $PcName)",
-            'Addresses, names, codes and passwords are masked (as collect-logs masks them). Send with /report.', '')
+            'Addresses, names, codes and passwords are masked (as collect-logs masks them). Send with /bugreport.', '')
         foreach ($e in @($new.Values | Sort-Object { -$_.Count })) { $lines += ('{0}x {1}' -f $e.Count, $e.Line) }
         [System.IO.File]::WriteAllText((Join-Path $stage 'problem-report.txt'), ($lines -join "`r`n") + "`r`n",
             (New-Object System.Text.UTF8Encoding $false))
@@ -226,12 +256,18 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'kit-paths.ps1')
 $kit = if ($env:OOT_COOP_KIT) { $env:OOT_COOP_KIT } else { Split-Path -Parent $PSScriptRoot }
 $stateFile = Get-ProblemStateFile $kit
+if ($Turn -in 'send', 'nosend') { & (Join-Path $PSScriptRoot 'problem-send.ps1') $Turn; return }
+# (the lock problem-send.ps1 makes its reports under: a game's end may be making one now)
+$lock = New-Object System.Threading.Mutex($false, 'Local\SquadalaProblem-reports')
+try { [void]$lock.WaitOne(30000) } catch [System.Threading.AbandonedMutexException] { }
 $state = Read-ProblemState $stateFile
 if ($Turn) {
     $state.choice = $Turn
     Write-ProblemState $stateFile $state
     if ($Turn -eq 'on') { Write-Host 'Problem reports are on: each start makes one when your games had a new problem.' }
     else { Write-Host 'Problem reports are off. scripts\problem-report.cmd still makes one when you ask.' }
+    try { $lock.ReleaseMutex() } catch { }
+    if ($Turn -eq 'off') { & (Join-Path $PSScriptRoot 'problem-send.ps1') off }
     return
 }
 if (-not $state.choice) {
@@ -239,7 +275,7 @@ if (-not $state.choice) {
     if (-not $interactive) { return }
     Write-Host ''
     Write-Host 'Problem reports: after your games, the kit can put the co-op problems it finds in your logs into a small zip'
-    Write-Host 'for you to send with /report in the Squadala! Discord. Addresses, names and codes are masked; nothing is'
+    Write-Host 'for you to send with /bugreport in the Squadala! Discord. Addresses, names and codes are masked; nothing is'
     Write-Host 'sent by itself. Change it later with scripts\problem-report.cmd on (or off).'
     $answer = Read-Host 'Make problem reports? [y/N]'
     $state.choice = if ($answer -and $answer.Trim() -match '^(?i)(y|yes)$') { 'on' } else { 'off' }
@@ -248,11 +284,13 @@ if (-not $state.choice) {
 if ($AtStart -and $state.choice -ne 'on') { return }
 $version = ''
 try { $version = (Get-Content -LiteralPath (Join-Path $kit 'VERSION.txt') -TotalCount 1 -ErrorAction Stop) } catch { }
-$report = New-ProblemReport @(Get-ProblemLogs $kit) $state (Join-Path $kit 'logs') $version
-Write-ProblemState $stateFile $state
+try {
+    $report = New-ProblemReport @(Get-ProblemLogs $kit) $state (Join-Path $kit 'logs') $version
+    Write-ProblemState $stateFile $state
+} finally { try { $lock.ReleaseMutex() } catch { } }
 if ($report) {
     Write-Host "Problem report: $($report.Count) new problem(s) in $($report.Zip)"
-    Write-Host 'Send it with /report in the Squadala! Discord (addresses, names and codes are masked in it).'
+    Write-Host 'Send it with /bugreport in the Squadala! Discord (addresses, names and codes are masked in it).'
 } elseif ($Now) {
     Write-Host 'Problem report: no new problem in your game logs since the last report.'
 }

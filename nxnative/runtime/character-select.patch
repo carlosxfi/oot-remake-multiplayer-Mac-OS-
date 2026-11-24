@@ -1,0 +1,105 @@
+diff --git a/dm/tools/patch_nso.py b/dm/tools/patch_nso.py
+index 54a8009..1c544c7 100644
+--- a/dm/tools/patch_nso.py
++++ b/dm/tools/patch_nso.py
+@@ -36,6 +36,13 @@ src, outdir, NAME = sys.argv[1], sys.argv[2], sys.argv[3]
+ # An NSO, or an NRO (a module the game loads at run time with nn::ro, Super Smash Bros. Ultimate's fighter code), rewritten as an NSO of the same layout would be. nso.py checks the file
+ # against its header before anything is allocated (a damaged module stops here with a [RED] line)
+ MOD = nso.cli_read(src)
++CHARACTER_SELECT = os.environ.get('DM_COOP_CHARACTER_SELECT_IPS') if NAME == 'main' else None
++if CHARACTER_SELECT:
++    from character_select_ips import apply_ips
++    try:
++        MOD = apply_ips(MOD, CHARACTER_SELECT)
++    except (OSError, ValueError) as exc:
++        sys.exit(f'[RED] Character Select: {exc}')
+ bss = MOD.bss
+ # Every jump between the patch area and the code is a B (±128 MB). A patch area appended after the image (with bss) cannot reach the code when it would start beyond 112 MB (leaving 16 MB for the patch area): Metroid Dread's main has about 1.8 GB of bss (the engine's static heap); Engage's main starts its patch area at about 103 MB and keeps it after the image.
+ # The patch area then sits FRONT bytes before the module base (PATCH_OFF is negative), and the output file holds only text + ro + data (FILE_IMAGE_LEN) followed by the patch area; the loader supplies zero pages for bss and the key page (IMAGE_SIZE is the whole image).
+@@ -1916,6 +1923,7 @@ with open(P('fixups.tsv'), 'w') as f:
+         assert isinstance(STEP_MAX, int) and 1 <= STEP_MAX <= 3, f'frame step stub: ctx.step_max is a whole step, 1 to 3: {STEP_MAX!r}'
+         f.write(f'# STEP_MAX\t{STEP_MAX}\n')
+     if NAME == 'main':
++        if CHARACTER_SELECT: f.write('# COOP_CHARACTER_SELECT\t1\n')
+         for capability in sorted(set(PATCHES['CAPABILITIES'].get(BUILD_ID, ())) | FS_CAPABILITIES):
+             assert re.fullmatch(r'[A-Z][A-Z0-9_]*', capability), f'invalid capability {capability}'
+             f.write(f'# {capability}\t1\n')
+diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
+index 7e75e0f..509aea0 100755
+--- a/scripts/build_ipa_from_nsp.py
++++ b/scripts/build_ipa_from_nsp.py
+@@ -1651,7 +1651,15 @@ def rewrite(py, repo, exe_dir, out, env, logs, g, provisional=False):
+     # the repository profile's build rows decide which builds the rewriter treats as the game's own (SDK-wide function patches skip those), and its snowdrop_pools the sizes of those cuts, so they are inputs too
+     try: own = [l for l in (repo / 'dm/games' / Path(env.get('DM_GAME') or '-').name / 'game.tsv').read_text(encoding='utf-8').splitlines() if l.startswith(('build\t', 'snowdrop_pools\t'))]
+     except OSError: own = []
+-    key = fingerprint(('files', [repo / 'dm/tools' / f for f in ('patch_nso.py', 'jump_solver.py', 'nso.py', 'nso_code.py', 'nso_asm.py', 'nso_syms.py', 'nso_match.py', 'ue_cvar.py', 'ue_malloc.py', 'ue_region.py', 'ue_ring.py', 'snowdrop_pools.py', 'loader_census.py', 'fps_target.py', 'monolith_fps.py', 'ue_fixed_rate.py', 'unity_fps.py', 'unity_bucket.py')] + patch_files(repo, exe_dir, mods, env.get('DM_GAME')) + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
++    character_select = env.get('DM_COOP_CHARACTER_SELECT_IPS')
++    character_inputs = []
++    if character_select and 'main' in src:
++        patch = Path(character_select).resolve()
++        if not patch.is_file():
++            raise BuildError('Character Select IPS32 file is missing')
++        env = dict(env, DM_COOP_CHARACTER_SELECT_IPS=str(patch))
++        character_inputs = [patch, repo / 'dm/tools/character_select_ips.py']
++    key = fingerprint(('files', character_inputs + [repo / 'dm/tools' / f for f in ('patch_nso.py', 'jump_solver.py', 'nso.py', 'nso_code.py', 'nso_asm.py', 'nso_syms.py', 'nso_match.py', 'ue_cvar.py', 'ue_malloc.py', 'ue_region.py', 'ue_ring.py', 'snowdrop_pools.py', 'loader_census.py', 'fps_target.py', 'monolith_fps.py', 'ue_fixed_rate.py', 'unity_fps.py', 'unity_bucket.py')] + patch_files(repo, exe_dir, mods, env.get('DM_GAME')) + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
+                       {k: env.get(k) for k in ('DM_PATCH_FRONT', 'DM_GAME')}, own)
+     if all((out / f'{m}.patched.bin').is_file() for m in names) and reused(kf, key) is not None:
+         PROG.end(f'{", ".join(mods)}{f" and {len(nros)} NROs" if nros else ""}, reused (inputs unchanged)')
+diff --git a/dm/tools/character_select_ips.py b/dm/tools/character_select_ips.py
+new file mode 100644
+index 0000000..b986b23
+--- /dev/null
++++ b/dm/tools/character_select_ips.py
+@@ -0,0 +1,51 @@
++"""Apply an explicitly selected Character Select IPS32 to the main NSO image."""
++import re
++from pathlib import Path
++
++
++def apply_ips(module, path):
++    name = Path(path).stem
++    if not re.fullmatch(r"[0-9a-fA-F]{32,64}", name) or len(name) % 2:
++        raise ValueError("name the IPS32 file with its target NSO build ID")
++    if bytes.fromhex(name).rstrip(b"\0") != module.build_id.rstrip(b"\0"):
++        raise ValueError("the Character Select patch targets a different game build")
++
++    data = Path(path).read_bytes()
++    if not data.startswith(b"IPS32"):
++        raise ValueError("expected an IPS32 patch")
++    at = 5
++    writes = []
++    text_end = module.text_end
++    ro_start = module.segments[1][0]
++    while data[at:at + 4] != b"EEOF":
++        if at + 6 > len(data):
++            raise ValueError("truncated IPS32 record")
++        offset = int.from_bytes(data[at:at + 4], "big") - 0x100
++        size = int.from_bytes(data[at + 4:at + 6], "big")
++        at += 6
++        if size:
++            if at + size > len(data):
++                raise ValueError("truncated IPS32 data")
++            payload = data[at:at + size]
++            at += size
++        else:
++            if at + 3 > len(data):
++                raise ValueError("truncated IPS32 run")
++            size = int.from_bytes(data[at:at + 2], "big")
++            if not size:
++                raise ValueError("empty IPS32 run")
++            payload = data[at + 2:at + 3] * size
++            at += 3
++        end = offset + size
++        if 0 <= offset < ro_start and end <= ro_start:
++            text_end = max(text_end, (end + 3) & ~3)
++        elif not (ro_start <= offset < end <= module.segments[2][0]
++                  or module.segments[2][0] <= offset < end <= len(module.image)):
++            raise ValueError(f"IPS32 write outside a mapped segment at {offset:#x}")
++        writes.append((offset, payload))
++
++    if at + 4 != len(data) or not writes:
++        raise ValueError("unexpected IPS32 trailer or empty patch")
++    image = bytearray(module.image)
++    for offset, payload in writes:
++        image[offset:offset + len(payload)] = payload
++    return module._replace(image=image, segments=((0, text_end), *module.segments[1:]))

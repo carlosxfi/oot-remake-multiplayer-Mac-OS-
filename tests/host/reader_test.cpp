@@ -897,7 +897,22 @@ TEST_CASE("host reader: what the player wears") {
                       {addr::kEquipHeadArmor, "Armor_GlassTruth"}});
       const auto e = reader.read_equipment();
       CHECK(e->armor == "Armor_Adult_Normal");
-      CHECK(e->head == "Armor_GlassTruth");
+      // ...but a head flag that is no mask is never sent (row 197): the Lens
+      // of Truth's base actor, the adult's unposed glasses on a puppet.
+      CHECK(e->head == "");
+    }
+    SUBCASE("the Lens of Truth's head flag is not sent, at either age (row 197)") {
+      for (const std::uint8_t child : {std::uint8_t{0}, std::uint8_t{1}}) {
+        CAPTURE(child);
+        m.put_u8(l.game_ui + addr::kGameUiIsChild, child);
+        put_strings(m, {{addr::kEquipHeadArmor, "Armor_GlassTruth"}});
+        CHECK(reader.read_equipment()->head == "");
+        wear(0, "Armor_Child_GlassTruth");  // nor the lens in a link
+        CHECK(reader.read_equipment()->head == "");
+        wear(0, "Armor_Child_Mask_Keaton");  // a mask in a link still is
+        CHECK(reader.read_equipment()->head == "Armor_Child_Mask_Keaton");
+        wear(0, "");
+      }
     }
     SUBCASE("other pieces in the links are not a mask, tunic or boots") {
       put_strings(m, {{addr::kEquipHeadArmor, ""}, {addr::kEquipBoot, ""}, {addr::kEquipArmor, ""}});

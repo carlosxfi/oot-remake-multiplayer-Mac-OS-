@@ -80,6 +80,9 @@ std::optional<std::uint64_t> manager(GameMemory& m) {
 // its queues.
 std::atomic<GameFlagCalls*> g_calls{nullptr};
 
+// GameFlags::on_int_written.
+std::atomic<GameFlags::IntWritten> g_int_written{nullptr};
+
 // The value a write still waiting for the game's setter gives this flag.
 std::optional<std::uint32_t> waiting(GameFlagType type, std::uint64_t id) {
   const GameFlagCalls* calls = g_calls.load(std::memory_order_acquire);
@@ -320,6 +323,18 @@ std::optional<std::int32_t> GameFlags::get_int(std::uint32_t hash) {
   return static_cast<std::int32_t>(*v);
 }
 
+std::optional<std::int32_t> GameFlags::get_int_live(std::uint32_t hash) {
+  const auto mgr = manager(memory_);
+  if (!mgr) return std::nullopt;
+  const auto index = find(memory_, *mgr, kInt, hash);
+  if (!index) return std::nullopt;
+  const auto entries = read_ptr(memory_, *mgr + kInt.entries);
+  if (!entries) return std::nullopt;
+  const auto v = read_u32(memory_, *entries + kInt.stride * *index + kInt.value);
+  if (!v) return std::nullopt;
+  return static_cast<std::int32_t>(*v);
+}
+
 std::optional<float> GameFlags::get_float(std::uint32_t hash) {
   const auto mgr = manager(memory_);
   if (!mgr) return std::nullopt;
@@ -450,6 +465,19 @@ bool GameFlags::set_string64_now(WritableGameMemory& m, std::uint32_t hash,
   return m.write(*buffer, std::span<const std::uint8_t>(bytes.data(), text.size() + 1));
 }
 
+bool GameFlags::set_int_now(WritableGameMemory& m, std::uint32_t hash, std::int32_t value) {
+  const auto mgr = manager(m);
+  if (!mgr) return false;
+  const auto index = find(m, *mgr, kInt, hash);
+  if (!index) return false;
+  const auto entries = read_ptr(m, *mgr + kInt.entries);
+  if (!entries) return false;
+  const auto v = static_cast<std::uint32_t>(value);
+  const std::array<std::uint8_t, 4> bytes{static_cast<std::uint8_t>(v), static_cast<std::uint8_t>(v >> 8),
+                                          static_cast<std::uint8_t>(v >> 16), static_cast<std::uint8_t>(v >> 24)};
+  return m.write(*entries + kInt.stride * *index + kInt.value, std::span<const std::uint8_t>(bytes.data(), 4));
+}
+
 std::optional<GameFlags::QueueSizes> GameFlags::queue_sizes() {
   const auto mgr = manager(memory_);
   if (!mgr) return std::nullopt;
@@ -463,6 +491,9 @@ std::optional<GameFlags::QueueSizes> GameFlags::queue_sizes() {
 }
 
 void GameFlags::use_calls(GameFlagCalls* calls) { g_calls.store(calls, std::memory_order_release); }
+void GameFlags::on_int_written(IntWritten callback) {
+  g_int_written.store(callback, std::memory_order_release);
+}
 
 bool GameFlags::setter_has_room(GameMemory& m, GameFlagType type) {
   const auto mgr = manager(m);
@@ -559,10 +590,16 @@ bool GameFlags::set_bool(WritableGameMemory& m, std::uint32_t hash, bool value) 
 bool GameFlags::set_int(WritableGameMemory& m, std::uint32_t hash, std::int32_t value) {
   const auto mgr = manager(m);
   if (!mgr || !find(m, *mgr, kInt, hash)) return false;
+  bool queued = false;
   if (GameFlagCalls* calls = g_calls.load(std::memory_order_acquire))
-    return calls->put({GameFlagType::int32, hash, static_cast<std::uint32_t>(value)});
-  return enqueue(m, *mgr, kInt.queue_cap, kInt.queue_buf, kInt.queue_word, kInt.slot_size,
-                 static_cast<std::uint32_t>(value), hash, false);
+    queued = calls->put({GameFlagType::int32, hash, static_cast<std::uint32_t>(value)});
+  else
+    queued = enqueue(m, *mgr, kInt.queue_cap, kInt.queue_buf, kInt.queue_word, kInt.slot_size,
+                     static_cast<std::uint32_t>(value), hash, false);
+  if (queued) {
+    if (const IntWritten written = g_int_written.load(std::memory_order_acquire)) written(hash, value);
+  }
+  return queued;
 }
 
 bool GameFlags::set_float(WritableGameMemory& m, std::uint32_t hash, float value) {

@@ -50,9 +50,9 @@ std::vector<Request> Took(const char* name) {
 } // namespace
 
 TEST_CASE("boss scenes: ten bosses, every intro and death event known, no mini-boss") {
-    CHECK(CoopBossScenes::Bosses().size() == 10);
+    CHECK(CoopBossScenes::Bosses().size() == 13);  // and three mid-fight stage changes (their own case)
     std::set<std::string_view> names;
-    for (const auto& b : CoopBossScenes::Bosses()) {
+    for (const auto& b : CoopBossScenes::Bosses().first(10)) {
         names.insert(b.intro);
         names.insert(b.outro);
         if (b.room >= 0) {
@@ -268,7 +268,11 @@ TEST_CASE("boss scenes: the settings a boss's own logic asks start its intro and
           std::optional(std::pair{std::uint8_t{4}, CoopBossScenes::Kind::outro}));
     CHECK(CoopBossScenes::OfEvent("InsideGanonCastle_Dungeon_BossDie_2") ==
           std::optional(std::pair{std::uint8_t{9}, CoopBossScenes::Kind::outro}));
-    CHECK_FALSE(CoopBossScenes::OfEvent("InsideGanonCastle_Dungeon_Boss_GetMasterSword"));  // mid-fight
+    // Mid-fight: never Ganon's death; its own stage change (shared as an intro of its own, entry 11).
+    CHECK(CoopBossScenes::OfEvent("InsideGanonCastle_Dungeon_Boss_GetMasterSword") ==
+          std::optional(std::pair{std::uint8_t{11}, CoopBossScenes::Kind::intro}));
+    CHECK(CoopBossScenes::OfEvent("InsideGanonCastle_Dungeon_BossBind0") ==
+          std::optional(std::pair{std::uint8_t{12}, CoopBossScenes::Kind::intro}));
     CHECK_FALSE(CoopBossScenes::OfEvent(""));
 
     Director a, b;
@@ -657,6 +661,29 @@ TEST_CASE("boss scenes: during the intro every joiner is put at its spot, the st
     CHECK_FALSE(c.Tick(At(CoopBoss::ArrivalFor(*room, 3), 3), {}, 1'100'000).move_to);
 }
 
+TEST_CASE("boss scenes: Twinrova's merge plays in every game near the starter, nobody moved") {
+    constexpr std::uint8_t kMerge = 10;
+    const auto& merge = CoopBossScenes::Bosses()[kMerge];
+    CHECK(merge.intro == "SageOfSpirit_BossChange");
+    CHECK(merge.room < 0);
+    CHECK(CoopBossScenes::OfEvent("SageOfSpirit_BossChange") == std::pair{kMerge, CoopBossScenes::Kind::intro});
+    CHECK(CoopBossScenes::OfEvent("InsideGanonCastle_Dungeon_Boss_GetMasterSword") ==
+          std::pair{std::uint8_t{11}, CoopBossScenes::Kind::intro});
+    const Vec at{0.0f, 140.0f, -158.0f};
+    Director a, b;
+    // B's game asks the merge as its sisters die: it starts it.
+    Actions out = b.Tick(At(at, 2, true, "TwinrovaStage"), Took("SageOfSpirit_BossChange"), 1'000'000);
+    REQUIRE(out.send.size() == 1);
+    CHECK(out.send[0].boss == kMerge);
+    proto::BossScene start = out.send[0];
+    start.player_number = 2;
+    // A's game, its sisters dead too but its own logic never asked: asked for it now, not moved.
+    a.Receive(start);
+    out = a.Tick(At(Vec{8.0f, 140.0f, -158.0f}, 1, false, "TwinrovaStage"), {}, 1'100'000);
+    CHECK(out.play == std::optional<std::string>("SageOfSpirit_BossChange"));
+    CHECK_FALSE(out.move_to);
+}
+
 TEST_CASE("boss scenes: in a boss rush stage the area is near the starter, and nobody is moved") {
     const auto& gohma = CoopBossScenes::Bosses()[kGohma];
     const Vec starter{0.0f, 0.0f, 0.0f};
@@ -795,4 +822,20 @@ TEST_CASE("boss scenes: DeathMayRun says while our own death of a boss may still
         b.Tick(At(kInRoom, 2), {}, 2'000'000);
         CHECK_FALSE(b.DeathMayRun(kGohma));
     }
+}
+
+TEST_CASE("enemies-dying-01111: a boss's death has begun here in the boss rush's stage too (DeathBegunHere)") {
+    // Run 20261122-092813 (King Dodongo in the boss rush's DodongoStage): the dying list matched only the room's
+    // dungeon scene, so B's copy was never named dying. The director's own area (Here) is the starter's scene there.
+    const Vec starter{0.0f, 0.0f, 0.0f};
+    Local near = At(Vec{10.0f, 0.0f, 0.0f}, 2, false, "GohmaStage");
+    near.boss_ours = false;
+    Director b;
+    CHECK_FALSE(b.DeathBegunHere(kGohma, near));  // no death yet
+    b.Receive(Scene(1, kGohma, proto::BossSceneKind::outro_start, starter, "GohmaStage"));
+    b.Tick(near, {}, 1'000'000);
+    CHECK(b.DeathBegunHere(kGohma, near));
+    CHECK_FALSE(b.DeathBegunHere(kGohma, At(Vec{40.0f, 0.0f, 0.0f}, 2, false, "GohmaStage")));  // out of its area
+    CHECK_FALSE(b.DeathBegunHere(kGohma, At(Vec{10.0f, 0.0f, 0.0f}, 2, false, "KokiriForest")));  // another scene
+    CHECK_FALSE(b.DeathBegunHere(1, near));  // another boss
 }

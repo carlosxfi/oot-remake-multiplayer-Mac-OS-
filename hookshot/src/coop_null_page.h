@@ -13,6 +13,10 @@
 // read of each page each minute is counted in the log; a write still faults.
 // HOS_COOP_NULL_READS=0 leaves it alone (as the exe's switch). Linux: the
 // whole guest window is mapped readable already.
+// That held-item read is the bow's update (BowRef: the bow and the
+// slingshot) and patch 0038 (nx2/coop_puppet_bow_guard.py) now sends a
+// puppet's bow through the update's own exit before it: the page stays for
+// the other reads of the puppet's missing components (and a game without 0038).
 #pragma once
 
 #include <cstdint>

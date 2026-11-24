@@ -36,7 +36,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "puppet_pack"  # noqa: A001
 
-from . import ainb, asb_carry, byml, dumpcheck, dungeon_rooms, hud, look_items, look_live, look_metal, map_captures, nup, pause_menu, rstb, sarc, skin, title_menu, tunic, tunic_extra, ui_pack, zs  # noqa: E402
+from . import ainb, asb_carry, byml, charsel_ui, coop_menu, dumpcheck, dungeon_rooms, hud, look_cap, look_items, look_live, look_metal, map_captures, nup, pause_menu, rstb, sarc, skin, title_menu, tunic, tunic_extra, ui_pack, zs  # noqa: E402
 
 TITLE_ID = "0400486024DEC000"
 DEFAULT_MOD_NAME = "coop-puppet"
@@ -296,6 +296,67 @@ def character_project(variant, file):
     return f"Player_{variant}_C{file:03d}"
 
 
+def charsel_native_wanted(mod_dir):
+    """Whether the pack makes co-op's own Characters tab (charsel_ui.py): not when the Character Select mod is in the
+    mods (its characters.json, where find_characters looks, switched on; with its NPC models or only its default
+    part) with a code patch of its own (exefs/*.ips or *.pchtxt): his files and his code are then the tab's. The kit
+    decides the same for the code patch it puts in before the game's build (kit-paths.ps1 Test-KitCharselNative), so
+    the game and the pack agree."""
+    here = os.path.abspath(mod_dir)
+    roots = [os.path.dirname(here)]
+    if os.path.basename(os.path.dirname(os.path.dirname(here))).lower() == "contents":
+        roots.append(os.path.dirname(os.path.dirname(os.path.dirname(here))))
+    for root in roots:
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(root, name, CHARACTERS_FILE)
+            if name.startswith(("-", "_", ".")) or not os.path.isfile(path):
+                continue
+            try:
+                with open(path, encoding="utf-8") as f:
+                    doc = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(doc, dict) or doc.get("mod") != CHARACTERS_MOD or doc.get("format") != CHARACTERS_FORMAT:
+                continue
+            if len(roots) > 1 and mod_list_off(roots[1], (f"contents/{os.path.basename(root)}/{name}"
+                                                         if root == roots[0] else name)):
+                continue
+            try:
+                code = os.listdir(os.path.join(root, name, "exefs"))
+            except OSError:
+                code = []
+            if any(n.lower().endswith((".ips", ".pchtxt")) for n in code):
+                return False
+    return True
+
+
+def mod_list_off(mods_root, name):
+    """The Mods tab's list (mods/coop-mods.list, "coop-mods 1") names `name` (its path under mods with '/') off: the
+    first row for it, letters without case (as Longshot reads it). No list or no row: on (C #58: a mod switched off
+    loads no models, so its characters get no puppets), unless the list has the "default off" line (Original game,
+    hos_coop_mods.h): then a mod with no row is off too."""
+    fold = lambda t: "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in t.replace("\\", "/"))
+    try:
+        with open(os.path.join(mods_root, "coop-mods.list"), "rb") as f:
+            lines = f.read().decode("utf-8", "replace").split("\n")
+    except OSError:
+        return False
+    if lines[0].rstrip("\r") != "coop-mods 1":
+        return False
+    default_off = False
+    for line in lines[1:]:
+        line = line.rstrip("\r")
+        default_off = default_off or line == "default off"
+        for state in ("on ", "off "):
+            if line.startswith(state) and fold(line[len(state):]) == fold(name):
+                return state == "off "
+    return default_off
+
+
 def find_characters(mod_dir, log=print):
     """The Character Select mod among the mods the pack is made into: {"mod": its folder, "files":
     {file number: [variants it has a model for]}, "heaps": {variant: {field: bytes}}, "numbers": {file:
@@ -318,6 +379,10 @@ def find_characters(mod_dir, log=print):
                 with open(path, encoding="utf-8") as f:
                     doc = json.load(f)
                 if doc.get("mod") != CHARACTERS_MOD or doc.get("format") != CHARACTERS_FORMAT:
+                    continue
+                if len(roots) > 1 and mod_list_off(roots[1], (f"contents/{os.path.basename(root)}/{name}"
+                                                             if root == roots[0] else name)):
+                    log(f"characters: {name} is switched off in the Mods tab: no character puppets from it")
                     continue
                 files, numbers = {}, {}
                 for row in doc["characters"]:
@@ -1147,7 +1212,7 @@ def nup_scene_files(n):
         if kind == "d":
             out += n.glob(f"Banc/{scene}/*.bcett.byml.zs")
     for pattern in map_captures.FILES:  # the map pictures' places, for coop_maps.txt
-        out += n.glob(pattern)[:1]
+        out += ui_pack.newest(n.glob(pattern)) if pattern == title_menu.SCREEN_GLOB else n.glob(pattern)[:1]
     return out
 
 
@@ -1156,14 +1221,18 @@ def nup_menu_files(n):
     open Nup: their UI archives and every language's message archive. A .nup build extracts only what is named, and
     these are not the pack's own sources: without them both steps were left out ("No such file")."""
     out = []
-    for pattern in (title_menu.TITLE_ARCHIVE, pause_menu.COMMON_ARCHIVE):
+    for pattern in (title_menu.TITLE_ARCHIVE, pause_menu.COMMON_ARCHIVE, title_menu.SCREEN_GLOB):
         out += n.glob(pattern)[:1]
     newest = {}   # (a .nup has the base game's and the update's: the game reads the newest, Product.110 over 100)
     for rel in n.glob(pause_menu.MALS_GLOB):
         lang = rel.split("/")[-1].split(".")[0]
         if lang not in newest or _product(rel) > _product(newest[lang]):
             newest[lang] = rel
-    return out + [newest[lang] for lang in sorted(newest)]
+    out += [newest[lang] for lang in sorted(newest)]
+    for rel in charsel_ui.sources() + coop_menu.sources():   # (the Characters tab's and co-op's screen's files)
+        if rel not in out and n.glob(rel):
+            out.append(rel)
+    return out
 
 
 def _product(rel):
@@ -1301,6 +1370,9 @@ def write_tunics(romfs, out_romfs, dicts, table, colors, log=print, self_dir=Non
         except tunic.TunicError as e:
             raise BuildError(f"{tile_rel}: {e}")
         look = [(tunic.TILE, tile if own is None else own)]
+        # (0.11.9, exact puppet tunics: the puppets' copy as the pack writes it, to be found in memory and repainted
+        # live in its wearer's exact colour; the same textures, in the same order, as green.bin's)
+        pup = [(name, data)]
         if own is not None and self_dir and c != "green":
             # Same size as the game's tile once unpacked: its size-table entry stands. (Packs
             # before colour-agree put this one over the game's tile; the kit now uses self_files.)
@@ -1341,6 +1413,7 @@ def write_tunics(romfs, out_romfs, dicts, table, colors, log=print, self_dir=Non
                 own_rel = strip_zs(f"Tex/{own_name}.bntx.zs")
                 own_sizes[own_rel] = max(own_sizes.get(own_rel, 0), (size or len(own_dark) + PACK_SIZE_MARGIN)
                                          if c == "green" else tile_size or len(own_dark) + PACK_SIZE_MARGIN)
+            pup.append((tunic.dark_name(c), ddata))
             if look_dir:
                 # In memory: the game's ASTC dark tile (green), else the BC3 copy your own Link
                 # wears for that colour; without those, the ASTC one recoloured in place.
@@ -1363,6 +1436,7 @@ def write_tunics(romfs, out_romfs, dicts, table, colors, log=print, self_dir=Non
             except tunic.TunicError as e:
                 raise BuildError(f"{e_rel}: {e}")
             look.append((name, e_own))
+            pup.append((tunic_extra.extra_name(name, c), e_pup))
             if own_set:
                 # Same size and layout as the game's file.
                 own_name = tunic_extra.extra_name(name, c, tunic.SELF_LETTER)
@@ -1412,6 +1486,9 @@ def write_tunics(romfs, out_romfs, dicts, table, colors, log=print, self_dir=Non
         if look_dir:
             write(os.path.join(look_dir, f"{c}.bin"), look_live.pack(look))
             look_files[c] = f"{look_live.DIR}/{c}.bin"
+            if c != "green":   # (the plain puppet's tunic is the game's own: never repainted)
+                write(os.path.join(look_dir, f"puppet-{c}.bin"), look_live.pack(pup))
+                look_files[f"puppet-{c}"] = f"{look_live.DIR}/puppet-{c}.bin"
         out[c] = paths
         log(f"tunic {c}: {tunic.tile_name(c)} and {len(models)} models")
     if look_dir and out and "green" not in out:
@@ -1458,7 +1535,9 @@ def write_look_items(romfs, out_romfs, dicts, table, ai_rows, gai_rows, slots, l
         if not models:
             log(f"look items: no Model/{project}.* in this romfs, {item} left out")
             continue
-        for slot in range(1, slots * look_items.COPIES_PER_SLOT + 1):  # (each slot's two copies)
+        # (each slot's two copies, then one more, the neutral copy (row 198): the game's colours, marked, never
+        # painted, worn by a puppet with no slot of its own, so it never wears the game's item your colour is drawn on)
+        for slot in range(1, slots * look_items.COPIES_PER_SLOT + 2):
             actor = look_items.actor_name(item, slot)
             pack, ap, info = look_items.copy_pack(members, item, slot)
             dst = f"Pack/Actor/{actor}.pack.zs"
@@ -1467,11 +1546,13 @@ def write_look_items(romfs, out_romfs, dicts, table, ai_rows, gai_rows, slots, l
             ap_size = table.get(look_items.actor_param_path(item)) or 0
             table.add_new(look_items.actor_param_path(actor), max(ap_size, len(ap) + PACK_SIZE_MARGIN))
             table.add_new(look_items.model_info_path(actor), chain_entry(table, info_chain, info))
-            # Row 184: the copy's own AnimationParam (retargeted clips), sized as the item's.
+            # Row 184: the copy's own AnimationParam (retargeted clips), with room for each IsRetarget it adds
+            # (row 198: sized as the item's, the game refused to make the shield copies).
             anim = look_items.copy_animation_param(members, item, actor)
             if anim is not None:
                 anim_size = table.get(look_items.item_animation_param(members, item)[0]) or 0
-                table.add_new(anim[0], max(anim_size, len(anim[1]) + PACK_SIZE_MARGIN))
+                table.add_new(anim[0], look_items.copy_animation_param_entry(members, item, anim_size, anim[1],
+                                                                             PACK_SIZE_MARGIN))
             new_ai.append(look_items.info_row(ai_rows[item], item, slot))
             new_gai.append(dict(gai_rows.get(item, {}), __RowId=actor))
             paths = [dst]
@@ -1504,7 +1585,8 @@ def write_look_items(romfs, out_romfs, dicts, table, ai_rows, gai_rows, slots, l
         log(f"look items: {len(made)} items x {slots} slots x {look_items.COPIES_PER_SLOT} copies ({len(files)} files): "
             "puppets in their own gear colours")
     copies = slots * look_items.COPIES_PER_SLOT
-    return {"slots": slots, "copies": copies, "actors": made, "files": files} if made else None, new_ai, new_gai
+    return ({"slots": slots, "copies": copies, "neutral": copies + 1, "actors": made, "files": files} if made else None,
+            new_ai, new_gai)
 
 
 def write_blade_items(romfs, out_romfs, dicts, table, ai_rows, gai_rows, copies, log=print):
@@ -1547,23 +1629,40 @@ def write_blade_items(romfs, out_romfs, dicts, table, ai_rows, gai_rows, copies,
             ap_size = table.get(look_items.actor_param_path(item)) or 0
             table.add_new(look_items.actor_param_path(actor), max(ap_size, len(ap) + PACK_SIZE_MARGIN))
             table.add_new(look_items.model_info_path(actor), chain_entry(table, info_chain, info))
-            # Row 184: the copy's own AnimationParam (retargeted clips), sized as the item's.
+            # Row 184: the copy's own AnimationParam (retargeted clips), with room for each IsRetarget it adds
+            # (row 198: sized as the item's, the game refused to make the shield copies).
             anim = look_items.copy_animation_param(members, item, actor)
             if anim is not None:
                 anim_size = table.get(look_items.item_animation_param(members, item)[0]) or 0
-                table.add_new(anim[0], max(anim_size, len(anim[1]) + PACK_SIZE_MARGIN))
+                table.add_new(anim[0], look_items.copy_animation_param_entry(members, item, anim_size, anim[1],
+                                                                             PACK_SIZE_MARGIN))
             new_ai.append(look_items.info_row_as(ai_rows[item], actor, copy_project))
             new_gai.append(dict(gai_rows.get(item, {}), __RowId=actor))
             files.append(dst)
             if (project, n) in projects_done:
                 continue   # (the Giant's Knife on the Biggoron's: its models are there already)
             projects_done.add((project, n))
+            named = set()
             for m in models:
                 raw = read(os.path.join(mdir, m))
                 m_dst = f"Model/{copy_project}{m[len(project):]}"
-                write(os.path.join(out_romfs, m_dst), raw)
-                table.add_new(strip_zs(m_dst), table.get(strip_zs(f"Model/{m}")) or len(dicts.decompress(raw)))
+                # (row 198: its own gear textures, marked, never the game's that your Link's colour is drawn over)
+                data, names = look_items.blade_model_for(dicts.decompress(raw), n)
+                named.update(names)
+                write(os.path.join(out_romfs, m_dst), recompress(dicts, raw, data, level=3) if names else raw)
+                table.add_new(strip_zs(m_dst), table.get(strip_zs(f"Model/{m}")) or len(data))
                 files.append(m_dst)
+            for g in sorted(named):
+                t_rel = f"Tex/{g}.bntx.zs"
+                t_path = os.path.join(romfs, t_rel)
+                if not os.path.isfile(t_path):
+                    continue
+                t_raw = read(t_path)
+                t_data = look_items.blade_texture_for(dicts.decompress(t_raw), g, n)
+                t_dst = f"Tex/{look_items.blade_tex_name(g, n)}.bntx.zs"
+                write(os.path.join(out_romfs, t_dst), recompress(dicts, t_raw, t_data))
+                table.add_new(strip_zs(t_dst), table.get(strip_zs(t_rel)) or len(t_data) + PACK_SIZE_MARGIN)
+                files.append(t_dst)
         made.append(item)
     if made:
         log(f"wearer copies: {len(made)} items ({', '.join(made)}) x {copies} player numbers, "
@@ -1827,7 +1926,7 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
           tunics=(), test_tunic=None, stand_in_effects=False, basic_xlink=False, title_rows=False, pause_tab=False,
           look_slots=look_items.SLOTS, perception=True, blade_copies=look_items.BLADE_COPIES,
           skins=(), test_skin=None, game_has=None, game_read=None, skin_effects=False, body=False, liftable=False,
-          pvp=False, characters=None):
+          pvp=False, characters=None, charsel_native=False):
     """`characters`: find_characters()'s answer, for a puppet per character of the Character Select mod
     (character_actor; each with its quiet copy, as the colours). `tunics`: the tunic colours to make puppets of (puppet_pack.tunic.COLORS; each is a model,
     a tile and an actor per age, CoopPuppet_<age>_<Colour>). `test_tunic`: give the plain puppets
@@ -1945,6 +2044,16 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
             if metal_blob is not None:
                 write(os.path.join(mod_dir, look_live.DIR, look_metal.FILE), metal_blob)
                 look_files["metal"] = f"{look_live.DIR}/{look_metal.FILE}"
+        # The blocks of the tunic's textures that only the cap uses (the Customize page's Cap trim,
+        # look_cap), beside green.bin, which holds their texels.
+        if "green" in look_files:
+            def read_model(variant):
+                p = os.path.join(romfs, *look_cap.model_path(variant).split("/"))
+                return dicts.decompress(read(p)) if os.path.isfile(p) else None
+            cap_blob = look_cap.cap(read_tex, read_model, log)
+            if cap_blob is not None:
+                write(os.path.join(mod_dir, look_live.DIR, look_cap.FILE), cap_blob)
+                look_files["cap"] = f"{look_live.DIR}/{look_cap.FILE}"
     look_item_files = None
     look_slots = max(0, min(look_slots, look_items.MAX_SLOTS))
     if tunics and look_slots > 0:
@@ -2173,6 +2282,24 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
     # One view of the game's files for every UI builder (ui_pack.PackRun): what one made is what the next reads (the
     # language archives get both steps' labels), and each size-table entry grows once from the game's original.
     ui_run = ui_pack.PackRun(romfs, table)
+    # Co-op's own Characters tab (charsel_ui.py: Snail's page, picker and Customize for Link, the owner 2026-11-22),
+    # with the - menu's four-tab header: only when no Character Select mod brings his (charsel_native, main:
+    # charsel_native_wanted). First, through the same view: its deltas are checked against the game's own files, and
+    # the title rows' and the pause menu's edits go on top of its files. The code patch goes into the pack's exefs
+    # (the bytes the kit put there before the game's build: hookshot-build.ps1). All or nothing: on any trouble neither
+    # the files nor the code patch (a tab whose code points at screens the game lacks would be worse than none).
+    charsel_files = []
+    if pause_tab and charsel_native:
+        try:
+            charsel_files = charsel_ui.build(romfs, out_romfs, dicts, table,
+                                             lambda root, r, data: write(os.path.join(root, r), data), recompress,
+                                             log, run=ui_run)
+            charsel_ui.write_code_patch(mod_dir)
+        except (charsel_ui.CharselError, ui_pack.UiPackError, sarc.SarcError, OSError, ValueError, KeyError,
+                IndexError, struct.error) as e:
+            log(f"characters tab: left out ({e}); the - menu keeps the game's three tabs and co-op's")
+            charsel_files = []
+            charsel_ui.remove_code_patch(mod_dir)
     title_files = []
     if title_rows:
         try:
@@ -2185,14 +2312,35 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
     # the co-op module that shows them (patch 0030); both stored hidden, so without the module the menu is the game's.
     # After the title rows, through the same view (ui_run): its labels join theirs in each language archive. All or
     # nothing.
+    # Co-op's own - menu screen (coop_menu.py, tabs-overhaul-01110): Multiplayer, Lobby and Mods as a page of the
+    # game's own right of the Map, when every file it is made from is the game's own and co-op's Characters tab is
+    # made (with the Character Select mod his layout category and screens table win). Tried first without writing
+    # (all of it can be made), so the pause menu leaves its page out of the strip only when the screen has it.
+    coop_screen = False
+    if pause_tab and charsel_native:
+        try:
+            coop_menu.make(ui_run, dicts, recompress)
+            coop_screen = True
+        except (coop_menu.CoopMenuError, charsel_ui.CharselError, ui_pack.UiPackError, sarc.SarcError, OSError,
+                ValueError, KeyError, IndexError, struct.error) as e:
+            log(f"co-op's - menu screen: left out ({e}); the - menu's tabs keep their page in the strip")
     pause_files = []
     if pause_tab:
         try:
             pause_files = pause_menu.build(romfs, out_romfs, dicts, table,
                                            lambda root, r, data: write(os.path.join(root, r), data), recompress, log,
-                                           run=ui_run)
+                                           run=ui_run, minus_page=not coop_screen)
         except (pause_menu.PauseMenuError, OSError, ValueError, KeyError, IndexError, struct.error) as e:
             log(f"pause menu: the Multiplayer tab left out ({e}); the pause menu keeps its four")
+            coop_screen = False
+    if coop_screen:
+        try:
+            pause_files += coop_menu.build(romfs, out_romfs, dicts, table,
+                                           lambda root, r, data: write(os.path.join(root, r), data), recompress,
+                                           log, run=ui_run)
+        except (coop_menu.CoopMenuError, charsel_ui.CharselError, ui_pack.UiPackError, sarc.SarcError, OSError,
+                ValueError, KeyError, IndexError, struct.error) as e:   # (it was made a moment ago: never seen)
+            log(f"co-op's - menu screen: NOT made after its trial ({e}); the - menu's tabs have no page this time")
 
     if characters:
         # The mod's own rows first, the pack's own over them, then the player's own Link's heaps (as the mod alone).
@@ -2257,6 +2405,9 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
         "title_rows": bool(title_rows),  # asked for (--title-rows); title_menu: what was made
         "title_menu": title_files,
         "pause_menu": pause_files,
+        "coop_screen": coop_screen,   # (co-op's own - menu screen CoopMenu_00 made: coop_menu.py)
+        "charsel_native": charsel_files,   # (co-op's own Characters tab: its files; [] with Character Select's own)
+        "menu_keys": list(ui_pack.MENU_KEYS),   # (the lists above kept aside together: merge_tables, the kit's start)
         "source_sha256": {rel(romfs, p): hashlib.sha256(read(p)).hexdigest()
                           for p in (ai_path, gai_path, rs_path)},
     }
@@ -2443,7 +2594,8 @@ def _main_build(a, romfs, hud_reader=None):
               game_has=(lambda path: _reader_has(hud_reader, path)) if hud_reader is not None else None,
               game_read=hud_reader.read if hud_reader is not None else None,
               body=a.puppet_body, liftable=a.puppet_liftable, pvp=a.puppet_pvp,
-              characters=None if a.no_characters else find_characters(mod_dir))
+              characters=None if a.no_characters else find_characters(mod_dir),
+              charsel_native=charsel_native_wanted(mod_dir))
     except BuildError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

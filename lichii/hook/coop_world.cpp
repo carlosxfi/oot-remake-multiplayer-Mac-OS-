@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "coop_world.h"
+#include "coop_pickups.h"
 #include "coop_show_delay.h"
 
 #include <algorithm>
@@ -92,9 +93,12 @@ bool IsMovable(std::string_view name) {
     if (!name.starts_with("Obj_") || name.find("BasePosAnchor") != std::string_view::npos) {
         return false;
     }
+    // Obj_Goron_Statue_A_01 (Goron City, 2 placed, linked to an Obj_Gimmick_AnswerPosAnchor): the game's movable-box
+    // AI (ActorLogicMovableBox, ExecuteMovableBoxControl, IsOnAnswerPos) like the Armos statues (block survey,
+    // 2026-11-21).
     return name.find("MovableBox_") != std::string_view::npos ||
-           name.starts_with("Obj_SliderBox_") || name.starts_with("Obj_AmosStatue_") || IsRoller(name) ||
-           IsGravestone(name);
+           name.starts_with("Obj_SliderBox_") || name.starts_with("Obj_AmosStatue_") ||
+           name.starts_with("Obj_Goron_Statue_") || IsRoller(name) || IsGravestone(name);
 }
 
 bool IsGravestone(std::string_view name) {
@@ -183,10 +187,19 @@ std::uint64_t PlacementOfTokenId(std::uint64_t id) {
     return IsGoldSkulltulaKey(hash) ? hash : 0;
 }
 
+bool IsCapstan(std::string_view name) {
+    // Turned in place by a player pushing a bar (CapstanParam, Capstan AI; block survey 2026-11-21): the Spirit
+    // Temple's three light mirrors (8 turns a lap, CapstanMirrorDirIndex) and the Shadow Temple's room 1 statue
+    // (CorrectDirIndex). Their directions are per-placement game data with no name, read by their AI; their turn
+    // is shared as a shifter's (a turn is a move, its rotation sent) and never held. The Forest Temple's turning
+    // floor goes by its named flag instead (coop_pivot.h).
+    return name.starts_with("Obj_SpiritTemple_CapstanMirror_") || name == "Obj_ShadowTemple_Statue_A_01";
+}
+
 bool IsShifter(std::string_view name) {
     // From the romfs (breakables-2): no LifeRef, moved or turned by their AI
     // when hit, and no 64-bit key, so before this nothing of them was shared.
-    return name.starts_with("Obj_FireTemple_HammerDropFloor_") ||
+    return IsCapstan(name) || name.starts_with("Obj_FireTemple_HammerDropFloor_") ||
            name.starts_with("Obj_FireTemple_HammerDropPillar_") ||
            name.starts_with("Obj_FireTemple_HammerStair_") ||
            name.starts_with("Obj_InsideTheDekuTree_FallingLadder_") ||
@@ -215,7 +228,8 @@ bool IsWorldObject(std::string_view name) {
 // stair, the Deku Tree ladder): held at the place it was given. The
 // falling floors `_A_03` have no AI in their packs: the normal settle.
 bool HoldsPlace(std::string_view name) {
-    return IsShifter(name) && name.find("FallingFloor_A_03") == std::string_view::npos;
+    // A capstan is turned again by the next push: never held.
+    return IsShifter(name) && !IsCapstan(name) && name.find("FallingFloor_A_03") == std::string_view::npos;
 }
 
 std::optional<std::string> KeyCountOf(std::string_view scene) {
@@ -891,6 +905,15 @@ void WorldSync::MakeBreak(Object& o, Break& b, std::uint64_t now_us, Out& out) {
             Line("world: %016llx %s taken by another player: deleted%s", o.hash, o.name, ""));
         return;
     }
+    if (CoopPickups::IsOneTimeHolder(o.hash)) {
+        // Row 219: a seed's one-time pot, crate or beehive gives its item once (the breaker got it); a life of 0
+        // here would break ours natively and drop the item a second time. Ours goes at once, as a taken key.
+        o.remove = true;
+        out.notes.push_back(
+            Line("world: %016llx %s broken by another player: a one-time holder, deleted%s", o.hash, o.name,
+                 " (its item was given there)"));
+        return;
+    }
     if (o.faller) {
         // It falls and stays (a bridge): never deleted. Life 0 makes the
         // game drop it; written again each second until the life reads 0
@@ -1115,6 +1138,16 @@ void WorldSync::Move(Object& o, std::uint8_t self, std::uint64_t now_us,
     const bool settling =
         !kept && !o.ours && o.settle_us != 0 && (o.hold || now_us - o.settle_us < kSettleUs);
     if (!o.ours && (remote || settling)) {
+        // Push diagnostics (a player report: only one player could push the Forest Temple's blocks): our Link
+        // right at a push block while our game still follows another player's move of it (each frame puts it
+        // back where theirs is, so a push of ours is undone). Said at most every 10 s.
+        if (IsPushBlock(o.name) && player && Finite(o.position) && Distance(*player, o.position) <= kAtBlockM &&
+            (o.at_it_noted_us == 0 || now_us - o.at_it_noted_us >= kAtBlockNoteUs)) {
+            o.at_it_noted_us = now_us;
+            out.notes.push_back(Line("world: %016llx %s: our Link is at it while it follows another player's move%s; "
+                                     "a push of ours now is undone",
+                                     o.hash, o.name, remote ? " (theirs is live)" : " (settling at their rest place)"));
+        }
         if (!o.following && !o.follow_from && !o.breakable && IsPushBlock(o.name)) {
             o.follow_from = o.rest;  // where our copy rested before (issue 147)
         }
@@ -2675,6 +2708,52 @@ RestScan NodeRestWords(const std::function<std::optional<std::uint64_t>(std::uin
         out.where.push_back(text);
     }
     return out;
+}
+
+RestScan NodeTargetAtRest(const std::function<std::optional<std::uint64_t>(std::uint64_t)>& read,
+                          std::uint64_t node, const proto::Vec3& to) {
+    RestScan out;
+    if (!Finite(to)) {
+        return out;
+    }
+    const auto float_at = [&](std::uint64_t address) -> std::optional<float> {
+        const auto word = read(address & ~std::uint64_t{7});
+        if (!word) return std::nullopt;
+        const auto b = static_cast<std::uint32_t>((address & 4) != 0 ? *word >> 32 : *word);
+        float f = 0.0f;
+        std::memcpy(&f, &b, 4);
+        return f;
+    };
+    // A place that cannot be read is left alone (nothing known to put right).
+    const auto off = [&](std::uint64_t offset) {
+        bool any = false;
+        for (int axis = 0; axis < 3; ++axis) {
+            const auto v = float_at(node + offset + 4 * axis);
+            if (!v) return false;
+            if (!std::isfinite(*v) || std::fabs(*v - to[axis]) > kRestMatchM) any = true;
+        }
+        return any;
+    };
+    char text[32];
+    for (const std::uint64_t offset : {BlockNode::kTarget, BlockNode::kStart}) {
+        if (!off(offset)) continue;
+        for (int axis = 0; axis < 3; ++axis) {
+            std::uint32_t b = 0;
+            std::memcpy(&b, &to[axis], 4);
+            out.writes.push_back({node + offset + 4 * axis, b});
+        }
+        std::snprintf(text, sizeof text, "node+%#llx", static_cast<unsigned long long>(offset));
+        out.where.push_back(text);
+    }
+    return out;
+}
+
+bool NodeMayStartAgain(bool force_on, const proto::Vec3& goal, const proto::Vec3& to) {
+    if (!force_on || !std::isfinite(goal[0]) || !std::isfinite(goal[2])) {
+        return true;  // the start's grid end: the place it sets is put at the rest after it (NodeTargetAtRest)
+    }
+    const float dx = to[0] - goal[0], dz = to[2] - goal[2];
+    return std::sqrt(dx * dx + dz * dz) <= BlockNode::kOnAnswerM;  // on its answer: the answer end agrees
 }
 
 } // namespace CoopWorld

@@ -121,6 +121,75 @@ TEST_CASE("lobby tab: Public games: a public game joins with one press, a privat
     CHECK(r->kind == Request::Kind::kRefreshGames);
 }
 
+TEST_CASE("lobby tab: Public games page by kGamesPerPage with a Page row that Left, Right, A and a click turn, round "
+          "(row 264)") {
+    Tab t;
+    t.Show();
+    Lobby l;
+    const auto with = [&](int n) {
+        l.games.clear();
+        for (int i = 0; i < n; ++i) {
+            const std::string room = "room-" + std::to_string(i);
+            l.games.push_back(PublicGame{room, room, "Public game, Players 1/4", true, true});
+        }
+        t.Set(l);
+    };
+    with(kGamesPerPage);   // (one page: no Page row, every game listed)
+    View v = t.view();
+    CHECK_FALSE(Has(v, "Page"));
+    CHECK(Has(v, "room-0"));
+    CHECK(Has(v, "room-" + std::to_string(kGamesPerPage - 1)));
+    with(2 * kGamesPerPage + 3);   // (three pages)
+    v = t.view();
+    const int page = RowOf(v, "Page");
+    REQUIRE(page == 4);   // (right under the heading)
+    CHECK(v.rows[4].kind == RowKind::kChoice);
+    CHECK(v.rows[4].value == "1/3");
+    CHECK(v.rows[4].left);
+    CHECK(v.rows[4].right);
+    CHECK(Has(v, "room-0"));
+    CHECK_FALSE(Has(v, "room-" + std::to_string(kGamesPerPage)));
+    CHECK(Has(v, "Refresh list"));
+    t.Select(4);
+    CHECK(t.view().change == "Turn the page");
+    t.Press(Input::kRight);
+    v = t.view();
+    CHECK(v.rows[4].value == "2/3");
+    CHECK(v.selected == 4);   // (the cursor stays on the Page row)
+    CHECK(Has(v, "room-" + std::to_string(kGamesPerPage)));
+    CHECK_FALSE(Has(v, "room-0"));
+    t.Press(Input::kDecide);   // (A: the page after)
+    CHECK(t.view().rows[4].value == "3/3");
+    CHECK(Has(t.view(), "room-" + std::to_string(2 * kGamesPerPage + 2)));
+    t.Press(Input::kRight);   // (round: past the last, the first)
+    CHECK(t.view().rows[4].value == "1/3");
+    t.Press(Input::kLeft);    // (round: before the first, the last)
+    CHECK(t.view().rows[4].value == "3/3");
+    t.Click(4, -1);           // (the value's left half: the page before)
+    CHECK(t.view().rows[4].value == "2/3");
+    // A game on a later page joins by its own room.
+    v = t.view();
+    const int game = RowOf(v, "room-" + std::to_string(kGamesPerPage + 1));
+    REQUIRE(game >= 0);
+    t.Select(static_cast<std::size_t>(game));
+    t.Press(Input::kDecide);
+    auto r = t.TakeRequest();
+    REQUIRE(r.has_value());
+    CHECK(r->kind == Request::Kind::kJoinRoom);
+    CHECK(r->name == "room-" + std::to_string(kGamesPerPage + 1));
+    // The list shrinks under the last page: the last page there is shown.
+    t.Select(4);
+    t.Press(Input::kRight);
+    CHECK(t.view().rows[4].value == "3/3");
+    with(kGamesPerPage + 1);
+    CHECK(t.view().rows[4].value == "2/2");
+    with(1);   // (one page again: no Page row)
+    CHECK_FALSE(Has(t.view(), "Page"));
+    t.Show();   // (the tab shown again: its first page)
+    with(3 * kGamesPerPage);
+    CHECK(t.view().rows[4].value == "1/3");
+}
+
 TEST_CASE("lobby tab: the list shows the players, the host, open places, the invite and the host's game") {
     Tab t;
     t.Show();
@@ -306,6 +375,41 @@ TEST_CASE("lobby tab: co-op started but not in the session yet says so, not 'not
     l.waiting = "Your friend's game turned this one away: the session is full.";
     t.Set(l);
     CHECK(t.view().rows[1].name == l.waiting);
+    CHECK(t.view().rows[2].name == "The players show here once this game is in the session.");
+    l.waiting_next = "Ask the host to choose Host (Multiplayer tab, or the title screen). Keep this page open: it joins "
+                     "by itself.";
+    t.Set(l);
+    CHECK(t.view().rows[2].name == l.waiting_next);
+}
+
+TEST_CASE("lobby tab: a join with no host to answer says so, not 'Co-op is starting...' forever (row 208)") {
+    // (hos_coop_host.h: 0 idle, 1 starting, 2 hosting, 3 joining, 4 waiting for the host, 5 connected, 6 failed)
+    CHECK(WaitingText(0, "", false, 0) == Waiting{});
+    CHECK(WaitingText(6, "", false, 99999) == Waiting{});
+    // Our own hosting: as before.
+    CHECK(WaitingText(1, "", false, 0).line == "Co-op is starting...");
+    CHECK(WaitingText(2, "", false, kNoAnswerMs * 3).line == "Co-op is starting...");
+    CHECK(WaitingText(2, "", false, 0).next.empty());
+    // Joining: first looking, then (no session after kNoAnswerMs) the host has not answered: Host first.
+    CHECK(WaitingText(3, "", false, 0).line == "Looking for the host's game...");
+    CHECK(WaitingText(5, "", false, kNoAnswerMs - 1).line == "Joining the host's game...");
+    for (const int state : {3, 5}) {
+        const Waiting w = WaitingText(state, "", false, kNoAnswerMs);
+        CHECK(w.line == "The host's game has not answered yet.");
+        CHECK(w.next ==
+              "Ask the host to choose Host (Multiplayer tab, or the title screen). Keep this page open: it joins by itself.");
+    }
+    // The host's PC did not answer directly: at once, with the ANSWER CODE.
+    const Waiting answer = WaitingText(4, "ANSWER-1234", false, 0);
+    CHECK(answer.line == "The host's game has not answered yet.");
+    CHECK(answer.next == "Ask the host to choose Host (Multiplayer tab, or the title screen). If they host already, "
+                         "send them this answer code: ANSWER-1234");
+    // Held by the host's approval (approve_joins): the host has to let us in, whatever the state and time.
+    for (const int state : {3, 4, 5}) {
+        const Waiting held = WaitingText(state, "ANSWER-1234", true, kNoAnswerMs * 2);
+        CHECK(held.line == "The host has to let you in.");
+        CHECK(held.next == "They answer with /allow in their chat. This page joins by itself once they do.");
+    }
 }
 
 TEST_CASE("lobby tab: in the session before a file is loaded, the players show with a line to load one") {

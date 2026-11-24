@@ -222,6 +222,7 @@ LineResult play_over_slow_line(std::uint32_t flags, std::uint64_t spike_every_ms
   clock.enet();
   coop::server::ServerOptions options;
   options.port = 0;
+  options.bind = 0x7F000001u;  // 127.0.0.1 only: a test listens on no other address
   options.session.join_password = "test-pass";
   options.now_us = clock.us();
   coop::server::EnetServer server(options);

@@ -6,8 +6,11 @@
 #include "coop_look_tunic.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <exception>
 #include <string_view>
 #include <utility>
 
@@ -37,11 +40,13 @@ void Fail(std::string* why, std::string text) {
     }
 }
 
-// Memory is compared in pieces of this size.
-constexpr std::size_t kPiece = std::size_t{4} << 20;
-
+// The game's memory at `address` holds the first `size` bytes of `texels`. Read and compared kComparePiece at a time
+// in a buffer on this (the look worker's) stack: nothing allocated per call, whatever the texture's size (row 260).
 bool Same(const Textures& memory, std::uint64_t address, const std::vector<std::uint8_t>& texels, std::size_t size) {
-    std::vector<std::uint8_t> piece(std::min(kPiece, size));
+    if (size > texels.size()) {
+        return false;
+    }
+    std::array<std::uint8_t, kComparePiece> piece;
     for (std::size_t at = 0; at < size; at += piece.size()) {
         const std::size_t n = std::min(piece.size(), size - at);
         if (!memory.Read(address + at, piece.data(), n)) return false;
@@ -145,6 +150,45 @@ std::pair<std::uint64_t, std::uint64_t> Sizes(const std::vector<std::shared_ptr<
     // A storage is the image's own size (the pack's texels), or its layout
     // rounded up a little.
     return {smallest, largest + kStorageSlack};
+}
+
+std::string PlacesLine(const std::vector<Place>& places, const Texels* names) {
+    std::string line;
+    char buf[64];
+    for (const Place& p : places) {
+        if (!line.empty()) line += ' ';
+        if (names != nullptr && p.texture < names->size()) {
+            line += (*names)[p.texture].name;
+        } else {
+            line += '#' + std::to_string(p.texture);
+        }
+        std::snprintf(buf, sizeof buf, "@0x%llx/%llu+%llu", static_cast<unsigned long long>(p.address),
+                      static_cast<unsigned long long>(p.serial), static_cast<unsigned long long>(p.size));
+        line += buf;
+    }
+    return line;
+}
+
+std::vector<std::pair<std::size_t, std::size_t>> Overlaps(const std::vector<Place>& a, const std::vector<Place>& b) {
+    std::vector<std::pair<std::size_t, std::size_t>> out;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        for (std::size_t j = 0; j < b.size(); ++j) {
+            if (a[i].address < b[j].address + b[j].size && b[j].address < a[i].address + a[i].size) {
+                out.emplace_back(i, j);
+            }
+        }
+    }
+    return out;
+}
+
+std::vector<std::pair<std::size_t, std::size_t>> Repeated(const std::vector<Place>& places) {
+    std::map<std::size_t, std::size_t> n;
+    for (const Place& p : places) ++n[p.texture];
+    std::vector<std::pair<std::size_t, std::size_t>> out;
+    for (const auto& [texture, count] : n) {
+        if (count > 1) out.emplace_back(texture, count);
+    }
+    return out;
 }
 
 Search Find(const Textures& textures, const std::vector<std::shared_ptr<const Texels>>& colours,
@@ -284,6 +328,28 @@ std::shared_ptr<const Texels> Wardrobe::Load(const std::string& colour) {
 }
 
 void Wardrobe::Step(std::uint64_t now_ms) {
+    try {
+        Once(now_ms);
+    } catch (const std::exception& e) {
+        Failed(e.what());
+    }
+}
+
+void Wardrobe::Failed(const char* why) {
+    // The game goes on: the next step looks at every texture again (this one may have stopped half way).
+    look_now_ = true;
+    if (said_failed_ >= kFailedSaid) return;
+    try {
+        ++said_failed_;
+        host_.log("coop: look: the " + host_.what + " wardrobe's step failed (" + why + "): tried again at the next "
+                  "step" + (said_failed_ == kFailedSaid ? " (said no more)" : ""));
+    } catch (...) {
+        // (no memory even for the line: nothing said)
+    }
+}
+
+void Wardrobe::Once(std::uint64_t now_ms) {
+    if (host_.textures == nullptr) return;   // (no game textures: nothing to look at)
     std::string want;
     {
         std::lock_guard lock(mutex_);
@@ -395,6 +461,15 @@ void Wardrobe::Step(std::uint64_t now_ms) {
                       " taken away: the game's memory there holds something else now");
         }
         places_ = std::move(found.places);
+        if (const auto twice = Repeated(places_); !twice.empty()) {
+            std::string line = "coop: look: row 198 guard: your Link's " + host_.what + " has textures found more than once "
+                               "among the game's (a copy with the game's own texels: your colour would show on it too):";
+            for (const auto& [texture, n] : twice) line += " #" + std::to_string(texture) + " x" + std::to_string(n);
+            if (line != said_repeated_) {
+                said_repeated_ = line;
+                host_.log(line);
+            }
+        }
         look_now_ = false, looked_ = true;
         generation_ = generation;
         if (!full) {
@@ -427,6 +502,15 @@ void Wardrobe::Step(std::uint64_t now_ms) {
     for (Place& p : places_) {
         if (p.drawn != target_ && Draw(*host_.textures, p, target_)) {
             ++drawn;
+        }
+    }
+    if (drawn != 0 && said_places_count_ < kPlacesSaid) {
+        // (row 198: where your colours are drawn, so a log shows whose texture each override lies on)
+        std::string line = PlacesLine(places_, target_.get());
+        if (line != said_places_) {
+            ++said_places_count_;
+            host_.log("coop: look: " + host_.what + " places: " + line);
+            said_places_ = std::move(line);
         }
     }
     if (drawn != 0) {

@@ -77,7 +77,7 @@ struct Boss {
     std::array<std::string_view, 2> outro_asks{};
 };
 
-inline constexpr std::size_t kBossCount = 10;
+inline constexpr std::size_t kBossCount = 13;  // 10 bosses and 3 mid-fight stage changes
 static_assert(kBossCount <= coop::protocol::kMaxSceneBoss + 1u);
 
 // The ten bosses, by BOSS_SCENE's boss index (0 to 7: CoopBoss::Rooms() order).
@@ -188,6 +188,10 @@ public:
     // any event running in our game (last Tick). Otherwise nothing of ours will run it: CoopBossBeaten::Apply gives
     // the boss's beaten set in its area then. Present thread (the inbox under its lock).
     bool DeathMayRun(std::uint8_t boss) const;
+    // enemies-dying-01111: whether `boss`'s death has begun (outro or done) and we are in its area (Here: its room's
+    // dungeon scene, or elsewhere, as in the boss rush's DodongoStage, the starter's scene near the starter). Its
+    // copy in our game is no copy any more then (SetDyingBosses).
+    bool DeathBegunHere(std::uint8_t boss, const Local& local) const;
 
 private:
     struct Fight {

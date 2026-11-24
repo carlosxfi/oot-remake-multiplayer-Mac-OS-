@@ -3,8 +3,11 @@
 #include "coop/protocol/animation_words.hpp"
 #include "coop_sensor_claim.h"
 #include "coop_bomb_share.h"
+#include "coop_boss.h"
+#include "coop_dungeon.h"
 #include "coop_enemy_shots.h"
 #include "coop_guard.h"
+#include "coop_pickups.h"
 #include "coop_world.h"
 
 #include <algorithm>
@@ -132,13 +135,35 @@ std::optional<bool> BossAlive(const std::vector<Seen>& seen, std::span<const std
 
 void NoteBossLives(const std::vector<Seen>& walk, BossLives& last) {
     for (const Seen& s : walk) {
-        if (s.life) last[s.name] = BossLifeSeen{s.address, s.life->life, false};
+        if (!s.life) continue;
+        auto& bodies = last[s.name];
+        const auto it = std::find_if(bodies.begin(), bodies.end(),
+                                     [&](const BossLifeSeen& b) { return b.address == s.address; });
+        if (it != bodies.end()) {
+            *it = BossLifeSeen{s.address, s.life->life, false};
+        } else {
+            // A new body of that name: the readings of deleted ones are over (the newest body speaks for the
+            // name, as one reading per name did).
+            std::erase_if(bodies, [](const BossLifeSeen& b) { return b.removed; });
+            bodies.push_back(BossLifeSeen{s.address, s.life->life, false});
+        }
     }
 }
 
+const BossLifeSeen* BossLifeOf(const BossLives& last, std::string_view name, std::uint64_t address) {
+    const auto it = last.find(name);
+    if (it == last.end()) return nullptr;
+    for (const BossLifeSeen& b : it->second) {
+        if (b.address == address) return &b;
+    }
+    return nullptr;
+}
+
 void NoteBossRemoved(std::uint64_t address, BossLives& last) {
-    for (auto& [name, seen] : last) {
-        if (address != 0 && seen.address == address) seen.removed = true;
+    for (auto& [name, bodies] : last) {
+        for (BossLifeSeen& seen : bodies) {
+            if (address != 0 && seen.address == address) seen.removed = true;
+        }
     }
 }
 
@@ -155,12 +180,14 @@ std::optional<bool> BossAliveKept(const std::vector<Seen>& walk, std::span<const
     for (const std::string_view body : bodies) {
         const auto it = last.find(body);
         if (it == last.end()) continue;  // never read here
-        if (it->second.life <= 0) {
-            died = true;
-        } else if (!it->second.removed) {
-            return true;  // away: alive
-        } else {
-            removed_alive = true;
+        for (const BossLifeSeen& seen : it->second) {  // (each body of that name)
+            if (seen.life <= 0) {
+                died = true;
+            } else if (!seen.removed) {
+                return true;  // away: alive
+            } else {
+                removed_alive = true;
+            }
         }
     }
     if (died) return false;
@@ -178,7 +205,8 @@ bool BossReadDead(const std::vector<Seen>& walk, std::span<const std::string_vie
     }
     for (const std::string_view body : bodies) {
         const auto it = last.find(body);
-        if (it != last.end() && it->second.life <= 0) {
+        if (it != last.end() && std::any_of(it->second.begin(), it->second.end(),
+                                            [](const BossLifeSeen& seen) { return seen.life <= 0; })) {
             return true;
         }
     }
@@ -206,7 +234,7 @@ std::optional<bool> BossOurs(const std::vector<Seen>& walk, std::span<const std:
 }
 
 bool IsPreBattleAnimation(std::string_view name) {
-    return name == "Sleep" || name.starts_with("Pre_Battle_");
+    return coop::protocol::anim::IsPreBattle(name);
 }
 
 std::optional<bool> BossPreBattle(const std::vector<Seen>& seen, std::span<const std::string_view> bodies) {
@@ -234,6 +262,7 @@ std::optional<bool> BossHurt(const std::vector<Seen>& seen, std::span<const std:
 
 bool IsShared(std::string_view name) {
     if (IsOwnPuzzle(name)) return false;  // before the Npc_ rule: the pond owner is one
+    if (IsOwnFollower(name)) return false;  // before the Npc_ and Animal_ rules (row 214)
     // Enemy shots (Enemy_MoblinClub_ShockWave is named like an enemy)
     // stay with the spawn sync: the game whose enemy fired one sends it.
     if (CoopEnemyShots::IsEnemyShot(name)) return false;
@@ -243,11 +272,6 @@ bool IsShared(std::string_view name) {
         return !name.starts_with("Npc_Navi") && !name.starts_with("Npc_Equipment") &&
                !name.starts_with("Npc_Invisible");
     }
-    // The horse a player rides (CoopRide::kHorse) is each game's own: shared,
-    // one game's Epona was a copy, frozen or pulled back under its rider, or
-    // the other game drew two horses (its copy and the ride's stand-in).
-    // The ride sync (coop_ride.h) shows the other player's horse instead.
-    if (name == "Animal_Epona_Adult") return false;
     return name.starts_with("Enemy_") || name.starts_with("Animal_") ||
            CoopWorld::IsBreakable(name);
 }
@@ -272,13 +296,6 @@ bool IsOwnPuzzle(std::string_view name) {
     // and _GetGoldScale, coop/host game_items). The fish are shared (IsFish,
     // fishing-2): the lure rules give each fish to the game whose lure it
     // goes for.
-    // Player report #64 (dungeon-sync-b, Revirie's 0.11.0 log). Child Ruto in
-    // Jabu-Jabu (Npc_Zora_Ruto_Child_001) is lifted and carried by one Link
-    // (her 'Act_LiftRest' animations): her AI follows that game's own Link.
-    // Shared as an NPC copy, the owner's 'Crouch' was played over the carried
-    // Ruto, so she dropped as soon as she was picked up, and again when the
-    // owner left the room (a new owner). Each game runs its own Ruto; the
-    // room flags she sets (switches, rooms cleared) stay shared.
     // Player report #100 (GitHub #253). A Business Scrub
     // (Enemy_Scrub_Business, _Leaf, _Seed) is a shop: once beaten, its talk
     // event (Event/EventFlow/Enemy_Scrub_Business_Common) turns it to our
@@ -290,8 +307,42 @@ bool IsOwnPuzzle(std::string_view name) {
     // over a scrub our Link had beaten and was talking to (the fishman's and
     // Ruto's case). Each game runs its own; the items it sells stay shared.
     return name.starts_with("Enemy_Scrub_Deku_Brothers") || name.starts_with("Enemy_Scrub_Business") ||
-           name.starts_with("Enemy_Scrub_ForestStage") || name.starts_with("Npc_Hylia_Fishman") ||
-           name.starts_with("Npc_Zora_Ruto_Child");
+           name.starts_with("Enemy_Scrub_ForestStage") || name.starts_with("Npc_Hylia_Fishman");
+}
+
+bool IsOwnFollower(std::string_view name) {
+    // Row 214 (the owner's 0.11.8 playtest, Ganon's Castle collapse). An actor whose own AI goes with the
+    // local Link: it waits for it, runs ahead of it, comes to it or is carried by it. Each game's AI reads only
+    // its own Link and its own story flags (the escape's EscapeFromCrumblingGanonCastle_* are per game), so a
+    // copy that plays one owner's actor shows it going with that owner's Link, and an owner change (the
+    // distance rule, an event claim) puts one game's escort, at its place and step, on another game whose own
+    // AI is at another step: Zelda's owner went P4 -> P1 -> P2 -> P4 -> P2 in the escape and she was stuck
+    // for nearly every player. Each game runs its own; what they do for the story (flags, items) is shared by
+    // the flag and item syncs as before. From the game's own AI (romfs Pack/Actor, scan in docs/objects.md
+    // "Followers"):
+    // - Npc_Hylia_Zelda_Adult (and _Scalable): NpcHyliaZeldaAdult.AISchedulePatrolMove runs her rail and
+    //   waits at its points for the player (ReachToPlayerWhenRailPointWait, ReachToPlayerDistance,
+    //   IsPlayerGoesFirst). Placed in CrumblingGanonCastle (the escape), FinalBattleField and GanonStage.
+    // - Npc_Zora_Ruto_Child (player report #64): lifted and carried by one Link ('Act_LiftRest'); shared,
+    //   the owner's 'Crouch' was played over the carried Ruto, so she dropped as soon as she was picked up,
+    //   and again when the owner left the room (a new owner). Her room flags stay shared.
+    // - Animal_Dog_* (the Market's dogs, Richard in Market and Kakariko): Animal_Dog.brain.FollowPlayer.
+    // - Animal_Epona_Adult (CoopRide::kHorse), Animal_Epona_Child, Animal_Horse, Animal_Horse_For_Ingo:
+    //   HorseMoveToPlayer / QueryQuadrupedCalcFollowTargetPos (the horse comes to the Link that called it).
+    //   Shared, one game's Epona was a copy, frozen or pulled back under its rider, or the other game drew two
+    //   horses (its copy and the ride's stand-in); the ride sync (coop_ride.h) shows the other's horse.
+    // - Npc_Hylia_Dampe_002 (Dampe's ghost, the Graveyard race): its own AI, outside any event, runs the race
+    //   rail ahead of the player and paces by it (GetDampeRaceParam, DistWithPlayer, DistanceFromRailRatePos,
+    //   HasPassFirstRailPoint). The race's prize flag stays shared.
+    // Not followers: the wagon and archery horses (no follow in their AI), Navi (never shared, Npc_Navi), the
+    // shop clerks and Pierre (ToPlayerDistance only turns them to the Link that talks or calls), Kaepora (only
+    // the event nodes every NPC has, Event*AISchedule*: his flights are events, which the event claim gives to
+    // the player in them) and the living Dampe, Npc_Hylia_Dampe_001 (his digging tour's follow is event nodes
+    // too, EventFollowToTargetActor; his rounds stay shared, issue 200).
+    return name.starts_with("Npc_Hylia_Zelda_Adult") || name.starts_with("Npc_Zora_Ruto_Child") ||
+           name == "Npc_Hylia_Dampe_002" ||
+           name.starts_with("Animal_Dog_") || name.starts_with("Animal_Epona_") || name == "Animal_Horse" ||
+           name.starts_with("Animal_Horse_For_Ingo");
 }
 
 bool IsFish(std::string_view name) {
@@ -390,7 +441,12 @@ const std::vector<PartRule>& PartRules() {
         boss("Enemy_MiddleBoss_DarkLink", {"Enemy_MiddleBoss_DarkLink_EffectLocater"}, kAny);
         boss("Enemy_MiddleBoss_FlareDancer", {"Enemy_MiddleBoss_FlareDancer_FireBody"}, kAny);
         boss("Enemy_MiddleBoss_Poe_Meg", {"Enemy_MiddleBoss_Poe_Meg_Dummy"}, kAny);
-        boss("Enemy_DeadHand", {"Enemy_DeadHand_Hand"}, kSummoned);
+        // Row 232: Dead Hand's hands are no part of him. They are placed enemies of their own (their own AI, BSA and
+        // perception: DeadHand_Hand.action.basicattack grabs the target it perceives, its own game's Link), so as
+        // his parts they followed his owner and only that player was ever grabbed. Each now goes to its nearest
+        // player like any enemy; its grab tells its own game's Dead Hand (OneShotDeadHandHandSendMessage
+        // MessageAppear), who rises for it in his owner's game (his turns pass him between the players). Dead
+        // Hand stays a boss by name (IsBossOrPart).
         // Enemies with a part or a brood. Several of one kind may share a
         // room: a part follows the nearest.
         enemy("Enemy_Dodongo", {"Enemy_Dodongo_Attention"}, 10.0f);
@@ -492,11 +548,67 @@ bool EnemyBrainSwitch(std::string_view value) {
     return !value.empty() && value != "0";
 }
 
+std::uint8_t AttackBits(std::optional<bool> attacking) {
+    if (!attacking) {
+        return 0;
+    }
+    return static_cast<std::uint8_t>(proto::object_state::attack_read |
+                                     (*attacking ? proto::object_state::attacking : 0));
+}
+
+std::vector<std::string_view> RallyMakers(const std::vector<std::string>& actor_names) {
+    std::vector<std::string_view> makers;
+    for (const std::string& name : actor_names) {
+        if (CoopEnemyShots::IsRallyBall(name)) {
+            for (const std::string_view m : CoopEnemyShots::MakersOf(name)) {
+                if (std::find(makers.begin(), makers.end(), m) == makers.end()) {
+                    makers.push_back(m);
+                }
+            }
+        }
+    }
+    return makers;
+}
+
+std::optional<bool> AttackWithRally(const Seen& s, const std::vector<std::string_view>& rally_makers) {
+    if (!s.attacking || *s.attacking) {
+        return s.attacking;
+    }
+    for (const std::string_view m : rally_makers) {
+        if (s.name.starts_with(m)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string_view PackFamily(std::string_view name) {
+    // Pair/pack survey (2026-11-21): these fight together by messages each one's AI writes into its ally's
+    // blackboard (Lizalfos/Dinolfos: SetBattlingAllyFromReferenceLink, IsRequestingCoop, IsReceivedCoop*Message;
+    // Wolfos: AllAlliesDisableMelee, tag WolfosAlly, IsDisableMeleeBattle). A copy's held brain sends none, so
+    // with two owners each game runs half a pair with no partner. One family near together is one group: one
+    // owner, the whole pack's teamwork in one game (no boss bit: plain enemies, no turns).
+    if (name.find("_Dictionary") != std::string_view::npos || name.find("_Haribote") != std::string_view::npos) {
+        return {};
+    }
+    if (name.starts_with("Enemy_Lizalfos") || name.starts_with("Enemy_Dinolfos")) return "lizalfos";
+    if (name.starts_with("Enemy_Stalfos")) return "stalfos";
+    if (name.starts_with("Enemy_Wolfos")) return "wolfos";
+    return {};
+}
+
+bool KeepsTarget(std::string_view name) {
+    // Enemy survey: Anubis mirrors its target's moves; passed between players every attack, nobody can line it up.
+    // No attack read is sent, so the server never turns it: it stays with whoever moves it (the near rule).
+    return name.starts_with("Enemy_Anubis");
+}
+
 bool IsBossOrPart(std::string_view name) {
     if (name.find("_Dictionary") != std::string_view::npos) return false;
     if (name.starts_with("Enemy_DungeonBoss_") || name.starts_with("Enemy_MiddleBoss_")) {
         return true;
     }
+    if (name == "Enemy_DeadHand") return true;  // (row 232: his hands are plain enemies, no part rule names him)
     for (const PartRule& rule : PartRules()) {
         if (rule.part.boss && rule.part.roots.front() == name) return true;
     }
@@ -562,6 +674,37 @@ std::vector<proto::ObjectGroupEntry> GroupsOf(
     for (const GroupInput& m : walk) {
         const GroupPart* part = PartOf(m.name);
         if (part == nullptr) {
+            if (const std::string_view family = PackFamily(m.name); !family.empty()) {
+                // A pack (PackFamily): the root is the lowest id of its family within kPackReach (every game picks
+                // the same); a root linked before stays out to kGroupKeep times the reach.
+                const GroupInput* root = nullptr;
+                if (const auto was = linked.find(m.id); was != linked.end()) {
+                    for (const GroupInput& r : walk) {
+                        if (r.id != was->second) continue;
+                        const float keep = kPackReach * kGroupKeep;
+                        const float d2 = dist2(r, m);
+                        if (PackFamily(r.name) == family && !(m.id < r.id) && std::isfinite(d2) && d2 <= keep * keep) {
+                            root = &r;
+                        }
+                        break;
+                    }
+                }
+                if (root == nullptr) {
+                    root = &m;
+                    for (const GroupInput& r : walk) {
+                        if (!(r.id < root->id) || PackFamily(r.name) != family) continue;
+                        const float d2 = dist2(r, m);
+                        if (std::isfinite(d2) && d2 <= kPackReach * kPackReach) root = &r;
+                    }
+                }
+                // Never the boss bit: their AI is a plain enemy's (it chases only its owner's Link), and the boss
+                // rules would pass the pack between players, the mob shuttle the owner settled off (geno-fix-0119).
+                // A lone one sends nothing unless it was linked before (then once, on its own again).
+                if (root != &m || linked.contains(m.id)) {
+                    out.push_back({m.id, root->id, std::uint8_t{0}});
+                }
+                continue;
+            }
             if (IsBossOrPart(m.name)) out.push_back({m.id, m.id, proto::object_group::boss});
             continue;
         }
@@ -630,6 +773,58 @@ bool IsSplitPart(std::string_view name) {
     return name == "Enemy_Floormaster_Little" || name == "Enemy_Floormaster_Little_Truth";
 }
 
+bool IsBattleManager(std::string_view name) {
+    return name == "Enemy_KotakeKoumeBattleManager";
+}
+
+bool InBossRoomTable(std::string_view name) {
+    for (const CoopBoss::Room& room : CoopBoss::Rooms()) {
+        if (std::find(room.parts.begin(), room.parts.end(), name) != room.parts.end()) return true;
+    }
+    return false;
+}
+
+bool Sync::CopyBossDying(const Object& o) const {
+    if (std::find(dying_.begin(), dying_.end(), o.name) != dying_.end()) return true;
+    return !InBossRoomTable(o.name) && (o.dead_at != 0 || o.owner_life_zero);
+}
+
+std::string_view GrabbingSummoner(std::string_view name) {
+    // DeadHand_Hand.action.basicattack: the hand grabs the Link its own perception sees (its own game's), and tells
+    // its own game's Dead Hand, who rises by that Link.
+    if (name == "Enemy_DeadHand_Hand") return "Enemy_DeadHand";
+    return {};
+}
+
+bool IsScreamer(std::string_view name) {
+    // Row 230: their packs' RedeadParam (the Gibdo's has the Redead's as its parent).
+    return (name.starts_with("Enemy_ReDead") || name.starts_with("Enemy_Gibdo")) &&
+           name.find("_Dictionary") == std::string_view::npos;
+}
+
+bool IsScream(std::string_view animation, std::int32_t took) {
+    // The scream's AS nodes (AS/Enemy_ReDead.root, Enemy_Gibdo.root: Shout, CryStanding); the bite is Attack_*.
+    // A hit that took no life while it plays none of the bite's is the scream too.
+    if (animation == "Shout" || animation == "CryStanding") return true;
+    return took == 0 && !animation.empty() && !animation.starts_with("Attack");
+}
+
+bool InScreamReach(const proto::Vec3& enemy, const std::optional<proto::Quat>& facing, const proto::Vec3& link) {
+    const float dx = link[0] - enemy[0], dy = link[1] - enemy[1], dz = link[2] - enemy[2];
+    if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(dz)) return false;
+    const float flat = std::sqrt(dx * dx + dz * dz);
+    if (flat > kScreamReachM || std::fabs(dy) > kScreamHighM) return false;
+    if (!facing || flat < 0.01f) return true;
+    // Its front: the rotation's z axis (column 2), on the ground.
+    const auto& q = *facing;  // x, y, z, w
+    const float fx = 2.0f * (q[0] * q[2] + q[3] * q[1]);
+    const float fz = 1.0f - 2.0f * (q[0] * q[0] + q[1] * q[1]);
+    const float fl = std::sqrt(fx * fx + fz * fz);
+    if (!(fl > 1e-4f)) return true;
+    const float cosine = (fx * dx + fz * dz) / (fl * flat);
+    return cosine >= std::cos(kScreamAngleDeg * 3.14159265f / 180.0f);
+}
+
 std::string_view MinionMaker(std::string_view name) {
     // Made by the boss's own spawn action in the fight (Pack/Actor; the
     // Dodongo's: its AI node ExecuteDungeonBossDodongoSpawnBaby). The parts a
@@ -646,6 +841,12 @@ std::string_view MinionMaker(std::string_view name) {
     // MinionOwner is 0 and nothing changes.
     if (name == "Enemy_DungeonBoss_Gohma_Egg") return "Enemy_DungeonBoss_Gohma";
     if (name == "Enemy_BabyDodongo") return "Enemy_DungeonBoss_Dodongo";
+    // Row 231 (Geno's survey): Meg's decoys (no BSA, MaxLife 1, their own AI that goes to the seat Meg's message
+    // names: ExecutePoeMegMessageReceiver, MegDummy_SeatId) are made anew each cycle by each game's Meg, which rolls
+    // its own layout, and got ids by order, so three made in one frame matched differently between games. Only
+    // her owner's are kept and shared; a copy game makes those (as Gohma's eggs). A copy's Meg that remakes them
+    // in a loop is logged (kMinionLoopMax), still deleted.
+    if (name == "Enemy_MiddleBoss_Poe_Meg_Dummy") return "Enemy_MiddleBoss_Poe_Meg";
     return {};
 }
 
@@ -664,6 +865,27 @@ bool IsLateEncounter(std::string_view name) {
     }
     // Twinrova's battle manager belongs to the boss fight (the boss sync).
     return name != "Enemy_KotakeKoumeBattleManager";
+}
+
+bool CopyGoesWithoutDeath(std::string_view name, bool dungeon) {
+    return !dungeon && IsLateEncounter(name);  // (a dungeon's rooms count their own kills: as before)
+}
+
+bool OwnLogicEncounter(std::string_view name, std::string_view scene) {
+    return scene.starts_with("GerudoFortress") && name.starts_with("Enemy_MiddleBoss_GerudoThief");
+}
+
+bool IsOwnInScene(std::string_view name, std::string_view scene) {
+    if (!scene.starts_with("GerudoFortress")) {
+        return false;
+    }
+    for (const std::string_view carpenter :
+         {"Npc_Hylia_013_Adult", "Npc_Hylia_014_Adult", "Npc_Hylia_015_Adult", "Npc_Hylia_016_Adult"}) {
+        if (name == carpenter) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::string_view AnimationBase(std::string_view name) {
@@ -729,8 +951,23 @@ bool IsStunAnimation(std::string_view name) {
     // files: Morpha 'ChanceTime', 'Chance_time_St'; Volvagia 'ChanceTimeDamageStart'; the Poe sisters 'Chance_St',
     // 'ChanceTime_Loop'; Phantom Ganon and Ganondorf 'DownTimeReaction_Start'). Gohma's 'ChanceAfterAttack' and
     // 'Attack_Chance' are her own moves (the owner's too), not a stun of a hit.
-    return first == "Stun" || first == "Down" || first == "Fall" || first == "Faint" || first == "Chance" ||
-           first.starts_with("ChanceTime") || first.starts_with("DownTimeReaction");
+    // Row 211: the stuns whose first word is no Stun/Down word (read from every boss and mid-boss AS file): Ganondorf's
+    // knockdown by his own ball sent back ('LightBallDamage_Start/Loop/End', his interruptweakpointhit module, the
+    // light and the charge ball), Ganon's light-arrow knockdown ('LightArrowDown_*', 'LightArrowDamage_*',
+    // 'Lightarrow_Damage_*'), the Lizalfos' and the Gerudo Thief's 'StunA'..'StunC' / 'StunAirA'.., Big Octo's
+    // 'ShortStun_L/R'. Plain hit reactions ('Damage', 'SmallDamage') are no stun.
+    // Dark Link: his chance window ('Dark_Chance_St/_Damage_B/_Ed', AS nodes 'DarkChanceSt'..; not every 'Dark_' word:
+    // 'Dark_Wait', 'Dark_Move_Run' are moves) and the player's no-life stuns in his AS ('Paralysis_*' a Deku Nut,
+    // 'Freeze' / 'FreezeBreak' an ice arrow). Ganon: 'Tail_Chance', the tail window his down goes on into.
+    // Not stuns (their own moves, which a copy plays from the owner's verbs): the Gerudo Thief's 'BigChance', Kotake's
+    // and Koume's 'Tired_*' (a brain verb), Morpha's tentacle 'SpinChance*' (its spin attack), Gohma's
+    // 'Ceiling_Spawn_Chance_*' (her larva drop), Dead Hand's 'Repel_Down' (a hit that takes life: its owner reacts).
+    return first.starts_with("Stun") || first == "ShortStun" || first == "Down" || first == "Fall" ||
+           first == "Faint" || first == "Chance" || first.starts_with("ChanceTime") ||
+           first.starts_with("DownTimeReaction") || first == "LightBallDamage" || first == "LightArrowDown" ||
+           first == "LightArrowDamage" || first == "Lightarrow" || base.starts_with("Dark_Chance") ||
+           first.starts_with("DarkChance") || first == "Paralysis" || first.starts_with("Freeze") ||
+           base.starts_with("Tail_Chance");
 }
 
 proto::Quat QuatOf(const Mat3& m) {
@@ -1070,6 +1307,9 @@ void Sync::Reset() {
     game_deletes_.clear();
     bound_.clear();
     refused_.clear();
+    minion_refusals_.clear();
+    minion_loop_.clear();
+    grabbing_.clear();
     decider_ = 0;
     // next_key_ and made_counter_ go on: the director never makes a key
     // twice, and the server keeps made ids until they are removed.
@@ -1239,6 +1479,20 @@ std::vector<std::pair<std::uint64_t, proto::BossBsa>> Sync::BossVerbsIn() const 
     return out;
 }
 
+std::vector<std::pair<std::uint64_t, proto::BossOrders>> Sync::BossOrdersIn() const {
+    std::vector<std::pair<std::uint64_t, proto::BossOrders>> out;
+    for (const auto& [address, o] : objects_) {
+        if (!o.orders_in) {
+            continue;
+        }
+        const auto owner = owners_.find(o.id);
+        if (owner != owners_.end() && owner->second.player != 0 && owner->second.player != self_) {
+            out.emplace_back(address, *o.orders_in);
+        }
+    }
+    return out;
+}
+
 std::optional<std::uint8_t> Sync::OwnerOf(std::uint64_t address) const {
     const auto it = objects_.find(address);
     if (it == objects_.end()) {
@@ -1254,6 +1508,65 @@ std::optional<std::uint8_t> Sync::OwnerOf(std::uint64_t address) const {
 bool Sync::OwnerSaysDead(std::uint64_t address) const {
     const auto it = objects_.find(address);
     return it != objects_.end() && (it->second.dead_at != 0 || it->second.owner_life_zero);
+}
+
+const Sync::Object* Sync::HeldByItsBoss(const Object& o) const {
+    if (!IsBossPart(o.name)) {
+        return nullptr;
+    }
+    const GroupPart* part = PartOf(o.name);
+    for (const auto& [address, other] : objects_) {
+        if (std::find(part->roots.begin(), part->roots.end(), other.name) == part->roots.end()) {
+            continue;
+        }
+        // Its boss, here and alive: not dead by its life, and no death said or begun for it.
+        if (other.dead_at == 0 && !other.dead_now && !other.owner_life_zero && !(other.life && *other.life <= 0)) {
+            return &other;
+        }
+    }
+    return nullptr;
+}
+
+bool Sync::GoesWithoutDeath(std::uint64_t address, std::uint64_t now_us) {
+    const auto it = objects_.find(address);
+    if (it == objects_.end()) {
+        return false;
+    }
+    Object& o = it->second;
+    if (o.quiet_gone) {
+        return true;
+    }
+    // Row 219: a seed's one-time flying pot (CoopPickups::IsOneTimeHolder, by its placement) gives its item once, in
+    // the game where it died; its own death here would drop the item a second time.
+    const bool holder = o.id.kind == proto::ObjectKind::placed && CoopPickups::IsOneTimeHolder(o.id.value);
+    if (!holder && (!bound_.contains(address) || !IsLateEncounter(o.name))) {
+        return false;  // only a director's copy of another game's encounter (our own game made the others)
+    }
+    if (const auto own = owners_.find(o.id); own != owners_.end() && own->second.player == self_) {
+        return false;  // handed to us: ours to fight and to die here
+    }
+    if (!holder && !CopyGoesWithoutDeath(o.name, CoopDungeon::IsDungeonScene(scene_))) {
+        return false;
+    }
+    // Its look follows its owner's own death until the owner's OBJECT_REMOVE dead deletes it (dead_now there);
+    // kDeadGraceUs from now it goes anyway.
+    o.quiet_gone = true;
+    if (o.dead_at == 0) {
+        o.dead_at = now_us;
+    }
+    o.hit_sum = 0;
+    o.hit_place.reset();
+    o.hit_record.reset();
+    notes_.emplace_back(holder ? "row 219: its owner killed it: a one-time holder, ours goes without a death here (its "
+                                 "death would drop its item again): " + o.name
+                               : "report 200: its owner killed it: our copy of their encounter goes without a death here "
+                                 "(its death would run our game's own defeat event with our Link): " + o.name);
+    return true;
+}
+
+bool Sync::GoneWithoutDeath(std::uint64_t address) const {
+    const auto it = objects_.find(address);
+    return it != objects_.end() && it->second.quiet_gone;
 }
 
 std::vector<std::pair<std::uint64_t, std::string>> Sync::Owned() const {
@@ -1408,14 +1721,21 @@ proto::ObjectState Sync::StateOf(Object& o, std::uint64_t now_us) {
     if (o.bsa) {
         state.bsa = o.bsa;  // native boss sync: a boss's brain and action verbs
     }
+    if (o.orders) {
+        state.orders = o.orders;  // row 222: its battle manager's orders
+    }
     if (o.rotation) {
         state.rotation = QuatOf(*o.rotation);
     }
     if (o.life) {
         state.life = proto::ObjectLife{*o.life, o.max};
     }
+    state.state = AttackBits(KeepsTarget(o.name) ? std::nullopt : o.attacking);  // boss turns (not Anubis)
     if (o.own_event_until > now_us) {
-        state.state = proto::object_state::in_event;  // S2: our Link's event binds it
+        state.state = static_cast<std::uint8_t>(state.state.value_or(0) | proto::object_state::in_event);  // S2
+    }
+    if (state.state && *state.state == 0) {
+        state.state.reset();
     }
     return state;
 }
@@ -1702,6 +2022,7 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
     // place; a drop of life on a copy we do not own is our hit.
     // A pickup taken elsewhere (taken_, from the last Apply) is hidden.
     std::map<std::uint64_t, const Seen*> now_seen;
+    const std::vector<std::string_view>& rally_makers = rally_makers_;  // row 211: its attack goes on
     std::vector<const Seen*> fresh;
     std::set<std::uint64_t> hidden;
     {
@@ -1761,7 +2082,10 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
     }
     for (const Seen& s : seen) {
         if (s.hash != 0 && s.hash != kNoHash) {
-            if (const auto t = taken_.find(s.hash); t != taken_.end() && RemovedWhenTaken(s.name)) {
+            // Row 219: a listed one-time placement goes by its key whatever its actor now is (a seed's
+            // swapped pickup, its one-time pot): CoopPickups::IsOneTime.
+            if (const auto t = taken_.find(s.hash);
+                t != taken_.end() && (RemovedWhenTaken(s.name) || CoopPickups::IsOneTime(s.hash))) {
                 // A chest has no near rule (issue 87): it is bound beside our
                 // Link too, and shown open (below, issue 195).
                 const bool chest = s.name.starts_with("Obj_TBox_");
@@ -2002,8 +2326,8 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
                 }
             }
         }
-        if (!IsShared(s.name)) {
-            continue;
+        if (!IsShared(s.name) || IsOwnInScene(s.name, scene_)) {
+            continue;  // (row 212: the fortress's carpenters are each game's own)
         }
         now_seen[s.address] = &s;
         const auto it = objects_.find(s.address);
@@ -2073,6 +2397,13 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         }
         o.slots = s.slots;
         o.bsa = s.bsa;
+        o.orders = s.orders;
+        o.attacking = AttackWithRally(s, rally_makers);
+        const bool rally_held = o.attacking.value_or(false) && !s.attacking.value_or(true);
+        if (rally_held && !o.rally_held) {
+            notes_.emplace_back(o.name + ": its own rally ball flies here: its attack goes on, no boss turn (row 211)");
+        }
+        o.rally_held = rally_held;
         o.event_member = s.event_member;  // row 97
         o.sensor_in_area = s.sensor_in_area;  // row 138(8)
         if (s.hit_at) {
@@ -2460,6 +2791,8 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         o.animation = s->animation;
         o.slots = s->slots;
         o.bsa = s->bsa;
+        o.orders = s->orders;
+        o.attacking = AttackWithRally(*s, rally_makers);
         o.seen_at = now_us;
         o.name = s->name;
         o.breakable = CoopWorld::IsBreakable(s->name);
@@ -2581,6 +2914,18 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
                 if (!waiting) {
                     if (!refused_.contains(s->address)) {
                         ++refused_count_;
+                        // Row 231: a copy's boss that remakes what we delete, again and again (Meg's decoys: a
+                        // copy's Meg may make them anew when hers are gone), is still refused: matching ours by
+                        // order again would bring back row 231's different layouts and show the owner's beside
+                        // ours. The loop is logged once a scene per name, for the run to show whether it happens.
+                        auto& times = minion_refusals_[s->name];
+                        times.push_back(now_us);
+                        while (!times.empty() && now_us - times.front() > kMinionLoopUs) times.pop_front();
+                        if (times.size() > kMinionLoopMax && minion_loop_.insert(s->name).second) {
+                            notes_.emplace_back("minions: our copy of " + std::string(maker) + " made " +
+                                                std::to_string(times.size()) + " " + s->name +
+                                                " within 3 s (a loop): still deleted, the owner's kept");
+                        }
                     }
                     refused.insert(s->address);
                 }
@@ -2648,9 +2993,30 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
     Apply(self, now_us, send, writes);
     // Copies their owner saw die that are still here after the grace.
     dead_.clear();
-    for (const auto& [address, o] : objects_) {
-        if (o.dead_at != 0 && (o.dead_now || now_us - o.dead_at >= kDeadGraceUs)) {
+    for (auto& [address, o] : objects_) {
+        if (o.dead_at == 0) {
+            continue;
+        }
+        if (o.dead_now || now_us - o.dead_at < kDeadGraceUs) {
+            if (o.dead_now) {
+                dead_.insert(address);
+            }
+            continue;
+        }
+        const Object* boss = HeldByItsBoss(o);
+        if (boss == nullptr) {
             dead_.insert(address);
+        } else if (!o.held_said && now_us - o.dead_at >= kDeadGraceUs + kHeldSayUs) {
+            // Rows 257/258 (LANE1 proof): a leftover, its own death never ended it; held, not deleted under its boss.
+            o.held_said = true;
+            char line[320];
+            std::snprintf(line, sizeof line,
+                          "a boss part dead in its owner's game still here %llu s on: held by its boss %016llx %s, "
+                          "not deleted (rows 257/258): %016llx %s life %d",
+                          static_cast<unsigned long long>((now_us - o.dead_at) / 1'000'000),
+                          static_cast<unsigned long long>(boss->id.value), boss->name.c_str(),
+                          static_cast<unsigned long long>(o.id.value), o.name.c_str(), o.life.value_or(-1));
+            notes_.emplace_back(line);
         }
     }
 
@@ -2659,10 +3025,11 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
     // "copy is never written" rule before the death began here, and bosses are never resent). Its whole remaining
     // life goes to its own Life step once (direct, never a write), which CoopBossNative lets end it
     // (review-boss-0114, at every boss; Gohma's own clamp may still hold her at 1).
+    // enemies-dying-01111: dying by CopyBossDying: a mini-boss (no boss room names it) was never named dying by the
+    // director, so its copy stood on alive after its owner's kill.
     for (auto& [address, o] : objects_) {
-        if (o.death_given || o.hurt_until != 0 || !o.life || *o.life <= 0 || !IsBossOrPart(o.name) ||
-            !(o.dead_at != 0 || o.owner_life_zero) ||
-            std::find(dying_.begin(), dying_.end(), o.name) == dying_.end()) {
+        if (o.quiet_gone || o.death_given || o.hurt_until != 0 || !o.life || *o.life <= 0 || !IsBossOrPart(o.name) ||
+            !(o.dead_at != 0 || o.owner_life_zero) || !CopyBossDying(o)) {
             continue;
         }
         const auto own = owners_.find(o.id);
@@ -2678,6 +3045,15 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
                             " given to its own Life step: " + o.name);
     }
 
+    // Row 230: each hit our Link took (NoteOurLinkHit) goes to the screamer standing at its attacker's place (the
+    // nearest within kScreamerAtM): the hit record names no actor (its +0x240 word is the hit's sensor).
+    std::unordered_map<std::uint64_t, LinkHit> scream_hits;
+    for (const LinkHit& hit : link_hits_) {
+        if (const std::uint64_t at = ScreamerAt(objects_, hit.from); at != 0) {
+            scream_hits[at] = hit;  // (two hits from one screamer in one walk: the later)
+        }
+    }
+
     for (auto& [address, o] : objects_) {
         // A hurt the game did not take (or took differently) in time: the
         // rest goes to the game's own Life step (WriteLife; an enemy's life is
@@ -2686,7 +3062,7 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         if (o.hurt_until != 0 && now_us >= o.hurt_until) {
             const auto boss_owner = owners_.find(o.id);
             const bool boss_ours = boss_owner != owners_.end() && boss_owner->second.player == self;
-            const bool dying = std::find(dying_.begin(), dying_.end(), o.name) != dying_.end();
+            const bool dying = CopyBossDying(o);
             if (o.life && *o.life > o.hurt_target && IsBossOrPart(o.name) && boss_ours) {
                 // Our boss refused another player's replayed hit (boss-hits, tracker 104, issue 150): the
                 // replay is a template sword hit, and Gohma's damage rules judge it as no eye hit, so only her
@@ -2715,6 +3091,38 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
                 notes_.emplace_back("a hit the dying boss's game did not take: " +
                                     std::to_string(*o.life - o.hurt_target) +
                                     " given to its own Life step (its death has begun): " + o.name);
+            } else if (o.life && *o.life > 0 && o.hurt_target <= 0 && IsBossPart(o.name) && !o.death_given &&
+                       o.dead_at == 0 && !o.owner_life_zero && !dying) {
+                // boss-body-life (LANE1 run 20261123-104651, Twinrova): the killing hit came while its owner's
+                // still lives here (our own kill of the copy, or the owner's death not heard yet). The copy's own
+                // Life step holds it at 1 until then (CoopBossNative::HeldLifeStep: never dies of its own), so a
+                // give now is swallowed, and marked given it blocked every later killing blow: Koume and Kotake
+                // stood at life 1 for good and never fused. Not given now: its owner's death (a dead remove, or its
+                // samples at life 0) starts the killing replay again (Lower), and a refusal then lands here released.
+                ++hurt_missed_;
+                if (!std::exchange(o.kill_held, true)) {
+                    ++part_kills_held_;
+                    notes_.emplace_back("a killing hit the boss part's game did not take while its owner's lives: held "
+                                        "until its owner's death (its own Life step keeps it at 1 until then): " +
+                                        o.name);
+                }
+            } else if (o.life && *o.life > 0 && o.hurt_target <= 0 && IsBossPart(o.name) && !o.death_given) {
+                // Rows 257/258 (Barinade, a co-op crash): another game killed a boss's part (a jellyfish), and our
+                // copy's game refused the replayed killing hit (the stand-in hit is no hit its rules take outside
+                // its weak time). Its life stayed 1, the copy was deleted from outside kDeadGraceUs later, and its
+                // boss never saw it die: its next phase (Phase4_St, the owner's) unstuck a jellyfish half deleted
+                // (ModelBind gone: a null write). The hitter's game judged the kill: the whole life goes into the
+                // part's own Life step (never a write), once, so its own death runs and tells its boss, as there.
+                ++hurt_missed_;
+                ++part_kills_stepped_;
+                o.death_given = true;
+                LifeWrite w{o.address, 0, *o.life, std::nullopt};
+                w.direct = true;
+                writes.push_back(w);
+                notes_.emplace_back("a killing hit the boss part's game did not take: its life " +
+                                    std::to_string(*o.life) +
+                                    " given to its own Life step (the hitter's game killed it; rows 257/258): " +
+                                    o.name);
             } else if (o.life && *o.life != o.hurt_target && IsBossOrPart(o.name)) {
                 // A boss copy is never written (boss-intro, the native rule): its game refused the owner's hit
                 // (Gohma holds her life at 1 outside her weak point), so its life stays what its own game says.
@@ -2809,6 +3217,30 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
             send.emplace_back(std::move(spawn));
             o.announced = true;
         }
+        // Row 230: our own Link was frozen by this Redead's or Gibdo's scream (NoteOurLinkHit): its samples carry
+        // the hit's kind (ObjectStrike), so each other game whose Link is in the scream's reach freezes its own.
+        if (const auto took_hit = scream_hits.find(address); took_hit != scream_hits.end()) {
+            const LinkHit hit = took_hit->second;
+            const std::string anim = o.animation ? o.animation->name : std::string();
+            if (!IsScreamer(o.name)) {
+                // (not a screamer: nothing to share)
+            } else if (!known) {
+                notes_.emplace_back("scream: our Link took a hit from " + o.name + " ('" + anim +
+                                    "'): no owner known (alone, or not yet given), nothing to share");
+            } else if (owner->second.player != self) {
+                notes_.emplace_back("scream: our Link took a hit from a copy of " + o.name + " ('" + anim +
+                                    "'): not ours, its owner's game shares its own");
+            } else if (!IsScream(anim, hit.took)) {
+                notes_.emplace_back("scream: our Link took a hit from our " + o.name + " playing '" + anim + "' (" +
+                                    std::to_string(hit.took) + " quarters): not a scream, not shared");
+            } else {
+                o.strike_out = proto::ObjectStrike{++o.strike_seq, hit.kind};
+                o.strike_show_until = now_us + kHitShowUs;
+                o.sent_once = false;  // at once, not at the next sample
+                notes_.emplace_back("scream: our " + o.name + " froze our Link ('" + anim + "', " +
+                                    std::to_string(hit.took) + " quarters): shared for the Links in its reach");
+            }
+        }
         // The owner's samples.
         if (known && owner->second.player == self &&
             (!o.sent_once || now_us - o.sent_at >= kSampleEveryUs)) {
@@ -2824,7 +3256,8 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
             const bool changed = life != o.sent_life || Moved(o.position, o.sent_position) ||
                                  Turned(rotation, o.sent_rotation) ||
                                  animation != o.sent_animation || slots != o.sent_slots ||
-                                 (o.bsa && o.sent_bsa_seq != o.bsa->seq);  // native boss sync: a new boss verb at once
+                                 (o.bsa && o.sent_bsa_seq != o.bsa->seq) ||  // native boss sync: a new boss verb at once
+                                 (o.orders && o.sent_orders_seq != o.orders->seq);  // row 222: a new order at once
             if (!o.sent_once || changed || now_us - o.sent_at >= kStillEveryUs) {
                 proto::ObjectSample sample;
                 sample.id = o.id;
@@ -2832,6 +3265,9 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
                 sample.state = StateOf(o, now_us);
                 if (o.hit_out && now_us < o.hit_show_until) {
                     sample.state.hit = o.hit_out;  // protocol 14: the hit our game took, for every copy
+                }
+                if (o.strike_out && now_us < o.strike_show_until) {
+                    sample.state.strike = o.strike_out;  // row 230: its scream froze our Link
                 }
                 send.emplace_back(sample);
                 o.sent_at = now_us;
@@ -2844,9 +3280,13 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
                 if (o.bsa) {
                     o.sent_bsa_seq = o.bsa->seq;
                 }
+                if (o.orders) {
+                    o.sent_orders_seq = o.orders->seq;
+                }
             }
         }
     }
+    link_hits_.clear();  // row 230: a hit with no screamer of the walk at its place is not kept for a later one
 
     // churn-b: an away object that came back goes on with its owner; one
     // still off the walk after kAwayKeepUs is gone (left), its owner forgotten.
@@ -2932,6 +3372,29 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
 
     std::vector<proto::ObjectPresence> present;
     present.reserve(objects_.size() + away_.size());
+    // Row 232: a summoned piece we own in its attack holds our own Link: its boss is wanted here.
+    std::set<std::string, std::less<>> grabbing;
+    for (const auto& [address, o] : objects_) {
+        const std::string_view boss = GrabbingSummoner(o.name);
+        const auto owner = owners_.find(o.id);
+        if (!boss.empty() && o.attacking.value_or(false) && now_seen.contains(address) && owner != owners_.end() &&
+            owner->second.player == self) {
+            grabbing.insert(std::string(boss));
+        }
+    }
+    if (grabbing != grabbing_) {
+        for (const std::string& boss : grabbing) {
+            if (!grabbing_.contains(boss)) {
+                notes_.emplace_back("grab: our " + boss + "'s piece holds our Link: " + boss + " wanted here");
+            }
+        }
+        for (const std::string& boss : grabbing_) {
+            if (!grabbing.contains(boss)) {
+                notes_.emplace_back("grab: no piece of " + boss + " holds our Link now");
+            }
+        }
+        grabbing_ = grabbing;
+    }
     std::vector<proto::FishLureEntry> fish;  // issue 151: FISH_LURE
     for (auto& [address, o] : objects_) {
         if (o.dead_said) {
@@ -3071,6 +3534,18 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         }
         if (std::find(unready_.begin(), unready_.end(), o.name) != unready_.end()) {
             flags |= proto::object_presence::unready;
+        }
+        if (takes_turns_ && IsBossOrPart(o.name)) {
+            flags |= proto::object_presence::takes_turns;  // boss turns: this build reads attacks
+        }
+        if (PresenceFlagsBattleManager(IsBattleManager(o.name), shares_orders_)) {
+            flags |= proto::object_presence::battle_manager;  // row 222 C: its group moves only from an unfit owner
+        }
+        if (grabbing.contains(o.name)) {
+            flags |= proto::object_presence::grabbed_here;  // row 232: his piece holds our Link: he is wanted here
+        }
+        if (!bound_.contains(address) && OwnLogicEncounter(o.name, scene_)) {
+            flags |= proto::object_presence::own_logic;  // row 212: our cell logic made it: it stays with such a game
         }
         present.push_back({o.id, flags});
     }
@@ -3605,6 +4080,12 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
                     // Row 175: it died here first (our hit, sent to its owner): its own death runs here and ends
                     // it (the room logic goes on from it); no write and no delete.
                     notes_.emplace_back("dead in its owner's game after our kill: ours runs its own death: " + o->name);
+                } else if (o != nullptr && (o->quiet_gone || (o->dead_at == 0 && GoesWithoutDeath(o->address, now_us)))) {
+                    o->dead_now = true;
+                    o->place_seen.reset();
+                    // Report 200: a copy of their encounter, killed by its owner: deleted now, no death here. Its kill
+                    // stays remembered (copy_killed_, above): an own one our logic makes later, when our Link walks
+                    // into that encounter itself, is that enemy already dead and dies there in our game (report 99).
                 } else if (o != nullptr && o->reacts && o->dead_at == 0) {
                     // Our game kills it itself (life 0 through the game), so
                     // its own kill counts: a room's enemy counter and shutter,
@@ -3613,7 +4094,10 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
                     // came (no owner was ever named to us: a late entrant or
                     // a rejoin, issue 133) whose life we cannot read goes at
                     // once.
-                    if (o->life && *o->life > 0) {
+                    if (o->life && *o->life > 0 && o->death_given && IsBossPart(o->name)) {
+                        // Rows 257/258: its killing hit was replayed and refused, and its whole life already went to
+                        // its own Life step: no second killing blow (each jellyfish kill was replayed twice).
+                    } else if (o->life && *o->life > 0) {
                         Lower(*o, 0, now_us, writes, remove->player_number);
                     } else if (had == owners_.end() && !o->life) {
                         o->dead_now = true;
@@ -3666,6 +4150,7 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
             // new owner's first state is the one the copy starts from.
             o->received.clear();
             o->bsa_in.reset();
+            o->orders_in.reset();
             if (owner->owner == self) {
                 // Ours now, where it stands here: nothing pulls it. A hit of
                 // ours not yet sent is already in its life, and the others
@@ -3708,6 +4193,9 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
                 o->bsa_in = sample->state.bsa;  // native boss sync: the owner's boss verbs
                 o->boss_native = true;
             }
+            if (sample->state.orders) {
+                o->orders_in = sample->state.orders;  // row 222: the owner's battle manager orders
+            }
             if (sample->state.position && Finite(*sample->state.position)) {
                 const std::uint64_t t = sample->state.time.server_time_us;
                 if (o->received.empty() || t > o->received.back().time) {
@@ -3730,11 +4218,36 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
                     }
                 }
             }
+            if (sample->state.strike && sample->state.strike->seq != o->strike_seq_in) {
+                // Row 230: the owner's Link was frozen by this one's scream: ours too when it stands in its reach.
+                o->strike_seq_in = sample->state.strike->seq;
+                const proto::Vec3 at =
+                    sample->state.position && Finite(*sample->state.position) ? *sample->state.position : o->position;
+                const std::optional<proto::Quat> facing = sample->state.rotation;
+                if (!IsScreamer(o->name)) {
+                    // (only a Redead's or Gibdo's)
+                } else if (!player_) {
+                    notes_.emplace_back("scream: the owner's " + o->name + " froze its Link; ours not seen: not frozen");
+                } else if (InScreamReach(at, facing, *player_)) {
+                    strikes_.push_back({o->address, at, *player_, sample->state.strike->kind});
+                    notes_.emplace_back("scream: the owner's " + o->name + " froze its Link; ours is in its reach (" +
+                                        std::to_string(Distance(at, *player_)) + " m): frozen here too");
+                } else {
+                    notes_.emplace_back("scream: the owner's " + o->name + " froze its Link; ours is out of its reach (" +
+                                        std::to_string(Distance(at, *player_)) + " m)");
+                }
+            }
             if (!sample->state.life || !o->life) {
                 continue;
             }
             const std::int32_t life = sample->state.life->life;
             o->owner_life_zero = life <= 0;
+            if (o->owner_life && life > *o->owner_life) {
+                // The owner's life went back up (a boss's refill for its next phase, Ganondorf's or Twinrova's; a
+                // new owner's higher count): the drops from here are new hits, each shown by its stand-in again.
+                // Kept, the old mark hid every hit of the refilled life down to the life before the refill.
+                o->boss_stand_in_life = 0;
+            }
             o->owner_life = life;
             const std::int32_t have = o->hurt_until != 0 ? o->hurt_target : *o->life;
             const bool holding =
@@ -4104,6 +4617,12 @@ void Sync::Lower(Object& o, std::int32_t life, std::uint64_t now_us,
     if (!hurt_ || !o.reacts) {
         writes.push_back({o.address, life, 0, {}});
         o.life = life;
+        return;
+    }
+    if (o.death_given && IsBossOrPart(o.name)) {
+        // enemies-dying-01111: its death went to its own Life step once already; the owner's life-0 samples that
+        // keep coming are that same death, never a new killing blow to replay (run 20261122-092813: King
+        // Dodongo's copy got A's killing blow ~50 times, each refused by the dying copy).
         return;
     }
     const std::int32_t from = o.hurt_until != 0 ? o.hurt_target : *o.life;

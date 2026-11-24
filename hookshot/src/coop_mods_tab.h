@@ -26,6 +26,9 @@ namespace CoopModsTab {
 // here instead — after a full stop or a comma when one is near the end, at a
 // space otherwise, and between characters for the scripts that have no spaces.
 // A '\n' in the text starts a new line; empty lines are dropped.
+// Each line holds at most kNoteLetters letters of width and bytes: a line of the - page's list with no value
+// (CoopPauseTab::kListLineChars, the same number: tests/hookshot/mods_tab_test.cpp), so the native list never cuts one.
+inline constexpr std::size_t kNoteLetters = 46;
 std::vector<std::string> NoteLines(const std::string& text);
 
 enum class Input { kUp, kDown, kLeft, kRight, kDecide, kBack, kErase };
@@ -66,6 +69,7 @@ private:
         Act act = Act::kNone;
         std::string name;  // kMod: the mod; kSetting: the setting's key
         std::string help;
+        bool own_help = false;   // the help is a mod author's own text: never looked up in the translation table
     };
     std::vector<Line> Lines() const;
     static bool Selectable(const Line& l);
@@ -93,6 +97,9 @@ private:
 bool Available();
 const char* TabName();
 bool Page(HosCoopMenuPage* out);
+// The tab's page as the pause menu's - page draws it (0.11.9: the Mods tab right of Map): its rows, and whether a
+// mod's own page shows (Back goes to the list) rather than the list. False before the tab is made.
+bool View(CoopPauseMenu::View* out, bool* on_mod_page);
 bool MenuInput(int event, int arg, int arg2);
 bool Key(std::uint32_t vk, bool repeat);  // while typing: the tab's
 bool Char(std::uint32_t cp);

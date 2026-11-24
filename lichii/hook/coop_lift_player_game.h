@@ -39,4 +39,7 @@ bool OurInputOff();
 // (CoopLiftPlayer::CarriedAnimation), so every copy of it plays that. Off, or not lifted: unchanged.
 void CarriedPose(std::optional<coop::host::PlayerReading>& reading);
 
+// Any thread: our Link is lifted now (CarriedPose gives its reading the carried pose). Off: false.
+bool Carried();
+
 } // namespace CoopLiftPlayerGame

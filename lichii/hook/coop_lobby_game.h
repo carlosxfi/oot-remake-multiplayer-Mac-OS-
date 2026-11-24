@@ -87,6 +87,9 @@ struct Seen {
     std::uint8_t self = 0;
     std::uint8_t host = 0;
     std::vector<PlayerSeen> players;     // by number
+    // Row 208: the session holds our join until the host lets us in (approve_joins: JOIN_KNOCK came); cleared by
+    // the WELCOME, REFUSED or disconnect that ends the wait.
+    bool held = false;
 };
 Seen Now();
 // A refusal auto-rejoin must not try again after (Seen::refusals): the host's own choice (kicked, banned, not let in)
