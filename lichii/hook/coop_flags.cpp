@@ -96,9 +96,17 @@ bool EmulatorMemory::read(std::uint64_t address, std::span<std::uint8_t> out) {
     if (out.empty()) {
         return true;
     }
+#if defined(__APPLE__) && defined(COOP_HOOKSHOT)
+    // nxnative's bridge checks the entire copy and reports a failed or short read.
+    // Two endpoint probes would each make another Mach call before that copy.
+    if (address == 0 || address + out.size() <= address) {
+        return false;
+    }
+#else
     if (!Valid(address, out.size())) {
         return false;
     }
+#endif
     // The unsafe read skips GPU flushing: the player state and the flags are
     // CPU data, and the present thread must not wait on the GPU.
     return memory_.ReadBlockUnsafe(address, out.data(), out.size());
