@@ -7,6 +7,8 @@
 #include <random>
 #include <utility>
 
+#include "bind_host.hpp"
+
 namespace coop::server::relay {
 
 namespace {
@@ -484,16 +486,7 @@ bool RelayServer::start() {
   if (socket_ != ENET_SOCKET_NULL) return true;
   socket_ = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
   if (socket_ == ENET_SOCKET_NULL) return false;
-  ENetAddress address{};
-  address.host = ENET_HOST_ANY;
-  if (bind_) {
-    const std::uint32_t v = *bind_;
-    const unsigned char b[4] = {static_cast<unsigned char>(v >> 24), static_cast<unsigned char>(v >> 16),
-                                static_cast<unsigned char>(v >> 8), static_cast<unsigned char>(v)};
-    std::memcpy(&address.host, b, 4);
-  }
-  address.port = port_;
-  if (enet_socket_bind(socket_, &address) != 0) {
+  if (bind_socket(socket_, bind_, port_) != 0) {
     enet_socket_destroy(socket_);
     socket_ = ENET_SOCKET_NULL;
     return false;

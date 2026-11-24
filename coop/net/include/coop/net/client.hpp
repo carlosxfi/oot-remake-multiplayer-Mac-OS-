@@ -237,6 +237,9 @@ enum class DropReason : std::uint8_t {
   // Full datagrams did not get through while small ones did (we saw it, or
   // the server said so): connecting again with small ones (enet_path.hpp).
   small_path,
+  // Too much waited to go between us and the server (enet_waiting.hpp kMaxOutgoingBytes): the server dropped us
+  // (kDisconnectBacklog) or we stopped (our own send backlog). Reconnecting as for connection_lost (row 260).
+  backlog,
 };
 
 // How the link to the server looked (issue 143), for the log. Read from
@@ -248,6 +251,10 @@ struct LinkInfo {
   std::uint32_t mtu = 0;            // the datagram size both sides agreed
   std::uint32_t largest_sent = 0;   // our largest message on this connection, bytes
   std::uint32_t waiting_bytes = 0;  // what ENet holds for us now (enet_waiting.hpp)
+  // What ENet holds to send to the server (enet_waiting.hpp outgoing_bytes, row 260), as of the last service() and
+  // what was queued since; unreliable messages not queued while it was over kSlowPeerBytes, on this connection.
+  std::uint32_t outgoing_bytes = 0;
+  std::uint64_t unreliable_skipped = 0;
   // What ENet counted for unassembled messages it threw away and we took off
   // again on this connection (lost fragments; issue 175).
   std::uint64_t mended_bytes = 0;
@@ -260,6 +267,11 @@ struct Event {
   // refused: during an automatic reconnect (this client was welcomed before),
   // not on the join the player started.
   bool reconnecting = false;
+  // refused: this client answered with the same-network key
+  // (protocol::kSameNetworkPassword: a host on this network, no password
+  // typed), so a wrong password means that host asks for its password on its
+  // own network too (docs/protocol.md "Same network").
+  bool same_network_key = false;
   DropReason drop_reason = DropReason::none;  // connect_failed, disconnected
   protocol::Message message;          // message
   std::uint8_t channel = 0;           // message, and the four after it
@@ -310,7 +322,9 @@ std::string_view refuse_reason_text(protocol::RefuseReason reason);
 
 // Text to show for a `refused` event. A wrong join password on an automatic
 // reconnect means the host started its server again (each start makes a new
-// password and invite; issue 85), so it says that; else refuse_reason_text.
+// password and invite; issue 85), so it says that; a wrong password for the
+// same-network key means the host on this network asks for its password
+// (row 251), so it says that; else refuse_reason_text.
 std::string_view refuse_text(const Event& event);
 
 class Client {
@@ -493,6 +507,7 @@ class Client {
 
   bool address_known_ = false;
   std::uint32_t address_host_ = 0;  // ENet's form, network byte order
+  bool used_same_network_key_ = false;  // the last JOIN_PROOF was the same-network key's
 
   std::uint64_t attempt_started_us_ = 0;
   // Held for the host's answer (JOIN_KNOCK): the attempt waits until then; 0: not held.

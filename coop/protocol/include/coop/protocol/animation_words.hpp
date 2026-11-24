@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // What an actor's animation name (its AS slot 0, as a walk reads it and samples carry) says it is doing, for the
 // rules that must never judge a death or a cutscene as a move: the objects walk (an enemy that left while dying,
-// IsDeathAnimation), the native boss table's stall check and the server's (row 149: CoopBossNative::StallJudged,
+// IsDeathAnimation, IsPreBattleAnimation), the native boss table's stall check and the server's (row 149: CoopBossNative::StallJudged,
 // Session::note_hold).
 #pragma once
 
@@ -42,6 +42,25 @@ constexpr bool IsEvent(std::string_view name) noexcept {
         ++at;
     }
     return at < name.size() && (name[at] == '-' || name[at] == '_');
+}
+
+// A stun or knock-down the actor lies in (its own chance time: Gohma's "Stun_St_Attack_Chance", "Down_Start",
+// "Fall_St"): the first word Stun, Down, Fall or Faint, as the hook's stun rule reads it (docs/dungeons-boss.md
+// "Stuns"). Boss turns never hand an enemy over in one.
+constexpr bool IsStun(std::string_view name) noexcept {
+    for (const std::string_view word :
+         {std::string_view("Stun"), std::string_view("Down"), std::string_view("Fall"), std::string_view("Faint")}) {
+        if (name.starts_with(word) && (name.size() == word.size() || name[word.size()] == '_')) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// An animation of a boss that waits for its fight to begin (row 189): Gohma's `Sleep` (far from her room's
+// middle) and `Pre_Battle_*` (on the ceiling, before her drop), as CoopObjects::IsPreBattleAnimation reads them.
+constexpr bool IsPreBattle(std::string_view name) noexcept {
+    return name == "Sleep" || name.starts_with("Pre_Battle_");
 }
 
 } // namespace coop::protocol::anim

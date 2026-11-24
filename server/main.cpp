@@ -192,6 +192,7 @@ int run_relay(const coop::server::CommandLine& line, const std::string& key) {
   using namespace coop::server::relay;
   RelayConfig config;
   config.host_key = key;
+  if (line.relay_max_per_address != 0) allow_sessions_per_address(config, line.relay_max_per_address);
   config.log = [](const std::string& text) { say("relay: " + text); };
   RelayServer relay(line.port, line.bind, config);
   if (!relay.start()) {

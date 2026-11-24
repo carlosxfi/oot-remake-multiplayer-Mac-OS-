@@ -45,6 +45,10 @@ struct HostServiceConfig {
   std::uint16_t port = protocol::kDefaultPort;
   std::uint16_t port_tries = 1;
   std::optional<std::uint32_t> bind;  // as ServerOptions::bind
+  // The address the sockets that look for the router (UPnP, PCP / NAT-PMP) and the relay link bind to; none: all
+  // addresses, as for a player. Not `bind`: a public game binds the game port to 127.0.0.1 only, while its relay link
+  // must reach the internet. Tests: 127.0.0.1 (a listener on all addresses makes the Windows firewall ask).
+  std::optional<std::uint32_t> helper_bind;
   SessionConfig session;              // join_password must not be empty
   // ENet's connection slots: more than max_players, so one more player can
   // connect and be told the server is full.
@@ -138,6 +142,8 @@ class HostService {
   bool port_failed() const { return port_failed_; }
   std::uint16_t port() const;
   const Session* session() const;
+  // The server's sizes and ENet's queues as one log line (host_memory_line; empty when not hosting). Row 260.
+  std::string memory_line() const;
   // The console's moderation (Session::admin); "not hosting" when not running.
   std::string admin(const std::string& line);
   // (Navi) New Game+: the hosting game's level (Session::set_ngplus). Between
@@ -184,6 +190,10 @@ class HostService {
 std::string show_ipv4(std::uint32_t ip);
 // The host's kept bans file (one lobby id of a player key, "k:" and hex, a line; comments and anything else skipped):
 // read sorted, written whole. The game's Host (coop-bans.txt) and coop_server --bans-file use it.
+// Row 260: what the in-process server holds, for the host's memory line every 30 s (coop_host_menu.cpp):
+// "server: <n> connections, deferred <n> (<bytes> B), ... ; enet: <n> peers, out <bytes> B (largest <bytes>), ...".
+std::string host_memory_line(const Session::Sizes& sizes, const EnetServer::Queues& queues);
+
 std::vector<std::string> read_ban_file(const std::string& path);
 void write_ban_file(const std::string& path, const std::vector<std::string>& bans);
 

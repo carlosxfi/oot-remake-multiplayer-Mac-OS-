@@ -29,7 +29,10 @@ namespace coop::protocol {
 // game's enemy takes the real hit through its own damage step (0.11.5, every hit shows on every screen).
 // 15: PLATFORM_CLOCK keys in a mover's GroundControl node (regions 0xfffe / 0xfffd, #196, 0.11.6): a protocol 14
 // reader refuses them as bad_value and drops the whole message, so a 0.11.5 game must be refused at HELLO.
-inline constexpr std::uint16_t kProtocolVersion = 15;
+// 16: OBJECT_SAMPLE component 23, a battle manager's orders (BossOrders, row 222 Twinrova, 0.11.11): a protocol 15
+// server keeps only the components it knows in an object's last state (HANDOVER_STATE), and a 0.11.9 game's copies
+// would follow their own manager again, so mixed versions are refused at HELLO.
+inline constexpr std::uint16_t kProtocolVersion = 16;
 // A public game (anyone joins without typing a password) lists itself on the relay's room list with this bit
 // on top of kProtocolVersion; the relay repeats the version as given. A listing without it is a private game
 // (or an older kit's): the joiner asks for the host's password and never tries the public one on it.
@@ -713,6 +716,20 @@ struct Host {
 // accessory (kind 14), not as hand armor (docs/puppet.md).
 inline constexpr std::string_view kChildBraceletPrefix = "Armor_Child_Gauntlet_";
 
+// The only head pieces a puppet wears: the masks, `Armor_Child_Mask_*` (the
+// game's ten; there are no adult masks, and the base `Armor_Mask_Base` is none).
+// PlayerStatus.EquipHeadArmor also names the Lens of Truth once a player has
+// it: `Armor_GlassTruth`, the age-less base actor whose model is the ADULT
+// glasses with no animation or physics for their hanging lenses. The game
+// never draws that name on Link (it wears Armor_Child_/Adult_GlassTruth only
+// while the Lens is in use). Worn and shown on a puppet it drew the adult
+// glasses' unposed mesh as orange spikes from the head and shoulders and a
+// long streak along the ground on every puppet (row 197; 0.11.6 to 0.11.8).
+constexpr bool is_drawn_head(std::string_view name) {
+  constexpr std::string_view kPrefix = "Armor_Child_Mask_";
+  return name.size() > kPrefix.size() && name.starts_with(kPrefix);
+}
+
 // What a player wears and holds (docs/puppet.md, "Equipment"). Each name is
 // the game's actor name of that piece, for example "Weapon_Sword_Kokiri" or
 // "Armor_Adult_Goron"; an empty name is nothing in that slot. A field that is
@@ -840,6 +857,8 @@ enum class ObjectComponent : std::uint16_t {
   slots = 19,  // protocol 10, issue 150: a boss's other AS slots (below)
   bsa = 20,    // native boss sync: a boss's brain and action verbs (BossBsa below)
   hit = 21,    // protocol 14: the hit the owner's game took (ObjectHit below)
+  strike = 22,  // row 230: a Redead's or Gibdo's scream that froze the owner's Link (ObjectStrike below)
+  orders = 23,  // protocol 16, row 222: the battle manager's orders this enemy took (BossOrders below)
 };
 
 struct ObjectLife {
@@ -857,6 +876,13 @@ inline constexpr std::uint8_t asleep = 1u << 2;
 // game logic (an Enemy_: a Deku Scrub) then keeps that logic; only the
 // event's result reaches it (its flags). An older build ignores the bit.
 inline constexpr std::uint8_t in_event = 1u << 3;
+// Boss turns (0.11.8): the owner's enemy is in an attack, read from its game's own action verb attribute Attack
+// (the attributes of its BSA's current action verbs, as the game's own method main+0x507be0 reads them). The server
+// hands the enemy to the next player at an attack end (Session::next_turn). An older build ignores the bit.
+inline constexpr std::uint8_t attacking = 1u << 4;
+// The sender reads attacks (the bit above means something): set on every sample of an enemy whose BSA it reads.
+// Turns only for enemies whose owner sets it, so an older owner's boss keeps its one owner.
+inline constexpr std::uint8_t attack_read = 1u << 5;
 }  // namespace object_state
 
 // Issue 150 (protocol 10): one more AS slot of the owner's actor than slot 0
@@ -930,6 +956,40 @@ struct ObjectHit {
   bool operator==(const ObjectHit&) const = default;
 };
 
+// Component 22 (row 230): the scream of a Redead or Gibdo that froze its owner's own Link (the game's
+// Redead.action.sleepparalysis module sets up a sensor attack on its target: the owner's Link only, as a
+// game's AI never targets a puppet). The kind words of the hit the owner's Link took (Life +0x250 up to the
+// hit's place, as PvpKind below: plain values). Sent in its samples for a short while (they may be lost); seq
+// is the owner's own count of them, from 1. Each other game whose own Link stands in the scream's reach
+// (RedeadParam: within 5.5 m and 45 degrees of the enemy's front) takes that hit on its own Link once.
+// An older reader skips it by its length: no version change.
+inline constexpr std::size_t kStrikeKindWords = 11;
+struct ObjectStrike {
+  std::uint32_t seq = 0;
+  std::array<std::uint32_t, kStrikeKindWords> kind{};
+  bool operator==(const ObjectStrike&) const = default;
+};
+
+// Component 23 (protocol 16, row 222): the orders a boss part took from its game's battle manager, as the game's own
+// message (Twinrova: Enemy_KotakeKoumeBattleManager tells Kotake and Koume the battle state through messages
+// 0x70210000 and 0x70210001, read by ExecuteKotakeKoumeReceiveMessageProc). The owner's game sends the ones its
+// part took; a copy game puts the same messages into its part (coop_boss_orders.h), so one manager decides for
+// every game. `type` is the game's message type and `payload` its 0x16-byte payload, passed on unread. seq is the
+// owner's own count for this part, from 1; recent holds the newest kMaxBossOrders, oldest first.
+inline constexpr std::size_t kBossOrderPayload = 0x16;
+inline constexpr std::size_t kMaxBossOrders = 6;
+struct BossOrder {
+  std::uint32_t seq = 0;
+  std::uint32_t type = 0;
+  std::array<std::uint8_t, kBossOrderPayload> payload{};
+  bool operator==(const BossOrder&) const = default;
+};
+struct BossOrders {
+  std::uint32_t seq = 0;  // the newest order's seq
+  std::vector<BossOrder> recent;
+  bool operator==(const BossOrders&) const = default;
+};
+
 // The components of OBJECT_SAMPLE, OBJECT_SPAWN and HANDOVER_STATE. time is
 // always sent; the others when the sender has them. Floats must be finite.
 struct ObjectState {
@@ -944,6 +1004,8 @@ struct ObjectState {
   std::optional<std::vector<SlotAnimation>> slots;  // issue 150: bosses only
   std::optional<BossBsa> bsa;                       // native boss sync: bosses only
   std::optional<ObjectHit> hit;                     // protocol 14: the owner's newest hit taken
+  std::optional<ObjectStrike> strike;               // row 230: the owner's Link frozen by its scream
+  std::optional<BossOrders> orders;                 // protocol 16: its battle manager's orders (row 222)
   bool operator==(const ObjectState&) const = default;
 };
 
@@ -955,6 +1017,27 @@ inline constexpr std::uint8_t targeting = 1u << 2;  // targeting our player
 // pre-battle phase (Gohma on the ceiling), so it must not own the boss; its AI
 // would hold every game's boss there.
 inline constexpr std::uint8_t unready = 1u << 3;
+// Boss turns (boss-turns-older-0119): this game reads its bosses' attacks (object_state::attack_read in its
+// samples when it owns one) and takes turns. An older build never sets it: the server gives it no turn, as a
+// boss it owned would never send an attack end and keep its one owner for the rest of the fight.
+inline constexpr std::uint8_t takes_turns = 1u << 4;
+// Row 212 (gerudo-212): this game's own level logic made this encounter (not a copy of another game's) and answers
+// its death with its own defeat event: Gerudo Fortress's cell guards (GerudoFortress_Common_Level_CarpenterSet_0N:
+// SageOfSpirit_RescueCarpenter, Player_Event EventPlayerWarpToTargetActor, GerudoThiefDropKey). The server keeps
+// such an object with a game that sets this bit (OBJECT_OWNER never moves it to one that does not), so the death,
+// the key and the carpenter freed run in a game whose logic made the fight. An older server ignores the bit.
+inline constexpr std::uint8_t own_logic = 1u << 5;
+// Row 222 (Twinrova, option C): this object is a boss's battle manager (Enemy_KotakeKoumeBattleManager): its game's
+// manager chooses its sisters' battle state the whole fight, from its own Link, and no other game's manager knows
+// that state. The server moves such a group's root only from an unfit, unready or gone owner (Session::orders_root),
+// never by distance, a nearer player, a chase or a stun hit. An older server ignores the bit.
+inline constexpr std::uint8_t battle_manager = 1u << 6;
+// Row 232 (Dead Hand): set on a boss's entry by a game where a summoned piece of that boss that this game owns holds
+// this game's own Link (one of Dead Hand's hands, owned here, in its grab). The boss's AI answers a grab only in its
+// own game (OneShotDeadHandHandSendMessage MessageAppear: he rises by the held Link), so a player grabbed in a game
+// that does not own him was held with nothing rising. The server hands the boss to that game once its owner's attack
+// has ended (Session::grab_owner), unless its owner is held too. An older server ignores the bit.
+inline constexpr std::uint8_t grabbed_here = 1u << 7;
 }  // namespace object_presence
 
 struct ObjectPresence {
@@ -1061,6 +1144,10 @@ enum class DamageCause : std::uint8_t {
   // The hitter's copy of an enemy whose life cannot be read died in its game (its own death
   // animation as it left): no life drop to send, so the kill itself goes (amount 1).
   killed = 13,
+  // Row 177 (docs/objects.md, "Shots sent back"): the sender's Link sent the owner's shot (a made projectile,
+  // an enemy's light ball, rock or nut) back on its copy, by the hit the game sends that shot back with; the
+  // owner's game sends its real one back. Amount 0. Older modules take it as a hit of 0 on an unknown object.
+  reflected = 14,
 };
 
 // DAMAGE: life lost on a copy, for the owner to take off. Amount 0 or more.
@@ -1979,6 +2066,7 @@ struct LiftShare {
 // values, never pointers.
 inline constexpr std::size_t kPvpKindWords = 11;
 using PvpKind = std::array<std::uint32_t, kPvpKindWords>;
+static_assert(kStrikeKindWords == kPvpKindWords);  // the same words of a hit (row 230's ObjectStrike)
 
 // What dealt a strike (PVP_STRIKE's source).
 enum class PvpSource : std::uint8_t {

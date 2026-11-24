@@ -225,6 +225,13 @@ std::optional<CommandLine> parse_command_line(const std::vector<std::string>& ar
         }
         line.relay_list = args[++i];
       }
+    } else if (arg == "--relay-max-per-address") {
+      std::uint32_t n = 0;
+      if (!has_value || !parse_number(args[++i], n) || n < 1 || n > 64) {
+        error = "--relay-max-per-address needs a number from 1 to 64";
+        return std::nullopt;
+      }
+      line.relay_max_per_address = n;
     } else if (arg == "--relay-key" || arg == "--relay-key-env") {
       if (!has_value || args[i + 1].empty() || args[i + 1].size() > 64) {
         error = arg + " needs a value of at most 64 characters";
@@ -282,6 +289,10 @@ std::optional<CommandLine> parse_command_line(const std::vector<std::string>& ar
   }
   if (!line.join.empty() && (line.relay || line.upnp || line.invite || !line.relay_via.empty())) {
     error = "--join runs Join.bat's helper; it cannot also host (--upnp, --invite, --relay, --relay-via)";
+    return std::nullopt;
+  }
+  if (line.relay_max_per_address != 0 && !line.relay) {
+    error = "--relay-max-per-address is for a relay: it needs --relay";
     return std::nullopt;
   }
   if (line.relay && line.invite) {
@@ -350,6 +361,9 @@ const char* usage() {
          "  --relay-key TEXT | --relay-key-env NAME  the relay's host key: on the\n"
          "                   relay, hosts must give it; with --relay-via, the one\n"
          "                   to give\n"
+         "  --relay-max-per-address N  with --relay, N sessions from one address\n"
+         "                   (1 to 64, default 2; for a test relay that one PC hosts\n"
+         "                   many rooms on, public relays keep 2)\n"
          "  --invite         learn this PC's internet address (STUN), print an invite\n"
          "                   code with it and the join password, and take answer\n"
          "                   codes typed here\n"

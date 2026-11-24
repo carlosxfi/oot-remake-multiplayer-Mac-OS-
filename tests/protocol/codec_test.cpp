@@ -1169,6 +1169,63 @@ TEST_CASE("object samples carry the owner's newest hit, component 21 (protocol 1
   CHECK(encode(s, out) == Error::bad_value);
 }
 
+TEST_CASE("object samples carry a scream that froze the owner's Link, component 22 (row 230)") {
+  ObjectSample s{0, test::kPlacedId, 3, {}};
+  s.state.time = {100, 1};
+  ObjectStrike strike;
+  strike.seq = 2;
+  strike.kind[0] = 0x00110003;
+  strike.kind[10] = 0xffffffffu;
+  s.state.strike = strike;
+  const Bytes b = must_encode(s);
+  Message back;
+  REQUIRE(decode(b, back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == s);
+  Bytes out;
+  s.state.strike->seq = 0;  // seqs count from 1
+  CHECK(encode(s, out) == Error::bad_value);
+}
+
+TEST_CASE("object samples carry a battle manager's orders, component 23 (protocol 16, row 222)") {
+  CHECK(kProtocolVersion >= 16);
+  CHECK(static_cast<int>(ObjectComponent::orders) == 23);
+  ObjectSample s{0, test::kPlacedId, 3, {}};
+  s.state.time = {100, 1};
+  BossOrder a{4, 0x70210000u, {}};
+  for (std::size_t i = 0; i < a.payload.size(); ++i) a.payload[i] = static_cast<std::uint8_t>(0xa0 + i);
+  BossOrder b{6, 0x70210001u, {}};
+  b.payload[0x15] = 1;
+  s.state.orders = BossOrders{6, {a, b}};
+  const Bytes bytes = must_encode(s);
+  Message back;
+  REQUIRE(decode(bytes, back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == s);
+  // No orders component: none after decoding (an older sender).
+  ObjectSample plain{0, test::kPlacedId, 3, {}};
+  plain.state.time = {100, 1};
+  REQUIRE(decode(must_encode(plain), back) == Error::none);
+  CHECK_FALSE(std::get<ObjectSample>(back).state.orders);
+  // Refused: seqs from 1, rising, none above seq; at most kMaxBossOrders.
+  Bytes out;
+  s.state.orders->recent[0].seq = 0;
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.orders->recent[0].seq = 6;
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.orders->recent[0].seq = 4;
+  s.state.orders->seq = 5;
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.orders = BossOrders{20, std::vector<BossOrder>(kMaxBossOrders + 1)};
+  for (std::size_t i = 0; i < s.state.orders->recent.size(); ++i) {
+    s.state.orders->recent[i].seq = static_cast<std::uint32_t>(i + 1);
+  }
+  CHECK(encode(s, out) == Error::bad_value);
+  // The decoder refuses a count above the limit too (the count byte follows the u32 seq).
+  s.state.orders = BossOrders{1, {}};
+  Bytes raw = must_encode(s);
+  raw.back() = static_cast<std::uint8_t>(kMaxBossOrders + 1);
+  CHECK(decode_bytes(raw) == Error::bad_value);
+}
+
 TEST_CASE("object id layout on the wire") {
   const Bytes b = must_encode(ObjectOwner{test::kMadeId, 2, 0x0102, 0x0a0b0c0d});
   REQUIRE(b.size() == kHeaderSize + 10 + 1 + 2 + 4);

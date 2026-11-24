@@ -30,6 +30,8 @@ struct RelayLinkConfig {
   // and '_'); empty for a join code only.
   std::string room;
   std::size_t max_flows = 32;
+  // The one IPv4 address of this PC (host order) the link's sockets bind to; none: all addresses (tests: 127.0.0.1).
+  std::optional<std::uint32_t> bind;
   std::function<void(const std::string&)> log;
   // Called when the relay gives a join code (again after a relay restart).
   std::function<void(const std::string& code)> on_code;
@@ -72,8 +74,10 @@ std::optional<RelayJoin> parse_relay_join(std::string_view text);
 // Nothing when the relay never answered (not running, wrong address, or a
 // relay from before room names asked for a room). `stop` returning true ends
 // the wait early.
+// `bind`: the one IPv4 address of this PC (host order) the socket binds to; none: all addresses (tests: 127.0.0.1).
 std::optional<LookupResult> lookup_on_relay(const ENetAddress& relay, const RelayJoin& join,
-                                            const std::function<bool()>& stop = {});
+                                            const std::function<bool()>& stop = {},
+                                            std::optional<std::uint32_t> bind = std::nullopt);
 
 // What to tell the player for a lookup's result, in plain English.
 std::string lookup_text(std::optional<LookupResult> result, const RelayJoin& join);
@@ -97,8 +101,9 @@ struct RoomList {
 // early. Blocks for up to about 3 s a page: call it off the game's threads.
 // `ask_proofs`: also ask the listed rooms' proofs (kListProofs) after the pages, two tries 500 ms apart;
 // proofs_answered says whether the relay answered (a relay before 0.11.8 never does: the caller need not ask it again).
+// `bind`: as for lookup_on_relay.
 std::optional<RoomList> list_rooms_on_relay(const ENetAddress& relay, const std::function<bool()>& stop = {},
-                                            bool ask_proofs = false);
+                                            bool ask_proofs = false, std::optional<std::uint32_t> bind = std::nullopt);
 
 class RelayLink {
  public:

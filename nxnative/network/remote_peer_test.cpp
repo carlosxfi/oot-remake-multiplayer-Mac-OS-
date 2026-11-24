@@ -22,7 +22,7 @@ void roundtrip(const T& original) {
 
 void check_protocol() {
   namespace protocol = coop::protocol;
-  static_assert(protocol::kProtocolVersion == 15);
+  static_assert(protocol::kProtocolVersion == 16);
   roundtrip(protocol::JoinKnock{1, 60, 0, "Mac-test"});
   roundtrip(protocol::JoinAllow{1, true, false});
   protocol::Damage damage;
@@ -60,9 +60,9 @@ int main() {
   check_protocol();
   using coop_nxnative::remote_config;
   const auto compatible = remote_config("127.0.0.1", "27510", "MacLink", "synthetic-password");
-  assert(compatible && compatible->hello.protocol_version == 15);
+  assert(compatible && compatible->hello.protocol_version == 16);
   auto legacy = compatible->hello;
-  legacy.protocol_version = 14;
+  legacy.protocol_version = 15;
   assert(coop::protocol::check_hello(legacy, legacy.game_build_id) ==
          coop::protocol::RefuseReason::wrong_protocol_version);
   assert(!remote_config("127.0.0.1:27510", "27510", "MacLink", "synthetic-password"));
