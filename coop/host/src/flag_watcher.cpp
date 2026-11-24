@@ -1,6 +1,10 @@
 #include "coop/host/flag_watcher.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <string_view>
 #include <limits>
 #include <utility>
 
@@ -13,6 +17,53 @@ namespace {
 
 // PlayerStatus.MaxLife: the one max-rule int with a live copy the object walk lowers (Link's Life component).
 constexpr std::uint32_t kMaxLifeHash = 0xfbe01da1u;
+
+struct FlagScanTiming {
+  using Clock = std::chrono::steady_clock;
+
+  explicit FlagScanTiming(bool full, std::size_t keys)
+      : full_(full), keys_(keys), start_(enabled() ? Clock::now() : Clock::time_point{}) {}
+
+  ~FlagScanTiming() {
+    if (!enabled()) return;
+    const double ms = std::chrono::duration<double, std::milli>(Clock::now() - start_).count();
+    struct Totals {
+      unsigned scans = 0;
+      std::size_t keys = 0;
+      double total_ms = 0;
+      double max_ms = 0;
+    };
+    static thread_local Totals full, sliced;
+    auto& totals = full_ ? full : sliced;
+    ++totals.scans;
+    totals.keys += keys_;
+    totals.total_ms += ms;
+    totals.max_ms = std::max(totals.max_ms, ms);
+    if (full.scans + sliced.scans < 300) return;
+    const auto report = [](const char* kind, const Totals& t) {
+      if (t.scans)
+        std::fprintf(stderr, "[coop-flag-timing] %s scans=%u keys=%zu mean_ms=%.3f max_ms=%.3f\n",
+                     kind, t.scans, t.keys, t.total_ms / t.scans, t.max_ms);
+    };
+    report("full", full);
+    report("sliced", sliced);
+    full = {};
+    sliced = {};
+  }
+
+ private:
+  static bool enabled() {
+    static const bool value = [] {
+      const char* setting = std::getenv("COOP_FLAG_TIMING");
+      return setting && std::string_view(setting) == "1";
+    }();
+    return value;
+  }
+
+  bool full_;
+  std::size_t keys_;
+  Clock::time_point start_;
+};
 
 using protocol::FlagEntry;
 
@@ -1163,6 +1214,7 @@ void FlagWatcher::ask_hud(FlagKey key, std::uint32_t value) {
 
 void FlagWatcher::diff(FlagStore& store, Table& changes) {
   const std::vector<FlagKey>& keys = diff_keys();
+  const FlagScanTiming timing(&keys == &shared_.keys(), keys.size());
   ++diff_pass_;
   for (std::size_t n = 0; n < keys.size(); ++n) {
     const FlagKey key = keys[n];
