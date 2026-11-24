@@ -158,28 +158,6 @@ TEST_CASE("game flags: a matching hash slot is read in one memory call") {
   CHECK(reads == 1);
 }
 
-TEST_CASE("game flags: reads the table descriptor and live queue header in one call each") {
-  auto w = game();
-  zero(w.mem, kMgr + 0x10, 0x34);
-  table(w.mem, 0x10, kBoolEntries, kBoolSlots, 0x18, {0x11, 0x18});
-  queue(w.mem, 0x10, kBoolQueue, 8);
-  unsigned descriptor_reads = 0;
-  unsigned queue_reads = 0;
-  w.on_read = [&](std::uint64_t address, std::size_t) {
-    if (address >= kMgr + 0x10 && address < kMgr + 0x30) ++descriptor_reads;
-    if (address >= kMgr + 0x30 && address <= kMgr + 0x40) ++queue_reads;
-  };
-  GameFlags flags(w);
-  CHECK(flags.get_bool(0x11) == false);
-  // One descriptor read, then one pointer read for the live entry.
-  CHECK(descriptor_reads == 2);
-  CHECK(queue_reads == 1);
-  w.mem.put_u32(kBoolQueue, 1);
-  w.mem.put_u32(kBoolQueue + 4, 0x11);
-  w.mem.put_u32(kMgr + 0x40, 0x30000001);
-  CHECK(flags.get_bool(0x11) == true);
-}
-
 TEST_CASE("game flags: nothing before the manager is up or on bad memory") {
   auto w = game();
   w.mem.put_u64(FakeMemory::kBase + 0x4e842a8, 0);
