@@ -34,4 +34,13 @@ int main() {
   assert(guard[6] == arm64_branch(kPuppetGuardCave + 24, kPuppetGuardSite + 12, false));
   assert(guard[7] == arm64_branch(kPuppetGuardCave + 28, kPuppetGuardSkip, false));
   assert(arm64_branch(kPuppetGuardSite, kPuppetGuardCave, false));
+
+  const auto bow = make_bow_guard();
+  assert(kBowGuardCave == kPuppetGuardCave + sizeof(guard));
+  assert((bow[0] & 0xff00001fu) == 0xb4000000u);  // cbz x0
+  assert(((bow[0] >> 5) & 0x7ffffu) == 3);
+  assert(bow[1] == kBowGuardOriginal[1]);
+  assert(bow[2] == arm64_branch(kBowGuardCave + 8, kBowGuardSite + 4, false));
+  assert(bow[3] == arm64_branch(kBowGuardCave + 12, kBowGuardSkip, false));
+  assert(arm64_branch(kBowGuardSite, kBowGuardCave, false));
 }

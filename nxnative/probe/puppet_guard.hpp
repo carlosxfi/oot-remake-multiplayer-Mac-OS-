@@ -24,4 +24,21 @@ inline std::array<std::uint32_t, 8> make_puppet_guard() {
   };
 }
 
+// Bow/slingshot update once the game has looked up the wearer's Player component.
+inline constexpr std::uint64_t kBowGuardSite = 0x2dceef8;
+inline constexpr std::uint64_t kBowGuardSkip = 0x2dcef04;
+inline constexpr std::uint64_t kBowGuardCave = kPuppetGuardCave + 8 * sizeof(std::uint32_t);
+inline constexpr std::array<std::uint32_t, 5> kBowGuardOriginal{
+    0x97696f73, 0xb947d808, 0x3100051f, 0x54000181, 0xfd403be8,
+};
+
+inline std::array<std::uint32_t, 4> make_bow_guard() {
+  return {
+      0xb4000060u,  // cbz x0, cave + 12
+      kBowGuardOriginal[1],  // ldr w8, [x0, #0x7d8]
+      arm64_branch(kBowGuardCave + 8, kBowGuardSite + 4, false).value(),
+      arm64_branch(kBowGuardCave + 12, kBowGuardSkip, false).value(),
+  };
+}
+
 }  // namespace coop_nxnative

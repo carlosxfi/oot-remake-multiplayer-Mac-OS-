@@ -177,6 +177,24 @@ bool install_puppet_guard(std::uint64_t base) {
   return true;
 }
 
+bool install_bow_guard(std::uint64_t base) {
+  using namespace coop_nxnative;
+  std::array<std::uint32_t, kBowGuardOriginal.size()> original{};
+  std::array<std::uint32_t, 4> padding{};
+  if (!read_at(base + kBowGuardSite - 4, original) || original != kBowGuardOriginal ||
+      !read_at(base + kBowGuardCave, padding) ||
+      !std::all_of(padding.begin(), padding.end(), [](std::uint32_t word) {
+        return word == 0 || word == 0xd503201f;
+      })) return false;
+  const auto cave = make_bow_guard();
+  const auto hook = arm64_branch(kBowGuardSite, kBowGuardCave, false).value();
+  const auto code = [](const auto& value) {
+    return std::span(reinterpret_cast<const std::uint8_t*>(&value), sizeof(value));
+  };
+  return write_code(base + kBowGuardCave, code(cave)) &&
+      write_code(base + kBowGuardSite, code(hook));
+}
+
 bool install_calc_bridge(std::uint64_t base) {
   std::uint32_t original = 0;
   if (!read_at(base + coop_nxnative::kCalcHookOffset, original) ||
@@ -877,6 +895,11 @@ void probe() {
       calc_bridge_installed = install_calc_bridge(base);
       if (calc_bridge_installed && std::getenv("COOP_NXNATIVE_PUPPET_PREFLIGHT")) {
         const bool guarded = install_puppet_guard(base);
+        if (guarded) {
+          const bool bow_guarded = install_bow_guard(base);
+          std::fprintf(stderr, "[coop-nxnative] puppet bow guard %s\n",
+                       bow_guarded ? "installed" : "unavailable");
+        }
 #ifdef COOP_NXNATIVE_NETWORK
         const char* spawn_test = std::getenv("COOP_NXNATIVE_SPAWN_TEST");
         if (want_shared) {
