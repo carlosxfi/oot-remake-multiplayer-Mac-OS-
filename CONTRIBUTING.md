@@ -31,6 +31,16 @@ Projects without a licence file (all rights reserved, for example Ship of Harkin
 
 Every co-op screen, menu, tab, notice, name tag and HUD piece is built from the game's own UI (its Layout panes, buttons, textures, fonts, icons and sounds), read from the player's game at run time. No hand-drawn UI: no rectangles, lines, bars, circles or panels drawn by our code, and no pictures we made. Everything fits on screen: no row hidden below a scroll, nothing cut off; long lists page with the game's own buttons, and Back is always in view. Say in the pull request which game pane or texture each new UI piece uses. A review sends back a drawn shape or a screen that does not fit.
 
+## How we fix things
+
+- **Root cause, every related case.** No band-aids: fix the cause, then search the code for the same pattern (other bosses, enemies, scenes, flags, platforms, paths) and fix those too. Say in the pull request what the cause is and which related cases you found.
+- **Solo must work.** Whatever is not inherently multiplayer (settings, Customize, mod loading, solo options, save fixes) works with co-op idle. Check that path.
+- **Native to the game.** Use the game's own functions, actors, flags and assets through the hook layer; no poking memory from outside and no faking an effect by copying state or pixels.
+- **A remote action looks like the real one.** A hit another player lands shows on your screen the way a local hit does (flinch, flash, sparks, sound, health change).
+- **Screenshot proof for anything visible.** A log line only proves a message was sent. List the visible checks under "Check in game" in the pull request; the maintainer's in-game run takes the screenshots.
+- **No telemetry.** Our builds never send crash reports, telemetry or statistics to Longshot or anyone else. Discord Rich Presence always shows the Squadala name, icon and our status.
+- **Tests and CI.** A bug fix starts with a failing unit test. The `linux (gcc)` job builds the tests with `-Werror`; changes under `lichii/hook/` or `hookshot/src/` also need the `linux (gcc)` job's strict compile of the hook (the Hookshot module) green. A review OK counts only on a finished green run. Details: [AGENTS.md](AGENTS.md) and [docs/testing.md](docs/testing.md).
+
 ## Reporting bugs and desyncs
 
 Use the issue forms. Include the co-op build version (`VERSION.txt` in the kit), whether you played with the Windows kit (Longshot), the Linux kit (experimental) or an older emulator kit, the game version, how you connected (invite code, VPN, port forwarding, relay or LAN), how many players, who hosted, and the steps to reproduce. For a desync, say what each player saw; clips from both sides help the most. Logs are welcome; recordings of long play sessions are not needed.

@@ -12,6 +12,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -91,14 +92,18 @@ public:
             return out;
         }
         std::vector<HosCoopTexture> got;
+        std::size_t filled = 0;   // what the last call wrote
         for (int tries = 0; tries < 4; ++tries) {   // (more may be made between two calls)
             const int n = list_(size_min, size_max, got.data(), static_cast<int>(got.size()), generation);
             if (n <= static_cast<int>(got.size())) {
-                got.resize(static_cast<std::size_t>(std::max(n, 0)));
+                filled = static_cast<std::size_t>(std::max(n, 0));
                 break;
             }
+            // (it wrote as many as there was room for; the game makes textures fast at a start: room for more)
+            filled = got.size();
             got.resize(static_cast<std::size_t>(n) + 64);
         }
+        got.resize(filled);   // (after four tries short of room: the ones written, not empty entries)
         for (const HosCoopTexture& t : got) {
             out.push_back({t.address, t.size, t.serial});
         }
@@ -592,6 +597,38 @@ void CrossGuard() {
     }
 }
 
+// One pass of the worker: the round of the rest when due, then every wardrobe's step.
+void WorkOnce(bool kicked, std::chrono::steady_clock::time_point now, std::chrono::steady_clock::time_point& round,
+              std::uint64_t ms) {
+    if (kicked || now >= round) {
+        round = now + kRound;
+        PaintPuppets(ms);   // before their puppets wear the copies
+        FollowNumber();
+        FollowBoots(FollowTunics());
+    }
+    g_wardrobe->Step(ms);
+    g_gear->Step(ms);
+    g_puppets->Step(ms);
+    g_boots->Step(ms);
+    if (g_ptunics) g_ptunics->Step(ms);
+    CrossGuard();
+}
+
+// A throw out of this thread ends the game (lane 2026-11-23: std::bad_alloc while the PC's memory ran out at a
+// start). A pass that throws is said in the log and the worker goes on: the game keeps its colours until a later
+// pass works. (The wardrobes' steps catch their own: Wardrobe::Step.)
+void WorkFailed(const char* why) {
+    static int said = 0;
+    if (said >= 20) return;
+    try {
+        ++said;
+        LOG_WARNING(Core, "coop: look: the look worker's pass failed ({}): tried again at the next one{}", why,
+                    said == 20 ? " (said no more)" : "");
+    } catch (...) {
+        // (no memory even for the line: nothing said)
+    }
+}
+
 void Work() {
     const auto start = std::chrono::steady_clock::now();
     auto round = start + kRound;   // the next round of the rest (who wears what)
@@ -605,18 +642,13 @@ void Work() {
         lock.unlock();
         const auto now = std::chrono::steady_clock::now();
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start);
-        if (kicked || now >= round) {
-            round = now + kRound;
-            PaintPuppets(static_cast<std::uint64_t>(ms.count()));   // before their puppets wear the copies
-            FollowNumber();
-            FollowBoots(FollowTunics());
+        try {
+            WorkOnce(kicked, now, round, static_cast<std::uint64_t>(ms.count()));
+        } catch (const std::exception& e) {
+            WorkFailed(e.what());
+        } catch (...) {
+            WorkFailed("not a std::exception");
         }
-        g_wardrobe->Step(static_cast<std::uint64_t>(ms.count()));
-        g_gear->Step(static_cast<std::uint64_t>(ms.count()));
-        g_puppets->Step(static_cast<std::uint64_t>(ms.count()));
-        g_boots->Step(static_cast<std::uint64_t>(ms.count()));
-        if (g_ptunics) g_ptunics->Step(static_cast<std::uint64_t>(ms.count()));
-        CrossGuard();
         lock.lock();
     }
 }
@@ -712,7 +744,7 @@ void AgreeStartTunic() {
     LOG_INFO(Core, "coop: look: your Link starts in {} (the puppet pack's tunic files; LICHII_COOP_SELF_TUNIC said "
                    "{}): the switch follows the files",
              start, hint.empty() ? std::string("none") : hint);
-#ifdef _MSC_VER
+#ifdef _WIN32
     _putenv_s("LICHII_COOP_SELF_TUNIC", start == "green" ? "" : start.c_str());
 #else
     if (start == "green") {

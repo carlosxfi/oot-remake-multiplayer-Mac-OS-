@@ -605,9 +605,20 @@ bool ScalesAsBoss(std::string_view name) {
     return rule != nullptr && (rule->why == "boss" || rule->why == "mini-boss");
 }
 
+namespace {
+// A placement hash our baked table does not have: a mod added it (OOTRR Difficulty), so it is never folded by kind
+// either: the mod already scaled it (ootrr-diff-compat D1). Hash 0 and all ones are made actors, not placements.
+bool ModAdded(std::uint64_t hash) {
+    return hash != 0 && hash != ~std::uint64_t{0} && !AreaOf(hash).has_value();
+}
+}  // namespace
+
 Kind AttackerKind(std::string_view name, std::uint64_t hash, bool no_spot) {
     if (ScalesAsBoss(name)) {
         return Kind::boss;
+    }
+    if (ModAdded(hash)) {
+        return Kind::enemy;
     }
     return no_spot || TreatmentOf(name, hash) == Treatment::fold ? Kind::folded_enemy : Kind::enemy;
 }
@@ -615,6 +626,9 @@ Kind AttackerKind(std::string_view name, std::uint64_t hash, bool no_spot) {
 Kind LifeKind(std::string_view name, std::uint64_t hash, bool no_spot) {
     if (ScalesAsBoss(name)) {
         return Kind::boss_life;
+    }
+    if (ModAdded(hash)) {
+        return Kind::enemy_life;
     }
     return no_spot || TreatmentOf(name, hash) == Treatment::fold ? Kind::folded_enemy_life : Kind::enemy_life;
 }
@@ -803,9 +817,8 @@ std::size_t Extras::Plan(std::string_view scene, const std::vector<Original>& wa
         }
         const std::optional<Area> area = areas_ ? areas_(o.hash) : std::nullopt;
         if (!area) {
-            if (ExtraCount(o.hash, count_pct) > 0) {
-                no_spot_.insert(o.hash);  // no placement data: no ground known
-            }
+            // A placement our baked data lacks was added by a mod (OOTRR Difficulty: more enemies, hordes): its mod
+            // already scaled it, so it keeps its own weight: no copies, no fold (ootrr-diff-compat D1).
             continue;
         }
         auto plan = plans_.find(area->name);

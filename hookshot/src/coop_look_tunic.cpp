@@ -6,9 +6,11 @@
 #include "coop_look_tunic.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <string_view>
 #include <utility>
 
@@ -38,11 +40,13 @@ void Fail(std::string* why, std::string text) {
     }
 }
 
-// Memory is compared in pieces of this size.
-constexpr std::size_t kPiece = std::size_t{4} << 20;
-
+// The game's memory at `address` holds the first `size` bytes of `texels`. Read and compared kComparePiece at a time
+// in a buffer on this (the look worker's) stack: nothing allocated per call, whatever the texture's size (row 260).
 bool Same(const Textures& memory, std::uint64_t address, const std::vector<std::uint8_t>& texels, std::size_t size) {
-    std::vector<std::uint8_t> piece(std::min(kPiece, size));
+    if (size > texels.size()) {
+        return false;
+    }
+    std::array<std::uint8_t, kComparePiece> piece;
     for (std::size_t at = 0; at < size; at += piece.size()) {
         const std::size_t n = std::min(piece.size(), size - at);
         if (!memory.Read(address + at, piece.data(), n)) return false;
@@ -324,6 +328,27 @@ std::shared_ptr<const Texels> Wardrobe::Load(const std::string& colour) {
 }
 
 void Wardrobe::Step(std::uint64_t now_ms) {
+    try {
+        Once(now_ms);
+    } catch (const std::exception& e) {
+        Failed(e.what());
+    }
+}
+
+void Wardrobe::Failed(const char* why) {
+    // The game goes on: the next step looks at every texture again (this one may have stopped half way).
+    look_now_ = true;
+    if (said_failed_ >= kFailedSaid) return;
+    try {
+        ++said_failed_;
+        host_.log("coop: look: the " + host_.what + " wardrobe's step failed (" + why + "): tried again at the next "
+                  "step" + (said_failed_ == kFailedSaid ? " (said no more)" : ""));
+    } catch (...) {
+        // (no memory even for the line: nothing said)
+    }
+}
+
+void Wardrobe::Once(std::uint64_t now_ms) {
     if (host_.textures == nullptr) return;   // (no game textures: nothing to look at)
     std::string want;
     {

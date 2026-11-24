@@ -1,4 +1,4 @@
-From 9f98014ede57a6977a69bafcfc7c5b7ead5a8dd9 Mon Sep 17 00:00:00 2001
+From 06e539fa21d68430edc4255c3973cbb52b0f967d Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Thu, 19 Nov 2026 11:58:55 -0600
 Subject: [PATCH] Co-op settings: the Insert menu's settings for the module
@@ -21,31 +21,69 @@ The keys (menu_setting_set): MkwVkSetting's key holds 31 bytes, so a
 longer ini key (version_and_hardware_at_every_level) was handed out cut
 and then matched no row. A cut key now matches the row it starts.
 ---
- gpu/vk/vk_menu.cpp  | 16 +++++++++++++++-
- host/coop_bridge.c  | 33 +++++++++++++++++++++++++++++++++
- host/hos_coop_api.h | 17 +++++++++++++++++
- 3 files changed, 65 insertions(+), 1 deletion(-)
+ gpu/vk/menu/audio.cpp | 11 +++++++++++
+ gpu/vk/menu/audio.h   |  1 +
+ gpu/vk/vk_menu.cpp    | 11 ++++++++++-
+ host/coop_bridge.c    | 33 +++++++++++++++++++++++++++++++++
+ host/hos_coop_api.h   | 17 +++++++++++++++++
+ 5 files changed, 72 insertions(+), 1 deletion(-)
 
+diff --git a/gpu/vk/menu/audio.cpp b/gpu/vk/menu/audio.cpp
+index 88d36f1c..67bb25f8 100644
+--- a/gpu/vk/menu/audio.cpp
++++ b/gpu/vk/menu/audio.cpp
+@@ -19,6 +19,8 @@
+ #include <string>
+ #include <vector>
+ 
++#include <algorithm>
++#include <chrono>
+ namespace mkwvk {
+ 
+ int output_pick = 0;   // (the Output device row: 0 Default, then output_devices from 1; past them, the saved one unplugged)
+@@ -203,6 +205,15 @@ void refresh_mics() {
+     mic_row_ends();
+     mic_tell_host();
+ }
++/// (oot-remake-multiplayer, patch 0032) The control bridge's settings list (menu_setting) lists the microphones as they are
++/// now, as the menu does when it opens: refresh_mics when their count moved (it tells the host its choice, which starts it
++/// again), at most each 2 s
++void mics_as_now() {
++    static auto asked = std::chrono::steady_clock::time_point{};
++    if (!can_mic() || std::chrono::steady_clock::now() - asked < std::chrono::seconds(2)) return;
++    asked = std::chrono::steady_clock::now();
++    if (std::min(host->mic_count(), kMaxMics) != mic_listed) refresh_mics();
++}
+ // (the row changed by the player: the choice is now this one, by its name; the "(not connected)" entry is kept only while
+ // it is the one chosen)
+ void mic_chosen() {
+diff --git a/gpu/vk/menu/audio.h b/gpu/vk/menu/audio.h
+index 6032a4f8..4cc092f0 100644
+--- a/gpu/vk/menu/audio.h
++++ b/gpu/vk/menu/audio.h
+@@ -18,6 +18,7 @@ void refresh_outputs();   // (the host's playback devices listed again, the row
+ extern std::string mic_want;
+ std::string mic_key(const char* name);
+ void refresh_mics();   // (the host's microphones listed again, the row on mic_want's)
++void mics_as_now();     // (oot-remake-multiplayer, patch 0032: refresh_mics when their count moved, at most each 2 s)
+ void mic_tell_host();
+ 
+ // (the microphone test: on while the player has it on (Test microphone), the levels the host measured and its state)
 diff --git a/gpu/vk/vk_menu.cpp b/gpu/vk/vk_menu.cpp
-index 737f025d..a93a3e2b 100644
+index 8d6084e1..c721770d 100644
 --- a/gpu/vk/vk_menu.cpp
 +++ b/gpu/vk/vk_menu.cpp
-@@ -6073,6 +6073,14 @@ static void bridge_probe_first() { (void)upscalers_available(), (void)dlss_why()
+@@ -4847,6 +4847,9 @@ static void bridge_probe_first() { (void)upscalers_available(), (void)dlss_why()
  int menu_setting(int index, MkwVkSetting* out) {
      bridge_probe_first();
      std::lock_guard lk(menu_mu);
 +    // (oot-remake-multiplayer, patch 0032) the microphones as they are now, as the menu lists them when it opens: else the
-+    // Microphone row ends at the default until the menu was opened once. At an enumeration's start, at most each 2 s, and
-+    // the list taken again only when its count moved (refresh_mics tells the host its choice, which starts it again)
-+    static auto mics_asked = std::chrono::steady_clock::time_point{};
-+    if (index == 0 && can_mic() && std::chrono::steady_clock::now() - mics_asked > std::chrono::seconds(2)) {
-+        mics_asked = std::chrono::steady_clock::now();
-+        if (std::min(host->mic_count(), kMaxMics) != mic_listed) refresh_mics();
-+    }
-     for (int i = 0, n = 0; i < kRows; i++)
++    // Microphone row ends at the default until the menu was opened once (menu/audio.cpp mics_as_now)
++    if (index == 0) mics_as_now();
+     for (int i = 0, n = 0; i < (int)std::size(rows); i++)
          if (bridge_row(i) && n++ == index) return bridge_fill(i, out), 1;
      return 0;
-@@ -6170,11 +6178,17 @@ void menu_auto_tune(double gpu_ms, double draws, double fps) {
+@@ -4944,11 +4947,17 @@ void menu_auto_tune(double gpu_ms, double draws, double fps) {
  /// through a list of their own (the Upscaler, Render resolution, the output resolution) are walked to value: walk_to. out: the
  /// row as it is now. 1 set, 0 no such row, -1 nothing to choose on this PC (row_fixed), -2 none of a list row's steps reach
  /// value here (the row and the rest as they were)
@@ -59,13 +97,13 @@ index 737f025d..a93a3e2b 100644
      bridge_probe_first();
      std::lock_guard lk(menu_mu);
      int i = 0;
--    while (i < kRows && !(bridge_row(i) && !strcmp(ini_key(rows[i]), key))) i++;
-+    while (i < kRows && !(bridge_row(i) && bridge_key_is(ini_key(rows[i]), key))) i++;
-     if (i == kRows) return 0;
+-    while (i < (int)std::size(rows) && !(bridge_row(i) && !strcmp(ini_key(rows[i]), key))) i++;
++    while (i < (int)std::size(rows) && !(bridge_row(i) && bridge_key_is(ini_key(rows[i]), key))) i++;
+     if (i == (int)std::size(rows)) return 0;
      Row& r = rows[i];
      if (row_fixed(r.value)) return bridge_fill(i, out), -1;
 diff --git a/host/coop_bridge.c b/host/coop_bridge.c
-index 889a0716..82b70a1e 100644
+index 889a0716..89fe118a 100644
 --- a/host/coop_bridge.c
 +++ b/host/coop_bridge.c
 @@ -8,6 +8,7 @@
@@ -123,7 +161,7 @@ index 889a0716..82b70a1e 100644
          hos_log("coop: the module stays off");
          __atomic_store_n(&state, 3, __ATOMIC_RELEASE);
 diff --git a/host/hos_coop_api.h b/host/hos_coop_api.h
-index bc47834c..380e9553 100644
+index bc47834c..c45382fc 100644
 --- a/host/hos_coop_api.h
 +++ b/host/hos_coop_api.h
 @@ -28,6 +28,15 @@ typedef struct HosCoopCall {

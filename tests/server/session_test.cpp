@@ -737,15 +737,20 @@ TEST_CASE("a player flooding reliable messages is held to the rate, after a burs
   h.join(1, "Link");
   h.join(2, "Zelda");
   h.clear();
-  // 60 a second with bursts of 120: 200 at once lets 120 through.
+  // 60 a second with bursts of 120: 200 at once lets 120 through; the other 80 wait (reliable: never dropped
+  // under reliable_queue_max, row 164 follow-up).
   for (int i = 0; i < 200; ++i) h.receive(1, Chat{0, "spam"}, kChannelSession);
   CHECK(h.to(2).size() == 120);
-  CHECK(h.session.stats().rate_limited == 80);
-  // Half a second later, 30 more.
+  CHECK(h.session.stats().rate_limited == 0);
+  CHECK(h.session.stats().rate_deferred == 80);
+  // Half a second later, 30 more: the waiting ones first, the new ones wait behind them.
   h.clear();
   h.now += 500'000;
+  h.session.tick(h.now);
   for (int i = 0; i < 100; ++i) h.receive(1, Chat{0, "spam"}, kChannelSession);
-  CHECK(h.to(2).size() == 30);
+  std::size_t chats = 0;  // (the tick's own PING to player 2 is no chat)
+  for (const Sent& sent : h.to(2)) chats += std::holds_alternative<Chat>(sent.message) ? 1 : 0;
+  CHECK(chats == 30);
   // PINGs share the budget, so a flood of them gets no flood of PONGs.
   h.clear();
   h.receive(1, Ping{1}, kChannelSession);
@@ -755,6 +760,57 @@ TEST_CASE("a player flooding reliable messages is held to the rate, after a burs
   h.receive(1, TestPayload{1, {}}, kChannelPlayerSamples);
   CHECK(h.to(1).size() == 1);
   CHECK(h.to(2).size() == 1);
+}
+
+TEST_CASE("row 164 follow-up: reliable messages over the rate wait in order and none is lost, up to reliable_queue_max") {
+  SessionConfig config;
+  config.reliable_queue_max = 50;
+  Harness h(config);
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.clear();
+  // A burst of 120 goes at once, 50 wait, the rest past the queue are dropped and counted.
+  for (int i = 0; i < 200; ++i) h.receive(1, Chat{0, std::to_string(i)}, kChannelSession);
+  CHECK(h.to(2).size() == 120);
+  CHECK(h.session.stats().rate_deferred == 50);
+  CHECK(h.session.stats().rate_limited == 30);
+  // Over the next second the waiting ones go, in the order they came.
+  h.clear();
+  for (int i = 0; i < 10; ++i) {
+    h.now += 100'000;
+    h.session.tick(h.now);
+  }
+  h.collect();
+  std::vector<std::string> texts;
+  for (const auto& sent : h.to(2)) {
+    if (const auto* chat = std::get_if<Chat>(&sent.message)) texts.push_back(chat->text);
+  }
+  REQUIRE(texts.size() == 50);
+  for (int i = 0; i < 50; ++i) CHECK(texts[static_cast<std::size_t>(i)] == std::to_string(120 + i));
+}
+
+TEST_CASE("row 164 follow-up: the reliable messages that wait are bounded in bytes too (reliable_queue_bytes_max)") {
+  SessionConfig config;
+  config.reliable_queue_bytes_max = 10'000;
+  Harness h(config);
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.clear();
+  for (int i = 0; i < 120; ++i) h.receive(1, Chat{0, "x"}, kChannelSession);  // the burst
+  const Chat big{0, std::string(kMaxChatChars, 'c')};
+  const std::size_t size = bytes_of(big).size();
+  const std::size_t fit = config.reliable_queue_bytes_max / size;
+  REQUIRE(fit >= 1);
+  for (std::size_t i = 0; i < fit + 3; ++i) h.receive(1, big, kChannelSession);
+  CHECK(h.session.stats().rate_deferred == fit);
+  CHECK(h.session.stats().rate_limited == 3);
+  // Once the waiting ones went, the room is free again.
+  for (int i = 0; i < 20; ++i) {
+    h.now += 100'000;
+    h.session.tick(h.now);
+  }
+  h.receive(1, big, kChannelSession);
+  CHECK(h.session.stats().rate_limited == 3);
 }
 
 TEST_CASE("a player flooding samples is held to the unreliable rate") {
@@ -1174,6 +1230,64 @@ TEST_CASE("a host's FLAG_RESET replaces the kept values, 0s included, and goes t
   auto snap = messages_of<FlagSnapshot>(h, 3);
   REQUIRE(snap.size() == 1);
   CHECK(snap[0].flags == std::vector<FlagEntry>{flag(5, 0), flag(6, 1)});
+}
+
+TEST_CASE("report 138 (4): a guest's old value in flight just after the host's save load is refused, its new ones go") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.receive(1, FlagState{0, {flag(5, 16), flag(6, 1)}}, kChannelProgress);
+  h.receive(1, FlagReset{0, {flag(5, 12), flag(6, 0)}}, kChannelProgress);  // the save: MaxLife 12, the boss alive
+  h.clear();
+  // Sent before player 2's game had the reset: its old 16 and its beaten boss. Refused; another flag goes on.
+  h.receive(2, FlagSet{0, {flag(5, 16), flag(6, 1), flag(7, 1)}}, kChannelProgress);
+  auto relayed = messages_of<FlagSet>(h, 1);
+  REQUIRE(relayed.size() == 1);
+  CHECK(relayed[0].flags == std::vector<FlagEntry>{flag(7, 1)});
+  CHECK(h.session.stats().reset_fenced == 2);
+  // The reset's own value, and a count change, are never refused.
+  h.clear();
+  h.receive(2, FlagSet{0, {flag(5, 12), FlagEntry{8, 0, FlagKind::count_delta, 1}}}, kChannelProgress);
+  relayed = messages_of<FlagSet>(h, 1);
+  REQUIRE(relayed.size() == 1);
+  CHECK(relayed[0].flags.size() == 2);
+  // After reset_fence_us the player's change is its own again (a heart container taken in the refight).
+  h.clear();
+  h.now += SessionConfig{}.reset_fence_us;
+  h.receive(2, FlagSet{0, {flag(5, 16)}}, kChannelProgress);
+  relayed = messages_of<FlagSet>(h, 1);
+  REQUIRE(relayed.size() == 1);
+  CHECK(relayed[0].flags == std::vector<FlagEntry>{flag(5, 16)});
+}
+
+TEST_CASE("report 138 (4): the host's own changes are never fenced, a guest's that waited over its rate are") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.receive(1, FlagState{0, {flag(5, 16), flag(6, 1)}}, kChannelProgress);
+  h.clear();
+  // Player 2 is over its rate: its FLAG_SET (its old values) waits behind the burst, then the host loads its save.
+  for (int i = 0; i < 120; ++i) h.receive(2, Chat{0, "x"}, kChannelSession);
+  h.receive(2, FlagSet{0, {flag(5, 16), flag(6, 1), flag(7, 1)}}, kChannelProgress);
+  CHECK(h.session.stats().rate_deferred == 1);
+  h.now += 100'000;
+  h.receive(1, FlagReset{0, {flag(5, 12), flag(6, 0)}}, kChannelProgress);
+  h.clear();
+  // Handled after the reset, but it came before it: its old values are refused, the rest goes on.
+  h.now += 100'000;
+  h.session.tick(h.now);
+  h.collect();
+  auto relayed = messages_of<FlagSet>(h, 1);
+  REQUIRE(relayed.size() == 1);
+  CHECK(relayed[0].flags == std::vector<FlagEntry>{flag(7, 1)});
+  CHECK(h.session.stats().reset_fenced == 2);
+  // The host's own game goes on from its load at once: its change to a flag the reset set is its game's, kept.
+  h.clear();
+  h.receive(1, FlagSet{0, {flag(6, 1)}}, kChannelProgress);
+  relayed = messages_of<FlagSet>(h, 1);
+  REQUIRE(relayed.size() == 1);
+  CHECK(relayed[0].flags == std::vector<FlagEntry>{flag(6, 1)});
+  CHECK(h.session.stats().reset_fenced == 2);
 }
 
 TEST_CASE("a joiner gets the table before any flag state sent after it joined") {
@@ -4733,6 +4847,52 @@ TEST_CASE("join password: which addresses are the same network") {
   CHECK(!is_same_network(ipv4_of(enet_address(100, 64, 0, 1))));    // (a carrier's NAT, a VPN's: not this network)
   CHECK(!is_same_network(ipv4_of(enet_address(25, 1, 2, 3))));
   CHECK(!is_same_network(ipv4_of(enet_address(8, 8, 8, 8))));
+  // The ranges' edges (row 251: LAN joins need no password, the internet's still do).
+  CHECK(is_same_network(ipv4_of(enet_address(10, 0, 0, 0))));
+  CHECK(is_same_network(ipv4_of(enet_address(10, 255, 255, 255))));
+  CHECK(!is_same_network(ipv4_of(enet_address(9, 255, 255, 255))));
+  CHECK(!is_same_network(ipv4_of(enet_address(11, 0, 0, 0))));
+  CHECK(!is_same_network(ipv4_of(enet_address(172, 15, 255, 255))));
+  CHECK(is_same_network(ipv4_of(enet_address(172, 16, 0, 0))));
+  CHECK(is_same_network(ipv4_of(enet_address(192, 168, 255, 255))));
+  CHECK(!is_same_network(ipv4_of(enet_address(192, 167, 255, 255))));
+  CHECK(!is_same_network(ipv4_of(enet_address(192, 169, 0, 0))));
+  CHECK(is_same_network(ipv4_of(enet_address(169, 254, 0, 0))));
+  CHECK(!is_same_network(ipv4_of(enet_address(169, 253, 255, 255))));
+  CHECK(!is_same_network(ipv4_of(enet_address(169, 255, 0, 0))));
+  CHECK(!is_same_network(ipv4_of(enet_address(0, 0, 0, 0))));
+  CHECK(!is_same_network(ipv4_of(enet_address(255, 255, 255, 255))));
+  CHECK(!is_same_network(ipv4_of(enet_address(127, 255, 255, 255))));
+}
+
+TEST_CASE("join password: which IPv6 addresses are the same network, IPv4-mapped ones by their IPv4") {
+  using V6 = std::array<std::uint8_t, 16>;
+  const auto mapped = [](std::uint8_t a, std::uint8_t b, std::uint8_t c, std::uint8_t d) {
+    return V6{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, a, b, c, d};
+  };
+  CHECK(is_same_network_ipv6(V6{0xFC, 0x00, 1}));                     // fc00::/7, both halves
+  CHECK(is_same_network_ipv6(V6{0xFD, 0x12, 0x34}));
+  CHECK(!is_same_network_ipv6(V6{0xFB, 0xFF}));
+  CHECK(!is_same_network_ipv6(V6{0xFE, 0x00}));
+  CHECK(is_same_network_ipv6(V6{0xFE, 0x80}));                        // fe80::/10
+  CHECK(is_same_network_ipv6(V6{0xFE, 0xBF, 0xFF}));
+  CHECK(!is_same_network_ipv6(V6{0xFE, 0xC0}));                       // (fec0::, the old site-local: not taken)
+  CHECK(!is_same_network_ipv6(V6{0xFE, 0x7F}));
+  CHECK(!is_same_network_ipv6(V6{0x20, 0x01, 0x0d, 0xb8}));           // a global one
+  CHECK(!is_same_network_ipv6(V6{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}));   // ::1 (as 127/8)
+  CHECK(!is_same_network_ipv6(V6{}));                                 // ::
+  CHECK(is_same_network_ipv6(mapped(192, 168, 1, 20)));
+  CHECK(is_same_network_ipv6(mapped(10, 0, 0, 1)));
+  CHECK(is_same_network_ipv6(mapped(172, 31, 0, 1)));
+  CHECK(is_same_network_ipv6(mapped(169, 254, 1, 1)));
+  CHECK(!is_same_network_ipv6(mapped(127, 0, 0, 1)));                 // (a relay's and a helper's)
+  CHECK(!is_same_network_ipv6(mapped(8, 8, 8, 8)));
+  CHECK(!is_same_network_ipv6(mapped(100, 64, 0, 1)));
+  // IPv4-compatible (::a.b.c.d) and NAT64 (64:ff9b::a.b.c.d) are not mapped ones: a private IPv4 there is not
+  // this network.
+  CHECK(!is_same_network_ipv6(V6{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 192, 168, 1, 20}));
+  CHECK(!is_same_network_ipv6(V6{0, 0x64, 0xFF, 0x9B, 0, 0, 0, 0, 0, 0, 0, 0, 192, 168, 1, 20}));
+  CHECK(!is_same_network_ipv6(V6{0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xFF, 0xFF, 192, 168, 1, 20}));
 }
 
 TEST_CASE("join password: no proof at all times out like a missing HELLO") {
@@ -6688,6 +6848,105 @@ TEST_CASE("boss-copy-b: a boss owned by a game that has not played its intro goe
   CHECK(messages_to<HandoverAsk>(h, 2).empty());
 }
 
+namespace {
+ObjectState boss_state(const std::string& animation) {
+  ObjectState s = state_at(0, 11);
+  s.animation = Animation{animation, 1.0f, 1.0f};
+  return s;
+}
+}  // namespace
+
+TEST_CASE("row 164 follow-up: a boss leaves an owner held in a cutscene of its own, never in the boss's own event") {
+  OwnerHarness h;
+  h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}}}, kChannelOwnership);
+  h.receive(1, boss_presence(object_presence::awake), kChannelOwnership);
+  h.receive(2, boss_presence(object_presence::awake), kChannelOwnership);
+  h.stand(1, 3);
+  h.stand(2, 5);
+  SUBCASE("the boss fights on (its own move): asked over after fight_owner_cutscene_us") {
+    h.receive(1, ObjectSample{0, placed(7), 0, boss_state("Walk")}, kChannelObjectSamples);
+    h.receive(1, PlayerStatus{0, status::in_cutscene}, kChannelSession);  // an item get, Navi's talk
+    h.clear();
+    h.run(2 * kSecond);
+    CHECK(h.asks() == 0);  // a short event keeps it
+    h.run(2 * kSecond);
+    CHECK(messages_to<HandoverAsk>(h, 1) == std::vector<HandoverAsk>{{placed(7), 0, 2}});
+    CHECK(h.session.stats().boss_from_cutscene == 1);
+  }
+  SUBCASE("the boss plays its own event (an intro or phase change every game is in): kept") {
+    h.receive(1, ObjectSample{0, placed(7), 0, boss_state("C01-Enemy_DungeonBoss_Gohma-A-0")}, kChannelObjectSamples);
+    h.receive(1, PlayerStatus{0, status::in_cutscene}, kChannelSession);
+    h.clear();
+    h.run(6 * kSecond);
+    CHECK(h.asks() == 0);
+    CHECK(h.session.stats().boss_from_cutscene == 0);
+  }
+  SUBCASE("the other game is in a cutscene too: kept") {
+    h.receive(1, ObjectSample{0, placed(7), 0, boss_state("Walk")}, kChannelObjectSamples);
+    h.receive(1, PlayerStatus{0, status::in_cutscene}, kChannelSession);
+    h.receive(2, PlayerStatus{0, status::in_cutscene}, kChannelSession);
+    h.clear();
+    h.run(6 * kSecond);
+    CHECK(h.asks() == 0);
+  }
+}
+
+TEST_CASE("pr-navi-01112: a boss whose AI runs in its owner's cutscene (a grab, an attack, a new move) is kept") {
+  // A boss that holds or throws its owner's Link plays that as an event in its owner's game (Morpha's tentacle), its
+  // AI running: never handed over from that. Only a boss standing in one move while its owner's event runs is.
+  OwnerHarness h;
+  h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}}}, kChannelOwnership);
+  h.receive(1, boss_presence(object_presence::awake), kChannelOwnership);
+  h.receive(2, boss_presence(object_presence::awake), kChannelOwnership);
+  h.stand(1, 3);
+  h.stand(2, 5);
+  SUBCASE("in its attack (attack_hold_max_us): kept") {
+    h.receive(1, ObjectSample{0, placed(7), 0, attack_state(11, true, "Grab")}, kChannelObjectSamples);
+    h.receive(1, PlayerStatus{0, status::in_cutscene}, kChannelSession);
+    h.clear();
+    h.run(6 * kSecond);
+    CHECK(h.asks() == 0);
+    CHECK(h.session.stats().boss_from_cutscene == 0);
+  }
+  SUBCASE("a piece of it holds its owner's Link (row 232): kept") {
+    h.receive(1, boss_presence(object_presence::awake | object_presence::grabbed_here), kChannelOwnership);
+    h.receive(1, ObjectSample{0, placed(7), 0, boss_state("Walk")}, kChannelObjectSamples);
+    h.receive(1, PlayerStatus{0, status::in_cutscene}, kChannelSession);
+    h.clear();
+    h.run(6 * kSecond);
+    CHECK(h.session.stats().boss_from_cutscene == 0);
+  }
+  SUBCASE("its move changes every second: kept, once one move stands fight_owner_cutscene_us: asked over") {
+    h.receive(1, PlayerStatus{0, status::in_cutscene}, kChannelSession);
+    const char* moves[] = {"Walk", "Turn", "Walk", "Turn", "Walk", "Turn"};
+    for (const char* m : moves) {
+      h.receive(1, ObjectSample{0, placed(7), 0, boss_state(m)}, kChannelObjectSamples);
+      h.run(1 * kSecond);
+    }
+    CHECK(h.session.stats().boss_from_cutscene == 0);
+    h.clear();
+    h.run(4 * kSecond);
+    CHECK(messages_to<HandoverAsk>(h, 1) == std::vector<HandoverAsk>{{placed(7), 0, 2}});
+    CHECK(h.session.stats().boss_from_cutscene == 1);
+  }
+}
+
+TEST_CASE("row 164 follow-up: fight_owner_cutscene_us 0 keeps a boss with an owner in a cutscene") {
+  SessionConfig config = quiet_config();
+  config.fight_owner_cutscene_us = 0;
+  OwnerHarness h(config);
+  h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}}}, kChannelOwnership);
+  h.receive(1, boss_presence(object_presence::awake), kChannelOwnership);
+  h.receive(2, boss_presence(object_presence::awake), kChannelOwnership);
+  h.stand(1, 3);
+  h.stand(2, 5);
+  h.receive(1, ObjectSample{0, placed(7), 0, boss_state("Walk")}, kChannelObjectSamples);
+  h.receive(1, PlayerStatus{0, status::in_cutscene}, kChannelSession);
+  h.clear();
+  h.run(6 * kSecond);
+  CHECK(h.asks() == 0);
+}
+
 TEST_CASE("row 189: a ready owner that stands still keeps its boss from a game that has not begun the fight") {
   OwnerHarness h;
   h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}}}, kChannelOwnership);
@@ -7479,6 +7738,53 @@ TEST_CASE("row 149: a stuck boss's freed fight lets a copy's chase hand it over"
   CHECK(messages_to<HandoverAsk>(h, 1) == std::vector<HandoverAsk>{{placed(7), 0, 2}});
 }
 
+TEST_CASE("row 222 follow-up: a boss part cut loose from its group keeps the group's fight, so no chase moves it") {
+  // Twinrova's merge: the battle manager (7) and the sisters leave every game, Twinrova (8) stays. Every fight mark
+  // of the group was on its root; on her own she must still be in that fight, or a copy's chase hands her over.
+  auto fight_on_root = [](OwnerHarness& h) {
+    h.receive(1, present_in("Field", {placed(7), placed(8)}), kChannelOwnership);
+    h.receive(2, present_in("Field", {placed(7), placed(8)}), kChannelOwnership);
+    h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}, {placed(8), placed(7), object_group::boss}}},
+              kChannelOwnership);
+    h.stand(1, 34);
+    h.stand(2, 60);
+    ObjectState s = state_at(0, 24);
+    s.state = object_state::in_fight;
+    h.receive(1, ObjectSample{0, placed(8), 0, s}, kChannelObjectSamples);
+    CHECK(h.session.object_in_fight(placed(8), h.now));  // (read through its root)
+  };
+  auto chase = [](OwnerHarness& h) {
+    h.clear();
+    ObjectPresent p = present_in("Field", {placed(8)});
+    p.objects[0].flags = object_presence::targeting;
+    h.receive(2, p, kChannelOwnership);
+    for (int i = 0; i < 8; ++i) h.run(kSecond);
+  };
+  SessionConfig config = quiet_config();
+  config.boss_near_hold_us = 0;
+  {
+    // The root forgotten (nobody has it loaded any more).
+    OwnerHarness h(config);
+    fight_on_root(h);
+    h.receive(2, present_in("Field", {placed(8)}), kChannelOwnership);
+    h.receive(1, present_in("Field", {placed(8)}), kChannelOwnership);
+    CHECK_FALSE(h.session.object_owner(placed(7)).has_value());
+    CHECK(h.session.object_in_fight(placed(8), h.now));
+    chase(h);
+    CHECK(h.asks() == 0);
+    CHECK(h.session.object_owner(placed(8)) == owned(1, 0));
+  }
+  {
+    // The part made a root of its own by a game's group list.
+    OwnerHarness h(config);
+    fight_on_root(h);
+    h.receive(1, ObjectGroup{0, {{placed(8), placed(8), object_group::boss}}}, kChannelOwnership);
+    CHECK(h.session.object_in_fight(placed(8), h.now));
+    chase(h);
+    CHECK(h.asks() == 0);
+  }
+}
+
 TEST_CASE("row 149: a boss stuck in one move with no animation or life in its samples is never judged") {
   SessionConfig config = quiet_config();
   config.boss_near_hold_us = 0;
@@ -8094,4 +8400,214 @@ TEST_CASE("row 212: owned by a copy holder, the guard is asked back, its maker u
   // Player 2's game unloads it (its Link left the cell): not handed to player 1's copy.
   h.receive(2, present_in("Field", {}), kChannelOwnership);
   CHECK(h.session.object_owner(placed(7)) == owned(0, 2));
+}
+
+// Row 222 (twinrova-222-2, option C): Twinrova's battle manager (object_presence::battle_manager) chose its sisters'
+// battle state from its own game's Link the whole fight; a hand-over by the near rule or a stun put a new owner's
+// manager on a state it never knew (a sister held in her attack). It moves only from an unfit owner.
+namespace {
+ObjectPresent manager_present(const std::string& scene, const std::vector<ObjectId>& ids) {
+  ObjectPresent p = present_in(scene, ids);
+  for (auto& e : p.objects) e.flags = static_cast<std::uint8_t>(e.flags | object_presence::battle_manager);
+  return p;
+}
+}  // namespace
+
+TEST_CASE("row 222: a battle manager's group never goes by the near rule or a stun, only from an unfit owner") {
+  OwnerHarness h(near_config());
+  h.receive(1, manager_present("Field", {placed(7)}), kChannelOwnership);
+  h.receive(2, manager_present("Field", {placed(7)}), kChannelOwnership);
+  h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}}}, kChannelOwnership);
+  h.receive(1, ObjectSample{0, placed(7), 0, state_at(0, 11)}, kChannelObjectSamples);  // a fight
+  REQUIRE(h.session.object_in_fight(placed(7), h.now));
+  h.stand(1, 12);  // the owner by the wall
+  h.stand(2, 3);   // player 2 at the manager's place
+  h.clear();
+  h.run(15 * kSecond);  // (a plain boss goes to player 2 after 10 s: issue 150's case)
+  CHECK(h.asks() == 0);
+  CHECK(h.session.stats().boss_to_near == 0);
+  h.receive(2, Damage{0, placed(7), 0, 0, 0, {}, {}}, kChannelOwnership);  // a stun from player 2
+  h.run(250'000);
+  CHECK(h.asks() == 0);
+  CHECK(h.session.stats().boss_to_hitter == 0);
+  CHECK(h.session.object_owner(placed(7)) == owned(1, 0));
+  // Its owner paused past fight_owner_paused_us: it goes on, as every boss.
+  h.receive(1, PlayerStatus{0, status::paused}, kChannelSession);
+  h.run(3 * kSecond);
+  CHECK(messages_to<HandoverAsk>(h, 1) == std::vector<HandoverAsk>{{placed(7), 0, 2}});
+}
+
+TEST_CASE("row 222: a battle manager whose attack ends after its 20 s takes no turn (orders_root above the turn rule)") {
+  TurnHarness h;
+  h.receive(1, turns_present("Field", {placed(7)}, object_presence::battle_manager), kChannelOwnership);
+  h.receive(2, turns_present("Field", {placed(7)}, object_presence::battle_manager), kChannelOwnership);
+  h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}}}, kChannelOwnership);
+  h.stand(1, 6);
+  h.stand(2, 10);
+  h.receive(1, ObjectSample{0, placed(7), 0, state_at(0, 11)}, kChannelObjectSamples);  // the fight begins
+  h.clear();
+  h.run(20 * kSecond + 500'000);
+  attack_ends(h, 1, 0, 11);  // (a plain boss turns to player 2 here: "boss turns: ... round")
+  h.run(250'000);
+  CHECK(h.asks() == 0);
+  CHECK(h.session.stats().boss_turns == 0);
+  CHECK(h.session.object_owner(placed(7)) == owned(1, 0));
+}
+
+// Row 232 (Dead Hand): his AI rises only for a grab in his own game, so a game whose own Link his hand holds
+// (object_presence::grabbed_here on his entry) takes him, unless his owner's Link is held too.
+namespace {
+ObjectPresent flagged_present(const std::string& scene, const std::vector<ObjectId>& ids, std::uint8_t flags) {
+  ObjectPresent p = present_in(scene, ids);
+  for (auto& e : p.objects) e.flags = static_cast<std::uint8_t>(e.flags | flags);
+  return p;
+}
+}  // namespace
+
+TEST_CASE("row 232: a boss goes to the game whose Link its summoned piece holds, not while its owner is held too") {
+  for (const bool owner_held : {false, true}) {
+    CAPTURE(owner_held);
+    OwnerHarness h(near_config());
+    h.receive(1, present_in("Field", {placed(7)}), kChannelOwnership);
+    h.receive(2, present_in("Field", {placed(7)}), kChannelOwnership);
+    h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}}}, kChannelOwnership);
+    h.receive(1, ObjectSample{0, placed(7), 0, state_at(0, 11)}, kChannelObjectSamples);  // a fight
+    REQUIRE(h.session.object_owner(placed(7)) == owned(1, 0));
+    h.clear();
+    h.run(kSecond);
+    CHECK(h.asks() == 0);  // nobody held: he stays
+    if (owner_held) {
+      h.receive(1, flagged_present("Field", {placed(7)}, object_presence::grabbed_here), kChannelOwnership);
+    }
+    h.receive(2, flagged_present("Field", {placed(7)}, object_presence::grabbed_here), kChannelOwnership);
+    h.run(250'000);
+    if (owner_held) {
+      CHECK(h.asks() == 0);  // his own game answers its own grab; his turns pass him on
+      CHECK(h.session.stats().boss_to_grabbed == 0);
+    } else {
+      CHECK(messages_to<HandoverAsk>(h, 1) == std::vector<HandoverAsk>{{placed(7), 0, 2}});
+      CHECK(h.session.stats().boss_to_grabbed == 1);
+    }
+  }
+}
+
+TEST_CASE("row 232: the grab hand-over waits for the owner's attack to end, and a battle manager never takes it") {
+  {
+    TurnHarness h;
+    h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}}}, kChannelOwnership);
+    h.receive(1, ObjectSample{0, placed(7), 0, attack_state(11, true)}, kChannelObjectSamples);  // mid-attack
+    h.clear();
+    h.receive(2, turns_present("Field", {placed(7)}, object_presence::grabbed_here), kChannelOwnership);
+    h.run(250'000);
+    CHECK(h.asks() == 0);  // he is rising for player 1's Link: not taken mid-attack
+    attack_ends(h, 1, 0, 11);
+    h.run(250'000);
+    CHECK(messages_to<HandoverAsk>(h, 1) == std::vector<HandoverAsk>{{placed(7), 0, 2}});
+  }
+  {
+    OwnerHarness h(near_config());
+    h.receive(1, manager_present("Field", {placed(7)}), kChannelOwnership);
+    h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}}}, kChannelOwnership);
+    h.receive(2, flagged_present("Field", {placed(7)},
+                                 object_presence::battle_manager | object_presence::grabbed_here),
+              kChannelOwnership);
+    h.clear();
+    h.run(kSecond);
+    CHECK(h.asks() == 0);
+    CHECK(h.session.stats().boss_to_grabbed == 0);
+  }
+}
+
+TEST_CASE("row 222: without the battle manager bit the same boss goes to the nearer player (as before)") {
+  OwnerHarness h(near_config());
+  h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}}}, kChannelOwnership);
+  h.receive(1, ObjectSample{0, placed(7), 0, state_at(0, 11)}, kChannelObjectSamples);
+  h.stand(1, 12);
+  h.stand(2, 3);
+  h.clear();
+  h.run(15 * kSecond);
+  CHECK(messages_to<HandoverAsk>(h, 1) == std::vector<HandoverAsk>{{placed(7), 0, 2}});
+}
+
+TEST_CASE("hand-over: every boss owner change logs its reason (review-01111-b 17)") {
+  const auto said = [](const std::vector<std::string>& lines, const std::string& part) {
+    return std::count_if(lines.begin(), lines.end(), [&](const std::string& l) {
+      return l.starts_with("hand-over: ") && l.find(part) != std::string::npos;
+    });
+  };
+  {  // the owner dies: player 1 -> player 2, "its owner is unfit (dead N s)"
+    std::vector<std::string> lines;
+    SessionConfig config = turn_config();
+    config.log = [&lines](const std::string& line) { lines.push_back(line); };
+    OwnerHarness h(config);
+    h.stand(1, 4);
+    h.stand(2, 6);
+    h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}}}, kChannelOwnership);
+    h.receive(1, ObjectSample{0, placed(7), 0, state_at(0, 11)}, kChannelObjectSamples);
+    h.clear();
+    h.receive(1, PlayerStatus{0, status::dead}, kChannelSession);
+    h.run(500'000);
+    REQUIRE(messages_to<HandoverAsk>(h, 1) == std::vector<HandoverAsk>{{placed(7), 0, 2}});
+    h.receive(1, HandoverState{0, placed(7), 0, state_at(0, 11)}, kChannelOwnership);
+    REQUIRE(h.session.object_owner(placed(7)) == owned(2, 1));
+    CHECK(said(lines, "player 1 -> player 2: its owner is unfit (dead ") == 1);
+    CHECK(said(lines, "no reason given") == 0);
+  }
+  {  // paused, no answer: the reason says so
+    std::vector<std::string> lines;
+    SessionConfig config = turn_config();
+    config.log = [&lines](const std::string& line) { lines.push_back(line); };
+    OwnerHarness h(config);
+    h.stand(1, 4);
+    h.stand(2, 6);
+    h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}}}, kChannelOwnership);
+    h.receive(1, ObjectSample{0, placed(7), 0, state_at(0, 11)}, kChannelObjectSamples);
+    h.clear();
+    h.receive(1, PlayerStatus{0, status::paused}, kChannelSession);
+    h.run(3 * kSecond);
+    REQUIRE(h.asks() == 1);
+    h.run(10 * kSecond);
+    REQUIRE(h.session.object_owner(placed(7)) == owned(2, 1));
+    CHECK(said(lines, "player 1 -> player 2: its owner is unfit (paused ") == 1);
+    CHECK(said(lines, "(the owner did not answer)") == 1);
+  }
+}
+
+TEST_CASE("hand-over: a plain pack's root changes owner without a log line (it can change often)") {
+  std::vector<std::string> lines;
+  SessionConfig config = turn_config();
+  config.log = [&lines](const std::string& line) { lines.push_back(line); };
+  OwnerHarness h(config);
+  h.stand(1, 4);
+  h.stand(2, 6);
+  h.receive(1, ObjectGroup{0, {{placed(7), placed(7), 0}, {placed(8), placed(7), 0}}}, kChannelOwnership);
+  h.receive(1, ObjectSample{0, placed(7), 0, state_at(0, 11)}, kChannelObjectSamples);
+  h.clear();
+  h.receive(1, PlayerStatus{0, status::dead}, kChannelSession);
+  h.run(15 * kSecond);  // a plain enemy's owner hold is 10 s; no answer: the change comes anyway
+  REQUIRE(h.session.object_owner(placed(7)).has_value());
+  CHECK(h.session.object_owner(placed(7))->first == 2);
+  CHECK(std::none_of(lines.begin(), lines.end(), [](const std::string& l) { return l.starts_with("hand-over: "); }));
+}
+
+TEST_CASE("world: entries counts every scene's breaks, places, hits and cuts (row 260)") {
+  WorldStore world;
+  CHECK(world.entries() == 0);
+  WorldBreak b;
+  b.scene = "spot04";
+  b.hash = 1;
+  CHECK(world.on_break(b));
+  WorldPlace place;
+  place.scene = "spot04";
+  place.hash = 2;
+  world.on_place(place);
+  WorldHit hit;
+  hit.scene = "spot04";
+  hit.hash = 3;
+  world.on_hit(hit);
+  world.on_hit(hit);
+  CHECK(world.entries() == 4);
+  CHECK(world.scenes() == 1);
+  world.forget("spot04");
+  CHECK(world.entries() == 0);
 }

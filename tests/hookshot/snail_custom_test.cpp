@@ -86,21 +86,35 @@ TEST_CASE("snail customize: A opens co-op's any-colour mixer in his six places, 
     CHECK_FALSE(d.Editing());
 }
 
-TEST_CASE("snail customize: a character with no colour options shows that, and its keys change nothing") {
+TEST_CASE("snail customize (npc-customize): a character's screen shows its model's own rows, and they change its parts") {
     Driver d;
     d.Open(Look{}, 9);
-    const auto t = d.Shown();
-    CHECK(t.labels[0] == CoopLookMenu::kNoColourOptions);
-    CHECK(t.title.find("Y:") == std::string::npos);
-    CHECK(t.title.find("A:") == std::string::npos);   // (no colour option: no hue to pick)
-    d.Pad(kZR), d.Pad(kA), d.Pad(kY);
-    CHECK_FALSE(d.TakeChange());
-    CHECK_FALSE(d.Editing());
+    d.SetRows(32 | 0x80);   // (a model with the equipment only)
+    auto t = d.Shown();
+    CHECK(t.labels[0] == "Equipment");
+    CHECK(t.values[0] == "Shown");
+    CHECK(t.labels[1].empty());   // (the rest empty: the screen's write gives them a space, PaneText)
+    CHECK(PaneText(t.labels[1]) == " ");
+    CHECK(t.title.find("Y:") == std::string::npos);   // (one page)
+    d.Pad(kZR);
+    const auto change = d.TakeChange();
+    REQUIRE(change);
+    CHECK((*change)[Part::char_gear] == CoopLook::kGearHidden);
+    CHECK(d.Shown().values[0] == "Hidden");
+    d.SetRows(1 | 2 | 4 | 32 | 0x80);   // (hair, eyes, one clothing colour)
+    t = d.Shown();
+    CHECK(t.labels[0] == "Hair Colour");
+    CHECK(t.labels[1] == "Eye Colour");
+    CHECK(t.labels[2] == "Clothing Colour");
+    CHECK(t.labels[3] == "Equipment");
+    d.Pad(kA);   // (the hair: the mixer)
+    CHECK(d.Editing());
 }
 
 TEST_CASE("snail customize: a place with nothing is given a space, never an empty text (Saria's screen, lane 035925)") {
     Driver d;
-    d.Open(Look{}, 9);   // (a character: one row, the rest of his six places empty)
+    d.Open(Look{}, 9);
+    d.SetRows(32 | 0x80);   // (a character whose model has the equipment only: one row, the rest of six places empty)
     const auto t = d.Shown();
     bool empty = false;
     for (int f = 1; f < kOptions; ++f) empty = empty || t.labels[static_cast<std::size_t>(f)].empty();

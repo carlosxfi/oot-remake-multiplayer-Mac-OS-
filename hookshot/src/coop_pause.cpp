@@ -39,7 +39,9 @@
 #include "coop_pvp_game.h"
 #include "coop_room_list.h"
 #include "coop_runtime.h"
+#include "coop_char_ages.h"
 #include "coop_ngplus.h"
+#include "coop_puppet_config.h"
 #include "coop_save.h"
 #include <cstdlib>
 #include <filesystem>
@@ -295,7 +297,7 @@ void RefreshSession(bool now) {
         g_menu.SetDifficulty({d.connected, d.can_edit, d.choice, d.values}, static_cast<int>(CoopHook::PlayerList().size()));
         g_menu.SetCharacter(CoopCharColours::ShownCharacter() != 0);   // (#308's Customize page: Link's colours wait)
         // (one home for Link's look: Character Select's Customize screen when his code is in the game)
-        g_menu.SetSnailHome(CoopPauseTab::SnailCodeBuiltIn(ExefsList()));
+        g_menu.SetSnailHome(CoopPauseTab::CharselCodeBuiltIn(ExefsList()));
     }
 }
 
@@ -573,8 +575,9 @@ bool Busy() {
 void Save();
 
 // False when it did not start: refused (co-op is on already; the menu's note says so) or the host could not start
-// (the session's lines say why).
-bool Host() {
+// (the session's lines say why). `o`: the menu's options (the Host row), or the autotest's (TestHost: no router port,
+// no invite).
+bool Host(const CoopTitleMenu::Options& o, bool test) {
     g_player_acted = true;
     if (g_doing == "hosting" && !g_coop_on) {
         Save();
@@ -585,18 +588,17 @@ bool Host() {
         return false;
     }
     CoopHookshot::HostMenu().Leave();   // (a failed start: clear it)
-    const CoopTitleMenu::Options o = g_menu.options();
     CoopFiles::SetCoopEnvironment(o);
     HosCoopHostOptions h{};
     h.size = sizeof h;
     h.name = o.name.c_str();
     h.password = o.password.empty() ? nullptr : o.password.c_str();
     h.port = o.host_port;
-    h.upnp = 1;             // the router forward (nothing to set up)
-    h.invite = 1;
+    h.upnp = test ? 0 : 1;             // the router forward (nothing to set up)
+    h.invite = test ? 0 : 1;
     h.pvp = o.pvp ? 1 : 0;
     h.approve_joins = o.approve_joins ? 1 : 0;
-    h.same_network_open = o.same_network_open ? 1 : 0;   // (off, the default: this network's players need the password too)
+    h.same_network_open = o.same_network_open ? 1 : 0;   // (on, the default: this network's players need no password)
     h.max_players = static_cast<std::uint8_t>(o.max_players);
     // coop-options.ini's relay lines, as Host.bat uses them (issue 261: a room name friends type in Join a game).
     h.relay_via = o.relay.empty() ? nullptr : o.relay.c_str();
@@ -626,6 +628,10 @@ bool Host() {
     LOG_INFO(Core, "coop: multiplayer tab: host: started (up to {} players, port {})", o.max_players, o.host_port);
     RefreshSession(true);
     return true;
+}
+
+bool Host() {
+    return Host(g_menu.options(), false);
 }
 
 // False when it did not start: refused (co-op on already, the code not readable; the menu's note says why) or the
@@ -825,13 +831,14 @@ void CopyLan(bool vpn) {
     const CoopTitleMenu::LanSplit split = CoopTitleMenu::SplitLan(CoopFiles::LocalCards());
     const auto& addresses = vpn ? split.vpn : split.home;
     const std::uint64_t session = g_session;
-    const auto show = [vpn, session, addresses, port = st.port, password = std::string(st.password)](bool copied) {
+    const bool open = st.same_network_open != 0;   // (this network's players need no password: none on the line)
+    const auto show = [vpn, session, addresses, open, port = st.port, password = std::string(st.password)](bool copied) {
         if (session != g_session) {
             return;   // (hosted again or joined since: these lines are old)
         }
         g_lan_password = password;
-        g_lan_lines = vpn ? CoopTitleMenu::VpnLines(addresses, port, password, copied)
-                          : CoopTitleMenu::HomeLines(addresses, port, password, copied);
+        g_lan_lines = vpn ? CoopTitleMenu::VpnLines(addresses, port, password, copied, open)
+                          : CoopTitleMenu::HomeLines(addresses, port, password, copied, open);
         LOG_INFO(Core, "coop: multiplayer tab: host: {}: {} address(es){}", vpn ? "VPN" : "same network",
                  addresses.size(), copied ? ", the join line is on the clipboard" : "");
         RefreshSession(true);
@@ -840,7 +847,9 @@ void CopyLan(bool vpn) {
         show(false);
         return;
     }
-    CopyThen(CoopTitleMenu::LanJoinText(addresses.front().address, st.port, st.password), show);
+    CopyThen(CoopTitleMenu::LanJoinText(addresses.front().address, st.port,
+                                        CoopTitleMenu::LanLinePassword(addresses.front().address, st.password, open)),
+             show);
 }
 
 void TakeAnswer(const std::optional<std::string>& clip);   // (below)
@@ -894,6 +903,17 @@ void Copy(const std::string& text, const char* what) {
         g_menu.SetNote({ok ? std::string("Copied: ") + text
                            : std::string("The clipboard could not be used: write the code down instead.")});
     });
+}
+
+// The Settings page's Character by age rows (coop_char_ages.h): the picks and the characters this PC can show.
+void FeedCharacterAges() {
+    const auto list = CoopCharAges::Pickable(CoopCharAges::ParseCharacters(CoopPuppetConfig::CharacterListText()),
+                                             CoopPuppetConfig::KnownCharacterFiles());
+    const auto stored = CoopCharAges::Current();
+    std::vector<std::pair<int, std::string>> rows;
+    for (const auto& c : list) rows.emplace_back(c.number, c.name);
+    g_menu.SetCharacterAges(list.size() > 1, stored.on, stored.child.value_or(-1), stored.adult.value_or(-1),
+                            std::move(rows));
 }
 
 void Act(const Request& r) {
@@ -1000,6 +1020,15 @@ void Act(const Request& r) {
         LOG_INFO(Core, "coop: multiplayer tab: difficulty {}", choice && CoopDifficulty::Get().can_edit ? "asked" : "refused");
         break;
     }
+    case Request::Kind::kCharAges: {   // "on", "off", "child=N" or "adult=N" (coop_char_ages.h)
+        if (r.text == "on" || r.text == "off") {
+            CoopCharAges::SetOn(r.text == "on");
+        } else if (const bool child = r.text.rfind("child=", 0) == 0; child || r.text.rfind("adult=", 0) == 0) {
+            CoopCharAges::SetPick(child, std::atoi(r.text.c_str() + 6));
+        }
+        FeedCharacterAges();
+        break;
+    }
     case Request::Kind::kNgPlus: {   // (Navi) New Game+ (coop_ngplus.h)
         CoopNgPlus::SetLevel(std::atoi(r.text.c_str()));
         g_menu.SetNgPlus(CoopNgPlus::Level(), CoopNgPlus::Unlocked(), CoopNgPlus::Hearts());
@@ -1027,6 +1056,7 @@ void ShowTab() {
     g_menu.Show(ReadOptions());
     g_menu.SetLook(CoopLook::Shown());   // the Customize page opens on the look waiting, else the one worn
     g_menu.SetNgPlus(CoopNgPlus::Level(), CoopNgPlus::Unlocked(), CoopNgPlus::Hearts());   // (Navi) New Game+
+    FeedCharacterAges();
     g_menu.SetSaveSet(CoopSave::MultiplayerSaves());   // (Navi) the Saves row
     const std::string coop = ReadText(CoopIni());
     const auto last = CoopTitleMenu::IniGet(coop, "last_invite");
@@ -1413,6 +1443,10 @@ int Wanted() {
     return g_wanted.exchange(HOS_COOP_MENU_WANT_NOTHING);
 }
 
+void WantLongshotMenu() {
+    g_wanted = kWantLongshotMenu;
+}
+
 // Ctrl and Shift held now. Windows: GetKeyState. Linux: the game's own SDL (SDL2 or SDL3, the library the game
 // loaded: CoopClipboard::GameSdl; Longshot loads it RTLD_LOCAL, so RTLD_DEFAULT never saw it and Ctrl+V did not
 // paste on Linux), whose KMOD_CTRL / KMOD_SHIFT bits are the same in both; without SDL, neither.
@@ -1535,6 +1569,11 @@ CoopPauseMenu::Page NativePage() {
     return g_menu.page();
 }
 
+bool SnailHome() {
+    std::lock_guard lock(g_mutex);
+    return g_menu.SnailHome();
+}
+
 bool NativeOpen() {
     std::lock_guard lock(g_mutex);
     return g_native;
@@ -1584,6 +1623,7 @@ void Open(CoopPauseMenu::Page page) {
     g_menu.Show(ReadOptions());
     // (as the overlay's tab, ShowTab: the pause page's Settings and look opens Customize and Co-op settings here)
     g_menu.SetLook(CoopLook::Shown());
+    FeedCharacterAges();
     g_menu.SetNgPlus(CoopNgPlus::Level(), CoopNgPlus::Unlocked(), CoopNgPlus::Hearts());
     g_menu.SetSaveSet(CoopSave::MultiplayerSaves());
     InputRows();
@@ -1899,7 +1939,9 @@ void PageCopyNow(PageCopy what) {
             SetPageNote(vpn ? "No VPN address found" : "No network address found");
             return;
         }
-        text = CoopTitleMenu::LanJoinText(addresses.front().address, st.port, st.password);
+        text = CoopTitleMenu::LanJoinText(
+            addresses.front().address, st.port,
+            CoopTitleMenu::LanLinePassword(addresses.front().address, st.password, st.same_network_open != 0));
         words = vpn ? "VPN line" : "network line";
         break;
     }
@@ -1928,7 +1970,38 @@ std::string PageSays(std::uint64_t* gen) {
     return g_page_says;
 }
 
+// The autotest's in-game host (CoopHostMenu::ParseTestHost): the Multiplayer page's Host, on the harness's port and
+// password, a private game with no relay, router port or invite. The host thread listens on 127.0.0.1 only.
+bool TestHost() {
+    const char* text = std::getenv(CoopHostMenu::kTestHostEnv);
+    const auto test = text != nullptr ? CoopHostMenu::ParseTestHost(text) : std::nullopt;
+    if (!test) {
+        LOG_WARNING(Core, "coop: multiplayer tab: test host: {} is not PORT:PASSWORD: not hosting", CoopHostMenu::kTestHostEnv);
+        return false;
+    }
+    std::lock_guard lock(g_mutex);
+    FreshMain();
+    if (g_coop_on) {
+        LOG_WARNING(Core, "coop: multiplayer tab: test host: co-op came with the game's start: not hosting");
+        return false;
+    }
+    CoopTitleMenu::Options o = g_menu.options();
+    o.host_port = test->first;
+    o.password = test->second;
+    o.public_game = false;
+    o.approve_joins = false;
+    o.relay.clear();
+    o.relay_key.clear();
+    o.relay_room.clear();
+    o.list_room = false;
+    LOG_INFO(Core, "coop: multiplayer tab: test host on port {} (Multiplayer > Host, as the page's Host row)", o.host_port);
+    return Host(o, true);
+}
+
 bool TestMenu(const std::string& page) {
+    if (page == "host") {
+        return TestHost();
+    }
     if (page == "customize") {
         Open(CoopPauseMenu::Page::kCustomize);
         return true;

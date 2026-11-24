@@ -1,4 +1,4 @@
-From 11f9996ff203f08a88a4f7cd4ea4406587c4886a Mon Sep 17 00:00:00 2001
+From d43e140bd855cb4824e9a7dae40b473ec1cb76eb Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Thu, 12 Nov 2026 13:00:23 -0900
 Subject: [PATCH] Co-op world hooks: game events and wrapped game functions to
@@ -36,7 +36,7 @@ The exports are kept once the module answers HOS_COOP_WORLD_HELLO.
 
 diff --git a/host/coop_platform_ring.c b/host/coop_platform_ring.c
 deleted file mode 100644
-index b241703..0000000
+index b2417033..00000000
 --- a/host/coop_platform_ring.c
 +++ /dev/null
 @@ -1,19 +0,0 @@
@@ -61,7 +61,7 @@ index b241703..0000000
 -}
 diff --git a/host/coop_world.c b/host/coop_world.c
 new file mode 100644
-index 0000000..ffea5b0
+index 00000000..ffea5b03
 --- /dev/null
 +++ b/host/coop_world.c
 @@ -0,0 +1,62 @@
@@ -129,7 +129,7 @@ index 0000000..ffea5b0
 +}
 diff --git a/host/hos_coop_world.h b/host/hos_coop_world.h
 new file mode 100644
-index 0000000..486456f
+index 00000000..486456f0
 --- /dev/null
 +++ b/host/hos_coop_world.h
 @@ -0,0 +1,49 @@
@@ -183,10 +183,10 @@ index 0000000..486456f
 +
 +#endif
 diff --git a/nx2/chunks.py b/nx2/chunks.py
-index 37f207c..830d29b 100644
+index bd110021..f48efd9d 100644
 --- a/nx2/chunks.py
 +++ b/nx2/chunks.py
-@@ -205,7 +205,8 @@ def parallel_emit(emit, order, texts, counters, jobs, run=2000):
+@@ -211,7 +211,8 @@ def parallel_emit(emit, order, texts, counters, jobs, run=2000):
  
  # What the emit reads of the lifter besides the bodies of the functions it emits (a64_lift.Lifter.emit_function and the
  # methods it calls): sent once to each new process
@@ -197,7 +197,7 @@ index 37f207c..830d29b 100644
  
  
 diff --git a/nx2/coop_hooks.py b/nx2/coop_hooks.py
-index cd87977..5f5a5f3 100644
+index cd87977f..5f5a5f32 100644
 --- a/nx2/coop_hooks.py
 +++ b/nx2/coop_hooks.py
 @@ -58,6 +58,11 @@ def install(lifter, img, build_id):
@@ -213,7 +213,7 @@ index cd87977..5f5a5f3 100644
      coop_puppet_guard.install(lifter, img, build_id)
      import coop_platform_lift   # (patch 0003: looping platforms' pause counters)
 diff --git a/nx2/coop_platform_lift.py b/nx2/coop_platform_lift.py
-index 9c9944b..4d5c73f 100644
+index 9c9944b6..4d5c73f8 100644
 --- a/nx2/coop_platform_lift.py
 +++ b/nx2/coop_platform_lift.py
 @@ -3,10 +3,10 @@ counters"; method and addresses from Hot Onion).
@@ -252,7 +252,7 @@ index 9c9944b..4d5c73f 100644
      return 1
 diff --git a/nx2/coop_world_wraps.py b/nx2/coop_world_wraps.py
 new file mode 100644
-index 0000000..8877d6c
+index 00000000..8877d6cd
 --- /dev/null
 +++ b/nx2/coop_world_wraps.py
 @@ -0,0 +1,77 @@
@@ -334,7 +334,7 @@ index 0000000..8877d6c
 +    print("co-op wraps: %d of %d game functions wrapped" % (n, len(wraps)))
 +    return n
 diff --git a/third_party/a64-kit/lift/a64_lift.py b/third_party/a64-kit/lift/a64_lift.py
-index 5616aee..2d961c3 100644
+index 5616aeee..2d961c3f 100644
 --- a/third_party/a64-kit/lift/a64_lift.py
 +++ b/third_party/a64-kit/lift/a64_lift.py
 @@ -973,6 +973,9 @@ class Lifter:

@@ -94,6 +94,18 @@ TEST_CASE("enemy shots: Ganondorf's own shots name him as a maker (native boss s
     CHECK(std::find(pg.begin(), pg.end(), "Enemy_DungeonBoss_PhantomGanon") != pg.end());
 }
 
+TEST_CASE("enemy shots: row 211: the rally balls are the boss balls a sword sends back") {
+    using CoopEnemyShots::IsRallyBall;
+    CHECK(IsRallyBall("DungeonBossGanondrof_Bullet_LightBall"));
+    CHECK(IsRallyBall("DungeonBossGanondrof_Bullet_ChargeLightBall"));
+    CHECK(IsRallyBall("DungeonBossPhantomGanon_Bullet_LightBall"));
+    CHECK_FALSE(IsRallyBall("DungeonBossGanondrof_Bullet_ShockWave"));
+    CHECK_FALSE(IsRallyBall("PhantomGanon_Bullet_Thunder"));
+    CHECK_FALSE(IsRallyBall("Octorok_Bullet"));
+    CHECK_FALSE(IsRallyBall("Twinrova_Bullet_IceBeam"));
+    CHECK_FALSE(IsRallyBall("SomeOther_LightBall"));  // (no enemy shot)
+}
+
 TEST_CASE("enemy shots: the names are known, with their makers") {
     for (const char* name :
          {"Octorok_Bullet", "Dodongo_Bullet_Fire", "DungeonBossDodongo_Bullet_Fire",

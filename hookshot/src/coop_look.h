@@ -55,8 +55,28 @@ enum class Part : std::uint8_t {
                           // model calls on your Link and the puppets, CoopCharColours); a kit before it passes it over
     hair = 19,            // 0.11.9: the hair's colour (the hair materials' ns_param_color0 / 1 and the brows', as the
                           // game colours its own characters' hair; Link models only)
+    // npc-customize (owner 2026-11-23): a Character Select character's own parts, one set for every character (a
+    // model without a part leaves it alone), dressed by CoopCharColours with the game's own model calls on your
+    // character, its Customize picture and your puppets. Link's eyes and hair (18, 19) never go on a character.
+    char_hair = 20,       // the hair: its own params in any colour and the mod's nearest hair palette texture
+    char_eyes = 21,       // the iris (Mt_Eye_Inner's ns_param_color2), any colour
+    char_cloth1 = 22,     // Clothing Color 1, 2, 3: the nearest of the mod's seven palette textures (kClothPresets)
+    char_cloth2 = 23,
+    char_cloth3 = 24,
+    char_gear = 25,       // the equipment shown (unset) or hidden (kGearHidden)
 };
-inline constexpr std::size_t kParts = 20;
+inline constexpr std::size_t kParts = 26;
+// char_gear's value when the equipment is hidden (any set value hides it; the settings say "hidden").
+inline constexpr std::uint32_t kGearHidden = 1;
+// A character's part (char_hair .. char_gear): on the Character page only, never on a Link model.
+inline constexpr bool IsCharacterPart(Part p) {
+    return static_cast<std::uint8_t>(p) >= static_cast<std::uint8_t>(Part::char_hair) &&
+           static_cast<std::uint8_t>(p) <= static_cast<std::uint8_t>(Part::char_gear);
+}
+// The clothing rows' colours: the mod's palette entries in their order (OoT Character Select v0.2.1 CLOTH_VALUES,
+// 1 = Green .. 7 = White), as CoopColors names them; a colour chosen is worn as the nearest of them.
+inline constexpr std::array<const char*, 7> kClothPresets = {"green", "red", "blue", "purple", "yellow", "black",
+                                                            "white"};
 
 // A part as the menu and the settings name it.
 struct PartInfo {

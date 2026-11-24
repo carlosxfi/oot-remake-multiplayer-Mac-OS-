@@ -39,6 +39,11 @@ bool IsEnemyShot(std::string_view name);
 // LICHII_COOP_SPLIT_SHOTS=0: off (one bolt, the owner's, as before).
 bool IsSplitShot(std::string_view name);
 bool SplitOn();
+// Row 211 (shot-reflect-211-4): a boss ball that a player sends back with a sword and its maker answers (Ganondorf's
+// light ball and charge ball, Phantom Ganon's): his volley (Parry) and the stun that ends a rally won are the same
+// attack as the shot. While one flies in a game, its maker's attack there goes on (CoopObjects AttackWithRally), so
+// a boss turn never hands him on mid-rally. Split shots or not.
+bool IsRallyBall(std::string_view name);
 // What its maker's name starts with ("Enemy_Octorok" for Octorok_Bullet),
 // one or more; empty for a name that is no enemy shot.
 std::vector<std::string_view> MakersOf(std::string_view shot);

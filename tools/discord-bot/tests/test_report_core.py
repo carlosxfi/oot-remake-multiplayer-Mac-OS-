@@ -409,5 +409,22 @@ class DescriptionFile(unittest.TestCase):
         self.assertIn("Report #? (being added)", core.description_file(None, WHEN, "u", "u", None, None, "d"))
 
 
+class Heartbeat(TempDir):
+    def test_text_is_utc_time_only(self):
+        self.assertEqual(core.heartbeat_text(WHEN), "2026-11-16T21:05:09Z\n")
+
+    def test_write_and_age(self):
+        path = self.dir / core.HEARTBEAT_NAME
+        core.write_heartbeat(path, WHEN)
+        later = WHEN + dt.timedelta(minutes=31)
+        age = core.heartbeat_age_minutes(path.read_text(), later)
+        self.assertAlmostEqual(age, 31.0)
+        self.assertGreater(age, core.HEARTBEAT_STALE_MINUTES)
+
+    def test_bad_text_has_no_age(self):
+        self.assertIsNone(core.heartbeat_age_minutes("garbage", WHEN))
+        self.assertIsNone(core.heartbeat_age_minutes("", WHEN))
+
+
 if __name__ == "__main__":
     unittest.main()

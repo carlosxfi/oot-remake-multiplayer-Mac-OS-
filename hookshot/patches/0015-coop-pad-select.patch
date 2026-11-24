@@ -1,4 +1,4 @@
-From d2964f2bdefcf7c8aeaf566c1b97813352114fa9 Mon Sep 17 00:00:00 2001
+From 51a25cabfcb15a5e414549a6b7fca0d78dae1a0f Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Fri, 13 Nov 2026 02:56:35 -0900
 Subject: [PATCH] Co-op pad select: this game's controller and keyboard, for
@@ -18,12 +18,12 @@ has none. hookshot_coop.dll sets it through two exports found by name in
 the exe: hos_coop_input_select and hos_coop_input_pad_name.
 ---
  host/display.c |   5 ++-
- host/nn_hid.c  |  30 +++++++++++++-
- host/pad_sdl.c | 107 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ host/nn_hid.c  |  31 ++++++++++++++-
+ host/pad_sdl.c | 106 ++++++++++++++++++++++++++++++++++++++++++++++++-
  3 files changed, 139 insertions(+), 3 deletions(-)
 
 diff --git a/host/display.c b/host/display.c
-index 2f2528c..6bb4007 100644
+index 5d83ae2f..f86294c8 100644
 --- a/host/display.c
 +++ b/host/display.c
 @@ -42,6 +42,7 @@ static int renderer;   /* the renderer presents into the window */
@@ -40,7 +40,7 @@ index 2f2528c..6bb4007 100644
          pointer_update(w, 0, 0);
 +        if (mouse_captured && hos_input_keyboard_mode() == 2) mouse_capture(w, 0);   /* (patch 0015: keyboard and mouse
 +                                                                                      off: a capture from before let go) */
-         /* (longshot, #1532) a controller is not input to Windows: playing with one, the display went off at the power
+         /* (longshot) a controller is not input to Windows: playing with one, the display would go off at the power
             plan's timeout. While the game's window is in front and not minimized, the display's idle timer is reset every
             30 s (ES_DISPLAY_REQUIRED without ES_CONTINUOUS: nothing is held when the game is left or closed).
 @@ -514,7 +517,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
@@ -53,19 +53,19 @@ index 2f2528c..6bb4007 100644
      case WM_KEYDOWN: {
          extern int hos_coop_key(unsigned key, int repeat);   /* (oot-remake-multiplayer: the chat box's keys first) */
 diff --git a/host/nn_hid.c b/host/nn_hid.c
-index 893b188..98c97b0 100644
+index 6e41f42c..f4d006c2 100644
 --- a/host/nn_hid.c
 +++ b/host/nn_hid.c
-@@ -786,6 +786,8 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
-             {XINPUT_GAMEPAD_DPAD_UP, HOS_PAD_UP}, {XINPUT_GAMEPAD_DPAD_RIGHT, HOS_PAD_RIGHT},
-             {XINPUT_GAMEPAD_DPAD_DOWN, HOS_PAD_DOWN}};
-         for (int p = 0; p < XUSER_MAX_COUNT && xinput_get; p++) {
-+            int hos_input_xinput_counts(int p);   /* (oot-remake-multiplayer's patch 0015, pad_sdl.c: this game's pads) */
-+            if (!hos_input_xinput_counts(p)) continue;
-             if (now < retry[p]) continue;
-             XINPUT_STATE xs;
-             if (xinput_get((DWORD)p, &xs) != ERROR_SUCCESS) {
-@@ -1023,6 +1025,22 @@ static void move_keys_stick(int x, int y, int percent, int32_t out[2]) {
+@@ -1017,6 +1017,8 @@ static void xinput_poll(int64_t now, uint64_t *out_raw, int32_t s[4]) {
+         {XINPUT_GAMEPAD_DPAD_UP, HOS_PAD_UP}, {XINPUT_GAMEPAD_DPAD_RIGHT, HOS_PAD_RIGHT},
+         {XINPUT_GAMEPAD_DPAD_DOWN, HOS_PAD_DOWN}};
+     for (int p = 0; p < XUSER_MAX_COUNT && xinput_get; p++) {
++        int hos_input_xinput_counts(int p);   /* (oot-remake-multiplayer's patch 0015, pad_sdl.c: this game's pads) */
++        if (!hos_input_xinput_counts(p)) continue;
+         if (now < retry[p]) continue;
+         XINPUT_STATE xs;
+         if (xinput_get((DWORD)p, &xs) != ERROR_SUCCESS) {
+@@ -1392,6 +1394,22 @@ static void move_keys_stick(int x, int y, int percent, int32_t out[2]) {
          logged = percent, hos_log("hid: walking: the movement keys tilt the left stick to %d%% (%d, %d)", percent, out[0], out[1]);
  }
  
@@ -88,21 +88,23 @@ index 893b188..98c97b0 100644
  /* *taps: the host's own presses (hos_hid_tap), apart from the rest */
  static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
      *buttons = *taps = 0;
-@@ -1062,7 +1080,12 @@ static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
+@@ -1451,8 +1469,14 @@ static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
          static const char *env;
          static int looked;
          if (!looked) looked = 1, env = getenv("HOS_INPUT_BACKGROUND");
--        if (pads_in_background(env, rx_option(4, 0))) pads_read(buttons, stick);
+-        if (pads_in_background(env, rx_option(4, 0))) pads_read(buttons, stick, NULL), sprint_now = pad_sprint_down();
 +        /* (patch 0015) a pad chosen for this game is its own, in front or not; the keys too when asked */
-+        if (pads_in_background(env, rx_option(4, 0)) || hos_input_pad_pick() > 0) pads_read(buttons, stick);
++        if (pads_in_background(env, rx_option(4, 0)) || hos_input_pad_pick() > 0)
++            pads_read(buttons, stick, NULL), sprint_now = pad_sprint_down();
+         hud_shortcut(0, 0);
 +        if (hos_input_keyboard_mode() == 1) keys_behind(buttons, stick);
 +        /* (patch 0015) behind other windows the mouse is never this game's, in any keyboard mode: the camera is the
 +           game's and the pads' (a Mouse camera on Native, with its last free look, would put its angles back over them) */
 +        hos_mouse_native_stick(1);
          walk_held(0, 0, rx_option(HOS_OPT_WALK_MODE, 0) == 1);   /* (behind: a toggled walk is kept) */
-         return;
+         goto done;
      }
-@@ -1086,6 +1109,11 @@ static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
+@@ -1480,6 +1504,11 @@ static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
              ps[3] > 12000 || ps[3] < -12000)
              player_used();
      }
@@ -113,12 +115,12 @@ index 893b188..98c97b0 100644
 +    }
      binds_load();   /* (the keys: key_default's, or longshot_options.ini's; the mouse's buttons once its capture is known) */
      for (int i = 0; i < HOS_SW_N; i++)
-         if (bound_down(i, 0)) *buttons |= 1ULL << i, player_used();
+         if (bound_down(i, 0)) *buttons |= 1ULL << i, down |= 1ULL << i;
 diff --git a/host/pad_sdl.c b/host/pad_sdl.c
-index a8b4dd4..534b944 100644
+index 56c0ab1c..fceb0367 100644
 --- a/host/pad_sdl.c
 +++ b/host/pad_sdl.c
-@@ -192,6 +192,53 @@ static int hd_poll(int i, const uint8_t side[3][4], long long now) {
+@@ -205,6 +205,53 @@ static int hd_poll(int i, const uint8_t side[3][4], long long now) {
      return 1;
  }
  
@@ -172,7 +174,7 @@ index a8b4dd4..534b944 100644
  /* (motion) the sensors on while Motion controls is on (HOS_OPT_GYRO, on without the menu), off otherwise; the pad with
     them that was used last read into the filter. count: the pads open */
  static void motion_poll(int64_t now, int count) {
-@@ -220,7 +267,7 @@ static void motion_poll(int64_t now, int count) {
+@@ -233,7 +280,7 @@ static void motion_poll(int64_t now, int count) {
                  pads[i].motion_retry_ns = 0;
              }
          }
@@ -181,7 +183,7 @@ index a8b4dd4..534b944 100644
      }
      InterlockedExchange(&gyro_status, any ? 2 : count ? 1 : 0);
      float a[3], g[3];
-@@ -343,6 +390,7 @@ static void pads_poll(void) {
+@@ -464,6 +511,7 @@ static void pads_poll(void) {
                      pads[i].rumble_lo = pads[i].rumble_hi = 0;
                      pads[i].rumble_ns = 0;
                      pads[i].motion = pads[i].motion_on = 0;
@@ -189,7 +191,7 @@ index a8b4dd4..534b944 100644
                  }
              int32_t ids[32];
              int opens[32];
-@@ -374,6 +422,26 @@ static void pads_poll(void) {
+@@ -503,6 +551,26 @@ static void pads_poll(void) {
                  pads[slot].steam = hos_sdl_pad_steam_handle(gc);
                  pads[slot].motion_only = 0;   /* (the poll below decides, and says so) */
                  hos_sdl_pad_log_connection(gc, pads[slot].motion, pads[slot].steam != 0);
@@ -214,9 +216,9 @@ index a8b4dd4..534b944 100644
 +                ReleaseSRWLockExclusive(&state_lock);
 +                InterlockedExchange(&pads_any, any);
              }
-         }
-         uint64_t b = 0;
-@@ -404,6 +472,14 @@ static void pads_poll(void) {
+             {   /* (longshot) the controller speaker follows the DualSense that is open (host/pad_speaker.c) */
+                 void *dualsense = NULL;
+@@ -557,6 +625,14 @@ static void pads_poll(void) {
          for (int i = 0; i < MAX_PADS; i++) {
              void *gc = pads[i].gc;
              if (!gc) continue;
@@ -231,11 +233,10 @@ index a8b4dd4..534b944 100644
              /* (longshot) a real Valve pad beside its Steam stand-in: its motion is read (motion_poll), its buttons and
                 sticks come through the stand-in as the player's Steam layout maps them, so they are not merged twice,
                 and its rumble goes through Steam too. Its own presses still mark it the pad used last, for motion */
-@@ -587,3 +663,32 @@ void hos_sdl_rumble_hd(int side, const float value[4]) {
-     memcpy(hd_values[side & 1], value, sizeof hd_values[0]);
-     ReleaseSRWLockExclusive(&hd_lock);
- }
-+
+@@ -801,3 +877,31 @@ void hos_sdl_rumble_hd(int side, const float value[4]) {
+ /* (longshot) the game is over: RenHDrum's backends stop and let go of the pads (host/rumble_renhdrum.c); hos_main.c calls
+    it once nnMain has returned */
+ void hos_sdl_vibration_shutdown(void) { rh_shutdown(); }
 +/* (oot-remake-multiplayer's patch 0015, two games on one PC) For hookshot_coop.dll, found by name in this exe:
 +   - hos_coop_input_select: this game's controller (0 every pad, -1 none, n the n-th in SDL's list) and keyboard
 +     (0 with the window in front, 1 also behind other windows, 2 off), as pad_pick and keyboard_mode above; any thread;

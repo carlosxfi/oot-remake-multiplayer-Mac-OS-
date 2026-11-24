@@ -45,6 +45,18 @@ namespace CoopSpawn {
 
 using coop::protocol::Vec3;
 
+// Row 164 follow-up: a flight that comes back to its thrower (the boomerang, the hookshot's tip): it never ends where
+// it hit, so its farthest point (Flight::far_at) stands for that. Shorter than kReturnShotMinFarM: never left the hand.
+inline constexpr float kReturnShotMinFarM = 1.0f;
+// Its turn is read while it flies, not when it is gone (it comes back up to a second or more after its hit, past a
+// boss copy's 12-frame look-back for its skipped stun): it came this much nearer than its farthest, or its farthest
+// stood for kReturnShotStoodSteps walks (a hookshot's tip held in a target or a boss's part).
+inline constexpr float kReturnShotTurnM = 0.25f;
+inline constexpr unsigned kReturnShotStoodSteps = 3;
+inline bool IsReturnShot(std::string_view name) {
+    return name == "Weapon_Boomerang" || name == "Shootable_Hook" || name == "Shootable_HookLong";
+}
+
 // The made actors that are shared, and whether they explode when gone.
 bool IsShared(std::string_view name);
 bool Explodes(std::string_view name);
@@ -272,9 +284,14 @@ public:
         bool shot = false;       // let go (its ammo count went down)
         bool made_up = false;    // its flight was sent from the shot, not its place
         unsigned bounces = 0;    // turned like a bounce (issue 166)
+        Vec3 far_at{};           // where it was farthest (a boomerang's or hookshot's turn: where it hit or held)
+        bool turn_seen = false;  // ReturnTurns had its turn while it flew
     };
     // The ones that left in the last Tick.
     const std::vector<Flight>& Flights() const { return flights_; }
+    // Row 164 follow-up: our boomerangs' and hookshots' turns read in the last Tick (IsReturnShot), each once,
+    // where it turned: for CoopBossNative::Table::NoteOwnShotEnd on the frame of the hit, not when the flight ends.
+    const std::vector<Vec3>& ReturnTurns() const { return turns_; }
 
 private:
     struct Own {
@@ -291,6 +308,9 @@ private:
         std::uint64_t made_at = 0;
         Vec3 made_position{};
         float far = 0.0f;
+        Vec3 far_at{};  // where `far` was reached
+        unsigned far_stood = 0;  // walks since `far` last grew (a return shot's turn)
+        bool turn_seen = false;  // its turn went to turns_
         float top_speed = 0.0f;
         // The shot (issue 158).
         std::optional<std::uint64_t> shot_at;
@@ -410,6 +430,7 @@ private:
     std::size_t hit_effects_asked_ = 0;
     std::size_t impacts_made_ = 0;
     std::vector<Flight> flights_;
+    std::vector<Vec3> turns_;  // ReturnTurns
     std::vector<MadeUp> made_up_;
     // Enemy shots on our list that are not sent (verdict keep or hide), by
     // address, and how many walks each was seen.

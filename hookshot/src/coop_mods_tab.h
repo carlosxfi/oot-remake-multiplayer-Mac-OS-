@@ -26,6 +26,9 @@ namespace CoopModsTab {
 // here instead — after a full stop or a comma when one is near the end, at a
 // space otherwise, and between characters for the scripts that have no spaces.
 // A '\n' in the text starts a new line; empty lines are dropped.
+// Each line holds at most kNoteLetters letters of width and bytes: a line of the - page's list with no value
+// (CoopPauseTab::kListLineChars, the same number: tests/hookshot/mods_tab_test.cpp), so the native list never cuts one.
+inline constexpr std::size_t kNoteLetters = 46;
 std::vector<std::string> NoteLines(const std::string& text);
 
 enum class Input { kUp, kDown, kLeft, kRight, kDecide, kBack, kErase };
@@ -66,6 +69,7 @@ private:
         Act act = Act::kNone;
         std::string name;  // kMod: the mod; kSetting: the setting's key
         std::string help;
+        bool own_help = false;   // the help is a mod author's own text: never looked up in the translation table
     };
     std::vector<Line> Lines() const;
     static bool Selectable(const Line& l);

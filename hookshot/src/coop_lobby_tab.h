@@ -114,7 +114,7 @@ public:
 private:
     enum class Act : std::uint8_t {
         kNone, kPlayer, kCopy, kOwnVoice, kOwnChat, kTeleport, kHostVoice, kHostChat, kKick, kBan, kResync,
-        kJoinGame, kRefreshGames
+        kJoinGame, kRefreshGames, kGamesPage
     };
     struct Line;
     std::vector<Line> Lines() const;
@@ -124,14 +124,22 @@ private:
     void Decide(const Line& line);
     void Change(const Line& line, int side);
     void Go(std::uint8_t player);
+    int GamesPages() const;
+    int GamesPage() const;      // games_page_ within the list's pages now (the list may have shrunk)
+    void TurnGames(int dir);    // the page of Public games before (-1) or after (+1), round (CoopListPages::Step)
 
     Lobby lobby_;
     std::uint8_t player_ = 0;       // the player page shown; 0: the list
     std::size_t selected_ = 0;
+    int games_page_ = 0;            // Public games: the page shown (kGamesPerPage a page)
     Act confirm_ = Act::kNone;      // Kick or Ban pressed once: the next press does it
     std::string note_;              // the answer to the last press, until the next one
     std::optional<Request> request_;
 };
+
+// Public games a page (row 264: every game list pages, none runs on under a scroll): the title's eight, and a page of
+// them with the Page row, the heading and Refresh list fits Hookshot's menu without its scroll bar.
+inline constexpr int kGamesPerPage = 8;
 
 // The value cell of a player's row on the list: "42 ms  Kokiri Forest  downed  talking  muted".
 std::string Summary(const Player& p);

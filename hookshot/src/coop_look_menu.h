@@ -77,6 +77,8 @@ std::string PagedName(CoopLook::Part part);
 // What a character other than Link shows (the owner: never a row that does nothing): only the gear pages, and only
 // once a run has shown our gear colours on that character's held items; else this one line.
 inline constexpr const char* kNoColourOptions = "This character has no colour options";
+// npc-customize: the index of the Character group (a character's own parts) in Groups().
+inline constexpr std::size_t kCharacterGroup = 4;
 
 // The preset colours, after the game's own (unset): CoopColors' names.
 const std::vector<std::string>& Presets();
@@ -93,6 +95,8 @@ public:
     // The character shown (Character Select's number; 0 Link). `gear_shows`: our gear colours were seen on a
     // character's held items (the owner's check), so its Shields and Swords pages are offered.
     void SetCharacter(std::uint16_t character, bool gear_shows);
+    // npc-customize: the rows the character's model has (CoopCharColours::Rows' bits; 0 not known: every row).
+    void SetRows(std::uint8_t rows);
     // The page of groups shown (0..Groups().size()-1) and how many are offered.
     std::size_t GroupShown() const;
     std::size_t GroupsOffered() const;
@@ -117,6 +121,7 @@ private:
     void Decide(std::size_t row);
     void Set(CoopLook::Part part, std::optional<std::uint32_t> colour);
     void Focus(CoopLook::Part part);   // the picture shows this part's item
+    void ResetAll();                   // every part of the model shown to the game's own
 
     std::vector<std::size_t> Offered() const;   // the groups this character has (indexes into Groups())
     void TurnPage(int step);
@@ -125,6 +130,7 @@ private:
     bool paged_ = false;
     std::uint16_t character_ = 0;
     bool gear_shows_ = false;
+    std::uint8_t rows_ = 0;
     std::size_t group_ = 0;   // index into Offered()
     std::optional<CoopLook::Part> editing_;   // the colour mixer's part; none: the list
     Hsv hsv_;                                 // the mixer's colour (kept as it is moved: no rounding drift)

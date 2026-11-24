@@ -92,7 +92,8 @@ index 0000000..b986b23
 +        end = offset + size
 +        if 0 <= offset < ro_start and end <= ro_start:
 +            text_end = max(text_end, (end + 3) & ~3)
-+        elif not any(start <= offset and end <= start + length for start, length in module.segments[1:]):
++        elif not (ro_start <= offset < end <= module.segments[2][0]
++                  or module.segments[2][0] <= offset < end <= len(module.image)):
 +            raise ValueError(f"IPS32 write outside a mapped segment at {offset:#x}")
 +        writes.append((offset, payload))
 +

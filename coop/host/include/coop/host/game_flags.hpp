@@ -50,6 +50,10 @@ class GameFlags {
   // in that table, or memory cannot be read. Hash 0 is never a flag.
   std::optional<bool> get_bool(std::uint32_t hash);
   std::optional<std::int32_t> get_int(std::uint32_t hash);
+  // An Int's value in its table entry only (+0x1c, as the game's getter
+  // 0x837070 reads it): not a write of ours still waiting in the call list
+  // or the queue. Nothing as get_int.
+  std::optional<std::int32_t> get_int_live(std::uint32_t hash);
   // A UInt flag (type 20; 0x57a4e0 reads it, 0x57af30 sets it). A hash only in
   // the game's fallback UInt table (M + 0x800, not read) is not found.
   std::optional<std::uint32_t> get_uint(std::uint32_t hash);
@@ -93,12 +97,28 @@ class GameFlags {
   static bool set_string64_now(WritableGameMemory& memory, std::uint32_t hash,
                                std::string_view text);
 
+  // Writes an Int's value straight into its table entry (the live value at
+  // +0x1c), without the game's queue, so the game's getter reads it from
+  // this moment. Only for a value the game must see before its next queue
+  // pass (the Character Select pick at a save load, coop_char_ages.h). It
+  // skips what the applier does (a saved copy if the Int has one, the
+  // save-file mask, the change ring: docs/flags.md), so the caller queues
+  // the same value with set_int after it. False when the flag is unknown or
+  // memory fails.
+  static bool set_int_now(WritableGameMemory& memory, std::uint32_t hash, std::int32_t value);
+
   // From now on the setters above hand each write to `calls` (which the
   // game's calc thread empties into the game's own setter functions,
   // game_flag_events.hpp) and write nothing into the game's queues; the
   // getters see a write that still waits there. nullptr: the queues again.
   // `calls` must outlive its use. Set once at start, before any flag call.
   static void use_calls(GameFlagCalls* calls);
+  // Row 238: called after each Int write set_int queued (any thread, with
+  // the hash and value), so the hook can ask the game to show it (the HUD
+  // gauges take Life / MaxLife / MP in only on their refresh,
+  // coop_life_gauge.h). nullptr: none. Set once at start.
+  using IntWritten = void (*)(std::uint32_t hash, std::int32_t value);
+  static void on_int_written(IntWritten callback);
   // True while the game's write queue of this type has room for one of our
   // writes (half of it stays the game's own, as with the queue writes): only
   // then may the game's setter be called for us, as the game's own setters

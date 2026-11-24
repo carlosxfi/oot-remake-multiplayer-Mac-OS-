@@ -5,11 +5,11 @@
 # tools\ootrr folder, where the co-op module finds it with no setting. Since 0.8.1 the Windows file is the portable
 # zip (one folder with ootrr.exe, LICENSE, NOTICE, README.md and portable.txt: its caches go in a data folder beside
 # ootrr.exe); the plain windows-x64 zip is gone from the release.
-# Move release= and the four lines below together, to a release (a prerelease only on the owner's word; v0.8.1 is a
-# full release, named by the owner for 0.11.9 (v0.8.0 was in 0.11.8; 0.7.3 in 0.11.5 to 0.11.7; 0.11.4 had v0.6.2).
-release=v0.8.1
-url=https://github.com/ootrando/ootrr/releases/download/v0.8.1
-windows=OOTRR-0.8.1-windows-x64-portable.zip
-windows_sha256=f1c1b31bb59cf3b023424f59e72ba50f9a9e64f399db1871407762454d02f4e6
-linux=OOTRR-0.8.1-linux-x86_64.tar.gz
-linux_sha256=d0cdb6d66aeae58f5e4d651a07bf61fd3d5b3af00498a5fb3e3a2f83d60a62dc
+# Move release= and the four lines below together, to a release (a prerelease only on the owner's word; v0.8.2 is a
+# full release, named by the owner for 0.11.11 (v0.8.1 was in 0.11.9; v0.8.0 was in 0.11.8; 0.7.3 in 0.11.5 to 0.11.7; 0.11.4 had v0.6.2).
+release=v0.8.2
+url=https://github.com/ootrando/ootrr/releases/download/v0.8.2
+windows=OOTRR-0.8.2-windows-x64-portable.zip
+windows_sha256=0598aa5f7e3fe93e690437d936456a92c00e6d20b59a9bcd24fb2948afb6fbae
+linux=OOTRR-0.8.2-linux-x86_64.tar.gz
+linux_sha256=715ee19e1c6e2e487e1800106f8694fc7a756ebc725bd1b501e1256959c79136

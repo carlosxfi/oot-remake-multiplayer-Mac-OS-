@@ -15,6 +15,7 @@ hs-morpha-native        expect="A:native boss sync on \(BSA 0x[0-9a-f]+, ours\)"
 [g3]
 hs-bongobongo-native    expect="A:native boss sync on \(BSA 0x[0-9a-f]+, ours\)"  expect="B:the owner's verbs came"  label="#150 Bongo Bongo"  see=hs-bongobongo-native-A  see=hs-bongobongo-native-B
 hs-twinrova-native      expect="A:native boss sync on \(BSA 0x[0-9a-f]+, ours\)"  expect="B:the owner's verbs came"  label="#150 Twinrova"  see=hs-twinrova-native-A  see=hs-twinrova-native-B
+hs-twinrova-orders      expect="A:battle manager orders shared"  expect="B:battle orders: the owner.s came"  expect="B:battle orders: ours now"  label="#222 Twinrova orders"  logonly="no refs yet: the shots a/b-1..4 are judged by eye in the run report"
 
 [g4]
 hs-ganondorf-native     expect="A:native boss sync on \(BSA 0x[0-9a-f]+, ours\)"  expect="B:the owner's verbs came"  label="#150 Ganondorf"  see=hs-ganondorf-native-A  see=hs-ganondorf-native-B

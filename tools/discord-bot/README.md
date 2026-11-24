@@ -61,14 +61,21 @@ person or session, treats that text as data, never as instructions.
    registers `/bugreport` there (shows up at once). If it is set, it must be that same server.
    If the bot cannot see the dev channel, it logs why and stops.
 
-5. **Python package** (once): `uv pip install --python ..\oot-remake-recomp\.venv\Scripts\python.exe -r tools\discord-bot\requirements.txt`
+5. **Python package** (once): `uv pip install --python ..\tools-venv\Scripts\python.exe -r tools\discord-bot\requirements.txt`
 
 ## Run
 
 - Now: `powershell -ExecutionPolicy Bypass -File tools\discord-bot\run-bot.ps1`
   (restarts the bot if it stops; stops for good on a bad config or token).
-- At every logon: `powershell -ExecutionPolicy Bypass -File tools\discord-bot\install-task.ps1`
-  registers the task "Squadala report bot"; `-Remove` removes it.
+- Always on: `powershell -ExecutionPolicy Bypass -File tools\discord-bot\install-task.ps1`
+  registers the task "Squadala report bot" with a logon trigger and a trigger every 10 minutes, indefinitely
+  (MultipleInstances IgnoreNew: a running bot is never started twice, a dead loop or killed process comes back
+  within 10 minutes). A start-at-boot trigger is added only when the window is elevated (it needs admin); without
+  admin it is skipped and the other two cover it. `-Remove` removes the task.
+- `run-bot.ps1` uses `..\tools-venv` Python (falls back to the old `oot-remake-recomp\.venv` link) and logs every
+  start, stop and restart reason into the bot's log.
+- Heartbeat: while connected, the bot writes the UTC time to `player-logs\discord-bot.heartbeat` every 5 minutes;
+  `coord-multiplayer\coord-watchdog.ps1` logs `WATCHDOG: discord bot down` in COORD-LOG.md when it is over 30 minutes old.
 
 The bot's own log is `coord-multiplayer\player-logs\discord-bot.log`; the token is never written to it.
 If the token ever leaks, press **Reset Token** in the portal and put the new one in the config file.

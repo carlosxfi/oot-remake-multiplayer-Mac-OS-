@@ -132,6 +132,8 @@ std::atomic<bool> g_mod_asked{false};    // a code mod asked for a re-read (AskS
 std::atomic<bool> g_list_open{false};    // a re-read is asked or running (a mod's or co-op's): not ready
 std::mutex g_mutex;
 CoopTitleMenu::SaveWait g_wait;   // Join at the title -> what the title says while the host's save comes
+// The title's own hint line (Pa_CoopHint_00) says g_wait's line: nothing drawn for it (B10, reports/ui-audit-01112.md).
+std::atomic<bool> g_wait_on_hint{false};
 CoopTitleMenu::PlayerChoice g_choice;   // the player's own A on the title, before the mods' holds (NotePlayerPad)
 std::uint64_t g_pad_last = 0;
 int g_focus_logged = -2;
@@ -736,6 +738,194 @@ void KeepFocusShown(void* ctx, std::uint64_t screen, int shown) {
     }
 }
 
+// --- The Host page's toggle: the game's own Options toggle on the title ---
+// The pack's Pa_CoopToggle_00 (tools/puppet_pack/title_menu.py: a part of PaOptionBtnL_00, the Options screen's two-cell
+// toggle, in Pa_Button_00's place, stored hidden) shown over the button of the page's row with two cells (Look::toggle:
+// the Host page's Who can join). That button stays the title's: the cursor, the mouse, the press sounds and A are the
+// game's own, and the menu's left / right / A flip the row as before; it is drawn almost see-through (kToggleUnder: at 0
+// the game's cursor skips it, coop_pause_tab_module.cpp's kKeepAlpha) so the toggle is what shows. The toggle's words
+// (its name T_Option_00, its cells T_BtnON_00 and T_BtnOFF_00) are live texts of the pack's (LayoutMsg/Title_00
+// Coop_Live_Toggle0..2), set as the game sets a pane's message (kPathFind, kPaneSetMsg: the cells have no "@" alias for
+// kPaneText); its look is its own animations, each stopped at its end as the game leaves them: Select or UnSelect with
+// the button's focus, Check at its first frame for the left cell, its last for the right. Where any of it cannot be
+// had (an older pack, a part the game did not make), the toggle stays hidden and the button keeps the row's own text.
+constexpr char kTogglePart[] = "Pa_CoopToggle_00";
+constexpr float kToggleUnder = 0.02f;
+constexpr int kToggleTexts = 3;   // the name, the left cell, the right cell
+constexpr std::array<const char*, kToggleTexts> kTogglePanes{"T_Option_00", "T_BtnON_00", "T_BtnOFF_00"};
+constexpr std::uint64_t kPathFind = CoopPauseTab::kPathFind, kPaneSetMsg = CoopPauseTab::kPaneSetMsg;
+struct Toggle {
+    std::uint64_t layout = 0;            // the title layout it was looked for on
+    std::uint64_t pane = 0;              // the part's own pane (0: the pack has none, or the game made no part)
+    std::uint64_t part = 0;              // the part's layout (kPathFind's), whose animations are looked up by name
+    std::array<std::uint64_t, kToggleTexts> text{};    // the placeholders' texts in the loaded message file
+    std::array<std::uint32_t, kToggleTexts> extra{};   // the bytes the game counts past each text
+    std::array<std::string, kToggleTexts> shown{};
+    int button = -1;                     // the title button it is over (-1: hidden)
+    int focused = -1, cell = -1;         // the look last given (-1: none yet)
+    bool usable = false, logged = false;
+};
+Toggle g_toggle;   // (the title's step only)
+
+// An animation of the toggle's part stopped at its first frame (`last` false) or its last. False when it has none.
+bool ToggleAnim(void* ctx, const char* name, bool last) {
+    const std::uint64_t at = g_api->scratch(ctx, name, std::strlen(name) + 1);
+    if (at == 0 || g_toggle.part == 0) return false;
+    const auto anim = GameCall3(ctx, Main(kAnimFind), g_toggle.part, at);
+    if (!anim || *anim == 0) return false;
+    float frame = 0;
+    if (last) {
+        const std::uint64_t player = Read64(*anim + kAnimPlayer);
+        const auto end = player != 0 ? GameCall(ctx, Main(kAnimLastFrame), player) : std::nullopt;
+        if (!end) return false;
+        frame = static_cast<float>(std::max<std::int32_t>(0, static_cast<std::int32_t>(*end)));
+    }
+    HosCoopCall k{};
+    k.function = Main(kAnimStopAt);
+    k.x[0] = *anim;
+    k.s0 = frame;
+    std::uint64_t x0 = 0;
+    return g_api->call(ctx, &k, &x0);
+}
+
+// The placeholder `i` of the toggle (Coop_Live_Toggle<i>) in the loaded message file: its text's address, or 0.
+std::uint64_t ToggleSlot(void* ctx, int i) {
+    std::array<std::uint8_t, 0x90> b{};   // [0x00] the ref, [0x20] &path, [0x28] &label, [0x30] path, [0x50] label
+    const std::uint64_t base = g_api->scratch(ctx, b.data(), b.size());
+    if (base == 0) return 0;
+    const std::string path = "LayoutMsg/Title_00", label = fmt::format("Coop_Live_Toggle{}", i);
+    const std::uint64_t at_path = base + 0x30, at_label = base + 0x50;
+    std::memcpy(b.data() + 0x20, &at_path, 8);
+    std::memcpy(b.data() + 0x28, &at_label, 8);
+    std::memcpy(b.data() + 0x30, path.c_str(), path.size() + 1);
+    std::memcpy(b.data() + 0x50, label.c_str(), label.size() + 1);
+    if (g_api->scratch(ctx, b.data(), b.size()) != base) return 0;
+    if (!GameCall3(ctx, Main(kMsgRefInit), base, 0)) return 0;
+    HosCoopCall k{};
+    k.function = Main(kMsgRefSet);
+    k.x[0] = base, k.x[1] = base + 0x20, k.x[2] = base + 0x28, k.x[3] = 1;
+    std::uint64_t x0 = 0;
+    if (!g_api->call(ctx, &k, &x0)) return 0;
+    const std::uint64_t text = Read64(base);
+    std::uint32_t length = 0;
+    CoopRuntime::Read(base + 8, &length, sizeof length);
+    char head[8] = {};
+    CoopRuntime::Read(text, head, sizeof head);
+    if (text == 0 || std::memcmp(head, "........", 8) != 0 || length < kLivePlaceholder) return 0;
+    g_toggle.extra[static_cast<std::size_t>(i)] = length - kLivePlaceholder;
+    return text;
+}
+
+// The toggle's text pane `i` showing `utf8` (at most kLivePlaceholder - 1 bytes) through its placeholder.
+bool ToggleText(void* ctx, std::uint64_t layout, int i, std::string utf8) {
+    const std::size_t k = static_cast<std::size_t>(i);
+    if (g_toggle.text[k] == 0) return false;
+    if (utf8.size() >= kLivePlaceholder) {
+        std::size_t cut = kLivePlaceholder - 1;
+        while (cut > 0 && (static_cast<unsigned char>(utf8[cut]) & 0xc0) == 0x80) --cut;
+        utf8.resize(cut);
+    }
+    if (utf8.empty()) utf8 = " ";
+    if (g_toggle.shown[k] == utf8) return true;
+    const std::string path = fmt::format("{}/{}", kTogglePart, kTogglePanes[k]);
+    std::array<std::uint8_t, 0x80> b{};   // [0x00] the path lookup's layout, [0x10] the path, [0x60] the reference
+    std::memcpy(b.data() + 0x10, path.c_str(), path.size() + 1);
+    const std::uint64_t base = g_api->scratch(ctx, b.data(), b.size());
+    if (base == 0) return false;
+    const auto name = GameCall3(ctx, Main(kPathFind), base + 0x10, layout, base);
+    const std::uint64_t part = Read64(base);
+    if (!name || *name == 0 || part == 0) return false;
+    const auto table = GameCall3(ctx, Main(kPaneTable), part + 0x40, 0);
+    const auto pane = table && *table != 0 ? GameCall3(ctx, Main(kPaneByName), *table, *name) : std::nullopt;
+    if (!pane || *pane == 0) return false;
+    if (((static_cast<std::uint32_t>(Read64(*pane + 0xa8)) >> 22) & 0xf) != CoopPauseTab::kTextPaneKind) return false;
+    if (i == 0) g_toggle.part = part;   // (the part's layout: its animations)
+    std::string bytes = utf8;
+    bytes.push_back('\0');
+    if (!CoopRuntime::Write(g_toggle.text[k], bytes.data(), bytes.size())) return false;
+    const std::uint64_t attrs = Read64(*pane + 0x10);
+    const std::uint32_t length = static_cast<std::uint32_t>(utf8.size()) + g_toggle.extra[k];
+    std::array<std::uint8_t, 0x18> ref{};
+    std::memcpy(ref.data() + 0x00, &g_toggle.text[k], 8);
+    std::memcpy(ref.data() + 0x08, &length, 4);
+    std::memcpy(ref.data() + 0x10, &attrs, 8);
+    if (!CoopRuntime::Write(base + 0x60, ref.data(), ref.size())) return false;
+    if (!GameCall3(ctx, Main(kPaneSetMsg), *pane, base + 0x60, 0)) return false;
+    g_toggle.shown[k] = utf8;
+    return true;
+}
+
+// The button `b` drawn as the column has it (dimmed or not), or under the toggle.
+void ToggleButtonAlpha(void* ctx, int b, bool under) {
+    if (b < 0 || b >= CoopTitleNative::kMaxButtons) return;
+    const std::size_t k = static_cast<std::size_t>(b);
+    PaneAlpha(ctx, g_column.buttons[k], under ? kToggleUnder : g_column.dim[k] ? kDimAlpha : 1.0f);
+}
+
+void HideToggle(void* ctx) {
+    if (g_toggle.button < 0) return;
+    if (g_toggle.pane != 0) GameCall3(ctx, Main(kSetVisible), g_toggle.pane, 0);
+    ToggleButtonAlpha(ctx, g_toggle.button, false);
+    g_toggle.button = -1, g_toggle.focused = -1, g_toggle.cell = -1;
+}
+
+// The toggle for the page's look (after ShowColumn): shown over its button with its words and look, or hidden. False
+// when the look has a toggle the module could not show (the button then keeps the row's own text).
+bool StepToggle(void* ctx, std::uint64_t screen, std::uint64_t layout, const CoopTitleNative::Look& look) {
+    if (g_toggle.layout != layout) {   // (a new title layout: the part and its texts looked for again)
+        g_toggle = Toggle{};
+        g_toggle.layout = layout;
+        g_toggle.pane = TitlePane(ctx, layout, kTogglePart);
+        bool texts = g_toggle.pane != 0;
+        for (int i = 0; i < kToggleTexts && texts; ++i) {
+            texts = (g_toggle.text[static_cast<std::size_t>(i)] = ToggleSlot(ctx, i)) != 0;
+        }
+        g_toggle.usable = texts;
+    }
+    const int b = look.toggle;
+    if (b < 0 || b >= look.buttons || !g_toggle.usable || g_column.buttons[static_cast<std::size_t>(b)] == 0) {
+        HideToggle(ctx);
+        return b < 0;
+    }
+    const std::string cells[2] = {CoopI18n::Tr(look.toggle_cells[0]), CoopI18n::Tr(look.toggle_cells[1])};
+    if (!ToggleText(ctx, layout, 0, CoopI18n::Tr(look.toggle_name)) || !ToggleText(ctx, layout, 1, cells[0]) ||
+        !ToggleText(ctx, layout, 2, cells[1])) {
+        if (!std::exchange(g_toggle.logged, true)) {
+            LOG_INFO(Core, "coop: title: toggle: its texts could not be set: the row stays on its button");
+        }
+        g_toggle.usable = false;
+        HideToggle(ctx);
+        return false;
+    }
+    if (g_toggle.button != b) {
+        HideToggle(ctx);
+        PlaceY(ctx, g_toggle.pane, PaneY(g_column.buttons[static_cast<std::size_t>(b)]));   // (its button's row)
+        ToggleButtonAlpha(ctx, b, true);
+        GameCall3(ctx, Main(kSetVisible), g_toggle.pane, 1);
+        g_toggle.button = b;
+        if (const std::uint64_t mark = g_toggle.part != 0 ? TitlePane(ctx, g_toggle.part, "P_CheckMark_00") : 0; mark != 0) {
+            GameCall3(ctx, Main(kSetVisible), mark, 0);   // (an Options row's check mark: never the toggle's)
+        }
+    }
+    const int focused = FocusedIndex(screen) == b ? 1 : 0;
+    if (focused != g_toggle.focused) {
+        const bool ok = ToggleAnim(ctx, focused != 0 ? "Select" : "UnSelect", true);
+        if (!std::exchange(g_toggle.logged, true) || !ok) {
+            LOG_INFO(Core, "coop: title: toggle: over button {}, {} {}", b, focused != 0 ? "Select" : "UnSelect",
+                     ok ? "at its end" : "not found on the part");
+        }
+        g_toggle.focused = focused;
+    }
+    if (look.toggle_cell != g_toggle.cell) {
+        const bool ok = ToggleAnim(ctx, "Check", look.toggle_cell == 1);
+        LOG_INFO(Core, "coop: title: toggle: {} chosen (Check {})", look.toggle_cells[static_cast<std::size_t>(
+                                                                         std::clamp(look.toggle_cell, 0, 1))],
+                 ok ? (look.toggle_cell == 1 ? "at its last frame" : "at its first frame") : "not found on the part");
+        g_toggle.cell = look.toggle_cell;
+    }
+    return true;
+}
+
 // The title's own menu as it is now (MenuFor): the game's buttons shown, their texts, and what the step was asked to do
 // (the focus moved, a button decided, a sound). From the title's step.
 // Co-op's menu page on the title's own buttons (coop_title_native.h), at each step of the title: the rows' live texts,
@@ -776,12 +966,20 @@ void StepNative(void* ctx, std::uint64_t screen) {
     }
     if (apply) StopBtnNum(ctx, layout, std::min(frame, static_cast<float>(CoopTitleNative::kButtons)));
     bool ok = true;
+    // (the toggle's button under it: no words of its own; until the toggle is found on this layout, or where it cannot
+    // be shown, the row's own text)
+    const bool toggled = look.toggle >= 0 && g_toggle.layout == layout && g_toggle.usable;
     for (int i = 0; i < look.buttons; ++i) {
-        ok = SetLiveText(ctx, layout, i, look.texts[static_cast<std::size_t>(i)]) && ok;
+        // The page's rows are already in the player's language (coop_title_native.cpp: RowText, TypingLook, LookFor), a
+        // field's own text and a player's or a room's name as it is: not looked up again here, which would turn a name
+        // that is also a word of the table ("Link") into the table's line.
+        ok = SetLiveText(ctx, layout, i, toggled && i == look.toggle ? std::string(" ") : look.texts[static_cast<std::size_t>(i)]) && ok;
     }
     if (g_column.layout != layout) FindColumn(ctx, screen, layout);
-    const bool hint = !look.hint.empty() && g_column.hint != 0 && SetLiveText(ctx, layout, kHintSlot, CoopI18n::Tr(look.hint));
+    const bool hint = !look.hint.empty() && g_column.hint != 0 && SetLiveText(ctx, layout, kHintSlot, look.hint);
     ShowColumn(ctx, screen, look.buttons, hint, look.dim);
+    if (ok) StepToggle(ctx, screen, layout, look);
+    else HideToggle(ctx);
     if (!ok) {   // (an older pack: the page in the overlay, as before)
         const int page = g_native_page.exchange(-1);
         CoopPause::CloseNative();
@@ -808,6 +1006,7 @@ void StepNative(void* ctx, std::uint64_t screen) {
 std::atomic<bool> g_ask{false};
 bool g_ask_looked = false;                 // (g_mutex)
 std::vector<std::string> g_ask_pending;    // (g_mutex) the game folder's records when it was looked for
+bool g_ask_stuck = false;                  // (g_mutex) the record asked about is a stuck load's (coop_stuck_load.h)
 std::uint64_t g_ask_since = 0;             // (g_mutex) when it came up
 bool g_ask_focused = false;                // (g_mutex) OK has the title's cursor
 constexpr std::uint64_t kAskQuietMs = 700;   // presses this soon after it came up are the ones that brought the title
@@ -824,6 +1023,7 @@ void LookForAsk() {
     if (Env("LICHII_COOP_PROBLEM_ASK") == "0") return;
     const std::filesystem::path folder = AskFolder();
     std::vector<std::string> pending = CoopProblemAsk::PendingNames(folder);
+    for (std::string& name : CoopProblemAsk::StuckNames(folder)) pending.push_back(std::move(name));   // (black-01112)
     const std::int64_t now_s =
         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     // (the crashes the kit already sent to us are not asked about: coop_problem_ask.h)
@@ -833,10 +1033,12 @@ void LookForAsk() {
     {
         std::lock_guard lock(g_mutex);
         g_ask_pending = std::move(pending);
+        g_ask_stuck = CoopProblemAsk::IsStuck(*due);
         g_ask_since = NowMs(), g_ask_focused = false;
     }
     g_ask = true;
-    LOG_INFO(Core, "coop: title: the game crashed last time ({}): the title asks for /bugreport once", *due);
+    LOG_INFO(Core, "coop: title: {} last time ({}): the title asks for /bugreport once",
+             CoopProblemAsk::IsStuck(*due) ? "a load never ended" : "the game crashed", *due);
 }
 
 // `seen`: the player pressed on it (it is not asked again for these records); else co-op's page or a host save's load
@@ -857,16 +1059,22 @@ void CloseAsk(bool seen) {
     if (seen && !CoopProblemAsk::WriteAsked(AskFolder(), CoopProblemAsk::AskedAfter(pending))) {
         LOG_WARNING(Core, "coop: title: bug-reports\\coop-asked.txt could not be written: the ask may come again");
     }
+    if (seen) {   // (a stuck load's records are ours: asked about once, then gone)
+        for (const std::string& name : pending) {
+            if (CoopProblemAsk::IsStuck(name)) CoopProblemAsk::RemoveStuck(AskFolder(), name);
+        }
+    }
     LOG_INFO(Core, "coop: title: the /bugreport ask {}", seen ? "seen and closed" : "shut (the title went to co-op)");
 }
 
 void StepAsk(void* ctx, std::uint64_t screen) {
     const std::uint64_t layout = Read64(screen + kTitleLayout);
     if (layout == 0) return;
-    bool apply = false, focus = false;
+    bool apply = false, focus = false, stuck = false;
     const char* sound = nullptr;
     {
         std::lock_guard lock(g_mutex);
+        stuck = g_ask_stuck;
         const std::uint64_t now = NowMs();
         if (now >= g_apply_next) apply = true, g_apply_next = now + 250;
         focus = !std::exchange(g_ask_focused, true);
@@ -874,10 +1082,12 @@ void StepAsk(void* ctx, std::uint64_t screen) {
     }
     if (apply) StopBtnNum(ctx, layout, static_cast<float>(CoopTitleNative::kButtons));
     ShowColumn(ctx, screen, CoopTitleNative::kButtons, false, {});
+    HideToggle(ctx);
     KeepFocusShown(ctx, screen, CoopTitleNative::kButtons);
     bool ok = true;
     for (int i = 0; i < CoopTitleNative::kButtons; ++i) {
-        ok = SetLiveText(ctx, layout, i, CoopI18n::Tr(CoopProblemAsk::kWords[static_cast<std::size_t>(i)])) && ok;
+        const auto& words = stuck ? CoopProblemAsk::kStuckWords : CoopProblemAsk::kWords;
+        ok = SetLiveText(ctx, layout, i, CoopI18n::Tr(words[static_cast<std::size_t>(i)])) && ok;
     }
     if (!ok) {   // (an older pack: no page of ours on the title, so no ask)
         CloseAsk(false);
@@ -911,17 +1121,21 @@ std::uint64_t AskPad(std::uint64_t buttons) {
 }
 
 void StepMenu(void* ctx, std::uint64_t screen) {
-    if (!g_menu.load() || ctx == nullptr || !HasScratch()) return;
+    // (g_wait_on_hint: false on every way out before the hint line is set; set once there, so the drawn line never
+    // shows for a step in between)
+    if (!g_menu.load() || ctx == nullptr || !HasScratch()) return g_wait_on_hint.store(false);
     if (g_native_page.load() < 0 && g_auto_load_until.load() == 0) LookForAsk();
     if (g_ask.load()) {
         if (g_native_page.load() >= 0 || g_auto_load_until.load() != 0 || g_auto_press_ms.load() != 0) {
             CloseAsk(false);
         } else {
+            g_wait_on_hint.store(false);
             StepAsk(ctx, screen);
             return;
         }
     }
     if (g_native_page.load() >= 0) {
+        g_wait_on_hint.store(false);
         StepNative(ctx, screen);
         return;
     }
@@ -929,6 +1143,7 @@ void StepMenu(void* ctx, std::uint64_t screen) {
     bool apply = false, any_save = true, sub = false;
     int focus = -1, decide = -1;
     const char* sound = nullptr;
+    std::string wait_line;   // (g_wait.Line(), read under the lock)
     bool one_start = CoopModsRuntime::FileSelectRuns();   // (before g_mutex: the mods' calls take it, coop_busy)
     {
         std::lock_guard lock(g_mutex);
@@ -949,6 +1164,7 @@ void StepMenu(void* ctx, std::uint64_t screen) {
         std::swap(focus, g_focus_to);
         std::swap(decide, g_decide);
         std::swap(sound, g_sound);
+        wait_line = g_wait.Line();
     }
     const CoopTitleMenu::TitleMenuLook look = CoopTitleMenu::MenuFor(any_save, sub, one_start);
     const std::uint64_t layout = Read64(screen + kTitleLayout);
@@ -959,9 +1175,14 @@ void StepMenu(void* ctx, std::uint64_t screen) {
                                 ? CoopTitleMenu::MenuHint(look.rows[static_cast<std::size_t>(f)].action)
                                 : nullptr;
         if (words == nullptr && !sub && CoopPackNotice::DirectOn()) words = CoopPackNotice::kDirectHint;   // (player report 225: solo has no chat box)
-        const bool hint = words != nullptr && layout != 0 && g_column.hint != 0 &&
-                          SetLiveText(ctx, layout, kHintSlot, CoopI18n::Tr(words));
+        // (the host's save on its way after a Join here comes first: "Loading Saria's save...", the name is data)
+        const std::string said = !wait_line.empty() ? CoopI18n::Tr(wait_line)
+                                 : words != nullptr  ? CoopI18n::Tr(words)
+                                                     : std::string();
+        const bool hint = !said.empty() && layout != 0 && g_column.hint != 0 && SetLiveText(ctx, layout, kHintSlot, said);
+        g_wait_on_hint.store(hint && !wait_line.empty());
         ShowColumn(ctx, screen, CoopTitleNative::kButtons, hint, {});
+        HideToggle(ctx);
         KeepFocusShown(ctx, screen, CoopTitleNative::kButtons);
     }
     if (apply && layout != 0) {
@@ -1808,6 +2029,7 @@ std::optional<CoopDraw::TitleView> View() {
         return std::nullopt;
     }
     if (const std::string line = g_wait.Line(); !line.empty()) {
+        if (g_wait_on_hint.load()) return std::nullopt;   // (on the title's own hint line: StepMenu)
         // ("Loading Saria's save..." in the player's language: the name is data)
         return CoopDraw::TitleView{CoopI18n::Tr(line)};
     }

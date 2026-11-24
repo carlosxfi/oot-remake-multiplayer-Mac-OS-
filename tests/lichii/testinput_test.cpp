@@ -268,6 +268,50 @@ TEST_CASE("testinput: goto with the game's camera, which turns behind Link as he
     }
 }
 
+TEST_CASE("testinput: warp refuses a scene name the game does not have, so nothing is written (2026-11-23 crash)") {
+    // "Market" is not a map name (Market_Child and Market_Adult are): the module wrote it into the game's next-scene
+    // request and a game worker crashed right after the load began.
+    std::string error;
+    CHECK_FALSE(Parse("warp Market\n", error));
+    CHECK(error.find("line 1") == 0);
+    CHECK(error.find("unknown scene 'Market'") != std::string::npos);
+    CHECK(error.find("Market_Adult") != std::string::npos);  // says what was likely meant
+    CHECK(error.find("Market_Child") != std::string::npos);
+    // The whole script is refused, not just the line: no step before it runs either.
+    CHECK_FALSE(Parse("wait 5\nwarp NoSuchPlace Entrance\ngive bombs\n", error));
+    CHECK(error.find("line 2") == 0);
+    CHECK_FALSE(Parse("warp market_child\n", error));  // exact case
+    CHECK_FALSE(Parse("warp Market_Child/../x\n", error));
+    // The names a real run uses still go through.
+    CHECK(Parse("warp Market_Child\nwarp Market_Adult Market_Entrance\nwarp InsideTheDekuTree Entrance\n", error));
+    CHECK(Parse("warp PhantomGanonStage PhantomGanonStage\nwarp WaterTemple StartPos_SageOfWater\n", error));
+    CHECK(Parse("warp BossRushIntervalRoom\n", error));
+}
+
+TEST_CASE("testinput: warp refuses a start name the game's String64 cannot hold or that is not a plain name") {
+    std::string error;
+    CHECK_FALSE(Parse("warp Market_Child Market Entrance\n", error));  // (three words: the line shape)
+    CHECK_FALSE(Parse("warp Market_Child Market-Entrance\n", error));
+    CHECK(error.find("bad start name") != std::string::npos);
+    CHECK_FALSE(Parse("warp Market_Child " + std::string(64, 'A') + "\n", error));
+    CHECK(Parse("warp Market_Child " + std::string(63, 'A') + "\n", error));
+    CHECK(WarpProblem("Market_Child", "").empty());
+    CHECK(WarpProblem("Market_Child", "Market_FrontOfHyruleCastle").empty());
+    CHECK_FALSE(WarpProblem("", "").empty());
+    CHECK_FALSE(WarpProblem("Market", "").empty());
+}
+
+TEST_CASE("testinput: the warp give-up line says when no save is loaded instead of scene ?") {
+    const std::string none = WarpGiveUpLine("KokiriForest_Child", 90.0, std::nullopt);
+    CHECK(none.find("scene ?") == std::string::npos);
+    CHECK(none.find("no save loaded") != std::string::npos);
+    CHECK(none.find("KokiriForest_Child") != std::string::npos);
+    CHECK(none.find("90 s") != std::string::npos);
+    const std::string there = WarpGiveUpLine("KokiriForest_Child", 90.0, std::string("Market_Child"));
+    CHECK(there.find("scene Market_Child") != std::string::npos);
+    CHECK(there.find("no save") == std::string::npos);
+}
+
 TEST_CASE("testinput: warp and give are handed to the hook once, in order") {
     std::string error;
     CHECK_FALSE(Parse("warp\n", error));
@@ -418,6 +462,49 @@ std::string ReadScenario(const std::filesystem::path& path, int depth = 0) {
 }
 }  // namespace
 
+TEST_CASE("testinput: await is the runner's own step: its shape checked, no module step (row 325)") {
+    std::string error;
+    const auto script = Parse("await 3600 anim Enemy_DungeonBoss_Dodongo \\S+ 'Rolling_Loop'$\nmark after\n", error);
+    REQUIRE_MESSAGE(script.has_value(), error);
+    REQUIRE(script->steps.size() == 1);
+    CHECK(script->steps[0].kind == Kind::mark);
+    CHECK(script->steps[0].line == 2);
+    CHECK(Parse("await 0 x\nmark after\n", error).has_value());  // (the runner takes 0 too)
+    CHECK_FALSE(Parse("await 600\nmark after\n", error));
+    CHECK(error.find("await TICKS REGEX") != std::string::npos);
+    CHECK_FALSE(Parse("await soon foo\nmark after\n", error));
+    CHECK_FALSE(Parse("await 600 foo\n", error));  // (no module step at all: "no steps")
+}
+
+TEST_CASE("testinput: the runner's grammar: every TICKS and number line is taken by both readers or refused by both") {
+    // Row 325 review: await's TICKS here was the module's own timed-step rule (1 to 36000) while the runner
+    // (tools/autotest/hookshot.py) takes 0 up, so 'await 0' played there and was refused here. The same lists are
+    // in tools/autotest/tests/test_hookshot.py GrammarTest: keep them equal.
+    static constexpr std::array kTaken = {
+        "wait 1", "wait 36000", "wait 0007", "hold A 36000", "press A 1", "stick -1 +1 5", "stick .5 -0.5 5",
+        "toward 1 2 36000", "goto 1.5 -2 0.2 600", "goto .5 5. 1", "goto 1e3 -1E-2", "goto 1000000 -1000000",
+        "await 0 x", "await 99999999999 x", "hit X 80", "drop X 500", "hurt 1", "setflag F -2147483648",
+        "setflag F 2147483647", "setflag F 007"};
+    static constexpr std::array kRefused = {
+        "wait 0", "wait 36001", "wait +5", "wait -0", "wait 1_0", "wait 0000000001", "hold A 0", "press A 0",
+        "stick 0 0 0", "toward 1 2 0", "toward 1 2 36001", "goto 1 2 1 0", "await -1 x", "await +1 x",
+        "await 1_0 x", "goto 0x10 2", "goto 1_0 2", "goto inf 2", "goto nan 2", "goto 1000001 2", "goto 1e7 2",
+        "goto . 2", "goto 1e 2", "stick 0x1 0 5", "hit X 0", "hit X 81", "hit X \xc2\xb2", "drop X 501",
+        "hurt 81", "hurt \xc2\xb3", "setflag F 2147483648", "setflag F -2147483649", "setflag F --5",
+        "setflag F +5"};
+    std::string error;
+    for (const char* line : kTaken) {
+        CAPTURE(line);
+        const auto script = Parse(std::string(line) + "\nmark z\n", error);
+        CHECK_MESSAGE(script.has_value(), error);
+    }
+    for (const char* line : kRefused) {
+        CAPTURE(line);
+        CHECK_FALSE(Parse(std::string(line) + "\nmark z\n", error));
+        CHECK(error.rfind("line 1:", 0) == 0);
+    }
+}
+
 TEST_CASE("testinput: every autotest scenario script parses") {
     const std::filesystem::path dir =
         std::filesystem::path(COOP_TEST_SOURCE_DIR) / ".." / "tools" / "autotest" / "scenarios";
@@ -548,6 +635,10 @@ TEST_CASE("testinput: setflag hands the hook a flag name and a whole number (iss
     CHECK_FALSE(Parse("setflag PlayerStatus.CurrentRupee\n", error));
     CHECK_FALSE(Parse("setflag PlayerStatus.CurrentRupee lots\n", error));
     CHECK_FALSE(Parse("setflag PlayerStatus.CurrentRupee 9 9\n", error));
+    // past int32: refused (all digits, so only the overflow tells; review-01111-b)
+    CHECK_FALSE(Parse("setflag PlayerStatus.CurrentRupee 2147483648\n", error));
+    CHECK_FALSE(Parse("setflag PlayerStatus.CurrentRupee -2147483649\n", error));
+    CHECK(Parse("setflag PlayerStatus.CurrentRupee 2147483647\n", error));
     Runner r(Must("setflag PouchData.Weapon_Shield_Deku.StockNum 0\nsetflag PlayerStatus.CurrentRupee 99\n"));
     std::vector<std::string> log;
     r.Advance(0.0, std::nullopt, log);
@@ -558,6 +649,20 @@ TEST_CASE("testinput: setflag hands the hook a flag name and a whole number (iss
     CHECK(requests[0].start == "0");
     CHECK(requests[1].name == "PlayerStatus.CurrentRupee");
     CHECK(requests[1].start == "99");
+}
+
+TEST_CASE("testinput: dump hands the hook a checkpoint tag (play-test kit)") {
+    std::string error;
+    CHECK_FALSE(Parse("dump\n", error));
+    CHECK_FALSE(Parse("dump a b\n", error));
+    CHECK_FALSE(Parse("dump ../x\n", error));  // a tag is part of a file name: no path
+    Runner r(Must("dump after_chest\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::dump);
+    CHECK(requests[0].name == "after_chest");
 }
 
 TEST_CASE("testinput: setenum hands the hook an Enum flag (name or 0x hash) and a value's name (issue 193)") {
@@ -742,4 +847,29 @@ TEST_CASE("testinput: AimPlace puts the arrow short of the target on its line, f
     CHECK((*up)[3 + 1 * 3 + 2] == doctest::Approx(1.0f));
     CHECK_FALSE(AimPlace(eye, eye, 0.6f).has_value());
     CHECK_FALSE(AimPlace({std::nanf(""), 0.0f, 0.0f}, eye, 0.6f).has_value());
+}
+
+TEST_CASE("testinput: event hands the hook an event setting's name (boss-route-01112)") {
+    std::string error;
+    CHECK_FALSE(Parse("event\n", error));
+    CHECK_FALSE(Parse("event DreamBossStage_Rematch_Barinade_Start extra\n", error));
+    Runner r(Must("event DreamBossStage_Rematch_Barinade_Start\nmark after\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::event);
+    CHECK(requests[0].name == "DreamBossStage_Rematch_Barinade_Start");
+}
+
+TEST_CASE("testinput: menu host hands the hook the in-game host (row 260)") {
+    std::string error;
+    CHECK_FALSE(Parse("menu host now\n", error));
+    Runner r(Must("menu Host\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::menu);
+    CHECK(requests[0].name == "host");
 }

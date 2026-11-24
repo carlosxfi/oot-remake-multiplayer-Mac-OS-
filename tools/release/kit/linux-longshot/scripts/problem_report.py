@@ -22,6 +22,7 @@ Files (data/logs): problem-reports.json (local reports' answer, sessions read, p
 (the queue; sent/ and held/ keep copies; result.txt the last result).
 """
 
+import threading
 import hashlib
 import io
 import ipaddress
@@ -59,6 +60,16 @@ FILE_EXT = re.compile(r"^(?i:exe|dll|txt|log|ini|json|zip|cpp|hpp|h|ps1|cmd|bat|
 ZIPS_KEPT = 10
 SEND_ASK_SECONDS = 20
 SEND_TIMEOUT = 15
+# The address can change without a release: docs/problem-send-address.txt on main (first line not a # comment).
+ADDRESS_LOOKUP = "https://raw.githubusercontent.com/daurosk/oot-remake-multiplayer/main/docs/problem-send-address.txt"
+ADDRESS_LOOKUP_TIMEOUT = 4
+
+
+def address_from_text(text):
+    """The first line that is not a # comment, when it is an allowed https address ('' otherwise)."""
+    lines = (text or "").splitlines()[:20]
+    u = next((l.strip() for l in lines if l.strip() and not l.strip().startswith("#")), "")
+    return u if re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d+)?/[\w./-]*", u) else ""
 SEND_MAX_TRIES = 30
 SEND_MAX_DAYS = 30
 SEND_KEPT = 10
@@ -422,8 +433,60 @@ class Kit:
         except (OSError, IndexError):
             return ""
 
+    def address_file(self):
+        return self.logs / "problem-send-address.txt"
+
+    def update_address(self, fetch=None, send=""):
+        """Looks the address up (only reads, sending still needs the player's yes) and caches a valid answer in
+        logs/problem-send-address.txt. Any failure keeps what was cached. fetch (tests) returns the text. With send
+        "off" nothing is requested. The whole lookup is bounded by wall time (urllib's timeout does not cover the
+        DNS lookup): it runs in a daemon thread that is waited for ADDRESS_LOOKUP_TIMEOUT seconds."""
+        if send == "off":
+            return ""
+        box = {}
+
+        def work():
+            try:
+                if fetch is None:
+                    ctx = ssl.create_default_context()
+                    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+
+                    class NoRedirect(urllib.request.HTTPRedirectHandler):
+                        def redirect_request(self, *a, **k):
+                            return None
+
+                    req = urllib.request.Request(ADDRESS_LOOKUP, headers={"User-Agent": "Squadala-kit"})
+                    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx), NoRedirect)
+                    with opener.open(req, timeout=ADDRESS_LOOKUP_TIMEOUT) as resp:
+                        if resp.status != 200:
+                            return
+                        box["text"] = resp.read(4096).decode("utf-8", "replace")
+                else:
+                    box["text"] = fetch()
+            except Exception:
+                pass
+
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+        t.join(ADDRESS_LOOKUP_TIMEOUT)
+        if t.is_alive() or "text" not in box:
+            return ""
+        try:
+            u = address_from_text(box["text"])
+            if u:
+                self.logs.mkdir(parents=True, exist_ok=True)
+                self.address_file().write_text(u + "\n", encoding="utf-8")
+            return u
+        except Exception:
+            return ""
+
     def url(self):
         u = os.environ.get("OOT_COOP_PROBLEM_SEND_URL", "").strip()
+        if not u:
+            try:
+                u = address_from_text(self.address_file().read_text(encoding="utf-8"))
+            except OSError:
+                u = ""
         if not u:
             try:
                 lines = (self.kit / "scripts" / "problem-send-url.txt").read_text(encoding="utf-8").splitlines()[:20]
@@ -722,20 +785,15 @@ def send_queue(kit, url=None, send=upload, user="", pc=""):
 
 def ask(url, seconds=SEND_ASK_SECONDS, read=None, out=print):
     """The question: y is yes; n, Enter or nothing in time is no; no terminal is no. read: tests (returns a line or None)."""
-    q = "Send problem reports to the Squadala! team after your games? [y/N]"
-    host = re.sub(r"^https?://([^/:]+).*$", r"\1", url) if url else ""
+    q = "Send automatic problem reports to the Squadala team? (y/n)"
     out("")
-    out("Problem reports: when a game you played had a co-op problem or a crash, the kit can send the team a small")
-    out("  report after the game closes: the problem lines from the game's log and the crash record, masked first")
-    out("  (IP and MAC addresses, your user and PC names, players' names, invite codes and passwords are taken")
-    out("  out; lines that may still hold an address are left out). Nothing is sent after a game without problems.")
-    out(f"  It goes to the Squadala! report bot{f' ({host})' if host else ''}, never to Longshot; a copy stays in data/logs/problem-send.")
-    out("  Turn it off at any time: bash start-squadala.sh --problem-reports off")
+    out(q)
+    out("  Masked, only after a game with a problem. Turn off any time: bash start-squadala.sh --problem-reports off")
     if read is None:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
-            out(f"{q} n (no terminal: no)")
+            out("  n (no terminal: no)")
             return False
-        sys.stdout.write(f"{q} (no in {seconds} s) ")
+        sys.stdout.write(f"  (y/n, no in {seconds} s) ")
         sys.stdout.flush()
         ready, _, _ = select.select([sys.stdin], [], [], seconds)
         line = sys.stdin.readline() if ready else None
@@ -806,6 +864,7 @@ def main(argv=None):
         send_queue(kit, user=user, pc=pc)
         return 0
     if cmd == "at-start":
+        kit.update_address(send=ss["send"])
         url = kit.url()
         if not ss["send"] and url:
             yes = ask(url)

@@ -39,6 +39,8 @@ function Get-ProblemSendStateFile([string]$Kit) { Join-Path $Kit 'logs\problem-s
 # when there is none: then the start does not ask and nothing is sent.
 function Get-ProblemSendUrl([string]$Kit) {
     $u = "$env:OOT_COOP_PROBLEM_SEND_URL".Trim()
+    # Then the address looked up at an earlier start (logs\problem-send-address.txt), then the kit's own file.
+    if (-not $u) { $u = Read-ProblemSendAddressText (Get-Content -LiteralPath (Join-Path $Kit 'logs\problem-send-address.txt') -TotalCount 20 -ErrorAction SilentlyContinue) }
     if (-not $u) {
         try {
             $u = "$(@(Get-Content -LiteralPath (Join-Path $Kit 'scripts\problem-send-url.txt') -TotalCount 20 -ErrorAction Stop |
@@ -47,6 +49,75 @@ function Get-ProblemSendUrl([string]$Kit) {
     }
     if ($u -match '^https://[A-Za-z0-9.-]+(:\d+)?/[\w./-]*$') { return $u }
     if ($u -match '^http://(127\.0\.0\.1|localhost)(:\d+)?/[\w./-]*$') { return $u }
+    ''
+}
+
+# The first line of a text that is not a # comment, when it is an allowed address ('' otherwise).
+function Read-ProblemSendAddressText($Lines) {
+    $u = "$(@($Lines | Where-Object { "$_".Trim() -and "$_".Trim() -notmatch '^#' }) | Select-Object -First 1)".Trim()
+    if ($u -match '^https://[A-Za-z0-9.-]+(:\d+)?/[\w./-]*$') { return $u }
+    ''
+}
+
+# The address can change without a new release: the file docs/problem-send-address.txt on main (one address line).
+$script:SendAddressLookup = 'https://raw.githubusercontent.com/daurosk/oot-remake-multiplayer/main/docs/problem-send-address.txt'
+$script:SendLookupMs = 4000
+
+# Runs $Work (a script block that returns text) in its own runspace and waits at most $Ms for it: a lookup that is stuck in
+# DNS or connect (HttpWebRequest.Timeout and BeginGetResponse do not bound those on .NET Framework, they run on the calling
+# thread) is left behind and gives $null. $Work runs in a fresh runspace: it sees only its arguments, not this script's
+# variables.
+function Invoke-ProblemSendTimed([scriptblock]$Work, [object[]]$ArgList = @(), [int]$Ms = 4000) {
+    $ps = $null
+    try {
+        $ps = [powershell]::Create()
+        [void]$ps.AddScript($Work.ToString())
+        foreach ($a in $ArgList) { [void]$ps.AddArgument($a) }
+        $h = $ps.BeginInvoke()
+        if (-not $h.AsyncWaitHandle.WaitOne($Ms)) { try { [void]$ps.BeginStop($null, $null) } catch { }; return $null }
+        $o = @($ps.EndInvoke($h))
+        $ps.Dispose()
+        if ($o.Count -eq 0) { return $null }
+        return "$($o[0])"
+    } catch { return $null }
+}
+
+$script:SendLookupWork = {
+    param($Url, $Ms)
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
+    $req = [System.Net.HttpWebRequest]::Create($Url)
+    $req.Timeout = $Ms
+    $req.ReadWriteTimeout = $Ms
+    $req.AllowAutoRedirect = $false
+    $req.UserAgent = 'Squadala-kit'
+    $resp = $req.GetResponse()
+    try {
+        if ([int]$resp.StatusCode -ne 200) { return '' }
+        $r = New-Object System.IO.StreamReader($resp.GetResponseStream())
+        try { $t = $r.ReadToEnd(); if ($t.Length -gt 4096) { $t = '' } } finally { $r.Dispose() }
+        return $t
+    } finally { $resp.Dispose() }
+}
+
+# Looks the address up (same GitHub access as Update.bat), short time limit, and caches a valid answer in
+# logs\problem-send-address.txt. Any failure keeps what was cached (or the kit's file). It only reads: nothing is sent,
+# and sending still needs the player's yes. $Fetch (tests) is the lookup's work block (it returns the file's text and goes
+# through the same timed path; it runs in its own runspace, see Invoke-ProblemSendTimed). $Ms = the wall-time limit.
+# $Send is the player's answer: with 'off' (no sending) nothing is requested at all.
+function Update-ProblemSendAddress([string]$Kit, [scriptblock]$Fetch = $null, [string]$Send = '', [int]$Ms = $script:SendLookupMs) {
+    if ($Send -eq 'off') { return '' }
+    try {
+        if ($Fetch) { $text = Invoke-ProblemSendTimed $Fetch @() $Ms }
+        else { $text = Invoke-ProblemSendTimed $script:SendLookupWork @($script:SendAddressLookup, $Ms) $Ms }
+        if ($null -eq $text) { return '' }
+        $u = Read-ProblemSendAddressText ("$text" -split "`r?`n" | Select-Object -First 20)
+        if ($u) {
+            $dir = Join-Path $Kit 'logs'
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+            [System.IO.File]::WriteAllText((Join-Path $dir 'problem-send-address.txt'), "$u`n")
+            return $u
+        }
+    } catch { }
     ''
 }
 
@@ -89,23 +160,19 @@ function Exit-ProblemSendLock($Lock) { if ($Lock) { try { $Lock.ReleaseMutex() }
 
 # The question (owner, 0.11.9): Y is yes; N, Enter or no key in $Seconds is no; no console is no. $ReadKey: tests.
 function Read-ProblemSendAnswer([int]$Seconds = $script:SendAskSeconds, [scriptblock]$ReadKey = $null, [string]$Url = '') {
-    $q = 'Send problem reports to the Squadala! team after your games? [y/N]'
+    $q = 'Send automatic problem reports to the Squadala team? (y/n)'
     Write-Host ''
-    Write-Host 'Problem reports: when a game you played had a co-op problem or a crash, the kit can send the team a small'
-    Write-Host '  report after the game closes: the problem lines from the game''s log and the crash record, masked first'
-    Write-Host '  (IP and MAC addresses, your user and PC names, players'' names, invite codes and passwords are taken'
-    Write-Host '  out; lines that may still hold an address are left out). Nothing is sent after a game without problems.'
-    Write-Host "  It goes to the Squadala! report bot$(if ($Url) { " ($(([uri]$Url).Host))" }), never to Longshot; a copy stays in logs\problem-send."
-    Write-Host '  Turn it off at any time: scripts\problem-report.cmd off.'
+    Write-Host $q
+    Write-Host '  Masked, only after a game with a problem. Turn off any time: scripts\problem-report.cmd off'
     $redirected = $true
     try { $redirected = [Console]::IsInputRedirected } catch { }
-    if ($redirected -and -not $ReadKey) { Write-Host "$q n (no console: no)"; return $false }
+    if ($redirected -and -not $ReadKey) { Write-Host "  n (no console: no)"; return $false }
     if (-not $ReadKey) { try { while ([Console]::KeyAvailable) { [void][Console]::ReadKey($true) } } catch { } }
     $end = (Get-Date).AddSeconds($Seconds)
     $left = -1
     while ((Get-Date) -lt $end) {
         $now = [int][Math]::Ceiling(($end - (Get-Date)).TotalSeconds)
-        if ($now -ne $left) { $left = $now; Write-Host -NoNewline "`r$q (no in $left s)  " }
+        if ($now -ne $left) { $left = $now; Write-Host -NoNewline "`r  (y/n, no in $left s)  " }
         $key = if ($ReadKey) { & $ReadKey } elseif ([Console]::KeyAvailable) { [Console]::ReadKey($true) } else { $null }
         if ($key) {
             if ("$($key.Key)" -eq 'Y') { Write-Host 'y'; return $true }
@@ -452,6 +519,8 @@ if ($SendPending) {
 }
 
 if ($AtStart) {
+    # Only when sending is on or not answered yet (the question needs the address); with 'off' no request is made.
+    [void](Update-ProblemSendAddress $kit -Send $sendState.send)
     $url = Get-ProblemSendUrl $kit
     if (-not $sendState.send -and $url) {
         $yes = Read-ProblemSendAnswer -Url $url

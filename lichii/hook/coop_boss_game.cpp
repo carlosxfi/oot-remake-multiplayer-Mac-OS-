@@ -344,10 +344,17 @@ struct Glue {
                 }
                 // boss-copy-b: also ready once our boss left its pre-battle
                 // phase here (a late joiner's copy following the fight).
+                // Row 244: never while our game plays the intro (sync's phase from its last Tick, 100 ms ago): its
+                // boss is the cutscene's, and as owner it held every game that skipped on the intro's boss (King
+                // Dodongo in his pit, Gohma in her intro animations). The server then gives the boss to a game in
+                // the fight (boss_to_ready); with every game in the intro the owner keeps it, as before.
+                const bool in_intro = sync.InIntro(event, now_us);
                 const bool ready =
-                    readiness.Step(room->index, intro, CoopObjects::LastBossPreBattle(Bodies(*room)));
+                    readiness.Step(room->index, intro, CoopObjects::LastBossPreBattle(Bodies(*room)), in_intro,
+                                   CoopObjects::LastBossHurt(Bodies(*room)));
                 if (readiness.TakeFoughtNews() && intro.has_value() && !*intro) {
-                    LOG_INFO(Core, "coop: boss: our boss left its pre-battle phase here: ready to own it without our intro");
+                    LOG_INFO(Core, "coop: boss: our boss left its pre-battle phase or lost life here: ready to own it "
+                                   "without our intro");
                 }
                 std::vector<std::string> unready;
                 if (!ready) {
@@ -356,7 +363,9 @@ struct Glue {
                 if (unready.empty() != unready_logged_) {
                     unready_logged_ = unready.empty();
                     LOG_INFO(Core, "coop: boss: {} ({})",
-                             unready.empty() ? "ready to own the boss" : "not ready to own the boss: its intro is not played here",
+                             unready.empty() ? "ready to own the boss"
+                             : in_intro      ? "not ready to own the boss: our game plays its intro now"
+                                             : "not ready to own the boss: its intro is not played here",
                              room->intro);
                 }
                 CoopBossNative::TheTable().SetNotBegun(unready);  // (row 189: its wait is no stuck move)
@@ -499,7 +508,11 @@ bool Glue::Scenes(Core::System& system, std::uint64_t main, const Local& local, 
     std::vector<std::string> dying;
     if (local.scene) {
         for (const auto& room : CoopBoss::Rooms()) {
-            if (room.scene == *local.scene && scenes.phase(room.index) >= CoopBossScenes::Director::Phase::outro) {
+            // enemies-dying-01111: also where the director's own area is not the room's dungeon scene (the boss
+            // rush's DodongoStage: King Dodongo's copy there was never named dying, and B replayed A's killing
+            // blow on it ~50 times, run 20261122-092813).
+            if (scenes.phase(room.index) >= CoopBossScenes::Director::Phase::outro &&
+                (room.scene == *local.scene || scenes.DeathBegunHere(room.index, here))) {
                 for (const auto body : CoopBoss::Bodies(room)) dying.emplace_back(body);
             }
         }
@@ -645,8 +658,26 @@ std::optional<std::int32_t> MaxLifeCap() {
     return TheGlue().max_life_cap;
 }
 
+// The autotest's `event NAME` (WantEvent): the play-test bridge's PlayNow asks it from the calc thread, so it has
+// its own lock (the glue's `wanted` is the present thread's).
+namespace {
+std::mutex g_test_events_mutex;
+std::vector<std::string> g_test_events;
+} // namespace
+
 std::vector<std::string> TakeWantedEvents() {
-    return std::exchange(TheGlue().wanted, {});
+    auto out = std::exchange(TheGlue().wanted, {});
+    std::lock_guard lock(g_test_events_mutex);
+    for (auto& name : g_test_events) {
+        out.push_back(std::move(name));
+    }
+    g_test_events.clear();
+    return out;
+}
+
+void WantEvent(std::string name) {
+    std::lock_guard lock(g_test_events_mutex);
+    g_test_events.push_back(std::move(name));
 }
 
 bool DeathMayRun(std::uint8_t boss) {

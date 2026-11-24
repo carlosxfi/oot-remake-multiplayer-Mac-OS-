@@ -2,6 +2,7 @@
 // The title's own buttons showing co-op's menu pages (hookshot/src/coop_title_native.h).
 #include <doctest/doctest.h>
 
+#include "coop_list_pages.h"
 #include "coop_title_native.h"
 
 using namespace CoopTitleNative;
@@ -79,7 +80,7 @@ TEST_CASE("title native: three rows a page and Back, the page that holds the sel
     CHECK(l.focus == 0);
     CHECK(l.top == 0);
     CHECK(l.pages == 2);
-    CHECK(l.hint == "Page 1 of 2 (ZL/ZR)");
+    CHECK(l.hint == "Page 1/2 (ZL/ZR)");   // (the buttons in words: the title has no icon pane of the game's, row 264)
     v.selected = 4;   // (Port: the fourth shown row, the next page; never a scroll)
     l = LookFor(v, l.top);
     CHECK(l.top == 3);
@@ -87,7 +88,7 @@ TEST_CASE("title native: three rows a page and Back, the page that holds the sel
     CHECK(l.rows[0] == 4);
     CHECK(l.rows[1] == 5);
     CHECK(l.focus == 0);
-    CHECK(l.hint == "Page 2 of 2 (ZL/ZR)");
+    CHECK(l.hint == "Page 2/2 (ZL/ZR)");
     CHECK(l.texts[2] == "Back");   // (two rows on the last page: Back right under them)
     CHECK(l.back == 2);
     v.selected = 5;
@@ -95,12 +96,13 @@ TEST_CASE("title native: three rows a page and Back, the page that holds the sel
     CHECK(l.top == 3);
     CHECK(l.focus == 1);
     CHECK(PageJump(v, l, -1) == 1);    // (ZL: the first row of the page before)
-    CHECK(PageJump(v, l, +1) == -1);   // (no page after)
+    CHECK(PageJump(v, l, +1) == 1);    // (ZR on the last page: round to the first, row 264)
     v.selected = 1;   // (back up: the page before)
     l = LookFor(v, l.top);
     CHECK(l.top == 0);
     CHECK(l.focus == 0);
     CHECK(PageJump(v, l, +1) == 4);
+    CHECK(PageJump(v, l, -1) == 4);   // (ZL on the first page: round to the last, two pages here)
     CHECK(l.back == kButtons - 1);   // (three rows or more: Back on the fourth)
     CHECK(l.buttons == kButtons);
     v.selected = -1;   // (nothing selected: the page shown before stays)
@@ -150,9 +152,17 @@ TEST_CASE("title native: with the pack's list, every row on one page, Back right
     CHECK(l.rows[0] == 13);
     CHECK(l.focus == 7);
     CHECK(l.texts[13] == "Back");
-    CHECK(l.hint == "Page 2 of 3 (ZL/ZR)   Joins this game.");   // (the page first, then what the row does)
+    CHECK(l.hint == "Page 2/3 (ZL/ZR)   Joins this game.");   // (the page first, then what the row does)
     CHECK(PageJump(v, l, 1) == 26);
     CHECK(PageJump(v, l, -1) == 0);
+    v.selected = 26;   // (the last page: ZR round to the first page's first row, ZL the page before)
+    l = LookFor(v, 0, kMaxButtons);
+    CHECK(l.page == 2);
+    CHECK(PageJump(v, l, 1) == 0);
+    CHECK(PageJump(v, l, -1) == 13);
+    v.selected = 0;   // (the first page: ZL round to the last page's first row)
+    l = LookFor(v, 0, kMaxButtons);
+    CHECK(PageJump(v, l, -1) == 26);
     CHECK(LookFor(v, 0, 99).buttons == kMaxButtons);   // (never more than the pack has)
 }
 
@@ -169,4 +179,33 @@ TEST_CASE("title native: the column is raised until its lowest box ends on the s
     // (a column taller than the screen: never raised past its first row's top)
     const float tall = ColumnRaise(kScreenFoot - 900.0f, 500.0f, 0.0f, 1.0f);
     CHECK(500.0f + tall <= kScreenTop + 0.01f);
+}
+
+TEST_CASE("title native: a row with two cells is the page's toggle, on its button, none without, none when fixed") {
+    View v;
+    Row who = R("Who can join", "Private", RowKind::kChoice);
+    who.cells = {"Private", "Public"};
+    who.cell = 0;
+    who.left = who.right = true;
+    v.rows = {R("Players", "4", RowKind::kChoice), who, R("Start hosting")};
+    v.selected = 1;
+    Look l = LookFor(v, 0);
+    CHECK(l.toggle == 1);
+    CHECK(l.toggle_name == "Who can join");
+    CHECK(l.toggle_cells == std::array<std::string, 2>{"Private", "Public"});
+    CHECK(l.toggle_cell == 0);
+    CHECK(l.texts[1] == "Who can join: < Private >");   // (the button keeps the row's words: shown where no toggle can be)
+    v.rows[1].cell = 1;
+    CHECK(LookFor(v, 0).toggle_cell == 1);
+    v.rows[1].fixed = true;
+    CHECK(LookFor(v, 0).toggle == -1);
+    v.rows[1].fixed = false;
+    v.rows[1].cell = -1;
+    CHECK(LookFor(v, 0).toggle == -1);
+    v.rows[1].cell = 0;
+    v.rows[1].cells[1].clear();
+    CHECK(LookFor(v, 0).toggle == -1);
+    View none;
+    none.rows = {R("Start hosting")};
+    CHECK(LookFor(none, 0).toggle == -1);
 }

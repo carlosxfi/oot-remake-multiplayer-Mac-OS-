@@ -982,12 +982,21 @@ function Get-KitCodeModsListHash([string]$List, $CodeMods) {
     if ($lines[0].TrimEnd("`r") -cne 'coop-mods 1') { return 'none' }
     $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     $kept = @()
+    $defaultOff = $false
     foreach ($line in @($lines | Select-Object -Skip 1)) {
         $line = $line.TrimEnd("`r")
+        if ($line -ceq 'default off') { $defaultOff = $true; continue }
         if (-not ($line -cmatch '^(on|off) (.+)$')) { continue }
         $fold = ConvertTo-KitModFold $Matches[2]
         if (-not $seen.Add($fold)) { continue }
         if ($CodeMods.Contains($fold)) { $kept += "$($Matches[1]) $fold" }
+    }
+    # "default off" (Original game, hos_coop_mods.h): a code mod the list does not name is off too, so one put into the
+    # folder later is built out, as the game leaves its files out (player report 266).
+    if ($defaultOff) {
+        $unnamed = [string[]]@($CodeMods | Where-Object { -not $seen.Contains($_) })
+        [Array]::Sort($unnamed, [StringComparer]::Ordinal)
+        foreach ($fold in $unnamed) { $kept += "off $fold" }
     }
     if (-not $kept.Count) { return 'none' }
     # Rows that change nothing are no change (player report 210): the game puts the mods the list does not name under the
@@ -1234,6 +1243,9 @@ function Get-KitHookshotNeed([string]$Kit) {
     }
     $stampFile = Join-Path $game 'coop-built-from.txt'
     $have = if (Test-Path -LiteralPath $stampFile) { [System.IO.File]::ReadAllText($stampFile) } else { '' }
+    # (co-op's own Characters tab's code patch in or out first, as hookshot-build.ps1 does before its stamp: a kit
+    # update that brings it, or Character Select put in or taken out, then asks for the build that takes it)
+    [void](Sync-KitCharselNativePatch $Kit (Join-Path $game 'mods\contents\0400486024DEC000\coop-puppet'))
     $want = Get-KitHookshotStamp $Kit
     if (-not $want) { return '' }   # (a kit without hookshot\PIN or TOOLS.txt cannot build: nothing to do here)
     if (Test-KitGameUnfinished $game) {
@@ -1496,6 +1508,7 @@ function Get-KitCharacterSelectPin([string]$Kit) {
               $op.folder -match '^[A-Za-z0-9][^\\/:*?"<>|]*$' -and
               $op.overlay_url -match '^https://' -and $op.overlay_sha256 -match '^[0-9a-fA-F]{64}$')) { return $null }
     if ($op.ips_url -and ($op.ips_url -notmatch '^https://' -or $op.ips_sha256 -notmatch '^[0-9a-fA-F]{64}$')) { $op.ips_url = '' }
+    if ($op.tool_folder -and ($op.tool_folder -match '\.\.' -or $op.tool_folder -match '^[\\/]')) { return $null }
     return $op
 }
 
@@ -1531,7 +1544,7 @@ function Read-KitCharacterSelectAnswer([int]$Seconds = 15, [scriptblock]$ReadKey
     Write-Host ''
     Write-Host 'The Characters page (in the - menu) comes with the kit: Character Select by Snail (snaildev99).'
     Write-Host '  Its NPC characters (Saria, Sheik, Darunia and over a hundred more) are an extra download from Snail''s own'
-    Write-Host '  GitHub page (about 1 GB, once). Without them you play as Link, and the page tells you when a character is not'
+    Write-Host '  GitHub page (a 145 MB download, about 1.1 GB on disk, made from your own game in a few minutes, once). Without them you play as Link, and the page tells you when a character is not'
     Write-Host '  downloaded. The Legend of Zelda: Ocarina of Time and its characters belong to Nintendo.'
     $redirected = $true
     try { $redirected = [Console]::IsInputRedirected } catch { }
@@ -1713,6 +1726,139 @@ function Complete-KitCharacterSelectFolder([string]$New, $Op, [string]$Part, [st
     return ''
 }
 
+# Since Character Select v0.2.2 (snaildev99) the release makes the game-derived part of the mod on the player's PC:
+# the zip's mod folder holds his own files (the code patch, the voices, his page's graph), and its tool folder
+# (the pin's tool_folder, build-from-your-game) makes the rest from the game's own RomFS: models, textures, menu
+# archives and tables, as byte patches and colour recipes against the player's files. It runs with the kit's
+# Python (numpy, zstandard, astc-encoder-py and texture2ddecoder, which the kit's Python has) into the unpacked
+# folder, checks every source file and every result by SHA-1 and refuses another game version. For part 'ui' it
+# skips the NPC part's files (--exclude: the rule of Test-KitCharacterSelectNpcFile). '' or why not.
+# The NPC part as player.py's --exclude (paths below romfs/, '/'): must say exactly what Test-KitCharacterSelectNpcFile
+# says for romfs files (launch_test.ps1 checks the two agree); change both together. Link's own textures in Tex/ (named
+# *_Player_* or Angin_Tile_*) stay in the ui part (row 242).
+$KitCharselToolExclude = '^(Phive|Sound)/|^Tex/(?![^/]*_Player_|Angin_Tile_)|^Model/Player_(Adult|Child)_C\d{3}\.|^Model/Player_Dark_|^Pack/Actor/Enemy_MiddleBoss_DarkLink\.pack\.zs$'
+# One argument line for CreateProcess (no shell: '|', '&', '^' and '%' are plain characters in it): each argument
+# quoted when it is empty or has a space, a tab or a quote; backslashes right before a quote, and at the end of a quoted
+# argument, doubled; a quote escaped. The program gets each argument back byte for byte (the C runtime's rules).
+function ConvertTo-KitArgLine([string[]]$ArgList) {
+    @(foreach ($x in $ArgList) {
+        if ($x -ne '' -and $x -notmatch '[\s"]') { $x; continue }
+        $q = [regex]::Replace($x, '(\\*)"', { param($m) $m.Groups[1].Value + $m.Groups[1].Value + '\"' })
+        $q = [regex]::Replace($q, '(\\+)$', { param($m) $m.Groups[1].Value + $m.Groups[1].Value })
+        '"' + $q + '"'
+    }) -join ' '
+}
+
+# Runs a program (no shell between) with a time limit: @{ Code; Out (its stdout and stderr lines, in the order they
+# came); Stopped ('' or why it was stopped) }. A program that writes nothing for $IdleSeconds, or runs longer than
+# $MaxSeconds, is stopped with its whole process tree (taskkill /T: Python's worker processes too), Code -1. A tool that
+# hangs (Character Select's tool on a damaged game dump: its workers die at start and are started again for good) can
+# no longer hold the start.
+function Invoke-KitToolLimited([string]$Exe, [string[]]$ArgList, [int]$IdleSeconds, [int]$MaxSeconds, [string]$WorkDir = '') {
+    # (Out: both streams, in the order they were read; Std / Err: stdout / stderr alone. Two pipes have no common order, so
+    # a caller that needs 'the last line' takes it from Std or Err, never from Out's tail)
+    $r = @{ Code = -1; Out = @(); Std = @(); Err = @(); Stopped = '' }
+    $lines = New-Object System.Collections.Generic.List[string]
+    $byStream = @((New-Object System.Collections.Generic.List[string]), (New-Object System.Collections.Generic.List[string]))
+    try {
+        $si = New-Object System.Diagnostics.ProcessStartInfo
+        $si.FileName = $Exe
+        $si.Arguments = ConvertTo-KitArgLine $ArgList
+        $si.UseShellExecute = $false
+        $si.CreateNoWindow = $true
+        $si.RedirectStandardOutput = $true
+        $si.RedirectStandardError = $true
+        if ($WorkDir) { $si.WorkingDirectory = $WorkDir }
+        $p = [System.Diagnostics.Process]::Start($si)
+        # (both pipes read line by line without a thread: one pending ReadLineAsync each, taken when it completes)
+        $readers = @($p.StandardOutput, $p.StandardError)
+        $tasks = @($readers[0].ReadLineAsync(), $readers[1].ReadLineAsync())
+        $start = Get-Date; $quietSince = $start; $exitedAt = $null
+        while ($tasks[0] -or $tasks[1]) {
+            $live = [System.Threading.Tasks.Task[]]@($tasks | Where-Object { $_ })
+            [void][System.Threading.Tasks.Task]::WaitAny($live, 1000)
+            for ($i = 0; $i -lt 2; $i++) {
+                while ($tasks[$i] -and $tasks[$i].IsCompleted) {
+                    $line = $tasks[$i].Result
+                    if ($null -eq $line) { $tasks[$i] = $null; break }
+                    $lines.Add($line); $byStream[$i].Add($line); $quietSince = Get-Date
+                    $tasks[$i] = $readers[$i].ReadLineAsync()
+                }
+            }
+            if (-not ($tasks[0] -or $tasks[1])) { break }
+            $now = Get-Date
+            # (it ended but a process it left holds the pipes open: what came is enough)
+            if ($p.HasExited) { if (-not $exitedAt) { $exitedAt = $now } elseif (($now - $exitedAt).TotalSeconds -ge 5) { break } }
+            if (($now - $quietSince).TotalSeconds -ge $IdleSeconds) { $r.Stopped = "it wrote nothing for $IdleSeconds s" }
+            elseif (($now - $start).TotalSeconds -ge $MaxSeconds) { $r.Stopped = "it ran longer than $MaxSeconds s" }
+            if ($r.Stopped) {
+                & "$env:SystemRoot\System32\taskkill.exe" /T /F /PID $p.Id 2>&1 | Out-Null
+                [void]$p.WaitForExit(10000)
+                break
+            }
+        }
+        if (-not $r.Stopped) { $p.WaitForExit(); $r.Code = $p.ExitCode }
+    } catch {
+        $lines.Add("$($_.Exception.Message)"); $byStream[1].Add("$($_.Exception.Message)"); $r.Code = -1
+    }
+    $r.Out = $lines.ToArray()
+    $r.Std = $byStream[0].ToArray()
+    $r.Err = $byStream[1].ToArray()
+    return $r
+}
+
+# Time limits of the Character Select tool step: stopped when it writes nothing for 15 minutes (it prints a line every
+# 100 files, the slowest first) or runs longer than 2 hours (the whole set took about 140 s on a 24-thread PC).
+$KitCharselToolIdle = 900
+$KitCharselToolMax = 7200
+function Invoke-KitCharacterSelectTool([string]$Kit, [string]$Zip, $Op, [string]$New, [string]$ModsDir, [string]$Downloads, [string]$Part) {
+    $python = Join-Path $Kit 'hookshot\tools\python\python.exe'
+    $exeDir = Split-Path -Parent $ModsDir     # (the game's files: beside longshot.exe or a folder up, as Get-KitHookshotNeed looks)
+    $romfs = @((Join-Path $exeDir 'romfs'), (Join-Path (Split-Path -Parent $exeDir) 'romfs')) |
+             Where-Object { Test-Path -LiteralPath (Join-Path $_ 'Pack\ZsDic.pack.zs') } | Select-Object -First 1
+    if (-not (Test-Path -LiteralPath $python)) { return "no $python to make its files with" }
+    if (-not $romfs) { return "no game RomFS beside $exeDir to make its files from" }
+    $tool = Join-Path $Downloads 'charsel-tool'
+    if (Test-Path -LiteralPath $tool) { Remove-Item -LiteralPath $tool -Recurse -Force -ErrorAction Stop }
+    New-Item -ItemType Directory -Force -Path $tool | Out-Null
+    $depth = @($Op.tool_folder -split '/').Count
+    & "$env:SystemRoot\System32\tar.exe" -x -f $Zip -C $tool "--strip-components=$depth" "$($Op.tool_folder)" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $tool 'player.py'))) { return "$($Op.zip) has no $($Op.tool_folder)/player.py" }
+    # (-I drops PYTHON* variables and the current folder; player.py puts its own folder and lib\ on sys.path itself (checked: it runs under -I
+    # from another folder), so nothing else is needed)
+    # (-u: each line reaches the output file at once, so the idle limit sees the tool's progress)
+    $a = @('-I', '-B', '-u', (Join-Path $tool 'player.py'), '--romfs', $romfs, '--mod', $New)
+    if ($Part -eq 'ui') {
+        # (an empty rule would exclude nothing: the ui part would get the NPC part's files, so no rule = no install)
+        if (-not $KitCharselToolExclude) { return 'the kit could not read its own NPC rule ($KitCharselToolExclude)' }
+        $a += @('--exclude', $KitCharselToolExclude)
+    }
+    Write-Host "  making Character Select's files from your game (a minute or two, once) ..."
+    # (stdout and stderr are read as text, not error records: a warning on its stderr is only text. The exit code decides.)
+    $run = Invoke-KitToolLimited $python $a $KitCharselToolIdle $KitCharselToolMax
+    $out = $run.Out; $code = $run.Code
+    Remove-Item -LiteralPath $tool -Recurse -Force -ErrorAction SilentlyContinue
+    if ($run.Stopped) {
+        return "making its files from your game was stopped ($($run.Stopped)): its tool stopped answering. The game files it reads may be damaged (dump the game again); nothing of it was put in"
+    }
+    if ($code -ne 0) {
+        # (the reason: stderr's last line that is not a Python warning (an exception's or sys.exit's message comes last there),
+        # else stdout's last line. Not the tail of both streams together: stdout and stderr are two pipes with no common
+        # order, so a warning printed first on stderr could be read after stdout's last line and shown as the reason)
+        $errReal = New-Object System.Collections.Generic.List[string]; $inWarn = $false
+        foreach ($l in $run.Err) {
+            if ("$l" -match ':\d+: \w*Warning: ') { $inWarn = $true; continue }
+            if ($inWarn -and "$l" -match '^\s') { continue }      # (the warning's source line, indented)
+            $inWarn = $false
+            if ("$l".Trim()) { $errReal.Add("$l") }
+        }
+        $stdLast = @($run.Std | Where-Object { "$_".Trim() }) | Select-Object -Last 1
+        $last = if ($errReal.Count) { $errReal[$errReal.Count - 1] } elseif ($stdLast) { $stdLast } else { @($out | Where-Object { "$_".Trim() }) | Select-Object -Last 1 }
+        return "making its files from your game failed ($last). Its tool needs the same game the kit builds (a RomFS of another version or dump is refused file by file); nothing of it was put in"
+    }
+    return ''
+}
+
 # Puts the mod in, or changes its part: @{ Ok; Changed (the folder was put in or replaced); Why; Lines }. $ModsDir: the
 # game's mods folder (<game>\mods, beside longshot.exe). $Part: 'full' (the player said yes to the NPC characters) or
 # 'ui' (every other kit). A Character Select folder the player put in by hand (no stamp) is never touched. The kit's
@@ -1762,7 +1908,7 @@ function Install-KitCharacterSelect([string]$Kit, [string]$ModsDir, [string]$Dow
             $ips = ''
         } else {
             $zipOk = (Test-Path -LiteralPath $zip) -and (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -eq $op.zip_sha256.ToUpperInvariant()
-            # (a 1 GB zip and 1.1 GB unpacked; the swap keeps the old folder until the new one is in place)
+            # (v0.2.2: a 145 MB zip, then 230 MB (default part) or 1.1 GB (with the NPC part) once the tool has made the game's files; the swap keeps the old folder until the new one is in place, so an update holds two copies: about 3 GB with the zip)
             $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($ModsDir))
             $free = try { (New-Object System.IO.DriveInfo $root).AvailableFreeSpace } catch { [long]::MaxValue }
             if ($free -lt $(if ($zipOk) { 2GB } else { 3GB })) { $why = "too little disk space (about 3 GB free needed on $root)" }
@@ -1778,6 +1924,7 @@ function Install-KitCharacterSelect([string]$Kit, [string]$ModsDir, [string]$Dow
                 & "$env:SystemRoot\System32\tar.exe" -x -f $zip -C $new "--strip-components=$depth" "$($op.zip_folder)" 2>&1 | Out-Null
                 if ($LASTEXITCODE -ne 0) { $why = "unpacking $($op.zip) failed (tar $LASTEXITCODE)" }
                 elseif (-not (Test-Path -LiteralPath (Join-Path $new 'romfs'))) { $why = "$($op.zip) has no $($op.zip_folder)/romfs" }
+                elseif ($op.tool_folder) { $why = Invoke-KitCharacterSelectTool $Kit $zip $op $new $ModsDir $Downloads $Part }
             }
         }
         if (-not $why) { $why = Complete-KitCharacterSelectFolder $new $op $Part $json $ips $want }
@@ -1790,7 +1937,7 @@ function Install-KitCharacterSelect([string]$Kit, [string]$ModsDir, [string]$Dow
             Save-KitCharacterSelectPrevious $ModsDir $op.folder
             try { [System.IO.Directory]::Move($new, $dir) }
             catch { [void](Undo-KitCharacterSelect $Kit $ModsDir); throw }
-            if (-not $derive) { Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue }   # (1 GB on disk; a new pin downloads its own)
+            if (-not $derive) { Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue }   # (145 MB on disk; a new pin downloads its own)
             $r.Changed = $true
         }
     } catch {
@@ -1846,19 +1993,22 @@ function Confirm-KitCharacterSelect([string]$Kit, [string]$ModsDir) {
 }
 
 # The Mods tab's list (<mods>\coop-mods.list, "coop-mods 1") names $Name (the path under mods with '/') off: the first
-# row for it, as the game reads it. No list, another version, or no row: on.
+# row for it, as the game reads it. No list, another version, or no row: on; no row in a list with the "default off"
+# line (Original game, hos_coop_mods.h): off.
 function Test-KitModListOff([string]$ModsDir, [string]$Name) {
     $list = Join-Path $ModsDir 'coop-mods.list'
     if (-not (Test-Path -LiteralPath $list -PathType Leaf)) { return $false }
+    $defaultOff = $false
     try {
         $lines = @(([System.IO.File]::ReadAllText($list, [System.Text.UTF8Encoding]::new($false))) -split "`n")
         if ($lines[0].TrimEnd("`r") -cne 'coop-mods 1') { return $false }
         $want = ConvertTo-KitModFold $Name
         foreach ($line in @($lines | Select-Object -Skip 1)) {
+            if ($line.TrimEnd("`r") -ceq 'default off') { $defaultOff = $true; continue }
             if ($line.TrimEnd("`r") -cmatch '^(on|off) (.+)$' -and (ConvertTo-KitModFold $Matches[2]) -ceq $want) { return $Matches[1] -ceq 'off' }
         }
     } catch { }
-    return $false
+    return $defaultOff
 }
 
 # The model files a Character Select folder has, as find_characters counts them: "<file>=<stored number>:<variants>"
@@ -1884,7 +2034,7 @@ function Get-KitCharacterSelectModels([string]$Dir, $Doc) {
 # the Mods tab. The models are in the key (C #58, lane 051234): the NPC part taken out (a UI-only kit) or put in, or a
 # release that renumbers its characters, makes the pack again, so its puppets and the pick guard never name a model
 # that is not there; the mod switched off in the Mods tab makes it again without the characters.
-function Get-KitCharacterSelectSeen([string]$Manifest) {
+function Get-KitCharacterSelectSeen([string]$Manifest, [switch]$Folder) {
     $pack = Split-Path -Parent $Manifest
     $title = Split-Path -Parent $pack
     $contents = Split-Path -Parent $title
@@ -1894,11 +2044,12 @@ function Get-KitCharacterSelectSeen([string]$Manifest) {
         foreach ($d in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
             if ($d.Name -match '^[-_.]') { continue }
             $file = Join-Path $d.FullName 'characters.json'
-            if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path $d.FullName 'romfs\Model'))) { continue }
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or (-not $Folder -and -not (Test-Path -LiteralPath (Join-Path $d.FullName 'romfs\Model')))) { continue }
             try { $doc = [System.IO.File]::ReadAllText($file) | ConvertFrom-Json -ErrorAction Stop } catch { continue }
             if ($doc.mod -ne 'OoT Character Select' -or $doc.format -ne 1) { continue }
             $listName = if ($root -eq $title) { "contents/$(Split-Path -Leaf $title)/$($d.Name)" } else { $d.Name }
             if (Test-KitModListOff $mods $listName) { continue }
+            if ($Folder) { return $d.FullName }   # (-Folder: the mod's folder, on, models or not: Test-KitCharselNative)
             $models = Get-KitCharacterSelectModels $d.FullName $doc
             if (-not $models) { continue }
             $c = $doc.puppet_colours
@@ -1906,6 +2057,69 @@ function Get-KitCharacterSelectSeen([string]$Manifest) {
         }
     }
     return ''
+}
+
+# Co-op's own Characters tab (tools/puppet_pack/charsel_ui.py, 0.11.10; the owner: "our mod itself should natively
+# include the character tab even without downloading any of Snails mod"): its code patch, Snail's header and page
+# hooks for Link (charsel/data/charsel-native.ips), goes into the pack's exefs, where the game's build takes the
+# mods' code patches from (patches 0034/0035). Not when the Character Select mod is in the mods (on; with its NPC
+# models or only its default part: Get-KitCharacterSelectSeen -Folder) with a code patch of his: his files and code are the tab's then. The same rule as the
+# pack tool's (build.py charsel_native_wanted), so the game and the pack agree. $Manifest: the pack's
+# coop_puppet.json (it need not be there yet).
+function Test-KitCharselNative([string]$Manifest) {
+    $cs = Get-KitCharacterSelectSeen $Manifest -Folder
+    if (-not $cs) { return $true }
+    return -not @(Get-ChildItem -LiteralPath (Join-Path $cs 'exefs') -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -in '.ips', '.pchtxt' }).Count
+}
+
+# Whether the tab's files (coop_puppet.json "charsel_native") are kept aside in <pack>\_coop-menus (merge_tables.py
+# guard_menus / park_menus, Move-KitMenuFilesAside: the size table the game reads cannot hold them) and not in the
+# pack's romfs. merge_tables.py charsel_native_parked says the same for the Linux kit. $Mod: the pack folder.
+function Test-KitCharselNativeParked([string]$Mod) {
+    $manifest = Join-Path $Mod 'coop_puppet.json'
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { return $false }
+    try { $json = [System.IO.File]::ReadAllText($manifest) | ConvertFrom-Json -ErrorAction Stop } catch { return $false }
+    if (-not $json.PSObject.Properties['charsel_native']) { return $false }
+    foreach ($rel in @($json.charsel_native)) {
+        if (-not ($rel -is [string]) -or -not $rel) { continue }
+        $r = $rel.Replace('/', '\')
+        if ((Test-Path -LiteralPath (Join-Path $Mod ('_coop-menus\' + $r)) -PathType Leaf) -and
+            -not (Test-Path -LiteralPath (Join-Path $Mod ('romfs\' + $r)) -PathType Leaf)) { return $true }
+    }
+    return $false
+}
+
+# The code patch put in or taken out of the pack folder $Mod (<exe dir>\mods\contents\0400486024DEC000\coop-puppet)
+# before the game's build reads the mods' code patches (hookshot-build.ps1, before Get-KitExefsStampLine): in when
+# Test-KitCharselNative says so and the pack there did not leave the tab out (its coop_puppet.json's "charsel_native"
+# empty: the pack tool could not make the tab for this game; else the next start would build the game again, and
+# again). The pack tool writes the same bytes into the pack it makes. Returns 'in', 'out' or '' (no change).
+# Out too while the tab's files are parked (Test-KitCharselNativeParked): code and files never split (the tab's code
+# over the game's own menu files: MsgNotFound on slot 0, no Map tab, L dead). The start parks or puts them back
+# (Invoke-KitSizeTableMerge) BEFORE this runs (play.ps1), so the game is built for the menus it will read.
+function Sync-KitCharselNativePatch([string]$Kit, [string]$Mod) {
+    $src = Join-Path $Kit 'tools\puppet_pack\charsel\data\charsel-native.ips'
+    $dst = Join-Path $Mod 'exefs\E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips'
+    $manifest = Join-Path $Mod 'coop_puppet.json'
+    $want = (Test-Path -LiteralPath $src -PathType Leaf) -and (Test-KitCharselNative $manifest)
+    if ($want -and (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+        try {
+            $json = [System.IO.File]::ReadAllText($manifest) | ConvertFrom-Json -ErrorAction Stop
+            if ($json.PSObject.Properties['charsel_native'] -and -not @($json.charsel_native).Count) { $want = $false }
+        } catch { }
+    }
+    if ($want -and (Test-KitCharselNativeParked $Mod)) { $want = $false }
+    $have = Test-Path -LiteralPath $dst -PathType Leaf
+    if ($want) {
+        if ($have -and (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash) { return '' }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
+        Copy-Item -LiteralPath $src -Destination $dst -Force
+        return 'in'
+    }
+    if (-not $have) { return '' }
+    Remove-Item -LiteralPath $dst -Force
+    return 'out'
 }
 
 # What a pack's coop_puppet.json records of its characters, in Get-KitCharacterSelectSeen's form ('' for none).
@@ -1926,7 +2140,7 @@ function Get-KitPackCharactersKey($Json) {
 # Every start after the question (row 206: the NPC characters on or off without editing a file): one line, and N within
 # $Seconds changes it. $true when N was pressed. No console (a scripted start): no wait, no change. $ReadKey: tests.
 function Read-KitCharacterSelectToggle([string]$Choice, [int]$Seconds = 2, [scriptblock]$ReadKey = $null) {
-    $now = if ($Choice -eq 'yes') { 'on (press N to take them out)' } else { 'off (press N to download them, about 1 GB)' }
+    $now = if ($Choice -eq 'yes') { 'on (press N to take them out)' } else { 'off (press N to make them, a 145 MB download and about 1.1 GB on disk)' }
     $redirected = $true
     try { $redirected = [Console]::IsInputRedirected } catch { }
     if ($redirected -and -not $ReadKey) { return $false }
@@ -1956,6 +2170,100 @@ function Set-KitOptionsCharacterSelect([string]$Kit, [string]$Value) {
     } catch { }
 }
 
+# black-cs-01112: a second Character Select copy. The game and its build take every mod folder (host/mods.c and
+# nx2/exefs_patches.py find_mods: a folder holding romfs, exefs or cheats, up to four deep, none of its folders named
+# with '-', '_' or '.' first). So a copy the player put in by hand beside the kit's (another folder name, or under
+# contents\0400486024DEC000\, the emulators' place) puts TWO of his code patches into one game: where both write a
+# byte the later one wins, so two releases' code are mixed, and the hand copy keeps his customizer. Both romfs load
+# too, each file from one of them. A copy is a folder whose romfs has his page's graph (Sequence\CharacterMenu.module.ainb)
+# and that has an exefs folder. The pack (contents\...\coop-puppet: our own Characters page when his is not there) is
+# never one. $Own: the kit's own copy (the pin's folder), a copy by its folder alone (a mod with exefs there), whatever
+# part of his romfs it has. @{ Dir (relative, '/'); Path; Off (its Mods tab row says off: the game loads none of it and
+# its code is not built in) } for each, in the game's find order.
+function Get-KitCharacterSelectCopies([string]$ModsDir, [string]$Own = '') {
+    if (-not (Test-Path -LiteralPath $ModsDir -PathType Container)) { return @() }
+    $root = ([System.IO.Path]::GetFullPath($ModsDir)).TrimEnd('\') + '\'
+    $off = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $defaultOff = $false   # (the list's "default off" line, Original game: a copy it does not name is off too)
+    $list = Join-Path $ModsDir 'coop-mods.list'
+    if (Test-Path -LiteralPath $list -PathType Leaf) {
+        $lines = @(([System.IO.File]::ReadAllText($list, [System.Text.UTF8Encoding]::new($false))) -split "`n")
+        if ($lines[0].TrimEnd("`r") -ceq 'coop-mods 1') {
+            foreach ($line in @($lines | Select-Object -Skip 1)) {
+                if ($line.TrimEnd("`r") -ceq 'default off') { $defaultOff = $true; continue }
+                if (-not ($line.TrimEnd("`r") -cmatch '^(on|off) (.+)$')) { continue }
+                $fold = ConvertTo-KitModFold $Matches[2]
+                if ($seen.Add($fold) -and $Matches[1] -ceq 'off') { [void]$off.Add($fold) }   # (each name's first row, as the game reads it)
+            }
+        }
+    }
+    $walk = {
+        param([string]$dir, [int]$depth)
+        foreach ($d in @(Get-ChildItem -LiteralPath $dir -Directory -Force -ErrorAction SilentlyContinue | Sort-Object Name)) {
+            if ($d.Name -match '^[-_.]') { continue }
+            $isMod = $false
+            foreach ($p in 'romfs', 'exefs', 'cheats') { if (Test-Path -LiteralPath (Join-Path $d.FullName $p) -PathType Container) { $isMod = $true } }
+            if ($isMod) {
+                $rel = $d.FullName.Substring($root.Length) -replace '\\', '/'
+                $isOwn = $Own -and (ConvertTo-KitModFold $rel) -ceq (ConvertTo-KitModFold $Own)
+                if ($d.Name -ine 'coop-puppet' -and
+                    ($isOwn -or (Test-Path -LiteralPath (Join-Path $d.FullName 'romfs\Sequence\CharacterMenu.module.ainb') -PathType Leaf)) -and
+                    (Test-Path -LiteralPath (Join-Path $d.FullName 'exefs') -PathType Container)) {
+                    $relFold = ConvertTo-KitModFold $rel
+                    $found.Add(@{ Dir = $rel; Path = $d.FullName; Off = ($off.Contains($relFold) -or ($defaultOff -and -not $seen.Contains($relFold))) })
+                }
+                continue
+            }
+            if ($depth -lt 4) { & $walk $d.FullName ($depth + 1) }
+        }
+    }
+    $found = New-Object System.Collections.Generic.List[object]
+    & $walk $ModsDir 1
+    return @($found.ToArray())
+}
+
+# Every Character Select copy but the kit's own (mods\<pin folder>) that the game would load is set aside: renamed
+# with '_' first in its own folder (the game and its build skip such a folder; the player renames it back to use it),
+# so one code patch and one romfs go into the game. Nothing is set aside when the kit's copy is switched off in the
+# Mods tab (the player chose his own copy) or not there; two copies there and none of them the kit's: said, left as
+# they are (which one the player wants is theirs to say). Run while the game is closed (the start, before the build's
+# stamp: a copy set aside changes it, so the game is built again with one code patch). @{ Changed; Lines }.
+function Resolve-KitCharacterSelectCopies([string]$Kit, [string]$ModsDir) {
+    $r = @{ Changed = $false; Lines = @() }
+    $op = Get-KitCharacterSelectPin $Kit
+    if (-not $op) { return $r }
+    $copies = @(Get-KitCharacterSelectCopies $ModsDir $op.folder)
+    $mineFold = ConvertTo-KitModFold $op.folder
+    $mine = @($copies | Where-Object { (ConvertTo-KitModFold $_.Dir) -ceq $mineFold })
+    $others = @($copies | Where-Object { (ConvertTo-KitModFold $_.Dir) -cne $mineFold -and -not $_.Off })
+    if (-not $others.Count) { return $r }
+    if (-not $mine.Count -or $mine[0].Off) {
+        if ($others.Count -gt 1) {
+            $r.Lines += "Character Select: $($others.Count) copies are on ($((@($others | ForEach-Object { "mods\$($_.Dir -replace '/', '\')" })) -join ', ')): " +
+                        'their code patches go into one game and can give a black screen or a crash. Switch all but one off in the Mods tab.'
+        }
+        return $r
+    }
+    foreach ($c in $others) {
+        $parent = Split-Path -Parent $c.Path
+        $leaf = Split-Path -Leaf $c.Path
+        $to = Join-Path $parent "_$leaf"
+        for ($i = 2; Test-Path -LiteralPath $to; $i++) { $to = Join-Path $parent "_$leaf.$i" }
+        try {
+            [System.IO.Directory]::Move($c.Path, $to)
+            $r.Changed = $true
+            $r.Lines += "Character Select: a second copy, mods\$($c.Dir -replace '/', '\'), was set aside as $($to.Substring($ModsDir.TrimEnd('\').Length + 1)): " +
+                        "two copies put two code patches into one game (a black screen or a crash). The kit's copy, mods\$($op.folder), stays. " +
+                        "To play with yours: switch the kit's off in the Mods tab, close the game, rename yours back."
+        } catch {
+            $r.Lines += "Character Select: a second copy, mods\$($c.Dir -replace '/', '\'), could not be set aside ($("$($_.Exception.Message)".Trim())): " +
+                        'two code patches go into one game and can give a black screen or a crash. Close the game, then remove one of them.'
+        }
+    }
+    return $r
+}
+
 # The start's step (play.ps1, before Get-KitHookshotNeed): every kit with the pin gets the Characters page (Snail's
 # default part); the NPC characters only on the player's yes (asked once; character_select = yes|no in
 # coop-options.ini or NPC-characters.bat changes it). $true when the mods folder changed (the game build and the pack
@@ -1976,7 +2284,10 @@ function Invoke-KitCharacterSelectStep([string]$Kit, [string]$GameDir, [int]$Sec
     }
     $r = Install-KitCharacterSelect $Kit $mods '' $(if ($choice -eq 'yes') { 'full' } else { 'ui' })
     foreach ($l in $r.Lines) { Write-Host $l -ForegroundColor $(if ($r.Ok -or $r.Why -eq 'offline') { 'Gray' } else { 'Yellow' }) }
-    return $r.Changed
+    # (black-cs-01112: one copy of his mod in the game, after the kit's own is in place)
+    $two = Resolve-KitCharacterSelectCopies $Kit $mods
+    foreach ($l in $two.Lines) { Write-Host $l -ForegroundColor Yellow }
+    return ($r.Changed -or $two.Changed)
 }
 
 # The resource size tables (romfs\System\Resource\*.rsizetable.zs) of the mods the game loads besides the randomizer's
@@ -2576,24 +2887,82 @@ function Get-KitPackArgs([string]$Tool, [string]$From, [string]$Mod) {
     return @('-I', '-B', $Tool, '--romfs', $From, '--mod-dir', $Mod, '--title-rows', '--pause-tab')
 }
 
+# Row 235: the no-Python start. The puppet pack's menu files (coop_puppet.json "title_menu" and "pause_menu": larger copies
+# of files the game reads at boot) are only safe while the size table the game reads holds their sizes, which only
+# merge_tables.py can check. Without it, move them to <pack>\_coop-menus (the game never reads them there), where
+# merge_tables.py guard_menus keeps them too; its next run puts them back. Returns how many files it moved.
+function Move-KitMenuFilesAside([string]$Mods) {
+    $moved = 0
+    $packs = @(Get-ChildItem -LiteralPath (Join-Path $Mods 'contents') -Directory -ErrorAction SilentlyContinue |
+        ForEach-Object { Join-Path $_.FullName 'coop-puppet' } | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'coop_puppet.json') })
+    foreach ($pack in $packs) {
+        # Only where another mod could win a size table the pack has (a same-name table in another mod folder; folders
+        # starting with _ are skipped as Longshot does): when the pack's own table is the only one, its menus are safe.
+        $tables = @(Get-ChildItem -LiteralPath (Join-Path $pack 'romfs\System\Resource') -Filter '*.rsizetable.zs' -File -ErrorAction SilentlyContinue | ForEach-Object Name)
+        $others = $false
+        foreach ($t in $tables) {
+            $hit = Get-ChildItem -LiteralPath $Mods -Recurse -Filter $t -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -notlike "$pack\*" -and $_.FullName -like '*\romfs\System\Resource\*' -and $_.FullName -and $_.FullName.Substring($Mods.TrimEnd('\').Length) -notmatch '\\_[^\\]*\\' } | Select-Object -First 1
+            if ($hit) { $others = $true; break }
+        }
+        if (-not $others) { continue }
+        try {
+            $m = Get-Content -LiteralPath (Join-Path $pack 'coop_puppet.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+            # (the pack's own list, coop_puppet.json "menu_keys" = puppet_pack ui_pack.MENU_KEYS, as merge_tables.py
+            # reads it; a pack without it: the two old keys. charsel_native, co-op's Characters tab, goes with them)
+            $keys = @($m.menu_keys | Where-Object { $_ -is [string] -and $_ })
+            if ($keys.Count -eq 0) { $keys = @('title_menu', 'pause_menu') }
+            foreach ($key in $keys) {
+                foreach ($rel in @($m.$key)) {
+                    if (-not ($rel -is [string]) -or -not $rel) { continue }
+                    $src = Join-Path $pack ('romfs\' + $rel.Replace('/', '\'))
+                    if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
+                    $dst = Join-Path $pack ('_coop-menus\' + $rel.Replace('/', '\'))
+                    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
+                    Move-Item -LiteralPath $src -Destination $dst -Force
+                    $moved++
+                }
+            }
+        } catch { }
+    }
+    return $moved
+}
+
 # #48: Longshot serves ONE resource size table, the winning mod's. A seed made on OOTRR's website (its folder put into
 # mods by hand) has its own, made without the puppet pack's entries, so the others could not be shown. Before the game
 # starts, tools\puppet_pack\merge_tables.py writes ONE table where the game reads it: that mod's entries and every
 # other mod's that is on (the pack's too), keeping its own in <mod>\_coop-size-table (undo: merge_tables.py --undo).
 # Last it writes <mod>\coop-merged.txt, which the module checks (MergedByKit) to keep the puppets on. Never stops the start. The lines it says, for the window.
-function Invoke-KitSizeTableMerge([string]$Kit, [string]$ExeDir) {
-    $python = Join-Path $Kit 'hookshot\tools\python\python.exe'
+function Invoke-KitSizeTableMerge([string]$Kit, [string]$ExeDir, [string]$Python = '') {
+    $python = if ($Python) { $Python } else { Join-Path $Kit 'hookshot\tools\python\python.exe' }
     $tool = Join-Path $Kit 'tools\puppet_pack\merge_tables.py'
     $mods = Join-Path $ExeDir 'mods'
     if (-not (Test-Path -LiteralPath $tool) -or -not (Test-Path -LiteralPath $mods)) { return @() }
-    if (-not (Test-Path -LiteralPath $python)) { return @("Size tables: not merged (no Python in $(Split-Path -Parent $python)): with a mod that has its own size table, the other players can't be shown.") }
+    if (-not (Test-Path -LiteralPath $python)) {
+        # Row 235: without the merge nobody checks that the size table the game reads holds the pack's menu files, and a
+        # mod whose table wins (Character Select) crashed both games at the title. So park them, as merge_tables.py's
+        # guard_menus does (the game keeps its own menus, co-op works from the Minus menu).
+        $parked = Move-KitMenuFilesAside $mods
+        $msg = "Size tables: not merged (no Python in $(Split-Path -Parent $python)): with a mod that has its own size table, the other players can't be shown."
+        if ($parked) { $msg += " The title's co-op rows and the pause menu's Multiplayer tab are off this start ($parked files kept aside); the next start with Python puts them back." }
+        return @($msg)
+    }
     $romfs = @((Join-Path $ExeDir 'romfs'), (Join-Path (Split-Path -Parent $ExeDir) 'romfs')) | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'Pack') } | Select-Object -First 1
     $pyArgs = @('-I', '-B', $tool, '--mods', $mods)
     if ($romfs) { $pyArgs += @('--romfs', $romfs) }
     $before = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    try { $out = @(& $python @pyArgs 2>&1 | ForEach-Object { "$_" }) } catch { $out = @("Size tables: not merged ($($_.Exception.Message)).") }
+    $failed = $false
+    try {
+        $out = @(& $python @pyArgs 2>&1 | ForEach-Object { "$_" })
+        # Python died before main() (an import error, a Traceback) without saying either of its own lines: unchecked.
+        if ($LASTEXITCODE -ne 0 -and -not ($out | Where-Object { $_ -match '^\s*(Size tables|Menus):' })) { $failed = $true }
+    } catch { $out = @("Size tables: not merged ($($_.Exception.Message))."); $failed = $true }
     $ErrorActionPreference = $before
+    if ($failed) {
+        $parked = Move-KitMenuFilesAside $mods
+        if ($parked) { $out += "Menus: the merge did not run ($parked of the puppet pack's menu files kept aside; the title's co-op rows and the pause menu's Multiplayer tab are off this start)." }
+    }
     return $out
 }
 
@@ -2611,4 +2980,49 @@ function Invoke-KitDiscordStatus([string]$Kit, [string]$ExeDir) {
     } catch { $out = @("Discord status: not set ($($_.Exception.Message)).") }
     $ErrorActionPreference = $before
     return $out
+}
+
+# ---- The start window's lines in a file (player report 266: what the start and the update said was not in the logs) ----
+# Start Squadala's window is copied into <kit>\hookshot\logs\start-log.txt (collect-logs.ps1 zips it, and the one
+# before as start-log.1.txt): a transcript of this PowerShell, started fresh by start.ps1 and appended to by the
+# play.ps1 and update.ps1 it starts (OOT_COOP_START_LOG names the file for them). One process writes it at a time: a
+# script stops its own transcript before it starts one of them and goes on after (Suspend/Resume below). The lines of
+# the other programs it starts (the game build, the puppet pack) are in their own logs. Never stops a start: a file
+# that cannot be written leaves the start without it.
+function Get-KitStartLogPath([string]$Kit) { return (Join-Path $Kit 'hookshot\logs\start-log.txt') }
+
+# Starts this process's copy: -Fresh (start.ps1) keeps the last start's file as start-log.1.txt and begins a new one;
+# else appends to OOT_COOP_START_LOG's file, or does nothing when no start named one. True when it runs.
+function Start-KitStartLog([string]$Kit, [switch]$Fresh) {
+    if ($global:KitStartLogOn) { return $true }
+    try {
+        if ($Fresh) {
+            $log = Get-KitStartLogPath $Kit
+            $dir = Split-Path -Parent $log
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            if (Test-Path -LiteralPath $log) { Move-Item -LiteralPath $log -Destination (Join-Path $dir 'start-log.1.txt') -Force -ErrorAction Stop }
+        } elseif ($env:OOT_COOP_START_LOG) {
+            $log = $env:OOT_COOP_START_LOG
+        } else {
+            return $false
+        }
+        Start-Transcript -LiteralPath $log -Append -Force -ErrorAction Stop | Out-Null
+        $env:OOT_COOP_START_LOG = $log
+        $global:KitStartLogOn = $true
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+# Stops this process's copy for a child that writes the file itself (play.ps1, update.ps1): whether it was on, for
+# Resume-KitStartLog after the child.
+function Suspend-KitStartLog {
+    if (-not $global:KitStartLogOn) { return $false }
+    $global:KitStartLogOn = $false
+    try { Stop-Transcript -ErrorAction Stop | Out-Null } catch { }
+    return $true
+}
+function Resume-KitStartLog([bool]$Was) {
+    if ($Was) { [void](Start-KitStartLog '') }
 }

@@ -4,6 +4,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,11 @@ void SelectRow(Menu& m, const std::string& name) {
         m.Press(Input::kDown);
     }
     REQUIRE(Selected(m) == name);
+}
+
+bool Has(const Menu& m, const std::string& name) {
+    const auto names = Names(m);
+    return std::find(names.begin(), names.end(), name) != names.end();
 }
 
 Session Hosting(int players, std::string code = "ABCDE-FGHJK") {
@@ -383,6 +389,63 @@ TEST_CASE("pause tab: Browse games: a public game joins in one press with no pas
     CHECK(m.NoteLines()[0].find("needs the host's password") != std::string::npos);
 }
 
+TEST_CASE("pause tab: Find a game pages its games by kFindPerPage under a Page row, round both ways (row 264)") {
+    Menu m;
+    CoopTitleMenu::Options o;
+    o.relay = "relay.example.net:27530";
+    m.Show(o);
+    m.Open(Page::kJoin);
+    SelectRow(m, "Browse games");
+    m.Press(Input::kDecide);
+    REQUIRE(m.page() == Page::kFind);
+    const auto nm = [](int i) { return std::string("room-") + (i < 10 ? "0" : "") + std::to_string(i); };
+    const auto rooms = [&](int n) {
+        std::vector<Menu::Found> out;
+        for (int i = 0; i < n; ++i) {
+            out.push_back({nm(i), "1/32", nm(i), 0, true, "Host", 31 - i, 32, true, false});   // (most players first)
+        }
+        return out;
+    };
+    m.SetFound(rooms(kFindPerPage), "");   // (one page: no Page row)
+    std::vector<std::string> names = Names(m);
+    CHECK(std::find(names.begin(), names.end(), "Page") == names.end());
+    CHECK(names.size() == 5u + kFindPerPage);
+    m.SetFound(rooms(2 * kFindPerPage + 3), "");   // (three pages)
+    names = Names(m);
+    REQUIRE(names.size() == 6u + kFindPerPage);
+    CHECK(names[5] == "Page");   // (right under Refresh, before the games)
+    CHECK(m.view().rows[5].value == "1/3");
+    CHECK(m.view().rows[5].kind == CoopPauseMenu::RowKind::kChoice);
+    CHECK(names[6] == "room-00");
+    SelectRow(m, "Page");
+    m.Press(Input::kRight);
+    CHECK(m.view().rows[5].value == "2/3");
+    CHECK(Selected(m) == "Page");   // (the cursor stays on it)
+    CHECK(Names(m)[6] == nm(kFindPerPage));
+    m.Press(Input::kDecide);   // (A: the page after)
+    CHECK(m.view().rows[5].value == "3/3");
+    CHECK(Names(m).size() == 6u + 3u);   // (the last page's three)
+    m.Press(Input::kRight);   // (round: the first)
+    CHECK(m.view().rows[5].value == "1/3");
+    m.Press(Input::kLeft);    // (round: the last)
+    CHECK(m.view().rows[5].value == "3/3");
+    // A game on the last page fills the Join page with its own room.
+    SelectRow(m, nm(2 * kFindPerPage + 2));
+    m.Press(Input::kDecide);
+    CHECK(m.page() == Page::kJoin);
+    CHECK(m.join_text() == nm(2 * kFindPerPage + 2) + "@relay.example.net:27530");
+    // Back on the list: it opens on its first page again; Sort starts it there too.
+    SelectRow(m, "Browse games");
+    m.Press(Input::kDecide);
+    m.SetFound(rooms(2 * kFindPerPage + 3), "");
+    CHECK(m.view().rows[5].value == "1/3");
+    SelectRow(m, "Page");
+    m.Press(Input::kRight);
+    SelectRow(m, "Sort");
+    m.Press(Input::kRight);
+    CHECK(m.view().rows[5].value == "1/3");
+}
+
 TEST_CASE("pause tab: Find a game lists what is heard, searches the relay's rooms, and a pick fills the Join page") {
     Menu m;
     CoopTitleMenu::Options o;
@@ -615,7 +678,7 @@ TEST_CASE("pause tab: Settings: name, Link's look, players and voice chat (off u
     CHECK(v.rows[5].value == "None");   // (no room name)
     CHECK_FALSE(v.rows[6].on);   // (List my room: off unless turned on)
     CHECK_FALSE(v.rows[7].on);   // (Auto-rejoin too)
-    CHECK(v.rows[8].value == "Needed");   // (the password on this network: needed unless chosen)
+    CHECK(v.rows[8].value == "Not needed");   // (the password on this network: not needed unless chosen, row 251)
     CHECK(v.rows[9].value == "Private game");   // (the host rows: what the next Host uses)
     CHECK_FALSE(v.rows[10].on);   // (Approve joins: off unless turned on)
     CHECK_FALSE(v.rows[11].on);   // (PvP too)
@@ -712,32 +775,38 @@ TEST_CASE("pause tab: Settings: players on the map and their names, on unless tu
     CHECK(m.options().map_names);
 }
 
-TEST_CASE("pause tab: Settings: the password on this network, needed unless chosen, saved") {
+TEST_CASE("pause tab: Settings: the password on this network, not needed unless chosen (row 251), saved") {
     Menu m;
     m.Show(CoopTitleMenu::Options{});
     m.Open(Page::kSettings);
     SelectRow(m, "Password on this network");
-    CHECK(m.view().rows[static_cast<std::size_t>(m.view().selected)].value == "Needed");   // (the default)
+    CHECK(m.view().rows[static_cast<std::size_t>(m.view().selected)].value == "Not needed");   // (the default)
     m.Press(Input::kDecide);
-    CHECK(m.options().same_network_open);
-    CHECK(m.TakeRequest()->kind == Request::Kind::kSave);
-    CHECK(m.view().rows[static_cast<std::size_t>(m.view().selected)].value == "Not needed");
-    m.Press(Input::kLeft);   // (two choices: either way flips it)
     CHECK_FALSE(m.options().same_network_open);
-    // coop-options.ini: same_network_open = on while it is not needed, no line otherwise; a file without the line
-    // (every older one) and an older same_network_password line keep it needed.
-    CHECK_FALSE(CoopTitleMenu::Options::Read("", "").same_network_open);
+    CHECK(m.TakeRequest()->kind == Request::Kind::kSave);
+    CHECK(m.view().rows[static_cast<std::size_t>(m.view().selected)].value == "Needed");
+    m.Press(Input::kLeft);   // (two choices: either way flips it)
+    CHECK(m.options().same_network_open);
+    // coop-options.ini: one line, the kit's own (Host.bat reads it too): same_network_password = on while this
+    // network needs the password, none otherwise. A file without it (every older one, and the kit's, where the line
+    // is commented out) lets the network in; an older build's line hand-set to off keeps the password.
+    CHECK(CoopTitleMenu::Options::Read("", "").same_network_open);
+    CHECK(CoopTitleMenu::Options::Read("", "# same_network_password = on\n").same_network_open);
     CHECK_FALSE(CoopTitleMenu::Options::Read("", "same_network_password = on\n").same_network_open);
+    CHECK(CoopTitleMenu::Options::Read("", "same_network_password = off\n").same_network_open);
+    CHECK(CoopTitleMenu::Options::Read("", "same_network_open = on\n").same_network_open);
+    CHECK_FALSE(CoopTitleMenu::Options::Read("", "same_network_open = off\n").same_network_open);
     CoopTitleMenu::Options o;
-    o.same_network_open = true;
-    std::string coop_ini, options_ini;
-    o.Write(coop_ini, options_ini);
-    CHECK(options_ini.find("same_network_open = on") != std::string::npos);
-    CHECK(CoopTitleMenu::Options::Read(coop_ini, options_ini).same_network_open);
     o.same_network_open = false;
+    std::string coop_ini, options_ini = "same_network_open = on\n";
     o.Write(coop_ini, options_ini);
-    CHECK(options_ini.find("# same_network_open = on") != std::string::npos);   // (commented out, as IniUnset does)
+    CHECK(options_ini.find("same_network_password = on") != std::string::npos);
+    CHECK(options_ini.find("# same_network_open = on") != std::string::npos);   // (the older line commented out)
     CHECK_FALSE(CoopTitleMenu::Options::Read(coop_ini, options_ini).same_network_open);
+    o.same_network_open = true;
+    o.Write(coop_ini, options_ini);
+    CHECK(options_ini.find("# same_network_password = on") != std::string::npos);   // (commented out, as IniUnset does)
+    CHECK(CoopTitleMenu::Options::Read(coop_ini, options_ini).same_network_open);
 }
 
 TEST_CASE("pause tab: a name the server would refuse is not kept") {
@@ -1882,9 +1951,23 @@ TEST_CASE("pause tab: the title's Host opens on its choices, hosts on Start host
     CHECK_FALSE(m.TakeRequest().has_value());   // (not hosted on opening)
     CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Start hosting"});
     CHECK(SelectedValue(m) == "Private");
+    // (Who can join is the title's toggle: its two cells, Private chosen; no other row has cells)
+    CHECK(m.view().rows[0].cells == std::array<std::string, 2>{"Private", "Public"});
+    CHECK(m.view().rows[0].cell == 0);
+    CHECK(m.view().rows[1].cell == -1);
+    CHECK(m.view().rows[2].cell == -1);
     m.Press(Input::kRight);   // (Anyone: the room name row)
     (void)m.TakeRequest();
     CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Room name", "Start hosting"});
+    CHECK(m.view().rows[0].cell == 1);
+    CHECK(SelectedValue(m) == "Public");
+    m.Press(Input::kDecide);   // (A flips it back, as the left and right do)
+    (void)m.TakeRequest();
+    CHECK(m.view().rows[0].cell == 0);
+    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Start hosting"});
+    m.Press(Input::kRight);
+    (void)m.TakeRequest();
+    CHECK(m.view().rows[0].cell == 1);
     m.Press(Input::kLeft);
     (void)m.TakeRequest();
     SelectRow(m, "Start hosting");
@@ -2166,4 +2249,40 @@ TEST_CASE("pause tab: Settings: Difficulty: the host changes it, the sliders und
     CHECK(s.view().help.find("The host chooses it") != std::string::npos);
     s.Press(Input::kRight);
     CHECK_FALSE(s.TakeRequest());
+}
+
+TEST_CASE("pause tab: Settings: Character by age shows only with the mod, then the two rows pick round the list") {
+    Menu m;
+    m.Show(CoopTitleMenu::Options{});
+    m.Open(Page::kSettings);
+    CHECK(Has(m, "Character by age") == false);   // (no mod: no rows)
+    m.SetCharacterAges(true, false, -1, -1, {{0, "Link"}, {2, "Saria"}, {8, "Zelda"}});
+    SelectRow(m, "Character by age");
+    CHECK(Has(m, "As a child") == false);   // (off: the two rows are hidden)
+    m.Press(Input::kDecide);
+    auto r = m.TakeRequest();
+    REQUIRE(r);
+    CHECK(r->kind == Request::Kind::kCharAges);
+    CHECK(r->text == "on");
+    m.SetCharacterAges(true, true, -1, 2, {{0, "Link"}, {2, "Saria"}, {8, "Zelda"}});
+    SelectRow(m, "As a child");
+    CHECK(SelectedValue(m) == "Not set");
+    m.Press(Input::kRight);   // (not set counts as the first: Link, so the next is Saria)
+    r = m.TakeRequest();
+    REQUIRE(r);
+    CHECK(r->kind == Request::Kind::kCharAges);
+    CHECK(r->text == "child=2");
+    CHECK(SelectedValue(m) == "Saria");
+    m.Press(Input::kLeft);
+    CHECK(m.TakeRequest()->text == "child=0");
+    CHECK(SelectedValue(m) == "Link");
+    m.Press(Input::kLeft);   // (round: Link back to the last)
+    CHECK(m.TakeRequest()->text == "child=8");
+    SelectRow(m, "As an adult");
+    CHECK(SelectedValue(m) == "Saria");
+    m.Press(Input::kRight);
+    CHECK(m.TakeRequest()->text == "adult=8");
+    SelectRow(m, "Character by age");
+    m.Press(Input::kLeft);
+    CHECK(m.TakeRequest()->text == "off");
 }

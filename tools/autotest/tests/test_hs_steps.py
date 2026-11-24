@@ -68,6 +68,12 @@ class FakeGames:
         self.calls.append(("kill", x, keep_log))
         self.running[x] = False
 
+    def freeze(self, x):
+        self.calls.append(("freeze", x))
+
+    def thaw(self, x):
+        self.calls.append(("thaw", x))
+
     def server_stop(self):
         self.calls.append(("server", "stop"))
 
@@ -114,9 +120,13 @@ try B refused
 expect both A=1 B=0
 shot here
 lines keep-number-A A max=0 coop: welcomed as player [2-4] on
+freeze B
+thaw B
 """)
         self.assertEqual([s.verb for s in steps], ["start", "load", "play", "close", "kill", "server", "sleep",
-                                                   "password", "password", "try", "expect", "shot", "lines"])
+                                                   "password", "password", "try", "expect", "shot", "lines",
+                                                   "freeze", "thaw"])
+        self.assertEqual(steps[13].args, ["B"])
         self.assertEqual(steps[2].args, [("A", "stray-out.A.txt"), ("B", "x.B.txt")])
         self.assertEqual(steps[6].args, [2.5])
         self.assertEqual(steps[7].args, ["B", "zelda-1"])
@@ -126,7 +136,8 @@ lines keep-number-A A max=0 coop: welcomed as player [2-4] on
         self.assertEqual(steps[12].pattern, "coop: welcomed as player [2-4] on")
 
     def test_errors(self):
-        for text in ("start", "start C", "play A", "close A B", "server restart", "sleep x", "password B",
+        for text in ("start", "start C", "play A", "close A B", "freeze", "thaw C", "freeze A B", "server restart",
+                     "sleep x", "password B",
                      "try B maybe", "expect x", "expect x C=1", "lines x A most=1 r", "dance A"):
             with self.assertRaises(hs.StepsError, msg=text):
                 hs.parse_steps(text)
@@ -188,6 +199,20 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(fails, 1)
         self.assertIn(("start", "A", right), self.g.calls)
         self.assertEqual(sum(1 for c in self.g.calls if c[0] == "kill" and str(c[2]).startswith("try")), 7)  # each try ends B, log kept
+
+    def test_a_once_per_process_line_said_again_is_a_fail(self):
+        # Row 267: "coop: objects: list head" at every object scan flooded a tester's log.
+        head = "[hos] coop: objects: list head 0x105f302870, 8 entries, 7 actors\n"
+        build = "[hos] coop: build hookshot v0\n"
+        self.g.logs["A"] = build + head
+        self.g.logs["B"] = build + head + build + head
+        self.assertEqual(self.r.run([]), 0)  # once per game process: no line at all
+        self.g.logs["A"] += head * 3
+        self.assertEqual(self.r.run([]), 1)
+        self.assertEqual(self.counts(), ["FAIL A: objects list head (row 267) said 4 times in 1 game process(es), "
+                                         "want at most once each"])
+        self.assertEqual(hs.once_floods(head * 2), [("objects list head (row 267)", 2, 1)])  # no build line: one
+        self.assertEqual(hs.once_floods(""), [])
 
     def test_start_waits_for_both_and_password_reaches_the_game(self):
         self.r.run(hs.parse_steps("password B secret\nstart A B\n"))
@@ -276,6 +301,13 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(sum(1 for line in self.counts() if line.startswith(("PASS", "FAIL", "UNPROVEN"))), 12)  # 10 expect, 2 lines
 
 
+    def test_freeze_and_thaw_reach_the_game_in_order(self):
+        self.r.run(hs.parse_steps("freeze B\nserver start\nthaw B\n"))
+        calls = [c for c in self.g.calls if c[0] in ("freeze", "server", "thaw")]
+        self.assertEqual(calls, [("freeze", "B"), ("server", "start"), ("thaw", "B")])
+        self.assertEqual(self.r.fails, 0)
+
+
 class DryRunTest(unittest.TestCase):
     def test_dry_run_starts_nothing(self):
         out = io.StringIO()
@@ -351,6 +383,8 @@ class HookshotGamesTest(unittest.TestCase):
         hk.exe_dir = lambda g: g
         hk.restore_save = lambda g: restored.append(g) or True
         hk.Bridge = Bridge
+        self.packed = []   # (row 265: the kit's start of the pack, before each game start)
+        hk.pack_start = lambda g, env, say: self.packed.append((g, env.get("X"))) or []
         self.restored = restored
         self.g = hs.HookshotGames(hk, self.games, self.out, None, 27560, "coop-test", ["X=1"], 30,
                                   {"switches": [], "start": None, "timeout": None, "server": []}, say=said.append)
@@ -361,6 +395,35 @@ class HookshotGamesTest(unittest.TestCase):
                 p.kill()
                 p.wait(10)
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_each_start_places_its_window_on_the_chosen_monitor(self):
+        """start() gives the game the no-activation start flags and places its window (hookshot.place_games)."""
+        calls, flags = [], []
+        self.g.hk.popen_flags = lambda: flags.append(1) or {}
+        self.g.hk.place_games = lambda pids, display, say, wait=0.0, topmost=False: calls.append((dict(pids), display, wait))
+        self.g.display = "DISPLAY7"
+        self.g.start("B", "pw", wait=False)
+        self.assertEqual(flags, [1])
+        self.assertEqual(calls, [({"B": self.g.procs["B"].pid}, "DISPLAY7", 30.0)])
+
+    def test_run_stops_before_any_game_when_the_monitor_is_missing(self):
+        """main run: a --display no monitor has is an error (exit 2) before the server or any game starts."""
+        import hookshot
+        from unittest import mock
+        with mock.patch.object(hs, "WINDOWS", True), \
+                mock.patch.object(hookshot.placement, "monitors",
+                                  lambda: [{"name": "\\\\.\\DISPLAY1", "work": (0, 0, 10, 10)}]), \
+                mock.patch.object(hs.HookshotGames, "server_start", side_effect=AssertionError("a start happened")):
+            steps = os.path.join(self.tmp, "s.steps.txt")
+            with open(steps, "w") as f:
+                f.write("start A\n")
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = hs.main(["run", "--steps", steps, "--game-a", self.games["A"], "--game-b", self.games["B"],
+                                "--out", os.path.join(self.tmp, "o2"), "--display", "DISPLAY9"])
+        self.assertEqual(code, 2)
+        with open(os.path.join(self.tmp, "o2", "steps.txt")) as f:
+            self.assertIn("no monitor called DISPLAY9", f.read())
 
     def test_fresh_log_each_start_and_the_old_one_kept(self):
         log = os.path.join(self.games["B"], "longshot_log.txt")
@@ -382,6 +445,17 @@ class HookshotGamesTest(unittest.TestCase):
         self.assertEqual(self.g.ended_by_itself(), [])
         self.g.close("B")
         self.g.finish()
+
+    def test_each_start_puts_the_pack_as_the_kits_start_first(self):
+        # (row 265: your own tunic files, then the merge, before the game reads its mods; a restart again)
+        order, popen = [], hs.subprocess.Popen
+        self.g.hk.pack_start = lambda g, env, say: order.append(("pack", g, env.get("X"))) or []
+        hs.subprocess.Popen = lambda args, **k: order.append(("game",)) or popen(args, **k)
+        try:
+            self.g.start("A", "", wait=False)
+        finally:
+            hs.subprocess.Popen = popen
+        self.assertEqual(order, [("pack", self.games["A"], "1"), ("game",)])
 
     def test_each_start_gets_the_test_defaults_a_switch_wins(self):
         # Its own save and no crash ask on the title (a crash record of an earlier run took the load's A presses:

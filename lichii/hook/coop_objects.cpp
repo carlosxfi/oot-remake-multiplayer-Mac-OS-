@@ -49,9 +49,11 @@
 // dropped, and an actor counts as gone only when two walks in a row miss it.
 
 #include "coop_objects.h"
+#include "coop_life_gauge.h"
 #include "coop_caller_orders.h"
 #include "coop_boss.h"
 #include "coop_hit_replay.h"
+#include "coop_presence_gates.h"
 #include "coop_every.h"
 #include "coop_event_result.h"
 #include "coop_cheat_items.h"
@@ -59,6 +61,7 @@
 #include "coop_hold.h"
 #include "coop_actor_events.h"
 #include "coop_boss_native.h"
+#include "coop_boss_orders.h"
 #include "coop_difficulty.h"
 #include "coop_puppet.h"
 #include "coop_pvp.h"
@@ -801,6 +804,47 @@ public:
             block_ = result;
             return std::nullopt;  // next frame
         }
+        if (after_call && node_ask_) {
+            // Row 244: the game's own answer to what the start would ask (ForceOnState, kLogicBoolFn) for a followed
+            // block. On, with the rest off its goal: the start would put it back on its answer (the room load of a
+            // cleared puzzle), in our game only. Then not started: its places only go to the rest, as the mover's
+            // node is (its own pull never starts it again). Else the start runs now, as before.
+            const NodeStart n = *std::exchange(node_ask_, std::nullopt);
+            const bool force_on = (result & 1) != 0;
+            coop::protocol::Vec3 goal{NAN, NAN, NAN};
+            for (int i = 0; i < 3; ++i) {
+                guest.Read(n.node + CoopWorld::BlockNode::kGoal + 4u * i, &goal[i], 4);
+            }
+            if (CoopWorld::NodeMayStartAgain(force_on, goal, n.to)) {
+                if (auto start = NodeStartCall(guest, n)) {
+                    return start;
+                }
+            } else {
+                const float dx = n.to[0] - goal[0], dz = n.to[2] - goal[2];
+                const std::string put = PutNodeAtRest(guest, n);
+                LOG_INFO(Core, "coop: world: push node {:x}: its block's ForceOnState is on (its room's puzzle is "
+                               "cleared) and it rests {:.2f} m off its answer: not started again (its start would "
+                               "put it back on the answer); {} (row 244)",
+                         n.node, std::sqrt(dx * dx + dz * dz), put.empty() ? "its places already at the rest" : put);
+            }
+        }
+        if (after_call && node_after_) {
+            // Row 244: the node's own start just ran on a followed block. Its target is a cell of its grid
+            // (CoopWorld::NodeTargetAtRest): a block left between cells by another player would slide there by
+            // itself in our game only (under our Link's grip too). Both places are put where it rests: idle there,
+            // its next push goes on from it as in the mover's game.
+            const NodeStart n = *std::exchange(node_after_, std::nullopt);
+            float target[3] = {NAN, NAN, NAN};
+            for (int i = 0; i < 3; ++i) {
+                guest.Read(n.node + CoopWorld::BlockNode::kTarget + 4u * i, &target[i], 4);
+            }
+            const float dx = target[0] - n.to[0], dy = target[1] - n.to[1], dz = target[2] - n.to[2];
+            if (const std::string put = PutNodeAtRest(guest, n); !put.empty()) {
+                LOG_INFO(Core, "coop: world: push node {:x}: its start aimed {:.2f} m from where the block rests "
+                               "(a rest between grid cells); {}, so it does not slide there by itself (row 244)",
+                         n.node, std::sqrt(dx * dx + dy * dy + dz * dz), put);
+            }
+        }
         if (after_call && alias_after_) {
             // The play just made, on a townsperson: its slot names what its
             // own AI asked for again, so that AI's request of every frame
@@ -823,6 +867,11 @@ public:
         }
         if (!after_call) {
             alias_after_.reset();  // its play's frame ended before we were asked again
+            node_after_.reset();   // (its after-call never came: nothing to check)
+            if (node_ask_ && node_starts_.size() < 16) {
+                node_starts_.push_back(*node_ask_);  // its answer never came: asked again on the next frame
+            }
+            node_ask_.reset();
             for (const u64 actor : std::exchange(releases_, {})) {
                 u32 flags = 0;
                 if (!Alive(guest, actor) || !guest.Read(actor + kActorFlags, &flags, 4)) {
@@ -1203,16 +1252,24 @@ public:
                 ++node_skipped_;
                 continue;
             }
-            const std::array<std::uint8_t, 0x10> args{};
-            if (!guest.Write(block_ + kBlockNodeArgs, args.data(), args.size())) {
-                continue;
+            // Row 244: first the game's own lookup the start makes (its ForceOnState), on the block's logic
+            // ([[actor + 0x270] + 0x118], the start's own chain); its answer decides in the after-call. No logic:
+            // the start finds no bool either (its grid end).
+            u64 logic = 0;
+            u32 key = 0;
+            if (guest.Read(n.actor + CoopLogicProbe::addr::kActorLogic, &logic, 8) && logic != 0 &&
+                guest.Read(logic + CoopLogicProbe::addr::kLogicInner, &logic, 8) && logic != 0 &&
+                guest.Read(node + CoopWorld::BlockNode::kAnswerKey, &key, 4)) {
+                node_ask_ = n;
+                CoopPuppet::Call c;
+                c.function = main_ + CoopWorld::BlockNode::kLogicBoolFn;
+                c.x[0] = logic;
+                c.x[1] = key;
+                return c;
             }
-            ++node_started_;
-            CoopPuppet::Call c;
-            c.function = main_ + CoopWorld::BlockNode::kStartFn;
-            c.x[0] = node;
-            c.x[1] = block_ + kBlockNodeArgs;
-            return c;
+            if (auto start = NodeStartCall(guest, n)) {
+                return start;
+            }
         }
         return std::nullopt;
     }
@@ -1529,6 +1586,42 @@ private:
     };
     std::vector<NodeStart> node_starts_;
     std::vector<NodeStart> work_node_starts_;
+    std::optional<NodeStart> node_after_;  // row 244: the start just called, its target checked after it
+    std::optional<NodeStart> node_ask_;    // row 244: its ForceOnState just asked (the start's own lookup)
+    // deku-visuals-b: the node's own start on `n` (its enter args zeroed in our block), its target read back
+    // after it (node_after_). Nothing when the args cannot be written.
+    std::optional<CoopPuppet::Call> NodeStartCall(CoopPuppet::Guest& guest, const NodeStart& n) {
+        const std::array<std::uint8_t, 0x10> args{};
+        if (!guest.Write(block_ + kBlockNodeArgs, args.data(), args.size())) {
+            return std::nullopt;
+        }
+        ++node_started_;
+        node_after_ = n;
+        CoopPuppet::Call c;
+        c.function = main_ + CoopWorld::BlockNode::kStartFn;
+        c.x[0] = n.node;
+        c.x[1] = block_ + kBlockNodeArgs;
+        return c;
+    }
+    // Row 244: the node's start and target put at the block's rest `n.to` (CoopWorld::NodeTargetAtRest), so it is
+    // idle there and its next push goes on from it. Says what was put ("" when both already held it).
+    std::string PutNodeAtRest(CoopPuppet::Guest& guest, const NodeStart& n) {
+        const auto at = CoopWorld::NodeTargetAtRest(
+            [&guest](u64 address) -> std::optional<u64> {
+                u64 word = 0;
+                return guest.Read(address, &word, 8) ? std::optional<u64>(word) : std::nullopt;
+            },
+            n.node, n.to);
+        if (at.writes.empty()) {
+            return {};
+        }
+        bool wrote = true;
+        for (const auto& w : at.writes) {
+            wrote = guest.Write(w.address, &w.value, 4) && wrote;
+        }
+        return std::string(wrote ? "its places" : "NOT all its places") + " put at the rest place (" +
+               (at.where.size() == 2 ? at.where[0] + ", " + at.where[1] : at.where[0]) + ")";
+    }
     std::size_t next_node_start_ = 0;
     std::size_t node_started_ = 0;
     std::size_t node_skipped_ = 0;
@@ -1599,6 +1692,12 @@ std::atomic<bool>& TheRefillAsked() {   // (AskRefill)
 std::atomic<s32>& TheMaxLifeLowerTo() {
     static std::atomic<s32> quarters{-1};
     return quarters;
+}
+
+// Row 238: the walk saw our Link's own max at or under the hold's value (TakeMaxLifeLowerDone).
+std::atomic<s32>& TheMaxLifeLowerDone() {   // Link's own max the walk saw at or under the lower-to value; -1: none
+    static std::atomic<s32> done{-1};
+    return done;
 }
 
 // Our Link's Life component as the walk last read it (OurLife): quarter
@@ -1804,6 +1903,22 @@ std::mutex& PvpMutex() {
     static std::mutex mutex;
     return mutex;
 }
+// Row 230 (NoteOurLinkStepHit): our Link's hits as its Life step took them, for the next walk.
+constexpr u64 kLinkStepHitMs = 1000;
+struct LinkStepHit {
+    std::uint32_t id = 0;
+    CoopHitReplay::Record record{};
+    std::int32_t sum = 0;
+    u64 at_ms = 0;  // (SteadyNowMs: a hit older than kLinkStepHitMs is not shared)
+};
+std::mutex& LinkStepHitsMutex() {
+    static std::mutex m;
+    return m;
+}
+std::vector<LinkStepHit>& TheLinkStepHits() {
+    static std::vector<LinkStepHit> hits;
+    return hits;
+}
 // Native puppets phase 3 (PlaceOurLink): where another player's Link holds ours, and when it was asked.
 struct OurLinkPut {
     std::array<float, 3> at{};
@@ -1927,6 +2042,12 @@ public:
                     // so the next hit does not kill it (Sync::KeepBossLives; no new network data).
                     std::vector<LifeWrite> keep;
                     sync_.KeepBossLives(self_, keep);
+                    // boss-body-life: the copies' Life steps released first (no copies any more), so an unsent hit
+                    // of ours that ends one (its death, given once) is never held at 1 by a hold that ends a moment
+                    // later. (Publish({}) again below is a no-op then.)
+                    if (CoopBossNative::Table& bosses = CoopBossNative::TheTable(); bosses.BrainOn()) {
+                        bosses.Publish({});
+                    }
                     if (!keep.empty()) {
                         Reader r(system.ApplicationMemory());
                         for (const LifeWrite& w : keep) {
@@ -1947,6 +2068,7 @@ public:
                 if (CoopBossNative::Table& bosses = CoopBossNative::TheTable(); bosses.BrainOn()) {
                     bosses.Publish({});
                 }
+                CoopBossOrders::TheTable().Publish({});  // row 222: no owner or copy: our managers decide again
                 sharing_ = false;
             }
             return;
@@ -2026,6 +2148,13 @@ public:
                                        return CoopBossNative::TheTable().Step(guest, after_call, result,
                                                                               TheBossMain().load());
                                    });
+                // Row 222: the owner's battle manager orders put into our copies (coop_boss_orders.h).
+                CoopSvc::AddCaller(CoopBossOrders::Table::kCallerOrder,
+                                   [](CoopPuppet::Guest& guest, bool after_call,
+                                      std::uint64_t result, std::uint64_t) {
+                                       return CoopBossOrders::TheTable().Step(guest, after_call, result,
+                                                                              TheBossMain().load());
+                                   });
                 CoopSvc::AddCaller(kGrassCallerOrder,
                                    [](CoopPuppet::Guest& guest, bool after_call,
                                       std::uint64_t result, std::uint64_t now_ms) {
@@ -2094,9 +2223,44 @@ public:
             std::lock_guard lock(g_unready_mutex);
             sync_.SetUnready(g_unready);
             sync_.SetTakesTurns(CoopBossNative::TheTable().TurnsOn());
+            sync_.SetSharesOrders(CoopBossOrders::TheTable().On());  // row 222: option A, else C's flag
             sync_.SetDying(g_dying);
         }
         sync_.Tick(*scene, self, server_now_us, seen, send, writes);
+        for (const CoopObjects::Sync::LinkStrike& k : sync_.TakeLinkStrikes()) {
+            // Row 230: another game's Redead or Gibdo froze its owner's Link with our Link in its reach: ours takes
+            // that scream's hit, no life (its game's SleepParalysis reaction).
+            CoopObjects::HurtOurLinkNative(0, k.at, k.from, k.kind);
+            scream_look_us_ = CoopEvery::NowUs() + kScreamLookUs;
+        }
+        if (scream_look_us_ != 0 && CoopEvery::NowUs() >= scream_look_us_) {
+            // Row 230: whether the game took the shared scream: our Link's own reaction (its AS node, 'Paralysis'
+            // when frozen, as the owner's Link plays it), once, 0.5 s after the hit was asked.
+            scream_look_us_ = 0;
+            const u64 link = TheLinkActor().load();
+            const auto anim = link != 0 ? Animation(r, link) : std::nullopt;
+            LOG_INFO(Core, "coop: objects: scream: our Link plays '{}' 0.5 s after the shared scream's hit",
+                     anim ? anim->name : std::string("?"));
+        }
+        if (main_ != 0) {
+            // Row 233: a shared flag that gates dungeon pieces changed: which of them our game has now (the probe).
+            if (*scene != presence_scene_) {
+                presence_scene_ = *scene;
+                presence_.Reset();
+            }
+            CoopHook::EmulatorMemory memory(system.ApplicationMemory(), main_);
+            coop::host::GameFlags flags(memory);
+            const auto lines = presence_.Step(
+                CoopEvery::NowUs(), [&flags](std::uint32_t hash) { return flags.get_bool(hash); },
+                [this](std::string_view name) {
+                    std::size_t n = 0;
+                    for (const auto& [a, known] : names_) n += known.first == name ? 1 : 0;
+                    return n;
+                });
+            for (const std::string& line : lines) {
+                LOG_INFO(Core, "coop: objects: {}", line);
+            }
+        }
         // A Gold Skulltula whose key this save already holds is not made again
         // (issue 89, 2026-11-16). The game reads a placement's key once, when
         // the scene's actors are made, and never looks again, so a key that
@@ -2235,7 +2399,7 @@ public:
                     CoopBossNative::Boss b{s.address, s.bsa_component,
                                            *owner == self ? CoopBossNative::Role::owner : CoopBossNative::Role::copy,
                                            s.name, *owner, s.life_component, owner_dead, plain,
-                                           plain && CoopBossNative::PlainDeath(life, owner_dead),
+                                           CoopBossNative::PlainDeath(life, owner_dead),  // (every body)
                                            s.animation ? s.animation->name : std::string{}, life,
                                            s.position, s.attacking};
                     list.push_back(std::move(b));
@@ -2248,6 +2412,25 @@ public:
             }
             for (const std::string& note : bosses.TakeNotes()) {
                 LOG_INFO(Core, "coop: bosses: {}", note);
+            }
+            // Row 222 (coop_boss_orders.h): the same parts for the battle manager's orders, then the owner's.
+            CoopBossOrders::Table& orders = CoopBossOrders::TheTable();
+            if (orders.On()) {
+                std::vector<CoopBossOrders::Member> members;
+                members.reserve(list.size());
+                for (const CoopBossNative::Boss& b : list) {
+                    members.push_back({b.actor,
+                                       b.role == CoopBossNative::Role::owner ? CoopBossOrders::Role::owner
+                                                                             : CoopBossOrders::Role::copy,
+                                       b.owner, b.name});
+                }
+                orders.Publish(members);
+                for (const auto& [address, state] : sync_.BossOrdersIn()) {
+                    orders.Receive(address, state);
+                }
+                for (const std::string& note : orders.TakeNotes()) {
+                    LOG_INFO(Core, "coop: bosses: {}", note);
+                }
             }
         }
         if (sync_.BlastDrops() != blast_drops_logged_) {
@@ -2492,6 +2675,19 @@ public:
                         LOG_INFO(Core, "coop: world: {:016x} {} push node {:x}: its own start "
                                        "(main+{:#x}) asked to run again, from where it rests now",
                                  fix.hash, fix.name, *node, CoopWorld::BlockNode::kStartFn);
+                        // Row 244 probe (log only): a block-pull camera softlock may be this start running while
+                        // our Link grips the block; the untouched path (NodeRestWords) has no busy test.
+                        if (player_ && std::isfinite((*player_)[0])) {
+                            const float dx = (*player_)[0] - fix.to[0], dy = (*player_)[1] - fix.to[1],
+                                        dz = (*player_)[2] - fix.to[2];
+                            const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+                            if (d <= CoopWorld::WorldSync::kAtBlockM) {
+                                LOG_INFO(Core, "coop: world: {:016x} {} push node start while our Link is {:.2f} m "
+                                               "from it (grip reach; {}, row 244 probe)",
+                                         fix.hash, fix.name, d,
+                                         fix.untouched ? "untouched: no busy test" : "moved by us too");
+                            }
+                        }
                     } else {
                         LOG_INFO(Core, "coop: world: {:016x} {} push node {:x} already starts from "
                                        "where it rests: left alone",
@@ -2651,6 +2847,15 @@ public:
             WriteLife(system.ApplicationMemory(), r, w);
         }
         if (switch_share_mode_ != 0) {
+            // Row 164 follow-up: the players whose world stands still (paused, the quick-switch menu, loading); their
+            // presses are not held meanwhile.
+            switch_away_.clear();
+            session->with_client([&](coop::net::Client& c) {
+                for (const auto& p : c.players()) {
+                    if ((p.status.value_or(0) & kSwitchAway) != 0) switch_away_.insert(p.number);
+                }
+                return 0;
+            });
             SwitchShare(system, r, *scene, server_now_us, send);
         }
         if (platforms_mode_ != 0) {
@@ -2842,6 +3047,9 @@ public:
     static constexpr u8 kCounterAway = coop::protocol::status::paused | coop::protocol::status::in_menu |
                                        coop::protocol::status::loading | coop::protocol::status::in_cutscene;
     std::set<u8> counter_away_;
+    // Row 164 follow-up: a presser whose world stands still (not a cutscene: a press often plays its own) is not held.
+    static constexpr u8 kSwitchAway = coop::protocol::status::paused | coop::protocol::status::loading;
+    std::set<u8> switch_away_;
     std::set<u64> counter_nodes_;  // the platform nodes the ring named, while their actor is here
     // Each counter node's placement in the room table, found once a scene (Counters).
     std::unordered_map<u64, const CoopRoomObjects::Placement*> counter_places_;
@@ -3207,6 +3415,7 @@ public:
     s32 link_life_logged_ = -1;
     s32 link_max_logged_ = -1;
     s32 flag_max_logged_ = -1;
+    s32 lower_logged_ = -1;   // row 238: the held value whose "already there" was logged (-1: none)
     bool hearts_to_link_ = true;  // LICHII_COOP_HEARTS_TO_LINK, on unless =0 (issue 88)
     // PvP hurts being given to our Link (GivePvp, CoopPvp::FollowLife).
     std::vector<CoopPvp::PendingGive> pvp_;
@@ -3249,6 +3458,7 @@ private:
             main_ = FindMain(system, process);
             actors_.clear();
             first_ = true;
+            list_said_ = false;  // row 267: the list head once per game process
             names_.clear();
             stamps_.clear();
             no_area_.clear();
@@ -3266,6 +3476,7 @@ private:
             pvp_life_ = -1;
             pvp_watch_.Reset();
             CoopProjectiles::TheOwnShots().Reset();
+            CoopBossOrders::TheTable().Reset();  // row 222: its block and nodes were the old game's
             extras_.Reset();  // difficulty: that run's extra enemies are gone with it
             horde_.Reset();
             {
@@ -3315,7 +3526,7 @@ private:
         std::vector<coop::protocol::SwitchState> out;
         std::vector<std::string> notes;
         const auto holds = CoopSwitchShare::TheSharer().Tick(scene, seen, !sync_.OthersHere(server_now_us).empty(),
-                                                             SteadyNowMs(), out, notes);
+                                                             sync_.Self(), SteadyNowMs(), out, notes, switch_away_);
         for (auto& m : out) {
             send.emplace_back(std::move(m));
         }
@@ -3999,6 +4210,7 @@ private:
             horde_.Bind(horde);
         }
         const u64 now_ms = SteadyNowMs();
+        std::vector<std::string> rally_balls;  // row 211: the boss balls a sword sends back, alive in this walk
         for (const u64 a : actors) {
             // Row 172 (run 053934): a scene change can put a new actor at an address an old one held without a
             // walk between (our adult Link where the last scene's TerrainScenePermanent was): the cached name
@@ -4037,6 +4249,9 @@ private:
                 known.second = *extra;  // difficulty: an extra enemy is shared by its own placement id
             }
             member_log(a, known.first);  // G1: the game's own event member test, for the log
+            if (CoopEnemyShots::IsRallyBall(known.first)) {
+                rally_balls.push_back(known.first);  // (no shared object: never in Seen)
+            }
             // Difficulty: a made actor that may be an extra the director has not bound yet waits for it.
             const bool extra_unbound = (known.second == 0 || known.second == ~u64{0}) &&
                                        extras_.Holds(known.first, now_ms);
@@ -4123,6 +4338,7 @@ private:
                         LOG_INFO(Core, "coop: objects: our Link's max life {} -> {} (from MaxLife)",
                                  max, *raised);
                         CoopBoss::NoteMaxLifeFromOthers(*raised);   // (not our pickup: no heart claim)
+                        CoopLifeGauge::TheRefresher().Want(SteadyNowMs());  // row 238: the HUD shows it
                     }
                     // Another player took the boss's heart container: our hearts full, as its pickup fills them.
                     if (TheRefillAsked().load() && memory_ != nullptr &&
@@ -4130,6 +4346,7 @@ private:
                         const s32 full = raised ? *raised : max;
                         if (full > 0 && TheRefillAsked().exchange(false)) {
                             memory_->Write32(value->first + 8, static_cast<u32>(full));
+                            CoopLifeGauge::TheRefresher().Want(SteadyNowMs());  // row 238: the HUD shows it
                             LOG_INFO(Core, "coop: objects: our Link's life {} -> {} (another player took the heart "
                                            "container: as its pickup)", life, full);
                         }
@@ -4137,6 +4354,15 @@ private:
                     // Rows 136/137: the host's older save lowered MaxLife; row 181: a second pickup of a boss's one
                     // container was put back. The component follows it (never in the frame it was raised).
                     const s32 lower = TheMaxLifeLowerTo().load();
+                    if (lower >= 4 && max > 0 && max <= lower) {
+                        TheMaxLifeLowerDone().store(max);  // row 238: already there
+                        if (lower != lower_logged_) {
+                            lower_logged_ = lower;
+                            LOG_INFO(Core, "coop: objects: our Link's max life {} is at or under the held {} (MaxLife is held "
+                                           "lower; the game made him from the group's value): nothing to lower", max, lower);
+                        }
+                    }
+                    if (lower < 0) lower_logged_ = -1;
                     const auto lowered =
                         raised ? std::nullopt
                                : LoweredMaxLife(max, life, lower >= 0 ? std::optional<std::int32_t>(lower) : std::nullopt);
@@ -4146,6 +4372,8 @@ private:
                             memory_->Write32(value->first + 8, static_cast<u32>(*lowered->life));
                         }
                         memory_->Write32(value->second + 8, static_cast<u32>(lowered->max));
+                        TheMaxLifeLowerDone().store(lowered->max);  // row 238: the hold may end by its quiet time now
+                        CoopLifeGauge::TheRefresher().Want(SteadyNowMs());  // row 238: the HUD shows it
                         LOG_INFO(Core, "coop: objects: our Link's max life {} -> {} (MaxLife is held lower: the host "
                                        "loaded a save with fewer hearts, or a boss's one container was taken twice){}",
                                  max, lowered->max,
@@ -4316,6 +4544,7 @@ private:
                         s.bsa_component = r.Ptr(*table + CoopBossNative::addr::kComponentBsa).value_or(0);
                     }
                     s.bsa = CoopBossNative::TheTable().OwnerState(a);
+                    s.orders = CoopBossOrders::TheTable().OwnerOrders(a);  // row 222: its manager's orders, ours
                     if (own_hit_life) {
                         s.hit_at = NewOwnHitAt(r, a, *own_hit_life, s.position, own_hit_took_life);
                     } else if (CoopBossNative::TheTable().OwnShotNear(s.position)) {
@@ -4369,10 +4598,12 @@ private:
             names.emplace(a, std::move(known));
         }
         names_ = std::move(names);
+        NoteFallingRocks();  // row 234: Volvagia's rocks, per game
         stamps_ = std::move(stamps);
         life_components_ = std::move(life_components);
         CoopDbno::NoteEnemiesNear(player && CoopDbno::AnyNear(*player, foes));
         sync_.SetPlayer(player);
+        NoteOurLinkHit();  // row 230: a Redead's or Gibdo's scream on our Link (its Life step's hits)
         sync_.SetLures(CoopProjectiles::TheLures().Get());  // issue 151: our cast lures
         player_ = player;
         {  // issue 144 / scrub sales: a scrub near our Link or bound into our event holds its flags
@@ -4391,6 +4622,7 @@ private:
                 CoopScrubSale::TheBusy().See(t.hash, distance, now_us, t.in_event);
             }
         }
+        sync_.SetRallyMakers(RallyMakers(rally_balls));  // row 211: for this walk's Tick (AttackWithRally)
         if (debug_) {  // research: the field grass that is no actor (world.md)
             for (const std::string& line : foliage_.Look(
                      [&r](u64 address) { return r.Get<u64>(address); }, main_, player)) {
@@ -4709,6 +4941,7 @@ private:
         }
         memory_->Write32(life_at, static_cast<u32>(*want));
         TheLinkLife().store(*want);
+        CoopLifeGauge::TheRefresher().Want(SteadyNowMs());  // row 238: the HUD shows it
         LOG_INFO(Core, "coop: dbno: our Link's life {} -> {}", life, *want);
     }
 
@@ -4808,6 +5041,7 @@ private:
                              life);
                 } else if (memory_ != nullptr && memory_->IsValidVirtualAddressRange(life_at, 4)) {
                     memory_->Write32(life_at, static_cast<u32>(to));
+                    CoopLifeGauge::TheRefresher().Want(SteadyNowMs());  // row 238: the HUD shows it
                     LOG_INFO(Core, "coop: pvp: our Link's life {} -> {}{}", life, to,
                              it->replayed ? " (the game's hit was not taken)" : "");
                     life = to;
@@ -5735,11 +5969,13 @@ private:
                 LOG_INFO(Core,
                          "coop: objects: share placed {} copies; off from where we put them "
                          "avg {:.3f} max {:.3f} over {}; game calls: {} moves, {} deletes, {} "
-                         "plays, {} frame sets; hurts taken {} missed {} (boss hits to its Life step {}, dying copies "
-                         "finished {}); own hits kept while a replay waited {}; boss copies kept in the room {}",
+                         "plays, {} frame sets; hurts taken {} missed {} (boss hits to its Life step {}, boss part kills to "
+                         "its Life step {} ({} held until the owner's death), dying copies finished {}); own hits "
+                         "kept while a replay waited {}; boss copies kept in the room {}",
                          placed_.size(), drift_count_ ? drift_sum_ / drift_count_ : 0.0f,
                          drift_max_, drift_count_, moved, deleted, played, framed, sync_.HurtsTaken(),
-                         sync_.HurtsMissed(), sync_.BossHitsStepped(), sync_.DyingFinished(),
+                         sync_.HurtsMissed(), sync_.BossHitsStepped(), sync_.PartKillsStepped(),
+                         sync_.PartKillsHeld(), sync_.DyingFinished(),
                          sync_.OwnHitsKept(), sync_.BossCopiesKept());
             }
             // Issue 101: which copy was furthest from where we put it, so
@@ -5829,7 +6065,10 @@ private:
             node = r.Ptr(*node);
         }
         const bool whole = node && walked == *count;
-        if (first_ && whole) {
+        // Row 267: once per game process whatever the caller. Not first_: that is cleared only by Walk(), which
+        // runs only with LICHII_COOP_DEBUG_OBJECTS, so in normal play every Collect()/Pivot() scan said it.
+        if (whole && !list_said_) {
+            list_said_ = true;
             LOG_INFO(Core, "coop: objects: list head {:#x}, {} entries, {} actors", head, walked,
                      out.size());
         }
@@ -6040,6 +6279,68 @@ private:
     CoopEvery::Every scan_{CoopEvery::kTwoFramesUs};
     CoopPivot::Follower pivot_;
     u32 link_hit_said_ = 0xffffffffu;  // the scream probe: our Link's last hit id seen
+    u32 link_hit_id_ = 0xffffffffu;    // row 230 (NoteOurLinkHit): the last hit id of our Link taken from its Life step
+    // Row 230: when to log our Link's reaction to a shared scream (0: none due).
+    static constexpr u64 kScreamLookUs = 500'000;
+    u64 scream_look_us_ = 0;
+    CoopPresenceGates::Probe presence_;  // row 233
+    std::string presence_scene_;
+
+    // Row 234 (Geno's survey): Volvagia's arena drops its rocks (Obj_FallingRock_A_06, from its
+    // Obj_FallingRockManager's pool, aimed at the game's own Link: QueryDungeonGetPlayerPos) when Volvagia's
+    // FallRockActivate plug switches it on; co-op shares none of them. Whether a game that does not own her drops
+    // its own is the live check: at most every 5 s, while new rocks come, one line with how many. Read only.
+    std::set<u64> rocks_seen_;
+    std::size_t rocks_new_ = 0;
+    u64 rocks_said_us_ = 0;
+    void NoteFallingRocks() {
+        std::set<u64> now;
+        for (const auto& [a, known] : names_) {
+            if (known.first.starts_with("Obj_FallingRock_")) {
+                now.insert(a);
+                rocks_new_ += rocks_seen_.contains(a) ? 0 : 1;
+            }
+        }
+        rocks_seen_ = std::move(now);
+        const u64 now_us = CoopEvery::NowUs();
+        if (rocks_new_ == 0 || now_us - rocks_said_us_ < 5'000'000) {
+            return;
+        }
+        LOG_INFO(Core, "coop: objects: rocks: {} new falling rocks in our game since the last line ({} live)",
+                 rocks_new_, rocks_seen_.size());
+        rocks_new_ = 0;
+        rocks_said_us_ = now_us;
+    }
+
+    // Row 230: the hits our Link's Life step took since the last walk (NoteOurLinkStepHit: the step sets and clears
+    // its hit id inside one frame, so the walk itself never reads one), each with its kind words, the life it took
+    // and the attacker's place (the record's +0x2a0; its +0x240 word is the hit's sensor, not an actor), for the
+    // Sync: a screamer of ours at that place shares its scream.
+    void NoteOurLinkHit() {
+        std::vector<LinkStepHit> hits;
+        {
+            std::lock_guard lock(LinkStepHitsMutex());
+            hits.swap(TheLinkStepHits());
+        }
+        for (const LinkStepHit& h : hits) {
+            if (SteadyNowMs() - h.at_ms > kLinkStepHitMs) {
+                continue;  // (a walk that did not run for a while: an old hit is no scream now)
+            }
+            if (h.id == link_hit_id_) {
+                continue;  // (the same hit, seen by a second step)
+            }
+            link_hit_id_ = h.id;
+            std::array<std::uint32_t, coop::protocol::kStrikeKindWords> kind{};
+            for (std::size_t i = 0; i < kind.size(); ++i) {
+                kind[i] = h.record[CoopHitReplay::kRecKind + i];
+            }
+            coop::protocol::Vec3 from{};
+            for (std::size_t i = 0; i < 3; ++i) {
+                std::memcpy(&from[i], &h.record[CoopHitReplay::kRecFrom + i], 4);
+            }
+            sync_.NoteOurLinkHit(from, kind, std::max(h.sum, 0));
+        }
+    }
     u64 pivot_actor_ = 0;
     u64 pivot_look_ms_ = 0;
     std::optional<std::int32_t> pivot_dir_said_;
@@ -6093,7 +6394,8 @@ private:
     Sync sync_;
     Kernel::KProcess* process_ = nullptr;
     u64 main_ = 0;
-    bool first_ = true;
+    bool first_ = true;  // Walk()'s first pass (debug only): no "+" lines for what was there already
+    bool list_said_ = false;  // row 267: the list head line said for this game process
     std::unordered_map<u64, Actor> actors_;
 };
 
@@ -6160,6 +6462,11 @@ void AskRefill() {
     TheRefillAsked().store(true);
 }
 
+std::optional<std::int32_t> TakeMaxLifeLowerDone() {
+    const s32 seen = TheMaxLifeLowerDone().exchange(-1);
+    return seen >= 0 ? std::optional<std::int32_t>(seen) : std::nullopt;
+}
+
 void SetMaxLifeLowerTo(std::optional<std::int32_t> quarters) {
     TheMaxLifeLowerTo().store(quarters.value_or(-1));
 }
@@ -6223,6 +6530,14 @@ void HurtOurLinkNative(std::int32_t quarters, const std::array<float, 3>& at, co
         ask.native = true;
         ask.record = KindRecord(kind);
         PvpAsks().push_back(ask);
+    }
+}
+
+void NoteOurLinkStepHit(std::uint32_t id, const std::array<std::uint32_t, 0x98 / 4>& record, std::int32_t sum) {
+    static_assert(std::tuple_size_v<CoopHitReplay::Record> == 0x98 / 4);
+    std::lock_guard lock(LinkStepHitsMutex());
+    if (TheLinkStepHits().size() < 16) {  // (a walk every two frames takes them; more would be a stuck walk)
+        TheLinkStepHits().push_back({id, record, sum, SteadyNowMs()});
     }
 }
 

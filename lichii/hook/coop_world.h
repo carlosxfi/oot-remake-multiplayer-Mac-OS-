@@ -397,6 +397,16 @@ inline constexpr std::uint64_t kStart = 0x108;
 // game runs it when the node is entered, not at each push (read from
 // Longshot v3.0.0-rc.3's lifted f_82771790, main at 0x80020000 there).
 inline constexpr std::uint64_t kStartFn = 0x2751790;
+// Row 244: the start has two ends. With a goal (+0x4c) and its block's logic bool under the key at +0xec true, it
+// aims +0xfc at the goal and asks the block's body onto the answer spot (+0x129 = 1); else +0xfc is a grid cell.
+// The key is Murmur3("ForceOnState") (0x304b4e37): the block's logic input plug, which the room graph feeds from
+// the room's "puzzle cleared" GameData flag (HoldGameDataGetBoolSimple, e.g. InsideTheDekuTree_Level_RoomH_
+// ClearBlock, set by TriggerGameDataSetBoolTrue once the block reaches its answer area). So that end is the room
+// load of a cleared puzzle: its block comes in on its answer. The start reads it with kLogicBoolFn(logic, key),
+// logic = [[actor + 0x270] + 0x118] (CoopLogicProbe::addr), a u8 result (bit 0).
+inline constexpr std::uint64_t kAnswerKey = 0xec;
+inline constexpr std::uint64_t kLogicBoolFn = 0x3db7c0;
+inline constexpr float kOnAnswerM = 0.1f;  // a rest this near its goal (across) is on its answer
 } // namespace BlockNode
 
 // Patch 0029 (hos_coop_nodes.h): HOS_COOP_WORLD_NODE_START's started nodes,
@@ -474,6 +484,24 @@ std::optional<std::uint64_t> FindBlockNode(
 RestScan NodeRestWords(const std::function<std::optional<std::uint64_t>(std::uint64_t)>& read,
                        std::uint64_t node, const coop::protocol::Vec3& from,
                        const coop::protocol::Vec3& to, bool untouched = false);
+
+// Row 244: right after the node's own start ran on a followed block, where its push now goes. The start sets the
+// target (+0xfc) to a cell of the grid from its base (0xd6ef80), not to the place: a block another player left
+// between cells (a push or pull let go mid-step: the Deku basement block at z 44.85 between the cells 44.1 and 45.6
+// of its base 47.1, hs-block-grip) gets a target up to half a cell away, and the node then slides it there by itself
+// in our game only ("jumped back toward its old rest"; under our Link's grip in piscesgamer97's Dodongo's Cavern
+// block room). Non-empty `writes`: the start and target words to set to `to` so the node is idle where the block
+// rests (both places at `to`, as a node entered there); `where` names the moved one(s). Empty: already there.
+RestScan NodeTargetAtRest(const std::function<std::optional<std::uint64_t>(std::uint64_t)>& read,
+                          std::uint64_t node, const coop::protocol::Vec3& to);
+
+// Row 244: whether a followed block's push node may run its own start again (BlockNode::kStartFn) for the rest
+// `to` another player left it at. Not when its ForceOnState is on (`force_on`: its room's puzzle is cleared) and
+// `to` is off its goal (`goal`, node +0x4c; NaN when it has none): the start would take its room-load end and put
+// the block back on its answer, in our game only, while in the mover's game it stays where it was pulled to (that
+// game's node never starts again mid-visit; pisces' Dodongo's Cavern and hs-block-grip's Deku basement: "jumped
+// back toward its old rest"). Then only its places go to the rest (NodeTargetAtRest), as the mover's node is.
+bool NodeMayStartAgain(bool force_on, const coop::protocol::Vec3& goal, const coop::protocol::Vec3& to);
 
 // Breaks and moves of placed world objects, shared by placement hash
 // (docs/world.md, "Broken for everyone" and "Moved for everyone"). Beside the

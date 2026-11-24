@@ -48,6 +48,8 @@ std::map<std::uint16_t, std::uint16_t> CharacterFiles();
 // Rows 239/240/241: CharacterFiles() with a pack; without one, an empty map when Character Select has no NPC model
 // file at all (its UI-only part), nothing when it has some (unknown: picks are kept). coop_puppet_config.cpp.
 std::optional<std::map<std::uint16_t, std::uint16_t>> KnownCharacterFiles();
+// The Character Select mod's characters.json text, or empty (coop_char_ages.h ParseCharacters reads it).
+std::string CharacterListText();
 #endif
 
 }  // namespace CoopPuppetConfig

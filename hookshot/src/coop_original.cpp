@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "coop_original.h"
 
+#include "coop_i18n.h"
+
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -92,6 +94,9 @@ std::string OffList(const std::vector<std::string>& mods) {
     out += "# Original game (co-op's Co-op settings): every mod left out. The list before is in ";
     out += kBackupFile;
     out += "; it comes back when the switch is turned off.\n";
+    // (a mod put into the folder after this list was written stays out too: the list never names it, report 266)
+    out += HOS_COOP_MODS_DEFAULT_OFF;
+    out += "\n";
     for (const auto& m : mods) out += "off " + m + "\n";
     return out;
 }
@@ -164,9 +169,15 @@ bool Tab::Page(HosCoopMenuPage* out) {
                                (on_ ? "it comes back as the original game." : "co-op and its extras come back.")
               : on_ ? std::string("Co-op, its menus, Link's look, the pack and mods are all off.")
                     : std::string("Co-op and its extras are on.");
+    status_ = CoopI18n::Tr(status_);
     rows_.clear();
+    name_tr_ = CoopI18n::Tr("Original game");
+    turnoff_tr_ = CoopI18n::Tr("Turn it off and start the game again to have co-op and the extras back.");
+    help_title_tr_ = CoopI18n::Tr("Original game");
+    help_tr_ = CoopI18n::Tr("Everything this kit adds stays off: the game plays as it came. Your saves are not touched.");
+    hint_tr_ = CoopI18n::Tr("It counts from the next start.");
     HosCoopMenuRow r{};
-    r.name = "Original game";
+    r.name = name_tr_.c_str();
     r.value = "";
     r.kind = HOS_COOP_MENU_TOGGLE;
     r.on = on_ ? 1 : 0;
@@ -177,7 +188,7 @@ bool Tab::Page(HosCoopMenuPage* out) {
     n.kind = HOS_COOP_MENU_NOTE;
     rows_.push_back(n);
     HosCoopMenuRow w{};
-    w.name = "Turn it off and start the game again to have co-op and the extras back.";
+    w.name = turnoff_tr_.c_str();
     w.value = "";
     w.kind = HOS_COOP_MENU_NOTE;
     if (on_ && !changed_) rows_.push_back(w);
@@ -185,9 +196,9 @@ bool Tab::Page(HosCoopMenuPage* out) {
     out->rows = rows_.data();
     out->selected = 0;
     out->typing = 0;
-    out->help_title = "Original game";
-    out->help = "Everything this kit adds stays off: the game plays as it came. Your saves are not touched.";
-    out->hint = "It counts from the next start.";
+    out->help_title = help_title_tr_.c_str();
+    out->help = help_tr_.c_str();
+    out->hint = hint_tr_.c_str();
     out->gold = "";
     out->change = "Change";
     out->confirm = "Change";

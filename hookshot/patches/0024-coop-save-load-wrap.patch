@@ -1,4 +1,4 @@
-From 3f87acb8790b365040c9c7aeae506ae643f8f643 Mon Sep 17 00:00:00 2001
+From cb5893b41638e2ceb585dd6b4ca0b548dbc7077c Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Mon, 16 Nov 2026 01:38:18 -0900
 Subject: [PATCH] Co-op save-load wraps: every save the game loads, to the
@@ -31,7 +31,7 @@ Phase 0 only reads. Nothing else changes: the wrap machinery, the checks
 
 diff --git a/host/hos_coop_save_load.h b/host/hos_coop_save_load.h
 new file mode 100644
-index 0000000..e1b2aa5
+index 00000000..e1b2aa57
 --- /dev/null
 +++ b/host/hos_coop_save_load.h
 @@ -0,0 +1,37 @@
@@ -73,7 +73,7 @@ index 0000000..e1b2aa5
 +
 +#endif
 diff --git a/nx2/coop_world_wraps.py b/nx2/coop_world_wraps.py
-index c50e9b5..20aca8a 100644
+index c50e9b55..20aca8a9 100644
 --- a/nx2/coop_world_wraps.py
 +++ b/nx2/coop_world_wraps.py
 @@ -37,6 +37,21 @@ WRAPS = (

@@ -78,6 +78,7 @@ class ReportBot(discord.Client):
         self.intake_limits = intake.Limits()
         self.intake_seen = intake.SeenIds(self.logs_dir / "auto-intake.json")
         self.intake_runner = None
+        self.heartbeat_task = None
 
     async def setup_hook(self):
         # The server is the dev channel's server (the config's guild_id, if set, must match).
@@ -195,7 +196,21 @@ class ReportBot(discord.Client):
 
     async def on_ready(self):
         log.info("online as %s", self.user)
+        if self.heartbeat_task is None:
+            self.heartbeat_task = asyncio.ensure_future(self._heartbeat_loop())
         self._check_report_channel_rights()
+
+    async def _heartbeat_loop(self):
+        """Every 5 minutes while the gateway is connected: the UTC time into player-logs/discord-bot.heartbeat.
+        The coordinator watchdog logs 'discord bot down' when the file is over 30 minutes old."""
+        path = self.logs_dir / core.HEARTBEAT_NAME
+        while not self.is_closed():
+            if self.is_ready():
+                try:
+                    core.write_heartbeat(path, dt.datetime.now(dt.timezone.utc))
+                except OSError as e:
+                    log.warning("heartbeat write failed (%s)", type(e).__name__)
+            await asyncio.sleep(core.HEARTBEAT_EVERY_SECONDS)
 
     def _check_report_channel_rights(self):
         """Log once at start when the bot cannot remove messages in the report channel."""

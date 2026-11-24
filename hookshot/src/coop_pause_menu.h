@@ -9,6 +9,7 @@
 // (hos_coop_menu.h). Not thread-safe: the module guards it.
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -33,6 +34,16 @@ struct Command {
     const char* help;    // one short paragraph
 };
 const std::vector<Command>& Commands();
+// The help of the main page's rows that open a page (Local co-op, Settings, Customize Link, Commands): the same words
+// on the - page's Settings and look rows (CoopPauseTab::MenuTabHelp), one source.
+inline constexpr const char* kLocalHelp = "Two players on this PC.";
+inline constexpr const char* kSettingsHelp =
+    "Your name, Link's look, how many players can join your game, voice chat, the chat key, which controller this "
+    "game reads, and players on the map.";
+inline constexpr const char* kCustomizeHelp =
+    "A colour for each part of your tunics, shields, swords, boots and gauntlets, with a picture. Your Link wears it "
+    "when you close the menu.";
+inline constexpr const char* kCommandsHelp = "The chat's commands, and the key that opens the chat.";
 // The key that opens the chat box, in words, from LICHII_COOP_CHAT_KEY ("T"
 // by default; "off": none).
 std::string ChatKeyWords(const std::string& chat_key);
@@ -55,6 +66,10 @@ std::string TitleGameName(const std::string& name, const std::string& host, std:
 // values in force, so the sliders open where the game is.
 // (protocol types only here: coop_difficulty.h uses std::max, which a file with windows.h before this one breaks)
 constexpr int kDifficultyRows = 5;
+// The Find a game page (Hookshot's menu, F1) lists this many games a page, under a "Page  < 2/3 >" row that Left and
+// Right (or A) turn, round (row 264, coop_list_pages.h: every game list pages; none runs on under the menu's scroll).
+// The title's own Join list pages on its buttons instead (CoopTitleNative::LookFor).
+inline constexpr int kFindPerPage = 8;
 int DifficultyIndex(const coop::protocol::DifficultyChoice& choice);
 coop::protocol::DifficultyChoice DifficultyAt(const coop::protocol::DifficultyChoice& now,
                                               const coop::protocol::DifficultyValues& in_force, int index);
@@ -92,7 +107,8 @@ struct Request {
                       // it (CoopHook::SendChat), so a host row and the command are one path and the chat line says
                       // what changed; the server takes it from the host only.
                       kChat,
-                      kDifficulty };   // kDifficulty: `text` the host's new choice (CoopDifficulty::FormatChoice)
+                      kDifficulty,     // kDifficulty: `text` the host's new choice (CoopDifficulty::FormatChoice)
+                      kCharAges };     // kCharAges: "on", "off", "child=N" or "adult=N" (coop_char_ages.h)
     Kind kind = Kind::kHost;
     std::string text;
 };
@@ -136,6 +152,15 @@ struct Row {
     bool on = false;                  // kToggle
     bool left = false, right = false; // kChoice: it can go that way
     bool fixed = false;               // it cannot be used now
+    // Words that are not the tab's own: a player's, a room's or a mod's text (a name, a room, a port, a password, a
+    // search, a mod's title or setting), or words already in the player's language. They are shown as they are and
+    // never looked up in the translation table (a player called "Link" must not read 林克, a name typed "On" must not
+    // become 开启). The tab's own words stay as they are: the row's name beside a text field is looked up, its value is not.
+    bool own_name = false, own_value = false;
+    // A choice of two shown as the game's own Options toggle where the page can (the title's Host page: its two cells,
+    // the chosen one `cell`, 0 or 1; -1 none): the value's words then are cells[cell].
+    std::array<std::string, 2> cells{};
+    int cell = -1;
 };
 struct View {
     std::vector<Row> rows;
@@ -202,6 +227,10 @@ public:
     // (Navi) New Game+ (coop_ngplus.h): the level chosen, the highest unlocked (0: Ganon not beaten yet), the
     // hearts carried (quarters). The Settings page's New Game+ row.
     void SetNgPlus(int level, int unlocked, int hearts);
+    // A Character Select pick per age (coop_char_ages.h): the Settings page's "Character by age" rows, shown only
+    // when `shown` (the mod and its NPC models are there). `characters`: the pickable ones (number, name), Link first.
+    void SetCharacterAges(bool shown, bool on, int child, int adult,
+                          std::vector<std::pair<int, std::string>> characters);
     // (Navi) The Settings page's Saves row: solo or multiplayer saves (CoopSave::MultiplayerSaves).
     void SetSaveSet(bool multiplayer);
     // The session's difficulty (CoopDifficulty::Get) and its players: the Settings page's Difficulty rows, among
@@ -215,7 +244,7 @@ public:
     // page keeps Your name and says where the colours are; the main page's Customize Link row says it too.
     void SetSnailHome(bool on) { snail_home_ = on; }
     bool SnailHome() const { return snail_home_; }
-    static constexpr const char* kSnailHomeNote = "Link's colours are on the Characters tab: pick Link, then Customize.";
+    static constexpr const char* kSnailHomeNote = "Link's colours are not on this page: press L until the Characters tab (the first tab of the - menu), pick Link, then Customize.";
     static constexpr const char* kCharacterNote =
         "A Character Select character is picked: it keeps its own colours (X on its Characters page); these colours show on Link when you pick Link again.";
     // The Find a game page's list (the Join page's first row): the games on this network or the relay's public
@@ -278,10 +307,11 @@ private:
         kName, kLook, kPlayers, kVoice, kMic, kVoiceMode, kChatKey, kController, kKeyboard, kMapPlayers, kMapNames,
         kSameNetwork, kGameKind,
         kOpenCustomize, kNgPlus, kSaveSet,
-        kOpenFind, kFindList, kFindSearch, kFindGame, kFindFilter, kFindSort, kFindRefresh,
+        kOpenFind, kFindList, kFindSearch, kFindGame, kFindFilter, kFindSort, kFindRefresh, kFindPage,
         kShowPassword, kNewPassword, kLetIn, kRefuse, kListRoom, kAutoRejoin, kOriginal,
         kApproveJoins, kPvp, kDbno, kDbnoTime, kDbnoHold, kDbnoHearts,
-        kDifficulty, kDifficultyLife, kDifficultyDamage, kDifficultyCount
+        kDifficulty, kDifficultyLife, kDifficultyDamage, kDifficultyCount,
+        kCharAges, kCharChild, kCharAdult
     };
     struct Line;   // a row, what it does and its help
     std::vector<Line> Lines() const;
@@ -300,6 +330,7 @@ private:
     std::string* Typed();
     void SyncManualJoinFromText();
     std::vector<Found> FoundShown() const;   // the Find page's games the search keeps, in its order
+    int FindPage(std::size_t games) const;   // find_page_ within the pages `games` take now
     void UpdateJoinFromIpPort();
     bool InSession() const;
 
@@ -328,6 +359,11 @@ private:
     std::string controller_row_, keyboard_row_;
     std::optional<std::vector<std::string>> microphones_;
     int ngplus_level_ = 0, ngplus_unlocked_ = 0, ngplus_hearts_ = 0;   // (Navi) New Game+ (SetNgPlus)
+    struct CharAges {   // SetCharacterAges
+        bool shown = false, on = false;
+        int child = -1, adult = -1;
+        std::vector<std::pair<int, std::string>> characters;
+    } char_ages_;
     bool mp_saves_ = false;   // (Navi) the Saves row (SetSaveSet)
     DifficultyState difficulty_;   // SetDifficulty
     int difficulty_players_ = 0;
@@ -343,6 +379,7 @@ private:
     bool find_online_ = true;                 // the Find a game page lists the relay's rooms (else this network's)
     std::string find_search_, search_before_; // its search, as typed
     int find_filter_ = 0, find_sort_ = 0;      // its filter and order (CoopBrowse)
+    int find_page_ = 0;                        // its page of games (kFindPerPage a page; FindPage keeps it in range)
     std::vector<Found> found_;                // what it lists now (SetFound), the search kept
     std::string found_state_;                 // why it lists none ("" looking)
     Session session_;

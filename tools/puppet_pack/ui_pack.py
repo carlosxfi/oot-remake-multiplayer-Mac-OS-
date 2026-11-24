@@ -97,6 +97,9 @@ class Copy(NamedTuple):
     # (w, h) given here for its pane, as that layout's own is not read.
     part_layout: Optional[str] = None
     size: Optional[tuple] = None
+    # The copy's scale (x, y) in place of the source's (the pane's +0x10 and +0x14, 1.0 on the game's own parts): a
+    # part layout drawn smaller where it goes than where the game uses it (the Options toggle in the title's column).
+    scale: Optional[tuple] = None
 
 
 def _q(d, o):
@@ -175,6 +178,41 @@ def read_layout(layout):
         raise
     except (struct.error, IndexError, ValueError) as e:   # cut short; ValueError: no string end
         raise UiPackError("the layout is cut short or damaged (%s)" % e) from e
+
+
+def part_layouts(layout):
+    """[(part name, the layout it shows)] of a Layout2 layout: each part record's first word is its layout's name."""
+    d = bytes(layout)
+    _, parts = read_layout(d)
+    try:
+        return [(p.name, _cstr(d, _q(d, p.record))) for p in parts]
+    except (struct.error, IndexError, ValueError) as e:
+        raise UiPackError("the layout's parts are cut short or damaged (%s)" % e) from e
+
+
+def check_own_parts(before, after, archive):
+    """Raise UiPackError when an archive's entries as made (`after`, [(name, bytes)]) show a part whose layout the
+    same entries do not hold and the entries as read (`before`) did not show either: what an edit adds must come from
+    its own archive. The game's own archives never use another archive's layout (tabs-overhaul-01110: Boot, Common,
+    Title and ZeldaNotes checked): a screen finds a part's layout only in the archive it loaded the layout from.
+    LANE1 2026-11-22: the title's Host toggle (a part of Common's PaOptionBtnL_00 added to Title_00) crashed every boot
+    on a null read (guest 0x58) as the Title archive loaded, with Common in Title_00's ArchiveCategory too."""
+    old, had = {}, set()   # (the layouts as read, and every part layout they show: the archive's own already)
+    for n, data in before:
+        if n.endswith(".buil") and data not in old:
+            old[data] = n
+            try:
+                had.update(layout for _, layout in part_layouts(data))
+            except UiPackError:
+                pass   # (not a layout of the game's shape: none of its parts counted)
+    have = {n[:-len(".buil")] for n, _ in after if n.endswith(".buil")}
+    for n, data in after:
+        if not n.endswith(".buil") or data in old:
+            continue   # (a layout as it was read: the game's own)
+        for part, layout in part_layouts(data):
+            if layout not in have and layout not in had:
+                raise UiPackError("%s in %s shows %s, which is not in %s (the game would read a null layout as the "
+                                  "archive loads)" % (part, n, layout, archive))
 
 
 def part_id(name):
@@ -313,6 +351,10 @@ def _clone(d, panes, parts, copies, new_id, out_of_order):
             raise UiPackError("%r is not a name for a pane (printable ASCII, no spaces)" % c.name)
         if c.name in taken:
             raise UiPackError("the layout has a %s already" % c.name)
+        if c.scale is not None and not (
+                isinstance(c.scale, tuple) and len(c.scale) == 2 and
+                all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= 16 for v in c.scale)):
+            raise UiPackError("the scale of %s is not (x, y), each above 0 and at most 16" % c.name)
         taken.add(c.name)
         try:
             for v in c.move:
@@ -389,6 +431,9 @@ def _clone(d, panes, parts, copies, new_id, out_of_order):
         struct.pack_into("<H", r, 0x42, p0 + i)
         if c.hidden:
             struct.pack_into("<I", r, 0x38, struct.unpack_from("<I", r, 0x38)[0] & ~1)   # (bit 0: shown at start)
+        if c.scale is not None:
+            r[0x10:0x14] = _f32(c.scale[0], "the scale of %s" % c.name)
+            r[0x14:0x18] = _f32(c.scale[1], "the scale of %s" % c.name)
         if c.size is not None:
             r[0x2c:0x30] = _f32(c.size[0], "the size of %s" % c.name)
             r[0x30:0x34] = _f32(c.size[1], "the size of %s" % c.name)
@@ -547,6 +592,37 @@ class PackRun:
             base, original = self._base.setdefault(key, (size, _old))
             self.table.set(key, base + max(0, _new - original) + 0x1000)
         self.made.update(files)
+
+
+SCREEN_GLOB = "RSDB/UIScreen.Product.*.rstbl.byml.zs"   # the game's screens table (docs/game-ui.md)
+
+
+def newest(paths):
+    """The newest of the game's copies of a file as a list of one (a base game and its update both have it: the game
+    reads the highest number after .Product., 100 or 110), [] when there is none."""
+    def number(rel):
+        part = rel.split(".Product.")[-1].split(".")[0] if ".Product." in rel else ""
+        return int(part) if part.isdigit() else 0
+    return [max(paths, key=number)] if paths else []
+
+
+def edit_screens(reader, dicts, recompress, edit):
+    """The screens table (UIScreen: one row per screen, keyed by Name, no __RowId) with `edit(rows)` applied: edit
+    changes the list of row dicts in place or returns a new list (None: in place). Reads through `reader` (a PackRun
+    sees what an earlier builder of the run made, so edits chain). Returns (rel, compressed file, growth entry): put
+    the file in the builder's files and the entry in its growth ([(rel, plain length read, plain length made, True)]).
+    merge_tables.py puts these rows into a mod's table that wins over the pack's, by Name."""
+    from . import byml
+    found = newest(reader.glob(SCREEN_GLOB))
+    if not found:
+        raise UiPackError("no %s in the game's files" % SCREEN_GLOB)
+    rel = found[0]
+    raw = reader.read(rel)
+    plain = dicts.decompress(raw)
+    rows = byml.loads(plain)
+    rows = edit(rows) or rows
+    made = byml.dumps(rows)
+    return rel, recompress(dicts, raw, made), (rel, len(plain), len(made), True)
 
 
 def edit_entries(entries, name, edit):
@@ -712,6 +788,13 @@ def add_labels(data, labels, replace=False):
 # those keep their English text.
 
 STRINGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "strings")
+# The pack's file lists (coop_puppet.json keys) that replace UI files the game reads and size by its size table: kept
+# aside all together when the table the game reads cannot hold them (merge_tables.py guard_menus; the kit's start
+# without Python, kit-paths.ps1 Move-KitMenuFilesAside). ONE list: build.py writes it into coop_puppet.json as
+# "menu_keys" and both read it from there (a pack without the field: the two old keys). charsel_native: co-op's own
+# Characters tab (UIScreen, GameDataList, the - menu's sequences, the layout category), charsel-native-0119.
+MENU_KEYS = ("title_menu", "pause_menu", "charsel_native")
+OLD_MENU_KEYS = ("title_menu", "pause_menu")   # (packs made before "menu_keys")
 FALLBACK = "en"
 _SECTION = re.compile(r"\[([^\[\]\s]+\.msbt)\]")
 

@@ -134,6 +134,8 @@ bool Mouse(float fx, float fy, int event);
 bool TypeKey(std::uint32_t vk, bool repeat);
 bool TypeChar(std::uint32_t byte);
 bool KeysTaken();
+// The chat box or the cheats panel is open (it has the keyboard).
+bool ChatOpen();
 // The key that opens the chat box from now on (the Multiplayer tab's Settings
 // row): LICHII_COOP_CHAT_KEY's words ("T", "F2", "off"). Takes no lock (the
 // next key press picks it up), so it may be called under CoopPause's mutex.
@@ -170,9 +172,10 @@ inline bool RefuseCreate(const std::string& actor, bool allow) {
 
 // Refused because the null page could not be armed (coop_null_page.h Arm
 // false: the guest's first MB is not where it should be, or could not be
-// committed). Every held piece reads the wearer's Player component through
-// the game's item update (f_82deee60, guest 0x7d8: the host crash of player
-// report 131 when a guest joined holding the slingshot), the worn gear and
+// committed). A held bow or slingshot reads the wearer's Player component in
+// the game's bow update (f_82deee60, guest 0x7d8: the host crash of player
+// report 131 when a guest joined holding the slingshot; patch 0038 guards that
+// one read, a game built without it still makes it), the worn gear and
 // the puppet's own update read its other missing components: with null reads
 // faulting no Link puppet is safe, so none is made and other players show as
 // their Navi. HOS_COOP_NULL_READS=0 is the test switch that wants the faults

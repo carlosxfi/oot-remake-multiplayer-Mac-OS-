@@ -2,6 +2,7 @@
 #include "coop_title_menu.h"
 
 #include "hos_coop_host.h"
+#include "session.hpp"   // (coop::server::is_same_network: the server's own rule for a line without the password)
 
 #include <algorithm>
 #include <cctype>
@@ -286,7 +287,10 @@ Options Options::Read(std::string_view coop_ini, std::string_view options_ini) {
     o.show_players = On(IniGet(options_ini, "LICHII_COOP_SHOW_PLAYERS"));
     o.pvp = On(IniGet(options_ini, "pvp"));
     o.approve_joins = On(IniGet(options_ini, "approve_joins"));
-    o.same_network_open = On(IniGet(options_ini, "same_network_open"));
+    // The password on this network (row 251, dauro 2026-11-22: LAN joins need none): not needed unless the kit's
+    // documented line says so (same_network_password = on, as Host.bat reads it) or an older build's line was
+    // hand-set to off (same_network_open = off). The host still lets only a private source address in that way.
+    o.same_network_open = !On(IniGet(options_ini, "same_network_password")) && !Off(IniGet(options_ini, "same_network_open"));
     o.auto_rejoin = On(IniGet(options_ini, "auto_rejoin"));
     o.original_game = On(IniGet(options_ini, "original_game"));
     o.list_room = On(IniGet(options_ini, "list_room"));
@@ -383,7 +387,10 @@ void Options::Write(std::string& coop_ini, std::string& options_ini) const {
     }
     o = auto_rejoin ? IniSet(o, "auto_rejoin", "on", true) : IniUnset(o, "auto_rejoin");
     o = original_game ? IniSet(o, "original_game", "on", true) : IniUnset(o, "original_game");
-    o = same_network_open ? IniSet(o, "same_network_open", "on", true) : IniUnset(o, "same_network_open");
+    // (one line for it, the kit's own: same_network_password = on while this network needs the password; the older
+    // same_network_open line goes)
+    o = same_network_open ? IniUnset(o, "same_network_password") : IniSet(o, "same_network_password", "on", true);
+    o = IniUnset(o, "same_network_open");
     o = list_room ? IniSet(o, "list_room", "on", true) : IniUnset(o, "list_room");
     o = public_game ? IniSet(o, "public_game", "on", true) : IniUnset(o, "public_game");
     // (the relay: the kit's default needs no line; a room name, or none)
@@ -696,10 +703,12 @@ bool VirtualBridge(std::string_view adapter) {
 }
 
 std::vector<std::string> AddressLines(const std::vector<LanAddress>& a, std::uint16_t port, std::string_view password,
-                                      bool copied) {
+                                      bool copied, bool same_network_open) {
+    const std::string_view shown = LanLinePassword(a.front().address, password, same_network_open);
     std::vector<std::string> out = {
-        "Friends on your " + a.front().label + " paste this line in Join (address and password):",
-        LanJoinText(a.front().address, port, password),
+        shown.empty() ? "Friends on your " + a.front().label + " paste this line in Join (no password needed):"
+                      : "Friends on your " + a.front().label + " paste this line in Join (address and password):",
+        LanJoinText(a.front().address, port, shown),
         copied ? "It is copied: paste it into your chat with them (Ctrl+V)."
                : "Type it into your chat with them, exactly as it is."};
     if (a.size() > 1) {
@@ -746,22 +755,32 @@ LanSplit SplitLan(const std::vector<LocalCard>& cards) {
     return out;
 }
 
+std::string_view LanLinePassword(std::string_view address, std::string_view password, bool same_network_open) {
+    if (!same_network_open) {
+        return password;
+    }
+    // (the address as the server sees a friend's: a private one gets in with the same-network key, docs/protocol.md
+    // "Same network"; a VPN's public range (Radmin VPN, Hamachi) or Tailscale's 100.64/10 still needs the password)
+    const auto r = coop::server::parse_address_range(address);
+    return r && r->prefix == 32 && coop::server::is_same_network(r->first) ? std::string_view{} : password;
+}
+
 std::vector<std::string> HomeLines(const std::vector<LanAddress>& home, std::uint16_t port, std::string_view password,
-                                   bool copied) {
+                                   bool copied, bool same_network_open) {
     if (home.empty()) {
         return {"No home-network address was found on this PC.",
                 "Friends somewhere else join with your invite code; on a VPN with you, they use the VPN row."};
     }
-    return AddressLines(home, port, password, copied);
+    return AddressLines(home, port, password, copied, same_network_open);
 }
 
 std::vector<std::string> VpnLines(const std::vector<LanAddress>& vpn, std::uint16_t port, std::string_view password,
-                                  bool copied) {
+                                  bool copied, bool same_network_open) {
     if (vpn.empty()) {
         return {"No VPN found.",
                 "Using one (Radmin VPN, Hamachi, ZeroTier, Tailscale, WireGuard)? Start it, then press this again."};
     }
-    return AddressLines(vpn, port, password, copied);
+    return AddressLines(vpn, port, password, copied, same_network_open);
 }
 
 std::string HostHeadline(bool copied) {

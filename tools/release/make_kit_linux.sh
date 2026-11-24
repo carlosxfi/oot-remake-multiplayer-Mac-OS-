@@ -117,6 +117,29 @@ done
 for s in "$pack"/strings/*.txt; do   # ui_pack.py's words for the game's menus, read where the module is
     text "$s" "$kit/data/tools/puppet_pack/strings/$(basename "$s")"
 done
+# Every data folder a kit module reads (DATA = os.path.join(HERE, "<name>", "data"): charsel_ui.py's charsel/data,
+# coop_menu.py's coopmenu/data), byte for byte (deltas and code patch are checked by their hashes), never through
+# text(). The import walk finds only .py files; without them build.py stops on the players' PCs (0.11.12's
+# integrate-01110 db12ad12 kits: FileNotFoundError charsel/data/manifest.json), as kit_pack.ps1's Copy-KitPack.
+for f in $(printf '%s\n' "${!seen[@]}" | sort); do
+    while IFS= read -r sub; do
+        [[ -n $sub ]] || continue
+        compgen -G "$pack/$sub/data/*" >/dev/null || die "tools/puppet_pack/$sub/data (read by $f) is not in the repo"
+        mkdir -p "$kit/data/tools/puppet_pack/$sub/data"
+        for d in "$pack/$sub/data"/*; do [[ -f $d ]] && cp -- "$d" "$kit/data/tools/puppet_pack/$sub/data/"; done
+    done < <(grep -o 'os\.path\.join(HERE, *"[A-Za-z0-9_]*", *"data")' "$pack/$f" | sed 's/.*HERE, *"\([A-Za-z0-9_]*\)".*/\1/' | sort -u)
+done
+# Self-check (as kit_pack.ps1's Test-KitPackData): every file of every pack data folder in the repo is in the kit byte
+# for byte, and every strings/*.txt, or no kit is made.
+miss=()
+for d in "$pack"/*/data/*; do
+    [[ -f $d ]] || continue
+    rel=${d#"$pack"/}
+    cmp -s -- "$d" "$kit/data/tools/puppet_pack/$rel" || miss+=("$rel")
+done
+for s in "$pack"/strings/*.txt; do [[ -f $kit/data/tools/puppet_pack/strings/$(basename "$s") ]] || miss+=("strings/$(basename "$s")"); done
+((${#miss[@]} == 0)) || die "the kit misses pack data (or it differs): ${miss[*]}"
+echo "Pack data self-check: OK (every tools/puppet_pack/*/data file in the kit, byte for byte)"
 text "$repo/docs/setup-linux.md" "$kit/data/docs/SETUP-LINUX.md"
 text "$repo/docs/known-issues.md" "$kit/data/docs/KNOWN-ISSUES.md"
 cp -- "$repo/LICENSE" "$kit/data/licenses/oot-remake-multiplayer-GPL-3.0.txt"

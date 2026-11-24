@@ -7,6 +7,7 @@ import glob
 import json
 import math
 import os
+import re
 import shutil
 import socket
 import struct
@@ -17,9 +18,32 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import hookshot as hs  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))   # (tools: puppet_pack, PackStartTest)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GAMEUI = 0x1000200000
+
+
+class FakePlacement:
+    """placement.py with no real monitor: check_display answers for any name, place_pids records its calls (a CI
+    runner has no DISPLAY2, and a test must not move a real window)."""
+    calls, saved = [], None
+
+    @classmethod
+    def install(cls):
+        cls.calls = []
+        cls.saved = (hs.placement.check_display, hs.placement.place_pids)
+
+        def place(pids, display=None, topmost=False, wait=0.0, step=0.25, slots=None, count=None):
+            cls.calls.append({"pids": list(pids), "display": display, "slots": list(slots), "count": count})
+            return []
+        hs.placement.check_display = lambda arg=None: {"name": "\\\\.\\" + (arg or "DISPLAY2"), "work": (0, 0, 1920, 1032)}
+        hs.placement.place_pids = place
+        return cls.calls
+
+    @classmethod
+    def restore(cls):
+        hs.placement.check_display, hs.placement.place_pids = cls.saved
 
 
 class Clock:
@@ -260,9 +284,13 @@ class ParseTest(unittest.TestCase):
         self.assertIn("stun", hs.MODULE_ONLY)
 
     def test_menu_step_goes_to_the_module(self):
-        steps = hs.parse("menu Customize\nmenu close\n")
-        self.assertEqual([(s.kind, s.name) for s in steps], [("menu", "customize"), ("menu", "close")])
+        steps = hs.parse("menu Customize\nmenu close\nmenu Host\n")
+        self.assertEqual([(s.kind, s.name) for s in steps], [("menu", "customize"), ("menu", "close"), ("menu", "host")])
         self.assertIn("menu", hs.MODULE_ONLY)
+
+    def test_host_in_game_env(self):  # row 260: A hosts through its own Multiplayer > Host
+        self.assertEqual(hs.host_in_game_env(27520, "autotest-pass"),
+                         {"LICHII_COOP_TEST_HOST": "27520:autotest-pass", "LICHII_COOP_NAME": "A"})
 
     def test_place_on_a_platform_goes_to_the_module(self):  # #196: a rider on a floor that waves
         s = hs.parse("place Obj_Deku_MoveFloor_A_01 0.3\n")[0]
@@ -295,14 +323,15 @@ class ParseTest(unittest.TestCase):
         for text, want in (("wait", "line 1: want: wait TICKS"), ("\n\nhold Q 3", "line 3: unknown key Q"),
                            ("stick 2 0 5", "line 1: want: STICK"), ("goto 1 2 0.1", "radius at least 0.2"),
                            ("jump", "unknown command jump"), ("# only", "no steps"),
-                           ("wear cape X", "want: wear"), ("dress hat", "want: dress"), ("menu", "want: menu customize|close"),
-                           ("menu map", "want: menu customize|close"), ("hurt", "want: hurt QUARTER_HEARTS"),
+                           ("wear cape X", "want: wear"), ("dress hat", "want: dress"), ("menu", "want: menu customize|close|host"),
+                           ("menu map", "want: menu customize|close|host"), ("hurt", "want: hurt QUARTER_HEARTS"),
                            ("hurt 0", "want: hurt QUARTER_HEARTS"), ("hurt 81", "want: hurt QUARTER_HEARTS"),
                            ("hurt 2x", "want: hurt QUARTER_HEARTS"), ("hit Enemy_DungeonBoss_Gohma", "want: hit ACTOR N"),
                            ("hit Enemy_DungeonBoss_Gohma 0", "want: hit ACTOR N"),
                            ("hit Enemy_DungeonBoss_Gohma 81", "want: hit ACTOR N"),
                            ("hit Enemy_DungeonBoss_Gohma 2x", "want: hit ACTOR N"), ("stun", "want: stun BOSS"),
-                           ("stun A B", "want: stun BOSS")):
+                           ("stun A B", "want: stun BOSS"), ("event", "want: event NAME"),
+                           ("event A B", "want: event NAME"), ("event Dm<x>", "want: event NAME")):
             with self.assertRaises(hs.ScriptError) as e:
                 hs.parse(text)
             self.assertIn(want, str(e.exception))
@@ -634,16 +663,18 @@ class PlayerTest(unittest.TestCase):
                 setenum 0x1234abcd Done
                 kill Enemy_Skulltula_Gold
                 hurt 4
+                event DreamBossStage_Rematch_Barinade_Start
                 mark m
             """, game, commands=path)
             self.assertEqual(len(taken), 3)   # the mark too: the module logs it in the game's log
             self.assertEqual(taken[0].splitlines()[1:], ["give bombs", "chat /teleport B", "place 1 2.5 -3"])
             self.assertEqual(taken[1].splitlines()[1:], [
                 "setflag PouchData.Item_Bomb.StockNum 20", "wear head Mask_Keaton", "assign Bow",
-                "setenum 0x1234abcd Done", "kill Enemy_Skulltula_Gold", "hurt 4"])
+                "setenum 0x1234abcd Done", "kill Enemy_Skulltula_Gold", "hurt 4",
+                "event DreamBossStage_Rematch_Barinade_Start"])
             self.assertEqual(taken[2].splitlines()[1:], ["mark m"])
             self.assertTrue(all(t.startswith("# ") for t in taken))
-            self.assertEqual(sum(" sent (line" in line for line in log.lines), 9)
+            self.assertEqual(sum(" sent (line" in line for line in log.lines), 10)
             self.assertFalse(any("skipped" in line for line in log.lines))
             self.assertEqual(len(game.cmds("press")), 1)
             self.assertEqual(log.lines[-2:], ["coop: test mark m", "coop: test script done"])
@@ -844,22 +875,31 @@ class RunTest(unittest.TestCase):
             with open(os.path.join(tmp, "b.txt"), "w") as f:
                 f.write("press A\n")
             popen, connect = hs.subprocess.Popen, hs.Bridge.connect
+            placed = FakePlacement.install()
             hs.subprocess.Popen = Proc
             hs.Bridge.connect = classmethod(lambda cls, path, timeout=10.0: fakes[path].connect())
             try:
                 code = hs.main(["run", "--game-a", os.path.join(tmp, "A"), "--game-b", os.path.join(tmp, "B"),
                                 "--out", os.path.join(tmp, "out"), "--name", "t", "--script-a",
                                 os.path.join(tmp, "a.txt"), "--script-b", os.path.join(tmp, "b.txt"),
-                                "--every", "0", "--env", "B:ONLY_B=1", "--env", "BOTH=1"])
+                                "--every", "0", "--env", "B:ONLY_B=1", "--env", "BOTH=1",
+                                "--playtest-ports", "5010", "--display", "DISPLAY7"])
             finally:
                 hs.subprocess.Popen, hs.Bridge.connect = popen, connect
+                FakePlacement.restore()
             out = os.path.join(tmp, "out")
             with open(os.path.join(out, "steps.txt")) as f:
                 self.assertEqual(code, 0, f.read())
             self.assertTrue(os.path.isdir(os.path.join(tmp, "A", "user", "save", "u")))   # baseline put back
             self.assertEqual([p.env["HOS_CONTROL_MEM"] for p in started], ["ro", "ro"])
+            if hs.WINDOWS:   # each game's window is placed on the chosen monitor: A in the first place, B in the second
+                self.assertEqual({c["display"] for c in placed}, {"DISPLAY7"})
+                self.assertEqual([c["slots"] for c in placed], [[0], [1], [0, 1]])
             self.assertEqual([p.env.get("ONLY_B") for p in started], [None, "1"])
             self.assertEqual([p.env["BOTH"] for p in started], ["1", "1"])
+            # the play-test bridge on, each game on its own port: A = p1 = base + 1, B = p2 = base + 2
+            self.assertEqual([p.env["LICHII_COOP_PLAYTEST_PORT"] for p in started], ["5011", "5012"])
+            self.assertEqual([p.env["LICHII_COOP_CHEATS"] for p in started], ["1", "1"])   # give needs it
             self.assertEqual([p.env["LICHII_COOP_TEST_OWN_SAVE"] for p in started], ["1", "1"])   # each game its own save
             # no crash ask on the title to take the load's A presses (TEST_GAME_DEFAULTS; smoke hs-players, kit-0119)
             self.assertEqual([p.env["LICHII_COOP_PROBLEM_ASK"] for p in started], ["0", "0"])
@@ -970,6 +1010,20 @@ class NoFairyTest(unittest.TestCase):
             with self.subTest(scenario=os.path.basename(f)):
                 self.assertTrue(set(hs.BOTTLE_ITEMS) <= emptied, "add `nofairy` before the first hurt")
 
+    def test_every_scenario_chat_line_fits_the_protocol(self):
+        # A chat line over coop::protocol::kMaxChatChars (200 characters) is refused by the client ("NOT sent"):
+        # proof-01112-c run 3 lost its long line that way (236 characters).
+        header = os.path.join(HERE, "..", "..", "..", "coop", "protocol", "include", "coop", "protocol", "messages.hpp")
+        with open(header, encoding="utf-8") as h:
+            limit = int(re.search(r"kMaxChatChars = (\d+);", h.read()).group(1))
+        for f in sorted(glob.glob(os.path.join(HERE, "..", "scenarios", "*.txt"))):
+            if f.endswith(".steps.txt"):
+                continue
+            for s in hs.parse(hs.read_script(f)):
+                if s.kind == "chat":
+                    with self.subTest(scenario=os.path.basename(f), chat=s.name[:30]):
+                        self.assertLessEqual(len(s.name), limit)
+
 
 class DropTest(unittest.TestCase):
     """Row 178's fall guard in a game: `drop NAME METRES` (a boss of ours put METRES down, test only)."""
@@ -982,6 +1036,291 @@ class DropTest(unittest.TestCase):
         for bad in ("drop\n", "drop X\n", "drop X 0\n", "drop X 501\n", "drop X 1.5\n"):
             with self.assertRaises(hs.ScriptError):
                 hs.parse(bad)
+
+
+class AwaitTest(unittest.TestCase):
+    """Row 325: `await TICKS REGEX`, until a new line of the game's own log matches (the runner reads it, no module)."""
+
+    LINE = "[hos Presentation Thread] coop: objects: anim Enemy_DungeonBoss_Dodongo 0x1050 'Rolling_Loop'"
+    RX = r"anim Enemy_DungeonBoss_Dodongo \S+ 'Rolling_Loop'$"
+
+    def test_parses_the_rest_of_the_line_as_the_regex(self):
+        steps = hs.parse("await 600 %s   # a comment\n" % self.RX)
+        self.assertEqual((steps[0].kind, steps[0].ticks, steps[0].name), ("await", 600, self.RX))
+        self.assertNotIn("await", hs.MODULE_ONLY)   # the runner's own step: plays on any module
+        for bad in ("await\n", "await 600\n", "await x foo\n", "await -1 foo\n", "await 60 (\n"):
+            with self.assertRaises(hs.ScriptError):
+                hs.parse(bad)
+
+    def test_waits_for_a_new_matching_line_only(self):
+        game = FakeGame()
+        text = ["coop: hello", self.LINE + "\r"]   # an old match (and a CRLF log) does not count
+        polls = []
+
+        def read_log():
+            polls.append(game.clock())
+            if len(polls) == 6:
+                text.append("coop: objects: anim Enemy_DungeonBoss_Dodongo 0x1050 'Rolling_End' (ours)")
+            if len(polls) == 9:
+                text.append(self.LINE)
+            return "\n".join(text)
+
+        _, log, shots, _, end = play("mark a\nawait 600 %s\nmark b\n" % self.RX, game, read_log=read_log)
+        seen = [ln for ln in log.lines if ln.startswith("coop: test await seen")]
+        self.assertEqual(len(seen), 1, log.lines)
+        self.assertTrue(seen[0].endswith(self.LINE), seen)
+        self.assertEqual(shots, ["a", "b"])
+        self.assertLess(end - polls[0], 600 / hs.TICKS)   # went on at the line, not at the step's end
+
+    def test_times_out_and_goes_on(self):
+        game = FakeGame()
+        _, log, shots, _, end = play("await 120 %s\nmark after\n" % self.RX, game, read_log=lambda: self.LINE)
+        self.assertTrue(any(ln.startswith("coop: test await timed out") for ln in log.lines), log.lines)
+        self.assertEqual(shots, ["after"])
+
+    def test_skipped_without_a_log(self):
+        _, log, shots, _, _ = play("await 120 foo\nmark after\n")
+        self.assertTrue(any(ln.startswith("coop: test await skipped") for ln in log.lines), log.lines)
+        self.assertEqual(shots, ["after"])
+
+
+class GrammarTest(unittest.TestCase):
+    """Row 325 review: one scenario grammar for both readers. The same lists are in tests/lichii/testinput_test.cpp
+    ('testinput: the runner's grammar'): every line here is taken by both parsers or refused by both."""
+
+    TAKEN = ("wait 1", "wait 36000", "wait 0007", "hold A 36000", "press A 1", "stick -1 +1 5", "stick .5 -0.5 5",
+             "toward 1 2 36000", "goto 1.5 -2 0.2 600", "goto .5 5. 1", "goto 1e3 -1E-2", "goto 1000000 -1000000",
+             "await 0 x", "await 99999999999 x", "hit X 80", "drop X 500", "hurt 1", "setflag F -2147483648",
+             "setflag F 2147483647", "setflag F 007")
+    REFUSED = ("wait 0", "wait 36001", "wait +5", "wait -0", "wait 1_0", "wait 0000000001", "hold A 0", "press A 0",
+               "stick 0 0 0", "toward 1 2 0", "toward 1 2 36001", "goto 1 2 1 0", "await -1 x", "await +1 x",
+               "await 1_0 x", "goto 0x10 2", "goto 1_0 2", "goto inf 2", "goto nan 2", "goto 1000001 2", "goto 1e7 2",
+               "goto . 2", "goto 1e 2", "stick 0x1 0 5", "hit X 0", "hit X 81", "hit X ²", "drop X 501",
+               "hurt 81", "hurt ³", "setflag F 2147483648", "setflag F -2147483649", "setflag F --5",
+               "setflag F +5")
+
+    def test_taken_by_the_runner(self):
+        for line in self.TAKEN:
+            with self.subTest(line=line):
+                hs.parse(line + "\nmark z\n")
+
+    def test_refused_by_the_runner_as_the_line_s_error(self):
+        for line in self.REFUSED:
+            with self.subTest(line=line):
+                with self.assertRaises(hs.ScriptError) as e:
+                    hs.parse(line + "\nmark z\n")
+                self.assertIn("line 1:", str(e.exception))
+
+
+class ScenarioFilesTest(unittest.TestCase):
+    """Row 325's proof pair parses (await, stun, event steps)."""
+
+    def test_kd_roll_hold_325_parses(self):
+        here = os.path.join(HERE, "..", "scenarios")
+        for x in ("A", "B"):
+            steps = hs.parse(hs.read_script(os.path.join(here, "kd-roll-hold-325.%s.txt" % x)))
+            kinds = [s.kind for s in steps]
+            self.assertIn("await", kinds)
+            self.assertIn("stun", kinds)
+            self.assertIn("event", kinds)
+
+    def test_every_runner_verb_is_the_modules(self):
+        # Row 325 review: the module's own parser (lichii/hook/coop_testinput.cpp Parse) reads every scenario too
+        # (testinput_test 'every autotest scenario script parses', and the emulator played them whole), so a verb
+        # only this runner plays (await) must still be one of its verbs, or that test goes red on a scenario using it.
+        import re
+        with open(os.path.join(HERE, "..", "hookshot.py"), encoding="utf-8") as f:
+            runner = f.read()
+        with open(os.path.join(HERE, "..", "..", "..", "lichii", "hook", "coop_testinput.cpp"), encoding="utf-8") as f:
+            module = set(re.findall(r'cmd == "([A-Z]+)"', f.read()))
+        verbs = set(re.findall(r'cmd == "([A-Z]+)"', runner))
+        for group in re.findall(r'cmd in \(([^)]*)\)', runner):
+            verbs.update(re.findall(r'"([A-Z]+)"', group))
+        self.assertIn("AWAIT", verbs)
+        self.assertGreater(len(verbs), 20)
+        self.assertEqual(sorted(verbs - module), [], "verbs hookshot.py reads that coop_testinput.cpp's Parse does not")
+
+
+class PackStartTest(unittest.TestCase):
+    """Row 265 (0.11.12): a game this file starts gets the kit's start of the pack (play.ps1 Use-KitPuppetPack, then
+    Invoke-KitSizeTableMerge): your own tunic files first, then the merge, so another mod's Link model (Character
+    Select's) names your own tunic textures and the module can paint them (the Customize preview's Kokiri row)."""
+
+    CHILD = b"FRES" + bytes(12) + b"Angin_Tile_A_Alb\x00Angin_Tile_A_Dark_Alb\x00Mt_Cloth_Parts_Player_Child_Alb\x00"
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="hookshot_pack_start_")
+        self.game = os.path.join(self.dir, "lane1-A")
+        self.mods = os.path.join(self.game, "mods")
+        self.pack = os.path.join(self.mods, *hs.PACK_REL[1:])
+        self.put(os.path.join(self.game, "longshot.exe"), b"")
+        self.put(os.path.join(self.pack, "coop_self", "green.Angin_Tile_S_Alb.bntx.zs"), b"own green tile")
+        self.put(os.path.join(self.pack, "coop_puppet.json"), json.dumps({
+            "tunics": {"green": ["x"]},
+            "self_files": {"green": {"Tex/Angin_Tile_S_Alb.bntx.zs": "coop_self/green.Angin_Tile_S_Alb.bntx.zs"}},
+        }).encode())
+        self.model = os.path.join(self.mods, "OoT Character Select", "romfs", "Model",
+                                  "Player_Child.Player_Child.bfres.zs")
+        self.put(self.model, self.CHILD)
+        self.tile = os.path.join(self.pack, "romfs", "Tex", "Angin_Tile_S_Alb.bntx.zs")
+        self.lines = []
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    @staticmethod
+    def put(path, data):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+
+    def test_folders_as_the_kit_finds_them(self):
+        mods, pack, romfs = hs.pack_folders(self.game)
+        self.assertEqual((mods, pack, romfs), (self.mods, self.pack, ""))
+        os.makedirs(os.path.join(self.game, "romfs", "Pack"))
+        self.assertEqual(hs.pack_folders(self.game)[2], os.path.join(self.game, "romfs"))
+
+    def test_your_tunic_files_go_in_before_the_merge(self):
+        from puppet_pack import merge_tables, self_tunic
+        calls = []
+        real_put, real_main = self_tunic.put, merge_tables.main
+        self_tunic.put = lambda pack, color, painted=True: calls.append(("put", pack, color)) or "green"
+        merge_tables.main = lambda argv=None: calls.append(("merge", argv)) or 0
+        try:
+            hs.pack_start(self.game, {"LICHII_COOP_COLOR": "yellow"}, self.lines.append)
+        finally:
+            self_tunic.put, merge_tables.main = real_put, real_main
+        self.assertEqual(calls, [("put", self.pack, "yellow"), ("merge", ["--mods", self.mods])])
+        self.assertEqual(self.lines, ["own tunic files: green"])
+
+    def test_the_colour_from_the_options_and_tunics_off(self):
+        from puppet_pack import merge_tables, self_tunic
+        self.put(os.path.join(self.game, "coop-options.ini"), b"color = red\n")
+        seen = []
+        real_put, real_main = self_tunic.put, merge_tables.main
+        self_tunic.put = lambda pack, color, painted=True: seen.append(color) or ""
+        merge_tables.main = lambda argv=None: 0
+        try:
+            hs.pack_start(self.game, {}, self.lines.append)
+            hs.pack_start(self.game, {"LICHII_COOP_TUNICS": "0"}, self.lines.append)
+        finally:
+            self_tunic.put, merge_tables.main = real_put, real_main
+        self.assertEqual(seen, ["red", ""])
+        self.assertEqual(self.lines, ["own tunic files: none (the game's green)"] * 2)
+
+    def test_character_selects_link_model_names_your_own_tunic(self):
+        try:
+            import zstandard  # noqa: F401 (merge_tables' size tables; CI installs it)
+        except ImportError:
+            self.skipTest("no zstandard")
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            hs.pack_start(self.game, {}, self.lines.append)
+        self.assertTrue(os.path.isfile(self.tile), said.getvalue())
+        with open(self.model, "rb") as f:
+            model = f.read()
+        self.assertIn(b"Angin_Tile_S_Alb\x00", model, said.getvalue())
+        self.assertNotIn(b"Angin_Tile_A_Alb\x00", model)
+        self.assertIn("names co-op's own tunic textures now", said.getvalue())
+
+    def test_no_pack_nothing(self):
+        shutil.rmtree(self.pack)
+        self.assertEqual(hs.pack_start(self.game, {}, self.lines.append), [])
+        self.assertEqual(self.lines, [])
+        with open(self.model, "rb") as f:
+            self.assertEqual(f.read(), self.CHILD)
+class WindowPlacementTest(unittest.TestCase):
+    """hookshot.py run puts the game windows on the chosen monitor and never starts a game without one."""
+
+    def test_missing_monitor_stops_the_run_before_any_game_starts(self):
+        import tempfile
+        from unittest import mock
+        started = []
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(hs, "WINDOWS", True), \
+                mock.patch.object(hs.placement, "monitors", lambda: [{"name": "\\\\.\\DISPLAY1", "work": (0, 0, 1, 1)}]), \
+                mock.patch.object(hs.subprocess, "Popen", lambda *a, **k: started.append(a)):
+            open(os.path.join(tmp, "s.txt"), "w").close()
+            with self.assertRaises(SystemExit) as c:
+                hs.main(["run", "--game-a", tmp, "--game-b", tmp, "--out", os.path.join(tmp, "o"), "--script-a",
+                         os.path.join(tmp, "s.txt"), "--display", "DISPLAY9"])
+        self.assertIn("no monitor called DISPLAY9", str(c.exception))
+        self.assertEqual(started, [])
+
+    def test_games_start_without_activating_their_window(self):
+        flags = hs.popen_flags()
+        if hs.WINDOWS:
+            self.assertEqual(flags["startupinfo"].wShowWindow, 4)   # SW_SHOWNOACTIVATE
+            self.assertTrue(flags["startupinfo"].dwFlags & hs.subprocess.STARTF_USESHOWWINDOW)
+        else:
+            self.assertEqual(flags, {"start_new_session": True})
+
+    def test_a_failed_placement_is_said_and_does_not_end_the_run(self):
+        from unittest import mock
+        said = []
+        with mock.patch.object(hs, "WINDOWS", True), \
+                mock.patch.object(hs.placement, "place_pids", side_effect=hs.placement.PlacementError("no monitor")):
+            hs.place_games({"A": 1}, "DISPLAY9", said.append)
+        self.assertEqual(said, ["window placement: no monitor"])
+
+
+class WarpSceneCheckTest(unittest.TestCase):
+    """`warp Market` (the scenes are Market_Child and Market_Adult): the module's test warp refuses a scene it does not
+    know and nothing moves, so the runner refuses it at once instead of leaving a run that goes on with the scene
+    unchanged (the old module wrote the name into the game, which crashed a game worker, 2026-11-23)."""
+
+    def test_an_unknown_scene_is_refused_when_the_script_is_read(self):
+        with self.assertRaises(hs.ScriptError) as ctx:
+            hs.parse("wait 5\nwarp Market\n")
+        msg = str(ctx.exception)
+        self.assertTrue(msg.startswith("line 2: unknown scene 'Market'"), msg)
+        self.assertIn("Market_Adult", msg)
+        self.assertIn("Market_Child", msg)
+        for bad in ("warp NoSuchPlace Entrance\n", "warp market_child\n", "warp Market_Child/x\n"):
+            with self.assertRaises(hs.ScriptError):
+                hs.parse(bad)
+
+    def test_real_scenes_and_the_bridges_index_still_parse(self):
+        steps = hs.parse("warp Market_Child\nwarp InsideTheDekuTree Entrance\nwarp BossRushIntervalRoom\n"
+                         "warp PhantomGanonStage PhantomGanonStage\nwarp 3\n")
+        self.assertEqual([x.name for x in steps], ["Market_Child", "InsideTheDekuTree", "BossRushIntervalRoom",
+                                                   "PhantomGanonStage", "3"])
+
+    def test_nothing_is_sent_for_a_refused_script(self):
+        game = FakeGame()
+        b = game.connect()
+        with self.assertRaises(hs.ScriptError):
+            hs.Player(b, hs.Log(), clock=game.clock, sleep=game.clock.sleep).play(hs.parse("warp Market\n"))
+        game.close()
+        self.assertEqual(game.cmds("teleport"), [])
+
+    def test_the_list_is_read_from_the_modules_source_and_matches_it(self):
+        scenes = hs.known_scenes()
+        self.assertIsNotNone(scenes)
+        self.assertIn("Market_Child", scenes)
+        self.assertGreater(len(scenes), 70)
+        teleport = os.path.join(os.path.dirname(hs.START_POINTS_INC), "coop_teleport.cpp")
+        with open(teleport, encoding="utf-8") as f:
+            source = f.read()
+        for name in hs.EXTRA_SCENES:   # the one literal IsKnownScene has besides the start points
+            self.assertIn('"%s"' % name, source)
+
+    def test_without_the_source_nothing_is_checked(self):
+        self.assertIsNone(hs.known_scenes(os.path.join(HERE, "no-such-file.inc")))
+        self.assertEqual(hs.scene_problem("Market", scenes={"Market_Child"}),
+                         "unknown scene 'Market' (did you mean Market_Child?)")
+        self.assertEqual(hs.scene_problem("Market_Child", scenes={"Market_Child"}), "")
+
+    def test_live_do_says_so_and_sends_nothing(self):
+        import tempfile
+        import live
+        with tempfile.TemporaryDirectory() as d:
+            with open(live.session_file(d), "w", encoding="utf-8") as f:
+                json.dump({"games": {}}, f)
+            out = live.do(type("A", (), {"session": d, "player": "A", "script": "warp Market; wait 5"})())
+        self.assertIn("unknown scene 'Market'", out["error"])
+        self.assertNotIn("A", out)   # (no bridge was opened, no look taken)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdlib>
 #include <string>
 
@@ -50,7 +51,11 @@ TEST_CASE("look menu: every part on the list, by item, under its heading") {
         parts += r.kind == 1;
         headings += r.kind == 3;
     }
-    CHECK(parts == static_cast<int>(CoopLook::kParts));
+    // (Link's list: every part but a character's, which are on the Character page)
+    const auto link_parts = std::count_if(CoopLook::Parts().begin(), CoopLook::Parts().end(),
+                                          [](const CoopLook::PartInfo& i) { return !CoopLook::IsCharacterPart(i.part); });
+    CHECK(parts == static_cast<int>(link_parts));
+    CHECK(link_parts == static_cast<std::ptrdiff_t>(CoopLook::kParts) - 6);
     CHECK(headings == 11);   // Tunic, 3 shields, 3 swords, Boots, Gauntlets, Eyes, Hair (0.11.9)
     CHECK(v.rows[static_cast<std::size_t>(v.selected)].kind == 1);   // a part, not a heading
     CHECK(v.rows[static_cast<std::size_t>(RowOf(page, "Hylian Shield", "Frame"))].value == "Game's own");
@@ -283,24 +288,62 @@ TEST_CASE("look menu (0.11.9): the Character page: three pages of six, ZL and ZR
     CHECK(page.look() == Look{});
 }
 
-TEST_CASE("look menu (0.11.9): a character other than Link: its gear pages once shown to work, else one plain line") {
+TEST_CASE("look menu (npc-customize): a character other than Link: its own parts, only the rows its model has") {
     Page page;
     page.SetPaged(true);
-    page.Open(Look{});
+    Look link;
+    link[Part::eyes] = 0x112233u;
+    page.Open(link);
     page.SetCharacter(9, false);
     auto v = page.view();
-    REQUIRE(v.rows.size() == 2);
-    CHECK(v.rows[1].name == CoopLookMenu::kNoColourOptions);
-    CHECK(v.rows[1].kind == 4);
-    CHECK(page.GroupsOffered() == 0u);
-    page.Press(Input::kDecide);                     // nothing to press: no change, no mixer
+    REQUIRE(v.rows.size() == 7);                    // (rows not known yet: every row)
+    CHECK(v.rows[0].name == "Character (page 1 of 1)");
+    CHECK(v.rows[1].name == "Hair Colour");
+    CHECK(v.rows[6].name == "Equipment");
+    CHECK(v.rows[6].value == "Shown");
+    CHECK(page.GroupsOffered() == 1u);
+    // Saria's model: hair, eyes, Clothing Colour 1 and 2 (CoopCharColours::Rows: 1 | 2 | 4 | 8 | 32 | known)
+    page.SetRows(1 | 2 | 4 | 8 | 32 | 0x80);
+    v = page.view();
+    REQUIRE(v.rows.size() == 6);
+    CHECK(v.rows[3].name == "Clothing Colour");
+    CHECK(v.rows[4].name == "Clothing Colour 2");
+    CHECK(v.rows[5].name == "Equipment");
+    // A cow: the equipment only.
+    page.SetRows(32 | 0x80);
+    REQUIRE(page.view().rows.size() == 2);
+    CHECK(page.view().rows[1].name == "Equipment");
+    page.Press(Input::kRight);                      // Hidden
+    CHECK(page.look()[Part::char_gear] == CoopLook::kGearHidden);
+    CHECK(page.view().rows[1].value == "Hidden");
+    page.Press(Input::kDecide);                     // (no mixer: A steps on) Shown again
     CHECK_FALSE(page.editing());
-    CHECK_FALSE(page.TakeChange());
+    CHECK_FALSE(page.look()[Part::char_gear]);
+    // The clothing rows step through the mod's seven colours, no mixer.
+    page.SetRows(1 | 2 | 4 | 32 | 0x80);
+    page.Select(3);
+    REQUIRE(page.view().rows[3].name == "Clothing Colour");
+    page.Press(Input::kRight);
+    CHECK(page.look()[Part::char_cloth1] == CoopColors::Parse("green"));
+    page.Press(Input::kLeft), page.Press(Input::kLeft);
+    CHECK(page.look()[Part::char_cloth1] == CoopColors::Parse("white"));
+    page.Press(Input::kDecide);
+    CHECK_FALSE(page.editing());
+    // The hair takes any colour (the mixer); X resets the character's parts only, Link's eyes stay.
+    page.Select(1);
+    page.Press(Input::kDecide);
+    CHECK(page.editing());
+    page.Press(Input::kBack);
+    page.Press(Input::kResetAll);
+    CHECK_FALSE(page.look()[Part::char_cloth1]);
+    CHECK(page.look()[Part::eyes] == 0x112233u);
     page.SetCharacter(9, true);
     v = page.view();
-    CHECK(v.rows[0].name == "Shields (page 1 of 2)");   // (a character: its held gear only)
+    CHECK(v.rows[0].name == "Character (page 1 of 3)");
     page.Press(Input::kPageNext);
-    CHECK(page.view().rows[0].name == "Swords (page 2 of 2)");
+    CHECK(page.view().rows[0].name == "Shields (page 2 of 3)");   // (its held gear, once shown to work)
+    page.Press(Input::kPageNext);
+    CHECK(page.view().rows[0].name == "Swords (page 3 of 3)");
     page.SetCharacter(0, true);                     // Link again: every page
     CHECK(page.view().rows[0].name == "Link (page 1 of 4)");
 }

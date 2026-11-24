@@ -677,6 +677,15 @@ Error check_object_state(const ObjectState& s) {
     }
   }
   if (s.hit && s.hit->seq == 0) return Error::bad_value;  // (seqs count from 1)
+  if (s.strike && s.strike->seq == 0) return Error::bad_value;
+  if (s.orders) {
+    if (s.orders->recent.size() > kMaxBossOrders) return Error::bad_value;
+    std::uint32_t before = 0;
+    for (const BossOrder& o : s.orders->recent) {
+      if (o.seq == 0 || o.seq <= before || o.seq > s.orders->seq) return Error::bad_value;
+      before = o.seq;
+    }
+  }
   if (s.bsa) {
     const auto finite = [](const BossAction& a) {
       for (const auto& p : a.places) {
@@ -786,6 +795,23 @@ void write_object_state(const ObjectState& s, Writer& w) {
     component(ObjectComponent::hit, [&] {
       w.u32(s.hit->seq);
       for (std::uint32_t word : s.hit->record) w.u32(word);
+    });
+  }
+  if (s.strike) {
+    component(ObjectComponent::strike, [&] {
+      w.u32(s.strike->seq);
+      for (std::uint32_t word : s.strike->kind) w.u32(word);
+    });
+  }
+  if (s.orders) {
+    component(ObjectComponent::orders, [&] {
+      w.u32(s.orders->seq);
+      w.u8(static_cast<std::uint8_t>(s.orders->recent.size()));
+      for (const BossOrder& o : s.orders->recent) {
+        w.u32(o.seq);
+        w.u32(o.type);
+        w.bytes(o.payload.data(), o.payload.size());
+      }
     });
   }
 }
@@ -1501,6 +1527,30 @@ Error decode_component(ObjectComponent id, Reader& c, ObjectState& s, bool& know
       COOP_READ(c.u32(h.seq));
       if (h.seq == 0) return Error::bad_value;
       for (std::uint32_t& word : h.record) COOP_READ(c.u32(word));
+      return Error::none;
+    }
+    case ObjectComponent::orders: {
+      BossOrders& b = s.orders.emplace();
+      std::uint8_t count = 0;
+      COOP_READ(c.u32(b.seq));
+      COOP_READ(c.u8(count));
+      if (count > kMaxBossOrders) return Error::bad_value;
+      std::uint32_t before = 0;
+      for (std::uint8_t i = 0; i < count; ++i) {
+        BossOrder& o = b.recent.emplace_back();
+        COOP_READ(c.u32(o.seq));
+        COOP_READ(c.u32(o.type));
+        if (o.seq == 0 || o.seq <= before || o.seq > b.seq) return Error::bad_value;
+        before = o.seq;
+        for (std::uint8_t& byte : o.payload) COOP_READ(c.u8(byte));
+      }
+      return Error::none;
+    }
+    case ObjectComponent::strike: {
+      ObjectStrike& k = s.strike.emplace();
+      COOP_READ(c.u32(k.seq));
+      if (k.seq == 0) return Error::bad_value;
+      for (std::uint32_t& word : k.kind) COOP_READ(c.u32(word));
       return Error::none;
     }
     case ObjectComponent::bsa: {

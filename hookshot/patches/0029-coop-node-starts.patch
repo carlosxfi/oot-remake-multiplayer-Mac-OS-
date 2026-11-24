@@ -1,4 +1,4 @@
-From 82a4466aff16f497f1f15ebd693183e73b71201e Mon Sep 17 00:00:00 2001
+From 9c9eee444593c4a521fc75e3a375fda9436043ea Mon Sep 17 00:00:00 2001
 From: daurosk <354202035+daurosk@users.noreply.github.com>
 Date: Tue, 17 Nov 2026 11:48:13 -0900
 Subject: [PATCH] Co-op AI node starts: the started node and its actor, to the
@@ -23,7 +23,7 @@ instead of looking for it in the heap. Words and build id checked.
 
 diff --git a/host/hos_coop_nodes.h b/host/hos_coop_nodes.h
 new file mode 100644
-index 0000000..d1fe54a
+index 00000000..d1fe54a4
 --- /dev/null
 +++ b/host/hos_coop_nodes.h
 @@ -0,0 +1,26 @@
@@ -54,7 +54,7 @@ index 0000000..d1fe54a
 +
 +#endif
 diff --git a/nx2/coop_hooks.py b/nx2/coop_hooks.py
-index e9905c5..cd126a7 100644
+index e9905c58..cd126a73 100644
 --- a/nx2/coop_hooks.py
 +++ b/nx2/coop_hooks.py
 @@ -73,4 +73,6 @@ def install(lifter, img, build_id):
@@ -66,7 +66,7 @@ index e9905c5..cd126a7 100644
      return len(FRAME_SITES) + 1
 diff --git a/nx2/coop_node_lift.py b/nx2/coop_node_lift.py
 new file mode 100644
-index 0000000..bb086a0
+index 00000000..bb086a00
 --- /dev/null
 +++ b/nx2/coop_node_lift.py
 @@ -0,0 +1,62 @@
@@ -132,6 +132,3 @@ index 0000000..bb086a0
 +        print("co-op node starts: %s hook at main+%#x (world hook)" % (name, site))
 +        n += 1
 +    return n
--- 
-
-

@@ -2710,4 +2710,50 @@ RestScan NodeRestWords(const std::function<std::optional<std::uint64_t>(std::uin
     return out;
 }
 
+RestScan NodeTargetAtRest(const std::function<std::optional<std::uint64_t>(std::uint64_t)>& read,
+                          std::uint64_t node, const proto::Vec3& to) {
+    RestScan out;
+    if (!Finite(to)) {
+        return out;
+    }
+    const auto float_at = [&](std::uint64_t address) -> std::optional<float> {
+        const auto word = read(address & ~std::uint64_t{7});
+        if (!word) return std::nullopt;
+        const auto b = static_cast<std::uint32_t>((address & 4) != 0 ? *word >> 32 : *word);
+        float f = 0.0f;
+        std::memcpy(&f, &b, 4);
+        return f;
+    };
+    // A place that cannot be read is left alone (nothing known to put right).
+    const auto off = [&](std::uint64_t offset) {
+        bool any = false;
+        for (int axis = 0; axis < 3; ++axis) {
+            const auto v = float_at(node + offset + 4 * axis);
+            if (!v) return false;
+            if (!std::isfinite(*v) || std::fabs(*v - to[axis]) > kRestMatchM) any = true;
+        }
+        return any;
+    };
+    char text[32];
+    for (const std::uint64_t offset : {BlockNode::kTarget, BlockNode::kStart}) {
+        if (!off(offset)) continue;
+        for (int axis = 0; axis < 3; ++axis) {
+            std::uint32_t b = 0;
+            std::memcpy(&b, &to[axis], 4);
+            out.writes.push_back({node + offset + 4 * axis, b});
+        }
+        std::snprintf(text, sizeof text, "node+%#llx", static_cast<unsigned long long>(offset));
+        out.where.push_back(text);
+    }
+    return out;
+}
+
+bool NodeMayStartAgain(bool force_on, const proto::Vec3& goal, const proto::Vec3& to) {
+    if (!force_on || !std::isfinite(goal[0]) || !std::isfinite(goal[2])) {
+        return true;  // the start's grid end: the place it sets is put at the rest after it (NodeTargetAtRest)
+    }
+    const float dx = to[0] - goal[0], dz = to[2] - goal[2];
+    return std::sqrt(dx * dx + dz * dz) <= BlockNode::kOnAnswerM;  // on its answer: the answer end agrees
+}
+
 } // namespace CoopWorld

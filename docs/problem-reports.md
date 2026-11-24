@@ -14,7 +14,7 @@ side: a few lines a session, and only problems not reported before.
 
 ## How a player meets it
 
-- **Asked once.** A start (`start.ps1`, step 5b) asks `Send problem reports to the Squadala! team after your games? [y/N]`
+- **Asked once.** A start (`start.ps1`, step 5b) asks `Send automatic problem reports to the Squadala team? (y/n)`
   (below, "Sending") when the kit has the bot's address; a kit without it asks the older `Make problem reports? [y/N]`
   (local zips only). No is the default either way. The answers are kept in `logs\problem-reports.json` and
   `logs\problem-send.json`.
@@ -64,18 +64,34 @@ skipped, and tried again at the next start, while the others are still read.
 
 ## Sending
 
-**The question.** A start asks once, with No as the default and 20 seconds to answer (no key, Enter or N: no; a start
-without a console or terminal: no, and asks again next time it has one):
+**The question.** On screen it is one short question and one line under it (the full text below is what it stands for):
+
+> Send automatic problem reports to the Squadala team? (y/n)
+>   Masked, only after a game with a problem. Turn off any time: scripts\problem-report.cmd off
+
+It is asked once at the first setup (`hookshot-build.ps1`) and at a start (`start.ps1`, Linux `start-squadala.sh`) of a kit that
+never answered. `y` is yes; `n`, Enter, no key in 20 seconds or no console/terminal is no (never blocks; a no from a missing
+console is asked again next time there is one). The full meaning of the question:
 
 > Problem reports: when a game you played had a co-op problem or a crash, the kit can send the team a small report after
 > the game closes: the problem lines from the game's log and the crash record, masked first (IP and MAC addresses, your
 > user and PC names, players' names, invite codes and passwords are taken out; lines that may still hold an address are
-> left out). Nothing is sent after a game without problems. It goes to the Squadala! report bot (*its host name*), never
-> to Longshot; a copy stays in logs\problem-send. Turn it off at any time: scripts\problem-report.cmd off.
+> left out). Nothing is sent after a game without problems. It goes to the Squadala! report bot, never to Longshot; a
+> copy stays in logs\problem-send. Turn it off at any time: scripts\problem-report.cmd off.
 
 Players who answered the older local-only question are asked this once too (sending is a new consent). A kit whose
 `scripts/problem-send-url.txt` has no address yet does not ask and sends nothing. Yes makes a random install id (32 hex
 digits: nothing about the PC or the player; the bot's rate limit counts uploads by it) and turns the local reports on.
+
+**The address.** The kit ships with the bot's address on the first line of `scripts/problem-send-url.txt` (a Tailscale
+Funnel address, `https://squadala-reports.<tailnet>.ts.net/v1/problem-report`; it holds no PC or personal name). So an
+address change needs no release, each start (`-AtStart`, Linux `at-start`) first looks the address up in
+`docs/problem-send-address.txt` on `main` (raw.githubusercontent.com, the same GitHub access the updater has; 4 seconds at
+most; HTTPS only; the first line that is not a `#` comment) and caches a valid answer in `logs/problem-send-address.txt`.
+Order used: `OOT_COOP_PROBLEM_SEND_URL` (tests), the cache, the kit's file. A failed or invalid lookup keeps the cache.
+The lookup only reads; nothing is sent without the player's yes. When the address changes, edit
+`docs/problem-send-address.txt` on main (and the kit file at the next release). The coordinator watchdog checks the
+intake (`POST` answers 411 or 415) and the bot's heartbeat; see `tools/discord-bot/README.md`.
 
 **When.** The kit's start does not wait for the game (play.ps1 returns once it started; the Linux `start.sh` only sees
 it close). Right after the game starts, with sending on, a hidden window (`problem-send.ps1 -AfterGame`; Linux:
@@ -109,6 +125,18 @@ Squadala! team (report #N): ...`). The queue: `logs\problem-send\<date>-<report 
 `<game>\bug-reports\coop-sent.txt`, and the title does not ask about it: the team has it already. With sending off that
 file is never written and the ask is as before. A game started again before the upload finished (about 20 s after the
 crash, longer without network) still asks.
+
+**A load that never ends (black-01112).** Row 242's black world was a mod's model naming textures no folder had: the
+game waited for them for good and nothing said so. Now, solo and co-op, the module watches the game's own scene load
+(`Sequence_IsLoadingBanc`, `hookshot/src/coop_stuck_load.h`): still on after 2 minutes of the game running (a pause, the window in the background or the PC asleep adds at most 1 s; counted only once the title has
+been up, so the first start's long boot never counts; the title stops it) it logs `coop: stuck load: ...`, writes a
+record `<game>\bug-reports\coop-stuck\stuck-<UTC>.txt` and, in a session, says so in the chat. The next title asks
+once, on the same page as the crash ask: "Loading got stuck last time. Please send /bugreport on Discord with the zip of
+collect-logs.cmd." A load that ends after all (a slow PC) takes its record back. Cutscenes without Link (the New Game
+intro, the staff roll, warps) are not a scene load: they never count; a long stretch with no Link, no load and no title
+is only logged (`no Link for 120 s ...: logged only`). Patch 0008 makes Longshot log every RomFS file the game opens
+that neither the game nor any mod has (`fs: OpenFile(rom:/...): not found: neither the game nor any mod has it`), so the
+log names the file such a load waits for.
 
 **The bot's side.** `tools/discord-bot/intake_core.py` (its README, "Problem-report intake"): POST `/v1/problem-report`
 only, 256 KB at most, `application/zip` only, both ids 32 hex digits, at most 4 uploads an hour and 12 a day per

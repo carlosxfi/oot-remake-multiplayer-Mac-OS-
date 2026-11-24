@@ -115,7 +115,11 @@ try {
     & $tar -x -f $newWin -C $newKit
     $newKit = @(Get-ChildItem -LiteralPath $newKit -Directory)[0].FullName
     $v = [System.IO.File]::ReadAllLines((Join-Path $kit 'VERSION.txt'))[0]
-    Check ($v -match "\(release $([regex]::Escape($Tag))\)") "VERSION.txt is the new release [$v]"
+    $newV = [System.IO.File]::ReadAllLines((Join-Path $newKit 'VERSION.txt'))[0]
+    # A release gate's test kit names its commit after the tag ('(release v0.11.12-test-<sha8>)'); a published kit has the
+    # bare tag. Either way the old updater must leave exactly the new zip's VERSION.txt.
+    Check ($newV -match "\(release $([regex]::Escape($Tag))(-test-[0-9a-f]{8})?\)") "the new zip's VERSION.txt is release $Tag or its test kit [$newV]"
+    Check ($v -eq $newV) "VERSION.txt is the new release's [$v]"
     Check (-not (Test-Path -LiteralPath (Join-Path $kit 'update-in-progress.txt'))) 'no unfinished-update marker'
     $files = @([System.IO.File]::ReadAllLines((Join-Path $newKit 'MANIFEST.txt')) | Where-Object { $_ -and -not $_.StartsWith('#') })
     $bad = @($files | Where-Object { -not (Test-Path -LiteralPath (Join-Path $kit $_)) -or (Sha (Join-Path $kit $_)) -ne (Sha (Join-Path $newKit $_)) })

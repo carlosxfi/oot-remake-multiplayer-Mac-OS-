@@ -288,6 +288,7 @@ void Session::on_join_proof(ConnectionId id, Connection& c, const JoinProof& pro
     same_network = true;
     password = std::string(protocol::kSameNetworkPassword);
     ++stats_.same_network_joins;
+    log("a player on this network joins without the join password (same-network key, private address)");
   }
   c.nonce = {};  // used once: a second proof on this connection finds no nonce to match
   std::vector<std::uint8_t> hello_packet = std::move(c.hello_packet);
@@ -647,6 +648,7 @@ std::string Session::client_label(const std::string& build_id) {
 
 void Session::on_player_message(ConnectionId id, Connection& c, std::uint8_t channel,
                                 Message& message, std::size_t bytes, std::uint64_t now_us) {
+  const std::size_t raw_bytes = bytes;  // its size as it came (the rate's bytes may leave some out)
   if (std::holds_alternative<Pong>(message)) return;  // our PING answered
   if (std::holds_alternative<FlagSnapshot>(message)) bytes = 0;  // see bytes_per_second
   // The host's save: a few hundred KB at once, paced by the host's game (one
@@ -660,10 +662,68 @@ void Session::on_player_message(ConnectionId id, Connection& c, std::uint8_t cha
       (std::holds_alternative<LocalSample>(message) &&
        local_player(id, std::get<LocalSample>(message).seat)) ||
       (std::holds_alternative<LocalMessage>(message) && local_player(id, std::get<LocalMessage>(message).seat));
-  if (!host_save && !seat_envelope && !within_rate(c, channel, bytes, now_us)) {
-    ++stats_.rate_limited;
+  // Reliable messages wait in order behind any already waiting, and over the rate they wait instead of being dropped
+  // (reliable_queue_max). PING is answered at once or not at all (a late PONG would skew the clock), unreliable ones
+  // are dropped as before.
+  const bool waits = channel <= kChannelOwnership && !std::holds_alternative<Ping>(message) && !host_save &&
+                     !seat_envelope;
+  const auto defer = [&] {
+    // Bounded by count and by bytes: a message may be up to 64 KiB, so 4096 of them alone would let one player
+    // make the server hold 256 MiB.
+    if (c.deferred.size() >= config_.reliable_queue_max ||
+        c.deferred_bytes + raw_bytes > config_.reliable_queue_bytes_max) {
+      ++stats_.rate_limited;
+      return;
+    }
+    ++stats_.rate_deferred;
+    c.deferred_bytes += raw_bytes;
+    // Its arrival time goes with it: a FLAG_SET that came before the host's save load is the guest's old value
+    // even when it is handled after it (on_flag_set's reset fence).
+    c.deferred.push_back({channel, std::move(message), bytes, raw_bytes, now_us});
+  };
+  if (waits && !c.deferred.empty()) {
+    defer();
     return;
   }
+  if (!host_save && !seat_envelope && !within_rate(c, channel, bytes, now_us)) {
+    if (waits) {
+      defer();
+    } else {
+      ++stats_.rate_limited;
+    }
+    return;
+  }
+  dispatch_player_message(id, c, channel, message, now_us, now_us);
+}
+
+void Session::run_deferred(std::uint64_t now_us) {
+  std::vector<ConnectionId> waiting;
+  for (const auto& [id, c] : connections_) {
+    if (!c.deferred.empty()) waiting.push_back(id);
+  }
+  for (const ConnectionId id : waiting) {
+    // Each step may remove players (a LEAVE): look the connection up again every time.
+    for (;;) {
+      auto it = connections_.find(id);
+      if (it == connections_.end() || it->second.deferred.empty()) break;
+      Connection& c = it->second;
+      if (c.state != State::joined) {
+        c.deferred.clear();
+        c.deferred_bytes = 0;
+        break;
+      }
+      Connection::Deferred& d = c.deferred.front();
+      if (!within_rate(c, d.channel, d.bytes, now_us)) break;
+      Connection::Deferred next = std::move(d);
+      c.deferred.pop_front();
+      c.deferred_bytes -= std::min(c.deferred_bytes, next.raw_bytes);
+      dispatch_player_message(id, c, next.channel, next.message, now_us, next.received_us);
+    }
+  }
+}
+
+void Session::dispatch_player_message(ConnectionId id, Connection& c, std::uint8_t channel, Message& message,
+                                      std::uint64_t now_us, std::uint64_t received_us) {
   if (const auto* ping = std::get_if<Ping>(&message)) {
     send(id, kChannelSession, Pong{ping->sender_time_us, now_us});
     return;
@@ -686,11 +746,11 @@ void Session::on_player_message(ConnectionId id, Connection& c, std::uint8_t cha
     return;
   }
   if (std::holds_alternative<FlagSet>(message)) {
-    on_flag_set(c, message);
+    on_flag_set(id, c, message, received_us);
     return;
   }
   if (std::holds_alternative<FlagState>(message) || std::holds_alternative<FlagReset>(message)) {
-    on_flag_state(id, c, message);
+    on_flag_state(id, c, message, now_us);
     return;
   }
   if (std::holds_alternative<SaveAsk>(message) || std::holds_alternative<SavePart>(message)) {
@@ -1252,7 +1312,28 @@ void Session::on_join_partner(ConnectionId id, Connection& c, JoinPartner& j) {
 
 // To the host only, the host itself included: a host's own FLAG_SET comes
 // back to it, so its build answers every FLAG_SET the same way.
-void Session::on_flag_set(Connection& c, Message& message) {
+void Session::on_flag_set(ConnectionId id, Connection& c, Message& message, std::uint64_t received_us) {
+  // Report 138 (4): just after the host's save load, a guest's change to a flag the reset set was most likely sent
+  // before that guest had the reset: its old value. Refused, so the save's value stands. Judged by when it reached
+  // us (received_us), not when it is handled: one that waited over its sender's rate (run_deferred) still came
+  // before. Never the host's own game (its seats included): its changes come after its own load, so they are the
+  // save's game going on.
+  const bool from_host_game = host_ && same_game(id, *host_);
+  if (!from_host_game && received_us < reset_fence_until_ && !reset_fence_.empty()) {
+    auto& entries = std::get<FlagSet>(message).flags;
+    const std::size_t before = entries.size();
+    std::erase_if(entries, [&](const FlagEntry& e) {
+      if (e.kind == FlagKind::count_delta) return false;
+      const auto it = reset_fence_.find(e.key);
+      return it != reset_fence_.end() && it->second != e.value;
+    });
+    if (entries.size() != before) {
+      stats_.reset_fenced += before - entries.size();
+      log("player " + std::to_string(c.number) + ": " + std::to_string(before - entries.size()) +
+          " flag change(s) refused just after the host's save load (sent before its game had the reset; report 138)");
+    }
+    if (entries.empty()) return;
+  }
   set_sender(message, c.number);
   send(*host_, kChannelProgress, message);
   ++stats_.flag_relayed;
@@ -1269,7 +1350,7 @@ void Session::on_flag_set(Connection& c, Message& message) {
   }
 }
 
-void Session::on_flag_state(ConnectionId id, Connection& c, Message& message) {
+void Session::on_flag_state(ConnectionId id, Connection& c, Message& message, std::uint64_t now_us) {
   if (id != host_) {
     ++stats_.flag_refused;
     return;
@@ -1279,7 +1360,7 @@ void Session::on_flag_state(ConnectionId id, Connection& c, Message& message) {
   const auto& flags = std::holds_alternative<FlagReset>(message) ? std::get<FlagReset>(message).flags
                                                                   : std::get<FlagState>(message).flags;
   for (const FlagEntry& e : flags) keep_flag(e);
-  if (std::holds_alternative<FlagReset>(message)) on_host_reset();
+  if (std::holds_alternative<FlagReset>(message)) on_host_reset(flags, now_us);
   set_sender(message, c.number);
   send_to_others(id, kChannelProgress, message);
   ++stats_.flag_relayed;
@@ -1321,8 +1402,13 @@ void Session::on_save(ConnectionId id, Connection& c, Message& message) {
   ++stats_.relayed;
 }
 
-void Session::on_host_reset() {
+void Session::on_host_reset(const std::vector<FlagEntry>& flags, std::uint64_t now_us) {
   ++stats_.host_resets;
+  reset_fence_.clear();
+  if (config_.reset_fence_us != 0) {
+    for (const FlagEntry& e : flags) reset_fence_[e.key] = e.value;
+    reset_fence_until_ = now_us + config_.reset_fence_us;
+  }
   // Owners of session-wide kept state add their clear here (docs/flags.md, "Saves").
   world_.forget_kept();  // locked doors' kept breaks (docs/dungeon.md, "Locked doors")
   dead_.clear();         // kills-late: the save's enemies are alive again
@@ -1438,6 +1524,7 @@ void Session::on_status(Connection& c, std::uint8_t flags, std::uint64_t now_us)
   };
   since(status::paused, c.paused_since);
   since(status::dead, c.dead_since);
+  since(status::in_cutscene, c.cutscene_since);
   c.status = flags;
 }
 
@@ -1575,6 +1662,8 @@ void Session::on_object_present(ConnectionId id, Connection& c, const ObjectPres
       o.present.insert(id);
       c.present.insert(oid);
       if (e.flags & object_presence::own_logic) o.own_logic.insert(id);  // row 212, as below
+      if (e.flags & object_presence::battle_manager) o.battle_manager = true;  // row 222, as below
+      if (e.flags & object_presence::grabbed_here) o.grabbed.insert(id);       // row 232, as below
       if (holding) {
         o.held = true;  // no owner and no OBJECT_OWNER yet: end_owner_hold decides
         continue;
@@ -1613,6 +1702,12 @@ void Session::on_object_present(ConnectionId id, Connection& c, const ObjectPres
       o.own_logic.insert(id);
     } else {
       o.own_logic.erase(id);
+    }
+    if (e.flags & object_presence::battle_manager) o.battle_manager = true;  // row 222 (orders_root)
+    if (e.flags & object_presence::grabbed_here) {
+      o.grabbed.insert(id);  // row 232 (grab_owner)
+    } else {
+      o.grabbed.erase(id);
     }
     // Tell a newcomer who owns it and the epoch to send with; its own made
     // enemy it knows.
@@ -1821,12 +1916,15 @@ void Session::on_damage(ConnectionId id, Connection& c, Damage& d, std::uint64_t
   }
   if ((o.boss || root->boss) && config_.boss_hitter_cooldown_us != 0) {
     // A hit that takes life stays with the owner (gohma-sync): only a stun.
-    if ((d.amount == 0 || config_.boss_hit_handover) && root->owner && *root->owner != id &&
+    if ((d.amount == 0 || config_.boss_hit_handover) && root->owner && *root->owner != id && !orders_root(*root) &&
         !root->ask && !busy(c) &&
         has_loaded(id, *root) && !root->unready.contains(id) &&
         (root->hitter_changed_at == 0 || now_us - root->hitter_changed_at >= config_.boss_hitter_cooldown_us) &&
         !owner_hit_lately(*root, now_us) && !owner_hit_lately(o, now_us)) {
-      if (ask_handover(root_id, *root, id, now_us)) ++stats_.boss_to_hitter;
+      if (ask_handover(root_id, *root, id, now_us,
+                       d.amount == 0 ? "a stun by a copy (issue 150)" : "the hitter takes it")) {
+        ++stats_.boss_to_hitter;
+      }
     }
     return;  // a boss is not moved by the distance rule below
   }
@@ -1849,7 +1947,7 @@ void Session::on_damage(ConnectionId id, Connection& c, Damage& d, std::uint64_t
   const auto theirs = distance_to(owner->second, o, now_us);
   if (mine && theirs && *mine <= config_.handover_near_m &&
       *mine + config_.handover_margin_m <= *theirs && !hands_back_soon(o, id, now_us)) {
-    ask_handover(d.id, o, id, now_us);
+    ask_handover(d.id, o, id, now_us, "the hitter is nearer than its owner");
   }
 }
 
@@ -2028,7 +2126,7 @@ void Session::on_object_group(ConnectionId id, Connection& c, const ObjectGroup&
         std::uint8_t old_owner = 0;
         if (auto it = connections_.find(*member.owner); it != connections_.end()) old_owner = it->second.number;
         ++stats_.parts_to_root;
-        change_owner(e.member, member, root.owner, old_owner, now_us);
+        change_owner(e.member, member, root.owner, old_owner, now_us, "a fresh part goes to its root's owner");
       }
     }
     if (group_of(member) != before) announce_owner(e.member, member);
@@ -2072,7 +2170,7 @@ void Session::drop_presence(ConnectionId id, std::uint8_t number, const ObjectId
     if (o.projectile) next = bomb_heir(o, id);
     if (next && o.projectile) ++stats_.bomb_handed_on;
     if (next) {
-      change_owner(oid, o, next, number, now_us);
+      change_owner(oid, o, next, number, now_us, "its owner let go of it (unloaded it or left)");
       return;
     }
     ObjectRemove r{number, oid, o.epoch, RemoveReason::gone, {}};
@@ -2089,7 +2187,7 @@ void Session::drop_presence(ConnectionId id, std::uint8_t number, const ObjectId
   if (o.owner != id) return;
   std::optional<ConnectionId> next = next_owner(o, id, now_us);
   if (kept && next && !o.own_logic.contains(*next)) next.reset();  // row 212: as a made one's, above
-  change_owner(oid, o, next, number, now_us);
+  change_owner(oid, o, next, number, now_us, "its owner let go of it (unloaded it or left)");
 }
 
 // Report 138: the owner let go of it (its game unloaded it, or it left). A
@@ -2151,9 +2249,59 @@ std::optional<double> Session::distance_to(const Connection& c, const Object& o,
   return metres(*c.position, *o.last_state->position);
 }
 
+bool Session::orders_root(const Object& o) const {
+  return o.boss && !o.root && o.battle_manager;
+}
+
+std::optional<ConnectionId> Session::grab_owner(const Object& o, ConnectionId owner, std::uint64_t now_us) const {
+  if (!o.boss || o.root || o.grabbed.empty() || o.grabbed.contains(owner) || orders_root(o)) return std::nullopt;
+  for (ConnectionId other : o.grabbed) {  // (lowest connection first: one answer while two are held)
+    if (other == owner || !o.present.contains(other) || !has_loaded(other, o) || o.unready.contains(other)) continue;
+    const auto it = connections_.find(other);
+    if (it == connections_.end() || busy(it->second) || unfit_fight_owner(it->second, now_us)) continue;
+    return other;
+  }
+  return std::nullopt;
+}
+
 bool Session::unfit_fight_owner(const Connection& c, std::uint64_t now_us) const {
   if (c.dead_since != 0 && now_us - c.dead_since >= config_.fight_owner_dead_us) return true;
   return c.paused_since != 0 && now_us - c.paused_since >= config_.fight_owner_paused_us;
+}
+
+std::string Session::unfit_why(const Connection& c, std::uint64_t now_us) const {
+  if (c.status & status::loading) return "loading";
+  if (c.dbno != DbnoState::up) return "downed";
+  if (c.dead_since != 0 && now_us >= c.dead_since) {
+    return "dead " + std::to_string((now_us - c.dead_since) / 1'000'000) + " s";
+  }
+  if (c.paused_since != 0 && now_us >= c.paused_since) {
+    return "paused " + std::to_string((now_us - c.paused_since) / 1'000'000) + " s";
+  }
+  return "unfit";
+}
+
+bool Session::owner_in_own_cutscene(ConnectionId owner, const Connection& c, const Object& o,
+                                    std::uint64_t now_us) const {
+  if (!o.boss || config_.fight_owner_cutscene_us == 0 || c.cutscene_since == 0) return false;
+  if (now_us - c.cutscene_since < config_.fight_owner_cutscene_us) return false;
+  // pr-navi-01112: only a boss whose AI stands in that event. A boss that holds or throws its owner's Link plays
+  // that as an event in its owner's game (Morpha's tentacle grab, about 6 s: dungeons-boss.md "The boss's death"),
+  // its AI running: a hand-over then takes the boss from the grab it is in. So never mid-attack (the rule below the
+  // unfit ones, attack_hold_max_us), never while a piece of it holds its owner's Link (row 232, grabbed_here), and
+  // only once its owner's samples show one move unchanged that long (note_hold: animation, action verb, life; reset
+  // by a death, an event's animation, 'Sleep' and an unready owner, so the boss's own intro never counts).
+  if (mid_attack(o, now_us) || o.grabbed.contains(owner)) return false;
+  if (o.hold_since == 0 || now_us - o.hold_since < config_.fight_owner_cutscene_us) return false;
+  if (o.last_state) {
+    // The boss's own intro, phase change or death: every game plays it, the owner's AI is in it on purpose.
+    if (o.last_state->life && o.last_state->life->life <= 0) return false;
+    if (const auto& a = o.last_state->animation;
+        a && (coop::protocol::anim::IsDeath(a->name) || coop::protocol::anim::IsEvent(a->name))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool Session::unfit_owner(const Connection& c, std::uint64_t now_us) const {
@@ -2261,6 +2409,9 @@ std::optional<ConnectionId> Session::next_turn(Object& o, ConnectionId owner, st
   // A shot of its owner's game in the air does not hold the turn: the edge above comes right after a shooting
   // attack, while its shots fly (Phantom Ganon's bolt and shockwaves: a hold on them meant no turn at all), and a
   // shot stays with the game that made it. His rally ball is each game's own (a split shot, coop_enemy_shots.h).
+  // A rally ball is the exception, read in its owner's game (row 211, CoopObjects::AttackWithRally): while it flies
+  // there, the boss's samples say it still attacks (his volley and the stun of a rally won are that attack), so no
+  // edge comes until the ball is gone.
   // The next player by number after the owner, round: in the boss's area,
   // ready (its intro played), up and playing.
   const auto own = connections_.find(owner);
@@ -2310,7 +2461,9 @@ bool Session::hands_back_soon(const Object& o, ConnectionId to, std::uint64_t no
 }
 
 void Session::note_hold(Object& o, const ObjectState& sample, std::uint64_t now_us) {
-  if (!o.boss || o.root || config_.boss_stall_us == 0) return;
+  // The move is tracked for every boss root (also row 164's owner_in_own_cutscene); only the stall below needs
+  // boss_stall_us.
+  if (!o.boss || o.root) return;
   // What the sample lacks is as last relayed.
   const ObjectState* last = o.last_state ? &*o.last_state : nullptr;
   const auto& animation = sample.animation ? sample.animation : last ? last->animation : std::nullopt;
@@ -2335,7 +2488,7 @@ void Session::note_hold(Object& o, const ObjectState& sample, std::uint64_t now_
     o.stalled = false;  // a new move (or a hit that took life, or none to judge): its fight counts again
     return;
   }
-  if (o.stalled || now_us - o.hold_since < config_.boss_stall_us) return;
+  if (config_.boss_stall_us == 0 || o.stalled || now_us - o.hold_since < config_.boss_stall_us) return;
   o.stalled = true;
   o.fight_until = 0;
   o.owner_hit_at = 0;
@@ -2409,7 +2562,7 @@ bool Session::keeps_finish(Object& o, ConnectionId to) {
 }
 
 bool Session::ask_handover(const ObjectId& oid, Object& o, ConnectionId to,
-                           std::uint64_t now_us) {
+                           std::uint64_t now_us, std::string why) {
   auto target = connections_.find(to);
   if (!o.owner || target == connections_.end()) return false;
   if (keeps_finish(o, to)) {
@@ -2425,7 +2578,11 @@ bool Session::ask_handover(const ObjectId& oid, Object& o, ConnectionId to,
     ++stats_.kept_by_logic;
     return false;
   }
-  o.ask = Object::Ask{to, now_us};
+  Object::Ask ask;
+  ask.to = to;
+  ask.at = now_us;
+  ask.why = std::move(why);
+  o.ask = std::move(ask);
   o.candidate.reset();
   send(*o.owner, kChannelOwnership, HandoverAsk{oid, o.epoch, target->second.number});
   ++stats_.handover_asked;
@@ -2439,6 +2596,7 @@ void Session::finish_handover(const ObjectId& oid, Object& o, const ObjectState*
   const std::int64_t hits_after_ask = o.ask->hits;
   const bool bomb = o.ask->bomb;
   const bool turn = o.ask->turn;
+  const std::string why = o.ask->why + (answer ? "" : " (the owner did not answer)");
   o.ask.reset();
   // The player it was for left, changed scene or unloaded it meanwhile: the
   // owner keeps it. A bomb is a projectile, listed by nobody: its asker only
@@ -2498,12 +2656,23 @@ void Session::finish_handover(const ObjectId& oid, Object& o, const ObjectState*
     old_owner = it->second.number;
   }
   const std::uint64_t hitter_changed_at = o.hitter_changed_at;
-  change_owner(oid, o, to, old_owner, now_us);
+  change_owner(oid, o, to, old_owner, now_us, why);
   if (turn) o.hitter_changed_at = hitter_changed_at;  // a boss turn starts no hitter cooldown
 }
 
 void Session::change_owner(const ObjectId& oid, Object& o, std::optional<ConnectionId> next,
-                           std::uint8_t old_owner, std::uint64_t now_us) {
+                           std::uint8_t old_owner, std::uint64_t now_us, const std::string& why) {
+  if (o.boss || o.battle_manager) {  // (a plain pack's root: not logged, it can change often)
+    std::string to = "nobody";
+    if (next) {
+      if (auto it = connections_.find(*next); it != connections_.end()) {
+        to = "player " + std::to_string(it->second.number);
+      }
+    }
+    log("hand-over: " + (o.actor.empty() ? std::string("an object") : o.actor) +
+        (o.serial != 0 ? " (group " + std::to_string(o.serial) + ")" : std::string()) + " player " +
+        std::to_string(old_owner) + " -> " + to + ": " + (why.empty() ? std::string("no reason given") : why));
+  }
   o.previous_owner = o.owner;
   if (o.owner) o.gave_up[*o.owner] = stamp(now_us);
   if (next) o.gave_up.erase(*next);
@@ -2570,7 +2739,7 @@ void Session::on_bomb_take(ConnectionId id, Connection& c, const BombTake& m,
     return;
   }
   ++stats_.bomb_takes;
-  ask_handover(m.id, o, id, now_us);
+  ask_handover(m.id, o, id, now_us, "a bomb taken (BOMB_TAKE)");
   if (o.ask) o.ask->bomb = true;
 }
 
@@ -2665,7 +2834,9 @@ void Session::fish_owner(const ObjectId& oid, Object& o, ConnectionId owner, boo
     o.candidate.reset();
     // An owner that stands still with no lure near anyone: as any object.
     if (unfit) {
-      if (auto next = best_other(o, owner, true, now_us)) ask_handover(oid, o, *next, now_us);
+      if (auto next = best_other(o, owner, true, now_us)) {
+        ask_handover(oid, o, *next, now_us, "a fish's owner is unfit");
+      }
     }
     return;
   }
@@ -2677,7 +2848,7 @@ void Session::fish_owner(const ObjectId& oid, Object& o, ConnectionId owner, boo
       o.changed_at == 0 || now_us - o.changed_at >= config_.fish_lure_cooldown_us;
   if (settled && now_us - o.candidate_since >= config_.fish_lure_hold_us) {
     ++stats_.fish_to_lure;
-    ask_handover(oid, o, *want, now_us);
+    ask_handover(oid, o, *want, now_us, "a fish to the nearest lure");
   }
 }
 
@@ -2716,7 +2887,7 @@ void Session::run_ownership(std::uint64_t now_us) {
     if (!o.own_logic.empty() && !o.own_logic.contains(owner)) {
       if (auto keeper = logic_owner(o, owner, now_us)) {
         ++stats_.back_to_logic;
-        ask_handover(oid, o, *keeper, now_us);
+        ask_handover(oid, o, *keeper, now_us, "back to a game whose logic made it (row 212)");
       }
       continue;
     }
@@ -2726,23 +2897,31 @@ void Session::run_ownership(std::uint64_t now_us) {
       auto r = objects_.find(*o.root);
       if (r != objects_.end() && r->second.owner && r->second.owner != o.owner &&
           !r->second.ask && has_loaded(*r->second.owner, o)) {
-        ask_handover(oid, o, *r->second.owner, now_us);
+        ask_handover(oid, o, *r->second.owner, now_us, "a group member follows its root's owner");
       }
       continue;
     }
 
     // An owner whose game stands still gives it up, fight or not; a boss's sooner (its AI fights its Link alone).
-    if (unfit_owner(oc, now_us) || ((o.boss || in_fight(o, now_us)) && unfit_fight_owner(oc, now_us))) {
+    // A boss also leaves an owner held in a cutscene of its own game (row 164 follow-up), for a game in none.
+    const bool owner_cut = owner_in_own_cutscene(owner, oc, o, now_us);
+    if (unfit_owner(oc, now_us) || ((o.boss || in_fight(o, now_us)) && unfit_fight_owner(oc, now_us)) || owner_cut) {
+      std::optional<ConnectionId> next = o.fish ? std::nullopt : best_other(o, owner, true, now_us);
+      if (owner_cut && next && connections_.at(*next).cutscene_since != 0) next.reset();  // its event: no better
       if (o.fish) {
         fish_owner(oid, o, owner, true, now_us);  // a hooked fish waits for it
-      } else if (auto next = best_other(o, owner, true, now_us)) {
+      } else if (next) {
         // Row 189: a boss in its fight (its owner's game ready) never goes to a game whose boss has not begun
         // it (unready: every game's boss would go back to its wait before the fight). It waits for its owner,
         // or for a ready game; an owner that leaves still gives it on (next_owner: nobody else has it).
         if (o.boss && !o.unready.contains(owner) && o.unready.contains(*next)) {
           ++stats_.boss_kept_from_unready;
         } else {
-          ask_handover(oid, o, *next, now_us);
+          const bool cut_only = owner_cut && !unfit_owner(oc, now_us) && !unfit_fight_owner(oc, now_us);
+          if (cut_only) ++stats_.boss_from_cutscene;
+          ask_handover(oid, o, *next, now_us,
+                       cut_only ? std::string("its owner is held in a cutscene of its own (row 164 follow-up)")
+                                : "its owner is unfit (" + unfit_why(oc, now_us) + ")");
         }
       }
       continue;
@@ -2762,9 +2941,23 @@ void Session::run_ownership(std::uint64_t now_us) {
     // spot (boss-copy-b).
     if (o.boss && o.unready.contains(owner)) {
       if (auto next = best_other(o, owner, true, now_us); next && !o.unready.contains(*next)) {
-        if (ask_handover(oid, o, *next, now_us)) ++stats_.boss_to_ready;
+        if (ask_handover(oid, o, *next, now_us, "its owner's game has not begun the fight (unready: intro or event)")) {
+          ++stats_.boss_to_ready;
+        }
         continue;
       }
+    }
+
+    // Row 222 (twinrova-222-2, option C): a boss group whose root is a battle manager (object_presence::
+    // battle_manager: Twinrova's Enemy_KotakeKoumeBattleManager, no BSA of its own) keeps its owner but for the rules
+    // above (a paused, dead, loading or gone owner; an unready one), and takes no turns. Its own game's manager chose
+    // the sisters' battle state from its own Link the whole fight, and a new owner's manager does not know that
+    // state, so a turn, a hand-over by distance, a nearer player or a chase held a sister in an attack whose next
+    // step never came. (Above the turn rule: a manager has no BSA today, so no attack end is read, but should a
+    // game ever send one, it still does not turn.)
+    if (orders_root(o)) {
+      o.candidate.reset();
+      continue;
     }
 
     // A boss in a fight takes turns: its AI fights only its owner's Link, so
@@ -2782,7 +2975,7 @@ void Session::run_ownership(std::uint64_t now_us) {
               std::to_string(from->second.number) + ": its attack ended: to player " +
               std::to_string(to->second.number) + " (turn " + std::to_string(stats_.boss_turns) + ")");
         }
-        ask_handover(oid, o, *next, now_us);
+        ask_handover(oid, o, *next, now_us, "a turn: its attack ended");
         if (o.ask) o.ask->turn = true;  // no hitter cooldown from a turn (hitter_changed_at)
         continue;
       }
@@ -2791,6 +2984,20 @@ void Session::run_ownership(std::uint64_t now_us) {
     // Never mid-attack (attack_hold_max_us): a grab or hold stays on the player it holds until it lets go.
     if (mid_attack(o, now_us)) {
       o.candidate.reset();
+      continue;
+    }
+
+    // Row 232: a summoned piece of this boss (Dead Hand's hand) holds another game's own Link while its owner's game
+    // is not held: his AI rises only for a grab in his own game, so that game takes him (once his attack in his
+    // owner's game has ended, above). Two held games: he stays, and his turns pass him on.
+    if (auto grabbed = grab_owner(o, owner, now_us)) {
+      if (ask_handover(oid, o, *grabbed, now_us, "its piece holds that game's Link (row 232)")) {
+        ++stats_.boss_to_grabbed;
+        const auto to = connections_.find(*grabbed);
+        log("boss grab: " + (o.actor.empty() ? std::string("a boss") : o.actor) + " of player " +
+            std::to_string(oc.number) + ": player " +
+            std::to_string(to != connections_.end() ? to->second.number : 0) + " is held by its summoned piece");
+      }
       continue;
     }
 
@@ -2828,7 +3035,7 @@ void Session::run_ownership(std::uint64_t now_us) {
           o.candidate_since = now_us;
         }
         if (now_us - o.candidate_since >= config_.boss_near_hold_us) {
-          if (ask_handover(oid, o, *want, now_us)) ++stats_.boss_to_near;
+          if (ask_handover(oid, o, *want, now_us, "a boss to the player near it (issue 150)")) ++stats_.boss_to_near;
         }
       }
       continue;
@@ -2847,7 +3054,7 @@ void Session::run_ownership(std::uint64_t now_us) {
     // members' chases as its own.
     if (auto chaser = chased_by(o, owner, now_us); chaser && !hands_back_soon(o, *chaser, now_us)) {
       ++stats_.handover_chased;
-      ask_handover(oid, o, *chaser, now_us);
+      ask_handover(oid, o, *chaser, now_us, "a copy chased its own player");
       continue;
     }
 
@@ -2884,7 +3091,7 @@ void Session::run_ownership(std::uint64_t now_us) {
       o.candidate_since = now_us;
     }
     if (now_us - o.candidate_since >= config_.handover_hold_us && !hands_back_soon(o, *want, now_us)) {
-      ask_handover(oid, o, *want, now_us);
+      ask_handover(oid, o, *want, now_us, "the near rule (a nearer player, out of a fight)");
     }
   }
 }
@@ -2936,10 +3143,17 @@ ObjectOwner Session::owner_message(const ObjectId& oid, const Object& o) const {
   return ObjectOwner{oid, owner, o.epoch, group_of(o)};
 }
 
+// A group's fight is kept on its root alone (mark_fight and in_fight go to the root), so a member cut loose from it
+// (its root forgotten, the member a root of its own, or moved to another root) keeps that fight lock as its own.
+// Row 222 follow-up (twinrova-01112): Twinrova's manager and sisters leave every game at her merge; Twinrova, on her
+// own again with no lock of her own, read "out of a fight" mid-fight and the chase rule (issue 101) moved her.
 void Session::unlink(const ObjectId& oid, Object& o) {
   if (!o.root) return;
   auto r = objects_.find(*o.root);
-  if (r != objects_.end()) r->second.members.erase(oid);
+  if (r != objects_.end()) {
+    r->second.members.erase(oid);
+    o.fight_until = std::max(o.fight_until, r->second.fight_until);
+  }
   o.root.reset();
 }
 
@@ -2947,11 +3161,13 @@ void Session::forget(Objects::iterator it) {
   const ObjectId oid = it->first;
   unlink(oid, it->second);
   const std::set<ObjectId> members = std::move(it->second.members);
+  const std::uint64_t group_fight_until = it->second.fight_until;
   objects_.erase(it);
-  // What followed it is on its own again.
+  // What followed it is on its own again, still in the group's fight.
   for (const ObjectId& m : members) {
     auto mi = objects_.find(m);
     if (mi == objects_.end()) continue;
+    mi->second.fight_until = std::max(mi->second.fight_until, group_fight_until);
     mi->second.root.reset();
     announce_owner(m, mi->second);
   }
@@ -3308,9 +3524,17 @@ std::uint32_t ipv4_of(std::uint32_t enet_host) {
          std::uint32_t{b[3]};
 }
 
-bool is_same_network(std::uint32_t ipv4) {
-  const std::uint32_t a = ipv4 >> 24, b = (ipv4 >> 16) & 255u;
-  return a == 10 || (a == 172 && (b & 0xF0u) == 16) || (a == 192 && b == 168) || (a == 169 && b == 254);
+bool is_same_network(std::uint32_t ipv4) { return protocol::is_same_network_ipv4(ipv4); }
+
+bool is_same_network_ipv6(const std::array<std::uint8_t, 16>& address) {
+  if ((address[0] & 0xFEu) == 0xFCu) return true;                          // fc00::/7
+  if (address[0] == 0xFEu && (address[1] & 0xC0u) == 0x80u) return true;   // fe80::/10
+  for (std::size_t i = 0; i < 10; ++i) {
+    if (address[i] != 0) return false;
+  }
+  if (address[10] != 0xFFu || address[11] != 0xFFu) return false;          // ::ffff:a.b.c.d only
+  return is_same_network((std::uint32_t{address[12]} << 24) | (std::uint32_t{address[13]} << 16) |
+                         (std::uint32_t{address[14]} << 8) | std::uint32_t{address[15]});
 }
 
 void Session::refuse(ConnectionId id, Connection& c, RefuseReason reason,
@@ -3423,6 +3647,7 @@ void Session::remove_player(ConnectionId id, LeaveReason reason, std::uint64_t n
 }
 
 void Session::tick(std::uint64_t now_us) {
+  run_deferred(now_us);  // reliable messages that waited for their sender's rate
   // Wrong-password counts whose window and block are both over.
   for (auto it = wrong_guesses_.begin(); it != wrong_guesses_.end();) {
     const WrongGuesses& g = it->second;
@@ -3534,6 +3759,24 @@ std::size_t Session::player_count() const {
   return static_cast<std::size_t>(std::count_if(
       connections_.begin(), connections_.end(),
       [](const auto& entry) { return entry.second.state == State::joined; }));
+}
+
+Session::Sizes Session::sizes() const {
+  Sizes out;
+  out.connections = connections_.size();
+  for (const auto& [id, c] : connections_) {
+    out.deferred += c.deferred.size();
+    out.deferred_bytes += c.deferred_bytes;
+    out.present += c.present.size();
+  }
+  out.objects = objects_.size();
+  out.flags = flags_.size();
+  for (const auto& [scene, dead] : dead_) out.dead += dead.size();
+  for (const auto& [scene, cuts] : grass_) out.grass += cuts.size();
+  out.world_scenes = world_.scenes();
+  out.world_entries = world_.entries();
+  out.actions = actions_.size();
+  return out;
 }
 
 std::optional<std::uint8_t> Session::host() const {

@@ -373,7 +373,7 @@ void FixSlotsLocked() {
         if (!it->is_directory(dec)) continue;
         const fs::path file = it->path() / "progress.sav";
         std::FILE* in = nullptr;
-#ifdef _MSC_VER
+#ifdef _WIN32  // (a Windows path is wide with MSVC and llvm-mingw alike: _WIN32, as ReadSaveSetLocked)
         if (_wfopen_s(&in, file.c_str(), L"rb") != 0) in = nullptr;
 #else
         in = std::fopen(file.c_str(), "rb");
@@ -396,7 +396,7 @@ void FixSlotsLocked() {
         }
         const fs::path tmp = it->path() / "progress.sav.coop-tmp";
         std::FILE* out = nullptr;
-#ifdef _MSC_VER
+#ifdef _WIN32
         if (_wfopen_s(&out, tmp.c_str(), L"wb") != 0) out = nullptr;
 #else
         out = std::fopen(tmp.c_str(), "wb");
@@ -419,6 +419,12 @@ void FixSlotsLocked() {
 namespace personal = CoopPersonalInventory;
 fs::path g_profile_path;
 std::optional<personal::Counts> g_profile_counts;
+// Bottle validity belongs to shared progress; only the contents go into a profile.
+constexpr std::array kBottleItems{0x7d48df76u, 0x1edd164au, 0xb80c70a8u, 0xe4c1b1fcu, 0x365e1953u};
+constexpr std::array kBottleValid{0xf39ce410u, 0x000ff6eau, 0xf63b1194u, 0xb7f052ceu, 0xe27b136du};
+using Bottles = std::array<std::optional<std::uint32_t>, kBottleItems.size()>;
+Bottles g_profile_bottles{};
+Bottles g_pending_bottles{};
 bool g_profile_mounted = false;
 std::optional<personal::Counts> g_profile_pending;
 unsigned g_profile_restore_attempts = 0;
@@ -455,13 +461,24 @@ bool OpenProfile(const fs::path& coop_dir) {
         personal::Counts counts{};
         file >> version;
         for (auto& count : counts) file >> count;
-        if (!file || version != "OOTINV1" || (file >> std::ws).peek() != EOF ||
+        Bottles bottles{};
+        if (version == "OOTINV2") {
+            for (auto& bottle : bottles) {
+                std::int64_t value = -1;
+                file >> value;
+                if (value < -1 || value > UINT32_MAX) file.setstate(std::ios::failbit);
+                if (value >= 0 && file) bottle = static_cast<std::uint32_t>(value);
+            }
+        }
+        if (!file || (version != "OOTINV1" && version != "OOTINV2") ||
+            (file >> std::ws).peek() != EOF ||
             std::any_of(counts.begin(), counts.end(), [](auto count) { return count > 10000; })) {
             close(fd);
             LOG_WARNING(Core, "coop: inventory profile could not be read");
             return false;
         }
         g_profile_counts = counts;
+        g_profile_bottles = bottles;
     }
     if (error) {
         close(fd);
@@ -472,11 +489,12 @@ bool OpenProfile(const fs::path& coop_dir) {
     return true;
 }
 
-bool WriteInventory(const personal::Counts& counts) {
+bool WriteInventory(const personal::Counts& counts, const Bottles& bottles) {
     const auto temporary = g_profile_path.string() + ".tmp";
     std::ofstream file(temporary, std::ios::trunc);
-    file << "OOTINV1\n";
+    file << "OOTINV2\n";
     for (const auto count : counts) file << count << '\n';
+    for (const auto bottle : bottles) file << (bottle ? static_cast<std::int64_t>(*bottle) : -1) << '\n';
     file.close();
     if (!file || std::rename(temporary.c_str(), g_profile_path.c_str()) != 0) {
         std::remove(temporary.c_str());
@@ -492,19 +510,29 @@ bool WriteInventory(const personal::Counts& counts) {
 save::WriteResult WriteSlotTo(const fs::path& dir, const save::SaveSlot& slot_in, bool played_from) {
     const save::SaveSlot slot = FixedSlotLocked(slot_in);
     const auto* incoming = &slot;
+    bool retain_guest_values = true;
 #if defined(__APPLE__) && defined(COOP_HOOKSHOT)
     g_profile_mounted = false;
     g_profile_pending.reset();
+    g_pending_bottles = {};
     g_profile_restore_attempts = 0;
     personal::Counts applied{};
     auto restored = save::SaveSlot{};
     const bool use_profile = g_remount && !played_from && save::is_coop_dir(dir) && OpenProfile(dir);
     bool profile_ready = use_profile;
+    retain_guest_values = !g_remount;
     if (use_profile && g_profile_counts) {
         restored = slot;
         profile_ready = !restored.files.empty() && restored.files.front().name == "progress.sav" &&
                         personal::Restore(restored.files.front().bytes, *g_profile_counts, &applied);
         if (profile_ready) {
+            auto& progress = restored.files.front().bytes;
+            for (std::size_t i = 0; i < kBottleItems.size(); ++i) {
+                if (!g_profile_bottles[i]) continue;
+                const save::OwnValue value{kBottleItems[i], *g_profile_bottles[i]};
+                if (save::put_own_values(progress, std::span{&value, 1}) == 1)
+                    g_pending_bottles[i] = value.value;
+            }
             incoming = &restored;
             LOG_INFO(Core, "coop: inventory restored into the incoming host save");
         } else {
@@ -512,7 +540,9 @@ save::WriteResult WriteSlotTo(const fs::path& dir, const save::SaveSlot& slot_in
         }
     }
 #endif
-    const auto result = save::write_coop_save(dir, *incoming, save::own_dir_of(dir));
+    int own_kept = -1;
+    const auto result = save::write_coop_save(dir, *incoming, save::own_dir_of(dir),
+                                             &own_kept, retain_guest_values);
     switch (result) {
     case save::WriteResult::written:
         g_guest.ready = true;
@@ -521,6 +551,13 @@ save::WriteResult WriteSlotTo(const fs::path& dir, const save::SaveSlot& slot_in
         if (profile_ready && g_profile_counts) g_profile_pending = applied;
 #endif
         LOG_INFO(Core, "coop: save: the host's save written to {}", dir.string());
+        // (row 249: rupees, ammo, bottles, life and magic are each player's own)
+        if (own_kept < 0) {
+            LOG_INFO(Core, "coop: save: no values of our own kept yet (a first join here): the host's rupees, ammo and "
+                           "bottles are where ours start");
+        } else {
+            LOG_INFO(Core, "coop: save: our own {} rupees/ammo/bottles/life/magic values kept in it", own_kept);
+        }
         if (played_from) Say(g_lines.on_ready(g_in_game));
         break;
     case save::WriteResult::not_coop:
@@ -593,13 +630,31 @@ void CheckpointInventory(coop::host::WritableGameMemory& memory) {
         if (!count || *count < 0 || *count > 10000) return;
         counts[i] = static_cast<std::uint32_t>(*count);
     }
+    Bottles bottles{};
+    for (std::size_t i = 0; i < bottles.size(); ++i) {
+        const auto valid = flags.get_bool(kBottleValid[i]);
+        if (!valid) return;
+        if (*valid) {
+            bottles[i] = flags.get_uint(kBottleItems[i]);
+            if (!bottles[i]) return;
+        }
+    }
     if (g_profile_pending) {
-        if (counts != *g_profile_pending) {
+        bool matches = counts == *g_profile_pending;
+        for (std::size_t i = 0; i < bottles.size(); ++i) {
+            if (g_pending_bottles[i] && bottles[i] != g_pending_bottles[i]) matches = false;
+        }
+        if (!matches) {
             if (g_profile_restore_attempts++ < 4) {
                 for (std::size_t i = 0; i < counts.size(); ++i) {
                     if (counts[i] != (*g_profile_pending)[i]) {
                         coop::host::GameFlags::set_int(memory, personal::stock[i],
                             static_cast<std::int32_t>((*g_profile_pending)[i]));
+                    }
+                }
+                for (std::size_t i = 0; i < bottles.size(); ++i) {
+                    if (bottles[i] && g_pending_bottles[i] && bottles[i] != g_pending_bottles[i]) {
+                        coop::host::GameFlags::set_uint(memory, kBottleItems[i], *g_pending_bottles[i]);
                     }
                 }
             } else {
@@ -612,7 +667,14 @@ void CheckpointInventory(coop::host::WritableGameMemory& memory) {
         g_profile_pending.reset();
         return;
     }
-    if (counts != g_profile_counts && WriteInventory(counts)) g_profile_counts = counts;
+    // A host save without a particular bottle cannot erase its saved contents.
+    for (std::size_t i = 0; i < bottles.size(); ++i) {
+        if (!bottles[i]) bottles[i] = g_profile_bottles[i];
+    }
+    if ((counts != g_profile_counts || bottles != g_profile_bottles) && WriteInventory(counts, bottles)) {
+        g_profile_counts = counts;
+        g_profile_bottles = bottles;
+    }
 }
 #endif
 

@@ -46,6 +46,10 @@ bool Page(int tab, HosCoopMenuPage* out);
 bool Picture(int tab, HosCoopMenuPicture* out);
 bool Input(int tab, int event, int arg, int arg2);
 int Wanted();
+// What hos_coop_menu_wanted says for Longshot's own menu (patch 0037's HOS_COOP_MENU_WANT_LONGSHOT, gpu/vk/hos_coop_menu.h).
+inline constexpr int kWantLongshotMenu = -3;
+// The pause menu's Longshot Settings button: Longshot's own menu opens at the next menu tick, in front or not.
+void WantLongshotMenu();
 
 // The window's keys and characters (Unicode) while the tab types into a
 // field: true when taken. Hookshot's own keys (F1, Insert) are never taken.
@@ -64,6 +68,7 @@ void OpenNative(CoopPauseMenu::Page page);
 bool NativeInput(int event, int arg = 0, int arg2 = 0);
 CoopPauseMenu::View NativeView();
 bool NativeOpen();
+bool SnailHome();   // (Character Select's Customize screen is Link's colours' home: the Customize Link page has none)
 CoopPauseMenu::Page NativePage();   // (the page the menu shows now)
 void CloseNative();
 // B on the title's page leaves it (the Multiplayer rows again) rather than going back a page (Menu::BackLeaves).
@@ -137,8 +142,9 @@ bool Rejoin(std::string* host);
 // of it.
 void PasteAnswerNow();
 
-// The autotest's `menu customize|close` step (LICHII_COOP_TEST_COMMANDS only, coop_testinput.h): the menu opened
-// on the Customize page, or closed. Never asked in a player's game (no commands file there).
+// The autotest's `menu customize|close|host` step (LICHII_COOP_TEST_COMMANDS only, coop_testinput.h): the menu
+// opened on the Customize page, or closed, or the game hosts through the Multiplayer page's Host
+// (LICHII_COOP_TEST_HOST, CoopHostMenu::ParseTestHost). Never asked in a player's game (no commands file there).
 bool TestMenu(const std::string& page);
 
 }  // namespace CoopPause

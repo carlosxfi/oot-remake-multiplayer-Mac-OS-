@@ -44,6 +44,12 @@ std::uint32_t GameColour(Part part) {
     case Part::cap_trim: return 0x4C8C3C;   // (unset it is the tunic's: Shown)
     case Part::eyes: return 0x3C6EC8;       // (Link's blue)
     case Part::hair: return 0xD8A848;       // (Link's blond)
+    case Part::char_hair: return 0x6A4428;  // (a character's: brown, where the mixer starts)
+    case Part::char_eyes: return 0x3C6EC8;
+    case Part::char_cloth1:
+    case Part::char_cloth2:
+    case Part::char_cloth3: return 0x808080;
+    case Part::char_gear: return 0x000000;
     }
     return 0x808080;
 }
@@ -73,6 +79,13 @@ const char* Note(Part part) {
         return "The cap's own trims: young Link's headband and knot, adult Link's hood trims (the cap's cloth is the tunic's). The other players see it on you too.";
     case Part::eyes: return "The colour of the eyes, on your Link and seen by the other players.";
     case Part::hair: return "The colour of the hair and the brows, on your Link and seen by the other players.";
+    case Part::char_hair: return "The colour of your character's hair and brows. The other players see it too.";
+    case Part::char_eyes: return "The colour of your character's eyes. The other players see it too.";
+    case Part::char_cloth1:
+    case Part::char_cloth2:
+    case Part::char_cloth3:
+        return "A part of your character's clothes, in one of seven colours. The other players see it too.";
+    case Part::char_gear: return "Your character's sword, shield and other gear shown or hidden.";
     }
     return "";
 }
@@ -81,7 +94,34 @@ const char* Note(Part part) {
 const char* Unset(Part part) { return part == Part::cap_trim ? "As the tunic" : "Game's own"; }
 
 std::string ValueText(Part part, const std::optional<std::uint32_t>& colour) {
+    if (part == Part::char_gear) return CoopI18n::Tr(colour ? "Hidden" : "Shown");
     return colour ? CoopLook::ColourText(colour) : CoopI18n::Tr(Unset(part));
+}
+
+// npc-customize: a character's clothing rows take the mod's seven palette colours only (CoopLook::kClothPresets),
+// and its Equipment row is shown or hidden; neither opens the mixer.
+bool IsCloth(Part p) { return p == Part::char_cloth1 || p == Part::char_cloth2 || p == Part::char_cloth3; }
+bool PresetOnly(Part p) { return IsCloth(p) || p == Part::char_gear; }
+std::optional<std::uint32_t> NextCloth(const std::optional<std::uint32_t>& colour, int step) {
+    const int n = static_cast<int>(CoopLook::kClothPresets.size()) + 1;   // (the game's own first)
+    int at = 0;
+    for (int i = 1; i < n; ++i) {
+        if (colour && CoopColors::Parse(CoopLook::kClothPresets[static_cast<std::size_t>(i - 1)]) == colour) at = i;
+    }
+    at = ((at + step) % n + n) % n;
+    return at == 0 ? std::nullopt : CoopColors::Parse(CoopLook::kClothPresets[static_cast<std::size_t>(at - 1)]);
+}
+// A character part's row on the model shown (CoopCharColours::Rows' bits; 0: not known yet, every row).
+bool RowOnModel(Part p, std::uint8_t rows) {
+    if (!CoopLook::IsCharacterPart(p) || rows == 0) return true;
+    switch (p) {
+    case Part::char_hair: return (rows & 1) != 0;
+    case Part::char_eyes: return (rows & 2) != 0;
+    case Part::char_cloth1: return (rows & 4) != 0;
+    case Part::char_cloth2: return (rows & 8) != 0;
+    case Part::char_cloth3: return (rows & 16) != 0;
+    default: return true;   // (the equipment: every model)
+    }
 }
 
 std::string Title(Part part) {
@@ -241,6 +281,9 @@ const std::vector<Group>& Groups() {
         {"Swords", {Part::kokiri_blade, Part::kokiri_hilt, Part::master_blade, Part::master_hilt, Part::biggoron_blade,
                     Part::biggoron_hilt}},
         {"Boots and gauntlets", {Part::boots, Part::gauntlets}},
+        // (npc-customize: a Character Select character's own parts; only the rows its model has are shown)
+        {"Character", {Part::char_hair, Part::char_eyes, Part::char_cloth1, Part::char_cloth2, Part::char_cloth3,
+                       Part::char_gear}},
     };
     return kGroups;
 }
@@ -256,6 +299,12 @@ std::string PagedName(Part part) {
     case Part::deku_shield: return "Deku Shield";
     case Part::eyes: return "Eye Colour";
     case Part::hair: return "Hair Colour";
+    case Part::char_hair: return "Hair Colour";
+    case Part::char_eyes: return "Eye Colour";
+    case Part::char_cloth1: return "Clothing Colour";
+    case Part::char_cloth2: return "Clothing Colour 2";
+    case Part::char_cloth3: return "Clothing Colour 3";
+    case Part::char_gear: return "Equipment";
     default: break;
     }
     const PartInfo& info = CoopLook::InfoOf(part);
@@ -325,14 +374,17 @@ std::vector<Page::Line> Page::Lines() const {
                         "", 3},
                        What::kHeading, g.parts[0], ""});
         for (const Part p : g.parts) {
+            if (!RowOnModel(p, rows_)) continue;   // (never a row that does nothing: one the model has not)
             out.push_back({{PagedName(p), ValueText(p, look_[p]), 1, true, true}, What::kPart, p,
                            CoopI18n::Tr(Note(p)) + " " +
-                               CoopI18n::Tr("Left and Right try the colours; A picks any colour of your own.")});
+                               CoopI18n::Tr(PresetOnly(p) ? "Left and Right change it."
+                                                          : "Left and Right try the colours; A picks any colour of your own.")});
         }
         return out;
     }
     std::string item;
     for (const PartInfo& info : CoopLook::Parts()) {
+        if (CoopLook::IsCharacterPart(info.part)) continue;   // (Link's list: a character's are on its own page)
         if (item != info.item) {
             item = info.item;
             out.push_back({{item, "", 3}, What::kHeading, info.part, ""});
@@ -372,10 +424,26 @@ void Page::SetCharacter(std::uint16_t character, bool gear_shows) {
     selected_ = 1;
 }
 
+void Page::ResetAll() {
+    // (the parts of the model shown: Link's page leaves a character's parts, a character's page Link's; npc-customize)
+    for (const PartInfo& info : CoopLook::Parts()) {
+        if (CoopLook::IsCharacterPart(info.part) == (character_ != 0)) Set(info.part, std::nullopt);
+    }
+}
+
+void Page::SetRows(std::uint8_t rows) {
+    if (rows == rows_) return;
+    rows_ = rows;
+    if (editing_ && !RowOnModel(*editing_, rows_)) editing_.reset();
+    if (!Selectable(selected_)) selected_ = 1;
+}
+
 std::vector<std::size_t> Page::Offered() const {
-    if (character_ == 0) return {0, 1, 2, 3};   // Link: every part
-    if (gear_shows_) return {1, 2};          // a character: its held gear only, once shown to work
-    return {};
+    if (character_ == 0) return {0, 1, 2, 3};   // Link: every part but a character's
+    // A character: its own parts (npc-customize; the Equipment row is on every model), then its held gear once shown
+    // to work.
+    if (gear_shows_) return {kCharacterGroup, 1, 2};
+    return {kCharacterGroup};
 }
 
 std::size_t Page::GroupShown() const {
@@ -446,7 +514,15 @@ void Page::Change(std::size_t row, int step) {
     }
     const Line& l = lines[row];
     switch (l.what) {
-    case What::kPart: Set(l.part, NextPreset(look_[l.part], step)); break;
+    case What::kPart:
+        if (l.part == Part::char_gear) {
+            Set(l.part, look_[l.part] ? std::nullopt : std::optional<std::uint32_t>(CoopLook::kGearHidden));
+        } else if (IsCloth(l.part)) {
+            Set(l.part, NextCloth(look_[l.part], step));
+        } else {
+            Set(l.part, NextPreset(look_[l.part], step));
+        }
+        break;
     case What::kPreset:
         Set(l.part, NextPreset(look_[l.part], step));
         hsv_ = ToHsv(Shown(look_, l.part));   // (the sliders follow the preset chosen)
@@ -474,6 +550,10 @@ void Page::Decide(std::size_t row) {
     const Line& l = lines[row];
     switch (l.what) {
     case What::kPart:
+        if (PresetOnly(l.part)) {   // (no mixer: A steps on, as Right)
+            Change(row, 1);
+            break;
+        }
         list_selected_ = row;
         editing_ = l.part;
         hsv_ = ToHsv(Shown(look_, l.part));   // (from the colour it shows: its own, the game's, or the tunic's)
@@ -481,9 +561,7 @@ void Page::Decide(std::size_t row) {
         selected_ = 1;   // Hue
         break;
     case What::kAllGame:
-        for (const PartInfo& info : CoopLook::Parts()) {
-            Set(info.part, std::nullopt);
-        }
+        ResetAll();
         break;
     case What::kGameOwn:
         Set(l.part, std::nullopt);
@@ -507,9 +585,7 @@ bool Page::Press(Input input) {
     case Input::kPagePrev: TurnPage(-1); return true;
     case Input::kPageNext: TurnPage(1); return true;
     case Input::kResetAll:
-        if (!editing_) {
-            for (const PartInfo& info : CoopLook::Parts()) Set(info.part, std::nullopt);
-        }
+        if (!editing_) ResetAll();
         return true;
     case Input::kBack:
         if (editing_) {

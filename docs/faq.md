@@ -27,7 +27,7 @@ That is Longshot building its shaders: the first time it sees an effect or an ar
 
 ## Where are my saves?
 
-In the kit: `hookshot\game\bin\user\save\`. They are your own and stay on your PC; updates keep them. Back up that folder if you want a copy. A guest who joined from the title plays from a copy of the host's save in a co-op save folder; their own saves are untouched ([setup.md](setup.md)).
+In the kit: `hookshot\game\user\save\`. They are your own and stay on your PC; updates keep them. Back up that folder if you want a copy. A guest who joined from the title plays from a copy of the host's save in a co-op save folder; their own saves are untouched ([setup.md](setup.md)).
 
 We never ship save files, keys, firmware or the game in a release or in this repository: each player uses their own.
 

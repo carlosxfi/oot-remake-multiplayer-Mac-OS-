@@ -36,7 +36,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "puppet_pack"  # noqa: A001
 
-from . import ainb, asb_carry, byml, dumpcheck, dungeon_rooms, hud, look_cap, look_items, look_live, look_metal, map_captures, nup, pause_menu, rstb, sarc, skin, title_menu, tunic, tunic_extra, ui_pack, zs  # noqa: E402
+from . import ainb, asb_carry, byml, charsel_ui, coop_menu, dumpcheck, dungeon_rooms, hud, look_cap, look_items, look_live, look_metal, map_captures, nup, pause_menu, rstb, sarc, skin, title_menu, tunic, tunic_extra, ui_pack, zs  # noqa: E402
 
 TITLE_ID = "0400486024DEC000"
 DEFAULT_MOD_NAME = "coop-puppet"
@@ -296,10 +296,49 @@ def character_project(variant, file):
     return f"Player_{variant}_C{file:03d}"
 
 
+def charsel_native_wanted(mod_dir):
+    """Whether the pack makes co-op's own Characters tab (charsel_ui.py): not when the Character Select mod is in the
+    mods (its characters.json, where find_characters looks, switched on; with its NPC models or only its default
+    part) with a code patch of its own (exefs/*.ips or *.pchtxt): his files and his code are then the tab's. The kit
+    decides the same for the code patch it puts in before the game's build (kit-paths.ps1 Test-KitCharselNative), so
+    the game and the pack agree."""
+    here = os.path.abspath(mod_dir)
+    roots = [os.path.dirname(here)]
+    if os.path.basename(os.path.dirname(os.path.dirname(here))).lower() == "contents":
+        roots.append(os.path.dirname(os.path.dirname(os.path.dirname(here))))
+    for root in roots:
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(root, name, CHARACTERS_FILE)
+            if name.startswith(("-", "_", ".")) or not os.path.isfile(path):
+                continue
+            try:
+                with open(path, encoding="utf-8") as f:
+                    doc = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(doc, dict) or doc.get("mod") != CHARACTERS_MOD or doc.get("format") != CHARACTERS_FORMAT:
+                continue
+            if len(roots) > 1 and mod_list_off(roots[1], (f"contents/{os.path.basename(root)}/{name}"
+                                                         if root == roots[0] else name)):
+                continue
+            try:
+                code = os.listdir(os.path.join(root, name, "exefs"))
+            except OSError:
+                code = []
+            if any(n.lower().endswith((".ips", ".pchtxt")) for n in code):
+                return False
+    return True
+
+
 def mod_list_off(mods_root, name):
     """The Mods tab's list (mods/coop-mods.list, "coop-mods 1") names `name` (its path under mods with '/') off: the
     first row for it, letters without case (as Longshot reads it). No list or no row: on (C #58: a mod switched off
-    loads no models, so its characters get no puppets)."""
+    loads no models, so its characters get no puppets), unless the list has the "default off" line (Original game,
+    hos_coop_mods.h): then a mod with no row is off too."""
     fold = lambda t: "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in t.replace("\\", "/"))
     try:
         with open(os.path.join(mods_root, "coop-mods.list"), "rb") as f:
@@ -308,12 +347,14 @@ def mod_list_off(mods_root, name):
         return False
     if lines[0].rstrip("\r") != "coop-mods 1":
         return False
+    default_off = False
     for line in lines[1:]:
         line = line.rstrip("\r")
+        default_off = default_off or line == "default off"
         for state in ("on ", "off "):
             if line.startswith(state) and fold(line[len(state):]) == fold(name):
                 return state == "off "
-    return False
+    return default_off
 
 
 def find_characters(mod_dir, log=print):
@@ -1171,7 +1212,7 @@ def nup_scene_files(n):
         if kind == "d":
             out += n.glob(f"Banc/{scene}/*.bcett.byml.zs")
     for pattern in map_captures.FILES:  # the map pictures' places, for coop_maps.txt
-        out += n.glob(pattern)[:1]
+        out += ui_pack.newest(n.glob(pattern)) if pattern == title_menu.SCREEN_GLOB else n.glob(pattern)[:1]
     return out
 
 
@@ -1180,14 +1221,18 @@ def nup_menu_files(n):
     open Nup: their UI archives and every language's message archive. A .nup build extracts only what is named, and
     these are not the pack's own sources: without them both steps were left out ("No such file")."""
     out = []
-    for pattern in (title_menu.TITLE_ARCHIVE, pause_menu.COMMON_ARCHIVE):
+    for pattern in (title_menu.TITLE_ARCHIVE, pause_menu.COMMON_ARCHIVE, title_menu.SCREEN_GLOB):
         out += n.glob(pattern)[:1]
     newest = {}   # (a .nup has the base game's and the update's: the game reads the newest, Product.110 over 100)
     for rel in n.glob(pause_menu.MALS_GLOB):
         lang = rel.split("/")[-1].split(".")[0]
         if lang not in newest or _product(rel) > _product(newest[lang]):
             newest[lang] = rel
-    return out + [newest[lang] for lang in sorted(newest)]
+    out += [newest[lang] for lang in sorted(newest)]
+    for rel in charsel_ui.sources() + coop_menu.sources():   # (the Characters tab's and co-op's screen's files)
+        if rel not in out and n.glob(rel):
+            out.append(rel)
+    return out
 
 
 def _product(rel):
@@ -1881,7 +1926,7 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
           tunics=(), test_tunic=None, stand_in_effects=False, basic_xlink=False, title_rows=False, pause_tab=False,
           look_slots=look_items.SLOTS, perception=True, blade_copies=look_items.BLADE_COPIES,
           skins=(), test_skin=None, game_has=None, game_read=None, skin_effects=False, body=False, liftable=False,
-          pvp=False, characters=None):
+          pvp=False, characters=None, charsel_native=False):
     """`characters`: find_characters()'s answer, for a puppet per character of the Character Select mod
     (character_actor; each with its quiet copy, as the colours). `tunics`: the tunic colours to make puppets of (puppet_pack.tunic.COLORS; each is a model,
     a tile and an actor per age, CoopPuppet_<age>_<Colour>). `test_tunic`: give the plain puppets
@@ -2237,6 +2282,24 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
     # One view of the game's files for every UI builder (ui_pack.PackRun): what one made is what the next reads (the
     # language archives get both steps' labels), and each size-table entry grows once from the game's original.
     ui_run = ui_pack.PackRun(romfs, table)
+    # Co-op's own Characters tab (charsel_ui.py: Snail's page, picker and Customize for Link, the owner 2026-11-22),
+    # with the - menu's four-tab header: only when no Character Select mod brings his (charsel_native, main:
+    # charsel_native_wanted). First, through the same view: its deltas are checked against the game's own files, and
+    # the title rows' and the pause menu's edits go on top of its files. The code patch goes into the pack's exefs
+    # (the bytes the kit put there before the game's build: hookshot-build.ps1). All or nothing: on any trouble neither
+    # the files nor the code patch (a tab whose code points at screens the game lacks would be worse than none).
+    charsel_files = []
+    if pause_tab and charsel_native:
+        try:
+            charsel_files = charsel_ui.build(romfs, out_romfs, dicts, table,
+                                             lambda root, r, data: write(os.path.join(root, r), data), recompress,
+                                             log, run=ui_run)
+            charsel_ui.write_code_patch(mod_dir)
+        except (charsel_ui.CharselError, ui_pack.UiPackError, sarc.SarcError, OSError, ValueError, KeyError,
+                IndexError, struct.error) as e:
+            log(f"characters tab: left out ({e}); the - menu keeps the game's three tabs and co-op's")
+            charsel_files = []
+            charsel_ui.remove_code_patch(mod_dir)
     title_files = []
     if title_rows:
         try:
@@ -2249,14 +2312,35 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
     # the co-op module that shows them (patch 0030); both stored hidden, so without the module the menu is the game's.
     # After the title rows, through the same view (ui_run): its labels join theirs in each language archive. All or
     # nothing.
+    # Co-op's own - menu screen (coop_menu.py, tabs-overhaul-01110): Multiplayer, Lobby and Mods as a page of the
+    # game's own right of the Map, when every file it is made from is the game's own and co-op's Characters tab is
+    # made (with the Character Select mod his layout category and screens table win). Tried first without writing
+    # (all of it can be made), so the pause menu leaves its page out of the strip only when the screen has it.
+    coop_screen = False
+    if pause_tab and charsel_native:
+        try:
+            coop_menu.make(ui_run, dicts, recompress)
+            coop_screen = True
+        except (coop_menu.CoopMenuError, charsel_ui.CharselError, ui_pack.UiPackError, sarc.SarcError, OSError,
+                ValueError, KeyError, IndexError, struct.error) as e:
+            log(f"co-op's - menu screen: left out ({e}); the - menu's tabs keep their page in the strip")
     pause_files = []
     if pause_tab:
         try:
             pause_files = pause_menu.build(romfs, out_romfs, dicts, table,
                                            lambda root, r, data: write(os.path.join(root, r), data), recompress, log,
-                                           run=ui_run)
+                                           run=ui_run, minus_page=not coop_screen)
         except (pause_menu.PauseMenuError, OSError, ValueError, KeyError, IndexError, struct.error) as e:
             log(f"pause menu: the Multiplayer tab left out ({e}); the pause menu keeps its four")
+            coop_screen = False
+    if coop_screen:
+        try:
+            pause_files += coop_menu.build(romfs, out_romfs, dicts, table,
+                                           lambda root, r, data: write(os.path.join(root, r), data), recompress,
+                                           log, run=ui_run)
+        except (coop_menu.CoopMenuError, charsel_ui.CharselError, ui_pack.UiPackError, sarc.SarcError, OSError,
+                ValueError, KeyError, IndexError, struct.error) as e:   # (it was made a moment ago: never seen)
+            log(f"co-op's - menu screen: NOT made after its trial ({e}); the - menu's tabs have no page this time")
 
     if characters:
         # The mod's own rows first, the pack's own over them, then the player's own Link's heaps (as the mod alone).
@@ -2321,6 +2405,9 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
         "title_rows": bool(title_rows),  # asked for (--title-rows); title_menu: what was made
         "title_menu": title_files,
         "pause_menu": pause_files,
+        "coop_screen": coop_screen,   # (co-op's own - menu screen CoopMenu_00 made: coop_menu.py)
+        "charsel_native": charsel_files,   # (co-op's own Characters tab: its files; [] with Character Select's own)
+        "menu_keys": list(ui_pack.MENU_KEYS),   # (the lists above kept aside together: merge_tables, the kit's start)
         "source_sha256": {rel(romfs, p): hashlib.sha256(read(p)).hexdigest()
                           for p in (ai_path, gai_path, rs_path)},
     }
@@ -2507,7 +2594,8 @@ def _main_build(a, romfs, hud_reader=None):
               game_has=(lambda path: _reader_has(hud_reader, path)) if hud_reader is not None else None,
               game_read=hud_reader.read if hud_reader is not None else None,
               body=a.puppet_body, liftable=a.puppet_liftable, pvp=a.puppet_pvp,
-              characters=None if a.no_characters else find_characters(mod_dir))
+              characters=None if a.no_characters else find_characters(mod_dir),
+              charsel_native=charsel_native_wanted(mod_dir))
     except BuildError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

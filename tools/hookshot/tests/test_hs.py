@@ -591,6 +591,19 @@ class CodeModsTest(Fixture):
         with self.assertRaises(hs.Fail):   # (one game for both: B without Character Select's code cannot share A's)
             hs.pairs_code_mods([a, os.path.join(self.tmp, "Y")], self.repo, self.Run())
 
+    def test_charsel_native_patch_synced_into_the_pairs_packs_first(self):
+        # (co-op's own Characters tab: kit-paths.ps1 Sync-KitCharselNativePatch per pair pack, one call; no packs: none)
+        a, b = os.path.join(self.tmp, "A"), os.path.join(self.tmp, "B")
+        run = self.Run()
+        self.assertEqual(hs.sync_charsel_native([a, b], self.repo, run), {})
+        self.assertEqual(run.calls, [])
+        os.makedirs(os.path.join(a, hs.PACK_DIR)), os.makedirs(os.path.join(b, hs.PACK_DIR))
+        run = self.Run(out="r=in\r\nr=\r\n")
+        self.assertEqual(hs.sync_charsel_native([a, b], self.repo, run), {a: "in", b: ""})
+        self.assertEqual(run.calls[0][-1].count("Sync-KitCharselNativePatch"), 2)
+        with self.assertRaises(hs.Fail):   # (one answer missing: the kit's function is not there)
+            hs.sync_charsel_native([a, b], self.repo, self.Run(out="r=in\r\n"))
+
     def test_key_and_restore_with_code_patches(self):
         st = hs.stamp(self.repo) + self.LINE
         self.assertNotEqual(hs.key_of(st), hs.key_of(hs.stamp(self.repo)))

@@ -17,6 +17,7 @@
 #include "coop_i18n.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -128,7 +129,7 @@ constexpr Entry kzh_Hans[] = {
      "用同一邀请码回到上次的房间（朋友仍在开房时有效）。"},
     {"Joins your friend's game.", "加入朋友的房间。"},
     {"Split screen (experimental): two full games on this PC.", "分屏（实验性）：在这台电脑上运行两个完整游戏。"},
-    {"1. Two kits (or Nucleus Co-op), each started once.", "1. 两个工具包（或 Nucleus Co-op），各启动一次。"},
+    {"1. Two kits (or Nucleus Co-op), each started once.", "1. 两个套件（或 Nucleus Co-op），各启动一次。"},
     {"2. Each game its own controller: Settings > Controller.", "2. 每个游戏用自己的手柄：设置 > 手柄。"},
     {"3. Host in one game, Join in the other (Same network row).", "3. 一个游戏里创建房间，另一个里加入（同一网络那一行）。"},
     {"Steps: PLAY-LAN.md. Native split screen comes later.", "步骤：PLAY-LAN.md。原生分屏以后提供。"},
@@ -147,7 +148,7 @@ constexpr Entry kzh_Hans[] = {
 
     // ---- The Settings page ----------------------------------------------
     {"The name the other players see: 1 to 16 characters, typed with the keyboard.",
-     "其他玩家看到的名字：1–16 个字符，用键盘输入。"},
+     "其他玩家看到的名字：1 到 16 个字符，用键盘输入。"},
     {"The colour of your Link's tunic and cap, as you and the other players see it. By player "
      "number: each player's own colour.",
      "你的林克衣服和帽子的颜色（你和别人看到的）。按玩家编号：每人一个颜色。"},
@@ -157,7 +158,7 @@ constexpr Entry kzh_Hans[] = {
      "用麦克风和靠近你的玩家说话；距离越远声音越小。关闭：不收也不发。"},
 
     // ---- Notes, the gold line, the banner --------------------------------
-    {"Your name: 1 to 16 characters. It was not changed.", "名字需 1–16 个字符，未修改。"},
+    {"Your name: 1 to 16 characters. It was not changed.", "名字需 1 到 16 个字符，未修改。"},
     {"Co-op is on", "联机已开启"},
     {"Starting your game...", "正在创建房间…"},
     {"Hosting: waiting for friends", "房间已开：等待朋友加入"},
@@ -200,6 +201,8 @@ constexpr Entry kzh_Hans[] = {
     {"{} friend(s) joined.", "{} 位朋友已加入。"},
     {"Friends on your {} paste this line in Join (address and password):",
      "同属{}的朋友把这一行粘贴到「加入房间」（地址+密码）："},
+    {"Friends on your {} paste this line in Join (no password needed):",
+     "同属{}的朋友把这一行粘贴到「加入房间」（不需要密码）："},
     {"Getting {}'s save...", "正在获取 {} 的存档…"},
     {"Loading {}'s save...", "正在载入 {} 的存档…"},
     {"{}'s save is not here yet (it still loads by itself if it comes): Continue plays your own save, New Game starts a new one.",
@@ -230,7 +233,7 @@ constexpr Entry kzh_Hans[] = {
     {"Your name is too long.", "你的名字太长。"},
     {"Pick a shorter one in Multiplayer, Settings.", "在「联机 → 设置」里换一个短一点的。"},
     {"Invite code copied to your clipboard. Share it in DMs only: it contains your internet address.",
-     "邀请码已复制到剪贴板。只在私信里发：它含有你的网络地址。"},
+     "邀请码已复制。只在私信里发：它含你的网络地址。"},
     {"It is copied: paste it into your chat with them (Ctrl+V).",
      "已复制：粘贴到和朋友的聊天里（Ctrl+V）。"},
     {"Press \"Copy the code again\" to put it on the clipboard.", "按「再复制一次邀请码」把它放进剪贴板。"},
@@ -251,7 +254,7 @@ constexpr Entry kzh_Hans[] = {
      "把这个邀请码发给朋友，让他在「创建房间」页按「粘贴朋友的邀请码」："},
     // Row 209: still no way in after the helper's wait
     {"If they pasted it and nothing happens, both routers are strict or a provider shares one address (CGNAT): both join a free VPN network (Radmin VPN or Tailscale); the host copies the line from \"VPN\" on their Host page and you paste it in Join a game.",
-     "如果他已经粘贴了却没有反应，说明两边的路由器都很严格，或者网络供应商让很多家庭共用一个地址（CGNAT）：两人都加入一个免费的 VPN 网络（Radmin VPN 或 Tailscale）；房主在「创建房间」页复制「VPN」那一行，你把它粘贴到「加入房间」里。"},
+     "粘贴后没反应：路由器严格或 CGNAT。两人装 Radmin VPN 或 Tailscale，房主复制「VPN」行给你。"},
     {"Or ask them to turn on UPnP in their router's settings and host again.",
      "或者请他打开路由器的 UPnP 再开一次房。"},
     {"Connected! Choose your file and play.", "已连接！选择存档开始玩。"},
@@ -316,27 +319,27 @@ constexpr Entry kzh_Hans[] = {
     {"Same network", "同一网络"},
     {"Paste friend's answer (or Ctrl+V)", "粘贴朋友的邀请码（或 Ctrl+V）"},
     {"For friends on a VPN with you (Radmin VPN, Hamachi, ZeroTier, Tailscale, WireGuard): copies one line with this PC's VPN address. They paste it in Join a game instead of the code.",
-     "给同一 VPN（Radmin VPN、Hamachi、ZeroTier、Tailscale、WireGuard）的朋友：复制含本机 VPN 地址的一行，他在「加入房间」粘贴这一行而不是邀请码。"},
+     "给同一 VPN 的朋友：复制含你 VPN 地址的一行，他在「加入房间」粘贴它（不是邀请码）。"},
     {"Your invite code is below. Share it in DMs only: it contains your internet address.",
-     "你的邀请码在下面。只在私信里发：它含有你的网络地址。"},
+     "邀请码在下面。只在私信里发：它含你的网络地址。"},
     {"Customize Link", "自定义林克"},
-    {"A colour for each part of your tunics, shields, swords, boots and gauntlets, with a picture of the result. Your Link wears it when you close the menu; the other players see your tunic's colour.",
-     "为束衣、盾、剑、靴子和护手的每个部位选颜色，附效果图。关闭菜单时林克换上；其他玩家能看到你束衣的颜色。"},
+    {"A colour for each part of your tunics, shields, swords, boots and gauntlets, with a picture. Your Link wears it when you close the menu.",
+     "为束衣、盾、剑、靴子和护手的每个部位选颜色，附效果图。关闭菜单时林克换上。"},
     {"Chat key", "聊天键"},
     {"The key that opens the chat box in the game. Off: no chat box.", "游戏中打开聊天框的键。关闭：没有聊天框。"},
     {"Controller", "手柄"},
     {"Which controller this game reads: all of them (only while its window is in front), one of them (also behind another window: two games on one PC, each with its own), or none.",
-     "本游戏读取哪个手柄：全部（仅当窗口在前台时）、其中一个（窗口在后台也读：一台电脑两个游戏各用各的），或不读。"},
+     "本游戏读取哪个手柄：全部（窗口在前台时）、其中一个（后台也读），或不读。"},
     {"Keyboard and mouse", "键盘和鼠标"},
     {"Window in front: the keyboard and mouse count while this game's window is in front. Also in background: the keys count behind other windows too. Off: neither (a controller only).",
-     "窗口在前台：本游戏窗口在前台时键盘和鼠标有效。后台也有效：在其他窗口后面按键也有效。关闭：都不用（只用手柄）。"},
+     "窗口在前台：仅本游戏在前台时键鼠有效。后台也有效：其他窗口后面按键也算。关闭：都不用。"},
     {"Show players on map", "在地图上显示玩家"},
     {"The other players as arrows in their colours on the minimap and on the Map page's area and dungeon maps (not the world map). Off: neither shows them.",
-     "其他玩家以各自颜色的箭头显示在小地图和地图页的区域图、迷宫图上（世界地图不显示）。关闭：都不显示。"},
+     "其他玩家以自己颜色的箭头显示在小地图和地图页上（世界地图不显示）。关闭：不显示。"},
     {"Names on map", "地图上的名字"},
     {"Each player's name beside their arrow on the maps. Off: the arrows only.", "地图上每个箭头旁显示玩家名字。关闭：只显示箭头。"},
     {"Split screen (experimental) runs two full games on this PC, one per player: about 10 GB of RAM each and a strong graphics card. Start two kits (or use Nucleus Co-op), give each game its own controller in Settings, Controller (controller 1, controller 2 or the keyboard), then Host a game in one and Join a game in the other with the Same network line. The steps are in PLAY-LAN.md. Native split screen, one game for both, comes in a later release.",
-     "分屏（实验性）会在这台电脑上为每位玩家运行一个完整游戏：每个约需 10 GB 内存，还要一张强劲的显卡。启动两个工具包（或使用 Nucleus Co-op），在「设置」的「手柄」里给每个游戏各选一个手柄（手柄 1、手柄 2 或键盘），然后在一个游戏里「创建房间」，在另一个里用「同一网络」那一行「加入房间」。步骤见 PLAY-LAN.md。原生分屏（两人一个游戏）将在以后的版本中提供。"},
+     "分屏（实验性）：本机一人一个游戏（各约 10 GB 内存）；两个套件一建一加，见 PLAY-LAN.md。"},
     {"No home-network address was found on this PC.", "这台电脑上没找到家庭网络地址。"},
     {"Friends somewhere else join with your invite code; on a VPN with you, they use the VPN row.",
      "不在同屋的朋友用邀请码加入；和你同一 VPN 的朋友用「VPN」那一行。"},
@@ -383,7 +386,7 @@ constexpr Entry kzh_Hans[] = {
     {"They answer with /allow in their chat. This page joins by itself once they do.", "房主在聊天里输入 /allow 回应。回应后这里会自动加入。"},
     {"The host's game has not answered yet.", "房主的游戏还没有回应。"},
     {"Ask the host to choose Host (Multiplayer tab, or the title screen). Keep this page open: it joins by itself.", "请房主选择「创建房间」（「联机」页或标题画面）。保持此页打开：会自动加入。"},
-    {"Ask the host to choose Host (Multiplayer tab, or the title screen). If they host already, send them this answer code: {}", "请房主选择「创建房间」（「联机」页或标题画面）。如果房主已经创建，把这个回应码发给他：{}"},
+    {"Ask the host to choose Host (Multiplayer tab, or the title screen). If they host already, send them this answer code: {}", "请房主选“创建房间”（联机页或标题）。已建的话，把这个回应码发给他：{}"},
     {"Joining the host's game...", "正在加入房主的游戏…"},
     {"Looking for the host's game...", "正在寻找房主的游戏…"},
     {"Open place", "空位"},
@@ -415,7 +418,7 @@ constexpr Entry kzh_Hans[] = {
     {"Press again to ban", "再按一次封禁"},
     {"The invite code is on the clipboard.", "邀请码已放进剪贴板。"},
     {"Resync from host", "从房主重新同步"},
-    {"Gets the host's save again. Back on the title, it is switched to once the chat says Success; while you play nothing changes until then. Your own saves are never touched.", "重新获取房主的存档。回到标题画面，聊天显示 Success 后切换过去；游戏中在那之前什么都不变。你自己的存档不会被改动。"},
+    {"Gets the host's save again. Back on the title, it is switched to once the chat says Success; while you play nothing changes until then. Your own saves are never touched.", "重新取房主的存档：回标题，聊天显示 Success 后载入即可；你的档不变。"},
     {"Asked the host for its save: the chat says how it goes.", "已向房主要存档：进展见聊天。"},
     {"The players of your game show here once you host or join.", "开房或加入后，你游戏里的玩家会显示在这里。"},
     {"downed", "倒地"},
@@ -451,6 +454,7 @@ constexpr Entry kzh_Hans[] = {
     {"In this co-op game the host sets this.", "联机时由房主设置。"},
     {"Counts after a restart.", "重启后生效。"},
     {"Type or Ctrl+V, then Enter. Esc: as it was.", "输入或按 Ctrl+V，然后按 Enter。Esc：保持原样。"},
+    {"{} characters ({} of {} bytes)", "{} 个字符（{} / {} 字节）"},
     {"Restart the game to use the changes.", "重启游戏以应用改动。"},
     {"Switch", "切换"},
     {"Co-op: waiting for the host's list of mods.", "联机：正在等待房主的模组列表。"},
@@ -479,7 +483,7 @@ constexpr Entry kzh_Hans[] = {
     {"Player {}. Press to see yourself.", "玩家 {}。按这里查看自己的情况。"},
     {"Voice mode", "语音模式"},
     {"Open mic: you are heard whenever you speak (silence and quiet noise are not sent). Push to talk: only while you hold {}. On speakers, not headphones? Push to talk keeps the others' voices from coming back to them through your microphone.",
-     "自由麦：你说话时大家都能听到（静音和轻声不会发送）。按键说话：只有按住 {} 时才发送。用音箱而不是耳机？用按键说话可以避免别人的声音从你的麦克风传回去。"},
+     "自由麦：说话即被听到（静音和轻声不发送）。按键说话：按住 {} 才发送；用音箱时建议开。"},
     {"Starts a game on this PC and makes a code. Send the code to your friends; they choose Join a game and paste it. They play on your save.",
      "在本机开房并生成邀请码。把码发给朋友，他们选「加入房间」粘贴。他们玩的是你的存档。"},
     {"Joins a friend's game with the code they sent you. You play on their save; your own saves are not touched.",
@@ -497,6 +501,7 @@ constexpr Entry kzh_Hans[] = {
     {"Push to talk", "按键说话"},
     // (the start screen's ask for a /bugreport after a crash, coop_problem_ask.h kWords: 40 bytes each at most)
     {"The game crashed last time.", "游戏上次崩溃了。"},
+    {"Loading got stuck last time.", "上次载入卡住了。"},
     {"Please send /bugreport on Discord", "请在 Discord 发送 /bugreport"},
     {"with the zip of collect-logs.cmd.", "附上 collect-logs.cmd 的压缩包。"},
     {"OK", "确定"},
@@ -510,10 +515,10 @@ constexpr Entry kzh_Hans[] = {
     {"The host only: takes that player out, and they cannot join again, under any name, until the host stops hosting.",
      "仅房主：把他踢出；在房主停止开房之前，他换任何名字都进不来。"},
     {"The host: nobody hears that player's voice or sees their chat (the server stops passing them on); add voice or chat for only that (/mute 2 voice). Anyone else: you stop hearing and seeing them yourself, and nobody is told.",
-     "房主：没人再听到他的语音或看到他的聊天（服务器停止转发）；只针对语音或聊天就加 voice 或 chat（/mute 2 voice）。其他人：你自己不再听到他、看到他的聊天，不会通知任何人。"},
+     "房主：所有人不再听到看到他（加 voice 或 chat 只限其一）；其他人：只有你自己。"},
     {"Undoes /mute (add voice or chat for only that).", "撤销 /mute（只对语音或聊天就加 voice 或 chat）。"},
     {"Takes you to that player: the whole name, the start of it, or the player's number (/teleport 2). In another place, talk to someone or read a sign within a minute to travel. Not during a cutscene, a talk or a boss fight.",
-     "把你传送到该玩家身边：全名、名字开头，或玩家编号（/teleport 2）。在别的地点时，一分钟内与人对话或读告示即可传送。过场动画、对话或 BOSS 战中不行。"},
+     "传送到该玩家：全名、开头或编号（/teleport 2）。过场动画、对话或 BOSS 战中不行。"},
     
     
     {"VPN", "VPN"},
@@ -575,10 +580,10 @@ constexpr Entry kzh_Hans[] = {
     {"The metal of the Silver and the Golden Gauntlets.", "银色护手和金色护手的金属部分。"},
     {"Cap trim", "帽子饰边"},
     {"The cap's own trims: young Link's headband and knot, adult Link's hood trims (the cap's cloth is the tunic's). The other players see it on you too.",
-     "帽子自己的饰边：幼年林克的头带和结，成年林克的兜帽饰边（帽子的布料与束衣相同）。其他玩家也会在你身上看到。"},
+     "帽子自己的饰边：幼年林克的头带和结，成年林克的兜帽饰边；其他玩家也看得到。"},
     {"As the tunic", "同束衣"},
     {"All parts to the game's own", "全部恢复游戏自带"},
-    {"A Character Select character is picked: it keeps its own colours (X on its Characters page); these colours show on Link when you pick Link again.", "已选择 Character Select 角色：它保留自己的颜色（在其角色页面按 X）；再次选择林克时，这些颜色会显示在林克身上。"},
+    {"A Character Select character is picked: it keeps its own colours (X on its Characters page); these colours show on Link when you pick Link again.", "已选 Character Select 角色：它保留自己的配色（在其页面按 X）。"},
     {"Every part in the game's own colours again (the tunic: your player number's colour for the others).",
      "所有部位都恢复游戏自带的颜色（束衣：在其他玩家眼里是你编号对应的颜色）。"},
     {"Game's own colour", "游戏自带的颜色"},
@@ -603,11 +608,11 @@ constexpr Entry kzh_Hans[] = {
      "字母和数字。留空：自动生成。联机时所有人用房主的种子。"},
     
     {"Only for other game files (1.1.1, with Pack, Banc, Event and System). Empty: the kit's own (romfs beside the game).",
-     "只在用别的游戏文件时填（1.1.1，含 Pack、Banc、Event 和 System）。留空：用工具包自带的（游戏旁边的 romfs）。"},
+     "只在用别的游戏文件时填（1.1.1，含 Pack、Banc、Event、System）。留空用套件自带的。"},
     {"Only for another OOTRR. Empty: the one the kit brings (tools\\ootrr beside the game).",
      "只在用别的 OOTRR 时填。留空：用工具包自带的（游戏旁边的 tools\\ootrr）。"},
     {"Shuffles chests, dungeon items and rewards (OOTRR). In co-op everyone plays the host's seed and every pickup is shared. A new seed needs a restart of the game, never a game build.",
-     "打乱宝箱、迷宫道具和奖励（OOTRR）。联机时所有人玩房主的种子，拾取共享。换种子只需重启游戏，不用重新构建。"},
+     "打乱宝箱、迷宫道具和奖励（OOTRR）。联机共用房主的种子，拾取共享；换种子重启即可。"},
     
     {"By {}", "作者：{}"},
     {", version {}", "，版本 {}"},
@@ -626,7 +631,6 @@ constexpr Entry kzh_Hans[] = {
     {"Open mic: you are heard whenever you speak (silence and quiet noise are not sent).", "自由麦：你说话时大家都能听到（静音和轻声不会发送）。"},
     {", ", "，"},
     {"Host: ", "房主："},
-    {": ", "："},
     {"Default", "默认"},
     {"Easy", "简单"},
     {"Open world", "开放世界"},
@@ -637,7 +641,7 @@ constexpr Entry kzh_Hans[] = {
     {"Port", "端口"},
     {"Port when you host", "建房端口"},
     {"The UDP port other players reach you on (default 27510). Type a number from 1 to 65535; changing it while hosting restarts hosting: friends join again with the new code.",
-     "其他玩家连接你使用的 UDP 端口（默认 27510）。输入 1 到 65535 之间的数字；建房期间修改会重新建房：朋友要用新的邀请码重新加入。"},
+     "其他玩家连你的 UDP 端口（默认 27510），1 到 65535。建房中改动会重建房间。"},
     {"The host's UDP port (default 27510). Type a number from 1 to 65535.",
      "房主的 UDP 端口（默认 27510）。输入 1 到 65535 之间的数字。"},
     {"The UDP port your game listens on when you host (default 27510). Type a number from 1 to 65535.",
@@ -656,6 +660,7 @@ constexpr Entry kzh_Hans[] = {
     //      pickup notices, the item and place names) ----
     {"The blade.", "剑身。"},
     {"connection lost, reconnecting", "连接断了，正在重连"},
+    {"connection too slow for the game's traffic, reconnecting", "连接太慢，跟不上游戏的数据，正在重连"},
     {"the host muted your chat: nobody sees it", "房主屏蔽了你的聊天：现在没人看得到"},
     {"you host now: the Lobby's host controls are yours", "你现在是房主：「大厅」页的房主操作归你了"},
     {"Difficulty: could not be sent", "难度：没能发出去"},
@@ -897,12 +902,13 @@ constexpr Entry kzh_Hans[] = {
     {"Solo", "单人"},
     {"Locked: beat Ganon", "未解锁：击败加农"},
     {"Beat Ganon to unlock it: then play again with the hearts you had and tougher enemies.", "击败加农后解锁：之后可以用当时的心数重玩，敌人也更强。"},
-    {"Solo: your own saves. Multiplayer: a separate set of saves for playing together (made from your solo saves the first time), so co-op progress never mixes with your own. When you join a friend from the title screen you play the host's save, copied beside your multiplayer saves; your saves are not touched. Switched on the title screen with no file loaded.", "单人：你自己的存档。联机：一套单独用于一起游玩的存档（第一次会从你的单人存档生成），联机进度永远不会和你自己的混在一起。从标题画面加入朋友的房间时，你玩的是房主的存档，它复制放在你的联机存档旁边；你自己的存档不受影响。在标题画面、没有载入存档时切换。"},
-    {"Start a new file with this on: you keep your {} hearts, and enemies and bosses get 50% more life and 25% more damage for each level (up to NG+ {} now). In a game you host your level counts for everyone. Off: the game as it is.", "开启后新开一个存档：保留你的 {} 颗心，每升一级敌人和 BOSS 的生命 +50%、伤害 +25%（目前最高 NG+ {}）。你开房时，你的等级对所有人都生效。关闭：游戏保持原样。"},
+    {"Solo: your own saves. Multiplayer: a separate set of saves for playing together (made from your solo saves the first time), so co-op progress never mixes with your own. When you join a friend from the title screen you play the host's save, copied beside your multiplayer saves; your saves are not touched. Switched on the title screen with no file loaded.", "单人：用你的存档。联机：独立的联机存档（首次由单人档生成），你自己的不受影响。"},
+    {"Start a new file with this on: you keep your {} hearts, and enemies and bosses get 50% more life and 25% more damage for each level (up to NG+ {} now). In a game you host your level counts for everyone. Off: the game as it is.", "开启后新开档：保留 {} 颗心，每级敌人生命 +50%、伤害 +25%（最高 NG+ {}）。"},
     {"Joining your friend's game...", "正在加入朋友的房间…"},
     {"Press Leave, then join again.", "按「离开」，然后再加入一次。"},
     {"Press Leave.", "按「离开」。"},
     {"wrong join password", "加入密码不对"},
+    {"this host asks for its join password on its own network too", "这个房主在自己的网络上也要加入密码"},
     {"wrong game build", "游戏版本不一致"},
     {"server full", "房间满了"},
     {"name taken", "名字被占了"},
@@ -917,6 +923,8 @@ constexpr Entry kzh_Hans[] = {
      "协议版本不一致：游戏和服务器不是同一版本；请在每份套件里都运行 Update.bat，房主的也要"},
     {"wrong join password: ask the host for it, then start Join.bat again and type it",
      "加入密码不对：向房主要密码，然后重新启动 Join.bat 输入"},
+    {"this host asks for its join password on its own network too: type the password the host sent you, then join again",
+     "这个房主在自己的网络上也要加入密码：输入房主发给你的密码，再加入一次"},
     {"the host took you out of the game: you can join again", "房主把你踢出了游戏：可以再加入"},
     {"the host banned you from this game: you cannot join it again until the host stops hosting",
      "房主在这个房间封禁了你：房主停止创建房间后，你才能再加入"},
@@ -939,11 +947,14 @@ constexpr Entry kzh_Hans[] = {
     {"Public game", "公开游戏"},
     {"Official public game", "官方公开游戏"},
     {"Public games", "公开游戏"},
+    {"Page", "页"},
+    {"Turn the page", "翻页"},
+    {"Left and Right (or A) turn the page of games.", "左右键（或A）翻到上一页或下一页的游戏。"},
     {"Public games ({})", "公开游戏（{}）"},
     {"Private game (the default): friends join with your code or room name and the password. Nobody else can join.", "私人游戏（默认）：朋友用你的代码或房间名加上密码加入。其他人无法加入。"},
-    {"Public game: shows in Public games and anyone can join, no password. Only through the game list's server, so players never see your internet address. Kick or ban players from the Lobby tab. Players can change the shared progress of the save you host from.", "公开游戏：显示在“公开游戏”中，任何人都能加入，无需密码。只经由游戏列表的服务器连接，玩家看不到你的网络地址。可在“大厅”页踢出或封禁玩家。玩家可以改变你所用存档的共享进度。"},
+    {"Public game: shows in Public games and anyone can join, no password. Only through the game list's server, so players never see your internet address. Kick or ban players from the Lobby tab. Players can change the shared progress of the save you host from.", "公开游戏：任何人无需密码可加入；只经列表服务器，看不到你的 IP。可在“大厅”踢人。"},
     {"Applies at your next Host: stop hosting, then start again.", "下次创建房间时生效：先停止，再重新创建。"},
-    {"Your public game's name in Public games: 3 to 24 letters, digits, - or _. A ready one is offered; change it if you like.", "你的公开游戏在“公开游戏”中的名称：3 到 24 个字母、数字、- 或 _。已给出一个现成的名称，可随意修改。"},
+    {"Your public game's name in Public games: 3 to 24 letters, digits, - or _. A ready one is offered; change it if you like.", "你的公开游戏的名字：3 到 24 个字母、数字、- 或 _，已给现成的一个，可改。"},
     {"Starts a public game on this PC: it shows in Public games, and anyone can join without a password.", "在这台电脑上开始公开游戏：它会显示在“公开游戏”中，任何人无需密码即可加入。"},
     {"No public games right now. Host one and choose Public game.", "现在没有公开游戏。创建一个，并选择“公开游戏”。"},
     {"Can't reach the game list. Check your internet connection, then press Refresh.", "无法连接游戏列表。请检查网络连接，然后按“刷新”。"},
@@ -987,10 +998,10 @@ constexpr Entry kzh_Hans[] = {
     {"Only the host changes this; it shows what the host chose.", "只有房主能更改此项；这里显示房主的选择。"},
     {"Your own setting for the next game you host; the game you are in keeps its host's.",
      "你下次开房时使用的设置；当前所在的房间沿用房主的设置。"},
-    {"On: each player who asks to join waits until you let them in or refuse them (Let in on Your game, or /allow and /deny in the chat). Applies at your next Host.", "开启：每位申请加入的玩家都要等你放行或拒绝（在“你的房间”中放行，或在聊天中输入 /allow、/deny）。下次开房时生效。"},
-    {"On: sword hits, arrows and other attacks hurt the other players too, both ways. In a game you host it changes at once for everyone (as /pvp on and /pvp off); else it is used at your next Host.", "开启：剑击、箭矢等攻击也会伤害其他玩家，双向生效。在你开的房间中会立即对所有人生效（同 /pvp on 与 /pvp off）；否则在你下次开房时使用。"},
+    {"On: each player who asks to join waits until you let them in or refuse them (Let in on Your game, or /allow and /deny in the chat). Applies at your next Host.", "开启：申请加入的人要等你放行或拒绝（“你的房间”或聊天 /allow、/deny）。"},
+    {"On: sword hits, arrows and other attacks hurt the other players too, both ways. In a game you host it changes at once for everyone (as /pvp on and /pvp off); else it is used at your next Host.", "开启：剑、箭等攻击也会伤到其他玩家，双向生效，开房即对所有人生效。"},
     {"Set while you host: these rules are the session's, and each game starts with them on.", "开房时设置：这些规则属于本次联机，每局开始时默认开启。"},
-    {"On: a player who loses their last heart goes down and crawls instead of a Game Over, and another player holds A beside them to revive them (as /dbno on and /dbno off).", "开启：失去最后一颗心的玩家会倒地爬行，而不是游戏结束；其他玩家在旁边按住A即可将其复活（同 /dbno on 与 /dbno off）。"},
+    {"On: a player who loses their last heart goes down and crawls instead of a Game Over, and another player holds A beside them to revive them (as /dbno on and /dbno off).", "开启：没心的玩家倒地爬行而非死亡，他人在旁按住 A 救起。对全房间生效。"},
     {"How long a downed player has before the Game Over if nobody revives them (10 to 240 seconds, as /dbno time).", "倒地的玩家无人复活时，距离游戏结束的时间（10到240秒，同 /dbno time）。"},
     {"How long A is held beside a downed player to revive them (0.5 to 10 seconds, as /dbno hold).", "在倒地玩家旁边按住A复活所需的时间（0.5到10秒，同 /dbno hold）。"},
     {"The hearts a revived player gets back (0.5 to 20, as /dbno hearts).", "被复活的玩家恢复的心数（0.5到20，同 /dbno hearts）。"},
@@ -1049,10 +1060,10 @@ constexpr Entry kzh_Hans[] = {
     {"teleport: {} is in a boss fight; no teleport there", "传送：{} 正在打 BOSS；那里不能传送"},
     {"teleport: {} is not in the game", "传送：{} 不在游戏里"},
     {"teleport: {} refused (reason {})", "传送：{} 拒绝了（原因 {}）"},
-    {"The host only, when a player asks to join (approve_joins = on in coop-options.ini): lets them in (the one who asked first, or by name). Add always to let them in without asking until you stop hosting.", "仅房主：有玩家申请加入时（coop-options.ini 里 approve_joins = on）放他进来（先申请的，或指定名字）。加 always 则直到你停止开房都不用再问。"},
+    {"The host only, when a player asks to join (approve_joins = on in coop-options.ini): lets them in (the one who asked first, or by name). Add always to let them in without asking until you stop hosting.", "仅房主：有玩家申请时（approve_joins = on）放行或拒绝；加 always 免再问。"},
     {"The host only: turns away the player who asks to join. Add always to keep them out until you stop hosting.", "仅房主：拒绝申请加入的玩家。加 always 则直到你停止开房都把他挡在外面。"},
     {"The host's save is coming: load a save once the chat says Success.", "房主的存档马上到：等聊天显示 Success 再载入存档。"},
-    {"You joined with a file loaded: the host's save is coming. To play from the host's progress, go back to the title and load a save once the chat says Success.", "你是带着存档加入的：房主的存档马上到。想从房主的进度开始，回标题画面，等聊天显示 Success 再载入存档。"},
+    {"You joined with a file loaded: the host's save is coming. To play from the host's progress, go back to the title and load a save once the chat says Success.", "你带着存档加入：房主的存档马上到。想用房主进度，回标题等 Success 再载入。"},
     {"The host's save came, but this game could not switch to it (see the log): play your own save.", "房主的存档到了，但这个游戏切不过去（见日志）：先玩你自己的存档。"},
     {"The host's save could not be written (see the log): play your own save.", "房主的存档写不进去（见日志）：先玩你自己的存档。"},
     {"The host's save came damaged; it is sent again after the host's next save.", "房主的存档到了但已损坏；房主下次存档后会重发。"},
@@ -1087,7 +1098,7 @@ constexpr Entry kzh_Hans[] = {
     {"You are in a friend's game: leave it first (Join a game).", "你在朋友的房间里：请先离开（“加入房间”）。"},
     {"Starts your game on this PC. They play on your save.", "在这台电脑上开房。他们在你的存档里游玩。"},
     {"Room  {}", "房间  {}"},
-    {"Page {} of {} (ZL/ZR)", "第 {}/{} 页（ZL/ZR）"},
+    {"Page {}/{}", "第 {}/{} 页"},
     {"The code is copied. Send it in a DM; your friend picks Join a game > Enter a code > Paste a code.", "邀请码已复制。私信发给朋友；他选“加入房间”>“输入邀请码或地址”>“粘贴邀请码”。"},
     {"Your friend types it after picking your game. A shows it.", "朋友选了你的房间后输入它。按 A 显示。"},
     {"For friends on your home network: copies one line they paste in Enter a code.", "给同一家庭网络的朋友：复制一行，他在“输入邀请码或地址”里粘贴。"},
@@ -1120,9 +1131,9 @@ constexpr Entry kzh_Hans[] = {
     {"The server is not up yet", "服务器还没起来"},
     {"No VPN address found", "找不到 VPN 地址"},
     {"No network address found", "找不到网络地址"},
-    {"No relay is set in coop-options.ini (relay = ...), so a room name has nowhere to be found. Ask your host for their whole room@relay line and paste it.", "coop-options.ini 里没设中转（relay = ...），房间名没处可找。向房主索取完整的 room@relay 那一行再粘贴。"},
-    {"The clipboard could not be read: no clipboard tool. Press Ctrl+V while typing, install wl-clipboard (Wayland) or xclip (X11), or type the code.", "读不了剪贴板：没有剪贴板工具。打字时按 Ctrl+V，或安装 wl-clipboard（Wayland）/ xclip（X11），也可以手输邀请码。"},
-    {"The clipboard could not be read: no clipboard tool. Press Ctrl+V here, or install wl-clipboard (Wayland) or xclip (X11), then press this again.", "读不了剪贴板：没有剪贴板工具。在这里按 Ctrl+V，或安装 wl-clipboard（Wayland）/ xclip（X11），再按一次这里。"},
+    {"No relay is set in coop-options.ini (relay = ...), so a room name has nowhere to be found. Ask your host for their whole room@relay line and paste it.", "coop-options.ini 没设中转（relay = ...），房名找不到。向房主要 room@relay 整行。"},
+    {"The clipboard could not be read: no clipboard tool. Press Ctrl+V while typing, install wl-clipboard (Wayland) or xclip (X11), or type the code.", "读不了剪贴板：装 wl-clipboard（Wayland）或 xclip（X11），或打字时按 Ctrl+V。"},
+    {"The clipboard could not be read: no clipboard tool. Press Ctrl+V here, or install wl-clipboard (Wayland) or xclip (X11), then press this again.", "读不了剪贴板：装 wl-clipboard（Wayland）或 xclip（X11），或在此按 Ctrl+V。"},
     {"No clipboard here", "这里没有剪贴板"},
     {"The host's progress did not finish arriving. If keys or dungeon items look wrong, use Resync from host in the Lobby tab.", "房主的进度没传完。钥匙或迷宫道具不对的话，在大厅页用「重新获取房主存档」。"},
     {"Co-op: {} player", "联机：{} 人"},
@@ -1146,7 +1157,7 @@ constexpr Entry kzh_Hans[] = {
     {"New Game+ off.", "新游戏+：关"},
     {"New Game+ {}: start a new file to play it (your hearts carry over).", "新游戏+ {}：开个新存档才能玩（心数会带过去）。"},
     {"Left and Right: less or more of it, {} a press (0 to 255).", "左右键：调小或调大，每按一次 {}（0 到 255）。"},
-    {"The microphone your voice is recorded from. Default: the one Longshot's Insert menu chooses (Gameplay: Microphone), the Ocarina's too. Left and Right go through the microphones plugged in now. One unplugged: the others hear nothing until it is back.", "录你声音的麦克风。默认：Longshot 的 Insert 菜单里选的那个（游戏 → 麦克风），陶笛也用同一个。左右键在现在插着的麦克风之间切换。拔掉一个：其他人会听不到，直到它插回来。"},
+    {"The microphone your voice is recorded from. Default: the one Longshot's Insert menu chooses (Gameplay: Microphone), the Ocarina's too. Left and Right go through the microphones plugged in now. One unplugged: the others hear nothing until it is back.", "录音用的麦克风。默认跟随游戏设置的麦克风；陶笛也用它。左右键试选。"},
     // (0.11.8's screens, DrHammer79's PR #308: the Multiplayer page, co-op's menu, the Original game switch)
     {"Co-op failed", "联机失败"},
     {"Turned away", "被拒"},
@@ -1199,15 +1210,15 @@ constexpr Entry kzh_Hans[] = {
     {"Most players", "人多的在前"},
     {"Fewest players", "人少的在前"},
     {"Name", "按名称"},
-    {"Your join password: friends type it with your room name or address. A shows it in groups of five, A again hides it. Share it in DMs only.", "你的加入密码：朋友输入房间名或地址时一起输入它。按A以五个一组显示，再按A隐藏。只在私信里分享。"},
+    {"Your join password: friends type it with your room name or address. A shows it in groups of five, A again hides it. Share it in DMs only.", "你的加入密码：朋友输入房间名或地址时一起填。按A五字一组显示，再按隐藏。"},
     {"Allow", "放行"},
     {"Refuse", "拒绝"},
-    {"A new join password, typed on the keyboard; Enter gives it to your game. Players who join from now on need it; players already in stay. No spaces, at most 128 characters.", "新的加入密码，用键盘输入；回车交给你的游戏。之后加入的玩家需要它；已经在的玩家不受影响。不能有空格，最多 128 个字符。"},
+    {"A new join password, typed on the keyboard; Enter gives it to your game. Players who join from now on need it; players already in stay. No spaces, at most 128 characters.", "新加入密码，键盘输入后回车。之后加入的人需要它；不能有空格，最多 128 字符。"},
     {"In your friend's game", "在朋友的房间里"},
     {"Joining your friend's game", "正在加入朋友的房间"},
-    {"Lists the games on this network and the public rooms on your relay, with a search. Pick one and its room or address is filled in below.", "列出本网络的房间和你的中转上的公开房间，可以搜索。选一个，它的房间名或地址就会填到下面。"},
+    {"Lists the games on this network and the public rooms on your relay, with a search. Pick one and its room or address is filled in below.", "列出本网络的房间和中转上的公开房间，可搜索；选中即填入下面。"},
     {"Room or address", "房间或地址"},
-    {"The host's room name (found through your relay, Settings > Relay) or their IP address or PC name. A name without a dot is tried as a PC on your network first, then as a room. Copied an invite code or address? Press this: it is pasted.", "房主的房间名（通过你的中转查找，设置 > 中转），或者对方的 IP 地址或电脑名。不带点的名字先当作本网络的电脑来找，再当作房间。复制了邀请码或地址？按这里就会粘贴。"},
+    {"The host's room name (found through your relay, Settings > Relay) or their IP address or PC name. A name without a dot is tried as a PC on your network first, then as a room. Copied an invite code or address? Press this: it is pasted.", "房主的房间名或 IP 地址、电脑名。不带点的名字先按本网络的电脑来找。"},
     {"The host's join password: they see it on their Multiplayer page (Hosting, Join password).", "房主的加入密码：房主在自己的联机页能看到（房间已开，加入密码）。"},
     {"Type the room name or address first.", "先输入房间名或地址。"},
     {"List", "列表"},
@@ -1222,16 +1233,16 @@ constexpr Entry kzh_Hans[] = {
     {"Forgets the games heard and listens again: the ones still hosting come back within 2 seconds.", "忘掉已发现的房间并重新监听：仍在开的房间 2 秒内会回来。"},
     {"Fills in the Join page with this game: then Join (with its password, if it asks one).", "把这个房间填进加入页：然后按加入（如果要密码就输入）。"},
     {"This game is full, or runs another version of co-op.", "这个房间满了，或者用的是另一个联机版本。"},
-    {"The relay that finds rooms by name and lists public rooms. Squadala's own is built in; type another (host or host:port) to use it instead. Cleared: Squadala's again. A change while you host applies at your next Host.", "按名称找房间并列出公开房间的中转。已内置 Squadala 自己的；输入别的（主机或 主机:端口）就改用它。清空：恢复 Squadala 的。开房时的更改在下次开房时生效。"},
-    {"Your room's name on the relay when you host: 3 to 24 letters, digits, - or _. Friends type it to join. Empty: a join code instead. A change while you host applies at your next Host.", "开房时你的房间在中转上的名称：3 到 24 个字母、数字、- 或 _。朋友输入它来加入。留空：改用邀请码。开房时的更改在下次开房时生效。"},
-    {"When you host with a room name, the room shows on your relay's public list (Browse games), so players can pick it. Never your join password. Off: only players who know the name find it.", "用房间名开房时，房间会出现在中转的公开列表里（浏览房间），玩家可以选它。加入密码绝不会公开。关闭：只有知道名称的玩家才能找到。"},
-    {"Joins your last friend's game again by itself: a few seconds after the game starts, and when the connection drops without you leaving. Off: you join again yourself.", "自动重新加入上次朋友的房间：游戏启动几秒后，以及你没离开却断线时。关闭：你自己重新加入。"},
+    {"The relay that finds rooms by name and lists public rooms. Squadala's own is built in; type another (host or host:port) to use it instead. Cleared: Squadala's again. A change while you host applies at your next Host.", "按名称找房间、列出公开房间的中转。清空用套件内置的；也可填 主机 或 主机:端口。"},
+    {"Your room's name on the relay when you host: 3 to 24 letters, digits, - or _. Friends type it to join. Empty: a join code instead. A change while you host applies at your next Host.", "开房时房间在中转上的名称：3 到 24 个字母、数字、- 或 _。留空则用邀请码。"},
+    {"When you host with a room name, the room shows on your relay's public list (Browse games), so players can pick it. Never your join password. Off: only players who know the name find it.", "开房时房间列进中转的公开列表，玩家可选中加入；加入密码绝不会公开。"},
+    {"Joins your last friend's game again by itself: a few seconds after the game starts, and when the connection drops without you leaving. Off: you join again yourself.", "自动重进上次朋友的房间：启动几秒后、以及没离开却断线时。关闭则手动。"},
     {"Password on this network", "本网络要密码"},
     {"Not needed", "不需要"},
     {"Needed", "需要"},
-    {"Not needed: when you host, players from a private address join without the join password. Only on a network you trust: a tunnel, a VPN or a port forward can bring others in that way.", "不需要：你开房时，来自内网地址的玩家不用加入密码就能加入。只在你信任的网络上用：隧道、VPN 或端口转发也可能让别人这样进来。"},
+    {"Not needed: when you host, players from a private address join without the join password. Only on a network you trust: a tunnel, a VPN or a port forward can bring others in that way.", "不需要：内网玩家不加密码即可加入。只在你信任的网络用（VPN/端口转发也算）。"},
     {"Original game", "原版游戏"},
-    {"From the next start, the game as it came: co-op, the pause menu's extra pages and buttons, Link's look, the co-op pack and code mods (Save Profiles) all off. Your saves are not touched. This switch stays in the F1 menu to turn it back.", "从下次启动起，游戏回到原样：联机、暂停菜单多出的页面和按钮、林克的外观、联机资源包和代码模组（存档配置）全部关闭。你的存档不受影响。这个开关留在 F1 菜单里，可以再打开。"},
+    {"From the next start, the game as it came: co-op, the pause menu's extra pages and buttons, Link's look, the co-op pack and code mods (Save Profiles) all off. Your saves are not touched. This switch stays in the F1 menu to turn it back.", "下次启动起，联机与附加项全部关闭，游戏回到原样；存档不受影响，F1 里可改回。"},
     {"Relay: host or host:port (letters, digits, . and -; a port from 1 to 65535). It was not changed.", "中转：主机或 主机:端口（字母、数字、. 和 -；端口 1 到 65535）。没有改动。"},
     {"Room name: 3 to 24 letters, digits, - or _. It was not changed.", "房间名：3 到 24 个字母、数字、- 或 _。没有改动。"},
     {"Nothing to paste: copy the room name or address first. You can also type it.", "没有可粘贴的：先复制房间名或地址。也可以直接输入。"},
@@ -1265,6 +1276,10 @@ constexpr Entry kzh_Hans[] = {
     {"Forward UDP {} to this PC", "把 UDP {} 转发到这台电脑"},
     {"This network ({})", "本网络（{}）"},
     {"Turns {} away, as /deny in the chat does. They can ask again.", "拒绝 {}，和聊天里的 /deny 一样。对方可以再申请。"},
+    {"{} asks to join your game. Lets them in, as /allow in the chat does.", "{} 申请加入你的游戏。放行，和聊天里的 /allow 一样。"},
+    {"{} asks to join your game.", "{} 申请加入你的游戏。"},
+    {"Turns {} away. They can ask again.", "拒绝 {}。对方可以再申请。"},
+    {"{} asks for a password", "{} 需要密码"},
     {"NG+ {}", "NG+ {}"},
     {"Could not write {}.", "写不了 {}。"},
     {"Turned away: {}", "被拒：{}"},
@@ -1276,7 +1291,7 @@ constexpr Entry kzh_Hans[] = {
     {"Joining {}...", "正在加入 {}…"},
     {"Pasted: {} characters.", "已粘贴：{} 个字符。"},
     {"Letter: < {} >", "字母：< {} >"},
-    {"No PC called {} was found. To join a room by its name, set a relay first: Co-op Settings, Relay. Or type the host's IP address.", "没有找到叫 {} 的电脑。要按名称加入房间，先设置中转：联机设置，中转。或者输入房主的 IP 地址。"},
+    {"No PC called {} was found. To join a room by its name, set a relay first: Co-op Settings, Relay. Or type the host's IP address.", "没找到叫 {} 的电脑。按名加入需先设中转（联机设置 > 中转），或填房主 IP。"},
     {"Room {}: friends type it in Join a game (IP address), with your join password.", "房间 {}：朋友在“加入房间”（IP 地址）里输入它，再加上你的加入密码。"},
     // (0.11.9, ui-tabs: the - menu tabs, Customize Eyes and Hair, the colour mixer)
     {"Eyes", "眼睛"},
@@ -1290,6 +1305,18 @@ constexpr Entry kzh_Hans[] = {
     {"Cap Trim", "帽子饰边"},
     {"Eye Colour", "眼睛颜色"},
     {"Hair Colour", "头发颜色"},
+    // (npc-customize: a Character Select character's own Customize page)
+    {"Character", "角色"},
+    {"Clothing Colour", "衣服颜色"},
+    {"Clothing Colour 2", "衣服颜色 2"},
+    {"Clothing Colour 3", "衣服颜色 3"},
+    {"Equipment", "装备"},
+    {"Shown", "显示"},
+    {"Left and Right change it.", "左右键切换。"},
+    {"The colour of your character's hair and brows. The other players see it too.", "你的角色的头发和眉毛的颜色，其他玩家也看得到。"},
+    {"The colour of your character's eyes. The other players see it too.", "你的角色的眼睛的颜色，其他玩家也看得到。"},
+    {"A part of your character's clothes, in one of seven colours. The other players see it too.", "你的角色衣服的一部分，七种颜色之一，其他玩家也看得到。"},
+    {"Your character's sword, shield and other gear shown or hidden.", "显示或隐藏你的角色的剑、盾牌和其他装备。"},
     {"Hylian Shield Frame", "海利亚之盾边框"},
     {"Y: page", "Y：翻页"},   // (Character Select's Customize screen's title, more than one page)
     {"A: exact hue", "A：调色"},
@@ -1299,10 +1326,10 @@ constexpr Entry kzh_Hans[] = {
     {"Brightness", "亮度"},
     {"Customize", "自定义"},
     {"This character has no colour options", "这个角色没有颜色选项"},
-    {"Link's colours are on the Characters tab: pick Link, then Customize.", "林克的颜色在“角色”标签页：选择林克，然后选择“自定义”。"},
+    {"Link's colours are not on this page: press L until the Characters tab (the first tab of the - menu), pick Link, then Customize.", "林克的颜色不在这一页：按L直到“角色”标签页（-菜单的第一个标签页），选择林克，然后选择“自定义”。"},
     {"Characters tab", "角色标签页"},
     {"Left and Right try the colours; A picks any colour of your own.", "左右键试颜色；按A自己调任意颜色。"},
-    {"Left and Right try the colours; Confirm picks any colour of your own. Your Link wears it when you close the menu. The other players see your gear in this colour, and your tunic in the nearest of the ten tunic colours.", "左右键试颜色；确认后自己调任意颜色。关闭菜单时你的林克就会换上。其他玩家看到你的装备是这个颜色，衣服则是十种衣服颜色里最接近的那一种。"},
+    {"Left and Right try the colours; Confirm picks any colour of your own. Your Link wears it when you close the menu. The other players see your gear in this colour, and your tunic in the nearest of the ten tunic colours.", "左右键试色；确认自定任意颜色，关菜单即穿上。装备用此色，衣服取最接近的十色之一。"},
     {"{} degrees", "{} 度"},
     {"Left and Right: round the colour wheel, {} degrees a press (red, yellow, green, cyan, blue, magenta, red).", "左右键：沿色轮转动，每按一次 {} 度（红、黄、绿、青、蓝、品红、红）。"},
     {"Left and Right: from grey (0%) to the full colour (100%), {}% a press.", "左右键：从灰色（0%）到全彩（100%），每按一次 {}%。"},
@@ -1331,24 +1358,145 @@ constexpr Entry kzh_Hans[] = {
     {"Enemy damage", "敌人伤害"},
     {"Enemies", "敌人数量"},
     {"Only the host can change it.", "只有房主能更改。"},
-    {"For everyone in your game: enemies' life, the damage they deal and how many there are. Automatic: more as more players join. Custom: your own values on the rows below. Also /difficulty in the chat.", "对你房间里的所有人：敌人的生命、造成的伤害和数量。自动：玩家越多越难。自定义：在下面几行设定你自己的数值。也可以在聊天中输入 /difficulty。"},
+    {"For everyone in your game: enemies' life, the damage they deal and how many there are. Automatic: more as more players join. Custom: your own values on the rows below. Also /difficulty in the chat.", "对全房间生效：敌人生命、伤害和数量。自动：人越多越难；自定义：在下面几行设。"},
     {"How much life enemies and bosses have: 25% to 500% of the game's, in steps of 25.", "敌人和 BOSS 的生命：游戏原本的 25% 到 500%，每次 25。"},
     {"How much damage enemies and bosses deal to players: 25% to 400% of the game's, in steps of 25.", "敌人和 BOSS 对玩家造成的伤害：游戏原本的 25% 到 400%，每次 25。"},
     {"How many enemies: 100% is the game's, 200% one more beside each, up to 300%, in steps of 25.", "敌人数量：100% 是游戏原本的，200% 每个旁边多一个，最多 300%，每次 25。"},
     {"This game's server does not say a difficulty: enemies as in the game.", "这个房间的服务器没有给出难度：敌人和原版一样。"},
-    {"The host chooses it for everyone while hosting: Automatic, Easy, Normal, Hard or Custom. Playing alone, enemies are as in the game (New Game+ aside).", "房主开房时为所有人选择：自动、简单、普通、困难或自定义。单人游戏时，敌人和原版一样（新游戏+ 除外）。"},
+    {"The host chooses it for everyone while hosting: Automatic, Easy, Normal, Hard or Custom. Playing alone, enemies are as in the game (New Game+ aside).", "房主为全房间选：自动、简单、普通、困难或自定义。单人与原版相同。"},
     {"Only the host can change the difficulty, while hosting.", "只有正在开房的房主能更改难度。"},
     {"Says the down-but-not-out rules in this game: on or off, the bleed-out time, the revive hold and the hearts a revived player gets.", "显示这个房间的倒地规则：开或关、倒地等待时间、救起要按住多久、被救起的玩家得到几颗心。"},
-    {"The host only: on, a player out of hearts goes down and another player can revive them; off, the game's own death. For everyone.", "仅房主：开启时，没有心的玩家会倒地，其他玩家可以救起他；关闭时，按游戏原本的方式死亡。对所有人生效。"},
+    {"The host only: on, a player out of hearts goes down and another player can revive them; off, the game's own death. For everyone.", "仅房主：开启则没心的玩家倒地可被救起；关闭按原版死亡。对所有人。"},
     {"The host only: how long a downed player waits for a revive, 10 to 240 seconds.", "仅房主：倒地的玩家等待救起的时间，10 到 240 秒。"},
     {"The host only: how long A is held to revive, 0.5 to 10 seconds (halves allowed).", "仅房主：救起时要按住 A 多久，0.5 到 10 秒（可以用半秒）。"},
     {"The host only: the hearts a revived player gets (halves allowed).", "仅房主：被救起的玩家得到几颗心（可以用半颗）。"},
     {"Says the difficulty in this game: enemies' life, the damage they deal and how many there are.", "显示这个房间的难度：敌人的生命、造成的伤害和数量。"},
-    {"The host only: auto, easy, normal or hard, for everyone. Auto: more as more players join. The same as Difficulty in Co-op settings while you host.", "仅房主：auto（自动）、easy（简单）、normal（普通）或 hard（困难），对所有人生效。自动：玩家越多越难。和开房时联机设置里的难度一样。"},
+    {"The host only: auto, easy, normal or hard, for everyone. Auto: more as more players join. The same as Difficulty in Co-op settings while you host.", "仅房主：auto、easy、normal、hard，对所有人生效。自动随人数变难。"},
     {"The host only: your own values in percent: life 25 to 500, damage 25 to 400, enemies 100 to 300, in steps of 25.", "仅房主：你自己的百分比数值：生命 25 到 500，伤害 25 到 400，敌人数量 100 到 300，每次 25。"},
     {"difficulty: the server has not said it yet", "难度：服务器还没有给出"},
     {"difficulty: only the host can change it", "难度：只有房主能更改"},
     {"difficulty: /difficulty auto, easy, normal or hard, or /difficulty custom <life> <damage> <enemies> (life 25-500, damage 25-400, enemies 100-300, steps of 25)", "难度：/difficulty auto、easy、normal 或 hard，或 /difficulty custom <生命> <伤害> <敌人数量>（生命 25-500，伤害 25-400，敌人数量 100-300，每次 25）"},
+    // The help of every co-op row the - page shows (help-lines, 0.11.10)
+    {"Co-op's own menu: what co-op is doing now, with Host, Join, Stop and Leave.",
+     "联机自己的菜单：当前状态，以及创建、加入、停止、离开。"},
+    {"Copies your game's room name or code. Send it to your friends so they can join.",
+     "复制你房间的名称或邀请码，发给朋友就能加入。"},
+    {"Lets in the first player who asks to join your game.",
+     "让第一个请求加入的玩家进入你的房间。"},
+    {"Starts hosting a game on this PC now. Your friends play on your save.",
+     "现在在这台电脑上开房。朋友用你的存档游玩。"},
+    {"Leaves the game, or stops hosting yours. Press A again to confirm.",
+     "离开房间，或停止你的房间。再按一次 A 确认。"},
+    {"Pastes the answer code a friend sent you back, so they can come in.",
+     "粘贴朋友发回的应答码，让他进入。"},
+    {"Copies this game's answer code. Send it to the host so they can let you in.",
+     "复制本游戏的应答码，发给房主让他放你进去。"},
+    {"Everyone in the game. Pick a player to see what you can do.",
+     "房间里的所有人。选一名玩家查看可用操作。"},
+    {"Players who ask to join your game: let them in or refuse them.",
+     "请求加入你房间的玩家：放行或拒绝。"},
+    {"Join a friend's game: with a code they sent you, or the last game again.",
+     "加入朋友的房间：用他发来的邀请码，或再次加入上一个房间。"},
+    {"Back to the rows before. B does the same.",
+     "返回上一级。按 B 效果相同。"},
+    {"Refuses the first player who asks to join your game.",
+     "拒绝第一个请求加入的玩家。"},
+    {"Joins with the code you copied. You play on the host's save; yours are not touched.",
+     "用你复制的邀请码加入。你在房主的存档上游玩，自己的存档不动。"},
+    {"Joins the last game you played in again.",
+     "再次加入你上次玩的房间。"},
+    {"Your game now: what co-op is doing, the lines to give your friends, and why it stopped.",
+     "你当前的房间：联机状态、给朋友的连接信息，以及停止的原因。"},
+    {"Copies the line friends on your network use to join you.",
+     "复制同一网络的朋友用来加入你的连接信息。"},
+    {"Copies the line friends on your VPN use to join you.",
+     "复制 VPN 里的朋友用来加入你的连接信息。"},
+    {"Loads the host's save again, so your game matches theirs.",
+     "重新载入房主的存档，让你的游戏和他的一致。"},
+    {"This player: go to them, or mute their voice or chat for you.",
+     "这名玩家：传送到他身边，或为你自己静音他的语音或聊天。"},
+    {"The next page of players.",
+     "下一页玩家。"},
+    {"The host's controls for this player: mute them for everyone, kick or ban.",
+     "房主对这名玩家的操作：为所有人静音、踢出或封禁。"},
+    {"Takes you to this player.",
+     "传送到这名玩家身边。"},
+    {"Mutes this player's voice for you only, or lets you hear it again.",
+     "只为你静音这名玩家的语音，或重新听到。"},
+    {"Hides this player's chat for you only, or shows it again.",
+     "只为你隐藏这名玩家的聊天，或重新显示。"},
+    {"Mutes this player's voice for everyone, or unmutes it.",
+     "为所有人静音这名玩家的语音，或取消静音。"},
+    {"Mutes this player's chat for everyone, or unmutes it.",
+     "为所有人屏蔽这名玩家的聊天，或取消屏蔽。"},
+    {"Sends this player out of your game. Press A again to confirm.",
+     "把这名玩家踢出你的房间。再按一次 A 确认。"},
+    {"Keeps this player out until you stop hosting. Press A again to confirm.",
+     "在你停止房间之前不让这名玩家进入。再按一次 A 确认。"},
+    {"Type the room name your friend gave you.",
+     "输入朋友给你的房间名称。"},
+    {"Type the game's join password, if it has one.",
+     "输入房间的加入密码（如果有）。"},
+    {"Joins that room with the password typed.",
+     "用输入的密码加入该房间。"},
+    {"Games on your network that you can join.",
+     "你网络里可以加入的房间。"},
+    {"This game: type its join password if it has one, then join.",
+     "这个房间：有密码就先输入，然后加入。"},
+    {"Joins this game with the password typed.",
+     "用输入的密码加入这个房间。"},
+    {"The next page of games.",
+     "下一页房间。"},
+    {"When on, co-op joins the game again by itself if the connection drops.",
+     "开启后，连接断开时联机会自动重新加入房间。"},
+    {"Shows your game's join password, or hides it again.",
+     "显示你房间的加入密码，或重新隐藏。"},
+    {"Your game's join password: show it, or change it.",
+     "你房间的加入密码：显示或更改。"},
+    {"Type a new join password. Players who join from now on need it.",
+     "输入新的加入密码。之后加入的玩家需要它。"},
+    {"Type the port your game uses when you host. Hosting starts again on it.",
+     "输入你开房时使用的端口。房间会在该端口重新开启。"},
+    {"Type the relay's address to see its public rooms. It is saved.",
+     "输入中继的地址以查看它的公开房间。会被保存。"},
+    {"Type words to find rooms with them in their names.",
+     "输入文字，查找名称中含有它的房间。"},
+    {"Lists the games on your network.",
+     "列出你网络里的房间。"},
+    {"Lists the public rooms online.",
+     "列出在线的公开房间。"},
+    {"Looks for games again.",
+     "重新查找房间。"},
+    {"When on, your game's room is listed online while you host, so anyone can find it.",
+     "开启后，你开房时房间会列在网上，任何人都能找到。"},
+    {"Switches between the public rooms online and the games on your network.",
+     "在线上公开房间和本网络房间之间切换。"},
+    {"Which games the list shows: all, open ones, or this version only.",
+     "列表显示哪些房间：全部、开放的，或仅此版本。"},
+    {"The list's order: most players, fewest players, or by name.",
+     "列表的顺序：人数最多、人数最少，或按名称。"},
+    {"Type the room name your game has when you host. It is saved.",
+     "输入你开房时的房间名称。会被保存。"},
+    {"Customize Link, co-op settings, the chat's commands and local co-op.",
+     "林克外观、联机设置、聊天命令和本地双人。"},
+    {"This page's rows are on the list. Right or A to pick one.",
+     "这一页的选项在右边的列表里。按右或 A 选择。"},
+    {"Host a game: start it, then give your friends its code and let them in.",
+     "创建房间：开房后把邀请码给朋友，再放他们进来。"},
+    {"Co-op settings at the host rows: game, approving joins, PvP and Down but not out.",
+     "联机设置里的房主选项：游戏、审批加入、PvP 和倒地不死。"},
+    {"A game you can join: A opens it, with a row for its join password if it has one.",
+     "可以加入的房间：按 A 打开，有密码的会有一行输入密码。"},
+    {"Left and Right pick a letter, A types it. Delete, OK and Cancel are below. A keyboard types too.",
+     "左右选字母，A 输入。下方有删除、确定和取消。键盘也能输入。"},
+    // (the port's state on the details list, the "(you)" after the own name,
+    // the turned-away line's endings: pieces of lines the module composes)
+    {"open", "开放"},
+    {"shut", "未开放"},
+    {" Leave.", " 请先离开。"},
+    {" Leave, then join again.", " 请先离开，稍后再加入。"},
+    {"{}  < {} of {} >", "{}  < {}/{} >"},
+
 };
 
 // ---------------------------------------------------------------------------
@@ -1437,7 +1585,7 @@ constexpr Entry kzh_Hant[] = {
      "用同一邀請碼回到上次的房間（朋友仍在開房時有效）。"},
     {"Joins your friend's game.", "加入朋友的房間。"},
     {"Split screen (experimental): two full games on this PC.", "分割畫面（實驗性）：在這台電腦上執行兩個完整遊戲。"},
-    {"1. Two kits (or Nucleus Co-op), each started once.", "1. 兩個工具包（或 Nucleus Co-op），各啟動一次。"},
+    {"1. Two kits (or Nucleus Co-op), each started once.", "1. 兩個套件（或 Nucleus Co-op），各啟動一次。"},
     {"2. Each game its own controller: Settings > Controller.", "2. 每個遊戲用自己的手把：設定 > 手把。"},
     {"3. Host in one game, Join in the other (Same network row).", "3. 一個遊戲裡建立房間，另一個裡加入（同一網路那一列）。"},
     {"Steps: PLAY-LAN.md. Native split screen comes later.", "步驟：PLAY-LAN.md。原生分割畫面以後提供。"},
@@ -1454,7 +1602,7 @@ constexpr Entry kzh_Hant[] = {
      "僅房主：為所有人開啟或關閉玩家互相傷害。"},
 
     {"The name the other players see: 1 to 16 characters, typed with the keyboard.",
-     "其他玩家看到的名字：1–16 個字元，用鍵盤輸入。"},
+     "其他玩家看到的名字：1 到 16 個字元，用鍵盤輸入。"},
     {"The colour of your Link's tunic and cap, as you and the other players see it. By player "
      "number: each player's own colour.",
      "你的林克衣服和帽子的顏色（你和別人看到的）。依玩家編號：每人一個顏色。"},
@@ -1463,7 +1611,7 @@ constexpr Entry kzh_Hant[] = {
      "they are. Off: you neither send nor hear voices.",
      "用麥克風和靠近你的玩家說話；距離越遠聲音越小。關閉：不收也不發。"},
 
-    {"Your name: 1 to 16 characters. It was not changed.", "名字需 1–16 個字元，未修改。"},
+    {"Your name: 1 to 16 characters. It was not changed.", "名字需 1 到 16 個字元，未修改。"},
     {"Co-op is on", "連線已開啟"},
     {"Starting your game...", "正在建立房間…"},
     {"Hosting: waiting for friends", "房間已開：等待朋友加入"},
@@ -1501,6 +1649,8 @@ constexpr Entry kzh_Hant[] = {
     {"{} friend(s) joined.", "{} 位朋友已加入。"},
     {"Friends on your {} paste this line in Join (address and password):",
      "同屬{}的朋友把這一行貼到「加入房間」（位址+密碼）："},
+    {"Friends on your {} paste this line in Join (no password needed):",
+     "同屬{}的朋友把這一行貼到「加入房間」（不需要密碼）："},
     {"Getting {}'s save...", "正在取得 {} 的存檔…"},
     {"Loading {}'s save...", "正在載入 {} 的存檔…"},
     {"{}'s save is not here yet (it still loads by itself if it comes): Continue plays your own save, New Game starts a new one.",
@@ -1531,7 +1681,7 @@ constexpr Entry kzh_Hant[] = {
     {"Your name is too long.", "你的名字太長。"},
     {"Pick a shorter one in Multiplayer, Settings.", "在「連線 → 設定」裡換一個短一點的。"},
     {"Invite code copied to your clipboard. Share it in DMs only: it contains your internet address.",
-     "邀請碼已複製到剪貼簿。只在私訊裡傳：它含有你的網路位址。"},
+     "邀請碼已複製。只在私訊裡傳：它含你的網路位址。"},
     {"It is copied: paste it into your chat with them (Ctrl+V).",
      "已複製：貼到和朋友的聊天裡（Ctrl+V）。"},
     {"Press \"Copy the code again\" to put it on the clipboard.", "按「再複製一次邀請碼」把它放進剪貼簿。"},
@@ -1552,7 +1702,7 @@ constexpr Entry kzh_Hant[] = {
      "把這個邀請碼傳給朋友，讓他在「建立房間」頁按「貼上朋友的邀請碼」："},
     // Row 209: still no way in after the helper's wait
     {"If they pasted it and nothing happens, both routers are strict or a provider shares one address (CGNAT): both join a free VPN network (Radmin VPN or Tailscale); the host copies the line from \"VPN\" on their Host page and you paste it in Join a game.",
-     "如果他已經貼上了卻沒有反應，表示兩邊的路由器都很嚴格，或者網路供應商讓很多家庭共用一個位址（CGNAT）：兩人都加入一個免費的 VPN 網路（Radmin VPN 或 Tailscale）；房主在「建立房間」頁複製「VPN」那一行，你把它貼到「加入房間」裡。"},
+     "貼上後沒反應：路由器嚴格或 CGNAT。兩人裝 Radmin VPN 或 Tailscale，房主複製「VPN」行給你。"},
     {"Or ask them to turn on UPnP in their router's settings and host again.",
      "或者請他打開路由器的 UPnP 再開一次房。"},
     {"Connected! Choose your file and play.", "已連線！選擇存檔開始玩。"},
@@ -1610,27 +1760,27 @@ constexpr Entry kzh_Hant[] = {
     {"Same network", "同一網路"},
     {"Paste friend's answer (or Ctrl+V)", "貼上朋友的邀請碼（或 Ctrl+V）"},
     {"For friends on a VPN with you (Radmin VPN, Hamachi, ZeroTier, Tailscale, WireGuard): copies one line with this PC's VPN address. They paste it in Join a game instead of the code.",
-     "給同一 VPN（Radmin VPN、Hamachi、ZeroTier、Tailscale、WireGuard）的朋友：複製含本機 VPN 位址的一行，他在「加入房間」貼上這一行而不是邀請碼。"},
+     "給同一 VPN 的朋友：複製含你 VPN 位址的一行，他在「加入房間」貼上它（不是邀請碼）。"},
     {"Your invite code is below. Share it in DMs only: it contains your internet address.",
-     "你的邀請碼在下面。只在私訊裡傳：它含有你的網路位址。"},
+     "邀請碼在下面。只在私訊裡傳：它含你的網路位址。"},
     {"Customize Link", "自訂林克"},
-    {"A colour for each part of your tunics, shields, swords, boots and gauntlets, with a picture of the result. Your Link wears it when you close the menu; the other players see your tunic's colour.",
-     "為束衣、盾、劍、靴子和護手的每個部位選顏色，附效果圖。關閉選單時林克換上；其他玩家能看到你束衣的顏色。"},
+    {"A colour for each part of your tunics, shields, swords, boots and gauntlets, with a picture. Your Link wears it when you close the menu.",
+     "為束衣、盾、劍、靴子和護手的每個部位選顏色，附效果圖。關閉選單時林克換上。"},
     {"Chat key", "聊天鍵"},
     {"The key that opens the chat box in the game. Off: no chat box.", "遊戲中打開聊天框的鍵。關閉：沒有聊天框。"},
     {"Controller", "手把"},
     {"Which controller this game reads: all of them (only while its window is in front), one of them (also behind another window: two games on one PC, each with its own), or none.",
-     "本遊戲讀取哪個手把：全部（僅當視窗在前景時）、其中一個（視窗在背景也讀：一台電腦兩個遊戲各用各的），或不讀。"},
+     "本遊戲讀取哪個手把：全部（視窗在前景時）、其中一個（背景也讀），或不讀。"},
     {"Keyboard and mouse", "鍵盤和滑鼠"},
     {"Window in front: the keyboard and mouse count while this game's window is in front. Also in background: the keys count behind other windows too. Off: neither (a controller only).",
-     "視窗在前景：本遊戲視窗在前景時鍵盤和滑鼠有效。背景也有效：在其他視窗後面按鍵也有效。關閉：都不用（只用手把）。"},
+     "視窗在前景：僅本遊戲在前景時鍵鼠有效。背景也有效：其他視窗後面按鍵也算。關閉：都不用。"},
     {"Show players on map", "在地圖上顯示玩家"},
     {"The other players as arrows in their colours on the minimap and on the Map page's area and dungeon maps (not the world map). Off: neither shows them.",
-     "其他玩家以各自顏色的箭頭顯示在小地圖和地圖頁的區域圖、迷宮圖上（世界地圖不顯示）。關閉：都不顯示。"},
+     "其他玩家以自己顏色的箭頭顯示在小地圖和地圖頁上（世界地圖不顯示）。關閉：不顯示。"},
     {"Names on map", "地圖上的名字"},
     {"Each player's name beside their arrow on the maps. Off: the arrows only.", "地圖上每個箭頭旁顯示玩家名字。關閉：只顯示箭頭。"},
     {"Split screen (experimental) runs two full games on this PC, one per player: about 10 GB of RAM each and a strong graphics card. Start two kits (or use Nucleus Co-op), give each game its own controller in Settings, Controller (controller 1, controller 2 or the keyboard), then Host a game in one and Join a game in the other with the Same network line. The steps are in PLAY-LAN.md. Native split screen, one game for both, comes in a later release.",
-     "分割畫面（實驗性）會在這台電腦上為每位玩家執行一個完整遊戲：每個約需 10 GB 記憶體，還要一張強勁的顯示卡。啟動兩個工具包（或使用 Nucleus Co-op），在「設定」的「手把」裡給每個遊戲各選一個手把（手把 1、手把 2 或鍵盤），然後在一個遊戲裡「建立房間」，在另一個裡用「同一網路」那一列「加入房間」。步驟見 PLAY-LAN.md。原生分割畫面（兩人一個遊戲）將在以後的版本中提供。"},
+     "分割畫面（實驗性）：本機一人一個遊戲（各約 10 GB 記憶體）；兩個套件一建一加，見 PLAY-LAN.md。"},
     {"No home-network address was found on this PC.", "這台電腦上沒找到家用網路位址。"},
     {"Friends somewhere else join with your invite code; on a VPN with you, they use the VPN row.",
      "不在同屋的朋友用邀請碼加入；和你同一 VPN 的朋友用「VPN」那一行。"},
@@ -1677,7 +1827,7 @@ constexpr Entry kzh_Hant[] = {
     {"They answer with /allow in their chat. This page joins by itself once they do.", "房主在聊天裡輸入 /allow 回應。回應後這裡會自動加入。"},
     {"The host's game has not answered yet.", "房主的遊戲還沒有回應。"},
     {"Ask the host to choose Host (Multiplayer tab, or the title screen). Keep this page open: it joins by itself.", "請房主選擇「建立房間」（「連線」頁或標題畫面）。保持此頁開啟：會自動加入。"},
-    {"Ask the host to choose Host (Multiplayer tab, or the title screen). If they host already, send them this answer code: {}", "請房主選擇「建立房間」（「連線」頁或標題畫面）。如果房主已經建立，把這個回應碼發給他：{}"},
+    {"Ask the host to choose Host (Multiplayer tab, or the title screen). If they host already, send them this answer code: {}", "請房主選「建立房間」（連線頁或標題）。已建的話，把這個回應碼發給他：{}"},
     {"Joining the host's game...", "正在加入房主的遊戲…"},
     {"Looking for the host's game...", "正在尋找房主的遊戲…"},
     {"Open place", "空位"},
@@ -1709,7 +1859,7 @@ constexpr Entry kzh_Hant[] = {
     {"Press again to ban", "再按一次封禁"},
     {"The invite code is on the clipboard.", "邀請碼已放進剪貼簿。"},
     {"Resync from host", "從房主重新同步"},
-    {"Gets the host's save again. Back on the title, it is switched to once the chat says Success; while you play nothing changes until then. Your own saves are never touched.", "重新取得房主的存檔。回到標題畫面，聊天顯示 Success 後切換過去；遊戲中在那之前什麼都不變。你自己的存檔不會被改動。"},
+    {"Gets the host's save again. Back on the title, it is switched to once the chat says Success; while you play nothing changes until then. Your own saves are never touched.", "重新取房主的存檔：回標題，聊天顯示 Success 後載入即可；你的檔不變。"},
     {"Asked the host for its save: the chat says how it goes.", "已向房主要存檔：進展見聊天。"},
     {"The players of your game show here once you host or join.", "開房或加入後，你遊戲裡的玩家會顯示在這裡。"},
     {"downed", "倒地"},
@@ -1745,6 +1895,7 @@ constexpr Entry kzh_Hant[] = {
     {"In this co-op game the host sets this.", "連線時由房主設定。"},
     {"Counts after a restart.", "重新啟動後生效。"},
     {"Type or Ctrl+V, then Enter. Esc: as it was.", "輸入或按 Ctrl+V，然後按 Enter。Esc：保持原樣。"},
+    {"{} characters ({} of {} bytes)", "{} 個字符（{} / {} 字節）"},
     {"Restart the game to use the changes.", "重新啟動遊戲以套用變更。"},
     {"Switch", "切換"},
     {"Co-op: waiting for the host's list of mods.", "連線：正在等待房主的模組清單。"},
@@ -1773,7 +1924,7 @@ constexpr Entry kzh_Hant[] = {
     {"Player {}. Press to see yourself.", "玩家 {}。按這裡查看自己的情況。"},
     {"Voice mode", "語音模式"},
     {"Open mic: you are heard whenever you speak (silence and quiet noise are not sent). Push to talk: only while you hold {}. On speakers, not headphones? Push to talk keeps the others' voices from coming back to them through your microphone.",
-     "自由麥：你說話時大家都能聽到（靜音和輕聲不會發送）。按鍵說話：只有按住 {} 時才發送。用喇叭而不是耳機？用按鍵說話可以避免別人的聲音從你的麥克風傳回去。"},
+     "自由麥：說話即被聽到（靜音和輕聲不發送）。按鍵說話：按住 {} 才發送；用喇叭時建議開。"},
     {"Starts a game on this PC and makes a code. Send the code to your friends; they choose Join a game and paste it. They play on your save.",
      "在本機開房並產生邀請碼。把碼發給朋友，他們選「加入房間」貼上。他們玩的是你的存檔。"},
     {"Joins a friend's game with the code they sent you. You play on their save; your own saves are not touched.",
@@ -1791,6 +1942,7 @@ constexpr Entry kzh_Hant[] = {
     {"Push to talk", "按鍵說話"},
     // (the start screen's ask for a /bugreport after a crash, coop_problem_ask.h kWords: 40 bytes each at most)
     {"The game crashed last time.", "遊戲上次當機了。"},
+    {"Loading got stuck last time.", "上次載入卡住了。"},
     {"Please send /bugreport on Discord", "請在 Discord 傳送 /bugreport"},
     {"with the zip of collect-logs.cmd.", "附上 collect-logs.cmd 的壓縮檔。"},
     {"OK", "確定"},
@@ -1804,10 +1956,10 @@ constexpr Entry kzh_Hant[] = {
     {"The host only: takes that player out, and they cannot join again, under any name, until the host stops hosting.",
      "僅房主：把他踢出；在房主停止開房之前，他換任何名字都進不來。"},
     {"The host: nobody hears that player's voice or sees their chat (the server stops passing them on); add voice or chat for only that (/mute 2 voice). Anyone else: you stop hearing and seeing them yourself, and nobody is told.",
-     "房主：沒人再聽到他的語音或看到他的聊天（伺服器停止轉發）；只針對語音或聊天就加 voice 或 chat（/mute 2 voice）。其他人：你自己不再聽到他、看到他的聊天，不會通知任何人。"},
+     "房主：所有人不再聽到看到他（加 voice 或 chat 只限其一）；其他人：只有你自己。"},
     {"Undoes /mute (add voice or chat for only that).", "撤銷 /mute（只對語音或聊天就加 voice 或 chat）。"},
     {"Takes you to that player: the whole name, the start of it, or the player's number (/teleport 2). In another place, talk to someone or read a sign within a minute to travel. Not during a cutscene, a talk or a boss fight.",
-     "把你傳送到該玩家身邊：全名、名字開頭，或玩家編號（/teleport 2）。在別的地點時，一分鐘內與人對話或讀告示即可傳送。過場動畫、對話或 BOSS 戰中不行。"},
+     "傳送到該玩家：全名、開頭或編號（/teleport 2）。過場動畫、對話或 BOSS 戰中不行。"},
     
     
     {"VPN", "VPN"},
@@ -1869,10 +2021,10 @@ constexpr Entry kzh_Hant[] = {
     {"The metal of the Silver and the Golden Gauntlets.", "銀色護手和金色護手的金屬部分。"},
     {"Cap trim", "帽子飾邊"},
     {"The cap's own trims: young Link's headband and knot, adult Link's hood trims (the cap's cloth is the tunic's). The other players see it on you too.",
-     "帽子自己的飾邊：幼年林克的頭帶和結，成年林克的兜帽飾邊（帽子的布料與束衣相同）。其他玩家也會在你身上看到。"},
+     "帽子自己的飾邊：幼年林克的頭帶和結，成年林克的兜帽飾邊；其他玩家也看得到。"},
     {"As the tunic", "同束衣"},
     {"All parts to the game's own", "全部恢復遊戲自帶"},
-    {"A Character Select character is picked: it keeps its own colours (X on its Characters page); these colours show on Link when you pick Link again.", "已選擇 Character Select 角色：它保留自己的顏色（在其角色頁面按 X）；再次選擇林克時，這些顏色會顯示在林克身上。"},
+    {"A Character Select character is picked: it keeps its own colours (X on its Characters page); these colours show on Link when you pick Link again.", "已選 Character Select 角色：它保留自己的配色（在其頁面按 X）。"},
     {"Every part in the game's own colours again (the tunic: your player number's colour for the others).",
      "所有部位都恢復遊戲自帶的顏色（束衣：在其他玩家眼裡是你編號對應的顏色）。"},
     {"Game's own colour", "遊戲自帶的顏色"},
@@ -1897,11 +2049,11 @@ constexpr Entry kzh_Hant[] = {
      "字母和數字。留空：自動產生。連線時所有人用房主的種子。"},
     
     {"Only for other game files (1.1.1, with Pack, Banc, Event and System). Empty: the kit's own (romfs beside the game).",
-     "只在用別的遊戲檔案時填（1.1.1，含 Pack、Banc、Event 和 System）。留空：用工具包自帶的（遊戲旁邊的 romfs）。"},
+     "只在用別的遊戲檔案時填（1.1.1，含 Pack、Banc、Event、System）。留空用套件自帶的。"},
     {"Only for another OOTRR. Empty: the one the kit brings (tools\\ootrr beside the game).",
      "只在用別的 OOTRR 時填。留空：用工具包自帶的（遊戲旁邊的 tools\\ootrr）。"},
     {"Shuffles chests, dungeon items and rewards (OOTRR). In co-op everyone plays the host's seed and every pickup is shared. A new seed needs a restart of the game, never a game build.",
-     "打亂寶箱、迷宮道具和獎勵（OOTRR）。連線時所有人玩房主的種子，拾取共享。換種子只需重新啟動遊戲，不用重新建置。"},
+     "打亂寶箱、迷宮道具和獎勵（OOTRR）。連線共用房主的種子，拾取共享；換種子重啟即可。"},
     
     {"By {}", "作者：{}"},
     {", version {}", "，版本 {}"},
@@ -1920,7 +2072,6 @@ constexpr Entry kzh_Hant[] = {
     {"Open mic: you are heard whenever you speak (silence and quiet noise are not sent).", "自由麥：你說話時大家都能聽到（靜音和輕聲不會發送）。"},
     {", ", "，"},
     {"Host: ", "房主："},
-    {": ", "："},
     {"Default", "預設"},
     {"Easy", "簡單"},
     {"Open world", "開放世界"},
@@ -1930,7 +2081,7 @@ constexpr Entry kzh_Hant[] = {
     {"Port", "連接埠"},
     {"Port when you host", "建房連接埠"},
     {"The UDP port other players reach you on (default 27510). Type a number from 1 to 65535; changing it while hosting restarts hosting: friends join again with the new code.",
-     "其他玩家連線至你使用的 UDP 連接埠（預設 27510）。輸入 1 到 65535 之間的數字；建房期間修改會重新建房：朋友要用新的邀請碼重新加入。"},
+     "其他玩家連你的 UDP 連接埠（預設 27510），1 到 65535。開房中改動會重建房間。"},
     {"The host's UDP port (default 27510). Type a number from 1 to 65535.",
      "房主的 UDP 連接埠（預設 27510）。輸入 1 到 65535 之間的數字。"},
     {"The UDP port your game listens on when you host (default 27510). Type a number from 1 to 65535.",
@@ -1949,6 +2100,7 @@ constexpr Entry kzh_Hant[] = {
     //      pickup notices, the item and place names) ----
     {"The blade.", "劍身。"},
     {"connection lost, reconnecting", "連線斷了，正在重連"},
+    {"connection too slow for the game's traffic, reconnecting", "連線太慢，跟不上遊戲的資料，正在重連"},
     {"the host muted your chat: nobody sees it", "房主封鎖了你的聊天：現在沒人看得到"},
     {"you host now: the Lobby's host controls are yours", "你現在是房主：「大廳」頁的房主操作歸你了"},
     {"Difficulty: could not be sent", "難度：沒能發出去"},
@@ -2190,12 +2342,13 @@ constexpr Entry kzh_Hant[] = {
     {"Solo", "單人"},
     {"Locked: beat Ganon", "未解鎖：擊敗加農"},
     {"Beat Ganon to unlock it: then play again with the hearts you had and tougher enemies.", "擊敗加農後解鎖：之後可以用當時的心數重玩，敵人也更強。"},
-    {"Solo: your own saves. Multiplayer: a separate set of saves for playing together (made from your solo saves the first time), so co-op progress never mixes with your own. When you join a friend from the title screen you play the host's save, copied beside your multiplayer saves; your saves are not touched. Switched on the title screen with no file loaded.", "單人：你自己的存檔。連線：一套單獨用於一起遊玩的存檔（第一次會從你的單人存檔產生），連線進度永遠不會和你自己的混在一起。從標題畫面加入朋友的房間時，你玩的是房主的存檔，它複製放在你的連線存檔旁邊；你自己的存檔不受影響。在標題畫面、沒有載入存檔時切換。"},
-    {"Start a new file with this on: you keep your {} hearts, and enemies and bosses get 50% more life and 25% more damage for each level (up to NG+ {} now). In a game you host your level counts for everyone. Off: the game as it is.", "開啟後新開一個存檔：保留你的 {} 顆心，每升一級敵人和 BOSS 的生命 +50%、傷害 +25%（目前最高 NG+ {}）。你開房時，你的等級對所有人都生效。關閉：遊戲保持原樣。"},
+    {"Solo: your own saves. Multiplayer: a separate set of saves for playing together (made from your solo saves the first time), so co-op progress never mixes with your own. When you join a friend from the title screen you play the host's save, copied beside your multiplayer saves; your saves are not touched. Switched on the title screen with no file loaded.", "單人：用你的存檔。連線：獨立的連線存檔（首次由單人檔產生），你自己的不受影響。"},
+    {"Start a new file with this on: you keep your {} hearts, and enemies and bosses get 50% more life and 25% more damage for each level (up to NG+ {} now). In a game you host your level counts for everyone. Off: the game as it is.", "開啟後新開檔：保留 {} 顆心，每級敵人生命 +50%、傷害 +25%（最高 NG+ {}）。"},
     {"Joining your friend's game...", "正在加入朋友的房間…"},
     {"Press Leave, then join again.", "按「離開」，然後再加入一次。"},
     {"Press Leave.", "按「離開」。"},
     {"wrong join password", "加入密碼不對"},
+    {"this host asks for its join password on its own network too", "這個房主在自己的網路上也要加入密碼"},
     {"wrong game build", "遊戲版本不一致"},
     {"server full", "房間滿了"},
     {"name taken", "名字被佔了"},
@@ -2208,6 +2361,8 @@ constexpr Entry kzh_Hant[] = {
      "協定版本不一致：遊戲和伺服器不是同一版本；請在每份套件裡都執行 Update.bat，房主的也要"},
     {"wrong join password: ask the host for it, then start Join.bat again and type it",
      "加入密碼不對：向房主要密碼，然後重新啟動 Join.bat 輸入"},
+    {"this host asks for its join password on its own network too: type the password the host sent you, then join again",
+     "這個房主在自己的網路上也要加入密碼：輸入房主傳給你的密碼，再加入一次"},
     {"the host took you out of the game: you can join again", "房主把你踢出了遊戲：可以再加入"},
     {"the host banned you from this game: you cannot join it again until the host stops hosting",
      "房主在這個房間封禁了你：房主停止建立房間後，你才能再加入"},
@@ -2230,11 +2385,14 @@ constexpr Entry kzh_Hant[] = {
     {"Public game", "公開遊戲"},
     {"Official public game", "官方公開遊戲"},
     {"Public games", "公開遊戲"},
+    {"Page", "頁"},
+    {"Turn the page", "翻頁"},
+    {"Left and Right (or A) turn the page of games.", "左右鍵（或A）翻到上一頁或下一頁的遊戲。"},
     {"Public games ({})", "公開遊戲（{}）"},
     {"Private game (the default): friends join with your code or room name and the password. Nobody else can join.", "私人遊戲（預設）：朋友用你的代碼或房間名加上密碼加入。其他人無法加入。"},
-    {"Public game: shows in Public games and anyone can join, no password. Only through the game list's server, so players never see your internet address. Kick or ban players from the Lobby tab. Players can change the shared progress of the save you host from.", "公開遊戲：顯示在「公開遊戲」中，任何人都能加入，無需密碼。只經由遊戲列表的伺服器連線，玩家看不到你的網路位址。可在「大廳」頁踢出或封鎖玩家。玩家可以改變你所用存檔的共享進度。"},
+    {"Public game: shows in Public games and anyone can join, no password. Only through the game list's server, so players never see your internet address. Kick or ban players from the Lobby tab. Players can change the shared progress of the save you host from.", "公開遊戲：任何人無需密碼可加入；只經列表伺服器，看不到你的 IP。可在「大廳」踢人。"},
     {"Applies at your next Host: stop hosting, then start again.", "下次建立房間時生效：先停止，再重新建立。"},
-    {"Your public game's name in Public games: 3 to 24 letters, digits, - or _. A ready one is offered; change it if you like.", "你的公開遊戲在「公開遊戲」中的名稱：3 到 24 個字母、數字、- 或 _。已提供一個現成的名稱，可隨意修改。"},
+    {"Your public game's name in Public games: 3 to 24 letters, digits, - or _. A ready one is offered; change it if you like.", "你的公開遊戲的名字：3 到 24 個字母、數字、- 或 _，已給現成的一個，可改。"},
     {"Starts a public game on this PC: it shows in Public games, and anyone can join without a password.", "在這台電腦上開始公開遊戲：它會顯示在「公開遊戲」中，任何人無需密碼即可加入。"},
     {"No public games right now. Host one and choose Public game.", "現在沒有公開遊戲。建立一個，並選擇「公開遊戲」。"},
     {"Can't reach the game list. Check your internet connection, then press Refresh.", "無法連線遊戲列表。請檢查網路連線，然後按「重新整理」。"},
@@ -2278,10 +2436,10 @@ constexpr Entry kzh_Hant[] = {
     {"Only the host changes this; it shows what the host chose.", "只有房主能更改此項；這裡顯示房主的選擇。"},
     {"Your own setting for the next game you host; the game you are in keeps its host's.",
      "你下次開房時使用的設定；目前所在的房間沿用房主的設定。"},
-    {"On: each player who asks to join waits until you let them in or refuse them (Let in on Your game, or /allow and /deny in the chat). Applies at your next Host.", "開啟：每位申請加入的玩家都要等你放行或拒絕（在「你的房間」中放行，或在聊天中輸入 /allow、/deny）。下次開房時生效。"},
-    {"On: sword hits, arrows and other attacks hurt the other players too, both ways. In a game you host it changes at once for everyone (as /pvp on and /pvp off); else it is used at your next Host.", "開啟：劍擊、箭矢等攻擊也會傷害其他玩家，雙向生效。在你開的房間中會立即對所有人生效（同 /pvp on 與 /pvp off）；否則在你下次開房時使用。"},
+    {"On: each player who asks to join waits until you let them in or refuse them (Let in on Your game, or /allow and /deny in the chat). Applies at your next Host.", "開啟：申請加入的人要等你放行或拒絕（「你的房間」或聊天 /allow、/deny）。"},
+    {"On: sword hits, arrows and other attacks hurt the other players too, both ways. In a game you host it changes at once for everyone (as /pvp on and /pvp off); else it is used at your next Host.", "開啟：劍、箭等攻擊也會傷到其他玩家，雙向生效，開房即對所有人生效。"},
     {"Set while you host: these rules are the session's, and each game starts with them on.", "開房時設定：這些規則屬於本次連線，每局開始時預設開啟。"},
-    {"On: a player who loses their last heart goes down and crawls instead of a Game Over, and another player holds A beside them to revive them (as /dbno on and /dbno off).", "開啟：失去最後一顆心的玩家會倒地爬行，而不是遊戲結束；其他玩家在旁邊按住A即可將其復活（同 /dbno on 與 /dbno off）。"},
+    {"On: a player who loses their last heart goes down and crawls instead of a Game Over, and another player holds A beside them to revive them (as /dbno on and /dbno off).", "開啟：沒心的玩家倒地爬行而非死亡，他人在旁按住 A 救起。對全房間生效。"},
     {"How long a downed player has before the Game Over if nobody revives them (10 to 240 seconds, as /dbno time).", "倒地的玩家無人復活時，距離遊戲結束的時間（10到240秒，同 /dbno time）。"},
     {"How long A is held beside a downed player to revive them (0.5 to 10 seconds, as /dbno hold).", "在倒地玩家旁邊按住A復活所需的時間（0.5到10秒，同 /dbno hold）。"},
     {"The hearts a revived player gets back (0.5 to 20, as /dbno hearts).", "被復活的玩家恢復的心數（0.5到20，同 /dbno hearts）。"},
@@ -2340,10 +2498,10 @@ constexpr Entry kzh_Hant[] = {
     {"teleport: {} is in a boss fight; no teleport there", "傳送：{} 正在打 BOSS；那裡不能傳送"},
     {"teleport: {} is not in the game", "傳送：{} 不在遊戲裡"},
     {"teleport: {} refused (reason {})", "傳送：{} 拒絕了（原因 {}）"},
-    {"The host only, when a player asks to join (approve_joins = on in coop-options.ini): lets them in (the one who asked first, or by name). Add always to let them in without asking until you stop hosting.", "僅房主：有玩家申請加入時（coop-options.ini 裡 approve_joins = on）放他進來（先申請的，或指定名字）。加 always 則直到你停止開房都不用再問。"},
+    {"The host only, when a player asks to join (approve_joins = on in coop-options.ini): lets them in (the one who asked first, or by name). Add always to let them in without asking until you stop hosting.", "僅房主：有玩家申請時（approve_joins = on）放行或拒絕；加 always 免再問。"},
     {"The host only: turns away the player who asks to join. Add always to keep them out until you stop hosting.", "僅房主：拒絕申請加入的玩家。加 always 則直到你停止開房都把他擋在外面。"},
     {"The host's save is coming: load a save once the chat says Success.", "房主的存檔馬上到：等聊天顯示 Success 再載入存檔。"},
-    {"You joined with a file loaded: the host's save is coming. To play from the host's progress, go back to the title and load a save once the chat says Success.", "你是帶著存檔加入的：房主的存檔馬上到。想從房主的進度開始，回標題畫面，等聊天顯示 Success 再載入存檔。"},
+    {"You joined with a file loaded: the host's save is coming. To play from the host's progress, go back to the title and load a save once the chat says Success.", "你帶著存檔加入：房主的存檔馬上到。想用房主進度，回標題等 Success 再載入。"},
     {"The host's save came, but this game could not switch to it (see the log): play your own save.", "房主的存檔到了，但這個遊戲切不過去（見日誌）：先玩你自己的存檔。"},
     {"The host's save could not be written (see the log): play your own save.", "房主的存檔寫不進去（見日誌）：先玩你自己的存檔。"},
     {"The host's save came damaged; it is sent again after the host's next save.", "房主的存檔到了但已損壞；房主下次存檔後會重發。"},
@@ -2378,7 +2536,7 @@ constexpr Entry kzh_Hant[] = {
     {"You are in a friend's game: leave it first (Join a game).", "你在朋友的房間裡：請先離開（「加入房間」）。"},
     {"Starts your game on this PC. They play on your save.", "在這台電腦上開房。他們在你的存檔裡遊玩。"},
     {"Room  {}", "房間  {}"},
-    {"Page {} of {} (ZL/ZR)", "第 {}/{} 頁（ZL/ZR）"},
+    {"Page {}/{}", "第 {}/{} 頁"},
     {"The code is copied. Send it in a DM; your friend picks Join a game > Enter a code > Paste a code.", "邀請碼已複製。私訊發給朋友；他選「加入房間」>「輸入邀請碼或位址」>「貼上邀請碼」。"},
     {"Your friend types it after picking your game. A shows it.", "朋友選了你的房間後輸入它。按 A 顯示。"},
     {"For friends on your home network: copies one line they paste in Enter a code.", "給同一家庭網路的朋友：複製一行，他在「輸入邀請碼或位址」裡貼上。"},
@@ -2411,9 +2569,9 @@ constexpr Entry kzh_Hant[] = {
     {"The server is not up yet", "伺服器還沒起來"},
     {"No VPN address found", "找不到 VPN 位址"},
     {"No network address found", "找不到網路位址"},
-    {"No relay is set in coop-options.ini (relay = ...), so a room name has nowhere to be found. Ask your host for their whole room@relay line and paste it.", "coop-options.ini 裡沒設中轉（relay = ...），房間名沒處可找。向房主索取完整的 room@relay 那一行再貼上。"},
-    {"The clipboard could not be read: no clipboard tool. Press Ctrl+V while typing, install wl-clipboard (Wayland) or xclip (X11), or type the code.", "讀不了剪貼簿：沒有剪貼簿工具。打字時按 Ctrl+V，或安裝 wl-clipboard（Wayland）/ xclip（X11），也可以手輸邀請碼。"},
-    {"The clipboard could not be read: no clipboard tool. Press Ctrl+V here, or install wl-clipboard (Wayland) or xclip (X11), then press this again.", "讀不了剪貼簿：沒有剪貼簿工具。在這裡按 Ctrl+V，或安裝 wl-clipboard（Wayland）/ xclip（X11），再按一次這裡。"},
+    {"No relay is set in coop-options.ini (relay = ...), so a room name has nowhere to be found. Ask your host for their whole room@relay line and paste it.", "coop-options.ini 沒設中轉（relay = ...），房名找不到。向房主要 room@relay 整行。"},
+    {"The clipboard could not be read: no clipboard tool. Press Ctrl+V while typing, install wl-clipboard (Wayland) or xclip (X11), or type the code.", "讀不了剪貼簿：裝 wl-clipboard（Wayland）或 xclip（X11），或打字時按 Ctrl+V。"},
+    {"The clipboard could not be read: no clipboard tool. Press Ctrl+V here, or install wl-clipboard (Wayland) or xclip (X11), then press this again.", "讀不了剪貼簿：裝 wl-clipboard（Wayland）或 xclip（X11），或在此按 Ctrl+V。"},
     {"No clipboard here", "這裡沒有剪貼簿"},
     {"The host's progress did not finish arriving. If keys or dungeon items look wrong, use Resync from host in the Lobby tab.", "房主的進度沒傳完。鑰匙或迷宮道具不對的話，在大廳頁用「重新取得房主存檔」。"},
     {"Co-op: {} player", "連線：{} 人"},
@@ -2437,7 +2595,7 @@ constexpr Entry kzh_Hant[] = {
     {"New Game+ off.", "新遊戲+：關"},
     {"New Game+ {}: start a new file to play it (your hearts carry over).", "新遊戲+ {}：開個新存檔才能玩（心數會帶過去）。"},
     {"Left and Right: less or more of it, {} a press (0 to 255).", "左右鍵：調小或調大，每按一次 {}（0 到 255）。"},
-    {"The microphone your voice is recorded from. Default: the one Longshot's Insert menu chooses (Gameplay: Microphone), the Ocarina's too. Left and Right go through the microphones plugged in now. One unplugged: the others hear nothing until it is back.", "錄你聲音的麥克風。預設：Longshot 的 Insert 選單裡選的那個（遊戲 → 麥克風），陶笛也用同一個。左右鍵在現在插著的麥克風之間切換。拔掉一個：其他人會聽不到，直到它插回來。"},
+    {"The microphone your voice is recorded from. Default: the one Longshot's Insert menu chooses (Gameplay: Microphone), the Ocarina's too. Left and Right go through the microphones plugged in now. One unplugged: the others hear nothing until it is back.", "錄音用的麥克風。預設跟隨遊戲設定的麥克風；陶笛也用它。左右鍵試選。"},
     // (0.11.8's screens, DrHammer79's PR #308: the Multiplayer page, co-op's menu, the Original game switch)
     {"Co-op failed", "連線失敗"},
     {"Turned away", "被拒"},
@@ -2490,15 +2648,15 @@ constexpr Entry kzh_Hant[] = {
     {"Most players", "人多的在前"},
     {"Fewest players", "人少的在前"},
     {"Name", "按名稱"},
-    {"Your join password: friends type it with your room name or address. A shows it in groups of five, A again hides it. Share it in DMs only.", "你的加入密碼：朋友輸入房間名或位址時一起輸入它。按A以五個一組顯示，再按A隱藏。只在私訊裡分享。"},
+    {"Your join password: friends type it with your room name or address. A shows it in groups of five, A again hides it. Share it in DMs only.", "你的加入密碼：朋友輸入房間名或位址時一起填。按A五字一組顯示，再按隱藏。"},
     {"Allow", "放行"},
     {"Refuse", "拒絕"},
-    {"A new join password, typed on the keyboard; Enter gives it to your game. Players who join from now on need it; players already in stay. No spaces, at most 128 characters.", "新的加入密碼，用鍵盤輸入；Enter 交給你的遊戲。之後加入的玩家需要它；已經在的玩家不受影響。不能有空格，最多 128 個字元。"},
+    {"A new join password, typed on the keyboard; Enter gives it to your game. Players who join from now on need it; players already in stay. No spaces, at most 128 characters.", "新加入密碼，鍵盤輸入後 Enter。之後加入的人需要它；不能有空格，最多 128 字元。"},
     {"In your friend's game", "在朋友的房間裡"},
     {"Joining your friend's game", "正在加入朋友的房間"},
-    {"Lists the games on this network and the public rooms on your relay, with a search. Pick one and its room or address is filled in below.", "列出本網路的房間和你的中轉上的公開房間，可以搜尋。選一個，它的房間名或位址就會填到下面。"},
+    {"Lists the games on this network and the public rooms on your relay, with a search. Pick one and its room or address is filled in below.", "列出本網路的房間和中轉上的公開房間，可搜尋；選中即填入下面。"},
     {"Room or address", "房間或位址"},
-    {"The host's room name (found through your relay, Settings > Relay) or their IP address or PC name. A name without a dot is tried as a PC on your network first, then as a room. Copied an invite code or address? Press this: it is pasted.", "房主的房間名（透過你的中轉查找，設定 > 中轉），或者對方的 IP 位址或電腦名。不帶點的名字先當作本網路的電腦來找，再當作房間。複製了邀請碼或位址？按這裡就會貼上。"},
+    {"The host's room name (found through your relay, Settings > Relay) or their IP address or PC name. A name without a dot is tried as a PC on your network first, then as a room. Copied an invite code or address? Press this: it is pasted.", "房主的房間名或 IP 位址、電腦名。不帶點的名字先按本網路的電腦來找。"},
     {"The host's join password: they see it on their Multiplayer page (Hosting, Join password).", "房主的加入密碼：房主在自己的連線頁能看到（房間已開，加入密碼）。"},
     {"Type the room name or address first.", "先輸入房間名或位址。"},
     {"List", "列表"},
@@ -2513,16 +2671,16 @@ constexpr Entry kzh_Hant[] = {
     {"Forgets the games heard and listens again: the ones still hosting come back within 2 seconds.", "忘掉已發現的房間並重新監聽：仍在開的房間 2 秒內會回來。"},
     {"Fills in the Join page with this game: then Join (with its password, if it asks one).", "把這個房間填進加入頁：然後按加入（如果要密碼就輸入）。"},
     {"This game is full, or runs another version of co-op.", "這個房間滿了，或者用的是另一個連線版本。"},
-    {"The relay that finds rooms by name and lists public rooms. Squadala's own is built in; type another (host or host:port) to use it instead. Cleared: Squadala's again. A change while you host applies at your next Host.", "按名稱找房間並列出公開房間的中轉。已內建 Squadala 自己的；輸入別的（主機或 主機:連接埠）就改用它。清空：恢復 Squadala 的。開房時的更改在下次開房時生效。"},
-    {"Your room's name on the relay when you host: 3 to 24 letters, digits, - or _. Friends type it to join. Empty: a join code instead. A change while you host applies at your next Host.", "開房時你的房間在中轉上的名稱：3 到 24 個字母、數字、- 或 _。朋友輸入它來加入。留空：改用邀請碼。開房時的更改在下次開房時生效。"},
-    {"When you host with a room name, the room shows on your relay's public list (Browse games), so players can pick it. Never your join password. Off: only players who know the name find it.", "用房間名開房時，房間會出現在中轉的公開列表裡（瀏覽房間），玩家可以選它。加入密碼絕不會公開。關閉：只有知道名稱的玩家才能找到。"},
-    {"Joins your last friend's game again by itself: a few seconds after the game starts, and when the connection drops without you leaving. Off: you join again yourself.", "自動重新加入上次朋友的房間：遊戲啟動幾秒後，以及你沒離開卻斷線時。關閉：你自己重新加入。"},
+    {"The relay that finds rooms by name and lists public rooms. Squadala's own is built in; type another (host or host:port) to use it instead. Cleared: Squadala's again. A change while you host applies at your next Host.", "按名稱找房間、列出公開房間的中轉。清空用套件內建的；也可填 主機 或 主機:連接埠。"},
+    {"Your room's name on the relay when you host: 3 to 24 letters, digits, - or _. Friends type it to join. Empty: a join code instead. A change while you host applies at your next Host.", "開房時房間在中轉上的名稱：3 到 24 個字母、數字、- 或 _。留空則用邀請碼。"},
+    {"When you host with a room name, the room shows on your relay's public list (Browse games), so players can pick it. Never your join password. Off: only players who know the name find it.", "開房時房間列進中轉的公開列表，玩家可選中加入；加入密碼絕不會公開。"},
+    {"Joins your last friend's game again by itself: a few seconds after the game starts, and when the connection drops without you leaving. Off: you join again yourself.", "自動重進上次朋友的房間：啟動幾秒後、以及沒離開卻斷線時。關閉則手動。"},
     {"Password on this network", "本網路要密碼"},
     {"Not needed", "不需要"},
     {"Needed", "需要"},
-    {"Not needed: when you host, players from a private address join without the join password. Only on a network you trust: a tunnel, a VPN or a port forward can bring others in that way.", "不需要：你開房時，來自內網位址的玩家不用加入密碼就能加入。只在你信任的網路上用：通道、VPN 或連接埠轉發也可能讓別人這樣進來。"},
+    {"Not needed: when you host, players from a private address join without the join password. Only on a network you trust: a tunnel, a VPN or a port forward can bring others in that way.", "不需要：內網玩家不加密碼即可加入。只在你信任的網路用（VPN/連接埠轉發也算）。"},
     {"Original game", "原版遊戲"},
-    {"From the next start, the game as it came: co-op, the pause menu's extra pages and buttons, Link's look, the co-op pack and code mods (Save Profiles) all off. Your saves are not touched. This switch stays in the F1 menu to turn it back.", "從下次啟動起，遊戲回到原樣：連線、暫停選單多出的頁面和按鈕、林克的外觀、連線資源包和程式模組（存檔設定檔）全部關閉。你的存檔不受影響。這個開關留在 F1 選單裡，可以再打開。"},
+    {"From the next start, the game as it came: co-op, the pause menu's extra pages and buttons, Link's look, the co-op pack and code mods (Save Profiles) all off. Your saves are not touched. This switch stays in the F1 menu to turn it back.", "下次啟動起，連線與附加項全部關閉，遊戲回到原樣；存檔不受影響，F1 裡可改回。"},
     {"Relay: host or host:port (letters, digits, . and -; a port from 1 to 65535). It was not changed.", "中轉：主機或 主機:連接埠（字母、數字、. 和 -；連接埠 1 到 65535）。沒有改動。"},
     {"Room name: 3 to 24 letters, digits, - or _. It was not changed.", "房間名：3 到 24 個字母、數字、- 或 _。沒有改動。"},
     {"Nothing to paste: copy the room name or address first. You can also type it.", "沒有可貼上的：先複製房間名或位址。也可以直接輸入。"},
@@ -2556,6 +2714,10 @@ constexpr Entry kzh_Hant[] = {
     {"Forward UDP {} to this PC", "把 UDP {} 轉發到這台電腦"},
     {"This network ({})", "本網路（{}）"},
     {"Turns {} away, as /deny in the chat does. They can ask again.", "拒絕 {}，和聊天裡的 /deny 一樣。對方可以再申請。"},
+    {"{} asks to join your game. Lets them in, as /allow in the chat does.", "{} 申請加入你的遊戲。放行，和聊天裡的 /allow 一樣。"},
+    {"{} asks to join your game.", "{} 申請加入你的遊戲。"},
+    {"Turns {} away. They can ask again.", "拒絕 {}。對方可以再申請。"},
+    {"{} asks for a password", "{} 需要密碼"},
     {"NG+ {}", "NG+ {}"},
     {"Could not write {}.", "寫不了 {}。"},
     {"Turned away: {}", "被拒：{}"},
@@ -2567,7 +2729,7 @@ constexpr Entry kzh_Hant[] = {
     {"Joining {}...", "正在加入 {}…"},
     {"Pasted: {} characters.", "已貼上：{} 個字元。"},
     {"Letter: < {} >", "字母：< {} >"},
-    {"No PC called {} was found. To join a room by its name, set a relay first: Co-op Settings, Relay. Or type the host's IP address.", "沒有找到叫 {} 的電腦。要按名稱加入房間，先設定中轉：連線設定，中轉。或者輸入房主的 IP 位址。"},
+    {"No PC called {} was found. To join a room by its name, set a relay first: Co-op Settings, Relay. Or type the host's IP address.", "沒找到叫 {} 的電腦。按名加入需先設中轉（連線設定 > 中轉），或填房主 IP。"},
     {"Room {}: friends type it in Join a game (IP address), with your join password.", "房間 {}：朋友在「加入房間」（IP 位址）裡輸入它，再加上你的加入密碼。"},
     // (0.11.9, ui-tabs: the - menu tabs, Customize Eyes and Hair, the colour mixer)
     {"Eyes", "眼睛"},
@@ -2581,6 +2743,18 @@ constexpr Entry kzh_Hant[] = {
     {"Cap Trim", "帽子飾邊"},
     {"Eye Colour", "眼睛顏色"},
     {"Hair Colour", "頭髮顏色"},
+    // (npc-customize: a Character Select character's own Customize page)
+    {"Character", "角色"},
+    {"Clothing Colour", "衣服顏色"},
+    {"Clothing Colour 2", "衣服顏色 2"},
+    {"Clothing Colour 3", "衣服顏色 3"},
+    {"Equipment", "裝備"},
+    {"Shown", "顯示"},
+    {"Left and Right change it.", "左右鍵切換。"},
+    {"The colour of your character's hair and brows. The other players see it too.", "你的角色的頭髮和眉毛的顏色，其他玩家也看得到。"},
+    {"The colour of your character's eyes. The other players see it too.", "你的角色的眼睛的顏色，其他玩家也看得到。"},
+    {"A part of your character's clothes, in one of seven colours. The other players see it too.", "你的角色衣服的一部分，七種顏色之一，其他玩家也看得到。"},
+    {"Your character's sword, shield and other gear shown or hidden.", "顯示或隱藏你的角色的劍、盾牌和其他裝備。"},
     {"Hylian Shield Frame", "海利亞之盾邊框"},
     {"Y: page", "Y：翻頁"},   // (Character Select's Customize screen's title, more than one page)
     {"A: exact hue", "A：調色"},
@@ -2590,10 +2764,10 @@ constexpr Entry kzh_Hant[] = {
     {"Brightness", "亮度"},
     {"Customize", "自訂"},
     {"This character has no colour options", "這個角色沒有顏色選項"},
-    {"Link's colours are on the Characters tab: pick Link, then Customize.", "林克的顏色在「角色」分頁：選擇林克，然後選擇「自訂」。"},
+    {"Link's colours are not on this page: press L until the Characters tab (the first tab of the - menu), pick Link, then Customize.", "林克的顏色不在這一頁：按L直到「角色」分頁（-選單的第一個分頁），選擇林克，然後選擇「自訂」。"},
     {"Characters tab", "角色分頁"},
     {"Left and Right try the colours; A picks any colour of your own.", "左右鍵試顏色；按A自己調任意顏色。"},
-    {"Left and Right try the colours; Confirm picks any colour of your own. Your Link wears it when you close the menu. The other players see your gear in this colour, and your tunic in the nearest of the ten tunic colours.", "左右鍵試顏色；確認後自己調任意顏色。關閉選單時你的林克就會換上。其他玩家看到你的裝備是這個顏色，衣服則是十種衣服顏色裡最接近的那一種。"},
+    {"Left and Right try the colours; Confirm picks any colour of your own. Your Link wears it when you close the menu. The other players see your gear in this colour, and your tunic in the nearest of the ten tunic colours.", "左右鍵試色；確認自定任意顏色，關選單即穿上。裝備用此色，衣服取最接近的十色之一。"},
     {"{} degrees", "{} 度"},
     {"Left and Right: round the colour wheel, {} degrees a press (red, yellow, green, cyan, blue, magenta, red).", "左右鍵：沿色輪轉動，每按一次 {} 度（紅、黃、綠、青、藍、洋紅、紅）。"},
     {"Left and Right: from grey (0%) to the full colour (100%), {}% a press.", "左右鍵：從灰色（0%）到全彩（100%），每按一次 {}%。"},
@@ -2622,24 +2796,145 @@ constexpr Entry kzh_Hant[] = {
     {"Enemy damage", "敵人傷害"},
     {"Enemies", "敵人數量"},
     {"Only the host can change it.", "只有房主能更改。"},
-    {"For everyone in your game: enemies' life, the damage they deal and how many there are. Automatic: more as more players join. Custom: your own values on the rows below. Also /difficulty in the chat.", "對你房間裡的所有人：敵人的生命、造成的傷害和數量。自動：玩家越多越難。自訂：在下面幾行設定你自己的數值。也可以在聊天中輸入 /difficulty。"},
+    {"For everyone in your game: enemies' life, the damage they deal and how many there are. Automatic: more as more players join. Custom: your own values on the rows below. Also /difficulty in the chat.", "對全房間生效：敵人生命、傷害和數量。自動：人越多越難；自訂：在下面幾行設。"},
     {"How much life enemies and bosses have: 25% to 500% of the game's, in steps of 25.", "敵人和 BOSS 的生命：遊戲原本的 25% 到 500%，每次 25。"},
     {"How much damage enemies and bosses deal to players: 25% to 400% of the game's, in steps of 25.", "敵人和 BOSS 對玩家造成的傷害：遊戲原本的 25% 到 400%，每次 25。"},
     {"How many enemies: 100% is the game's, 200% one more beside each, up to 300%, in steps of 25.", "敵人數量：100% 是遊戲原本的，200% 每個旁邊多一個，最多 300%，每次 25。"},
     {"This game's server does not say a difficulty: enemies as in the game.", "這個房間的伺服器沒有給出難度：敵人和原版一樣。"},
-    {"The host chooses it for everyone while hosting: Automatic, Easy, Normal, Hard or Custom. Playing alone, enemies are as in the game (New Game+ aside).", "房主開房時為所有人選擇：自動、簡單、普通、困難或自訂。單人遊戲時，敵人和原版一樣（新遊戲+ 除外）。"},
+    {"The host chooses it for everyone while hosting: Automatic, Easy, Normal, Hard or Custom. Playing alone, enemies are as in the game (New Game+ aside).", "房主為全房間選：自動、簡單、普通、困難或自訂。單人與原版相同。"},
     {"Only the host can change the difficulty, while hosting.", "只有正在開房的房主能更改難度。"},
     {"Says the down-but-not-out rules in this game: on or off, the bleed-out time, the revive hold and the hearts a revived player gets.", "顯示這個房間的倒地規則：開或關、倒地等待時間、救起要按住多久、被救起的玩家得到幾顆心。"},
-    {"The host only: on, a player out of hearts goes down and another player can revive them; off, the game's own death. For everyone.", "僅房主：開啟時，沒有心的玩家會倒地，其他玩家可以救起他；關閉時，按遊戲原本的方式死亡。對所有人生效。"},
+    {"The host only: on, a player out of hearts goes down and another player can revive them; off, the game's own death. For everyone.", "僅房主：開啟則沒心的玩家倒地可被救起；關閉按原版死亡。對所有人。"},
     {"The host only: how long a downed player waits for a revive, 10 to 240 seconds.", "僅房主：倒地的玩家等待救起的時間，10 到 240 秒。"},
     {"The host only: how long A is held to revive, 0.5 to 10 seconds (halves allowed).", "僅房主：救起時要按住 A 多久，0.5 到 10 秒（可以用半秒）。"},
     {"The host only: the hearts a revived player gets (halves allowed).", "僅房主：被救起的玩家得到幾顆心（可以用半顆）。"},
     {"Says the difficulty in this game: enemies' life, the damage they deal and how many there are.", "顯示這個房間的難度：敵人的生命、造成的傷害和數量。"},
-    {"The host only: auto, easy, normal or hard, for everyone. Auto: more as more players join. The same as Difficulty in Co-op settings while you host.", "僅房主：auto（自動）、easy（簡單）、normal（普通）或 hard（困難），對所有人生效。自動：玩家越多越難。和開房時聯機設定裡的難度一樣。"},
+    {"The host only: auto, easy, normal or hard, for everyone. Auto: more as more players join. The same as Difficulty in Co-op settings while you host.", "僅房主：auto、easy、normal、hard，對所有人生效。自動隨人數變難。"},
     {"The host only: your own values in percent: life 25 to 500, damage 25 to 400, enemies 100 to 300, in steps of 25.", "僅房主：你自己的百分比數值：生命 25 到 500，傷害 25 到 400，敵人數量 100 到 300，每次 25。"},
     {"difficulty: the server has not said it yet", "難度：伺服器還沒有給出"},
     {"difficulty: only the host can change it", "難度：只有房主能更改"},
     {"difficulty: /difficulty auto, easy, normal or hard, or /difficulty custom <life> <damage> <enemies> (life 25-500, damage 25-400, enemies 100-300, steps of 25)", "難度：/difficulty auto、easy、normal 或 hard，或 /difficulty custom <生命> <傷害> <敵人數量>（生命 25-500，傷害 25-400，敵人數量 100-300，每次 25）"},
+    // The help of every co-op row the - page shows (help-lines, 0.11.10)
+    {"Co-op's own menu: what co-op is doing now, with Host, Join, Stop and Leave.",
+     "連線自己的選單：目前狀態，以及建立、加入、停止、離開。"},
+    {"Copies your game's room name or code. Send it to your friends so they can join.",
+     "複製你房間的名稱或邀請碼，傳給朋友就能加入。"},
+    {"Lets in the first player who asks to join your game.",
+     "讓第一個請求加入的玩家進入你的房間。"},
+    {"Starts hosting a game on this PC now. Your friends play on your save.",
+     "現在在這台電腦上開房。朋友使用你的存檔遊玩。"},
+    {"Leaves the game, or stops hosting yours. Press A again to confirm.",
+     "離開房間，或停止你的房間。再按一次 A 確認。"},
+    {"Pastes the answer code a friend sent you back, so they can come in.",
+     "貼上朋友傳回的應答碼，讓他進入。"},
+    {"Copies this game's answer code. Send it to the host so they can let you in.",
+     "複製本遊戲的應答碼，傳給房主讓他放你進去。"},
+    {"Everyone in the game. Pick a player to see what you can do.",
+     "房間裡的所有人。選一名玩家查看可用操作。"},
+    {"Players who ask to join your game: let them in or refuse them.",
+     "請求加入你房間的玩家：放行或拒絕。"},
+    {"Join a friend's game: with a code they sent you, or the last game again.",
+     "加入朋友的房間：使用他傳來的邀請碼，或再次加入上一個房間。"},
+    {"Back to the rows before. B does the same.",
+     "返回上一層。按 B 效果相同。"},
+    {"Refuses the first player who asks to join your game.",
+     "拒絕第一個請求加入的玩家。"},
+    {"Joins with the code you copied. You play on the host's save; yours are not touched.",
+     "使用你複製的邀請碼加入。你在房主的存檔上遊玩，自己的存檔不動。"},
+    {"Joins the last game you played in again.",
+     "再次加入你上次玩的房間。"},
+    {"Your game now: what co-op is doing, the lines to give your friends, and why it stopped.",
+     "你目前的房間：連線狀態、給朋友的連線資訊，以及停止的原因。"},
+    {"Copies the line friends on your network use to join you.",
+     "複製同一網路的朋友用來加入你的連線資訊。"},
+    {"Copies the line friends on your VPN use to join you.",
+     "複製 VPN 裡的朋友用來加入你的連線資訊。"},
+    {"Loads the host's save again, so your game matches theirs.",
+     "重新載入房主的存檔，讓你的遊戲和他的一致。"},
+    {"This player: go to them, or mute their voice or chat for you.",
+     "這名玩家：傳送到他身邊，或為你自己靜音他的語音或聊天。"},
+    {"The next page of players.",
+     "下一頁玩家。"},
+    {"The host's controls for this player: mute them for everyone, kick or ban.",
+     "房主對這名玩家的操作：為所有人靜音、踢出或封鎖。"},
+    {"Takes you to this player.",
+     "傳送到這名玩家身邊。"},
+    {"Mutes this player's voice for you only, or lets you hear it again.",
+     "只為你靜音這名玩家的語音，或重新聽到。"},
+    {"Hides this player's chat for you only, or shows it again.",
+     "只為你隱藏這名玩家的聊天，或重新顯示。"},
+    {"Mutes this player's voice for everyone, or unmutes it.",
+     "為所有人靜音這名玩家的語音，或取消靜音。"},
+    {"Mutes this player's chat for everyone, or unmutes it.",
+     "為所有人屏蔽這名玩家的聊天，或取消屏蔽。"},
+    {"Sends this player out of your game. Press A again to confirm.",
+     "把這名玩家踢出你的房間。再按一次 A 確認。"},
+    {"Keeps this player out until you stop hosting. Press A again to confirm.",
+     "在你停止房間之前不讓這名玩家進入。再按一次 A 確認。"},
+    {"Type the room name your friend gave you.",
+     "輸入朋友給你的房間名稱。"},
+    {"Type the game's join password, if it has one.",
+     "輸入房間的加入密碼（如果有）。"},
+    {"Joins that room with the password typed.",
+     "使用輸入的密碼加入該房間。"},
+    {"Games on your network that you can join.",
+     "你網路裡可以加入的房間。"},
+    {"This game: type its join password if it has one, then join.",
+     "這個房間：有密碼就先輸入，然後加入。"},
+    {"Joins this game with the password typed.",
+     "使用輸入的密碼加入這個房間。"},
+    {"The next page of games.",
+     "下一頁房間。"},
+    {"When on, co-op joins the game again by itself if the connection drops.",
+     "開啟後，連線中斷時連線會自動重新加入房間。"},
+    {"Shows your game's join password, or hides it again.",
+     "顯示你房間的加入密碼，或重新隱藏。"},
+    {"Your game's join password: show it, or change it.",
+     "你房間的加入密碼：顯示或更改。"},
+    {"Type a new join password. Players who join from now on need it.",
+     "輸入新的加入密碼。之後加入的玩家需要它。"},
+    {"Type the port your game uses when you host. Hosting starts again on it.",
+     "輸入你開房時使用的連接埠。房間會在該連接埠重新開啟。"},
+    {"Type the relay's address to see its public rooms. It is saved.",
+     "輸入中繼的位址以查看它的公開房間。會被儲存。"},
+    {"Type words to find rooms with them in their names.",
+     "輸入文字，尋找名稱中含有它的房間。"},
+    {"Lists the games on your network.",
+     "列出你網路裡的房間。"},
+    {"Lists the public rooms online.",
+     "列出線上的公開房間。"},
+    {"Looks for games again.",
+     "重新尋找房間。"},
+    {"When on, your game's room is listed online while you host, so anyone can find it.",
+     "開啟後，你開房時房間會列在網路上，任何人都能找到。"},
+    {"Switches between the public rooms online and the games on your network.",
+     "在線上公開房間和本網路房間之間切換。"},
+    {"Which games the list shows: all, open ones, or this version only.",
+     "列表顯示哪些房間：全部、開放的，或僅此版本。"},
+    {"The list's order: most players, fewest players, or by name.",
+     "列表的順序：人數最多、人數最少，或按名稱。"},
+    {"Type the room name your game has when you host. It is saved.",
+     "輸入你開房時的房間名稱。會被儲存。"},
+    {"Customize Link, co-op settings, the chat's commands and local co-op.",
+     "林克外觀、連線設定、聊天指令和本機雙人。"},
+    {"This page's rows are on the list. Right or A to pick one.",
+     "這一頁的選項在右邊的列表裡。按右或 A 選擇。"},
+    {"Host a game: start it, then give your friends its code and let them in.",
+     "建立房間：開房後把邀請碼給朋友，再放他們進來。"},
+    {"Co-op settings at the host rows: game, approving joins, PvP and Down but not out.",
+     "連線設定裡的房主選項：遊戲、審批加入、PvP 和倒地不死。"},
+    {"A game you can join: A opens it, with a row for its join password if it has one.",
+     "可以加入的房間：按 A 開啟，有密碼的會有一行輸入密碼。"},
+    {"Left and Right pick a letter, A types it. Delete, OK and Cancel are below. A keyboard types too.",
+     "左右選字母，A 輸入。下方有刪除、確定和取消。鍵盤也能輸入。"},
+    // (the port's state on the details list, the "(you)" after the own name,
+    // the turned-away line's endings: pieces of lines the module composes)
+    {"open", "開放"},
+    {"shut", "未開放"},
+    {" Leave.", " 請先離開。"},
+    {" Leave, then join again.", " 請先離開，稍後再加入。"},
+    {"{}  < {} of {} >", "{}  < {}/{} >"},
+
 };
 
 std::string Trim(std::string s) {
@@ -2933,14 +3228,55 @@ const char* MenuLanguageCode(int setting) {
     return setting <= kCount ? kMenuLangs[setting - 1] : "en";   // (a newer Longshot's language: none of ours)
 }
 
-const Lang* Current() {
-    // Longshot's Menu language row: the tabs are drawn in that menu, with the
-    // glyphs it merged for that language (vk_imgui.cpp script_fonts).
-    if (const char* menu = MenuLanguageCode(MenuLanguageNow())) {
-        return ForCode(menu);
+namespace {
+std::atomic<bool> g_forced_on{false};
+std::atomic<const Lang*> g_forced{nullptr};
+}  // namespace
+
+void ForceLanguage(const char* code) {
+    if (code == nullptr) {
+        g_forced_on = false;
+        return;
     }
-    static const Lang* const game = ForCode(ReadLanguage());   // (Auto)
+    g_forced = ForCode(code);
+    g_forced_on = true;
+}
+
+const Lang* Current() {
+    if (g_forced_on) {
+        return g_forced;
+    }
+    // Longshot's Menu language row picks the table, but our tabs are the game's own panes now (0.11.9 on), drawn with
+    // the font set the game loaded for ITS language, not Longshot's ImGui fonts: a table that set has no letters for
+    // shows English (row 139, ui-fit-139-2: menu_language 13 on an English game drew boxes).
+    static const std::string game_code = ReadLanguage();   // (read once: the game picks its font set at its start)
+    if (const char* menu = MenuLanguageCode(MenuLanguageNow())) {
+        return Shown(ForCode(menu), game_code);
+    }
+    static const Lang* const game = Shown(ForCode(game_code), game_code);   // (Auto)
     return game;
+}
+
+FontSet FontSetFor(std::string_view game_code) {
+    const auto starts = [&](std::string_view code) {
+        return game_code.size() >= code.size() && SameCode(game_code.substr(0, code.size()), code) &&
+               (game_code.size() == code.size() || game_code[code.size()] == '-' || game_code[code.size()] == '_');
+    };
+    if (starts("ko")) return FontSet::kKRko;
+    if (starts("ru")) return FontSet::kEUru;
+    if (starts("zh")) {
+        const Lang* t = ForCode(game_code);
+        return t != nullptr && std::string_view(t->code) == "zh-Hant" ? FontSet::kTWzh : FontSet::kCNzh;
+    }
+    return FontSet::kBase;
+}
+
+const Lang* Shown(const Lang* menu, std::string_view game_code) {
+    if (menu == nullptr) return nullptr;
+    // (the set a table's letters need: our tables are the two Chinese ones; a new table names its set here)
+    const std::string_view code = menu->code;
+    const FontSet needs = code == "zh-Hant" ? FontSet::kTWzh : code == "zh-Hans" ? FontSet::kCNzh : FontSet::kBase;
+    return FontSetFor(game_code) == needs ? menu : nullptr;
 }
 
 namespace {
@@ -2959,6 +3295,8 @@ struct Shape {
 constexpr Shape kShapes[] = {
     {"Friends on your ", " paste this line in Join (address and password):",
      "Friends on your {} paste this line in Join (address and password):", true},
+    {"Friends on your ", " paste this line in Join (no password needed):",
+     "Friends on your {} paste this line in Join (no password needed):", true},
     {"Press ", " in the game to open the chat box; Enter sends, Esc closes. A line that starts with / is a command, "
                "not chat. To use another key: Settings, Chat key.",
      "Press {} in the game to open the chat box; Enter sends, Esc closes. A line that starts with / is a command, "
@@ -2966,7 +3304,7 @@ constexpr Shape kShapes[] = {
     {"Co-op is on: ", " players", "Co-op is on: {} players", false},
     // (another player's character not downloaded: "Player 3 plays ...", coop_char_slots.h)
     {"", " plays a character you have not downloaded, shown as Link (press N at the kit's start to get Snail's NPC characters).",
-     "{} plays a character you have not downloaded, shown as Link (press N at the kit's start to get Snail's NPC characters).", true},
+     "{} plays a character you have not downloaded, shown as Link (press N at the kit's start to get Snail's NPC characters).", false},
     // (the caller writes "Player N": the number in the table's own "玩家 N", as every other Player line)
     {"Player ", " plays a character you have not downloaded, shown as Link (press N at the kit's start to get Snail's NPC characters).",
      "Player {} plays a character you have not downloaded, shown as Link (press N at the kit's start to get Snail's NPC characters).", false},
@@ -3089,6 +3427,11 @@ constexpr Shape kShapes[] = {
      "Room {}: friends type it in Join a game (IP address), with your join password.", false},
     {"Turns ", " away, as /deny in the chat does. They can ask again.",
      "Turns {} away, as /deny in the chat does. They can ask again.", false},
+    {"Turns ", " away. They can ask again.", "Turns {} away. They can ask again.", false},
+    {"", " asks to join your game. Lets them in, as /allow in the chat does.",
+     "{} asks to join your game. Lets them in, as /allow in the chat does.", false},
+    {"", " asks to join your game.", "{} asks to join your game.", false},
+    {"", " asks for a password", "{} asks for a password", false},
     {"Your name is in use in that game: joined with", " after it.",
      "Your name is in use in that game: joined with{} after it.", false},
     {"Forward UDP ", " to this PC",
@@ -3177,6 +3520,7 @@ struct SplitShape {
     int words;    // bit i: part i is a word of the table too (a preset's name, an age)
     int count;    // pieces used
     const char* key;
+    int places = 0;   // bit i: part i is a place of the game (a scene: "Hyrule Field"), the rest are names, as they are
 };
 bool SplitAll(std::string_view text, const SplitShape& shape, std::string_view* parts) {
     if (shape.count < 2 || shape.count > 8) {
@@ -3332,7 +3676,7 @@ const Clause* ClauseOf(std::string_view text, std::string_view* data) {
 // A name the notice gives: a player's name as it is; the stand-ins notify.cpp
 // writes when it has none ("Someone", "Player 3") in the table's words.
 std::string Who(const Lang* lang, std::string_view who) {
-    if (who == "Someone" || (StartsWith(who, "Player ") && who.size() > 7 &&
+    if (who == "Someone" || who == "A player" || (StartsWith(who, "Player ") && who.size() > 7 &&
                              who.find_first_not_of("0123456789", 7) == std::string_view::npos)) {
         return Tr(lang, who);
     }
@@ -3540,57 +3884,63 @@ std::string FillAll(const char* text, const std::string_view* parts, int count) 
 
 constexpr SplitShape kSplitShapes[] = {
     // the host's difficulty notice (coop_difficulty.cpp Describe): numbers, plus the preset or the player count
-    {{"Difficulty: Automatic (", " players): life ", "%, damage ", "%, enemies ", "%; bosses: life ", "%, damage ", "%"}, 0, 7, "Difficulty: Automatic ({} players): life {}%, damage {}%, enemies {}%; bosses: life {}%, damage {}%"},
-    {{"Difficulty: Automatic (", " player): life ", "%, damage ", "%, enemies ", "%; bosses: life ", "%, damage ", "%"}, 0, 7, "Difficulty: Automatic ({} player): life {}%, damage {}%, enemies {}%; bosses: life {}%, damage {}%"},
-    {{"Difficulty: ", ": life ", "%, damage ", "%, enemies ", "%"}, 1, 5, "Difficulty: {}: life {}%, damage {}%, enemies {}%"},
+    {{"Difficulty: Automatic (", " players): life ", "%, damage ", "%, enemies ", "%; bosses: life ", "%, damage ", "%"}, 0, 7, "Difficulty: Automatic ({} players): life {}%, damage {}%, enemies {}%; bosses: life {}%, damage {}%", 0},
+    {{"Difficulty: Automatic (", " player): life ", "%, damage ", "%, enemies ", "%; bosses: life ", "%, damage ", "%"}, 0, 7, "Difficulty: Automatic ({} player): life {}%, damage {}%, enemies {}%; bosses: life {}%, damage {}%", 0},
+    {{"Difficulty: ", ": life ", "%, damage ", "%, enemies ", "%"}, 1, 5, "Difficulty: {}: life {}%, damage {}%, enemies {}%", 0},
     // /teleport's lines (coop_teleport.cpp)
-    {{"teleport: going to ", " in ", ""}, 0, 3, "teleport: going to {} in {}"},
-    {{"teleport: ", " has gone on to ", "; you are where they were. Type /teleport again to follow", ""}, 0, 3, "teleport: {} has gone on to {}; you are where they were. Type /teleport again to follow"},
-    {{"teleport: ", " is in ", ", a place for ", " Link; yours is ", "", ""}, 12, 5, "teleport: {} is in {}, a place for {} Link; yours is {}"},
-    {{"teleport: ", " is ", " Link and you are ", ": no teleport to another age's Link", ""}, 6, 4, "teleport: {} is {} Link and you are {}: no teleport to another age's Link"},
-    {{"teleport: ", " is busy now; you are where they were", ""}, 0, 2, "teleport: {} is busy now; you are where they were"},
-    {{"teleport: no answer from ", "; you are where they were", ""}, 0, 2, "teleport: no answer from {}; you are where they were"},
-    {{"teleport: no answer from ", " (an older build, or their game is busy)", ""}, 0, 2, "teleport: no answer from {} (an older build, or their game is busy)"},
-    {{"teleport: ", " is in a dungeon: you may need its items to get on from there", ""}, 0, 2, "teleport: {} is in a dungeon: you may need its items to get on from there"},
-    {{"teleport: ", " is in ", ", a place /teleport cannot load (no start point known there)", ""}, 0, 3, "teleport: {} is in {}, a place /teleport cannot load (no start point known there)"},
-    {{"teleport: stopped: you left ", ""}, 0, 2, "teleport: stopped: you left {}"},
-    {{"teleport: stopped: ", " left", ""}, 0, 2, "teleport: stopped: {} left"},
-    {{"teleport: ", " is coming to you", ""}, 0, 2, "teleport: {} is coming to you"},
-    {{"teleport: asking ", " where they are", ""}, 0, 2, "teleport: asking {} where they are"},
-    {{"teleport: next to ", ""}, 0, 2, "teleport: next to {}"},
+    {{"teleport: going to ", " in ", ""}, 0, 3, "teleport: going to {} in {}", 2},
+    {{"teleport: ", " has gone on to ", "; you are where they were. Type /teleport again to follow", ""}, 0, 3, "teleport: {} has gone on to {}; you are where they were. Type /teleport again to follow", 2},
+    {{"teleport: ", " is in ", ", a place for ", " Link; yours is ", "", ""}, 12, 5, "teleport: {} is in {}, a place for {} Link; yours is {}", 2},
+    {{"teleport: ", " is ", " Link and you are ", ": no teleport to another age's Link", ""}, 6, 4, "teleport: {} is {} Link and you are {}: no teleport to another age's Link", 0},
+    {{"teleport: ", " is busy now; you are where they were", ""}, 0, 2, "teleport: {} is busy now; you are where they were", 0},
+    {{"teleport: no answer from ", "; you are where they were", ""}, 0, 2, "teleport: no answer from {}; you are where they were", 0},
+    {{"teleport: no answer from ", " (an older build, or their game is busy)", ""}, 0, 2, "teleport: no answer from {} (an older build, or their game is busy)", 0},
+    {{"teleport: ", " is in a dungeon: you may need its items to get on from there", ""}, 0, 2, "teleport: {} is in a dungeon: you may need its items to get on from there", 0},
+    {{"teleport: ", " is in ", ", a place /teleport cannot load (no start point known there)", ""}, 0, 3, "teleport: {} is in {}, a place /teleport cannot load (no start point known there)", 2},
+    {{"teleport: stopped: you left ", ""}, 0, 2, "teleport: stopped: you left {}", 1},
+    {{"teleport: stopped: ", " left", ""}, 0, 2, "teleport: stopped: {} left", 0},
+    {{"teleport: ", " is coming to you", ""}, 0, 2, "teleport: {} is coming to you", 0},
+    {{"teleport: asking ", " where they are", ""}, 0, 2, "teleport: asking {} where they are", 0},
+    {{"teleport: next to ", ""}, 0, 2, "teleport: next to {}", 0},
     // the group's sync lines (coop/host/src/notify.cpp): its counts ("2 items, 1 songs") each in the table's words
-    {{"Synced with the group: ", ""}, 0, 2, "Synced with the group: {}"},
-    {{"...and ", " more from the group", ""}, 0, 2, "...and {} more from the group"},
+    {{"Synced with the group: ", ""}, 0, 2, "Synced with the group: {}", 0},
+    {{"...and ", " more from the group", ""}, 0, 2, "...and {} more from the group", 0},
     // the lobby's and the mods' notes
-    {{"", ": not connected", ""}, 0, 2, "{}: not connected"},
-    {{"", ": only the host can do that", ""}, 0, 2, "{}: only the host can do that"},
-    {{"", ": could not be sent", ""}, 0, 2, "{}: could not be sent"},
+    {{"", ": not connected", ""}, 0, 2, "{}: not connected", 0},
+    {{"", ": only the host can do that", ""}, 0, 2, "{}: only the host can do that", 0},
+    {{"", ": could not be sent", ""}, 0, 2, "{}: could not be sent", 0},
     // the reason is a line of the table too (coop/net/src/client.cpp's full sentences)
-    {{"refused: ", ""}, 1, 2, "refused: {}"},
-    {{"Mods: yours differ from the host's (", "): see the Mods tab", ""}, 0, 2, "Mods: yours differ from the host's ({}): see the Mods tab"},
-    {{"Mods: player ", " (", ") has ", " mods unlike yours", ""}, 0, 4, "Mods: player {} ({}) has {} mods unlike yours"},
-    {{"Mods: player ", " has ", " mods unlike yours", ""}, 0, 3, "Mods: player {} has {} mods unlike yours"},
-    {{"Mods: player ", " has ", " mod unlike yours", ""}, 0, 3, "Mods: player {} has {} mod unlike yours"},
-    {{"Mods: player ", " (", ") has ", " mod unlike yours", ""}, 0, 4, "Mods: player {} ({}) has {} mod unlike yours"},
+    {{"refused: ", ""}, 1, 2, "refused: {}", 0},
+    {{"Mods: yours differ from the host's (", "): see the Mods tab", ""}, 0, 2, "Mods: yours differ from the host's ({}): see the Mods tab", 0},
+    {{"Mods: player ", " (", ") has ", " mods unlike yours", ""}, 0, 4, "Mods: player {} ({}) has {} mods unlike yours", 0},
+    {{"Mods: player ", " has ", " mods unlike yours", ""}, 0, 3, "Mods: player {} has {} mods unlike yours", 0},
+    {{"Mods: player ", " has ", " mod unlike yours", ""}, 0, 3, "Mods: player {} has {} mod unlike yours", 0},
+    {{"Mods: player ", " (", ") has ", " mod unlike yours", ""}, 0, 4, "Mods: player {} ({}) has {} mod unlike yours", 0},
     // New Game+'s help while unlocked (coop_pause_menu.cpp): the hearts kept, then the level now.
-    {{"Start a new file with this on: you keep your ", " hearts, and enemies and bosses get 50% more life and 25% more damage for each level (up to NG+ ", " now). In a game you host your level counts for everyone. Off: the game as it is.", "", "", "", ""}, 0, 4, "Start a new file with this on: you keep your {} hearts, and enemies and bosses get 50% more life and 25% more damage for each level (up to NG+ {} now). In a game you host your level counts for everyone. Off: the game as it is."},
-    {{"Let in ", " (+", ")"}, 0, 3, "Let in {} (+{})"},
-    {{"More players (", "/", ")"}, 0, 3, "More players ({}/{})"},
-    {{"Local games (", ")"}, 0, 2, "Local games ({})"},
-    {{"Online games (", ")"}, 0, 2, "Online games ({})"},
-    {{"Next page (", "/", ")"}, 0, 3, "Next page ({}/{})"},
-    {{"teleport: ", " refused (reason ", ")"}, 0, 3, "teleport: {} refused (reason {})"},
-    {{"The text was longer than this setting takes (", "): the end was left out."}, 0, 2, "The text was longer than this setting takes ({}): the end was left out."},
-    {{"That text is longer than this setting takes (", "): nothing was changed."}, 0, 2, "That text is longer than this setting takes ({}): nothing was changed."},
-    {{"New Game+ ", ": start a new file to play it (your hearts carry over)."}, 0, 2, "New Game+ {}: start a new file to play it (your hearts carry over)."},
-    {{"Left and Right: less or more of it, ", " a press (0 to 255)."}, 0, 2, "Left and Right: less or more of it, {} a press (0 to 255)."},
+    {{"Start a new file with this on: you keep your ", " hearts, and enemies and bosses get 50% more life and 25% more damage for each level (up to NG+ ", " now). In a game you host your level counts for everyone. Off: the game as it is.", "", "", "", ""}, 0, 4, "Start a new file with this on: you keep your {} hearts, and enemies and bosses get 50% more life and 25% more damage for each level (up to NG+ {} now). In a game you host your level counts for everyone. Off: the game as it is.", 0},
+    {{"Let in ", " (+", ")"}, 0, 3, "Let in {} (+{})", 0},
+    {{"More players (", "/", ")"}, 0, 3, "More players ({}/{})", 0},
+    {{"Local games (", ")"}, 0, 2, "Local games ({})", 0},
+    {{"Online games (", ")"}, 0, 2, "Online games ({})", 0},
+    {{"Next page (", "/", ")"}, 0, 3, "Next page ({}/{})", 0},
+    {{"teleport: ", " refused (reason ", ")"}, 0, 3, "teleport: {} refused (reason {})", 0},
+    {{"The text was longer than this setting takes (", "): the end was left out."}, 0, 2, "The text was longer than this setting takes ({}): the end was left out.", 0},
+    {{"That text is longer than this setting takes (", "): nothing was changed."}, 0, 2, "That text is longer than this setting takes ({}): nothing was changed.", 0},
+    {{"New Game+ ", ": start a new file to play it (your hearts carry over)."}, 0, 2, "New Game+ {}: start a new file to play it (your hearts carry over).", 0},
+    {{"Left and Right: less or more of it, ", " a press (0 to 255)."}, 0, 2, "Left and Right: less or more of it, {} a press (0 to 255).", 0},
     // (0.11.8's screens, PR #308)
-    {{"Public games (", ")"}, 0, 2, "Public games ({})"},
-    {{"This network (", ")"}, 0, 2, "This network ({})"},
+    {{"Public games (", ")"}, 0, 2, "Public games ({})", 0},
+    {{"This network (", ")"}, 0, 2, "This network ({})", 0},
     // (0.11.9, ui-tabs)
-    {{"", " (page ", " of ", ")"}, 1, 4, "{} (page {} of {})"},
-    // (title-join: the title page's hint)
-    {{"Page ", " of ", " (ZL/ZR)"}, 0, 3, "Page {} of {} (ZL/ZR)"},
+    {{"", " (page ", " of ", ")"}, 1, 4, "{} (page {} of {})", 0},
+    // (row 264: every game list's page line, coop_list_pages.h; the game's ZL and ZR letters around it are added after)
+    {{"Page ", "/", ""}, 0, 3, "Page {}/{}", 0},
+    // (a page's header: the page's name and, when its rows take more than one
+    // page, "  < 1 of 3 >"; the name is the table's word, the two numbers as
+    // they are)
+    {{"", "  < ", " of ", " >"}, 1, 4, "{}  < {} of {} >", 0},
+    // (the Mods tab's typing hint: what was typed, in characters and in bytes)
+    {{"", " characters (", " of ", " bytes)"}, 0, 4, "{} characters ({} of {} bytes)", 0},
 };
 std::string PlaceIn(const Lang* lang, std::string_view en) {
     if (lang == nullptr || lang->entries == nullptr) {
@@ -3704,8 +4054,12 @@ std::string Tr(const Lang* lang, std::string_view en) {
             if (const Entry* word = Find(*lang, middle)) {
                 text = word->text;
             }
-        } else if (kept = PlaceIn(lang, middle); kept != middle) {
-            text = kept;   // a scene the game names ("Hyrule Field")
+        } else {
+            // A name (a player's, a room's, a mod's) goes in as it is: only the stand-ins the game writes when it has none
+            // ("Someone", "Player 3") are the table's words. Never the name looked up: a player called "Link" or
+            // "Hyrule Field" stays so.
+            kept = Who(lang, middle);
+            text = kept;
         }
         if (const Entry* entry = Find(*lang, shape.key)) {
             return Fill(entry->text, text);
@@ -3722,10 +4076,12 @@ std::string Tr(const Lang* lang, std::string_view en) {
             filled[i] = std::string(parts[i]);
             if ((shape.words & (1 << i)) != 0) {
                 filled[i] = Tr(lang, parts[i]);
+            } else if ((shape.places & (1 << i)) != 0) {
+                filled[i] = PlaceIn(lang, parts[i]);   // a scene the game names ("Hyrule Field")
             } else if (std::string counts; CountsLine(lang, parts[i], counts)) {
                 filled[i] = counts;   // "2 items, 1 keys": each count in its own words
-            } else if (const std::string place = PlaceIn(lang, parts[i]); place != parts[i]) {
-                filled[i] = place;   // a scene the game names ("Hyrule Field")
+            } else {
+                filled[i] = Who(lang, parts[i]);   // a name as it is (the stand-ins "Someone", "Player 3" in the table's words)
             }
             views[i] = filled[i];
         }
@@ -3742,6 +4098,18 @@ std::string Tr(const Lang* lang, std::string_view en) {
     return std::string(en);
 }
 
+
+std::string TrAround(std::string_view before, std::string_view text, std::string_view after) {
+    std::string probe(before);
+    probe += '';   // (a middle no table line, shape or place has)
+    probe += after;
+    std::string line = Tr(probe);
+    const std::size_t at = line.find('');
+    if (at == std::string::npos) {
+        return std::string(before) + std::string(text) + std::string(after);
+    }
+    return line.replace(at, 1, text);
+}
 
 // A place's name in the table's language (places.json's English); the name as
 // it is when the table has no line for it, and for English.

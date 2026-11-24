@@ -1347,6 +1347,22 @@ TEST_CASE("puppet move: the game's setter once a frame when asked for") {
         CHECK(calls[0].x[1] == 0u);
     }
     CheckPosition(g2.guest, kActor + addr::kActorPosition, 4, 5, 6);
+
+    // Row 268: parked (hidden), then held (their cutscene): the setter still runs once a frame in both,
+    // so the physics body follows the place we write and does not pull it back to the parked spot.
+    Target t = At(1, 4, 5, 6);
+    std::uint64_t now = 40;
+    for (const auto show : {CoopPuppet::Show::hide, CoopPuppet::Show::hold, CoopPuppet::Show::hold,
+                            CoopPuppet::Show::show}) {
+        t.show = show;
+        d2.SetInput(Wants({t}));
+        now += 10;
+        calls = Frame(d2, g2, now);
+        REQUIRE(calls.size() == 1);
+        CHECK(calls[0].function == kBase + addr::kSetMatrix);
+        CHECK(calls[0].x[0] == kActor);
+    }
+    CheckPosition(g2.guest, kActor + addr::kActorPosition, 4, 5, 6);
 }
 
 

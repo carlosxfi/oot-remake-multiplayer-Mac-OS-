@@ -11,6 +11,7 @@ namespace CoopProblemAsk {
 namespace {
 
 constexpr std::string_view kPrefix = "crash-";
+constexpr std::string_view kStuckPrefix = "stuck-";
 
 // Days since 1970-01-01 of a date in the Gregorian calendar (H. Hinnant's days_from_civil).
 std::int64_t DaysFromCivil(std::int64_t y, unsigned m, unsigned d) {
@@ -44,9 +45,9 @@ bool Listed(std::string_view asked, std::string_view name) {
 }  // namespace
 
 std::optional<std::int64_t> CrashTime(std::string_view name) {
-    // crash-YYYYMMDDTHHMMSSZ[-<pid>-<n>].txt, as hos_crash_record_name takes it
-    if (name.substr(0, kPrefix.size()) != kPrefix) return std::nullopt;
-    const std::string_view p = name.substr(kPrefix.size());
+    // crash-YYYYMMDDTHHMMSSZ[-<pid>-<n>].txt, as hos_crash_record_name takes it; stuck-YYYYMMDDTHHMMSSZ.txt (StuckName)
+    if (name.substr(0, kPrefix.size()) != kPrefix && !IsStuck(name)) return std::nullopt;
+    const std::string_view p = name.substr(kPrefix.size());   // (both prefixes are 6 long)
     if (p.size() < 16) return std::nullopt;
     for (std::size_t i = 0; i < 16; ++i) {
         const char c = p[i];
@@ -70,6 +71,26 @@ std::optional<std::int64_t> CrashTime(std::string_view name) {
     if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || se > 60) return std::nullopt;
     const std::int64_t days = DaysFromCivil(Digits(p, 0, 4), static_cast<unsigned>(mo), static_cast<unsigned>(d));
     return days * 86400 + h * 3600 + mi * 60 + se;
+}
+
+bool IsStuck(std::string_view name) { return name.substr(0, kStuckPrefix.size()) == kStuckPrefix; }
+
+std::string StuckName(std::int64_t now_s) {
+    // (H. Hinnant's civil_from_days, the inverse of DaysFromCivil)
+    const std::int64_t days = (now_s >= 0 ? now_s : now_s - 86399) / 86400, secs = now_s - days * 86400;
+    const std::int64_t z = days + 719468, era = (z >= 0 ? z : z - 146096) / 146097;
+    const unsigned doe = static_cast<unsigned>(z - era * 146097);
+    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100), mp = (5 * doy + 2) / 153;
+    const unsigned d = doy - (153 * mp + 2) / 5 + 1, m = mp < 10 ? mp + 3 : mp - 9;
+    const std::int64_t y = static_cast<std::int64_t>(yoe) + era * 400 + (m <= 2 ? 1 : 0);
+    const auto two = [](std::int64_t v) {
+        return std::string{static_cast<char>('0' + v / 10), static_cast<char>('0' + v % 10)};
+    };
+    std::string year = std::to_string(y);
+    if (year.size() < 4) year.insert(0, 4 - year.size(), '0');
+    return std::string(kStuckPrefix) + year + two(m) + two(d) + "T" + two(secs / 3600) + two(secs / 60 % 60) +
+           two(secs % 60) + "Z.txt";
 }
 
 std::optional<std::string> Due(std::span<const std::string> pending, std::string_view asked, std::int64_t now_s) {
@@ -126,6 +147,36 @@ std::string ReadAsked(const std::filesystem::path& game_folder) {
 
 std::string ReadSent(const std::filesystem::path& game_folder) {
     return ReadSmall(game_folder / "bug-reports" / "coop-sent.txt");
+}
+
+std::vector<std::string> StuckNames(const std::filesystem::path& game_folder) {
+    std::vector<std::string> names;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(game_folder / "bug-reports" / "coop-stuck", ec), end; !ec && it != end;
+         it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        const auto u8 = it->path().filename().u8string();
+        std::string name;
+        for (const auto c : u8) name.push_back(static_cast<char>(c));
+        if (IsStuck(name)) names.push_back(std::move(name));
+    }
+    return names;
+}
+
+bool WriteStuck(const std::filesystem::path& game_folder, const std::string& name, const std::string& text) {
+    std::error_code ec;
+    const std::filesystem::path dir = game_folder / "bug-reports" / "coop-stuck";
+    std::filesystem::create_directories(dir, ec);
+    std::ofstream out(dir / name, std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out << text;
+    return static_cast<bool>(out.flush());
+}
+
+bool RemoveStuck(const std::filesystem::path& game_folder, const std::string& name) {
+    std::error_code ec;
+    std::filesystem::remove(game_folder / "bug-reports" / "coop-stuck" / name, ec);
+    return !ec;
 }
 
 bool WriteAsked(const std::filesystem::path& game_folder, const std::string& text) {

@@ -185,6 +185,32 @@ def code_mods_mismatch(game, repo=REPO, run=subprocess.run):
             " (hs.py build --pair, or the kit's start)" % (game, have or "none", want or "none"))
 
 
+PACK_DIR = os.path.join("mods", "contents", "0400486024DEC000", "coop-puppet")
+
+
+def sync_charsel_native(pairs, repo=REPO, run=subprocess.run):
+    """Co-op's own Characters tab's code patch (charsel/data/charsel-native.ips) put into or taken out of each pair's
+    pack folder before the pairs' code patches are read, by the kit's own rule (kit-paths.ps1
+    Sync-KitCharselNativePatch, what hookshot-build.ps1 does before its stamp): a pair without Character Select's code
+    gets ours in its game, a pair with his gets his only. Pairs without a pack folder: nothing to do (no call).
+    Returns {pair: 'in' | 'out' | ''}."""
+    packs = [(p, os.path.join(p, PACK_DIR)) for p in pairs if os.path.isdir(os.path.join(p, PACK_DIR))]
+    if not packs:
+        return {}
+    q = lambda t: "'" + t.replace("'", "''") + "'"
+    body = "; ".join("[Console]::Out.WriteLine('r=' + (Sync-KitCharselNativePatch %s %s))" % (q(os.path.abspath(repo)),
+                                                                                       q(os.path.abspath(m)))
+                     for _, m in packs)
+    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+           ". %s; %s" % (q(os.path.join(repo, KIT_PATHS)), body)]
+    r = run(cmd, capture_output=True, text=True, errors="replace")
+    got = [l[2:].strip() for l in (r.stdout or "").replace("\r", "").split("\n") if l.startswith("r=")]
+    if r.returncode or len(got) != len(packs):
+        raise Fail("co-op's Characters tab's code patch could not be put into the pairs' packs (kit-paths.ps1"
+                   " Sync-KitCharselNativePatch): %s" % ((r.stdout or "") + (r.stderr or "")).strip()[-300:])
+    return {p: g for (p, _), g in zip(packs, got)}
+
+
 def pairs_code_mods(pairs, repo=REPO, run=subprocess.run):
     """(line, mods folder) of the pairs' code patches; ('', None) when no pair has any. One game serves every pair,
     so pairs with different code patches cannot be built together (Fail)."""
@@ -862,6 +888,10 @@ def build(pairs, build_dir, kit=None, game=None, jobs=0, keep=3, repo=REPO, dry=
           owner="hs-build"):
     """Game from the cache (or built once through a kit and stored), hookshot_coop.dll rebuilt, both into each pair."""
     root = root or main_root(repo)
+    for p, how in sync_charsel_native(pairs, repo).items():
+        if how:
+            say("co-op's Characters tab's code patch %s of %s's pack (kit-paths.ps1 Sync-KitCharselNativePatch)"
+                % ("put into" if how == "in" else "taken out", p))
     mods_line, mods = pairs_code_mods(pairs, repo)
     st = stamp(repo) + mods_line
     k = key_of(st)

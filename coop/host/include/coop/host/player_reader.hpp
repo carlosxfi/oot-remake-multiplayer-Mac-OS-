@@ -51,6 +51,9 @@ struct PlayerReading {
   // A game menu is in front: one of the game's menu screens (its update f_802f1380) has a focused button: the pause
   // menu, the Key Items / Threads of Time / Map panel, a dialog (Longshot's patch 0018, hos_coop_menu_state).
   std::optional<bool> in_menu;
+  // Our world stands still while no menu says so (WorldStill, sampler.hpp): the quick-switch item menu, a menu
+  // patch 0018 does not track, a stall. The hook sets it; false: running, or not judged.
+  bool world_still = false;
   // The player actor's own Life component at 0 (read_life): Game Over. Down but not out keeps a downed Link at a
   // quarter heart, so not then. Nothing: not read (the last value sent is kept).
   std::optional<bool> dead;

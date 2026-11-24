@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "coop_title_native.h"
 
+#include "coop_i18n.h"
+#include "coop_list_pages.h"
+#include "coop_text_fit.h"
+
 #include <algorithm>
 #include <vector>
 
@@ -8,27 +12,30 @@ namespace CoopTitleNative {
 
 namespace {
 
-// At most `n` bytes, cut before a UTF-8 sequence's start, with "..." when cut.
-std::string Fit(std::string t, std::size_t n) {
-    if (t.size() <= n) return t;
-    std::size_t k = n - 3;
-    while (k > 0 && (static_cast<unsigned char>(t[k]) & 0xc0) == 0x80) --k;
-    return t.substr(0, k) + "...";
-}
+// At most `n` letters of width (and bytes), cut before a letter's start, with "..." when cut (coop_text_fit.h).
+std::string Fit(std::string t, std::size_t n) { return CoopTextFit::Fit(t, n); }
 
 }  // namespace
 
 std::string RowText(const CoopPauseMenu::Row& r) {
     using CoopPauseMenu::RowKind;
-    std::string t = r.name;
+    // The row's words in the player's language (coop_i18n.h), before the cut: a
+    // cut line is not the table's line any more. The table has no line for the
+    // game's own English (the tests read this file's lines as they are written).
+    // A player's, a room's or a mod's own text on the row (Row::own_name, own_value: "Your name: Link") is put in as it
+    // is: a name that is also a word of the table must not turn into the table's line.
+    const std::string name = r.own_name ? r.name : CoopI18n::Tr(r.name);
+    const std::string value = r.own_value ? r.value : CoopI18n::Tr(r.value);
+    std::string t = name;
     switch (r.kind) {
-    case RowKind::kToggle: t += std::string(": ") + (r.on ? "On" : "Off"); break;
+    case RowKind::kToggle: t += CoopI18n::Tr(": ") + (r.on ? CoopI18n::Tr("On") : CoopI18n::Tr("Off")); break;
     case RowKind::kChoice:
-        t += ": " + std::string(r.left ? "< " : "") + r.value + (r.right ? " >" : "");
+        t += CoopI18n::Tr(": ") + std::string(r.left ? "< " : "") + value + (r.right ? " >" : "");
         break;
     default:
         // (a value that only says the row's own word again, "Join: Join", is left off)
-        if (!r.value.empty() && (t.empty() || t.rfind(r.value, 0) != 0)) t += t.empty() ? r.value : ": " + r.value;
+        if (!value.empty() && (name.empty() || r.name.rfind(r.value, 0) != 0))
+            t += t.empty() ? value : CoopI18n::Tr(": ") + value;
         break;
     }
     return Fit(t, kTextBytes);
@@ -51,16 +58,22 @@ Look TypingLook(const CoopPauseMenu::View& v, char letter, int key) {
     const bool row = v.selected >= 0 && static_cast<std::size_t>(v.selected) < v.rows.size();
     if (row) {   // (the field's name and what is typed; a long one shows its end, where the typing goes)
         const CoopPauseMenu::Row& r = v.rows[static_cast<std::size_t>(v.selected)];
-        out.texts[static_cast<std::size_t>(Key::kField)] = r.value.empty() ? r.name : r.name + ": " + r.value;
+        out.texts[static_cast<std::size_t>(Key::kField)] =
+            r.value.empty() ? (r.own_name ? r.name : CoopI18n::Tr(r.name))
+                            : (r.own_name ? r.name : CoopI18n::Tr(r.name)) + CoopI18n::Tr(": ") +
+                                  (r.own_value ? r.value : CoopI18n::Tr(r.value));   // (what is typed: as it is, "On_")
     }
+    // (the keys in the player's language here, not by the caller: the field's line above is the player's text)
     out.texts[static_cast<std::size_t>(Key::kLetter)] =
-        std::string("Letter: < ") + (letter == ' ' ? std::string("Space") : std::string(1, letter)) + " >";
-    out.texts[static_cast<std::size_t>(Key::kDelete)] = "Delete";
-    out.texts[static_cast<std::size_t>(Key::kOk)] = "OK";
+        CoopI18n::Tr(std::string("Letter: < ") + (letter == ' ' ? std::string("Space") : std::string(1, letter)) + " >");
+    out.texts[static_cast<std::size_t>(Key::kDelete)] = CoopI18n::Tr("Delete");
+    out.texts[static_cast<std::size_t>(Key::kOk)] = CoopI18n::Tr("OK");
     for (std::string& t : out.texts) {
-        if (t.size() > kTextBytes) {   // (the field's end: the typing; never inside a letter of more bytes)
-            std::size_t from = t.size() - (kTextBytes - 3);
-            while (from < t.size() && (static_cast<unsigned char>(t[from]) & 0xC0) == 0x80) ++from;
+        if (t.size() > kTextBytes || CoopTextFit::Halves(t) > 2 * kTextBytes) {   // (the field's end: the typing)
+            std::size_t from = t.size() - std::min(t.size(), kTextBytes - 3);
+            while (from < t.size() && (CoopTextFit::Halves(t.substr(from)) > 2 * kTextBytes - 6 ||
+                                       (static_cast<unsigned char>(t[from]) & 0xC0) == 0x80))
+                ++from;   // (never inside a letter; the end that fits the button's width)
             t = "..." + t.substr(from);
         }
     }
@@ -101,7 +114,11 @@ Look LookFor(const CoopPauseMenu::View& v, int top, int buttons) {
         const int row = shown[static_cast<std::size_t>(l.top + b)];
         l.rows[static_cast<std::size_t>(b)] = row;
         l.texts[static_cast<std::size_t>(b)] = RowText(v.rows[static_cast<std::size_t>(row)]);
-        l.dim[static_cast<std::size_t>(b)] = v.rows[static_cast<std::size_t>(row)].fixed;
+        const CoopPauseMenu::Row& r = v.rows[static_cast<std::size_t>(row)];
+        l.dim[static_cast<std::size_t>(b)] = r.fixed;
+        if (l.toggle < 0 && (r.cell == 0 || r.cell == 1) && !r.cells[0].empty() && !r.cells[1].empty() && !r.fixed) {
+            l.toggle = b, l.toggle_name = r.name, l.toggle_cells = r.cells, l.toggle_cell = r.cell;
+        }
     }
     // (Back right under the page's last row, the buttons after it not shown; never under the third button: with two
     // shown, the game put its own word on the second, "Join" for our Back. A page of one row had Back three rows
@@ -111,13 +128,18 @@ Look LookFor(const CoopPauseMenu::View& v, int top, int buttons) {
     for (int b = 0; b < l.back; ++b) {
         if (l.texts[static_cast<std::size_t>(b)].empty()) l.texts[static_cast<std::size_t>(b)] = " ";
     }
-    l.texts[static_cast<std::size_t>(l.back)] = "Back";
+    l.texts[static_cast<std::size_t>(l.back)] = CoopI18n::Tr("Back");
     l.rows[static_cast<std::size_t>(l.back)] = -1;
     l.focus = at >= 0 ? at - l.top : l.back;
-    // (more than one page: the page first, then what the row does)
-    const std::string paged =
-        l.pages > 1 ? "Page " + std::to_string(l.page + 1) + " of " + std::to_string(l.pages) + " (ZL/ZR)" : std::string();
-    l.hint = Fit(paged.empty() ? v.help : v.help.empty() ? paged : paged + "   " + v.help, kHintBytes);
+    // (more than one page: the page first, "Page 2/3 (ZL/ZR)", then what the row does; both in the player's language
+    // before the cut: the page is the table's shape, the row's help its line. The buttons in words: the title's
+    // archive has no icon pane of the game's (coop_list_pages.h), and the game's letters in this words pane drew as
+    // empty boxes, row 264)
+    const std::string paged = CoopListPages::Line(l.page, l.pages, true);
+    l.hint = Fit(paged.empty()   ? CoopI18n::Tr(v.help)
+                 : v.help.empty() ? paged
+                                  : paged + "   " + CoopI18n::Tr(v.help),
+                 kHintBytes);
     return l;
 }
 
@@ -135,8 +157,8 @@ float ColumnRaise(float lowest, float highest, float raised, float scale) {
 int PageJump(const CoopPauseMenu::View& v, const Look& l, int dir) {
     int at = -1;
     const std::vector<int> shown = Shown(v, &at);
-    const int page = l.page + (dir < 0 ? -1 : 1);
-    if (dir == 0 || l.pages <= 1 || page < 0 || page >= l.pages) return -1;
+    if (dir == 0 || l.pages <= 1) return -1;
+    const int page = CoopListPages::Step(l.page, l.pages, dir);   // (round at both ends, as every list: row 264)
     const int per_page = std::max(1, l.per_page);
     const std::size_t first = static_cast<std::size_t>(page) * static_cast<std::size_t>(per_page);
     return first < shown.size() ? shown[first] : -1;

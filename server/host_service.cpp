@@ -70,6 +70,21 @@ std::string HostService::admin(const std::string& line) {
   return server_->admin(line);
 }
 
+std::string host_memory_line(const Session::Sizes& s, const EnetServer::Queues& q) {
+  const auto n = [](std::uint64_t v) { return std::to_string(v); };
+  return "server: " + n(s.connections) + " connections, deferred " + n(s.deferred) + " (" + n(s.deferred_bytes) +
+         " B), objects " + n(s.objects) + " (listed " + n(s.present) + "), flags " + n(s.flags) + ", dead " +
+         n(s.dead) + ", grass " + n(s.grass) + ", world " + n(s.world_entries) + " in " + n(s.world_scenes) +
+         " scenes, actions " + n(s.actions) + "; enet: " + n(q.peers) + " peers, out " + n(q.outgoing_bytes) +
+         " B (largest " + n(q.largest_outgoing) + "), in " + n(q.waiting_bytes) + " B, unreliable not queued " +
+         n(q.unreliable_skipped) + ", dropped for backlog " + n(q.backlog_drops);
+}
+
+std::string HostService::memory_line() const {
+  if (!server_ || stopped_) return {};
+  return host_memory_line(server_->session().sizes(), server_->queues());
+}
+
 std::vector<std::string> read_ban_file(const std::string& path) {
   std::vector<std::string> out;
   if (path.empty()) return out;
@@ -224,6 +239,7 @@ bool HostService::start(std::string& error) {
     upnp::Config c;
     c.internal_port = server_->port();
     c.external_port = server_->port();
+    c.bind = config_.helper_bind;
     c.log = config_.log;
     mapping_ = std::make_unique<upnp::Mapping>(c);
     if (mapping_->open()) {
@@ -234,6 +250,7 @@ bool HostService::start(std::string& error) {
       pcp::Config p;
       p.internal_port = server_->port();
       p.external_port = server_->port();
+      p.bind = config_.helper_bind;
       for (const nat::Addr& at : config_.pcp_routers) p.routers.push_back({at, 0x7F000001u});
       p.log = [this](const std::string& text) { say("router forward: " + text); };
       say("router forward: UPnP did not open the port; asking the router with PCP / NAT-PMP");
@@ -256,6 +273,7 @@ bool HostService::start(std::string& error) {
 
   if (!config_.relay_via.empty()) {
     relay::RelayLinkConfig c;
+    c.bind = config_.helper_bind;
     if (!relay::parse_relay_address(config_.relay_via, c.relay_host, c.relay_port)) {
       say("relay: '" + config_.relay_via + "' is not a relay address (name or IPv4, optional :port)");
       set_message("'" + config_.relay_via + "' is not a relay address", HostProblem::kRelay);
@@ -457,7 +475,7 @@ void HostService::stop() {
   const Stats& stats = server_->session().stats();
   say("stopping; relayed " + count(stats.relayed) + ", dropped " + count(stats.dropped()) + ", half-open refused " +
       count(stats.half_open_limited) + ", not allowed " + count(stats.not_allowed));
-  say("host save loads " + count(stats.host_resets) + ", over the rate " + count(stats.rate_limited));
+  say("host save loads " + count(stats.host_resets) + ", over the rate " + count(stats.rate_limited) + " dropped, " + count(stats.rate_deferred) + " waited");
   say("flags relayed " + count(stats.flag_relayed) + ", refused " + count(stats.flag_refused) + ", clashes " +
       count(stats.flag_clashes) + "; join relayed " + count(stats.join_relayed) + ", not there " +
       count(stats.join_not_there) + ", dropped " + count(stats.join_dropped));

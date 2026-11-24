@@ -417,7 +417,7 @@ public:
     // Where they stand and which get none comes from the original's area's
     // placement data (PlanArea), decided once per area and visit, at the
     // count then: a higher count later in the visit adds none (its next visit
-    // has them). An original the data does not have gets none (NoSpot).
+    // has them). An original the data does not have (a mod's added placement) gets none and no fold.
     std::size_t Plan(std::string_view scene, const std::vector<Original>& walk, std::uint16_t count_pct,
                      bool boss_here, std::uint64_t now_ms);
     // The placed enemy with `hash` gets no copies for want of ground: its life and hits are folded instead.

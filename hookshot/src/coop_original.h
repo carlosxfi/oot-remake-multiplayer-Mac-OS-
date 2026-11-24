@@ -4,7 +4,8 @@
 //
 // From the next start: the module stays off (no co-op, no pages or buttons of ours in the pause menu or on the title,
 // no look on Link, no HUD, no networking, no code mods such as Save Profiles), and Longshot loads no mod at all: the
-// mods list (coop-mods.list, hos_coop_mods.h) names every mod in the mods folder as off, the co-op pack too. The list
+// mods list (coop-mods.list, hos_coop_mods.h) names every mod in the mods folder as off, the co-op pack too, and says
+// "default off", so a mod put into the folder later stays out as well (player report 266). The list
 // as it was is kept beside it (coop-mods.list.before-original) and put back when the switch goes off again, so each
 // mod comes back as the player had it.
 //
@@ -59,6 +60,9 @@ private:
     std::string note_;      // a write that failed
     std::vector<HosCoopMenuRow> rows_;
     std::string status_;
+    // The page's words in the player's language: the rows and the help point into
+    // these (they must outlive the call that fills the page).
+    std::string name_tr_, turnoff_tr_, help_title_tr_, help_tr_, hint_tr_;
 };
 
 }  // namespace CoopOriginal

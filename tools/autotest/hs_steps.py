@@ -11,6 +11,9 @@ run.ps1 -Runtime hookshot calls `run` when the scenario is a steps file. The ver
   load A [B]            title to the save in each (hookshot.py to_play); the `#! start` regex checked after it
   play A f [B f]        play scenarios/<f> in A (and B), both at once, and wait for both
   close B / kill B      B quits through its control bridge (it leaves the server) / B ends at once (a crash)
+  freeze B / thaw B     B's process is suspended / goes on (Windows): a frozen game sends and retries nothing, so
+                        after `server start` the other game gets back in (and hosts) first; every game is thawed
+                        before it is ended
   server stop|start     the server goes away / comes back on the same port (server-out[-n].txt)
   sleep S               seconds
   password B TEXT       the join password game B sends from its next start (LICHII_COOP_PASSWORD; - for none);
@@ -47,6 +50,10 @@ JOINED = "coop: welcomed as player"
 # "The game crashed last time" page on the title to take the load's A presses.
 TEST_GAME_DEFAULTS = (("LICHII_COOP_TEST_OWN_SAVE", "1"), ("LICHII_COOP_PROBLEM_ASK", "0"))
 LIVE = re.compile(r"coop: objects: ([+-]) (CoopPuppet_\w+|Dm_Npc_Navi) (0x[0-9a-f]+)")
+# Lines the module says once per game process, checked in every game's log after the steps (row 267: the list
+# head was said at every object scan, 43% of a tester's 190 MB log). A game process starts with "coop: build".
+ONCE_PER_PROCESS = (("objects list head (row 267)", re.compile(r"(?m)^.*coop: objects: list head ")),)
+PROCESS_START = re.compile(r"(?m)^.*coop: build ")
 
 
 class StepsError(Exception):
@@ -85,7 +92,7 @@ def parse_steps(text):
                 raise StepsError("line %d: play A file [B file]" % n)
             pairs = [(_game(n, rest[i]), rest[i + 1]) for i in range(0, len(rest), 2)]
             steps.append(Step(n, verb, pairs, line))
-        elif verb in ("close", "kill"):
+        elif verb in ("close", "kill", "freeze", "thaw"):
             if len(rest) != 1:
                 raise StepsError("line %d: %s B" % (n, verb))
             steps.append(Step(n, verb, [_game(n, rest[0])], line))
@@ -181,6 +188,17 @@ def count_lines(text, pattern):
         return None
 
 
+def once_floods(text):
+    """(name, lines, processes) of each once-per-process line said more often than the log has game processes."""
+    processes = max(1, len(PROCESS_START.findall(text)))
+    out = []
+    for name, pattern in ONCE_PER_PROCESS:
+        got = len(pattern.findall(text))
+        if got > processes:
+            out.append((name, got, processes))
+    return out
+
+
 def live_actors(text):
     """The puppets and fairies alive in a game's log: name list (as run.ps1's Live-Actors)."""
     live = {}
@@ -250,7 +268,19 @@ class Runner:
             ended = self.g.ended_by_itself()
             for x in ended:
                 self.result(False, "game %s ended by itself during step %d" % (x, s.n))
+        self.check_floods()
         return self.fails
+
+    def check_floods(self):
+        """A FAIL line for each once-per-process line a game's log says more often (silent when none)."""
+        for x in ("A", "B"):
+            try:
+                text = self.g.log(x)
+            except Exception:  # a game this backend does not have
+                continue
+            for name, got, processes in once_floods(text or ""):
+                self.result(False, "%s: %s said %d times in %d game process(es), want at most once each" % (
+                    x, name, got, processes))
 
     def do_start(self, s):
         for x in s.args:
@@ -271,6 +301,12 @@ class Runner:
 
     def do_kill(self, s):
         self.g.kill(s.args[0])
+
+    def do_freeze(self, s):
+        self.g.freeze(s.args[0])
+
+    def do_thaw(self, s):
+        self.g.thaw(s.args[0])
 
     def do_server(self, s):
         (self.g.server_stop if s.args[0] == "stop" else self.g.server_start)()
@@ -371,6 +407,12 @@ class DryGames:
     def kill(self, x, keep_log=None):
         self.say("  would end %s at once" % x)
 
+    def freeze(self, x):
+        self.say("  would suspend %s's process" % x)
+
+    def thaw(self, x):
+        self.say("  would let %s's process go on" % x)
+
     def server_stop(self):
         self.say("  would stop the server")
 
@@ -400,10 +442,12 @@ class HookshotGames:
         self.hk, self.games, self.out, self.server_exe, self.port = hk, games, out, server, port
         self.pipe, self.env, self.timeout, self.head, self.restore, self.say = pipe, env, timeout, head, restore, say
         self.procs, self.bridges, self.runs, self.expected_exit = {}, {}, {"A": 0, "B": 0}, set()
+        self.frozen = set()  # games whose process is suspended (freeze)
         self.server, self.server_runs = None, 0
         self.server_delay = []   # hookshot.py test_delay_args: the TEST-ONLY delay (needs OOT_COOP_TEST=1)
         self.renderer = None     # (wait, stall, limit) for hookshot.wait_renderer; None: (timeout, its defaults)
         self.commands = {x: os.path.join(out, "commands-%s.txt" % x) for x in games}
+        self.display = None      # the monitor for the game windows (placement.py); None: $OOT_TEST_DISPLAY, else DISPLAY2
 
     def _log_path(self, x):
         # Longshot rc.3 wrote longshot_log.txt beside the exe, rc.4 in logs\ there: the newest one, else rc.3's place.
@@ -429,10 +473,47 @@ class HookshotGames:
         p = self.procs.get(x)
         return p is not None and p.poll() is None
 
+    def _suspend(self, x, on):
+        """NtSuspendProcess / NtResumeProcess on game x (Windows only; a game that is not running: nothing)."""
+        p = self.procs.get(x)
+        if p is None or p.poll() is not None:
+            return False
+        import ctypes
+        k32, nt = ctypes.WinDLL("kernel32", use_last_error=True), ctypes.WinDLL("ntdll")
+        k32.OpenProcess.restype = ctypes.c_void_p
+        h = k32.OpenProcess(0x0800, False, p.pid)  # PROCESS_SUSPEND_RESUME
+        if not h:
+            raise OSError("cannot open game %s's process (error %d)" % (x, ctypes.get_last_error()))
+        try:
+            fn = nt.NtSuspendProcess if on else nt.NtResumeProcess
+            fn.argtypes = [ctypes.c_void_p]
+            status = fn(h) & 0xFFFFFFFF
+        finally:
+            k32.CloseHandle(ctypes.c_void_p(h))
+        if status != 0:
+            raise OSError("%s game %s: NTSTATUS %#x" % ("suspending" if on else "resuming", x, status))
+        return True
+
+    def freeze(self, x):
+        if self._suspend(x, True):
+            self.frozen.add(x)
+            self.say("%s: process suspended" % x)
+
+    def thaw(self, x):
+        if x in self.frozen:
+            self.frozen.discard(x)
+            self._suspend(x, False)
+            self.say("%s: process goes on" % x)
+
     def _end(self, x, how):
         p = self.procs.get(x)
         if p is None:
             return
+        if x in self.frozen:
+            try:
+                self.thaw(x)  # a frozen game cannot quit through its bridge
+            except OSError as e:
+                self.say("%s" % e)
         self.expected_exit.add(x)
         if p.poll() is None:
             if how == "quit" and x in self.bridges:
@@ -484,13 +565,18 @@ class HookshotGames:
                     continue
                 k = k[2:]
             env[k] = v
+        hk.pack_start(g, env, lambda line: self.say("%s: %s" % (x, line)))   # (as the kit's start: row 265)
         exe = os.path.join(hk.exe_dir(g), "longshot.exe" if WINDOWS else "longshot")
         go = open(os.path.join(self.out, "game-out-%s-%d.txt" % (x, self.runs[x])), "wb")
-        kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {"start_new_session": True}
+        flags = getattr(hk, "popen_flags", None)   # (no window activation, see hookshot.popen_flags)
+        kw = flags() if flags else ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS
+                                    else {"start_new_session": True})
         self.procs[x] = subprocess.Popen([exe], cwd=hk.exe_dir(g), env=env, stdin=subprocess.DEVNULL, stdout=go,
                                          stderr=subprocess.STDOUT, **kw)
         go.close()
         self.say("%s: started pid %d, bridge %s" % (x, self.procs[x].pid, sock))
+        if getattr(hk, "place_games", None):   # (its window on the chosen monitor as soon as it is there)
+            hk.place_games({x: self.procs[x].pid}, self.display, self.say, wait=30.0)
         self.bridges[x] = (sock, hk.Bridge.connect(sock, timeout=120))
         if wait:
             self.wait_joined(x)
@@ -502,6 +588,8 @@ class HookshotGames:
         wait, stall, limit = self.renderer or (self.timeout, self.hk.RENDERER_STALL, self.hk.RENDERER_LIMIT)
         waited = self.hk.wait_renderer(lambda: self.log(x), lambda: self.alive(x), wait, stall, limit)
         self.say("%s: renderer ready (%.0f s waited)" % (x, waited))
+        if getattr(self.hk, "place_games", None):   # (the game can move its window when its renderer comes up)
+            self.hk.place_games({x: self.procs[x].pid}, self.display, self.say)
         t0 = time.monotonic()
         while JOINED not in self.log(x):
             if not self.alive(x):
@@ -663,6 +751,8 @@ def main(argv=None):
     r.add_argument("--expect-wait", type=float, default=60.0)
     r.add_argument("--no-restore", action="store_true")
     r.add_argument("--dry-run", action="store_true")
+    r.add_argument("--display", help="the monitor the game windows go to, by device name (default "
+                                     "$OOT_TEST_DISPLAY, else DISPLAY2): tools/autotest/placement.py")
     r.add_argument("--test-delay-ms", type=int, default=0,
                    help="TEST ONLY: the server holds every packet, this round trip in ms (half each way)")
     r.add_argument("--test-jitter-ms", type=int, default=0, help="TEST ONLY: +- up to this many ms each way")
@@ -713,6 +803,14 @@ def main(argv=None):
     say = hk.Log(os.path.join(a.out, "steps.txt"), echo=print)
     games = HookshotGames(hk, {"A": os.path.abspath(a.game_a), "B": os.path.abspath(a.game_b)}, a.out, a.server,
                           a.port, a.pipe, a.env, head["timeout"] or a.timeout, head, restore=not a.no_restore, say=say)
+    games.display = a.display
+    try:
+        mon = hk.placement.check_display(a.display) if WINDOWS else None
+    except hk.placement.PlacementError as e:   # (before any game window can open anywhere else)
+        say("window placement: %s" % e)
+        return 2
+    if mon:
+        say("windows go to %s (work area %s)" % (mon["name"], mon["work"]))
     games.server_delay = hk.test_delay_args(a.test_delay_ms, a.test_jitter_ms)
     games.renderer = (a.renderer_wait or games.timeout, a.renderer_stall or hk.RENDERER_STALL,
                       a.renderer_limit or hk.RENDERER_LIMIT)
@@ -741,7 +839,7 @@ def _dry(steps):
             games.load(s.args)
         elif s.verb == "play":
             games.play(dict(s.args), "")
-        elif s.verb in ("close", "kill"):
+        elif s.verb in ("close", "kill", "freeze", "thaw"):
             getattr(games, s.verb)(s.args[0])
         elif s.verb == "server":
             (games.server_stop if s.args[0] == "stop" else games.server_start)()

@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "coop_i18n.h"
+#include "coop_list_pages.h"
 
 namespace CoopLobbyTab {
 
@@ -100,22 +101,28 @@ const Player* Tab::Shown() const {
 
 std::vector<Tab::Line> Tab::Lines() const {
     std::vector<Line> out;
-    const auto heading = [&](std::string name) {
+    // (`own`: the name is a player's or a room's own text, or already in the player's language: shown as it is, never
+    // looked up in the table: a player called "Link" stays "Link")
+    const auto heading = [&](std::string name, bool own = false) {
         Line l;
         l.row.name = std::move(name);
+        l.row.own_name = own;
         l.row.kind = RowKind::kHeading;
         out.push_back(std::move(l));
     };
-    const auto note = [&](std::string text) {
+    const auto note = [&](std::string text, bool own = false) {
         Line l;
         l.row.name = std::move(text);
+        l.row.own_name = own;
         l.row.kind = RowKind::kNote;
         out.push_back(std::move(l));
     };
-    const auto action = [&](std::string name, std::string value, Act act, std::string help, std::uint8_t player = 0) {
+    const auto action = [&](std::string name, std::string value, Act act, std::string help, std::uint8_t player = 0,
+                            bool own = false) {
         Line l;
         l.row.name = std::move(name);
         l.row.value = std::move(value);
+        l.row.own_name = l.row.own_value = own;   // (the name and the value: a room's, a player's; the value already ours)
         l.act = act;
         l.player = player;
         l.help = std::move(help);
@@ -147,14 +154,29 @@ std::vector<Tab::Line> Tab::Lines() const {
         if (lobby_.games.empty()) {
             note(lobby_.games_state.empty() ? std::string("Looking for public games...") : lobby_.games_state);
         }
-        for (std::size_t i = 0; i < lobby_.games.size() && i < 255; ++i) {
+        // (more than a page: the Page row first, "Page  < 2/3 >", Left and Right or A turn it, round; then that page's
+        // games. Row 264: the whole list ran on under the menu's scroll, with nothing saying there were more)
+        const int pages = GamesPages(), page = GamesPage();
+        if (pages > 1) {
+            Line l;
+            l.row.name = "Page";
+            l.row.value = std::to_string(page + 1) + "/" + std::to_string(pages);
+            l.row.own_value = true;   // (two numbers, as they are)
+            l.row.kind = RowKind::kChoice;
+            l.row.left = l.row.right = true;   // (round: both ways always)
+            l.act = Act::kGamesPage;
+            l.help = "Left and Right (or A) turn the page of games.";
+            out.push_back(std::move(l));
+        }
+        const std::size_t first = static_cast<std::size_t>(page) * kGamesPerPage;
+        for (std::size_t i = first; i < lobby_.games.size() && i < first + kGamesPerPage && i < 255; ++i) {
             const PublicGame& g = lobby_.games[i];
             action(g.name, g.joinable ? CoopI18n::Tr("Join") : g.detail, Act::kJoinGame,
                    g.detail + (g.joinable ? std::string(". ") +
                                                 (g.is_public ? CoopI18n::Tr("Press to join: no password needed.")
                                                              : CoopI18n::Tr("Press, then type the host's password."))
                                           : std::string()),
-                   static_cast<std::uint8_t>(i));
+                   static_cast<std::uint8_t>(i), true);
         }
         action("Refresh list", "Refresh", Act::kRefreshGames, "Asks the game list again now.");
         return out;
@@ -176,7 +198,7 @@ std::vector<Tab::Line> Tab::Lines() const {
                        (pl.colour.empty() ? "" : CoopI18n::Tr(", ") + pl.colour) +
                        (pl.host ? CoopI18n::Tr(", the host") : std::string()) + CoopI18n::Tr(". Press to see ") +
                        CoopI18n::Tr(pl.self ? "yourself." : "what you can do."),
-                   pl.number);
+                   pl.number, true);
         }
         if (lobby_.max_players > count) {
             const int open = lobby_.max_players - count;
@@ -213,7 +235,7 @@ std::vector<Tab::Line> Tab::Lines() const {
             game += "  " +
                     CoopI18n::Tr(Hearts(*lobby_.host_life) + " / " + Hearts(*lobby_.host_max) + " hearts");
         }
-        note(std::move(game));
+        note(std::move(game), true);   // (the place and the counts: already in the table's words)
         if (!lobby_.hosting && lobby_.can_resync) {
             action("Resync from host", "", Act::kResync,
                    "Gets the host's save again. Back on the title, it is switched to once the chat says Success; "
@@ -222,14 +244,14 @@ std::vector<Tab::Line> Tab::Lines() const {
         return out;
     }
 
-    heading(p->host ? CoopI18n::Tr("Host: ") + p->name : p->name);
+    heading(p->host ? CoopI18n::Tr("Host: ") + p->name : p->name, true);
     // Each part in the table's words before they are joined: the composed line is
     // not a key the table has ("Player 2, red").
     note(CoopI18n::Tr("Player") + " " + std::to_string(p->number) +
          (p->colour.empty() ? "" : CoopI18n::Tr(", ") + p->colour) +
          (p->self ? CoopI18n::Tr(" (you)") : ""));
     if (const std::string s = Summary(*p); !s.empty()) {
-        note(s);
+        note(s, true);   // (the parts are the table's words and the place already)
     }
     if (p->host_mutes != 0) {
         note("The host muted their " + MutedWords(p->host_mutes) + " for everyone.");
@@ -266,9 +288,22 @@ bool Selectable(RowKind kind) {
 
 }  // namespace
 
+int Tab::GamesPages() const {
+    return CoopListPages::Pages(static_cast<int>(lobby_.games.size()), kGamesPerPage);
+}
+
+int Tab::GamesPage() const {
+    return std::clamp(games_page_, 0, GamesPages() - 1);
+}
+
+void Tab::TurnGames(int dir) {
+    games_page_ = CoopListPages::Step(GamesPage(), GamesPages(), dir);
+}
+
 void Tab::Show() {
     player_ = 0;
     selected_ = 0;
+    games_page_ = 0;
     confirm_ = Act::kNone;
     note_.clear();
     Clamp();
@@ -284,6 +319,7 @@ void Tab::Set(Lobby lobby) {
     // In or out of a game, the page is another list (out of one: Public games): it starts at its top again.
     if (lobby_.connected != was_connected) {
         selected_ = 0;
+        games_page_ = 0;
         confirm_ = Act::kNone;
     }
     if (player_ != 0 && (Shown() == nullptr || !lobby_.connected)) {
@@ -397,6 +433,7 @@ void Tab::Decide(const Line& line) {
         note_ = g.is_public ? "Joining " + g.room + "..." : "Type the host's password on the Multiplayer tab.";
         return;
     }
+    case Act::kGamesPage: TurnGames(1); return;
     case Act::kRefreshGames: {
         Request r;
         r.kind = Request::Kind::kRefreshGames;
@@ -457,12 +494,16 @@ bool Tab::Press(Input input) {
     case Input::kUp: Move(-1); return true;
     case Input::kDown: Move(1); return true;
     case Input::kLeft:
-        if (line != nullptr && line->row.kind == RowKind::kToggle) {
+        if (line != nullptr && line->act == Act::kGamesPage) {
+            TurnGames(-1);
+        } else if (line != nullptr && line->row.kind == RowKind::kToggle) {
             Change(*line, -1);
         }
         return true;
     case Input::kRight:
-        if (line != nullptr && line->row.kind == RowKind::kToggle) {
+        if (line != nullptr && line->act == Act::kGamesPage) {
+            TurnGames(1);
+        } else if (line != nullptr && line->row.kind == RowKind::kToggle) {
             Change(*line, 1);
         }
         return true;
@@ -509,7 +550,10 @@ void Tab::Click(std::size_t row, int side) {
     Select(row);
     note_.clear();
     const Line& line = lines[row];
-    if (line.row.kind == RowKind::kToggle && side != 0) {
+    if (line.act == Act::kGamesPage) {
+        confirm_ = Act::kNone;
+        TurnGames(side < 0 ? -1 : 1);   // (the value's left half: the page before; its right half or the name: after)
+    } else if (line.row.kind == RowKind::kToggle && side != 0) {
         confirm_ = Act::kNone;
         Change(line, side);
     } else {
@@ -529,18 +573,23 @@ View Tab::view() const {
     }
     if (selected_ < lines.size() && Selectable(lines[selected_].row.kind)) {
         v.selected = static_cast<int>(selected_);
-        v.help_title = lines[selected_].row.name;
-        v.help = lines[selected_].help;
+        // (a player's or a room's name as it is; the help of such a row is built from words already in the table's
+        // language and the name)
+        const Line& picked = lines[selected_];
+        v.help_title = picked.row.own_name ? picked.row.name : CoopI18n::Tr(picked.row.name);
+        v.help = picked.row.own_name ? picked.help : CoopI18n::Tr(picked.help);
         if (lines[selected_].row.kind == RowKind::kToggle) {
-            v.change = "Off / On";
+            v.change = CoopI18n::Tr("Off / On");
+        } else if (picked.act == Act::kGamesPage) {
+            v.change = CoopI18n::Tr("Turn the page");   // (the prompt strip's Left / Right words)
         }
     } else {
-        v.help_title = "Lobby";
-        v.help = lobby_.connected ? "" : "The players of your game show here once you host or join.";
+        v.help_title = CoopI18n::Tr("Lobby");
+        v.help = lobby_.connected ? "" : CoopI18n::Tr("The players of your game show here once you host or join.");
     }
     v.gold = note_;
-    v.confirm = "Choose";
-    v.back = player_ != 0 ? "Back" : "Close";
+    v.confirm = CoopI18n::Tr("Choose");
+    v.back = player_ != 0 ? CoopI18n::Tr("Back") : CoopI18n::Tr("Close");
     return v;
 }
 

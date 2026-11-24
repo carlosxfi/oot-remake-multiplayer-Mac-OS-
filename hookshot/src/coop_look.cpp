@@ -33,6 +33,12 @@ const std::array<PartInfo, kParts>& Parts() {
         {Part::biggoron_hilt, "biggoron_hilt", "Biggoron's Sword", "Hilt"},
         {Part::boots, "boots", "Boots", "Leather"},
         {Part::gauntlets, "gauntlets", "Gauntlets", "Metal"},
+        {Part::char_hair, "char_hair", "Character", "Hair Color"},
+        {Part::char_eyes, "char_eyes", "Character", "Eye Color"},
+        {Part::char_cloth1, "char_cloth1", "Character", "Clothing Color"},
+        {Part::char_cloth2, "char_cloth2", "Character", "Clothing Color 2"},
+        {Part::char_cloth3, "char_cloth3", "Character", "Clothing Color 3"},
+        {Part::char_gear, "char_gear", "Character", "Equipment"},
     }};
     return kTable;
 }
@@ -159,7 +165,9 @@ bool WriteSettings(const Look& look, std::string& coop_ini, std::string* options
     std::string& text = options_ini != nullptr ? *options_ini : coop_ini;
     std::string out = text;
     for (const PartInfo& info : Parts()) {
-        const std::string colour = ColourText(look[info.part]);
+        // (the equipment's row is shown or hidden, not a colour)
+        const std::string colour = info.part == Part::char_gear ? (look[info.part] ? "hidden" : "")
+                                                                : ColourText(look[info.part]);
         const std::string key = SettingsKey(info);
         if (colour.empty()) {
             // An unset part other than the tunic is left out of a file that never had it.
@@ -188,7 +196,13 @@ Look ReadParts(std::string_view text, std::vector<std::string>* errors) {
         if (!value || value->empty()) {
             continue;
         }
-        if (const auto colour = CoopColors::Parse(*value)) {
+        if (info.part == Part::char_gear) {
+            if (*value == "hidden") {
+                look[info.part] = kGearHidden;
+            } else if (*value != "shown" && errors != nullptr) {
+                errors->push_back(key + " = " + *value + " is not shown or hidden");
+            }
+        } else if (const auto colour = CoopColors::Parse(*value)) {
             look[info.part] = colour;
         } else if (errors != nullptr) {
             errors->push_back(key + " = " + *value + " is not a colour (a name such as red, or #RRGGBB)");

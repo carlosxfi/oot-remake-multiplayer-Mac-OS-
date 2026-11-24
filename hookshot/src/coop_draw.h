@@ -152,6 +152,7 @@ struct TitleBox {
     float text_x = 0, text_top = 0, px = 0;
 };
 TitleBox TitleAt(float width, float height, const TitleView& t, const FontMetrics& m);
+inline constexpr const char* kMinusText = "(-)";   // the Minus button, as words (no drawn button)
 
 // The other players on the HUD minimap and on the pause menu's Map page
 // (docs/overlay.md, "Players on the map"; coop/overlay/map_icons.hpp): our
@@ -227,15 +228,33 @@ bool GameLook(const HosCoopDraw& d, const Look& look);
 std::vector<std::vector<std::string>> PlayerCells(const std::vector<CoopHook::PlayerRow>& rows,
                                                   bool place = false);
 
-// The keys (docs/hookshot.md): F6 held shows the player list, F7 turns the
-// panel on and off. Tab and Enter, the emulator's keys, are the game's Plus
-// on Hookshot. Update turns the panel over when F7 goes down.
+// The F6 list's size: its text size, each column's width, the gap between columns, a row's height, and the whole
+// list's width and height. PlayerListAt starts at `px` and makes it smaller until the list (`rows` rows, a row
+// `line_k` times the text size, `measure(px)` its columns' widths) fits in the picture below `top`, with a margin;
+// never under kListLeastPx (a list that cannot fit at that size is as small as it gets).
+inline constexpr float kListLeastPx = 10.0f;
+struct PlayerListSize {
+    float px = 0;
+    std::vector<float> widths;
+    float gap = 0, line = 0, width = 0, height = 0;
+};
+PlayerListSize PlayerListAt(float width, float height, float top, std::size_t rows, float px, float line_k,
+                            const std::function<std::vector<float>(float)>& measure);
+
+// The keys (docs/hookshot.md): F6 opens the game's - menu on the Players view (list_press, once as F6 goes down;
+// coop_players_open.h), or, without our - tabs, holding it shows the drawn list (list); F7 turns the panel on and
+// off (developer builds). Tab and Enter, the emulator's keys, are the game's Plus on Hookshot. Update turns the panel
+// over when F7 goes down.
 struct Keys {
     bool list = false;
+    bool list_press = false;   // F6 went down at this Update
+    bool list_was_down = false;
     bool panel = false;
     bool panel_was_down = false;
     void Update(bool list_down, bool panel_down) {
         list = list_down;
+        list_press = list_down && !list_was_down;
+        list_was_down = list_down;
         if (panel_down && !panel_was_down) {
             panel = !panel;
         }

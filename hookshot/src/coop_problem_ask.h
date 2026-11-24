@@ -13,7 +13,11 @@
 // lists it in bug-reports/coop-sent.txt (a name a line) once the bot took the report. With sending off the file is never
 // written, and the ask stays as it was.
 //
-// Logic only, plus the two files (tests/hookshot/problem_ask_test.cpp).
+// A load that never ended (coop_stuck_load.h, black-01112) is asked about the same way: the module puts a record
+// stuck-YYYYMMDDTHHMMSSZ.txt in bug-reports/coop-stuck (ours, beside Longshot's pending) and takes it back when the
+// load ends after all; the page's first line says so (kStuckWords). Once the player saw the ask, its stuck records go.
+//
+// Logic only, plus the files (tests/hookshot/problem_ask_test.cpp).
 #pragma once
 
 #include <array>
@@ -30,9 +34,13 @@ namespace CoopProblemAsk {
 // A crash is asked about for this long after it (a player who comes back days later still sees it once).
 inline constexpr std::int64_t kMaxAgeS = 3 * 86400;
 
-// A crash record's time (seconds since 1970, UTC) from its name, or nothing when the name is not one (an unclean record,
-// another file).
+// A record's time (seconds since 1970, UTC) from its name: a crash record (crash-...) or a stuck load's (stuck-...);
+// nothing when the name is neither (an unclean record, another file).
 std::optional<std::int64_t> CrashTime(std::string_view name);
+// A stuck load's record (stuck-..., coop-stuck), not a crash's.
+bool IsStuck(std::string_view name);
+// The name of a stuck load's record made at `now_s`: stuck-YYYYMMDDTHHMMSSZ.txt (CrashTime reads it back).
+std::string StuckName(std::int64_t now_s);
 
 // The crash to ask about: the newest crash record in `pending` that `asked` (coop-asked.txt, a name a line) does not
 // list, at most kMaxAgeS old and not more than 5 minutes ahead of `now_s` (a clock set wrong). Nothing: no ask.
@@ -46,6 +54,10 @@ std::string AskedAfter(std::span<const std::string> pending);
 // title button (CoopTitleNative::kTextBytes).
 inline constexpr std::array<const char*, 4> kWords{"The game crashed last time.", "Please send /bugreport on Discord",
                                                     "with the zip of collect-logs.cmd.", "OK"};
+// The same page after a load that never ended (IsStuck).
+inline constexpr std::array<const char*, 4> kStuckWords{"Loading got stuck last time.",
+                                                         "Please send /bugreport on Discord",
+                                                         "with the zip of collect-logs.cmd.", "OK"};
 
 // The game folder's files: the names in bug-reports/pending (none when it is not there), and coop-asked.txt read and
 // written whole ("" when it is not there; false when it could not be written).
@@ -54,5 +66,10 @@ std::string ReadAsked(const std::filesystem::path& game_folder);
 // bug-reports/coop-sent.txt, the kit's (read only here): "" when it is not there. Due() takes it with coop-asked.txt.
 std::string ReadSent(const std::filesystem::path& game_folder);
 bool WriteAsked(const std::filesystem::path& game_folder, const std::string& text);
+// bug-reports/coop-stuck: the names in it (none when it is not there); a record written (`text`: what the log said)
+// or taken back. False when it could not be.
+std::vector<std::string> StuckNames(const std::filesystem::path& game_folder);
+bool WriteStuck(const std::filesystem::path& game_folder, const std::string& name, const std::string& text);
+bool RemoveStuck(const std::filesystem::path& game_folder, const std::string& name);
 
 }  // namespace CoopProblemAsk

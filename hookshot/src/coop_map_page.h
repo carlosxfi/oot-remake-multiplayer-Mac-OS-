@@ -69,6 +69,7 @@ struct Menu {
     // Patch 0018 (row 141): the screens that ran in the last 100 ms (none from an older exe).
     std::array<std::uint64_t, 24> screens{};
     std::uint32_t screen_count = 0;
+    bool screens_known = false;  // this exe's patch 0018 says the running screens (row 141); else none are known
     bool Runs(std::uint64_t screen) const {
         for (std::uint32_t i = 0; i < screen_count && i < screens.size(); ++i) {
             if (screens[i] == screen) return true;
@@ -83,6 +84,18 @@ struct Menu {
 void ObserveMacScreen(void* ctx, const HosCoopApi* api, std::uint64_t screen);
 #endif
 std::optional<Menu> MenuState();
+
+// Row 164 follow-up (PR #316, pr-navi-01112): the R button's item choice, the quick-switch menu. It stops the world as
+// the pause menu does, but it has no focused button, so patch 0018's menu_open never names it. Read from the game:
+// one of the screens that ran in the last 100 ms (Menu::screens) is a UIShortCutScreen (its class's vtable,
+// docs/game-ui.md "The screens co-op cares about") opening or open (the screen state every screen has).
+inline constexpr std::uint64_t kShortCutVtable = 0x4bed430;  // main+: UIShortCutScreen (guest 0x84c0d430)
+inline constexpr std::uint64_t kScreenStateAt = 0x1a6;       // u8: 0, 1 opening, 2 open, 3 closing (coop_pause_tab.h)
+inline bool ShortCutShows(std::uint64_t vtable_offset, int state) {
+    return vtable_offset == kShortCutVtable && (state == 1 || state == 2);
+}
+// Any thread. None: this exe's patch 0018 does not say the running screens.
+std::optional<bool> QuickSwitchOpen(const Menu& menu);
 // Rows 63/76: asks patch 0018's hos_coop_hud_refresh (the HUD screen's own refresh at its next update) and logs the
 // HUD copy before, and after once the refresh has run. False when this Longshot has no such export.
 bool AskHudRefresh();

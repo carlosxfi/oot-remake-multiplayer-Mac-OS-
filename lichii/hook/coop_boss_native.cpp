@@ -229,6 +229,11 @@ void Table::Publish(const std::vector<Boss>& bosses) {
                         e.restart_action = again;
                         Note(b.name + ": made ours mid-move: its move (slot " + std::to_string(again.slot) +
                              " verb " + std::to_string(again.verb) + ") starts over as ours (row 178)");
+                    } else if (turns_ && e.put_action && b.attacking.has_value() && !*b.attacking) {
+                        // Row 325: mid-move, but no attack: its own cycle goes on from its body, nothing started over.
+                        e.rechoose = true;
+                        Note(b.name + ": made ours mid-move (verb " + std::to_string(e.put_action->verb) +
+                             ", no attack): its AI chooses again from its body, nothing started over (row 325)");
                     } else {
                         e.rechoose = true;
                         Note(b.name + ": its AI did not run its body as a copy: it chooses again");
@@ -302,9 +307,27 @@ void Table::Publish(const std::vector<Boss>& bosses) {
             }
             e.dying = b.own_death;
         } else {
-            e.dying = Dying(b.name);
+            // Probe 3 run 20261123-092928: Twinrova's sisters died here (life 0, their owner's death) mid-fight, no
+            // outro: their copies' own death flow (which starts the fusion event in the game that runs it) was
+            // skipped as any copy change, so neither game fused. A dead body runs its own death, as a plain enemy.
+            const bool was_dying = e.dying;
+            e.body_dead = b.own_death;
+            e.dying = Dying(b.name) || e.body_dead;
             if (e.dying && b.role == Role::copy) {
-                AddDyingLife(b.life_component);
+                if (Dying(b.name)) {
+                    AddDyingLife(b.life_component);  // (the outro's: its next step ends it. A dead body's Life is
+                                                     // free already, its owner's death released it: one that comes
+                                                     // back, a Bongo Bongo hand, a Stalfos, is held again)
+                }
+                if (!was_dying && e.body_dead) {
+                    if (e.wanted && !event_ && steps_ >= e.react_until) {
+                        MakeLate(e);  // its death's first changes, skipped a moment ago
+                    }
+                    ++counts_.body_deaths;
+                    Note(b.name + ": dead here (its life 0 or its owner's death): the copy runs all its own from now on");
+                }
+            } else if (was_dying && !e.dying && b.role == Role::copy) {
+                e.react_until = std::max(e.react_until, steps_ + kAfterEventSteps);  // (a part back from life 0)
             }
             if (b.role == Role::owner) {
                 Hold(e, b);
@@ -464,11 +487,7 @@ std::int32_t Table::HeldLifeStep(std::uint64_t component, std::int32_t life, std
 }
 
 bool Table::OnBrainVerb(std::uint64_t bsa, std::int32_t verb, bool force, bool own) {
-    std::unique_lock lock(mutex_, std::try_to_lock);
-    if (!lock.owns_lock()) {
-        ++counts_.busy;  // (racy count, for the log only)
-        return false;
-    }
+    std::lock_guard lock(mutex_);  // (waits: see the header, "The wraps")
     if (!brain_on_) {
         return false;
     }
@@ -504,11 +523,7 @@ bool Table::OnBrainVerb(std::uint64_t bsa, std::int32_t verb, bool force, bool o
 }
 
 bool Table::OnActionVerb(std::uint64_t bsa, const Request& request, bool changed, bool own) {
-    std::unique_lock lock(mutex_, std::try_to_lock);
-    if (!lock.owns_lock()) {
-        ++counts_.busy;
-        return false;
-    }
+    std::lock_guard lock(mutex_);  // (waits: see the header, "The wraps")
     if (!actions_on_) {
         return false;
     }
@@ -657,7 +672,7 @@ void Table::SetDying(std::vector<std::string> bodies) {
         }
     }
     for (auto& [bsa, e] : by_bsa_) {
-        const bool now = Dying(e.name);
+        const bool now = Dying(e.name) || e.body_dead;
         if (e.plain || now == e.dying) {
             continue;  // (a plain enemy's death is Publish's own_death)
         }
@@ -952,8 +967,8 @@ bool Table::CopyMakes(std::string_view maker) {
     if (maker.empty()) {
         return false;
     }
-    std::unique_lock lock(mutex_, std::try_to_lock);
-    if (!lock.owns_lock() || !brain_on_) {
+    std::lock_guard lock(mutex_);  // (waits: see the header, "The wraps")
+    if (!brain_on_) {
         return false;
     }
     for (const auto& [bsa, e] : by_bsa_) {
@@ -1158,6 +1173,9 @@ bool Table::StepOne(CoopPuppet::Guest& guest, std::uint64_t bsa, Entry& e, std::
             return true;
         }
         const BossAction& action = std::get<BossAction>(d.change.what);
+        if (e.busy_step == steps_) {
+            break;  // row 211: its slot is busy this frame: asked again next frame
+        }
         if (e.own_node == 0) {
             ++counts_.action_waiting;  // (asked again next frame; the changes after it wait too)
             break;
@@ -1251,11 +1269,28 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
             ++counts_.brain_applied;
             Made(true);
             break;
-        case Pending::action:
-            ++counts_.action_applied;
+        case Pending::action: {
             NoteAnswer("the owner's move", result, true);
+            Entry* e = Find(pending_bsa_);
+            if (e != nullptr && result == addr::kActionSlotBusy && e->taken_step != steps_ &&
+                e->busy_asks < kBusyAsks) {
+                // Row 211: the copy's own request took the slot this frame, not one of ours: ours next frame.
+                ++e->busy_asks;
+                e->busy_step = steps_;
+                ++counts_.action_busy_again;
+                Made(false);
+                break;
+            }
+            if (e != nullptr) {
+                e->busy_asks = 0;
+                if (result == addr::kActionTaken) {
+                    e->taken_step = steps_;
+                }
+            }
+            ++counts_.action_applied;
             Made(true);
             break;
+        }
         case Pending::late: {
             ++counts_.copy_own_late;
             const Entry* e = Find(pending_bsa_);

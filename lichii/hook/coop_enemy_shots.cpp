@@ -118,6 +118,10 @@ bool IsEnemyShot(std::string_view name) {
     return Find(name) != nullptr;
 }
 
+bool IsRallyBall(std::string_view name) {
+    return IsEnemyShot(name) && (name.ends_with("_Bullet_LightBall") || name.ends_with("_Bullet_ChargeLightBall"));
+}
+
 std::vector<std::string_view> MakersOf(std::string_view shot) {
     std::vector<std::string_view> out;
     if (const Shot* s = Find(shot)) {
@@ -208,8 +212,9 @@ bool StopAtCreate(std::string_view shot, const Vec3& at, std::uint64_t shooter) 
     if (!IsEnemyShot(shot) || IsSplitShot(shot) || !On() || !HideOn() || !StopOn()) {
         return false;
     }
-    std::unique_lock lock(g_mutex, std::try_to_lock);
-    if (!lock.owns_lock() || g_at == 0 ||
+    // (waits: a busy list once let a copy's own shot be made beside the owner's; its holders only copy the list)
+    std::lock_guard lock(g_mutex);
+    if (g_at == 0 ||
         std::chrono::steady_clock::now() - g_noted > std::chrono::microseconds(kFreshUs)) {
         return false;
     }

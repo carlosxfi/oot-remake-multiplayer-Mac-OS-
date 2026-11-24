@@ -413,3 +413,26 @@ class ScrubFormatter(logging.Formatter):
     def format(self, record):
         text = super().format(record)
         return text.replace(self._token, "[token]") if self._token else text
+
+
+HEARTBEAT_NAME = "discord-bot.heartbeat"
+HEARTBEAT_EVERY_SECONDS = 300
+HEARTBEAT_STALE_MINUTES = 30
+
+
+def heartbeat_text(now):
+    """The heartbeat file's one line: the UTC time, ISO 8601 with a Z (no token, no names)."""
+    return now.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") + "\n"
+
+
+def write_heartbeat(path, now):
+    _write_atomic(Path(path), heartbeat_text(now), False)
+
+
+def heartbeat_age_minutes(text, now):
+    """Minutes since the time in a heartbeat file's text; None when the text is not a time."""
+    try:
+        then = _dt.datetime.strptime((text or "").strip(), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.timezone.utc)
+    except ValueError:
+        return None
+    return (now - then).total_seconds() / 60.0

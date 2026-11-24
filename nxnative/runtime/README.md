@@ -41,13 +41,13 @@ Open a Windows host session with a saved file, then join from the Mac title scre
 
 ### Personal inventory on rejoin
 
-The Mac launcher asks for an optional profile name before launch. Use the same name for the same campaign and a different name for a different host or save slot. Join from the title and load the host's save. The Mac checkpoints seeds, arrows, bombs, nuts, sticks and rupees while the guest is playing the co-op save. On a later join with the same profile, it restores those counts into the local copy of the host's save, up to the capacities in that save. The first join uses the host's starting counts. The profile is stored beside the game's save folders in `coop-inventory`. Shared progress and the host's inventory still follow the existing co-op rules.
+The Mac launcher asks for an optional profile name before launch. Use the same name for the same campaign and a different name for a different host or save slot. Join from the title and load the host's save. The Mac checkpoints seeds, arrows, bombs, nuts, sticks, rupees and bottle contents while the guest is playing the co-op save. On a later join with the same profile, it restores those counts into the local copy of the host's save, up to the capacities in that save. It restores bottle contents only where the host save has the bottle. The first join uses the host's starting values. Existing inventory profiles are read and upgraded when written. The profile is stored beside the game's save folders in `coop-inventory`. Shared progress and the host's inventory still follow the existing co-op rules.
 
 To test, start both players at 30 seeds. On the Mac, enter a new profile name, join from the title, spend one seed and wait a second. Leave and rejoin, then repeat after fully quitting the Mac app. The Mac should have 29 and the host should have 30 both times. Try a different profile and confirm it starts with the host's counts. Launch with no profile and verify the original Mac solo save.
 
 ### Character Select on Mac
 
-Apply `character-select.patch` to the pinned nxnative source used for the Mac game build. Set
+Apply `character-select.patch` to the pinned nxnative source used for the Mac game build. The patch accepts IPS32 writes in section padding between read-only and writable data, as used by Character Select. Set
 `DM_COOP_CHARACTER_SELECT_IPS` to the absolute path of the compatible IPS32 prepared by the Windows
 co-op kit (its copy with the conflicting customizer code removed), then run the normal nxnative Mac
 app build. Keep the IPS's original build-ID filename. The rewriter checks that ID against the game's

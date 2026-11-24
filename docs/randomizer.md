@@ -1,6 +1,6 @@
 # The randomizer in co-op: step by step
 
-For 0.11.2 and later. OOTRR comes with the kit: 0.6.0 in 0.11.2, 0.6.1 in 0.11.3, 0.6.2 in 0.11.4, 0.7.3 in 0.11.5 to 0.11.7, 0.8.0 in 0.11.8, 0.8.1 in 0.11.9. The full reference is [mods.md](mods.md#the-randomizer); this page is only the steps.
+For 0.11.2 and later. OOTRR comes with the kit: 0.6.0 in 0.11.2, 0.6.1 in 0.11.3, 0.6.2 in 0.11.4, 0.7.3 in 0.11.5 to 0.11.7, 0.8.0 in 0.11.8, 0.8.1 in 0.11.9, 0.8.2 in 0.11.11. The full reference is [mods.md](mods.md#the-randomizer); this page is only the steps.
 
 The randomizer is **off** until the host turns it on. Each game builds the seed by itself in the background, so every player (the host too) needs **one restart** after their build. Nobody has to download or install anything: do not put OOTRR into `mods` by hand.
 

@@ -43,7 +43,8 @@ std::array<float, 3> Floats(const std::array<std::uint8_t, 3>& b) {
 
 class Dresser {
 public:
-    Dresser(const Game& g, State& s, Result& r, std::size_t max_calls) : g_(g), s_(s), r_(r), max_calls_(max_calls) {}
+    Dresser(const Game& g, State& s, Result& r, std::size_t max_calls, bool learn = false)
+        : g_(g), s_(s), r_(r), max_calls_(max_calls), learn_(learn) {}
     bool Stopped() const { return r_.failed || r_.cut; }
 
     std::uint64_t R64(std::uint64_t a) const {
@@ -158,17 +159,32 @@ public:
                 }
             }
             if (Stopped()) return;
+            // (what the model has, for the Customize page's rows: reads only)
+            u.hair_palette = u.material[0] >= 0 && HasPalette(MaterialObject(u.unit, u.material[0]));
+            u.cloth_rows = 0;
+            for (std::uint64_t i = 0; i < u.materials; i++) {
+                const std::uint64_t m = R64(MaterialObject(u.unit, static_cast<std::int64_t>(i)));
+                if (m == 0) continue;
+                const int row = ClothRow(Rv<std::uint8_t>(m + kMatSamplers), Rv<std::uint8_t>(m + kMatTextures));
+                if (row >= 0) u.cloth_rows = static_cast<std::uint8_t>(u.cloth_rows | (1u << row));
+            }
             u.looked_up = true;
         }
+        if (learn_) return;
         if (o.hair_exact && !Stopped()) {
-            // (co-op's hair colour on a Link model: the parameters alone, as the game colours its own hair)
+            // (co-op's hair colour on a Link model: the parameters alone, as the game colours its own hair. On a
+            // character's (npc-customize: o.hair is then the nearest palette entry too) the mod's recoloured texture
+            // is put first as well, since a character's hair is mostly its texture; a stand-in keeps its own colours.)
             for (std::size_t i = 0; i < kHairNames.size() && !Stopped(); i++) {
                 if (u.material[i] < 0) continue;
+                const std::uint64_t object = MaterialObject(u.unit, u.material[i]);
+                if (o.hair != 0 && i == 0 && !HasPalette(object)) continue;
                 const bool brow = i + 1 == kHairNames.size();
                 for (int p = 0; p < 2; p++) {
                     SetFloats(u.unit, u.material[i], u.param[i][static_cast<std::size_t>(p)],
                               brow ? (*o.hair_exact)[2] : (*o.hair_exact)[static_cast<std::size_t>(p)]);
                 }
+                if (o.hair != 0) PutTexture(object, o.hair, put_back);
             }
         } else if (o.hair != 0 || put_back) {
             for (std::size_t i = 0; i < kHairNames.size() && !Stopped(); i++) {
@@ -202,11 +218,13 @@ public:
     }
 
     void Run(const Options& o, bool put_back, int iris_shift) {
-        if (!o.Colours() && !put_back) return;
+        if (!o.Colours() && !put_back && !learn_) return;
         // The model component, the player's kind only (the mod's own check: its +0xf8 is the player model's).
         const std::uint64_t component = R64(R64(s_.actor + kActorComponents) + 8);
         const std::uint64_t kind = R64(g_.main_base + kModelTypeGot);
-        if (component == 0 || kind == 0 || Virtual(component, 0xf8) != kind) return;
+        if (component == 0 || kind == 0) return;
+        s_.other_kind = Virtual(component, 0xf8) != kind;
+        if (s_.other_kind) return;
         const std::uint64_t model = R64(component + 0x18);
         const auto count = Rv<std::int32_t>(model + 0x20);
         const std::uint64_t list = R64(model + 0x28);
@@ -246,6 +264,7 @@ private:
     State& s_;
     Result& r_;
     std::size_t max_calls_;
+    bool learn_ = false;
 };
 
 }  // namespace
@@ -300,6 +319,13 @@ std::atomic<bool> g_mod_present{false};
 void SetModPresent(bool present) { g_mod_present.store(present, std::memory_order_relaxed); }
 bool ModPresent() { return g_mod_present.load(std::memory_order_relaxed); }
 std::uint16_t ShownCharacter() { return g_shown.load(std::memory_order_relaxed); }
+std::uint16_t NoteOwnPick(std::optional<std::int32_t> pick, std::uint16_t max) {
+    const std::uint16_t shown =
+        pick && *pick > 0 && *pick <= int{max} ? static_cast<std::uint16_t>(*pick) : std::uint16_t{0};
+    SetModPresent(pick.has_value());   // (row 207: its saved Int is there)
+    SetShownCharacter(shown);
+    return shown;
+}
 
 Wardrobe& TheWardrobe() {
     static Wardrobe w;
@@ -312,6 +338,144 @@ Result Dress(const Game& game, State& state, std::uint32_t custom, bool put_back
     if (state.cell == 0 || state.actor == 0 || !game.read || !game.write || !game.call) return r;
     Dresser(game, state, r, max_calls).Run(Options::Of(custom), put_back, iris_shift);
     return r;
+}
+
+Result Learn(const Game& game, State& state, std::size_t max_calls) {
+    Result r;
+    if (state.cell == 0 || state.actor == 0 || !game.read || !game.write || !game.call) return r;
+    Dresser(game, state, r, max_calls, true).Run(Options{}, false, 0);
+    return r;
+}
+
+std::uint8_t Rows(const State& state) {
+    if (state.other_kind) return static_cast<std::uint8_t>(kRowGear | kRowsKnown);
+    std::uint8_t rows = 0;
+    bool any = false;
+    for (const State::Unit& u : state.units) {
+        if (u.unit == 0) continue;
+        if (!u.looked_up) return 0;   // (part of the model only: not known yet)
+        any = true;
+        if (u.hair_palette) rows |= kRowHair;
+        if (u.material[kHairNames.size()] >= 0 && u.param[kHairNames.size()][2] >= 0) rows |= kRowEyes;
+        rows |= static_cast<std::uint8_t>(u.cloth_rows * kRowCloth1);
+    }
+    return any ? static_cast<std::uint8_t>(rows | kRowGear | kRowsKnown) : std::uint8_t{0};
+}
+
+std::size_t SetGearShown(const Game& game, std::uint64_t actor, bool shown) {
+    if (!game.read || !game.write) return 0;
+    const auto r64 = [&](std::uint64_t a) {
+        std::uint64_t v = 0;
+        return a != 0 && game.read(a, &v, sizeof v) ? v : std::uint64_t{0};
+    };
+    const auto r32 = [&](std::uint64_t a, std::uint32_t& v) { return a != 0 && game.read(a, &v, sizeof v); };
+    const std::uint64_t equipment = r64(r64(actor + kActorComponents) + kActorEquipment);
+    if (equipment == 0) return 0;
+    std::size_t changed = 0;
+    // (the mod's cz_gear: a handle's id must be its piece's, and a piece being made or deleted, state 7..11 at +0x2c,
+    // is left alone)
+    for (std::uint32_t k = 0; k < kGearCount; k++) {
+        if (((kGearHandles >> k) & 1u) == 0) continue;
+        const std::uint64_t handle = equipment + kGearFirst + kGearStride * k;
+        std::uint32_t id = 0, link_id = 0, state = 0, flags = 0;
+        if (!r32(handle + 0x10, id) || id == 0xFFFFFFFFu) continue;
+        const std::uint64_t link = r64(handle + 0x8);
+        if (link == 0 || !r32(link + 0x48, link_id) || link_id != id) continue;
+        const std::uint64_t piece = r64(link + 0x40);
+        if (piece == 0 || !r32(piece + 0x2c, state) || state - 7u < 5u) continue;
+        if (!r32(piece + kActorFlags, flags)) continue;
+        const std::uint32_t want = shown ? (flags | kShownBit) : (flags & ~kShownBit);
+        if (want != flags && game.write(piece + kActorFlags, &want, sizeof want)) changed++;
+    }
+    return changed;
+}
+
+std::uint8_t NearestHair(std::uint32_t rgb) {
+    const auto want = HairParam(rgb)[0];
+    std::uint8_t best = 1;
+    float best_d = -1.0f;
+    for (std::uint8_t i = 1; i <= kHairs; i++) {
+        const auto c = *HairColour(i, 0);
+        float d = 0.0f;
+        for (std::size_t k = 0; k < 3; k++) d += (c[k] - want[k]) * (c[k] - want[k]);
+        if (best_d < 0.0f || d < best_d) best_d = d, best = i;
+    }
+    return best;
+}
+
+namespace {
+// A colour's hue in degrees (0..360), its saturation and its value (0..1).
+struct Hsv {
+    float h = 0.0f, s = 0.0f, v = 0.0f;
+};
+Hsv ToHsv(std::uint32_t rgb) {
+    const float r = static_cast<float>((rgb >> 16) & 0xFF) / 255.0f, g = static_cast<float>((rgb >> 8) & 0xFF) / 255.0f,
+                b = static_cast<float>(rgb & 0xFF) / 255.0f;
+    const float hi = std::max({r, g, b}), lo = std::min({r, g, b}), span = hi - lo;
+    Hsv out;
+    out.v = hi;
+    out.s = hi > 0.0f ? span / hi : 0.0f;
+    if (span > 0.0f) {
+        if (hi == r) out.h = 60.0f * std::fmod((g - b) / span + 6.0f, 6.0f);
+        else if (hi == g) out.h = 60.0f * ((b - r) / span + 2.0f);
+        else out.h = 60.0f * ((r - g) / span + 4.0f);
+    }
+    return out;
+}
+}  // namespace
+
+std::uint8_t NearestCloth(std::uint32_t rgb) {
+    // The mod's clothing palettes are full-strength colours plus black and white, so a colour is matched by its hue
+    // (a dark blue is Blue, not the darker Purple a plain RGB distance picks); a grey or near-black colour by its
+    // brightness to Black or White.
+    constexpr float kGrey = 0.25f, kDark = 0.15f;
+    const Hsv want = ToHsv(rgb);
+    const auto index_of = [](std::uint32_t c) {
+        for (std::uint8_t i = 0; i < kCloths; i++) {
+            if (kClothRgb[i] == c) return static_cast<std::uint8_t>(i + 1);
+        }
+        return std::uint8_t{1};
+    };
+    if (want.v < kDark || (want.s < kGrey && want.v < 0.5f)) return index_of(0x000000u);
+    if (want.s < kGrey) return index_of(0xFFFFFFu);
+    std::uint8_t best = 1;
+    float best_d = -1.0f;
+    for (std::uint8_t i = 0; i < kCloths; i++) {
+        const Hsv c = ToHsv(kClothRgb[i]);
+        if (c.s < kGrey) continue;   // (black and white are chosen above)
+        const float diff = std::fabs(c.h - want.h), d = std::min(diff, 360.0f - diff);
+        if (best_d < 0.0f || d < best_d) best_d = d, best = static_cast<std::uint8_t>(i + 1);
+    }
+    return best;
+}
+
+ModelColours ForModel(bool link_model, const std::function<std::optional<std::uint32_t>(std::uint8_t)>& part,
+                      std::uint32_t legacy_custom) {
+    const auto get = [&](std::uint8_t n) -> std::optional<std::uint32_t> {
+        auto v = part ? part(n) : std::nullopt;
+        if (v) *v &= 0xFFFFFFu;
+        return v;
+    };
+    ModelColours out;
+    if (link_model) {
+        out.eyes = get(kLinkEyesPart), out.hair = get(kLinkHairPart);
+        return out;
+    }
+    bool any = false;
+    for (std::uint8_t n = kCharHairPart; n <= kCharGearPart; n++) any = any || get(n).has_value();
+    if (!any) {
+        out.custom = legacy_custom & 0xFFFFFFu;
+        return out;
+    }
+    out.hair = get(kCharHairPart), out.eyes = get(kCharEyesPart);
+    if (out.hair) out.custom |= NearestHair(*out.hair);   // nibble 0: the hair's palette entry
+    if (get(kCharGearPart)) out.custom |= 1u << 8;       // nibble 2: Hidden
+    for (std::uint8_t c = 0; c < 3; c++) {                // nibbles 3..5: the clothing palettes
+        if (const auto v = get(static_cast<std::uint8_t>(kCharCloth1Part + c))) {
+            out.custom |= static_cast<std::uint32_t>(NearestCloth(*v)) << (4 * (3 + c));
+        }
+    }
+    return out;
 }
 
 Result Dress(const Game& game, State& state, const Options& options, bool put_back, int iris_shift,
@@ -360,6 +524,7 @@ std::size_t Wardrobe::Frame(const Game& game, const std::vector<Target>& targets
     std::size_t calls = 0;
     // One target further each frame comes first, so a budget that runs out never leaves the same puppets last.
     first_ = targets.empty() ? 0 : (first_ + 1) % targets.size();
+    std::optional<std::uint32_t> own_rows, picture_rows;   // (character << 8) | rows
     for (std::size_t n = 0; n < targets.size(); n++) {
         const Target& t = targets[(first_ + n) % targets.size()];
         auto it = std::find_if(kept_.begin(), kept_.end(), [&](const Kept& k) { return k.state.actor == t.actor; });
@@ -379,7 +544,31 @@ std::size_t Wardrobe::Frame(const Game& game, const std::vector<Target>& targets
             k.model = t.model;
             k.seen = true;
         }
+        // npc-customize, Equipment Hidden: the game shows a piece again when it uses it, so it is hidden every frame
+        // (as the mod did from its per-frame code); shown again once, when Hidden ends. Reads and the flag word only.
+        const bool hide = Options::Of(t.custom).gear == 1;
+        if (hide || k.gear_hidden) {
+            SetGearShown(game, t.actor, !hide);
+            k.gear_hidden = hide;
+        }
         if (t.mods_routine || calls >= kCallsPerFrame || now_ms < k.retry_ms) continue;
+        // Your own character's model, and its picture on the Customize screen, looked up even with nothing to put on,
+        // for the page's rows. Every frame: a model already looked up costs reads only (no call), and one put in its
+        // place (another pick, the field model changed when the menu closes) is looked up again.
+        if ((t.own || t.picture) && t.character != 0) {
+            const Result r = Learn(game, k.state, kCallsPerFrame - calls);
+            calls += r.calls;
+            if (r.failed) {
+                k.retry_ms = now_ms + kAgainMs;   // (as a failed dressing: not again before kAgainMs)
+                continue;
+            }
+        }
+        if (t.picture && t.character != 0) {
+            picture_rows = (static_cast<std::uint32_t>(t.character) << 8) | Rows(k.state);
+        } else if (t.own) {
+            own_rows = (static_cast<std::uint32_t>(t.character) << 8) |
+                       (t.character != 0 ? Rows(k.state) : std::uint8_t{0});
+        }
         Options o = Options::Of(t.custom);
         if (t.eyes) o.eyes_exact = EyeParam(*t.eyes);
         if (t.hair) o.hair_exact = HairParam(*t.hair);
@@ -418,6 +607,12 @@ std::size_t Wardrobe::Frame(const Game& game, const std::vector<Target>& targets
         k.at_ms = now_ms;
     }
     kept_.erase(std::remove_if(kept_.begin(), kept_.end(), [](const Kept& k) { return !k.seen; }), kept_.end());
+    // The page's rows: the picture's while Customize shows one, else your own model's (OwnRows).
+    if (picture_rows) {
+        own_rows_.store(*picture_rows, std::memory_order_relaxed);
+    } else if (own_rows) {
+        own_rows_.store(*own_rows, std::memory_order_relaxed);
+    }
     return calls;
 }
 

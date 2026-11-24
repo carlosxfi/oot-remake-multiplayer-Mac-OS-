@@ -1187,7 +1187,9 @@ TEST_CASE("flag watcher: a guest's older save joining a host's new file takes th
   CHECK(guest_game.get(kHookshot) == 0);
   CHECK(guest_game.get(kEmerald) == 0);
   CHECK(w.stats().snapshot_exact == 2);
-  // From now on the guest plays the host's file: its own new pickup goes out.
+  // From now on the guest plays the host's file: its own new pickup goes out (row 238: after the join's hold on a
+  // lowered max-rule value has ended, kResetQuietFrames of the game keeping it; no pickup comes in that second).
+  for (int i = 0; i <= FlagWatcher::kResetQuietFrames; ++i) CHECK(w.frame(store).empty());
   guest_game.values[kHookshot] = entry(kHookshot, 1, proto::FlagKind::int32);
   CHECK(only<proto::FlagSet>(w.frame(store)) ==
         std::vector{entry(kHookshot, 1, proto::FlagKind::int32)});
@@ -3377,12 +3379,203 @@ TEST_CASE("flag watcher: the host's older save lowers MaxLife, our game's write-
   }
   CHECK(w.stats().reset_holds_kept == 10);
   // The object walk lowered Link's own max: the game keeps 12. Once it has kept it a while the hold ends...
+  w.lowered_done(kMaxLife, 12);  // (row 238: MaxLife's hold waits for the walk's word)
   for (int i = 0; i <= FlagWatcher::kResetQuietFrames; ++i) CHECK(w.frame(store).empty());
   CHECK_FALSE(w.reset_lowered(kMaxLife));
   CHECK_FALSE(w.reset_lowered(kMagic));
   // ...and the refight's container (12 -> 16, no higher than before the load) is real progress again.
   game_store.values[kMaxLife] = entry(kMaxLife, 16, proto::FlagKind::int32);
   CHECK(only<proto::FlagSet>(w.frame(store)) == std::vector{entry(kMaxLife, 16, proto::FlagKind::int32)});
+}
+
+TEST_CASE("flag watcher: a guest with more hearts joining a host with fewer follows the host, its write-back is not sent (row 238)") {
+  // corgidad's Mac guest (own save, 4 hearts) joined a host with 3: the snapshot wrote 3, the game's Life component
+  // wrote its 4 back, the max rule sent it and the host rose to 4. The join now holds the value as a host's save load
+  // does (rows 136/137): put back, never sent, until the game keeps it; a rise past 4 is real progress.
+  constexpr FlagKey kMaxLife{0xfbe01da1u, 0};  // PlayerStatus.MaxLife, max (quarter hearts: 12 = 3, 16 = 4)
+  constexpr FlagKey kMagic{0x12d63a97u, 0};    // PlayerStatus.MPMax, max: every max-rule capacity the same way
+  FakeStore game;
+  game.values[kMaxLife] = entry(kMaxLife, 16, proto::FlagKind::int32);
+  game.values[kMagic] = entry(kMagic, 96, proto::FlagKind::int32);
+  ItemFlagStore store(game);
+  FlagWatcher w(SharedFlags({kMaxLife, kMagic}), FlagRole::player);
+  CHECK(w.frame(store).empty());  // the baseline: the guest's own save
+  w.reset();                      // a new connection
+  CHECK(w.receive(proto::FlagSnapshot{
+      0, 1, {entry(kMaxLife, 12, proto::FlagKind::int32), entry(kMagic, 48, proto::FlagKind::int32)}}));
+  CHECK(w.frame(store).empty());
+  CHECK(game.get(kMaxLife) == 12u);
+  CHECK(w.reset_lowered(kMaxLife) == 12);
+  CHECK(w.reset_lowered(kMagic) == 48);
+  for (int round = 0; round < 5; ++round) {
+    game.values[kMaxLife] = entry(kMaxLife, 16, proto::FlagKind::int32);   // the game's write-back of its own
+    game.values[kMagic] = entry(kMagic, 96, proto::FlagKind::int32);
+    CHECK(w.frame(store).empty());
+    CHECK(game.get(kMaxLife) == 12u);
+    CHECK(game.get(kMagic) == 48u);
+  }
+  w.lowered_done(kMaxLife, 12);  // the walk saw Link's own max lowered
+  for (int i = 0; i <= FlagWatcher::kResetQuietFrames; ++i) CHECK(w.frame(store).empty());
+  CHECK_FALSE(w.reset_lowered(kMaxLife));
+}
+
+TEST_CASE("flag watcher: a join's lower MaxLife stays held until the object walk lowered Link's own max (row 238)") {
+  // The run on the real game (lane 1, 083706): B (5 hearts) rejoined a host with 4; the flag went to 16 but B's Link
+  // component never wrote its 20 back, so nothing refreshed the hold, it ended after one quiet second, before the
+  // walk lowered the component: B kept showing 5 hearts. The hold now waits for the walk (lowered_done), bounded.
+  constexpr FlagKey kMaxLife{0xfbe01da1u, 0};
+  constexpr FlagKey kMagic{0x12d63a97u, 0};
+  FakeStore game;
+  game.values[kMaxLife] = entry(kMaxLife, 20, proto::FlagKind::int32);
+  game.values[kMagic] = entry(kMagic, 96, proto::FlagKind::int32);
+  ItemFlagStore store(game);
+  FlagWatcher w(SharedFlags({kMaxLife, kMagic}), FlagRole::player);
+  CHECK(w.frame(store).empty());
+  w.reset();
+  CHECK(w.receive(proto::FlagSnapshot{
+      0, 1, {entry(kMaxLife, 16, proto::FlagKind::int32), entry(kMagic, 48, proto::FlagKind::int32)}}));
+  // The game never writes its higher values back: well past the quiet time, MaxLife is still held (the walk has not
+  // said it lowered Link), MPMax (no live copy the walk lowers) has ended.
+  for (int i = 0; i < 3 * FlagWatcher::kResetQuietFrames; ++i) CHECK(w.frame(store).empty());
+  CHECK(w.reset_lowered(kMaxLife) == 16);
+  CHECK_FALSE(w.reset_lowered(kMagic));
+  // The walk lowered Link: the hold ends by its quiet time, the value stays the host's.
+  w.lowered_done(kMaxLife, 16);
+  for (int i = 0; i <= FlagWatcher::kResetQuietFrames; ++i) CHECK(w.frame(store).empty());
+  CHECK_FALSE(w.reset_lowered(kMaxLife));
+  CHECK(game.get(kMaxLife) == 16u);
+}
+
+TEST_CASE("flag watcher: a MaxLife hold the walk never answers ends after kLowerWaitFrames (row 238)") {
+  constexpr FlagKey kMaxLife{0xfbe01da1u, 0};
+  FakeStore game;
+  game.values[kMaxLife] = entry(kMaxLife, 20, proto::FlagKind::int32);
+  ItemFlagStore store(game);
+  FlagWatcher w(SharedFlags({kMaxLife}), FlagRole::player);
+  CHECK(w.frame(store).empty());
+  w.reset();
+  CHECK(w.receive(proto::FlagSnapshot{0, 1, {entry(kMaxLife, 16, proto::FlagKind::int32)}}));
+  for (int i = 0; i < FlagWatcher::kResetQuietFrames + FlagWatcher::kLowerWaitFrames + 5; ++i) w.frame(store);
+  CHECK_FALSE(w.reset_lowered(kMaxLife));  // no Link in the scene (the title): not held for good
+}
+
+TEST_CASE("flag watcher: the walk's answer for an earlier, higher hold does not end a later hold's wait (row 238)") {
+  // A hold at 16 was answered (Link at or under 16); a host save load with 12 replaces it. The old answer (16) says
+  // nothing about the new hold: only Link seen at or under 12 ends its wait.
+  constexpr FlagKey kMaxLife{0xfbe01da1u, 0};
+  FakeStore game;
+  game.values[kMaxLife] = entry(kMaxLife, 20, proto::FlagKind::int32);
+  ItemFlagStore store(game);
+  FlagWatcher w(SharedFlags({kMaxLife}), FlagRole::player);
+  for (int i = 0; i <= FlagWatcher::kSettleFrames; ++i) w.frame(store);
+  CHECK(w.receive(proto::Message{proto::FlagReset{1, {entry(kMaxLife, 16, proto::FlagKind::int32)}}}));
+  CHECK(w.frame(store).empty());
+  CHECK(w.reset_lowered(kMaxLife) == 16);
+  CHECK(w.receive(proto::Message{proto::FlagReset{2, {entry(kMaxLife, 12, proto::FlagKind::int32)}}}));
+  CHECK(w.frame(store).empty());
+  CHECK(w.reset_lowered(kMaxLife) == 12);
+  w.lowered_done(kMaxLife, 16);  // the answer for the 16 hold: Link at 16 is still above 12
+  for (int i = 0; i < 3 * FlagWatcher::kResetQuietFrames; ++i) CHECK(w.frame(store).empty());
+  CHECK(w.reset_lowered(kMaxLife) == 12);  // still waiting for the walk
+  w.lowered_done(kMaxLife, 12);
+  for (int i = 0; i <= FlagWatcher::kResetQuietFrames; ++i) CHECK(w.frame(store).empty());
+  CHECK_FALSE(w.reset_lowered(kMaxLife));
+}
+
+TEST_CASE("flag watcher: a guest's own save load with more hearts than the group is held, its write-back never sent (row 238)") {
+  // The host loaded an older save (the group has 16); a guest's Game Over Try Again loads its co-op copy of the newer
+  // one (20). The load window puts the group's 16 back; the game made Link from the save's 20 and writes it back.
+  // Held as a host's save load is (rows 136/137): put back, never sent, until the walk lowered Link.
+  constexpr FlagKey kMaxLife{0xfbe01da1u, 0};
+  FakeStore game;
+  game.values[kDoor] = entry(kDoor, 1);
+  game.values[kKey0] = entry(kKey0, 1);
+  game.values[kMaxLife] = entry(kMaxLife, 16, proto::FlagKind::int32);
+  ItemFlagStore store(game);
+  FlagWatcher w(SharedFlags({kDoor, kKey0, kMaxLife}), FlagRole::player);
+  w.set_loading(true);
+  w.frame(store);
+  CHECK(w.receive(proto::FlagSnapshot{
+      0, 1, {entry(kDoor, 1), entry(kKey0, 1), entry(kMaxLife, 16, proto::FlagKind::int32)}}));
+  CHECK(w.frame(store).empty());
+  w.set_scene(false);
+  for (int i = 0; i < FlagWatcher::kTitleFrames; ++i) w.frame(store);
+  game.values[kDoor] = entry(kDoor, 0);  // the save: older door and key states (the sign of a load: two go back) ...
+  game.values[kKey0] = entry(kKey0, 0);
+  game.values[kMaxLife] = entry(kMaxLife, 20, proto::FlagKind::int32);  // ... and more hearts than the group
+  CHECK(w.frame(store).empty());
+  CHECK(game.get(kMaxLife) == 16u);  // the group's value back at once
+  w.set_scene(true);
+  w.set_loading(false);
+  for (int i = 0; i <= FlagWatcher::kSettleFrames + 1; ++i) CHECK(w.frame(store).empty());
+  CHECK_FALSE(w.settling());
+  CHECK(w.reset_lowered(kMaxLife) == 16);  // held after the window
+  for (int round = 0; round < 5; ++round) {
+    game.values[kMaxLife] = entry(kMaxLife, 20, proto::FlagKind::int32);  // Link's Life component writes its max back
+    CHECK(w.frame(store).empty());  // never sent
+    CHECK(game.get(kMaxLife) == 16u);
+  }
+  w.lowered_done(kMaxLife, 16);
+  for (int i = 0; i <= FlagWatcher::kResetQuietFrames; ++i) CHECK(w.frame(store).empty());
+  CHECK_FALSE(w.reset_lowered(kMaxLife));
+}
+
+TEST_CASE("flag watcher: a hold made inside a load window outlives its end, one made before it does not (row 238)") {
+  // Lane 1 run 122412: B rejoined; its Link was not made again (a reconnect rebuilds nothing), but the snapshot came
+  // inside a load window, and the window's end cleared the hold, so Link's own max stayed 20 over the group's 16.
+  // A window's end clears only the holds that began before the window (the game made Link from the flags in it).
+  constexpr FlagKey kMaxLife{0xfbe01da1u, 0};
+  FakeStore game;
+  game.values[kMaxLife] = entry(kMaxLife, 20, proto::FlagKind::int32);
+  ItemFlagStore store(game);
+  FlagWatcher w(SharedFlags({kMaxLife}), FlagRole::player);
+  for (int i = 0; i <= FlagWatcher::kSettleFrames; ++i) w.frame(store);
+  w.reset();  // the reconnect
+  w.set_loading(true);
+  w.frame(store);  // the window opens
+  CHECK(w.settling());
+  CHECK(w.receive(proto::FlagSnapshot{0, 1, {entry(kMaxLife, 16, proto::FlagKind::int32)}}));
+  w.frame(store);
+  CHECK(w.reset_lowered(kMaxLife) == 16);  // made inside the window
+  w.set_loading(false);
+  for (int i = 0; i <= FlagWatcher::kSettleFrames + 1; ++i) w.frame(store);
+  CHECK_FALSE(w.settling());
+  CHECK(w.reset_lowered(kMaxLife) == 16);  // the window's end did not clear it
+  w.lowered_done(kMaxLife, 16);            // the walk lowered Link
+  for (int i = 0; i <= FlagWatcher::kResetQuietFrames; ++i) w.frame(store);
+  CHECK_FALSE(w.reset_lowered(kMaxLife));
+}
+
+TEST_CASE("flag watcher: a hold made before a load window is cleared at its end, Link was made again (rows 136/137)") {
+  constexpr FlagKey kMaxLife{0xfbe01da1u, 0};
+  FakeStore game;
+  game.values[kMaxLife] = entry(kMaxLife, 20, proto::FlagKind::int32);
+  ItemFlagStore store(game);
+  FlagWatcher w(SharedFlags({kMaxLife}), FlagRole::player);
+  for (int i = 0; i <= FlagWatcher::kSettleFrames; ++i) w.frame(store);
+  CHECK(w.receive(proto::Message{proto::FlagReset{1, {entry(kMaxLife, 16, proto::FlagKind::int32)}}}));
+  w.frame(store);
+  CHECK(w.reset_lowered(kMaxLife) == 16);
+  w.set_loading(true);  // a scene load: Link is made again from the flags
+  w.frame(store);
+  w.set_loading(false);
+  for (int i = 0; i <= FlagWatcher::kSettleFrames + 1; ++i) w.frame(store);
+  CHECK_FALSE(w.settling());
+  CHECK_FALSE(w.reset_lowered(kMaxLife));
+}
+
+TEST_CASE("flag watcher: a guest with fewer hearts joining a host with more gets the host's value, a join with no lower value holds nothing (row 238)") {
+  constexpr FlagKey kMaxLife{0xfbe01da1u, 0};
+  FakeStore game;
+  game.values[kMaxLife] = entry(kMaxLife, 12, proto::FlagKind::int32);
+  ItemFlagStore store(game);
+  FlagWatcher w(SharedFlags({kMaxLife}), FlagRole::player);
+  CHECK(w.frame(store).empty());
+  w.reset();
+  CHECK(w.receive(proto::FlagSnapshot{0, 1, {entry(kMaxLife, 16, proto::FlagKind::int32)}}));
+  CHECK(w.frame(store).empty());
+  CHECK(game.get(kMaxLife) == 16u);   // the host's 4 hearts, nothing sent
+  CHECK_FALSE(w.reset_lowered(kMaxLife));
 }
 
 TEST_CASE("flag watcher: a reset hold lets a rise past the old value through, ends at a load, a higher reset holds nothing") {

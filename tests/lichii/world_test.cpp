@@ -3044,6 +3044,72 @@ TEST_CASE("world: a followed push puts the new rest in the push node's target an
     CHECK(CoopWorld::NodeRestWords(g.Reader(), kNode, to, {-51.06f, 79.27f, 45.62f}).writes.empty());
 }
 
+TEST_CASE("world: a cleared puzzle's block pulled off its answer does not start again (row 244)") {
+    // hs-block-grip diag 2 (2026-11-23): the Deku basement block loads on its answer (z 42.60) in both games, its
+    // room cleared (ForceOnState on). A pulled it to 44.85; B ran the node's start again there, took the start's
+    // room-load end and put its block back on the answer ("jumped back toward its old rest").
+    const proto::Vec3 goal{-51.06f, 79.27f, 42.6f};
+    const proto::Vec3 off{-51.06f, 79.27f, 44.85f};
+    CHECK_FALSE(CoopWorld::NodeMayStartAgain(true, goal, off));
+    CHECK_FALSE(CoopWorld::NodeMayStartAgain(true, goal, {-51.06f, 79.27f, 44.1f}));  // a whole cell off too
+    // On its answer (across; its height aside), the answer end agrees.
+    CHECK(CoopWorld::NodeMayStartAgain(true, goal, {-51.06f, 79.27f, 42.6f}));
+    CHECK(CoopWorld::NodeMayStartAgain(true, goal, {-51.0f, 82.0f, 42.65f}));
+    // Not cleared, or no goal: the start's grid end, as before (its places are put at the rest after it).
+    CHECK(CoopWorld::NodeMayStartAgain(false, goal, off));
+    CHECK(CoopWorld::NodeMayStartAgain(true, {NAN, NAN, NAN}, off));
+}
+
+TEST_CASE("world: a node start that aims at a grid cell is put back to the block's rest (row 244)") {
+    // hs-block-grip (2026-11-22): A let the Deku basement block go mid-pull at z 44.85, between the cells 44.1 and
+    // 45.6 of its base 47.1. B's node start set the target to the cell 44.1 and B's block slid there by itself
+    // ("jumped back toward its old rest"), as in piscesgamer97's Dodongo's Cavern block room.
+    FakeGame g;
+    BlockNodeMemory(g);
+    const proto::Vec3 to{-51.06f, 79.27f, 44.85f};
+    PutFloats(g, kNode + CoopWorld::BlockNode::kBase, {-51.06f, 79.27f, 47.1f});
+    PutFloats(g, kNode + CoopWorld::BlockNode::kGoal, {-51.06f, 79.27f, 42.6f});
+    PutFloats(g, kNode + CoopWorld::BlockNode::kTarget, {-51.06f, 79.27f, 44.1f});  // the start's grid cell
+    PutFloats(g, kNode + CoopWorld::BlockNode::kStart, {-51.06f, 79.27f, 44.85f});  // the place
+    const auto at = CoopWorld::NodeTargetAtRest(g.Reader(), kNode, to);
+    REQUIRE(at.where.size() == 1);
+    CHECK(at.where[0] == "node+0xfc");
+    REQUIRE(at.writes.size() == 3);
+    for (const auto& w : at.writes) {
+        g.Put(w.address, &w.value, 4);
+    }
+    CHECK(FloatAt(g, kNode + 0xfc + 8) == 44.85f);
+    CHECK(FloatAt(g, kNode + 0xfc) == -51.06f);
+    CHECK(FloatAt(g, kNode + 0x108 + 8) == 44.85f);
+    CHECK(FloatAt(g, kNode + 0x40 + 8) == 47.1f);  // base left alone
+    CHECK(FloatAt(g, kNode + 0x4c + 8) == 42.6f);  // goal left alone
+    // Now idle at the rest: nothing more; a rest on a cell (the start aimed at the place) needs nothing either.
+    CHECK(CoopWorld::NodeTargetAtRest(g.Reader(), kNode, to).writes.empty());
+    CHECK(CoopWorld::NodeTargetAtRest(g.Reader(), kNode, {-51.06f, 79.27f, 44.86f}).writes.empty());  // within 2 cm
+    // Both places off (a start that read another place): both put right, target first.
+    {
+        FakeGame m;
+        BlockNodeMemory(m);
+        PutFloats(m, kNode + CoopWorld::BlockNode::kTarget, {-51.06f, 79.27f, 45.6f});
+        PutFloats(m, kNode + CoopWorld::BlockNode::kStart, {-51.06f, 79.27f, 45.6f});
+        const auto both = CoopWorld::NodeTargetAtRest(m.Reader(), kNode, to);
+        REQUIRE(both.where.size() == 2);
+        CHECK(both.where[0] == "node+0xfc");
+        CHECK(both.where[1] == "node+0x108");
+        CHECK(both.writes.size() == 6);
+    }
+    // A NaN word (unset) is put right; an unreadable node or a rest that is not a place is left alone.
+    {
+        FakeGame m;
+        BlockNodeMemory(m);
+        PutFloats(m, kNode + CoopWorld::BlockNode::kTarget, {NAN, NAN, NAN});
+        PutFloats(m, kNode + CoopWorld::BlockNode::kStart, {-51.06f, 79.27f, 44.85f});
+        CHECK(CoopWorld::NodeTargetAtRest(m.Reader(), kNode, to).writes.size() == 3);
+        CHECK(CoopWorld::NodeTargetAtRest(m.Reader(), kNode, {NAN, 0.0f, 0.0f}).writes.empty());
+        CHECK(CoopWorld::NodeTargetAtRest(m.Reader(), 0x7700000000, to).writes.empty());
+    }
+}
+
 // ------------------------------- the Deku Tree basement's moving floor (issue 196)
 
 TEST_CASE("world: the Deku Tree's moving floor is left to its own wave: never sent, never written (issue 196)") {

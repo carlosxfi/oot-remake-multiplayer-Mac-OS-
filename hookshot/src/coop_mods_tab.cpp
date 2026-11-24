@@ -4,6 +4,7 @@
 
 #include "coop_rando.h"
 #include "coop_i18n.h"
+#include "coop_text_fit.h"
 
 #include <algorithm>
 #include <cmath>
@@ -132,9 +133,6 @@ struct Piece {
     bool stops = false;
 };
 
-int Cells(std::uint32_t cp) {
-    return cp >= 0x1100 ? 2 : 1;   // the wide scripts: CJK, kana, hangul, the fullwidth forms
-}
 
 bool Stops(std::uint32_t cp) {
     switch (cp) {
@@ -183,7 +181,7 @@ std::vector<Piece> Pieces(const std::string& text) {
         }
         Piece p;
         p.bytes = text.substr(i, n);
-        p.cells = Cells(cp);
+        p.cells = CoopTextFit::Half(cp);   // (half-letters: the native list's own measure, coop_text_fit.h)
         p.space = cp == ' ';
         p.stops = Stops(cp);
         out.push_back(std::move(p));
@@ -192,9 +190,11 @@ std::vector<Piece> Pieces(const std::string& text) {
     return out;
 }
 
-// A row takes about 85 cells at the menu's usual scale (a line of 44 Chinese
-// characters before the "…"); 76 keeps a margin for a larger UI scale.
-constexpr std::size_t kNoteCells = 76;
+// A note's line is a line of the - page's list with no value (row 139, ui-fit-139-2): CoopPauseTab cuts it to
+// kNoteLetters letters of width and bytes (CoopTextFit::Fit), so a line is broken here within both, never cut there.
+// (0.11.10 broke at 76 cells, the Insert menu's ImGui row, and the native list then cut each line at 30 letters.)
+constexpr std::size_t kNoteCells = 2 * kNoteLetters;   // half-letters
+constexpr std::size_t kNoteBytes = kNoteLetters;
 
 }  // namespace
 
@@ -206,14 +206,18 @@ std::vector<std::string> NoteLines(const std::string& text) {
         std::vector<Piece> left = Pieces(text.substr(start, nl == std::string::npos ? std::string::npos : nl - start));
         while (!left.empty()) {
             std::size_t cells = 0;
+            std::size_t bytes = 0;
             std::size_t stop = 0;
             std::size_t space = 0;
             std::size_t take = 0;
             for (; take < left.size(); ++take) {
-                if (cells + static_cast<std::size_t>(left[take].cells) > kNoteCells && take > 0) {
+                if ((cells + static_cast<std::size_t>(left[take].cells) > kNoteCells ||
+                     bytes + left[take].bytes.size() > kNoteBytes) &&
+                    take > 0) {
                     break;
                 }
                 cells += static_cast<std::size_t>(left[take].cells);
+                bytes += left[take].bytes.size();
                 if (left[take].stops) stop = take + 1;
                 if (left[take].space) space = take + 1;
             }
@@ -275,9 +279,12 @@ std::vector<Tab::Line> Tab::Lines() const {
     std::vector<Line> out;
     if (src_.loader == nullptr) return out;
     const std::vector<CoopMods::Row> rows = src_.loader->Rows();
-    const auto note = [&](std::string text) {
+    // (`own`: a mod's own words, or text already in the player's language: shown as they are, never looked up. The kit's
+    // own mod, the randomizer, is the one whose words are in the table.)
+    const auto note = [&](std::string text, bool own = false) {
         Line l;
         l.row = Make(std::move(text), "", RowKind::kNote);
+        l.row.own_name = own;
         l.act = Act::kNote;
         out.push_back(std::move(l));
     };
@@ -299,6 +306,7 @@ std::vector<Tab::Line> Tab::Lines() const {
         }
         for (const CoopMods::Row& m : rows) {
             Line l;
+            const bool kit = m.id == CoopRando::kId;   // (the others' title, version and text are the mod author's own)
             if (m.id == CoopRando::kId) {
                 // The randomizer's row is its name and a Settings button: its own switch ("Randomizer") is on its
                 // page, so an Off / On here (the mod's) would read as the randomizer's.
@@ -306,6 +314,7 @@ std::vector<Tab::Line> Tab::Lines() const {
             } else {
                 l.row = Make(m.title + (m.version.empty() || m.version == "0" ? "" : " " + m.version), "",
                              RowKind::kToggle);
+                l.row.own_name = !kit;
                 l.row.on = m.on;
                 l.row.fixed = !m.can_switch;
             }
@@ -313,6 +322,7 @@ std::vector<Tab::Line> Tab::Lines() const {
             l.name = m.name;
             l.help = m.description;
             if (!m.note.empty()) l.help += (l.help.empty() ? "" : "\n") + m.note;
+            l.own_help = !kit;
             out.push_back(std::move(l));
         }
         return out;
@@ -323,24 +333,28 @@ std::vector<Tab::Line> Tab::Lines() const {
         return out;
     }
     const CoopMods::Row& m = *it;
+    // (only the kit's own mod, the randomizer, has its words in the table; every other mod's title, description, author,
+    // note and settings are its author's own text, shown as they are: a mod called "Swords" is not 剑)
+    const bool kit = m.id == CoopRando::kId;
     Line head;
     head.row = Make(m.title, "", RowKind::kHeading);
+    head.row.own_name = !kit;
     out.push_back(head);
     if (!m.description.empty()) {
-        for (const std::string& line : NoteLines(m.description)) note(line);
+        for (const std::string& line : NoteLines(m.description)) note(line, !kit);
     }
     if (!m.author.empty()) {
         // The table's words around the author and the version, and the author's own
         // text through it too (the kit's randomizer writes a sentence there, which
         // the table has; a mod's own name is not in it and stays as it is).
-        std::string by = CoopI18n::Tr("By") + " " + CoopI18n::Tr(m.author);
+        std::string by = CoopI18n::Tr("By") + " " + (kit ? CoopI18n::Tr(m.author) : m.author);
         if (!m.version.empty()) {
             by += CoopI18n::Tr(", version") + " " + m.version;
         }
-        note(std::move(by));
+        note(std::move(by), true);   // (the words around the author are in the player's language, the author's are its own)
     }
     if (!m.note.empty()) {
-        for (const std::string& line : NoteLines(m.note)) note(line);
+        for (const std::string& line : NoteLines(m.note)) note(line, !kit);
     }
     if (m.id == CoopRando::kId && src_.rando) {
         if (std::string r = src_.rando(); !r.empty()) note("Randomizer: " + r);
@@ -351,6 +365,7 @@ std::vector<Tab::Line> Tab::Lines() const {
     on.row.fixed = !m.can_switch;
     on.act = Act::kOn;
     on.help = m.can_switch ? "Off: the game leaves this mod out from its next start." : m.note;
+    on.own_help = !m.can_switch && !kit;   // (a mod's note)
     out.push_back(on);
     for (const auto& [act, name, help] :
          {std::tuple{Act::kUp, "Move up", "Up: it wins a file it shares with the mods under it."},
@@ -400,14 +415,18 @@ std::vector<Tab::Line> Tab::Lines() const {
             break;
         }
         case CoopMods::SettingType::Text:
-            l.row = Make(caption, s.value.empty() ? "(empty)" : EndsShown(s.value), RowKind::kAction);
+            l.row = Make(caption, s.value.empty() ? CoopI18n::Tr("(empty)") : EndsShown(s.value), RowKind::kAction);
             break;
         }
         l.row.fixed = s.locked;
+        // (a setting of another mod: its caption, choice words and text are its author's own, shown as they are)
+        l.row.own_name = !kit;
+        l.row.own_value = !kit || s.setting.type == CoopMods::SettingType::Text;
         // The setting's own help and the restart note are two lines of the table,
         // put together here: the joined paragraph ("... (for it). Counts after a
         // restart.") is not a line of any table, so it would stay English.
         l.help = s.locked ? CoopI18n::Tr("In this co-op game the host sets this.") : s.setting.help;
+        l.own_help = !kit && !s.locked;
         if (s.setting.restart) {
             l.help += (l.help.empty() ? "" : " ") + CoopI18n::Tr("Counts after a restart.");
         }
@@ -683,25 +702,28 @@ CoopPauseMenu::View Tab::view() const {
     if (selected_ < lines.size() && Selectable(lines[selected_])) {
         v.selected = static_cast<int>(selected_);
         const Line& l = lines[selected_];
-        v.help_title = l.row.name;
-        v.help = l.help;
+        // (a mod's title, caption and help are its author's own text: not looked up in the table)
+        v.help_title = l.row.own_name ? l.row.name : CoopI18n::Tr(l.row.name);
+        v.help = l.own_help ? l.help : CoopI18n::Tr(l.help);
         if (typing_) {
             v.rows[selected_].value = TailShown(typed_) + "_";   // (the end: where the next character goes)
             v.typing = true;
-            v.help = "Type or Ctrl+V, then Enter. Esc: as it was.";   // (a line of the translation table: keep it whole)
-            v.hint = std::to_string(CharStarts(typed_).size()) + " characters (" + std::to_string(typed_.size()) +
-                     " of " + std::to_string(MaxLength(l.name)) + " bytes)";
+            v.help = CoopI18n::Tr("Type or Ctrl+V, then Enter. Esc: as it was.");   // (a line of the table: keep it whole)
+            // (the module's split shape reads "12 characters (34 of 64 bytes)" whole)
+            v.hint = CoopI18n::Tr(std::to_string(CharStarts(typed_).size()) + " characters (" +
+                                  std::to_string(typed_.size()) + " of " + std::to_string(MaxLength(l.name)) +
+                                  " bytes)");
         }
     }
     if (!note_.empty()) {
         v.gold = note_;
     } else if (src_.loader != nullptr && src_.loader->RestartNeeded().needed) {
-        v.gold = "Restart the game to use the changes.";
+        v.gold = CoopI18n::Tr("Restart the game to use the changes.");
     }
     const bool on_text = !typing_ && selected_ < lines.size() && IsText(lines[selected_]) && !lines[selected_].row.fixed;
-    v.change = typing_ ? "" : on_text ? "Paste" : "Switch";
-    v.confirm = typing_ ? "Done" : mod_.empty() ? "Open" : "Choose";
-    v.back = mod_.empty() && !typing_ ? "Close" : "Back";
+    v.change = typing_ ? "" : CoopI18n::Tr(on_text ? "Paste" : "Switch");
+    v.confirm = typing_ ? CoopI18n::Tr("Done") : CoopI18n::Tr(mod_.empty() ? "Open" : "Choose");
+    v.back = CoopI18n::Tr(mod_.empty() && !typing_ ? "Close" : "Back");
     return v;
 }
 

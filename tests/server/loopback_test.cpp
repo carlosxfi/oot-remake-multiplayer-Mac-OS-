@@ -3,6 +3,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -16,6 +17,7 @@
 
 #include <enet/enet.h>
 
+#include "coop/net/enet_waiting.hpp"
 #include "coop/protocol/codec.hpp"
 #include "coop/protocol/join_password.hpp"
 #include "coop/protocol/traffic_crypto.hpp"
@@ -817,6 +819,7 @@ namespace {
 HostServiceConfig service_config(std::vector<std::string>* log) {
   HostServiceConfig config;
   config.port = 0;  // any free port
+  config.bind = 0x7F000001u;  // 127.0.0.1 only: a test listens on no other address
   config.session.join_password = kTestPassword;
   if (log != nullptr) config.log = [log](const std::string& line) { log->push_back(line); };
   return config;
@@ -853,7 +856,7 @@ TEST_CASE("host service: a player joins with the password, the status counts the
   REQUIRE(port != 0);
   CHECK(service.status().state == HostState::kHosting);
   CHECK(service.status().port == port);
-  CHECK(said(log, "listening on port " + std::to_string(port) + " (all network adapters"));
+  CHECK(said(log, "listening on port " + std::to_string(port) + " (only 127.0.0.1"));
   CHECK(said(log, "players must give the join password to join; the traffic is encrypted"));
 
   Client a;
@@ -1195,4 +1198,120 @@ TEST_CASE("host service: with approve_joins it says so at the start, holds a joi
 
   service.stop();
   CHECK(said(log, "host approval: asked 1, let in 0, turned away 0, no answer 0, in without asking 0"));
+}
+
+TEST_CASE("loopback: what waits for a player that stops reading is counted, and goes when it reads again (row 260)") {
+  EnetLife enet;
+  ServerOptions options = server_options();
+  EnetServer server(options);
+  REQUIRE(server.start());
+  const std::uint16_t port = server.port();
+  Client a;
+  Client b;
+  a.connect(port);
+  REQUIRE(pump_until(server, {&a}, [&] { return a.connected; }));
+  a.send(hello_from("Link"), kChannelSession);
+  REQUIRE(pump_until(server, {&a}, [&] { return a.find<Welcome>() != nullptr; }));
+  b.connect(port);
+  REQUIRE(pump_until(server, {&a, &b}, [&] { return b.connected; }));
+  b.send(hello_from("Zelda"), kChannelSession);
+  REQUIRE(pump_until(server, {&a, &b}, [&] { return b.find<Welcome>() != nullptr; }));
+  CHECK(server.queues().peers == 2);
+
+  // b stops reading (its game hangs): what the server relays to it reliably waits, unacknowledged.
+  for (int i = 0; i < 20; ++i) a.send(Chat{0, "line " + std::to_string(i)}, kChannelSession);
+  REQUIRE(pump_until(server, {&a}, [&] { return server.queues().largest_outgoing > 200; }));
+  const std::size_t held = server.queues().largest_outgoing;
+  CHECK(server.queues().backlog_drops == 0);   // far under kMaxOutgoingBytes: b stays in
+
+  // b reads again: the chat comes through and the backlog goes.
+  REQUIRE(pump_until(server, {&a, &b}, [&] {
+    const auto chats = std::count_if(b.inbox.begin(), b.inbox.end(), [](const Received& r) {
+      return std::holds_alternative<Chat>(r.message);
+    });
+    return chats == 20 && server.queues().largest_outgoing < held;
+  }));
+  CHECK(server.queues().backlog_drops == 0);
+  CHECK(server.session().player_count() == 2);
+}
+
+TEST_CASE("loopback: the largest save in flight to a player that is not reading never stops the puppets (row 260)") {
+  EnetLife enet;
+  ServerOptions options = server_options();
+  EnetServer server(options);
+  REQUIRE(server.start());
+  const std::uint16_t port = server.port();
+  Client a;   // the host (the first player in)
+  Client b;
+  a.connect(port);
+  REQUIRE(pump_until(server, {&a}, [&] { return a.connected; }));
+  a.send(hello_from("Link"), kChannelSession);
+  REQUIRE(pump_until(server, {&a}, [&] { return a.find<Welcome>() != nullptr; }));
+  b.connect(port);
+  REQUIRE(pump_until(server, {&a, &b}, [&] { return b.connected; }));
+  b.send(hello_from("Zelda"), kChannelSession);
+  REQUIRE(pump_until(server, {&a, &b}, [&] { return b.find<Welcome>() != nullptr; }));
+
+  // b stops reading while the host sends it a save of kMaxSaveBytes (every part, at once).
+  for (std::uint16_t i = 0; i < kMaxSaveParts; ++i) {
+    SavePart part;
+    part.to_player = 2;
+    part.transfer_id = 7;
+    part.total_size = kMaxSaveBytes;
+    part.count = kMaxSaveParts;
+    part.index = i;
+    part.data.assign(save_part_size(kMaxSaveBytes, i), static_cast<std::uint8_t>(i));
+    a.send(part, kChannelSession);
+  }
+  REQUIRE(pump_until(server, {&a}, [&] { return server.session().stats().save_parts == kMaxSaveParts; }));
+  const auto settle = [&] {   // (a few rounds without b: what can go to it went)
+    for (int round = 0; round < 100; ++round) {
+      server.service(1);
+      a.pump();
+    }
+  };
+  settle();
+  CHECK(server.queues().largest_outgoing >= kMaxSaveBytes / 2);
+  CHECK(server.queues().largest_outgoing < coop::net::kSlowPeerBytes);
+
+  // A pose of the host's (unreliable) is still queued to b, and reaches it once it reads.
+  PlayerSample sample;
+  sample.time = {2000, 1};
+  sample.position = Vec3{1.0f, 2.0f, 3.0f};
+  a.send(sample, kChannelPlayerSamples);
+  settle();
+  CHECK(server.queues().unreliable_skipped == 0);
+  CHECK(server.queues().backlog_drops == 0);
+  // (ENet's resends to b have backed off while it did not read: up to a few seconds)
+  const auto all_parts = [&] {
+    return std::count_if(b.inbox.begin(), b.inbox.end(), [](const Received& r) {
+             return std::holds_alternative<SavePart>(r.message);
+           }) == kMaxSaveParts;
+  };
+  bool got = false;
+  for (int tries = 0; tries < 4 && !got; ++tries) got = pump_until(server, {&a, &b}, all_parts);
+  CHECK(got);
+  CHECK(server.session().player_count() == 2);
+}
+
+TEST_CASE("session: sizes of an empty session are all 0, and the host's memory line names each (row 260)") {
+  Session session;
+  const Session::Sizes sizes = session.sizes();
+  CHECK(sizes.connections == 0);
+  CHECK(sizes.deferred == 0);
+  CHECK(sizes.deferred_bytes == 0);
+  CHECK(sizes.objects == 0);
+  CHECK(sizes.flags == 0);
+  CHECK(sizes.world_entries == 0);
+  CHECK(sizes.actions == 0);
+  Session::Sizes s;
+  s.connections = 2, s.deferred = 3, s.deferred_bytes = 4096, s.objects = 17, s.present = 30, s.flags = 900;
+  s.dead = 5, s.grass = 6, s.world_scenes = 1, s.world_entries = 8, s.actions = 0;
+  EnetServer::Queues q;
+  q.peers = 2, q.outgoing_bytes = 2048, q.largest_outgoing = 1500, q.waiting_bytes = 64, q.unreliable_skipped = 9;
+  q.backlog_drops = 1;
+  const std::string line = host_memory_line(s, q);
+  CHECK(line == "server: 2 connections, deferred 3 (4096 B), objects 17 (listed 30), flags 900, dead 5, grass 6, "
+                "world 8 in 1 scenes, actions 0; enet: 2 peers, out 2048 B (largest 1500), in 64 B, unreliable not "
+                "queued 9, dropped for backlog 1");
 }

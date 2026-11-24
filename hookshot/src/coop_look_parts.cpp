@@ -58,7 +58,9 @@ const std::vector<GearTexture>& Gear() {
 namespace {
 // The parts the gear wardrobe paints (the tunic and the Cap trim are the tunic wardrobe's; the eyes are no texture:
 // the model's own parameter, CoopCharColours).
-bool IsGear(Part p) { return p != Part::tunic && p != Part::cap_trim && p != Part::eyes && p != Part::hair; }
+bool IsGear(Part p) {
+    return p != Part::tunic && p != Part::cap_trim && p != Part::eyes && p != Part::hair && !CoopLook::IsCharacterPart(p);
+}
 }  // namespace
 
 bool AnyGear(const CoopLook::Look& look) {

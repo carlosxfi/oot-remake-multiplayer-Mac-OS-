@@ -118,6 +118,10 @@ void CarriedPose(std::optional<coop::host::PlayerReading>& reading) {
     reading->animation = CarriedAnimation();
 }
 
+bool Carried() {
+    return On() && TheGlue().carried.load(std::memory_order_relaxed);
+}
+
 bool OurInputOff() {
     return On() && InputOffFresh(TheGlue().input_off_us.load(std::memory_order_relaxed), SteadyUs());
 }

@@ -530,6 +530,26 @@ TEST_CASE("Same network and VPN: two rows, the VPN found by its card's name") {
     const auto no_vpn = VpnLines({}, 27510, "pw", false);
     CHECK(no_vpn[0] == "No VPN found.");
     CHECK(HomeLines({}, 27510, "pw", false)[0].find("No home-network address") != std::string::npos);
+    // Row 251: a host that lets its own network in without the password (the default) gives a private address's
+    // line without it, as its server takes them; a VPN's public range (Radmin VPN, Hamachi) or Tailscale's still
+    // carries it.
+    const auto open_home = HomeLines(split.home, 27510, "pw", true, true);
+    CHECK(open_home[0] == "Friends on your home network paste this line in Join (no password needed):");
+    CHECK(open_home[1] == "192.168.1.20:27510");
+    const auto open_vpn = VpnLines(split.vpn, 27510, "pw", false, true);
+    CHECK(open_vpn[1] == "10.147.17.5:27510");   // (ZeroTier's private range: the server lets it in by address)
+    const auto radmin = VpnLines({{"26.12.34.56", "Radmin VPN"}}, 27510, "pw", false, true);
+    CHECK(radmin[0].find("(address and password)") != std::string::npos);
+    CHECK(radmin[1] == "26.12.34.56:27510 pw");
+    CHECK(LanLinePassword("192.168.1.20", "pw", true).empty());
+    CHECK(LanLinePassword("172.16.0.1", "pw", true).empty());
+    CHECK(LanLinePassword("169.254.3.4", "pw", true).empty());
+    CHECK(LanLinePassword("192.168.1.20", "pw", false) == "pw");   // (the host keeps the password for its network)
+    CHECK(LanLinePassword("100.100.1.2", "pw", true) == "pw");     // (Tailscale)
+    CHECK(LanLinePassword("25.1.2.3", "pw", true) == "pw");        // (Hamachi)
+    CHECK(LanLinePassword("127.0.0.1", "pw", true) == "pw");       // (the server never takes the key from there)
+    CHECK(LanLinePassword("172.32.0.1", "pw", true) == "pw");
+    CHECK(LanLinePassword("not an address", "pw", true) == "pw");
     CHECK(HostHeadline(true) ==
           "Invite code copied to your clipboard. Share it in DMs only: it contains your internet address.");
 }

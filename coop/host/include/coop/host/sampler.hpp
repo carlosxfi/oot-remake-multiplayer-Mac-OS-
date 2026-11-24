@@ -9,6 +9,8 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "coop/host/outgoing.hpp"
@@ -62,6 +64,41 @@ inline std::uint64_t frame_aligned_us(std::uint64_t server_now_us, std::uint64_t
 //   world (a talk's choices are a menu inside an event: the world runs on);
 // - dead: our Link's life at 0 (PlayerReading::dead); unknown keeps the bit.
 std::uint8_t status_bits(std::uint8_t previous, const std::optional<PlayerReading>& reading, bool title_up);
+
+// Our world stands still with no game menu in front (row 164 follow-up): the quick-switch item menu stops the world
+// as the pause menu does, but patch 0018's menu state does not name it (it is no screen with a focused button), so a
+// player there was "playing" to every away rule: a lift they led held the others, a boss they owned stood still on
+// every screen. Read from the game itself: our Link's main animation (its AS slot 0) at a rate other than 0 whose frame
+// and place do not move for kStillUs while no event runs. Any change, or an animation at rate 0 (a pose held on
+// purpose), is a running world. One per game, fed every reading.
+// LICHII_COOP_STILL's value: WorldStill feeds `paused` only when it is "1" (pr-navi-01112: opt-in, off by default;
+// a held animation frame is no paused world: aiming, a ledge, a ladder, ice, a Like-Like's hold, a shock).
+inline bool world_still_on(const char* value) { return value != nullptr && std::string_view(value) == "1"; }
+
+class WorldStill {
+ public:
+  static constexpr std::uint64_t kStillUs = 300'000;  // 0.3 s: a held animation frame for that long is no game frame
+  static constexpr float kFrameEpsilon = 1e-3f;      // AS frames
+  static constexpr float kPlaceEpsilon = 1e-3f;      // metres
+
+  // This reading at `now_us`; true while our world stands still.
+  bool step(const PlayerReading& reading, std::uint64_t now_us) {
+    return step(reading.animation ? &*reading.animation : nullptr, reading.position,
+                reading.event_running.value_or(false), now_us);
+  }
+  // The same from its parts: `animation` null is not judged (none read, or not the game's own: a carried Link's
+  // reading plays the carried pose, CoopLiftPlayerGame::CarriedPose, held at one frame while its carrier stands).
+  bool step(const protocol::Animation* animation, const Vec3& position, bool event, std::uint64_t now_us);
+  bool still() const { return still_; }
+
+ private:
+  bool seen_ = false;
+  bool still_ = false;
+  std::string name_;
+  float frame_ = 0.0f;
+  Vec3 place_{};
+  std::uint64_t changed_us_ = 0;
+};
 
 class Sampler {
  public:

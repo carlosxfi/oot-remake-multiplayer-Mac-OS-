@@ -261,6 +261,7 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
     }
     Apply(now_us);
     flights_.clear();
+    turns_.clear();
     made_up_.clear();
     doom_.clear();
     decided_.clear();
@@ -381,7 +382,20 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
             if (bounced) {
                 ++m.bounces;
             }
-            m.far = std::max(m.far, Distance(m.position, m.made_position));
+            if (const float d = Distance(m.position, m.made_position); d > m.far) {
+                m.far = d;
+                m.far_at = m.position;
+                m.far_stood = 0;
+            } else if (dt > 0.0) {
+                ++m.far_stood;
+                // Row 164 follow-up: a boomerang or hookshot turned (came back, or its tip stood in what it hit or
+                // held): its hit for a boss copy now, while the copy's skipped stun is still within its look-back.
+                if (!m.turn_seen && !m.made_up && m.far >= kReturnShotMinFarM && IsReturnShot(m.name) &&
+                    (m.far - d >= kReturnShotTurnM || m.far_stood >= kReturnShotStoodSteps)) {
+                    m.turn_seen = true;
+                    turns_.push_back(m.far_at);
+                }
+            }
             m.seen_at = now_us;
             m.missed = 0;
             m.animation = s.animation;
@@ -577,7 +591,7 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         out.position = m.made_up ? ShotPlace(m, now_us) : m.position;
         send.emplace_back(out);
         flights_.push_back({m.id, m.name, lived, m.far, m.top_speed, out.reason,
-                            m.shot_at.has_value(), m.made_up, m.bounces});
+                            m.shot_at.has_value(), m.made_up, m.bounces, m.far_at, m.turn_seen});
         it = mine_.erase(it);
     }
     // Addresses the game may give to a new actor later.
@@ -2166,6 +2180,11 @@ public:
             LOG_INFO(Core, "coop: shots: bomb copy blown on the owner's fuse ({} so far)",
                      logged_blown_);
         }
+        // Row 164 follow-up: our boomerang's or hookshot's turn, read on the walk it happened (its hit or hold), so a
+        // boss copy there still has its skipped stun within its look-back (coop_boss_native.h kLookBackSteps).
+        for (const auto& at : sync_.ReturnTurns()) {
+            CoopBossNative::TheTable().NoteOwnShotEnd(at);
+        }
         for (const auto& f : sync_.Flights()) {
             LOG_INFO(Core,
                      "coop: shots: our {} #{:#x} gone (reason {}) after {} ms: went {:.2f} m from "
@@ -2173,6 +2192,15 @@ public:
                      f.name, f.id.value, static_cast<int>(f.reason), f.lived_us / 1000, f.far,
                      f.top_speed,
                      f.made_up ? ", shot (flight made up)" : f.shot ? ", shot" : "", f.bounces);
+            // Row 164 follow-up (the audit's stun gap): the boomerang and the hookshot come back, so they never end
+            // at what they hit. Their turn (the farthest point) is where they hit or held: a boss copy within reach
+            // of it takes it as our hit, as a seed's end (Barinade's stem and jellyfish, Morpha's nucleus, the Flare
+            // Dancer's core; coop_boss_native.h NoteOwnShotEnd).
+            // Read while it flew (ReturnTurns, below the walk); here only one that went before its turn was read
+            // (gone at its farthest point: held in place, or lost).
+            if (!f.made_up && !f.turn_seen && f.far >= kReturnShotMinFarM && IsReturnShot(f.name)) {
+                CoopBossNative::TheTable().NoteOwnShotEnd(f.far_at);
+            }
             // PvP (coop_pvp_game.h): a shot that hit something or went off, where
             // its remove says it ended, may have reached another player's Link.
             const auto* info = CoopProjectiles::Find(f.name);

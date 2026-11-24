@@ -1,4 +1,4 @@
-From c5ac7fded0f61dfbc760426fec5126f61c6c3c64 Mon Sep 17 00:00:00 2001
+From 14536771bbbc08170e3a01b8d151eadde56efb84 Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Fri, 13 Nov 2026 00:40:00 -0900
 Subject: [PATCH] Co-op boss wraps: a BSA component's brain and action verbs to
@@ -21,7 +21,7 @@ machinery, the checks (build id, first words) and the hello's bits are 0005's.
 
 diff --git a/host/hos_coop_bosses.h b/host/hos_coop_bosses.h
 new file mode 100644
-index 0000000..dc48c75
+index 00000000..dc48c75d
 --- /dev/null
 +++ b/host/hos_coop_bosses.h
 @@ -0,0 +1,23 @@
@@ -49,7 +49,7 @@ index 0000000..dc48c75
 +
 +#endif
 diff --git a/nx2/coop_world_wraps.py b/nx2/coop_world_wraps.py
-index 8877d6c..03c7d91 100644
+index 8877d6cd..03c7d916 100644
 --- a/nx2/coop_world_wraps.py
 +++ b/nx2/coop_world_wraps.py
 @@ -24,6 +24,14 @@ WRAPS = (

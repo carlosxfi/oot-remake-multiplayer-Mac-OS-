@@ -114,10 +114,10 @@ std::string Quote(const std::string& arg) {
 // coop_mod_library.cpp). A preset the installed OOTRR cannot build is not offered, so
 // its line is left out here and the table's line for it is simply unused.
 std::string PresetNames(const std::string& value) {
-    static constexpr const char* kValues[] = {"default", "easy", "open_world", "keysanity", "full_shuffle"};
-    static constexpr const char* kNames[] = {"Default", "Easy", "Open world", "Keysanity", "Full shuffle"};
-    static constexpr const char* kNamesHans[] = {"默认", "简单", "开放世界", "钥匙乱序", "完全乱序"};
-    static constexpr const char* kNamesHant[] = {"預設", "簡單", "開放世界", "鑰匙亂序", "完全亂序"};
+    static constexpr const char* kValues[] = {"default", "easy", "open_world", "keysanity", "full_shuffle", "open", "open_fast"};
+    static constexpr const char* kNames[] = {"Default", "Easy", "Open world", "Keysanity", "Full shuffle", "Open areas", "Open areas, fast fortress"};
+    static constexpr const char* kNamesHans[] = {"默认", "简单", "开放世界", "钥匙乱序", "完全乱序", "区域全开", "区域全开（速通要塞）"};
+    static constexpr const char* kNamesHant[] = {"預設", "簡單", "開放世界", "鑰匙亂序", "完全亂序", "區域全開", "區域全開（速通要塞）"};
     for (std::size_t i = 0; i < sizeof kValues / sizeof kValues[0]; ++i) {
         if (value == kValues[i]) {
             std::string out = "{\"value\": \"" + value + "\", \"name\": \"" + kNames[i];
@@ -380,7 +380,8 @@ Plan Decide(const Want& want, const std::vector<Built>& built, const std::vector
 
 std::vector<std::string> GenerateArgs(const std::string& preset, const std::string& seed, const fs::path& seed_file,
                                       const fs::path& spoiler) {
-    std::vector<std::string> args = {"generate", preset.empty() ? "default" : preset, SeedWord(seed),
+    const std::string own = OwnPresetString(preset);
+    std::vector<std::string> args = {"generate", !own.empty() ? own : preset.empty() ? "default" : preset, SeedWord(seed),
                                      CoopMods::ToUtf8(seed_file)};
     if (!spoiler.empty()) {
         args.push_back("--spoiler");
@@ -533,7 +534,42 @@ bool ParseHandSeed(std::string_view value, std::string* hash, std::string* folde
     return true;
 }
 
-std::string SeedFilesHash(const fs::path& folder, const std::function<bool()>* stop) {
+namespace {
+// The mod's own copy of a file merge_tables.py rewrote in the mod (size table, actor rows, saved values, archive), kept
+// beside with a stamp whose second line `out <file path under the mods folder> <length> <FNV-1a 64>` names the file it
+// wrote. The kept copy counts only while that line names the file now: a seed built again in the same folder leaves the
+// old copy and stamp behind, and the new file is the seed. A `prev <file path> <length> <FNV-1a 64>` line (after `out`)
+// names the file the stamp replaced when that was the kit's own earlier output; a merge that stopped after its stamp
+// leaves that file live and `out` naming one never written, so either line counts. Same rule as merge_tables.py
+// stamp_names. Empty path: use the file itself.
+fs::path KeptCopy(const fs::path& folder, const fs::path& live, const fs::path& kept, const fs::path& stamp) {
+    std::error_code ec;
+    if (!fs::is_regular_file(kept, ec)) return {};
+    std::ifstream in(stamp, std::ios::binary);
+    std::string head, line;
+    if (!in || !std::getline(in, head)) return {};
+    std::vector<std::string> lines;  // the stamp's lines after the head, `out` first
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        lines.push_back(line);
+    }
+    if (lines.empty()) return {};
+    const std::string now = TablesStamp(folder.parent_path(), {live});  // "coop-tables 1\n<path> <length> <hash>\n"
+    const std::size_t at = now.find('\n');
+    const std::size_t end = now.find('\n', at + 1);
+    if (at == std::string::npos || end == std::string::npos) return {};
+    const std::string file = now.substr(at + 1, end - at - 1);
+    if (lines[0] == "out " + file) return kept;
+    for (std::size_t i = 1; i < lines.size(); ++i) {
+        if (lines[i] == "prev " + file) return kept;
+    }
+    return {};
+}
+}  // namespace
+
+std::string SeedFilesHash(const fs::path& folder_in, const std::function<bool()>* stop) {
+    fs::path folder = folder_in;
+    if (!folder.has_filename()) folder = folder.parent_path();  // (a trailing separator)
     // path (lower case, '/') -> the file whose bytes stand for it
     std::vector<std::pair<std::string, fs::path>> files;
     std::error_code ec;
@@ -548,17 +584,25 @@ std::string SeedFilesHash(const fs::path& folder, const std::function<bool()>* s
         fs::path from = it->path();
         // The kit's start rewrites these in the mod whose tables win and keeps the mod's own beside (merge_tables.py).
         const fs::path name = it->path().filename();
+        // Each only while its stamp names the file now (KeptCopy). The size table's stamp is one for the mod, the others'
+        // are `<kept file>.txt`.
+        const auto per_file = [&](const fs::path& kept) {
+            fs::path stamp = kept;
+            return KeptCopy(folder, it->path(), kept, stamp += ".txt");
+        };
+        fs::path kept_copy;
         if (rel.rfind("system/resource/", 0) == 0 && rel.find('/', 16) == std::string::npos &&
-            fs::is_regular_file(folder / "_coop-size-table" / name, ec)) {
-            from = folder / "_coop-size-table" / name;
+            !(kept_copy = KeptCopy(folder, it->path(), folder / "_coop-size-table" / name,
+                                   folder / "_coop-size-table" / "merged.txt")).empty()) {
+            from = kept_copy;
         } else if (rel.rfind("rsdb/", 0) == 0 && rel.find('/', 5) == std::string::npos &&
-                   fs::is_regular_file(folder / "_coop-rows" / name, ec)) {
-            from = folder / "_coop-rows" / name;
+                   !(kept_copy = per_file(folder / "_coop-rows" / name)).empty()) {
+            from = kept_copy;
         } else if (rel.rfind("gamedata/", 0) == 0 && rel.find('/', 9) == std::string::npos &&
-                   fs::is_regular_file(folder / "_coop-gamedata" / name, ec)) {
-            from = folder / "_coop-gamedata" / name;  // (player report 206: other mods' saved values merged in)
-        } else if (fs::is_regular_file(folder / "_coop-archives" / rel_path, ec)) {
-            from = folder / "_coop-archives" / rel_path;  // (the pack's or another mod's archive members merged in)
+                   !(kept_copy = per_file(folder / "_coop-gamedata" / name)).empty()) {
+            from = kept_copy;  // (player report 206: other mods' saved values merged in)
+        } else if (!(kept_copy = per_file(folder / "_coop-archives" / rel_path)).empty()) {
+            from = kept_copy;  // (the pack's or another mod's archive members merged in)
         }
         ec.clear();
         files.emplace_back(std::move(rel), std::move(from));

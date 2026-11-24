@@ -2,11 +2,13 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <map>
 #include <string>
+#include <thread>
 
 #include "coop_boss_native.h"
 
@@ -240,6 +242,123 @@ TEST_CASE("native boss: the request block is asked again for a new game, not for
     REQUIRE(c);
     CHECK(c->function == kMain + 0x100000 + addr::kMalloc);
     CHECK(addr::kActionTaken == 0);  // (a skipped request answers as a taken one: hookshot's wrap 5)
+}
+
+TEST_CASE("native boss (probe 3 f-19): the wraps wait for a busy table, never let a copy's own change run") {
+    // The walk's Publish, Receive and our caller's Step hold the table on other threads. A wrap that gave up on a
+    // busy table let the copy's own AI ask run (Twinrova's copy left the owner's fire attack for its own Fly_Start)
+    // and left an owner's change unsent.
+    Table copy;
+    copy.SetOn(true, true);
+    copy.Publish({Gohma(Role::copy)});
+    copy.Receive(kActor, BossBsa{1, 4, std::nullopt, {}});
+    Table owner;
+    owner.SetOn(true, true);
+    owner.Publish({Gohma(Role::owner)});
+    std::atomic<bool> done{false};
+    std::thread other([&] {
+        std::uint32_t seq = 2;
+        while (!done.load()) {
+            copy.Receive(kActor, BossBsa{seq++, 4, std::nullopt, {}});
+            (void)copy.Totals();
+            (void)owner.Totals();
+        }
+    });
+    constexpr int kAsks = 2000;
+    int copy_ran = 0, owner_skipped = 0;
+    for (int i = 0; i < kAsks; ++i) {
+        copy_ran += copy.OnActionVerb(kBsa, GameRequest(12, kNode), i == 0, false) ? 0 : 1;
+        copy_ran += copy.OnBrainVerb(kBsa, 2, false, false) ? 0 : 1;
+        copy_ran += copy.CopyMakes("Enemy_DungeonBoss_Gohma") ? 0 : 1;
+        owner_skipped += owner.OnActionVerb(kBsa, GameRequest(12, kNode), i == 0, false) ? 1 : 0;
+    }
+    done = true;
+    other.join();
+    CHECK(copy_ran == 0);  // every own change of the copy skipped, every own minion stopped
+    CHECK(owner_skipped == 0);
+    CHECK(copy.Totals().copy_skipped == 2u * kAsks);
+    CHECK(owner.Totals().owner_action == static_cast<std::uint64_t>(kAsks));  // every owner's ask kept to send
+}
+
+TEST_CASE("native boss: a boss body dead before its outro runs its own death on a copy (Twinrova's sisters)") {
+    // Probe 3 run 20261123-092928: Koume and Kotake died mid-fight (no outro); their copies' own death flow (which
+    // starts the fusion event) was skipped, so neither game fused.
+    Table t;
+    t.SetOn(true, true);
+    Boss koume{kActor, kBsa, Role::copy, "Enemy_DungeonBoss_Koume", 2};
+    t.Publish({koume});
+    t.Receive(kActor, BossBsa{1, 4, std::nullopt, {}});
+    CHECK(t.OnActionVerb(kBsa, GameRequest(141, kNode), true, false));  // alive: its own change skipped
+    koume.own_death = PlainDeath(0, true);
+    t.Publish({koume});
+    CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(141, kNode), false, false));  // dead here: its own death runs
+    CHECK_FALSE(t.OnBrainVerb(kBsa, 7, true, false));
+    t.SetDying({});  // (the room's outro list, empty: not the fight's end) keeps it
+    CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(141, kNode), false, false));
+    CHECK(t.Totals().body_deaths == 1);
+    const auto notes = t.TakeNotes();
+    CHECK(std::any_of(notes.begin(), notes.end(), [](const std::string& n) { return n.find("dead here") != n.npos; }));
+    // Back from life 0 (a part that grows back): the owner's verbs again, after a short own time.
+    koume.own_death = false;
+    t.Publish({koume});
+    CHECK(t.Totals().body_deaths == 1);
+    // A boss we own that dies: nothing changes for the wraps (our game runs it anyway).
+    Table ours;
+    ours.SetOn(true, true);
+    Boss own{kActor, kBsa, Role::owner, "Enemy_DungeonBoss_Koume", 2};
+    own.own_death = true;
+    ours.Publish({own});
+    CHECK_FALSE(ours.OnActionVerb(kBsa, GameRequest(141, kNode), true, false));
+    CHECK(ours.Totals().body_deaths == 0);
+}
+
+TEST_CASE("native boss: a boss body back from its death (a Bongo Bongo hand) takes the owner's verbs and is held again") {
+    constexpr std::uint64_t kLife = 0x7000000;
+    Table t;
+    t.SetOn(true, true);
+    Boss hand{kActor, kBsa, Role::copy, "Enemy_DungeonBoss_BongoBongo_LeftHand", 2, kLife};
+    t.Publish({hand});
+    t.Receive(kActor, BossBsa{1, 4, std::nullopt, {}});
+    CHECK(t.HeldLifeStep(kLife, 3, 5) == 2);  // alive: never dies of our hits
+    hand.owner_dead = true;  // the owner's hand down (its life 0 in the owner's samples)
+    hand.own_death = PlainDeath(0, true);
+    t.Publish({hand});
+    CHECK(t.HeldLifeStep(kLife, 3, 5) == 5);  // released: dies with the owner's
+    CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(9, kNode), true, false));  // its own fall and regrowth run
+    hand.owner_dead = false;  // grown back in the owner's game
+    hand.own_death = PlainDeath(3, false);
+    t.Publish({hand});
+    CHECK(t.HeldLifeStep(kLife, 3, 5) == 2);  // held again, not finished by its next hit
+    CHECK(t.HeldLifeStep(kLife, 3, 1) == 1);
+    // After a short own time (kAfterEventSteps) it takes the owner's verbs again.
+    FakeGuest g;
+    for (std::uint64_t i = 0; i <= Table::kAfterEventSteps; ++i) {
+        (void)t.Step(g, false, 0, kMain);
+    }
+    CHECK(t.OnActionVerb(kBsa, GameRequest(9, kNode), true, false));
+}
+
+TEST_CASE("native boss: every boss and mini-boss body dead here runs its own death on a copy") {
+    for (const char* name : {"Enemy_DungeonBoss_Kotake", "Enemy_DungeonBoss_Gohma", "Enemy_DungeonBoss_Volvagia",
+                             "Enemy_DungeonBoss_Barinade_Jellyfish", "Enemy_MiddleBoss_Stalfos",
+                             "Enemy_MiddleBoss_Lizalfos"}) {
+        CAPTURE(name);
+        Table t;
+        t.SetOn(true, true);
+        Boss b{kActor, kBsa, Role::copy, name, 2};
+        t.Publish({b});
+        t.Receive(kActor, BossBsa{1, 4, std::nullopt, {}});
+        FakeGuest g;
+        for (std::uint64_t i = 0; i <= Table::kStartSteps; ++i) {
+            (void)t.Step(g, false, 0, kMain);  // (a new mini-boss copy runs its own start first)
+        }
+        CHECK(t.OnBrainVerb(kBsa, 9, true, false));
+        b.own_death = PlainDeath(0, false);  // its life 0 read here
+        t.Publish({b});
+        CHECK_FALSE(t.OnBrainVerb(kBsa, 9, true, false));
+        CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(141, kNode), true, false));
+        CHECK(t.Totals().body_deaths == 1);
+    }
 }
 
 TEST_CASE("native boss: a copy boss's own minion is not made, the owner's own is") {
@@ -2286,7 +2405,9 @@ TEST_CASE("native boss (row 190): the game's answer to an owner's move is counte
         t.TakeNotes();
         CHECK_FALSE(t.Step(g, true, answer, kMain));
         const Counts n = t.Totals();
-        CHECK(n.action_applied == 1);  // (as before: the move is not asked again)
+        // A refusal is not asked again; a busy slot (none of ours taken this frame) is, next frame (row 211).
+        CHECK(n.action_applied == (answer == addr::kActionSlotBusy ? 0u : 1u));
+        CHECK(n.action_busy_again == (answer == addr::kActionSlotBusy ? 1u : 0u));
         CHECK(n.action_slot_busy == (answer == addr::kActionSlotBusy ? 1u : 0u));
         CHECK(n.action_refused == (answer == addr::kActionNoSlot ? 1u : 0u));
         bool said = false;
@@ -2294,6 +2415,46 @@ TEST_CASE("native boss (row 190): the game's answer to an owner's move is counte
             said = said || line.find("was not taken by the game (" + std::to_string(answer)) != std::string::npos;
         }
         CHECK(said == (answer != addr::kActionTaken));
+    }
+}
+
+TEST_CASE("native boss (row 211): an owner's move answered busy is asked again next frame, not in the same one, "
+          "at most kBusyAsks times") {
+    // A hand-over's first frame: the copy's own AI asked its slot before the owner's verbs came, so the owner's
+    // first move (Ganondorf's shot, verb 112) was answered 3 and dropped: the copy never fired its own ball.
+    for (const int busy_frames : {1, 3, 4}) {
+        CAPTURE(busy_frames);
+        Table t;
+        t.SetOn(true, true);
+        t.Publish({Gohma(Role::copy)});
+        BossAction a = *ActionFromRequest(GameRequest(11, 0xdead));
+        t.Receive(kActor, BossBsa{1, 2, a, {}});
+        FakeGuest g;
+        const std::int32_t verb = 2;
+        g.Write(kBsa + addr::kBsaBrainVerb, &verb, 4);
+        CHECK(t.OnActionVerb(kBsa, GameRequest(12, kNode), true, false));
+        auto c = t.Step(g, false, 0, kMain);
+        REQUIRE(c);
+        c = t.Step(g, true, kBlock, kMain);  // (the block) -> the move
+        REQUIRE(c);
+        REQUIRE(c->function == kMain + addr::kRequestActionVerb);
+        int asked = 1;
+        for (int frame = 0; frame < 8; ++frame) {
+            const bool busy = frame < busy_frames;
+            // The answer; in the same frame the move is not asked again.
+            CHECK_FALSE(t.Step(g, true, busy ? addr::kActionSlotBusy : addr::kActionTaken, kMain));
+            c = t.Step(g, false, 0, kMain);  // next frame
+            if (!c) {
+                break;
+            }
+            REQUIRE(c->function == kMain + addr::kRequestActionVerb);
+            ++asked;
+        }
+        const Counts n = t.Totals();
+        const int again = std::min(busy_frames, Table::kBusyAsks);
+        CHECK(asked == 1 + again);
+        CHECK(n.action_busy_again == static_cast<std::uint64_t>(again));
+        CHECK(n.action_applied == 1);  // taken once, or given up after kBusyAsks
     }
 }
 
@@ -2327,7 +2488,9 @@ TEST_CASE("native boss: boss turns: a copy made ours between moves resumes, mid-
     CHECK(PlanMadeOurs(true, false, true, true, false) == MadeOurs::resume);  // (its own ask is the same move)
     CHECK(PlanMadeOurs(true, true, true, true, true) == MadeOurs::restart_move);  // mid-attack: row 178
     CHECK(PlanMadeOurs(true, std::nullopt, true, true, true) == MadeOurs::restart_move);  // not read
-    CHECK(PlanMadeOurs(true, false, true, false, true) == MadeOurs::restart_move);  // its own AI is elsewhere
+    CHECK(PlanMadeOurs(true, false, true, false, false) == MadeOurs::rechoose);  // (row 325, no node either)
+    CHECK(PlanMadeOurs(true, true, true, false, true) == MadeOurs::restart_move);  // an attack still starts over
+    CHECK(PlanMadeOurs(true, false, true, false, true) == MadeOurs::rechoose);  // row 325: no attack, its own AI elsewhere
     CHECK(PlanMadeOurs(true, false, false, false, false) == MadeOurs::rechoose);   // row 149
     CHECK(PlanMadeOurs(false, false, true, true, true) == MadeOurs::restart_move);  // turns off: as before
     CHECK(PlanMadeOurs(false, false, false, false, true) == MadeOurs::rechoose);
@@ -2376,6 +2539,48 @@ TEST_CASE("native boss: boss turns: handed to us between moves, its own brain go
         REQUIRE(c);
         CHECK(c->function == kMain + addr::kRequestActionVerb);
         CHECK((g.Get<std::uint16_t>(kBlock + addr::kReqFlags) & addr::kReqStartOver) != 0);
+    }
+}
+
+TEST_CASE("native boss: row 325: made ours mid-move that is no attack: its AI chooses again, nothing started over") {
+    // Run 20261123-043946: King Dodongo's turn after a roll (verb 104) and his walk (verb 1), handed over while the
+    // copy's own AI had asked another move, were started over (row 178): the turn became a roll on in his old facing to
+    // the far wall, the walk ended at once, and his next roll, aimed at Link from there, went into the lava pit where
+    // no roll ends. With one game (kd-pit-solo-325) every roll ended. Same rule for every boss on the native table.
+    FakeGuest g;
+    const std::int32_t brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    auto turn = ActionFromRequest(GameRequest(104, 0));
+    REQUIRE(turn);
+    turn->flags = 0;
+    for (const bool attacking : {false, true}) {
+        CAPTURE(attacking);
+        Table t;
+        t.SetOn(true, true);
+        t.SetTurns(true);
+        t.Publish({Phantom(Role::copy)});
+        // Its own AI asked ANOTHER move (walk, skipped, its node kept); the owner's turn is put in.
+        CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(1, kNode), true, false));
+        t.Receive(kActor, BossBsa{3, 6, turn, {}});
+        REQUIRE(t.Step(g, false, 0, kMain));
+        REQUIRE(t.Step(g, true, kBlock, kMain));
+        CHECK_FALSE(t.Step(g, true, 0, kMain));
+        Boss ours = Phantom(Role::owner);
+        ours.attacking = attacking;
+        t.Publish({ours});
+        g.bytes.erase(kBlock + addr::kReqVerb);
+        const auto c = t.Step(g, false, 0, kMain);
+        REQUIRE(c);
+        if (attacking) {
+            CHECK(c->function == kMain + addr::kRequestActionVerb);  // an attack: row 178's start-over, unchanged
+            CHECK((g.Get<std::uint16_t>(kBlock + addr::kReqFlags) & addr::kReqStartOver) != 0);
+        } else {
+            CHECK(c->function == kMain + addr::kSetBrainVerb);  // its own brain chooses from what its body does
+            CHECK(c->x[0] == kBsa);
+            CHECK(c->x[1] == 6u);
+            CHECK(c->x[2] == 1u);
+            CHECK_FALSE(g.bytes.contains(kBlock + addr::kReqVerb));  // the turn is not asked again
+        }
     }
 }
 

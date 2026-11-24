@@ -28,6 +28,14 @@ inline constexpr std::size_t kMaxJoinPasswordBytes = 128;
 // relay's or a helper's connections come from. It is no secret: the traffic
 // is still sealed with fresh keys, it is only not a password.
 inline constexpr std::string_view kSameNetworkPassword = "squadala-same-network";
+// The same-network rule, both sides' (row 251): an IPv4 address (first dotted
+// part highest) in 10/8, 172.16/12, 192.168/16 or 169.254/16. Not 127/8.
+bool is_same_network_ipv4(std::uint32_t ipv4);
+// What a game answers JOIN_CHALLENGE with: the password typed, or with none
+// typed and a host at a private address (`host_ipv4`, first dotted part
+// highest), the same-network key. The host still decides by the address the
+// game's packets really come from.
+std::string_view answer_password(std::string_view typed, std::uint32_t host_ipv4);
 
 // A public game (0.11.8, docs/play-online.md "Public games"): a host who lists the room on the relay's public list
 // hosts it with no password to type. Its join password is this one, made from the room name every joiner sees on

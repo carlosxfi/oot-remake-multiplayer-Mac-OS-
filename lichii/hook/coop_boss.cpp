@@ -140,14 +140,23 @@ Vec ArrivalFor(const Room& room, std::uint8_t number) {
     return v;
 }
 
-bool Readiness::Step(std::uint8_t room, std::optional<bool> intro_played, std::optional<bool> pre_battle) {
+bool Readiness::Step(std::uint8_t room, std::optional<bool> intro_played, std::optional<bool> pre_battle,
+                     bool in_intro, std::optional<bool> hurt) {
     if (room_ != room) {
         Reset();
         room_ = room;
     }
+    if (in_intro) {
+        // Row 244: the intro's boss is no fight's. Its own animations (Gohma's C01..C03) are no pre-battle pose
+        // either, so they never count as "left the pre-battle phase".
+        if (pre_battle == true) {
+            seen_pre_battle_ = true;
+        }
+        return false;
+    }
     if (pre_battle == true) {
         seen_pre_battle_ = true;
-    } else if (pre_battle == false && seen_pre_battle_ && !fought_) {
+    } else if (!fought_ && ((pre_battle == false && seen_pre_battle_) || hurt == true)) {
         fought_ = true;
         fought_news_ = true;
     }
@@ -159,6 +168,16 @@ void Readiness::Reset() {
     seen_pre_battle_ = false;
     fought_ = false;
     fought_news_ = false;
+}
+
+bool Sync::InIntro(bool event, std::uint64_t now_us) const {
+    if (!event || here_ == nullptr || died_) {
+        return false;
+    }
+    if (phase_ == Phase::waiting || phase_ == Phase::intro) {
+        return true;  // waiting: this tick's event becomes the intro at our next Tick
+    }
+    return phase_ == Phase::fight && fight_at_ != 0 && now_us - fight_at_ < kMinFightUs;
 }
 
 std::vector<std::string_view> StaleBossFlags::Check(const std::optional<std::string>& scene,

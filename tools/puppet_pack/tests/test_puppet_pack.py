@@ -3023,6 +3023,42 @@ class FullBuildTest(unittest.TestCase):
         with open(os.path.join(mods, "coop-mods.list"), "w", encoding="utf-8") as f:
             f.write("coop-mods 1\non OoT Character Select\n")
         self.assertEqual(build.find_characters(pack, log=lambda *_: None)["numbers"], {5: 7})
+        # Original game's "default off" (report 266): no row for it in such a list is off, as the game reads it.
+        with open(os.path.join(mods, "coop-mods.list"), "w", encoding="utf-8") as f:
+            f.write("coop-mods 1\ndefault off\non contents/0400486024DEC000/coop-puppet\n")
+        self.assertTrue(build.mod_list_off(mods, "OoT Character Select"))
+        self.assertIsNone(build.find_characters(pack, log=lambda *_: None))
+        with open(os.path.join(mods, "coop-mods.list"), "w", encoding="utf-8") as f:
+            f.write("coop-mods 1\ndefault off\non OoT Character Select\n")
+        self.assertFalse(build.mod_list_off(mods, "OoT Character Select"))
+
+    def test_charsel_native_wanted(self):
+        # Co-op's own Characters tab (charsel_ui.py) unless Character Select is in the mods (on, with models) with a
+        # code patch of his: then his files and code are the tab's (kit-paths.ps1 Test-KitCharselNative, the same).
+        mods = os.path.join(self.dir, "mods_native")
+        pack = os.path.join(mods, "contents", "0400486024DEC000", "coop-puppet")
+        os.makedirs(pack)
+        self.assertTrue(build.charsel_native_wanted(pack))   # no mods
+        cs = os.path.join(mods, "OoT Character Select")
+        os.makedirs(os.path.join(cs, "romfs", "Model"))
+        doc = {"format": 1, "mod": "OoT Character Select",
+               "actor_heaps": {v: {"InstanceHeapSize": 1, "PreActorRenderInfoHeapSize": 1} for v in build.VARIANTS},
+               "characters": [{"number": 7, "name": "Made Up", "file": 5}]}
+        with open(os.path.join(cs, build.CHARACTERS_FILE), "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        with open(os.path.join(cs, "romfs", "Model", "Player_Child_C005.Player_Child.bfres.zs"), "wb") as f:
+            f.write(b"made up")
+        self.assertTrue(build.charsel_native_wanted(pack))   # his models, no code of his
+        os.makedirs(os.path.join(cs, "exefs"))
+        with open(os.path.join(cs, "exefs", "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips"), "wb") as f:
+            f.write(b"IPS32EEOF")
+        self.assertFalse(build.charsel_native_wanted(pack))  # his code: his tab
+        os.remove(os.path.join(cs, "romfs", "Model", "Player_Child_C005.Player_Child.bfres.zs"))
+        self.assertIsNone(build.find_characters(pack, log=lambda *_: None))
+        self.assertFalse(build.charsel_native_wanted(pack))  # his default part alone (no NPC models), his code: his tab
+        with open(os.path.join(mods, "coop-mods.list"), "w", encoding="utf-8") as f:
+            f.write("coop-mods 1\noff OoT Character Select\n")
+        self.assertTrue(build.charsel_native_wanted(pack))   # switched off: ours
 
     def test_build_characters(self):
         # A Character Select mod beside the pack (made-up data): a puppet per character and age it has a

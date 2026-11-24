@@ -1,4 +1,4 @@
-From faeef3c596824cca278e91cf40eec80e966bb08e Mon Sep 17 00:00:00 2001
+From 4358c0f0dc1aabfccb1d35ab4d3129495063411c Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Thu, 12 Nov 2026 13:30:00 -0900
 Subject: [PATCH] Co-op actor events: creates, deletes and the Life step go to
@@ -27,7 +27,7 @@ the shooter's actor, before the create it makes).
 
 diff --git a/nx2/coop_actor_lift.py b/nx2/coop_actor_lift.py
 new file mode 100644
-index 0000000..a38f9d1
+index 00000000..a38f9d14
 --- /dev/null
 +++ b/nx2/coop_actor_lift.py
 @@ -0,0 +1,135 @@
@@ -167,7 +167,7 @@ index 0000000..a38f9d1
 +    print("co-op actors: %d of %d actor event hooks (world hook)" % (n, len(HOOKS)))
 +    return n
 diff --git a/nx2/coop_hooks.py b/nx2/coop_hooks.py
-index 5f5a5f3..2d0ffda 100644
+index 5f5a5f32..2d0ffdac 100644
 --- a/nx2/coop_hooks.py
 +++ b/nx2/coop_hooks.py
 @@ -63,6 +63,8 @@ def install(lifter, img, build_id):

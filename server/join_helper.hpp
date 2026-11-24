@@ -50,6 +50,9 @@ struct JoinConfig {
   // with no new answer code. Empty / 0: a random nonce, any port.
   std::optional<Nonce> nonce;
   std::uint16_t public_port = 0;
+  // The one IPv4 address of this PC (host order) the helper's public socket binds to; none: all addresses. Tests:
+  // 127.0.0.1, so a test never listens on the network (the Windows firewall asks about every such program).
+  std::optional<std::uint32_t> bind;
   std::function<void(const std::string&)> log;
   std::function<void(const std::string&)> on_answer;  // the answer code, once
   std::function<std::uint64_t()> unix_now;            // empty: the system clock

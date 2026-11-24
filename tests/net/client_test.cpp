@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "coop/net/client.hpp"
+#include "coop/net/enet_path.hpp"
 #include "coop/net/enet_waiting.hpp"
 #include "coop/protocol/codec.hpp"
 
@@ -177,10 +178,10 @@ class FakeServer {
     enet_host_flush(host_);
   }
 
-  // Disconnect the client with notice.
-  void drop() {
+  // Disconnect the client with notice (`data`: the reason the server gives, enet_path.hpp).
+  void drop(enet_uint32 data = 0) {
     REQUIRE(last_peer != nullptr);
-    enet_peer_disconnect_now(last_peer, 0);
+    enet_peer_disconnect_now(last_peer, data);
     last_peer = nullptr;
   }
 
@@ -600,6 +601,35 @@ TEST_CASE("client: a JOIN_CHALLENGE is answered once with the proof of the join 
   CHECK_FALSE(refused.reconnecting);
   CHECK(refuse_text(refused).starts_with("wrong join password"));
   CHECK(client.state() == State::refused);
+}
+
+TEST_CASE("client: a host on this network that still asks for its password says so (row 251)") {
+  // The game joins a private address with no password typed with the same-network key; a host that keeps the
+  // password for its own network refuses it as a wrong password, and the line says what to do.
+  FakeServer server;
+  ClientConfig config = config_for(server);
+  config.join_password = std::string(proto::kSameNetworkPassword);
+  Client client(config);
+  Events events;
+  REQUIRE(client.start());
+  REQUIRE(pump(client, server, [&] { return server.find<proto::Hello>().has_value(); }));
+  proto::JoinNonce nonce{};
+  server.send_challenge(nonce, std::string(proto::kSameNetworkPassword));
+  REQUIRE(pump(client, server, [&] { return server.find<proto::JoinProof>().has_value(); }));
+  server.cipher.reset();
+  server.send(proto::Refused{proto::RefuseReason::bad_password}, proto::kChannelSession);
+  REQUIRE(wait_event(client, server, events, EventKind::refused));
+  const Event& refused = events.all[*events.find(EventKind::refused)];
+  CHECK(refused.same_network_key);
+  CHECK(refuse_text(refused).starts_with("this host asks for its join password on its own network too"));
+  // Any other refusal keeps its own text.
+  Event full = refused;
+  full.refuse_reason = proto::RefuseReason::server_full;
+  CHECK(refuse_text(full) == refuse_reason_text(proto::RefuseReason::server_full));
+  // A typed password keeps the plain wrong-password text.
+  Event typed = refused;
+  typed.same_network_key = false;
+  CHECK(refuse_text(typed).starts_with("wrong join password"));
 }
 
 TEST_CASE("client: with no join password typed a challenge is still answered (the server refuses it)") {
@@ -2705,4 +2735,39 @@ TEST_CASE("client: as the host, another player's JOIN_KNOCK is a message, and JO
   REQUIRE(client.send(proto::JoinAllow{5, true, false}));
   const std::size_t at = wait_received<proto::JoinAllow>(client, server, from);
   CHECK(std::get<proto::JoinAllow>(server.received[at].message) == proto::JoinAllow{5, true, false});
+}
+
+TEST_CASE("enet: outgoing_bytes counts what waits to go and what is not acknowledged, nothing received (row 260)") {
+  ENetPeer peer{};
+  enet_list_clear(&peer.outgoingCommands);
+  enet_list_clear(&peer.outgoingSendReliableCommands);
+  enet_list_clear(&peer.sentReliableCommands);
+  enet_list_clear(&peer.dispatchedCommands);
+  CHECK(coop::net::outgoing_bytes(peer) == 0);
+  ENetOutgoingCommand queued{}, reliable{}, sent{}, fragment{};
+  queued.fragmentLength = 100;
+  reliable.fragmentLength = 1200;
+  sent.fragmentLength = 300;
+  fragment.fragmentLength = 1100;   // one fragment of a larger message: its own length
+  enet_list_insert(enet_list_end(&peer.outgoingCommands), &queued);
+  enet_list_insert(enet_list_end(&peer.outgoingCommands), &fragment);
+  enet_list_insert(enet_list_end(&peer.outgoingSendReliableCommands), &reliable);
+  enet_list_insert(enet_list_end(&peer.sentReliableCommands), &sent);
+  CHECK(coop::net::outgoing_bytes(peer) == 100 + 1100 + 1200 + 300);
+  CHECK(coop::net::kSlowPeerBytes < coop::net::kMaxOutgoingBytes);
+}
+
+TEST_CASE("client: dropped by the server for a backlog, the reason is backlog, and it comes back (row 260)") {
+  FakeServer server;
+  Client client(config_for(server));
+  Events events;
+  REQUIRE(client.start());
+  welcome_client(client, server);
+  REQUIRE(wait_event(client, server, events, EventKind::welcomed));
+
+  server.drop(coop::net::kDisconnectBacklog);
+  REQUIRE(wait_event(client, server, events, EventKind::disconnected));
+  CHECK(events.all[*events.find(EventKind::disconnected)].drop_reason == DropReason::backlog);
+  welcome_client(client, server);
+  REQUIRE(wait_event(client, server, events, EventKind::reconnected));
 }

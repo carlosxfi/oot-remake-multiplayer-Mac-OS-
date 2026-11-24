@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <new>
 #include <set>
 #include <string>
 #include <vector>
@@ -19,6 +20,7 @@
 #include "coop/protocol/messages.hpp"
 #include "coop_colors.h"
 #include "coop_look.h"
+#include "coop_char_colours.h"
 #include "coop_look_paint.h"
 #include "coop_look_parts.h"
 #include "coop_look_tunic.h"
@@ -59,6 +61,7 @@ public:
             return false;
         }
         ++reads[a];
+        max_read = std::max(max_read, n);
         std::memcpy(out, bytes_.data() + (a - base_), n);
         return true;
     }
@@ -112,6 +115,7 @@ public:
     std::size_t overrides() const { return overrides_.size(); }
     int overridden = 0;
     mutable std::map<std::uint64_t, int> reads;   // Read calls by address
+    mutable std::size_t max_read = 0;               // the largest Read asked for
 
 private:
     void Drop(std::uint64_t a, std::uint64_t n) {
@@ -257,6 +261,48 @@ TEST_CASE("look: every part has its number, a key and a row, and the numbers nev
     CHECK(static_cast<int>(Part::master_blade) == 11);
     CHECK(static_cast<int>(Part::gauntlets) == 16);
     CHECK(static_cast<int>(Part::cap_trim) == 17);
+    CHECK(static_cast<int>(Part::char_hair) == 20);   // (npc-customize: a character's own parts)
+    CHECK(static_cast<int>(Part::char_eyes) == 21);
+    CHECK(static_cast<int>(Part::char_cloth1) == 22);
+    CHECK(static_cast<int>(Part::char_gear) == 25);
+    CHECK(CoopCharColours::kCharHairPart == static_cast<int>(Part::char_hair));   // (the dresser's numbers are these)
+    CHECK(CoopCharColours::kCharEyesPart == static_cast<int>(Part::char_eyes));
+    CHECK(CoopCharColours::kCharCloth1Part == static_cast<int>(Part::char_cloth1));
+    CHECK(CoopCharColours::kCharGearPart == static_cast<int>(Part::char_gear));
+    CHECK(CoopCharColours::kLinkEyesPart == static_cast<int>(Part::eyes));
+    CHECK(CoopCharColours::kLinkHairPart == static_cast<int>(Part::hair));
+}
+
+TEST_CASE("look (npc-customize): a character's parts are saved, read back and sent like the others") {
+    Look look;
+    look[Part::char_hair] = 0xC02020u;
+    look[Part::char_cloth2] = CoopColors::Parse("blue");
+    look[Part::char_gear] = CoopLook::kGearHidden;
+    std::string coop = "server = 1.2.3.4\n";
+    CHECK(CoopLook::WriteSettings(look, coop, nullptr));
+    CHECK(coop.find("look_char_hair = #C02020") != std::string::npos);
+    CHECK(coop.find("look_char_cloth2 = blue") != std::string::npos);
+    CHECK(coop.find("look_char_gear = hidden") != std::string::npos);
+    std::vector<std::string> errors;
+    const Look back = CoopLook::ReadParts(coop, &errors);
+    CHECK(errors.empty());
+    CHECK(back[Part::char_hair] == 0xC02020u);
+    CHECK(back[Part::char_cloth2] == look[Part::char_cloth2]);
+    CHECK(back[Part::char_gear] == CoopLook::kGearHidden);
+    CHECK_FALSE(CoopLook::ReadParts("look_char_gear = shown\n")[Part::char_gear]);
+    CoopLook::ReadParts("look_char_gear = maybe\n", &errors);
+    CHECK(errors.size() == 1);
+    // the wire: by number, and back
+    const auto wire = CoopLook::Wire(look);
+    REQUIRE(wire.size() == 3);
+    CHECK(wire[0] == std::pair<std::uint8_t, std::uint32_t>{20, 0xC02020u});
+    CHECK(wire[2] == std::pair<std::uint8_t, std::uint32_t>{25, CoopLook::kGearHidden});
+    CHECK(CoopLook::FromWire(wire) == look);
+    // unset again: its line leaves the file
+    look[Part::char_gear].reset();
+    CHECK(CoopLook::WriteSettings(look, coop, nullptr));
+    CHECK_FALSE(CoopTitleMenu::IniGet(coop, "look_char_gear").has_value());   // (IniUnset leaves it as a "# " comment)
+    CHECK_FALSE(CoopLook::ReadParts(coop)[Part::char_gear]);
 }
 
 TEST_CASE("look: every part is saved under its own key, and read back") {
@@ -354,6 +400,32 @@ TEST_CASE("look tunic: a texture is known by its exact texels, with no file in f
     CHECK(found.heads == 1);
 }
 
+TEST_CASE("look tunic: a large texture is compared a piece at a time, its last byte too (row 260)") {
+    // Larger than one piece and not a whole number of them: the compare reads the game's memory in pieces of at most
+    // kComparePiece (a buffer on the worker's stack, no heap per texture) and still sees every byte.
+    constexpr std::size_t kLarge = 3 * CoopLookTunic::kComparePiece + 100;
+    std::vector<std::uint8_t> texels(kLarge);
+    for (std::size_t i = 0; i < texels.size(); ++i) {
+        texels[i] = static_cast<std::uint8_t>(i * 13 + i / 251);
+    }
+    FakeTextures m(kBase, 0x40000);
+    std::memcpy(m.at(kBase + 0x1000), texels.data(), kLarge);
+    m.Make(kBase + 0x1000, kLarge);   // the same texels
+    std::memcpy(m.at(kBase + 0x20000), texels.data(), kLarge);
+    m.at(kBase + 0x20000)[kLarge - 1] ^= 0xFF;
+    m.Make(kBase + 0x20000, kLarge);   // the same but its very last byte
+
+    const auto colour = std::make_shared<const CoopLookTunic::Texels>(
+        CoopLookTunic::Texels{CoopLookTunic::Texture{"Big", 0, texels}});
+    const auto found = CoopLookTunic::Find(m, {colour});
+    REQUIRE(found.places.size() == 1);
+    CHECK(found.places[0].address == kBase + 0x1000);
+    CHECK(found.places[0].size == kLarge);
+    CHECK(found.heads == 1);   // the other: its first bytes only
+    CHECK(m.max_read > 0);
+    CHECK(m.max_read <= CoopLookTunic::kComparePiece);
+}
+
 TEST_CASE("look tunic: your Link's textures are found and drawn over, the game's memory and a puppet's copy left alone") {
     FakeTextures m(kBase, 0x10000);
     const auto green = Colour({{"Tile_A", TexelsOf(1)}, {"Vest", TexelsOf(2)}});
@@ -409,6 +481,104 @@ TEST_CASE("look tunic (0.11.9 lane crash, a178e8bd): a Host with a part missing 
     CoopLookTunic::Wardrobe none(CoopLookTunic::Wardrobe::Host{});   // (no textures at all)
     none.Wear("red");
     CHECK_NOTHROW(none.Step(0));
+}
+
+namespace {
+// The game's textures as FakeTextures has them, with the PC out of memory when asked (every new throws
+// std::bad_alloc), and the largest single read noted.
+class ShortOfMemory final : public CoopLookTunic::Textures {
+public:
+    explicit ShortOfMemory(FakeTextures& m) : m_(m) {}
+    std::vector<CoopLookTunic::Live> List(std::uint64_t lo, std::uint64_t hi, std::uint64_t* generation) const override {
+        if (out_of_memory) throw std::bad_alloc();
+        return m_.List(lo, hi, generation);
+    }
+    bool Read(std::uint64_t a, void* out, std::size_t n) const override {
+        largest = std::max(largest, n);
+        if (out_of_memory && n > CoopLookTunic::kHead) throw std::bad_alloc();   // (the head read went through)
+        return m_.Read(a, out, n);
+    }
+    bool Override(std::uint64_t a, std::uint64_t serial, const void* in, std::size_t n) override {
+        return m_.Override(a, serial, in, n);
+    }
+    bool out_of_memory = false;
+    mutable std::size_t largest = 0;
+
+private:
+    FakeTextures& m_;
+};
+}  // namespace
+
+TEST_CASE("look tunic (lane 2026-11-23 crash): a texture is compared in small reads, none of it held on the heap") {
+    // The compare made a buffer of up to 4 MiB on the heap for every texture it read, every step. With the PC's
+    // memory gone (two games starting) that new threw std::bad_alloc out of the look worker and ended the game.
+    const std::size_t big = 3 * CoopLookTunic::kComparePiece + 5;
+    std::vector<std::uint8_t> texels(big);
+    for (std::size_t i = 0; i < big; ++i) texels[i] = static_cast<std::uint8_t>(i * 13 + i / 251);
+    FakeTextures m(kBase, 4 * CoopLookTunic::kComparePiece + 0x1000);
+    std::memcpy(m.at(kBase + 0x1000), texels.data(), big);
+    m.Make(kBase + 0x1000, big);
+    std::vector<std::uint8_t> other = texels;
+    other[big - 1] ^= 1;   // the same but for its last byte (a copy's mark)
+    const auto green = Colour({{"Tile_A", texels}});
+    const auto marked = Colour({{"Tile_A", other}});
+    ShortOfMemory t(m);
+    const auto found = CoopLookTunic::Find(t, {green});
+    REQUIRE(found.places.size() == 1);
+    CHECK(found.places[0].size == big);
+    CHECK(t.largest <= CoopLookTunic::kComparePiece);
+    t.largest = 0;
+    const auto missed = CoopLookTunic::Find(t, {marked});
+    CHECK(missed.places.empty());
+    CHECK(missed.heads == 1);   // (read to its last byte, in pieces)
+    CHECK(t.largest <= CoopLookTunic::kComparePiece);
+}
+
+TEST_CASE("look tunic (lane 2026-11-23 crash): a step that throws is said and tried again, never out of the worker") {
+    FakeTextures m(kBase, 0x10000);
+    PutFile(m, kBase + 0x1000, "Tile_A", TexelsOf(1));
+    const std::map<std::string, std::vector<std::uint8_t>> pack = {
+        {"green", LookFile({{"Tile_A", TexelsOf(1)}})},
+        {"red", LookFile({{"Tile_A", TexelsOf(9)}})},
+    };
+    std::vector<std::string> log;
+    ShortOfMemory t(m);
+    CoopLookTunic::Wardrobe::Host host;
+    host.textures = &t;
+    host.file = [&](const std::string& c) -> std::optional<std::vector<std::uint8_t>> {
+        const auto it = pack.find(c);
+        return it == pack.end() ? std::nullopt : std::optional(it->second);
+    };
+    host.log = [&](const std::string& l) { log.push_back(l); };
+    CoopLookTunic::Wardrobe w(host);
+    const std::uint64_t at = kBase + 0x1000 + kOffset;
+    const auto failed = [&] {
+        return std::count_if(log.begin(), log.end(), [](const std::string& l) {
+            return l.rfind("coop: look: the tunic wardrobe's step failed (", 0) == 0;
+        });
+    };
+
+    w.Wear("red");
+    t.out_of_memory = true;
+    CHECK_NOTHROW(w.Step(0));
+    CHECK(failed() == 1);
+    CHECK(Drawn(m, at, 1));   // (the game's colour until a step works)
+    // Said at most kFailedSaid times however long it lasts.
+    for (int i = 1; i < 3 * CoopLookTunic::kFailedSaid; ++i) {
+        CHECK_NOTHROW(w.Step(static_cast<std::uint64_t>(i)));
+    }
+    CHECK(failed() == CoopLookTunic::kFailedSaid);
+    // Memory back: the next step finds the texture and draws it.
+    t.out_of_memory = false;
+    CHECK_NOTHROW(w.Step(5000));
+    CHECK(Drawn(m, at, 9));
+    // Out of memory halfway through a later step (a texture made again, read whole): it looks again after.
+    m.Make(at, kTexels);
+    t.out_of_memory = true;
+    CHECK_NOTHROW(w.Step(6000));
+    t.out_of_memory = false;
+    CHECK_NOTHROW(w.Step(6001));
+    CHECK(Drawn(m, at, 9));
 }
 
 TEST_CASE("look tunic: the wardrobe keeps your Link in the colour worn") {
@@ -786,7 +956,7 @@ TEST_CASE("look parts: every gear part has a texture, every texture once") {
             parts.insert(r.part);
         }
     }
-    CHECK(parts.size() == CoopLook::kParts - 4);
+    CHECK(parts.size() == CoopLook::kParts - 10);   // (and a character's six: CoopCharColours, no texture of ours)
 }
 
 TEST_CASE("look parts: the gear painted in a look, a painting's name says its colours") {
