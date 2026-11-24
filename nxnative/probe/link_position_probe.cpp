@@ -23,7 +23,9 @@
 #ifdef __APPLE__
 #include "game_call.hpp"
 #include "../../hookshot/src/coop_pause_tab.h"
+#include "../../hookshot/src/hos_coop_boss_orders.h"
 #include "../../hookshot/src/hos_coop_draw.h"
+#include "../../hookshot/src/hos_coop_world.h"
 #include "multiplayer_menu.hpp"
 #include "../../lichii/hook/coop_colors.h"
 #include <filesystem>
@@ -359,6 +361,40 @@ bool install_native_pause_menu(void* module, std::uint64_t base, RegisterPad reg
   return true;
 }
 
+// Twinrova's receive method is called on the game's thread. Replays enter the
+// original method by address, so they never feed back into the capture hook.
+using BossReceive = std::uint64_t (*)(std::uint64_t, std::uint64_t);
+std::atomic<BossReceive> original_boss_receive{nullptr};
+std::atomic<hos_coop_wrap_fn> boss_order_event{nullptr};
+
+std::uint64_t receive_boss_order(std::uint64_t node, std::uint64_t message) {
+  if (const auto wrap = boss_order_event.load(std::memory_order_acquire)) {
+    std::array<std::uint64_t, 32> registers{node, message};
+    if (wrap(HOS_COOP_WRAP_BOSS_ORDER, 0, registers.data(), &shared_api)) return registers[0];
+  }
+  return original_boss_receive.load(std::memory_order_acquire)(node, message);
+}
+
+bool install_boss_order_bridge(void* module, std::uint64_t base) {
+  constexpr std::uint64_t kReceiverVtable = 0x49a8568;
+  constexpr std::uint64_t kReceiverMethod = 0x2723f80;
+  constexpr std::uint64_t kReceiverSlot = 39;
+  const auto slot = base + kReceiverVtable + kReceiverSlot * sizeof(std::uint64_t);
+  const auto wrap = reinterpret_cast<hos_coop_wrap_fn>(dlsym(module, "hos_coop_wrap"));
+  const auto world = reinterpret_cast<hos_coop_world_fn>(dlsym(module, "hos_coop_world"));
+  std::uint64_t current = 0;
+  if (!wrap || !world || !read_at(slot, current) || current != base + kReceiverMethod) return false;
+  original_boss_receive.store(reinterpret_cast<BossReceive>(current), std::memory_order_release);
+  if (!with_writable_alias(slot, sizeof(current), [](void* alias) {
+    __atomic_store_n(static_cast<std::uint64_t*>(alias),
+                     reinterpret_cast<std::uint64_t>(&receive_boss_order), __ATOMIC_RELEASE);
+  })) return false;
+  if (!world(HOS_COOP_WORLD_HELLO, HOS_COOP_WORLD_VERSION, std::uint64_t{1} << HOS_COOP_WRAP_BOSS_ORDER))
+    return false;  // The installed forwarder still calls the original.
+  boss_order_event.store(wrap, std::memory_order_release);
+  return true;
+}
+
 bool start_shared_module(const char* path, std::uint64_t base) {
   const char* game_dir = std::getenv("COOP_NXNATIVE_SHARED_DIR");
   if (!game_dir || !*game_dir) {
@@ -426,6 +462,8 @@ bool start_shared_module(const char* path, std::uint64_t base) {
     std::fprintf(stderr, "[coop-nxnative] shared module start refused\n");
     return false;
   }
+  const bool boss_orders = install_boss_order_bridge(module, base);
+  std::fprintf(stderr, "[coop-nxnative] Twinrova order bridge %s\n", boss_orders ? "installed" : "unavailable");
   shared_frame.store(frame, std::memory_order_release);
   using SetCamera = void (*)(hos_coop_camera_wanted_fn, hos_coop_camera_fn);
   const auto set_camera = reinterpret_cast<SetCamera>(dlsym(RTLD_DEFAULT, "dm_coop_set_camera"));
