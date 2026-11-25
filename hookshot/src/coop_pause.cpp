@@ -1328,8 +1328,26 @@ void LocalStep(std::uint64_t now) {
                         CoopLocalStart::kAnswerMs / 1000);
         }
     }
+    // (a test's trigger, LICHII_COOP_TEST_LOCAL=1 only: a file "local-start.now" in the game's folder holding N asks
+    // what the page's Start asks, and the page's state is counted and logged even with the page closed)
+    static const bool test_local = [] {
+        const char* v = std::getenv("LICHII_COOP_TEST_LOCAL");
+        const bool on = v != nullptr && v[0] == '1';
+        if (on) LOG_INFO(Core, "coop: multiplayer tab: test: local-start.now in {} asks Start (local co-op)",
+                         CoopRuntime::GameDir().string());
+        return on;
+    }();
+    if (test_local) {
+        const std::filesystem::path asked = CoopRuntime::GameDir() / "local-start.now";
+        const std::string n = ReadText(asked);
+        std::error_code ec;
+        if (!n.empty() && std::filesystem::remove(asked, ec)) {
+            LOG_INFO(Core, "coop: multiplayer tab: test: Start asked for {} games (local-start.now)", std::atoi(n.c_str()));
+            LocalAsked(std::atoi(n.c_str()));
+        }
+    }
     const bool shown = (g_shown || g_native) && g_menu.page() == CoopPauseMenu::Page::kLocal;
-    if (!shown || (g_local.counted_ms != 0 && now - g_local.counted_ms < 2000)) return;
+    if (!(shown || test_local) || (g_local.counted_ms != 0 && now - g_local.counted_ms < 2000)) return;
     g_local.counted_ms = now;
     CoopPauseMenu::LocalGames l;
     const std::filesystem::path game = CoopRuntime::GameDir();
@@ -1348,6 +1366,10 @@ void LocalStep(std::uint64_t now) {
     l.starting = g_local.launch || g_local.waiting;
     l.note = g_local.note;
     l.problem = g_local.problem;
+    if (test_local && !(l == g_menu.local())) {
+        LOG_INFO(Core, "coop: multiplayer tab: test: local page: asked {} running {} joined {} starting {} note '{}' "
+                       "problem '{}'", l.asked, l.running, l.joined, l.starting, l.note, l.problem);
+    }
     g_menu.SetLocal(std::move(l));
 }
 
