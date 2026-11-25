@@ -2313,7 +2313,11 @@ int Wrap(std::uint32_t id, int phase, std::uint64_t* x, void* /*ctx*/) {
         }
         std::optional<CoopBossNative::Request> renamed;
         std::uint64_t answer = CoopBossNative::addr::kActionTaken;
-        if (!t.OnActionVerb(x[0], r, (x[2] & 1) != 0, t_own_call, std::move(plug_name), &renamed, &answer)) {
+        std::int32_t brain_now = 0;  // the brain verb its AI asks in (its own asks are kept per verb)
+        const bool brain_read =
+            CoopRuntime::Read(x[0] + CoopBossNative::addr::kBsaBrainVerb, &brain_now, sizeof brain_now);
+        if (!t.OnActionVerb(x[0], r, (x[2] & 1) != 0, t_own_call, std::move(plug_name), &renamed, &answer,
+                            brain_read ? std::optional(brain_now) : std::nullopt)) {
             if (renamed) {
                 // Row 222: a copy's own ask of the owner's move, run with the owner's variation: its plug and
                 // has-plug set before the game reads the request (0x38..0x40).

@@ -2055,6 +2055,8 @@ TEST_CASE("native boss: row 177 review, a brain change forgets the copy's kept n
     for (int i = 0; i < 8 && c && !action; ++i) {
         if (c->function == kMain + addr::kSetBrainVerb) {
             brain = true;
+            const std::int32_t set = 3;  // (the game's function writes it at once)
+            g.Write(kBsa + addr::kBsaBrainVerb, &set, 4);
         } else if (c->function == kMain + addr::kRequestActionVerb) {
             action = c;
             break;
@@ -3306,6 +3308,9 @@ std::vector<std::int32_t> PutIns(Table& t, FakeGuest& g, std::vector<std::uint64
             if (nodes != nullptr) {
                 nodes->push_back(g.Get<std::uint64_t>(kBlock + addr::kReqNode));
             }
+        } else if (c->function == kMain + addr::kSetBrainVerb) {
+            const auto set = static_cast<std::int32_t>(c->x[1]);  // (as the game's function, at once)
+            g.Write(c->x[0] + addr::kBsaBrainVerb, &set, 4);
         }
         c = t.Step(g, true, block, kMain);
         if (!c) {
@@ -3590,4 +3595,108 @@ TEST_CASE("native boss: Twinrova hand-over, a copy's own start of another move t
     (void)PutIns(other, g);
     CHECK(other.OnActionVerb(kBsa, GameRequest(5, kNode), true, false, std::nullopt, nullptr, &answer));
     CHECK(answer == addr::kActionTaken);
+}
+
+TEST_CASE("native boss: Twinrova hand-over, the own asks follow the brain verb the game is in, also in its own time") {
+    constexpr std::uint64_t kAttackNode = 0x4000300;  // its own node of the attack, in brain 6
+    constexpr std::uint64_t kFlyNode = 0x4000400;
+    constexpr std::uint64_t kStunNode = 0x4000500;  // a node of brain 65 that asks the same verb
+    FakeGuest g;
+    std::int32_t brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    t.Receive(kActor, BossBsa{1, 6, std::nullopt, {}});
+    CHECK(t.OnActionVerb(kBsa, GameRequest(121, kAttackNode), true, false, std::nullopt, nullptr, nullptr, 6));
+    PutIns(t, g);
+    // Our own hit: its own AI goes to brain 65 and asks the verb there through another node (run by the game).
+    t.NoteOwnHit(kActor);
+    brain = 65;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(121, kStunNode), true, false, std::nullopt, nullptr, nullptr, 65));
+    PutIns(t, g);
+    brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    for (std::uint64_t i = 0; i <= Table::kReactSteps; ++i) {
+        PutIns(t, g);
+    }
+    BossAction attack = *ActionFromRequest(GameRequest(121, 0));
+    attack.changed = true;
+    t.Receive(kActor, BossBsa{2, 6, attack, {BossChange{2, attack}}});
+    std::vector<std::uint64_t> nodes;
+    CHECK(PutIns(t, g, &nodes) == std::vector<std::int32_t>{121});
+    REQUIRE(nodes.size() == 1);
+    CHECK(nodes[0] == kAttackNode);  // brain 6's own, not brain 65's
+    // As the owner: a brain request the game puts off (main+0x6733b0, not forced) is no change.
+    CHECK(t.OnActionVerb(kBsa, GameRequest(4, kFlyNode), true, false, std::nullopt, nullptr, nullptr, 6));
+    t.Publish({Twinrova(Role::owner)});
+    CHECK_FALSE(t.OnBrainVerb(kBsa, 7, false, false));  // (the game stays in 6)
+    PutIns(t, g);
+    t.Publish({Twinrova(Role::copy)});
+    BossAction fly = *ActionFromRequest(GameRequest(4, 0));
+    fly.changed = true;
+    t.Receive(kActor, BossBsa{20, 6, fly, {BossChange{20, fly}}});
+    PutIns(t, g);
+    nodes.clear();
+    t.Receive(kActor, BossBsa{21, 6, attack, {BossChange{20, fly}, BossChange{21, attack}}});
+    CHECK(PutIns(t, g, &nodes) == std::vector<std::int32_t>{121});
+    REQUIRE(nodes.size() == 1);
+    CHECK(nodes[0] == kAttackNode);  // not its last ask's (Fly)
+}
+
+TEST_CASE("native boss: Twinrova hand-over, a held start its AI left is no hold any more") {
+    constexpr std::uint64_t kShotNode = 0x4000100;
+    BossAction a = *ActionFromRequest(GameRequest(121, 0, true));
+    a.changed = true;
+    const auto begin = [&](Table& t, FakeGuest& g) {
+        const std::int32_t brain = 2;
+        g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+        t.SetOn(true, true);
+        t.Publish({Twinrova(Role::copy)});
+        (void)t.OnActionVerb(kBsa, GameRequest(121, kShotNode), true, false, std::string{});
+        t.Receive(kActor, BossBsa{1, 2, a, {BossChange{1, a}}}, BossVariants{{BossVariant{1, ""}}});
+        CHECK(PutIns(t, g) == std::vector<std::int32_t>{121});
+        std::uint64_t answer = addr::kActionTaken;
+        CHECK(t.OnActionVerb(kBsa, GameRequest(80, kShotNode), true, false, std::string{}, nullptr, &answer));
+        CHECK(answer == addr::kActionSlotBusy);
+        CHECK(t.Totals().own_starts_held == 1);
+    };
+    std::uint64_t answer = addr::kActionTaken;
+    {
+        // Its AI asks the owner's move on: made ours, that move starts over (row 178), as with no hold.
+        FakeGuest g;
+        Table t;
+        begin(t, g);
+        CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(121, kShotNode), false, false, std::string{}, nullptr, &answer));
+        t.Publish({Twinrova(Role::owner)});
+        CHECK(PutIns(t, g) == std::vector<std::int32_t>{121});
+        CHECK(t.Totals().made_ours_own_other == 0);
+    }
+    {
+        // The owner's new brain verb: what its AI waited to start in the old one says nothing.
+        FakeGuest g;
+        Table t;
+        begin(t, g);
+        const BossChange brain3{2, BossBrain{3, true}};
+        t.Receive(kActor, BossBsa{2, 3, a, {BossChange{1, a}, brain3}}, BossVariants{{BossVariant{1, ""}}});
+        CHECK(PutIns(t, g).empty());
+        CHECK(g.Get<std::int32_t>(kBsa + addr::kBsaBrainVerb) == 3);
+        t.Publish({Twinrova(Role::owner)});
+        CHECK(PutIns(t, g) == std::vector<std::int32_t>{121});
+        CHECK(t.Totals().made_ours_own_other == 0);
+    }
+    {
+        // Asked no more, and the same start much later: held anew, not answered by the old hold's cap.
+        FakeGuest g;
+        Table t;
+        begin(t, g);
+        for (std::uint64_t i = 0; i < Table::kOwnStartLapseSteps + 2; ++i) {
+            PutIns(t, g);
+        }
+        CHECK(t.OnActionVerb(kBsa, GameRequest(80, kShotNode), true, false, std::string{}, nullptr, &answer));
+        CHECK(answer == addr::kActionSlotBusy);
+        CHECK(t.Totals().own_starts_held == 2);
+        CHECK(t.Totals().own_start_holds_capped == 0);
+    }
 }

@@ -475,6 +475,8 @@ public:
     static constexpr int kBusyAsks = 3;  // row 211: an owner's move answered busy, asked again on this many frames
     // Twinrova hand-over: the frames a copy's own start of a move other than the owner's is answered busy, at most.
     static constexpr std::uint64_t kOwnStartHoldSteps = 60;
+    // Frames without another ask after which a hold is over (its AI left that start; a later one is a new hold).
+    static constexpr std::uint64_t kOwnStartLapseSteps = 2 * kOwnStartHoldSteps;
     // Switches (LICHII_COOP_BOSS_NATIVE, LICHII_COOP_BOSS_ACTIONS): off -> no
     // skip, no apply, nothing kept (the old gohma-sync path alone).
     void SetOn(bool brain, bool actions);
@@ -521,9 +523,10 @@ public:
     // busy, for kOwnStartHoldSteps at most, so its AI waits at that start and asks it again; when the owner's move
     // reaches it the start is taken (skipped as before) and its own asks of the move run (row 222). Every hold and
     // its first asks again are said (the probe: does its AI ask again after a busy answer?).
+    // `brain`: the brain verb the BSA is in now (kBsaBrainVerb, read by the wrap): the own ask is learnt in it.
     bool OnActionVerb(std::uint64_t bsa, const Request& request, bool changed, bool own,
                       std::optional<std::string> plug_name = std::nullopt, std::optional<Request>* renamed = nullptr,
-                      std::uint64_t* answer = nullptr);
+                      std::uint64_t* answer = nullptr, std::optional<std::int32_t> brain = std::nullopt);
 
     // Our game runs an event now (the boss glue, every frame; the player
     // reader's event flag). Copies then run their own changes; the owner keeps
@@ -876,6 +879,7 @@ private:
             std::int32_t slot = 0;
             std::int32_t verb = 0;
             std::uint64_t since = 0;
+            std::uint64_t asked = 0;  // the step of its AI's last ask of it
             std::uint64_t asks = 0;
             bool capped = false;
         };
@@ -905,12 +909,14 @@ private:
     Entry* FindActor(std::uint64_t actor);
     const Entry* FindActor(std::uint64_t actor) const;
     // Row 177 review: a brain change may change the action sequence whose AI nodes the kept own asks name: the
-    // asks of one brain verb are never used in another. A brain change puts the asks away under the verb they were
+    // asks of one brain verb are not used in another (but for own_node, named when a verb has none of its own yet). A brain change puts the asks away under the verb they were
     // learnt in and takes out those of the new verb (none: the copy's next own asks fill them). Back in a verb, its
     // asks are named again: the game keeps a brain verb's nodes (lane run NEXT48: the same Attack node before and
     // after; forgetting them put the copy's next Attack_R in through another move's node, no bullet). A role change
     // keeps them (all learnt as a copy: the owner learns none; NEXT29, NEXT36b).
-    static void SwitchOwnAsks(Entry& e, std::int32_t to);
+    // Called with the verb the game says it is in: at each step and at each own ask (OnActionVerb's `brain`), so a
+    // change of the copy's own (its own time, an event, before an owner's state) counts as the owner's do.
+    void SwitchOwnAsks(Entry& e, std::int32_t to);
     static void LearnOwnAsk(Entry& e, const Request& request, const std::optional<std::string>& plug_name);
     void Note(std::string line);
     // Row 177's log: one line when the stream's kind changes (the last kind's run length with it), capped.

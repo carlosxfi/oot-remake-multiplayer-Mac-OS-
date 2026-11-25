@@ -879,6 +879,13 @@ change:
    (`PlanMadeOurs`, `own_ask_other`). Other bosses restart as before (row 178). Log: `its own AI
    already in verb V: its AI goes on`.
 
+Review of the above (on top): the own asks follow the brain verb the game itself is in (BSA+0x28, read at each step and
+at each own ask), not the requests for one. A copy's own change (its stun, an event, before an owner's state) counts too,
+and a request the game puts off (main+0x6733b0, not forced: kept at +0x2c) does not. A held start is over when its AI asks
+the owner's move on, runs in its own time, changes brain verb, or asks it no more for 120 frames; before, an old hold made
+a hand-over skip the start-over (row 178) and capped a later start at once. The last-node fallback (`own_node`) is still
+named in a brain verb that has no own ask yet, as before 0.11.13.
+
 No protocol change. Solo play and owners are not touched. Not covered: a copy made
 the owner drops the old owner's moves still queued (its own AI runs the boss from here). Tests: boss_native_test
 ("Twinrova hand-over": a former owner's nodes are not the copy's, a copy keeps its own across role changes; both moves the new owner made are put
