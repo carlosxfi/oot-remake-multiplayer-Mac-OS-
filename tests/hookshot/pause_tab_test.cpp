@@ -3368,3 +3368,33 @@ TEST_CASE("pause tab: the Players view's list is the session's chat, paged with 
     CHECK(std::string(RowHelp(RowAction::kChatPage)).size() > 3);
     CHECK(std::string(ActionWords(RowAction::kChatPage)).size() > 3);
 }
+
+TEST_CASE("row 223: the details list's second page is the key items, only with a game loaded") {
+    SessionView v;
+    // no game: the one page, no page line, no key items
+    CHECK(DetailLines(View::kMain, v)[0].name == "Not in a session");
+    CHECK_FALSE(DetailLines(View::kMain, v)[0].paged);
+    v.tally_ok = true;
+    v.tally.groups[static_cast<std::size_t>(coop::host::TallyGroup::songs)] = {8, 13};
+    v.tally.groups[static_cast<std::size_t>(coop::host::TallyGroup::medallions)] = {0, 6};
+    // page 1: the session's lines, the heading says there are two pages
+    auto d = DetailLines(View::kMain, v);
+    CHECK(d[0].name.ends_with("Page 1/2"));
+    CHECK(d[0].paged);
+    // page 2: the tally, 4 lines that fit the list
+    v.detail_page = 1;
+    d = DetailLines(View::kMain, v);
+    CHECK(d[0].name == "Key items  Page 2/2");
+    CHECK(d[0].paged);
+    CHECK(d[1].name == "Songs");
+    CHECK(d[1].value == "8 of 13");
+    CHECK(d[2].value == "0 of 6");
+    CHECK(d[4].name == "Dungeon items");
+    CHECK(d.size() == static_cast<std::size_t>(kListRows));
+    // the page wraps (ZR from the last is the first)
+    v.detail_page = 2;
+    CHECK(DetailLines(View::kMain, v)[0].name.ends_with("Page 1/2"));
+    // other views have no key items page
+    v.detail_page = 1;
+    CHECK_FALSE(DetailLines(View::kLan, v)[0].paged);
+}

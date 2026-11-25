@@ -17,6 +17,8 @@
 #define COOP_HOOKSHOT_EXPORT __attribute__((visibility("default")))
 #endif
 
+#include "coop/host/key_item_tally.hpp"
+
 namespace CoopHookshot {
 
 // hos_coop_start: checks the table and the game build, reads the settings and
@@ -42,6 +44,12 @@ constexpr WorldLevel HelloLevel(std::uint64_t a, std::uint64_t b) {
 WorldLevel WorldHooks();
 // True when Hookshot's hooks have this wrap (hos_coop_world.h's ids).
 bool HasWrap(std::uint32_t id);
+
+// Row 223: the key items the game holds now, counted by group (coop/host/key_item_tally.hpp). Read only: plain
+// guest-memory reads of the flag tables through GameFlags::get_bool (no game call, no write, no patch), so any thread
+// may ask. The result is kept for half a second under a lock of its own, so a menu frame costs one copy. False
+// before a game is loaded (no flag manager yet): nothing then.
+bool KeyItemTallyNow(coop::host::KeyItemTally& out);
 // A wrapped game function (hos_coop_world.h): phase 0 before it (1: do not run it), 1 after; x = its registers.
 int Wrap(std::uint32_t id, int phase, std::uint64_t* x, void* ctx);
 // hos_coop_stop: CoopHook::Shutdown.

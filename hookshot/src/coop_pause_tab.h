@@ -33,6 +33,7 @@
 #include <utility>
 #include <vector>
 
+#include "coop/host/key_item_tally.hpp"
 #include "coop_menu_state.h"
 #include "coop_menu_nav.h"
 #include "coop_pause_menu.h"
@@ -740,6 +741,12 @@ std::vector<ListLine> TypingLines(int which, const TextField& f, char letter);
 
 struct SessionView {
     Session s;
+    // Row 223 (key items), page 2 of the Main and Session views' details list (ZL / ZR, like the games list's pages):
+    // the page shown (0 the session's lines, 1 the key items) and what the game holds now (`tally_ok` false: no game
+    // loaded yet, so the list has the one page).
+    int detail_page = 0;
+    bool tally_ok = false;
+    coop::host::KeyItemTally tally;
     bool connecting = false;     // starting a server, or joining (not in yet)
     std::string room;            // hosting: the room name (else a join code) friends type, "" none yet
     int players = 0;             // in the session, us included (0: not in one)
