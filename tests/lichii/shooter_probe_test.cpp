@@ -115,7 +115,7 @@ TEST_CASE("shooter probe: a refused prepare counts as refused, an unknown key is
     CHECK(probe.GetCounts().at({Fn::prepare, "Enemy_DungeonBoss_Twinrova"}).refused == 1);
 }
 
-TEST_CASE("shooter probe: a shoot reads its key at +0x1928, a sleep from the registers; the answer is a bool's low byte") {
+TEST_CASE("shooter probe: a shoot reads its key at +0x1928, a sleep from the registers, the answer is a bool's low byte") {
     Memory m;
     const Reader read = m.reader();
     Probe probe;
