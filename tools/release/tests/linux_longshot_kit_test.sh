@@ -548,7 +548,7 @@ sed -i '/^character_select = /d' "$D/coop-options.ini"; rm -f "$D/character-sele
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs5k.txt" 2>&1; export CODE=$?
 check 'Character Select: no answer kept, the NPC part there -> kept, not asked (a reinstall)' \
     bash -c '[ $CODE -eq 0 ] && grep -q "found in your game from before, kept" "$1" && ! grep -q "press y to download" "$1" && grep -qx yes "$3/character-select-answer.txt" &&
-        grep -q "^v1 .* full cz2v$" "$2/coop-charsel.txt"' _ "$tmp/build-cs5k.txt" "$CS" "$D"
+        grep -q "^v1 .* full cz3g$" "$2/coop-charsel.txt"' _ "$tmp/build-cs5k.txt" "$CS" "$D"
 # reinstall-character-select.sh: the copy set aside, his zip fetched again (offline here: said), asked again.
 printf 'character_select = yes\n' >>"$D/coop-options.ini"
 bash "$kit/scripts/character-select.sh" reinstall >"$tmp/cs-re.txt" 2>&1; export CODE=$?
@@ -565,7 +565,7 @@ check 'reinstall-character-select.sh: the answer replaces ask in coop-options.in
 sed -i 's/^character_select = .*/character_select = yes/' "$D/coop-options.ini"
 cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >/dev/null 2>&1
-check 'reinstall-character-select.sh: with his zip, the next start makes it again' grep -q "^v1 .* full cz2v$" "$CS/coop-charsel.txt"
+check 'reinstall-character-select.sh: with his zip, the next start makes it again' grep -q "^v1 .* full cz3g$" "$CS/coop-charsel.txt"
 sed -i 's/^character_select = .*/character_select = ask/' "$D/coop-options.ini"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs5a.txt" 2>&1
 check 'Character Select: an ask line by hand asks even with the NPC part there (not "found, kept"), then takes the answer'     bash -c 'grep -q "press y to download them" "$1" && ! grep -q "found in your game from before" "$1" && grep -qx "character_select = no" "$2/coop-options.ini"' _ "$tmp/build-cs5a.txt" "$D"
@@ -584,7 +584,7 @@ check 'uninstall-character-select.sh: the start takes it out and builds without 
 sed -i 's/^character_select = off$/character_select = yes/' "$D/coop-options.ini"
 cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >/dev/null 2>&1
-check 'Character Select: back on after the uninstall checks' grep -q "^v1 .* full cz2v$" "$CS/coop-charsel.txt"
+check 'Character Select: back on after the uninstall checks' grep -q "^v1 .* full cz3g$" "$CS/coop-charsel.txt"
 kit=$kit_lc D=$kit_lc/data CS="$kit_lc/data/game/mods/OoT Character Select"; rm -rf "$tmp/kit-lc"
 # A newer patch of his laid out otherwise (no record at cz_head): refused, the copy there kept as it was.
 cs_ips "$D/builder/charsel/code.ips" 0
