@@ -197,6 +197,11 @@ add_executable(coop_tests
   ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_time_sync.cpp
 )
 target_include_directories(coop_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook)
+# Each message type adds template code (the Message variant's visits) to every test file that uses it, and
+# lichii/objects_test.cpp outgrew MSVC's object sections (C1128) with MOD_DATA; the server tests have the same flag.
+if(MSVC)
+  target_compile_options(coop_tests PRIVATE /bigobj)
+endif()
 # The Hookshot module and our patch to Hookshot (hookshot/): what can be checked without the game.
 target_sources(coop_tests PRIVATE hookshot/module_test.cpp hookshot/draw_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_draw.cpp
