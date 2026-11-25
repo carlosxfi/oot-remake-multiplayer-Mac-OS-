@@ -149,6 +149,8 @@ jobs:
         run: python tools/hookshot/tests/test_puppet_bow_guard.py -v
       - name: The kit's size table, actor rows and menu archives merge tests
         run: python tools/puppet_pack/tests/test_merge_tables.py -v
+      - name: The kit's Character Select part check (row 280) tests
+        run: python tools/puppet_pack/tests/test_part_check.py -v
       - name: Character Select's readable names tests
         run: python tools/puppet_pack/tests/test_charsel_names.py -v
       - name: Test lanes tests

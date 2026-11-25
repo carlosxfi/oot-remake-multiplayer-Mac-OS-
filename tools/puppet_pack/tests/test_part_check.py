@@ -103,6 +103,39 @@ class NoteTest(unittest.TestCase):
                     f.write(b"..Player_Dark_Animation..")
             self.assertEqual(pc.cmd_check(mod, game, "Character Select", said.append), 0)
             self.assertFalse(os.path.exists(os.path.join(mod, pc.NOTE)))
+            self.assertFalse(os.path.exists(os.path.join(mod, pc.LEFT_LIST)))
+
+    def test_a_part_made_from_a_checked_copy_still_says_so_and_links_stay_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            mod, game, new = (os.path.join(d, n) for n in ("mod", "game", "new"))
+            for root, rel, data in ((mod, PACK, b"..Player_Dark_Animation.."), (game, PACK, b"vanilla"),
+                                    (game, "Model/Player_Dark_Animation.anim.bfres.zs", b"a")):
+                p = os.path.join(root, "romfs" if root == mod else "", rel)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "wb") as f:
+                    f.write(data)
+            with open(os.path.join(mod, pc.RELEASE_LIST), "w") as f:
+                f.write(f"{PACK}\n{SKEL}\n")
+            self.assertEqual(pc.cmd_check(mod, game, "Character Select", lambda s: None), 0)
+            # (the kit's derive: every file as a hard link; the pack is already out)
+            for r, _, fs in os.walk(mod):
+                for n in fs:
+                    a = os.path.join(r, n)
+                    b = os.path.join(new, os.path.relpath(a, mod))
+                    os.makedirs(os.path.dirname(b), exist_ok=True)
+                    os.link(a, b)
+            with open(os.path.join(mod, pc.RELEASE_LIST), encoding="utf-8") as f:
+                listed = f.read()
+            pc.cmd_list(new, None)
+            self.assertEqual(pc.cmd_check(new, game, "Character Select", lambda s: None), 0)
+            with open(os.path.join(new, pc.NOTE), encoding="utf-8") as f:
+                self.assertTrue(f.read().startswith("Character Select: the game's own Player_Adult used"))
+            with open(os.path.join(new, pc.LEFT_LIST), encoding="utf-8") as f:
+                self.assertEqual(f.read().split(), [PACK])
+            # (the copy's own files are as they were: writes replace the link, never write through it)
+            with open(os.path.join(mod, pc.RELEASE_LIST), encoding="utf-8") as f:
+                self.assertEqual(f.read(), listed)
+            self.assertTrue(os.path.isfile(os.path.join(mod, pc.NOTE)))
 
     def test_list_keeps_what_the_copy_had(self):
         with tempfile.TemporaryDirectory() as mod:

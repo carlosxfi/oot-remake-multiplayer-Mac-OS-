@@ -178,6 +178,8 @@ if __name__ == "__main__":
             print("Menus: fake merge %d put back" % n)
 EOF
 : >"$kit/data/tools/puppet_pack/__init__.py"
+# (row 280: the real part check and what it reads with; the build.py and merge_tables.py above are stand-ins)
+cp "$repo/tools/puppet_pack/part_check.py" "$repo/tools/puppet_pack/zs.py" "$repo/tools/puppet_pack/sarc.py" "$kit/data/tools/puppet_pack/"
 mkdir -p "$kit/data/tools/puppet_pack/charsel/data"
 printf 'PATCHcharsel' >"$kit/data/tools/puppet_pack/charsel/data/charsel-native.ips"
 # (dumpcheck.py's stand-in: a file that starts with "nup" is the game; the pack's .nup search takes no other)
@@ -443,7 +445,7 @@ OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs1.txt"
 check 'Character Select: no -> the default part alone (the Characters page, Link), characters.json, stamped ui, credited, the answer kept' \
     bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/UI/LayoutArchiveCategory.Product.100.byml.zs" ] && [ -f "$2/romfs/Model/Player_Child.Player_Child.bfres.zs" ] &&
         [ ! -e "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && [ ! -e "$2/romfs/Tex/Npc_A.bntx.zs" ] && [ -f "$2/romfs/Tex/Mt_Vest_Player_Child_Ac1.bntx.zs" ] && [ -f "$2/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips" ] &&
-        [ -f "$2/characters.json" ] && [ ! -e "$2/INSTALL.txt" ] && grep -q "^v1 .* ui cz3$" "$2/coop-charsel.txt" && grep -q "belong to Nintendo" "$2/CREDITS-coop.txt" &&
+        [ -f "$2/characters.json" ] && [ ! -e "$2/INSTALL.txt" ] && grep -q "^v1 .* ui cz3g$" "$2/coop-charsel.txt" && grep -q "belong to Nintendo" "$2/CREDITS-coop.txt" &&
         grep -qx no "$3/character-select-answer.txt" && [ ! -e "$3/builder/charsel/CS-v1.zip" ] && [ ! -e "$3/game/mods/coop-mods.list" ]' _ "$tmp/build-cs1.txt" "$CS" "$D"
 export CS_RECS=$(cs_recs "$CS/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips")
 check 'Character Select strip: the exefs patch keeps only the 2 records outside his customizer, his own whole beside it (outside exefs)' \
@@ -458,7 +460,7 @@ cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
 : >"$log"; OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs3.txt" 2>&1; export CODE=$?
 export CS_RECS=$(cs_recs "$CS/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips")
 check 'Character Select: character_select = yes gets the NPC part too, his patch still stripped' \
-    bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && [ -f "$2/romfs/Tex/Npc_A.bntx.zs" ] && grep -q "^v1 .* full cz3$" "$2/coop-charsel.txt" &&
+    bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && [ -f "$2/romfs/Tex/Npc_A.bntx.zs" ] && grep -q "^v1 .* full cz3g$" "$2/coop-charsel.txt" &&
         [ "$CS_RECS" = 2 ]' _ "$tmp/build-cs3.txt" "$CS"
 check 'Character Select pack: UI-only -> full (NPC models put in) makes the puppet pack again' bash -c 'grep -q "^puppet_pack" "$1" && grep -q "models:" "$2/.coop-stamp"' _ "$log" "$P"
 # Off again: from the copy there (no zip here, nothing downloaded): the NPC part out, the Characters page kept.
@@ -466,7 +468,7 @@ sed -i 's/^character_select = yes$/character_select = no/' "$D/coop-options.ini"
 : >"$log"; OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs4.txt" 2>&1; export CODE=$?
 check 'Character Select: character_select = no keeps the Characters page, takes the NPC part out, no download' \
     bash -c '[ $CODE -eq 0 ] && [ ! -e "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && [ ! -e "$2/romfs/Tex/Npc_A.bntx.zs" ] && [ -f "$2/romfs/Tex/Mt_Vest_Player_Child_Ac1.bntx.zs" ] && [ -f "$2/romfs/UI/LayoutArchiveCategory.Product.100.byml.zs" ] &&
-        grep -q "^v1 .* ui cz3$" "$2/coop-charsel.txt" && grep -q "exefs=OoT Character Select/exefs/" "$3/game/coop-built-from.txt" && ! grep -q downloading "$1"' _ "$tmp/build-cs4.txt" "$CS" "$D"
+        grep -q "^v1 .* ui cz3g$" "$2/coop-charsel.txt" && grep -q "exefs=OoT Character Select/exefs/" "$3/game/coop-built-from.txt" && ! grep -q downloading "$1"' _ "$tmp/build-cs4.txt" "$CS" "$D"
 # black-cs-01112: a hand copy beside the kit's (another name, or under contents/<title>, the emulators' place) puts a
 # second code patch into the game: the start sets every such copy aside with '_' (the game and its build skip it).
 for d in "$D/game/mods/contents/0400486024DEC000/OoT Character Select" "$D/game/mods/My CS"; do
@@ -512,7 +514,7 @@ cp "$tmp/cs-his.ips" "$CS/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs5.txt" 2>&1; export CODE=$?
 export CS_RECS=$(cs_recs "$CS/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips")
 check 'Character Select: a 0.11.8 full copy keeps its NPC part, his patch stripped, his own kept aside, no download' \
-    bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && grep -q "^v1 .* full cz3$" "$2/coop-charsel.txt" &&
+    bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && grep -q "^v1 .* full cz3g$" "$2/coop-charsel.txt" &&
         [ "$CS_RECS" = 2 ] && cmp -s "$2/coop-charsel-code.ips" "$3" && ! grep -q downloading "$1"' _ "$tmp/build-cs5.txt" "$CS" "$tmp/cs-his.ips"
 # A newer patch of his laid out otherwise (no record at cz_head): refused, the copy there kept as it was.
 cs_ips "$D/builder/charsel/code.ips" 0
@@ -520,7 +522,7 @@ cs_pin https://example.invalid/code.ips "$(sha256sum "$D/builder/charsel/code.ip
 cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs6.txt" 2>&1; export CODE=$?
 check 'Character Select strip: a patch without a customizer region is refused, the copy there kept' \
-    bash -c '[ $CODE -eq 0 ] && grep -q "nothing at cz_head" "$1" && grep -q "^v1 .* - full cz3$" "$2/coop-charsel.txt"' _ "$tmp/build-cs6.txt" "$CS"
+    bash -c '[ $CODE -eq 0 ] && grep -q "nothing at cz_head" "$1" && grep -q "^v1 .* - full cz3g$" "$2/coop-charsel.txt"' _ "$tmp/build-cs6.txt" "$CS"
 cs_pin
 # A copy the player put in by hand (no stamp) is never touched.
 rm -f "$CS/coop-charsel.txt"
@@ -560,6 +562,12 @@ if os.environ.get("FAKE_TOOL_HANG"):
     open(os.environ["FAKE_TOOL_HANG"], "w").write(str(c.pid))
     print("Making 2287 files", flush=True)
     time.sleep(600)
+if os.environ.get("FAKE_TOOL_GONE"):   # (row 280: a pack naming a file its recipes list but it did not make)
+    os.makedirs(os.path.join(mod, "romfs", "Pack", "Actor"), exist_ok=True)
+    open(os.path.join(mod, "romfs", "Pack", "Actor", "Player_Adult.pack.zs"), "w").write("pack: Model/Gone_Skel.Skeleton.bfres")
+    open(os.path.join(mod, "romfs", "Pack", "Actor", "Player_Child.pack.zs"), "w").write("pack: Model/Made_By_Tool")
+    open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "recipes.json"), "w").write(
+        '{"files": [{"path": "Model/Gone_Skel.Skeleton.bfres.zs"}, {"path": "Model/Made_By_Tool.bin"}]}')
 os.makedirs(os.path.join(mod, "romfs", "Model"), exist_ok=True)
 open(os.path.join(mod, "romfs", "Model", "Made_By_Tool.bin"), "w").write(" ".join(a[1:]))
 print("Done: 1 file. The mod folder is ready.")
@@ -607,7 +615,15 @@ check 'Character Select tool: a hanging tool -> stopped at the idle limit with i
 rm -rf "$CS"; cs2_zip; printf 'character_select = yes\n' >>"$D/coop-options.ini"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-t4.txt" 2>&1; export CODE=$?
 check 'Character Select tool: the RomFS there at the install -> made at once, full part gets no --exclude' \
-    bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Made_By_Tool.bin" ] && ! grep -q -- "--exclude" "$2/romfs/Model/Made_By_Tool.bin" && grep -q "^v2 .* full cz3$" "$2/coop-charsel.txt" && [ ! -e "$3/builder/charsel/tool" ]' _ "$tmp/build-t4.txt" "$CS" "$D"
+    bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Made_By_Tool.bin" ] && ! grep -q -- "--exclude" "$2/romfs/Model/Made_By_Tool.bin" && grep -q "^v2 .* full cz3g$" "$2/coop-charsel.txt" && [ ! -e "$3/builder/charsel/tool" ]' _ "$tmp/build-t4.txt" "$CS" "$D"
+# Row 280: a kept file naming a file of the release neither the part nor the game has (the tool's recipes list
+# Model/Gone_Skel.Skeleton, which it did not make) is left out, so the game's own is used; coop-fallback.txt holds the
+# module's line, the start says it, the release's files are listed.
+rm -rf "$CS"; cs2_zip
+FAKE_TOOL_GONE=1 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-t4g.txt" 2>&1; export CODE=$?
+check 'Character Select part check (row 280): a pack naming a released file neither the part nor the game has is left out, coop-fallback.txt + the start line say so, the release listed'     bash -c '[ $CODE -eq 0 ] && [ ! -e "$2/romfs/Pack/Actor/Player_Adult.pack.zs" ] && [ -f "$2/romfs/Pack/Actor/Player_Child.pack.zs" ] &&
+        grep -q "^Character Select: the game.s own Player_Adult used" "$2/coop-fallback.txt" && grep -q "Note: Character Select: the game.s own Player_Adult used" "$1" &&
+        grep -qx "Model/Gone_Skel.Skeleton.bfres.zs" "$2/coop-release-files.txt" && grep -qx "Pack/Actor/Player_Adult.pack.zs" "$2/coop-left-out.txt"' _ "$tmp/build-t4g.txt" "$CS"
 # A tool_folder that leaves the zip is refused.
 rm -rf "$CS"; cs2_zip; cs2_pin 'CS-v2/../x'
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-t5.txt" 2>&1

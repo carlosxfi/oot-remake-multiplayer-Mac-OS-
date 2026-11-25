@@ -465,6 +465,14 @@ charsel_tool_make() {
     fi
     return 0
 }
+# Row 280: tools/puppet_pack/part_check.py on a part the kit makes, as the Windows kit's Invoke-KitPartCheck. 'list'
+# (before any file is left out: <mod>/coop-release-files.txt) or 'check' (after: a kept file naming a released file
+# neither the part nor the game has is left out, the game's own used, <mod>/coop-fallback.txt holds one line the module
+# shows). Its lines on stdout; its exit code (2: could not; 0 also when the tool is not in the kit).
+part_check() {
+    [[ -f $DATA/tools/puppet_pack/part_check.py ]] || return 0
+    "$PY" -I -B "$DATA/tools/puppet_pack/part_check.py" "$@" 2>&1
+}
 charsel_step() {
     local pin=$LS/CHARACTER-SELECT.txt choice='' line rel url zip zsha zfolder folder ourl osha iurl isha want dir new dl why='' part have derive=0 json ips a=''
     [[ -f $pin ]] || return 0
@@ -523,7 +531,7 @@ charsel_step() {
     fi
     part=ui
     [[ $choice == yes ]] && part=full
-    want="$rel $zsha $osha ${isha:--} $part cz3"   # (cz2, row 242: the default part keeps Link own textures; an older ui copy is never derived from. cz2v: his voice files deleted. cz3, row 280: it keeps Model/Player_Dark_Animation.Skeleton)
+    want="$rel $zsha $osha ${isha:--} $part cz3g"   # (cz2, row 242: the default part keeps Link own textures; an older ui copy is never derived from. cz2v: his voice files deleted. cz3, row 280: it keeps Model/Player_Dark_Animation.Skeleton. cz3g, row 280: each part is checked by part_check.py)
     local what='the Characters page (NPC characters not downloaded)'
     [[ $part == full ]] && what='with its NPC characters'
     if [[ -d $dir && ! -f $dir/coop-charsel.txt ]]; then say "Character Select: your own copy in $dir is used as it is."; return 0; fi
@@ -532,12 +540,14 @@ charsel_step() {
     # The copy there, of this release (a 0.11.8 stamp, four fields: full): its part decides whether it can give the one wanted.
     local hf wf
     read -r -a hf <<<"$have"; read -r -a wf <<<"$want"
-    if [[ -d $dir/romfs && ${#hf[@]} -ge 4 && "${hf[*]:0:4}" == "${wf[*]:0:4}" && ( ${hf[4]:-full} == full || ( $part == ui && ${hf[5]:-} == cz3 ) ) ]]; then derive=1; fi
+    if [[ -d $dir/romfs && ${#hf[@]} -ge 4 && "${hf[*]:0:4}" == "${wf[*]:0:4}" && ( ${hf[4]:-full} == full || ( $part == ui && ${hf[5]:-} == cz3g ) ) ]]; then derive=1; fi
     dl=$B/charsel new=$CS_HOME/_$folder.new json=$dl/characters.json ips=''
     mkdir -p "$dl" "$CS_HOME"
     rm -rf "$new"
     if ((derive)); then
         mkdir -p "$new"
+        # (row 280: a copy made before the release list was kept lists what it has; the copy below takes the list along)
+        [[ -f $dir/coop-release-files.txt ]] || part_check list --mod "$dir" >/dev/null || true
         charsel_py derive "$dir" "$new" "$part" || why='the copy there could not be linked'
         json=$dir/characters.json
     else
@@ -603,16 +613,31 @@ with zipfile.ZipFile(z) as f:
 ' "$dl/$zip" "$tfolder" "$dl/tool" || [[ ! -f $dl/tool/player.py ]]; then
                         why="$zip has no $tfolder/player.py"; rm -rf "$dl/tool"
                     elif [[ ! -f $GAME/romfs/Pack/ZsDic.pack.zs ]]; then why="no game RomFS in $GAME/romfs to make its files from"; rm -rf "$dl/tool"
-                    elif charsel_tool_make "$new" "$part"; then rm -rf "$dl/tool"
+                    elif charsel_tool_make "$new" "$part"; then
+                        # (row 280: the release's files, the ones its tool made and the ones it was told to leave out,
+                        # before any is left out; the check after charsel_py complete reads them)
+                        part_check list --mod "$new" --recipes "$dl/tool/recipes.json" >/dev/null || true
+                        rm -rf "$dl/tool"
                     else why=$cs_tool_why; rm -rf "$dl/tool"
                     fi
                 fi
+            elif [[ -z $why ]]; then part_check list --mod "$new" >/dev/null || true
             fi
         fi
     fi
     if [[ -z $why ]]; then
         local err
         if ! err=$(charsel_py complete "$new" "$part" "$json" "$ips" "$want" "$rel" 2>&1 >/dev/null); then why=${err:-the folder could not be made ready}; fi
+    fi
+    if [[ -z $why && -f $GAME/romfs/Pack/ZsDic.pack.zs ]]; then
+        # (row 280: a kept file that names a file neither this part nor the game has makes every load of it wait for good
+        # (a black world); such files are left out, so the game's own are used, and the module says so. Character models
+        # are guarded by the module itself (coop_char_slots). Never stops the install.)
+        local pc prc=0
+        pc=$(part_check check --mod "$new" --romfs "$GAME/romfs" --name 'Character Select' --guarded '^Model/Player_(Adult|Child)_C\d{3}\.') || prc=$?
+        if ((prc == 2)); then warn "Character Select: its files could not be checked ($(printf '%s\n' "$pc" | grep -v '^[[:space:]]*$' | tail -n 1)); it is put in as it is."
+        elif [[ -f $new/coop-fallback.txt ]]; then warn "$(head -n1 "$new/coop-fallback.txt")"
+        fi
     fi
     if [[ -z $why ]]; then
         ((derive)) || curl -fsSL --max-time 30 -o "$new/LICENSE.txt" "https://raw.githubusercontent.com/snaildev99/OoT-Character-Select/$rel/LICENSE" 2>/dev/null || rm -f "$new/LICENSE.txt"

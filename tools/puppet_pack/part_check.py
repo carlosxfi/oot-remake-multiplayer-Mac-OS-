@@ -30,6 +30,7 @@ import sys
 
 RELEASE_LIST = "coop-release-files.txt"
 NOTE = "coop-fallback.txt"
+LEFT_LIST = "coop-left-out.txt"  # (the paths the check left out, for a part made from this one)
 # Files that name other files: packs, models, tables, sequences. Textures, sounds and cloth only hold data.
 _NAMING = re.compile(r"^(Pack|Model|Sequence|RSDB|GameData|Mals|UI|AI|Logic|Component|Event|Effect)/", re.I)
 _TOKEN = re.compile(rb"[A-Za-z0-9_]{4,}")
@@ -126,11 +127,22 @@ def _names_reader(romfs, game_romfs):
     return names_of
 
 
+def _write_new(path, data):
+    """A new file in place of path: a part made from another copy holds hard links to that copy's files, so writing
+    into one would change the copy the kit keeps to undo with (mods/_<folder>.prev)."""
+    tmp = path + ".coop-new"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
 def _raise_sizes(mod_romfs, game_romfs, left, say):
     """Each left-out file's entry in the part's size table at least the game's own (the game's file is used now)."""
-    from .merge_tables import Codec
     res = os.path.join(mod_romfs, "System", "Resource")
     tables = sorted(n for n in os.listdir(res) if n.endswith(".rsizetable.zs")) if os.path.isdir(res) else []
+    if not tables:
+        return
+    from .merge_tables import Codec
     c = Codec(game_romfs)
     for n in tables:
         theirs = os.path.join(game_romfs, "System", "Resource", n)
@@ -148,8 +160,7 @@ def _raise_sizes(mod_romfs, game_romfs, left, say):
                 mine.set(p.removesuffix(".zs"), g)
                 raised += 1
         if raised:
-            with open(os.path.join(res, n), "wb") as f:
-                f.write(c.save(mine, raw))
+            _write_new(os.path.join(res, n), c.save(mine, raw))
             say(f"part check: {n}: {raised} entries raised to the game's own")
 
 
@@ -162,8 +173,7 @@ def cmd_list(mod, recipes):
     if os.path.isfile(have):  # (a part made from another copy: what that copy's release had)
         with open(have, encoding="utf-8") as f:
             paths |= {l.strip() for l in f if l.strip()}
-    with open(have, "w", encoding="utf-8", newline="\n") as f:
-        f.write("".join(p + "\n" for p in sorted(paths)))
+    _write_new(have, "".join(p + "\n" for p in sorted(paths)).encode("utf-8"))
     print(f"part check: {len(paths)} release files listed")
 
 
@@ -183,9 +193,16 @@ def cmd_check(mod, game_romfs, name, say=print, guarded=None):
         return 2
     left, why = plan(released, kept, game, _names_reader(mod_romfs, game_romfs),
                       _names_reader(game_romfs, game_romfs), guarded)
-    if os.path.isfile(note):
-        os.remove(note)
-    if not left:
+    # (a part made from a copy this check left files out of: those stay out, and the line still names them)
+    gone = os.path.join(mod, LEFT_LIST)
+    before = set()
+    if os.path.isfile(gone):
+        with open(gone, encoding="utf-8") as f:
+            before = {l.strip() for l in f if l.strip()} - kept
+    for f in (note, gone):
+        if os.path.isfile(f):
+            os.remove(f)
+    if not left and not before:
         say("part check: every file the part names is in the part or the game")
         return 0
     for p in left:
@@ -193,9 +210,10 @@ def cmd_check(mod, game_romfs, name, say=print, guarded=None):
             "which neither the part nor the game has")
         os.remove(os.path.join(mod_romfs, p))
     _raise_sizes(mod_romfs, game_romfs, left, say)
-    line = note_line(name, left)
-    with open(note, "w", encoding="utf-8", newline="\n") as f:
-        f.write(line + "\n")
+    every = sorted(set(left) | before)
+    _write_new(gone, "".join(p + "\n" for p in every).encode("utf-8"))
+    line = note_line(name, every)
+    _write_new(note, (line + "\n").encode("utf-8"))
     say(f"part check: {line}")
     return 0
 
