@@ -49,6 +49,8 @@ In 0.11.13 (game rebuild on Longshot v3.2.0; protocol 17). Checked in a game by 
 - **Not yet seen in a game**: [P: list from reports/release-01113.md].
 - **Rejoining alone after the host quits** (row 273): [P: fixed in 0.11.13 if review-273-c lands, else keep the 0.11.12 line and workaround].
 - **Twinrova's attacks** (row 222): [P: still open or fixed, from twinrova-222-fix-3].
+- **Redead and Gibdo freeze, Meg's decoys, Dead Hand's hands** (tracker rows 230 to 232): fixed (rows 231 and 232 passed in a game; row 230's fix is in the code). Tell us if one still differs between games.
+- **Kit tools by Geno, PRs #338 and #339** (kit instances keep their own logs and caches; Nucleus Co-op root path fix): from Geno, merged with our review fixes; not seen in a game yet.
 
 ## New in 0.11.12
 
@@ -136,7 +138,6 @@ In 0.11.8. Watched working in a two-game run (marked *seen*): the Gold Skulltula
 - **Microsoft Defender** may warn about the zip or `Update.bat` ("Trojan:Script/Wacatac"): a false alarm on our scripts, which we report to Microsoft.
 
 - **The pause menu's Multiplayer page and the title's Host and Join rows** (new in 0.11.6, DrHammer79, [PR #281](https://github.com/daurosk/oot-remake-multiplayer/pull/281) and the PRs after it): the page and the rows are drawn in both games and the game starts with them (0.11.5 made its pack without them because they crashed the game at start). Typing a room name on the Join rows, the list of games on this network, rejoining by itself and the page through a stall are in the code, not yet checked in a game. The Multiplayer tab opens as before (**−** and **+**, Home or F1).
-- **Redead and Gibdo freeze only one player**, **Meg's decoys can differ per game** and **Dead Hand's hands grab only one player** (tracker rows 230 to 232): not fixed yet, planned for a later release.
 
 ## Not yet checked in a game, or only partly
 
