@@ -2954,7 +2954,7 @@ void OnEvent(const coop::net::Event& event) {
         queue.push_back(CoopLinkSound::Sound{sound->name, now_ms});
     } else if (const auto* emote = std::get_if<coop::protocol::Emote>(&event.message);
                event.kind == EventKind::message && emote != nullptr) {
-        // EMOTE (coop_emote.h): the puppet holds the emote's animation (Collect) and makes its sound. An id this
+        // EMOTE (coop_emote.h): the puppet holds the emote's animation (Collect); a call is said by its Navi (coop_emote_body.h). An id this
         // build does not know is ignored.
         if (emote->player_number == 0 || emote->player_number >= g_sounds.size()) {
             return;
@@ -2972,13 +2972,6 @@ void OnEvent(const coop::net::Event& event) {
         if (g_director) {
             g_director->Note("P" + std::to_string(emote->player_number) + " EMOTE received: '" +
                             (def != nullptr ? def->name : "?") + "'");
-        }
-        if (def != nullptr && def->sound[0] != '\0') {
-            auto& queue = g_sounds[emote->player_number];
-            if (queue.size() >= CoopLinkSound::kHeardMax) {
-                queue.erase(queue.begin());
-            }
-            queue.push_back(CoopLinkSound::Sound{def->sound, now_ms});
         }
     } else if (event.kind == EventKind::message) {
         const auto* sample = std::get_if<coop::protocol::PlayerSample>(&event.message);

@@ -1,0 +1,53 @@
+# both Links side by side on one spawn (Deku Tree entrance), facing the cameras: A says /wave /yes /wow /here, then B does. PASS: in the shots of BOTH games both Links are in view and the sender's Link makes the gesture (own Link on their own screen, puppet on the other's) once, then stands again (-after); log lines 'coop: emote: our Link plays' on the sender, 'Navi says' on both after a /here; moving during a gesture (wow of each side) ends it with no snap back; crash lines 0.
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_OBJECTS=1,LICHII_COOP_CHEATS=1
+#! timeout 600
+mark start
+warp InsideTheDekuTree Entrance
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark after
+wait 120
+stick 0 -0.4 12   # face the camera
+wait 300
+mark a-side-by-side
+chat /wave
+wait 24
+mark a-wave-1
+wait 40
+mark a-wave-2
+wait 260
+mark a-wave-after
+chat /yes
+wait 24
+mark a-yes-1
+wait 40
+mark a-yes-2
+wait 260
+mark a-yes-after
+chat /here
+wait 24
+mark a-here-1
+wait 40
+mark a-here-2
+wait 260
+mark a-here-after
+chat /wow
+wait 30
+mark a-wow-1
+stick 0 -0.4 12
+wait 30
+mark a-wow-moved
+wait 240
+mark a-wow-after
+wait 1884
+mark end

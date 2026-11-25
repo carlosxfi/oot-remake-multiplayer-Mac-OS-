@@ -117,7 +117,7 @@ add_executable(coop_tests
   lichii/brain_state_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_brain_state.cpp
   lichii/boss_scenes_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_boss_scenes.cpp
   lichii/teleport_test.cpp
-  lichii/emote_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_emote.cpp
+  lichii/emote_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_emote.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_emote_body.cpp
   lichii/hallway_test.cpp
   lichii/pivot_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_hallway.cpp

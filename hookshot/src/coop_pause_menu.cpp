@@ -227,12 +227,12 @@ const std::vector<Command>& Commands() {
          "place, talk to someone or read a sign within a minute to travel. Not during a cutscene, a talk or a boss "
          "fight."},
         {"/tp <player>", "The same as /teleport."},
-        // Emotes and pings (lichii/hook/coop_emote.cpp Parse): the others see your Link play a gesture.
+        // Emotes and pings (lichii/hook/coop_emote.cpp Parse): everyone sees your Link play a gesture.
         {"/emote", "Lists the emotes."},
         {"/wave, /yes, /no, /look, /here, /wow",
-         "Your Link plays a gesture on the other players' screens, as they see you (/emote wave is the same). /here "
-         "also calls out, and every player reads the call in the chat. It stops when you move. Nothing happens "
-         "when you play alone."},
+         "Your Link plays a gesture, on your screen when he stands still and on the other players' (/emote wave is "
+         "the same). /here also sends Navi to call out, and every player reads the call in the chat. It stops when "
+         "you move. Nothing happens when you play alone."},
         {"/pvp", "Says whether players can hurt each other (PvP) in this game."},
         {"/pvp on, /pvp off", "The host only: lets players hurt each other, or stops it, for everyone."},
         // Down but not out (docs/play-online.md "Down but not out"; lichii/hook/coop_dbno.cpp Parse).

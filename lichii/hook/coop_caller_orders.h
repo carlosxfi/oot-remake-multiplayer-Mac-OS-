@@ -40,11 +40,12 @@ inline constexpr int kPvpShield = 67;     // phase 4: the _Pvp copies' Life invi
 inline constexpr int kTestDress = 68;     // test only: `dress` asks the game's own equip for our Link (coop_hook.cpp)
 inline constexpr int kKeptShield = 69;    // row 160 (b): kept kills' copies held unhittable (coop_objects.cpp)
 inline constexpr int kLifeGauge = 70;     // row 238: HUD gauges refreshed after co-op life writes (coop_life_gauge.h)
+inline constexpr int kEmote = 71;         // our Link's gesture and the Navis' calls (coop_emote_body.h)
 
 inline constexpr std::array kAll{kSpawn,     kShotReflect, kFairy,       kMover,     kDrops,   kGrass,        kTime,
                                  kSwitchStand, kBrainState, kBossTable, kBossOrders, kLiftRide,    kDbnoBody,  kSwitchShare, kBossRooms, kEventResult, kEyeSwitch,
                                  kLiveEvents, kTeleportEvent, kScrubs, kCounters, kStory,      kOcarinaEquip, kPvpShield,
-                                 kTestDress, kKeptShield, kLifeGauge};
+                                 kTestDress, kKeptShield, kLifeGauge, kEmote};
 
 constexpr bool Unique() {
     for (std::size_t i = 0; i < kAll.size(); ++i) {

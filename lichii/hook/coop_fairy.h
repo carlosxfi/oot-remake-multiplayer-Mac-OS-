@@ -193,6 +193,9 @@ private:
 // empty without one. Also for /teleport (coop_teleport.h CheckMove).
 CoopRooms::Table RoomTable();
 
+// The calc thread: `number`'s live fairy in our game (0: none).
+std::uint64_t FairyActor(std::uint8_t number);
+
 void Publish(std::uint64_t main_base, const std::optional<std::string>& scene,
              const std::optional<Vec3>& position, bool local_event,
              coop::host::Session* session, std::uint64_t server_now_us);

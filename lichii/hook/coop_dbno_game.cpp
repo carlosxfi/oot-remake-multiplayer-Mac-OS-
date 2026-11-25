@@ -26,6 +26,7 @@
 #include "coop/net/client.hpp"
 #include "coop_actor_events.h"
 #include "coop_dbno_body.h"
+#include "coop_emote_body.h"
 #include "coop_objects.h"
 #include "coop_puppet.h"
 #include "coop_fairy.h"
@@ -443,6 +444,11 @@ void Frame(const std::optional<std::string>& scene, const std::optional<coop::ho
                                           CoopPuppet::QuatToMatrix(*reading->rotation))
                         : std::nullopt);
     Body::TheCrawl().Want(body);
+    // Our Link's emote gesture (coop_emote_body.h): not while an event or lying drives him, or no reading of him.
+    CoopEmote::TheBody().SetOur({reading ? body.actor : 0, body.lying || body.event});
+    for (auto& note : CoopEmote::TheBody().TakeNotes()) {
+        LOG_INFO(Core, "coop: emote: {}", note);
+    }
     for (auto& note : Body::TheCrawl().TakeNotes()) {
         LOG_INFO(Core, "coop: dbno: {}", note);
     }
