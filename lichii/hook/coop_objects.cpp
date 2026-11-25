@@ -86,8 +86,10 @@
 #include <utility>
 #include <tuple>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -109,6 +111,7 @@
 #include "coop_hook.h"
 #include "coop_pivot.h"
 #include "coop/host/game_items.hpp"
+#include "coop/host/key_item_tally.hpp"
 #include "coop/host/session.hpp"
 #include "coop/net/client.hpp"
 #include "coop_objects_sync.h"
@@ -2330,7 +2333,27 @@ public:
         // tools/autotest/compare_digest.py to compare with the other games' logs. The entries are built only
         // when a beat is due, not every frame.
         if (digest_.Due(server_now_us)) {
-            for (const std::string& line : digest_.Take(server_now_us, *scene, self, sync_.DigestEntries())) {
+            std::vector<CoopDigest::Entry> entries = sync_.DigestEntries();
+            if (main_ != 0) {
+                // Row 223: the key items this game holds, one entry of its own (every game has it in every scene): per
+                // group the held flags as a mask, so compare_digest.py names a game that lacks a song or a medallion.
+                CoopHook::EmulatorMemory memory(system.ApplicationMemory(), main_);
+                coop::host::GameFlags flags(memory);
+                const coop::host::KeyItemTally t = coop::host::key_item_tally(
+                    [&flags](std::uint32_t hash) { return flags.get_bool(hash).value_or(false); });
+                CoopDigest::Entry e{coop::protocol::ObjectId{coop::protocol::ObjectKind::placed, 0, CoopDigest::kKeyItemsId}, {}};
+                e.fields.emplace_back("name", "key_items");
+                char buf[24];
+                for (const coop::host::TallyGroup g : {coop::host::TallyGroup::songs, coop::host::TallyGroup::medallions,
+                                                       coop::host::TallyGroup::stones, coop::host::TallyGroup::dungeon_items}) {
+                    std::snprintf(buf, sizeof buf, "%llx", static_cast<unsigned long long>(t.at(g).mask));
+                    std::string key(coop::host::tally_group_label(g));
+                    for (char& c : key) c = c == ' ' ? '_' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    e.fields.emplace_back("items." + key, buf);
+                }
+                entries.push_back(std::move(e));
+            }
+            for (const std::string& line : digest_.Take(server_now_us, *scene, self, entries)) {
                 LOG_INFO(Core, "{}", line);
             }
         }

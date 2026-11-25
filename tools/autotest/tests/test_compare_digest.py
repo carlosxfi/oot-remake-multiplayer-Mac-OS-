@@ -110,6 +110,22 @@ class CompareDigest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("NOTHING COMPARED", out)
 
+    def test_key_items_mask_difference_is_a_desync(self):
+        # Row 223: the key-item entry. B lacks a song A holds (masks differ) for longer than --hold: a DESYNC that
+        # names the object and both masks; with the same masks the games agree.
+        def items(t, self_, songs):
+            return HEAD + ("coop: digest: t=%d scene=S self=%d obj=p4b45594954454d53 name=key_items items.songs=%s"
+                           " items.medallions=3f items.spiritual_stones=7 items.dungeon_items=0 h=0" % (t, self_, songs))
+        rooms_a = [room(t, "S", 1) for t in range(0, 14000, 2000)]
+        rooms_b = [room(t, "S", 2) for t in range(0, 14000, 2000)]
+        code, out = self.run_tool([items(0, 1, "1fff")] + rooms_a, [items(0, 2, "1fff")] + rooms_b)
+        self.assertEqual(code, 0, out)
+        code, out = self.run_tool([items(0, 1, "1fff")] + rooms_a, [items(0, 2, "1ffe")] + rooms_b)
+        self.assertEqual(code, 1, out)
+        self.assertIn("key_items", out)
+        self.assertIn("items.songs", out)
+        self.assertIn("1ffe", out)
+
 
 if __name__ == "__main__":
     unittest.main()

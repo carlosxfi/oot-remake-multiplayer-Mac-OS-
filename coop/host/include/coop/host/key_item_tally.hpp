@@ -17,6 +17,9 @@ enum class TallyGroup : std::uint8_t { songs, medallions, stones, dungeon_items 
 struct TallyCount {
   unsigned owned = 0;
   unsigned total = 0;
+  // Which are held: bit i is the group's i-th flag in item_flags() order (by hash, the same in every game), so two
+  // games' masks say WHICH item differs, not only how many (the sync digest, coop_digest.h).
+  std::uint64_t mask = 0;
 };
 
 struct KeyItemTally {
