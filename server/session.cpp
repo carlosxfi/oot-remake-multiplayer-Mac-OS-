@@ -1101,15 +1101,12 @@ void Session::on_mods(ConnectionId id, Connection& c, Message& message) {
 
 // MOD_DATA (protocol 18, issue 250; docs/protocol.md "Mods"): a player's own values, by mod id and key. Kept per
 // player (forgotten when it leaves), relayed when they change, given to joiners; the bytes are never read.
+//
+// The send budget never loses a value: a game marks what it sent as the server's and does not send it again, so a
+// change over the budget (sends bunched by a stall, a relay hiccup or ENet resends) is kept like any other and its
+// key waits until the budget lets one go (run_held_mod_data); the others then get the key's value of that moment.
+// Only the count limits refuse, and a game keeps those itself (coop_mod_data.h Store::Set), so no answer is needed.
 void Session::on_mod_data(ConnectionId id, Connection& c, ModData& data, std::uint64_t now_us) {
-  // The budget: a burst of kModDataSendsPerSecond, then one each gap (a game sends at most one each gap anyway).
-  constexpr std::uint64_t kGapUs = 1'000'000 / kModDataSendsPerSecond;
-  const std::uint64_t due = std::max(c.mod_data_due_us, now_us);
-  if (due - now_us > kGapUs * (kModDataSendsPerSecond - 1)) {
-    ++stats_.mod_data_refused;
-    return;
-  }
-  c.mod_data_due_us = due + kGapUs;
   auto mod = c.mod_data.find(data.mod_id);
   if (data.value.empty()) {  // clears the key
     if (mod == c.mod_data.end() || mod->second.erase(data.key) == 0) return;
@@ -1135,9 +1132,43 @@ void Session::on_mod_data(ConnectionId id, Connection& c, ModData& data, std::ui
       key->second = data.value;
     }
   }
-  data.player_number = c.number;
-  send_to_others(id, kChannelSession, data);
+  const std::pair<std::string, std::string> held{data.mod_id, data.key};
+  if (!c.mod_data_held.empty() || !take_mod_data_slot(c, now_us)) {
+    // Over the budget, or others already wait (in order): this key goes when its turn comes, with its value then.
+    if (c.mod_data_held.insert(held).second) ++stats_.mod_data_held;
+    return;
+  }
+  relay_mod_data(id, c, data.mod_id, data.key);
+}
+
+// The budget: a burst of kModDataSendsPerSecond, then one each gap (a game sends at most one each gap anyway).
+bool Session::take_mod_data_slot(Connection& c, std::uint64_t now_us) {
+  constexpr std::uint64_t kGapUs = 1'000'000 / kModDataSendsPerSecond;
+  const std::uint64_t due = std::max(c.mod_data_due_us, now_us);
+  if (due - now_us > kGapUs * (kModDataSendsPerSecond - 1)) return false;
+  c.mod_data_due_us = due + kGapUs;
+  return true;
+}
+
+// The key's value as the server keeps it now (none: the key was cleared), with the player's number.
+void Session::relay_mod_data(ConnectionId id, const Connection& c, const std::string& mod_id, const std::string& key) {
+  ModData out{c.number, mod_id, key, {}};
+  if (const auto mod = c.mod_data.find(mod_id); mod != c.mod_data.end()) {
+    if (const auto value = mod->second.find(key); value != mod->second.end()) out.value = value->second;
+  }
+  send_to_others(id, kChannelSession, out);
   ++stats_.mod_data_relayed;
+}
+
+void Session::run_held_mod_data(std::uint64_t now_us) {
+  for (auto& [id, c] : connections_) {
+    if (c.state != State::joined) continue;
+    while (!c.mod_data_held.empty() && take_mod_data_slot(c, now_us)) {
+      const auto held = *c.mod_data_held.begin();
+      c.mod_data_held.erase(c.mod_data_held.begin());
+      relay_mod_data(id, c, held.first, held.second);
+    }
+  }
 }
 
 // To the victim only, and only while PvP is on: a game with PvP off never
@@ -3785,6 +3816,7 @@ void Session::remove_player(ConnectionId id, LeaveReason reason, std::uint64_t n
 
 void Session::tick(std::uint64_t now_us) {
   run_deferred(now_us);  // reliable messages that waited for their sender's rate
+  run_held_mod_data(now_us);  // MOD_DATA changes that waited for their sender's budget
   // Wrong-password counts whose window and block are both over.
   for (auto it = wrong_guesses_.begin(); it != wrong_guesses_.end();) {
     const WrongGuesses& g = it->second;

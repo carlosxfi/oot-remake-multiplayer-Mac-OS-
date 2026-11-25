@@ -112,6 +112,7 @@ void Store::Welcomed(std::uint8_t number) {
     number_ = number;
     sent_.clear();
     last_send_ms_.reset();
+    ++connection_;
 }
 
 void Store::Left() {
@@ -119,6 +120,7 @@ void Store::Left() {
     number_ = 0;
     sent_.clear();
     last_send_ms_.reset();
+    ++connection_;
 }
 
 std::optional<proto::ModData> Store::Next(std::uint64_t now_ms) const {
@@ -146,7 +148,8 @@ std::optional<proto::ModData> Store::Next(std::uint64_t now_ms) const {
     return std::nullopt;
 }
 
-void Store::MarkSent(const proto::ModData& data, std::uint64_t now_ms) {
+void Store::MarkSent(const proto::ModData& data, std::uint64_t now_ms, std::uint64_t connection) {
+    if (connection != connection_) return;  // sent on a connection that is gone: the new one sends it again
     last_send_ms_ = now_ms;
     if (data.value.empty()) {
         if (const auto mod = sent_.find(data.mod_id); mod != sent_.end()) {
@@ -216,6 +219,7 @@ void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
 void Frame(coop::host::Session* session, std::uint64_t now_ms) {
     Glue& g = TheGlue();
     std::optional<proto::ModData> next;
+    std::uint64_t connection = 0;
     {
         std::lock_guard lock(g.mutex);
         if (session == nullptr) {
@@ -226,6 +230,7 @@ void Frame(coop::host::Session* session, std::uint64_t now_ms) {
             return;
         }
         next = g.store.Next(now_ms);
+        connection = g.store.connection();
     }
     if (!next) return;
     const bool sent = session->with_client([&](coop::net::Client& client) {
@@ -233,7 +238,7 @@ void Frame(coop::host::Session* session, std::uint64_t now_ms) {
     });
     if (sent) {
         std::lock_guard lock(g.mutex);
-        g.store.MarkSent(*next, now_ms);
+        g.store.MarkSent(*next, now_ms, connection);
     }
 }
 

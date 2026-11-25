@@ -78,9 +78,13 @@ public:
 
     // The next MOD_DATA to send at `now_ms`, at most one each kModDataSendGapMs: a key whose value is not the one the
     // server has (a cleared key first, so a new key never comes before the clear that makes room for it). nullopt
-    // when nothing is due, the gap has not passed or this game is not in a session. MarkSent once it went out.
+    // when nothing is due, the gap has not passed or this game is not in a session. MarkSent once it went out, with
+    // the connection() read with Next: a send of a connection that has been replaced since (a reconnect between the
+    // send and MarkSent) is not marked, so the new connection sends the value again.
     std::optional<coop::protocol::ModData> Next(std::uint64_t now_ms) const;
-    void MarkSent(const coop::protocol::ModData& data, std::uint64_t now_ms);
+    void MarkSent(const coop::protocol::ModData& data, std::uint64_t now_ms, std::uint64_t connection);
+    // Counts the connections (each Welcomed and Left).
+    std::uint64_t connection() const { return connection_; }
 
     std::vector<Change> TakeChanges();
     // The players with values now, and this game's number (0: not in a session).
@@ -98,6 +102,7 @@ private:
     std::vector<Change> changes_;
     std::uint8_t number_ = 0;
     std::optional<std::uint64_t> last_send_ms_;
+    std::uint64_t connection_ = 0;
     std::uint64_t dropped_ = 0;
 };
 

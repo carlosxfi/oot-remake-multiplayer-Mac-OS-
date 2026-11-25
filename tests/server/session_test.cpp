@@ -5692,17 +5692,51 @@ TEST_CASE("mod data: at most 8 keys per mod, 16 mods per player, a burst of 4 se
   CHECK_FALSE(send("mod99", "k", {1}));  // a 17th mod
   CHECK(h.session.stats().mod_data_refused == 2);
 
-  // The budget: 4 at once, then one each quarter second.
+  // The budget: 4 at once, then one each quarter second. A change over it is never lost (the game marks a sent
+  // value as the server's and does not send it again): 20 sends bunched in one tick by a stall all arrive, in turn.
   h.now += kSecond;
   h.clear();
-  for (int i = 0; i < 6; ++i) h.receive(2, ModData{0, "b", "k", {static_cast<std::uint8_t>(i + 1)}}, kChannelSession);
+  const auto key_of = [](int i) { return std::pair<std::string, std::string>{"b" + std::to_string(i / 8), "k" + std::to_string(i % 8)}; };
+  for (int i = 0; i < 20; ++i) {
+    const auto [mod, key] = key_of(i);
+    h.receive(2, ModData{0, mod, key, {static_cast<std::uint8_t>(i + 1)}}, kChannelSession);
+  }
   CHECK(messages_to<ModData>(h, 1).size() == kModDataSendsPerSecond);
-  CHECK(h.session.stats().mod_data_refused == 4);
+  CHECK(h.session.stats().mod_data_refused == 2);  // the budget refuses nothing
+  CHECK(h.session.stats().mod_data_held == 16);
+  // A held key that changes again goes once, with its newest value.
+  h.receive(2, ModData{0, "b2", "k3", {77}}, kChannelSession);
+  CHECK(h.session.stats().mod_data_held == 16);
+  for (int step = 0; step < 16; ++step) {
+    h.now += 1'000'000 / kModDataSendsPerSecond;
+    h.session.tick(h.now);
+    h.collect();
+  }
+  const auto told = messages_to<ModData>(h, 1);
+  CHECK(told.size() == 20);
+  for (int i = 0; i < 20; ++i) {
+    const auto [mod, key] = key_of(i);
+    const std::uint8_t value = i == 19 ? 77 : static_cast<std::uint8_t>(i + 1);
+    CHECK(std::count(told.begin(), told.end(), ModData{2, mod, key, {value}}) == 1);
+  }
+  // A joiner gets the newest values too.
   h.clear();
-  h.now += 1'000'000 / kModDataSendsPerSecond;
-  h.receive(2, ModData{0, "b", "k", {9}}, kChannelSession);
-  h.receive(2, ModData{0, "b", "k", {10}}, kChannelSession);
-  CHECK(messages_to<ModData>(h, 1) == std::vector<ModData>{ModData{2, "b", "k", {9}}});
+  h.join(3, "Saria");
+  const auto joiner = messages_to<ModData>(h, 3);
+  CHECK(std::count(joiner.begin(), joiner.end(), ModData{2, "b2", "k3", {77}}) == 1);
+  // A held clear goes as a clear.
+  h.clear();
+  h.now += kSecond;
+  for (int i = 0; i < 5; ++i) {
+    const auto [mod, key] = key_of(i);
+    h.receive(2, ModData{0, mod, key, {}}, kChannelSession);
+  }
+  h.now += kSecond;
+  h.session.tick(h.now);
+  h.collect();
+  const auto cleared = messages_to<ModData>(h, 1);
+  CHECK(cleared.size() == 5);
+  CHECK(std::count(cleared.begin(), cleared.end(), ModData{2, "b0", "k4", {}}) == 1);
 }
 
 // Race mode (coop/protocol/race.hpp): the world stays in each game. 3 players, one joining mid-game.

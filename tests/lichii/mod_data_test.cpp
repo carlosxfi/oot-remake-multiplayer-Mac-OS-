@@ -48,7 +48,7 @@ TEST_CASE("mod data store: sends each change once, a clear first, one each quart
     auto next = s.Next(now);
     REQUIRE(next);
     CHECK(*next == proto::ModData{proto::kPlayerSelf, "a", "x", B("1")});
-    s.MarkSent(*next, now);
+    s.MarkSent(*next, now, s.connection());
     CHECK_FALSE(s.Next(now + 100));  // nothing due
     s.Set("a", "x", B("2"));
     s.Set("a", "y", B("3"));
@@ -59,7 +59,7 @@ TEST_CASE("mod data store: sends each change once, a clear first, one each quart
     CHECK(*next == proto::ModData{proto::kPlayerSelf, "a", "x", B("2")});
     // Not sent (the client refused it): still due.
     CHECK(s.Next(now) == next);
-    s.MarkSent(*next, now);
+    s.MarkSent(*next, now, s.connection());
     // A clear goes before a key the server has not got yet.
     s.Set("a", "x", {});
     s.Set("a", "y", B("3"));
@@ -67,12 +67,12 @@ TEST_CASE("mod data store: sends each change once, a clear first, one each quart
     next = s.Next(now);
     REQUIRE(next);
     CHECK(*next == proto::ModData{proto::kPlayerSelf, "a", "x", {}});
-    s.MarkSent(*next, now);
+    s.MarkSent(*next, now, s.connection());
     now += proto::kModDataSendGapMs;
     next = s.Next(now);
     REQUIRE(next);
     CHECK(*next == proto::ModData{proto::kPlayerSelf, "a", "y", B("3")});
-    s.MarkSent(*next, now);
+    s.MarkSent(*next, now, s.connection());
     now += proto::kModDataSendGapMs;
     CHECK_FALSE(s.Next(now));
     // A new connection: the server knows none of ours.
@@ -122,4 +122,18 @@ TEST_CASE("mod data store: changes nobody takes are capped, the oldest dropped")
     CHECK(changes.size() == kMaxChanges);
     CHECK(changes.back().value == B(std::to_string(kMaxChanges + 2)));
     CHECK(s.dropped() == 3);
+}
+
+TEST_CASE("mod data store: a send of a connection replaced before MarkSent is sent again on the new one") {
+    Store s;
+    s.Set("a", "x", B("1"));
+    s.Welcomed(2);
+    const auto next = s.Next(10'000);
+    REQUIRE(next);
+    const std::uint64_t old_connection = s.connection();
+    s.Welcomed(2);  // a reconnect between the send and MarkSent
+    s.MarkSent(*next, 10'000, old_connection);
+    CHECK(s.Next(10'000) == next);  // still due on the new connection
+    s.MarkSent(*next, 10'000, s.connection());
+    CHECK_FALSE(s.Next(20'000));
 }
