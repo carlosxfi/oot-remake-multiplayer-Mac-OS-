@@ -115,7 +115,10 @@ struct Request {
                       // what changed; the server takes it from the host only.
                       kChat,
                       kDifficulty,     // kDifficulty: `text` the host's new choice (CoopDifficulty::FormatChoice)
-                      kCharAges };     // kCharAges: "on", "off", "child=N" or "adult=N" (coop_char_ages.h)
+                      kCharAges,       // kCharAges: "on", "off", "child=N" or "adult=N" (coop_char_ages.h)
+                      // kLocalStart: `text` is how many games this PC runs (kLocalFewest to kLocalMost), this one
+                      // included: this game hosts them (when it does not yet) and the launcher starts the missing ones
+                      kLocalStart };
     Kind kind = Kind::kHost;
     std::string text;
 };
@@ -153,6 +156,22 @@ struct Session {
 
     bool operator==(const Session&) const = default;
 };
+
+// Local co-op started from the game (the Local co-op page; owner 2026-11-24: two to four games on one PC, one click):
+// this PC's games as the module sees them (SetLocal; coop_local_start.h starts them).
+struct LocalGames {
+    bool offered = false;   // this game can start the others (a Windows kit with the launcher; not an extra game)
+    int player = 0;         // this game is player N (2 to 4) of this PC's games, an extra game; 0 not one
+    int asked = 0;          // the local session's games (0: no local session in this game)
+    int running = 0;        // this PC's games that run, this one included (0: not counted)
+    int joined = 0;         // the players in this game's session, this one included
+    bool starting = false;  // the launcher is starting games now
+    std::string note;       // what the last start did ("" nothing yet)
+    std::string problem;    // the launcher's one problem line ("" none): the Start row's help says it first
+    bool operator==(const LocalGames&) const = default;
+};
+// The most games of one PC: a controller each and a quarter of the screen (the kit's scripts\local-coop.ps1).
+inline constexpr int kLocalFewest = 2, kLocalMost = 4;
 
 // A row as Hookshot draws it (the numbers are hos_coop_menu.h's HOS_COOP_MENU_*).
 enum class RowKind : std::uint8_t { kAction = 0, kChoice = 1, kToggle = 2, kHeading = 3, kNote = 4 };
@@ -219,6 +238,10 @@ public:
 
     // What co-op is doing now; the pages follow it.
     void SetSession(Session session);
+    // This PC's games (the Local co-op page's rows follow them).
+    void SetLocal(LocalGames local);
+    const LocalGames& local() const { return local_; }
+    int local_count() const { return local_count_; }
     // The answer to the last request, shown until the next press ("Settings
     // saved.", "Copy your friend's answer code first").
     void SetNote(std::vector<std::string> lines);
@@ -329,7 +352,8 @@ private:
         kShowPassword, kNewPassword, kLetIn, kRefuse, kListRoom, kAutoRejoin, kOriginal,
         kApproveJoins, kGoldSkulltulas, kRace, kFloorSwitches, kPvp, kDbno, kDbnoTime, kDbnoHold, kDbnoHearts,
         kDifficulty, kDifficultyLife, kDifficultyDamage, kDifficultyCount,
-        kCharAges, kCharChild, kCharAdult
+        kCharAges, kCharChild, kCharAdult,
+        kLocalGames, kLocalStart
     };
     struct Line;   // a row, what it does and its help
     std::vector<Line> Lines() const;
@@ -408,6 +432,9 @@ private:
     std::vector<Found> found_;                // what it lists now (SetFound), the search kept
     std::string found_state_;                 // why it lists none ("" looking)
     Session session_;
+    LocalGames local_;        // SetLocal
+    int local_count_ = kLocalFewest;   // the Games on this PC row (kLocalFewest to kLocalMost)
+    void LocalLines(std::vector<Line>& out) const;
     std::vector<std::string> note_;
     std::optional<Request> request_;
     // The Customize page (coop_look_menu.h): it has its own rows and presses.

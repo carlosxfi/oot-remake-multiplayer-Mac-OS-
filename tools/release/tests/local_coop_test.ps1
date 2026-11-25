@@ -107,6 +107,64 @@ try {
     $said = @(Sync-KitLocalInstance $game $inst)
     Check ((Read-File (Join-Path $inst 'mods\m.txt')) -eq 'mod') "instance: a link to a folder that is gone is made again ($($said -join ' | '))"
 
+    # --- What player 2's game will see through its links (run local-coop-count-run: games 2 and 3 started with an
+    # empty mods folder and stopped at their start) ---
+    $blind = @(Test-KitLocalLinks $game $inst)
+    Check ($blind.Count -eq 0) "links: every linked folder shows the game's ($($blind -join ' | '))"
+    [System.IO.Directory]::Delete((Join-Path $inst 'mods'), $false)
+    $empty = Join-Path $root 'empty-mods'
+    New-Item -ItemType Directory -Path $empty | Out-Null
+    New-Item -ItemType Junction -Path (Join-Path $inst 'mods') -Target $empty | Out-Null
+    $blind = @(Test-KitLocalLinks $game $inst)
+    Check ($blind.Count -eq 1 -and $blind[0] -match 'mods' -and $blind[0] -match 'shows 0 of the 1') "links: a mods link that shows nothing is said ($($blind -join ' | '))"
+    [System.IO.Directory]::Delete((Join-Path $inst 'mods'), $false)
+    [void](Sync-KitLocalInstance $game $inst)
+    Check (@(Test-KitLocalLinks $game $inst).Count -eq 0) 'links: made again, all shown'
+
+    # --- A folder of the instance's own, made before the game had one of that name (review: it stopped every start) ---
+    Write-File (Join-Path $inst 'screenshots\mine.png') 'mine'
+    Write-File (Join-Path $game 'screenshots\p1.png') 'p1'
+    $said = @(Sync-KitLocalInstance $game $inst)
+    Check ($said.Count -eq 1 -and $said[0] -match 'screenshots is a folder of its own') "own folder: kept and said ($($said -join ' | '))"
+    Check ((Read-File (Join-Path $inst 'screenshots\mine.png')) -eq 'mine' -and -not (Test-Path (Join-Path $game 'screenshots\mine.png'))) 'own folder: its file is kept where it was'
+    $blind = @(Test-KitLocalLinks $game $inst)
+    Check ($blind.Count -eq 0) "own folder: one a start does not need stops nothing ($($blind -join ' | '))"
+    # An empty one has nothing to keep: linked.
+    New-Item -ItemType Directory -Path (Join-Path $inst 'texts') | Out-Null
+    Write-File (Join-Path $game 'texts\t.txt') 'text'
+    [void](Sync-KitLocalInstance $game $inst)
+    Check ((Test-Link (Join-Path $inst 'texts')) -and (Read-File (Join-Path $inst 'texts\t.txt')) -eq 'text') 'own folder: an empty one becomes the link'
+    # mods: a start needs it. Its own without the game's mods is said (and what to do); with them and more, it starts.
+    [System.IO.Directory]::Delete((Join-Path $inst 'mods'), $false)
+    Write-File (Join-Path $inst 'mods\other.txt') 'other'
+    [void](Sync-KitLocalInstance $game $inst)
+    $blind = @(Test-KitLocalLinks $game $inst)
+    Check ($blind.Count -eq 1 -and $blind[0] -match 'shows 0 of the 1' -and $blind[0] -match 'folder of its own: move it') "own folder: mods without the game's mods is said ($($blind -join ' | '))"
+    Write-File (Join-Path $inst 'mods\m.txt') 'mod'
+    $blind = @(Test-KitLocalLinks $game $inst)
+    Check ($blind.Count -eq 0) "own folder: mods with the game's and more starts ($($blind -join ' | '))"
+    Remove-Item -LiteralPath (Join-Path $inst 'mods') -Recurse -Force
+    # A link that is missing is still said, for any folder.
+    [System.IO.Directory]::Delete((Join-Path $inst 'texts'), $false)
+    $blind = @(Test-KitLocalLinks $game $inst)
+    Check ($blind.Count -eq 2 -and ($blind -join ' ') -match 'mods' -and ($blind -join ' ') -match 'texts') "links: missing ones are said ($($blind -join ' | '))"
+    [void](Sync-KitLocalInstance $game $inst)
+    Check (@(Test-KitLocalLinks $game $inst).Count -eq 0) 'links: the missing ones are made, all shown'
+    foreach ($n in 'screenshots', 'texts') {
+        $l = Join-Path $inst $n
+        if (Test-Link $l) { [System.IO.Directory]::Delete($l, $false) } else { Remove-Item -LiteralPath $l -Recurse -Force }
+        Remove-Item -LiteralPath (Join-Path $game $n) -Recurse -Force
+    }
+
+    # --- Which player a running game is (its exe's folder); the pattern parses (it ended in one \ before) ---
+    $lp = (Join-Path $game 'local-players') + '\'
+    Check ((Get-KitLocalPlayerOfPath $lp (Join-Path $lp 'player3\longshot.exe')) -eq 3) 'running: local-players\player3\longshot.exe is player 3'
+    Check ((Get-KitLocalPlayerOfPath $lp (Join-Path $lp 'PLAYER2\longshot.exe')) -eq 2) 'running: the folder''s case does not matter'
+    Check ((Get-KitLocalPlayerOfPath $lp (Join-Path $lp 'player1\longshot.exe')) -eq 0) 'running: player1 is not one of the games it starts'
+    Check ((Get-KitLocalPlayerOfPath $lp (Join-Path $lp 'player2x\longshot.exe')) -eq 0) 'running: player2x is not player 2'
+    Check ((Get-KitLocalPlayerOfPath $lp (Join-Path $game 'longshot.exe')) -eq 0) 'running: game 1 is not a local player'
+    Check ((Get-KitLocalPlayerOfPath $lp '') -eq 0) 'running: a process without a path'
+
     # --- Copies of this game folder never take the local players (review: robocopy follows the junctions) ---
     # hookshot-build.ps1's copy from another kit's game: its command as written, run on this game folder.
     $hb = Read-File (Join-Path $scripts 'hookshot-build.ps1')
@@ -194,6 +252,31 @@ try {
     Check ($play.Contains("'local-coop.ps1'") -and $play.Contains('Read-KitLocalPlayers') -and $play.Contains('Start-KitLocalCoop')) 'play.ps1 asks and starts local co-op'
     Check ($play -match "Mode -eq 'title' -and -not \`$env:OOT_COOP_TEST_KIT") 'play.ps1 asks only at the kit''s own start, never in the autotest''s kit mode'
     Check ((Read-File (Join-Path $release 'make_kit_hookshot.ps1')).Contains("'local-coop.ps1'")) 'the kit ships local-coop.ps1'
+
+    # From the game (local-coop-start.ps1, the Local co-op page's Start): game 1 hosts already; the missing players'
+    # games are made and started into its session. This made-up longshot.exe does not start, so each is a game that
+    # did not start (the page's "Did not start: player 2 and 3."), and nothing is left half done.
+    Check ((Read-File (Join-Path $release 'make_kit_hookshot.ps1')).Contains("'local-coop-start.ps1'")) 'the kit ships local-coop-start.ps1'
+    Check (@(Get-KitLocalRunning $game).Count -eq 0) 'from the game: no extra game runs in the made-up folder'
+    $result = Join-Path $game 'local-players\start-result.txt'
+    $env:LICHII_COOP_PAD = '1'   # (game 1's, inherited by the launcher: never player 2's)
+    $null = @(Add-KitLocalCoop $kit (Join-Path $game 'longshot.exe') 3 27561 'pw-from-game' 0 $result 6>$null)
+    $said = Read-File $result
+    Check ($said -match '(?m)^started=\r?$') "from the game: nothing started ($said)"
+    Check ($said -match '(?m)^failed=2,3\r?$') 'from the game: players 2 and 3 did not start (the result says so)'
+    Check ($said -match '(?m)^problem=Player 2') 'from the game: the problem line names the first game that did not start'
+    $p3 = Read-File (Join-Path $game 'local-players\player3\coop.ini')
+    Check ($p3 -match '(?m)^server = 127\.0\.0\.1' -and $p3 -match '(?m)^port = 27561' -and $p3 -match '(?m)^password = pw-from-game') 'from the game: player 3 gets game 1''s session'
+    Check ((Read-File (Join-Path $game 'local-players\player3\coop-player.ini')) -match '(?m)^LICHII_COOP_PAD\s*=\s*3') 'from the game: player 3 reads controller 3'
+    Check ("$env:LICHII_COOP_PAD" -eq '1') 'from the game: the launcher''s own variables are put back'
+    Check ((Read-File (Join-Path $game 'local-players\instances.txt')) -match '(?m)^3=') 'from the game: instances.txt lists the session''s games for collect-logs'
+    $null = @(Add-KitLocalCoop $kit (Join-Path $game 'longshot.exe') 9 27561 'pw-from-game' 0 $result 6>$null)
+    Check ((Read-File $result) -match '(?m)^failed=2,3,4\r?$') 'from the game: more than 4 asked = 4 games (the most)'
+    $start = Read-File (Join-Path $scripts 'local-coop-start.ps1')
+    Check ($start.Contains('Add-KitLocalCoop') -and $start.Contains('problem-send.ps1')) 'local-coop-start.ps1 runs Add-KitLocalCoop and watches each game for problem reports'
+    Remove-Item -Path env:LICHII_COOP_PAD -ErrorAction SilentlyContinue
+    Initialize-KitLocalWin32
+    Check (-not [KitLocalWin32]::FillsScreen([IntPtr]::Zero)) 'from the game: no window is not a full-screen one (game 1''s window is placed only when not full screen)'
     Check ((Read-File (Join-Path $scripts 'collect-logs.ps1')).Contains("local-players")) 'collect-logs takes the local players'' logs'
     Check ((Read-File (Join-Path $release 'kit\coop-options.ini')) -match '(?m)^#\s*local_fps') 'coop-options.ini explains local_fps'
 } finally {
