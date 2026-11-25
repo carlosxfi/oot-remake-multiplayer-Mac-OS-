@@ -844,12 +844,12 @@ void Leave() {
 }
 
 // Row 229: what the voice's microphone gives now, on the Voice rows (the Microphone row's words, the Proximity voice
-// chat row's help). g_mutex; Tick's follow-up reads it from its Gather (off g_mutex), else CoopVoice's own lock is
-// taken under ours (it takes none of ours).
+// chat row's help). g_mutex. Only FollowStep's Gather reads CoopVoice::Status (off g_mutex, row 236); without a
+// fresh Gather (a settings change) the rows say what the last one saw; the next one (250 ms) brings them up to date.
+CoopVoice::MicStatus g_mic_seen = CoopVoice::MicStatus::unknown;   // (g_mutex: the last Gather's microphone)
 void VoiceStatusRows() {
-    const CoopVoice::MicStatus s = !g_menu.options().voice ? CoopVoice::MicStatus::unknown
-                                 : g_outside != nullptr  ? g_outside->mic
-                                                         : CoopVoice::Status();
+    if (g_outside != nullptr) g_mic_seen = g_outside->mic;
+    const CoopVoice::MicStatus s = !g_menu.options().voice ? CoopVoice::MicStatus::unknown : g_mic_seen;
     g_menu.SetVoiceStatus(CoopVoice::MicStatusWords(s), CoopVoice::MicStatusNote(s));
 }
 
