@@ -6,6 +6,8 @@
 #   ice, fire for fire; NEXT36 was 0 of 3); no bullet twice; 0 crashes; the h-NN shots show the bullet on BOTH screens.
 #   Read too: 'the new owner goes on from seq N', 'own start of verb V held', 'asked again after busy' (does her AI ask
 #   again after a busy answer?), 'made ours mid-move ...: its AI goes on', and no 'held ... stuck' after it.
+# Checkpoints (play-test kit, docs/playtest.md): `dump h-start / h-mid1 / h-mid2 / h-end1 / h-end2` on both games; the run
+#   script puts them together for tools/autotest/desync_check.py (shared flags only; h-end1 + h-end2 are the two looks).
 # FAIL: a copy's attack with no bullet, a double one, a boss that stands still after a hand-over, a crash.
 #! noload
 #! start coop: test warp done
@@ -36,6 +38,7 @@ wait 2400               # the merge cutscene
 hold ZL 240
 stun Enemy_DungeonBoss_Twinrova   # she goes to us (from the owner: not a copy)
 hold ZL 90 h-01
+dump h-start
 hold ZL 90 h-02
 hold ZL 90 h-03
 hold ZL 90 h-04
@@ -59,6 +62,7 @@ hold ZL 90 h-21
 hold ZL 90 h-22
 hold ZL 90 h-23
 hold ZL 90 h-24
+dump h-mid1
 hold ZL 90 h-25
 hold ZL 90 h-26
 hold ZL 90 h-27
@@ -83,6 +87,7 @@ hold ZL 90 h-45
 hold ZL 90 h-46
 hold ZL 90 h-47
 hold ZL 90 h-48
+dump h-mid2
 stun Enemy_DungeonBoss_Twinrova   # she goes to us (from the owner: not a copy)
 hold ZL 90 h-49
 hold ZL 90 h-50
@@ -108,5 +113,8 @@ hold ZL 90 h-69
 hold ZL 90 h-70
 hold ZL 90 h-71
 hold ZL 90 h-72
-wait 600
+dump h-end1
+wait 120
+dump h-end2
+wait 480
 mark end
