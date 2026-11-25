@@ -19,6 +19,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -57,6 +58,15 @@ struct Settings {
     // room_near units (a doorway, or a room guessed wrong). Off: false.
     bool rooms = true;
     float room_near = 8.0f;
+    // A call (/here, CoopEmote::Def::heard): the caller's Navi flies up over
+    // their head and bobs there quickly for call_ms, as the game's own Navi
+    // hovers over what she points at. That is the ping's marker: the game's
+    // own fairy, nothing drawn. Offset in the puppet's frame, scaled for an
+    // adult as `offset` is.
+    Vec3 call_offset{0.0f, 2.1f, 0.1f};
+    float call_bob = 0.14f;
+    float call_bob_hz = 2.2f;
+    std::uint64_t call_ms = 5000;
 };
 
 // The svc cave's order for the fairy director (puppets first, CoopSpawn 10).
@@ -85,9 +95,15 @@ public:
 
     const Settings& settings() const { return settings_; }
 
+    // Player `number` called (CoopEmote::TakeCalls) at `now_ms`: their fairy
+    // hovers over their head until now_ms + call_ms (a new call restarts it).
+    void Call(std::uint8_t number, std::uint64_t now_ms);
+    bool Calling(std::uint8_t number, std::uint64_t now_ms) const;
+
     // Where the fairy should be with no trailing: the puppet's position plus
-    // the offset turned by its rotation, plus the bob at `t` seconds.
-    Vec3 Goal(const CoopPuppet::Target& puppet, float t, std::uint8_t number) const;
+    // the offset turned by its rotation, plus the bob at `t` seconds. While
+    // `calling`, call_offset and the call's quicker bob instead.
+    Vec3 Goal(const CoopPuppet::Target& puppet, float t, std::uint8_t number, bool calling = false) const;
 
 private:
     struct Track {
@@ -96,10 +112,12 @@ private:
     };
     Settings settings_;
     std::map<std::uint8_t, Track> tracks_;
+    std::map<std::uint8_t, std::uint64_t> calls_;  // per player: the call's end (steady ms)
     std::string scene_;
     CoopRooms::Tracker rooms_;
     Log log_;
     std::map<std::uint8_t, bool> room_parked_;  // per player: parked by the room rule (for the log)
+    std::set<std::uint8_t> called_logged_;      // per player: this call's log line written
     static constexpr std::uint32_t kLocalKey = 0x100;  // our Link in rooms_
 };
 
@@ -174,6 +192,9 @@ private:
 // The dungeon room table from the puppet pack (coop_rooms.txt), read now;
 // empty without one. Also for /teleport (coop_teleport.h CheckMove).
 CoopRooms::Table RoomTable();
+
+// The calc thread: `number`'s live fairy in our game (0: none).
+std::uint64_t FairyActor(std::uint8_t number);
 
 void Publish(std::uint64_t main_base, const std::optional<std::string>& scene,
              const std::optional<Vec3>& position, bool local_event,

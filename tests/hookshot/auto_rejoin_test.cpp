@@ -196,3 +196,88 @@ TEST_CASE("auto-rejoin: only the host's choice and hopeless refusals stop it, a 
         CHECK_FALSE(CoopLobby::StopsRejoin(r));
     }
 }
+
+TEST_CASE("auto-rejoin: after the restart for the host's randomizer seed (row 281) the start joins once, setting off") {
+    Planner p;
+    Facts f = IdleOn();
+    f.enabled = false;
+    f.once = true;
+    CHECK_FALSE(p.Tick(f, 1000));
+    CHECK_FALSE(p.Tick(f, 1000 + kStartDelayMs - 1));
+    CHECK(p.Tick(f, 1000 + kStartDelayMs));
+    CHECK(p.Why() == "after the restart for the host's randomizer seed");
+    CHECK_FALSE(p.Tick(f, 1000 + kStartDelayMs + 100));   // (once)
+    // In, then dropped: with the setting off it is not tried again (the one join was the restart's).
+    Facts in = f;
+    in.guest_in = true;
+    in.idle = false;
+    CHECK_FALSE(p.Tick(in, 20000));
+    for (std::uint64_t t = 20500; t < 100000; t += 500) CHECK_FALSE(p.Tick(f, t));
+    // With the setting on it says the usual why.
+    Planner on;
+    Facts both = IdleOn();
+    both.once = true;
+    CHECK(on.Tick(both, 1000 + kStartDelayMs) == false);   // (the first update starts the clock)
+    CHECK(on.Tick(both, 1000 + 2 * kStartDelayMs));
+    CHECK(on.Why() == "at the game's start");
+}
+
+TEST_CASE("auto-rejoin: the restart's one join is never made with no last game, co-op from the start, or the player's own") {
+    for (int which = 0; which < 4; ++which) {
+        Planner p;
+        Facts f = IdleOn();
+        f.enabled = false;
+        f.once = true;
+        if (which == 0) f.code = false;
+        if (which == 1) f.launcher = true;
+        if (which == 2) f.idle = false;   // (co-op on already: hosting or joining by itself)
+        bool any = false;
+        for (std::uint64_t t = 1000; t < 100000; t += 500) {
+            Facts now = f;
+            if (which == 3 && t == 1500) now.player_acted = true;   // (the player's own Join before the moment)
+            any = p.Tick(now, t) || any;
+        }
+        CHECK_FALSE(any);
+    }
+}
+
+TEST_CASE("auto-rejoin: the restart's one join (row 281) is taken back by the player's choice or when none is due") {
+    Facts in = IdleOn();
+    in.enabled = false;
+    in.idle = false;
+    in.guest_in = true;
+    const auto marked = [&] {
+        RestartMark m;
+        CHECK_FALSE(m.Tick(false, in).has_value());
+        CHECK(m.Tick(true, in) == std::optional<bool>(true));
+        CHECK_FALSE(m.Tick(true, in).has_value());   // (written once)
+        return m;
+    };
+    for (int which = 0; which < 4; ++which) {
+        RestartMark m = marked();
+        Facts f = in;
+        f.guest_in = false;
+        f.idle = true;
+        if (which == 0) f.player_left = true;
+        if (which == 1) f.player_acted = true;   // (Host, or Join of another game)
+        if (which == 2) f.turned_away = true;
+        CHECK(m.Tick(which != 3, f) == std::optional<bool>(false));   // (3: no restart is due any more)
+        Facts after = in;   // out of the game: the old word that it is due does not bring it back
+        after.guest_in = false;
+        after.idle = true;
+        CHECK_FALSE(m.Tick(true, after).has_value());
+        CHECK(m.Tick(true, in) == std::optional<bool>(true));   // (in a game again with a restart due: again)
+    }
+    // A drop alone (the client tries again by itself) changes nothing while the restart is still due.
+    RestartMark dropped = marked();
+    Facts out = in;
+    out.guest_in = false;
+    CHECK_FALSE(dropped.Tick(true, out).has_value());
+    // Never with no last game kept, or co-op from the game's start.
+    for (const bool launcher : {false, true}) {
+        RestartMark m;
+        Facts f = in;
+        (launcher ? f.launcher : f.code) = launcher;
+        CHECK_FALSE(m.Tick(true, f).has_value());
+    }
+}

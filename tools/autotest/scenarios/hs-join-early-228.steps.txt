@@ -1,0 +1,24 @@
+# hs-join-early-228 (player row 228): a guest whose own save is a new game's story (Longshot's repo save castle-gate:
+# child Link at the Castle Town gate, no Deku Tree, no owl, no Zelda) joins a host whose save is further on. The report:
+# after the join "the Threads of Time synced, but the Map would not open and the ocarina playing UI was hidden".
+# Needs the wrapper (coord-multiplayer offline u5-menus-2 run.ps1: B's baseline swapped for castle-gate), not run.ps1
+# alone. B opens the Minus menu (map, Threads of Time, Important: shots j-minus-*), then takes out and plays the
+# ocarina (shots j-oc-*); A does the same as the control. The wrapper's solo run (-NoCoop) of the same B save gives
+# the game's own behaviour for that save (shots s-*).
+#! switches LICHII_COOP_DEBUG_FLAGS=1
+start A B
+load A B
+sleep 40
+shot joined
+play B hs-join-early-228.minus.txt
+play B hs-join-early-228.ocarina.txt
+sleep 5
+play A hs-join-early-228.minus.txt
+play A hs-join-early-228.ocarina.txt
+shot end
+lines ocarina-b B min=0 coop: items: ocarina
+lines tot-b B min=0 flags debug: bool 0x1450c74f
+# The fix (row 228): B's Hyrule Field visit comes from the host's Dm_HrlField_0000 (or owl) scene, about 3 s
+# after the join, before B opens the Map page; then B's Map page shows the Hyrule Field map (shot m-r1-B or
+# m-l1-B, the page after Threads of Time), not "Unavailable right now.".
+lines visit-b B min=1 coop: story: IsVisitLocation.HyruleField set to 1

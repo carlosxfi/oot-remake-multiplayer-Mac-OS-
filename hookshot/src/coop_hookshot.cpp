@@ -55,6 +55,8 @@
 #include "coop_game_build.h"
 #include "coop_i18n.h"
 #include "coop_native_ui.h"
+#include "coop_party_hud.h"
+#include "coop_race_mode.h"
 #include "coop_save.h"
 #include "coop_hold.h"
 #include "coop_counters.h"
@@ -70,6 +72,7 @@
 #include "coop_enemy_shots.h"
 #include "coop_mod_api.h"
 #include "coop_mods_runtime.h"
+#include "coop_part_fallback.h"
 #include "coop_pad_order.h"
 #include "coop_rando.h"
 #include "coop_hook.h"
@@ -486,6 +489,10 @@ void LogBossOrders() {
              c.owner_kept, c.delivered, c.copy_skipped, c.copy_own_ran, c.dropped, c.restarts, c.unknown, c.replayed);
 }
 
+// Row 222: how many plugs of the action-verb wrap read as a name (the owner's variations), and how many did not.
+std::atomic<std::uint64_t> g_plug_read{0};
+std::atomic<std::uint64_t> g_plug_unread{0};
+
 // Every 10 s while a boss is synced natively: the counts (first proof lines).
 void LogBossNative() {
     static std::uint64_t said_ms = 0;
@@ -504,7 +511,12 @@ void LogBossNative() {
         c.copy_hits_to_owner == said.copy_hits_to_owner && c.copy_own_stuns == said.copy_own_stuns &&
         c.plain_wakes == said.plain_wakes && c.plain_deaths == said.plain_deaths &&
         c.action_slot_busy == said.action_slot_busy && c.action_busy_again == said.action_busy_again &&
-        c.body_deaths == said.body_deaths) {
+        c.body_deaths == said.body_deaths &&
+        c.variant_named == said.variant_named && c.variant_plain == said.variant_plain &&
+        c.variant_node_moved == said.variant_node_moved && c.variant_node_conflict == said.variant_node_conflict &&
+        c.copy_own_move == said.copy_own_move && c.owner_move_left == said.owner_move_left &&
+        c.owner_variants == said.owner_variants && c.own_starts_held == said.own_starts_held &&
+        c.own_start_reasks == said.own_start_reasks && c.made_ours_own_other == said.made_ours_own_other) {
         return;
     }
     said_ms = now;
@@ -514,11 +526,19 @@ void LogBossNative() {
                    "{} hits that took life left to the owner), "
                    "{} own minions not made; {} own Life steps held at 1, {} let die after the owner's, {} ended in their death; "
                    "plain enemies: {} own other phases told, {} own wakes run, {} deaths begun; {} boss bodies dead before the outro; "
-                   "owner's brain verbs given to copies {} ({} the copy was in already)",
+                   "owner's brain verbs given to copies {} ({} the copy was in already); variations put in: {} named, {} "
+                   "plain, {} not known, {} past the name pools; {} through another node (the move's chose another "
+                   "variation), {} with no such node left (row 222); {} own asks of the owner's move run ({} renamed to its "
+                   "variation), {} owner's repeats left out; owner's variations kept {} (plug names read {}, not read {}); "
+                   "own starts held {} (asked again {}, {} reached the cap, {} met the owner's move), {} made ours "
+                   "with its own AI in another move",
              c.owner_brain, c.owner_action, c.plug_actions, c.copy_skipped, c.brain_applied, c.action_applied,
              c.action_waiting, c.action_slot_busy, c.action_busy_again, c.copy_own_run, c.copy_own_late, c.copy_shot_hits, c.copy_own_stuns, c.copy_hits_to_owner, c.minions_stopped, c.copy_life_held,
              c.copy_killed, c.copy_finished, c.plain_wants, c.plain_wakes, c.plain_deaths, c.body_deaths, c.brain_came,
-             c.brain_already);
+             c.brain_already, c.variant_named, c.variant_plain, c.variant_unknown, c.variant_pool_full,
+             c.variant_node_moved, c.variant_node_conflict, c.copy_own_move, c.own_move_renamed, c.owner_move_left, c.owner_variants, g_plug_read.load(),
+             g_plug_unread.load(), c.own_starts_held, c.own_start_reasks, c.own_start_holds_capped,
+             c.own_start_holds_met, c.made_ours_own_other);
 }
 
 // ---- Name tags on the game's own balloons (coop_native_tags.h, B3 of reports/ui-audit-01112.md), at the frame hook.
@@ -647,40 +667,101 @@ void RunCalls(void* ctx) {
 // the file on disk is only as new as our last door. Our game is asked for its own autosave with the call its
 // EventTriggerRequestAutoSave node makes at the end of an event (the node's body, main+0x31f2f50): the AutoSaveMgr is
 // the game system's component 0xc (main+0xba7880(system, 0xc), 0 when there is none), then
-// main+0xba7730(mgr, 5, 0). That call runs the game's own gate first (main+0xba72d0: refused while the game's
-// autosave is off, in its cooldown after a save, or in a player state it does not save in) and otherwise only marks
-// the request in the manager's state; the manager saves at its own next step, into the slot it always uses. We write
-// nothing in the game; the send waits for a save written after the ask (save::Planner's round), at most
-// save::Planner::kFreshSaveUs, then our last save on disk goes as before.
+// main+0xba7730(mgr, 5, 0). That call runs the game's own gate first (main+0xba72d0) and, only when the gate lets it,
+// marks the request: bit 0 of the byte at *(mgr+0x130)+5; the manager saves at its own next step, into the slot it
+// always uses. The gate refuses (nothing marked) while mgr+0x158 has bit 2 or 3, while the game's autosave-off Bool
+// is set, in its cooldown after a save (the float mgr+0x15c above 0) or in a player state it does not save in.
+// rejoin-host-273-3: a refusal is often only for a moment (the cooldown right after a load or a scene change), so the
+// ask is made again every kAutoSaveRetryUs until the mark is there or its window ends (the guests' round:
+// save::Planner::kFreshSaveUs; the test commands' autosave: kTestAutoSaveUs). Each answer is logged, with the gate's
+// own inputs on a refusal. We write nothing in the game; the send waits for a save written after the ask (the
+// Planner's round), and after its window our last save on disk goes as before.
 constexpr std::uint64_t kGameSystemGot = 0x4c7e178;    // main+: GOT -> the global that holds the game system
 constexpr std::uint64_t kSystemComponent = 0xba7880;   // main+: (system, index) -> the component, or 0
 constexpr std::uint64_t kAutoSaveMgrIndex = 0xc;       // the AutoSaveMgr's index (the node's own)
 constexpr std::uint64_t kRequestAutoSave = 0xba7730;   // main+: (mgr, kind, 0): the gate, then the request mark
 constexpr std::uint64_t kAutoSaveKindEvent = 5;        // EventTriggerRequestAutoSave's kind
 constexpr std::uint64_t kAutoSaveMgrState = 0x130;     // mgr: -> the state the request marks (0 before it is made)
+constexpr std::uint64_t kAutoSaveMark = 5;             // state+: the request byte; bit 0 is the mark (main+0xba77dc)
+constexpr std::uint64_t kAutoSaveMgrOff = 0x158;       // mgr: u32; bit 2 or 3 and the gate refuses at once
+constexpr std::uint64_t kAutoSaveCooldown = 0x15c;     // mgr: float; above 0 and the gate refuses (after a save)
+constexpr std::uint64_t kAutoSaveRetryUs = 250'000;
+constexpr std::uint64_t kTestAutoSaveUs = 30'000'000;
+
+struct AutoSaveAsk {   // the calc thread's ask still open (RequestHostAutoSave only)
+    CoopSave::SaveRequest kind = CoopSave::SaveRequest::none;
+    std::uint64_t until_us = 0;
+    std::uint64_t next_us = 0;
+    unsigned refusals = 0;
+};
+AutoSaveAsk g_autosave_ask;
+
+std::uint64_t AutoSaveNowUs() {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
+// The gate's inputs we can read (main+0xba72d0): why it refused, for the log.
+std::string AutoSaveRefusal(std::uint64_t mgr) {
+    std::uint32_t off = 0;
+    float cooldown = 0.0f;
+    g_api->read(mgr + kAutoSaveMgrOff, &off, sizeof off);
+    g_api->read(mgr + kAutoSaveCooldown, &cooldown, sizeof cooldown);
+    if ((off & 0xc) != 0) return fmt::format("the manager's own off bits, +0x158 = {:#x}", off);
+    if (cooldown > 0.0f) return fmt::format("its cooldown after a save, +0x15c = {}", cooldown);
+    return fmt::format("the game's autosave-off setting or a player state it does not save in, +0x158 = {:#x}, "
+                       "no cooldown",
+                       off);
+}
 
 void RequestHostAutoSave(void* ctx) {
-    if (!CoopSave::TakeSaveRequest()) return;
+    const auto request = CoopSave::TakeSaveRequest();
+    if (request == CoopSave::SaveRequest::none && g_autosave_ask.kind == CoopSave::SaveRequest::none) return;
+    const std::uint64_t now = AutoSaveNowUs();
+    if (request != CoopSave::SaveRequest::none) {   // (a new ask: its own window; a guests' ask wins over a test's)
+        if (g_autosave_ask.kind != CoopSave::SaveRequest::guests || request == CoopSave::SaveRequest::guests) {
+            g_autosave_ask.kind = request;
+        }
+        g_autosave_ask.until_us =
+            now + (g_autosave_ask.kind == CoopSave::SaveRequest::test ? kTestAutoSaveUs
+                                                                       : coop::host::save::Planner::kFreshSaveUs);
+        g_autosave_ask.next_us = now;
+        g_autosave_ask.refusals = 0;
+    }
+    if (now < g_autosave_ask.next_us) return;
+    // (the test commands' `autosave`, rejoin-host-273-2: the same call; no guest waits for it)
+    const bool test = g_autosave_ask.kind == CoopSave::SaveRequest::test;
+    const bool first = g_autosave_ask.refusals == 0;
+    const char* const without = test ? "the test's autosave is not asked" : "the guests get our last save on disk";
+    const auto end = [&](const char* why) {
+        if (why != nullptr) LOG_WARNING(Core, "coop: save: {}: {}", why, without);
+        g_autosave_ask = AutoSaveAsk{};
+    };
+    if (now >= g_autosave_ask.until_us) {
+        return end("our game's own gate refused the autosave the whole window");
+    }
+    g_autosave_ask.next_us = now + kAutoSaveRetryUs;
     const std::uint64_t base = CoopRuntime::MainBase();
     const auto read64 = [](std::uint64_t at) {
         std::uint64_t v = 0;
         return g_api->read(at, &v, sizeof v) != 0 ? v : 0;
     };
+    const auto marked = [](std::uint64_t state) {
+        std::uint8_t v = 0;
+        return g_api->read(state + kAutoSaveMark, &v, sizeof v) != 0 && (v & 1) != 0;
+    };
     const std::uint64_t got = read64(base + kGameSystemGot);
     const std::uint64_t system = got != 0 ? read64(got) : 0;
-    if (system == 0) {
-        LOG_WARNING(Core, "coop: save: our game has no game system yet: the guests get our last save on disk");
-        return;
-    }
+    if (system == 0) return end("our game has no game system yet");
     HosCoopCall k{};
     k.function = base + kSystemComponent;
     k.x[0] = system;
     k.x[1] = kAutoSaveMgrIndex;
     std::uint64_t mgr = 0;
-    if (!g_api->call(ctx, &k, &mgr) || mgr == 0 || read64(mgr + kAutoSaveMgrState) == 0) {
-        LOG_WARNING(Core, "coop: save: our game's autosave manager is not there: the guests get our last save on disk");
-        return;
-    }
+    const std::uint64_t state = g_api->call(ctx, &k, &mgr) && mgr != 0 ? read64(mgr + kAutoSaveMgrState) : 0;
+    if (state == 0) return end("our game's autosave manager is not there");
+    const bool before = marked(state);
     k = HosCoopCall{};
     k.function = base + kRequestAutoSave;
     k.x[0] = mgr;
@@ -688,12 +769,29 @@ void RequestHostAutoSave(void* ctx) {
     k.x[2] = 0;
     std::uint64_t x0 = 0;
     if (!g_api->call(ctx, &k, &x0)) {
-        LOG_WARNING(Core, "coop: no game function at {:#x}: the guests get our last save on disk", k.function);
-        return;
+        LOG_WARNING(Core, "coop: no game function at {:#x}", k.function);
+        return end("the autosave call is not there");
     }
-    LOG_INFO(Core, "coop: save: asked our game for its own autosave (an event's end request): the guests' send waits "
-                   "for that save, at most {} s",
-             coop::host::save::Planner::kFreshSaveUs / 1'000'000);
+    if (first) {
+        if (test) {
+            LOG_INFO(Core, "coop: save: asked our game for its own autosave (an event's end request), for the test "
+                           "commands' autosave: the game's own gate may refuse it");
+        } else {
+            LOG_INFO(Core, "coop: save: asked our game for its own autosave (an event's end request): the guests' "
+                           "send waits for that save, at most {} s",
+                     coop::host::save::Planner::kFreshSaveUs / 1'000'000);
+        }
+    }
+    if (marked(state)) {
+        LOG_INFO(Core, "coop: save: our game's gate took the autosave ask{} after {} refusals: it saves at its own "
+                       "next step",
+                 before ? " (an earlier ask was still marked)" : "", g_autosave_ask.refusals);
+        return end(nullptr);
+    }
+    if (g_autosave_ask.refusals++ == 0) {
+        LOG_INFO(Core, "coop: save: our game's gate refused the autosave ask ({}): asked again every {} ms for {} s",
+                 AutoSaveRefusal(mgr), kAutoSaveRetryUs / 1000, (g_autosave_ask.until_us - now) / 1'000'000);
+    }
 }
 
 }  // namespace
@@ -1090,6 +1188,78 @@ bool NativeOn() {
     return on;
 }
 
+// The other players' hearts on the game's own HUD (coop_party_hud.h). DrawScene (the present's thread) makes the
+// blocks; NativeStep (the game's thread) sets the game's heart parts from them. While the game's HUD shows them,
+// DrawScene draws no blocks of its own, so nothing shows twice.
+class PartyGame final : public CoopPartyHud::Game {
+public:
+    PartyGame(NativeGame& game, void* ctx) : game_(game), ctx_(ctx) {}
+    bool Read(std::uint64_t a, void* out, std::size_t n) override { return game_.Read(a, out, n); }
+    bool Write(std::uint64_t a, const void* in, std::size_t n) override { return game_.Write(a, in, n); }
+    std::optional<std::uint64_t> Call(std::uint64_t f, const std::array<std::uint64_t, 5>& x) override {
+        return game_.Call(f, x);
+    }
+    std::uint64_t Main() const override { return game_.Main(); }
+    std::optional<std::uint64_t> CallFloat(std::uint64_t f, std::uint64_t x0, float s0) override {
+        HosCoopCall k{};
+        k.function = f;
+        k.x[0] = x0;
+        k.s0 = s0;
+        std::uint64_t r = 0;
+        if (g_api == nullptr || g_api->call(ctx_, &k, &r) == 0) return std::nullopt;
+        return r;
+    }
+
+private:
+    NativeGame& game_;
+    void* ctx_;
+};
+
+struct PartyShared {
+    std::mutex mutex;
+    std::vector<CoopPartyHud::Block> blocks;   // DrawScene's last
+    std::optional<double> game_hud_bottom;
+    std::string own;                           // our own line ("You" + voice words), "" none
+    bool game_menu_up = false;
+    std::uint64_t ms = 0;                      // when DrawScene left them (SteadyMs): older than a second = none
+};
+PartyShared g_party;
+std::atomic<bool> g_party_native{false};     // the game's HUD showed the blocks last frame (Hud::Step true)
+
+bool PartyTest() {
+    static const bool on = EnvOn("COOP_TEST_PARTY_HUD");   // scenario hs-party-hud: four made-up players
+    return on;
+}
+
+void PartyStep(NativeGame& game, void* ctx, std::uint64_t now) {
+    static CoopPartyHud::Hud hud;
+    std::vector<CoopPartyHud::Block> blocks;
+    std::optional<double> bottom;
+    std::string own;
+    bool menu_up = false;
+    {
+        std::lock_guard lock(g_party.mutex);
+        if (now < g_party.ms + 1000) blocks = g_party.blocks, own = g_party.own;
+        bottom = g_party.game_hud_bottom;
+        menu_up = g_party.game_menu_up;
+    }
+    if (PartyTest() && !menu_up) blocks = CoopPartyHud::TestBlocks(now), own = CoopPartyHud::TestOwn();
+    // Double defence is one for all players (a shared flag): ours is theirs. Race mode shares no flag and no message
+    // carries theirs, so it is off on their hearts then.
+    if (!blocks.empty() && !CoopRaceMode::InForce()) {
+        CoopHook::EmulatorMemory memory(g_system.ApplicationMemory(), CoopRuntime::MainBase());
+        const bool defence = coop::host::GameFlags(memory).get_bool(CoopPartyHud::kDefenceUpHash).value_or(false);
+        for (auto& b : blocks) b.double_defence = defence;
+    }
+    PartyGame party(game, ctx);
+    std::vector<std::string> log;
+    const bool on = hud.Step(party, blocks, bottom, &log, now, own);
+    for (const auto& l : log) LOG_INFO(Core, "{}", l);
+    if (g_party_native.exchange(on) != on) {
+        LOG_INFO(Core, "coop: party hud: {}", on ? "on the game's HUD" : "hidden (the game's HUD has none of ours now; nothing drawn instead)");
+    }
+}
+
 using Colours = std::map<std::string, std::uint32_t, std::less<>>;
 
 // The speakers' colours by the names chat lines call them (the HUD's and tags' colours: CoopPuppet::NameColor).
@@ -1148,9 +1318,11 @@ bool NativeTyping(CoopNativeUi::Game& game, std::uint64_t now, const Colours& co
 }
 
 void NativeStep(void* ctx) {
-    if (!NativeOn() || g_native.block == Native::Block::kFailed) return;
+    if (!NativeOn()) return;
     NativeGame game(ctx);
     const std::uint64_t now = SteadyMs();
+    PartyStep(game, ctx, now);   // (its own memory: on even when the chat's texts got none)
+    if (g_native.block == Native::Block::kFailed) return;
     if (g_native.block == Native::Block::kNone) {
         const auto block =
             game.Call(game.At(CoopNativeUi::addr::kMalloc), {CoopNativeUi::TextRing::kBlockBytes + 16, 0, 0, 0, 0});
@@ -1178,6 +1350,22 @@ void NativeStep(void* ctx) {
     const auto lines = CoopHook::ChatLines();
     const Colours colours = SpeakerColours();
     std::vector<CoopNativeUi::ChatIn> in;
+    {  // row 280 (coop_part_fallback.h): a mod part with files left out (the game's own used) says so on the banner,
+       // once each time play starts from the title, solo too. Its arrival time is fixed, so the feed takes it once;
+       // the feed's first Update (primed) has been, so it is not swallowed as a line from before.
+        static CoopPartFallback::OncePerLoad once;
+        static std::uint64_t came = 0;
+        static bool fed = false;
+        static std::optional<std::vector<std::string>> part;
+        if (!part && CoopModsRuntime::Loader() != nullptr) part = CoopModsRuntime::PartFallbackLines();
+        if (fed && part && !part->empty()) {
+            if (once.Step(CoopSave::TitleUp(), CoopObjects::OurLinkActor().has_value())) came = now;
+            if (came != 0 && now - came < CoopNativeUi::ChatFeed::kStaleMs) {
+                for (const std::string& t : *part) in.push_back({t, true, now - came, 0});
+            }
+        }
+        fed = true;
+    }
     for (const auto& l : lines) {
         // (a notice is the module's own words: in the player's language; chat is as typed)
         CoopNativeUi::ChatIn c{l.notice ? CoopI18n::Tr(l.text) : l.text, l.notice, l.age_ms, 0};
@@ -1336,29 +1524,42 @@ CoopDraw::Scene DrawScene() {
     CoopPauseTab::CensusFromMenuState();   // (the - menu research: only with COOP_TEST_SCREEN_PROBE=1)
     const auto menu_state = CoopMapPage::MenuState();
     const bool game_menu_up = (menu_state && menu_state->menu_open) || CoopPauseTab::GameMenuUp();   // (row 199)
+    // The blocks for the game's own heart parts (PartyStep): per player the line is the name, voice words and place.
+    // Never drawn by us (owner: nothing hand-drawn); with an older pack that has none they are hidden (PartyStep logs why).
+    std::vector<CoopPartyHud::Block> party;
+    std::string own;
     for (const auto& row : game ? rows : std::vector<CoopHook::PlayerRow>{}) {
-        if (row.self) {
-            s.own_voice = CoopVoice::IconFor(voice_on, CoopVoice::Get().muted || voice_muted(row.number),
-                                             CoopVoice::Talking(), true);
+        if (row.self) {   // our own line over the blocks: "You" and our voice state
+            const auto icon = CoopVoice::IconFor(voice_on, CoopVoice::Get().muted || voice_muted(row.number),
+                                                 CoopVoice::Talking(), true);
+            if (icon != CoopVoice::Icon::none) own = CoopI18n::Tr("You") + CoopDraw::VoiceWords(icon);
             continue;
         }
         if (game_menu_up) continue;
-        CoopDraw::HudBlock b;
-        b.voice = CoopVoice::IconFor(voice_on, voice_muted(row.number), CoopVoice::Speaking(row.number), false);
-        b.name = row.name.empty() ? "Player " + std::to_string(row.number) : row.name;
+        CoopPartyHud::Block b;
+        const auto voice = CoopVoice::IconFor(voice_on, voice_muted(row.number), CoopVoice::Speaking(row.number), false);
+        b.text = (row.name.empty() ? "Player " + std::to_string(row.number) : row.name) + CoopDraw::VoiceWords(voice);
         if (row.scene && !row.scene->empty()) {
             // The place names are the game's own (places.json): the table has them
             // for the languages it carries, and a name it does not know stays as it is.
-            b.place = CoopI18n::Place(CoopHud::PlaceName(*row.scene));
+            const std::string place = CoopI18n::Place(CoopHud::PlaceName(*row.scene));
+            if (!place.empty()) b.text += "  " + place;
         }
         if (const auto life = CoopHud::PlayerLife(row.number); life && life->max > 0) {
             b.hearts = CoopHudHearts::Quarters(life->life, life->max);
         }
         b.dim = dim_hold.Dim(row.number, row.state == "connected", dim_now);
-        s.hud.push_back(std::move(b));
+        party.push_back(std::move(b));
     }
-    if (!s.hud.empty()) {   // row 141: the blocks go below the game's own HUD as it is laid out now
-        s.game_hud_bottom = CoopMapPage::GameHudBottom();
+    {   // row 141: the blocks go below the game's own HUD as it is laid out now
+        const std::optional<double> bottom =
+            !party.empty() || PartyTest() ? CoopMapPage::GameHudBottom() : std::optional<double>{};
+        std::lock_guard lock(g_party.mutex);
+        g_party.blocks = std::move(party);
+        g_party.own = std::move(own);
+        g_party.game_hud_bottom = bottom;
+        g_party.game_menu_up = game_menu_up;
+        g_party.ms = SteadyMs();
     }
     // F6 (ui-audit-01112 B5): the game's own - menu, Multiplayer > Players (coop_players_open.h), when we are in a
     // scene (never on the title or a file screen, where Minus is not the - menu); the drawn list only when the pack has
@@ -1597,8 +1798,21 @@ bool Start(const HosCoopApi* api) {
     }
     // Original game (coop_original.h): the module stays off, all of it, and Longshot's F1 menu gets one tab with the
     // switch alone, so the player can turn it back.
-    if (const auto options = CoopTitle::KitOptionsFile();
-        options && CoopOriginal::OnIn(CoopTitle::ReadKitOptions())) {
+    // The mods list in step with the switch first (CoopOriginal::Sync: a list an older kit wrote, the switch set or
+    // taken out by hand in coop-options.ini; report 266), for the next start: Longshot read the list before the module.
+    const auto options = CoopTitle::KitOptionsFile();
+    const bool original = options && CoopOriginal::OnIn(CoopTitle::ReadKitOptions());
+    if (options) {
+        bool changed = false;
+        std::string why;
+        if (!CoopOriginal::Sync(CoopRuntime::GameDir() / "mods", original, changed, why)) {
+            LOG_WARNING(Core, "coop: original game: the mods list is not in step with the switch: {}", why);
+        } else if (changed) {
+            LOG_INFO(Core, "coop: original game {}: the mods list put in step with it (from the next start)",
+                     original ? "on" : "off");
+        }
+    }
+    if (original) {
         g_original.Open(*options, CoopRuntime::GameDir() / "mods");
         g_original_on = true;
         LOG_INFO(Core, "coop: original game ({}): the module stays off; F1's \"Original game\" tab turns it back",
@@ -1731,12 +1945,19 @@ void Frame(void* ctx, int site) {
         CoopPlaytest::AtFrame();
     }
     CoopWindowBrand::Tick(CoopRuntime::GameDir());  // the window's title and icon, co-op on or idle (solo too)
+    if (site == HOS_COOP_SITE_FRAME) {  // row 271: this game's memory once a minute, solo too (coop_host_menu.h)
+        static std::uint64_t next_memory_ms = 0;
+        if (CoopHostMenu::MemoryLineDue(SteadyMs(), next_memory_ms)) {
+            LOG_INFO(Core, "coop: memory: {}", CoopHostMenu::ProcessMemoryText());
+        }
+    }
     if (!g_on) {
         return;
     }
     if (site == HOS_COOP_SITE_FRAME) {
         CoopFrameClock::Note();  // jitter-b: the game frame the next present reads (coop_frame_clock.h)
         CoopModsRuntime::Frame();
+        CoopVoiceGameMic::Poll();   // (row 229) Longshot's Insert-menu microphone, for the voice's Default
         CoopPause::Tick();   // the Multiplayer tab's follow-ups, also while the menu is closed
         TestState();         // (LICHII_COOP_TEST_STATE=1 only)
         CoopLook::Frame();   // a look chosen in the pause menu, once it closed
@@ -2081,6 +2302,32 @@ bool HasWrap(std::uint32_t id) {
     return id < 64 && (g_world_wraps.load() >> id & 1) != 0;
 }
 
+bool KeyItemTallyNow(coop::host::KeyItemTally& out) {
+    static std::mutex lock;
+    static coop::host::KeyItemTally cached;
+    static bool cached_ok = false;
+    static std::chrono::steady_clock::time_point at{};
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> guard(lock);
+    if (at == std::chrono::steady_clock::time_point{} || now - at > std::chrono::milliseconds(500)) {
+        at = now;
+        cached_ok = false;
+        if (CoopRuntime::MainBase() != 0) {
+            CoopHook::EmulatorMemory memory(g_system.ApplicationMemory(), CoopRuntime::MainBase());
+            coop::host::GameFlags flags(memory);
+            bool any_flag_table = false;   // (the manager is not up: get_bool says nothing for every flag)
+            cached = coop::host::key_item_tally([&](std::uint32_t hash) {
+                const auto v = flags.get_bool(hash);
+                any_flag_table = any_flag_table || v.has_value();
+                return v.value_or(false);
+            });
+            cached_ok = any_flag_table;
+        }
+    }
+    if (cached_ok) out = cached;
+    return cached_ok;
+}
+
 // The wrapped game functions (patch 0005, nx2/coop_world_wraps.py). The game's function always runs (0 at phase 0).
 int Wrap(std::uint32_t id, int phase, std::uint64_t* x, void* /*ctx*/) {
     if (!g_on || x == nullptr) {
@@ -2253,12 +2500,39 @@ int Wrap(std::uint32_t id, int phase, std::uint64_t* x, void* /*ctx*/) {
         if (!t.ActionsOn()) {
             return 0;
         }
-        if (!t.OnActionVerb(x[0], r, (x[2] & 1) != 0, t_own_call)) {
+        // Row 222 part 2: the plug's name, the move's variation ('Ice', a feint, ...), kept by an owner to send.
+        std::optional<std::string> plug_name;
+        if (r[CoopBossNative::addr::kReqHasPlug] == 1) {
+            std::uint64_t plug = 0;
+            std::memcpy(&plug, r.data() + CoopBossNative::addr::kReqPlug, sizeof plug);
+            plug_name = CoopBossNative::VariantName(
+                [](std::uint64_t a, void* out, std::size_t n) { return CoopRuntime::Read(a, out, n); }, plug);
+            if (plug_name) {
+                g_plug_read.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                g_plug_unread.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        std::optional<CoopBossNative::Request> renamed;
+        std::uint64_t answer = CoopBossNative::addr::kActionTaken;
+        std::int32_t brain_now = 0;  // the brain verb its AI asks in (its own asks are kept per verb)
+        const bool brain_read =
+            CoopRuntime::Read(x[0] + CoopBossNative::addr::kBsaBrainVerb, &brain_now, sizeof brain_now);
+        if (!t.OnActionVerb(x[0], r, (x[2] & 1) != 0, t_own_call, std::move(plug_name), &renamed, &answer,
+                            brain_read ? std::optional(brain_now) : std::nullopt)) {
+            if (renamed) {
+                // Row 222: a copy's own ask of the owner's move, run with the owner's variation: its plug and
+                // has-plug set before the game reads the request (0x38..0x40).
+                CoopRuntime::Write(x[1] + CoopBossNative::addr::kReqPlug,
+                                   renamed->data() + CoopBossNative::addr::kReqPlug,
+                                   CoopBossNative::addr::kReqHasPlug + 1 - CoopBossNative::addr::kReqPlug);
+            }
             return 0;
         }
         // Skipped: the result its callers pass up is what the game gives for a request it took (0, its main path
-        // main+0xc10f4; 2 and 3 are its refusals), so the asking node goes on as after its own request.
-        x[0] = CoopBossNative::addr::kActionTaken;
+        // main+0xc10f4; 2 and 3 are its refusals), so the asking node goes on as after its own request. A copy's own
+        // start held (Twinrova hand-over) answers 3, the slot busy: its node asks again.
+        x[0] = answer;
         return 1;
     }
     if (id == HOS_COOP_WRAP_TIME_SET && phase == 0) {
@@ -2495,7 +2769,11 @@ void DressCharacters(void* ctx) {
         const auto part = CoopLook::PartOf(number);
         return part ? shown[*part] : std::nullopt;
     });
-    if (own.eyes || own.hair || character != 0) {
+    // (and Link once he has worn a colour: back to none, the wardrobe puts the game's own back. Without him as a
+    // target it never saw the change, and Game's own colour left the last colour on him)
+    static bool own_worn = false;
+    own_worn = own_worn || own.eyes || own.hair;
+    if (own_worn || character != 0) {
         // (the model key: the actor name and the character shown, ModelKey, so another pick or age is looked up anew;
         // `picture`: dressed only on the Customize screen, its rows are the page's)
         const auto dress = [&](std::uint64_t actor, std::size_t i, std::uint64_t model) {
@@ -2790,6 +3068,14 @@ COOP_HOOKSHOT_EXPORT int hos_coop_mouse(float fx, float fy, int event) {
     static CoopBoundary::Site site{"hos_coop_mouse"};
     return CoopExportGuard::Guard(site, static_cast<int>(0), [&]() -> int {
         return CoopHookshot::Mouse(fx, fy, event) ? 1 : 0;
+    });
+}
+// The game's menu mouse held off while co-op presses the menu's buttons for the player (coop_auto_press.h; Longshot
+// patch 0030's oot_menu.c asks each menu frame): 1 = held, the mouse neither points nor clicks.
+COOP_HOOKSHOT_EXPORT int hos_coop_menu_mouse_held(void) noexcept {
+    static CoopBoundary::Site site{"hos_coop_menu_mouse_held"};
+    return CoopExportGuard::Guard(site, static_cast<int>(0), [&]() -> int {
+        return g_on && CoopTitle::MenuMouseHeld() ? 1 : 0;
     });
 }
 // Drawing over the picture (hos_coop_draw.h), on Hookshot's render thread.

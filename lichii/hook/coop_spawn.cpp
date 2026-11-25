@@ -672,6 +672,8 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         if (hit && landing && !r.landed) {
             r.landed = true;
             ++landed_;
+            // ai-stuns: it is shown reaching the spot kBehindUs late; a stun there is the thrower's.
+            CoopProjectiles::TheShotHits().Add(r.Position(), r.got_us + behind);
         }
         if (hit && landing && r.effect.empty() && hit_effects_ == HitEffectMode::copy &&
             now_us >= r.got_us + behind && !CoopProjectiles::HitEffect(info->kind).empty()) {
@@ -679,10 +681,13 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
             // late): it plays the shootable's own hit effect there, through
             // the game's own emit (the director; once for a copy).
             r.effect = std::string(CoopProjectiles::HitEffect(info->kind));
+            // ... and its landing sound on its own sound user, after it.
+            r.sound = std::string(CoopProjectiles::HitSound(info->kind));
             r.effect_asked = true;
             ++hit_effects_asked_;
         }
         c.effect = r.effect;
+        c.sound = r.sound;
         if (hit && landing && !r.effect_asked && hit_effects_ == HitEffectMode::real &&
             !CoopProjectiles::HitEffect(info->kind).empty()) {
             // The test route: the game's own shootable is made at the spot
@@ -1231,6 +1236,9 @@ std::optional<CoopPuppet::Call> Director::Step(CoopPuppet::Guest& guest, bool af
                     stand_in_fails_[slot.copy_of] = 0;
                 }
                 Say(slot.actor + ": copy " + std::to_string(slot.key) + " is actor " + Hex(result));
+                if (on_made_) {
+                    on_made_(slot.key);  // (issue 337: the CrawlAnchor live; SetOnMade)
+                }
             }
             slot.request = 0;
             break;
@@ -1244,13 +1252,18 @@ std::optional<CoopPuppet::Call> Director::Step(CoopPuppet::Guest& guest, bool af
             emit_found_ = (result & 1) != 0;
             if (!emit_found_ && emit_notes_ < 8) {
                 ++emit_notes_;
-                Say(slot.actor + ": its effect user has no such key; no hit effect for copy " +
+                Say(slot.actor + (emit_sound_ ? ": its sound user has no such key; no landing sound for copy "
+                                              : ": its effect user has no such key; no hit effect for copy ") +
                     std::to_string(slot.key));
             }
             break;
         case Pending::emit:
-            ++emits_done_;
-            if (emits_done_ <= 8) {
+            if (emit_sound_) {
+                if (++sounds_done_ <= 8) {
+                    Say(slot.actor + ": copy " + std::to_string(slot.key) +
+                        " played its landing sound through the game's own emit");
+                }
+            } else if (++emits_done_ <= 8) {
                 Say(slot.actor + ": copy " + std::to_string(slot.key) +
                     " played its hit effect through the game's own emit");
             }
@@ -1507,6 +1520,7 @@ std::uint64_t Director::NameCellOf(CoopPuppet::Guest& guest, const std::string& 
 namespace {
 constexpr std::uint64_t kComponentXLink = 0x68;
 constexpr std::uint64_t kXLinkELinkUser = 0x70;
+constexpr std::uint64_t kXLinkSLinkUser = 0x78;  // (CoopPuppetSound: the same search and emit play it)
 constexpr std::uint64_t kUserResource = 0x58;
 constexpr std::uint64_t kResourceAccessor = 0x18;
 constexpr std::uint64_t kXLinkSearch = 0x43db00;
@@ -1516,14 +1530,22 @@ constexpr std::uint64_t kSlotEmitHandle = 0x168;
 static_assert(kSlotEmitHandle + 0x10 <= Director::kSlotSize);
 } // namespace
 
-std::uint64_t Director::ELinkUser(CoopPuppet::Guest& guest, std::uint64_t actor) const {
+std::uint64_t Director::XLinkUser(CoopPuppet::Guest& guest, std::uint64_t actor, std::uint64_t at) const {
     std::uint64_t table = 0, xlink = 0, user = 0;
     if (actor == 0 || !ReadValue(guest, actor + kActorComponents, table) || table == 0 ||
         !ReadValue(guest, table + kComponentXLink, xlink) || xlink == 0 ||
-        !ReadValue(guest, xlink + kXLinkELinkUser, user)) {
+        !ReadValue(guest, xlink + at, user)) {
         return 0;
     }
     return user;
+}
+
+std::uint64_t Director::ELinkUser(CoopPuppet::Guest& guest, std::uint64_t actor) const {
+    return XLinkUser(guest, actor, kXLinkELinkUser);
+}
+
+std::uint64_t Director::SLinkUser(CoopPuppet::Guest& guest, std::uint64_t actor) const {
+    return XLinkUser(guest, actor, kXLinkSLinkUser);
 }
 
 std::optional<CoopPuppet::Call> Director::NextEmit(CoopPuppet::Guest& guest) {
@@ -1532,15 +1554,24 @@ std::optional<CoopPuppet::Call> Director::NextEmit(CoopPuppet::Guest& guest) {
         emits_.pop_back();
         Slot& slot = slots_[i];
         const Copy* c = Wanted(slot.key);
-        if (slot.phase != Phase::live || slot.emitted || c == nullptr || c->effect.empty()) {
+        if (slot.phase != Phase::live || c == nullptr) {
             continue;
         }
-        slot.emitted = true;  // once, whatever comes of it
+        // The hit effect (ELink user) first, then the landing sound (SLink
+        // user): each once, whatever comes of it.
+        const bool effect = !slot.emitted && !c->effect.empty();
+        const bool sound = !effect && !slot.sounded && !c->sound.empty();
+        if (!effect && !sound) {
+            continue;
+        }
+        (effect ? slot.emitted : slot.sounded) = true;
+        if (effect && !slot.sounded && !c->sound.empty()) {
+            emits_.push_back(i);  // the sound is asked for when the effect's calls are done
+        }
         std::uint64_t vtable = 0, resource = 0, accessor = 0;
-        const std::uint64_t user = ReadValue(guest, slot.taken, vtable) && vtable == slot.vtable
-                                       ? ELinkUser(guest, slot.taken)
-                                       : 0;
-        const std::uint64_t key = NameCellOf(guest, c->effect);
+        const bool same = ReadValue(guest, slot.taken, vtable) && vtable == slot.vtable;
+        const std::uint64_t user = !same ? 0 : effect ? ELinkUser(guest, slot.taken) : SLinkUser(guest, slot.taken);
+        const std::uint64_t key = NameCellOf(guest, effect ? c->effect : c->sound);
         const std::uint64_t b = SlotBase(i);
         const std::array<std::uint8_t, 0x18> zero{};
         if (user == 0 || key == 0 || !ReadValue(guest, user + kUserResource, resource) || resource == 0 ||
@@ -1549,7 +1580,9 @@ std::optional<CoopPuppet::Call> Director::NextEmit(CoopPuppet::Guest& guest) {
             if (emit_notes_ < 8) {
                 ++emit_notes_;
                 Say(slot.actor + ": copy " + std::to_string(slot.key) +
-                    (user == 0 ? " has no effect user; no hit effect" : " could not ask for its hit effect"));
+                    (effect ? (user == 0 ? " has no effect user; no hit effect" : " could not ask for its hit effect")
+                            : (user == 0 ? " has no sound user; no landing sound"
+                                         : " could not ask for its landing sound")));
             }
             continue;
         }
@@ -1560,6 +1593,7 @@ std::optional<CoopPuppet::Call> Director::NextEmit(CoopPuppet::Guest& guest) {
         call.x[2] = key;
         pending_ = Pending::search;
         pending_slot_ = i;
+        emit_sound_ = sound;
         return call;
     }
     return std::nullopt;
@@ -1573,13 +1607,13 @@ std::optional<CoopPuppet::Call> Director::EmitCall(CoopPuppet::Guest& guest, std
         vtable != slot.vtable) {
         return std::nullopt;  // (gone between the two calls)
     }
-    const std::uint64_t user = ELinkUser(guest, slot.taken);
+    const std::uint64_t user = emit_sound_ ? SLinkUser(guest, slot.taken) : ELinkUser(guest, slot.taken);
     const std::uint64_t b = SlotBase(i);
     if (user == 0 || !ReadValue(guest, b + kSlotLocator, locator) || locator == 0) {
         if (emit_notes_ < 8) {
             ++emit_notes_;
-            Say(slot.actor + ": the game's search found the key but named nothing; no hit effect for copy " +
-                std::to_string(slot.key));
+            Say(slot.actor + ": the game's search found the key but named nothing; no " +
+                (emit_sound_ ? "landing sound" : "hit effect") + " for copy " + std::to_string(slot.key));
         }
         return std::nullopt;
     }
@@ -1601,6 +1635,7 @@ void Director::NewFrame(CoopPuppet::Guest& guest, std::uint64_t now_ms) {
     plays_.clear();
     emits_.clear();
     emit_found_ = false;
+    emit_sound_ = false;
     {
         // Phase 2 (bomb share): our taken bombs whose handed fuse ran out
         // go off as a copy does (a bomb's life is 1; at 0 the game runs its
@@ -1767,9 +1802,12 @@ void Director::NewFrame(CoopPuppet::Guest& guest, std::uint64_t now_ms) {
                 }
             }
         }
-        if (slot.phase == Phase::live && !slot.emitted) {
-            // Issue 166: the hit effect, once (also for an actor that is not placed: Copy::real).
-            if (const Copy* c = Wanted(slot.key); c != nullptr && c->act == Act::show && !c->effect.empty()) {
+        if (slot.phase == Phase::live && !(slot.emitted && slot.sounded)) {
+            // Issue 166: the hit effect and the landing sound, once each (also for an actor that is
+            // not placed: Copy::real).
+            if (const Copy* c = Wanted(slot.key);
+                c != nullptr && c->act == Act::show &&
+                ((!slot.emitted && !c->effect.empty()) || (!slot.sounded && !c->sound.empty()))) {
                 emits_.push_back(i);
             }
         }
@@ -2026,6 +2064,7 @@ Director& TheDirector() {
 #include "coop/net/client.hpp"
 #include "coop/host/game_flags.hpp"
 #include "coop/host/player_reader.hpp"
+#include "coop_dbno_body.h"
 #include "coop_boss_native.h"  // NoteOwnShotEnd (issue 150)
 #include "coop_objects.h"  // OurLinkActor (row 177)
 #include "coop_flags.h"  // EmulatorMemory
@@ -2155,6 +2194,17 @@ public:
                      f.velocity[1], f.velocity[2]);
         }
         CoopProjectiles::TheLures().Set(sync_.OwnLures());  // issue 151, for the objects sync
+        if (const auto anchor = CoopDbno::Body::Anchor()) {
+            // Issue 337: the game's own CrawlAnchor at our downed child (coop_dbno_body.h), ours only.
+            Copy a;
+            a.key = CoopDbno::Body::kAnchorKey + anchor->down;
+            a.remakes = CoopDbno::Body::kAnchorRemakes;
+            a.actor = std::string(CoopDbno::Body::kAnchorActor);
+            a.position = anchor->position;
+            a.rotation = anchor->rotation;
+            a.real = true;
+            copies.push_back(std::move(a));
+        }
         TheDirector().SetInput(main_, std::move(copies));
         if (const auto fuse = sync_.Fuse().Fuse(); fuse && fuse != logged_fuse_) {
             LOG_INFO(Core, "coop: shots: our bombs' fuse is {:.2f} s", double(*fuse) / 1e6);
@@ -2522,6 +2572,16 @@ Glue& TheGlue() {
 Director& TheDirector() {
     static Director director(
         [](const std::string& text) { LOG_INFO(Core, "coop: {}", text); });
+    static const bool wired = [] {
+        director.SetOnMade([](std::uint64_t key) {
+            if ((key & ~std::uint64_t{0xffffffff}) == CoopDbno::Body::kAnchorKey) {
+                // Issue 337: our downed child's Crawl is asked only once this down's anchor is live.
+                CoopDbno::Body::AnchorLive(static_cast<std::uint32_t>(key - CoopDbno::Body::kAnchorKey));
+            }
+        });
+        return true;
+    }();
+    (void)wired;
     return director;
 }
 

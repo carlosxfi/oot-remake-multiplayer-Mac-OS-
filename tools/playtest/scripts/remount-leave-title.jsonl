@@ -1,0 +1,13 @@
+# what: remount-leave (owner 2026-11-25): B, a guest on the title with the host's save switched to, leaves from the menu and is back on its own saves at once (the title re-reads its list).
+# scene: HyruleField_Child
+# start: live.py start --boot tools/autotest/scenarios/live-leave-solo --no-load --env LICHII_COOP_DEBUG_FLAGS=1 --env B:LICHII_COOP_HOST_SAVE=1 --env B:LICHII_COOP_TEST_OWN_SAVE=0 (replay --include-reads for the shots).
+# expect: every wait_log ok; first shot: B's title on the host's save; second shot: B's title on its own saves.
+# kit: 1
+{"server":"live","tool":"wait_log","args":{"player":"B","pattern":"coop: save: now playing from the co-op save folder","timeout_s":120}}
+{"server":"live","tool":"shot","args":{"player":"B"}}
+{"server":"live","tool":"act","args":{"player":"B","script":"menu leave; wait 300"}}
+{"server":"live","tool":"wait_log","args":{"player":"B","pattern":"coop: test menu leave: asked","timeout_s":30}}
+{"server":"live","tool":"wait_log","args":{"player":"B","pattern":"coop: save: on the title and no session holds the co-op save here: back on this game's own saves","timeout_s":60}}
+{"server":"live","tool":"sleep","args":{"seconds":5}}
+{"server":"live","tool":"shot","args":{"player":"B"}}
+{"server":"live","tool":"wait_log","args":{"player":"B","pattern":"unhandled exception|fault at|coop: null read","min":0,"max":0,"timeout_s":0}}

@@ -217,9 +217,15 @@ std::size_t PaintCap(const Cap& cap, const std::string& name, CoopLookPaint::For
                      double base);
 // The same by any rule (the gear's: its tunic's tones, shaded against that
 // part's average in the game's own texels): `rule`'s colour and base taken as given.
+// Row 185's cause in the cap (row 278 follow-up): a cap block is wholly the cap's
+// (look_cap: only cap triangles cover it), but its end colours are the encoder's;
+// beside the Goron hood's red it often put a grey or dark end no tone takes, so the
+// block came out half painted (specks of the old colour). Every cap block is the
+// rule's region: it also takes each Forceable end (no tone of `tones`, every part's
+// tone in the texture; pale or dark), as the shield frame's region blocks do.
 std::size_t PaintCap(const Cap& cap, const std::string& name, CoopLookPaint::Format format,
                      std::span<const std::uint8_t> original, std::vector<std::uint8_t>& texels,
-                     const CoopLookPaint::Rule& rule);
+                     const CoopLookPaint::Rule& rule, std::uint32_t tones);
 
 // The boots in Link's own model (the adult's Kokiri boots, the child's
 // leather, which holds his belts too): not an item, so no item copies. Every
@@ -271,6 +277,13 @@ std::string PuppetTunicsName(const TunicPaints& paints);
 // The copies' dark tile (the child's tunic body) is the main tile recoloured darker (tunic.py dark_tile_for,
 // DARK_SCALE): it is painted so from green's main tile in the colour scaled by kDarkScale (review round 2).
 inline constexpr float kDarkScale = 0.64f;
+// Row 198: green.bin is your own Link's texels (the game's own, marked kSelfMark: tunic.py SELF_MARK), so a texture
+// painted from it is your own Link's texels too, and with no colour (or the preset green, row 243) exactly what your
+// Link's memory holds. Each such texture of a copy is marked as the copy's are (tunic.py TUNIC_MARK): its last byte
+// XOR kSelfMark ^ kTunicMark, so no texture a puppet is drawn in is ever your own Link's and no wardrobe can take
+// one for the other (lane log 0.11.10: 'row 198 cross guard: tunic #0 on puppets' tunics #21').
+inline constexpr std::uint8_t kSelfMark = 0x5A;
+inline constexpr std::uint8_t kTunicMark = 0xA5;
 // `cap`: the Cap trim's blocks (cap.bin; may be null: the trim as the tunic).
 CoopLookTunic::Texels PuppetTunicsTexels(const std::vector<std::pair<std::string, CoopLookTunic::Texels>>& copies,
                                          const CoopLookTunic::Texels& green, const TunicPaints& paints,

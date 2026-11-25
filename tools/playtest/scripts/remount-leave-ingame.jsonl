@@ -1,0 +1,21 @@
+# what: remount-leave (owner 2026-11-25): B plays the host's save, leaves from the menu IN GAME: no switch under the game, its saves go on into the co-op folder (never its own slots); B's own save folder is unchanged (the job hashes it before and after). Then Game Over's way back to the title takes B home.
+# scene: HyruleField_Child
+# start: live.py start --boot tools/autotest/scenarios/live-leave-solo --no-load --env LICHII_COOP_DEBUG_FLAGS=1 --env B:LICHII_COOP_HOST_SAVE=1 --env B:LICHII_COOP_TEST_OWN_SAVE=0 --env B:HOS_FS_TRACE=1 (replay --include-reads for the shots).
+# expect: every wait_log ok up to the last two steps; shots: B in game on the host's save, B still in game after the leave; the job's hash of B's own folder unchanged. The Game Over steps' shots are judged by eye (best effort).
+# kit: 1
+{"server":"live","tool":"wait_log","args":{"player":"B","pattern":"coop: save: now playing from the co-op save folder","timeout_s":120}}
+{"server":"live","tool":"act","args":{"player":"B","script":"press A; wait 180; press A; wait 180; press A; wait 300; press A; wait 600"}}
+{"server":"live","tool":"shot","args":{"player":"B"}}
+{"server":"live","tool":"act","args":{"player":"B","script":"menu leave; wait 600"}}
+{"server":"live","tool":"wait_log","args":{"player":"B","pattern":"coop: test menu leave: asked","timeout_s":30}}
+{"server":"live","tool":"act","args":{"player":"B","script":"autosave; wait 600"}}
+{"server":"live","tool":"wait_log","args":{"player":"B","pattern":"coop: save: asked our game for its own autosave .*for the test","timeout_s":30}}
+{"server":"live","tool":"shot","args":{"player":"B"}}
+{"server":"live","tool":"wait_log","args":{"player":"B","pattern":"coop: save: on the title and no session holds the co-op save here","min":0,"max":0,"timeout_s":0}}
+{"server":"live","tool":"act","args":{"player":"B","script":"hurt 80; wait 900"}}
+{"server":"live","tool":"shot","args":{"player":"B"}}
+{"server":"live","tool":"act","args":{"player":"B","script":"press A; wait 300"}}
+{"server":"live","tool":"shot","args":{"player":"B"}}
+{"server":"live","tool":"act","args":{"player":"B","script":"press A; wait 300"}}
+{"server":"live","tool":"shot","args":{"player":"B"}}
+{"server":"live","tool":"wait_log","args":{"player":"B","pattern":"unhandled exception|fault at|coop: null read","min":0,"max":0,"timeout_s":0}}

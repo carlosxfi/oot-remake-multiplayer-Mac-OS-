@@ -1,0 +1,23 @@
+# hs-u5-cow, B: waits in Kokiri Forest (child) with the flag debug on; A's cow payout flag
+# HavePlayedEvent.Dm_StaffCredit_0027 (0x4f4c1315) must arrive here once (see hs-u5-cow.A.txt).
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_FLAGS=1
+#! timeout 500
+mark start
+warp KokiriForest_Child FrontDekuTree
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark after
+wait 6000
+mark b-wait
+wait 1200
+mark end

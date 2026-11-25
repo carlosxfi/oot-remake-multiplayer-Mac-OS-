@@ -169,7 +169,7 @@ TEST_CASE("native boss: a copy's action waits for its own node, then is asked wi
     auto c = t.Step(g, false, 0, kMain);  // first a block for the request
     REQUIRE(c);
     CHECK(c->function == kMain + addr::kMalloc);
-    CHECK(c->x[0] == addr::kRequestSize);
+    CHECK(c->x[0] == addr::kBlockSize);
     c = t.Step(g, true, kBlock, kMain);
     REQUIRE(c);
     CHECK(c->function == kMain + addr::kRequestActionVerb);
@@ -2055,6 +2055,8 @@ TEST_CASE("native boss: row 177 review, a brain change forgets the copy's kept n
     for (int i = 0; i < 8 && c && !action; ++i) {
         if (c->function == kMain + addr::kSetBrainVerb) {
             brain = true;
+            const std::int32_t set = 3;  // (the game's function writes it at once)
+            g.Write(kBsa + addr::kBsaBrainVerb, &set, 4);
         } else if (c->function == kMain + addr::kRequestActionVerb) {
             action = c;
             break;
@@ -2542,6 +2544,57 @@ TEST_CASE("native boss: boss turns: handed to us between moves, its own brain go
     }
 }
 
+TEST_CASE("native boss: row 149: resumed between moves, then its old owner's move state differed: it chooses again") {
+    // KD proof r2 round 3 (run 20261125-080748): B's game reloaded (a fresh King Dodongo, its own stale corner), was
+    // made his owner between moves (its own walk, verb 1: resume) and only then got the old owner's corner put in
+    // (coop_brain_state.h: 1 put in). The walk its AI went on with was chosen from the stale corner: across the lava
+    // pit; his next roll from inside the pit never ended. A resume whose move state then differs chooses again.
+    FakeGuest g;
+    const std::int32_t brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    auto walk = ActionFromRequest(GameRequest(1, 0));
+    REQUIRE(walk);
+    walk->flags = 0;
+    const auto resumed = [&](Table& t) {
+        t.SetOn(true, true);
+        t.SetTurns(true);
+        t.Publish({Phantom(Role::copy)});
+        CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(1, kNode), true, false));  // its own AI asks the same walk
+        t.Receive(kActor, BossBsa{3, 6, walk, {}});
+        REQUIRE(t.Step(g, false, 0, kMain));
+        REQUIRE(t.Step(g, true, kBlock, kMain));
+        CHECK_FALSE(t.Step(g, true, 0, kMain));
+        Boss ours = Phantom(Role::owner);
+        ours.attacking = false;
+        t.Publish({ours});
+        CHECK_FALSE(t.Step(g, false, 0, kMain));  // resume: nothing asked
+    };
+    {
+        Table t;
+        resumed(t);
+        t.StateChanged(kActor);
+        const auto c = t.Step(g, false, 0, kMain);
+        REQUIRE(c);
+        CHECK(c->function == kMain + addr::kSetBrainVerb);  // its brain chooses again from the values put in
+        CHECK(c->x[0] == kBsa);
+        CHECK(c->x[1] == 6u);
+        CHECK(c->x[2] == 1u);
+        CHECK_FALSE(t.Step(g, true, 0, kMain));
+        t.StateChanged(kActor);  // (once per hand-over)
+        CHECK_FALSE(t.Step(g, false, 0, kMain));
+    }
+    {
+        // Its move state came long after the hand-over: its AI chose since; nothing.
+        Table t;
+        resumed(t);
+        for (std::uint64_t i = 0; i <= Table::kStartSteps; ++i) {
+            CHECK_FALSE(t.Step(g, false, 0, kMain));
+        }
+        t.StateChanged(kActor);
+        CHECK_FALSE(t.Step(g, false, 0, kMain));
+    }
+}
+
 TEST_CASE("native boss: row 325: made ours mid-move that is no attack: its AI chooses again, nothing started over") {
     // Run 20261123-043946: King Dodongo's turn after a roll (verb 104) and his walk (verb 1), handed over while the
     // copy's own AI had asked another move, were started over (row 178): the turn became a roll on in his old facing to
@@ -2614,4 +2667,1087 @@ TEST_CASE("native boss: boss turns: every boss fights the Player only (puppets u
     t.Publish({baba});
     CHECK_FALSE(t.PlayerOnlyBoss());
     CHECK_FALSE(t.KeepsLinkAsAttacker(kActor));
+}
+
+namespace {
+
+// Row 222 part 2: a request an AI asks by plug (no place), its plug at `plug`.
+Request PlugRequest(std::int32_t verb, std::uint64_t node, std::uint64_t plug) {
+    Request r = GameRequest(verb, node, false);
+    std::memcpy(r.data() + addr::kReqPlug, &plug, 8);
+    r[addr::kReqHasPlug] = 1;
+    return r;
+}
+
+Boss Twinrova(Role role, std::uint8_t owner = 2) {
+    return Boss{kActor, kBsa, role, "Enemy_DungeonBoss_Twinrova", owner};
+}
+
+std::string CString(FakeGuest& g, std::uint64_t at) {
+    std::string s;
+    for (char ch = g.Get<char>(at); ch != '\0' && s.size() < 64; ch = g.Get<char>(at + s.size())) {
+        s.push_back(ch);
+    }
+    return s;
+}
+
+} // namespace
+
+TEST_CASE("native boss: row 222 part 2, a plug's variation name: a short printable C string, else none") {
+    FakeGuest g;
+    constexpr std::uint64_t kIce = 0x6000000;
+    g.Write(kIce, "Ice", 4);
+    const auto read = [&g](std::uint64_t a, void* out, std::size_t n) { return g.Read(a, out, n); };
+    CHECK(VariantName(read, kIce) == std::optional<std::string>("Ice"));
+    CHECK_FALSE(VariantName(read, 0));
+    g.Write(kIce + 0x100, "", 1);
+    CHECK_FALSE(VariantName(read, kIce + 0x100));  // empty: not a plug name
+    g.Write(kIce + 0x200, "Fire Ice", 9);
+    CHECK_FALSE(VariantName(read, kIce + 0x200));  // a space: not one we send
+    const std::string longer(coop::protocol::kMaxBossVariantChars + 1, 'a');
+    g.Write(kIce + 0x300, longer.c_str(), longer.size() + 1);
+    CHECK_FALSE(VariantName(read, kIce + 0x300));  // no end within kMaxBossVariantChars
+    const std::string longest(coop::protocol::kMaxBossVariantChars, 'b');
+    g.Write(kIce + 0x400, longest.c_str(), longest.size() + 1);
+    CHECK(VariantName(read, kIce + 0x400) == std::optional<std::string>(longest));
+    // A bulk read that fails (a page's end after the name): read byte by byte up to its end.
+    const auto edge = [&g](std::uint64_t a, void* out, std::size_t n) { return n == 1 && g.Read(a, out, n); };
+    CHECK(VariantName(edge, kIce) == std::optional<std::string>("Ice"));
+    const auto none = [](std::uint64_t, void*, std::size_t) { return false; };
+    CHECK_FALSE(VariantName(none, kIce));
+}
+
+TEST_CASE("native boss: row 222 part 2, the owner keeps its actions' variations by seq") {
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::owner, 1)});
+    constexpr std::uint64_t kPlug = 0x5000000;
+    std::optional<BossVariants> v;
+    CHECK_FALSE(t.OwnerState(kActor, &v));
+    t.OnActionVerb(kBsa, PlugRequest(121, kNode, kPlug), true, false, "Ice");         // seq 1
+    t.OnActionVerb(kBsa, GameRequest(121, kNode), true, false);                       // seq 2: plain (Fire)
+    t.OnActionVerb(kBsa, PlugRequest(121, kNode, kPlug), true, false);                // seq 3: a plug not read
+    t.OnActionVerb(kBsa, PlugRequest(121, kNode, kPlug), true, false, "Fire Ice");    // seq 4: not a name we send
+    t.OnActionVerb(kBsa, PlugRequest(121, kNode, kPlug), true, false, "1FeintFire");  // seq 5
+    auto s = t.OwnerState(kActor, &v);
+    REQUIRE(s);
+    CHECK(s->seq == 5);
+    REQUIRE(v);
+    CHECK(v->recent == std::vector<BossVariant>{{1, "Ice"}, {2, ""}, {5, "1FeintFire"}});
+    CHECK(t.Totals().owner_variants == 3);
+    // Eight brain changes push every action out of recent: its action now's variation still goes (older than recent).
+    for (int i = 0; i < 8; ++i) {
+        t.OnBrainVerb(kBsa, 3 + i, true, false);
+    }
+    s = t.OwnerState(kActor, &v);
+    REQUIRE(s);
+    CHECK(s->recent.front().seq == 6);
+    REQUIRE(v);
+    CHECK(v->recent == std::vector<BossVariant>{{5, "1FeintFire"}});
+    CHECK(ActionVariantOf(*s, v) == std::optional<std::string>("1FeintFire"));
+    // An action whose plug could not be read: its action now has no variation known (none sent for it).
+    t.OnActionVerb(kBsa, PlugRequest(121, kNode, kPlug), true, false);
+    s = t.OwnerState(kActor, &v);
+    REQUIRE(s);
+    CHECK_FALSE(v);
+    CHECK_FALSE(ActionVariantOf(*s, v));
+    // More named actions than a sample holds: the newest kMaxBossVariants.
+    for (int i = 0; i < 10; ++i) {
+        t.OnActionVerb(kBsa, PlugRequest(121, kNode, kPlug), true, false, "Ice");
+    }
+    s = t.OwnerState(kActor, &v);
+    REQUIRE(s);
+    REQUIRE(v);
+    CHECK(v->recent.size() == coop::protocol::kMaxBossVariants);
+    CHECK(v->recent.back().seq == s->seq);
+    // A copy has none to send.
+    Table copy;
+    copy.SetOn(true, true);
+    copy.Publish({Twinrova(Role::copy)});
+    CHECK_FALSE(copy.OwnerState(kActor, &v));
+    CHECK_FALSE(v);
+}
+
+TEST_CASE("native boss: row 222 part 2, a copy asks the owner's variation, not its own AI's last plug") {
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    FakeGuest g;
+    constexpr std::uint64_t kOwnIce = 0x5000000;  // its own AI's plug string 'Ice'
+    g.Write(kOwnIce, "Ice", 4);
+    const std::int32_t brain = 2;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    t.OnActionVerb(kBsa, PlugRequest(121, kNode, kOwnIce), true, false, "Ice");  // its own AI chose Ice
+    BossAction a = *ActionFromRequest(GameRequest(121, 0, false));  // the owner's, by plug: no place
+    a.changed = true;
+    BossBsa s{1, 2, a, {BossChange{1, a}}};
+    t.Receive(kActor, s, BossVariants{{{1, "1FeintFire"}}});
+    REQUIRE(t.Step(g, false, 0, kMain));  // the block
+    auto c = t.Step(g, true, kBlock, kMain);
+    REQUIRE(c);
+    CHECK(c->function == kMain + addr::kRequestActionVerb);
+    const std::uint64_t pooled = g.Get<std::uint64_t>(kBlock + addr::kReqPlug);
+    CHECK(g.Get<std::uint8_t>(kBlock + addr::kReqHasPlug) == 1);
+    CHECK(pooled == kBlock + addr::kRequestSize);  // the pool's first slot, after the request
+    CHECK(CString(g, pooled) == "1FeintFire");     // the owner's feint, not its own 'Ice'
+    CHECK(g.Get<std::uint64_t>(kBlock + addr::kReqNode) == kNode);
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    // The owner's plain ask with no place: no plug, though its own AI's last for this move was 'Ice'.
+    s = BossBsa{2, 2, a, {BossChange{1, a}, BossChange{2, a}}};
+    t.Receive(kActor, s, BossVariants{{{1, "1FeintFire"}, {2, ""}}});
+    REQUIRE(t.Step(g, false, 0, kMain));
+    CHECK(g.Get<std::uint8_t>(kBlock + addr::kReqHasPlug) == 0);
+    CHECK(g.Get<std::uint64_t>(kBlock + addr::kReqPlug) == 0);
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    // The feint again: the same pooled string (written once, never moved).
+    s = BossBsa{3, 2, a, {BossChange{1, a}, BossChange{2, a}, BossChange{3, a}}};
+    t.Receive(kActor, s, BossVariants{{{1, "1FeintFire"}, {2, ""}, {3, "1FeintFire"}}});
+    REQUIRE(t.Step(g, false, 0, kMain));
+    CHECK(g.Get<std::uint64_t>(kBlock + addr::kReqPlug) == pooled);
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    // Another name: the next slot.
+    s = BossBsa{4, 2, a, {BossChange{1, a}, BossChange{2, a}, BossChange{3, a}, BossChange{4, a}}};
+    t.Receive(kActor, s, BossVariants{{{2, ""}, {3, "1FeintFire"}, {4, "Ice"}}});
+    REQUIRE(t.Step(g, false, 0, kMain));
+    CHECK(g.Get<std::uint64_t>(kBlock + addr::kReqPlug) == pooled + addr::kVariantSlotSize);
+    CHECK(CString(g, pooled + addr::kVariantSlotSize) == "Ice");
+    CHECK(CString(g, pooled) == "1FeintFire");  // (the first slot kept)
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    // An older owner (no variations sent): its own AI's plug for this move, as before.
+    s = BossBsa{5, 2, a, {BossChange{4, a}, BossChange{5, a}}};
+    t.Receive(kActor, s);
+    REQUIRE(t.Step(g, false, 0, kMain));
+    CHECK(g.Get<std::uint64_t>(kBlock + addr::kReqPlug) == kOwnIce);
+    CHECK(g.Get<std::uint8_t>(kBlock + addr::kReqHasPlug) == 1);
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    const Counts n = t.Totals();
+    CHECK(n.variant_named == 3);
+    CHECK(n.variant_plain == 1);
+    CHECK(n.variant_unknown == 1);
+    CHECK(n.variant_pool_full == 0);
+    CHECK(n.action_applied == 5);
+}
+
+namespace {
+
+// Row 222 part 2: the owner's next action change with the variation `name` (its recent list capped as the sample's),
+// put in by the copy `bsa`. A new name pool first when `pool` is not 0 (the game's malloc answers `pool`). Returns
+// the plug address the request named (0: none).
+std::uint64_t PutInNamed(Table& t, FakeGuest& g, std::uint64_t actor, std::uint32_t seq, std::vector<BossChange>& recent,
+                         const std::string& name, std::uint64_t pool) {
+    const BossAction a = *ActionFromRequest(GameRequest(121, 0, false));
+    recent.push_back(BossChange{seq, a});
+    if (recent.size() > coop::protocol::kMaxBossChanges) {
+        recent.erase(recent.begin());
+    }
+    t.Receive(actor, BossBsa{seq, 2, a, recent}, BossVariants{{{seq, name}}});
+    auto c = t.Step(g, false, 0, kMain);
+    REQUIRE(c);
+    if (pool != 0) {
+        CHECK(c->function == kMain + addr::kMalloc);  // another pool from the game's heap first
+        CHECK(c->x[0] == addr::kPoolSize);
+        c = t.Step(g, true, pool, kMain);
+        REQUIRE(c);
+    }
+    CHECK(c->function == kMain + addr::kRequestActionVerb);
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    return g.Get<std::uint8_t>(kBlock + addr::kReqHasPlug) == 1 ? g.Get<std::uint64_t>(kBlock + addr::kReqPlug) : 0;
+}
+
+} // namespace
+
+TEST_CASE("native boss: row 222 part 2, more names than a pool, across two bosses: another pool, every one named") {
+    constexpr std::uint64_t kActor2 = 0x1100000;
+    constexpr std::uint64_t kBsa2 = 0x2100000;
+    constexpr std::uint64_t kPool = 0x6000000;
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy), Boss{kActor2, kBsa2, Role::copy, "Enemy_DungeonBoss_Gohma", 2}});
+    FakeGuest g;
+    const std::int32_t brain = 2;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    g.Write(kBsa2 + addr::kBsaBrainVerb, &brain, 4);
+    t.OnActionVerb(kBsa, GameRequest(121, kNode), true, false);
+    t.OnActionVerb(kBsa2, GameRequest(121, kNode + 0x100), true, false);
+    // Twinrova: the first pool (after the request in our block) filled.
+    std::vector<BossChange> recent;
+    const BossAction a = *ActionFromRequest(GameRequest(121, 0, false));
+    recent.push_back(BossChange{1, a});
+    t.Receive(kActor, BossBsa{1, 2, a, recent}, BossVariants{{{1, "V1"}}});
+    REQUIRE(t.Step(g, false, 0, kMain));  // the block
+    REQUIRE(t.Step(g, true, kBlock, kMain));
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    const std::uint64_t first = kBlock + addr::kRequestSize;
+    CHECK(g.Get<std::uint64_t>(kBlock + addr::kReqPlug) == first);
+    for (std::uint32_t seq = 2; seq <= addr::kVariantSlots; ++seq) {
+        CHECK(PutInNamed(t, g, kActor, seq, recent, "V" + std::to_string(seq), 0) ==
+              first + (seq - 1) * addr::kVariantSlotSize);
+    }
+    // Another boss later in the run, new names: a second pool, not its own plug.
+    std::vector<BossChange> recent2;
+    CHECK(PutInNamed(t, g, kActor2, 1, recent2, "W1", kPool) == kPool);
+    CHECK(CString(g, kPool) == "W1");
+    CHECK(PutInNamed(t, g, kActor2, 2, recent2, "W2", 0) == kPool + addr::kVariantSlotSize);
+    // A name of the first pool: the same string (written once, never moved).
+    CHECK(PutInNamed(t, g, kActor2, 3, recent2, "V5", 0) == first + 4 * addr::kVariantSlotSize);
+    CHECK(CString(g, first + 4 * addr::kVariantSlotSize) == "V5");
+    const Counts n = t.Totals();
+    CHECK(n.variant_named == addr::kVariantSlots + 3);
+    CHECK(n.variant_pool_full == 0);
+}
+
+TEST_CASE("native boss: row 222 part 2, past the last pool a name asks as before") {
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    FakeGuest g;
+    const std::int32_t brain = 2;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    t.OnActionVerb(kBsa, GameRequest(121, kNode), true, false);  // (its node; no plug of its own)
+    std::vector<BossChange> recent;
+    const BossAction a = *ActionFromRequest(GameRequest(121, 0, false));
+    recent.push_back(BossChange{1, a});
+    t.Receive(kActor, BossBsa{1, 2, a, recent}, BossVariants{{{1, "V1"}}});
+    REQUIRE(t.Step(g, false, 0, kMain));  // the block
+    REQUIRE(t.Step(g, true, kBlock, kMain));
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    const auto names = static_cast<std::uint32_t>(addr::kMaxVariantPools * addr::kVariantSlots);
+    for (std::uint32_t seq = 2; seq <= names; ++seq) {
+        const bool new_pool = (seq - 1) % addr::kVariantSlots == 0;
+        const std::uint64_t pool = 0x6000000 + ((seq - 1) / addr::kVariantSlots) * 0x1000;
+        const std::uint64_t at = PutInNamed(t, g, kActor, seq, recent, "V" + std::to_string(seq), new_pool ? pool : 0);
+        if (seq > addr::kVariantSlots) {
+            CHECK(at == pool + ((seq - 1) % addr::kVariantSlots) * addr::kVariantSlotSize);
+        }
+    }
+    // Every pool full: no more allocations, the name asked with the copy's own plug (none here).
+    CHECK(PutInNamed(t, g, kActor, names + 1, recent, "Last", 0) == 0);
+    const Counts n = t.Totals();
+    CHECK(n.variant_named == names);
+    CHECK(n.variant_pool_full == 1);
+}
+
+TEST_CASE("native boss: row 222 part 2, a resync's action takes the variation of the owner's action now") {
+    BossAction a;
+    a.verb = 121;
+    BossBsa s{7, 2, a, {BossChange{5, a}, BossChange{6, BossBrain{3, true}}, BossChange{7, BossBrain{4, true}}}};
+    CHECK(ActionVariantOf(s, BossVariants{{{4, "Ice"}, {5, "1FeintIce"}}}) == std::optional<std::string>("1FeintIce"));
+    CHECK_FALSE(ActionVariantOf(s, BossVariants{{{4, "Ice"}}}));  // its action change has none: not known
+    CHECK_FALSE(ActionVariantOf(s, std::nullopt));                 // an older owner
+    s.recent = {BossChange{6, BossBrain{3, true}}, BossChange{7, BossBrain{4, true}}};
+    CHECK(ActionVariantOf(s, BossVariants{{{2, "Ice"}, {5, ""}}}) == std::optional<std::string>(""));
+    s.action.reset();
+    CHECK_FALSE(ActionVariantOf(s, BossVariants{{{5, "Ice"}}}));
+    CHECK(VariantOf(BossVariants{{{5, "Ice"}}}, 5) == std::optional<std::string>("Ice"));
+    CHECK_FALSE(VariantOf(BossVariants{{{5, "Ice"}}}, 6));
+    CHECK_FALSE(VariantOf(BossVariants{{{5, "Ice"}}}, 0));
+}
+
+namespace {
+template <class T>
+T ReqAt(const Request& r, std::size_t at) {
+    T v{};
+    std::memcpy(&v, r.data() + at, sizeof v);
+    return v;
+}
+}  // namespace
+
+TEST_CASE("native boss: row 222, an ask by plug names its places, they go with its variation, not in bsa's action") {
+    constexpr std::uint64_t kPlug = 0x5000000;
+    Request ice = GameRequest(121, kNode, true);  // the owner's 'Ice' (diag run 20261123-160338): placed AND by plug
+    std::memcpy(ice.data() + addr::kReqPlug, &kPlug, 8);
+    ice[addr::kReqHasPlug] = 1;
+    const auto places = PlacesOf(ice);
+    REQUIRE(places[0]);
+    CHECK((*places[0])[0] == 10.0f);
+    CHECK_FALSE(places[1]);  // (first float NaN: no place, the game's rule)
+    bool plug = false;
+    auto a = ActionFromRequest(ice, &plug);
+    REQUIRE(a);
+    CHECK(plug);
+    CHECK_FALSE(a->places[0]);  // (bsa's action: none for a plug ask, as older copies expect)
+    // The owner's named ask records its places with its variation (component 24).
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::owner, 1)});
+    t.OnActionVerb(kBsa, ice, true, false, std::string("Ice"));
+    t.OnActionVerb(kBsa, GameRequest(121, kNode, true), true, false, std::string{});  // plain: bsa has its places
+    std::optional<BossVariants> v;
+    REQUIRE(t.OwnerState(kActor, &v));
+    REQUIRE(v);
+    REQUIRE(v->recent.size() == 2);
+    CHECK(v->recent[0].name == "Ice");
+    REQUIRE(v->recent[0].places[0]);
+    CHECK((*v->recent[0].places[0])[0] == 10.0f);
+    CHECK_FALSE(v->recent[1].places[0]);
+    // Put in with the owner's variation by name: its places AND the named plug.
+    a->places = places;
+    const Request named = RequestFromAction(*a, OwnAsk{kNode, 0x6000000, true, true});
+    CHECK(named[addr::kReqHasPlug] == 1);
+    CHECK(ReqAt<std::uint64_t>(named, addr::kReqPlug) == 0x6000000);
+    CHECK(ReqAt<float>(named, addr::kReqPlaces) == 10.0f);
+    // Our own AI's plug (an older owner, no variation sent) with the owner's places: no plug, as before.
+    const Request own = RequestFromAction(*a, OwnAsk{kNode, 0x6000000, true});
+    CHECK(own[addr::kReqHasPlug] == 0);
+    CHECK(ReqAt<float>(own, addr::kReqPlaces) == 10.0f);
+}
+
+TEST_CASE("native boss: row 222, the owner's move never goes through a node that chose another variation of it") {
+    constexpr std::uint64_t kShotNode = 0x4000100;   // asks the ranged attack (121): its own last plain (Fire)
+    constexpr std::uint64_t kStartNode = 0x4000200;  // asked StartBattle (65)
+    constexpr std::uint64_t kFlyNode = 0x4000300;    // asked Fly (4), the slot's last
+    BossAction a;
+    a.slot = 0;
+    a.verb = 121;
+    const std::map<std::pair<std::int32_t, std::int32_t>, OwnAsk> by_move{{{0, 121}, OwnAsk{kShotNode}},
+                                                                         {{0, 65}, OwnAsk{kStartNode, 0x77, true}},
+                                                                         {{0, 4}, OwnAsk{kFlyNode}}};
+    const std::map<std::int32_t, OwnAsk> by_slot{{0, OwnAsk{kFlyNode}}};
+    OwnVariants own;
+    own.choices[{kShotNode, 0, 121}] = "";
+    own.choices[{kStartNode, 0, 65}] = "StartBattle";
+    own.choices[{kFlyNode, 0, 4}] = "";
+    // 'Ice' while its shot node chose plain: the slot's last node (no choice of this move), not the shot node.
+    AskRule rule = AskRule::own;
+    CHECK(AskFor(by_move, by_slot, kFlyNode, a, own, std::string("Ice"), &rule)->node == kFlyNode);
+    CHECK(rule == AskRule::slot);
+    // Plain while it chose plain: the shot node and its own ask, as before.
+    CHECK(*AskFor(by_move, by_slot, kFlyNode, a, own, std::string{}, &rule) == OwnAsk{kShotNode});
+    CHECK(rule == AskRule::own);
+    // Not known (an older owner): as before.
+    CHECK(*AskFor(by_move, by_slot, kFlyNode, a, own, std::nullopt) == OwnAsk{kShotNode});
+    // Its shot node chose Ice: 'Ice' goes there, plain goes elsewhere (Koume's fire after Kotake's ice, either way).
+    own.choices[{kShotNode, 0, 121}] = "Ice";
+    CHECK(AskFor(by_move, by_slot, kFlyNode, a, own, std::string("Ice"))->node == kShotNode);
+    CHECK(AskFor(by_move, by_slot, kFlyNode, a, own, std::string{})->node == kFlyNode);
+    // The slot's last and the last node are the shot node too: another node of its own.
+    const std::map<std::int32_t, OwnAsk> shot_slot{{0, OwnAsk{kShotNode}}};
+    CHECK(AskFor(by_move, shot_slot, kShotNode, a, own, std::string{}, &rule)->node != kShotNode);
+    CHECK(rule == AskRule::other);
+    // Only the shot node: the move's own (nothing better), said as such.
+    OwnVariants only;
+    only.choices[{kShotNode, 0, 121}] = "Ice";
+    CHECK(AskFor(by_move, shot_slot, kShotNode, a, only, std::string{}, &rule)->node == kShotNode);
+    CHECK(rule == AskRule::all_conflict);
+    // Review-01112-h: a node keeps its choice of each move. The shot node chose Fire (plain) for 121, then asked
+    // another move (Fly, verb 4): its 121 choice still stands, so 'Ice' does not go through it.
+    OwnVariants kept;
+    kept.choices[{kShotNode, 0, 121}] = "";
+    kept.choices[{kShotNode, 0, 4}] = "";
+    kept.choices[{kStartNode, 0, 65}] = "StartBattle";
+    CHECK(AskFor(by_move, shot_slot, kShotNode, a, kept, std::string("Ice"), &rule)->node == kStartNode);
+    CHECK(rule == AskRule::other);
+    // A plug not read as a name differs from every name.
+    CHECK(OwnAskVariant(GameRequest(121, kNode), "Ice").empty());
+    CHECK(OwnAskVariant(PlugRequest(121, kNode, 0x77), std::nullopt) == "?");
+    CHECK(OwnAskVariant(PlugRequest(121, kNode, 0x77), std::string("Ice")) == "Ice");
+}
+
+TEST_CASE("native boss: row 222, a copy puts the owner's 'Ice' in through a node that did not choose Fire, with its places") {
+    constexpr std::uint64_t kShotNode = 0x4000100;
+    constexpr std::uint64_t kStartNode = 0x4000200;
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    FakeGuest g;
+    const std::int32_t brain = 2;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    constexpr std::uint64_t kOwnStart = 0x5000000;
+    g.Write(kOwnStart, "StartBattle", 12);
+    t.OnActionVerb(kBsa, PlugRequest(65, kStartNode, kOwnStart), true, false, "StartBattle");
+    t.OnActionVerb(kBsa, GameRequest(121, kShotNode), true, false, std::string{});  // its own AI: the plain shot
+    // The owner's 'Ice', asked by plug with its places (Link's).
+    Request owner = GameRequest(121, 0, true);
+    owner[addr::kReqHasPlug] = 1;
+    BossAction a = *ActionFromRequest(owner);
+    CHECK_FALSE(a.places[0]);  // (bsa's action: none; they come with the variation)
+    a.changed = true;
+    t.Receive(kActor, BossBsa{1, 2, a, {BossChange{1, a}}}, BossVariants{{BossVariant{1, "Ice", PlacesOf(owner)}}});
+    REQUIRE(t.Step(g, false, 0, kMain));  // the block
+    auto c = t.Step(g, true, kBlock, kMain);
+    REQUIRE(c);
+    CHECK(c->function == kMain + addr::kRequestActionVerb);
+    CHECK(g.Get<std::uint64_t>(kBlock + addr::kReqNode) == kStartNode);  // (its shot node chose Fire)
+    CHECK(g.Get<std::uint8_t>(kBlock + addr::kReqHasPlug) == 1);
+    CHECK(CString(g, g.Get<std::uint64_t>(kBlock + addr::kReqPlug)) == "Ice");
+    CHECK(g.Get<float>(kBlock + addr::kReqPlaces) == 10.0f);  // the owner's place: it aims as the owner's did
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    // The owner's plain shot next: through its shot node, which chose plain.
+    BossAction b = *ActionFromRequest(GameRequest(121, 0, true));
+    b.changed = true;
+    t.Receive(kActor, BossBsa{2, 2, b, {BossChange{1, a}, BossChange{2, b}}}, BossVariants{{{1, "Ice"}, {2, ""}}});
+    REQUIRE(t.Step(g, false, 0, kMain));
+    CHECK(g.Get<std::uint64_t>(kBlock + addr::kReqNode) == kShotNode);
+    CHECK(g.Get<std::uint8_t>(kBlock + addr::kReqHasPlug) == 0);
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+}
+
+TEST_CASE("native boss: row 222, a named move made ours mid-move starts over with its places (row 178 restart)") {
+    // Review-01112-h: put_action has no places for a named ask (bsa leaves them out), so the restart dropped them.
+    FakeGuest g;
+    const std::int32_t brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    Request owner = GameRequest(9, 0, true);
+    owner[addr::kReqHasPlug] = 1;
+    auto rush = ActionFromRequest(owner);  // the owner's ask by plug: bsa's action has no place
+    REQUIRE(rush);
+    CHECK_FALSE(rush->places[0]);
+    rush->flags = 0;
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Phantom(Role::copy)});
+    CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(9, kNode), true, false));
+    t.Receive(kActor, BossBsa{3, 6, rush, {BossChange{3, *rush}}}, BossVariants{{BossVariant{3, "Charge", PlacesOf(owner)}}});
+    REQUIRE(t.Step(g, false, 0, kMain));  // the block
+    REQUIRE(t.Step(g, true, kBlock, kMain));
+    CHECK(g.Get<float>(kBlock + addr::kReqPlaces) == 10.0f);  // put in with the owner's place
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    // Made ours mid-move: it starts over with the same variation AND its places.
+    t.Publish({Phantom(Role::owner)});
+    g.bytes.erase(kBlock + addr::kReqVerb);
+    auto c = t.Step(g, false, 0, kMain);
+    REQUIRE(c);
+    CHECK(c->function == kMain + addr::kRequestActionVerb);
+    CHECK((g.Get<std::uint16_t>(kBlock + addr::kReqFlags) & addr::kReqStartOver) != 0);
+    CHECK(g.Get<std::uint8_t>(kBlock + addr::kReqHasPlug) == 1);
+    CHECK(CString(g, g.Get<std::uint64_t>(kBlock + addr::kReqPlug)) == "Charge");
+    CHECK(g.Get<float>(kBlock + addr::kReqPlaces) == 10.0f);
+}
+
+TEST_CASE("native boss: row 222, a node that chose Fire and then asked another move still holds its Fire") {
+    // Review-01112-h: the choice is kept per (node, slot, verb), not only the node's last ask.
+    constexpr std::uint64_t kShotNode = 0x4000100;
+    constexpr std::uint64_t kStartNode = 0x4000200;
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    FakeGuest g;
+    const std::int32_t brain = 2;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    t.OnActionVerb(kBsa, PlugRequest(65, kStartNode, 0x77), true, false, std::string("StartBattle"));
+    t.OnActionVerb(kBsa, GameRequest(121, kShotNode), true, false, std::string{});  // its shot node: plain (Fire)
+    t.OnActionVerb(kBsa, GameRequest(4, kShotNode), true, false, std::string{});    // then Fly from the same node
+    Request owner = GameRequest(121, 0, true);
+    owner[addr::kReqHasPlug] = 1;
+    BossAction a = *ActionFromRequest(owner);
+    a.changed = true;
+    t.Receive(kActor, BossBsa{1, 2, a, {BossChange{1, a}}}, BossVariants{{BossVariant{1, "Ice", PlacesOf(owner)}}});
+    REQUIRE(t.Step(g, false, 0, kMain));
+    REQUIRE(t.Step(g, true, kBlock, kMain));
+    CHECK(g.Get<std::uint64_t>(kBlock + addr::kReqNode) == kStartNode);  // never the node that chose Fire
+    CHECK(t.Totals().variant_node_moved == 1);
+    CHECK(t.Totals().variant_node_conflict == 0);
+    const auto notes = t.TakeNotes();
+    CHECK(std::any_of(notes.begin(), notes.end(), [](const std::string& n) {
+        return n.find("another node of its own") != n.npos || n.find("its slot's last node") != n.npos;
+    }));
+}
+
+namespace {
+Request WithKind(Request r, std::uint32_t kind) {
+    std::memcpy(r.data() + addr::kReqKind3, &kind, 4);
+    return r;
+}
+} // namespace
+
+TEST_CASE("native boss: row 222, the owner's places go in with the owner's place kind (run 20261124-011531)") {
+    // The game's request function keeps the request's word at 0x34 with the move's places. Twinrova's 121 node asks
+    // with 0; a put-in with the owner's places under the default 0x10 gave the copy no FireBullet and no IceBullet.
+    BossAction a;
+    a.slot = 0;
+    a.verb = 121;
+    const std::map<std::pair<std::int32_t, std::int32_t>, OwnAsk> none;
+    const std::map<std::pair<std::int32_t, std::int32_t>, OwnAsk> by_move{{{0, 121}, OwnAsk{kNode, 0, false, false, 0}}};
+    CHECK(KindFor(0x10u, by_move, a) == 0x10);         // the owner's kind first
+    CHECK(KindFor(std::nullopt, by_move, a) == 0);     // else the copy's own AI's for this move
+    CHECK(KindFor(std::nullopt, none, a) == addr::kKind3);  // else the game's default
+    a.places[0] = coop::protocol::Vec3{1.0f, 2.0f, 3.0f};
+    CHECK(ReqAt<std::uint32_t>(RequestFromAction(a, OwnAsk{kNode}, 0), addr::kReqKind3) == 0);
+    CHECK(ReqAt<std::uint32_t>(RequestFromAction(a, OwnAsk{kNode}), addr::kReqKind3) == addr::kKind3);
+
+    // The owner records each ask's kind with its variation (plain and named).
+    {
+        Table t;
+        t.SetOn(true, true);
+        t.Publish({Twinrova(Role::owner, 1)});
+        Request ice = WithKind(GameRequest(121, kNode, true), 0x10);
+        ice[addr::kReqHasPlug] = 1;
+        t.OnActionVerb(kBsa, ice, true, false, std::string("Ice"));
+        t.OnActionVerb(kBsa, WithKind(GameRequest(121, kNode, true), 0), true, false, std::string{});
+        std::optional<BossVariants> v;
+        REQUIRE(t.OwnerState(kActor, &v));
+        REQUIRE(v);
+        REQUIRE(v->recent.size() == 2);
+        CHECK(v->recent[0].kind == 0x10);
+        CHECK(v->recent[1].kind == 0);
+    }
+
+    // A copy: its own shot node asked plain with kind 0; the owner's plain shot (kind 0, places) and the owner's
+    // 'Ice' from another node (kind 0x10) each go in with the owner's own kind.
+    constexpr std::uint64_t kShotNode = 0x4000100;
+    constexpr std::uint64_t kStartNode = 0x4000200;
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    FakeGuest g;
+    const std::int32_t brain = 2;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    t.OnActionVerb(kBsa, WithKind(PlugRequest(65, kStartNode, 0x77), 0), true, false, std::string("StartBattle"));
+    t.OnActionVerb(kBsa, WithKind(GameRequest(121, kShotNode), 0), true, false, std::string{});
+    const Request owner_plain = WithKind(GameRequest(121, 0, true), 0);
+    BossAction b = *ActionFromRequest(owner_plain);
+    b.changed = true;
+    BossVariant plain{1, ""};
+    plain.kind = 0;
+    t.Receive(kActor, BossBsa{1, 2, b, {BossChange{1, b}}}, BossVariants{{plain}});
+    REQUIRE(t.Step(g, false, 0, kMain));  // the block
+    REQUIRE(t.Step(g, true, kBlock, kMain));
+    CHECK(g.Get<std::uint64_t>(kBlock + addr::kReqNode) == kShotNode);
+    CHECK(g.Get<float>(kBlock + addr::kReqPlaces) == 10.0f);
+    CHECK(g.Get<std::uint32_t>(kBlock + addr::kReqKind3) == 0);  // was 0x10: no shot
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    Request owner_ice = WithKind(GameRequest(121, 0, true), 0x10);
+    owner_ice[addr::kReqHasPlug] = 1;
+    BossAction c = *ActionFromRequest(owner_ice);
+    c.changed = true;
+    BossVariant ice{2, "Ice", PlacesOf(owner_ice)};
+    ice.kind = 0x10;
+    t.Receive(kActor, BossBsa{2, 2, c, {BossChange{1, b}, BossChange{2, c}}}, BossVariants{{plain, ice}});
+    REQUIRE(t.Step(g, false, 0, kMain));
+    CHECK(g.Get<std::uint8_t>(kBlock + addr::kReqHasPlug) == 1);
+    CHECK(g.Get<float>(kBlock + addr::kReqPlaces) == 10.0f);
+    CHECK(g.Get<std::uint32_t>(kBlock + addr::kReqKind3) == 0x10);
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+}
+
+TEST_CASE("native boss: row 222, with no owner's kind a put-in takes its own AI's kind of the move") {
+    // An owner whose variation is not known (a plug not read as a name: no component 24 entry).
+    constexpr std::uint64_t kShotNode = 0x4000100;
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    FakeGuest g;
+    const std::int32_t brain = 2;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    t.OnActionVerb(kBsa, WithKind(GameRequest(121, kShotNode), 0), true, false, std::string{});
+    BossAction b = *ActionFromRequest(GameRequest(121, 0, true));
+    b.changed = true;
+    t.Receive(kActor, BossBsa{1, 2, b, {BossChange{1, b}}}, std::nullopt);
+    REQUIRE(t.Step(g, false, 0, kMain));
+    REQUIRE(t.Step(g, true, kBlock, kMain));
+    CHECK(g.Get<std::uint32_t>(kBlock + addr::kReqKind3) == 0);
+}
+
+TEST_CASE("native boss: row 222, a move made ours mid-move starts over with the owner's place kind") {
+    FakeGuest g;
+    const std::int32_t brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    Request owner = WithKind(GameRequest(9, 0, true), 0);
+    owner[addr::kReqHasPlug] = 1;
+    auto rush = ActionFromRequest(owner);
+    REQUIRE(rush);
+    rush->flags = 0;
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Phantom(Role::copy)});
+    CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(9, kNode), true, false));  // its own AI: kind 0x10
+    BossVariant charge{3, "Charge", PlacesOf(owner)};
+    charge.kind = 0;
+    t.Receive(kActor, BossBsa{3, 6, rush, {BossChange{3, *rush}}}, BossVariants{{charge}});
+    REQUIRE(t.Step(g, false, 0, kMain));
+    REQUIRE(t.Step(g, true, kBlock, kMain));
+    CHECK(g.Get<std::uint32_t>(kBlock + addr::kReqKind3) == 0);
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    t.Publish({Phantom(Role::owner)});
+    g.bytes.erase(kBlock + addr::kReqVerb);
+    auto c = t.Step(g, false, 0, kMain);
+    REQUIRE(c);
+    CHECK((g.Get<std::uint16_t>(kBlock + addr::kReqFlags) & addr::kReqStartOver) != 0);
+    CHECK(g.Get<std::uint32_t>(kBlock + addr::kReqKind3) == 0);
+}
+
+TEST_CASE("native boss: row 222 (tw-222), a copy's own asks of the owner's move run, with the owner's variation") {
+    // Twinrova's copy fired no Fire/IceBullet while the other game owned her: its own AI's per-frame asks of the
+    // owner's ranged attack were skipped, and the owner's sparse put-ins alone never took the move to its shot.
+    constexpr std::uint64_t kShotNode = 0x4000100;
+    constexpr std::uint64_t kStartNode = 0x4000200;
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    FakeGuest g;
+    const std::int32_t brain = 2;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    t.OnActionVerb(kBsa, PlugRequest(65, kStartNode, 0x77), true, false, std::string("StartBattle"));
+    t.OnActionVerb(kBsa, GameRequest(121, kShotNode), true, false, std::string{});
+    Request owner = GameRequest(121, 0, true);
+    owner[addr::kReqHasPlug] = 1;
+    BossAction a = *ActionFromRequest(owner);
+    a.changed = true;
+    t.Receive(kActor, BossBsa{1, 2, a, {BossChange{1, a}}}, BossVariants{{BossVariant{1, "Ice", PlacesOf(owner)}}});
+    REQUIRE(t.Step(g, false, 0, kMain));  // the block
+    REQUIRE(t.Step(g, true, kBlock, kMain));  // the owner's 'Ice' put in
+    const std::uint64_t ice = g.Get<std::uint64_t>(kBlock + addr::kReqPlug);
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    // Its own AI asks the ranged attack plain (Fire) next frame: the game runs it, renamed to the owner's 'Ice'.
+    std::optional<Request> renamed;
+    CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(121, kShotNode), false, false, std::string{}, &renamed));
+    REQUIRE(renamed);
+    CHECK((*renamed)[addr::kReqHasPlug] == 1);
+    CHECK(ReqAt<std::uint64_t>(*renamed, addr::kReqPlug) == ice);
+    CHECK(ReqAt<std::uint64_t>(*renamed, addr::kReqNode) == kShotNode);  // its own node, places and kind
+    // An own ask already 'Ice': runs as it is.
+    renamed.reset();
+    CHECK_FALSE(t.OnActionVerb(kBsa, PlugRequest(121, kShotNode, ice), false, false, std::string("Ice"), &renamed));
+    CHECK_FALSE(renamed);
+    CHECK(t.Totals().copy_own_move == 2);
+    // Its own AI starting the move again (changed 1) is skipped: the owner's next start would fire a second shot.
+    renamed.reset();
+    CHECK(t.OnActionVerb(kBsa, GameRequest(121, kShotNode), true, false, std::string{}, &renamed));
+    CHECK_FALSE(renamed);
+    CHECK(t.Totals().copy_own_move == 2);
+    // The owner's repeat of the move is left out; another own move is still skipped.
+    BossAction again = a;
+    again.changed = false;
+    t.Receive(kActor, BossBsa{2, 2, again, {BossChange{1, a}, BossChange{2, again}}},
+              BossVariants{{{1, "Ice"}, {2, "Ice"}}});
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    CHECK(t.Totals().owner_move_left == 1);
+    CHECK(t.OnActionVerb(kBsa, GameRequest(4, kShotNode), true, false, std::string{}));
+}
+
+TEST_CASE("native boss: row 222 (tw-222), the owner's next move still goes in while the copy runs its own asks") {
+    // The known risk: the copy's own asks must never hold the owner's next move (a new verb, changed 1) out.
+    constexpr std::uint64_t kShotNode = 0x4000100;
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    FakeGuest g;
+    const std::int32_t brain = 2;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    t.OnActionVerb(kBsa, GameRequest(121, kShotNode), true, false, std::string{});
+    t.OnActionVerb(kBsa, GameRequest(4, kShotNode), true, false, std::string{});
+    BossAction a = *ActionFromRequest(GameRequest(121, 0, true));
+    a.changed = true;
+    t.Receive(kActor, BossBsa{1, 2, a, {BossChange{1, a}}}, BossVariants{{BossVariant{1, ""}}});
+    REQUIRE(t.Step(g, false, 0, kMain));
+    REQUIRE(t.Step(g, true, kBlock, kMain));
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(121, kShotNode), false, false, std::string{}));  // runs
+    BossAction fly = *ActionFromRequest(GameRequest(4, 0, true));
+    fly.changed = true;
+    t.Receive(kActor, BossBsa{2, 2, fly, {BossChange{1, a}, BossChange{2, fly}}}, BossVariants{{{1, ""}, {2, ""}}});
+    auto c = t.Step(g, false, 0, kMain);
+    REQUIRE(c);
+    CHECK(g.Get<std::int32_t>(kBlock + addr::kReqVerb) == 4);
+    // Now the owner's move is Fly: the copy's own 121 is skipped again.
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    CHECK(t.OnActionVerb(kBsa, GameRequest(121, kShotNode), false, false, std::string{}));
+}
+
+namespace {
+
+// Steps the table until it asks nothing more; the action verbs put in, in order (their nodes in `nodes`).
+std::vector<std::int32_t> PutIns(Table& t, FakeGuest& g, std::vector<std::uint64_t>* nodes = nullptr) {
+    std::vector<std::int32_t> verbs;
+    std::optional<CoopPuppet::Call> c = t.Step(g, false, 0, kMain);
+    for (int i = 0; i < 32 && c; ++i) {
+        std::uint64_t block = 0;
+        if (c->function == kMain + addr::kMalloc) {
+            block = kBlock;
+        } else if (c->function == kMain + addr::kRequestActionVerb) {
+            verbs.push_back(g.Get<std::int32_t>(kBlock + addr::kReqVerb));
+            if (nodes != nullptr) {
+                nodes->push_back(g.Get<std::uint64_t>(kBlock + addr::kReqNode));
+            }
+        } else if (c->function == kMain + addr::kSetBrainVerb) {
+            const auto set = static_cast<std::int32_t>(c->x[1]);  // (as the game's function, at once)
+            g.Write(c->x[0] + addr::kBsaBrainVerb, &set, 4);
+        }
+        c = t.Step(g, true, block, kMain);
+        if (!c) {
+            c = t.Step(g, false, 0, kMain);
+        }
+    }
+    return verbs;
+}
+
+} // namespace
+
+TEST_CASE("native boss: Twinrova hand-over, a former owner's nodes are not the copy's (NEXT36)") {
+    // NEXT36: a copy that kept the nodes its own AI named while it was the owner put the owner's Attack_R in through
+    // them, and the attack fired no bullet (0 of 3). A role change forgets them; the copy's next own asks name them.
+    constexpr std::uint64_t kOwnerNode = 0x4000300;  // its AI's node of the attack while it was the owner
+    constexpr std::uint64_t kCopyNode = 0x4000400;   // its own ask as a copy (Fly, verb 4)
+    FakeGuest g;
+    const std::int32_t brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::owner)});
+    CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(121, kOwnerNode), true, false));  // ours: Attack
+    t.Publish({Twinrova(Role::copy)});  // handed to player 2
+    t.Receive(kActor, BossBsa{1, 6, std::nullopt, {}});
+    CHECK(t.OnActionVerb(kBsa, GameRequest(4, kCopyNode), true, false));  // its own ask as a copy: skipped
+    PutIns(t, g);
+    BossAction attack = *ActionFromRequest(GameRequest(121, 0));
+    attack.changed = true;
+    t.Receive(kActor, BossBsa{2, 6, attack, {BossChange{2, attack}}});
+    std::vector<std::uint64_t> nodes;
+    CHECK(PutIns(t, g, &nodes) == std::vector<std::int32_t>{121});
+    REQUIRE(nodes.size() == 1);
+    CHECK(nodes[0] == kCopyNode);  // its node as a copy, not the one it had as the owner
+}
+
+TEST_CASE("native boss: Twinrova hand-over, a copy that stays a copy keeps its attack's node (NEXT29)") {
+    // NEXT29: the owner changed from player 1 to player 3; our copy forgot its own asks and put the attack in
+    // through Fly's node: no bullet. A copy that stays a copy keeps them.
+    constexpr std::uint64_t kAttackNode = 0x4000300;
+    constexpr std::uint64_t kFlyNode = 0x4000400;
+    FakeGuest g;
+    const std::int32_t brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    t.Receive(kActor, BossBsa{1, 6, std::nullopt, {}});
+    CHECK(t.OnActionVerb(kBsa, GameRequest(121, kAttackNode), true, false));
+    CHECK(t.OnActionVerb(kBsa, GameRequest(4, kFlyNode), true, false));
+    PutIns(t, g);
+    t.Publish({Twinrova(Role::copy, 3)});  // handed from player 1 to player 3
+    BossAction attack = *ActionFromRequest(GameRequest(121, 0));
+    attack.changed = true;
+    t.Receive(kActor, BossBsa{9, 6, attack, {BossChange{9, attack}}});
+    std::vector<std::uint64_t> nodes;
+    CHECK(PutIns(t, g, &nodes) == std::vector<std::int32_t>{121});
+    REQUIRE(nodes.size() == 1);
+    CHECK(nodes[0] == kAttackNode);  // its own node of the attack, not Fly's
+}
+
+TEST_CASE("native boss: Twinrova hand-over, a copy that was the owner for a while keeps its copy nodes (NEXT36b)") {
+    // NEXT36b: B went copy -> owner -> copy; its nodes learnt as a copy were forgotten at the change back, and the
+    // owner's Attack_L went in through its slot's last node (another move's): no IceBullet.
+    constexpr std::uint64_t kAttackNode = 0x4000300;
+    constexpr std::uint64_t kFlyNode = 0x4000400;
+    FakeGuest g;
+    const std::int32_t brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    t.Receive(kActor, BossBsa{1, 6, std::nullopt, {}});
+    CHECK(t.OnActionVerb(kBsa, GameRequest(121, kAttackNode), true, false));
+    CHECK(t.OnActionVerb(kBsa, GameRequest(4, kFlyNode), true, false));
+    PutIns(t, g);
+    t.Publish({Twinrova(Role::owner)});  // a stun hands her to us
+    CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(4, 0x4000500), true, false));  // ours: learnt as nothing
+    t.Publish({Twinrova(Role::copy)});  // and back
+    BossAction attack = *ActionFromRequest(GameRequest(121, 0));
+    attack.changed = true;
+    t.Receive(kActor, BossBsa{9, 6, attack, {BossChange{9, attack}}});
+    std::vector<std::uint64_t> nodes;
+    CHECK(PutIns(t, g, &nodes) == std::vector<std::int32_t>{121});
+    REQUIRE(nodes.size() == 1);
+    CHECK(nodes[0] == kAttackNode);  // its own node of the attack as a copy
+}
+
+TEST_CASE("native boss: Twinrova hand-over, a copy back in a brain verb names that verb's own nodes (NEXT48)") {
+    // NEXT48: copy A's brain went 28 -> 65 and back; the change forgot its own asks, and the owner's next Attack_R
+    // went in through its slot's last node (another move's): no bullet. Each brain verb keeps its own asks.
+    constexpr std::uint64_t kAttackNode = 0x4000300;  // its own node of the attack, in brain 6
+    constexpr std::uint64_t kFlyNode = 0x4000400;     // its own node of Fly, in brain 6
+    constexpr std::uint64_t kOtherNode = 0x4000500;   // its own node of Fly, in brain 7
+    FakeGuest g;
+    std::int32_t brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    t.Receive(kActor, BossBsa{1, 6, std::nullopt, {}});
+    CHECK(t.OnActionVerb(kBsa, GameRequest(121, kAttackNode), true, false));
+    CHECK(t.OnActionVerb(kBsa, GameRequest(4, kFlyNode), true, false));
+    PutIns(t, g);
+    t.Receive(kActor, BossBsa{2, 7, std::nullopt, {BossChange{2, BossBrain{7, false}}}});  // the owner's brain 7
+    PutIns(t, g);
+    brain = 7;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    CHECK(t.OnActionVerb(kBsa, GameRequest(4, kOtherNode), true, false));  // learnt in brain 7
+    BossAction fly = *ActionFromRequest(GameRequest(4, 0));
+    fly.changed = true;
+    t.Receive(kActor, BossBsa{3, 7, fly, {BossChange{3, fly}}});
+    std::vector<std::uint64_t> nodes;
+    CHECK(PutIns(t, g, &nodes) == std::vector<std::int32_t>{4});
+    REQUIRE(nodes.size() == 1);
+    CHECK(nodes[0] == kOtherNode);  // brain 7's own node, never brain 6's (row 177)
+    t.Receive(kActor, BossBsa{4, 6, fly, {BossChange{4, BossBrain{6, false}}}});  // back to brain 6
+    PutIns(t, g);
+    brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    BossAction attack = *ActionFromRequest(GameRequest(121, 0));
+    attack.changed = true;
+    t.Receive(kActor, BossBsa{5, 6, attack, {BossChange{5, attack}}});
+    nodes.clear();
+    CHECK(PutIns(t, g, &nodes) == std::vector<std::int32_t>{121});
+    REQUIRE(nodes.size() == 1);
+    CHECK(nodes[0] == kAttackNode);  // brain 6's own node of the attack, not Fly's
+}
+
+TEST_CASE("native boss: Twinrova hand-over, the new copy makes every move the new owner made, not only its last") {
+    // NEXT29: copy B logged 4 attacks while owner A logged 6. At a hand-over the new copy started again from the new
+    // owner's first state (only its move now), so the moves it had made since its last state never played here.
+    constexpr std::uint64_t kAttackNode = 0x4000300;
+    FakeGuest g;
+    const std::int32_t brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::owner)});
+    t.OnActionVerb(kBsa, GameRequest(121, kAttackNode), true, false);  // ours: Attack (seq 1)
+    t.OnActionVerb(kBsa, GameRequest(4, kAttackNode), true, false);    // Fly (seq 2)
+    auto ours = t.OwnerState(kActor);
+    REQUIRE(ours);
+    REQUIRE(ours->seq == 2);
+    t.Publish({Twinrova(Role::copy)});  // handed to player 2
+    t.OnActionVerb(kBsa, GameRequest(4, kAttackNode), true, false);  // its own AI asks as a copy: its node
+    // Player 2 had both of ours, then made Attack_L (verb 122) and Attack_R (verb 121) before its first state came.
+    BossAction left = *ActionFromRequest(GameRequest(122, 0));
+    left.changed = true;
+    BossAction right = *ActionFromRequest(GameRequest(121, 0));
+    right.changed = true;
+    BossBsa theirs = *ours;
+    theirs.recent.push_back(BossChange{3, left});
+    theirs.recent.push_back(BossChange{4, right});
+    theirs.seq = 4;
+    theirs.action = right;
+    CHECK(ContinuesChain(*ours, theirs));
+    t.Receive(kActor, theirs);
+    CHECK(PutIns(t, g) == std::vector<std::int32_t>{122, 121});  // both attacks, in order
+    // A new owner that had not had all of ours (its seq 2 is its own move): not this chain, a resync as before.
+    BossBsa other = theirs;
+    other.recent[1] = BossChange{2, left};
+    CHECK_FALSE(ContinuesChain(*ours, other));
+    BossBsa older = theirs;
+    older.recent.erase(older.recent.begin() + 1);  // (its newest of ours missing)
+    CHECK_FALSE(ContinuesChain(*ours, older));
+}
+
+TEST_CASE("native boss: Twinrova hand-over, made ours mid-move with its own AI already in another move goes on (NEXT49)") {
+    // NEXT49 A 9588: made ours mid-attack, its own AI had asked Fly (80) as a copy. The attack started over as ours
+    // went to every copy, then its own AI's Fly took the boss on: the copies played an attack never made (no shot).
+    constexpr std::uint64_t kShotNode = 0x4000100;
+    FakeGuest g;
+    const std::int32_t brain = 2;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    (void)t.OnActionVerb(kBsa, GameRequest(121, kShotNode), true, false, std::string{});  // its node of the attack
+    BossAction a = *ActionFromRequest(GameRequest(121, 0, true));
+    a.changed = true;
+    t.Receive(kActor, BossBsa{1, 2, a, {BossChange{1, a}}}, BossVariants{{BossVariant{1, ""}}});
+    CHECK(PutIns(t, g) == std::vector<std::int32_t>{121});
+    // Its AI starts Fly (80): held (answered busy, as the wrap passes `answer`), its AI waits there.
+    std::uint64_t answer = addr::kActionTaken;
+    CHECK(t.OnActionVerb(kBsa, GameRequest(80, kShotNode), true, false, std::string{}, nullptr, &answer));
+    CHECK(answer == addr::kActionSlotBusy);
+    t.Publish({Twinrova(Role::owner)});
+    CHECK(PutIns(t, g).empty());  // nothing started over
+    CHECK(t.Totals().owner_restarted == 0);
+    CHECK(t.Totals().made_ours_own_other == 1);
+    // Its own AI still in the owner's move: started over as before (row 178).
+    Table same;
+    same.SetOn(true, true);
+    same.Publish({Twinrova(Role::copy)});
+    (void)same.OnActionVerb(kBsa, GameRequest(121, kShotNode), true, false, std::string{});
+    same.Receive(kActor, BossBsa{1, 2, a, {BossChange{1, a}}}, BossVariants{{BossVariant{1, ""}}});
+    CHECK(PutIns(same, g) == std::vector<std::int32_t>{121});
+    same.Publish({Twinrova(Role::owner)});
+    CHECK(PutIns(same, g) == std::vector<std::int32_t>{121});
+    CHECK(same.Totals().owner_restarted == 1);
+    CHECK(PlanMadeOurs(false, std::nullopt, true, true, true, true) == MadeOurs::resume);
+    CHECK(PlanMadeOurs(false, std::nullopt, true, true, true, false) == MadeOurs::restart_move);
+    // Its AI's last ask taken (not held, e.g. past the cap) and another move: goes on too.
+    Table taken;
+    taken.SetOn(true, true);
+    taken.Publish({Twinrova(Role::copy)});
+    (void)taken.OnActionVerb(kBsa, GameRequest(121, kShotNode), true, false, std::string{});
+    taken.Receive(kActor, BossBsa{1, 2, a, {BossChange{1, a}}}, BossVariants{{BossVariant{1, ""}}});
+    CHECK(PutIns(taken, g) == std::vector<std::int32_t>{121});
+    CHECK(taken.OnActionVerb(kBsa, GameRequest(80, kShotNode), true, false, std::string{}));
+    taken.Publish({Twinrova(Role::owner)});
+    CHECK(PutIns(taken, g).empty());
+    CHECK(taken.Totals().made_ours_own_other == 1);
+    // Another boss (Phantom Ganon mid RushAttack, row 178): its own AI's last ask of another move restarts as before.
+    Table phantom;
+    phantom.SetOn(true, true);
+    phantom.Publish({Phantom(Role::copy)});
+    (void)phantom.OnActionVerb(kBsa, GameRequest(9, kNode), true, false);
+    BossAction rush = *ActionFromRequest(GameRequest(9, 0, true));
+    rush.changed = true;
+    phantom.Receive(kActor, BossBsa{1, 2, rush, {BossChange{1, rush}}});
+    CHECK(PutIns(phantom, g) == std::vector<std::int32_t>{9});
+    CHECK(phantom.OnActionVerb(kBsa, GameRequest(5, kNode), true, false, std::nullopt, nullptr, &answer));
+    CHECK(answer == addr::kActionTaken);
+    phantom.Publish({Phantom(Role::owner)});
+    CHECK(PutIns(phantom, g) == std::vector<std::int32_t>{9});
+    CHECK(phantom.Totals().owner_restarted == 1);
+    CHECK(phantom.Totals().made_ours_own_other == 0);
+}
+
+TEST_CASE("native boss: Twinrova hand-over, a copy's own start of another move than the owner's waits (NEXT49)") {
+    // NEXT49: after hand-overs the copy's own AI ran out of step: it never asked the owner's attack in the owner's
+    // window, so the attack had no own asks and fired nothing. Its own start of another move is answered busy.
+    constexpr std::uint64_t kShotNode = 0x4000100;
+    FakeGuest g;
+    const std::int32_t brain = 2;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    t.OnActionVerb(kBsa, GameRequest(121, kShotNode), true, false, std::string{});
+    BossAction fly = *ActionFromRequest(GameRequest(80, 0, true));
+    fly.changed = true;
+    t.Receive(kActor, BossBsa{1, 2, fly, {BossChange{1, fly}}}, BossVariants{{BossVariant{1, ""}}});
+    CHECK(PutIns(t, g) == std::vector<std::int32_t>{80});
+    // The owner flies; its own AI starts the attack early: held.
+    std::uint64_t answer = addr::kActionTaken;
+    CHECK(t.OnActionVerb(kBsa, GameRequest(121, kShotNode), true, false, std::string{}, nullptr, &answer));
+    CHECK(answer == addr::kActionSlotBusy);
+    CHECK_FALSE(t.Step(g, false, 0, kMain));  // (a frame)
+    CHECK(t.OnActionVerb(kBsa, GameRequest(121, kShotNode), true, false, std::string{}, nullptr, &answer));
+    CHECK(answer == addr::kActionSlotBusy);
+    CHECK(t.Totals().own_starts_held == 1);
+    CHECK(t.Totals().own_start_reasks == 1);
+    // The owner's attack comes: its start is taken now, and its own asks of the attack run (row 222).
+    BossAction a = *ActionFromRequest(GameRequest(121, 0, true));
+    a.changed = true;
+    t.Receive(kActor, BossBsa{2, 2, a, {BossChange{1, fly}, BossChange{2, a}}}, BossVariants{{{1, ""}, {2, ""}}});
+    CHECK(PutIns(t, g) == std::vector<std::int32_t>{121});
+    CHECK(t.OnActionVerb(kBsa, GameRequest(121, kShotNode), true, false, std::string{}, nullptr, &answer));
+    CHECK(answer == addr::kActionTaken);
+    CHECK(t.Totals().own_start_holds_met == 1);
+    CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(121, kShotNode), false, false, std::string{}, nullptr, &answer));
+    // A hold never stalls it: past kOwnStartHoldSteps its start is taken as before.
+    CHECK(t.OnActionVerb(kBsa, GameRequest(4, kShotNode), true, false, std::string{}, nullptr, &answer));
+    CHECK(answer == addr::kActionSlotBusy);
+    for (std::uint64_t i = 0; i < Table::kOwnStartHoldSteps; ++i) {
+        (void)t.Step(g, false, 0, kMain);
+    }
+    CHECK(t.OnActionVerb(kBsa, GameRequest(4, kShotNode), true, false, std::string{}, nullptr, &answer));
+    CHECK(answer == addr::kActionTaken);
+    CHECK(t.Totals().own_start_holds_capped == 1);
+    // Another boss's copy is not held.
+    Table other;
+    other.SetOn(true, true);
+    other.Publish({Phantom(Role::copy)});
+    other.OnActionVerb(kBsa, GameRequest(9, kNode), true, false);
+    BossAction rush = *ActionFromRequest(GameRequest(9, 0, true));
+    rush.changed = true;
+    other.Receive(kActor, BossBsa{1, 6, rush, {BossChange{1, rush}}});
+    (void)PutIns(other, g);
+    CHECK(other.OnActionVerb(kBsa, GameRequest(5, kNode), true, false, std::nullopt, nullptr, &answer));
+    CHECK(answer == addr::kActionTaken);
+}
+
+TEST_CASE("native boss: Twinrova hand-over, the own asks follow the brain verb the game is in, also in its own time") {
+    constexpr std::uint64_t kAttackNode = 0x4000300;  // its own node of the attack, in brain 6
+    constexpr std::uint64_t kFlyNode = 0x4000400;
+    constexpr std::uint64_t kStunNode = 0x4000500;  // a node of brain 65 that asks the same verb
+    FakeGuest g;
+    std::int32_t brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Twinrova(Role::copy)});
+    t.Receive(kActor, BossBsa{1, 6, std::nullopt, {}});
+    CHECK(t.OnActionVerb(kBsa, GameRequest(121, kAttackNode), true, false, std::nullopt, nullptr, nullptr, 6));
+    PutIns(t, g);
+    // Our own hit: its own AI goes to brain 65 and asks the verb there through another node (run by the game).
+    t.NoteOwnHit(kActor);
+    brain = 65;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(121, kStunNode), true, false, std::nullopt, nullptr, nullptr, 65));
+    PutIns(t, g);
+    brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    for (std::uint64_t i = 0; i <= Table::kReactSteps; ++i) {
+        PutIns(t, g);
+    }
+    BossAction attack = *ActionFromRequest(GameRequest(121, 0));
+    attack.changed = true;
+    t.Receive(kActor, BossBsa{2, 6, attack, {BossChange{2, attack}}});
+    std::vector<std::uint64_t> nodes;
+    CHECK(PutIns(t, g, &nodes) == std::vector<std::int32_t>{121});
+    REQUIRE(nodes.size() == 1);
+    CHECK(nodes[0] == kAttackNode);  // brain 6's own, not brain 65's
+    // As the owner: a brain request the game puts off (main+0x6733b0, not forced) is no change.
+    CHECK(t.OnActionVerb(kBsa, GameRequest(4, kFlyNode), true, false, std::nullopt, nullptr, nullptr, 6));
+    t.Publish({Twinrova(Role::owner)});
+    CHECK_FALSE(t.OnBrainVerb(kBsa, 7, false, false));  // (the game stays in 6)
+    PutIns(t, g);
+    t.Publish({Twinrova(Role::copy)});
+    BossAction fly = *ActionFromRequest(GameRequest(4, 0));
+    fly.changed = true;
+    t.Receive(kActor, BossBsa{20, 6, fly, {BossChange{20, fly}}});
+    PutIns(t, g);
+    nodes.clear();
+    t.Receive(kActor, BossBsa{21, 6, attack, {BossChange{20, fly}, BossChange{21, attack}}});
+    CHECK(PutIns(t, g, &nodes) == std::vector<std::int32_t>{121});
+    REQUIRE(nodes.size() == 1);
+    CHECK(nodes[0] == kAttackNode);  // not its last ask's (Fly)
+}
+
+TEST_CASE("native boss: Twinrova hand-over, a held start its AI left is no hold any more") {
+    constexpr std::uint64_t kShotNode = 0x4000100;
+    BossAction a = *ActionFromRequest(GameRequest(121, 0, true));
+    a.changed = true;
+    const auto begin = [&](Table& t, FakeGuest& g) {
+        const std::int32_t brain = 2;
+        g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+        t.SetOn(true, true);
+        t.Publish({Twinrova(Role::copy)});
+        (void)t.OnActionVerb(kBsa, GameRequest(121, kShotNode), true, false, std::string{});
+        t.Receive(kActor, BossBsa{1, 2, a, {BossChange{1, a}}}, BossVariants{{BossVariant{1, ""}}});
+        CHECK(PutIns(t, g) == std::vector<std::int32_t>{121});
+        std::uint64_t answer = addr::kActionTaken;
+        CHECK(t.OnActionVerb(kBsa, GameRequest(80, kShotNode), true, false, std::string{}, nullptr, &answer));
+        CHECK(answer == addr::kActionSlotBusy);
+        CHECK(t.Totals().own_starts_held == 1);
+    };
+    std::uint64_t answer = addr::kActionTaken;
+    {
+        // Its AI asks the owner's move on: made ours, that move starts over (row 178), as with no hold.
+        FakeGuest g;
+        Table t;
+        begin(t, g);
+        CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(121, kShotNode), false, false, std::string{}, nullptr, &answer));
+        t.Publish({Twinrova(Role::owner)});
+        CHECK(PutIns(t, g) == std::vector<std::int32_t>{121});
+        CHECK(t.Totals().made_ours_own_other == 0);
+    }
+    {
+        // The owner's new brain verb: what its AI waited to start in the old one says nothing.
+        FakeGuest g;
+        Table t;
+        begin(t, g);
+        const BossChange brain3{2, BossBrain{3, true}};
+        t.Receive(kActor, BossBsa{2, 3, a, {BossChange{1, a}, brain3}}, BossVariants{{BossVariant{1, ""}}});
+        CHECK(PutIns(t, g).empty());
+        CHECK(g.Get<std::int32_t>(kBsa + addr::kBsaBrainVerb) == 3);
+        t.Publish({Twinrova(Role::owner)});
+        CHECK(PutIns(t, g) == std::vector<std::int32_t>{121});
+        CHECK(t.Totals().made_ours_own_other == 0);
+    }
+    {
+        // Asked no more, and the same start much later: held anew, not answered by the old hold's cap.
+        FakeGuest g;
+        Table t;
+        begin(t, g);
+        for (std::uint64_t i = 0; i < Table::kOwnStartLapseSteps + 2; ++i) {
+            PutIns(t, g);
+        }
+        CHECK(t.OnActionVerb(kBsa, GameRequest(80, kShotNode), true, false, std::string{}, nullptr, &answer));
+        CHECK(answer == addr::kActionSlotBusy);
+        CHECK(t.Totals().own_starts_held == 2);
+        CHECK(t.Totals().own_start_holds_capped == 0);
+    }
 }

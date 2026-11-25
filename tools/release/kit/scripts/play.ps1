@@ -75,7 +75,7 @@ function Read-YesNo([string]$Question, [int]$Seconds) {
         $line = [Console]::In.ReadLine()
         return -not ($line -and $line.Trim() -match '^(?i)(n|no)$')
     }
-    Write-Host -NoNewline "$Question [Y/n] (yes in $Seconds s) "
+    Write-Host -NoNewline "$Question [Y/n] (press Y or N; no key in $Seconds s: yes) "
     $end = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $end) {
         if ([Console]::KeyAvailable) {
@@ -197,6 +197,12 @@ if ($Hookshot) {
     # needs your tunic tile there (row 265). The original game (coop-options.ini original_game) touches no size table.
     $originalGame = @(Get-Content (Join-Path $kit 'coop-options.ini') -ErrorAction SilentlyContinue |
         Where-Object { $_ -match '^\s*original_game\s*=\s*(on|1|yes|true)\s*$' }).Count -gt 0
+    # The game's mods list in step with that switch before any build check reads it (row 266: a list an older kit
+    # wrote, the switch set or taken out by hand; kit-paths.ps1 Sync-KitOriginalMods, the module's CoopOriginal::Sync).
+    if ($exe) {
+        $l = Sync-KitOriginalMods (Join-Path (Split-Path -Parent $exe) 'mods') $originalGame
+        if ($l) { Write-Host $l }
+    }
     function Invoke-KitStartMerge {
         if (-not $exe -or $originalGame) { return }
         foreach ($l in @(Invoke-KitSizeTableMerge $kit (Split-Path -Parent $exe))) { Write-Host $l }
@@ -475,6 +481,10 @@ $rejoin = $false
 if ($inviteJoin) {
     # The invite code holds the join password: nothing to type.
     $Password = $inviteJoin.Password
+}
+elseif ($relayJoin -and $relayJoin.Password) {
+    # The host's relay line with its join password after it (as the game's host copies it): nothing to type.
+    $Password = $relayJoin.Password
 }
 elseif ($Mode -eq 'host') {
     $hostAccess = Read-KitServerAccess $optionsFile

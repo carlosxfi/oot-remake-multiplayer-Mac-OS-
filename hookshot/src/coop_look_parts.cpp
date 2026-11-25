@@ -292,7 +292,8 @@ CoopLookTunic::Texels Painted(const CoopLookTunic::Texels& gear, const CoopLook:
             }
             if (n != 0 && sum > 0) {
                 PaintCap(*cap, t.name, entry->format, original, t.texels,
-                         CoopLookPaint::Rule{tones, *trim & 0xFFFFFFu, T::Takes::tones, sum / static_cast<double>(n)});
+                         CoopLookPaint::Rule{tones, *trim & 0xFFFFFFu, T::Takes::tones, sum / static_cast<double>(n)},
+                         tones);
             }
         }
     }
@@ -448,13 +449,16 @@ std::optional<Cap> ParseCap(const std::vector<std::uint8_t>& file, std::string* 
 std::size_t PaintCap(const Cap& cap, const std::string& name, CoopLookPaint::Format format,
                      std::span<const std::uint8_t> green, std::vector<std::uint8_t>& texels, std::uint32_t colour,
                      double base) {
-    return PaintCap(cap, name, format, green, texels, CoopLookPaint::Rule{0, colour & 0xFFFFFFu, T::Takes::green, base});
+    return PaintCap(cap, name, format, green, texels, CoopLookPaint::Rule{0, colour & 0xFFFFFFu, T::Takes::green, base},
+                    T::kGreen);
 }
 
 std::size_t PaintCap(const Cap& cap, const std::string& name, CoopLookPaint::Format format,
                      std::span<const std::uint8_t> original, std::vector<std::uint8_t>& texels,
-                     const CoopLookPaint::Rule& rule) {
+                     const CoopLookPaint::Rule& rule, std::uint32_t tones) {
     const std::size_t step = CoopLookPaint::BlockBytes(format);
+    static constexpr std::int8_t kTheRule[] = {0};   // each cap block, painted alone, is the rule's region
+    const CoopLookPaint::Region region{kTheRule, tones};
     const std::size_t size = std::min(original.size(), texels.size());
     const std::span<std::uint8_t> out(texels);
     std::size_t changed = 0;
@@ -466,7 +470,7 @@ std::size_t PaintCap(const Cap& cap, const std::string& name, CoopLookPaint::For
             if (at % step != 0 || at > size || size - at < step) {
                 continue;
             }
-            changed += CoopLookPaint::Recolour(format, original.subspan(at, step), out.subspan(at, step), {rule});
+            changed += CoopLookPaint::Recolour(format, original.subspan(at, step), out.subspan(at, step), {rule}, region);
         }
     }
     return changed;
@@ -691,8 +695,10 @@ CoopLookTunic::Texels PuppetTunicsTexels(const std::vector<std::pair<std::string
         std::optional<CoopLookTunic::Texels> darker;   // (the dark tile's: the main tile in the darker colour)
         for (std::size_t i = 0; i < texels.size(); ++i) {
             CoopLookTunic::Texture t = texels[i];   // (its name and offset: the copy's)
+            bool from_green = false;
             if (i < painted.size() && painted[i].texels.size() == t.texels.size()) {
                 t.texels = painted[i].texels;
+                from_green = true;
             } else if (t.name.find("_Dark_") != std::string::npos && !painted.empty() &&   // (by its name: any order)
                        texels[0].texels.size() == t.texels.size()) {
                 if (!darker) {
@@ -705,7 +711,13 @@ CoopLookTunic::Texels PuppetTunicsTexels(const std::vector<std::pair<std::string
                     darker = TunicPainted(green, own_dark ? *own_dark
                                                            : darkened(own ? 0x30D040u : *paint->second.tunic));
                 }
-                if (!darker->empty() && (*darker)[0].texels.size() == t.texels.size()) t.texels = (*darker)[0].texels;
+                if (!darker->empty() && (*darker)[0].texels.size() == t.texels.size()) {
+                    t.texels = (*darker)[0].texels;
+                    from_green = true;
+                }
+            }
+            if (from_green && !t.texels.empty()) {
+                t.texels.back() ^= kSelfMark ^ kTunicMark;   // (from green: marked as the copy's, never your Link's; row 198)
             }
             out.push_back(std::move(t));
         }

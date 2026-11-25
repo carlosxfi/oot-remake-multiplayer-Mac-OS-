@@ -64,6 +64,7 @@
 #include "coop_frame_clock.h"
 #include "coop_boss_scenes.h"
 #include "coop_teleport_game.h"
+#include "coop_emote_game.h"
 #include "coop_pvp_game.h"
 #include "coop_lift_player_game.h"
 #include "coop_pvp_native_game.h"
@@ -71,6 +72,7 @@
 #include "coop_dbno_game.h"
 #include "coop_hallway.h"
 #include "coop_mod_share.h"
+#include "coop_mod_data.h"
 #include "coop_pack_notice.h"
 #include "coop_name_privacy.h"
 #include "coop_scene_probe.h"
@@ -362,7 +364,7 @@ void MendGifts(EmulatorMemory& memory, coop::host::GameFlags& flags, MendClocks&
     for (std::size_t i = 0; i < gifts.size() && i < CoopStory::kGiftsMax; ++i) {
         const auto& gift = gifts[i];
         auto& since = clocks.gifts[i];
-        const bool due = gift.mend && idle && !clocks.gift_given[i] &&
+        const bool due = gift.mend && !CoopStory::GiftShuffled(i) && idle && !clocks.gift_given[i] &&
                          CoopStory::GiftDue(gift, [&](std::uint32_t h) { return flags.get_bool(h); },
                                             [&](std::uint32_t h) { return flags.get_int(h); });
         if (!due) {
@@ -565,9 +567,9 @@ public:
         }
         // docs/items.md "One-time sales": a randomizer seed with shops sells each one-time shelf once for the group.
         shop_sale_ = shop_sale_on_ && CoopShopSale::SeedHasShops();
-        if (flag_error.empty() && shop_sale_on_) {  // the randomizer's Great Fairy gifts: given once for the group
+        if (flag_error.empty() && shop_sale_on_) {  // one-time gifts (coop_shop_sale.h kOnceGifts): once for the group
             const std::size_t added = CoopShopSale::MergeGifts(session.shared);
-            LOG_INFO(Core, "coop: fairies: sharing {} randomizer Great Fairy gift flags", added);
+            LOG_INFO(Core, "coop: gifts: sharing {} one-time gift flags (Great Fairies, cows, Medigoron, frogs)", added);
         }
         if (flag_error.empty() && shop_sale_) {
             const std::size_t added = CoopShopSale::Merge(session.shared);
@@ -771,8 +773,8 @@ public:
                 session_->share_pickup_named(coop::protocol::FlagKey(f.hash, std::uint16_t{0}));
             }
         }
-        if (sharing_ && shop_sale_on_) {  // a Great Fairy's shuffled gift (coop_shop_sale.h): given once for everyone
-            for (const auto& f : CoopShopSale::kFairyGifts) {
+        if (sharing_ && shop_sale_on_) {  // a one-time gift (coop_shop_sale.h kOnceGifts): given once for everyone
+            for (const auto& f : CoopShopSale::kOnceGifts) {
                 session_->share_pickup_named(coop::protocol::FlagKey(f.hash, std::uint16_t{0}));
             }
         }
@@ -807,6 +809,9 @@ public:
             Log(event);
         }
         CoopPuppet::OnEvent(event);
+        if (!left) {
+            CoopEmote::OnEvent(event, client);  // a call (/here) is read in the chat too (coop_emote_game.h)
+        }
         CoopPose::OnEvent(event, SteadyMs());
         if (!left) {
             Chat(event, client);
@@ -823,6 +828,7 @@ public:
         CoopDbno::OnEvent(event, client);  // down but not out (docs/play-online.md)
         CoopDifficulty::OnEvent(event, client);  // docs/play-online.md "Difficulty"
         CoopModShare::OnEvent(event, client);  // mods (docs/mods.md "Mods in co-op")
+        CoopModData::OnEvent(event, client);  // the mods' data channel (MOD_DATA, issue 250)
         if (event.kind == coop::net::EventKind::welcomed ||
             (event.kind == coop::net::EventKind::message && !client.is_host() &&
              std::holds_alternative<coop::protocol::ModSettings>(event.message))) {
@@ -1142,7 +1148,7 @@ public:
                     return true;  // a shelf another player sold out waits while our shop talk runs
                 }
                 if (gift_on && CoopShopSale::GiftWaits(key.hash, sale_here.in_event)) {
-                    return true;  // a Great Fairy's gift another player got waits while our event runs
+                    return true;  // a one-time gift another player got waits while our event runs (kOnceGifts)
                 }
                 if (sale_on) {
                     CoopScrubSale::Here here = sale_here;
@@ -1261,7 +1267,8 @@ public:
             lent_keys_.forget();  // dungeon-sync-b: the save has its own key counts
             start_source_.Reset();  // deku-sync-fix: what the game asked before the load is not ours now
             story_source_.Reset();
-            coop::host::map_drop_log().note("save load seen (" + std::to_string(report.save_load_flags) + " flags back)");
+            coop::host::map_drop_log().game_reset("save load seen (" + std::to_string(report.save_load_flags) +
+                                                  " flags back)");
         }
         // deku-dungeon-2 (DUNGEON_EVENT, issues 176 and 196): a gimmick event
         // our game starts goes out at once, and another player's start is
@@ -1946,15 +1953,24 @@ public:
         CoopRide::Frame(system, view.game ? base_ : 0, report.connected ? session_.get() : nullptr,
                         view.scene, event, view.position,
                         reading ? reading->rotation : std::nullopt,
-                        reading ? reading->animation : std::nullopt, report.server_now_us);
+                        reading ? reading->animation : std::nullopt, report.server_now_us,
+                        // epona-sync: Get_Epona (Enum 0x92431c55) at Complete (0x4c0a63f4): Epona is this
+                        // game's own, so she is sent while nobody rides her too (coop_ride.h).
+                        [&memory]() {
+                            return memory && coop::host::GameFlags(*memory).get_enum(0x92431c55u) ==
+                                                 std::optional<std::uint32_t>{0x4c0a63f4u};
+                        });
+        // Race mode (coop/protocol/race.hpp): the world's parts run as alone, so this game owns all its enemies,
+        // bosses, drops, spawns and its clock; the players still see each other, chat and talk.
+        coop::host::Session* const world = report.connected && !report.race ? session_.get() : nullptr;
         // jitter-b: stamped with the game frame the objects were read from (coop_frame_clock.h).
-        CoopObjects::Share(system, report.connected ? session_.get() : nullptr, view.scene,
+        CoopObjects::Share(system, world, view.scene,
                            coop::host::frame_aligned_us(report.server_now_us, CoopFrameClock::PresentAgeUs()));
         CoopHud::Frame(report.connected ? session_.get() : nullptr);  // our hearts (PLAYER_LIFE)
-        CoopSpawn::Frame(system, report.connected ? session_.get() : nullptr, view.scene, report.server_now_us);
-        CoopDrops::Frame(system, report.connected ? session_.get() : nullptr, view.scene, report.server_now_us);
+        CoopSpawn::Frame(system, world, view.scene, report.server_now_us);
+        CoopDrops::Frame(system, world, view.scene, report.server_now_us);
         if (!reading) CoopTime::Loading(report.server_now_us);  // issue 159: a reload, a death
-        CoopTime::Frame(system, view.game ? base_ : 0, report.connected ? session_.get() : nullptr,
+        CoopTime::Frame(system, view.game ? base_ : 0, world,
                         report.server_now_us,
                         reading && reading->event_running.value_or(false),  // issue 192: no nudge in a cutscene
                         // Row 164 follow-up: our game paused (a menu in front, no event), for the host's catch-up.
@@ -1977,7 +1993,7 @@ public:
         }
         CoopBoss::Frame(system, view.game ? base_ : 0, view.scene, view.position,
                         reading && reading->event_running.value_or(false), boss_shut_in,
-                        report.connected ? session_.get() : nullptr, report.server_now_us);
+                        world, report.server_now_us);
         // /teleport <player> (docs/setup.md "Chat commands"), after the boss
         // rooms: it reads whether our boss fight runs.
         CoopTeleport::Frame(system, view.game ? base_ : 0, reading, report.connected ? session_.get() : nullptr);
@@ -1987,6 +2003,9 @@ public:
         // LICHII_COOP_SCENE_PROBE=1 only (docs/scenes.md "Free-play scene change").
         CoopSceneProbe::Frame(system, view.game ? base_ : 0, reading);
         for (auto& line : CoopTeleport::TakeLines()) {
+            chat_.Add(std::move(line), true);
+        }
+        for (auto& line : CoopEmote::TakeLines()) {
             chat_.Add(std::move(line), true);
         }
         // PvP (docs/play-online.md "PvP"), after the objects and spawn syncs:
@@ -2040,6 +2059,7 @@ public:
         }
         // Mods (docs/mods.md "Mods in co-op"): our list, the host's shared settings, a warning when they differ.
         CoopModShare::Frame(report.connected ? session_.get() : nullptr);
+        CoopModData::Frame(report.connected ? session_.get() : nullptr, SteadyMs());  // MOD_DATA (issue 250)
         for (auto& line : CoopModShare::TakeLines()) {
             chat_.Add(std::move(line), true);
         }
@@ -2125,6 +2145,9 @@ public:
         if (CoopPvp::OnChat(text, *session_)) {
             return true;  // /pvp: the same
         }
+        if (CoopEmote::OnChat(text, *session_)) {
+            return true;  // /wave, /here, /emote ...: the same (coop_emote.h)
+        }
         if (CoopDbno::OnChat(text, *session_)) {
             return true;  // /dbno: the same
         }
@@ -2146,10 +2169,10 @@ public:
         return sent;
     }
 
-    std::vector<ChatLine> ChatLines() const {
+    std::vector<ChatLine> ChatLines(bool history = false) const {
         std::vector<ChatLine> out;
         const auto now = CoopChat::Clock::now();
-        for (auto& l : chat_.Lines()) {
+        for (auto& l : history ? chat_.History() : chat_.Lines()) {
             const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - l.at);
             out.push_back({std::move(l.text), l.notice, static_cast<std::uint64_t>(age.count())});
         }
@@ -3737,7 +3760,7 @@ void KeepMapsAlone(EmulatorMemory& memory, bool in_play, const std::optional<std
     coop::host::GameFlagStore flags(memory);
     const coop::host::MapDropBecause because("the solo keeper (minimap-b)");
     const auto restored = keeper.frame(flags, in_play, coop::host::view_of(scene));
-    if (keeper.take_save_load()) coop::host::map_drop_log().note("save load (no scene for a while: the title)");
+    if (keeper.take_save_load()) coop::host::map_drop_log().game_reset("save load (no scene for a while: the title)");
     if (keeper.take_hud_refresh() && StartMapRefresh()) CoopMapRefresh::TheRefresher().WantNow(SteadyMs());  // rows 140, 183
     for (const auto key : restored) {
         const auto* item = coop::host::find_item(key.hash);
@@ -3760,6 +3783,10 @@ void WatchMapDrops(EmulatorMemory& memory, bool in_play, const std::optional<std
     for (const auto& line : coop::host::map_drop_log().frame(
              flags, coop::host::view_of(scene), in_play, link)) {
         LOG_WARNING(Core, "{}", line);
+    }
+    // Row 269: the game's own clear at a save load or the title is no drop in play: information.
+    for (const auto& line : coop::host::map_drop_log().take_info()) {
+        LOG_INFO(Core, "{}", line);
     }
 }
 
@@ -4255,6 +4282,7 @@ void OnFrameBody(Core::System& system) {
         coop->Frame(system);
         break;
     case CoopSessionEnd::Path::solo:
+        CoopSave::SoloFrame();   // remount-leave: a guest that left goes back to its own saves on the title
         LocalFrameOff(system, true);
         break;
     case CoopSessionEnd::Path::read_only: {
@@ -4266,6 +4294,7 @@ void OnFrameBody(Core::System& system) {
                            "Customize picture, menus, settings); nothing is written to the game (story and map "
                            "mends, split screen, a left session's clean-up) while the mod is installed");
         }
+        CoopSave::SoloFrame();   // (the save folder only, through the exe's own mount: nothing written to the game)
         LocalFrameOff(system, false);
         break;
     }
@@ -4382,6 +4411,16 @@ bool SendChat(const std::string& text) {
     }
     auto* coop = Get();
     return coop && coop->SendChat(text);
+}
+
+std::vector<ChatLine> ChatHistory() {
+    if (g_mod_refused) {
+        return {};
+    }
+    if (auto* coop = Get()) {
+        return coop->ChatLines(true);
+    }
+    return {};
 }
 
 std::vector<ChatLine> ChatLines() {

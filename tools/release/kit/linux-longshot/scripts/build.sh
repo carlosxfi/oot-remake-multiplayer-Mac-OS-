@@ -12,6 +12,9 @@
 #   bash scripts/build.sh --dlss                with NVIDIA DLSS: asks you to accept NVIDIA's license once, then every
 #                                               build fetches NVIDIA's DLSS SDK and builds with it (data/dlss.txt)
 #   bash scripts/build.sh --no-dlss             without DLSS again (the game is built again without it)
+#   bash scripts/build.sh --fsr4                with AMD FSR 4 and its native AA (#326): every build is made with FSR 4
+#                                               (data/fsr4.txt); AMD's Vulkan library is yours to put beside the game
+#   bash scripts/build.sh --no-fsr4             without FSR 4 again (the game is built again without it)
 #   bash scripts/build.sh --renderer-only DIR   (CI, no game) steps 1 to 3, then compile Longshot's patched
 #                                               Linux renderer and our host files into DIR
 #
@@ -31,7 +34,7 @@
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-game='' exefs='' rebuild=0 check_only=0 jobs='' renderer_out='' dlss=0 no_dlss=0
+game='' exefs='' rebuild=0 check_only=0 jobs='' renderer_out='' dlss=0 no_dlss=0 fsr4=0 no_fsr4=0
 while (($#)); do
     case $1 in
         --game) game=$2; shift ;;
@@ -40,6 +43,8 @@ while (($#)); do
         --check-only) check_only=1 ;;
         --dlss) dlss=1 ;;
         --no-dlss) no_dlss=1 ;;
+        --fsr4) fsr4=1 ;;
+        --no-fsr4) no_fsr4=1 ;;
         --jobs) jobs=$2; shift ;;
         --renderer-only) renderer_out=$2; shift ;;
         *) fail "build.sh: unknown option $1" ;;
@@ -150,8 +155,11 @@ make_game() {
 # OoT Character Select by Snail (data/longshot/CHARACTER-SELECT.txt; owner, 0.11.8 and 0.11.9), as kit-paths.ps1's
 # Invoke-KitCharacterSelectStep: every kit gets his Characters page (the default part); his NPC characters (a 145 MB download, 1.1 GB on disk)
 # only on the player's yes (asked once: y is yes; Enter, n, 15 s or no terminal: no; data/coop-options.ini
-# character_select = yes|no|ask wins, data/character-select-answer.txt keeps the answer; every later start in a terminal
-# shows one line and n within 2 s changes it). Snail's own release and his characters.json are downloaded from his GitHub
+# character_select = yes|no|off|ask wins, data/character-select-answer.txt keeps the answer; every later start in a
+# terminal shows one line: off, n or y within 3 s downloads them (the in-game page says "press N at the kit's start"), on,
+# n takes them out). off: uninstall-character-select.sh (his mod out, until reinstall-character-select.sh: that one sets
+# the copy aside and asks again). A kit with no answer whose game has the kit's copy with the NPC part keeps it, no
+# question (a reinstall: launcher-clarity). The kit's one rule for a timed question: its line says what y, n and no key do. Snail's own release and his characters.json are downloaded from his GitHub
 # pages onto this PC, SHA-256 checked, his customizer left out of his code patch (co-op's own Customize fills his
 # screen), and the mod's folder goes into data/game/mods, on (the Mods tab switches
 # it off; the list is never written here). The kit carries none of its files. Before the game's stamp
@@ -207,8 +215,9 @@ CZ = [("cz_head (HEAD_CALL)", 0x804D756C, 0x804D7570), ("cz_frame (FRAME_SITE)",
 SHIFT = 0x8001FF00
 # The NPC part, below romfs/: one rule for npc() and for the v0.2.2 tool --exclude (charsel_tool_make reads it with
 # "exclude"). Link own textures in Tex/ (*_Player_*, Angin_Tile_*: named by his kept Link models) are not NPC files
-# (row 242). Same rule as kit-paths.ps1 Test-KitCharacterSelectNpcFile / $KitCharselToolExclude.
-NPC_RULE = (r"^(Phive|Sound)/|^Tex/(?![^/]*_Player_|Angin_Tile_)|^Model/Player_(Adult|Child)_C\d{3}\.|^Model/Player_Dark_"
+# (row 242), nor Model/Player_Dark_Animation.Skeleton (named by his adult Link packs; row 280). Same rule as
+# kit-paths.ps1 Test-KitCharacterSelectNpcFile / $KitCharselToolExclude.
+NPC_RULE = (r"^(Phive|Sound)/|^Tex/(?![^/]*_Player_|Angin_Tile_)|^Model/Player_(Adult|Child)_C\d{3}\."
             r"|^Pack/Actor/Enemy_MiddleBoss_DarkLink\.pack\.zs$")
 def npc(rel):
     r = rel.replace("\\", "/")
@@ -353,7 +362,7 @@ elif cmd == "complete":
     fresh(os.path.join(ex, code[0]), data)
     fresh(os.path.join(new, "characters.json"), rd(js))
     fresh(os.path.join(new, "coop-charsel.txt"), (want + "\n").encode())
-    npcs = "with its NPC characters" if part == "full" else "without its NPC characters (character_select = yes in data/coop-options.ini gets them)"
+    npcs = "with its NPC characters" if part == "full" else "without its NPC characters (reinstall-character-select.sh in the kit folder gets them)"
     fresh(os.path.join(new, "CREDITS-coop.txt"), "\n".join([
         f"OoT Character Select {rel} by snaildev99 (Snail): https://github.com/snaildev99/OoT-Character-Select",
         f"Downloaded by the Squadala co-op kit from his own release page onto this PC, {npcs}; the kit carries none of its files.",
@@ -464,6 +473,14 @@ charsel_tool_make() {
     fi
     return 0
 }
+# Row 280: tools/puppet_pack/part_check.py on a part the kit makes, as the Windows kit's Invoke-KitPartCheck. 'list'
+# (before any file is left out: <mod>/coop-release-files.txt) or 'check' (after: a kept file naming a released file
+# neither the part nor the game has is left out, the game's own used, <mod>/coop-fallback.txt holds one line the module
+# shows). Its lines on stdout; its exit code (2: could not; 0 also when the tool is not in the kit).
+part_check() {
+    [[ -f $DATA/tools/puppet_pack/part_check.py ]] || return 0
+    "$PY" -I -B "$DATA/tools/puppet_pack/part_check.py" "$@" 2>&1
+}
 charsel_step() {
     local pin=$LS/CHARACTER-SELECT.txt choice='' line rel url zip zsha zfolder folder ourl osha iurl isha want dir new dl why='' part have derive=0 json ips a=''
     [[ -f $pin ]] || return 0
@@ -484,46 +501,83 @@ charsel_step() {
         say 'Character Select (the Characters page) is put in at the next start, once the game is built: its files are made from your game, and that start builds the game again (a few minutes) with its code patch.'
         return 0
     fi
-    line=$(sed -n 's/^[[:space:]]*character_select[[:space:]]*=[[:space:]]*\(yes\|no\|ask\)[[:space:]]*\([#;].*\)\{0,1\}$/\1/p' "$DATA/coop-options.ini" 2>/dev/null | head -n1 || true)
-    if [[ -n $line ]]; then choice=$line; [[ $choice == ask ]] && rm -f "$DATA/character-select-answer.txt"
-    else choice=$(head -n1 "$DATA/character-select-answer.txt" 2>/dev/null | tr -d '\r[:space:]' || true); [[ $choice == yes || $choice == no ]] || choice=ask
+    if [[ -f $DATA/character-select-reinstall.txt ]]; then
+        # (reinstall-character-select.sh: the kit's copy set aside, kept until the game is built again, and his zip fetched again)
+        if [[ -d $dir && ! -f $dir/coop-charsel.txt ]]; then
+            warn "Character Select: $dir is your own copy (the kit did not put it in): remove it yourself, then run reinstall-character-select.sh again."
+        else
+            [[ -d $dir ]] && charsel_save_previous "$folder"
+            rm -f "$B/charsel/$zip"
+        fi
+        rm -f "$DATA/character-select-reinstall.txt"
     fi
-    if [[ $choice == ask ]]; then
+    line=$(sed -n 's/^[[:space:]]*character_select[[:space:]]*=[[:space:]]*\(yes\|no\|off\|ask\)[[:space:]]*\([#;].*\)\{0,1\}$/\1/p' "$DATA/coop-options.ini" 2>/dev/null | head -n1 || true)
+    if [[ -n $line ]]; then choice=$line; [[ $choice == ask ]] && rm -f "$DATA/character-select-answer.txt"
+    else choice=$(head -n1 "$DATA/character-select-answer.txt" 2>/dev/null | tr -d '\r[:space:]' || true); [[ $choice == yes || $choice == no || $choice == off ]] || choice=ask
+    fi
+    local get_later='  To get them later: run reinstall-character-select.sh in the kit folder, or press n (for NPC) at a start while the kit shows the NPC characters line.'
+    local take_out='  To take them out later: press n at a start while the kit shows the NPC characters line.'
+    if [[ $choice == off ]]; then
+        dir=$CS_HOME/$folder
+        if [[ ! -f $dir/coop-charsel.txt ]]; then
+            [[ -d $dir ]] && say "Character Select: uninstalled ($dir is your own copy, used as it is). To put it back: run reinstall-character-select.sh." \
+                          || say 'Character Select: uninstalled. To put it back: run reinstall-character-select.sh.'
+            return 0
+        fi
+        charsel_save_previous "$folder"
+        say 'Character Select: uninstalled now (the game is built again without it). To put it back: run reinstall-character-select.sh.'
+        return 0
+    fi
+    have=$(head -n1 "$CS_HOME/$folder/coop-charsel.txt" 2>/dev/null | tr -d '\r' || true)
+    local -a hf0=()
+    read -r -a hf0 <<<"$have"
+    # (an ask line in coop-options.ini, by hand or by reinstall-character-select.sh: asked, never kept without a question)
+    if [[ $choice == ask && $line != ask && -d $CS_HOME/$folder/romfs && ${#hf0[@]} -ge 4 && ${hf0[4]:-full} == full ]]; then
+        # (a reinstalled kit, or one pointed at a game made before: the characters there stay, no question)
+        choice=yes
+        say 'NPC characters (Characters page): found in your game from before, kept.'
+        say "$take_out"
+        printf '%s\n' "$choice" >"$DATA/character-select-answer.txt"
+    elif [[ $choice == ask ]]; then
         say ''
         say 'The Characters page (in the - menu) comes with the kit: Character Select by Snail (snaildev99).'
         say "  Its NPC characters (Saria, Sheik, Darunia and over a hundred more) are an extra download from Snail's own"
         say '  GitHub page (a 145 MB download, about 1.1 GB on disk, made from your game in a few minutes, once). Without them you play as Link, and the page tells you when a character is not'
         say '  downloaded. The Legend of Zelda: Ocarina of Time and its characters belong to Nintendo.'
-        local q='Download the NPC characters for the Characters page? [y/N]' s
+        local q='NPC characters: press y to download them, n to skip' s
         choice=no
         if kit_tty; then
             for ((s = ${OOT_COOP_CHARSEL_WAIT:-15}; s > 0; s--)); do
-                printf '\r%s (no in %d s)  ' "$q" "$s"
+                printf '\r%s (no key in %d s: skip)  ' "$q" "$s"
                 if IFS= read -r -s -n 1 -t 1 a; then break; fi
                 a=timeout
             done
             [[ $a == [yY] ]] && choice=yes
-            printf '%s\n' "${choice:0:1}"
+            if [[ $choice == yes ]]; then printf 'y\n'; elif [[ $a == timeout ]]; then printf 'no key\n'; else printf 'n\n'; fi
         else
-            say "$q n (no terminal: no)"
+            say "$q: skipped (no terminal)"
         fi
         printf '%s\n' "$choice" >"$DATA/character-select-answer.txt"
-        [[ $choice == no ]] && say '  Not downloaded. To get them later: press n at the next start, while the kit shows the NPC line.'
+        # (review-pool-b2: an ask line in coop-options.ini takes the answer too, else it wins over the kept answer and the
+        # question comes back at every start, with no n line)
+        [[ -f $DATA/coop-options.ini ]] && sed -i "s/^[[:space:]]*character_select[[:space:]]*=.*/character_select = $choice/" "$DATA/coop-options.ini"
+        if [[ $choice == yes ]]; then say '  Downloading them now (once).'; say "$take_out"
+        else say '  Skipped: you play as Link.'; say "$get_later"; fi
     elif kit_tty; then
-        # (row 206: on or off from the kit itself, no file to edit; coop-options.ini's line follows the change)
-        if [[ $choice == yes ]]; then say 'Characters page, NPC characters: on (press n to take them out)'
-        else say 'Characters page, NPC characters: off (press n to make them, a 145 MB download and about 1.1 GB on disk)'; fi
-        if IFS= read -r -s -n 1 -t 2 a && [[ $a == [nN] ]]; then
-            if [[ $choice == yes ]]; then choice=no; else choice=yes; fi
-            say '  changed.'
+        # (row 206: on or off from the kit itself, no file to edit; coop-options.ini's line follows the change. Off: n (the
+        # in-game page says "press N at the kit's start") or y downloads them; on: n takes them out; another key goes on)
+        if [[ $choice == yes ]]; then say 'NPC characters (Characters page): on. To take them out press n within 3 s (no key: they stay).'
+        else say 'NPC characters (Characters page): not downloaded. To download them now (145 MB, about 1.1 GB on disk) press n or y within 3 s (no key: the game starts without them).'; fi
+        if IFS= read -r -s -n 1 -t 3 a && [[ $a == [nN] || ( $choice == no && $a == [yY] ) ]]; then
+            if [[ $choice == yes ]]; then choice=no; say '  n: taking them out now.'; else choice=yes; say "  $a: downloading them now."; fi
             printf '%s\n' "$choice" >"$DATA/character-select-answer.txt"
             [[ -f $DATA/coop-options.ini ]] && sed -i "s/^[[:space:]]*character_select[[:space:]]*=.*/character_select = $choice/" "$DATA/coop-options.ini"
         fi
     fi
     part=ui
     [[ $choice == yes ]] && part=full
-    want="$rel $zsha $osha ${isha:--} $part cz2v"   # (cz2, row 242: the default part keeps Link own textures; an older ui copy is never derived from. cz2v: his voice files deleted)
-    local what='the Characters page (NPC characters not downloaded)'
+    want="$rel $zsha $osha ${isha:--} $part cz3g"   # (cz2, row 242: the default part keeps Link own textures; an older ui copy is never derived from. cz2v: his voice files deleted. cz3, row 280: it keeps Model/Player_Dark_Animation.Skeleton. cz3g, row 280: each part is checked by part_check.py)
+    local what='the Characters page (NPC characters not downloaded: reinstall-character-select.sh or n at a start gets them)'
     [[ $part == full ]] && what='with its NPC characters'
     if [[ -d $dir && ! -f $dir/coop-charsel.txt ]]; then say "Character Select: your own copy in $dir is used as it is."; return 0; fi
     have=$(head -n1 "$dir/coop-charsel.txt" 2>/dev/null | tr -d '\r' || true)
@@ -531,12 +585,14 @@ charsel_step() {
     # The copy there, of this release (a 0.11.8 stamp, four fields: full): its part decides whether it can give the one wanted.
     local hf wf
     read -r -a hf <<<"$have"; read -r -a wf <<<"$want"
-    if [[ -d $dir/romfs && ${#hf[@]} -ge 4 && "${hf[*]:0:4}" == "${wf[*]:0:4}" && ( ${hf[4]:-full} == full || ( $part == ui && ${hf[5]:-} == cz2v ) ) ]]; then derive=1; fi
+    if [[ -d $dir/romfs && ${#hf[@]} -ge 4 && "${hf[*]:0:4}" == "${wf[*]:0:4}" && ( ${hf[4]:-full} == full || ( $part == ui && ${hf[5]:-} == cz3g ) ) ]]; then derive=1; fi
     dl=$B/charsel new=$CS_HOME/_$folder.new json=$dl/characters.json ips=''
     mkdir -p "$dl" "$CS_HOME"
     rm -rf "$new"
     if ((derive)); then
         mkdir -p "$new"
+        # (row 280: a copy made before the release list was kept lists what it has; the copy below takes the list along)
+        [[ -f $dir/coop-release-files.txt ]] || part_check list --mod "$dir" >/dev/null || true
         charsel_py derive "$dir" "$new" "$part" || why='the copy there could not be linked'
         json=$dir/characters.json
     else
@@ -602,16 +658,31 @@ with zipfile.ZipFile(z) as f:
 ' "$dl/$zip" "$tfolder" "$dl/tool" || [[ ! -f $dl/tool/player.py ]]; then
                         why="$zip has no $tfolder/player.py"; rm -rf "$dl/tool"
                     elif [[ ! -f $GAME/romfs/Pack/ZsDic.pack.zs ]]; then why="no game RomFS in $GAME/romfs to make its files from"; rm -rf "$dl/tool"
-                    elif charsel_tool_make "$new" "$part"; then rm -rf "$dl/tool"
+                    elif charsel_tool_make "$new" "$part"; then
+                        # (row 280: the release's files, the ones its tool made and the ones it was told to leave out,
+                        # before any is left out; the check after charsel_py complete reads them)
+                        part_check list --mod "$new" --recipes "$dl/tool/recipes.json" >/dev/null || true
+                        rm -rf "$dl/tool"
                     else why=$cs_tool_why; rm -rf "$dl/tool"
                     fi
                 fi
+            elif [[ -z $why ]]; then part_check list --mod "$new" >/dev/null || true
             fi
         fi
     fi
     if [[ -z $why ]]; then
         local err
         if ! err=$(charsel_py complete "$new" "$part" "$json" "$ips" "$want" "$rel" 2>&1 >/dev/null); then why=${err:-the folder could not be made ready}; fi
+    fi
+    if [[ -z $why && -f $GAME/romfs/Pack/ZsDic.pack.zs ]]; then
+        # (row 280: a kept file that names a file neither this part nor the game has makes every load of it wait for good
+        # (a black world); such files are left out, so the game's own are used, and the module says so. Character models
+        # are guarded by the module itself (coop_char_slots). Never stops the install.)
+        local pc prc=0
+        pc=$(part_check check --mod "$new" --romfs "$GAME/romfs" --name 'Character Select' --guarded '^Model/Player_(Adult|Child)_C\d{3}\.') || prc=$?
+        if ((prc == 2)); then warn "Character Select: its files could not be checked ($(printf '%s\n' "$pc" | grep -v '^[[:space:]]*$' | tail -n 1)); it is put in as it is."
+        elif [[ -f $new/coop-fallback.txt ]]; then warn "$(head -n1 "$new/coop-fallback.txt")"
+        fi
     fi
     if [[ -z $why ]]; then
         ((derive)) || curl -fsSL --max-time 30 -o "$new/LICENSE.txt" "https://raw.githubusercontent.com/snaildev99/OoT-Character-Select/$rel/LICENSE" 2>/dev/null || rm -f "$new/LICENSE.txt"
@@ -852,6 +923,26 @@ if ((ready && want_dlss != game_dlss && (want_dlss || no_dlss))); then
     else say 'NVIDIA DLSS off: the game is built again without it.'; fi
     ready=0
 fi
+# AMD FSR 4 and its native AA (#326), as hookshot-build.ps1's -Fsr4: a game built with make_game.py --fsr (its mark
+# .longshot_fsr in the game folder). Nothing of AMD's is downloaded on Linux (AMD publishes no Linux runtime; the FSR API
+# headers are Longshot's own, MIT), so there is no license to accept here: a Vulkan amd_fidelityfx_upscaler_vk.so put
+# beside the game runs it. --fsr4 turns it on (data/fsr4.txt keeps it), --no-fsr4 off.
+fsr4_note=$DATA/fsr4.txt
+if ((no_fsr4)); then
+    rm -f "$fsr4_note"
+elif ((fsr4)) && [[ ! -f $fsr4_note ]]; then
+    printf 'fsr4=on\n' >"$fsr4_note"
+    say "AMD FSR 4: every build of this kit is made with it. AMD publishes no Linux runtime: put a Vulkan amd_fidelityfx_upscaler_vk.so in $GAME yourself (the game's Upscaler row says when it is missing)."
+fi
+want_fsr4=0
+((!no_fsr4)) && [[ -f $fsr4_note ]] && want_fsr4=1
+game_fsr4=0
+[[ -f $GAME/.longshot_fsr ]] && game_fsr4=1
+if ((ready && want_fsr4 != game_fsr4 && (want_fsr4 || no_fsr4))); then
+    if ((want_fsr4)); then say 'AMD FSR 4: the game has no FSR 4 yet, so it is built again with it (much shorter than the first build).'
+    else say 'AMD FSR 4 off: the game is built again without it.'; fi
+    ready=0
+fi
 # The game built from another stamp than this start wants (player report 210: a mod with code patches switched on or
 # off on the Mods tab, an update): the build there is kept first (a copy of the files a build makes: the ones Longshot's
 # finish copies in, .longshot_installed.json, and exefs_patches.txt; copies, never hard links), and one of exactly this
@@ -867,7 +958,12 @@ for k in sorted(json.load(open(sys.argv[1], encoding="utf-8"))): print(k)' "$GAM
     fi
     printf 'exefs_patches.txt\n.longshot_installed.json\n'   # (the note too: a build kept after a put back still knows its files)
 }
-variant_text() { printf '%s\ndlss=%s' "$(printf '%s\n' "$1" | tr -d '\r' | sed 's/[[:space:]]*$//')" "$2"; }
+# (plus the game's DLSS state, and its AMD FSR 4 state only when on: the builds kept before #326 keep their keys)
+variant_text() {
+    printf '%s\ndlss=%s' "$(printf '%s\n' "$1" | tr -d '\r' | sed 's/[[:space:]]*$//')" "$2"
+    [[ ${3:-0} == 1 ]] && printf '\nfsr4=1'
+    return 0
+}
 variant_dir() { printf '%s/%s' "$variants" "$(printf '%s' "$1" | sha256sum | cut -c1-20)"; }
 variant_save() {
     local have text dir part f bytes=0 free_kb bad
@@ -876,7 +972,7 @@ variant_save() {
     # (kit-harden: files of two builds are never kept as a build)
     bad=$(game_mismatch "$GAME")
     [[ -z $bad ]] || { say "  (this build is not kept for later: its files are not from one build: ${bad%%$'\n'*})"; return 0; }
-    text=$(variant_text "$have" "$game_dlss")
+    text=$(variant_text "$have" "$game_dlss" "$game_fsr4")
     dir=$(variant_dir "$text")
     if [[ -f $dir/stamp.txt && $(cat "$dir/stamp.txt") == "$text" ]]; then touch "$dir/stamp.txt"; return 0; fi
     while IFS= read -r f; do [[ -n $f && -f $GAME/$f ]] && bytes=$((bytes + $(stat -c %s "$GAME/$f"))); done < <(variant_files)
@@ -921,9 +1017,9 @@ if ((!ready && !rebuild && !check_only)) && [[ -n $(kit_game_exe) && -f $game_st
     say ''
     say '  Keeping the game as it is built now, for later (about 650 MB, a few seconds) ...'
     variant_save
-    kept_text=$(variant_text "$game_want" "$want_dlss")
+    kept_text=$(variant_text "$game_want" "$want_dlss" "$want_fsr4")
     kept=$(variant_dir "$kept_text")
-    if ((want_dlss == game_dlss)) && [[ -f $kept/stamp.txt && $(cat "$kept/stamp.txt") == "$kept_text" && -f $kept/built-from.txt && -f $kept/files/image.bin && -z $(game_mismatch "$kept/files") ]]; then
+    if ((want_dlss == game_dlss && want_fsr4 == game_fsr4)) && [[ -f $kept/stamp.txt && $(cat "$kept/stamp.txt") == "$kept_text" && -f $kept/built-from.txt && -f $kept/files/image.bin && -z $(game_mismatch "$kept/files") ]]; then
         step 'The game: putting back the build made before with these mods (seconds, instead of building it again)'
         if variant_restore "$kept" && [[ $(cat "$game_stamp") == "$game_want" ]]; then
             ready=1
@@ -1023,6 +1119,8 @@ game_build() {
         # (NVIDIA DLSS: make_game.py fetches NVIDIA's SDK into data/work/ngx-sdk, only what is missing, and builds the
         # renderer with it; the license was accepted above, data/dlss.txt)
         ((want_dlss)) && build_args+=(--fetch-ngx-sdk --accept-nvidia-license)
+        # (AMD FSR 4: the renderer built with it, data/fsr4.txt; AMD publishes no Linux runtime, so nothing is fetched)
+        ((want_fsr4)) && build_args+=(--fsr)
         mkdir -p "$GAME"
         ((want_dlss)) && export LONGSHOT_NGX_SDK=$WORK/ngx-sdk
         # (make_game.py's own words for a failed SDK download are the Builder's, "untick NVIDIA DLSS": the kit's way is --no-dlss)

@@ -1,0 +1,24 @@
+# geno-emote-carry: B carries the Kakariko Cucco and says /wave, then presses ZL during a /wave; A watches (as cucco-claim). PASS: the Cucco stays in
+# B's hands in the shots of both games (either B's Link waves with it or the log says 'our Link plays no'), and is put down as usual; with ZL the
+# game's own targeting pose wins or the wave plays on, no stuck pose (-after); read B's log for the names after 'was' and 'he is on'.
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_OBJECTS=1
+#! timeout 600
+mark start
+warp KakarikoVillage_Child Kakariko_WellSide
+wait 1200
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark landed
+goto -8.0 30.0 1.0 900
+toward -11.04 28.49 8
+mark a-there
+wait 3000
+mark end

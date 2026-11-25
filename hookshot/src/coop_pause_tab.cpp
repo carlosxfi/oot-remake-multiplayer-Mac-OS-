@@ -4,7 +4,10 @@
 
 #include "coop_browse.h"
 #include "coop_i18n.h"
+#include "coop_chat_history.h"
 #include "coop_list_pages.h"
+#include "coop_mods_tab.h"
+#include "coop_native_ui.h"
 #include "coop_text_fit.h"
 
 #include "hos_coop_host.h"
@@ -1553,6 +1556,7 @@ const char* RowHelp(RowAction a) {
     case RowAction::kBrowseLan: return "Lists the games on your network.";
     case RowAction::kBrowseOnline: return "Lists the public rooms online.";
     case RowAction::kBrowsePage: return "The next page of games.";
+    case RowAction::kChatPage: return "Older chat lines (ZL and ZR turn the pages).";
     case RowAction::kBrowseRefresh: return "Looks for games again.";
     case RowAction::kListRoom: return "When on, your game's room is listed online while you host, so anyone can find it.";
     case RowAction::kBrowseList: return "Switches between the public rooms online and the games on your network.";
@@ -1592,45 +1596,36 @@ std::string MinusHelp(const HelpAt& at, const Session& s) {
 }
 
 namespace {
-// The letter at `i` of `t`: its bytes and how wide it shows (a CJK letter or a full-width mark two, others one).
-std::pair<std::size_t, std::size_t> Letter(const std::string& t, std::size_t i) {
-    const unsigned char c = static_cast<unsigned char>(t[i]);
-    const std::size_t n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xe ? 3 : (c >> 3) == 0x1e ? 4 : 1;
-    if (i + n > t.size()) return {t.size() - i, 1};
-    std::uint32_t cp = n == 1 ? c : c & (0xffu >> (n + 1));
-    for (std::size_t k = 1; k < n; ++k) cp = (cp << 6) | (static_cast<unsigned char>(t[i + k]) & 0x3fu);
-    const bool wide = (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) ||
-                      (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60) ||
-                      (cp >= 0xffe0 && cp <= 0xffe6);
-    return {n, wide ? 2 : 1};
-}
-
-std::size_t WidthOf(const std::string& t) {
-    std::size_t w = 0;
-    for (std::size_t i = 0; i < t.size();) {
-        const auto [n, v] = Letter(t, i);
-        w += v, i += n;
-    }
-    return w;
+// The letter at `i` of `t`: its bytes, how wide it shows (CoopNativeUi::Width: the game's font) and whether a line may
+// break before or after it (a Chinese letter or a full-width mark).
+struct HelpLetter {
+    std::size_t bytes, width;
+    bool wide;
+};
+HelpLetter Letter(const std::string& t, std::size_t i) {
+    std::size_t n = 1;
+    CoopTextFit::Decode(t, i, &n);
+    const std::string_view letter = std::string_view(t).substr(i, n);
+    return {n, CoopNativeUi::Width(letter), CoopNativeUi::Columns(letter) == 2};
 }
 }  // namespace
 
-std::string HelpText(const std::string& utf8, std::size_t columns, std::size_t lines) {
-    // Letters in order onto lines; a line that would grow past `columns` ends at its last space (the word goes on to
+std::string HelpText(const std::string& utf8, std::size_t width_max, std::size_t lines) {
+    // Letters in order onto lines; a line that would grow past `width_max` ends at its last space (the word goes on to
     // the next) or, with no space in it (Chinese), before the letter.
     std::vector<std::string> out{std::string()};
     std::size_t width = 0;
     bool cut = false;
     for (std::size_t i = 0; i < utf8.size() && !cut;) {
-        const auto [n, w] = Letter(utf8, i);
+        const auto [n, w, wide] = Letter(utf8, i);
         const std::string letter = utf8.substr(i, n);
         i += n;
         std::string& line = out.back();
         const bool newline = letter == "\n";
-        if (newline || width + w > columns) {
+        if (newline || width + w > width_max) {
             std::string rest;
             if (!newline && letter != " ") {
-                if (const std::size_t sp = line.rfind(' '); sp != std::string::npos && w == 1) {
+                if (const std::size_t sp = line.rfind(' '); sp != std::string::npos && !wide) {
                     rest = line.substr(sp + 1);
                     line.resize(sp);
                 }
@@ -1641,7 +1636,7 @@ std::string HelpText(const std::string& utf8, std::size_t columns, std::size_t l
                 break;
             }
             out.push_back(rest);
-            width = WidthOf(out.back());
+            width = CoopNativeUi::Width(out.back());
             continue;
         }
         if (letter == " " && line.empty()) continue;   // (no line starts with a space)
@@ -1651,7 +1646,7 @@ std::string HelpText(const std::string& utf8, std::size_t columns, std::size_t l
     while (!out.empty() && out.back().empty()) out.pop_back();
     if (cut && !out.empty()) {   // (longer than its lines: the last ends with "...")
         std::string& last = out.back();
-        while (!last.empty() && WidthOf(last) + 3 > columns) {
+        while (!last.empty() && CoopNativeUi::Width(last) + CoopNativeUi::Width("...") > width_max) {
             std::size_t k = last.size() - 1;
             while (k > 0 && (static_cast<unsigned char>(last[k]) & 0xc0) == 0x80) --k;   // (a whole letter off)
             last.resize(k);
@@ -1662,6 +1657,49 @@ std::string HelpText(const std::string& utf8, std::size_t columns, std::size_t l
     std::string text;
     for (std::size_t k = 0; k < out.size(); ++k) text += (k ? "\n" : "") + out[k];
     return text;
+}
+
+std::vector<std::string> LinePages(const std::string& utf8, std::size_t letters, std::size_t bytes) {
+    std::vector<std::string> out;
+    const auto blank = [&](std::size_t i) { return utf8[i] == ' ' || utf8[i] == '\n'; };
+    std::size_t at = 0;
+    while (at < utf8.size()) {
+        if (blank(at)) {
+            ++at;
+            continue;
+        }
+        std::size_t end = at + CoopTextFit::PrefixEnd(std::string_view(utf8).substr(at), bytes, 2 * letters);
+        if (end < utf8.size() && !blank(end)) {   // (a word left whole when a space is in the page's second half)
+            const std::size_t space = utf8.find_last_of(" \n", end);
+            if (space != std::string::npos && space > at && (space - at) * 2 >= end - at) end = space;
+        }
+        if (end == at) {   // (no letter fits: one, so the loop moves on)
+            std::size_t n = 1;
+            CoopTextFit::Decode(utf8, at, &n);
+            end = at + n;
+        }
+        std::string page = utf8.substr(at, end - at);
+        std::replace(page.begin(), page.end(), '\n', ' ');
+        while (!page.empty() && page.back() == ' ') page.pop_back();
+        out.push_back(std::move(page));
+        at = end;
+    }
+    return out;
+}
+
+std::string HelpPager::Shown(const std::string& utf8, std::uint64_t now_ms, std::size_t line_letters,
+                             std::size_t line_bytes) {
+    if (utf8 != text_ || line_letters != letters_ || line_bytes != bytes_) {
+        text_ = utf8, letters_ = line_letters, bytes_ = line_bytes;
+        pages_ = utf8.empty()        ? std::vector<std::string>{}
+                 : line_letters == 0 ? CoopModsTab::HelpPages(utf8)
+                                     : LinePages(utf8, line_letters, line_bytes);
+        since_ms_ = now_ms;
+    }
+    if (pages_.empty()) return {};
+    const std::uint64_t turns = now_ms >= since_ms_ ? (now_ms - since_ms_) / kHelpPageMs : 0;
+    const std::string& page = pages_[static_cast<std::size_t>(turns % pages_.size())];
+    return line_letters == 0 ? HelpText(page) : page;
 }
 
 const char* ActionWords(RowAction a) {
@@ -1715,6 +1753,7 @@ const char* ActionWords(RowAction a) {
     case RowAction::kBrowseLan: return "the browser lists the games on this network";
     case RowAction::kBrowseOnline: return "the browser lists the relay's public rooms";
     case RowAction::kBrowsePage: return "the browser's next page of games";
+    case RowAction::kChatPage: return "the chat list's page of older lines";
     case RowAction::kBrowseRefresh: return "the browser's list asked again";
     case RowAction::kListRoom: return "this game's room listed online when it hosts, on or off (saved)";
     case RowAction::kTypePassword: return "the join password typed on its row";
@@ -1963,13 +2002,54 @@ bool RoomMatches(const std::string& room, const std::string& host, const std::st
     return lower(room).find(want) != std::string::npos || lower(host).find(want) != std::string::npos;
 }
 
+std::vector<ListLine> ChatHistoryLines(const SessionView& v) {
+    std::vector<ListLine> lines(kListRows);
+    if (!v.s.in_one) return lines;
+    const std::vector<std::string> rows = CoopChatHistory::Rows(v.chat, kListLineChars);
+    const int pages = CoopChatHistory::Pages(static_cast<int>(rows.size()));
+    const int shown = CoopChatHistory::Shown(v.s.chat_page, pages);
+    lines[0] = ListLine{CoopListPages::Heading(CoopI18n::Tr("Chat"), CoopListPages::Line(shown, pages), kListLineChars), ""};
+    lines[0].paged = pages > 1;
+    if (pages > 1) lines[0].act = RowAction::kChatPage;
+    if (rows.empty()) {
+        lines[1].name = FitTo(CoopI18n::Tr("No chat yet"), kListLineChars);
+    } else {
+        const std::vector<std::string> page = CoopChatHistory::PageRows(rows, v.s.chat_page);
+        for (std::size_t i = 0; i < page.size() && i + 1 < lines.size(); ++i) lines[i + 1].name = page[i];
+    }
+    MarkShown(&lines);   // (said as typed, notices already in the player's language: never looked up again)
+    return lines;
+}
+
 std::vector<ListLine> DetailLines(View view, const SessionView& v) {
     std::vector<ListLine> lines(kListRows);
     // (menu-parity-0119, a lane shot: co-op that came with the game's start left the Lobby's Host and Join views with
     // one row and an empty right half: they say there why nothing starts or stops here)
     const bool launcher_view = v.s.by_launcher && (view == View::kHost || view == View::kJoin);
+    if (view == View::kPlayers) return ChatHistoryLines(v);
     if (view != View::kMain && view != View::kSession && view != View::kPassword && !launcher_view) return lines;
     std::size_t at = 1;
+    // Row 223: the details list's pages (ZL / ZR), on the Main and Session views only: page 1 is the session's lines
+    // below, page 2 the key items the game holds, "Songs  8 of 13" (a list of ours, English keys through Tr; only
+    // with a game loaded, else the list has the one page).
+    const bool paged_details = (view == View::kMain || view == View::kSession) && v.tally_ok;
+    const int detail_pages = paged_details ? 2 : 1;
+    const int detail_page = CoopListPages::Wrap(v.detail_page, detail_pages);
+    if (detail_page == 1) {
+        using coop::host::TallyGroup;
+        lines[0] = ListLine{CoopListPages::Heading(CoopI18n::Tr("Key items"), CoopListPages::Line(1, 2), kListNameChars),
+                            "", RowAction::kNone};
+        lines[0].paged = true;
+        for (const TallyGroup g : {TallyGroup::songs, TallyGroup::medallions, TallyGroup::stones, TallyGroup::dungeon_items}) {
+            const auto& n = v.tally.at(g);
+            if (at < lines.size())
+                lines[at++] = ListLine{FitTo(CoopI18n::Tr(std::string(coop::host::tally_group_label(g))), kListNameChars),
+                                       FitTo(std::to_string(n.owned) + CoopI18n::Tr(" of ") + std::to_string(n.total),
+                                             kListValueChars)};
+        }
+        MarkShown(&lines);
+        return lines;
+    }
     // (each line in the player's language before the cut: the names and the short values are
     // the table's words, a room's own name comes back as it is)
     // (`own`: the value is a room's, a host's or a password: shown as it is, never looked up)
@@ -2101,6 +2181,11 @@ std::vector<ListLine> DetailLines(View view, const SessionView& v) {
         for (const std::string& l : Wrap(why, all ? left : left - 1, kListLineChars)) lines[at++] = ListLine{l, ""};
     }
     if (!release.empty()) add("Release", release);
+    // (page 1 of two: the heading says so, with the game's ZL / ZR icons beside it)
+    if (detail_pages > 1) {
+        lines[0].name = CoopListPages::Heading(CoopI18n::Tr(header), CoopListPages::Line(0, 2), kListNameChars);
+        lines[0].paged = true;
+    }
     MarkShown(&lines);
     return lines;
 }

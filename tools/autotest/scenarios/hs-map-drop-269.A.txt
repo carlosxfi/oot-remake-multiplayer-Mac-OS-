@@ -1,0 +1,28 @@
+# hs-map-drop-269, A (host): System > Load in play (from hs-heart-137-sysload.A.txt). The confirm opens on Cancel
+# (run rows-269-mapdrop 2026-11-25, shot a-sys-confirm), so DUP to Load before the last A.
+press PLUS
+wait 240
+press R
+wait 90
+press R
+wait 90
+press R
+wait 120
+mark a-sys-tab
+press DDOWN                # the page opens on Save (its first row); no DUP (a wrap would land on Title Screen)
+wait 60
+mark a-sys-load
+press A
+wait 180
+mark a-sys-list
+press A
+wait 180
+mark a-sys-confirm
+press DUP
+wait 60
+mark a-sys-on-load
+press A
+wait 1800
+mark a-sys-loaded
+wait 900
+mark a-sys-late

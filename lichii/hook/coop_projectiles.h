@@ -210,6 +210,12 @@ std::vector<std::string_view> ImpactActors(Kind kind);
 // its code emits where it hits (the spark), played on the copy through the
 // game's own emit where the copy lands (CoopSpawn::Director). Empty: none.
 std::string_view HitEffect(Kind kind);
+// Issue 166: the key of the landing sound a copy of `kind` plays on its own
+// SLink user where it lands (the director, after HitEffect): the shared
+// ReactionHit user's wall-hit sounds for the seed and the arrow (their
+// stand-ins' sound user, tools/puppet_pack STAND_IN_SLINK_USER), the nut's
+// own burst. Empty: none.
+std::string_view HitSound(Kind kind);
 bool IsImpact(std::string_view actor);
 // How long an impact actor is kept before it is deleted: its effect and
 // sound are one-shots, over by then. Short, and at most kMaxImpacts live at
@@ -251,6 +257,9 @@ private:
 };
 
 Blasts& TheBlasts();
+// ai-stuns: where another player's shot copy (nut, seed, arrow, boomerang, hookshot) hit here, kept the same way: a
+// stun of our copy of an enemy there is that player's (its game asks for the enemy), not ours.
+Blasts& TheShotHits();
 
 // Issue 133 (whose hit): our own projectiles (seeds, arrows, nuts, bombs, the boomerang, the hookshot's tip) by
 // actor address, kept kKeepUs after each was last seen on our list, so a seed that hit an enemy and was removed

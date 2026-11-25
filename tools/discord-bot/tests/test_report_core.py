@@ -185,6 +185,26 @@ class DiskBudget(TempDir):
         self.assertTrue(core.over_budget(1000, 1, budget=1000))
         self.assertTrue(core.over_budget(core.LOGS_BUDGET_BYTES, core.MAX_ZIP_BYTES))
 
+    def test_stored_size_counts_only_what_the_bot_wrote(self):
+        self.assertEqual(core.stored_size(self.dir / "none"), 0)
+        r = self.dir / "player-20261124"
+        r.mkdir()
+        (r / "logs.zip").write_bytes(b"1" * 700)
+        (r / "description.txt").write_bytes(b"2" * 50)
+        a = self.dir / "auto-ab12-20261124"
+        a.mkdir()
+        (a / "problem-report.zip").write_bytes(b"3" * 200)
+        (a / "description.txt").write_bytes(b"4" * 50)
+        # The team's unpacked copies, loose files and hand-made folders do not count.
+        (r / "logs").mkdir()
+        (r / "logs" / "coop.log").write_bytes(b"5" * 10_000)
+        (r / "extra.zip").write_bytes(b"6" * 10_000)
+        (self.dir / "owner-sent").mkdir()
+        (self.dir / "owner-sent" / "big.log").write_bytes(b"7" * 10_000)
+        (self.dir / "loose.zip").write_bytes(b"8" * 10_000)
+        self.assertEqual(core.stored_size(self.dir), 1000)
+        self.assertGreater(core.dir_size(self.dir), 40_000)
+
 
 class GuildLock(unittest.TestCase):
     def test_resolve(self):

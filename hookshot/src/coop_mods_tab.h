@@ -60,6 +60,8 @@ public:
     void Paste(const std::optional<std::string>& clip, bool into_typing);
     bool typing() const { return typing_; }
     bool on_mod_page() const { return !mod_.empty(); }
+    // Press(kBack) would be taken: typing ends, or a mod's page goes back to the list (coop_menu_handoff.h).
+    bool BackTaken() const { return src_.loader != nullptr && (typing_ || !mod_.empty()); }
     CoopPauseMenu::View view() const;
 
 private:
@@ -99,14 +101,14 @@ private:
 };
 
 // The module's part: tab 2 of hos_coop_menu.h. Before CoopModsRuntime::Start (or with no loader): no tab.
-// A text cut into pages that each fit the help box (CoopPauseTab::kHelpColumns x kHelpLines) whole, at a space or a
+// A text cut into pages that each fit the help box (CoopPauseTab::kHelpWidth x kHelpLines) whole, at a space or a
 // stop where one is near: nothing is ever cut with "...". Empty text: no page.
 std::vector<std::string> HelpPages(const std::string& text);
 bool Available();
 const char* TabName();
-bool Page(HosCoopMenuPage* out);
 // The tab's page as the pause menu's - page draws it (0.11.9: the Mods tab right of Map): its rows, and whether a
-// mod's own page shows (Back goes to the list) rather than the list. False before the tab is made.
+// mod's own page shows (Back goes to the list) rather than the list. False before the tab is made. Also the page of
+// Hookshot's Mods tab, built on the game's main thread (CoopPause::Tick, coop_menu_handoff.h: row 279).
 bool View(CoopPauseMenu::View* out, bool* on_mod_page);
 bool MenuInput(int event, int arg, int arg2);
 bool Key(std::uint32_t vk, bool repeat);  // while typing: the tab's

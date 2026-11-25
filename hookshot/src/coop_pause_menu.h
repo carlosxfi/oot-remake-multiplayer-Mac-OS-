@@ -59,6 +59,8 @@ std::vector<std::string> MicChoices(const std::vector<std::string>& listed, cons
 // ("..." at its end), with " (not connected)" when it is not listed.
 constexpr std::size_t kMicChars = 28;
 std::string MicWords(const std::string& chosen, const std::vector<std::string>& listed);
+// With the voice's state after it (SetVoiceStatus's words), unless the name already says "(not connected)".
+std::string MicWords(const std::string& chosen, const std::vector<std::string>& listed, const std::string& status);
 // The most bytes one of the title's own buttons shows (CoopTitleNative::RowText cuts a longer row, "..." at its end).
 constexpr std::size_t kTitleRowBytes = 40;
 // A game's name on a title row that has `rest` bytes after it ("1/4  Public", " asks for a password"), so the row's own
@@ -82,6 +84,8 @@ struct DifficultyState {
     bool can_edit = false;    // we host
     coop::protocol::DifficultyChoice choice;
     coop::protocol::DifficultyValues values;
+    // Not in a session: this player's next lobby's (CoopDifficulty::NextLobby), what the lobby-creation rows set.
+    coop::protocol::DifficultyChoice next;
 };
 
 struct Request {
@@ -145,6 +149,8 @@ struct Session {
     bool rules = false;
     bool pvp = false;
     bool gold_own = false;   // Gold Skulltulas not shared in this session (CoopGoldMode::InForce)
+    bool race = false;       // race mode in this session (CoopRaceMode::InForce)
+    bool floor_switches = true;   // shared floor switches in this session (CoopSwitchStandMode::InForce)
     bool dbno = true;
     int dbno_bleed_s = 45, dbno_revive_tenths = 50, dbno_revive_life = 12;
 
@@ -214,6 +220,9 @@ public:
     // One press; false when nothing took it (a Back on the first page: the
     // caller closes the whole menu). A request may be waiting after it.
     bool Press(Input input);
+    // Whether a Back now would be taken (Press(kBack) true): typing ends, or a page under the first goes back. Hookshot's
+    // menu is answered from it at once while the press waits for the game's thread (coop_menu_handoff.h, row 279).
+    bool BackTaken() const { return typing_ || page_ != Page::kMain; }
     // The mouse: over a row, and a click on its name (side 0) or on the left
     // (-1) or right (1) half of its value.
     void Select(std::size_t row);
@@ -249,6 +258,10 @@ public:
     // (CoopVoice::Microphones). None: this game cannot choose one for the
     // voice (an older patch 0009), so the row is not shown.
     void SetMicrophones(std::optional<std::vector<std::string>> listed);
+    // Row 229: what the voice's microphone gives now (CoopVoice::MicStatus): the Microphone row's words after its
+    // name ("(Off in Longshot)", MicStatusWords) and one sentence after the Proximity voice chat row's help
+    // (MicStatusNote); both "" when it reaches the others or is not known yet.
+    void SetVoiceStatus(std::string words, std::string note);
     // The look shown now (the one waiting for the menu to close, else the one
     // worn): the Customize page opens on it.
     void SetLook(const CoopLook::Look& look);
@@ -337,7 +350,7 @@ private:
         kOpenCustomize, kNgPlus, kSaveSet,
         kOpenFind, kFindList, kFindSearch, kFindGame, kFindFilter, kFindSort, kFindRefresh, kFindPage,
         kShowPassword, kNewPassword, kLetIn, kRefuse, kListRoom, kAutoRejoin, kOriginal,
-        kApproveJoins, kGoldSkulltulas, kPvp, kDbno, kDbnoTime, kDbnoHold, kDbnoHearts,
+        kApproveJoins, kGoldSkulltulas, kRace, kFloorSwitches, kPvp, kDbno, kDbnoTime, kDbnoHold, kDbnoHearts,
         kDifficulty, kDifficultyLife, kDifficultyDamage, kDifficultyCount,
         kCharAges, kCharChild, kCharAdult,
         kLocalGames, kLocalStart
@@ -390,6 +403,7 @@ private:
     std::string rejoin_host_, rejoin_code_;
     std::string controller_row_, keyboard_row_;
     std::optional<std::vector<std::string>> microphones_;
+    std::string voice_words_, voice_note_;   // SetVoiceStatus
     int ngplus_level_ = 0, ngplus_unlocked_ = 0, ngplus_hearts_ = 0;   // (Navi) New Game+ (SetNgPlus)
     struct CharAges {   // SetCharacterAges
         bool shown = false, on = false;
@@ -403,6 +417,9 @@ private:
     coop::protocol::DifficultyChoice DifficultyShown() const;
     coop::protocol::DifficultyValues DifficultyValuesShown() const;
     void DifficultyLines(std::vector<Line>& out) const;
+    // Whether this player's Difficulty rows change something: the host's in the session, or the next lobby's while
+    // in none (a guest's and a joining game's are read only).
+    bool DifficultyEditable() const;
     bool character_ = false;  // SetCharacter
     bool snail_home_ = false;  // SetSnailHome
     bool title_ = false;      // SetTitle

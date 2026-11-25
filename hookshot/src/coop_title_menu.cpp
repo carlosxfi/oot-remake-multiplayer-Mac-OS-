@@ -383,6 +383,8 @@ Options Options::Read(std::string_view coop_ini, std::string_view options_ini) {
     o.pvp = On(IniGet(options_ini, "pvp"));
     o.approve_joins = On(IniGet(options_ini, "approve_joins"));
     o.gold_own = IniGet(options_ini, "gold_skulltulas").value_or("") == "own";
+    o.race = On(IniGet(options_ini, "race"));
+    o.floor_switches = IniGet(options_ini, "floor_switches").value_or("") != "off";
     // The password on this network (row 251, dauro 2026-11-22: LAN joins need none): not needed unless the kit's
     // documented line says so (same_network_password = on, as Host.bat reads it) or an older build's line was
     // hand-set to off (same_network_open = off). The host still lets only a private source address in that way.
@@ -482,6 +484,8 @@ void Options::Write(std::string& coop_ini, std::string& options_ini) const {
         o = approve_joins ? IniSet(o, "approve_joins", "on", true) : IniUnset(o, "approve_joins");
     }
     o = gold_own ? IniSet(o, "gold_skulltulas", "own", true) : IniUnset(o, "gold_skulltulas");
+    o = race ? IniSet(o, "race", "on", true) : IniUnset(o, "race");
+    o = floor_switches ? IniUnset(o, "floor_switches") : IniSet(o, "floor_switches", "off", true);
     o = auto_rejoin ? IniSet(o, "auto_rejoin", "on", true) : IniUnset(o, "auto_rejoin");
     o = original_game ? IniSet(o, "original_game", "on", true) : IniUnset(o, "original_game");
     // (one line for it, the kit's own: same_network_password = on while this network needs the password; the older
@@ -629,6 +633,26 @@ std::string RoomJoinLine(std::string_view join_line, std::string_view relay) {
     std::string out = std::string(t.substr(0, space)) + "@" + std::string(Trim(relay));
     if (!password.empty()) out += " " + std::string(password);
     return out;
+}
+
+std::string RelayShareLine(std::string_view relay_line, std::string_view password) {
+    const std::string_view line = Trim(relay_line);
+    const std::string_view pass = Trim(password);
+    if (line.empty() || line.find('@') == std::string_view::npos || pass.empty() || !PasswordOk(pass)) {
+        return std::string(line);
+    }
+    return std::string(line) + " " + std::string(pass);
+}
+
+std::string HostShareText(std::string_view relay_room, std::string_view relay_code, std::string_view invite,
+                          std::string_view password, bool copied) {
+    const std::string_view line = !Trim(relay_room).empty() ? relay_room : !Trim(relay_code).empty() ? relay_code : invite;
+    return copied ? RelayShareLine(line, password) : std::string(Trim(line));
+}
+
+bool RelayLineWithoutPassword(std::string_view join_line) {
+    const std::string_view t = Trim(join_line);
+    return t.find('@') != std::string_view::npos && t.find_first_of(" \t") == std::string_view::npos && AddressOk(t);
 }
 
 JoinTarget ReadJoin(std::string_view typed, const CodeResult& code) {

@@ -159,6 +159,7 @@ enum class Kind {
     menu,    // test only: menu customize|close, the Multiplayer tab's Customize page opened or the menu closed (issue 74)
     dump,    // test only (play-test kit): this game's shared flags written to <commands file>.dump-TAG.json
     event,   // test only (boss-route-01112): an event setting asked of our game by name (the live-event requester)
+    autosave,  // test only (rejoin-host-273-2): our game asked for its own autosave (CoopSave::AskOwnAutoSave)
 };
 
 struct Step {
@@ -418,7 +419,8 @@ FlagReading ReadFlag(Core::System& system, std::string_view name);
 bool SetEnumHash(Core::System& system, std::string_view name, std::uint32_t value);
 
 // The menu step's doer: the Hookshot module sets it (coop_pause.cpp); "customize" opens
-// the Multiplayer tab's Customize page, "close" closes the menu. True when asked.
+// the Multiplayer tab's Customize page, "close" closes the menu, "host" hosts, "paste" joins with the
+// clipboard's code. True when asked.
 // Unset (the emulator): the step logs that it is not here.
 using MenuOpener = std::function<bool(const std::string& page)>;
 void SetMenuOpener(MenuOpener opener);

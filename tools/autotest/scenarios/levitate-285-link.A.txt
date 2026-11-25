@@ -1,0 +1,38 @@
+# levitate-285-link (row 285), A: stays Link and watches B, who plays Link (the comparison, no character), open the Deku Tree map chest.
+# The two scenarios are the same cutscene with and without a character; compare their shots.
+# PASS in A's window: B's puppet has its feet on the floor at "stand" and at "open1" .. "open4" (it stood on Link's
+# leg lengths under the character's hips, in the air, while the clips were not retargeted; DrHammer79's 4be88ad6
+# and the pack test). A log line: "P1 show -> hold (their cutscene)" or P2; the pack's log names the
+# "puppets take OoT Character Select's ... (retargeted clips)".
+# NOT a fault of ours in both windows alike: the character's own rig keeps Link's hip drop in a kneel (the mod's
+# NOTES.md "Hips": a taller character floats in crouches); measured offline, Impa 0.3 m in the chest clips.
+#! noload
+#! start coop: test warp done
+#! timeout 420
+mark start
+warp InsideTheDekuTree Entrance
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+wait 900
+place 7.57 108.9 8.35
+wait 240
+toward 5.45 6.15 10       # face B
+mark stand
+wait 60
+mark open1
+wait 60
+mark open2
+wait 120
+mark open3
+wait 240
+mark open4
+wait 1080
+mark after

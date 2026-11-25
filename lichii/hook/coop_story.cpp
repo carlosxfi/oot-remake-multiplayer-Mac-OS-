@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <string_view>
 #include <utility>
@@ -543,10 +544,31 @@ constexpr std::uint32_t kTimeHeld[] = {
     0x54e2a3d1u,  // PouchData.Item_Ocarina_Time.StockNum
 };
 constexpr Gift kGifts[] = {
-    {kSariaPlayed, 0xb7df60f1u, kOcarinaHeld, "Item_Ocarina_Fairy", "Saria's gift on the bridge", true},
-    {kTimePlayed, 0x54e2a3d1u, kTimeHeld, "Item_Ocarina_Time", "the Ocarina of Time in the moat", false},
+    {kSariaPlayed, 0xb7df60f1u, kOcarinaHeld, "Item_Ocarina_Fairy", "Saria's gift on the bridge", true,
+     "LW Gift from Saria"},
+    {kTimePlayed, 0x54e2a3d1u, kTimeHeld, "Item_Ocarina_Time", "the Ocarina of Time in the moat", false,
+     "HF Ocarina of Time Item"},
 };
+std::atomic<std::uint32_t> g_gifts_shuffled{0};  // bit i: Gifts()[i] is shuffled (row 237)
 } // namespace
+
+void SetGiftShuffled(std::size_t gift, bool shuffled) {
+    if (gift >= kGiftsMax) return;
+    const std::uint32_t bit = 1u << gift;
+    if (shuffled) {
+        g_gifts_shuffled.fetch_or(bit, std::memory_order_relaxed);
+    } else {
+        g_gifts_shuffled.fetch_and(~bit, std::memory_order_relaxed);
+    }
+}
+
+bool GiftShuffled(std::size_t gift) {
+    return gift < kGiftsMax && (g_gifts_shuffled.load(std::memory_order_relaxed) & (1u << gift)) != 0;
+}
+
+bool GiftKeepsVanilla(std::optional<std::string_view> placement) {
+    return !placement || *placement == "Ocarina";
+}
 
 std::span<const Gift> Gifts() {
     return kGifts;
@@ -563,7 +585,7 @@ std::optional<std::size_t> GiftOf(std::uint32_t hash) {
 
 bool GiftHolds(std::uint32_t hash, const std::array<bool, kGiftsMax>& held) {
     const auto i = GiftOf(hash);
-    return i && *i < kGiftsMax && !held[*i];
+    return i && *i < kGiftsMax && !held[*i] && !GiftShuffled(*i);
 }
 
 EffectsGiven::Verdict EffectsGiven::Take(const Effect& due) {

@@ -3,6 +3,7 @@
 #include "coop_host_menu.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
@@ -16,6 +17,7 @@
 #include <enet/enet.h>
 
 #include "coop/net/bind_guard.hpp"
+#include "coop/protocol/difficulty.hpp"
 #include "coop/protocol/join_password.hpp"
 #include "coop/protocol/messages.hpp"
 #include "host_service.hpp"
@@ -33,6 +35,18 @@ std::uint8_t HostMaxPlayers(std::uint8_t asked) {
         return coop::server::kDefaultMaxPlayers;
     }
     return asked < coop::protocol::kMaxPlayers ? asked : coop::protocol::kMaxPlayers;
+}
+
+coop::protocol::DifficultyChoice HostDifficulty(std::uint8_t code, std::uint16_t life, std::uint16_t damage,
+                                                std::uint16_t enemies) {
+    using coop::protocol::DifficultyPreset;
+    coop::protocol::DifficultyChoice c;
+    if (code == 0 || code > 4) return c;   // (automatic: an older caller's 0, or a code this module does not know)
+    c.auto_scale = false;
+    c.preset = code == 1 ? DifficultyPreset::easy : code == 2 ? DifficultyPreset::normal
+             : code == 3 ? DifficultyPreset::hard : DifficultyPreset::custom;
+    c.custom = coop::protocol::clamp_difficulty({life, damage, enemies});
+    return c;
 }
 
 namespace nat = coop::server::nat;
@@ -93,6 +107,12 @@ std::optional<std::pair<std::uint16_t, std::string>> ParseTestHost(std::string_v
     return std::pair{static_cast<std::uint16_t>(port), std::string(password)};
 }
 
+bool MemoryLineDue(std::uint64_t now_ms, std::uint64_t& next_ms) {
+    if (now_ms < next_ms) return false;
+    next_ms = now_ms + kGameMemoryLineMs;
+    return true;
+}
+
 #ifdef _WIN32
 std::string ProcessMemoryText() {
     // (kernel32's K32 names and HeapSummary looked up by name: no psapi link, and builds whose headers lack them)
@@ -128,6 +148,26 @@ std::string ProcessMemoryText() {
     h.cb = sizeof h;
     if (summary != nullptr && summary(GetProcessHeap(), 0, &h)) {
         out += ", heap allocated " + mb(h.cbAllocated) + ", committed " + mb(h.cbCommitted);
+    }
+    // Row 271: every heap of the process (the C runtime's, which holds all of co-op's and Longshot's own allocations,
+    // and the ones the graphics driver and other DLLs made), then what private holds outside them: memory taken
+    // straight from Windows (Longshot's guest memory and Vulkan blocks, the driver's pipelines, thread stacks).
+    if (summary != nullptr) {
+        std::array<HANDLE, 256> heaps{};
+        const DWORD n = GetProcessHeaps(static_cast<DWORD>(heaps.size()), heaps.data());
+        std::uint64_t allocated = 0, committed = 0;
+        for (DWORD i = 0; i < n && i < heaps.size(); ++i) {
+            Summary s{};
+            s.cb = sizeof s;
+            if (summary(heaps[i], 0, &s)) {
+                allocated += s.cbAllocated;
+                committed += s.cbCommitted;
+            }
+        }
+        out += "; all " + std::to_string(n) + " heaps: allocated " + mb(allocated) + ", committed " + mb(committed);
+        if (c.PrivateUsage != 0) {
+            out += "; outside the heaps " + mb(c.PrivateUsage > committed ? c.PrivateUsage - committed : 0);
+        }
     }
     using HandleCount = BOOL(WINAPI*)(HANDLE, PDWORD);
     const auto count = kernel ? reinterpret_cast<HandleCount>(
@@ -258,6 +298,12 @@ int Menu::HostStart(const HosCoopHostOptions* o) {
     job.upnp = COOP_HAS(o, HosCoopHostOptions, upnp) && o->upnp != 0;
     job.invite = COOP_HAS(o, HosCoopHostOptions, invite) && o->invite != 0;
     job.pvp = COOP_HAS(o, HosCoopHostOptions, pvp) && o->pvp != 0;
+    if (COOP_HAS(o, HosCoopHostOptions, difficulty_enemies)) {   // (an older caller: automatic)
+        job.difficulty = o->difficulty;
+        job.difficulty_life = o->difficulty_life;
+        job.difficulty_damage = o->difficulty_damage;
+        job.difficulty_enemies = o->difficulty_enemies;
+    }
     job.approve_joins = COOP_HAS(o, HosCoopHostOptions, approve_joins) && o->approve_joins != 0;
     job.same_network_open = COOP_HAS(o, HosCoopHostOptions, same_network_open) && o->same_network_open != 0;
     job.relay_via = Trim(COOP_HAS(o, HosCoopHostOptions, relay_via) ? Text(o->relay_via) : std::string());
@@ -326,6 +372,8 @@ void Menu::RunHost(HostJob job) {
         config.helper_bind = coop::net::test_bind();
         config.session.join_password = job.password;
         config.session.pvp = job.pvp;
+        config.session.difficulty = HostDifficulty(job.difficulty, job.difficulty_life, job.difficulty_damage,
+                                                   job.difficulty_enemies);
         config.session.approve_joins = job.approve_joins;
         config.session.same_network_open = job.same_network_open;
         config.session.max_players = job.max_players;
@@ -668,6 +716,16 @@ void Menu::RunRelayJoin(RelayJoinJob job_in) {
             return;
         }
         at.port = job.join.relay_port;
+        if (TryRelayDirect(RelayJoinJob{job.name, job.password, job.join.code, job.join.room, job.join.relay_host,
+                                        job.join.relay_port},
+                           at.host, at.port) ||
+            stop_) {
+            return;
+        }
+        {
+            std::lock_guard lock(mutex_);
+            CopyText(status_.message, sizeof status_.message, "asking the relay " + job.join.relay_host + " to let this game in");
+        }
         const auto result = relay::lookup_on_relay(at, job.join, [this] { return stop_.load(); }, coop::net::test_bind());
         if (stop_) {
             return;
@@ -700,6 +758,109 @@ void Menu::RunRelayJoin(RelayJoinJob job_in) {
     } catch (const std::exception& e) {
         Fail(std::string("the relay join stopped: ") + e.what(), HOS_COOP_PROBLEM_INTERNAL);
     }
+}
+
+bool Menu::TryRelayDirect(const RelayJoinJob& job, std::uint32_t relay_host, std::uint16_t relay_port) {
+    namespace relay = coop::server::relay;
+    // A public game's password is the room's (anyone may know it): its host takes no answer codes, and this game's
+    // address stays with the relay, as the public list promises.
+    if (coop::protocol::is_public_join_password(job.password) || job.password.empty()) {
+        return false;
+    }
+    const relay::RelayJoin join{job.code, job.room, job.relay_host, job.relay_port};
+    ENetAddress at{};
+    at.host = relay_host;
+    at.port = relay_port;
+    nat::JoinConfig config;
+    config.host = nat::Addr{};   // (not known yet: the host's reply through the relay gives it)
+    config.password = job.password;
+    config.stun_servers = StunServers();
+    config.game_port = hooks_.helper_port;
+    config.bind = coop::net::test_bind();
+    config.direct_ms = 0;
+    config.log = [this](const std::string& text) { Say("coop: join: direct way: " + text); };
+    nat::JoinHelper helper(config);
+    std::string why;
+    if (!helper.start(why)) {
+        Say("coop: join: direct way: " + why + "; through the relay");
+        return false;
+    }
+    {
+        std::lock_guard lock(mutex_);
+        CopyText(status_.message, sizeof status_.message, "looking for a direct way to the host through " + job.relay_host);
+    }
+    // Each wait short, so a host with no direct way costs a few seconds at most before the relay way.
+    const auto started = std::chrono::steady_clock::now();
+    std::optional<std::chrono::steady_clock::time_point> asked;
+    while (!stop_) {
+        helper.service(kRoundMs);
+        const auto now = std::chrono::steady_clock::now();
+        if (helper.state() == nat::JoinState::kOpen) {
+            break;
+        }
+        if (!asked) {
+            if (helper.state() == nat::JoinState::kWaitingForHost) {
+                if (helper.answer_code().empty()) {
+                    return false;   // (no STUN answer: the helper said why)
+                }
+                const relay::DirectResult r =
+                    relay::direct_on_relay(at, join, helper.answer_code(), [this] { return stop_.load(); }, 6000,
+                                           coop::net::test_bind());
+                if (r.found == relay::LookupResult::kUnknown || r.found == relay::LookupResult::kSlowDown) {
+                    // (the relay way would only be refused the same, and count one more wrong name)
+                    Say("coop: join: " + relay::lookup_text(r.found, join));
+                    Fail(relay::lookup_text(r.found, join), HOS_COOP_PROBLEM_RELAY_JOIN);
+                    return true;
+                }
+                if (!r.host) {
+                    Say(std::string("coop: join: direct way: ") +
+                        (!r.found ? "the relay or the host does not know the direct way (an older version)"
+                         : *r.found != relay::LookupResult::kOk ? relay::lookup_text(r.found, join)
+                                                                 : "the host did not take it (no invite code there, or another join password)") +
+                        "; through the relay");
+                    return false;
+                }
+                helper.set_host(nat::Addr{r.host->ip, r.host->port});
+                asked = std::chrono::steady_clock::now();
+            } else if (now - started > std::chrono::seconds(5)) {
+                return false;
+            }
+        } else if (now - *asked > std::chrono::seconds(8)) {
+            Say("coop: join: direct way: no way through both routers in 8 s; through the relay");
+            return false;
+        }
+    }
+    if (stop_) {
+        return true;
+    }
+    const bool ok = hooks_.connect && hooks_.connect(Target{"127.0.0.1", helper.game_port(), job.name, job.password});
+    {
+        std::lock_guard lock(mutex_);
+        status_.state = ok ? HOS_COOP_CONNECTED : HOS_COOP_FAILED;
+        status_.problem = ok ? HOS_COOP_PROBLEM_NONE : HOS_COOP_PROBLEM_CLIENT_FAILED;
+        status_.port = helper.peer().port;
+        CopyText(status_.message, sizeof status_.message,
+                 ok ? std::string("the host answered directly (the relay found them): connecting")
+                    : std::string("this game's co-op did not start (see the log)"));
+    }
+    Say(std::string("coop: join: direct way open (") + (helper.direct() ? "the host answered" : "through both routers") +
+        "): the game's traffic goes to the host, not through the relay");
+    if (!ok) {
+        return true;
+    }
+    // Joined: the helper carries the game's traffic until Leave.
+    while (!stop_) {
+        helper.service(kRoundMs);
+    }
+    if (hooks_.disconnect) {
+        hooks_.disconnect();
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+        while (std::chrono::steady_clock::now() < until) {
+            helper.service(kRoundMs);
+        }
+    }
+    helper.stop();
+    return true;
 }
 
 int Menu::Answer(const char* code) {

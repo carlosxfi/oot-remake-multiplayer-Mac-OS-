@@ -1,5 +1,7 @@
 #include "coop/net/client.hpp"
 
+#include "coop/protocol/race.hpp"
+
 // ENet pulls in windows.h on Windows; keep its min and max macros out.
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -562,6 +564,14 @@ void Client::on_receive(const std::uint8_t* data, std::size_t size,
 }
 
 void Client::on_connected_message(proto::Message message, std::uint8_t channel) {
+  // Race mode (coop/protocol/race.hpp): the host's setting, as the server relays it; the world stays ours.
+  if (const auto* mods = std::get_if<proto::ModSettings>(&message)) {
+    if (const auto race = proto::race_of(mods->settings)) race_ = *race;
+  }
+  if (race_ && proto::race_private(message)) {
+    ++race_dropped_;
+    return;
+  }
   if (const auto* pong = std::get_if<proto::Pong>(&message)) {
     // Only an echo of a PING sent on this connection counts.
     const std::uint64_t now = now_us();
@@ -776,6 +786,9 @@ bool Client::send_on(const proto::Message& message, std::uint8_t channel) {
     return false;
   }
   if (!send_raw(message, channel)) return false;
+  if (const auto* mods = std::get_if<proto::ModSettings>(&message)) {  // the host's own race setting
+    if (const auto race = proto::race_of(mods->settings)) race_ = *race;
+  }
   if (const auto* status = std::get_if<proto::PlayerStatus>(&message)) {
     if (Player* self = player_entry(player_number_)) self->status = status->flags;
   }
@@ -839,6 +852,14 @@ bool Client::answer_challenge(const proto::JoinChallenge& challenge,
 }
 
 bool Client::send_raw(const proto::Message& message, std::uint8_t channel) {
+  if (race_ && proto::race_private(message)) {  // race mode: kept in our game, done as far as the caller goes
+    ++race_dropped_;
+    return true;
+  }
+  if (world_held_ && proto::race_private(message)) {  // held out of the host's world: kept in our game
+    ++held_dropped_;
+    return true;
+  }
   std::vector<std::uint8_t> bytes;
   if (proto::encode(message, bytes) != proto::Error::none) return false;
   return send_packet(bytes, channel);
@@ -906,16 +927,38 @@ void Client::clear_shared() {
   our_join_.reset();
   their_joins_.clear();
   pending_.clear();
+  held_flags_.clear();
   host_number_ = 0;
+  race_ = false;  // a new session: off until its host's settings say on
 }
 
 void Client::settle_pending(std::span<const proto::FlagEntry> flags) {
-  for (const proto::FlagEntry& flag : flags) pending_.erase(key_of(flag));
+  for (const proto::FlagEntry& flag : flags) {
+    pending_.erase(key_of(flag));
+    // (a count change held back was in no total the host told: it still goes out)
+    const auto held = held_flags_.find(key_of(flag));
+    if (held != held_flags_.end() && !is_delta(held->second)) held_flags_.erase(held);
+  }
+}
+
+void Client::set_world_held(bool held) {
+  world_held_ = held && !(host_number_ != 0 && host_number_ == player_number_);
+  if (world_held_ || held_flags_.empty() || state_ != State::connected) return;
+  std::vector<proto::FlagEntry> list;
+  list.reserve(held_flags_.size());
+  for (const auto& entry : held_flags_) list.push_back(entry.second);
+  if (!send_flags(list, false)) return;  // (kept: the next call tries again)
+  for (const proto::FlagEntry& flag : list) pending_.try_emplace(key_of(flag), flag);
+  held_flags_.clear();
 }
 
 bool Client::on_host(std::uint8_t number) {
   if (number == host_number_) return false;
   host_number_ = number;
+  if (number == player_number_) {  // our world is the session's now: not held (row 281), before anything is sent
+    world_held_ = false;
+    held_flags_.clear();  // (all of it is in pending_ too, or is a count our snapshot carries)
+  }
   if (pending_.empty()) return true;
   std::vector<proto::FlagEntry> list;
   list.reserve(pending_.size());
@@ -932,6 +975,8 @@ bool Client::on_host(std::uint8_t number) {
       store_flags(list);
       pending_.clear();
     }
+  } else if (world_held_) {
+    for (const proto::FlagEntry& flag : list) held_flags_.try_emplace(key_of(flag), flag);  // (the new host has none)
   } else {
     send_flags(list, false);  // still pending until the new host answers
   }
@@ -987,16 +1032,20 @@ bool Client::set_flags(std::span<const proto::FlagEntry> flags) {
   if (host) {
     store_flags(list);
   } else {
-    for (const proto::FlagEntry& flag : list) {
-      auto [it, fresh] = pending_.try_emplace(key_of(flag), flag);
-      if (fresh) continue;
-      if (is_delta(flag) && is_delta(it->second)) {
-        // Both unanswered: a resend must carry both.
-        it->second.value = add_delta(it->second.value, flag.value);
-      } else {
-        it->second = flag;
+    const auto keep = [&list](std::map<FlagKey, proto::FlagEntry>& kept) {
+      for (const proto::FlagEntry& flag : list) {
+        auto [it, fresh] = kept.try_emplace(key_of(flag), flag);
+        if (fresh) continue;
+        if (is_delta(flag) && is_delta(it->second)) {
+          // Both unanswered: a resend must carry both.
+          it->second.value = add_delta(it->second.value, flag.value);
+        } else {
+          it->second = flag;
+        }
       }
-    }
+    };
+    keep(pending_);
+    if (world_held_) keep(held_flags_);
   }
   return true;
 }

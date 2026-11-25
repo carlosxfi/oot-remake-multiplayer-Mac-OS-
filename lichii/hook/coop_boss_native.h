@@ -40,6 +40,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <tuple>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -58,6 +59,8 @@ using coop::protocol::BossAction;
 using coop::protocol::BossBsa;
 using coop::protocol::BossBrain;
 using coop::protocol::BossChange;
+using coop::protocol::BossVariant;
+using coop::protocol::BossVariants;
 
 namespace addr {
 inline constexpr std::uint64_t kActorComponents = 0x270;  // actor -> component table
@@ -152,7 +155,7 @@ inline constexpr std::size_t kReqPlaces = 0x00;   // 3 x Vec3; the first float N
 inline constexpr std::size_t kReqKind = 0x24;     // u32 4 (checked by the game)
 inline constexpr std::size_t kReqKind2 = 0x28;    // u32 0x11a (checked)
 inline constexpr std::size_t kReqExtra = 0x2c;    // 2 x f32, NaN: none
-inline constexpr std::size_t kReqKind3 = 0x34;    // u32, 0x10 as the AI nodes make it
+inline constexpr std::size_t kReqKind3 = 0x34;    // u32 the places' kind: default 0x10, each asking node its own (row 222)
 inline constexpr std::size_t kReqPlug = 0x38;     // a plug pointer, used when the byte at 0x40 is 1
 inline constexpr std::size_t kReqHasPlug = 0x40;
 inline constexpr std::size_t kReqSlot = 0x48;     // s32
@@ -162,6 +165,15 @@ inline constexpr std::size_t kReqFlags = 0x50;    // u16
 // move starts over from its start, its module's own sub-state with it).
 inline constexpr std::uint16_t kReqStartOver = 0x100;
 inline constexpr std::size_t kReqNode = 0x58;     // the asking AI node
+// Row 222 part 2: our request block holds the request, then a pool of the owner's variation names (plug strings,
+// each written once into its own slot and never moved: the game may keep a plug pointer past the request).
+inline constexpr std::size_t kVariantSlots = 16;
+inline constexpr std::size_t kVariantSlotSize = 40;  // kMaxBossVariantChars + its end, rounded up
+static_assert(kVariantSlotSize > coop::protocol::kMaxBossVariantChars);
+inline constexpr std::size_t kPoolSize = kVariantSlots * kVariantSlotSize;  // one pool of names
+inline constexpr std::size_t kBlockSize = kRequestSize + kPoolSize;        // the request, then the first pool
+// Pools full: another kPoolSize from the game's heap (the game's plug names are a bounded set), at most this many.
+inline constexpr std::size_t kMaxVariantPools = 16;
 inline constexpr std::uint32_t kKind = 4;
 inline constexpr std::uint32_t kKind2 = 0x11a;
 inline constexpr std::uint32_t kKind3 = 0x10;
@@ -189,15 +201,94 @@ struct OwnAsk {
     std::uint64_t node = 0;
     std::uint64_t plug = 0;
     bool has_plug = false;
+    bool named = false;  // row 222: `plug` is the owner's variation by name (Table::WithVariant), not our AI's own
+    std::uint32_t kind = addr::kKind3;  // row 222: the places' kind its own AI asked this move with (kReqKind3)
     bool operator==(const OwnAsk&) const = default;
 };
-// The request for the owner's action as the copy's own AI would ask it: `ask`'s node, and its plug when the
-// owner's action names no place (the owner's own was asked through a plug: its places were not sent).
-Request RequestFromAction(const BossAction& a, const OwnAsk& ask);
+// The request for the owner's action as the copy's own AI would ask it: `ask`'s node, and its plug when it is the
+// owner's variation by name (`named`, with the owner's places: an ask by plug names its places too, Twinrova's
+// 'Ice' the Link it aims at), or our own AI's plug when the owner's action names no place (an older owner).
+Request RequestFromAction(const BossAction& a, const OwnAsk& ask, std::uint32_t kind = addr::kKind3);
+// Row 222 (run 20261124-011531): the places' kind (kReqKind3) to put the owner's action in with. The game's request
+// function (main+0xc09f0) keeps the request's kind with the move's places, and each asking node sets its own:
+// Twinrova's 121 node 0 (Link and a point off him), another of her nodes 0x10 (Link and a point 0.8 above him). The
+// owner's places put in with the default 0x10 where the owner's node asked 0 gave the copy no FireBullet and no
+// IceBullet (with no place at all, the node aimed by itself and shot). So: the owner's kind (component 24), else the
+// kind the copy's own AI asked this same move with, else the game's default.
+std::uint32_t KindFor(const std::optional<std::uint32_t>& owner,
+                      const std::map<std::pair<std::int32_t, std::int32_t>, OwnAsk>& by_move, const BossAction& a);
+// A request's places (a place whose first float is NaN, or any not finite: none). Row 222 (diag run
+// 20261123-160338): an ask by plug names them too (Twinrova's 'Ice': the Link it aims at and a second point); bsa's
+// action leaves them out for such an ask (an older copy puts its own plug in only for an action with no place), so
+// an owner sends them with the ask's variation (BossVariant::places, component 24).
+std::array<std::optional<coop::protocol::Vec3>, 3> PlacesOf(const Request& r);
 // The copy's own ask to name for `a` from what its own AI asked: the same slot and verb, else the slot's last,
 // else its last ask of all (`last`). Nothing when it never asked (no node yet).
 std::optional<OwnAsk> AskFor(const std::map<std::pair<std::int32_t, std::int32_t>, OwnAsk>& by_move,
                              const std::map<std::int32_t, OwnAsk>& by_slot, std::uint64_t last, const BossAction& a);
+// Row 222 (diag run 20261123-160338): an AI node keeps its own choice of a move's variation. The copy's own 121
+// node, whose own AI had just asked the plain (Fire) shot, played the owner's 'Ice' put in through it (Attack_L)
+// but shot nothing; the same 'Ice' put in through another node (its StartBattle node) shot ice. Each node's own
+// last choice of each move it asked (node, slot, verb): its variation ("" plain, the plug's name, "?" a plug not
+// read as a name). Kept per move, not only a node's last ask (review-01112-h): a node that chose Fire and then
+// asked another move still holds its Fire.
+struct OwnVariants {
+    std::map<std::tuple<std::uint64_t, std::int32_t, std::int32_t>, std::string> choices;  // at most kMaxOwnAsks
+};
+// Which node AskFor named (the put-in log, the LANE1 proof): its own node of the move, the slot's last, its last
+// node, another node of its own, or the move's own though it chose another variation (every node conflicts).
+enum class AskRule { own, slot, last, other, all_conflict };
+std::string_view AskRuleName(AskRule rule);
+// AskFor for the owner's move in its variation `variant` (nothing: not known, plain AskFor): never a node whose own
+// choice of this same move is ANOTHER variation (its own choice would undo ours); the slot's last node, the last
+// node, or another node of its own then, in that order; only when every node it has conflicts, the move's own.
+// `rule` (when given) says which.
+std::optional<OwnAsk> AskFor(const std::map<std::pair<std::int32_t, std::int32_t>, OwnAsk>& by_move,
+                             const std::map<std::int32_t, OwnAsk>& by_slot, std::uint64_t last, const BossAction& a,
+                             const OwnVariants& own, const std::optional<std::string>& variant,
+                             AskRule* rule = nullptr);
+// The variation of a copy's own ask (OwnVariants): "" plain, the plug's name, "?" a plug not read as a name.
+std::string OwnAskVariant(const Request& r, const std::optional<std::string>& plug_name);
+
+// Row 222 part 2 (component 24): a boss move's variation is its request's plug name. The game runs the command
+// '<verb's name>:<plug>' (no plug: the plain command; main+0xbe070): Twinrova's ranged attack is plain for Fire and
+// 'Ice', '1FeintFire', ... for the others; every boss move asked by plug likewise ('StartBattle', ...). The plug is
+// a const char*. VariantName reads it: the name when it is 1 to kMaxBossVariantChars printable characters ending in
+// a 0 (ValidVariantName), else nothing (not a name we can send). `read` is bool(std::uint64_t address, void* out,
+// std::size_t size), the guest reader; a bulk read that fails (a page's end) is read again byte by byte.
+template <class Read>
+std::optional<std::string> VariantName(Read&& read, std::uint64_t plug) {
+    if (plug == 0) {
+        return std::nullopt;
+    }
+    std::array<char, coop::protocol::kMaxBossVariantChars + 1> b{};
+    const bool bulk = read(plug, b.data(), b.size());
+    std::string name;
+    for (std::size_t i = 0; i < b.size(); ++i) {
+        if (!bulk && !read(plug + i, &b[i], 1)) {
+            return std::nullopt;
+        }
+        if (b[i] == '\0') {
+            if (name.empty() || !coop::protocol::ValidVariantName(name)) {
+                return std::nullopt;
+            }
+            return name;
+        }
+        name.push_back(b[i]);
+    }
+    return std::nullopt;  // no end within kMaxBossVariantChars: not a name
+}
+// The owner's variation of its action change `seq` (nothing: not known; an older owner, or a name it could not read).
+std::optional<std::string> VariantOf(const std::optional<BossVariants>& v, std::uint32_t seq);
+// The variation of `state.action` (a resync's move): its newest action change in recent, else (all of recent brain
+// changes) the newest entry older than recent, which the owner sends for its action now (Table::OwnerState).
+std::optional<std::string> ActionVariantOf(const BossBsa& state, const std::optional<BossVariants>& v);
+// Twinrova hand-over (0.11.13): a new owner's first state `theirs` goes on from the chain we held at the hand-over
+// (`ours`: our own state as its old owner, or the old owner's last state as a copy). A new owner counts on from the
+// last state it had of the old owner, so its change at our newest seq is ours (the same change) when it had all of
+// ours; then every change after it is new and is made in order, not collapsed into a resync. Any change both hold
+// that differs (it had not had all of ours): not this chain.
+bool ContinuesChain(const BossBsa& ours, const BossBsa& theirs);
 
 enum class Role : std::uint8_t { owner, copy };
 // A boss whose new copy runs its own start first (Table::kStartSteps): a
@@ -205,6 +296,9 @@ enum class Role : std::uint8_t { owner, copy };
 // by its own AI with no intro event to run it (a dungeon boss's intro is an
 // event: SetEvent covers it).
 bool RunsOwnStart(std::string_view name);
+// Twinrova hand-over (tw-handover-3): a boss whose copy holds its own AI's starts of a move other than the owner's
+// (Table::OnActionVerb, answered busy) so its AI asks the owner's move when the owner's put-in comes. Twinrova only.
+bool HoldsOwnStarts(std::string_view name);
 // #238: whether a mid-boss's AS slot 0 animation is its start (the Lizalfos's 'Appear': it jumps into the fight
 // and shows only once its own appear has played).
 bool PlaysOwnStart(std::string_view animation);
@@ -292,10 +386,17 @@ enum class MadeOurs : std::uint8_t {
 // far wall; his walk, started over, ended at once; his next roll, aimed at Link from there, went into the lava pit,
 // where no roll ever ends). Its own AI chooses again from what its body does instead (row 149), unless it asked that
 // same move itself (then it goes on).
+// Twinrova hand-over (tw-handover-3, NEXT49 A 9588): `own_ask_other` (Twinrova only, HoldsOwnStarts): its own AI's
+// last ask in that slot as a copy, or its own start held now, named another move (it had left the owner's move). Started over, the owner's move ran one frame here and went to
+// every copy, then our own AI's next ask took the boss on: the copies played an attack the owner never made (no
+// shot). Its own AI goes on instead (resume): its next ask is the move it is in.
 constexpr MadeOurs PlanMadeOurs(bool turns, std::optional<bool> attacking, bool put_action, bool own_ask_same,
-                                bool own_node) {
+                                bool own_node, bool own_ask_other = false) {
     if (turns && attacking.has_value() && !*attacking && put_action) {
         return own_ask_same ? MadeOurs::resume : MadeOurs::rechoose;
+    }
+    if (put_action && own_ask_other) {
+        return MadeOurs::resume;
     }
     return put_action && own_node ? MadeOurs::restart_move : MadeOurs::rechoose;
 }
@@ -305,6 +406,9 @@ struct Counts {
     std::uint64_t owner_action = 0;   // the owner's action requests kept
     std::uint64_t plug_actions = 0;   // of those, named through a plug (places not sent)
     std::uint64_t copy_skipped = 0;   // a copy's own changes not run
+    std::uint64_t copy_own_move = 0;  // row 222: a copy's own asks of the owner's move run in the game (OnActionVerb)
+    std::uint64_t own_move_renamed = 0;  // row 222: ... with its plug set to the owner's variation
+    std::uint64_t owner_move_left = 0;   // row 222: the owner's repeats of a move the copy's own asks run, left out
     std::uint64_t brain_applied = 0;  // owner's brain verbs put into a copy
     std::uint64_t brain_came = 0;     // owner's brain verbs a copy took from its queue (a change, or a resync's state);
                                       // one queued and then replaced by a resync is not counted
@@ -341,11 +445,38 @@ struct Counts {
     std::uint64_t action_slot_busy = 0;
     std::uint64_t action_busy_again = 0;
     std::uint64_t action_refused = 0;
+    // Row 222 part 2: the owner's action requests whose variation we keep to send (plain or a plug name); a copy's
+    // put-ins named by the owner's variation (plain: no plug; a name: our pooled string), by its own AI's as before
+    // (an older owner, or a name not read), or not named for want of room in the name pool (asked as before).
+    std::uint64_t owner_variants = 0;
+    std::uint64_t variant_plain = 0;
+    std::uint64_t variant_named = 0;
+    std::uint64_t variant_unknown = 0;
+    std::uint64_t variant_pool_full = 0;
+    // Row 222 (review-01112-h): owner's moves put in through another node than the move's own (that node chose another
+    // variation of it), and those with no node left that did not (the move's own then: the bug still possible).
+    std::uint64_t variant_node_moved = 0;
+    std::uint64_t variant_node_conflict = 0;
+    // Twinrova hand-over (tw-handover-3): a copy's own starts of a move other than the owner's, answered busy (held);
+    // its AI's asks of a held start again (the probe: does it ask again after a busy answer?); holds that reached
+    // kOwnStartHoldSteps and were answered taken after all; holds ended by the owner's move reaching the held one.
+    std::uint64_t own_starts_held = 0;
+    std::uint64_t own_start_reasks = 0;
+    std::uint64_t own_start_holds_capped = 0;
+    std::uint64_t own_start_holds_met = 0;
+    // Made ours mid-move whose own AI's last ask as a copy was another move: its AI goes on (PlanMadeOurs).
+    std::uint64_t made_ours_own_other = 0;
 };
 
 class Table {
 public:
+    // Row 222: the frames a copy's own ask of the owner's move keeps the owner's repeats of that move out.
+    static constexpr std::uint64_t kOwnMoveSteps = 30;
     static constexpr int kBusyAsks = 3;  // row 211: an owner's move answered busy, asked again on this many frames
+    // Twinrova hand-over: the frames a copy's own start of a move other than the owner's is answered busy, at most.
+    static constexpr std::uint64_t kOwnStartHoldSteps = 60;
+    // Frames without another ask after which a hold is over (its AI left that start; a later one is a new hold).
+    static constexpr std::uint64_t kOwnStartLapseSteps = 2 * kOwnStartHoldSteps;
     // Switches (LICHII_COOP_BOSS_NATIVE, LICHII_COOP_BOSS_ACTIONS): off -> no
     // skip, no apply, nothing kept (the old gohma-sync path alone).
     void SetOn(bool brain, bool actions);
@@ -373,7 +504,29 @@ public:
     // holder calls the game (Step only returns its call, made after the lock is let go; the others read and
     // write memory), so the wait is short and never on ourselves.
     bool OnBrainVerb(std::uint64_t bsa, std::int32_t verb, bool force, bool own);
-    bool OnActionVerb(std::uint64_t bsa, const Request& request, bool changed, bool own);
+    // Row 222 part 2: `plug_name`, the request's plug read as a name (VariantName; the wrap reads it for every
+    // request with a plug): an owner's action keeps it as its variation (component 24), "" for a plain ask.
+    // Row 222 (tw-222): a copy's own repeat (changed 0) of the move the owner's last put-in named (same slot and verb;
+    // its own starts, changed 1, stay skipped: only the owner's start a move, else two shots) runs in the
+    // game: the move goes on frame by frame from its own AI (its own places and kind: it aims at its own Link), as
+    // the owner's does, so it reaches its shot. The owner's sparse put-ins alone left the copy's move without its
+    // per-frame asks: Twinrova's copy went PreAttack -> Attack_R with no Fire/IceBullet while the other game owned
+    // her. When its own plug is another variation than the owner's, `renamed` gets the request with the owner's
+    // (no plug for a plain ask, or its name in our pools) for the wrap to write before the game reads it; with no
+    // `renamed`, or the name not in a pool yet, it is skipped as before. The owner's repeats (changed 0) of that
+    // move are then left out for kOwnMoveSteps (StepOne).
+    // Twinrova hand-over (tw-handover-3): `answer`, when given, gets the game's result for a skipped request (true):
+    // kActionTaken, or kActionSlotBusy for a copy's own start held (HoldsOwnStarts). NEXT49: after hand-overs the
+    // copy's own AI ran its move cycle out of step with the owner's; its own asks of the owner's attack never came
+    // in the owner's window, so the attack ran on the owner's sparse put-ins alone and fired nothing (5 of 5 such
+    // windows). Its own start (changed 1) of a move other than the owner's current one in that slot is now answered
+    // busy, for kOwnStartHoldSteps at most, so its AI waits at that start and asks it again; when the owner's move
+    // reaches it the start is taken (skipped as before) and its own asks of the move run (row 222). Every hold and
+    // its first asks again are said (the probe: does its AI ask again after a busy answer?).
+    // `brain`: the brain verb the BSA is in now (kBsaBrainVerb, read by the wrap): the own ask is learnt in it.
+    bool OnActionVerb(std::uint64_t bsa, const Request& request, bool changed, bool own,
+                      std::optional<std::string> plug_name = std::nullopt, std::optional<Request>* renamed = nullptr,
+                      std::uint64_t* answer = nullptr, std::optional<std::int32_t> brain = std::nullopt);
 
     // Our game runs an event now (the boss glue, every frame; the player
     // reader's event flag). Copies then run their own changes; the owner keeps
@@ -506,19 +659,34 @@ public:
     // The owner's state to send for one of our bosses; nothing before its
     // first change was seen.
     std::optional<BossBsa> OwnerState(std::uint64_t actor) const;
+    // The same, with its action changes' variations (row 222 part 2, component 24; read under one lock, so their
+    // seqs match the state's): the names for its action changes in recent, and the one for its action now when that
+    // is older than recent; the newest kMaxBossVariants. `variants` stays empty when none is known.
+    std::optional<BossBsa> OwnerState(std::uint64_t actor, std::optional<BossVariants>* variants) const;
 
     // An owner's state for a copy (from its OBJECT_SAMPLE). Its changes the
     // copy has not had are queued in the owner's order and made by Step, one
     // call each. When the copy missed more than the sample holds, or the
     // owner is new (Publish), it starts from the state now. An older sample
     // than the newest had (seq not above it) is dropped.
-    void Receive(std::uint64_t actor, const BossBsa& state);
+    // `variants`: the owner's variations sent with it (component 24; none from an older owner): a put-in names the
+    // owner's variation of its change, else the copy's own AI's plug (AskFor) as before.
+    void Receive(std::uint64_t actor, const BossBsa& state,
+                 const std::optional<BossVariants>& variants = std::nullopt);
 
     // The caller (coop_callers.h contract), order kCallerOrder.
     std::optional<CoopPuppet::Call> Step(CoopPuppet::Guest& guest, bool after_call,
                                          std::uint64_t result, std::uint64_t main_base);
 
     Counts Totals() const;
+    // Row 149 (KD proof r2 round 3): the move state its old owner left (coop_brain_state.h) was put into one of ours
+    // and CHANGED it. A boss made ours between moves goes on with the move its own AI had chosen as a copy (resume),
+    // chosen from its own stale blackboard: King Dodongo's walk to his stale corner, the one across the lava pit (B's
+    // game reloaded: his fresh blackboard), and his next roll from inside the pit never ends. Its AI chooses again
+    // (its brain verb set again) from the values put in. Only right after a resume; any other hand-over plan
+    // (start-over of an attack, a re-choice) already decides after them.
+    void StateChanged(std::uint64_t actor);
+
     // Lines for the log since the last call (first sightings, first applies).
     std::vector<std::string> TakeNotes();
     // Everything forgotten, the block too (tests; co-op off).
@@ -587,6 +755,7 @@ public:
     static constexpr std::size_t kMaxSkippedKept = 8;
     static constexpr std::size_t kMaxHeld = 8;  // copy bosses held at once (more: not held)
     static constexpr std::size_t kMaxOwnAsks = 64;     // moves kept per copy (AskFor)
+    static constexpr std::size_t kMaxOwnBrains = 16;   // brain verbs whose own asks are kept per copy
     static constexpr std::uint64_t kMaxStreamNotes = 240;  // row 177's action stream lines per game
 
 private:
@@ -600,10 +769,17 @@ private:
         bool have_mine = false;
         // Copy: the owner's latest, and its changes still to make here.
         std::optional<BossBsa> wanted;
+        std::optional<BossVariants> wanted_variants;  // row 222 part 2: the owner's, with `wanted`
+        // Owner (row 222 part 2): the variations of our action changes in mine.recent, and of our action now.
+        std::vector<BossVariant> mine_variants;
+        std::optional<BossVariant> mine_action_variant;
         struct Due {
             BossChange change;
             bool resync = false;  // the state now, not a call the owner made: skipped when already so
             bool counted = false; // (a brain verb: counted in brain_came once, also when asked again)
+            std::optional<std::string> variant = std::nullopt;  // row 222 part 2: an action's, the owner's (nothing: not known)
+            std::array<std::optional<coop::protocol::Vec3>, 3> variant_places{};  // row 222: a named ask's places
+            std::optional<std::uint32_t> variant_kind = std::nullopt;  // row 222: the owner's places' kind (nothing: not known)
         };
         std::deque<Due> due;
         std::uint32_t queued_seq = 0;  // the owner's newest change queued (or made)
@@ -613,6 +789,18 @@ private:
         // Row 177: the copy's own asks by move (slot, verb) and by slot (AskFor), at most kMaxOwnAsks moves.
         std::map<std::pair<std::int32_t, std::int32_t>, OwnAsk> own_asks;
         std::map<std::int32_t, OwnAsk> own_slot_asks;
+        OwnVariants own_variants;  // row 222: each node's own last ask and its variation (AskFor)
+        // Twinrova hand-over: the brain verb the own asks above were learnt in, and those learnt in its other
+        // brain verbs (at most kMaxOwnBrains), taken out again when the boss is back in that verb (SwitchOwnAsks).
+        struct OwnAskSet {
+            std::map<std::pair<std::int32_t, std::int32_t>, OwnAsk> asks;
+            std::map<std::int32_t, OwnAsk> slot_asks;
+            OwnVariants variants;
+        };
+        std::optional<std::int32_t> own_brain;
+        std::map<std::int32_t, OwnAskSet> own_by_brain;
+        // Twinrova hand-over: the chain we held when the owner changed (ContinuesChain), until its first state.
+        std::optional<BossBsa> handover;
         // Row 177's log: the action stream's last kind (who, slot, verb, changed, plug or node source) and its run.
         std::string stream_last;
         std::uint64_t stream_run = 0;
@@ -655,6 +843,8 @@ private:
         std::uint64_t hold_asks = 0;
         int hold_rechoices = 0;
         bool rechoose = false;
+        // Row 149: made ours between moves (resume) at this step, its old owner's move state not yet put in (StateChanged).
+        std::optional<std::uint64_t> resumed_at;
         // The move last re-chosen as stuck, and how often. The re-choice itself makes its AI ask another move
         // for a moment before it falls back into the stuck one (Phantom Ganon: 'Run' verb 40, then 96 for 22
         // frames, then 40 again; run 20261120-184021), which read as a new move and started the count over: "1
@@ -672,6 +862,9 @@ private:
         // module where the copy's body was: Phantom Ganon in RushAttack's dive with his rigid body forced no-hit).
         std::optional<BossAction> restart_action;
         OwnAsk restart_ask;
+        std::optional<std::string> restart_variant;  // row 222 part 2: put_variant's, named in its restart
+        std::array<std::optional<coop::protocol::Vec3>, 3> restart_variant_places{};  // row 222: put_variant_places'
+        std::optional<std::uint32_t> restart_variant_kind = std::nullopt;  // row 222: put_variant_kind
         // Row 178's fall guard: its first seen height, and its falls rechosen while below.
         std::optional<float> start_y;
         std::optional<coop::protocol::Vec3> start;  // (its first seen place, for the put back)
@@ -682,8 +875,27 @@ private:
         // since, asks nothing: the copy runs that move already (asking it again started King Dodongo's roll
         // over after every sword hit, on every hitter's screen).
         std::optional<BossAction> put_action;
+        std::optional<std::string> put_variant;  // row 222 part 2: the variation it was put in with
+        // Row 222 (review-01112-h): that named ask's places (bsa's action has none for it), for its restart (row 178).
+        std::array<std::optional<coop::protocol::Vec3>, 3> put_variant_places{};
+        std::optional<std::uint32_t> put_variant_kind = std::nullopt;  // row 222: the owner's places' kind it was put in with
         bool own_action_ran = false;
+        // Row 222: per slot, the owner's move (verb) the copy's own AI last asked itself, and the step it did.
+        std::map<std::int32_t, std::pair<std::int32_t, std::uint64_t>> own_moves;
+        // Twinrova hand-over: per slot, the move its own AI last asked as a copy and was not held (PlanMadeOurs's
+        // own_ask_other), and the own start held now (OnActionVerb's answer): its slot, verb, first step, asks again.
+        std::map<std::int32_t, std::int32_t> own_last_verb;
+        struct StartHold {
+            std::int32_t slot = 0;
+            std::int32_t verb = 0;
+            std::uint64_t since = 0;
+            std::uint64_t asked = 0;  // the step of its AI's last ask of it
+            std::uint64_t asks = 0;
+            bool capped = false;
+        };
+        std::optional<StartHold> start_hold;
     };
+    void EndStartHold(Entry& e, const char* why);  // (says the hold's asks again; clears it)
     void Hold(Entry& e, const Boss& b);   // the owner's stall check (Publish)
     void Fall(Entry& e, const Boss& b);   // row 178's fall guard (Publish; a boss, owner or copy: its start)
     bool OwnTime(const Entry& e) const;   // the copy's own changes run now
@@ -694,16 +906,33 @@ private:
                                         bool* made);
     void Record(Entry& e, std::variant<BossBrain, BossAction> what);
     void Resync(Entry& e, const BossBsa& state);
+    // Row 222 part 2: `ask` named with the owner's variation: not known: as it is (the copy's own AI's, AskFor);
+    // "": no plug (the plain command); a name: its string in one of our name pools (written once, never moved).
+    // true: every pool is full: allocate another (PoolCall) and ask again. Past kMaxVariantPools, or a write that
+    // fails, leaves `ask` as it is. Counted. Needs block_.
+    bool WithVariant(CoopPuppet::Guest& guest, const std::optional<std::string>& variant, OwnAsk& ask);
+    std::uint64_t SlotAt(std::size_t slot) const;                       // name slot -> its address in pools_
+    std::optional<CoopPuppet::Call> PoolCall(std::uint64_t main_base);  // the game's malloc for one more pool
+    std::vector<std::string> pool_;     // the names in our pools, by slot (cleared with block_)
+    std::vector<std::uint64_t> pools_;  // each pool's first slot: block_ + kRequestSize, then allocated ones
     Entry* Find(std::uint64_t bsa);
     Entry* FindActor(std::uint64_t actor);
     const Entry* FindActor(std::uint64_t actor) const;
-    // Row 177 review: the kept own asks (their AI nodes) go: a brain change (its action sequence's nodes may
-    // go with it) or a role change; the copy's next own asks fill them again.
-    static void ForgetOwnAsks(Entry& e);
+    // Row 177 review: a brain change may change the action sequence whose AI nodes the kept own asks name: the
+    // asks of one brain verb are not used in another (but for own_node, named when a verb has none of its own yet). A brain change puts the asks away under the verb they were
+    // learnt in and takes out those of the new verb (none: the copy's next own asks fill them). Back in a verb, its
+    // asks are named again: the game keeps a brain verb's nodes (lane run NEXT48: the same Attack node before and
+    // after; forgetting them put the copy's next Attack_R in through another move's node, no bullet). A role change
+    // keeps them (all learnt as a copy: the owner learns none; NEXT29, NEXT36b).
+    // Called with the verb the game says it is in: at each step and at each own ask (OnActionVerb's `brain`), so a
+    // change of the copy's own (its own time, an event, before an owner's state) counts as the owner's do.
+    void SwitchOwnAsks(Entry& e, std::int32_t to);
+    static void LearnOwnAsk(Entry& e, const Request& request, const std::optional<std::string>& plug_name);
     void Note(std::string line);
     // Row 177's log: one line when the stream's kind changes (the last kind's run length with it), capped.
     void Stream(Entry& e, std::string kind);
     std::uint64_t stream_notes_ = 0;
+    std::uint64_t hold_notes_ = 0;  // the start holds' lines (at most kMaxStreamNotes)
 
     mutable std::mutex mutex_;
     std::map<std::uint64_t, Entry> by_bsa_;
@@ -749,7 +978,7 @@ private:
     std::uint64_t block_ = 0;      // our request in guest memory (kRequestSize)
     std::uint64_t main_base_ = 0;  // the game the block belongs to
     bool allocating_ = false;
-    enum class Pending : std::uint8_t { none, malloc, brain, action, late, rechoose, restart } pending_ = Pending::none;
+    enum class Pending : std::uint8_t { none, malloc, pool, brain, action, late, rechoose, restart } pending_ = Pending::none;
     // Row 190: the game's answer to an action request of ours (counted; the first few said).
     void NoteAnswer(const char* what, std::uint64_t result, bool is_action);
     std::uint64_t pending_bsa_ = 0;  // the copy whose change pending_ is (brain, action, late)

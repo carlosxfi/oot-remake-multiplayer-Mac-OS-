@@ -1980,6 +1980,39 @@ TEST_CASE("look parts (row 278): the Goron and Zora tunics' hood trims take the 
     CoopLookParts::UseCap(nullptr);
 }
 
+TEST_CASE("look parts (row 185 in the cap): a cap block takes the encoder's grey end beside the hood's red") {
+    using CoopLookPaint::Format;
+    // BC1 blocks as the Goron hood's trim has them (offline, the game's own texture: 753 of its 14367 cap blocks
+    // had a grey or dark end beside the red, painted at the red end only). 565 ends, every texel index used.
+    const auto block = [](std::uint16_t c0, std::uint16_t c1) {
+        std::vector<std::uint8_t> b{static_cast<std::uint8_t>(c0), static_cast<std::uint8_t>(c0 >> 8),
+                                    static_cast<std::uint8_t>(c1), static_cast<std::uint8_t>(c1 >> 8),
+                                    0xE4, 0xE4, 0xE4, 0xE4};
+        return b;
+    };
+    const std::uint16_t red = 0xC945, grey = 0x8C71, gold = 0xDDA5;   // (206, 40, 41), (140, 142, 140), (222, 182, 41)
+    std::vector<std::uint8_t> original;
+    for (const auto& b : {block(red, grey), block(gold, red), block(grey, 0x8C70), block(red, grey)}) {
+        original.insert(original.end(), b.begin(), b.end());
+    }
+    const char* const kGoron = "Mt_Vest_Armor_Adult_Goron_Alb";
+    const auto cap = *CoopLookParts::ParseCap(CapFile({{kGoron, 8, {0, 8, 16}}}));   // block 3 is not the cap's
+    std::vector<std::uint8_t> t = original;
+    const CoopLookPaint::Rule rule{CoopLookPaint::kRed, 0x2040C0u, CoopLookPaint::Takes::tones, 0.2};
+    CHECK(CoopLookParts::PaintCap(cap, kGoron, Format::bc1, original, t, rule, CoopLookPaint::kRed) == 3);
+    const auto tones_at = [&](std::size_t at) {
+        std::uint32_t tones = 0;
+        for (const auto& e : CoopLookPaint::Ends(Format::bc1, std::span<const std::uint8_t>(t.data() + at, 8))) {
+            tones |= CoopLookPaint::ToneOf(e);
+        }
+        return tones;
+    };
+    CHECK(tones_at(0) == CoopLookPaint::kBlue);                             // both ends: no grey speck left
+    CHECK(tones_at(8) == (CoopLookPaint::kBlue | CoopLookPaint::kGold));    // a coloured end (gold) is kept
+    CHECK(tones_at(16) == CoopLookPaint::kBlue);                            // a grey cap block: the trim's
+    CHECK(std::equal(t.begin() + 24, t.end(), original.begin() + 24));     // not a cap block: untouched
+}
+
 TEST_CASE("look tunic: the wardrobe draws the tunic and the Cap trim as one painting") {
     using CoopLookParts::TunicPaint;
     FakeTextures m(kBase, 0x10000);
@@ -2058,6 +2091,12 @@ TEST_CASE("look (row 198): where the places lie, and two wardrobes over one text
     CHECK(CoopLookTunic::Overlaps(own, theirs).empty());
 }
 
+// A texture painted from green as a puppet's copy holds it (row 198): its last byte marked as the copy's, not green's.
+std::vector<std::uint8_t> CopyMarked(std::vector<std::uint8_t> texels) {
+    if (!texels.empty()) texels.back() ^= CoopLookParts::kSelfMark ^ CoopLookParts::kTunicMark;
+    return texels;
+}
+
 TEST_CASE("look (0.11.9): the puppets' tunic copies, each repainted in the exact colour of the player given it") {
     const auto green = GreenTunic();
     // Two copies as the pack wrote them (here: green's texels shifted, so they differ from the painting).
@@ -2083,7 +2122,7 @@ TEST_CASE("look (0.11.9): the puppets' tunic copies, each repainted in the exact
     const auto want = CoopLookParts::TunicPainted(green, 0x123456u);
     for (std::size_t i = 0; i < red.size(); ++i) CHECK(painted[i].texels == red[i].texels);
     for (std::size_t i = 0; i + 1 < blue.size(); ++i) {
-        CHECK(painted[red.size() + i].texels == want[i].texels);
+        CHECK(painted[red.size() + i].texels == CopyMarked(want[i].texels));
         CHECK(painted[red.size() + i].name == blue[i].name);
     }
     CHECK(painted.back().texels == blue.back().texels);   // (another size: as written)
@@ -2100,15 +2139,17 @@ TEST_CASE("look (0.11.9): the puppets' tunic copies, each repainted in the exact
     REQUIRE(red2[1].texels.size() != green2[1].texels.size());
     const auto dark = CoopLookParts::PuppetTunicsTexels({{"red", red2}}, green2, {{"red", Paint{0xC86432u, std::nullopt}}});
     const auto darker = CoopLookParts::TunicPainted(green2, 0x804020u);   // (0xC8, 0x64, 0x32 times 0.64, rounded)
-    CHECK(dark[1].texels == darker[0].texels);
-    CHECK(dark[0].texels == CoopLookParts::TunicPainted(green2, 0xC86432u)[0].texels);
+    CHECK(dark[1].texels == CopyMarked(darker[0].texels));
+    CHECK(dark[0].texels == CopyMarked(CoopLookParts::TunicPainted(green2, 0xC86432u)[0].texels));
 
     // Row 243: no colour, or the preset green 30D040 (slot 3's), is the game's own green on a puppet too, as for the
     // player's own Link (TunicPainting): the copy's textures are green's as they are, not painted lime.
     for (const std::optional<std::uint32_t> own : {std::optional<std::uint32_t>{}, std::optional<std::uint32_t>{0x30D040u}}) {
         const auto game = CoopLookParts::PuppetTunicsTexels(copies, green, {{"blue", Paint{own, std::nullopt}}});
         REQUIRE(game.size() == base.size());
-        CHECK(game[red.size()].texels == green[0].texels);   // (the main tile: the game's own, unchanged)
+        // (the main tile: the game's own, unchanged but for the copy's mark: never your own Link's texels, row 198)
+        CHECK(game[red.size()].texels == CopyMarked(green[0].texels));
+        CHECK(game[red.size()].texels != green[0].texels);
         CHECK(game[red.size()].texels != CoopLookParts::TunicPainted(green, 0x30D040u)[0].texels);   // (not the lime)
         CHECK(game[0].texels == red[0].texels);   // (the others' copies as written)
     }
@@ -2121,17 +2162,64 @@ TEST_CASE("look (0.11.9): the puppets' tunic copies, each repainted in the exact
         }
         const auto own_dark = CoopLookParts::PuppetTunicsTexels({{"red", red2}}, green2, {{"red", Paint{std::nullopt, std::nullopt}}});
         REQUIRE(own_dark.size() == red2.size());
-        CHECK(own_dark[0].texels == green2[0].texels);   // (the main tile: the game's own)
+        CHECK(own_dark[0].texels == CopyMarked(green2[0].texels));   // (the main tile: the game's own, the copy's mark)
         CHECK(own_dark[1].texels.size() == red2[1].texels.size());   // (the copy's dark tile's size)
         const auto lime_dark = CoopLookParts::TunicPainted(green2, 0x1F8529u);   // (30D040 times 0.64, rounded: the old result)
         if (game_green) {
             CHECK(own_dark[1].texels != lime_dark[0].texels);
             CHECK(own_dark[1].texels != own_dark[0].texels);   // (darker than the main tile)
         } else {
-            CHECK(own_dark[1].texels == lime_dark[0].texels);   // (no game colour readable in this fixture: the preset's)
+            CHECK(own_dark[1].texels == CopyMarked(lime_dark[0].texels));   // (no game colour readable in this fixture: the preset's)
         }
     }
     // Another colour is painted as before.
     CHECK(CoopLookParts::PuppetTunicsTexels(copies, green, {{"blue", Paint{0x30D041u, std::nullopt}}})[red.size()].texels ==
-          CoopLookParts::TunicPainted(green, 0x30D041u)[0].texels);
+          CopyMarked(CoopLookParts::TunicPainted(green, 0x30D041u)[0].texels));
+}
+
+TEST_CASE("look (row 198): no puppet's tunic copy is drawn in your own Link's texels, and its wardrobe never takes yours") {
+    const auto green = GreenTunic();   // (your own Link's: green.bin, the game's own texels marked kSelfMark)
+    auto cyan = green;
+    for (auto& t : cyan) t.texels.back() ^= CoopLookParts::kSelfMark ^ CoopLookParts::kTunicMark;   // (as the pack marks)
+    const std::vector<std::pair<std::string, CoopLookTunic::Texels>> copies = {{"cyan", cyan}};
+    using Paint = CoopLookParts::TunicPaint;
+    // 0.11.10 host log: a green player given the cyan copy had it drawn in green.bin as it is = your own Link's texels.
+    for (const std::optional<std::uint32_t> colour :
+         {std::optional<std::uint32_t>{}, std::optional<std::uint32_t>{0x30D040u}, std::optional<std::uint32_t>{0xFF6820u}}) {
+        const auto drawn = CoopLookParts::PuppetTunicsTexels(copies, green, {{"cyan", Paint{colour, std::nullopt}}});
+        const auto yours = colour ? CoopLookParts::TunicPainted(green, *colour) : green;   // (your Link in that colour)
+        for (const auto& t : drawn) {
+            for (const auto& g : green) CHECK(t.texels != g.texels);
+            for (const auto& y : yours) CHECK(t.texels != y.texels);
+        }
+    }
+
+    // A puppets' wardrobe looks only for the copies as the pack wrote them (its base), never for its painting: the
+    // game's memory holds your own Link's texture in the painting's texels (9) and the copy's (1).
+    FakeTextures m(kBase, 0x10000);
+    PutFile(m, kBase + 0x1000, "Tile_A", TexelsOf(9));   // your own Link's
+    PutFile(m, kBase + 0x4000, "Tile_A", TexelsOf(1));   // the puppet's copy
+    const std::map<std::string, std::vector<std::uint8_t>> pack = {
+        {"base", LookFile({{"Tile_A", TexelsOf(1)}})},
+        {"painted", LookFile({{"Tile_A", TexelsOf(9)}})},
+    };
+    for (const bool in_memory : {true, false}) {
+        CoopLookTunic::Wardrobe::Host host;
+        host.textures = &m;
+        host.base = "base";
+        host.what = "puppets' tunics";
+        host.target_in_memory = in_memory;
+        host.file = [&](const std::string& c) -> std::optional<std::vector<std::uint8_t>> {
+            const auto it = pack.find(c);
+            return it == pack.end() ? std::nullopt : std::optional(it->second);
+        };
+        CoopLookTunic::Wardrobe w(host);
+        w.Wear("painted");
+        w.Step(0);
+        CHECK(Drawn(m, kBase + 0x4000 + kOffset, 9));   // (the copy in its painting)
+        // (your Link's texture: taken by the old search, left alone now)
+        CHECK(w.places().size() == (in_memory ? 2u : 1u));
+        if (!in_memory) CHECK(w.places()[0].address == kBase + 0x4000 + kOffset);
+        w.Clear();
+    }
 }

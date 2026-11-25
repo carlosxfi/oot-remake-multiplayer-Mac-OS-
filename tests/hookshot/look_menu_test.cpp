@@ -141,9 +141,15 @@ TEST_CASE("look menu: a part with no colour mixes from the game's own, Default c
         if (v.rows[i].name == "Done") done = static_cast<int>(i);
     }
     REQUIRE(own > 0);
-    page.Click(static_cast<std::size_t>(own), 0);
+    REQUIRE(done > own);
+    page.Click(static_cast<std::size_t>(done), 0);   // Done: back to the parts, the colour kept
+    CHECK_FALSE(page.editing());
+    CHECK(page.look()[Part::boots]);
+    page.Select(static_cast<std::size_t>(RowOf(page, "Boots", "Leather")));
+    page.Press(Input::kDecide);
+    REQUIRE(page.editing());
+    page.Click(static_cast<std::size_t>(own), 0);   // Game's own colour: the game's colour, and back to the parts
     CHECK_FALSE(page.look()[Part::boots]);
-    page.Click(static_cast<std::size_t>(done), 0);
     CHECK_FALSE(page.editing());
 }
 

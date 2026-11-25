@@ -38,15 +38,18 @@ class FakeGames:
         self.join_rule = lambda x, password: "welcomed"   # what a start leads to
         self.ended = []
 
-    def start(self, x, password, wait=True):
-        self.calls.append(("start", x, password))
+    def start(self, x, password, wait=True, idle=False):
+        self.calls.append(("start", x, password) + (("idle",) if idle else ()))
         self.running[x] = True
         self.logs[x] = "boot\n"
-        outcome = self.join_rule(x, password)
+        outcome = "none" if idle else self.join_rule(x, password)
         if outcome == "welcomed":
             self.logs[x] += "coop: welcomed as player 2 on 127.0.0.1:27560\n"
         elif outcome == "refused":
             self.server += "refused a connection, reason 6: wrong join password\n"
+
+    def wait_ready(self, x):
+        self.calls.append(("ready", x))
 
     def wait_joined(self, x):
         self.calls.append(("wait", x))
@@ -200,6 +203,17 @@ class RunnerTest(unittest.TestCase):
         self.assertIn(("start", "A", right), self.g.calls)
         self.assertEqual(sum(1 for c in self.g.calls if c[0] == "kill" and str(c[2]).startswith("try")), 7)  # each try ends B, log kept
 
+    def test_launch_waits_for_the_renderer_only(self):
+        # Row 124 (save-refresh-list): the games start before the server, so `start` would wait for a welcome that
+        # cannot come; `launch` stops at the renderer.
+        self.g.join_rule = lambda x, pw: "none"
+        steps = hs.parse_steps("launch A B")
+        self.assertEqual([s.verb for s in steps], ["launch"])
+        self.assertEqual(self.r.run(steps), 0)
+        self.assertEqual([c for c in self.g.calls if c[0] in ("wait", "ready")], [("ready", "A"), ("ready", "B")])
+        with self.assertRaises(hs.StepsError):
+            hs.parse_steps("launch")
+
     def test_a_once_per_process_line_said_again_is_a_fail(self):
         # Row 267: "coop: objects: list head" at every object scan flooded a tester's log.
         head = "[hos] coop: objects: list head 0x105f302870, 8 entries, 7 actors\n"
@@ -218,6 +232,16 @@ class RunnerTest(unittest.TestCase):
         self.r.run(hs.parse_steps("password B secret\nstart A B\n"))
         self.assertEqual(self.g.calls[:4], [("start", "A", ""), ("start", "B", "secret"), ("wait", "A"),
                                             ("wait", "B")])
+
+    def test_idle_start_has_no_server_and_waits_for_the_renderer_only(self):
+        # start A idle: co-op idle at the title (the Host page before hosting, difficulty-lobby); no join wait.
+        steps = hs.parse_steps("start A idle\nstart A B idle\nstart B\n")
+        self.assertEqual([(s.args, s.idle) for s in steps], [(["A"], True), (["A", "B"], True), (["B"], False)])
+        self.assertEqual(self.r.run(steps[:1]), 0)
+        self.assertEqual(self.g.calls[:2], [("start", "A", "", "idle"), ("ready", "A")])
+        for text in ("start idle", "load A idle", "start idle A"):
+            with self.assertRaises(hs.StepsError):
+                hs.parse_steps(text)
 
     def test_a_game_without_a_password_line_sends_the_servers(self):
         # Every session may have a join password (OOT_COOP_TEST_PASSWORD, run.ps1 -ServerPassword): a game with no
@@ -323,6 +347,20 @@ class DryRunTest(unittest.TestCase):
         self.assertIn("would wait until A=1 B=1 puppets and fairies", text)
         self.assertFalse(os.path.exists("O"))
 
+    def test_dry_run_says_the_password_without_setting_it(self):
+        old = os.environ.pop("OOT_COOP_TEST_PASSWORD", None)
+        try:
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = hs.main(["run", "--steps", os.path.join(SCENARIOS, "stray.steps.txt"), "--game-a", "GA",
+                                "--game-b", "GB", "--server", "S.exe", "--out", "O", "--dry-run"])
+            self.assertEqual(code, 0)
+            self.assertIn("a random join password would be made", out.getvalue())
+            self.assertNotIn("OOT_COOP_TEST_PASSWORD", os.environ)
+        finally:
+            if old is not None:
+                os.environ["OOT_COOP_TEST_PASSWORD"] = old
+
     def test_check(self):
         out = io.StringIO()
         with redirect_stdout(out):
@@ -346,6 +384,46 @@ class DryRunTest(unittest.TestCase):
             self.assertIn("14 steps (password start try)", out.getvalue())
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+
+class ServerPasswordTest(unittest.TestCase):
+    # rejoin-host-273-2: a wrapper that ran `run` without OOT_COOP_TEST_PASSWORD started a server with no join
+    # password (coop_server refuses to start) and games with none. Now one is always there for both.
+    def test_unset_makes_a_random_one(self):
+        env = {}
+        self.assertTrue(hs.ensure_server_password(env))
+        pw = env["OOT_COOP_TEST_PASSWORD"]
+        self.assertTrue(1 <= len(pw) <= 64 and pw.isprintable() and " " not in pw)
+        other = {}
+        hs.ensure_server_password(other)
+        self.assertNotEqual(pw, other["OOT_COOP_TEST_PASSWORD"])   # random, never a fixed one
+
+    def test_empty_counts_as_unset(self):
+        env = {"OOT_COOP_TEST_PASSWORD": ""}
+        self.assertTrue(hs.ensure_server_password(env))
+        self.assertTrue(env["OOT_COOP_TEST_PASSWORD"])
+
+    def test_a_set_one_is_kept(self):
+        env = {"OOT_COOP_TEST_PASSWORD": "zelda"}
+        self.assertFalse(hs.ensure_server_password(env))
+        self.assertEqual(env["OOT_COOP_TEST_PASSWORD"], "zelda")
+
+    def test_the_games_send_the_servers(self):
+        # The Runner's default (a game with no `password` line) is the one the server got.
+        env = {}
+        hs.ensure_server_password(env)
+        old = os.environ.get("OOT_COOP_TEST_PASSWORD")
+        try:
+            os.environ["OOT_COOP_TEST_PASSWORD"] = env["OOT_COOP_TEST_PASSWORD"]
+            d = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, d, True)
+            r = hs.Runner(FakeGames(Clock()), d, say=lambda *_: None)
+            self.assertEqual(r.password("B"), env["OOT_COOP_TEST_PASSWORD"])
+        finally:
+            if old is None:
+                os.environ.pop("OOT_COOP_TEST_PASSWORD", None)
+            else:
+                os.environ["OOT_COOP_TEST_PASSWORD"] = old
 
 
 class HookshotGamesTest(unittest.TestCase):
@@ -407,12 +485,11 @@ class HookshotGamesTest(unittest.TestCase):
         self.assertEqual(calls, [({"B": self.g.procs["B"].pid}, "DISPLAY7", 30.0)])
 
     def test_run_stops_before_any_game_when_the_monitor_is_missing(self):
-        """main run: a --display no monitor has is an error (exit 2) before the server or any game starts."""
+        """main run: a PC with no monitor at all is an error (exit 2) before the server or any game starts."""
         import hookshot
         from unittest import mock
         with mock.patch.object(hs, "WINDOWS", True), \
-                mock.patch.object(hookshot.placement, "monitors",
-                                  lambda: [{"name": "\\\\.\\DISPLAY1", "work": (0, 0, 10, 10)}]), \
+                mock.patch.object(hookshot.placement, "monitors", lambda: []), \
                 mock.patch.object(hs.HookshotGames, "server_start", side_effect=AssertionError("a start happened")):
             steps = os.path.join(self.tmp, "s.steps.txt")
             with open(steps, "w") as f:
@@ -456,6 +533,25 @@ class HookshotGamesTest(unittest.TestCase):
         finally:
             hs.subprocess.Popen = popen
         self.assertEqual(order, [("pack", self.games["A"], "1"), ("game",)])
+
+    def test_idle_start_sends_no_server_nor_password(self):
+        seen, popen = [], hs.subprocess.Popen
+        hs.subprocess.Popen = lambda args, **k: seen.append(k["env"]) or popen(args, **k)
+        old = os.environ.get("LICHII_COOP_SERVER")
+        os.environ["LICHII_COOP_SERVER"] = "10.0.0.1:1"   # (not from the environment either)
+        try:
+            self.g.start("A", "pw", wait=False, idle=True)
+            self.g.start("B", "pw", wait=False)
+        finally:
+            hs.subprocess.Popen = popen
+            if old is None:
+                del os.environ["LICHII_COOP_SERVER"]
+            else:
+                os.environ["LICHII_COOP_SERVER"] = old
+        self.assertNotIn("LICHII_COOP_SERVER", seen[0])
+        self.assertNotIn("LICHII_COOP_PASSWORD", seen[0])
+        self.assertEqual(seen[1]["LICHII_COOP_SERVER"], "127.0.0.1:%d" % self.g.port)
+        self.assertEqual(seen[1]["LICHII_COOP_PASSWORD"], "pw")
 
     def test_each_start_gets_the_test_defaults_a_switch_wins(self):
         # Its own save and no crash ask on the title (a crash record of an earlier run took the load's A presses:
@@ -513,8 +609,14 @@ class HookshotGamesTest(unittest.TestCase):
                 os.environ.pop("OOT_COOP_TEST_PASSWORD", None)
             else:
                 os.environ["OOT_COOP_TEST_PASSWORD"] = old
-        self.assertEqual(started[0], ["coop_server.exe", "--port", "27560", "--password-env", "OOT_COOP_TEST_PASSWORD"])
+        self.assertEqual(started[0], ["coop_server.exe", "--port", "27560", "--password-env", "OOT_COOP_TEST_PASSWORD",
+                                      "--bind", "127.0.0.1"])   # (test listeners bind 127.0.0.1: no firewall prompt)
         self.assertNotIn("zelda", " ".join(started[0]))   # the password never on the command line
+
+    def test_server_bind_keeps_its_own(self):
+        # (hs.py server_bind: 127.0.0.1 added once; a LAN test's own --bind wins)
+        self.assertEqual(hs.lanes.hs.server_bind(["s", "--port", "1"]), ["s", "--port", "1", "--bind", "127.0.0.1"])
+        self.assertEqual(hs.lanes.hs.server_bind(["s", "--bind", "192.168.1.5"]), ["s", "--bind", "192.168.1.5"])
 
     def test_server_test_delay_needs_the_test_environment(self):
         started = []

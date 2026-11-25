@@ -1,0 +1,19 @@
+# hs-join-early-228: take the ocarina out (D-pad Left, as hs-ocarina-play), shots of its play UI, a note, put away.
+press DLEFT 12
+wait 240
+mark oc-out
+press A 12
+wait 120
+mark oc-note
+press Y 12
+wait 40
+press X 12
+wait 40
+press R 12
+wait 200
+mark oc-notes
+press B 12
+wait 120
+press B 12
+wait 120
+mark oc-away

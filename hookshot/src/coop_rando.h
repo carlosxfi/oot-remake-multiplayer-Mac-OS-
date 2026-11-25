@@ -191,6 +191,10 @@ std::string SeedSettings(std::string_view seed_file_text);
 // Whether a seed file (.ootrr, JSON) places shop items (shopsanity: a top-level "shops" object with an entry). Such a seed
 // sells its one-time shelves once (lichii/hook/coop_shop_sale.h: co-op shares their sold counters).
 bool SeedShops(std::string_view seed_file_text);
+// The item a seed file (.ootrr, JSON) places at `location` (its top-level "placements" object, OOTRR settings/seed.rs:
+// location name -> item name), or none when the location is not listed (it keeps its vanilla item) or the file has
+// no placements. lichii/hook/coop_story.h GiftShuffled (row 237): Saria's gift and the moat's ocarina.
+std::optional<std::string> SeedPlacement(std::string_view seed_file_text, std::string_view location);
 std::vector<std::string> BuildArgs(const std::filesystem::path& seed_file, const std::filesystem::path& game_folder,
                                    const std::filesystem::path& mods_root, const std::string& folder);
 // The game uses one resource size table, the one of the mod that wins (the seed), so the seed's must hold every
@@ -357,6 +361,10 @@ public:
         // and why: one chat line (any thread). False when it could not be sent (not connected): tried again at the
         // next Recheck. Empty: said only in this game.
         std::function<bool(const std::string& line)> tell_others;
+        // Row 281: whether a restart is due now to play the host's values (its seed, or its switch): the next start
+        // joins the host's game again once (CoopPause::RejoinAfterRestart). Told at each check, also when it is due no
+        // more. Any thread. Empty: nothing.
+        std::function<void(bool due)> restart_for_host;
         // The clock for repeating the restart line (tests); empty: steady_clock.
         std::function<std::chrono::steady_clock::time_point()> now;
         // Try every preset once per OOTRR before its first build (#16): the Settings row then offers only the ones it
@@ -394,6 +402,12 @@ public:
     // Also when a pack actor table wins without the pack's rows (OutsideActorRows, RowsMissing).
     // This run plays one of our seeds whose seed file places shop items (SeedShops; set at Start).
     bool SeedHasShops() const { return seed_shops_.load(); }
+    // Whether this run plays a seed (one of ours on, or a hand-put seed folder), and whether its seed file was read
+    // (a hand-put folder has none). Set at Start.
+    bool PlaysSeed() const;
+    bool SeedRead() const;
+    // The item this run's seed places at `location` (SeedPlacement of its seed file), none when not listed or unread.
+    std::optional<std::string> PlacementAt(std::string_view location) const;
     bool HoldPack() const { return hold_pack_.load() || outside_.load() || rows_out_.load(); }
     // A mod's RSDB table wins without the pack's rows this run (OutsideActorRows): the game would refuse the puppets.
     bool RowsMissing() const { return rows_out_.load(); }
@@ -415,6 +429,7 @@ private:
     void TellOthers();                    // sends tell_ and outside_tell_ (Hooks::tell_others)
     void SayOutside();                    // outside_line_ into the chat again, outside_tell_ armed (mutex_ not held)
     void SayRestart(std::string line);    // a restart line for the chat, kept to repeat (mutex_ not held)
+    void RestartForHost(bool due);        // Hooks::restart_for_host, false without a host's values (mutex_ free)
     void RepeatRestart();                 // restart_ into the chat now (mutex_ not held)
     std::chrono::steady_clock::time_point Now() const;
     std::string CurrentTables() const;    // TablesStamp of the other mods' size tables now
@@ -465,6 +480,8 @@ private:
     std::thread hasher_;                            // hand_mutex_
     std::atomic<bool> stop_hash_{false};
     std::string hand_playing_;  // set at Start: HandPlaying
+    bool plays_seed_ = false;   // set at Start (mutex_): PlaysSeed
+    std::string seed_text_;     // set at Start (mutex_): the seed file of the seed this run plays, empty when unread
     std::string hand_said_;     // the host's folder the guest's chat line was said for, with its match (mutex_)
     std::string hand_tell_;     // a HandTellLine not sent yet (mutex_)
 };

@@ -227,6 +227,12 @@ const std::vector<Command>& Commands() {
          "place, talk to someone or read a sign within a minute to travel. Not during a cutscene, a talk or a boss "
          "fight."},
         {"/tp <player>", "The same as /teleport."},
+        // Emotes and pings (lichii/hook/coop_emote.cpp Parse): everyone sees your Link play a gesture.
+        {"/emote", "Lists the emotes."},
+        {"/wave, /yes, /no, /look, /here, /wow",
+         "Your Link plays a gesture, on your screen when he stands still and on the other players' (/emote wave is "
+         "the same). /here also sends Navi to call out, and every player reads the call in the chat. It stops when "
+         "you move. Nothing happens when you play alone."},
         {"/pvp", "Says whether players can hurt each other (PvP) in this game."},
         {"/pvp on, /pvp off", "The host only: lets players hurt each other, or stops it, for everyone."},
         // Down but not out (docs/play-online.md "Down but not out"; lichii/hook/coop_dbno.cpp Parse).
@@ -327,6 +333,13 @@ std::string MicWords(const std::string& chosen, const std::vector<std::string>& 
     return there ? words : words + " (not connected)";
 }
 
+std::string MicWords(const std::string& chosen, const std::vector<std::string>& listed, const std::string& status) {
+    std::string words = MicWords(chosen, listed);
+    const std::string gone = " (not connected)";
+    const bool says_gone = words.size() >= gone.size() && words.compare(words.size() - gone.size(), gone.size(), gone) == 0;
+    return status.empty() || says_gone || status == "(not connected)" ? words : words + " " + status;
+}
+
 const char* PageWord(Page page) {
     switch (page) {
     case Page::kMain: return "main";
@@ -393,19 +406,56 @@ void Menu::HostRuleLines(std::vector<Line>& out, bool guest) const {
                          : std::string("On: each player who asks to join waits until you let them in or refuse them "
                                        "(Let in on Your game, or /allow and /deny in the chat). Applies at your next "
                                        "Host.")});
+    // Rows race mode overrides (coop/protocol/race.hpp: a race keeps every Gold Skulltula and floor switch in each
+    // game whatever those rows say). One rule for both: their help follows the race mode of the next Host (the one
+    // chosen here, or the session's while it is a race: a restart there would not share them either, so no "stop
+    // hosting" advice), and the "This game:" part the session's mode. The race note stands alone (not before the
+    // On/Off text): a help longer than the caption's 160 characters is cut.
+    const bool race_rules = options_.race || (live && session_.race);
+    auto ruled_help = [&](bool differs, const char* race_note, const std::string& now, const char* usual) {
+        if (guest) return std::string(kYourNextHost) + " " + now;
+        if (race_rules) return std::string(race_note) + (live ? " " + now : std::string());
+        if (live && differs) return "Applies at your next Host: stop hosting, then start again. " + now;
+        return std::string(usual);
+    };
     // Row 63 (coop_gold_mode.h): this player's choice for the next Host, as Approve joins; the session's mode
     // holds until it ends.
     const std::string gold_now =
-        live ? std::string(session_.gold_own ? "This game: Not shared." : "This game: Shared.") : std::string();
+        !live           ? std::string()
+        : session_.race ? std::string("This game: Not shared (race mode).")
+                        : std::string(session_.gold_own ? "This game: Not shared." : "This game: Shared.");
     out.push_back({Choice("Gold Skulltulas", options_.gold_own ? "Not shared" : "Shared"), Act::kGoldSkulltulas,
-                   guest ? std::string(kYourNextHost) + " " + gold_now
-                   : live && options_.gold_own != session_.gold_own
-                       ? "Applies at your next Host: stop hosting, then start again. " + gold_now
-                       : std::string(options_.gold_own
-                                         ? "Not shared: a race. Each player's Gold Skulltulas, tokens and count are "
-                                           "their own. Applies at your next Host."
-                                         : "Shared: a kill drops the token in every game, and one pickup counts once "
-                                           "for everyone. Applies at your next Host.")});
+                   ruled_help(options_.gold_own != session_.gold_own,
+                              "Race mode is on, so Gold Skulltulas are not shared whatever is set here.", gold_now,
+                              options_.gold_own ? "Not shared: a race. Each player's Gold Skulltulas, tokens and "
+                                                  "count are their own. Applies at your next Host."
+                                                : "Shared: a kill drops the token in every game, and one pickup "
+                                                  "counts once for everyone. Applies at your next Host.")});
+    // Race mode (coop_race_mode.h), as Gold Skulltulas: the choice for the next Host; a session keeps its mode.
+    const std::string race_now = live ? std::string(session_.race ? "This game: On." : "This game: Off.") : std::string();
+    out.push_back({Toggle("Race mode", options_.race), Act::kRace,
+                   guest ? std::string(kYourNextHost) + " " + race_now
+                   : live && options_.race != session_.race
+                       ? "Applies at your next Host: stop hosting, then start again. " + race_now
+                       : std::string(options_.race
+                                         ? "On: everyone sees each other, chats and talks, and plays the world alone: "
+                                           "no items, enemies, doors, switches or saves are shared. PvP works as "
+                                           "set below. Applies at your next Host."
+                                         : "Off: the world is shared (the usual co-op). Applies at your next Host.")});
+    // Shared floor switches (coop_switch_stand_mode.h), the same way: on by default (the stander in coop_objects.cpp
+    // shares none in a race).
+    const std::string switches_now =
+        !live           ? std::string()
+        : session_.race ? std::string("This game: Off (race mode).")
+                        : std::string(session_.floor_switches ? "This game: On." : "This game: Off.");
+    out.push_back({Toggle("Shared floor switches", options_.floor_switches), Act::kFloorSwitches,
+                   ruled_help(options_.floor_switches != session_.floor_switches,
+                              "Race mode is on, so floor switches are not shared whatever is set here.", switches_now,
+                              options_.floor_switches
+                                  ? "On: another player standing on a floor switch holds it down in every game. "
+                                    "Applies at your next Host."
+                                  : "Off: a floor switch is held only by your own Link or a block. Applies at your "
+                                    "next Host.")});
     Row pvp = Toggle("PvP", live ? session_.pvp : options_.pvp);
     pvp.fixed = guest;
     out.push_back({pvp, Act::kPvp,
@@ -567,6 +617,7 @@ std::vector<Menu::Line> Menu::Lines() const {
             }
             out.push_back({Choice("Players", std::to_string(options_.max_players)), Act::kPlayers,
                            "The most players in your game, you included."});
+            DifficultyLines(out);   // (the lobby's, as the title's Host page: in force from the start)
             out.push_back({Action("Port", port_value), Act::kHostPort, kHostPortHelp});
         }
         break;
@@ -755,11 +806,18 @@ std::vector<Menu::Line> Menu::Lines() const {
                        "Only on a network you trust: a tunnel, a VPN or a port forward can bring others in that way."});
         HostRuleLines(out, guest);
         DifficultyLines(out);   // (the host's rows: the host changes them, everyone else sees them)
-        out.push_back({Toggle("Proximity voice chat", options_.voice), Act::kVoice,
-                       "Talk with players near your Link through your microphone; they sound quieter the farther away "
-                       "they are. Off: you neither send nor hear voices."});
+        {
+            const char* voice_help = "Talk with players near your Link through your microphone; they sound quieter the "
+                                     "farther away they are. Off: you neither send nor hear voices.";
+            if (options_.voice && !voice_note_.empty()) {   // (row 229: a microphone that reaches nobody says so)
+                out.push_back({Toggle("Proximity voice chat", options_.voice), Act::kVoice,
+                               CoopI18n::Tr(voice_help) + " " + CoopI18n::Tr(voice_note_), true});
+            } else {
+                out.push_back({Toggle("Proximity voice chat", options_.voice), Act::kVoice, voice_help});
+            }
+        }
         if (options_.voice && microphones_) {
-            out.push_back({Choice("Microphone", MicWords(options_.voice_mic, *microphones_)), Act::kMic,
+            out.push_back({Choice("Microphone", MicWords(options_.voice_mic, *microphones_, voice_words_)), Act::kMic,
                            "The microphone your voice is recorded from. Default: the one Longshot's Insert menu "
                            "chooses (Gameplay: Microphone), the Ocarina's too. Left and Right go through the "
                            "microphones plugged in now. One unplugged: the others hear nothing until it is back."});
@@ -984,6 +1042,7 @@ void Menu::TitleHostLines(std::vector<Line>& out, bool host, bool guest) const {
                                                                                     : options_.relay_room),
                            Act::kRoom, "Your game's name in Join a game: 3 to 24 letters, digits, - or _."});
         }
+        DifficultyLines(out);   // (the lobby's, picked as it is made: in force from the start, shown in the lists)
         out.push_back({Action("Start hosting", "", guest), Act::kStartHost,
                        guest ? "You are in a friend's game: leave it first (Join a game)."
                              : "Starts your game on this PC. They play on your save."});
@@ -1212,6 +1271,10 @@ void Menu::SetRejoin(std::string host, std::string code) {
     const auto same = std::find_if(after.begin(), after.end(), [act](const Line& l) { return l.act == act; });
     selected_ = same != after.end() ? static_cast<std::size_t>(same - after.begin()) : 0;
     Clamp();
+}
+
+void Menu::SetVoiceStatus(std::string words, std::string note) {
+    voice_words_ = std::move(words), voice_note_ = std::move(note);   // (the same rows: the cursor stays)
 }
 
 void Menu::SetMicrophones(std::optional<std::vector<std::string>> listed) {
@@ -1960,6 +2023,8 @@ void Menu::Decide(Act act) {
     case Act::kGameKind:
     case Act::kApproveJoins:
     case Act::kGoldSkulltulas:
+    case Act::kRace:
+    case Act::kFloorSwitches:
     case Act::kPvp:
     case Act::kDbno:
         Change(act, 0);   // (a toggle: A flips it)
@@ -2101,6 +2166,14 @@ void Menu::Change(Act act, int step) {
         options_.gold_own = !options_.gold_own;   // (two choices: either way flips it)
         request_ = Request{Request::Kind::kSave, {}};
         break;
+    case Act::kRace:
+        options_.race = step > 0 ? true : step < 0 ? false : !options_.race;
+        request_ = Request{Request::Kind::kSave, {}};
+        break;
+    case Act::kFloorSwitches:
+        options_.floor_switches = step > 0 ? true : step < 0 ? false : !options_.floor_switches;
+        request_ = Request{Request::Kind::kSave, {}};
+        break;
     case Act::kPvp: {
         const bool now = session_.rules ? session_.pvp : options_.pvp;
         const bool want = step > 0 ? true : step < 0 ? false : !now;
@@ -2136,8 +2209,9 @@ void Menu::Change(Act act, int step) {
     case Act::kDifficulty:
     case Act::kDifficultyLife:
     case Act::kDifficultyDamage:
-    case Act::kDifficultyCount: {   // (the host's: the server says it to everyone, the chat says it then)
-        if (!difficulty_.connected || !difficulty_.can_edit) {
+    case Act::kDifficultyCount: {   // (the host's: the server says it to everyone, the chat says it then; with no
+                                    // session the next lobby's, kept at once)
+        if (!DifficultyEditable()) {
             break;
         }
         const CoopDifficulty::Choice now = DifficultyShown();
@@ -2618,7 +2692,10 @@ void Menu::SetDifficulty(const DifficultyState& state, int players) {
                           (w.auto_scale || (state.choice.preset == w.preset &&
                                             (w.preset != CoopDifficulty::Preset::custom ||
                                              state.values == coop::protocol::clamp_difficulty(w.custom))));
-        if (said || !state.connected || !state.can_edit) {
+        // (not in a session: the next lobby's, kept by the module at once; a host's wish is kept the same way, so
+        // one that the session's end overtook is said there too)
+        const bool lobby_said = !state.connected && state.next == w;
+        if ((state.connected && (said || !state.can_edit)) || lobby_said) {
             difficulty_wish_.reset();
         }
     }
@@ -2627,27 +2704,27 @@ void Menu::SetDifficulty(const DifficultyState& state, int players) {
 }
 
 CoopDifficulty::Choice Menu::DifficultyShown() const {
-    return difficulty_wish_ ? *difficulty_wish_ : difficulty_.choice;
+    return difficulty_wish_ ? *difficulty_wish_ : difficulty_.connected ? difficulty_.choice : difficulty_.next;
 }
 
 CoopDifficulty::Values Menu::DifficultyValuesShown() const {
-    return difficulty_wish_ ? coop::protocol::difficulty_in_force(
-                                  *difficulty_wish_, static_cast<std::size_t>(std::max(difficulty_players_, 1)))
-                            : difficulty_.values;
+    if (difficulty_.connected && !difficulty_wish_) return difficulty_.values;
+    return coop::protocol::difficulty_in_force(DifficultyShown(),
+                                               static_cast<std::size_t>(std::max(difficulty_players_, 1)));
+}
+
+bool Menu::DifficultyEditable() const {
+    return difficulty_.connected ? difficulty_.can_edit : !InSession();
 }
 
 // The Difficulty rows: the host's choice with its arrows (and Custom's three sliders), or the guest's, read only.
 void Menu::DifficultyLines(std::vector<Line>& out) const {
     static const char* const kNames[kDifficultyRows] = {"Automatic", "Easy", "Normal", "Hard", "Custom"};
-    if (!difficulty_.connected) {   // (not in a game, or a server that says none: the game as it is)
+    if (!difficulty_.connected && InSession()) {   // (joining, or a server that says none: the game as it is)
         Row r = Choice("Difficulty", "Normal");
         r.left = r.right = false;
         r.fixed = true;
-        out.push_back({r, Act::kDifficulty,
-                       InSession() ? std::string("This game's server does not say a difficulty: enemies as in the game.")
-                                   : std::string("The host chooses it for everyone while hosting: Automatic, Easy, "
-                                                 "Normal, Hard or Custom. Playing alone, enemies are as in the game "
-                                                 "(New Game+ aside).")});
+        out.push_back({r, Act::kDifficulty, "This game's server does not say a difficulty: enemies as in the game."});
         return;
     }
     const CoopDifficulty::Choice shown = DifficultyShown();
@@ -2661,16 +2738,22 @@ void Menu::DifficultyLines(std::vector<Line>& out) const {
         return first + (first == now ? ". " : "。") + CoopI18n::Tr(rest);
     };
     Row r = Choice("Difficulty", kNames[DifficultyIndex(shown)]);
-    if (!difficulty_.can_edit) {
+    if (!difficulty_.connected) {   // (no session: the lobby this player makes next starts with it)
+        out.push_back({r, Act::kDifficulty,
+                       help("For the game you host: everyone plays with it from the start, and the game lists show "
+                            "it. Automatic: more as more players join. Custom: your values on the rows below. "
+                            "Playing alone, enemies are as in the game.")});
+    } else if (!difficulty_.can_edit) {
         r.left = r.right = false;
         r.fixed = true;
         out.push_back({r, Act::kDifficulty, help("Only the host can change it.")});
         return;
+    } else {
+        out.push_back({r, Act::kDifficulty,
+                       help("For everyone in your game: enemies' life, the damage they deal and how many there are. "
+                            "Automatic: more as more players join. Custom: your own values on the rows below. Also "
+                            "/difficulty in the chat.")});
     }
-    out.push_back({r, Act::kDifficulty,
-                   help("For everyone in your game: enemies' life, the damage they deal and how many there are. "
-                        "Automatic: more as more players join. Custom: your own values on the rows below. Also "
-                        "/difficulty in the chat.")});
     if (shown.auto_scale || shown.preset != CoopDifficulty::Preset::custom) {
         return;
     }

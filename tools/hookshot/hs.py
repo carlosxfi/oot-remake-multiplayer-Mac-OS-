@@ -28,6 +28,7 @@ its owner's process on this PC is gone.
 Nothing here runs a game. Every command that changes something has --dry-run.
 """
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
@@ -60,16 +61,63 @@ def run_quiet(cmd, **kw):
     return subprocess.run(cmd, **no_window(kw))
 
 
+def kill_tree(p):
+    """Stops process p and every process it started (Windows: taskkill /T while p still lives, so the tree is known;
+    elsewhere: p's own process group, see run_tree). Then waits for p."""
+    if p.poll() is None:
+        if WINDOWS:
+            run_quiet(["taskkill", "/PID", str(p.pid), "/T", "/F"], stdout=subprocess.DEVNULL,
+                      stderr=subprocess.DEVNULL)
+        else:
+            try:
+                os.killpg(p.pid, 9)
+            except OSError:
+                pass
+    try:
+        p.kill()
+    except OSError:
+        pass
+    p.wait()
+
+
+def run_tree(cmd, input=None, timeout=None, **kw):
+    """run_quiet, but a timeout stops the whole process tree, not only cmd (subprocess.run's timeout kills cmd alone).
+    Why (u2-fix, U2 from v0.11.10/v0.11.11): a kit's start timed out while its game build ran; the build's children
+    lived on and wrote their game into the folder after the next build had, so that folder ended on the old Longshot.
+    Raises subprocess.TimeoutExpired after the tree is stopped."""
+    if not WINDOWS:
+        kw.setdefault("start_new_session", True)
+    if input is not None:
+        kw["stdin"] = subprocess.PIPE
+    with popen_quiet(cmd, **kw) as p:
+        try:
+            out, err = p.communicate(input, timeout=timeout)
+        except BaseException:   # (the timeout, or the harness stopped: never leave the tree running)
+            kill_tree(p)
+            raise
+        return subprocess.CompletedProcess(p.args, p.returncode, out, err)
+
+
 def popen_quiet(cmd, **kw):
     """subprocess.Popen of a console program with no window on Windows (see no_window)."""
     return subprocess.Popen(cmd, **no_window(kw))
+
+
+def server_bind(args):
+    """A test coop_server's arguments with --bind 127.0.0.1 added unless they name their own --bind (a LAN test such
+    as lan-nopw passes its LAN address). Test listeners bind 127.0.0.1: one on all adapters, from the new exe path of
+    each build, raised Windows Firewall's prompt over the windows the runs screenshot (crash-cookie-4-run)."""
+    args = list(args)
+    return args if "--bind" in args else args + ["--bind", "127.0.0.1"]
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 # build-game.lock: a game build (a cache miss) is running; it stops both test lanes (tools/autotest/lanes.py), whose
 # runs hold lane1.lock / lane2.lock. A module build (build-hs.lock alone) stops no lane.
 LOCK_NAMES = {"emu": "build-emu.lock", "hs": "build-hs.lock", "game": "build-game.lock", "lane1": "lane1.lock",
               "lane2": "lane2.lock"}
-LANE_LOCKS = ("lane1", "lane2")
+# Each game of a lane is a lane of its own too (a one-game live session): laneN-A.lock, laneN-B.lock.
+LOCK_NAMES.update({"lane%d-%s" % (n, x): "lane%d-%s.lock" % (n, x) for n in (1, 2) for x in "AB"})
+LANE_LOCKS = tuple(k for k in LOCK_NAMES if k.startswith("lane"))
 OLD_LOCK = "build.lock"
 # What is per player or per run in a game folder: never cached, never overwritten in a pair.
 PER_PLAYER = {"hookshot_coop.dll", "coop.ini", "coop-options.ini", "user", "save", "autotest-save", "mods",
@@ -946,6 +994,28 @@ def find_dll(build):
     return os.path.join(build, "hookshot", "hookshot_coop.dll")
 
 
+@contextlib.contextmanager
+def kit_game_folder_kept(kit, dry=False):
+    """The kit's hookshot\\game-folder.txt as it was before (or still absent) once the block ends, also on a failed or
+    stopped build: a cache build of the kit's hookshot-build.ps1 is not the game the kit starts."""
+    p = os.path.join(kit, "hookshot", "game-folder.txt")
+    try:
+        with open(p, "rb") as f:
+            was = f.read()
+    except OSError:
+        was = None
+    try:
+        yield
+    finally:
+        if not dry:
+            if was is None:
+                if os.path.isfile(p):
+                    os.remove(p)
+            else:
+                with open(p, "wb") as f:
+                    f.write(was)
+
+
 def build_script_args(script):
     """What the kit's hookshot-build.ps1 takes: a kit made before hs-build-speed has no -Tools/-Work."""
     try:
@@ -1054,7 +1124,12 @@ def build(pairs, build_dir, kit=None, game=None, jobs=0, keep=3, repo=REPO, dry=
             # without code mods got a game with co-op's Characters-tab patch from it, and the store was refused).
             env = dict(os.environ)
             env["HOS_MODS"] = os.path.abspath(mods) if mods else no_mods_dir(dry)
-            if not run_steps([cmd], [], dry, say, env=env):
+            # The kit's script notes its -Out as the kit's own game (hookshot\game-folder.txt: where the kit starts):
+            # this build's -Out is the cache's, so the kit keeps the game it named before (u2-fix-3: U2 from v0.11.10,
+            # a cache miss left kit-A starting the pin's game folder instead of lane1-A, and its start never ran).
+            with kit_game_folder_kept(kit, dry):
+                built = run_steps([cmd], [], dry, say, env=env)
+            if not built:
                 raise Fail("hookshot-build.ps1 failed")
             if dry:
                 say("cache: would store %s as %s" % (out, k))
