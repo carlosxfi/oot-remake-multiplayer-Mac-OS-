@@ -1242,6 +1242,11 @@ try {
         if ($csZipHad) { Copy-Item -LiteralPath $csZipNow -Destination "$csZipNow.kept" -Force }
         Check ((Set-KitCharacterSelectFiles $ck $cg 'reinstall') -eq '' -and (Get-KitCharacterSelectChoice $ck) -eq 'ask' -and -not (Test-Path -LiteralPath $csDir) -and
                (Test-Path -LiteralPath $csPrev) -and -not (Test-Path -LiteralPath $csZipNow)) 'Reinstall Character Select: the copy set aside, its zip gone (fetched again), asked again'
+        # (review-pool-b2: the answer replaces the ask line, so the next start does not ask again)
+        $env:OOT_COOP_OFFLINE = '1'
+        [void](Invoke-KitCharacterSelectStep $ck $cg 1)
+        $env:OOT_COOP_OFFLINE = '0'
+        Check ((Get-KitCharacterSelectChoice $ck) -eq 'no' -and @(Get-Content -LiteralPath (Join-Path $ck 'coop-options.ini')) -contains 'character_select = no') 'Reinstall Character Select: the answer replaces ask in coop-options.ini (the next start does not ask again)'
         Check ((Undo-KitCharacterSelect $ck $cm) -and (Test-Path -LiteralPath $csDir)) 'Reinstall Character Select: a failed build puts the old copy back'
         if ($csZipHad) { Move-Item -LiteralPath "$csZipNow.kept" -Destination $csZipNow -Force }
         $csOwnStamp = Join-Path $csDir 'coop-charsel.txt'; $csOwnKept = [System.IO.File]::ReadAllBytes($csOwnStamp); Remove-Item -LiteralPath $csOwnStamp -Force

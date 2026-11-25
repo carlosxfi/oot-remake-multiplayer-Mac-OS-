@@ -2466,7 +2466,10 @@ function Invoke-KitCharacterSelectStep([string]$Kit, [string]$GameDir, [int]$Sec
         return $true
     }
     if ($choice -eq 'ask') {
-        if (Test-KitCharacterSelectHasNpc $mods $op.folder) {
+        # (asked by hand, coop-options.ini 'character_select = ask', or by "Reinstall Character Select.bat": asked)
+        $askedInIni = @(Get-Content -LiteralPath (Join-Path $Kit 'coop-options.ini') -ErrorAction SilentlyContinue |
+                        Where-Object { $_ -match '^\s*character_select\s*=\s*ask\s*([#;].*)?$' }).Count -gt 0
+        if (-not $askedInIni -and (Test-KitCharacterSelectHasNpc $mods $op.folder)) {
             # (a reinstalled kit, or one pointed at a game made before: the characters there stay, no question)
             $choice = 'yes'
             Write-Host 'NPC characters (Characters page): found in your game from before, kept.'
@@ -2477,8 +2480,11 @@ function Invoke-KitCharacterSelectStep([string]$Kit, [string]$GameDir, [int]$Sec
             else { Write-Host '  Skipped: you play as Link.'; Write-Host $script:KitCharselGetLater }
         }
         Set-KitCharacterSelectChoice $Kit $choice
+        # (review-pool-b2: an 'ask' line in coop-options.ini takes the answer too, else it wins over the kept answer and
+        # the question comes back at every start, with no N line)
+        Set-KitOptionsCharacterSelect $Kit $choice
     } elseif (Read-KitCharacterSelectToggle $choice 3) {
-        # (row 206: on or off from the kit itself, no file to edit; coop-options.ini's line, if any, would win again)
+        # (row 206: on or off from the kit itself, no file to edit; coop-options.ini's line, if any, takes it too)
         $choice = if ($choice -eq 'yes') { 'no' } else { 'yes' }
         Set-KitCharacterSelectChoice $Kit $choice
         Set-KitOptionsCharacterSelect $Kit $choice

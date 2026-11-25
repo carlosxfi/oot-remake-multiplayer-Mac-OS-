@@ -517,7 +517,8 @@ charsel_step() {
     have=$(head -n1 "$CS_HOME/$folder/coop-charsel.txt" 2>/dev/null | tr -d '\r' || true)
     local -a hf0=()
     read -r -a hf0 <<<"$have"
-    if [[ $choice == ask && -d $CS_HOME/$folder/romfs && ${#hf0[@]} -ge 4 && ${hf0[4]:-full} == full ]]; then
+    # (an ask line in coop-options.ini, by hand or by reinstall-character-select.sh: asked, never kept without a question)
+    if [[ $choice == ask && $line != ask && -d $CS_HOME/$folder/romfs && ${#hf0[@]} -ge 4 && ${hf0[4]:-full} == full ]]; then
         # (a reinstalled kit, or one pointed at a game made before: the characters there stay, no question)
         choice=yes
         say 'NPC characters (Characters page): found in your game from before, kept.'
@@ -543,6 +544,9 @@ charsel_step() {
             say "$q: skipped (no terminal)"
         fi
         printf '%s\n' "$choice" >"$DATA/character-select-answer.txt"
+        # (review-pool-b2: an ask line in coop-options.ini takes the answer too, else it wins over the kept answer and the
+        # question comes back at every start, with no n line)
+        [[ -f $DATA/coop-options.ini ]] && sed -i "s/^[[:space:]]*character_select[[:space:]]*=.*/character_select = $choice/" "$DATA/coop-options.ini"
         if [[ $choice == yes ]]; then say '  Downloading them now (once).'; say "$take_out"
         else say '  Skipped: you play as Link.'; say "$get_later"; fi
     elif kit_tty; then

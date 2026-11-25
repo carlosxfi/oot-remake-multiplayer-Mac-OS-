@@ -533,10 +533,19 @@ OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs5r.txt
 check 'reinstall-character-select.sh: the start sets the copy aside, removes the zip (fetched again), asks again' \
     bash -c '[ $CODE -eq 0 ] && [ ! -e "$2/character-select-reinstall.txt" ] && [ ! -e "$2/builder/charsel/CS-v1.zip" ] && grep -q "press y to download them" "$1" &&
         ! grep -q "found in your game from before" "$1" && grep -q offline "$1"' _ "$tmp/build-cs5r.txt" "$D"
-sed -i 's/^character_select = ask$/character_select = yes/' "$D/coop-options.ini"
+# (review-pool-b2: the answer replaces the ask line, so the next start does not ask again; an ask line is never "found, kept")
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs5r2.txt" 2>&1
+check 'reinstall-character-select.sh: the answer replaces ask in coop-options.ini; the next start does not ask again'     bash -c 'grep -qx "character_select = no" "$2/coop-options.ini" && ! grep -q "press y to download them" "$1"' _ "$tmp/build-cs5r2.txt" "$D"
+sed -i 's/^character_select = .*/character_select = yes/' "$D/coop-options.ini"
 cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >/dev/null 2>&1
 check 'reinstall-character-select.sh: with his zip, the next start makes it again' grep -q "^v1 .* full cz2v$" "$CS/coop-charsel.txt"
+sed -i 's/^character_select = .*/character_select = ask/' "$D/coop-options.ini"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs5a.txt" 2>&1
+check 'Character Select: an ask line by hand asks even with the NPC part there (not "found, kept"), then takes the answer'     bash -c 'grep -q "press y to download them" "$1" && ! grep -q "found in your game from before" "$1" && grep -qx "character_select = no" "$2/coop-options.ini"' _ "$tmp/build-cs5a.txt" "$D"
+sed -i 's/^character_select = .*/character_select = yes/' "$D/coop-options.ini"
+cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >/dev/null 2>&1
 # uninstall-character-select.sh: off; the start takes the kit's copy out, later starts leave it out.
 bash "$kit/scripts/character-select.sh" uninstall >"$tmp/cs-un.txt" 2>&1; export CODE=$?
 check 'uninstall-character-select.sh: the answer is off (coop-options.ini line too), says how to put it back' \
