@@ -205,7 +205,7 @@ TEST_CASE("pause tab: Host page: Private game is the default, Public game offers
     CHECK(m.options().public_game);
     CHECK_FALSE(m.options().relay_room.empty());   // a ready name, as forest-4821
     CHECK(m.TakeRequest()->kind == Request::Kind::kSave);
-    CHECK(Names(m) == std::vector<std::string>{"Start hosting", "Game", "Room name", "Players", "Port"});
+    CHECK(Names(m) == std::vector<std::string>{"Start hosting", "Game", "Room name", "Players", "Difficulty", "Port"});
     CHECK(m.view().help.find("no password") != std::string::npos);
     Session s = Hosting(1, "");
     s.public_game = true;
@@ -1242,7 +1242,7 @@ TEST_CASE("pause tab: Host Port and Settings Port when you host validate, save, 
     m.Open(Page::kHost);
     REQUIRE(m.TakeRequest()->kind == Request::Kind::kHost);
     m.SetSession(Session{});
-    CHECK(Names(m) == std::vector<std::string>{"Start hosting", "Game", "Players", "Port"});
+    CHECK(Names(m) == std::vector<std::string>{"Start hosting", "Game", "Players", "Difficulty", "Port"});
     SelectRow(m, "Port");
     m.Press(Input::kDecide);
     for (const char c : std::string("28600")) {
@@ -1988,7 +1988,7 @@ TEST_CASE("pause tab: the title's Host opens on its choices, hosts on Start host
     m.SetTitle(true);
     m.Open(Page::kHost);
     CHECK_FALSE(m.TakeRequest().has_value());   // (not hosted on opening)
-    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Start hosting"});
+    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Difficulty", "Start hosting"});
     // (the cursor on Start hosting: one A hosts with the choices as they are, as most hosts want; Up to change them)
     CHECK(Selected(m) == "Start hosting");
     SelectRow(m, "Who can join");
@@ -2000,13 +2000,13 @@ TEST_CASE("pause tab: the title's Host opens on its choices, hosts on Start host
     CHECK(m.view().rows[2].cell == -1);
     m.Press(Input::kRight);   // (Anyone: the room name row)
     (void)m.TakeRequest();
-    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Room name", "Start hosting"});
+    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Room name", "Difficulty", "Start hosting"});
     CHECK(m.view().rows[0].cell == 1);
     CHECK(SelectedValue(m) == "Public");
     m.Press(Input::kDecide);   // (A flips it back, as the left and right do)
     (void)m.TakeRequest();
     CHECK(m.view().rows[0].cell == 0);
-    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Start hosting"});
+    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Difficulty", "Start hosting"});
     m.Press(Input::kRight);
     (void)m.TakeRequest();
     CHECK(m.view().rows[0].cell == 1);
