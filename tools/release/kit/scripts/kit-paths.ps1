@@ -828,7 +828,8 @@ function Test-KitOtherKitGame([string]$Kit, [string]$Game) {
 # DLSS choice (hookshot\dlss.txt); only a game with DLSS as chosen is taken (Test-KitHookshotDlss), so a kit never
 # gets NVIDIA's files without its own opt-in, nor a game without them that it would build again at once. Returns the
 # game folder, or ''.
-function Find-KitHookshotGameToCopy([string]$Kit, [string]$Stamp, [string[]]$Others, [bool]$Dlss = $false) {
+# $Fsr4: this kit's AMD FSR 4 choice (hookshot\fsr4.txt), the same way (Test-KitHookshotFsr4).
+function Find-KitHookshotGameToCopy([string]$Kit, [string]$Stamp, [string[]]$Others, [bool]$Dlss = $false, [bool]$Fsr4 = $false) {
     if (-not $Stamp) { return '' }
     $mine = [System.IO.Path]::GetFullPath($Kit).TrimEnd('\')
     foreach ($o in @($Others | Where-Object { $_ } | Sort-Object -Unique)) {
@@ -838,6 +839,7 @@ function Find-KitHookshotGameToCopy([string]$Kit, [string]$Stamp, [string[]]$Oth
         if (-not (Get-KitHookshotExe $g)) { continue }
         $s = Join-Path $g 'coop-built-from.txt'
         if ((Test-KitHookshotDlss $g) -ne $Dlss) { continue }
+        if ((Test-KitHookshotFsr4 $g) -ne $Fsr4) { continue }
         if ((Test-Path -LiteralPath $s) -and [System.IO.File]::ReadAllText($s) -eq $Stamp) {
             if (@(Get-KitGameBuildMismatch $g).Count) { continue }   # (kit-harden: never copy a game whose files are of two builds)
             return $g
@@ -848,8 +850,9 @@ function Find-KitHookshotGameToCopy([string]$Kit, [string]$Stamp, [string[]]$Oth
 
 # A built game in the co-op game cache on this PC made from $Stamp (Get-KitHookshotStamp): <cache>\<key>\game, where
 # <cache> is OOT_COOP_HS_CACHE or %LOCALAPPDATA%\oot-coop\hs-cache (tools/hookshot/hs.py fills it; it keeps the last 3
-# builds). Its game folders hold nothing of a player's. $Dlss: as Find-KitHookshotGameToCopy's. Returns the game folder, or ''.
-function Find-KitHookshotCachedGame([string]$Stamp, [string]$Root = '', [bool]$Dlss = $false) {
+# builds). Its game folders hold nothing of a player's. $Dlss, $Fsr4: as Find-KitHookshotGameToCopy's. Returns the game
+# folder, or ''.
+function Find-KitHookshotCachedGame([string]$Stamp, [string]$Root = '', [bool]$Dlss = $false, [bool]$Fsr4 = $false) {
     if (-not $Stamp) { return '' }
     if (-not $Root) {
         $Root = if ($env:OOT_COOP_HS_CACHE) { $env:OOT_COOP_HS_CACHE } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'oot-coop\hs-cache' } else { '' }
@@ -863,6 +866,7 @@ function Find-KitHookshotCachedGame([string]$Stamp, [string]$Root = '', [bool]$D
         $g = Join-Path $d.FullName 'game'
         if (-not (Test-Path -LiteralPath $s -PathType Leaf) -or -not (Get-KitHookshotExe $g)) { continue }
         if ((Test-KitHookshotDlss $g) -ne $Dlss) { continue }
+        if ((Test-KitHookshotFsr4 $g) -ne $Fsr4) { continue }
         if ((& $norm ([System.IO.File]::ReadAllText($s))) -eq $want) {
             if (@(Get-KitGameBuildMismatch $g).Count) { continue }   # (kit-harden)
             return $g
@@ -877,15 +881,87 @@ function Test-KitHookshotDlss([string]$Game) {
     return [bool]($Game -and (Test-Path -LiteralPath (Join-Path $Game 'ngx\nvngx_dlss.dll')))
 }
 
-# NVIDIA's DLSS license, as the pinned Longshot's own tools\scripts\ngx_sdk.py names it (LICENSE_URL at its COMMIT), so a
-# pin that moves NVIDIA's commit moves the link too. Without those tools: the license in NVIDIA's repository.
-function Get-KitNgxLicenseUrl([string]$Tools) {
-    $py = if ($Tools) { Join-Path $Tools 'scripts\ngx_sdk.py' } else { '' }
-    if ($py -and (Test-Path -LiteralPath $py)) {
-        $m = Select-String -LiteralPath $py -Pattern '^COMMIT\s*=\s*"([0-9a-f]{40})"' | Select-Object -First 1
-        if ($m) { return "https://github.com/NVIDIA/DLSS/blob/$($m.Matches[0].Groups[1].Value)/LICENSE.txt" }
+# A game folder built with AMD FSR 4 (#326): make_game.py --fsr leaves its mark .longshot_fsr in the game folder (FSR_MARK)
+# and a build without --fsr removes it. AMD's runtime (amd_fidelityfx_*_vk.dll, --fetch-fsr-runtime) goes beside it.
+function Test-KitHookshotFsr4([string]$Game) {
+    return [bool]($Game -and (Test-Path -LiteralPath (Join-Path $Game '.longshot_fsr') -PathType Leaf))
+}
+
+# A vendor's pinned commit in the pinned Longshot's tools: scripts\fetch.py's <Name>_COMMIT (DLSS_COMMIT, FSR_COMMIT; v3.2.0
+# and later), else the older scripts\ngx_sdk.py's COMMIT for NVIDIA's (before v3.2.0). '' without those tools.
+function Get-KitVendorCommit([string]$Tools, [string]$Name) {
+    if (-not $Tools) { return '' }
+    $tries = @(, @((Join-Path $Tools 'scripts\fetch.py'), "^$($Name)_COMMIT"))
+    if ($Name -eq 'DLSS') { $tries += , @((Join-Path $Tools 'scripts\ngx_sdk.py'), '^COMMIT') }
+    foreach ($t in $tries) {
+        if (-not (Test-Path -LiteralPath $t[0])) { continue }
+        $m = Select-String -LiteralPath $t[0] -Pattern ($t[1] + '\s*=\s*"([0-9a-f]{40})"') | Select-Object -First 1
+        if ($m) { return $m.Matches[0].Groups[1].Value }
     }
-    return 'https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt'
+    return ''
+}
+
+# NVIDIA's DLSS license at the commit the pinned Longshot fetches (Get-KitVendorCommit), so a pin that moves NVIDIA's
+# commit moves the link too. Without those tools: the license in NVIDIA's repository.
+function Get-KitNgxLicenseUrl([string]$Tools) {
+    $c = Get-KitVendorCommit $Tools 'DLSS'
+    return "https://github.com/NVIDIA/DLSS/blob/$(if ($c) { $c } else { 'main' })/LICENSE.txt"
+}
+
+# AMD's FSR SDK license at the commit the pinned Longshot fetches AMD's FSR 4 runtime from (fetch.py FSR_COMMIT and its
+# license_path), as Get-KitNgxLicenseUrl.
+function Get-KitFfxLicenseUrl([string]$Tools) {
+    $c = Get-KitVendorCommit $Tools 'FSR'
+    return "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/$(if ($c) { $c } else { 'main' })/Kits/FidelityFX/docs/license.md"
+}
+
+# Intel XeSS (#326, owner 2026-11-25): every Windows build of Longshot v3.2.0 has it (gpu/vk/vk_xess.cpp, no build flag);
+# it runs once Intel's libxess.dll is beside longshot.exe. Longshot's own fetch (scripts\fetch.py xess, each file SHA-256
+# checked) saves Intel's license beside it as LICENSE-INTEL-XESS-SDK.txt: that file says the library is the kit's fetch,
+# not a libxess.dll the player put there alone (theirs: never touched).
+function Test-KitHookshotXess([string]$ExeDir) {
+    return [bool]($ExeDir -and (Test-Path -LiteralPath (Join-Path $ExeDir 'libxess.dll') -PathType Leaf))
+}
+
+# Intel's XeSS license at the commit the pinned Longshot fetches libxess.dll from (fetch.py XESS_COMMIT), as Get-KitNgxLicenseUrl.
+function Get-KitXessLicenseUrl([string]$Tools) {
+    $c = Get-KitVendorCommit $Tools 'XESS'
+    return "https://github.com/intel/xess/blob/$(if ($c) { $c } else { 'main' })/LICENSE.txt"
+}
+
+# Intel's XeSS library in or out of the game folder ($ExeDir, beside longshot.exe) as the kit's choice ($Want, hookshot\xess.txt)
+# says. In: the pinned Longshot's fetch.py downloads it into $Folder once (later runs keep each file whose SHA-256 is the pinned
+# one) and copies it beside the game; nothing is built. Out: only the files that fetch put there go. Every game the kit puts in
+# place (built, copied from another kit or the cache, a kept build put back) passes here, so it always matches the choice.
+# Returns the lines to show ($null when nothing changed); a failed download is a warning, never a stop (XeSS just stays off).
+function Sync-KitHookshotXess([string]$ExeDir, [bool]$Want, [string]$Python, [string]$Tools, [string]$Folder) {
+    $intel = @('libxess.dll', 'LICENSE-INTEL-XESS-SDK.txt', 'THIRD-PARTY-INTEL-XESS-SDK.txt')
+    $fetched = Test-Path -LiteralPath (Join-Path $ExeDir $intel[1]) -PathType Leaf
+    if (-not $Want) {
+        if (-not $fetched) { return $null }
+        foreach ($n in $intel) { Remove-Item -LiteralPath (Join-Path $ExeDir $n) -Force -ErrorAction SilentlyContinue }
+        return "  Intel XeSS off: Intel's library taken out of the game."
+    }
+    if (Test-KitHookshotXess $ExeDir) {
+        if ($fetched) { return $null }
+        return "  Intel XeSS: the libxess.dll in $ExeDir is your own (no Intel license file beside it): left as it is."
+    }
+    $fetch = if ($Tools) { Join-Path $Tools 'scripts\fetch.py' } else { '' }
+    if (-not $Python -or -not (Test-Path -LiteralPath $Python) -or -not $fetch -or -not (Test-Path -LiteralPath $fetch)) {
+        return "  Intel XeSS: Longshot's tools (scripts\fetch.py) are not in $Tools yet, so Intel's library is not in the game. ""Start Squadala.bat"" gets them; then ""Intel XeSS.bat"" again."
+    }
+    $lines = @("  Intel XeSS: getting Intel's library (libxess.dll, about 78 MB the first time) into the game ...")
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $said = @(& $Python -I $fetch xess --accept-intel-license --game $ExeDir $Folder 2>&1 | ForEach-Object { "$_" })
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $eap }
+    if ($code -eq 0 -and (Test-KitHookshotXess $ExeDir)) {
+        return $lines + "  Intel XeSS: Intel's libxess.dll is beside the game (Intel's, under Intel's license, saved beside it)."
+    }
+    $last = @($said | Where-Object { $_ -match '\S' } | Select-Object -Last 2)
+    return $lines + @($last | ForEach-Object { "    $_" }) + "  Intel XeSS: Intel's library could not be downloaded (exit $code; offline?). The game works without it; ""Intel XeSS.bat"" tries again, ""Intel XeSS.bat"" -NoXess turns it off."
 }
 
 # longshot.exe of a game folder (a builder's game folder has it in bin\), or $null.
@@ -1070,10 +1146,11 @@ function Complete-KitGameWrite([string]$Game) {
 }
 
 # The stamp text as compared: line endings and trailing space do not count, plus the game's DLSS state (a game with
-# NVIDIA's runtime is kept apart: Test-KitHookshotDlss).
-function ConvertTo-KitVariantStamp([string]$Stamp, [bool]$Dlss) {
+# NVIDIA's runtime is kept apart: Test-KitHookshotDlss) and, only when on, its AMD FSR 4 state (Test-KitHookshotFsr4: a
+# renderer built with --fsr is another build; the builds kept before #326 keep their keys).
+function ConvertTo-KitVariantStamp([string]$Stamp, [bool]$Dlss, [bool]$Fsr4 = $false) {
     $lines = @(("$Stamp" -replace "`r", '').Trim() -split "`n" | ForEach-Object { $_.TrimEnd() })
-    return (($lines -join "`n") + "`ndlss=$(if ($Dlss) { 1 } else { 0 })")
+    return (($lines -join "`n") + "`ndlss=$(if ($Dlss) { 1 } else { 0 })" + $(if ($Fsr4) { "`nfsr4=1" } else { '' }))
 }
 
 function Get-KitVariantKey([string]$Text) {
@@ -1186,7 +1263,7 @@ function Save-KitGameVariant([string]$Kit, [string]$Game, [int]$Keep = 3) {
     # (files of two builds are never kept as the build their stamp names: kit-harden)
     $bad = @(Get-KitGameBuildMismatch $Game)
     if ($bad.Count) { return "  (this build is not kept for later: its files are not from one build: $($bad[0]))" }
-    $text = ConvertTo-KitVariantStamp ([System.IO.File]::ReadAllText($stampFile)) (Test-KitHookshotDlss $Game)
+    $text = ConvertTo-KitVariantStamp ([System.IO.File]::ReadAllText($stampFile)) (Test-KitHookshotDlss $Game) (Test-KitHookshotFsr4 $Game)
     $root = Get-KitGameVariantRoot $Kit
     $dir = Join-Path $root (Get-KitVariantKey $text)
     $kept = Join-Path $dir 'stamp.txt'
@@ -1241,10 +1318,10 @@ function Get-KitBuildWhyText([string]$Have, [string]$Want) {
     return 'this update changes the co-op game''s code (about 5 to 20 minutes).'
 }
 
-# The kept build for $Stamp (as hookshot-build.ps1's gameWant) with DLSS as $Dlss, or ''.
-function Find-KitGameVariant([string]$Kit, [string]$Stamp, [bool]$Dlss) {
+# The kept build for $Stamp (as hookshot-build.ps1's gameWant) with DLSS as $Dlss and AMD FSR 4 as $Fsr4, or ''.
+function Find-KitGameVariant([string]$Kit, [string]$Stamp, [bool]$Dlss, [bool]$Fsr4 = $false) {
     if (-not $Stamp) { return '' }
-    $text = ConvertTo-KitVariantStamp $Stamp $Dlss
+    $text = ConvertTo-KitVariantStamp $Stamp $Dlss $Fsr4
     $dir = Join-Path (Get-KitGameVariantRoot $Kit) (Get-KitVariantKey $text)
     $kept = Join-Path $dir 'stamp.txt'
     if (-not (Test-Path -LiteralPath $kept) -or [System.IO.File]::ReadAllText($kept) -ne $text) { return '' }
@@ -1334,7 +1411,8 @@ function Get-KitHookshotNeed([string]$Kit) {
     if (Test-KitGameUnfinished $game) {
         # (rows 239/240: a build, put back or copy stopped half way; a kept build of exactly this stamp still goes back)
         $wantDlss = Test-Path -LiteralPath (Join-Path $Kit 'hookshot\dlss.txt')
-        if (Find-KitGameVariant $Kit $want $wantDlss) { return 'variant' }
+        $wantFsr4 = Test-Path -LiteralPath (Join-Path $Kit 'hookshot\fsr4.txt')
+        if (Find-KitGameVariant $Kit $want $wantDlss $wantFsr4) { return 'variant' }
         return 'unfinished'
     }
     # (kit-harden: files of two builds, e.g. one copied over from another build: the game never starts like that)
@@ -1342,7 +1420,9 @@ function Get-KitHookshotNeed([string]$Kit) {
     if ($have -ne $want) {
         # (row 210: a build of exactly this stamp kept from before, e.g. a code mod switched back: put back in seconds)
         $wantDlss = Test-Path -LiteralPath (Join-Path $Kit 'hookshot\dlss.txt')
-        if ($wantDlss -eq (Test-KitHookshotDlss $game) -and (Find-KitGameVariant $Kit $want $wantDlss)) { return 'variant' }
+        $wantFsr4 = Test-Path -LiteralPath (Join-Path $Kit 'hookshot\fsr4.txt')
+        if ($wantDlss -eq (Test-KitHookshotDlss $game) -and $wantFsr4 -eq (Test-KitHookshotFsr4 $game) -and
+            (Find-KitGameVariant $Kit $want $wantDlss $wantFsr4)) { return 'variant' }
         $base = { param($s) (@($s -split "`n") | Where-Object { $_ -match '^(release|commit)=' }) -join "`n" }
         if ((& $base $have) -ne (& $base $want)) { return 'pin' }
         $codeless = { param($s) (@($s -split "`n") | Where-Object { $_ -notmatch '^exefs=' }) -join "`n" }

@@ -12,6 +12,9 @@
 #   bash scripts/build.sh --dlss                with NVIDIA DLSS: asks you to accept NVIDIA's license once, then every
 #                                               build fetches NVIDIA's DLSS SDK and builds with it (data/dlss.txt)
 #   bash scripts/build.sh --no-dlss             without DLSS again (the game is built again without it)
+#   bash scripts/build.sh --fsr4                with AMD FSR 4 and its native AA (#326): every build is made with FSR 4
+#                                               (data/fsr4.txt); AMD's Vulkan library is yours to put beside the game
+#   bash scripts/build.sh --no-fsr4             without FSR 4 again (the game is built again without it)
 #   bash scripts/build.sh --renderer-only DIR   (CI, no game) steps 1 to 3, then compile Longshot's patched
 #                                               Linux renderer and our host files into DIR
 #
@@ -31,7 +34,7 @@
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-game='' exefs='' rebuild=0 check_only=0 jobs='' renderer_out='' dlss=0 no_dlss=0
+game='' exefs='' rebuild=0 check_only=0 jobs='' renderer_out='' dlss=0 no_dlss=0 fsr4=0 no_fsr4=0
 while (($#)); do
     case $1 in
         --game) game=$2; shift ;;
@@ -40,6 +43,8 @@ while (($#)); do
         --check-only) check_only=1 ;;
         --dlss) dlss=1 ;;
         --no-dlss) no_dlss=1 ;;
+        --fsr4) fsr4=1 ;;
+        --no-fsr4) no_fsr4=1 ;;
         --jobs) jobs=$2; shift ;;
         --renderer-only) renderer_out=$2; shift ;;
         *) fail "build.sh: unknown option $1" ;;
@@ -878,6 +883,26 @@ if ((ready && want_dlss != game_dlss && (want_dlss || no_dlss))); then
     else say 'NVIDIA DLSS off: the game is built again without it.'; fi
     ready=0
 fi
+# AMD FSR 4 and its native AA (#326), as hookshot-build.ps1's -Fsr4: a game built with make_game.py --fsr (its mark
+# .longshot_fsr in the game folder). Nothing of AMD's is downloaded on Linux (AMD publishes no Linux runtime; the FSR API
+# headers are Longshot's own, MIT), so there is no license to accept here: a Vulkan amd_fidelityfx_upscaler_vk.so put
+# beside the game runs it. --fsr4 turns it on (data/fsr4.txt keeps it), --no-fsr4 off.
+fsr4_note=$DATA/fsr4.txt
+if ((no_fsr4)); then
+    rm -f "$fsr4_note"
+elif ((fsr4)) && [[ ! -f $fsr4_note ]]; then
+    printf 'fsr4=on\n' >"$fsr4_note"
+    say "AMD FSR 4: every build of this kit is made with it. AMD publishes no Linux runtime: put a Vulkan amd_fidelityfx_upscaler_vk.so in $GAME yourself (the game's Upscaler row says when it is missing)."
+fi
+want_fsr4=0
+((!no_fsr4)) && [[ -f $fsr4_note ]] && want_fsr4=1
+game_fsr4=0
+[[ -f $GAME/.longshot_fsr ]] && game_fsr4=1
+if ((ready && want_fsr4 != game_fsr4 && (want_fsr4 || no_fsr4))); then
+    if ((want_fsr4)); then say 'AMD FSR 4: the game has no FSR 4 yet, so it is built again with it (much shorter than the first build).'
+    else say 'AMD FSR 4 off: the game is built again without it.'; fi
+    ready=0
+fi
 # The game built from another stamp than this start wants (player report 210: a mod with code patches switched on or
 # off on the Mods tab, an update): the build there is kept first (a copy of the files a build makes: the ones Longshot's
 # finish copies in, .longshot_installed.json, and exefs_patches.txt; copies, never hard links), and one of exactly this
@@ -893,7 +918,12 @@ for k in sorted(json.load(open(sys.argv[1], encoding="utf-8"))): print(k)' "$GAM
     fi
     printf 'exefs_patches.txt\n.longshot_installed.json\n'   # (the note too: a build kept after a put back still knows its files)
 }
-variant_text() { printf '%s\ndlss=%s' "$(printf '%s\n' "$1" | tr -d '\r' | sed 's/[[:space:]]*$//')" "$2"; }
+# (plus the game's DLSS state, and its AMD FSR 4 state only when on: the builds kept before #326 keep their keys)
+variant_text() {
+    printf '%s\ndlss=%s' "$(printf '%s\n' "$1" | tr -d '\r' | sed 's/[[:space:]]*$//')" "$2"
+    [[ ${3:-0} == 1 ]] && printf '\nfsr4=1'
+    return 0
+}
 variant_dir() { printf '%s/%s' "$variants" "$(printf '%s' "$1" | sha256sum | cut -c1-20)"; }
 variant_save() {
     local have text dir part f bytes=0 free_kb bad
@@ -902,7 +932,7 @@ variant_save() {
     # (kit-harden: files of two builds are never kept as a build)
     bad=$(game_mismatch "$GAME")
     [[ -z $bad ]] || { say "  (this build is not kept for later: its files are not from one build: ${bad%%$'\n'*})"; return 0; }
-    text=$(variant_text "$have" "$game_dlss")
+    text=$(variant_text "$have" "$game_dlss" "$game_fsr4")
     dir=$(variant_dir "$text")
     if [[ -f $dir/stamp.txt && $(cat "$dir/stamp.txt") == "$text" ]]; then touch "$dir/stamp.txt"; return 0; fi
     while IFS= read -r f; do [[ -n $f && -f $GAME/$f ]] && bytes=$((bytes + $(stat -c %s "$GAME/$f"))); done < <(variant_files)
@@ -947,9 +977,9 @@ if ((!ready && !rebuild && !check_only)) && [[ -n $(kit_game_exe) && -f $game_st
     say ''
     say '  Keeping the game as it is built now, for later (about 650 MB, a few seconds) ...'
     variant_save
-    kept_text=$(variant_text "$game_want" "$want_dlss")
+    kept_text=$(variant_text "$game_want" "$want_dlss" "$want_fsr4")
     kept=$(variant_dir "$kept_text")
-    if ((want_dlss == game_dlss)) && [[ -f $kept/stamp.txt && $(cat "$kept/stamp.txt") == "$kept_text" && -f $kept/built-from.txt && -f $kept/files/image.bin && -z $(game_mismatch "$kept/files") ]]; then
+    if ((want_dlss == game_dlss && want_fsr4 == game_fsr4)) && [[ -f $kept/stamp.txt && $(cat "$kept/stamp.txt") == "$kept_text" && -f $kept/built-from.txt && -f $kept/files/image.bin && -z $(game_mismatch "$kept/files") ]]; then
         step 'The game: putting back the build made before with these mods (seconds, instead of building it again)'
         if variant_restore "$kept" && [[ $(cat "$game_stamp") == "$game_want" ]]; then
             ready=1
@@ -1049,6 +1079,8 @@ game_build() {
         # (NVIDIA DLSS: make_game.py fetches NVIDIA's SDK into data/work/ngx-sdk, only what is missing, and builds the
         # renderer with it; the license was accepted above, data/dlss.txt)
         ((want_dlss)) && build_args+=(--fetch-ngx-sdk --accept-nvidia-license)
+        # (AMD FSR 4: the renderer built with it, data/fsr4.txt; AMD publishes no Linux runtime, so nothing is fetched)
+        ((want_fsr4)) && build_args+=(--fsr)
         mkdir -p "$GAME"
         ((want_dlss)) && export LONGSHOT_NGX_SDK=$WORK/ngx-sdk
         # (make_game.py's own words for a failed SDK download are the Builder's, "untick NVIDIA DLSS": the kit's way is --no-dlss)

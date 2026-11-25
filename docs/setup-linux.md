@@ -79,6 +79,10 @@ A normal build offers AMD FSR 3.1 and the game's own upscaler: Longshot has **NV
 
 The kit remembers it (`data/dlss.txt`), so the builds after an update keep DLSS; `--no-dlss` builds the game again without it. NVIDIA's Linux driver loads DLSS only from a folder whose whole path is plain ASCII: keep the kit in a folder such as `~/OoT-Coop`. A game built with DLSS holds NVIDIA's files (`data/game/ngx/`): never share it.
 
+## AMD FSR 4
+
+Longshot has **AMD FSR 4** and **AMD FSR 4 Native AA** only in a game built with FSR 4 that has AMD's FSR 4 library beside it. `bash start-squadala.sh --fsr4` builds the game again with FSR 4 (the kit remembers it in `data/fsr4.txt`; `--no-fsr4` builds it again without). AMD publishes its FSR 4 runtime for Windows only, so on Linux the kit downloads nothing: put a Vulkan `amd_fidelityfx_upscaler_vk.so` in `data/game/` yourself. Then in the game: **Graphics → Upscaler: AMD FSR 4**; without that file the row says AMD's files were not found, and AMD FSR 3.1 stays in every build.
+
 ## Going back to an older version
 
 `bash revert.sh` in the kit folder puts back the version the kit had before its last update. Every update keeps the version it replaces in `previous/` (the last two; only the kit's own files).

@@ -91,6 +91,12 @@ if os.environ.get("LONGSHOT_NGX_SDK") and "--fetch-ngx-sdk" in a and "--accept-n
     open(ngx, "w").close()
 elif os.path.exists(ngx):
     os.remove(ngx)
+# (as make_game.py's FSR_MARK: --fsr leaves .longshot_fsr in the game folder, a build without it removes it)
+mark = os.path.join(out, ".longshot_fsr")
+if "--fsr" in a:
+    open(mark, "w").close()
+elif os.path.exists(mark):
+    os.remove(mark)
 print("@@stage build Building")
 print("built")
 EOF
@@ -333,6 +339,24 @@ check 'dlss: --no-dlss forgets the license, builds again without the SDK, NVIDIA
 : >"$log"
 bash "$kit/scripts/build.sh" </dev/null >"$tmp/dlss5.txt" 2>&1; export CODE=$?
 check 'dlss: off, the next start builds nothing' bash -c '[ $CODE -eq 0 ] && grep -q "built already" "$1" && ! grep -q "^make_game" "$2"' _ "$tmp/dlss5.txt" "$log"
+
+# AMD FSR 4 (#326): --fsr4 builds the game again with make_game.py --fsr (nothing of AMD's fetched on Linux, no license
+# question), data/fsr4.txt keeps it; --no-fsr4 builds it again without. The game's stamp stays the release, pin and patches.
+: >"$log"
+bash "$kit/scripts/build.sh" --fsr4 </dev/null >"$tmp/fsr1.txt" 2>&1; export CODE=$?
+check 'fsr4: --fsr4 builds the game again with --fsr, no runtime fetch, the mark there, data/fsr4.txt kept' \
+    bash -c '[ $CODE -eq 0 ] && [ -f "$2/fsr4.txt" ] && grep "^make_game" "$1" | grep -v -- --check | grep -q -- " --fsr" && ! grep -q -- --fetch-fsr-runtime "$1" && [ -f "$2/game/.longshot_fsr" ] && grep -q "amd_fidelityfx_upscaler_vk.so" "$3"' _ "$log" "$D" "$tmp/fsr1.txt"
+check 'fsr4: the game stamp is still the release, pin and patches' [ "$(cat "$D/game/coop-built-from.txt")" = "$stamp_before" ]
+: >"$log"
+bash "$kit/scripts/build.sh" </dev/null >"$tmp/fsr2.txt" 2>&1; export CODE=$?
+check 'fsr4: the next start builds nothing' bash -c '[ $CODE -eq 0 ] && grep -q "built already" "$1" && ! grep -q "^make_game" "$2"' _ "$tmp/fsr2.txt" "$log"
+: >"$log"
+bash "$kit/scripts/build.sh" --no-fsr4 </dev/null >"$tmp/fsr3.txt" 2>&1; export CODE=$?
+check 'fsr4: --no-fsr4 forgets it, builds again without --fsr, the mark gone' \
+    bash -c '[ $CODE -eq 0 ] && [ ! -f "$2/fsr4.txt" ] && grep "^make_game" "$1" | grep -v -- --check | grep -q -- "--out" && ! grep -q -- " --fsr" "$1" && [ ! -f "$2/game/.longshot_fsr" ]' _ "$log" "$D"
+: >"$log"
+bash "$kit/scripts/build.sh" </dev/null >"$tmp/fsr4.txt" 2>&1; export CODE=$?
+check 'fsr4: off, the next start builds nothing' bash -c '[ $CODE -eq 0 ] && grep -q "built already" "$1" && ! grep -q "^make_game" "$2"' _ "$tmp/fsr4.txt" "$log"
 
 # pack-retry: the pack is made again on a start whenever it is missing, incomplete or from another tool, and the
 # game file is looked for when it moved; a pack tool error is said and the start goes on.

@@ -9,6 +9,8 @@
 #   bash start-squadala.sh --game FILE.nup     the game file, no question (also --exefs, --rebuild, --jobs N)
 #   bash start-squadala.sh --dlss              NVIDIA DLSS: asks for NVIDIA's license once, builds the game with it
 #                                              (--no-dlss: without it again)
+#   bash start-squadala.sh --fsr4              AMD FSR 4 and its native AA: builds the game with it (--no-fsr4: without
+#                                              it again; AMD's Linux library is yours to put beside the game)
 #   bash start-squadala.sh --no-update         no update check this time
 #   bash start-squadala.sh --logs              collect the logs for a bug report, start nothing
 #   bash start-squadala.sh --pack              make the puppet pack again (how you see the others), start nothing
@@ -26,7 +28,7 @@ while (($#)); do
         --logs) exec bash "$KIT/scripts/collect-logs.sh" ;;
         --pack) pack_only=1 ;;
         --game | --exefs | --jobs) build_args+=("$1" "${2-}"); shift ;;
-        --rebuild | --check-only | --dlss | --no-dlss) build_args+=("$1") ;;
+        --rebuild | --check-only | --dlss | --no-dlss | --fsr4 | --no-fsr4) build_args+=("$1") ;;
         --problem-reports)
             pr_py=$DATA/builder/image/usr/python/bin/python3
             [[ -x $pr_py ]] || pr_py=$(command -v python3 || true)
