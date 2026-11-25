@@ -955,10 +955,8 @@ TEST_CASE("testinput: menu host hands the hook the in-game host (row 260)") {
 
 TEST_CASE("testinput: menu leave leaves the session as the Multiplayer page's Leave row (remount-leave)") {
     std::string error;
-    CHECK_FALSE(Parse("menu leave now
-", error));
-    Runner r(Must("menu Leave
-"));
+    CHECK_FALSE(Parse("menu leave now\n", error));
+    Runner r(Must("menu Leave\n"));
     std::vector<std::string> log;
     r.Advance(0.0, std::nullopt, log);
     const auto requests = r.TakeRequests();
