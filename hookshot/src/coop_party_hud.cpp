@@ -99,7 +99,9 @@ float BlockHeight(int hearts) {
 
 float TopFrom(std::optional<double> game_hud_bottom) {
     if (!game_hud_bottom || !(*game_hud_bottom > 0.0) || !(*game_hud_bottom < 1.0)) return kDefaultTop;
-    return -static_cast<float>(*game_hud_bottom) * kLayoutHeight - kBlockGap;
+    // (never so low that the fullest stack, three blocks of two rows and the "+N" line, leaves the picture)
+    const float lowest = -kLayoutHeight + kSlots * BlockHeight(kHearts) + kLabelHeight + kBlockGap;
+    return std::max(-static_cast<float>(*game_hud_bottom) * kLayoutHeight - kBlockGap, lowest);
 }
 
 std::string MoreText(std::size_t players) {

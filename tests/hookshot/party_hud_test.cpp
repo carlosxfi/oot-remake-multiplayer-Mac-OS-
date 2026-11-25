@@ -180,6 +180,10 @@ TEST_CASE("party hud: the blocks stay on the picture") {
     }
     CHECK(top - party::kLabelHeight > -2160.0f);   // and the "+N" line under them
     CHECK(party::BlockHeight(3) < party::BlockHeight(11));
+    // A game HUD reaching far down (a bottom at 90 %): the fullest stack still ends on the picture.
+    float low = party::TopFrom(0.9);
+    for (int s = 0; s < party::kSlots; ++s) low -= party::BlockHeight(party::kHearts);
+    CHECK(low - party::kLabelHeight >= -2160.0f);
     CHECK(party::MoreText(3).empty());
     CHECK(party::MoreText(5) == "+2");
 }
