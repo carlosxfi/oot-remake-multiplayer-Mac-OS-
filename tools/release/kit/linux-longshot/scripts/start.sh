@@ -104,7 +104,7 @@ if ((!no_update)) && [[ $mode != no ]] && [[ -z ${OOT_COOP_NO_UPDATE-} ]]; then
             elif [[ $mode == yes ]]; then go=1
             elif kit_tty; then
                 say "Co-op ${status#newer } is out (this kit: $(kit_version)). Every player needs the same version."
-                read -r -t 60 -p 'Update now? Your saves and settings are kept. [Y/n] ' a || a=y
+                read -r -t 60 -p 'Update now? Your saves and settings are kept. [Y/n] (type Y or N, then Enter; no answer in 60 s: yes) ' a || a=y
                 [[ $a =~ ^[nN] ]] || go=1
             else
                 say "Co-op ${status#newer } is out: start start-squadala.sh from a terminal to update."

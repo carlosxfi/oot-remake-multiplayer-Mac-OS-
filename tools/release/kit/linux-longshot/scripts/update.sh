@@ -300,7 +300,7 @@ else
     if [[ $action == launch && -n $left && $(kit_auto_update) == yes ]]; then
         # (auto_update = ask: start.sh asked already)
         a=n
-        kit_tty && { read -r -t 20 -p "You went back to $current on purpose. Co-op $tag is out, newer than $left. Update now? [y/N] " a || a=n; }
+        kit_tty && { read -r -t 20 -p "You went back to $current on purpose. Co-op $tag is out, newer than $left. Update now? [y/N] (type Y or N, then Enter; no answer in 20 s: no) " a || a=n; }
         [[ $a =~ ^[yY] ]] || { echo "Staying on $current. bash scripts/update.sh updates when you want."; exit 0; }
     fi
     if ((back)); then
