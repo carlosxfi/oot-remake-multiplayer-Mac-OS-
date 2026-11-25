@@ -1288,6 +1288,8 @@ TEST_CASE("public game: listed with the public bit, relay only, a guest joins wi
   c.upnp = true;                        // all forced off: relay only
   c.invite = true;
   c.session.same_network_open = true;
+  c.session.difficulty.auto_scale = false;  // the lobby's difficulty, picked as it was made: on the list
+  c.session.difficulty.preset = coop::protocol::DifficultyPreset::hard;
   HostService host(c);
   std::string error;
   REQUIRE(host.start(error));
@@ -1318,7 +1320,11 @@ TEST_CASE("public game: listed with the public bit, relay only, a guest joins wi
   REQUIRE(list->rooms.size() == 1);
   CHECK(list->rooms[0].room == "Forest-4821");
   CHECK(list->rooms[0].host == "Forest-4821");  // the room's name: nothing of the host's PC
-  CHECK(list->rooms[0].version == coop::protocol::public_listing_version());
+  // (the public bit and the lobby's difficulty ride the version the relay repeats; the protocol is its low byte)
+  CHECK(list->rooms[0].version == coop::protocol::with_listed_difficulty(coop::protocol::public_listing_version(),
+                                                                         c.session.difficulty));
+  CHECK(coop::protocol::listing_protocol(list->rooms[0].version) == coop::protocol::kProtocolVersion);
+  CHECK(coop::protocol::listing_difficulty(list->rooms[0].version) == coop::protocol::ListedDifficulty::hard);
 
   // The game port is on 127.0.0.1 only (the relay's link reaches it there); a guest on this PC stands in for the
   // relay's flow. The wrong password (a private one) is refused, the room's opens it.

@@ -62,6 +62,13 @@ State Get();
 // the server has answered (Get). False when we do not host a session now.
 bool Set(const Choice& choice);
 
+// Any thread: this player's lobby difficulty, the one the next lobby they make starts with (docs/play-online.md
+// "Difficulty"; HosCoopHostOptions::difficulty): the kept choice (coop-difficulty.ini), automatic when none.
+Choice NextLobby();
+// Any thread: the lobby difficulty picked on the lobby-creation rows while not hosting, kept as Set keeps it. False
+// while in a session (the host's change then goes through Set, a guest's nowhere).
+bool SetNextLobby(const Choice& choice);
+
 // Any thread: the values in force now (the game as it is while not in a
 // session or before the server said them).
 Values Now();

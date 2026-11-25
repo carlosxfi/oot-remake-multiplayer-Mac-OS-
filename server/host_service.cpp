@@ -289,7 +289,11 @@ bool HostService::start(std::string& error) {
           const Session& session = server_->session();
           e.players = static_cast<std::uint8_t>(std::min<std::size_t>(session.player_count(), 255));
           e.max_players = config_.session.max_players;
-          e.version = config_.public_game ? protocol::public_listing_version() : protocol::kProtocolVersion;
+          // (the lobby's difficulty in the version's bits 8 to 10, protocol/difficulty.hpp: the list shows it, and it
+          // follows the host's changes, each listing round as the players)
+          e.version = protocol::with_listed_difficulty(
+              config_.public_game ? protocol::public_listing_version() : protocol::kProtocolVersion,
+              session.difficulty_choice());
           return e;
         };
         if (config_.public_game && config_.official_key) {

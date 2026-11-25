@@ -133,6 +133,26 @@ bool Set(const Choice& choice) {
     return true;
 }
 
+Choice NextLobby() {
+    Glue& g = TheGlue();
+    std::lock_guard lock(g.mutex);
+    return Kept(g).value_or(Choice{});
+}
+
+bool SetNextLobby(const Choice& choice) {
+    Glue& g = TheGlue();
+    {
+        std::lock_guard lock(g.mutex);
+        if (g.state.connected) {
+            return false;
+        }
+        g.kept = choice;
+        g.kept_read = true;
+    }
+    Keep(choice);
+    return true;
+}
+
 void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
     using coop::net::EventKind;
     Glue& g = TheGlue();

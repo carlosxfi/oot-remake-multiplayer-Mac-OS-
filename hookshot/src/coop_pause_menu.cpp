@@ -595,6 +595,7 @@ std::vector<Menu::Line> Menu::Lines() const {
             }
             out.push_back({Choice("Players", std::to_string(options_.max_players)), Act::kPlayers,
                            "The most players in your game, you included."});
+            DifficultyLines(out);   // (the lobby's, as the title's Host page: in force from the start)
             out.push_back({Action("Port", port_value), Act::kHostPort, kHostPortHelp});
         }
         break;
@@ -948,6 +949,7 @@ void Menu::TitleHostLines(std::vector<Line>& out, bool host, bool guest) const {
                                                                                     : options_.relay_room),
                            Act::kRoom, "Your game's name in Join a game: 3 to 24 letters, digits, - or _."});
         }
+        DifficultyLines(out);   // (the lobby's, picked as it is made: in force from the start, shown in the lists)
         out.push_back({Action("Start hosting", "", guest), Act::kStartHost,
                        guest ? "You are in a friend's game: leave it first (Join a game)."
                              : "Starts your game on this PC. They play on your save."});
@@ -2100,8 +2102,9 @@ void Menu::Change(Act act, int step) {
     case Act::kDifficulty:
     case Act::kDifficultyLife:
     case Act::kDifficultyDamage:
-    case Act::kDifficultyCount: {   // (the host's: the server says it to everyone, the chat says it then)
-        if (!difficulty_.connected || !difficulty_.can_edit) {
+    case Act::kDifficultyCount: {   // (the host's: the server says it to everyone, the chat says it then; with no
+                                    // session the next lobby's, kept at once)
+        if (!DifficultyEditable()) {
             break;
         }
         const CoopDifficulty::Choice now = DifficultyShown();
@@ -2571,7 +2574,10 @@ void Menu::SetDifficulty(const DifficultyState& state, int players) {
                           (w.auto_scale || (state.choice.preset == w.preset &&
                                             (w.preset != CoopDifficulty::Preset::custom ||
                                              state.values == coop::protocol::clamp_difficulty(w.custom))));
-        if (said || !state.connected || !state.can_edit) {
+        // (not in a session: the next lobby's, kept by the module at once; a host's wish is kept the same way, so
+        // one that the session's end overtook is said there too)
+        const bool lobby_said = !state.connected && state.next == w;
+        if ((state.connected && (said || !state.can_edit)) || lobby_said) {
             difficulty_wish_.reset();
         }
     }
@@ -2580,27 +2586,27 @@ void Menu::SetDifficulty(const DifficultyState& state, int players) {
 }
 
 CoopDifficulty::Choice Menu::DifficultyShown() const {
-    return difficulty_wish_ ? *difficulty_wish_ : difficulty_.choice;
+    return difficulty_wish_ ? *difficulty_wish_ : difficulty_.connected ? difficulty_.choice : difficulty_.next;
 }
 
 CoopDifficulty::Values Menu::DifficultyValuesShown() const {
-    return difficulty_wish_ ? coop::protocol::difficulty_in_force(
-                                  *difficulty_wish_, static_cast<std::size_t>(std::max(difficulty_players_, 1)))
-                            : difficulty_.values;
+    if (difficulty_.connected && !difficulty_wish_) return difficulty_.values;
+    return coop::protocol::difficulty_in_force(DifficultyShown(),
+                                               static_cast<std::size_t>(std::max(difficulty_players_, 1)));
+}
+
+bool Menu::DifficultyEditable() const {
+    return difficulty_.connected ? difficulty_.can_edit : !InSession();
 }
 
 // The Difficulty rows: the host's choice with its arrows (and Custom's three sliders), or the guest's, read only.
 void Menu::DifficultyLines(std::vector<Line>& out) const {
     static const char* const kNames[kDifficultyRows] = {"Automatic", "Easy", "Normal", "Hard", "Custom"};
-    if (!difficulty_.connected) {   // (not in a game, or a server that says none: the game as it is)
+    if (!difficulty_.connected && InSession()) {   // (joining, or a server that says none: the game as it is)
         Row r = Choice("Difficulty", "Normal");
         r.left = r.right = false;
         r.fixed = true;
-        out.push_back({r, Act::kDifficulty,
-                       InSession() ? std::string("This game's server does not say a difficulty: enemies as in the game.")
-                                   : std::string("The host chooses it for everyone while hosting: Automatic, Easy, "
-                                                 "Normal, Hard or Custom. Playing alone, enemies are as in the game "
-                                                 "(New Game+ aside).")});
+        out.push_back({r, Act::kDifficulty, "This game's server does not say a difficulty: enemies as in the game."});
         return;
     }
     const CoopDifficulty::Choice shown = DifficultyShown();
@@ -2614,16 +2620,22 @@ void Menu::DifficultyLines(std::vector<Line>& out) const {
         return first + (first == now ? ". " : "。") + CoopI18n::Tr(rest);
     };
     Row r = Choice("Difficulty", kNames[DifficultyIndex(shown)]);
-    if (!difficulty_.can_edit) {
+    if (!difficulty_.connected) {   // (no session: the lobby this player makes next starts with it)
+        out.push_back({r, Act::kDifficulty,
+                       help("For the game you host: everyone plays with it from the start, and the game lists show "
+                            "it. Automatic: more as more players join. Custom: your values on the rows below. "
+                            "Playing alone, enemies are as in the game.")});
+    } else if (!difficulty_.can_edit) {
         r.left = r.right = false;
         r.fixed = true;
         out.push_back({r, Act::kDifficulty, help("Only the host can change it.")});
         return;
+    } else {
+        out.push_back({r, Act::kDifficulty,
+                       help("For everyone in your game: enemies' life, the damage they deal and how many there are. "
+                            "Automatic: more as more players join. Custom: your own values on the rows below. Also "
+                            "/difficulty in the chat.")});
     }
-    out.push_back({r, Act::kDifficulty,
-                   help("For everyone in your game: enemies' life, the damage they deal and how many there are. "
-                        "Automatic: more as more players join. Custom: your own values on the rows below. Also "
-                        "/difficulty in the chat.")});
     if (shown.auto_scale || shown.preset != CoopDifficulty::Preset::custom) {
         return;
     }

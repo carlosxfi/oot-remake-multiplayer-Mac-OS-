@@ -2300,16 +2300,76 @@ TEST_CASE("pause tab: Settings: Difficulty: the host changes it, the sliders und
     g.Press(Input::kDecide);
     CHECK_FALSE(g.TakeRequest());
 
-    // Solo (co-op idle): the row says who chooses it; nothing asked.
+    // Solo (co-op idle): the next lobby's choice (Host settings is the lobby-creation step): Automatic until picked.
     Menu s;
     s.Show(CoopTitleMenu::Options{});
     s.Open(Page::kSettings);
     REQUIRE(RowNamed(s.view(), "Difficulty") != nullptr);
-    CHECK(RowNamed(s.view(), "Difficulty")->fixed);
+    CHECK_FALSE(RowNamed(s.view(), "Difficulty")->fixed);
+    CHECK(RowNamed(s.view(), "Difficulty")->value == "Automatic");
     SelectRow(s, "Difficulty");
-    CHECK(s.view().help.find("The host chooses it") != std::string::npos);
+    CHECK(s.view().help.find("For the game you host") != std::string::npos);
     s.Press(Input::kRight);
-    CHECK_FALSE(s.TakeRequest());
+    r = s.TakeRequest();
+    REQUIRE(r);
+    CHECK(r->kind == Request::Kind::kDifficulty);
+    asked = CoopDifficulty::ParseChoice(r->text);
+    REQUIRE(asked);
+    CHECK_FALSE(asked->auto_scale);
+    CHECK(asked->preset == Preset::easy);
+}
+
+// The owner (2026-11-25): difficulty is picked when making the lobby. The Host pages (the title's and the pause
+// menu's) offer it before Start hosting; it is this player's next lobby's (DifficultyState::next, the kept choice),
+// the module gives it to the server (HosCoopHostOptions::difficulty) and the game lists show it.
+TEST_CASE("pause tab: Host page: the lobby's Difficulty is picked before Start hosting, Custom with its sliders") {
+    using CoopDifficulty::Preset;
+    for (const bool title : {false, true}) {
+        INFO(title);
+        Menu m;
+        m.Show(CoopTitleMenu::Options{});
+        if (title) m.SetTitle(true);
+        DifficultyState st;   // (no session)
+        st.next.auto_scale = false;
+        st.next.preset = Preset::hard;
+        m.SetDifficulty(st, 1);
+        m.Open(Page::kHost);
+        const auto names = Names(m);
+        const auto diff = std::find(names.begin(), names.end(), "Difficulty");
+        REQUIRE(diff != names.end());
+        if (title) {
+            CHECK(std::find(diff, names.end(), "Start hosting") != names.end());   // (picked before the start)
+        }
+        REQUIRE(RowNamed(m.view(), "Difficulty") != nullptr);
+        CHECK(RowNamed(m.view(), "Difficulty")->value == "Hard");
+        CHECK_FALSE(RowNamed(m.view(), "Difficulty")->fixed);
+        CHECK(Fits(*RowNamed(m.view(), "Difficulty")));
+        SelectRow(m, "Difficulty");
+        m.Press(Input::kRight);   // Hard -> Custom, at Hard's values
+        auto r = m.TakeRequest();
+        REQUIRE(r);
+        CHECK(r->kind == Request::Kind::kDifficulty);
+        auto asked = CoopDifficulty::ParseChoice(r->text);
+        REQUIRE(asked);
+        CHECK(asked->preset == Preset::custom);
+        CHECK(asked->custom.hp_pct == 200);
+        CHECK(SelectedValue(m) == "Custom");   // (shown until the module has kept it)
+        st.next = *asked;
+        m.SetDifficulty(st, 1);
+        for (const char* name : {"Enemy life", "Enemy damage", "Enemies"}) {
+            INFO(name);
+            REQUIRE(RowNamed(m.view(), name) != nullptr);
+            CHECK(Fits(*RowNamed(m.view(), name)));
+        }
+        CHECK(RowNamed(m.view(), "Enemy life")->value == "200%");
+    }
+    // Hosting: the title's Host page is the code and Stop; the lobby's difficulty is the session's then.
+    Menu h;
+    h.Show(CoopTitleMenu::Options{});
+    h.SetTitle(true);
+    h.SetSession(Hosting(1));
+    h.Open(Page::kHost);
+    CHECK(RowNamed(h.view(), "Difficulty") == nullptr);
 }
 
 TEST_CASE("pause tab: Settings: Character by age shows only with the mod, then the two rows pick round the list") {

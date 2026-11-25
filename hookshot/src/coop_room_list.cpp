@@ -37,11 +37,27 @@ bool Joinable(const Room& r, int my_protocol) {
 }
 
 static_assert(kPublicListingBit == coop::protocol::kPublicListingBit);
+static_assert(kListingDifficultyShift == coop::protocol::kListingDifficultyShift);
 
 Room FromListing(std::string room, std::string host, int players, int max, int version) {
-    Room r{std::move(room), std::move(host), players, max, version & ~int{coop::protocol::kPublicListingBit}, false, false};
-    r.is_public = (version & coop::protocol::kPublicListingBit) != 0;
+    const auto v = static_cast<std::uint16_t>(version);
+    Room r{std::move(room), std::move(host), players, max, coop::protocol::listing_protocol(v), false, false};
+    r.is_public = (v & coop::protocol::kPublicListingBit) != 0;
+    r.difficulty = static_cast<int>(coop::protocol::listing_difficulty(v));
     return r;
+}
+
+const char* DifficultyWord(int listed) {
+    using L = coop::protocol::ListedDifficulty;
+    switch (static_cast<L>(listed)) {
+    case L::automatic: return "Automatic";
+    case L::easy: return "Easy";
+    case L::normal: return "Normal";
+    case L::hard: return "Hard";
+    case L::custom: return "Custom";
+    case L::none: break;
+    }
+    return "";
 }
 
 std::string DetailText(const Room& r, int my_protocol) {
@@ -57,6 +73,8 @@ std::string DetailText(const Room& r, int my_protocol) {
                                               : Tr("Players") + " " + std::to_string(r.players) + "/" +
                                                     std::to_string(r.max));
     }
+    // (the lobby's difficulty, the host's pick when making it: the Difficulty row's own words)
+    if (const char* word = DifficultyWord(r.difficulty); word[0] != 0) out += Tr(", ") + Tr(word);
     return out;
 }
 

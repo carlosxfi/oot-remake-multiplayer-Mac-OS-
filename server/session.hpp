@@ -101,6 +101,10 @@ struct SessionConfig {
   // out"): a player at no hearts is downed and can be revived. On unless the
   // server or the host turns it off; every player gets the value at join.
   protocol::DbnoMode dbno{};
+  // Difficulty (coop_server --difficulty; the host's choice when it made the lobby, HosCoopHostOptions): in force
+  // from the first player on, and again whenever the session empties. The host may change it in the session
+  // (DIFFICULTY). Default: automatic, by the number of players.
+  protocol::DifficultyChoice difficulty{};
   // Guessing the join password: an address that sends max_wrong_passwords
   // wrong proofs within wrong_password_window_us is closed at connect for
   // wrong_password_block_us (counted in password_blocked). 0: no limit.
@@ -660,6 +664,8 @@ class Session {
   const protocol::DbnoMode& dbno() const { return dbno_; }
   // The difficulty in force now, as every player has been told (DIFFICULTY).
   protocol::Difficulty difficulty() const;
+  // The session's choice now (the room list's listing shows it: protocol/difficulty.hpp with_listed_difficulty).
+  const protocol::DifficultyChoice& difficulty_choice() const { return difficulty_; }
   // (Navi) New Game+: the hosting game's level (protocol/difficulty.hpp
   // ngplus_difficulty), on top of the difficulty in force; a change is told
   // to everyone at once. 0: none. Only the in-game host's server sets it.
@@ -967,6 +973,8 @@ class Session {
   // but `except` (the joiner, told already; the leaver). Nothing when the
   // values in force are the ones told before, as with the host's own choice.
   void tell_difficulty_change(ConnectionId except);
+  // SessionConfig::difficulty with its custom values kept within the sliders' ends.
+  protocol::DifficultyChoice lobby_difficulty() const;
   void on_mods(ConnectionId id, Connection& c, protocol::Message& message);
   // The Lobby: the host's kick, ban and mutes (docs/protocol.md "Lobby").
   void on_lobby(ConnectionId id, const protocol::LobbyAction& a, std::uint64_t now_us);
@@ -1227,10 +1235,9 @@ class Session {
   // told, so its game gets their beaten sets (G2, #241). Forgotten when the host loads a save and when the session
   // empties.
   std::map<std::pair<std::uint8_t, std::string>, protocol::BossScene> boss_beaten_;
-  // Difficulty (protocol/difficulty.hpp): automatic, by the number of
-  // players, until the host chooses; the host's choice then stays whoever
-  // joins or leaves, a new host included. Automatic again when the session
-  // empties. `difficulty_set_by_` is DIFFICULTY's set_by; `difficulty_told_`
+  // Difficulty (protocol/difficulty.hpp): the lobby's (SessionConfig::difficulty, automatic by default) until the
+  // host chooses; the host's choice then stays whoever joins or leaves, a new host included. The lobby's again
+  // when the session empties (lobby_difficulty). `difficulty_set_by_` is DIFFICULTY's set_by; `difficulty_told_`
   // the values the players in the session were last told.
   protocol::DifficultyChoice difficulty_;
   std::uint8_t difficulty_set_by_ = 0;

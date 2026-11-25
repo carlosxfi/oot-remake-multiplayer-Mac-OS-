@@ -86,6 +86,9 @@ struct CommandLine {
   std::uint16_t game_port = 27512;
   // --pvp on|off: players hurt each other (docs/play-online.md, "PvP").
   bool pvp = false;
+  // --difficulty auto|easy|normal|hard|custom:LIFE,DAMAGE,ENEMIES: the lobby's difficulty from the start
+  // (docs/play-online.md, "Difficulty"); automatic by default. The host can change it in the game.
+  protocol::DifficultyChoice difficulty{};
   // --dbno on|off: down but not out (docs/play-online.md); on by default.
   bool dbno = true;
   // --approve-joins: the host lets each new player in (docs/protocol.md,
@@ -102,6 +105,10 @@ struct CommandLine {
 
 // Parses the arguments after the program name. On a mistake, returns nothing
 // and puts the reason in `error`.
+// --difficulty's value: auto, easy, normal, hard, or custom:LIFE,DAMAGE,ENEMIES (percent, steps of 25, each within
+// its slider's ends; bosses as the other enemies). Nothing when it is not one.
+std::optional<protocol::DifficultyChoice> parse_difficulty(const std::string& text);
+
 std::optional<CommandLine> parse_command_line(const std::vector<std::string>& args,
                                               std::string& error);
 
