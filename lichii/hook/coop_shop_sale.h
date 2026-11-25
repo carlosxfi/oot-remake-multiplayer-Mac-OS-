@@ -154,19 +154,22 @@ private:
 // The frogs (Zora's River, MiniGame_FrogTenors.bfevfl, read from the romfs): TeachNewMusic pays each song once,
 // asked by its own Bool (MiniGame_FrogTenors_<song>, set as the song is taught); the bug game (MushiToriGame) pays
 // the Heart Piece while MiniGame_FrogTenors_InsectRepellent is 0 (event 100; the first win sets it, event 63) and a
-// Blue Rupee after. Under OOTRR ("ZR Frogs <song>", "ZR Frogs Bug Game") each payout is the seed's item, so every
-// player got all six again; in the base game each player got the song rupees and a second Heart Piece (a count:
-// the whole group's). The bug game opens on MiniGame_FrogTenors_SongClear, which the frogs' own talk sets once all
-// six song Bools are 1 (events 13-19), so a game with the shared five still opens it after its own Song of Storms;
-// MiniGame_FrogTenors_StormSong (no payout; the water's room object, coop_room_objects.cpp) stays each game's own,
-// and so do the payout tier (MiniGame_FrogTenors_GetCount) and the bug game's win count.
+// Blue Rupee after. The Song of Storms pays a Heart Piece too: event 22 (MiniGame_FrogTenors_StormSong clear) ->
+// 167 -> 184 -> fork 141 (146 -> 23 sets the Bool) -> 145 -> 247 GetInEvent Obj_Heart_Piece; the scene's
+// HeartPieceAnchor names the same Bool. Under OOTRR ("ZR Frogs <song>", "ZR Frogs Ocarina Game" = event 247, in every
+// seed's pool, "ZR Frogs Bug Game") each payout is the seed's item, so every player got all seven again; in the base
+// game each player got the song rupees and the group two Heart Pieces more. All six song Bools are shared, so the
+// frogs' own talk sets MiniGame_FrogTenors_SongClear (events 13-19) and opens the bug game in every game. The Storms
+// Bool is also the only input of Zora's River's water group (coop_room_objects.cpp kGroupFlags): shared, it moves
+// that water in every game, as the dungeon groups do. The payout tier (MiniGame_FrogTenors_GetCount) and the bug
+// game's win count stay each game's own.
 struct GiftFlag {
     std::uint32_t hash;  // Murmur3 x86 32, seed 0, of the name
     std::string_view name;
     std::string_view what;  // for the log
 };
 
-inline constexpr std::array<GiftFlag, 21> kOnceGifts{{
+inline constexpr std::array<GiftFlag, 22> kOnceGifts{{
     {0xbc9cec9b, "HavePlayedEvent.Dm_Title_0080", "the Death Mountain Trail Great Fairy's gift (Din)"},
     {0x93ada401, "HavePlayedEvent.Dm_Title_0096", "the Hyrule Castle Great Fairy's gift (Power)"},
     {0x0f39b5f4, "HavePlayedEvent.Dm_Title_0110", "the Zora's Fountain Great Fairy's gift (Farore)"},
@@ -187,6 +190,7 @@ inline constexpr std::array<GiftFlag, 21> kOnceGifts{{
     {0xf675a0f2, "MiniGame_FrogTenors_SariaSong", "the frogs' Saria's Song payout"},
     {0x61305ed4, "MiniGame_FrogTenors_SunSong", "the frogs' Sun's Song payout"},
     {0xcc4216b9, "MiniGame_FrogTenors_TimeSong", "the frogs' Song of Time payout"},
+    {0xd578df95, "MiniGame_FrogTenors_StormSong", "the frogs' Song of Storms Heart Piece"},
     {0x8ffec767, "MiniGame_FrogTenors_InsectRepellent", "the frogs' bug game Heart Piece"},
 }};
 

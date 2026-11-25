@@ -80,5 +80,5 @@ mark a-bridge-after
 setflag HaveTalked_Special.Npc_Goron_Medigoron_Adult_Talk_Event26 1
 wait 600
 mark a-medigoron-set
-wait 2400
+wait 4800                  # B plays the Lullaby, then the Song of Storms: its Bool must arrive here
 mark end
