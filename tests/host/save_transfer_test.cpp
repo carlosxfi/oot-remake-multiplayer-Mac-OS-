@@ -1177,3 +1177,70 @@ TEST_CASE("save transfer: the slot last played is kept through the title (the ho
   CHECK_FALSE(p.slot());
   CHECK(p.last() == a);
 }
+
+TEST_CASE("save transfer: a guest that leaves is back on its own saves at once, never under a game played") {
+  // remount-leave (owner 2026-11-25): every way a guest's session ends. A guest frame as CoopSave runs it: a session
+  // that is over ends the choice on the title (decide_again) or keeps it with a file loaded (g_ended); then HomeFrame
+  // remounts the own folder (RemountLocked: the title re-reads its list) when home_due says so. With no session at all
+  // (the menu's Leave: CoopSave::SoloFrame) every frame is `over`.
+  struct Guest {
+    bool decided = true, use = true, ended = false, on_coop = true;
+    int remounts = 0;
+    void frame(bool over, bool title_menu, bool in_game) {
+      if (over) {
+        if (save::decide_again(decided, true, in_game)) {
+          decided = use = ended = false;
+        } else if (decided) {
+          ended = true;
+        }
+      }
+      if (save::home_due(on_coop, title_menu, in_game, decided && use)) {
+        on_coop = false;
+        ++remounts;
+      }
+    }
+  };
+  // Leave from the menu on the title (and a leave with the title's load list open, which the title re-reads quietly).
+  Guest g;
+  g.frame(true, true, false);
+  CHECK_FALSE(g.on_coop);
+  CHECK(g.remounts == 1);
+  g.frame(true, true, false);
+  CHECK(g.remounts == 1);   // once
+  // Leave while a file is picked or loading (the title's menu not up): home when the menu is back, not before.
+  g = Guest{};
+  g.frame(true, false, false);
+  CHECK(g.on_coop);
+  g.frame(true, true, false);
+  CHECK_FALSE(g.on_coop);
+  // Leave IN GAME: the choice is kept and the folder untouched for every frame of play (the autosave, the save prompt,
+  // Game Over's save go to the co-op folder it plays from, never its own slots); home on the next title (Save and
+  // quit, a soft reset, Game Over's Quit). Before, with no session the frame never ran again: the co-op folder stayed
+  // until the next session.
+  g = Guest{};
+  for (int i = 0; i < 3; ++i) g.frame(true, false, true);
+  CHECK(g.on_coop);
+  CHECK(g.ended);
+  CHECK(g.decided);
+  g.frame(true, true, false);
+  CHECK_FALSE(g.on_coop);
+  CHECK_FALSE(g.decided);
+  // Kicked or banned (the client's refused state), a join refused after the co-op folder was mounted (a later
+  // REFUSED), the client stopped: `over` in SwitchFrame, the same steps.
+  CHECK(save::decide_again(true, true, false));
+  // A drop or a timeout: the client retries (a reconnect is no end, the server may be restarting): kept, as is a
+  // live guest.
+  g = Guest{};
+  g.frame(false, true, false);
+  CHECK(g.on_coop);
+  // The host quits and this guest hosts now: alone it goes home, with others staying it keeps the group's save
+  // (row 273, rejoin-host-273-3).
+  CHECK(save::role_changed(true, true, false, true));
+  CHECK(save::home_due(true, true, false, save::keeps_group_save(true, false)));     // (decided as host: held = group)
+  CHECK_FALSE(save::home_due(true, true, false, save::keeps_group_save(true, true)));
+  // Already on its own folder (a guest that left before the host's save came in): nothing to remount.
+  g = Guest{};
+  g.on_coop = false;
+  g.frame(true, true, false);
+  CHECK(g.remounts == 0);
+}

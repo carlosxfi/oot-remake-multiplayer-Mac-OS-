@@ -498,14 +498,15 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             const auto to = static_cast<std::size_t>(w.back().data() + w.back().size() - line.data());
             step.mark = std::string(line.substr(from, to - from));
         } else if (cmd == "MENU") {
-            // menu customize|close|host|paste: the Customize page opened, the menu closed, the game hosts through the
-            // Multiplayer page's Host (hookshot.py --host-in-game: LICHII_COOP_TEST_HOST), or joins with the clipboard's
-            // code as the page's "Paste code and join" (private-lobby-fix). Test only.
+            // menu customize|close|host|paste|leave: the Customize page opened, the menu closed, the game hosts through the
+            // Multiplayer page's Host (hookshot.py --host-in-game: LICHII_COOP_TEST_HOST), joins with the clipboard's
+            // code as the page's "Paste code and join" (private-lobby-fix), or leaves the
+            // session as the page's Leave row does (remount-leave). Test only.
             std::string page = w.size() == 2 ? std::string(w[1]) : std::string{};
             std::transform(page.begin(), page.end(), page.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (page != "customize" && page != "close" && page != "host" && page != "paste") {
-                return fail("want: menu customize|close|host|paste");
+            if (page != "customize" && page != "close" && page != "host" && page != "paste" && page != "leave") {
+                return fail("want: menu customize|close|host|paste|leave");
             }
             step.kind = Kind::menu;
             step.mark = page;

@@ -85,6 +85,11 @@ bool HostHasNoSave();
 // Hookshot: a session has chosen its save folder and is still connected (false before that, and once it ended:
 // the host dropped, the link went, Leave). A title waiting for the host's save stops when it goes off.
 bool SessionLive();
+// Emulator thread, each frame with no session (solo, after the menu's Leave; also with a code mod): the session that
+// chose the save folder is over. A guest on the co-op folder (the host's save) goes back to its own saves on the
+// title's menu, never under a file being played (remount-leave; OnFrame does the same for a session that ended with
+// its client still kept: a kick, a refused join, a host migration).
+void SoloFrame();
 // Row 63, Gold Skulltulas Not shared, a guest: the game plays from the co-op folder whose host's save was written with
 // our race (coop_gold_mode.h), so the Skulltulas it shows are ours and the hook keeps the race from them.
 bool PlaysRaceSave();

@@ -4279,6 +4279,7 @@ void OnFrameBody(Core::System& system) {
         coop->Frame(system);
         break;
     case CoopSessionEnd::Path::solo:
+        CoopSave::SoloFrame();   // remount-leave: a guest that left goes back to its own saves on the title
         LocalFrameOff(system, true);
         break;
     case CoopSessionEnd::Path::read_only: {
@@ -4290,6 +4291,7 @@ void OnFrameBody(Core::System& system) {
                            "Customize picture, menus, settings); nothing is written to the game (story and map "
                            "mends, split screen, a left session's clean-up) while the mod is installed");
         }
+        CoopSave::SoloFrame();   // (the save folder only, through the exe's own mount: nothing written to the game)
         LocalFrameOff(system, false);
         break;
     }

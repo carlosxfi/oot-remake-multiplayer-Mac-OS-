@@ -965,6 +965,18 @@ TEST_CASE("testinput: menu paste hands the hook the clipboard's join (private-lo
     CHECK(requests[0].name == "paste");
 }
 
+TEST_CASE("testinput: menu leave leaves the session as the Multiplayer page's Leave row (remount-leave)") {
+    std::string error;
+    CHECK_FALSE(Parse("menu leave now\n", error));
+    Runner r(Must("menu Leave\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::menu);
+    CHECK(requests[0].name == "leave");
+}
+
 TEST_CASE("testinput: the bridge's act allows only the listed kinds and refuses the whole script otherwise") {
     const auto& allowed = ActKinds();
     CHECK(NotAllowed(Must("kill Enemy_Test\nhit Enemy_Test 2\nhurt 2\nplace 1 2 3\nface 1 2\nchat hello"), allowed).empty());
