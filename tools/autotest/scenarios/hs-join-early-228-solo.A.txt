@@ -1,0 +1,4 @@
+# hs-join-early-228-solo, A: idles (the solo control is B's).
+mark s-start
+wait 1800
+mark s-end

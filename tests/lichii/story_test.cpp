@@ -581,6 +581,34 @@ TEST_CASE("story effects: the owl's HyruleField_ArriveEntrance, which starts the
     REQUIRE(CoopStory::Find(owl->played) != nullptr);
 }
 
+TEST_CASE("story effects: an area's first scene played elsewhere gives its visit: its Map page opens (row 228)") {
+    // Dm_HrlField_0000 shows the Hyrule Field banner (EventTriggerOpenLocationUI), whose UI graph sets
+    // IsVisitLocation.HyruleField; the Map page shows "Unavailable right now." without it. A guest whose
+    // Dm_HrlField_0000 came from the host never ran it.
+    const auto* field = FindEffect("Dm_HrlField_0000", "IsVisitLocation.HyruleField");
+    REQUIRE(field != nullptr);
+    CHECK(field->played == 0xd35d3f12u);  // HavePlayedEvent.Dm_HrlField_0000, a shared story flag
+    CHECK(field->flag == 0xdda673cbu);
+    CHECK(field->value);
+    REQUIRE(CoopStory::Find(field->played) != nullptr);
+    auto due = Due({{field->played, true}, {field->flag, false}});
+    CHECK(std::find(due.begin(), due.end(), field) != due.end());
+    CHECK(Due({{field->played, true}, {field->flag, true}}).empty());
+    // The owl's scene shows the same banner: either one played gives the visit, once.
+    const auto* owl = FindEffect("HyruleField_Goto_HyruleCastle_Kaepora", "IsVisitLocation.HyruleField");
+    REQUIRE(owl != nullptr);
+    CHECK(Due({{owl->played, true}, {field->played, true}, {field->flag, false}}).size() == 1);
+    // Every visit row names a location's IsVisitLocation and sets it to 1.
+    std::size_t visits = 0;
+    for (const auto& e : CoopStory::Effects()) {
+        if (std::string_view(e.name).starts_with("IsVisitLocation.")) {
+            ++visits;
+            CHECK(e.value);
+        }
+    }
+    CHECK(visits >= 15);
+}
+
 TEST_CASE("story effects: due only once the event played, while the flag is read and not its value") {
     const auto* owl = FindEffect("HyruleField_Goto_HyruleCastle_Kaepora", "HyruleField_ArriveEntrance");
     REQUIRE(owl != nullptr);
