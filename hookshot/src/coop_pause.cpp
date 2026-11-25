@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "coop_pause.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -32,6 +33,7 @@
 #include "coop_lan_net.h"
 #include "coop_lobby_game.h"
 #include "coop_lobby_tab.h"
+#include "coop_local_start.h"
 #include "coop_look.h"
 #include "coop_look_view.h"
 #include "coop_mods_tab.h"
@@ -280,6 +282,9 @@ const std::string& ExefsList() {
     }();
     return text;
 }
+
+// The Local co-op page's Start (below, with the local co-op host).
+void LocalAsked(int games);
 
 namespace {
 
@@ -1025,6 +1030,9 @@ void Act(const Request& r) {
         FeedCharacterAges();
         break;
     }
+    case Request::Kind::kLocalStart:   // (the Local co-op page's Start: this PC's other games, into this game's session)
+        LocalAsked(std::atoi(r.text.c_str()));
+        break;
     case Request::Kind::kNgPlus: {   // (Navi) New Game+ (coop_ngplus.h)
         CoopNgPlus::SetLevel(std::atoi(r.text.c_str()));
         g_menu.SetNgPlus(CoopNgPlus::Level(), CoopNgPlus::Unlocked(), CoopNgPlus::Hearts());
@@ -1180,10 +1188,167 @@ void LocalHostStep() {
     o.relay_key.clear();
     o.relay_room.clear();
     o.list_room = false;
+    // (every game of this PC fits: the session is this PC's alone, and a player's own "Players when you host" of 2
+    // left games 3 and 4 out)
+    o.max_players = std::max(o.max_players, CoopPauseMenu::kLocalMost);
     LOG_INFO(Core, "coop: multiplayer tab: local co-op: this game hosts the session of this PC's games (port {}, "
                    "127.0.0.1 only)", port);
     CoopHookshot::HostMenu().LoopbackNextHost();   // (this host only: a later Host from the menu is a usual one)
     if (!Host(o, true)) LOG_WARNING(Core, "coop: multiplayer tab: local co-op: the host did not start");
+}
+
+// Local co-op from the game (the Local co-op page's Start, coop_local_start.h): this game hosts the session (as the
+// launcher's game 1 does, LocalHostStep) and then runs the kit's launcher, which starts the games of players 2 to N
+// that do not run into it. g_mutex.
+struct LocalRun {
+    int games = 0;                    // the local session's games, this one included (0: none in this game)
+    CoopLocalStart::Session session;  // its port and password
+    bool launch = false;              // the launcher runs once this game hosts
+    bool waiting = false;             // its answer (CoopLocalStart::kResultFile) is awaited, since asked_ms
+    std::uint64_t asked_ms = 0;
+    std::uint64_t counted_ms = 0;     // this PC's games last counted (every 2 s while the page shows)
+    std::string note, problem;
+};
+LocalRun g_local;
+
+std::filesystem::path LocalRoot() {
+    return CoopRuntime::GameDir() / "local-players";
+}
+
+bool LocalOffered() {
+    static const bool offered = CoopLocalStart::Offered(CoopFiles::FindKit(), CoopRuntime::GameDir());
+    return offered;
+}
+
+void LocalStart(int games) {
+    games = std::clamp(games, CoopPauseMenu::kLocalFewest, CoopPauseMenu::kLocalMost);
+    if (!LocalOffered()) {
+        g_local.note = "This game cannot start the others.";
+        return;
+    }
+    const bool ours = g_local.games > 0 && g_doing == "hosting";
+    if (!ours) {
+        if (Busy()) {
+            g_local.note = "Leave this game first.";
+            return;
+        }
+        // (this game was closed and started again while the others ran: they keep their session, so this game
+        // hosts that one again and they can join it again; else a new one)
+        CoopLocalStart::Session s;
+        for (const int p : CoopLocalStart::RunningPlayers(CoopRuntime::GameDir())) {
+            const auto old =
+                CoopLocalStart::SessionOf(ReadText(LocalRoot() / ("player" + std::to_string(p)) / "coop.ini"));
+            if (old && CoopLocalStart::PortFree(old->port)) {
+                s = *old;
+                break;
+            }
+        }
+        if (s.port == 0) {
+            s.port = CoopLocalStart::FreePort();
+            const auto wall = static_cast<std::uint64_t>(std::chrono::system_clock::now().time_since_epoch().count());
+            s.password = CoopLocalStart::NewPassword(
+                NowMs() ^ wall ^ (static_cast<std::uint64_t>(CoopLocalStart::ThisPid()) << 32));
+        }
+        if (s.port == 0) {
+            g_local.note = "No free port on this PC for the session.";
+            LOG_WARNING(Core, "coop: multiplayer tab: local co-op: no free UDP port from {}", CoopLocalStart::kFirstPort);
+            return;
+        }
+        g_local.session = s;
+        g_local_host = std::make_pair(s.port, s.password);   // (LocalHostStep hosts it at this Tick)
+        // This game is player 1: controller 1 and the keyboard, for this run (its own choice kept when it made one;
+        // with every controller, the other players' pads moved this Link too)
+        if (CoopInput::Current().pad == CoopInput::kAuto) {
+            CoopInput::Apply({1, CoopInput::Keyboard::Focus});
+            LOG_INFO(Core, "coop: multiplayer tab: local co-op: this game reads controller 1 and the keyboard (this run)");
+        }
+    }
+    g_local.games = games;
+    g_local.launch = true;
+    g_local.note.clear();
+    g_local.problem.clear();
+    LOG_INFO(Core, "coop: multiplayer tab: local co-op: {} games on this PC asked ({})", games,
+             ours ? "this game hosts them already" : "this game hosts them first");
+}
+
+void LocalLaunch(std::uint64_t now) {
+    g_local.launch = false;
+    const auto kit = CoopFiles::FindKit();
+    const std::filesystem::path exe = CoopLocalStart::ThisExe();
+    if (!kit || exe.empty()) {
+        g_local.note = "The launcher was not found.";
+        return;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(LocalRoot(), ec);
+    const std::filesystem::path result = LocalRoot() / CoopLocalStart::kResultFile;
+    std::filesystem::remove(result, ec);
+    const std::string cmd =
+        CoopLocalStart::CommandLine(*kit, exe, g_local.games, g_local.session, CoopLocalStart::ThisPid(), result);
+    if (!CoopLocalStart::Launch(cmd)) {
+        g_local.note = "The launcher did not start.";
+        LOG_WARNING(Core, "coop: multiplayer tab: local co-op: powershell did not start (kit {})", CoopFiles::Utf8Path(*kit));
+        return;
+    }
+    g_local.waiting = true;
+    g_local.asked_ms = now;
+    LOG_INFO(Core, "coop: multiplayer tab: local co-op: the launcher starts the games of players 2 to {} that do not "
+                   "run (port {})", g_local.games, g_local.session.port);
+}
+
+void LocalAsked(int games) {
+    LocalStart(games);
+    g_local.counted_ms = 0;   // (the page follows at once)
+}
+
+// Each Tick: the launcher run once this game hosts, its answer read, and this PC's games counted for the page.
+void LocalStep(std::uint64_t now) {
+    if (g_local.games > 0 && !g_local_host) {
+        const HosCoopStatus st = Status();
+        const bool hosting = g_doing == "hosting" && st.state != HOS_COOP_IDLE && st.state != HOS_COOP_FAILED;
+        if (g_local.launch && hosting && st.state == HOS_COOP_HOSTING) {
+            LocalLaunch(now);
+        } else if (!hosting && !g_local.waiting) {   // (the host did not start, or was stopped: no local session)
+            if (g_local.launch) g_local.note = "This game could not host: see Host a game.";
+            g_local.games = 0;
+            g_local.launch = false;
+        }
+    }
+    if (g_local.waiting) {
+        if (const auto r = CoopLocalStart::ParseResult(ReadText(LocalRoot() / CoopLocalStart::kResultFile))) {
+            g_local.waiting = false;
+            g_local.note = CoopLocalStart::ResultNote(*r);
+            g_local.problem = r->problem;
+            LOG_INFO(Core, "coop: multiplayer tab: local co-op: launcher: {} started, {} ran already, {} did not start{}{}",
+                     r->started.size(), r->running.size(), r->failed.size(), r->problem.empty() ? "" : ": ", r->problem);
+        } else if (now - g_local.asked_ms > CoopLocalStart::kAnswerMs) {
+            g_local.waiting = false;
+            g_local.note = "The launcher did not answer.";
+            LOG_WARNING(Core, "coop: multiplayer tab: local co-op: no answer from the launcher in {} s",
+                        CoopLocalStart::kAnswerMs / 1000);
+        }
+    }
+    const bool shown = (g_shown || g_native) && g_menu.page() == CoopPauseMenu::Page::kLocal;
+    if (!shown || (g_local.counted_ms != 0 && now - g_local.counted_ms < 2000)) return;
+    g_local.counted_ms = now;
+    CoopPauseMenu::LocalGames l;
+    const std::filesystem::path game = CoopRuntime::GameDir();
+    const int player = CoopLocalStart::PlayerOf(game);
+    l.player = player >= CoopPauseMenu::kLocalFewest ? player : 0;
+    l.offered = l.player == 0 && LocalOffered();
+    l.asked = g_local.games;
+    if (l.offered) {
+        int running = 1;   // (this game; then the others of this session's count)
+        for (const int p : CoopLocalStart::RunningPlayers(game)) {
+            if (g_local.games == 0 || p <= g_local.games) ++running;
+        }
+        l.running = running;
+    }
+    if (g_local.games > 0) l.joined = std::max(1, static_cast<int>(Status().players));
+    l.starting = g_local.launch || g_local.waiting;
+    l.note = g_local.note;
+    l.problem = g_local.problem;
+    g_menu.SetLocal(std::move(l));
 }
 
 void Init(bool coop_on) {
@@ -1191,6 +1356,11 @@ void Init(bool coop_on) {
     g_coop_on = coop_on;
     if (const char* local = std::getenv(CoopHostMenu::kLocalHostEnv); local != nullptr && *local != 0) {
         g_local_host = coop_on ? std::nullopt : CoopHostMenu::ParseTestHost(local);
+        if (g_local_host) {   // (the launcher's game 1: its session is the page's, so Start missing games adds to it)
+            g_local.session = {g_local_host->first, g_local_host->second};
+            g_local.games = std::clamp(CoopLocalStart::GamesListed(ReadText(LocalRoot() / "instances.txt")),
+                                       CoopPauseMenu::kLocalFewest, CoopPauseMenu::kLocalMost);
+        }
         if (!g_local_host) {
             LOG_WARNING(Core, "coop: multiplayer tab: local co-op: {} {}: not hosting", CoopHostMenu::kLocalHostEnv,
                         coop_on ? "with a server in coop.ini" : "is not PORT:PASSWORD");
@@ -1285,6 +1455,7 @@ void Tick() {
     Follow(Status());
     RefreshFound(now);
     LocalHostStep();
+    LocalStep(now);
     LanJoinStep(now);
     // (a test's trigger, LICHII_COOP_TEST_TO_TITLE=1 only: a file "to-title.now" in the game's folder starts the way
     // back to the title a join with a file loaded takes, with no host to join)

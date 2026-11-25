@@ -250,6 +250,15 @@ public static class KitLocalWin32 {
         return found;
     }
     public static int[] WorkArea() { int[] r = new int[4]; SystemParametersInfo(0x30, 0, r, 0); return r; }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, int[] r);
+    [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
+    [DllImport("user32.dll")] public static extern bool GetMonitorInfo(IntPtr m, int[] info);
+    // (a window as big as its whole monitor: full screen, left as it is)
+    public static bool FillsScreen(IntPtr h) {
+        int[] w = new int[4]; if (!GetWindowRect(h, w)) return false;
+        int[] mi = new int[10]; mi[0] = 40; if (!GetMonitorInfo(MonitorFromWindow(h, 2), mi)) return false;
+        return w[0] <= mi[1] && w[1] <= mi[2] && w[2] >= mi[3] && w[3] >= mi[4];
+    }
 }
 '@
 }
@@ -350,5 +359,91 @@ function Start-KitLocalCoop([string]$Kit, [string]$Exe, [int]$Players, [int]$Pau
     }
     $n = Set-KitLocalWindows $games
     Write-Host "Local co-op: $n of $Players windows placed."
+    return $games
+}
+
+# The players 2..N whose game runs now (a longshot.exe started from <game>\local-players\playerN).
+function Get-KitLocalRunning([string]$Game) {
+    $root = (Join-Path $Game 'local-players').TrimEnd('\') + '\'
+    $out = @()
+    foreach ($p in @(Get-Process longshot -ErrorAction SilentlyContinue)) {
+        $path = "$($p.Path)"
+        if (-not $path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        if ($path.Substring($root.Length) -match '^(?i)player([2-9])\') { $out += [int]$Matches[1] }
+    }
+    return @($out | Sort-Object -Unique)
+}
+
+# Started from game 1 (its Local co-op page, Start the games / Start missing games: the module runs
+# local-coop-start.ps1): game 1 runs already and hosts the session on $Port with $Password; the games of players 2 to
+# $Players that do not run are started into it, as Start-KitLocalCoop starts them (the same folders, files, controllers,
+# frame cap), and placed in their part of the screen (game 1's own window is moved too unless it fills the screen).
+# A game that runs already is left as it is (its player is in, or joins again from its own menu). $Result gets what
+# happened, for the game's page: started=2,3 / running=4 / failed=... / problem=<one line>. Returns the started games.
+function Add-KitLocalCoop([string]$Kit, [string]$Exe, [int]$Players, [int]$Port, [string]$Password, [int]$HostPid, [string]$Result) {
+    $game = Split-Path -Parent $Exe
+    $Players = [math]::Max(2, [math]::Min(4, $Players))
+    $running = @(Get-KitLocalRunning $game)
+    $fps = Get-KitLocalFps $Kit
+    $folders = @()
+    $want = @()
+    $problem = ''
+    for ($p = 2; $p -le $Players; $p++) {
+        $inst = Join-Path (Join-Path $game 'local-players') "player$p"
+        $folders += $inst
+        if ($running -contains $p) { continue }
+        foreach ($l in @(Sync-KitLocalInstance $game $inst)) { if (-not $problem) { $problem = $l } }
+        Write-KitLocalPlayer $inst $Kit $p $Port $Password $fps
+        $want += $p
+    }
+    # (players past $Players that run stay listed, so collect-logs still takes their logs)
+    foreach ($r in $running) { if ($r -gt $Players) { $folders += (Join-Path (Join-Path $game 'local-players') "player$r") } }
+    Write-KitLocalInstances $game $folders
+    $ram = 0
+    try { $ram = [math]::Round(((Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory) / 1GB) } catch { }
+    $slow = if ($ram -and $ram -lt 10 * $Players) { "This PC has $ram GB of RAM for $Players games: it may run slowly." } else { '' }
+    $started = @(); $failed = @(); $games = @()
+    $saved = @{}
+    foreach ($k in $script:KitLocalKeys + @('OOT_COOP_LOCAL_HOST', 'HOS_WINDOW_NOACTIVATE', 'HOS_FULLSCREEN', 'HOS_FPS_MAX')) { $saved[$k] = [Environment]::GetEnvironmentVariable($k) }
+    try {
+        foreach ($p in $want) {
+            Set-KitLocalEnvironment $p $Port $Password $fps
+            $exeN = Join-Path $folders[$p - 2] (Split-Path -Leaf $Exe)
+            $g = $null
+            try { $g = Start-Process -FilePath $exeN -WorkingDirectory (Split-Path -Parent $exeN) -PassThru -ErrorAction Stop } catch { if (-not $problem) { $problem = "Player $p's game did not start: $($_.Exception.Message)" } }
+            if ($g) { $started += $p; $games += $g } else { $failed += $p }
+        }
+    } finally {
+        foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
+    }
+    if (-not $problem) { $problem = $slow }   # (a game that did not start says more than the RAM)
+    $line = "started=$($started -join ',')`r`nrunning=$(@($running | Where-Object { $_ -le $Players }) -join ',')`r`nfailed=$($failed -join ',')`r`nproblem=$problem`r`n"
+    if ($Result) { try { [System.IO.File]::WriteAllText($Result, $line) } catch { } }
+    # The windows: every game of the session in its part of the screen (game 1 too when it is in a window).
+    try {
+        Initialize-KitLocalWin32
+        $rects = Get-KitLocalRects (Get-KitLocalWorkArea) $Players
+        if ($HostPid -gt 0) {
+            $h = [KitLocalWin32]::MainWindow([uint32]$HostPid)
+            if ($h -ne [IntPtr]::Zero -and -not [KitLocalWin32]::FillsScreen($h)) {
+                $r = $rects[0]
+                [void][KitLocalWin32]::SetWindowPos($h, [IntPtr]::Zero, $r[0], $r[1], $r[2], $r[3], 0x0010 -bor 0x0004 -bor 0x0200)
+            }
+        }
+        $until = (Get-Date).AddSeconds(120)
+        $placed = @{}
+        while ($placed.Count -lt $games.Count -and (Get-Date) -lt $until) {
+            for ($i = 0; $i -lt $games.Count; $i++) {
+                if ($placed[$i]) { continue }
+                if ($games[$i].HasExited) { $placed[$i] = $true; continue }
+                $h = [KitLocalWin32]::MainWindow([uint32]$games[$i].Id)
+                if ($h -eq [IntPtr]::Zero) { continue }
+                $r = $rects[$started[$i] - 1]
+                [void][KitLocalWin32]::SetWindowPos($h, [IntPtr]::Zero, $r[0], $r[1], $r[2], $r[3], 0x0010 -bor 0x0004 -bor 0x0200)
+                $placed[$i] = $true
+            }
+            Start-Sleep -Milliseconds 500
+        }
+    } catch { }
     return $games
 }

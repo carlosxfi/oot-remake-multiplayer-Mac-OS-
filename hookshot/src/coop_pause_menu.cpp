@@ -687,6 +687,12 @@ std::vector<Menu::Line> Menu::Lines() const {
         break;
     }
     case Page::kLocal:
+        if (local_.offered || local_.player >= kLocalFewest) {
+            LocalLines(out);
+            break;
+        }
+        // (no launcher to start the others from here: a Linux game, a game with no kit, a Nucleus Co-op instance:
+        // the steps by hand)
         out.push_back({Note("Split screen (experimental): two full games on this PC."), Act::kNone, {}});
         out.push_back({Note("1. Two kits (or Nucleus Co-op), each started once."), Act::kNone, {}});
         out.push_back({Note("2. Each game its own controller: Settings > Controller."), Act::kNone, {}});
@@ -858,6 +864,64 @@ std::vector<Menu::Line> Menu::Lines() const {
 // The Host and Join pages of co-op that came with the game's start (Host.bat, Join.bat, coop.ini): nothing to
 // start or stop here, so they say what is on and where the players are (the page's help: kByLauncher).
 // The title's Join list: the last game again, the games (this network's first), then Enter a code or address.
+// The Local co-op page when this game can start this PC's other games (LocalGames::offered), or is one of them: how
+// many games, one press to start them (this game hosts them; each other game is its own player with its own controller,
+// colour and name, and joins), and how they stand. A start with fewer games than asked, a game closed, a game started
+// again: the same Start row starts the missing ones into the same session.
+void Menu::LocalLines(std::vector<Line>& out) const {
+    if (local_.player >= kLocalFewest) {   // (an extra game: game 1 has the rows)
+        out.push_back({Note("This game is player " + std::to_string(local_.player) + " of this PC's games."), Act::kNone, {}});
+        out.push_back({Note("Game 1 hosts: closing it ends the session."), Act::kNone, {}});
+        out.push_back({Note("Your controller: Settings, Controller."), Act::kNone, {}});
+        return;
+    }
+    const bool local = local_.asked > 0;   // (this game hosts a local session)
+    if (InSession() && !local) {   // (a friend's game or an online one of this game's: local co-op starts its own)
+        out.push_back({Note("Leave this game first (Host or Join page)."), Act::kNone, {}});
+        out.push_back({Note("Local co-op hosts a game of its own."), Act::kNone, {}});
+        return;
+    }
+    out.push_back({Choice("Games on this PC", std::to_string(local_count_)), Act::kLocalGames,
+                   "How many games run on this PC, this one included: a player and a controller each (2 to " +
+                       std::to_string(kLocalMost) + "). This game is player 1 with controller 1 and the keyboard."});
+    const int running = std::max(local_.running, local ? 1 : 0);
+    const bool missing = !local || running < local_count_;
+    if (local_.starting) {
+        out.push_back({Action("Start the games", "Starting...", true), Act::kLocalStart,
+                       "The other games are starting. Each opens in its own window and joins this one."});
+    } else if (missing) {
+        out.push_back({Action(local ? "Start missing games" : "Start the games",
+                              local ? std::to_string(running) + " of " + std::to_string(local_count_) : std::string()),
+                       Act::kLocalStart,
+                       (local_.problem.empty() ? std::string() : local_.problem + " ") +
+                       (local ? "Starts the games of this PC that are not running (one closed, or did not start), "
+                               "into this session. Their players keep their saves, controller, colour and name."
+                             : "This game hosts a private game for this PC only, and the other games start beside it: "
+                               "each its own window, controller, colour and name. Each player then loads a save or "
+                               "presses Continue. About 10 GB of RAM a game.")});
+    }
+    if (local) {
+        out.push_back({Note("Players in: " + std::to_string(std::max(local_.joined, 1)) + " of " +
+                            std::to_string(std::max(local_.asked, local_count_))),
+                       Act::kNone, {}});
+        out.push_back({Note("Closing this game ends the session."), Act::kNone, {}});
+    }
+    if (!local_.note.empty()) out.push_back({Note(local_.note), Act::kNone, {}});
+}
+
+void Menu::SetLocal(LocalGames local) {
+    if (local == local_) return;
+    const auto before = Lines();
+    const Act act = selected_ < before.size() ? before[selected_].act : Act::kNone;
+    if (local.asked > local_.asked) local_count_ = std::clamp(local.asked, kLocalFewest, kLocalMost);   // (the launcher's count)
+    local_ = std::move(local);
+    if (page_ != Page::kLocal) return;
+    const auto after = Lines();
+    const auto same = std::find_if(after.begin(), after.end(), [act](const Line& l) { return l.act == act; });
+    if (same != after.end()) selected_ = static_cast<std::size_t>(same - after.begin());
+    Clamp();
+}
+
 void Menu::TitleListLines(std::vector<Line>& out, bool off) const {
     if (!rejoin_code_.empty()) {
         out.push_back({NamedAction("Join ", rejoin_host_, " again", "", off), Act::kRejoin,
@@ -1662,6 +1726,9 @@ void Menu::Decide(Act act) {
     case Act::kOpenLocal:
         Go(Page::kLocal);
         break;
+    case Act::kLocalStart:
+        if (!local_.starting) request_ = Request{Request::Kind::kLocalStart, std::to_string(local_count_)};
+        break;
     case Act::kOpenSettings:
         Go(Page::kSettings);
         break;
@@ -1879,6 +1946,7 @@ void Menu::Decide(Act act) {
     case Act::kDifficultyCount:
     case Act::kCharChild:
     case Act::kCharAdult:
+    case Act::kLocalGames:
         Change(act, 1);
         break;
     case Act::kVoice:
@@ -1922,6 +1990,12 @@ void Menu::Change(Act act, int step) {
                        CoopTitleMenu::kMinPlayers;
         options_.max_players = CoopTitleMenu::kMinPlayers + (at + (step < 0 ? span - 1 : 1)) % span;
         request_ = Request{Request::Kind::kSave, {}};
+        break;
+    }
+    case Act::kLocalGames: {   // (2, 3, 4, 2...: this page only, not saved; Start uses it)
+        const int span = kLocalMost - kLocalFewest + 1;
+        const int at = std::clamp(local_count_, kLocalFewest, kLocalMost) - kLocalFewest;
+        local_count_ = kLocalFewest + (at + (step < 0 ? span - 1 : 1)) % span;
         break;
     }
     case Act::kVoice:
@@ -2423,6 +2497,17 @@ View Menu::view() const {
         break;
     case Page::kLocal:
         v.help_title = CoopI18n::Tr("Local co-op");
+        if (local_.player >= kLocalFewest) {
+            v.help = CoopI18n::Tr("One of this PC's games: game 1 hosts the session and this game joined it. Your "
+                                  "controller, colour and name are this game's own (Settings).");
+            break;
+        }
+        if (local_.offered) {
+            v.help = CoopI18n::Tr("Two to four games on this PC, one per player, each with its own controller: pick "
+                                  "how many, then Start. This game hosts them; the others open in their own windows "
+                                  "and join. About 10 GB of RAM a game. Closing this game ends the session.");
+            break;
+        }
         v.help = CoopI18n::Tr("Split screen (experimental) runs two full games on this PC, one per player: about 10 GB "
                  "of RAM each "
                  "and a strong graphics card. Start two kits (or use Nucleus Co-op), give each game its own controller"

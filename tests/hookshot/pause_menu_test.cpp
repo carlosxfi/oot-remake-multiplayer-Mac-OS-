@@ -593,6 +593,112 @@ TEST_CASE("pause tab: co-op that came with the game's start is shown, not starte
     CHECK(m.page() == Page::kSettings);
 }
 
+TEST_CASE("pause tab: Local co-op from the game: pick how many games, Start hosts them and starts the others") {
+    Menu m;
+    m.Show(CoopTitleMenu::Options{});
+    LocalGames l;
+    l.offered = true;
+    l.running = 1;
+    m.SetLocal(l);
+    m.Open(Page::kLocal);
+    CHECK(Names(m) == std::vector<std::string>{"Games on this PC", "Start the games"});
+    CHECK(Selected(m) == "Games on this PC");
+    CHECK(SelectedValue(m) == "2");
+    CHECK(m.view().help.find("Start") != std::string::npos);   // (the offered page's own help, not the by-hand steps)
+    // 2, 3, 4, then 2 again (Right, and A as on every choice); Left back
+    m.Press(Input::kRight);
+    CHECK(SelectedValue(m) == "3");
+    m.Press(Input::kRight);
+    CHECK(SelectedValue(m) == "4");
+    m.Press(Input::kRight);
+    CHECK(SelectedValue(m) == "2");
+    m.Press(Input::kLeft);
+    CHECK(SelectedValue(m) == "4");
+    m.Press(Input::kLeft);
+    CHECK(SelectedValue(m) == "3");
+    CHECK_FALSE(m.TakeRequest());   // (a count is not saved, nothing asked)
+    SelectRow(m, "Start the games");
+    m.Press(Input::kDecide);
+    auto r = m.TakeRequest();
+    REQUIRE(r);
+    CHECK(r->kind == Request::Kind::kLocalStart);
+    CHECK(r->text == "3");
+    // starting: the row says so and a second press asks nothing
+    l.asked = 3;
+    l.starting = true;
+    m.SetLocal(l);
+    CHECK(SelectedValue(m) == "Starting...");
+    m.Press(Input::kDecide);
+    CHECK_FALSE(m.TakeRequest());
+    // fewer than asked started (or one closed later): Start missing games, into the same session
+    l.starting = false;
+    l.running = 2;
+    l.joined = 2;
+    l.note = "Did not start: player 3.";
+    m.SetLocal(l);
+    CHECK(Names(m) == std::vector<std::string>{"Games on this PC", "Start missing games", "Players in: 2 of 3",
+                                               "Closing this game ends the session.", "Did not start: player 3."});
+    CHECK(Selected(m) == "Start missing games");   // (the same row kept under the cursor)
+    CHECK(SelectedValue(m) == "2 of 3");
+    m.Press(Input::kDecide);
+    r = m.TakeRequest();
+    REQUIRE(r);
+    CHECK(r->text == "3");
+    // every game runs: no Start row until the count is raised
+    l.running = 3;
+    l.joined = 3;
+    l.note.clear();
+    m.SetLocal(l);
+    CHECK(Names(m) == std::vector<std::string>{"Games on this PC", "Players in: 3 of 3", "Closing this game ends the session."});
+    SelectRow(m, "Games on this PC");
+    m.Press(Input::kRight);
+    CHECK(SelectedValue(m) == "4");
+    CHECK(Names(m)[1] == "Start missing games");
+    // every row of the page fits a native list line
+    for (const auto& row : m.view().rows) CHECK(row.name.size() + row.value.size() <= 46);
+}
+
+TEST_CASE("pause tab: Local co-op: the launcher's count, another game's session, and an extra game's page") {
+    Menu m;
+    m.Show(CoopTitleMenu::Options{});
+    m.Open(Page::kLocal);
+    LocalGames l;
+    l.offered = true;
+    l.asked = 4;   // (Start Squadala started 4: the row shows the session's count)
+    l.running = 4;
+    l.joined = 4;
+    Session hosting;
+    hosting.state = State::kHosting;
+    hosting.hosting = true;
+    m.SetSession(hosting);
+    m.SetLocal(l);
+    CHECK(m.local_count() == 4);
+    CHECK(Names(m) == std::vector<std::string>{"Games on this PC", "Players in: 4 of 4", "Closing this game ends the session."});
+    // a friend's game (or an online one of this game's): no local start here
+    Menu g;
+    g.Show(CoopTitleMenu::Options{});
+    g.Open(Page::kLocal);
+    LocalGames off;
+    off.offered = true;
+    g.SetLocal(off);
+    Session joined;
+    joined.state = State::kJoined;
+    g.SetSession(joined);
+    CHECK(Names(g) == std::vector<std::string>{"Leave this game first (Host or Join page).", "Local co-op hosts a game of its own."});
+    // player 3's own game: what it is, no Start
+    Menu e;
+    e.Show(CoopTitleMenu::Options{});
+    e.Open(Page::kLocal);
+    LocalGames extra;
+    extra.player = 3;
+    e.SetLocal(extra);
+    const View v = e.view();
+    REQUIRE(v.rows.size() == 3);
+    CHECK(v.rows[0].name == "This game is player 3 of this PC's games.");
+    for (const auto& row : v.rows) CHECK(row.kind == RowKind::kNote);
+    CHECK(v.help.find("game 1 hosts") != std::string::npos);
+}
+
 TEST_CASE("pause tab: Local co-op lists the experimental split screen steps") {
     Menu m;
     m.Show(CoopTitleMenu::Options{});

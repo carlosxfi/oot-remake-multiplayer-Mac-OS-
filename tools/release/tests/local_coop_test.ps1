@@ -194,6 +194,31 @@ try {
     Check ($play.Contains("'local-coop.ps1'") -and $play.Contains('Read-KitLocalPlayers') -and $play.Contains('Start-KitLocalCoop')) 'play.ps1 asks and starts local co-op'
     Check ($play -match "Mode -eq 'title' -and -not \`$env:OOT_COOP_TEST_KIT") 'play.ps1 asks only at the kit''s own start, never in the autotest''s kit mode'
     Check ((Read-File (Join-Path $release 'make_kit_hookshot.ps1')).Contains("'local-coop.ps1'")) 'the kit ships local-coop.ps1'
+
+    # From the game (local-coop-start.ps1, the Local co-op page's Start): game 1 hosts already; the missing players'
+    # games are made and started into its session. This made-up longshot.exe does not start, so each is a game that
+    # did not start (the page's "Did not start: player 2 and 3."), and nothing is left half done.
+    Check ((Read-File (Join-Path $release 'make_kit_hookshot.ps1')).Contains("'local-coop-start.ps1'")) 'the kit ships local-coop-start.ps1'
+    Check (@(Get-KitLocalRunning $game).Count -eq 0) 'from the game: no extra game runs in the made-up folder'
+    $result = Join-Path $game 'local-players\start-result.txt'
+    $env:LICHII_COOP_PAD = '1'   # (game 1's, inherited by the launcher: never player 2's)
+    $null = @(Add-KitLocalCoop $kit (Join-Path $game 'longshot.exe') 3 27561 'pw-from-game' 0 $result 6>$null)
+    $said = Read-File $result
+    Check ($said -match '(?m)^started=\r?$') "from the game: nothing started ($said)"
+    Check ($said -match '(?m)^failed=2,3\r?$') 'from the game: players 2 and 3 did not start (the result says so)'
+    Check ($said -match '(?m)^problem=Player 2') 'from the game: the problem line names the first game that did not start'
+    $p3 = Read-File (Join-Path $game 'local-players\player3\coop.ini')
+    Check ($p3 -match '(?m)^server = 127\.0\.0\.1' -and $p3 -match '(?m)^port = 27561' -and $p3 -match '(?m)^password = pw-from-game') 'from the game: player 3 gets game 1''s session'
+    Check ((Read-File (Join-Path $game 'local-players\player3\coop-player.ini')) -match '(?m)^LICHII_COOP_PAD\s*=\s*3') 'from the game: player 3 reads controller 3'
+    Check ("$env:LICHII_COOP_PAD" -eq '1') 'from the game: the launcher''s own variables are put back'
+    Check ((Read-File (Join-Path $game 'local-players\instances.txt')) -match '(?m)^3=') 'from the game: instances.txt lists the session''s games for collect-logs'
+    $null = @(Add-KitLocalCoop $kit (Join-Path $game 'longshot.exe') 9 27561 'pw-from-game' 0 $result 6>$null)
+    Check ((Read-File $result) -match '(?m)^failed=2,3,4\r?$') 'from the game: more than 4 asked = 4 games (the most)'
+    $start = Read-File (Join-Path $scripts 'local-coop-start.ps1')
+    Check ($start.Contains('Add-KitLocalCoop') -and $start.Contains('problem-send.ps1')) 'local-coop-start.ps1 runs Add-KitLocalCoop and watches each game for problem reports'
+    Remove-Item -Path env:LICHII_COOP_PAD -ErrorAction SilentlyContinue
+    Initialize-KitLocalWin32
+    Check (-not [KitLocalWin32]::FillsScreen([IntPtr]::Zero)) 'from the game: no window is not a full-screen one (game 1''s window is placed only when not full screen)'
     Check ((Read-File (Join-Path $scripts 'collect-logs.ps1')).Contains("local-players")) 'collect-logs takes the local players'' logs'
     Check ((Read-File (Join-Path $release 'kit\coop-options.ini')) -match '(?m)^#\s*local_fps') 'coop-options.ini explains local_fps'
 } finally {
