@@ -1239,7 +1239,13 @@ def kit_start_command(kit):
             "-Mode", "choose", "-Hookshot", "-NoUpdate"]
 
 
-def kit_start(kit, env, out, x, timeout=1200, run_cmd=None):
+# A start may build the game without asking (a mod's code patches changed: 5 to 25 minutes, more on a slow PC), so the
+# wait is a real player's. Past it the start's whole process tree is stopped (hs.run_tree): a build left running wrote
+# its old game into the folder after the next build had (u2-fix: U2 from v0.11.10 ended on Longshot v3.0.0).
+KIT_START_TIMEOUT = 3600
+
+
+def kit_start(kit, env, out, x, timeout=KIT_START_TIMEOUT, run_cmd=None):
     """Runs the kit's start for game x with env; the started game's process id. Its window's text: kit-start-<x>.txt."""
     pidfile = os.path.join(out, "kit-pid-%s.txt" % x)
     if os.path.exists(pidfile):
@@ -1247,8 +1253,15 @@ def kit_start(kit, env, out, x, timeout=1200, run_cmd=None):
     env = dict(env, OOT_COOP_KIT=kit, OOT_COOP_TEST_KIT=pidfile, OOT_COOP_NO_SHORTCUT="1")
     text_path = os.path.join(out, "kit-start-%s.txt" % x)
     with open(text_path, "wb") as so:
-        r = (run_cmd or lanes.hs.run_quiet)(kit_start_command(kit), cwd=kit, env=env, input=b"n\r\n" * 16, stdout=so,
-                    stderr=subprocess.STDOUT, timeout=timeout)
+        try:
+            r = (run_cmd or lanes.hs.run_tree)(kit_start_command(kit), cwd=kit, env=env, input=b"n\r\n" * 16,
+                                               stdout=so, stderr=subprocess.STDOUT, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            r = None
+    if r is None:
+        last = " | ".join(l.strip() for l in read_text(text_path).splitlines() if l.strip())[-600:]
+        raise RuntimeError("kit start of %s timed out after %d s (it and everything it started stopped): %s"
+                           % (x, timeout, last))
     text = read_text(text_path)
     pid = ""
     if os.path.isfile(pidfile):

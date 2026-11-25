@@ -119,6 +119,44 @@ class NoRawConsoleChildren(unittest.TestCase):
         files = {rel for rel, _ in found}
         self.assertEqual(files, {rel for rel, _ in self.GAME_OR_FLAGGED}, sorted(found))
 
+class RunTreeTest(unittest.TestCase):
+    """run_tree (u2-fix): a timeout stops cmd AND what it started, so a kit start's game build never lives on."""
+
+    def test_output_and_exit_code_like_run(self):
+        r = hs.run_tree([sys.executable, "-c", "import sys; print(sys.stdin.read().upper()); sys.exit(3)"],
+                        input=b"n", stdout=subprocess.PIPE, timeout=60)
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(r.stdout.strip(), b"N")
+
+    def test_a_timeout_stops_the_grandchild(self):
+        d = tempfile.mkdtemp()
+        pidfile = os.path.join(d, "child.txt")
+        # cmd starts a child that keeps running (as play.ps1's build does), then waits forever itself.
+        child = "import time; time.sleep(120)"
+        parent = ("import subprocess, sys, time; p = subprocess.Popen([sys.executable, '-c', %r]); "
+                  "open(%r, 'w').write(str(p.pid)); time.sleep(120)" % (child, pidfile))
+        with self.assertRaises(subprocess.TimeoutExpired):
+            hs.run_tree([sys.executable, "-c", parent], timeout=8)
+        self.assertTrue(os.path.isfile(pidfile))
+        pid = int(open(pidfile).read())
+        self.assertFalse(alive(pid), "the grandchild %d lives on after the timeout" % pid)
+
+
+def alive(pid):
+    if hs.WINDOWS:
+        out = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid, "/NH"], capture_output=True, text=True,
+                             creationflags=hs.CREATE_NO_WINDOW).stdout
+        return str(pid) in out.split()
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    try:   # (a killed child of a killed parent may be a zombie until init reaps it)
+        with open("/proc/%d/stat" % pid) as f:
+            return f.read().split(")")[-1].split()[0] != "Z"
+    except OSError:
+        return True
+
 
 if __name__ == "__main__":
     unittest.main()

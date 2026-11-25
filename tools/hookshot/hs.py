@@ -60,6 +60,43 @@ def run_quiet(cmd, **kw):
     return subprocess.run(cmd, **no_window(kw))
 
 
+def kill_tree(p):
+    """Stops process p and every process it started (Windows: taskkill /T while p still lives, so the tree is known;
+    elsewhere: p's own process group, see run_tree). Then waits for p."""
+    if p.poll() is None:
+        if WINDOWS:
+            run_quiet(["taskkill", "/PID", str(p.pid), "/T", "/F"], stdout=subprocess.DEVNULL,
+                      stderr=subprocess.DEVNULL)
+        else:
+            try:
+                os.killpg(p.pid, 9)
+            except OSError:
+                pass
+    try:
+        p.kill()
+    except OSError:
+        pass
+    p.wait()
+
+
+def run_tree(cmd, input=None, timeout=None, **kw):
+    """run_quiet, but a timeout stops the whole process tree, not only cmd (subprocess.run's timeout kills cmd alone).
+    Why (u2-fix, U2 from v0.11.10/v0.11.11): a kit's start timed out while its game build ran; the build's children
+    lived on and wrote their game into the folder after the next build had, so that folder ended on the old Longshot.
+    Raises subprocess.TimeoutExpired after the tree is stopped."""
+    if not WINDOWS:
+        kw.setdefault("start_new_session", True)
+    if input is not None:
+        kw["stdin"] = subprocess.PIPE
+    with popen_quiet(cmd, **kw) as p:
+        try:
+            out, err = p.communicate(input, timeout=timeout)
+        except BaseException:   # (the timeout, or the harness stopped: never leave the tree running)
+            kill_tree(p)
+            raise
+        return subprocess.CompletedProcess(p.args, p.returncode, out, err)
+
+
 def popen_quiet(cmd, **kw):
     """subprocess.Popen of a console program with no window on Windows (see no_window)."""
     return subprocess.Popen(cmd, **no_window(kw))
