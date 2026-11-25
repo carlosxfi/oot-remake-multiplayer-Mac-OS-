@@ -856,6 +856,10 @@ bool Client::send_raw(const proto::Message& message, std::uint8_t channel) {
     ++race_dropped_;
     return true;
   }
+  if (world_held_ && proto::race_private(message)) {  // held out of the host's world: kept in our game
+    ++held_dropped_;
+    return true;
+  }
   std::vector<std::uint8_t> bytes;
   if (proto::encode(message, bytes) != proto::Error::none) return false;
   return send_packet(bytes, channel);

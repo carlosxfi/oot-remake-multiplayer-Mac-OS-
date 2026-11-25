@@ -24,6 +24,7 @@ Tab* TheTab() {  // under g_mutex
             std::vector<std::string> out;
             if (!v.connected) return out;
             if (!v.hosting && !v.host_list_known) out.push_back("Co-op: waiting for the host's list of mods.");
+            if (!v.held.empty()) out.push_back(v.held);
             for (const std::string& d : v.differences) out.push_back("Co-op: " + d);
             for (const std::string& g : v.guests_differ) out.push_back("Co-op: " + g);
             if (!v.hosting && v.host_list_known && v.differences.empty()) {

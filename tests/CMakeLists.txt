@@ -17,6 +17,7 @@ add_executable(coop_tests
   protocol/codec_test.cpp
   protocol/fuzz_test.cpp
   protocol/join_password_test.cpp
+  protocol/mod_world_test.cpp
   protocol/official_mark_test.cpp
   protocol/race_test.cpp
   protocol/traffic_crypto_test.cpp

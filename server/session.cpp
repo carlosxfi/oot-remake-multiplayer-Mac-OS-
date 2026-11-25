@@ -1,6 +1,7 @@
 #include "session.hpp"
 
 #include "coop/protocol/animation_words.hpp"
+#include "coop/protocol/mod_world.hpp"
 #include "coop/protocol/race.hpp"
 #include "coop/protocol/scene_place.hpp"
 
@@ -737,6 +738,10 @@ void Session::dispatch_player_message(ConnectionId id, Connection& c, std::uint8
     ++stats_.race_dropped;
     return;
   }
+  if (c.world_held && race_private(message)) {  // another randomizer seed than the host's: not the host's world
+    ++stats_.world_held_dropped;
+    return;
+  }
   if (std::holds_alternative<LocalJoin>(message) || std::holds_alternative<LocalLeave>(message) ||
       std::holds_alternative<LocalSample>(message) || std::holds_alternative<LocalMessage>(message)) {
     on_local(id, c, message, now_us);
@@ -1073,6 +1078,7 @@ void Session::on_mods(ConnectionId id, Connection& c, Message& message) {
   if (const auto* list = std::get_if<ModList>(&message)) {
     c.mods = *list;
     log("player " + std::to_string(c.number) + " runs " + std::to_string(list->mods.size()) + " shared mods");
+    update_world_held();
   } else {
     mod_settings_ = std::get<ModSettings>(message);
     // Race mode: on from the host's first "on" until the session empties. An "off" later does not bring
@@ -1084,6 +1090,26 @@ void Session::on_mods(ConnectionId id, Connection& c, Message& message) {
   }
   send_to_others(id, kChannelSession, message);
   ++stats_.relayed;
+}
+
+// Row 281: a player whose randomizer seed is not the host's plays another world (other items in chests), so nothing
+// of its world is taken (its game holds itself back too, by the same check). Until both lists are known nobody is held.
+void Session::update_world_held() {
+  const Connection* host = host_ ? &connections_.at(*host_) : nullptr;
+  for (auto& [cid, oc] : connections_) {
+    if (oc.parent) continue;  // a seat: its game's connection decides
+    coop::protocol::World w;
+    if (host != nullptr && host_ != cid && host->mods && oc.mods) w = world_of(*host->mods, *oc.mods);
+    const bool held = w.diff != WorldDiff::same;
+    if (held == oc.world_held) continue;
+    oc.world_held = held;
+    log("player " + std::to_string(oc.number) +
+        (held ? " held out of the host's world: randomizer seed " + w.seed +
+                    (w.diff == WorldDiff::missing       ? " (the host's) not played"
+                     : w.diff == WorldDiff::other_files ? " built unlike the host's"
+                                                        : " not the host's")
+              : " plays the host's world now"));
+  }
 }
 
 // To the victim only, and only while PvP is on: a game with PvP off never
@@ -3707,6 +3733,7 @@ void Session::remove_player(ConnectionId id, LeaveReason reason, std::uint64_t n
     const std::uint8_t number = connections_.at(*host_).number;
     send_to_others(id, kChannelProgress, Host{number});
     log("player " + std::to_string(number) + " hosts now");
+    update_world_held();  // each player against the new host's list
   }
   // Host approval: the host who was asked left, so nobody answers them.
   if (was_host) refuse_held(now_us, "the host left before answering");

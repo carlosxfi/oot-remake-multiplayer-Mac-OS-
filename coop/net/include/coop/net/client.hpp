@@ -465,6 +465,13 @@ class Client {
   // received). While on, no world message is sent or taken in; race_dropped() counts them.
   bool race() const { return race_; }
   std::size_t race_dropped() const { return race_dropped_; }
+  // Held out of the host's world (coop/protocol/mod_world.hpp, row 281: this game plays another randomizer seed than
+  // the host's): set by the game, kept across connections until it says otherwise. While held no world message
+  // (race_private's list) is sent; what comes is still taken (the host's world written into a game that starts again
+  // anyway harms nobody, and nothing is missed once it plays the host's seed). held_dropped() counts them.
+  void set_world_held(bool held) { world_held_ = held; }
+  bool world_held() const { return world_held_; }
+  std::size_t held_dropped() const { return held_dropped_; }
 
  private:
   void use_small_datagrams();
@@ -546,6 +553,8 @@ class Client {
   std::size_t rejected_ = 0;
   bool race_ = false;
   std::size_t race_dropped_ = 0;
+  bool world_held_ = false;
+  std::size_t held_dropped_ = 0;
 
   std::map<FlagKey, protocol::FlagEntry> flags_;
   std::map<FlagKey, protocol::FlagEntry> pending_;  // our unanswered FLAG_SETs

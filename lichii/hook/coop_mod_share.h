@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "coop/protocol/messages.hpp"
+#include "coop/protocol/mod_world.hpp"
 
 namespace coop::host {
 class Session;
@@ -35,7 +36,7 @@ namespace CoopModShare {
 // kept copies, and its size tables left out (they hold file sizes, and the kit, OOTRR and the button prompts merge the
 // other mods' entries into them on each PC). Unmarked: way 1 (every file as it was on that PC). Hashes made two ways
 // are not compared: the higher way is the newer kit.
-inline constexpr std::uint8_t kHashWay = 2;
+inline constexpr std::uint8_t kHashWay = coop::protocol::kHashWay;  // (coop/protocol/mod_world.hpp)
 void MarkHashWay(coop::protocol::ModHash& hash);
 std::uint8_t HashWay(const coop::protocol::ModHash& hash);
 
@@ -70,6 +71,17 @@ std::string SeedOtherMineLine(std::string_view seed);
 std::string SeedKitLine(std::uint8_t number, std::string_view name, std::string_view seed, bool newer);
 std::string SeedKitMineLine(std::string_view seed, bool newer);
 std::string SeedBackLine(std::uint8_t number, std::string_view name);
+// Row 281: a player whose randomizer seed is not the host's is held out of the host's world (coop/protocol/
+// mod_world.hpp world_of; the server holds it by the same rule). SeedExtraLine: about player `number`, who plays a seed
+// the host does not. This game's own lines: HeldLine (what differs, what its game does now and what to do: the host's
+// seed `host_seed`, empty when the host plays none, and its settings, RandoSettingsName) and HeldEndLine.
+inline constexpr const char* kRandoModId = "oot-remake-randomizer";  // (hookshot/src/coop_rando.h kId)
+std::string SeedExtraLine(std::uint8_t number, std::string_view name, std::string_view seed);
+std::string HeldLine(const coop::protocol::World& world, std::string_view host_seed, std::string_view settings);
+std::string HeldEndLine();
+// The host's randomizer settings as a line names them: its preset ("keysanity"), or "settings string OOTRR1-..." cut;
+// empty when the host's values have no randomizer (or are not known).
+std::string RandoSettingsName(const std::optional<std::vector<coop::protocol::ModSetting>>& host_values);
 
 struct Provider {
     // This game's list once its mods are hashed (any thread, often: cheap); nullopt until then.
@@ -99,6 +111,7 @@ struct View {
     bool host_list_known = false;
     std::vector<std::string> differences;  // this game's against the host's (guest), empty when the same
     std::vector<std::string> guests_differ;  // host: "Player 2 (Zelda): 1 mod differs"
+    std::string held;  // a guest held out of the host's world (HeldLine), empty when not
 };
 View Now();
 

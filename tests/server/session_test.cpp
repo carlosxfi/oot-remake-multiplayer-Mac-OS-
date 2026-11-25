@@ -5668,6 +5668,57 @@ TEST_CASE("race mode: no flag is relayed, kept or given to a joiner, chat still 
   CHECK(messages_of<FlagSet>(h, 5).size() == 1);
 }
 
+// Row 281: a player whose randomizer seed is not the host's is held out of the host's world (mod_world.hpp).
+TEST_CASE("row 281: a player on another randomizer seed is held: its world is not taken, chat goes, a host change decides again") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.join(3, "Saria");
+  ModEntry seed{"randomizer-abc", "", {}};
+  seed.hash[0] = 5;
+  h.receive(1, ModList{0, {seed}}, kChannelSession);
+  h.receive(2, ModList{0, {}}, kChannelSession);  // the base game
+  h.receive(3, ModList{0, {seed}}, kChannelSession);
+  h.clear();
+
+  h.receive(2, FlagSet{0, {flag(1, 1)}}, kChannelProgress);
+  h.receive(3, FlagSet{0, {flag(2, 1)}}, kChannelProgress);
+  h.receive(2, Chat{0, "why"}, kChannelSession);
+  CHECK(messages_of<FlagSet>(h, 1).size() == 1);  // Saria's only
+  CHECK(messages_of<FlagSet>(h, 2).size() == 1);  // a held player still gets the world
+  CHECK(messages_of<Chat>(h, 1).size() == 1);
+  CHECK(h.session.stats().world_held_dropped == 1);
+
+  // The host leaves: Zelda hosts (the base game), so Saria's seed is the one held now.
+  h.session.disconnected(1, h.now);
+  h.collect();
+  h.clear();
+  h.receive(2, FlagSet{0, {flag(3, 1)}}, kChannelProgress);
+  h.receive(3, FlagSet{0, {flag(4, 1)}}, kChannelProgress);
+  CHECK(messages_of<FlagSet>(h, 3).size() == 1);  // Zelda's
+  CHECK(messages_of<FlagSet>(h, 2).empty());
+  CHECK(h.session.stats().world_held_dropped == 2);
+}
+
+TEST_CASE("row 281: nobody is held until both lists are known, and a matching list is never held") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.receive(2, ModList{0, {}}, kChannelSession);  // the host's list not known yet
+  h.clear();
+  h.receive(2, FlagSet{0, {flag(1, 1)}}, kChannelProgress);
+  CHECK(messages_of<FlagSet>(h, 1).size() == 1);
+  ModEntry seed{"randomizer-abc", "", {}};
+  h.receive(1, ModList{0, {seed}}, kChannelSession);  // now known: Zelda lacks it
+  h.clear();
+  h.receive(2, FlagSet{0, {flag(2, 1)}}, kChannelProgress);
+  CHECK(messages_of<FlagSet>(h, 1).empty());
+  h.receive(1, ModList{0, {}}, kChannelSession);  // the host's list again, without the seed: the same world
+  h.clear();
+  h.receive(2, FlagSet{0, {flag(3, 1)}}, kChannelProgress);
+  CHECK(messages_of<FlagSet>(h, 1).size() == 1);
+}
+
 // Issue 151 (fishing-3): a fish goes to the game whose lure is nearest it.
 namespace {
 FishLure lure_at(std::uint16_t cm, std::uint8_t flags = 0) {

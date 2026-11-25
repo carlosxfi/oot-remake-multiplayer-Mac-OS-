@@ -16,6 +16,7 @@
 
 #include "coop/host/session.hpp"
 #include "coop/net/client.hpp"
+#include "coop/protocol/mod_world.hpp"
 #include "coop/protocol/race.hpp"
 
 namespace CoopModShare {
@@ -43,6 +44,9 @@ struct Glue {
     std::vector<std::string> differences;     // as last told
     std::map<std::uint8_t, std::size_t> guests_told;  // host: differences last told per guest
     std::map<std::uint8_t, int> seedless;  // a player's seed against the host's, as last told: 0 same, 1 none, 2 other files (#59)
+    // Row 281: this game (a guest) held out of the host's world, and why (WorldDiff::same: not held). Kept across a
+    // reconnect (its client keeps holding back): decided again once the host's list is known.
+    proto::World held;
     std::vector<std::string> lines;
     void Line(std::string text) {
         if (lines.size() < 32) {
@@ -120,73 +124,19 @@ std::vector<std::string> Compare(const proto::ModList& host, const proto::ModLis
     return out;
 }
 
-namespace {
-constexpr std::size_t kWayAt = std::tuple_size_v<proto::ModHash> - 3;  // 'S', 'Q', the way
-}  // namespace
-
-void MarkHashWay(proto::ModHash& hash) {
-    hash[kWayAt] = 'S';
-    hash[kWayAt + 1] = 'Q';
-    hash[kWayAt + 2] = kHashWay;
-}
-
-std::uint8_t HashWay(const proto::ModHash& hash) {
-    if (hash[kWayAt] != 'S' || hash[kWayAt + 1] != 'Q' || hash[kWayAt + 2] < 2) return 1;
-    return hash[kWayAt + 2];
-}
-
-bool IsSeedId(std::string_view id) {
-    constexpr std::string_view prefix = "randomizer-";
-    if (id.size() <= prefix.size() || id.substr(0, prefix.size()) != prefix) return false;
-    for (const char c : id.substr(prefix.size())) {
-        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) return false;
-    }
-    return true;
-}
-
-namespace {
-std::string SeedWordOf(const std::string& id) {
-    std::string word = id.substr(std::string_view("randomizer-").size());
-    for (char& c : word) {
-        if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
-    }
-    return word;
-}
-}  // namespace
-
+// The seed checks are coop/protocol/mod_world.hpp's (row 281: the server holds a player out of the world by the same
+// rule).
+void MarkHashWay(proto::ModHash& hash) { proto::mark_hash_way(hash); }
+std::uint8_t HashWay(const proto::ModHash& hash) { return proto::hash_way(hash); }
+bool IsSeedId(std::string_view id) { return proto::is_seed_id(id); }
 std::string SeedMissing(const proto::ModList& host, const proto::ModList& theirs) {
-    for (const auto& h : host.mods) {
-        if (!IsSeedId(h.id)) continue;
-        bool has = false;
-        for (const auto& t : theirs.mods) has = has || t.id == h.id;
-        if (has) continue;
-        return SeedWordOf(h.id);
-    }
-    return {};
+    return proto::seed_missing(host, theirs);
 }
-
 std::string SeedFilesOther(const proto::ModList& host, const proto::ModList& theirs) {
-    for (const auto& h : host.mods) {
-        if (!IsSeedId(h.id) || h.hash == proto::ModHash{}) continue;
-        for (const auto& t : theirs.mods) {
-            if (t.id == h.id && t.hash != proto::ModHash{} && t.hash != h.hash && HashWay(t.hash) == HashWay(h.hash)) {
-                return SeedWordOf(h.id);
-            }
-        }
-    }
-    return {};
+    return proto::seed_files_other(host, theirs);
 }
-
 int SeedKitOther(const proto::ModList& host, const proto::ModList& theirs, std::string* seed) {
-    for (const auto& h : host.mods) {
-        if (!IsSeedId(h.id) || h.hash == proto::ModHash{}) continue;
-        for (const auto& t : theirs.mods) {
-            if (t.id != h.id || t.hash == proto::ModHash{} || HashWay(t.hash) == HashWay(h.hash)) continue;
-            if (seed != nullptr) *seed = SeedWordOf(h.id);
-            return HashWay(t.hash) > HashWay(h.hash) ? 1 : -1;
-        }
-    }
-    return 0;
+    return proto::seed_kit_other(host, theirs, seed);
 }
 
 namespace {
@@ -197,8 +147,56 @@ std::string Who(std::uint8_t number, std::string_view name) {
 
 std::string SeedlessLine(std::uint8_t number, std::string_view name, std::string_view seed) {
     return "Mods: " + Who(number, name) + " runs WITHOUT the randomizer seed " + std::string(seed) +
-           ": that game is the base game, another world (other items in chests); its chat says why";
+           ": the base game, another world (other items in chests), so it is held out of the host's world "
+           "until it plays the seed; its chat says why";
 }
+
+std::string SeedExtraLine(std::uint8_t number, std::string_view name, std::string_view seed) {
+    return "Mods: " + Who(number, name) + " plays the randomizer seed " + std::string(seed) +
+           ", not the host's: another world, so it is held out of the host's world until it plays the host's seed";
+}
+
+std::string RandoSettingsName(const std::optional<std::vector<proto::ModSetting>>& host_values) {
+    if (!host_values) return {};
+    std::string preset, settings;
+    bool any = false;
+    for (const proto::ModSetting& s : *host_values) {
+        if (s.mod_id != kRandoModId) continue;
+        any = true;
+        if (s.key == "preset") preset = s.value;
+        if (s.key == "settings") settings = s.value;
+    }
+    if (!any) return {};
+    while (!settings.empty() && settings.front() == ' ') settings.erase(settings.begin());
+    if (settings.rfind("OOTRR", 0) == 0) {
+        return "settings string " + (settings.size() > 20 ? settings.substr(0, 20) + "..." : settings);
+    }
+    return preset.empty() ? std::string("default") : preset;
+}
+
+std::string HeldLine(const proto::World& world, std::string_view host_seed, std::string_view settings) {
+    const std::string with = settings.empty() ? std::string() : " (" + std::string(settings) + ")";
+    const std::string held = "Randomizer: you are HELD out of the host's world (nothing you do reaches the others): ";
+    const std::string again = " Then RESTART the game and join again.";
+    switch (world.diff) {
+    case proto::WorldDiff::missing:
+        return held + "it plays seed " + world.seed + with +
+               ", your game does not. Your game makes it now, nothing to set: wait until the chat says it is ready." +
+               again;
+    case proto::WorldDiff::other_files:
+        return held + "its seed " + world.seed +
+               " is built unlike yours (another kit or OOTRR). Update to the host's kit." + again;
+    case proto::WorldDiff::extra:
+        return held + "you play seed " + world.seed + ", the host " +
+               (host_seed.empty() ? std::string("plays the base game") : "plays seed " + std::string(host_seed) + with) +
+               ". Your game switches to the host's now: wait until the chat says to restart." + again;
+    case proto::WorldDiff::same:
+        break;
+    }
+    return {};
+}
+
+std::string HeldEndLine() { return "Randomizer: you play the host's seed: you are in its world now"; }
 
 std::string SeedlessMineLine(std::string_view seed) {
     return "Mods: you run WITHOUT the host's randomizer seed " + std::string(seed) +
@@ -250,6 +248,10 @@ void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
     case EventKind::welcomed:
     case EventKind::reconnected:
     case EventKind::disconnected:
+        if (event.kind == EventKind::disconnected) {
+            g.held = {};
+            client.set_world_held(false);  // (a game alone holds nothing back)
+        }
         g.Reset();  // each connection starts with nothing; the server gives the rest
         g.connected = event.kind != EventKind::disconnected;
         g.hosting = g.connected && client.is_host();
@@ -313,6 +315,7 @@ void Frame(coop::host::Session* session) {
     std::optional<proto::Message> send_settings;
     std::string race_in_settings;   // the race id send_settings carries (CoopGoldMode::MarkRaceSent once sent)
     std::optional<std::optional<std::vector<proto::ModSetting>>> hand_on;
+    std::optional<bool> set_held;  // our client's world hold, when decided this frame
     std::function<void(std::optional<std::vector<proto::ModSetting>>)> host_values;
     {
         std::lock_guard lock(g.mutex);
@@ -355,12 +358,32 @@ void Frame(coop::host::Session* session) {
                     CoopGoldMode::MarkRaceSent(race_in_settings);   // (sent before)
                 }
             }
+            if (!g.hosting) {
+                // Row 281: held out of the host's world while our seed is not its (coop/protocol/mod_world.hpp, the
+                // server's rule too). Our own list not hashed yet: held when the host plays a seed, nothing said.
+                const auto host = g.lists.find(g.host_number);
+                if (host != g.lists.end()) {
+                    const std::string host_seed = proto::seed_missing(host->second, proto::ModList{});
+                    proto::World now = mine ? proto::world_of(host->second, *mine) : proto::World{};
+                    if (now.diff != g.held.diff || now.seed != g.held.seed) {
+                        if (now.diff != proto::WorldDiff::same) {
+                            g.Line(HeldLine(now, host_seed, RandoSettingsName(g.host_values)));
+                        } else if (g.held.diff != proto::WorldDiff::same) {
+                            g.Line(HeldEndLine());
+                        }
+                        g.held = std::move(now);
+                    }
+                    set_held = g.held.diff != proto::WorldDiff::same || (!mine && !host_seed.empty());
+                }
+            }
             if (mine && !g.hosting) {
                 const auto host = g.lists.find(g.host_number);
                 if (host != g.lists.end()) {
                     std::vector<std::string> diff = Compare(host->second, *mine);
                     if (diff != g.differences) {
-                        if (const std::string seed = SeedMissing(host->second, *mine); !seed.empty()) {
+                        if (g.held.diff != proto::WorldDiff::same) {
+                            // (HeldLine said it above; the other differences are in the Mods tab)
+                        } else if (const std::string seed = SeedMissing(host->second, *mine); !seed.empty()) {
                             g.Line(SeedlessMineLine(seed));  // (the other differences are in the Mods tab)
                         } else if (const std::string other = SeedFilesOther(host->second, *mine); !other.empty()) {
                             g.Line(SeedOtherMineLine(other));
@@ -399,6 +422,10 @@ void Frame(coop::host::Session* session) {
                     if (state == 0) {
                         if (const int kit = SeedKitOther(*host_list, list, &seed)) state = kit > 0 ? 4 : 3;
                     }
+                    if (state == 0) {
+                        seed = proto::seed_extra(*host_list, list);
+                        if (!seed.empty()) state = 5;  // a seed the host does not play (row 281: held too)
+                    }
                     const auto told = g.seedless.try_emplace(number, 0).first;
                     if (told->second == state) continue;
                     told->second = state;
@@ -406,6 +433,7 @@ void Frame(coop::host::Session* session) {
                     const std::string who = name != g.names.end() ? name->second : std::string();
                     g.Line(state == 1   ? SeedlessLine(number, who, seed)
                            : state == 2 ? SeedOtherLine(number, who, seed)
+                           : state == 5 ? SeedExtraLine(number, who, seed)
                            : state >= 3 ? SeedKitLine(number, who, seed, state == 4)
                                         : SeedBackLine(number, who));
                 }
@@ -429,6 +457,12 @@ void Frame(coop::host::Session* session) {
     }
     if (hand_on && host_values) {
         host_values(*hand_on);
+    }
+    if (set_held && session != nullptr) {
+        session->with_client([&](coop::net::Client& client) {
+            client.set_world_held(*set_held);
+            return true;
+        });
     }
     for (auto* m : {&send_list, &send_settings}) {
         if (!*m) {
@@ -474,6 +508,11 @@ View Now() {
     v.hosting = g.hosting;
     v.host_list_known = g.hosting || g.lists.count(g.host_number) != 0;
     v.differences = g.differences;
+    if (!g.hosting && g.held.diff != proto::WorldDiff::same) {
+        const auto host = g.lists.find(g.host_number);
+        v.held = HeldLine(g.held, host != g.lists.end() ? proto::seed_missing(host->second, proto::ModList{}) : "",
+                          RandoSettingsName(g.host_values));
+    }
     for (const auto& [number, n] : g.guests_told) {
         if (n > 0) {
             const auto name = g.names.find(number);

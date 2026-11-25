@@ -2772,6 +2772,28 @@ TEST_CASE("client: dropped by the server for a backlog, the reason is backlog, a
   REQUIRE(wait_event(client, server, events, EventKind::reconnected));
 }
 
+TEST_CASE("client world hold (row 281): held, no world message is sent, what comes is taken, chat goes on") {
+  FakeServer server;
+  Client client(config_for(server));
+  Events events;
+  REQUIRE(client.start());
+  welcome_as(client, server, events, 2, {{1, "Saria"}});
+  CHECK_FALSE(client.world_held());
+  client.set_world_held(true);
+  server.send(proto::FlagState{1, {bool_flag(7, true)}}, proto::kChannelProgress);
+  REQUIRE(wait_event(client, server, events, EventKind::flag_state));  // the host's world still comes in
+  const std::size_t from = server.received.size();
+  CHECK(client.set_flags(std::vector<proto::FlagEntry>{bool_flag(10, true)}));
+  CHECK(client.send_chat("hi"));
+  REQUIRE(pump(client, server, [&] { return server.find<proto::Chat>(from).has_value(); }));
+  CHECK_FALSE(server.find<proto::FlagSet>(from).has_value());
+  CHECK(client.held_dropped() == 1);
+  client.set_world_held(false);
+  const std::size_t later = server.received.size();
+  CHECK(client.set_flags(std::vector<proto::FlagEntry>{bool_flag(11, true)}));
+  REQUIRE(pump(client, server, [&] { return server.find<proto::FlagSet>(later).has_value(); }));
+}
+
 TEST_CASE("client race mode: the host's setting stops world messages both ways, chat goes on") {
   FakeServer server;
   Client client(config_for(server));
