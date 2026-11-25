@@ -28,6 +28,7 @@ its owner's process on this PC is gone.
 Nothing here runs a game. Every command that changes something has --dry-run.
 """
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
@@ -983,6 +984,28 @@ def find_dll(build):
     return os.path.join(build, "hookshot", "hookshot_coop.dll")
 
 
+@contextlib.contextmanager
+def kit_game_folder_kept(kit, dry=False):
+    """The kit's hookshot\\game-folder.txt as it was before (or still absent) once the block ends, also on a failed or
+    stopped build: a cache build of the kit's hookshot-build.ps1 is not the game the kit starts."""
+    p = os.path.join(kit, "hookshot", "game-folder.txt")
+    try:
+        with open(p, "rb") as f:
+            was = f.read()
+    except OSError:
+        was = None
+    try:
+        yield
+    finally:
+        if not dry:
+            if was is None:
+                if os.path.isfile(p):
+                    os.remove(p)
+            else:
+                with open(p, "wb") as f:
+                    f.write(was)
+
+
 def build_script_args(script):
     """What the kit's hookshot-build.ps1 takes: a kit made before hs-build-speed has no -Tools/-Work."""
     try:
@@ -1091,7 +1114,12 @@ def build(pairs, build_dir, kit=None, game=None, jobs=0, keep=3, repo=REPO, dry=
             # without code mods got a game with co-op's Characters-tab patch from it, and the store was refused).
             env = dict(os.environ)
             env["HOS_MODS"] = os.path.abspath(mods) if mods else no_mods_dir(dry)
-            if not run_steps([cmd], [], dry, say, env=env):
+            # The kit's script notes its -Out as the kit's own game (hookshot\game-folder.txt: where the kit starts):
+            # this build's -Out is the cache's, so the kit keeps the game it named before (u2-fix-3: U2 from v0.11.10,
+            # a cache miss left kit-A starting the pin's game folder instead of lane1-A, and its start never ran).
+            with kit_game_folder_kept(kit, dry):
+                built = run_steps([cmd], [], dry, say, env=env)
+            if not built:
                 raise Fail("hookshot-build.ps1 failed")
             if dry:
                 say("cache: would store %s as %s" % (out, k))
