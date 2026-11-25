@@ -22,10 +22,12 @@ setflag PouchData.Item_DekuNut.Count 20
 wait 120
 assign DekuNut
 wait 300
-goto -66.5 5.0 1.0 900
-toward -71.33 3.5 10
+goto 5.0 -2.5 1.0 900
+toward 2.87 -6.57 10
 wait 60
-face -71.33 3.5          # the Baba in B frame (run 210037: moss wall only)
+face 2.87 -6.57          # Enemy_Dekubaba 0x104ff639e0 at 2.87 100.04 -6.57 (actor list; the old -71.33 Baba is 63 m away, 18 m lower)
+press ZL                # camera behind B
+wait 60
 wait 120
 mark b-ready
 press ZR 4

@@ -1,4 +1,4 @@
-# geno-stun (geno-polish-ai, ai-stuns #332): A stands by the Deku Tree entrance's Deku Baba (-71.33 3.50) first, so
+# geno-stun (geno-polish-ai, ai-stuns #332): A stands by the Deku Tree entrance's Deku Baba (2.87 -6.57) first, so
 # A owns it; B comes beside A and throws Deku Nuts at it: B's copy is stunned in B's game, B's DAMAGE of 0 hands the
 # Baba to B (server 'a stun by a copy (ai-stuns)', stun_to_stunner), and A's Baba then shows B's stun.
 # PASS: B's b-stun-* shots and A's a-watch-* shots both show the Baba stunned (no Baba attacking A while B's is
@@ -20,8 +20,8 @@ wait 300
 press A
 wait 2400
 mark after
-goto -68.5 3.5 1.5 900
-toward -71.33 3.5 10
+goto 2.0 -3.0 1.5 900
+toward 2.87 -6.57 10
 wait 300
 mark a-near
 wait 60
