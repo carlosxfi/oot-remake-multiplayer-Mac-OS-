@@ -627,6 +627,7 @@ class Player:
         self.warp_for = warp_for
         self.mem_ok = None            # guest memory reads answered (None: not tried)
         self.warps = []
+        self.warp_failed = []         # "ASKED -> GOT": warps the bridge sent to another map (the run FAILs on them)
         self.angle = 0.0              # camera model: world direction = stick direction turned by this
         self.learned = False
 
@@ -819,6 +820,16 @@ class Player:
                         continue
                     if r.get("sent"):
                         to = r.get("map") or s.name
+                        if to.lower() != s.name.lower():
+                            # The bridge's teleport keeps the game's age: `warp HyruleField_Adult` in a child game
+                            # goes to HyruleField_Child ('sent (map HyruleField_Child, not accepted)'), and waiting for
+                            # that map used to say 'warp done' (epona-sync-1db5e721-r2: B child, no Epona, graded as
+                            # if the scenario had played). Another map than the one asked is a failed warp.
+                            self.warp_failed.append("%s -> %s" % (s.name, to))
+                            self.log("coop: test warp %s FAILED: the bridge sends the game to map %s, not the one "
+                                     "asked (it keeps the game's age: set Sequence_IsChildhood after the save is "
+                                     "loaded, then warp)" % (s.name, to))
+                            return
                         if s.start and not said_start[0]:
                             said_start[0] = True
                             self.log("coop: test warp %s: start %s not used on hookshot (the map's own)"
@@ -831,6 +842,15 @@ class Player:
                         # Not accepted: usually dropped, so ask again soon (the game refuses a teleport within 8 s
                         # of the last one); the map may still come (seen once), so wait for it that long first.
                         if self._arrived(b, to, deadline, 9.0 if r.get("accepted") is False else 30.0):
+                            # In the map is not Link at its age: epona-sync-2195cbd1 landed in HyruleField_Adult
+                            # (Epona there) with the flag set and Link still a child. The age is read back from the
+                            # bridge's status (game.age) for up to 20 s; a Link of the other age FAILs the warp.
+                            got = self._age_after(b, to)
+                            if got:
+                                self.warp_failed.append("%s -> Link is %s" % (s.name, got))
+                                self.log("coop: test warp %s FAILED: in the map, but Link is still a %s (the map's "
+                                         "age is the other one): the age flag did not take" % (s.name, got))
+                                return
                             self.log("coop: test warp done (map %s)" % to)
                             return
                         why = "map %s not reached" % to
@@ -845,6 +865,27 @@ class Player:
         t = threading.Thread(target=ask, daemon=True)
         t.start()
         self.warps.append(t)
+
+    def _age_after(self, b, to, within=20.0):
+        """The age Link has when it is not the one `to`'s name ends with (_Child / _Adult) after `within` s; "" when it
+        is, when the name has no age, or when the bridge's status has no readable game.age (not judged)."""
+        want = "child" if to.endswith("_Child") else "adult" if to.endswith("_Adult") else ""
+        if not want:
+            return ""
+        end, got = self.clock() + within, ""
+        while True:
+            try:
+                age = ((b.request("status") or {}).get("game") or {}).get("age")
+            except (BridgeError, TimeoutError):
+                age = None
+            if not isinstance(age, str) or not age:
+                return ""
+            if age.lower() == want:
+                return ""
+            got = age.lower()
+            if self.clock() >= end:
+                return got
+            self.sleep(0.5)
 
     def _arrived(self, b, to, deadline, arrive_for=30.0):
         """True once the game is in map `to` (the bridge's `wait map`); False if it is not within arrive_for s."""
@@ -1539,6 +1580,9 @@ def run(a):
             raise RuntimeError("play: " + ", ".join("%s %s" % kv for kv in errs.items()))
         time.sleep(1)
         both("end")
+        wrong = ["%s %s" % (x, ", ".join(p.warp_failed)) for x, p in sorted(players.items()) if p.warp_failed]
+        if wrong:   # (the shots are taken: they show where the game went instead)
+            raise RuntimeError("warp landed on another map than asked: " + "; ".join(wrong))
         say("scenario played")
     except Exception as e:
         failed = str(e) or e.__class__.__name__
