@@ -139,10 +139,55 @@ std::optional<AsSlot> ReadSlot0(CoopPuppet::Guest& guest, std::uint64_t actor) {
     return out;
 }
 
+std::optional<std::uint32_t> ReadDoAction(CoopPuppet::Guest& guest, std::uint64_t actor) {
+    std::uint64_t parts = 0, work = 0;
+    std::uint32_t action = 0;
+    if (actor == 0 || !guest.Read(actor + addr::kActorComponents, &parts, sizeof parts) || parts == 0 ||
+        !guest.Read(parts + addr::kComponentWork, &work, sizeof work) || work == 0 ||
+        !guest.Read(work + addr::kWorkDoAction, &action, sizeof action)) {
+        return std::nullopt;
+    }
+    return action;
+}
+
 // --- Crawl ---
+
+void Crawl::StepOffer(CoopPuppet::Guest& guest) {
+    // (the lock is held) Issue 337. The game's crawl starts only when the game itself offers it: the
+    // attention receiver has taken the CrawlAnchor as its target and the do action reads Crawl. A live anchor
+    // is not enough (asked in the frame it appeared, the Crawl was taken and nothing crawled).
+    const bool ours = want_.lying && !want_.event && !want_.adult && want_.actor != 0 && Anchor().has_value();
+    if (!want_.lying) {
+        offers_seen_.clear();
+        false_starts_ = 0;
+        start_reads_ = 0;
+    }
+    if (!ours || crawling_) {
+        awaits_offer_ = false;  // (no anchor wanted: asked as before; taken: StepPose watches slot 0)
+        return;
+    }
+    if (false_starts_ >= kMaxFalseStarts) {
+        awaits_offer_ = true;  // the game's own verbs run for the rest of this down
+        return;
+    }
+    const std::optional<std::uint32_t> action = AnchorReady() ? ReadDoAction(guest, want_.actor) : std::nullopt;
+    const bool offered = action && *action == addr::kDoActionCrawl;
+    if (offered && awaits_offer_) {
+        Note("our downed Link: the game offers Crawl (its do action is " + std::to_string(*action) + "): Crawl asked");
+    } else if (!offered && action && offers_seen_.size() < 8 &&
+               std::find(offers_seen_.begin(), offers_seen_.end(), *action) == offers_seen_.end()) {
+        offers_seen_.push_back(*action);
+        Note("our downed Link: the game's do action is " + std::to_string(*action) + ", not Crawl (" +
+             std::to_string(addr::kDoActionCrawl) + "): Crawl waits for the game's offer");
+    }
+    awaits_offer_ = !offered;
+}
 
 void Crawl::Want(const Wanted& w) {
     std::lock_guard lock(mutex_);
+    if (w.lying && !want_.lying && !w.adult && Anchor().has_value()) {
+        awaits_offer_ = true;  // (until this frame's StepOffer: the game's own verbs are not skipped before it)
+    }
     // An adult laid down by kLyingPose gets up through the game's
     // LDamageStandUp: the game's own requests on our slot are skipped from
     // now (Skip), before its own Walk / Wait would take the slot this frame.
@@ -348,6 +393,19 @@ std::optional<CoopPuppet::Call> Crawl::StepPose(CoopPuppet::Guest& guest, std::u
         const bool now = slot && CrawlCommand(slot->name);
         if (now) {
             ++counts_.game_crawl;
+            start_reads_ = 0;
+            false_starts_ = 0;
+        } else if (want_.lying && !want_.event && crawling_ && Anchor() && ++start_reads_ >= kCrawlStartReads) {
+            // Taken, and the game's crawl is not in slot 0 (its enter failed, or the crawl ended): while
+            // crawling_ every verb of the game's is skipped, so our Link would stay as he is for the whole
+            // down. The slot is the game's again; StepOffer waits for its next offer.
+            start_reads_ = 0;
+            crawling_ = false;
+            awaits_offer_ = true;
+            ++false_starts_;
+            Note("our downed Link: the game's crawl is not running ('" + (slot ? slot->name : std::string("-")) +
+                 "'): the game's own verbs run again, Crawl waits for its next offer (" +
+                 std::to_string(false_starts_) + " of " + std::to_string(kMaxFalseStarts) + ")");
         }
         if (now != game_crawl_.load(std::memory_order_relaxed)) {
             game_crawl_.store(now, std::memory_order_release);
@@ -491,6 +549,7 @@ std::optional<CoopPuppet::Call> Crawl::Next(CoopPuppet::Guest& guest, bool after
         for (auto& [n, h] : puppets_) {
             h.tried = false;
         }
+        StepOffer(guest);
     } else {
         const Pending was = std::exchange(pending_, Pending::none);
         switch (was) {
@@ -719,8 +778,11 @@ std::optional<CoopPuppet::Call> Crawl::Next(CoopPuppet::Guest& guest, bool after
             return std::nullopt;
         }
         if (!want_.adult && AnchorReady() && std::exchange(anchor_wait_noted_, false)) {
-            Note("our downed Link: this down's CrawlAnchor is live: Crawl asked");  // (never live: no ask; the
-        }                                                                      // director logs its request)
+            Note("our downed Link: this down's CrawlAnchor is live");  // (never live: no ask; the director
+        }                                                             // logs its request)
+        if (awaits_offer_) {
+            return std::nullopt;  // (StepOffer: the game does not offer Crawl yet; its own verbs run)
+        }
         if (held_back_) {
             // The game's own request ran on our slot this frame (a round
             // that starts now, or a kPassVerbs verb): the slot is busy.
