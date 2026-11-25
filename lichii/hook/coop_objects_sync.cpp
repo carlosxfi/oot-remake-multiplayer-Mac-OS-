@@ -1548,8 +1548,8 @@ std::optional<proto::BossVariants> Sync::BossVariantsIn(std::uint64_t address) c
     return it->second.variants_in;
 }
 
-std::vector<std::pair<std::uint64_t, proto::BrainState>> Sync::BrainStateIn() const {
-    std::vector<std::pair<std::uint64_t, proto::BrainState>> out;
+std::vector<std::pair<std::uint64_t, proto::KeyedValues>> Sync::BrainStateIn() const {
+    std::vector<std::pair<std::uint64_t, proto::KeyedValues>> out;
     for (const auto& [address, o] : objects_) {
         if (o.brain_in) {
             out.emplace_back(address, *o.brain_in);
@@ -4323,7 +4323,9 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
                 o->orders_in = sample->state.orders;  // row 222: the owner's battle manager orders
             }
             if (sample->state.brain) {
-                o->brain_in = sample->state.brain;  // row 149: the owner's blackboard move state
+                // Row 149: the owner's blackboard move state (a full list replaces ours, a delta changes it).
+                std::size_t dropped = 0;
+                o->brain_in = proto::MergeKeyed(o->brain_in ? &*o->brain_in : nullptr, *sample->state.brain, dropped);
             }
             if (sample->state.position && Finite(*sample->state.position)) {
                 const std::uint64_t t = sample->state.time.server_time_us;

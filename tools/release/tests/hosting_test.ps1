@@ -140,6 +140,19 @@ $r = ConvertTo-RelayJoin 'bird-song@1.2.3.4'
 Check ($r -and -not $r.Code -and $r.Room -eq 'bird-song') 'relay: laid out as a code, but I and O are no code letters: a room'
 Check ((Get-RelayLookupHelp 'unknown' (ConvertTo-RelayJoin 'lake-gang@1.2.3.4')) -join ' ' -match "no join code or room 'lake-gang'") 'relay: unknown as both is said once'
 
+# The game's host copies its relay line with the join password after it (private-lobby-fix): Join.bat takes both.
+$r = ConvertTo-RelayJoin ' Drumstick@159.54.182.85:27530 KQ7MZ3XAHN4PWR8TBC2D '
+Check ($r -and $r.Room -eq 'Drumstick' -and $r.Relay -eq '159.54.182.85' -and $r.Port -eq 27530 -and $r.Password -eq 'KQ7MZ3XAHN4PWR8TBC2D') 'relay: a room line with its password after it'
+$r = ConvertTo-RelayJoin 'abcd-efgh @ relay.example.net pw@x!'
+Check ($r -and $r.Code -eq 'ABCDEFGH' -and $r.Relay -eq 'relay.example.net' -and $r.Password -eq 'pw@x!') 'relay: a code line with a password (an @ in it too)'
+$r = ConvertTo-RelayJoin 'forest-gang@1.2.3.4'
+Check ($r -and $null -eq $r.Password) 'relay: a line without a password has none'
+Check (-not (ConvertTo-RelayJoin 'forest-gang@1.2.3.4 two words')) 'relay: a password with a space is no line'
+$r = ConvertTo-RelayJoin 'forest-gang@relay.example.net :27600'
+Check ($r -and $r.Port -eq 27600 -and $null -eq $r.Password) 'relay: a port apart from its relay is the port, not a password'
+$r = ConvertTo-RelayJoin 'forest-gang@relay.example.net : 27600 pw:1'
+Check ($r -and $r.Port -eq 27600 -and $r.Password -eq 'pw:1') 'relay: a port apart from its relay, then the password'
+
 # Room names (issue 261): name@relay, kept as typed; a name shaped like a code gets both.
 $r = ConvertTo-RelayJoin ' Forest-Gang@relay.example.net:27600 '
 Check ($r -and -not $r.Code -and $r.Room -eq 'Forest-Gang' -and $r.Relay -eq 'relay.example.net' -and $r.Port -eq 27600) 'relay: a room name with its relay and port'

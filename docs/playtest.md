@@ -30,7 +30,7 @@ claude mcp add oot-playtest -- python -I tools/autotest/mcp_playtest.py --sessio
 
 `live.py start` puts both game windows side by side on one monitor and does not take the focus. Choose the monitor
 with `--display \\.\DISPLAY2` (a device name), or the environment variable `OOT_TEST_DISPLAY`; the default is
-`\\.\DISPLAY2`. A name that no monitor has stops the start with the list of monitors. Details and what to check:
+`\\.\DISPLAY2`. A name that no monitor has (DISPLAY2 off) puts the windows on the primary monitor, and the start says so. Details and what to check:
 [testing.md](testing.md#where-the-test-games-windows-go). `live.py shot` and the MCP `shot` tool go through the
 game's own control bridge, so they work wherever the windows are. A bridge shot leaves out Longshot's overlays (the
 co-op pages); read `menu` in the state instead.

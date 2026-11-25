@@ -15,7 +15,8 @@
 //
 // So the values go with the boss:
 // - the owner's game reads the keys of kKeys its boss has, each frame, and sends them in the boss's samples
-//   (OBJECT_SAMPLE component 25, coop::protocol::BrainState; the server keeps them for HANDOVER_STATE);
+//   (OBJECT_SAMPLE component 25 `brain`, coop::protocol::KeyedValues, owner 0; the server keeps them for
+//   HANDOVER_STATE);
 // - a copy keeps the owner's last values and changes nothing in its own game (its place and verbs are the owner's);
 // - a game made the owner puts those values into its own blackboard first, through the game's own setters, called
 //   by our caller on the game's calc thread before the boss table's caller (kBrainState < kBossTable), so its brain
@@ -34,6 +35,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "coop/protocol/messages.hpp"
@@ -42,8 +44,25 @@
 
 namespace CoopBrainState {
 
-using coop::protocol::BrainState;
-using coop::protocol::BrainValue;
+// One carried value: the key's number (KeyId of its name) and 32 bits, an s32 as it is, a bool as 0 or 1.
+struct BrainValue {
+    std::uint32_t key = 0;
+    std::int32_t value = 0;
+    bool operator==(const BrainValue&) const = default;
+};
+// An actor's carried values, by rising key.
+struct BrainState {
+    std::vector<BrainValue> values;
+    bool operator==(const BrainState&) const = default;
+};
+// No actor carries more keys than this.
+inline constexpr std::size_t kMaxBrainValues = 32;
+
+// The wire's form (component 25: keyed values, owner 0 for the actor itself, name = the key's number, type s32).
+// Ours is always the full list. From the wire: the actor's own s32 values; a part's (another owner), another type
+// and a remove are passed over.
+coop::protocol::KeyedValues ToKeyed(const BrainState& state);
+BrainState FromKeyed(const coop::protocol::KeyedValues& keyed);
 
 namespace addr {
 // Build e0f3ccfaf50065ae. An actor's blackboard: [[[actor + 0x270]] + 0x10], none when 0 or -1 (main+0xd6d110).
@@ -70,10 +89,10 @@ inline constexpr std::size_t kBlockSize = 0x10;
 inline constexpr std::int32_t kMaxNames = 1024;
 }  // namespace addr
 
-// The kinds carried now, as the wire's type codes.
-enum class Kind : std::uint8_t { s32 = coop::protocol::kBrainS32, boolean = coop::protocol::kBrainBool };
+// The kinds carried now (both go as the wire's s32).
+enum class Kind : std::uint8_t { s32, boolean };
 
-// A key's number on the wire: Murmur3 (x86_32, seed 0) of its name.
+// A key's number on the wire (a keyed value's name): Murmur3 (x86_32, seed 0) of its name.
 constexpr std::uint32_t KeyId(std::string_view name) {
     std::uint32_t h = 0;
     const std::size_t blocks = name.size() / 4;
@@ -217,7 +236,7 @@ constexpr bool KeysFit() {
     std::size_t start = 0;
     for (std::size_t i = 0; i < kKeys.size(); ++i) {
         if (i != 0 && kKeys[i].boss != kKeys[i - 1].boss) start = i;
-        if (i - start + 1 > coop::protocol::kMaxBrainValues) return false;
+        if (i - start + 1 > kMaxBrainValues) return false;
         for (std::size_t j = start; j < i; ++j) {
             if (kKeys[j].id == kKeys[i].id) return false;
         }

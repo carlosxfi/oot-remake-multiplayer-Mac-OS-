@@ -10,12 +10,12 @@ works too). Pick it, strongest first:
   2. the environment variable OOT_TEST_DISPLAY;
   3. the default, \\\\.\\DISPLAY2.
 "primary" names the primary monitor, whatever its number.
+When the chosen monitor does not exist (DISPLAY2 unplugged or renumbered, a stale OOT_TEST_DISPLAY, a mistyped --display),
+the games go to the primary monitor (owner 2026-11-24: tests may use it) and the run says so: the returned monitor has a
+"note" that says which name was missing and which monitors exist. One rule for every caller (run.ps1, hookshot.py,
+hs_steps.py, live.py, the kit's play-test start and the offline scripts). With no monitor at all it is an error.
 The name is resolved to the monitor's work area (the screen minus the taskbar) when the games start, never as a
-fixed 0,0, so a display added later, or the same display after the layout moved, only needs the setting changed. A name
-asked for (1. or 2.) that no monitor has is an error that lists the monitors found (the run does not fall back to
-another screen: that is where the windows would pop up over someone's work). The default only, on a PC with no DISPLAY2
-(unplugged, renumbered), is the primary monitor.
-
+fixed 0,0, so a display added later, or the same display after the layout moved, only needs the setting changed.
 Windows are placed side by side from the work area's top left, 960x600 each (smaller when the work area is too small,
 so every window is fully on that monitor). Placing never activates a window (SWP_NOACTIVATE) and never restores a
 minimized one with a call that activates it.
@@ -83,8 +83,8 @@ PRIMARY = "primary"
 
 def find_monitor(monitors, name, primary_if_gone=False):
     """The monitor dict (name, work=(l, t, r, b), primary) called name ("primary": the primary monitor), or a
-    PlacementError that lists those found. primary_if_gone: a name no monitor has is the primary monitor (for the
-    default display, not one asked for: that monitor was unplugged or renumbered)."""
+    PlacementError that lists those found. primary_if_gone: a name no monitor has is the primary monitor (the
+    chosen monitor was unplugged or renumbered; check_display always asks for it)."""
     want = normalize(name)
     for m in monitors:
         if normalize(m["name"]) == want or (want == PRIMARY.upper() and m.get("primary")):
@@ -205,9 +205,15 @@ def place_window(hwnd, rect, topmost=False):
 
 
 def check_display(arg=None):
-    """The chosen monitor (dict), or a PlacementError; call it before starting games so a wrong name fails first."""
-    asked = bool((arg and arg.strip()) or (os.environ.get(ENV) or "").strip())
-    return find_monitor(monitors(), display_name(arg), primary_if_gone=not asked)
+    """The chosen monitor (dict), or a PlacementError when the PC has no monitor; call it before starting games. A name
+    no monitor has gives the primary monitor, with mon["note"] saying so (callers print it)."""
+    name = display_name(arg)
+    mons = monitors()
+    mon = find_monitor(mons, name, primary_if_gone=True)
+    if normalize(mon["name"]) != normalize(name) and normalize(name) != PRIMARY.upper():
+        mon = dict(mon, note="no monitor called %s: the windows go to the primary monitor %s (monitors found: %s)"
+                   % (name, mon["name"], ", ".join(m["name"] for m in mons)))
+    return mon
 
 
 def place_pids(pids, display=None, topmost=False, wait=0.0, step=0.25, slots=None, count=None):
@@ -254,7 +260,10 @@ def main(argv=None):
             print(json.dumps(monitors(), indent=1))
         elif a.cmd == "rects":
             mon = check_display(a.display)
-            print(json.dumps({"display": mon["name"], "rects": layout(mon["work"], a.count)}))
+            out = {"display": mon["name"], "rects": layout(mon["work"], a.count)}
+            if mon.get("note"):
+                out["note"] = mon["note"]
+            print(json.dumps(out))
         elif a.cmd == "launch":
             cmd = [c for i, c in enumerate(a.cmd_line) if not (i == 0 and c == "--")]
             if not cmd:

@@ -2521,7 +2521,7 @@ public:
                 }
                 board.Publish(members);
                 for (const auto& [address, state] : sync_.BrainStateIn()) {
-                    board.Receive(address, state);
+                    board.Receive(address, CoopBrainState::FromKeyed(state));
                 }
                 for (const std::string& note : board.TakeNotes()) {
                     LOG_INFO(Core, "coop: bosses: {}", note);
@@ -4893,7 +4893,9 @@ private:
                     }
                     s.bsa = CoopBossNative::TheTable().OwnerState(a, &s.variants);
                     s.orders = CoopBossOrders::TheTable().OwnerOrders(a);  // row 222: its manager's orders, ours
-                    s.brain = CoopBrainState::TheTable().OwnerBoard(a);     // row 149: its blackboard move state
+                    if (const auto brain = CoopBrainState::TheTable().OwnerBoard(a)) {
+                        s.brain = CoopBrainState::ToKeyed(*brain);  // row 149: its blackboard move state
+                    }
                     if (own_hit_life) {
                         s.hit_at = NewOwnHitAt(r, a, *own_hit_life, s.position, own_hit_took_life);
                     } else if (CoopBossNative::TheTable().OwnShotNear(s.position)) {

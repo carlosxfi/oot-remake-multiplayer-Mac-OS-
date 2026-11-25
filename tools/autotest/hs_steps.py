@@ -32,10 +32,13 @@ counts match is PASS only when its see= checks are all OK (FAIL when a shot show
 Log-only steps by nature: `try` (a join's outcome: a connection result) and `lines` (counts log lines); a run made of
 them alone still needs its group line's see= or logonly= (groups.py).
 The server's join password comes from the environment variable OOT_COOP_TEST_PASSWORD (run.ps1 -ServerPassword).
+Unset, `run` makes a random one for the run (ensure_server_password) and gives it to the server and to every game: every
+session has a join password (coop_server does not start without one; a game without the server's is refused).
 """
 import argparse
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -69,6 +72,17 @@ class Step:
 
     def __repr__(self):
         return "Step(%d, %r, %r)" % (self.n, self.verb, self.args)
+
+
+def ensure_server_password(environ):
+    """The run's join password in environ["OOT_COOP_TEST_PASSWORD"]: kept when set (run.ps1 -ServerPassword, a
+    wrapper's own), else a random one made here, so the server (--password-env) and the games (Runner's default
+    password, LICHII_COOP_PASSWORD) always get the same one. A wrapper that called `run` without it started a server
+    with no password, which coop_server refuses (rejoin-host-273's harness gaps). True when one was made."""
+    if environ.get("OOT_COOP_TEST_PASSWORD"):
+        return False
+    environ["OOT_COOP_TEST_PASSWORD"] = "autotest-" + secrets.token_hex(8)
+    return True
 
 
 def _game(n, x):
@@ -693,9 +707,8 @@ class HookshotGames:
             return
         self.server_runs += 1
         sfx = "-%d" % self.server_runs if self.server_runs > 1 else ""
-        args = [self.server_exe, "--port", str(self.port)]
-        if os.environ.get("OOT_COOP_TEST_PASSWORD"):
-            args += ["--password-env", "OOT_COOP_TEST_PASSWORD"]
+        # (always set by main: ensure_server_password; the games send the same one)
+        args = [self.server_exe, "--port", str(self.port), "--password-env", "OOT_COOP_TEST_PASSWORD"]
         args += self.head.get("server", [])   # the steps file's `#! server` arguments
         env = None
         if self.server_delay:
@@ -793,13 +806,16 @@ def main(argv=None):
         print("hs_steps.py: %s: %s" % (a.steps, e))
         return 1
     head = parse_header(text)
-    if a.dry_run:
-        print("steps %s: %d steps; games %s / %s; server %s port %d%s; pipes %s-A/-B; out %s" % (
+    if a.dry_run:   # (nothing set: a dry run starts nothing)
+        print("steps %s: %d steps; games %s / %s; server %s port %d, %s; pipes %s-A/-B; out %s" % (
             a.steps, len(steps), a.game_a, a.game_b, a.server, a.port,
-            ", join password from OOT_COOP_TEST_PASSWORD" if os.environ.get("OOT_COOP_TEST_PASSWORD") else "",
-            a.pipe, a.out))
+            "join password from OOT_COOP_TEST_PASSWORD" if os.environ.get("OOT_COOP_TEST_PASSWORD")
+            else "a random join password would be made for the run (OOT_COOP_TEST_PASSWORD is unset)", a.pipe, a.out))
         _dry(steps)
         return 0
+    made = ensure_server_password(os.environ)   # (before the server and the Runner read it)
+    password_note = ("a random join password made for this run (OOT_COOP_TEST_PASSWORD was unset)" if made
+                     else "join password from OOT_COOP_TEST_PASSWORD")
     os.makedirs(a.out, exist_ok=True)
     sys.path.insert(0, HERE)
     import hookshot as hk  # noqa: E402 (tools/autotest/hookshot.py: the bridge, the player, the load)
@@ -813,7 +829,10 @@ def main(argv=None):
         say("window placement: %s" % e)
         return 2
     if mon:
+        if mon.get("note"):
+            say("window placement: %s" % mon["note"])
         say("windows go to %s (work area %s)" % (mon["name"], mon["work"]))
+    say("server and games: %s" % password_note)
     games.server_delay = hk.test_delay_args(a.test_delay_ms, a.test_jitter_ms)
     games.renderer = (a.renderer_wait or games.timeout, a.renderer_stall or hk.RENDERER_STALL,
                       a.renderer_limit or hk.RENDERER_LIMIT)

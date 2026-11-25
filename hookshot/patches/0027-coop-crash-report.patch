@@ -286,12 +286,12 @@ index bc502bf6..41d74f6f 100644
                  : "The report could not be put on the clipboard, nor saved. ",
 -        opened ? "In the issue form that opened in your browser, paste it into the longshot_log.txt box, say what you were doing, "
 -                 "and fill in the rest."
-+        opened ? "Send it as the page that opened in your browser says (/bugreport on Discord, or a GitHub issue with the "
-+                 "kit's collect-logs zip), and say what you were doing."
++        opened ? "Nothing has been sent: send it yourself, as the page that opened in your browser says (/bugreport on Discord "
++                 "with the zip that collect-logs.cmd in the kit's scripts folder makes, or a GitHub issue), and say what you were doing."
                 : "Open ",
          opened ? "" : issues,
 -        opened ? "" : ", choose Game problem, and paste it into the longshot_log.txt box.",
-+        opened ? "" : " and send it as that page says (/bugreport on Discord, or a GitHub issue with the kit's collect-logs zip).",
++        opened ? "" : ". Nothing has been sent: send it yourself as that page says (/bugreport on Discord with the zip that collect-logs.cmd in the kit's scripts folder makes, or a GitHub issue).",
          saved ? "\n\nIt is saved as " : "", saved ? saved : "");
      size_t used = n < 0 ? 0 : (size_t)n < cap ? (size_t)n : cap ? cap - 1 : 0;
      const char *tail = saved ? "." : "";

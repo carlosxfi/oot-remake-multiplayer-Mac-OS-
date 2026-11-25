@@ -673,7 +673,11 @@ constexpr std::uint64_t kAutoSaveKindEvent = 5;        // EventTriggerRequestAut
 constexpr std::uint64_t kAutoSaveMgrState = 0x130;     // mgr: -> the state the request marks (0 before it is made)
 
 void RequestHostAutoSave(void* ctx) {
-    if (!CoopSave::TakeSaveRequest()) return;
+    const auto request = CoopSave::TakeSaveRequest();
+    if (request == CoopSave::SaveRequest::none) return;
+    // (the test commands' `autosave`, rejoin-host-273-2: the same call; no guest waits for it)
+    const bool test = request == CoopSave::SaveRequest::test;
+    const char* const without = test ? "the test's autosave is not asked" : "the guests get our last save on disk";
     const std::uint64_t base = CoopRuntime::MainBase();
     const auto read64 = [](std::uint64_t at) {
         std::uint64_t v = 0;
@@ -682,7 +686,7 @@ void RequestHostAutoSave(void* ctx) {
     const std::uint64_t got = read64(base + kGameSystemGot);
     const std::uint64_t system = got != 0 ? read64(got) : 0;
     if (system == 0) {
-        LOG_WARNING(Core, "coop: save: our game has no game system yet: the guests get our last save on disk");
+        LOG_WARNING(Core, "coop: save: our game has no game system yet: {}", without);
         return;
     }
     HosCoopCall k{};
@@ -691,7 +695,7 @@ void RequestHostAutoSave(void* ctx) {
     k.x[1] = kAutoSaveMgrIndex;
     std::uint64_t mgr = 0;
     if (!g_api->call(ctx, &k, &mgr) || mgr == 0 || read64(mgr + kAutoSaveMgrState) == 0) {
-        LOG_WARNING(Core, "coop: save: our game's autosave manager is not there: the guests get our last save on disk");
+        LOG_WARNING(Core, "coop: save: our game's autosave manager is not there: {}", without);
         return;
     }
     k = HosCoopCall{};
@@ -701,7 +705,12 @@ void RequestHostAutoSave(void* ctx) {
     k.x[2] = 0;
     std::uint64_t x0 = 0;
     if (!g_api->call(ctx, &k, &x0)) {
-        LOG_WARNING(Core, "coop: no game function at {:#x}: the guests get our last save on disk", k.function);
+        LOG_WARNING(Core, "coop: no game function at {:#x}: {}", k.function, without);
+        return;
+    }
+    if (test) {
+        LOG_INFO(Core, "coop: save: asked our game for its own autosave (an event's end request), for the test "
+                       "commands' autosave: the game's own gate may refuse it");
         return;
     }
     LOG_INFO(Core, "coop: save: asked our game for its own autosave (an event's end request): the guests' send waits "
@@ -2824,6 +2833,14 @@ COOP_HOOKSHOT_EXPORT int hos_coop_mouse(float fx, float fy, int event) {
     static CoopBoundary::Site site{"hos_coop_mouse"};
     return CoopExportGuard::Guard(site, static_cast<int>(0), [&]() -> int {
         return CoopHookshot::Mouse(fx, fy, event) ? 1 : 0;
+    });
+}
+// The game's menu mouse held off while co-op presses the menu's buttons for the player (coop_auto_press.h; Longshot
+// patch 0030's oot_menu.c asks each menu frame): 1 = held, the mouse neither points nor clicks.
+COOP_HOOKSHOT_EXPORT int hos_coop_menu_mouse_held(void) noexcept {
+    static CoopBoundary::Site site{"hos_coop_menu_mouse_held"};
+    return CoopExportGuard::Guard(site, static_cast<int>(0), [&]() -> int {
+        return g_on && CoopTitle::MenuMouseHeld() ? 1 : 0;
     });
 }
 // Drawing over the picture (hos_coop_draw.h), on Hookshot's render thread.

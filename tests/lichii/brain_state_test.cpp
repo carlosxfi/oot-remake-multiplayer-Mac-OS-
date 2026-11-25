@@ -9,6 +9,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "coop_brain_state.h"
@@ -31,9 +32,9 @@ constexpr std::uint32_t kReverseId = KeyId(kReverse);
 constexpr std::uint32_t kSpawnId = KeyId(kSpawn);
 static_assert(kCornerId == 0x44f0ae37u && kReverseId == 0x9419f2ceu && kSpawnId == 0xaa89a18fu);
 
-BrainValue C(std::int32_t corner) { return {kCornerId, coop::protocol::kBrainS32, corner}; }
-BrainValue R(std::int32_t reverse) { return {kReverseId, coop::protocol::kBrainBool, reverse}; }
-BrainValue S(std::int32_t spawn) { return {kSpawnId, coop::protocol::kBrainBool, spawn}; }
+BrainValue C(std::int32_t corner) { return {kCornerId, corner}; }
+BrainValue R(std::int32_t reverse) { return {kReverseId, reverse}; }
+BrainValue S(std::int32_t spawn) { return {kSpawnId, spawn}; }
 // A component as it goes on the wire: its values by rising key.
 BrainState State(std::vector<BrainValue> values) {
     std::sort(values.begin(), values.end(), [](const BrainValue& a, const BrainValue& b) { return a.key < b.key; });
@@ -198,7 +199,7 @@ TEST_CASE("row 149: keys are named on the wire by the hash of their name, and Ki
     for (const Key& k : kKeys) {
         CHECK(k.id == KeyId(k.name));
         const std::vector<Key> of = KeysOf(k.boss);
-        CHECK(of.size() <= coop::protocol::kMaxBrainValues);
+        CHECK(of.size() <= kMaxBrainValues);
         std::set<std::uint32_t> ids;
         for (std::size_t i = 0; i < of.size(); ++i) {
             CHECK(ids.insert(of[i].id).second);         // no two keys of an actor share a hash
@@ -228,19 +229,41 @@ TEST_CASE("row 149: keys are named on the wire by the hash of their name, and Ki
     CHECK(KeysOf("Enemy_DungeonBoss_Dodongo_Attention").empty());  // (the exact name only)
 }
 
-TEST_CASE("row 149: the plan puts in only what differs, only carried and read keys of the same type") {
+TEST_CASE("row 149: the plan puts in only what differs, only carried and read keys, bools as 0 or 1") {
     const std::vector<Key> king = KeysOf(kKing);
     const BrainState ours = State({C(0), R(0), S(1)});
     CHECK(State(Plan(king, State({C(2), R(1), S(1)}), ours)) == State({C(2), R(1)}));
     CHECK(Plan(king, ours, ours).empty());
-    // A key of another actor or of a newer build is passed over.
-    const BrainValue other{KeyId("DungeonBossVolvagia_BattleState"), coop::protocol::kBrainS32, 5};
-    CHECK(State(Plan(king, State({R(1), other}), ours)) == State({R(1)}));
-    // A key that came as another type than ours is not put in.
-    CHECK(Plan(king, State({BrainValue{kCornerId, coop::protocol::kBrainBool, 1}}), ours).empty());
-    CHECK(Plan(king, State({BrainValue{kCornerId, coop::protocol::kBrainF32, 0x40000000}}), ours).empty());
+    // A bool that came as another non-zero value is true; a key of another actor or of a newer build is passed over.
+    const BrainValue other{KeyId("DungeonBossVolvagia_BattleState"), 5};
+    CHECK(State(Plan(king, State({R(7), other}), ours)) == State({R(1)}));
+    CHECK(Plan(king, State({S(255)}), ours).empty());
     // A key our game could not read is left alone.
     CHECK(State(Plan(king, State({C(2), R(1)}), State({R(0)}))) == State({R(1)}));
+}
+
+TEST_CASE("row 149: on the wire the values are component 25's keyed values of the actor itself, a full list") {
+    using coop::protocol::KeyedValue;
+    using coop::protocol::KeyedValues;
+    const BrainState state = State({C(2), R(1), S(0)});
+    const KeyedValues keyed = ToKeyed(state);
+    CHECK(keyed.full);
+    REQUIRE(keyed.values.size() == 3);
+    for (std::size_t i = 0; i < keyed.values.size(); ++i) {
+        CHECK(keyed.values[i].owner == 0);  // the actor itself
+        CHECK(std::holds_alternative<std::int32_t>(keyed.values[i].value));
+        CHECK((i == 0 || keyed.values[i - 1].name < keyed.values[i].name));  // the wire's order
+    }
+    CHECK(FromKeyed(keyed) == state);
+    // From the wire: a part's value (another owner), another type and a remove are passed over.
+    KeyedValues in = keyed;
+    in.values.push_back(KeyedValue{0x1234, kCornerId, std::int32_t{9}});
+    in.values.push_back(KeyedValue{0, 0x11111111u, 1.5f});
+    in.values.push_back(KeyedValue{0, 0x22222222u, coop::protocol::KeyedRemove{}});
+    in.values.push_back(KeyedValue{0, 0x33333333u, std::uint64_t{77}});
+    CHECK(FromKeyed(in) == state);
+    CHECK(FromKeyed(KeyedValues{}) == BrainState{});
+    CHECK(ToKeyed(BrainState{}).values.empty());
 }
 
 TEST_CASE("row 149: the owner's game reads its boss's move state for its samples") {

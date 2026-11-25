@@ -41,6 +41,33 @@ std::string Text(std::span<const Key> keys, const std::vector<BrainValue>& value
 
 }  // namespace
 
+coop::protocol::KeyedValues ToKeyed(const BrainState& state) {
+    coop::protocol::KeyedValues out;
+    out.full = true;
+    for (const BrainValue& v : state.values) {
+        out.values.push_back(coop::protocol::KeyedValue{0, v.key, v.value});
+    }
+    // (the wire's order: owner, then name; ours are by rising key already, sorted again for a caller's own list)
+    std::sort(out.values.begin(), out.values.end(),
+              [](const coop::protocol::KeyedValue& a, const coop::protocol::KeyedValue& b) { return a.name < b.name; });
+    return out;
+}
+
+BrainState FromKeyed(const coop::protocol::KeyedValues& keyed) {
+    BrainState out;
+    for (const coop::protocol::KeyedValue& v : keyed.values) {
+        if (v.owner != 0) {
+            continue;  // (a part's)
+        }
+        if (const std::int32_t* value = std::get_if<std::int32_t>(&v.value)) {
+            out.values.push_back({v.name, *value});
+        }
+    }
+    std::sort(out.values.begin(), out.values.end(),
+              [](const BrainValue& a, const BrainValue& b) { return a.key < b.key; });
+    return out;
+}
+
 std::vector<Key> KeysOf(std::string_view boss) {
     std::vector<Key> out;
     for (const Key& k : kKeys) {
@@ -57,12 +84,12 @@ std::vector<BrainValue> Plan(std::span<const Key> keys, const BrainState& theirs
     for (const Key& k : keys) {
         const BrainValue* want = ValueOf(theirs, k.id);
         const BrainValue* have = ValueOf(ours, k.id);
-        if (want == nullptr || have == nullptr || want->type != static_cast<std::uint8_t>(k.kind)) {
-            continue;  // (not sent by that owner's build or as another type, or not read here)
+        if (want == nullptr || have == nullptr) {
+            continue;  // (not sent by that owner's build, or not read here)
         }
         const std::int32_t value = k.kind == Kind::boolean ? (want->value != 0 ? 1 : 0) : want->value;
         if (value != have->value) {
-            out.push_back({k.id, static_cast<std::uint8_t>(k.kind), value});
+            out.push_back({k.id, value});
         }
     }
     return out;
@@ -217,12 +244,12 @@ std::optional<BrainState> Table::ReadValues(CoopPuppet::Guest& guest, const Entr
         if (s.key.kind == Kind::s32) {
             std::int32_t value = 0;
             if (s32_at != 0 && guest.Read(s32_at + s.index * sizeof value, &value, sizeof value)) {
-                out.values.push_back({s.key.id, coop::protocol::kBrainS32, value});
+                out.values.push_back({s.key.id, value});
             }
         } else {
             std::uint8_t value = 0;
             if (bool_at != 0 && guest.Read(bool_at + s.index, &value, sizeof value)) {
-                out.values.push_back({s.key.id, coop::protocol::kBrainBool, value != 0 ? 1 : 0});
+                out.values.push_back({s.key.id, value != 0 ? 1 : 0});
             }
         }
     }
