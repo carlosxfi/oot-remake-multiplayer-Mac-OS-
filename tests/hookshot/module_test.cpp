@@ -1275,8 +1275,18 @@ TEST_CASE("hookshot: a guest's ask makes the host's game save first, with the ca
     CHECK(module.find("constexpr std::uint64_t kRequestAutoSave = 0xba7730;") != std::string::npos);
     CHECK(module.find("constexpr std::uint64_t kAutoSaveKindEvent = 5;") != std::string::npos);
     const std::string ask = body("void RequestHostAutoSave(void* ctx) {");
-    CHECK(ask.find("const auto request = CoopSave::TakeSaveRequest();\n    if (request == CoopSave::SaveRequest::none) "
-                   "return;") != std::string::npos);   // only a guest's ask (or the test commands' autosave)
+    CHECK(ask.find("const auto request = CoopSave::TakeSaveRequest();\n    if (request == CoopSave::SaveRequest::none && "
+                   "g_autosave_ask.kind == CoopSave::SaveRequest::none) return;") !=
+          std::string::npos);   // only a guest's ask (or the test commands' autosave), or one still open
+    // rejoin-host-273-3: the gate's answer is read (the mark main+0xba77dc sets) and a refusal is asked again until
+    // its window ends (the guests' round, or the test's own); the refusal logs the gate's inputs
+    CHECK(module.find("constexpr std::uint64_t kAutoSaveMark = 5;") != std::string::npos);
+    CHECK(ask.find("const bool before = marked(state);") < ask.find("base + kRequestAutoSave"));
+    CHECK(ask.find("if (marked(state)) {") > ask.find("base + kRequestAutoSave"));
+    CHECK(ask.find("g_autosave_ask.next_us = now + kAutoSaveRetryUs;") != std::string::npos);
+    CHECK(ask.find("if (now >= g_autosave_ask.until_us) {") != std::string::npos);
+    CHECK(ask.find(": coop::host::save::Planner::kFreshSaveUs);") != std::string::npos);
+    CHECK(module.find("std::string AutoSaveRefusal(std::uint64_t mgr) {") != std::string::npos);
     CHECK(ask.find("base + kSystemComponent") != std::string::npos);
     CHECK(ask.find("base + kRequestAutoSave") != std::string::npos);
     CHECK(ask.find("g_api->write") == std::string::npos);   // the game's own call; nothing written by us
