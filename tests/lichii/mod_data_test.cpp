@@ -85,6 +85,23 @@ TEST_CASE("mod data store: sends each change once, a clear first, one each quart
     CHECK(*next == proto::ModData{proto::kPlayerSelf, "a", "y", B("3")});
 }
 
+TEST_CASE("mod data store: a key that changes all the time keeps no other back") {
+    Store s;
+    s.Welcomed(2);
+    s.Set("z", "late", B("1"));
+    std::uint64_t now = 10'000;
+    bool late = false;
+    for (int i = 0; i < 4; ++i) {
+        s.Set("a", "score", B(std::to_string(i)));
+        const auto next = s.Next(now);
+        REQUIRE(next);
+        late |= next->mod_id == "z";
+        s.MarkSent(*next, now, s.connection());
+        now += proto::kModDataSendGapMs;
+    }
+    CHECK(late);
+}
+
 TEST_CASE("mod data store: the others' values, their changes, and forgetting them") {
     Store s;
     s.Welcomed(1);

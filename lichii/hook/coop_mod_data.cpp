@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "coop_mod_data.h"
 #include <mutex>
+#include <tuple>
 #include <variant>
 #include "coop/host/session.hpp"
 #include "coop/net/client.hpp"
@@ -135,17 +136,21 @@ std::optional<proto::ModData> Store::Next(std::uint64_t now_ms) const {
             }
         }
     }
+    std::optional<proto::ModData> first;
     for (const auto& [mod_id, keys] : mine_) {
         const auto mod = sent_.find(mod_id);
         for (const auto& [key, value] : keys) {
-            if (mod == sent_.end()) return proto::ModData{proto::kPlayerSelf, mod_id, key, value};
-            const auto k = mod->second.find(key);
-            if (k == mod->second.end() || k->second != value) {
+            if (mod != sent_.end()) {
+                const auto k = mod->second.find(key);
+                if (k != mod->second.end() && k->second == value) continue;
+            }
+            if (std::tie(mod_id, key) > std::tie(last_sent_.first, last_sent_.second)) {
                 return proto::ModData{proto::kPlayerSelf, mod_id, key, value};
             }
+            if (!first) first = proto::ModData{proto::kPlayerSelf, mod_id, key, value};
         }
     }
-    return std::nullopt;
+    return first;
 }
 
 void Store::MarkSent(const proto::ModData& data, std::uint64_t now_ms, std::uint64_t connection) {
@@ -159,6 +164,7 @@ void Store::MarkSent(const proto::ModData& data, std::uint64_t now_ms, std::uint
         return;
     }
     sent_[data.mod_id][data.key] = data.value;
+    last_sent_ = {data.mod_id, data.key};
 }
 
 std::vector<Change> Store::TakeChanges() {

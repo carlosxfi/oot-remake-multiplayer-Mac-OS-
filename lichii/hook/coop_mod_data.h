@@ -77,7 +77,8 @@ public:
     void Left();
 
     // The next MOD_DATA to send at `now_ms`, at most one each kModDataSendGapMs: a key whose value is not the one the
-    // server has (a cleared key first, so a new key never comes before the clear that makes room for it). nullopt
+    // server has (a cleared key first, so a new key never comes before the clear that makes room for it; then the next
+    // one after the last sent, round and round, so a key that changes all the time keeps no other back). nullopt
     // when nothing is due, the gap has not passed or this game is not in a session. MarkSent once it went out, with
     // the connection() read with Next: a send of a connection that has been replaced since (a reconnect between the
     // send and MarkSent) is not marked, so the new connection sends the value again.
@@ -98,6 +99,7 @@ private:
 
     Values mine_;
     Values sent_;  // what the server has of ours on this connection
+    std::pair<std::string, std::string> last_sent_;  // the last key sent with a value
     std::map<std::uint8_t, Values> others_;
     std::vector<Change> changes_;
     std::uint8_t number_ = 0;
