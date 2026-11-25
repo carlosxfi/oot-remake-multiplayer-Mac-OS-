@@ -43,7 +43,10 @@ The pack's menu files (build.py --title-rows / --pause-tab: larger copies of fil
 (guard_menus): kept out of the pack's romfs, in `<pack>/_coop-menus`, while the table the game reads lacks their sizes;
 else the language archive fails to load and the game crashes at boot.
 
-    python -I merge_tables.py --mods <game>/mods [--romfs <game>/romfs] [--undo]
+    python -I merge_tables.py --mods <game>/mods [--romfs <game>/romfs] [--undo] [--in-game]
+
+One merge at a time on a mods folder (merge_lock). `--in-game`: the game runs this itself at a start the kit did not
+make (the Insert menu's Restart now, longshot.exe by hand; host/mods.c, patch 0011, player report 288).
 
 Prints what it did, one line each. Exit 0 also when there is nothing to do; 1 when a table could not be merged
 (said why; the game starts anyway and the module says the puppets are off).
@@ -1312,7 +1315,7 @@ def _menu_short(codec, order, pack_path, files):
     return None, 0
 
 
-def guard_menus(root, romfs, say=print):
+def guard_menus(root, romfs, say=print, put_back=True):
     """The menu files only where the game can load them. They are larger than the game's own (more labels, more panes),
     so the size table the game reads must hold the pack's sizes for them: the game loads a file larger than its entry
     as a failed resource, and the language archive failing at boot crashed the game (0xc0000005 reading guest 0x8 in
@@ -1322,7 +1325,10 @@ def guard_menus(root, romfs, say=print):
     <pack>/_coop-menus (beside its romfs: the game never reads them there) and the game keeps its own menus (the module
     keeps the title rows and the pause tab off without their panes). They go back at the first start the table holds
     them again; a pack made since (its files in romfs again) drops the kept copies. Returns 1 when it could not move
-    a file, else 0."""
+    a file, else 0.
+    put_back=False (--in-game: the game runs this merge itself, at a start the kit did not make, player report 288):
+    files kept aside stay there. The game was built without the code that goes with them (charsel_native_parked), and
+    the game cannot build itself; the next start with the kit puts them back and builds."""
     order = load_order(root)
     pack_path = next((p for n, p in order if fold(n) == PACK), None)
     if pack_path is None:
@@ -1350,6 +1356,11 @@ def guard_menus(root, romfs, say=print):
                     "pack's menu files: the title's co-op rows and the pause menu's Multiplayer tab are off this start "
                     "(the game's own menus; co-op still works from the Minus menu). Turn that mod off, or merge the "
                     "pack's entries into its table, and they come back.")
+            return 0
+        if not put_back:
+            if os.path.isdir(keep):
+                say("Menus: the puppet pack's menu files stay aside this start (the game was built without them): "
+                    "start the game with Start Squadala and they come back.")
             return 0
         back = 0
         for rel in files:
@@ -1405,6 +1416,44 @@ def park_menus(root, say=print):
         say(f"Menus: the title's co-op rows and the pause menu's Multiplayer tab are off this start ({moved} files "
             "kept aside: the size tables could not be checked); the next start that can merge puts them back.")
     return moved
+
+
+LOCK_WAIT = 120.0   # seconds a start waits for another start's merge of the same mods folder (the game's limit: 180)
+
+
+def merge_lock(root, wait=None):
+    """One merge at a time on a mods folder (player report 288: the game runs this merge itself at a start the kit did
+    not make, so two games of one folder started together, Nucleus Co-op or local co-op, would both write the merged
+    files). A lock on a file in the temp folder named by the mods folder's path (nothing is put into the mods folder),
+    held by the operating system for this process only, so a merge that died leaves none. Returns the open file (keep
+    it until the merge is done), False when the lock cannot be made here (the merge runs as before), None when
+    another merge still held it after `wait` seconds."""
+    import tempfile
+    import time
+    try:
+        key = fnv64_bytes(os.path.normcase(os.path.realpath(root)).encode("utf-8", "surrogateescape"))
+        f = open(os.path.join(tempfile.gettempdir(), f"coop-merge-{key}.lock"), "a+b")
+    except OSError:
+        return False
+    until = time.monotonic() + (LOCK_WAIT if wait is None else wait)
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return f
+        except OSError:
+            if time.monotonic() >= until:
+                f.close()
+                return None
+            time.sleep(0.2)
+        except ImportError:
+            f.close()
+            return False
 
 
 def original_table(root, mod_path, fname):
@@ -1946,9 +1995,24 @@ def main(argv=None):
     ap.add_argument("--mods", required=True)
     ap.add_argument("--romfs", default="")
     ap.add_argument("--undo", action="store_true")
+    ap.add_argument("--in-game", action="store_true",
+                    help="run by the game itself (host/mods.c, patch 0011): menu files kept aside stay aside")
     a = ap.parse_args(argv)
     if not os.path.isdir(a.mods):
         return 0
+    lock = merge_lock(a.mods)
+    if lock is None:
+        print(f"Size tables: not merged (another start of the game was still merging this mods folder after "
+              f"{LOCK_WAIT:.0f} s).")
+        return 1
+    try:
+        return _main(a)
+    finally:
+        if lock:
+            lock.close()
+
+
+def _main(a):
     if a.undo:
         undo(a.mods)
         return 0
@@ -1963,7 +2027,7 @@ def main(argv=None):
         models_failed = merge_self_models(a.mods, a.romfs)   # (row 202: your Link's colours with Character Select)
         failed = merge_mods(a.mods, a.romfs, fit=fit) + members_failed + models_failed
         # Last, on the tables as the game will read them: the pack's menu files only where they can load.
-        menus_failed = guard_menus(a.mods, a.romfs)
+        menus_failed = guard_menus(a.mods, a.romfs, put_back=not a.in_game)
         return 1 if (failed or rows_failed or menus_failed or once_failed) else 0
     except SystemExit:  # (zs._zstd: no zstandard package)
         print("Size tables: not merged (this Python has no zstandard package): with a mod that has its own size "

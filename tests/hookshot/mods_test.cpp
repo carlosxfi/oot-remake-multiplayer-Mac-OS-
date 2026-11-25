@@ -427,6 +427,79 @@ TEST_CASE("mods: hos_coop_mods.h is the same file in the module and in patch 001
     CHECK(NewFile(patch, "host/hos_coop_mods.h") == Slurp(kRepo / "hookshot" / "src" / "hos_coop_mods.h"));
 }
 
+TEST_CASE("mods: the kit's merge runs at a restart or a start without the kit (hos_coop_mods_start_merge, report 288)") {
+    const auto run = hos_coop_mods_start_merge;
+    // The switch: 1 on, 0 off, not set (or empty): the default.
+    const int def = HOS_COOP_MODS_START_MERGE_DEFAULT ? HOS_COOP_MODS_MERGE_DIRECT : HOS_COOP_MODS_MERGE_NO;
+    CHECK(run(nullptr, nullptr, nullptr, 0) == def);
+    CHECK(run("", nullptr, nullptr, 0) == def);
+    CHECK(run("0", nullptr, "1", 0) == HOS_COOP_MODS_MERGE_NO);
+    // A start without the kit's marker (longshot.exe by hand, Nucleus Co-op): merged.
+    CHECK(run("1", nullptr, nullptr, 0) == HOS_COOP_MODS_MERGE_DIRECT);
+    CHECK(run("1", "", nullptr, 0) == HOS_COOP_MODS_MERGE_DIRECT);
+    CHECK(run("1", "0", nullptr, 0) == HOS_COOP_MODS_MERGE_DIRECT);
+    // The kit's start, the lanes and the autotest (they merged themselves and set the marker): nothing changes.
+    CHECK(run("1", "1", nullptr, 0) == HOS_COOP_MODS_MERGE_NO);
+    CHECK(run("1", "1", "", 0) == HOS_COOP_MODS_MERGE_NO);
+    CHECK(run("1", "1", "0", 0) == HOS_COOP_MODS_MERGE_NO);
+    // The Insert menu's Restart now: the marker is inherited from the kit's start, the merge is not.
+    CHECK(run("1", "1", "1", 0) == HOS_COOP_MODS_MERGE_RESTART);
+    CHECK(run("1", nullptr, "1", 0) == HOS_COOP_MODS_MERGE_RESTART);
+    // The Original game (a "default off" list): the kit merges nothing for it, nor does the game.
+    CHECK(run("1", "1", "1", 1) == HOS_COOP_MODS_MERGE_NO);
+    CHECK(run("1", nullptr, nullptr, 1) == HOS_COOP_MODS_MERGE_NO);
+
+    // The folders above the game's, where the kit is looked for.
+    char out[64];
+    REQUIRE(hos_coop_mods_up("/kit/data/game/bin/", 0, out, sizeof out));
+    CHECK(std::string(out) == "/kit/data/game/bin");
+    REQUIRE(hos_coop_mods_up("/kit/data/game/bin/", 2, out, sizeof out));
+    CHECK(std::string(out) == "/kit/data");
+    REQUIRE(hos_coop_mods_up("C:\\kit\\hookshot\\game\\bin\\", 3, out, sizeof out));
+    CHECK(std::string(out) == "C:\\kit");
+    REQUIRE(hos_coop_mods_up("C:\\kit\\hookshot/game", 1, out, sizeof out));
+    CHECK(std::string(out) == "C:\\kit\\hookshot");
+    REQUIRE(hos_coop_mods_up("C:\\kit", 1, out, sizeof out));        // (the drive)
+    CHECK(std::string(out) == "C:");
+    CHECK_FALSE(hos_coop_mods_up("C:\\kit", 2, out, sizeof out));    // (nothing above it)
+    CHECK_FALSE(hos_coop_mods_up("/kit", 1, out, sizeof out));       // (only the root)
+    CHECK_FALSE(hos_coop_mods_up("game", 1, out, sizeof out));
+    CHECK_FALSE(hos_coop_mods_up("", 0, out, sizeof out));
+    char tiny[8];
+    CHECK_FALSE(hos_coop_mods_up("/kit/data", 0, tiny, sizeof tiny));   // (does not fit)
+
+    // The merge's files, by the kit's own layout only.
+    char path[96];
+#ifdef _WIN32
+    REQUIRE(hos_coop_mods_kit_file("C:\\kit", HOS_COOP_MODS_KIT_TOOL, path, sizeof path));
+    CHECK(std::string(path) == "C:\\kit\\tools\\puppet_pack\\merge_tables.py");
+    REQUIRE(hos_coop_mods_kit_file("C:\\kit", HOS_COOP_MODS_KIT_PYTHON, path, sizeof path));
+    CHECK(std::string(path) == "C:\\kit\\hookshot\\tools\\python\\python.exe");
+    CHECK_FALSE(hos_coop_mods_kit_file("C:\\kit", HOS_COOP_MODS_KIT_PYTHON_SYSTEM, path, sizeof path));   // (the kit's only)
+#else
+    REQUIRE(hos_coop_mods_kit_file("/kit/data", HOS_COOP_MODS_KIT_TOOL, path, sizeof path));
+    CHECK(std::string(path) == "/kit/data/tools/puppet_pack/merge_tables.py");
+    REQUIRE(hos_coop_mods_kit_file("/kit/data", HOS_COOP_MODS_KIT_PYTHON, path, sizeof path));
+    CHECK(std::string(path) == "/kit/data/builder/image/usr/python/bin/python3");
+    REQUIRE(hos_coop_mods_kit_file("/kit/data", HOS_COOP_MODS_KIT_PYTHON_SYSTEM, path, sizeof path));
+    CHECK(std::string(path) == "/usr/bin/python3");
+#endif
+    CHECK_FALSE(hos_coop_mods_kit_file("", HOS_COOP_MODS_KIT_TOOL, path, sizeof path));
+    CHECK_FALSE(hos_coop_mods_kit_file("/kit/data", 9, path, sizeof path));
+    char small[24];
+    CHECK_FALSE(hos_coop_mods_kit_file("/kit/data", HOS_COOP_MODS_KIT_TOOL, small, sizeof small));   // (does not fit)
+
+    // Patch 0011 holds the three places: the game started again is told so, and the merge runs before the index.
+    const std::string patch = Slurp(kRepo / "hookshot" / "patches" / "0011-coop-mods.patch");
+    CHECK(patch.find("SetEnvironmentVariableW(L\"" HOS_COOP_MODS_RESTART_ENV "\", L\"1\")") != std::string::npos);
+    CHECK(patch.find("static char again[] = \"" HOS_COOP_MODS_RESTART_ENV "=1\"") != std::string::npos);
+    const auto merge = patch.find("+    coop_start_merge(game_dir);");
+    REQUIRE(merge != std::string::npos);
+    CHECK(patch.find("+    coop_mods_rank(root_dir);") < merge);   // (after the list: its "default off")
+    CHECK(patch.find(" --in-game --mods ") != std::string::npos);
+    CHECK(patch.find("\"--in-game\"") != std::string::npos);
+}
+
 TEST_CASE("mods: a code mod is used as the game was built for it (hos_coop_mods_built, hos_coop_mods_as_built)") {
     // exefs_patches.txt as nx2/exefs_patches.py write_list writes it: mod, file, hash, kind, note
     const std::string list =
