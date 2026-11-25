@@ -16,6 +16,10 @@ press A
 wait 2400
 mark after
 place -55.0 114.6 -8.0
+wait 60
+face -49.0 -8.0          # plate Obj_StepSwitch_A_01 at -49.00 114.20 -8.00 (actor list); B stands on the floor below (111.4) 6 m west of it
+press ZL                # camera behind B (the camera does not follow face)
+wait 120
 wait 700
 mark b-held
 wait 1800
