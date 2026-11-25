@@ -48,6 +48,7 @@ bool Relay::over_limit(std::map<std::uint32_t, Tries>& tries, std::uint32_t addr
   if (t.count == 0 || now_ms - t.window_start >= (window_ms != 0 ? window_ms : config_.window_ms)) {
     t.window_start = now_ms;
     t.count = 0;
+    t.said = false;
   }
   if (t.count >= limit) return true;
   if (count) ++t.count;
@@ -113,18 +114,31 @@ std::map<std::uint64_t, Relay::Session>::iterator Relay::open_session(Endpoint f
 
 LookupResult Relay::let_in(Endpoint from, std::optional<std::uint64_t> token, const std::string& what,
                            std::uint64_t now_ms) {
+  // A failed lookup is said with its reason (what was asked: a room's name, never a code or a password), at most
+  // lookups_per_window times a window from one address (then once "over the limit"): a guest who could not get in
+  // shows in the journal, not only in the counts (private-lobby-fix, 2026-11-24).
   if (over_limit(lookups_, from.host, config_.lookups_per_window, now_ms, false)) {
     ++stats_.lookups_limited;
+    if (Tries& t = lookups_[from.host]; !std::exchange(t.said, true)) {
+      say("a guest from " + address_text(from.host) + " is over the limit of wrong codes and room names (" +
+          std::to_string(config_.lookups_per_window) + "): turned away for now");
+    }
     return LookupResult::kSlowDown;
   }
   if (!token) {
     over_limit(lookups_, from.host, config_.lookups_per_window, now_ms, true);
     ++stats_.lookups_wrong;
+    say("a guest from " + address_text(from.host) + " asked for " + what + ": no host has it");
     return LookupResult::kUnknown;
   }
   Session& s = sessions_.at(*token);
   const bool known = s.guests.find(from.host) != s.guests.end();
-  if (!known && s.guests.size() >= config_.max_guest_addresses) return LookupResult::kFull;
+  if (!known && s.guests.size() >= config_.max_guest_addresses) {
+    ++stats_.lookups_full;
+    say("a guest from " + address_text(from.host) + " asked for " + what + ": that host has " +
+        std::to_string(s.guests.size()) + " guest addresses already (the most it takes)");
+    return LookupResult::kFull;
+  }
   if (!known) say("a guest from " + address_text(from.host) + " used " + what);
   s.guests[from.host] = now_ms;
   guest_session_[from.host] = s.token;
@@ -287,10 +301,13 @@ void Relay::control(Endpoint from, const Message& m, std::uint64_t now_ms,
       std::string what;
       if (m.kind == Kind::kLookup) {
         if (auto code = by_code_.find(m.code); code != by_code_.end()) token = code->second;
-        what = "join code " + show_code(m.code);
+        // (the code only when it is right: a wrong one may be a letter off a real one)
+        what = token ? "join code " + show_code(m.code) : std::string("a join code");
       } else if (auto room = normalize_room(m.name)) {
         if (auto held = by_room_.find(room_key(*room)); held != by_room_.end()) token = held->second;
         what = "room \"" + *room + "\"";
+      } else {
+        what = "a room name the relay does not take";
       }
       Message found;
       found.kind = Kind::kFound;

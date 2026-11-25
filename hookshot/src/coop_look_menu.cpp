@@ -570,10 +570,9 @@ void Page::Decide(std::size_t row) {
     case What::kAllGame:
         ResetAll();
         break;
-    case What::kGameOwn:
+    case What::kGameOwn:   // (back to the game's colour and to the list of parts: nothing is left to mix)
         Set(l.part, std::nullopt);
-        hsv_ = ToHsv(Shown(look_, l.part));
-        break;
+        [[fallthrough]];
     case What::kDone:
         editing_.reset();
         selected_ = list_selected_;

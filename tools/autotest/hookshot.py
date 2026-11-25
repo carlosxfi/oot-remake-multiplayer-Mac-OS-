@@ -68,7 +68,7 @@ STICK_KEYS = {  # full stick directions: (stick, x, y)
 }
 WEAR_SLOTS = ("weapon", "shield", "head", "armor", "boots", "hand")
 MODULE_ONLY = ("chat", "give", "wear", "dress", "assign", "place", "face", "aim", "kill", "hit", "stun", "drop", "hurt", "setflag", "setenum", "menu",
-               "dump", "event")
+               "dump", "event", "autosave")
 
 
 class ScriptError(Exception):
@@ -395,6 +395,12 @@ def parse(text):
             if len(w) != 2 or not re.fullmatch(r"[A-Za-z0-9_]+", w[1]):
                 fail("want: event NAME (an event setting's name: letters, digits and _)")
             s.kind, s.name = "event", w[1]
+        elif cmd == "AUTOSAVE":
+            # autosave: our game asked for its own autosave (the module's CoopSave::AskOwnAutoSave, rejoin-host-273-2):
+            # a warp never saves, so a script that checks progress on disk asks for one.
+            if len(w) != 1:
+                fail("want: autosave")
+            s.kind = "autosave"
         elif cmd == "SETENUM":
             if len(w) != 3:
                 fail("want: setenum NAME VALUE (an Enum flag, or 0xHASH, and a value's name)")
@@ -1112,9 +1118,10 @@ def place_games(pids, display, say, wait=0.0, topmost=False):
         say("window placement: %s" % e)
         return
     by_pid = {pids[x]: x for x in tags}
+    used = placement.check_display(display)["name"]   # (the monitor really used: the primary one after a fallback)
     for pid, rect in placed:
         say("%s: window placed at %d,%d %dx%d on %s" % (by_pid[pid], rect[0], rect[1], rect[2], rect[3],
-                                                         placement.display_name(display)))
+                                                         used))
 
 
 SAVE_USER = "5a3c9e1f0b7d24680000000000000001"   # the user folder a Hookshot game reads its saves from
@@ -1346,6 +1353,8 @@ def run(a):
             mon = placement.check_display(a.display)
         except placement.PlacementError as e:
             raise SystemExit("window placement: %s" % e)
+        if mon.get("note"):
+            say("window placement: %s" % mon["note"])
         say("windows go to %s (work area %s)" % (mon["name"], mon["work"]))
     started = {}
     scripts = {"A": a.script_a, "B": a.script_b}

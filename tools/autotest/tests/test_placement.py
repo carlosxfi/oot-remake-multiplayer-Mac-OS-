@@ -60,17 +60,33 @@ class FindMonitor(unittest.TestCase):
         with self.assertRaises(pl.PlacementError):   # (a name asked for stays an error)
             pl.find_monitor(one, pl.DEFAULT_DISPLAY)
 
-    def test_check_display_falls_back_only_for_the_default(self):
+    def test_check_display_keeps_the_monitor_when_it_exists(self):
+        real, env = pl.monitors, os.environ.pop(pl.ENV, None)
+        pl.monitors = lambda: MONS
+        try:
+            mon = pl.check_display()
+            self.assertEqual(mon["name"], "\\\\.\\DISPLAY2")
+            self.assertNotIn("note", mon)
+            self.assertEqual(pl.check_display("DISPLAY3")["name"], "\\\\.\\DISPLAY3")
+        finally:
+            pl.monitors = real
+            if env is not None:
+                os.environ[pl.ENV] = env
+
+    def test_check_display_falls_back_to_primary_when_the_monitor_is_missing(self):
         one = [MONS[0]]
         real, env = pl.monitors, os.environ.pop(pl.ENV, None)
         pl.monitors = lambda: one
         try:
+            mon = pl.check_display()   # the default DISPLAY2 is off
+            self.assertEqual(mon["name"], "\\\\.\\DISPLAY1")
+            self.assertIn("DISPLAY2", mon["note"])
+            self.assertIn("primary", mon["note"])
+            self.assertEqual(pl.check_display("DISPLAY2")["name"], "\\\\.\\DISPLAY1")   # --display
+            os.environ[pl.ENV] = "DISPLAY2"   # a stale OOT_TEST_DISPLAY
             self.assertEqual(pl.check_display()["name"], "\\\\.\\DISPLAY1")
-            with self.assertRaises(pl.PlacementError):
-                pl.check_display("DISPLAY2")
-            os.environ[pl.ENV] = "DISPLAY2"
-            with self.assertRaises(pl.PlacementError):
-                pl.check_display()
+            self.assertNotIn("note", pl.check_display("primary"))
+            self.assertNotIn("note", pl.check_display("DISPLAY1"))
         finally:
             pl.monitors = real
             os.environ.pop(pl.ENV, None)
@@ -138,10 +154,12 @@ class RealMonitors(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             self.assertEqual(pl.main(["rects", "--display", prim, "--count", "2"]), 0)
         self.assertEqual(len(json.loads(buf.getvalue())["rects"]), 2)
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            self.assertEqual(pl.main(["rects", "--display", "\\\\.\\DISPLAY99"]), 2)
-        self.assertIn("DISPLAY99", err.getvalue())
+        buf = io.StringIO()   # a missing monitor: the primary one, with the note
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(pl.main(["rects", "--display", "\\\\.\\DISPLAY99"]), 0)
+        out = json.loads(buf.getvalue())
+        self.assertEqual(out["display"], prim)
+        self.assertIn("DISPLAY99", out["note"])
 
 
 if __name__ == "__main__":

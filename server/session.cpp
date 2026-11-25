@@ -3692,7 +3692,7 @@ void Session::remove_player(ConnectionId id, LeaveReason reason, std::uint64_t n
     boss_hearts_.clear();  // as the flags: a new group (a new save) has its own containers
     boss_beaten_.clear();
   } else if (host_ == id) {
-    // The remaining player with the lowest number takes over. Everyone is
+    // The remaining player in the session longest takes over. Everyone is
     // told on the progress channel, so the new host learns it hosts before
     // any FLAG_SET relayed to it.
     std::optional<ConnectionId> next;

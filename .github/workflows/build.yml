@@ -287,6 +287,8 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/update_test.ps1
       - name: Kit path check tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/paths_test.ps1
+      - name: Kit Nucleus handler refresh tests
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/nucleus_handler_test.ps1
       - name: Kit no-Python menu park tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/menu_park_test.ps1
       - name: Kit hosting tests

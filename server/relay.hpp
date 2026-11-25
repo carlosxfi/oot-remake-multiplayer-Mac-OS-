@@ -96,6 +96,7 @@ struct RelayStats {
   std::uint64_t lookups_ok = 0;
   std::uint64_t lookups_wrong = 0;
   std::uint64_t lookups_limited = 0;
+  std::uint64_t lookups_full = 0;   // a right code or room whose host had max_guest_addresses guests already
   std::uint64_t hosts_registered = 0;
   std::uint64_t hosts_refused = 0;
   std::uint64_t rooms_taken = 0;  // a room name another host already had
@@ -146,6 +147,7 @@ class Relay {
   struct Tries {
     std::uint64_t window_start = 0;
     std::uint32_t count = 0;
+    bool said = false;   // (lookups: "over the limit" said once this window)
   };
 
   void control(Endpoint from, const Message& m, std::uint64_t now_ms, std::vector<Outgoing>& out);

@@ -4,6 +4,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -281,6 +282,51 @@ TEST_CASE("relay: wrong room names count with wrong codes against one limit (iss
   CHECK(f.lookup_room("forest-gang", kGuest, 200) == LookupResult::kSlowDown);
   CHECK(f.lookup(code, kGuest, 200) == LookupResult::kSlowDown);
   CHECK(f.lookup_room("forest-gang", Endpoint{0x0300000Au, 1}, 200) == LookupResult::kOk);
+}
+
+TEST_CASE("relay: a failed lookup is said with its reason, never with a wrong code, and counted (private-lobby-fix)") {
+  std::vector<std::string> said;
+  std::uint64_t next_random = 777;
+  Relay relay{[&] {
+    RelayConfig c;
+    c.random = [&] { return next_random++ * 0x9E3779B97F4A7C15ull; };
+    c.log = [&](const std::string& line) { said.push_back(line); };
+    c.max_guest_addresses = 1;
+    return c;
+  }()};
+  const auto ask = [&](Message m, Endpoint from, std::uint64_t now) {
+    auto out = relay.received(from, encode(m), now);
+    REQUIRE(out.size() == 1);
+    return static_cast<LookupResult>(decoded(out[0]).status);
+  };
+  const auto said_with = [&](const std::string& part) {
+    return std::count_if(said.begin(), said.end(), [&](const std::string& l) { return l.find(part) != std::string::npos; });
+  };
+  auto reg = relay.received(kHost, encode(register_room_message(5, "Drumstick")), 0);
+  REQUIRE(reg.size() == 1);
+  const std::string code = decoded(reg[0]).code;
+  std::string wrong = code;
+  wrong[0] = wrong[0] == 'A' ? 'B' : 'A';
+  said.clear();
+  CHECK(ask(lookup_room_message("drumstik"), kGuest, 10) == LookupResult::kUnknown);
+  CHECK(said_with("asked for room \"drumstik\": no host has it") == 1);
+  CHECK(ask(lookup_message(wrong), kGuest, 10) == LookupResult::kUnknown);
+  CHECK(said_with("asked for a join code: no host has it") == 1);
+  CHECK(said_with(show_code(wrong)) == 0);   // (a wrong code may be one letter off a real one: never said)
+  CHECK(ask(lookup_room_message("x"), kGuest, 10) == LookupResult::kUnknown);
+  CHECK(said_with("a room name the relay does not take") == 1);
+  CHECK(relay.stats().lookups_wrong == 3);
+  // The right room in any case lets the first guest in; a second address is one too many for this host.
+  CHECK(ask(lookup_room_message("DRUMSTICK"), Endpoint{0x0300000Au, 1}, 20) == LookupResult::kOk);
+  CHECK(ask(lookup_room_message("drumstick"), Endpoint{0x0400000Au, 1}, 20) == LookupResult::kFull);
+  CHECK(relay.stats().lookups_full == 1);
+  CHECK(said_with("the most it takes") == 1);
+  // Over the limit: said once a window, however many asks follow.
+  for (int i = 0; i < 7; ++i) ask(lookup_room_message("nope-" + std::to_string(i)), kGuest, 30);
+  said.clear();
+  for (int i = 0; i < 5; ++i) CHECK(ask(lookup_room_message("drumstick"), kGuest, 40) == LookupResult::kSlowDown);
+  CHECK(said_with("over the limit") == 1);
+  CHECK(relay.stats().lookups_limited == 5);
 }
 
 TEST_CASE("relay join text: a code or a room name with its relay, as Join.bat reads it (issue 261)") {
