@@ -6,6 +6,7 @@
 #include "coop_i18n.h"
 #include "coop_list_pages.h"
 #include "coop_mods_tab.h"
+#include "coop_native_ui.h"
 #include "coop_text_fit.h"
 
 #include "hos_coop_host.h"
@@ -1593,45 +1594,36 @@ std::string MinusHelp(const HelpAt& at, const Session& s) {
 }
 
 namespace {
-// The letter at `i` of `t`: its bytes and how wide it shows (a CJK letter or a full-width mark two, others one).
-std::pair<std::size_t, std::size_t> Letter(const std::string& t, std::size_t i) {
-    const unsigned char c = static_cast<unsigned char>(t[i]);
-    const std::size_t n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xe ? 3 : (c >> 3) == 0x1e ? 4 : 1;
-    if (i + n > t.size()) return {t.size() - i, 1};
-    std::uint32_t cp = n == 1 ? c : c & (0xffu >> (n + 1));
-    for (std::size_t k = 1; k < n; ++k) cp = (cp << 6) | (static_cast<unsigned char>(t[i + k]) & 0x3fu);
-    const bool wide = (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) ||
-                      (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60) ||
-                      (cp >= 0xffe0 && cp <= 0xffe6);
-    return {n, wide ? 2 : 1};
-}
-
-std::size_t WidthOf(const std::string& t) {
-    std::size_t w = 0;
-    for (std::size_t i = 0; i < t.size();) {
-        const auto [n, v] = Letter(t, i);
-        w += v, i += n;
-    }
-    return w;
+// The letter at `i` of `t`: its bytes, how wide it shows (CoopNativeUi::Width: the game's font) and whether a line may
+// break before or after it (a Chinese letter or a full-width mark).
+struct HelpLetter {
+    std::size_t bytes, width;
+    bool wide;
+};
+HelpLetter Letter(const std::string& t, std::size_t i) {
+    std::size_t n = 1;
+    CoopTextFit::Decode(t, i, &n);
+    const std::string_view letter = std::string_view(t).substr(i, n);
+    return {n, CoopNativeUi::Width(letter), CoopNativeUi::Columns(letter) == 2};
 }
 }  // namespace
 
-std::string HelpText(const std::string& utf8, std::size_t columns, std::size_t lines) {
-    // Letters in order onto lines; a line that would grow past `columns` ends at its last space (the word goes on to
+std::string HelpText(const std::string& utf8, std::size_t width_max, std::size_t lines) {
+    // Letters in order onto lines; a line that would grow past `width_max` ends at its last space (the word goes on to
     // the next) or, with no space in it (Chinese), before the letter.
     std::vector<std::string> out{std::string()};
     std::size_t width = 0;
     bool cut = false;
     for (std::size_t i = 0; i < utf8.size() && !cut;) {
-        const auto [n, w] = Letter(utf8, i);
+        const auto [n, w, wide] = Letter(utf8, i);
         const std::string letter = utf8.substr(i, n);
         i += n;
         std::string& line = out.back();
         const bool newline = letter == "\n";
-        if (newline || width + w > columns) {
+        if (newline || width + w > width_max) {
             std::string rest;
             if (!newline && letter != " ") {
-                if (const std::size_t sp = line.rfind(' '); sp != std::string::npos && w == 1) {
+                if (const std::size_t sp = line.rfind(' '); sp != std::string::npos && !wide) {
                     rest = line.substr(sp + 1);
                     line.resize(sp);
                 }
@@ -1642,7 +1634,7 @@ std::string HelpText(const std::string& utf8, std::size_t columns, std::size_t l
                 break;
             }
             out.push_back(rest);
-            width = WidthOf(out.back());
+            width = CoopNativeUi::Width(out.back());
             continue;
         }
         if (letter == " " && line.empty()) continue;   // (no line starts with a space)
@@ -1652,7 +1644,7 @@ std::string HelpText(const std::string& utf8, std::size_t columns, std::size_t l
     while (!out.empty() && out.back().empty()) out.pop_back();
     if (cut && !out.empty()) {   // (longer than its lines: the last ends with "...")
         std::string& last = out.back();
-        while (!last.empty() && WidthOf(last) + 3 > columns) {
+        while (!last.empty() && CoopNativeUi::Width(last) + CoopNativeUi::Width("...") > width_max) {
             std::size_t k = last.size() - 1;
             while (k > 0 && (static_cast<unsigned char>(last[k]) & 0xc0) == 0x80) --k;   // (a whole letter off)
             last.resize(k);

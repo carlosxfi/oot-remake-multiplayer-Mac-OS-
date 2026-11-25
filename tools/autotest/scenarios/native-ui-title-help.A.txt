@@ -3,7 +3,8 @@
 # -NoLoad (the game stays at the title). Title > Multiplayer > its third row (Co-op Settings) > eight rows down, each
 # shot three times 6.3 s apart. One game is enough (A); B idles.
 mark start
-wait 300
+# (the title must be up and its rows in: at 300 the first Down was lost and A opened the game's Options)
+wait 1500
 mark title
 press DDOWN
 wait 30

@@ -99,7 +99,7 @@ private:
 };
 
 // The module's part: tab 2 of hos_coop_menu.h. Before CoopModsRuntime::Start (or with no loader): no tab.
-// A text cut into pages that each fit the help box (CoopPauseTab::kHelpColumns x kHelpLines) whole, at a space or a
+// A text cut into pages that each fit the help box (CoopPauseTab::kHelpWidth x kHelpLines) whole, at a space or a
 // stop where one is near: nothing is ever cut with "...". Empty text: no page.
 std::vector<std::string> HelpPages(const std::string& text);
 bool Available();

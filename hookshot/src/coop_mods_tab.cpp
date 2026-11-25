@@ -260,7 +260,7 @@ std::vector<std::string> NoteLines(const std::string& text) {
 namespace {
 // Does the text fit the help box whole (no cut, no "...")? A fifth line would show as a cut.
 bool FitsHelp(const std::string& text) {
-    const std::string shown = CoopPauseTab::HelpText(text, CoopPauseTab::kHelpColumns, CoopPauseTab::kHelpLines + 1);
+    const std::string shown = CoopPauseTab::HelpText(text, CoopPauseTab::kHelpWidth, CoopPauseTab::kHelpLines + 1);
     return std::count(shown.begin(), shown.end(), '\n') + 1 <= static_cast<std::ptrdiff_t>(CoopPauseTab::kHelpLines);
 }
 
