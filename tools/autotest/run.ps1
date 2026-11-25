@@ -782,6 +782,8 @@ function Run-Steps([string]$file) {
         Note "step ${n}: $line"
         switch ($w[0]) {
             'start' {
+                # (start A idle, co-op idle at the title: Hookshot only, hs_steps.py; the emulator has no Host page)
+                if ($rest -contains 'idle') { throw "step ${n}: start ... idle is for -Runtime hookshot only" }
                 foreach ($x in $rest) { Start-Game $x; Start-Sleep 3 }
                 foreach ($x in $rest) { Wait-Joined $x }
                 Place-Windows

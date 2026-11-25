@@ -38,15 +38,18 @@ class FakeGames:
         self.join_rule = lambda x, password: "welcomed"   # what a start leads to
         self.ended = []
 
-    def start(self, x, password, wait=True):
-        self.calls.append(("start", x, password))
+    def start(self, x, password, wait=True, idle=False):
+        self.calls.append(("start", x, password) + (("idle",) if idle else ()))
         self.running[x] = True
         self.logs[x] = "boot\n"
-        outcome = self.join_rule(x, password)
+        outcome = "none" if idle else self.join_rule(x, password)
         if outcome == "welcomed":
             self.logs[x] += "coop: welcomed as player 2 on 127.0.0.1:27560\n"
         elif outcome == "refused":
             self.server += "refused a connection, reason 6: wrong join password\n"
+
+    def wait_ready(self, x):
+        self.calls.append(("ready", x))
 
     def wait_joined(self, x):
         self.calls.append(("wait", x))
@@ -218,6 +221,16 @@ class RunnerTest(unittest.TestCase):
         self.r.run(hs.parse_steps("password B secret\nstart A B\n"))
         self.assertEqual(self.g.calls[:4], [("start", "A", ""), ("start", "B", "secret"), ("wait", "A"),
                                             ("wait", "B")])
+
+    def test_idle_start_has_no_server_and_waits_for_the_renderer_only(self):
+        # start A idle: co-op idle at the title (the Host page before hosting, difficulty-lobby); no join wait.
+        steps = hs.parse_steps("start A idle\nstart A B idle\nstart B\n")
+        self.assertEqual([(s.args, s.idle) for s in steps], [(["A"], True), (["A", "B"], True), (["B"], False)])
+        self.assertEqual(self.r.run(steps[:1]), 0)
+        self.assertEqual(self.g.calls[:2], [("start", "A", "", "idle"), ("ready", "A")])
+        for text in ("start idle", "load A idle", "start idle A"):
+            with self.assertRaises(hs.StepsError):
+                hs.parse_steps(text)
 
     def test_a_game_without_a_password_line_sends_the_servers(self):
         # Every session may have a join password (OOT_COOP_TEST_PASSWORD, run.ps1 -ServerPassword): a game with no
@@ -509,6 +522,25 @@ class HookshotGamesTest(unittest.TestCase):
         finally:
             hs.subprocess.Popen = popen
         self.assertEqual(order, [("pack", self.games["A"], "1"), ("game",)])
+
+    def test_idle_start_sends_no_server_nor_password(self):
+        seen, popen = [], hs.subprocess.Popen
+        hs.subprocess.Popen = lambda args, **k: seen.append(k["env"]) or popen(args, **k)
+        old = os.environ.get("LICHII_COOP_SERVER")
+        os.environ["LICHII_COOP_SERVER"] = "10.0.0.1:1"   # (not from the environment either)
+        try:
+            self.g.start("A", "pw", wait=False, idle=True)
+            self.g.start("B", "pw", wait=False)
+        finally:
+            hs.subprocess.Popen = popen
+            if old is None:
+                del os.environ["LICHII_COOP_SERVER"]
+            else:
+                os.environ["LICHII_COOP_SERVER"] = old
+        self.assertNotIn("LICHII_COOP_SERVER", seen[0])
+        self.assertNotIn("LICHII_COOP_PASSWORD", seen[0])
+        self.assertEqual(seen[1]["LICHII_COOP_SERVER"], "127.0.0.1:%d" % self.g.port)
+        self.assertEqual(seen[1]["LICHII_COOP_PASSWORD"], "pw")
 
     def test_each_start_gets_the_test_defaults_a_switch_wins(self):
         # Its own save and no crash ask on the title (a crash record of an earlier run took the load's A presses:
