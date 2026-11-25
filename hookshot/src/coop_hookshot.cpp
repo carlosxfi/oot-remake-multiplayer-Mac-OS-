@@ -1432,51 +1432,37 @@ CoopDraw::Scene DrawScene() {
     CoopPauseTab::CensusFromMenuState();   // (the - menu research: only with COOP_TEST_SCREEN_PROBE=1)
     const auto menu_state = CoopMapPage::MenuState();
     const bool game_menu_up = (menu_state && menu_state->menu_open) || CoopPauseTab::GameMenuUp();   // (row 199)
+    // The blocks for the game's own heart parts (PartyStep): per player the line is the name, voice words and place.
+    // Never drawn by us (owner: nothing hand-drawn); with an older pack that has none they are hidden (PartyStep logs why).
+    std::vector<CoopPartyHud::Block> party;
     for (const auto& row : game ? rows : std::vector<CoopHook::PlayerRow>{}) {
         if (row.self) {
-            s.own_voice = CoopVoice::IconFor(voice_on, CoopVoice::Get().muted || voice_muted(row.number),
-                                             CoopVoice::Talking(), true);
             continue;
         }
         if (game_menu_up) continue;
-        CoopDraw::HudBlock b;
-        b.voice = CoopVoice::IconFor(voice_on, voice_muted(row.number), CoopVoice::Speaking(row.number), false);
-        b.name = row.name.empty() ? "Player " + std::to_string(row.number) : row.name;
+        CoopPartyHud::Block b;
+        const auto voice = CoopVoice::IconFor(voice_on, voice_muted(row.number), CoopVoice::Speaking(row.number), false);
+        b.text = (row.name.empty() ? "Player " + std::to_string(row.number) : row.name) + CoopDraw::VoiceWords(voice);
         if (row.scene && !row.scene->empty()) {
             // The place names are the game's own (places.json): the table has them
             // for the languages it carries, and a name it does not know stays as it is.
-            b.place = CoopI18n::Place(CoopHud::PlaceName(*row.scene));
+            const std::string place = CoopI18n::Place(CoopHud::PlaceName(*row.scene));
+            if (!place.empty()) b.text += "  " + place;
         }
         if (const auto life = CoopHud::PlayerLife(row.number); life && life->max > 0) {
             b.hearts = CoopHudHearts::Quarters(life->life, life->max);
         }
         b.dim = dim_hold.Dim(row.number, row.state == "connected", dim_now);
-        s.hud.push_back(std::move(b));
+        party.push_back(std::move(b));
     }
     {   // row 141: the blocks go below the game's own HUD as it is laid out now
         const std::optional<double> bottom =
-            !s.hud.empty() || PartyTest() ? CoopMapPage::GameHudBottom() : std::optional<double>{};
-        if (!s.hud.empty()) s.game_hud_bottom = bottom;
-        // The same blocks for the game's own heart parts (PartyStep): the line is the drawn block's name, voice words
-        // and place.
-        std::vector<CoopPartyHud::Block> party;
-        for (const auto& b : s.hud) {
-            CoopPartyHud::Block p;
-            p.text = b.name + CoopDraw::VoiceWords(b.voice) + (b.place.empty() ? std::string() : "  " + b.place);
-            p.hearts = b.hearts;
-            p.dim = b.dim;
-            party.push_back(std::move(p));
-        }
-        {
-            std::lock_guard lock(g_party.mutex);
-            g_party.blocks = std::move(party);
-            g_party.game_hud_bottom = bottom;
-            g_party.game_menu_up = game_menu_up;
-            g_party.ms = SteadyMs();
-        }
-        // Never drawn by us (owner: nothing hand-drawn): the game's own heart parts show them (PartyStep), and with
-        // an older pack that has none they are hidden (PartyStep logs why).
-        s.hud.clear();
+            !party.empty() || PartyTest() ? CoopMapPage::GameHudBottom() : std::optional<double>{};
+        std::lock_guard lock(g_party.mutex);
+        g_party.blocks = std::move(party);
+        g_party.game_hud_bottom = bottom;
+        g_party.game_menu_up = game_menu_up;
+        g_party.ms = SteadyMs();
     }
     // F6 (ui-audit-01112 B5): the game's own - menu, Multiplayer > Players (coop_players_open.h), when we are in a
     // scene (never on the title or a file screen, where Minus is not the - menu); the drawn list only when the pack has

@@ -351,57 +351,6 @@ TEST_CASE("hookshot draw: the panel at the top left, and F7 turns it over on eac
     CHECK_FALSE(k.list);
 }
 
-TEST_CASE("hookshot draw: the other players under your hearts in the game look only, with the heart pictures") {
-    CoopDraw::Scene s;
-    s.hud = {{"Mido", "Kokiri Forest", {4, 4, 2, 0}, false}, {"Saria", "", {}, true}};
-    CHECK(CoopDraw::Wanted(s));
-    Canvas plain(1280, 720);
-    CoopDraw::Draw(plain.d, s);
-    CHECK(plain.calls.empty());  // the plain look has no HUD blocks (as the co-op window)
-
-    Canvas c(1280, 720);
-    CoopDraw::Draw(c.d, s, GameLook());
-    const auto texts = c.Of("text");
-    REQUIRE(texts.size() == 18);  // three lines, each the game's rim (4), shadow and fill
-    const auto& mido = texts[5];
-    CHECK(mido.text == "Mido");
-    CHECK(mido.font == 2);                                      // the medium font
-    CHECK(mido.x == doctest::Approx(40.0f));                    // 40 of 720 lines at 720 high
-    CHECK(mido.y == doctest::Approx(CoopHudLayout::BlocksTop(1280, 720)));
-    CHECK(AlphaOf(texts[4].rgba) == 150);                       // the drop shadow
-    CHECK(texts[4].x > mido.x);
-    CHECK(texts[11].text == "Kokiri Forest");
-    CHECK(texts[11].font == 1);                                 // the regular font
-    CHECK(texts[11].y > mido.y);
-    CHECK(texts[17].text == "Saria");
-    CHECK(AlphaOf(texts[17].rgba) == 150);                      // not connected: dim
-    // Four hearts as the pictures for 4, 4, 2 and 0 quarters, 38 of 720 lines big, 0.55 of that apart.
-    const auto hearts = c.Of("image");
-    REQUIRE(hearts.size() == 4);
-    CHECK(hearts[0].text == "15");
-    CHECK(hearts[1].text == "15");
-    CHECK(hearts[2].text == "13");
-    CHECK(hearts[3].text == "11");
-    CHECK(hearts[0].px == doctest::Approx(32.0f));
-    CHECK(hearts[1].x - hearts[0].x == doctest::Approx(32.0f * 0.55f));
-    CHECK(hearts[0].rgba == CoopDraw::Rgba(255, 255, 255, 255));
-    CHECK(c.Of("rect").empty());
-    CHECK(c.font == 0);  // Hookshot's own font again after drawing
-
-    // A long name and place on a narrow window: cut with "..." to the blocks' column, never past the picture.
-    CoopDraw::Scene longer;
-    longer.hud = {{"A very long player name that goes on and on", "Sacred Forest Meadow, by the Lost Woods", {4}, false}};
-    Canvas n(480, 720);
-    CoopDraw::Draw(n.d, longer, GameLook());
-    const auto cut = n.Of("text");
-    REQUIRE_FALSE(cut.empty());
-    for (const auto& t : cut) {
-        CHECK(t.x + static_cast<float>(t.text.size()) * t.px * 0.5f <= 480.0f);
-        CHECK(t.text.size() < 44);
-    }
-    CHECK(std::any_of(cut.begin(), cut.end(), [](const auto& t) { return t.text.find("...") != std::string::npos; }));
-}
-
 TEST_CASE("hookshot draw: game look name tags in the players' colours, over the game's shadow") {
     CoopHook::Markers m{640, 360, {}};
     CoopHook::Marker other;
@@ -1107,98 +1056,9 @@ TEST_CASE("hookshot map page: a tap held for one present counts as a press, like
     CHECK(w.Update(true, false));
 }
 
-TEST_CASE("hookshot draw row 141: the blocks start below the game's own HUD as laid out, and stop above the chat") {
-    CoopDraw::Scene s;
-    s.hud = {{"Mido", "Kokiri Forest", {4, 4, 2, 0}, false}};
-    s.game_hud_bottom = 0.45;   // two heart rows, the magic bar and the d-pad under them
-    Canvas c(1280, 720);
-    CoopDraw::Draw(c.d, s, GameLook());
-    auto texts = c.Of("text");
-    REQUIRE(texts.size() == 12);
-    CHECK(texts[5].text == "Mido");
-    CHECK(texts[5].y == doctest::Approx((0.45 + CoopHudLayout::kGap) * 720));
-    CHECK(texts[5].y > 0.45f * 720);   // under the game's d-pad, not over it
-    // A one-row HUD: the blocks come up with it.
-    s.game_hud_bottom = 0.30;
-    Canvas up(1280, 720);
-    CoopDraw::Draw(up.d, s, GameLook());
-    CHECK(up.Of("text")[5].y == doctest::Approx((0.30 + CoopHudLayout::kGap) * 720));
-
-    // Fifteen others (16 players) with 20 hearts and a place each, chat lines at the bottom: the blocks that would
-    // run into the chat are left out and a "+N" line says how many.
-    s.hud.clear();
-    for (int i = 0; i < 15; ++i) {
-        s.hud.push_back({"Player " + std::to_string(i + 2), "Kokiri Forest", std::vector<int>(20, 4), false});
-    }
-    s.chat = {{"Saria: hi", false, 1.0f}, {"Mido: hello", false, 1.0f}};
-    Canvas many(1280, 720);
-    CoopDraw::Draw(many.d, s, GameLook());
-    texts = many.Of("text");
-    float chat_top = 720.0f, lowest = 0.0f;
-    std::string more;
-    for (const auto& t : texts) {
-        if (t.text.rfind("Saria", 0) == 0) chat_top = std::min(chat_top, t.y);
-        if (t.text.rfind("Player ", 0) == 0 || t.text == "Kokiri Forest") lowest = std::max(lowest, t.y + t.px);
-        if (!t.text.empty() && t.text[0] == '+') more = t.text;
-    }
-    CHECK(chat_top < 720.0f);
-    CHECK(lowest > 0.0f);
-    CHECK(lowest <= chat_top);
-    REQUIRE_FALSE(more.empty());
-    std::size_t names = 0;
-    for (std::size_t i = 5; i < texts.size(); i += 6) {
-        if (texts[i].text.rfind("Player ", 0) == 0) ++names;
-    }
-    CHECK(names >= 1);
-    CHECK(more == "+" + std::to_string(15 - names));
-}
-
-TEST_CASE("hookshot draw: the voice state as words after a name, no drawn shapes, our row over the others") {
-    CoopDraw::Scene s;
-    s.hud = {{"Mido", "", {}, false}};
-    const auto no_shapes = [](const Canvas& c) {
-        CHECK(c.Of("rect").empty());
-        CHECK(c.Of("circle").empty());
-        CHECK(c.Of("triangle").empty());
-    };
-    const auto name_of = [](const Canvas& c) {   // the name's fill: the last of GameText's six texts
-        const auto t = c.Of("text");
-        return t.empty() ? std::string() : t.back().text;
-    };
-    Canvas quiet(1280, 720);
-    CoopDraw::Draw(quiet.d, s, GameLook());
-    no_shapes(quiet);
-    CHECK(name_of(quiet) == "Mido");
-    s.hud[0].voice = CoopVoice::Icon::talking;
-    Canvas talk(1280, 720);
-    CoopDraw::Draw(talk.d, s, GameLook());
-    no_shapes(talk);
-    CHECK(name_of(talk) == "Mido (talking)");
-    s.hud[0].voice = CoopVoice::Icon::muted;
-    Canvas muted(1280, 720);
-    CoopDraw::Draw(muted.d, s, GameLook());
-    no_shapes(muted);
-    CHECK(name_of(muted) == "Mido (muted)");
-    // our own row first, with "You", while voice is on
-    s.hud[0].voice = CoopVoice::Icon::none;
-    s.own_voice = CoopVoice::Icon::idle;
-    Canvas own(1280, 720);
-    CoopDraw::Draw(own.d, s, GameLook());
-    no_shapes(own);
-    const auto texts = own.Of("text");
-    REQUIRE(texts.size() == 12);
-    CHECK(texts[5].text == "You");   // quiet: no words
-    CHECK(texts[5].y == doctest::Approx(CoopHudLayout::BlocksTop(1280, 720)));
-    CHECK(texts[11].text == "Mido");
-    CHECK(texts[11].y > texts[5].y);
-    s.own_voice = CoopVoice::Icon::talking;
-    Canvas own_talk(1280, 720);
-    CoopDraw::Draw(own_talk.d, s, GameLook());
-    no_shapes(own_talk);
-    CHECK(own_talk.Of("text")[5].text == "You (talking)");
-    // nobody else: no row of our own either
-    s.hud.clear();
-    Canvas alone(1280, 720);
-    CoopDraw::Draw(alone.d, s, GameLook());
-    CHECK(alone.calls.empty());
+TEST_CASE("hookshot draw: the voice state as words after a name") {
+    CHECK(CoopDraw::VoiceWords(CoopVoice::Icon::none).empty());
+    CHECK(CoopDraw::VoiceWords(CoopVoice::Icon::idle).empty());
+    CHECK(CoopDraw::VoiceWords(CoopVoice::Icon::talking) == " (talking)");
+    CHECK(CoopDraw::VoiceWords(CoopVoice::Icon::muted) == " (muted)");
 }
