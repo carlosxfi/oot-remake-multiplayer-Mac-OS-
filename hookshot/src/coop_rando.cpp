@@ -417,6 +417,38 @@ bool SeedShops(std::string_view text) {
     return false;
 }
 
+std::optional<std::string> SeedPlacement(std::string_view text, std::string_view location) {
+    // {"format": "ootrr-seed", ..., "placements": {"KF Midos Top Left Chest": "Bow", ...}, ...}: the first
+    // "placements" key followed by ':' and an object, then the location's key in it (names hold no quotes).
+    for (auto key = text.find("\"placements\""); key != std::string_view::npos;
+         key = text.find("\"placements\"", key + 12)) {
+        auto at = text.find_first_not_of(" \t\r\n", key + 12);
+        if (at == std::string_view::npos || text[at] != ':') continue;
+        at = text.find_first_not_of(" \t\r\n", at + 1);
+        if (at == std::string_view::npos || text[at] != '{') return std::nullopt;
+        const auto end = text.find('}', at);  // the values are plain strings: no nested object
+        const std::string_view body = text.substr(at, end == std::string_view::npos ? std::string_view::npos : end - at);
+        const std::string quoted = "\"" + std::string(location) + "\"";
+        for (auto k = body.find(quoted); k != std::string_view::npos; k = body.find(quoted, k + 1)) {
+            const auto prev = body.find_last_not_of(" \t\r\n", k - 1);  // k > 0: body starts with '{'
+            if (prev == std::string_view::npos || (body[prev] != '{' && body[prev] != ',')) continue;  // a value
+            auto v = body.find_first_not_of(" \t\r\n", k + quoted.size());
+            if (v == std::string_view::npos || body[v] != ':') continue;
+            v = body.find_first_not_of(" \t\r\n", v + 1);
+            if (v == std::string_view::npos || body[v] != '"') return std::nullopt;
+            std::string item;
+            for (std::size_t i = v + 1; i < body.size(); ++i) {
+                if (body[i] == '"') return item;
+                if (body[i] == '\' && i + 1 < body.size()) ++i;
+                item += body[i];
+            }
+            return std::nullopt;
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 std::vector<std::string> BuildArgs(const fs::path& seed_file, const fs::path& game_folder, const fs::path& mods_root,
                                    const std::string& folder) {
     return {"build", CoopMods::ToUtf8(seed_file), CoopMods::ToUtf8(game_folder), CoopMods::ToUtf8(mods_root), folder,
@@ -1341,6 +1373,12 @@ void Rando::Start() {
         }
         // The seed this run plays, built beside other size tables than now: no pack actor until it is checked.
         hand_playing_ = HandPlaying(Scan(loader_.Root()), loader_.Rows());
+        {
+            // Row 237 (coop_story.h GiftShuffled): what the seed places at the story gifts' spots.
+            std::lock_guard lock(mutex_);
+            plays_seed_ = on_now || !hand_playing_.empty();
+            seed_text_ = on_now ? ReadFileText(folder / CoopMods::FromUtf8(playing + ".ootrr")) : std::string();
+        }
         if (on_now) {
             const std::string now = CurrentTables();
             for (const Built& b : Scan(loader_.Root())) {
@@ -2125,6 +2163,21 @@ void Rando::Build(const Plan& plan, const Want& want) {
             hooks_.log("randomizer: " + plan.folder + "'s size table was right: the co-op puppets are made now");
         }
     }
+}
+
+bool Rando::PlaysSeed() const {
+    std::lock_guard lock(mutex_);
+    return plays_seed_;
+}
+
+bool Rando::SeedRead() const {
+    std::lock_guard lock(mutex_);
+    return !seed_text_.empty();
+}
+
+std::optional<std::string> Rando::PlacementAt(std::string_view location) const {
+    std::lock_guard lock(mutex_);
+    return SeedPlacement(seed_text_, location);
 }
 
 }  // namespace CoopRando

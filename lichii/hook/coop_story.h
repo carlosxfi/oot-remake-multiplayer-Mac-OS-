@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "coop/host/flags.hpp"
@@ -269,9 +270,25 @@ struct Gift {
     // progressive ocarina (OOTRR flow_rules.rs pins "HF Ocarina of Time Item" to "Ocarina"), so the item a spent
     // scene stands for is not always that one; its played flag is only held (GiftHolds).
     bool mend;
+    // The spot's OOTRR location name (its seed file's "placements" key).
+    const char* location;
 };
 std::span<const Gift> Gifts();
 inline constexpr std::size_t kGiftsMax = 4;  // Gifts().size() stays under it (story_test)
+// Row 237 (randomizer items repeat): since OOTRR 0.7.0 (flow_rules.rs ANY_POUCH) Saria's gift and the moat's Ocarina
+// of Time can hold ANY item of the seed, and the item given there is shared as every item is. Holding the spot's
+// played flags until an ocarina is ours (GiftHolds) then kept Saria on the bridge (and the moat's scene) in every
+// other game until the group found an ocarina: each player got the spot's item again (a second tier of a
+// progressive item, more ammo or rupees), and MendGifts gave a Fairy Ocarina that the seed never placed there.
+// A gift is "shuffled" while this run plays a seed that places another item at its location (or a seed whose
+// placements cannot be read: a hand-put seed folder); then it is neither held nor mended, and its played flags are
+// shared as plain story flags (the group's item came with the scene that ran). Set by the module's randomizer at
+// its start (SeedGifts); never in the emulator build, so the base game keeps the rows 195/204 rules.
+void SetGiftShuffled(std::size_t gift, bool shuffled);
+bool GiftShuffled(std::size_t gift);
+// Whether the seed's item at `location` keeps the gift's vanilla item: OOTRR names the progressive ocarina "Ocarina",
+// and a location missing from the placements keeps its vanilla item. `placement`: the seed's item there, if listed.
+bool GiftKeepsVanilla(std::optional<std::string_view> placement);
 // Whether the gift (or better) is in the pouch: any held count above 0 is
 // true, all read and 0 is false, otherwise not known (a load, the title).
 template <class ReadInt>
@@ -304,6 +321,7 @@ bool GiftDue(const Gift& gift, ReadBool&& read_bool, ReadInt&& read_int) {
 std::optional<std::size_t> GiftOf(std::uint32_t hash);
 // Holds `hash` now: a gift's played flag while that gift is not known held
 // (`held[i]`: GiftHeld of Gifts()[i] is true).
+// Never for a shuffled gift (GiftShuffled, row 237).
 bool GiftHolds(std::uint32_t hash, const std::array<bool, kGiftsMax>& held);
 
 } // namespace CoopStory

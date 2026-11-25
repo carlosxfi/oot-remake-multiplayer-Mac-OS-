@@ -363,7 +363,7 @@ void MendGifts(EmulatorMemory& memory, coop::host::GameFlags& flags, MendClocks&
     for (std::size_t i = 0; i < gifts.size() && i < CoopStory::kGiftsMax; ++i) {
         const auto& gift = gifts[i];
         auto& since = clocks.gifts[i];
-        const bool due = gift.mend && idle && !clocks.gift_given[i] &&
+        const bool due = gift.mend && !CoopStory::GiftShuffled(i) && idle && !clocks.gift_given[i] &&
                          CoopStory::GiftDue(gift, [&](std::uint32_t h) { return flags.get_bool(h); },
                                             [&](std::uint32_t h) { return flags.get_int(h); });
         if (!due) {
@@ -566,9 +566,9 @@ public:
         }
         // docs/items.md "One-time sales": a randomizer seed with shops sells each one-time shelf once for the group.
         shop_sale_ = shop_sale_on_ && CoopShopSale::SeedHasShops();
-        if (flag_error.empty() && shop_sale_on_) {  // the randomizer's Great Fairy gifts: given once for the group
+        if (flag_error.empty() && shop_sale_on_) {  // one-time gifts (coop_shop_sale.h kOnceGifts): once for the group
             const std::size_t added = CoopShopSale::MergeGifts(session.shared);
-            LOG_INFO(Core, "coop: fairies: sharing {} randomizer Great Fairy gift flags", added);
+            LOG_INFO(Core, "coop: gifts: sharing {} one-time gift flags (Great Fairies, cows, Medigoron, frogs)", added);
         }
         if (flag_error.empty() && shop_sale_) {
             const std::size_t added = CoopShopSale::Merge(session.shared);
@@ -772,8 +772,8 @@ public:
                 session_->share_pickup_named(coop::protocol::FlagKey(f.hash, std::uint16_t{0}));
             }
         }
-        if (sharing_ && shop_sale_on_) {  // a Great Fairy's shuffled gift (coop_shop_sale.h): given once for everyone
-            for (const auto& f : CoopShopSale::kFairyGifts) {
+        if (sharing_ && shop_sale_on_) {  // a one-time gift (coop_shop_sale.h kOnceGifts): given once for everyone
+            for (const auto& f : CoopShopSale::kOnceGifts) {
                 session_->share_pickup_named(coop::protocol::FlagKey(f.hash, std::uint16_t{0}));
             }
         }
@@ -1143,7 +1143,7 @@ public:
                     return true;  // a shelf another player sold out waits while our shop talk runs
                 }
                 if (gift_on && CoopShopSale::GiftWaits(key.hash, sale_here.in_event)) {
-                    return true;  // a Great Fairy's gift another player got waits while our event runs
+                    return true;  // a one-time gift another player got waits while our event runs (kOnceGifts)
                 }
                 if (sale_on) {
                     CoopScrubSale::Here here = sale_here;
