@@ -1,10 +1,10 @@
-# Known issues in the newest release (0.11.11)
+# Known issues in the newest release (0.11.12)
 
 This is an early test release. Everything under "Works" was seen in our two-game tests: two copies of the game on one PC talking through the server, driven by the [autotest](../tools/autotest) scripts or played by hand, with the logs and screenshots of both games read afterwards. Testers play the releases on separate PCs, over a LAN and the internet. Please report what you see ([setup.md, Reporting a problem](setup.md#reporting-a-problem)); every open problem is on the [issues page](https://github.com/daurosk/oot-remake-multiplayer/issues).
 
-**Every player needs the same release.** 0.11.6 to 0.11.11 are protocol 15 and can join each other, but 0.11.11's fixes need 0.11.11 in every game (0.11.6 also still has the crash after about an hour fixed in 0.11.7, tracker row 156): update together; they refuse every older version at join, with the note to run `Update.bat`. 0.11.0 to 0.11.4 are protocol 12 and 0.11.5 is protocol 14: a game and a server (or another game) of different protocol versions refuse each other, so a 0.11.5 or older game cannot join a 0.11.6 game: update together. A 0.10.1 or newer kit offers the update when you start it. A kit from before 0.10.1 cannot: download `Update.bat` from the release page into the kit folder and double-click it. `Revert.bat` goes back to the version you had before.
+**Every player needs the same release.** 0.11.12 is protocol 16: it refuses every older version at join (and they refuse it), with the note to run `Update.bat`, so update together. 0.11.6 to 0.11.11 are protocol 15, 0.11.5 is 14 and 0.11.0 to 0.11.4 are 12. A 0.10.1 or newer kit offers the update when you start it. A kit from before 0.10.1 cannot: download `Update.bat` from the release page into the kit folder and double-click it. `Revert.bat` goes back to the version you had before.
 
-**The game runs on Longshot v3.0.0** (Team MagicBean's recompilation; its changes are being merged into [Hookshot](https://git.notrexed.dev/Hookshot/Hookshot)). There is no emulator in this release: emulator players keep the last emulator release (the early test release of 2026-11-12 on the [releases page](https://github.com/daurosk/oot-remake-multiplayer/releases)), which cannot join a Longshot game. The first start builds the game from your own copy (10 to 45 minutes); later updates put the new co-op into it in a few minutes, or build it again when Longshot or our game patches move (0.11.6 builds it again, once, for Longshot v3.0.0). If Longshot's server cannot be reached, the build takes the same files from our [mirror](https://github.com/daurosk/oot-remake-multiplayer/releases/tag/longshot-mirror-v3.0.0), each checked by its SHA-256.
+**The game runs on Longshot v3.1.1** (Team MagicBean's recompilation; its changes are being merged into [Hookshot](https://git.notrexed.dev/Hookshot/Hookshot)). There is no emulator in this release: emulator players keep the last emulator release (the early test release of 2026-11-12 on the [releases page](https://github.com/daurosk/oot-remake-multiplayer/releases)), which cannot join a Longshot game. The first start builds the game from your own copy (10 to 45 minutes); later updates put the new co-op into it in a few minutes, or build it again when Longshot or our game patches move (0.11.12 builds it again, once, for Longshot v3.1.1). If Longshot's server cannot be reached, the build takes the same files from our [mirror](https://github.com/daurosk/oot-remake-multiplayer/releases/tag/longshot-mirror-v3.1.1), each checked by its SHA-256.
 
 ## Works (seen in two-game tests)
 
@@ -41,6 +41,14 @@ This is an early test release. Everything under "Works" was seen in our two-game
 - **Mods that sort before the co-op files** (fixed for 0.11.3): a randomizer seed from OOTRR's website, or another mod with its own game tables whose folder name sorts before the co-op files, no longer crashes the game 1 s into the start, and the other players show as usual.
 - **Joining by address** (new in 0.11.2, from bmitch87's PR #230): IP address, Port and Password rows in Join, and a Port row when you host.
 - **Chinese** (new in 0.11.2, from cirnoice9's PR #231): the co-op tabs in Simplified and Traditional Chinese when the game is set to Chinese.
+
+## New in 0.11.12
+
+In 0.11.12 (game rebuild on Longshot v3.1.1; protocol 16). Checked in a game by me: the essentials (start solo, host and join, Character Select off, menus only and full, a player without the mod, Classic Link Voices on, updating from 0.11.11 and 0.11.10) and the items marked seen in [the release notes](https://github.com/daurosk/oot-remake-multiplayer/releases/tag/v0.11.12). The rest is in the code and CI and **not yet seen in a game**: tell me if something is off.
+
+- **Not yet seen in a game**: the Longshot Settings menu itself, name tags on the game's balloons, the F6 player list, the guest crash fix on missing game data, the King Dodongo roll crash fix (#325), Character Select with two copies installed, a won Ganondorf rally, the Door of Time in open randomizer seeds, menus fitting in every language, the ZL/ZR page icons, Character Select pick per age.
+- **Rejoining alone after the host quits**: If the host quits and the server restarts, a player who rejoins alone comes back as player 2, not as host, and stays on the co-op save. Workaround: restart your game, then it joins as host with your own save. (Fix planned for 0.11.13.)
+- **Twinrova's attacks** (row 222): which sister's ice or fire comes when, and where a shot lands, can still differ between the games. The stuck attacks and the fusion are fixed.
 
 ## New in 0.11.11
 
