@@ -1,0 +1,17 @@
+# what: remount-leave, host gone for good: B (a guest on the title with the host's save) loses A and the server. By design the client retries for as long as it runs (coop/net client.hpp: the game decides when to give up, and none does), so B stays in the session on the host's save while it retries; the player's Leave then takes B back to its own saves at once.
+# scene: HyruleField_Child
+# start: live.py start --boot tools/autotest/scenarios/live-leave-solo --no-load --env LICHII_COOP_DEBUG_FLAGS=1 --env B:LICHII_COOP_HOST_SAVE=1 --env B:LICHII_COOP_TEST_OWN_SAVE=0 (replay --include-reads for the shots).
+# expect: every wait_log ok; shot 1: B's title on the host's save while it retries; shot 2: B's title on its own saves after the Leave.
+# kit: 1
+{"server":"live","tool":"wait_log","args":{"player":"B","pattern":"coop: save: now playing from the co-op save folder","timeout_s":120}}
+{"server":"live","tool":"quit_game","args":{"player":"A","kill":true}}
+{"server":"live","tool":"server","args":{"action":"stop"}}
+{"server":"live","tool":"sleep","args":{"seconds":30}}
+{"server":"live","tool":"wait_log","args":{"player":"B","pattern":"coop: save: on the title and no session holds the co-op save here","min":0,"max":0,"timeout_s":0}}
+{"server":"live","tool":"shot","args":{"player":"B"}}
+{"server":"live","tool":"act","args":{"player":"B","script":"menu leave; wait 300"}}
+{"server":"live","tool":"wait_log","args":{"player":"B","pattern":"coop: test menu leave: asked","timeout_s":30}}
+{"server":"live","tool":"wait_log","args":{"player":"B","pattern":"coop: save: on the title and no session holds the co-op save here: back on this game's own saves","timeout_s":60}}
+{"server":"live","tool":"sleep","args":{"seconds":5}}
+{"server":"live","tool":"shot","args":{"player":"B"}}
+{"server":"live","tool":"wait_log","args":{"player":"B","pattern":"unhandled exception|fault at|coop: null read","min":0,"max":0,"timeout_s":0}}
