@@ -99,6 +99,25 @@ TEST_CASE("flag watcher: the first frame is the baseline and sends nothing") {
   CHECK(w.frame(store).empty());
 }
 
+TEST_CASE("flag watcher: the settling tail uses sliced audits and one exit scan") {
+  FakeStore store = game();
+  FlagWatcher w(shared(), FlagRole::player);
+  w.use_events(true);
+  w.frame(store);
+  REQUIRE(w.stats().full_reads == 1);
+
+  w.set_loading(true);
+  w.frame(store);
+  REQUIRE(w.stats().full_reads == 2);
+  w.set_loading(false);
+
+  const auto before_tail = w.stats().full_reads;
+  for (int i = 0; i < FlagWatcher::kSettleFrames; ++i) w.frame(store);
+  CHECK(w.stats().full_reads == before_tail);
+  w.frame(store);
+  CHECK(w.stats().full_reads == before_tail + 1);
+}
+
 TEST_CASE("flag watcher: the game's changes go out as one FLAG_SET") {
   FakeStore store = game();
   FlagWatcher w(shared(), FlagRole::player);

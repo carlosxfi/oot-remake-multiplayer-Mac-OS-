@@ -702,6 +702,9 @@ class FlagWatcher {
   // A load window (docs/flags.md, "Saves"): from the first loading frame to
   // the end of the settle frames. Nothing is sent from inside it.
   bool window_ = false;
+  // Requests the one full reconciliation at each load-window boundary. The
+  // settling tail otherwise uses the normal bounded audit slices.
+  bool full_scan_due_ = true;
   bool moved_ = false;  // a save was loaded in it (the title seen, kSaveLoadMin flags back)
   std::set<FlagKey> back_keys_;  // distinct named flags gone back with no Link in this window
   bool seen_ = false;            // take_save_load: a save load was seen, not taken yet

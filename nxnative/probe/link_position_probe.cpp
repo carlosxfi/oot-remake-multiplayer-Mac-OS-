@@ -13,6 +13,7 @@
 #include "puppet_guard.hpp"
 #include "module_detection.hpp"
 #include "local_memory.hpp"
+#include "coop/host/frame_trace.hpp"
 #include "coop/host/player_reader.hpp"
 #include "coop/host/sampler.hpp"
 #ifdef COOP_NXNATIVE_NETWORK
@@ -612,8 +613,17 @@ bool start_shared_module(const char* path, std::uint64_t base) {
   shared_api.main_build_id = "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348";
   shared_api.game_dir = game_dir;
   shared_api.read = [](std::uint64_t address, void* out, std::size_t size) -> int {
-    return address && out && size && address + size > address &&
-        copy_local(address, {static_cast<std::uint8_t*>(out), size}, nullptr);
+    if (!address || !out || !size || address + size <= address) return 0;
+    auto* trace = coop::host::FrameTrace::active;
+    const auto start = trace ? coop::host::FrameTrace::Clock::now()
+                             : coop::host::FrameTrace::Clock::time_point{};
+    const bool copied = copy_local(address, {static_cast<std::uint8_t*>(out), size}, nullptr);
+    if (trace) {
+      ++trace->read_calls;
+      trace->read_bytes += size;
+      trace->read_ms += coop::host::FrameTrace::since_ms(start);
+    }
+    return copied;
   };
   shared_api.write = [](std::uint64_t address, const void* bytes, std::size_t size) -> int {
     return address && bytes && size && address + size > address && size <= UINT32_MAX &&

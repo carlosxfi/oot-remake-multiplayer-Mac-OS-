@@ -451,6 +451,7 @@ std::vector<Outgoing> FlagWatcher::frame(FlagStore& store) {
   }
   if (settling() && !window_) {
     window_ = true;
+    full_scan_due_ = true;
     // Row 140: a room or scene load (also the game's own load nodes) reads the game's own copies in again (the HUD
     // screen's floors): a value left to the game may take a put-back again (owed_, when the window ends).
     game_owned_.clear();
@@ -465,6 +466,7 @@ std::vector<Outgoing> FlagWatcher::frame(FlagStore& store) {
     no_scene_frames_ = 0;
   } else if (!settling() && window_) {
     window_ = false;
+    full_scan_due_ = true;
     // Rows 136/137: the game made Link (and its other live copies) again from the flags in this window. Only the
     // holds that began before the window did (row 238: a hold made inside it, by a reconnect's snapshot or a reset
     // that came mid-window, is for a value Link was not made from).
@@ -1139,21 +1141,43 @@ void FlagWatcher::add(FlagStore& store, const FlagEntry& delta) {
 const std::vector<FlagKey>& FlagWatcher::diff_keys() {
   audit_from_ = static_cast<std::size_t>(-1);
   const std::vector<FlagKey>& list = shared_.keys();
+  const auto note_trace = [](bool full, FlagScanReason reason, std::size_t keys) {
+    if (!FrameTrace::active) return;
+    FrameTrace::active->full_flag_scan = full;
+    FrameTrace::active->flag_scan_reason = reason;
+    FrameTrace::active->flag_keys_read += keys;
+  };
 #ifndef __APPLE__
-  if (!events_) return list;
+  if (!events_) {
+    note_trace(true, FlagScanReason::polling, list.size());
+    return list;
+  }
 #endif
-  // The whole list: the first time (the baseline), when a flag joined the
-  // list, in a load window (a save load or a room load moves many flags, and
-  // the rules of the window look at each), and when events were lost.
-  if (!baselined_ || wrote_all_ || listed_ != list.size() || window_ || settling()) {
+  // Keep exact, immediate reconciliation while Link is absent. During the
+  // 120-frame settling tail, audit slices instead of rereading every shared
+  // flag on every calc frame. A full scan at each window boundary catches the
+  // final load result before normal sliced auditing resumes.
+  const bool baseline = !baselined_;
+  const bool overflow = wrote_all_;
+  const bool list_changed = listed_ != list.size();
+  const bool boundary = full_scan_due_;
+  if (baseline || overflow || list_changed || loading_ || boundary) {
+    FlagScanReason reason = FlagScanReason::load_boundary;
+    if (baseline) reason = FlagScanReason::baseline;
+    else if (overflow) reason = FlagScanReason::event_overflow;
+    else if (list_changed) reason = FlagScanReason::list_changed;
+    else if (loading_) reason = FlagScanReason::loading;
     baselined_ = true;
     wrote_all_ = false;
+    full_scan_due_ = false;
     listed_ = list.size();
     wrote_.clear();
     ++stats_.full_reads;
+    note_trace(true, reason, list.size());
     return list;
   }
   visit_.clear();
+  const bool had_events = !wrote_.empty() || !restate_.empty();
   for (const FlagKey& key : wrote_) {
     if (shared_.contains(key)) visit_.push_back(key);
   }
@@ -1165,7 +1189,7 @@ const std::vector<FlagKey>& FlagWatcher::diff_keys() {
   if (events_) audit_from_ = visit_.size();
   if (!list.empty()) {
     // Without flag-write hooks, nxnative polls every key over eight gameplay
-    // frames. Initial scans and loading windows still read the full list.
+    // frames. Loading itself remains exact; only its settling tail is sliced.
     static const std::size_t polling_frames = [] {
 #ifdef __APPLE__
       const char* setting = std::getenv("COOP_FLAG_POLL_FRAMES");
@@ -1181,6 +1205,8 @@ const std::vector<FlagKey>& FlagWatcher::diff_keys() {
       if (events_ || !restate_.contains(key)) visit_.push_back(key);
     }
   }
+  note_trace(false, had_events ? FlagScanReason::event_audit : FlagScanReason::polling,
+             visit_.size());
   return visit_;
 }
 

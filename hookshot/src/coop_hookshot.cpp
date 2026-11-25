@@ -2592,6 +2592,78 @@ std::optional<double> CoopProcessAgeMs() {
     return (wall.tv_sec - start.tv_sec) * 1000.0 + (wall.tv_usec - start.tv_usec) / 1000.0;
 }
 
+class CoopFrameTraceRecorder {
+public:
+    using Trace = coop::host::FrameTrace;
+
+    CoopFrameTraceRecorder() {
+        const char* path = std::getenv("COOP_FRAME_TSV");
+        if (!path || !*path) return;
+        path_ = path;
+        if (auto* file = std::fopen(path_.c_str(), "w")) {
+            std::fputs("start_ms\tcallback_ms\tsync_ms\tflag_scan_ms\tpuppet_and_save_ms\tnative_ui_ms"
+                       "\tread_ms\tread_calls\tread_bytes\tnet_lock_wait_ms\tflag_keys\tfull_flag_scan"
+                       "\tflag_scan_reason\n", file);
+            std::fclose(file);
+        } else {
+            path_.clear();
+            LOG_WARNING(Core, "coop: could not open the frame timing trace");
+        }
+    }
+
+    bool enabled() const { return !path_.empty(); }
+
+    void push(double start_ms, double callback_ms, const Trace& trace) {
+        if (!enabled()) return;
+        samples_[next_] = {start_ms, callback_ms, trace};
+        next_ = (next_ + 1) % samples_.size();
+        if (count_ < samples_.size()) ++count_;
+    }
+
+    void flush() {
+        if (!enabled() || count_ == 0) return;
+        auto* file = std::fopen(path_.c_str(), "a");
+        if (!file) {
+            LOG_WARNING(Core, "coop: could not flush the frame timing trace");
+            return;
+        }
+        const std::size_t first = count_ == samples_.size() ? next_ : 0;
+        for (std::size_t i = 0; i < count_; ++i) {
+            const Sample& sample = samples_[(first + i) % samples_.size()];
+            const Trace& trace = sample.trace;
+            std::fprintf(file,
+                         "%.3f\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f\t%zu\t%zu\t%.3f\t%zu\t%d\t%s\n",
+                         sample.start_ms, sample.callback_ms, trace.sync_ms, trace.flag_scan_ms,
+                         trace.puppet_and_save_ms, trace.native_ui_ms, trace.read_ms,
+                         trace.read_calls, trace.read_bytes, trace.net_lock_wait_ms,
+                         trace.flag_keys_read, trace.full_flag_scan ? 1 : 0,
+                         coop::host::flag_scan_reason_name(trace.flag_scan_reason));
+        }
+        std::fclose(file);
+        count_ = 0;
+        next_ = 0;
+    }
+
+private:
+    struct Sample {
+        double start_ms = 0;
+        double callback_ms = 0;
+        Trace trace{};
+    };
+
+    // Roughly 18 minutes at 60 fps. The ring is fixed-size so tracing never
+    // allocates or formats text on nxnative's calc thread.
+    std::array<Sample, 65536> samples_{};
+    std::string path_;
+    std::size_t next_ = 0;
+    std::size_t count_ = 0;
+};
+
+CoopFrameTraceRecorder& CoopFrameTraceLog() {
+    static CoopFrameTraceRecorder recorder;
+    return recorder;
+}
+
 }  // namespace
 #endif
 
@@ -2603,21 +2675,11 @@ COOP_HOOKSHOT_EXPORT void hos_coop_frame(void* ctx, int site) {
         return setting && std::string_view(setting) == "1";
     }();
 #ifdef __APPLE__
-    static std::FILE* const trace_file = []() -> std::FILE* {
-        const char* path = std::getenv("COOP_FRAME_TSV");
-        if (!path || !*path) return nullptr;
-        auto* file = std::fopen(path, "w");
-        if (!file) {
-            LOG_WARNING(Core, "coop: could not open the frame timing trace");
-            return nullptr;
-        }
-        std::fputs("start_ms\tcallback_ms\tsync_ms\tflag_scan_ms\tpuppet_and_save_ms\tnative_ui_ms\n", file);
-        return file;
-    }();
+    auto& trace_log = CoopFrameTraceLog();
     using Trace = coop::host::FrameTrace;
     Trace trace;
-    const bool record = trace_file && site == HOS_COOP_SITE_FRAME && !Trace::active;
-    static const auto anchor = trace_file ? CoopProcessAgeMs() : std::optional<double>{};
+    const bool record = trace_log.enabled() && site == HOS_COOP_SITE_FRAME && !Trace::active;
+    static const auto anchor = trace_log.enabled() ? CoopProcessAgeMs() : std::optional<double>{};
     static const auto anchor_time = Clock::now();
     const bool capture = record && anchor.has_value();
     if (capture) Trace::active = &trace;
@@ -2633,8 +2695,7 @@ COOP_HOOKSHOT_EXPORT void hos_coop_frame(void* ctx, int site) {
         Trace::active = nullptr;
         const double ms = Trace::since_ms(start);
         const double start_ms = *anchor + std::chrono::duration<double, std::milli>(start - anchor_time).count();
-        std::fprintf(trace_file, "%.3f\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f\n",
-                     start_ms, ms, trace.sync_ms, trace.flag_scan_ms, trace.puppet_and_save_ms, trace.native_ui_ms);
+        trace_log.push(start_ms, ms, trace);
     }
 #endif
     if (timing) {
@@ -2683,6 +2744,9 @@ COOP_HOOKSHOT_EXPORT int hos_coop_wrap(uint32_t id, int phase, uint64_t* x, void
 COOP_HOOKSHOT_EXPORT void hos_coop_stop(void) {
     static CoopBoundary::Site site{"hos_coop_stop"};
     CoopExportGuard::Guard(site, [&] {
+#ifdef __APPLE__
+        CoopFrameTraceLog().flush();
+#endif
         CoopHookshot::Stop();
     });
 }
