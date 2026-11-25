@@ -851,22 +851,28 @@ HopStep CharactersHopNext(CharactersHop& h, bool ours, bool minus_open, int lit,
 
 std::uint64_t CharactersHoldPad(CharactersHold& h, bool minus_open, bool ours, int category, std::uint64_t buttons,
                                 std::uint64_t now_ms, bool* held) {
-    constexpr std::uint64_t left = kPadL | kPadZL;
-    const std::uint64_t now_left = buttons & left;
-    const std::uint64_t down = now_left & ~h.last;
-    h.last = now_left;
-    h.kept &= now_left;   // (let go: decided again at its next press)
+    constexpr std::uint64_t left = kPadL | kPadZL, right = kPadR | kPadZR;
+    const std::uint64_t now_keys = buttons & (left | right);
+    const std::uint64_t down = now_keys & ~h.last;
+    h.last = now_keys;
+    h.kept &= now_keys;   // (let go: decided again at its next press)
     if (held != nullptr) *held = false;
-    if (down != 0 && minus_open && !ours) {
+    if (!minus_open || ours) return buttons & ~h.kept;
+    std::uint64_t tap = 0;
+    if (down != 0) {
+        const bool l = (down & left) != 0, r = (down & right) != 0;
         const bool settled = h.passed_ms == 0 || now_ms < h.passed_ms || now_ms - h.passed_ms >= kHoldSettleMs;
-        if ((category == 1 || category == 2) && settled) {
-            h.passed_ms = now_ms;   // (Map to Threads of Time, or Threads of Time to Key Items: never the page)
-        } else {
-            h.kept |= down;
-            if (held != nullptr) *held = true;
+        // (L from Map or Threads of Time, R from Key Items or Threads of Time: never onto the page, either way round)
+        const bool l_ok = !l || category == 1 || category == 2, r_ok = !r || category == 6 || category == 1;
+        if (settled && l_ok && r_ok) {
+            h.passed_ms = now_ms;
+            tap = down;
+        } else if (held != nullptr) {
+            *held = l && category == 6;
         }
     }
-    return buttons & ~h.kept;
+    h.kept |= now_keys;   // (a tap goes through at this read only; a key held from before not at all)
+    return buttons & ~(h.kept & ~tap);
 }
 
 SnailEdge SnailEdgeFrom(bool open, std::uint64_t edge_ms, int strip_state, std::uint64_t strip_seen_ms, std::uint64_t now_ms) {
