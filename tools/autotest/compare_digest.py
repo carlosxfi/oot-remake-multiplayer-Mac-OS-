@@ -7,6 +7,10 @@ Each game's module writes, every 2 s of server time, what it holds of every shar
     coop: digest: t=<server ms> scene=<s> self=<n> obj=<id> gone
     coop: digest: t=<server ms> scene=<s> self=<n> room objects=<count> h=<hex>
 
+Row 223: the key items are one more object (obj=p4b45594954454d53 name=key_items items.songs=<hex mask> items.medallions=...
+items.spiritual_stones=... items.dungeon_items=...): a game that lacks a song or a medallion the others hold shows as a DESYNC
+of that object with both masks (bit i = the group's i-th flag in the item table order).
+
 An object line is written when its fields change (and every 10 s); the room line every tick. So a game's view at a
 time is, per scene, the last line of each object up to then, less the gone ones.
 

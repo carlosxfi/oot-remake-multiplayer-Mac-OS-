@@ -31,6 +31,8 @@
 namespace CoopDigest {
 
 inline constexpr std::uint64_t kPeriodUs = 2'000'000;
+// The placement-hash slot of the key-item entry (row 223): not a real placement, "KEYITEMS" in ASCII.
+inline constexpr std::uint64_t kKeyItemsId = 0x4b455949'54454d53ull;
 inline constexpr std::uint64_t kRefreshUs = 10'000'000;  // an unchanged object is written again this often
 inline constexpr std::string_view kPrefix = "coop: digest: ";
 

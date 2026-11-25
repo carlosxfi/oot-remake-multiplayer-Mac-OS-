@@ -40,8 +40,11 @@ KeyItemTally key_item_tally(const std::function<bool(std::uint32_t)>& has) {
     TallyGroup g;
     if (!tally_group_of(item.name, g)) continue;
     TallyCount& c = t.groups[static_cast<std::size_t>(g)];
-    ++c.total;
-    if (has && has(item.hash)) ++c.owned;
+    const unsigned bit = c.total++;
+    if (has && has(item.hash)) {
+      ++c.owned;
+      if (bit < 64) c.mask |= std::uint64_t{1} << bit;
+    }
   }
   return t;
 }
