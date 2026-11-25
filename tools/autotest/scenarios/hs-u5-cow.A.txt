@@ -1,6 +1,8 @@
 # hs-u5-cow (row 237 kOnceGifts, u5-rando): the randomizer's Link's house cow (adult). Position from the scene actor
 # data (romfs Banc KokiriForest_Adult_Dynamic): Animal_Cow_LinkHouse at -44.55 118.40 16.64, present only with
-# MiniGame_HorseRace_IsNewRecord = 1 (Presence, not lazy: offline/u5-rando-run.ps1 sets it in A's baseline save);
+# MiniGame_HorseRace_IsNewRecord = 1 (Presence, not lazy: offline/u5-rando-run.ps1 sets it in A's baseline save).
+# A's baseline here is ADULT: hs-u5-prep's autosave after `warp HyruleField_Adult` (hookshot turns KokiriForest_Adult
+# into KokiriForest_Child for a child save: 'sent (map KokiriForest_Child, not accepted)'), then `place` on LinkBed;
 # StartPos LinkBed at -46.50 118.60 15.30 (2.4 m from the cow, inside Link's house).
 # A faces the cow, camera behind (ZL), plays Epona's Song (Up Left Right x2 = X Y R X Y R). Seed U5GIFTA:
 # KF Links House Cow = Piece of Heart. Shots decide; flag debug: HavePlayedEvent.Dm_StaffCredit_0027 0x4f4c1315
@@ -23,6 +25,8 @@ press A
 wait 2400
 mark after
 wait 600
+place -46.50 118.60 15.30  # StartPos LinkBed (the warp's start is not used on hookshot)
+wait 120
 face -44.55 16.64          # Animal_Cow_LinkHouse
 press ZL
 wait 60
@@ -31,15 +35,15 @@ press DLEFT 12
 wait 240
 mark a-ocarina-out
 press X 12
-wait 40
+wait 60
 press Y 12
-wait 40
+wait 60
 press R 12
-wait 40
+wait 60
 press X 12
-wait 40
+wait 60
 press Y 12
-wait 40
+wait 60
 press R 12
 wait 120
 mark a-epona

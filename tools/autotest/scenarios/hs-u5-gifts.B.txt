@@ -2,7 +2,7 @@
 # ZoraRiver_Child_Static): OcarinaPoint_MiniGame_FrogTenors and Animal_Frog_Blue at 9.19 101.86 -54.83 (the other
 # four frogs within 1.5 m), the frog scene's player anchor DestinationAnchor "TurnToTarget" at 8.90 101.90 -50.90.
 # B stands on TurnToTarget, faces the frogs, camera behind (ZL), then plays Zelda's Lullaby (Left Up Right x2 =
-# Y X R Y X R). Seed U5GIFTA: ZR Frogs Zeldas Lullaby = Piece of Heart. Shots decide what the frogs do; the flag
+# Y X R Y X R) once the intro text is closed (A). Seed U5GIFTA: ZR Frogs Zeldas Lullaby = Piece of Heart. Shots decide what the frogs do; the flag
 # debug shows MiniGame_FrogTenors_ZeldaLullaby 0x6e3948e7 and A's Medigoron flag 0x0e3dad8a arriving.
 #! noload
 #! start coop: test warp done
@@ -30,24 +30,26 @@ wait 60
 mark b-frogs
 press DLEFT 12
 wait 240
-mark b-ocarina-out
+mark b-ocarina-out         # the frogs' intro text "Play us a nice tune!" is up here (run c4d9c5c3)
+press A 12                 # closes it: the note prompt opens only after this
+wait 240
+mark b-prompt
 press Y 12
-wait 40
+wait 60
 press X 12
-wait 40
+wait 60
 press R 12
-wait 40
+wait 60
 press Y 12
-wait 40
+wait 60
 press X 12
-wait 40
+wait 60
 press R 12
 wait 120
 mark b-lullaby
 wait 240
 mark b-frogs-01
-press A
-wait 200
+wait 240
 mark b-frogs-02
 press A
 wait 200
@@ -59,8 +61,14 @@ press A
 wait 200
 mark b-frogs-05
 press A
-wait 240
+wait 200
 mark b-frogs-06
+press A
+wait 240
+mark b-frogs-07
+press A
+wait 240
+mark b-frogs-08
 press B
 wait 240
 mark b-frogs-after
