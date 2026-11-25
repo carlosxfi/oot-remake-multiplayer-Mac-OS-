@@ -1,0 +1,17 @@
+# key-items-223, game B (a guest): after A has set every counted flag (they come to B as shared flags), B opens the -
+# menu's Multiplayer page and shows the same two pages: page 2 must read 13 of 13, 6 of 6, 3 of 3, 42 of 42 from B's
+# own flag table (the counts are never sent). Waits out A's script (about 1100 ticks of 1/60 s) first.
+mark start
+wait 1500
+press MINUS
+wait 150
+mark b-minus-open
+press R
+wait 120
+mark b-page1
+press ZR
+wait 120
+mark b-page2
+press ZL
+wait 90
+mark b-page1-again
