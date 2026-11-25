@@ -121,6 +121,41 @@ try {
     [void](Sync-KitLocalInstance $game $inst)
     Check (@(Test-KitLocalLinks $game $inst).Count -eq 0) 'links: made again, all shown'
 
+    # --- A folder of the instance's own, made before the game had one of that name (review: it stopped every start) ---
+    Write-File (Join-Path $inst 'screenshots\mine.png') 'mine'
+    Write-File (Join-Path $game 'screenshots\p1.png') 'p1'
+    $said = @(Sync-KitLocalInstance $game $inst)
+    Check ($said.Count -eq 1 -and $said[0] -match 'screenshots is a folder of its own') "own folder: kept and said ($($said -join ' | '))"
+    Check ((Read-File (Join-Path $inst 'screenshots\mine.png')) -eq 'mine' -and -not (Test-Path (Join-Path $game 'screenshots\mine.png'))) 'own folder: its file is kept where it was'
+    $blind = @(Test-KitLocalLinks $game $inst)
+    Check ($blind.Count -eq 0) "own folder: one a start does not need stops nothing ($($blind -join ' | '))"
+    # An empty one has nothing to keep: linked.
+    New-Item -ItemType Directory -Path (Join-Path $inst 'texts') | Out-Null
+    Write-File (Join-Path $game 'texts\t.txt') 'text'
+    [void](Sync-KitLocalInstance $game $inst)
+    Check ((Test-Link (Join-Path $inst 'texts')) -and (Read-File (Join-Path $inst 'texts\t.txt')) -eq 'text') 'own folder: an empty one becomes the link'
+    # mods: a start needs it. Its own without the game's mods is said (and what to do); with them and more, it starts.
+    [System.IO.Directory]::Delete((Join-Path $inst 'mods'), $false)
+    Write-File (Join-Path $inst 'mods\other.txt') 'other'
+    [void](Sync-KitLocalInstance $game $inst)
+    $blind = @(Test-KitLocalLinks $game $inst)
+    Check ($blind.Count -eq 1 -and $blind[0] -match 'shows 0 of the 1' -and $blind[0] -match 'folder of its own: move it') "own folder: mods without the game's mods is said ($($blind -join ' | '))"
+    Write-File (Join-Path $inst 'mods\m.txt') 'mod'
+    $blind = @(Test-KitLocalLinks $game $inst)
+    Check ($blind.Count -eq 0) "own folder: mods with the game's and more starts ($($blind -join ' | '))"
+    Remove-Item -LiteralPath (Join-Path $inst 'mods') -Recurse -Force
+    # A link that is missing is still said, for any folder.
+    [System.IO.Directory]::Delete((Join-Path $inst 'texts'), $false)
+    $blind = @(Test-KitLocalLinks $game $inst)
+    Check ($blind.Count -eq 2 -and ($blind -join ' ') -match 'mods' -and ($blind -join ' ') -match 'texts') "links: missing ones are said ($($blind -join ' | '))"
+    [void](Sync-KitLocalInstance $game $inst)
+    Check (@(Test-KitLocalLinks $game $inst).Count -eq 0) 'links: the missing ones are made, all shown'
+    foreach ($n in 'screenshots', 'texts') {
+        $l = Join-Path $inst $n
+        if (Test-Link $l) { [System.IO.Directory]::Delete($l, $false) } else { Remove-Item -LiteralPath $l -Recurse -Force }
+        Remove-Item -LiteralPath (Join-Path $game $n) -Recurse -Force
+    }
+
     # --- Which player a running game is (its exe's folder); the pattern parses (it ended in one \ before) ---
     $lp = (Join-Path $game 'local-players') + '\'
     Check ((Get-KitLocalPlayerOfPath $lp (Join-Path $lp 'player3\longshot.exe')) -eq 3) 'running: local-players\player3\longshot.exe is player 3'

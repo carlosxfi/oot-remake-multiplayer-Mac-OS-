@@ -27,6 +27,8 @@ $script:KitLocalCopied = @('longshot_options.ini', 'language.txt', 'longshot_pip
 # The game's own files that every game shares as they are (by name: the per-player text files the game writes beside
 # its exe, coop-*.ini/.txt and the rest, stay each game's own).
 $script:KitLocalLinkedPattern = '^(?i)(.+\.(exe|dll|bin|idx|png)|exefs_patches\.txt|longshot_title\.txt|coop-built-from\.txt)$'
+# The folders a game does not start without (its files, the mods its built code needs).
+$script:KitLocalDirsNeeded = @('romfs', 'mods')
 $script:KitLocalKeys = @('LICHII_COOP_PAD', 'LICHII_COOP_KEYBOARD', 'LICHII_COOP_COLOR')
 
 # How many players on this PC: 1 (just you, as before) or 2 to 4 (local co-op). Nothing waits for an answer, so a solo
@@ -151,8 +153,13 @@ function Sync-KitLocalInstance([string]$Game, [string]$Inst) {
                 if ($target -ieq $d.FullName.TrimEnd('\')) { continue }
                 try { [System.IO.Directory]::Delete($to, $false) } catch { $said += "Local co-op: could not renew the link $to ($($_.Exception.Message))."; continue }
             } else {
-                $said += "Local co-op: $to is a folder of its own, not the game's: left as it is."
-                continue
+                # (a folder of its own, made by that game before the game's folder had one of that name: an empty one holds
+                # nothing to keep and is linked; one with things in it is the player's. Never removed with its content.)
+                $empty = $false
+                try {
+                    if (-not @(Get-ChildItem -LiteralPath $to -Force -ErrorAction Stop)) { [System.IO.Directory]::Delete($to, $false); $empty = $true }
+                } catch { }
+                if (-not $empty) { $said += "Local co-op: $to is a folder of its own, not the game's: left as it is."; continue }
             }
         }
         try { New-Item -ItemType Junction -Path $to -Target $d.FullName -ErrorAction Stop | Out-Null }
@@ -176,27 +183,32 @@ function Sync-KitLocalInstance([string]$Game, [string]$Inst) {
     return $said
 }
 
-# The game's folders as player N's game will see them through its links (romfs, mods, ...): one line for each that does
-# not show what the game's own folder holds (a link that names nothing or another place). Such a game starts without the
-# game's files or mods and stops at its start: it is not started, and the line says why. Nothing when all is well.
+# The game's folders as player N's game will see them (romfs, mods, ...): one line for each link that is missing or does
+# not show what the game's own folder holds. Such a game starts without the game's files or mods and stops at its start:
+# it is not started, and the line says why. A folder of the instance's own (Sync-KitLocalInstance leaves it) counts only
+# when a game does not start without it (KitLocalDirsNeeded) and it lacks something of the game's; what it has more than
+# the game's is the player's. Nothing when all is well.
 function Test-KitLocalLinks([string]$Game, [string]$Inst) {
     $bad = @()
     foreach ($d in @(Get-ChildItem -LiteralPath $Game -Directory -Force -ErrorAction SilentlyContinue)) {
         if ($script:KitLocalDirsNotLinked -contains $d.Name -or $d.Name -like 'autotest*' -or $d.Name -like '*.old*' -or $d.Name -like '*.bak*') { continue }
         $to = Join-Path $Inst $d.Name
-        # (read twice when they differ: game 1 runs and may be writing in a shared folder such as cache right then)
-        $same = $false
-        for ($try = 0; $try -lt 2 -and -not $same; $try++) {
+        $item = Get-Item -LiteralPath $to -Force -ErrorAction SilentlyContinue
+        $own = $item -and -not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+        if ($own -and $script:KitLocalDirsNeeded -notcontains $d.Name) { continue }
+        # (read twice when something lacks: game 1 runs and may be writing in a shared folder such as cache right then)
+        for ($try = 0; $try -lt 2; $try++) {
             if ($try) { Start-Sleep -Milliseconds 300 }
-            $want = @(Get-ChildItem -LiteralPath $d.FullName -Force -Name -ErrorAction SilentlyContinue | Sort-Object)
-            $seen = @(Get-ChildItem -LiteralPath $to -Force -Name -ErrorAction SilentlyContinue | Sort-Object)
-            $same = ($want -join '|') -eq ($seen -join '|')
+            $want = @(Get-ChildItem -LiteralPath $d.FullName -Force -Name -ErrorAction SilentlyContinue)
+            $seen = @(Get-ChildItem -LiteralPath $to -Force -Name -ErrorAction SilentlyContinue)
+            $lacks = @($want | Where-Object { $seen -notcontains $_ })
+            if (-not $lacks) { break }
         }
-        if (-not $same) {
-            $item = Get-Item -LiteralPath $to -Force -ErrorAction SilentlyContinue
-            $names = if ($item) { "$(@($item.Target)[0])" } else { 'nothing' }
-            $bad += "Local co-op: $to shows $($seen.Count) of the $($want.Count) things in the game's $($d.Name) folder (it names $names)."
-        }
+        if (-not $lacks) { continue }
+        $line = "Local co-op: $to shows $($want.Count - $lacks.Count) of the $($want.Count) things in the game's $($d.Name) folder"
+        if ($own) { $bad += "$line. It is a folder of its own: move it somewhere else, then start again."; continue }
+        $names = if ($item) { "$(@($item.Target)[0])" } else { 'nothing' }
+        $bad += "$line (it names $names). Close every game and start again; if it says this again, run collect-logs."
     }
     return $bad
 }
@@ -361,7 +373,7 @@ function Start-KitLocalCoop([string]$Kit, [string]$Exe, [int]$Players, [int]$Pau
         $blind = @(Test-KitLocalLinks $game $inst)
         if ($blind) {
             foreach ($l in $blind) { Write-Host $l -ForegroundColor Yellow }
-            Write-Host "Local co-op: player $p's game would start without the game's files, so local co-op is not started. Close every game and start again; if it says this again, run collect-logs." -ForegroundColor Yellow
+            Write-Host "Local co-op: player $p's game would start without the game's files, so local co-op is not started." -ForegroundColor Yellow
             return @()
         }
         $folders += $inst
@@ -427,11 +439,12 @@ function Add-KitLocalCoop([string]$Kit, [string]$Exe, [int]$Players, [int]$Port,
     $want = @()
     $cannot = @()   # (a player whose folder does not show the game's: not started, failed)
     $problem = ''
+    $note = ''   # (what Sync says and the game starts anyway: said only when nothing failed)
     for ($p = 2; $p -le $Players; $p++) {
         $inst = Join-Path (Join-Path $game 'local-players') "player$p"
         $folders += $inst
         if ($running -contains $p) { continue }
-        foreach ($l in @(Sync-KitLocalInstance $game $inst)) { if (-not $problem) { $problem = $l } }
+        foreach ($l in @(Sync-KitLocalInstance $game $inst)) { Write-Host $l; if (-not $note) { $note = $l } }
         Write-KitLocalPlayer $inst $Kit $p $Port $Password $fps
         $blind = @(Test-KitLocalLinks $game $inst)
         if ($blind) { $blind | ForEach-Object { Write-Host $_ }; $problem = $blind[0]; $cannot += $p; continue }
@@ -457,7 +470,8 @@ function Add-KitLocalCoop([string]$Kit, [string]$Exe, [int]$Players, [int]$Port,
     } finally {
         foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
     }
-    if (-not $problem) { $problem = $slow }   # (a game that did not start says more than the RAM)
+    if (-not $problem) { $problem = if ($note) { $note } else { $slow } }   # (a game that did not start says more than the RAM)
+    $problem = ($problem -replace '[\r\n]+', ' ').Trim()   # (one line of the result file)
     $line = "started=$($started -join ',')`r`nrunning=$(@($running | Where-Object { $_ -le $Players }) -join ',')`r`nfailed=$($failed -join ',')`r`nproblem=$problem`r`n"
     if ($Result) { try { [System.IO.File]::WriteAllText($Result, $line) } catch { } }
     # The windows: every game of the session in its part of the screen (game 1 too when it is in a window).
