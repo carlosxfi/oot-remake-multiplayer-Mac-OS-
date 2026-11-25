@@ -543,6 +543,8 @@ enum class RowAction {
     kViewLocal,      // Local co-op (0.11.9, the Multiplayer tab's row): Settings and look on its Local co-op page
     kViewHostSettings,   // the Host view's Host settings: Settings and look on Co-op settings, at its host rows (Game,
                          // Approve joins, PvP, Down but not out), the list holding the pad
+    kChatPage,       // the Players view's chat list (row 282): its heading's A or click, the page of older lines (round;
+                     // ZL and ZR turn it either way, coop_chat_history.h)
 };
 // Settings and look's pages by their row (kMenuTabNames): the Co-op settings row and Host settings open kTabSettings
 // (Customize Link is System's own button, kTabCustomize); Local co-op's row shows only when its page is open (its home
@@ -582,6 +584,7 @@ struct Session {
     int listed = 0;         // the Players view: how many players it lists
     int self = -1;          // the Players view: our own place in its list (-1 not listed): no view of our own
     int page = 0;           // the Players view: its page (PlayerIndex)
+    int chat_page = -1;     // the Players view's chat list: its page from the oldest, -1 the newest (coop_chat_history.h)
     int player = 0;         // a player's view: 0 that player left, 1 it is us, 2 another player
 };
 // The Players view: which player (an index of the list) a row shows on a page, or -1. Up to four fit; more: three a
@@ -743,6 +746,8 @@ struct SessionView {
     std::vector<std::string> asking;   // hosting: who asks to join, oldest first
     bool confirm_leave = false;  // the Leave row waits for its second A
     std::vector<std::string> names;   // the Players view: who is in the session, by number ("(you)", "(host)" added)
+    std::vector<std::string> chat;    // the Players view: the session's chat and notices, oldest first, as the banner
+                                      // words them (a notice in the player's language, chat as typed; row 282)
     std::string rejoin_host;          // the Join view: the last game's host ("" its name is not known)
     std::string note;                 // what the last copy on the page did, a few seconds (CoopPause::PageNote)
     std::string host_name;            // a guest: the host's name ("" not known)
@@ -827,8 +832,13 @@ std::vector<ListLine> ListLines(const SessionView& v);
 bool RoomMatches(const std::string& room, const std::string& host, const std::string& search);
 // The same list on the main view and the Session view: the session's details (a header, what it is, then name and
 // value lines), co-op's problem or hint as lines of text (no value: their value box not shown), and the release last.
-// None on the other views. The rows keep what can be done.
+// The Players view: the session's chat to look back at (ChatHistoryLines). None on the other views. The rows keep what
+// can be done.
 std::vector<ListLine> DetailLines(View view, const SessionView& v);
+// The Players view's list (row 282, coop_chat_history.h): the heading "Chat  Page 3/3" (paged: the game's ZL and ZR
+// beside it; its A the page of older lines), then a page of v.chat's rows, as they were said (never looked up); "No
+// chat yet" with none; nothing out of a session.
+std::vector<ListLine> ChatHistoryLines(const SessionView& v);
 // What a game's right column says: "2/4", "Full", "Other version" (it cannot be joined from here).
 std::string ListValue(int players, int max, bool same_version);
 // What a room's left column says: the name its host listed it under (the room name unless they picked one), with the

@@ -4,6 +4,7 @@
 
 #include "coop_browse.h"
 #include "coop_i18n.h"
+#include "coop_chat_history.h"
 #include "coop_list_pages.h"
 #include "coop_text_fit.h"
 
@@ -1553,6 +1554,7 @@ const char* RowHelp(RowAction a) {
     case RowAction::kBrowseLan: return "Lists the games on your network.";
     case RowAction::kBrowseOnline: return "Lists the public rooms online.";
     case RowAction::kBrowsePage: return "The next page of games.";
+    case RowAction::kChatPage: return "Older chat lines (ZL and ZR turn the pages).";
     case RowAction::kBrowseRefresh: return "Looks for games again.";
     case RowAction::kListRoom: return "When on, your game's room is listed online while you host, so anyone can find it.";
     case RowAction::kBrowseList: return "Switches between the public rooms online and the games on your network.";
@@ -1715,6 +1717,7 @@ const char* ActionWords(RowAction a) {
     case RowAction::kBrowseLan: return "the browser lists the games on this network";
     case RowAction::kBrowseOnline: return "the browser lists the relay's public rooms";
     case RowAction::kBrowsePage: return "the browser's next page of games";
+    case RowAction::kChatPage: return "the chat list's page of older lines";
     case RowAction::kBrowseRefresh: return "the browser's list asked again";
     case RowAction::kListRoom: return "this game's room listed online when it hosts, on or off (saved)";
     case RowAction::kTypePassword: return "the join password typed on its row";
@@ -1963,11 +1966,31 @@ bool RoomMatches(const std::string& room, const std::string& host, const std::st
     return lower(room).find(want) != std::string::npos || lower(host).find(want) != std::string::npos;
 }
 
+std::vector<ListLine> ChatHistoryLines(const SessionView& v) {
+    std::vector<ListLine> lines(kListRows);
+    if (!v.s.in_one) return lines;
+    const std::vector<std::string> rows = CoopChatHistory::Rows(v.chat, kListLineChars);
+    const int pages = CoopChatHistory::Pages(static_cast<int>(rows.size()));
+    const int shown = CoopChatHistory::Shown(v.s.chat_page, pages);
+    lines[0] = ListLine{CoopListPages::Heading(CoopI18n::Tr("Chat"), CoopListPages::Line(shown, pages), kListLineChars), ""};
+    lines[0].paged = pages > 1;
+    if (pages > 1) lines[0].act = RowAction::kChatPage;
+    if (rows.empty()) {
+        lines[1].name = FitTo(CoopI18n::Tr("No chat yet"), kListLineChars);
+    } else {
+        const std::vector<std::string> page = CoopChatHistory::PageRows(rows, v.s.chat_page);
+        for (std::size_t i = 0; i < page.size() && i + 1 < lines.size(); ++i) lines[i + 1].name = page[i];
+    }
+    MarkShown(&lines);   // (said as typed, notices already in the player's language: never looked up again)
+    return lines;
+}
+
 std::vector<ListLine> DetailLines(View view, const SessionView& v) {
     std::vector<ListLine> lines(kListRows);
     // (menu-parity-0119, a lane shot: co-op that came with the game's start left the Lobby's Host and Join views with
     // one row and an empty right half: they say there why nothing starts or stops here)
     const bool launcher_view = v.s.by_launcher && (view == View::kHost || view == View::kJoin);
+    if (view == View::kPlayers) return ChatHistoryLines(v);
     if (view != View::kMain && view != View::kSession && view != View::kPassword && !launcher_view) return lines;
     std::size_t at = 1;
     // (each line in the player's language before the cut: the names and the short values are

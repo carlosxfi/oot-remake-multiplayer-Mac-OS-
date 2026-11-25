@@ -830,7 +830,8 @@ TEST_CASE("coop i18n (help-lines): every row's help on the - page has a line in 
     REQUIRE(hans != nullptr);
     REQUIRE(hant != nullptr);
     std::vector<std::string> helps;
-    // Every action but kNone (the enum's last is kViewHostSettings) has a help.
+    // Every action but kNone up to kViewHostSettings has a help with Chinese lines (kChatPage after it, row 282:
+    // its help in English only, as we add no Chinese lines).
     for (int a = static_cast<int>(CoopPauseTab::RowAction::kNone) + 1;
          a <= static_cast<int>(CoopPauseTab::RowAction::kViewHostSettings); ++a) {
         const std::string h = CoopPauseTab::RowHelp(static_cast<CoopPauseTab::RowAction>(a));

@@ -3319,3 +3319,52 @@ TEST_CASE("pause tab: the frames given back to the game after the list show only
     // all shown again, as it had them.
     for (int r = 0; r < kRows; ++r) CHECK(GivenBackShown(true, r, now.row));
 }
+
+TEST_CASE("pause tab: the Players view's list is the session's chat, paged with ZL and ZR (row 282)") {
+    SessionView out;   // (not in a session: nothing on the list)
+    out.chat = {"Saria: hi"};
+    for (const ListLine& l : DetailLines(View::kPlayers, out)) CHECK(l.name.empty());
+    SessionView pv;
+    pv.s.in_one = true;
+    std::vector<ListLine> d = DetailLines(View::kPlayers, pv);
+    REQUIRE(d.size() == static_cast<std::size_t>(kListRows));
+    CHECK(d[0].name == "Chat");
+    CHECK_FALSE(d[0].paged);
+    CHECK(d[0].act == RowAction::kNone);
+    CHECK(d[1].name == "No chat yet");
+    // One page: the heading alone, the lines as said (never looked up: a player called "Back" stays "Back").
+    pv.chat = {"Saria: hello", "Mido joined", "Back: Back"};
+    d = DetailLines(View::kPlayers, pv);
+    CHECK(d[0].name == "Chat");
+    CHECK(d[1].name == "Saria: hello");
+    CHECK(d[2].name == "Mido joined");
+    CHECK(d[3].name == "Back: Back");
+    CHECK(d[4].name.empty());
+    CHECK(d[1].own_name);
+    CHECK(d[1].value.empty());   // (no value box: the line has the whole row)
+    // Fifteen lines: three pages, on the newest; its heading pages (the game's ZL and ZR beside it) and its A goes older.
+    pv.chat.clear();
+    for (int i = 0; i < 15; ++i) pv.chat.push_back("P" + std::to_string(i) + ": line " + std::to_string(i));
+    d = DetailLines(View::kPlayers, pv);
+    CHECK(d[0].name == "Chat  Page 3/3");
+    CHECK(d[0].paged);
+    CHECK(d[0].act == RowAction::kChatPage);
+    CHECK(d[1].name == "P12: line 12");
+    CHECK(d[3].name == "P14: line 14");
+    CHECK(d[4].name.empty());
+    pv.s.chat_page = 0;
+    d = DetailLines(View::kPlayers, pv);
+    CHECK(d[0].name == "Chat  Page 1/3");
+    CHECK(d[1].name == "P0: line 0");
+    CHECK(d[6].name == "P5: line 5");
+    // A long line: on over the next rows, each within the row.
+    pv.s.chat_page = -1;
+    pv.chat = {"Saria: " + std::string(30, 'a') + " " + std::string(30, 'b') + " " + std::string(30, 'c')};
+    d = DetailLines(View::kPlayers, pv);
+    CHECK(d[1].name == "Saria: " + std::string(30, 'a'));
+    CHECK(d[2].name == "  " + std::string(30, 'b'));
+    CHECK(d[3].name == "  " + std::string(30, 'c'));
+    for (const ListLine& l : d) CHECK(l.name.size() <= kListLineChars);
+    CHECK(std::string(RowHelp(RowAction::kChatPage)).size() > 3);
+    CHECK(std::string(ActionWords(RowAction::kChatPage)).size() > 3);
+}

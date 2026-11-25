@@ -2166,10 +2166,10 @@ public:
         return sent;
     }
 
-    std::vector<ChatLine> ChatLines() const {
+    std::vector<ChatLine> ChatLines(bool history = false) const {
         std::vector<ChatLine> out;
         const auto now = CoopChat::Clock::now();
-        for (auto& l : chat_.Lines()) {
+        for (auto& l : history ? chat_.History() : chat_.Lines()) {
             const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - l.at);
             out.push_back({std::move(l.text), l.notice, static_cast<std::uint64_t>(age.count())});
         }
@@ -4406,6 +4406,16 @@ bool SendChat(const std::string& text) {
     }
     auto* coop = Get();
     return coop && coop->SendChat(text);
+}
+
+std::vector<ChatLine> ChatHistory() {
+    if (g_mod_refused) {
+        return {};
+    }
+    if (auto* coop = Get()) {
+        return coop->ChatLines(true);
+    }
+    return {};
 }
 
 std::vector<ChatLine> ChatLines() {
