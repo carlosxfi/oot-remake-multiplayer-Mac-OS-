@@ -1020,3 +1020,17 @@ in `HANDOVER_STATE`). **Not proven in game.** Check: kd-roll-hold-325 again: aft
 `held 'Rolling_Loop'`; screenshots on both games. Not known: whether a roll started over mid-leg (a forced hand-over
 during the roll) goes to the corner it was heading for or to the one after it; the other bosses' keys are carried
 by the same rule and were not each seen in a hand-over.
+
+**A resumed move chosen from the stale state (KD proof r2 round 3, run 20261125-080748).** B's Link died in the lava
+and B's game reloaded: a fresh King Dodongo with its own blackboard. B's stun made B his owner between moves (its own
+walk, verb 1): the boss table's plan was *resume* (its own AI goes on, nothing asked again), and only after that the
+old owner's corner went in (`put in: CurrentTargetCornerNum=3`, 1 put in). The walk went on to the corner its AI had
+chosen as a copy from its own stale value: straight across the lava pit (his fire from 30.05 76.16 -61.66; every
+other fire in the run and in the solo reference is at a wall, x 9.2 or z -77.6). A, made owner again in the pit,
+fired and rolled from there (roll centre y 75.03) and was held 3 x 25 s. **Now:** a boss resumed on a hand-over
+whose move state then differs (any key put in, `CoopBrainState::Table::TakeChanged`) chooses again
+(`CoopBossNative::Table::StateChanged`: its brain verb set again, as row 325's re-choice) within `kStartSteps` of the
+hand-over. Log: `<boss>: its old owner's move state differed from ours: the move its AI goes on with was chosen
+from our stale state, its AI chooses again (row 149)`. Every boss with carried keys, every resume; a start-over
+(attack) and a re-choice already decide after the values. Tests: `boss_native_test` (row 149 resumed then
+differed), `brain_state_test` (a hand-over that changed a value names its boss once).

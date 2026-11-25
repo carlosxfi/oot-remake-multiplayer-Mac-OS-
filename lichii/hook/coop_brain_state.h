@@ -296,6 +296,9 @@ public:
 
     Counts GetCounts() const;
     std::vector<std::string> TakeNotes();
+    // Bosses of ours whose hand-over put in at least one value that differed from ours (since the last call): their AI
+    // may go on with a move chosen from the stale ones (CoopBossNative::Table::StateChanged).
+    std::vector<std::uint64_t> TakeChanged();
 
 private:
     struct Slot {
@@ -326,6 +329,7 @@ private:
     std::map<std::uint64_t, Entry> entries_;  // by actor
     Counts counts_{};
     std::vector<std::string> notes_;
+    std::vector<std::uint64_t> changed_;  // (TakeChanged)
     std::uint64_t main_base_ = 0;
     std::uint64_t block_ = 0;
     bool allocating_ = false;

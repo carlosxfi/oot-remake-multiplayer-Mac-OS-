@@ -385,6 +385,9 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
             Note(e.member.name + ": blackboard: its old owner's move state is ours: " + std::to_string(e.put) +
                  " put in, " + std::to_string(e.same) + " the same");
             e.due = false;
+            if (e.put > 0) {
+                changed_.push_back(actor);
+            }
             e.planned = false;
         }
         e.mine = ReadValues(guest, e);
@@ -399,6 +402,7 @@ void Table::DropGame() {
     malloc_failed_ = false;
     pending_ = Pending::none;
     pending_actor_ = 0;
+    changed_.clear();
 }
 
 void Table::Reset() {
@@ -417,6 +421,11 @@ Counts Table::GetCounts() const {
 std::vector<std::string> Table::TakeNotes() {
     std::lock_guard lock(mutex_);
     return std::exchange(notes_, {});
+}
+
+std::vector<std::uint64_t> Table::TakeChanged() {
+    std::lock_guard lock(mutex_);
+    return std::exchange(changed_, {});
 }
 
 Table& TheTable() {

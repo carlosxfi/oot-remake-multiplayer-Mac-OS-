@@ -2526,6 +2526,10 @@ public:
                 for (const std::string& note : board.TakeNotes()) {
                     LOG_INFO(Core, "coop: bosses: {}", note);
                 }
+                // Row 149: a boss resumed on a hand-over whose move state then differed chooses again.
+                for (const std::uint64_t changed : board.TakeChanged()) {
+                    bosses.StateChanged(changed);
+                }
             }
             // Row 222 (coop_boss_orders.h): the same parts for the battle manager's orders, then the owner's.
             CoopBossOrders::Table& orders = CoopBossOrders::TheTable();

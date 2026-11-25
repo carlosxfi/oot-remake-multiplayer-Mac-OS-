@@ -646,6 +646,14 @@ public:
                                          std::uint64_t result, std::uint64_t main_base);
 
     Counts Totals() const;
+    // Row 149 (KD proof r2 round 3): the move state its old owner left (coop_brain_state.h) was put into one of ours
+    // and CHANGED it. A boss made ours between moves goes on with the move its own AI had chosen as a copy (resume),
+    // chosen from its own stale blackboard: King Dodongo's walk to his stale corner, the one across the lava pit (B's
+    // game reloaded: his fresh blackboard), and his next roll from inside the pit never ends. Its AI chooses again
+    // (its brain verb set again) from the values put in. Only right after a resume; any other hand-over plan
+    // (start-over of an attack, a re-choice) already decides after them.
+    void StateChanged(std::uint64_t actor);
+
     // Lines for the log since the last call (first sightings, first applies).
     std::vector<std::string> TakeNotes();
     // Everything forgotten, the block too (tests; co-op off).
@@ -793,6 +801,8 @@ private:
         std::uint64_t hold_asks = 0;
         int hold_rechoices = 0;
         bool rechoose = false;
+        // Row 149: made ours between moves (resume) at this step, its old owner's move state not yet put in (StateChanged).
+        std::optional<std::uint64_t> resumed_at;
         // The move last re-chosen as stuck, and how often. The re-choice itself makes its AI ask another move
         // for a moment before it falls back into the stuck one (Phantom Ganon: 'Run' verb 40, then 96 for 22
         // frames, then 40 again; run 20261120-184021), which read as a new move and started the count over: "1

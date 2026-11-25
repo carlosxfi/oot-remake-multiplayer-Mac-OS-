@@ -336,6 +336,40 @@ TEST_CASE("row 149: King Dodongo made ours rolls on from his old owner's corner,
     CHECK(t.GetCounts().handed == 1);
 }
 
+TEST_CASE("row 149: a hand-over that changed a value names its boss once (its resumed move chooses again)") {
+    // KD proof r2 round 3: B's game reloaded (a fresh KD, its own corner), was made his owner between moves and
+    // walked on to its stale corner across the lava pit. The boss table re-chooses on this news (StateChanged).
+    {
+        Table t;
+        FakeGuest g;
+        King(g, 0, false);
+        Publish(t, Theirs());
+        t.Receive(kDodongo, State({C(3), R(0), S(0)}));
+        (void)Frame(t, g);
+        CHECK(t.TakeChanged().empty());  // (a copy: nothing put in)
+        Publish(t, Ours());
+        (void)Frame(t, g);
+        (void)Frame(t, g);
+        CHECK(g.S32(kBoard, 2) == 3);
+        CHECK(t.TakeChanged() == std::vector<std::uint64_t>{kDodongo});
+        CHECK(t.TakeChanged().empty());  // (once)
+    }
+    {
+        // All the same: nothing to choose again.
+        Table t;
+        FakeGuest g;
+        King(g, 2, true);
+        Publish(t, Theirs());
+        t.Receive(kDodongo, State({C(2), R(1), S(0)}));
+        (void)Frame(t, g);
+        Publish(t, Ours());
+        (void)Frame(t, g);
+        (void)Frame(t, g);
+        CHECK(t.GetCounts().handed == 1);
+        CHECK(t.TakeChanged().empty());
+    }
+}
+
 TEST_CASE("row 149: a copy follows the owner's newest values, and a hand-over state after the news goes in too") {
     Table t;
     FakeGuest g;
