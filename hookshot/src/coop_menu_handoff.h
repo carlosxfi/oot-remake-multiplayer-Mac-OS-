@@ -158,6 +158,15 @@ inline bool Fill(const Handoff& from, Held& held, HosCoopMenuPage* out) {
     return true;
 }
 
+// Row 236's timer on coop_pause.cpp's g_mutex (MenuLock): a wait or hold of `ms` is logged when it is over `limit`
+// and the first for its kind, or twice the longest logged for it (`most`, updated): a few lines per run, not one a
+// frame.
+inline bool SlowToLog(std::uint64_t& most, std::uint64_t ms, std::uint64_t limit) {
+    if (ms <= limit || (most != 0 && ms < most * 2)) return false;
+    most = ms;
+    return true;
+}
+
 }  // namespace CoopMenuHandoff
 
 #endif

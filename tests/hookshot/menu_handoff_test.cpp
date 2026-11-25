@@ -203,3 +203,18 @@ TEST_CASE("menu handoff: pages and presses from two threads at once stay whole")
     main_thread.join();
 
 }
+
+TEST_CASE("menu lock timer: logged over the limit, then only when twice the longest logged (row 236)") {
+    std::uint64_t most = 0;
+    CHECK_FALSE(CoopMenuHandoff::SlowToLog(most, 5, 20));    // (short: never)
+    CHECK_FALSE(CoopMenuHandoff::SlowToLog(most, 20, 20));   // (at the limit: not over it)
+    CHECK(most == 0);
+    CHECK(CoopMenuHandoff::SlowToLog(most, 30, 20));         // the first slow one
+    CHECK(most == 30);
+    CHECK_FALSE(CoopMenuHandoff::SlowToLog(most, 45, 20));   // under twice 30
+    CHECK(CoopMenuHandoff::SlowToLog(most, 60, 20));         // twice
+    CHECK(most == 60);
+    CHECK_FALSE(CoopMenuHandoff::SlowToLog(most, 25, 20));   // (shorter than logged: no line)
+    CHECK(most == 60);
+    CHECK(CoopMenuHandoff::SlowToLog(most, 5000, 20));       // a stall: always said
+}

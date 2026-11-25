@@ -162,10 +162,10 @@ inline constexpr std::uint64_t kNoAnswerMs = 10000;   // joining this long with 
 Waiting WaitingText(int state, const std::string& answer, bool held, std::uint64_t waited_ms);
 
 // The module's part (coop_lobby_tab_module.cpp, only in hookshot_coop.dll): the one Tab, handed to Hookshot
-// right after Multiplayer through coop_pause.cpp's exports (hos_coop_menu.h). Thread-safe, but View and MenuInput
+// right after Multiplayer through coop_pause.cpp's exports (hos_coop_menu.h). Thread-safe, but MenuView and MenuInput
 // take the network lock: the game's main thread only (coop_menu_handoff.h), never Hookshot's present thread.
 const char* TabName();
-bool View(CoopPauseMenu::View* out, bool* back_taken);
+bool MenuView(CoopPauseMenu::View* out, bool* back_taken);
 bool MenuInput(int event, int arg, int arg2);
 
 }  // namespace CoopLobbyTab

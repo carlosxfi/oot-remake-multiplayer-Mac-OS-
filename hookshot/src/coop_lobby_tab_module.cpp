@@ -235,7 +235,7 @@ const char* TabName() {
 
 // The tab's page, refreshed (the session's reads: the network lock, then this tab's), and whether Back on it goes
 // somewhere (a player's page: the list). The game's main thread only (CoopPause::Tick): never the present's (row 279).
-bool View(CoopPauseMenu::View* out, bool* back_taken) {
+bool MenuView(CoopPauseMenu::View* out, bool* back_taken) {
     if (out == nullptr || back_taken == nullptr) {
         return false;
     }

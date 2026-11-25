@@ -73,7 +73,16 @@ fs::path PathOf(const std::string& s) {
     return fs::path(std::u8string(s.begin(), s.end()));
 }
 
+// This module's file reads and writes, one at a time (a leaf lock: nothing else is called while it is held). Since
+// row 236 the menu reads its files outside its own lock (coop_pause.cpp Gather), so a read could meet a write's
+// move: on Windows the move over a file open for reading fails and the setting was not saved.
+static std::mutex& FilesMutex() {
+    static std::mutex mu;
+    return mu;
+}
+
 std::string ReadText(const fs::path& p) {
+    std::lock_guard lock(FilesMutex());
     std::ifstream f(p, std::ios::binary);
     std::ostringstream s;
     s << f.rdbuf();
@@ -82,6 +91,7 @@ std::string ReadText(const fs::path& p) {
 
 // Written whole: a new file beside it, then moved over the old one.
 bool WriteText(const fs::path& p, const std::string& text) {
+    std::lock_guard lock(FilesMutex());
     const fs::path tmp = p.string() + ".new";
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
