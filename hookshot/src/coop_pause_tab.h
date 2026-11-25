@@ -910,6 +910,28 @@ std::string MinusHelp(const HelpAt& at, const Session& s);
 // twice as wide; it may break anywhere), at most `lines` of them, the last cut with "..." when the help is longer.
 inline constexpr std::size_t kHelpColumns = 40, kHelpLines = 4;
 std::string HelpText(const std::string& utf8, std::size_t columns = kHelpColumns, std::size_t lines = kHelpLines);
+// A help longer than the caption, shown whole a page at a time instead of cut with "...": the pages the Mods tab's
+// About text uses (CoopModsTab::HelpPages: each fits kHelpColumns x kHelpLines, ending at a stop or a space), the next
+// one every kHelpPageMs, round again after the last; a new help starts at its first page. Any language: the words
+// stay as they are (a shorter English line would lose its Chinese one).
+inline constexpr std::uint64_t kHelpPageMs = 6000;
+// A help as one-line pages (the title's hint line): each at most `letters` letters of width and `bytes` bytes
+// (CoopTextFit's measure), ending at a space where one is in its second half; line ends read as spaces.
+std::vector<std::string> LinePages(const std::string& utf8, std::size_t letters, std::size_t bytes);
+class HelpPager {
+public:
+    // The text shown now, "" for an empty help: with `line_letters` 0 the caption's (HelpText's lines), else one line
+    // of LinePages(utf8, line_letters, line_bytes).
+    std::string Shown(const std::string& utf8, std::uint64_t now_ms, std::size_t line_letters = 0,
+                      std::size_t line_bytes = 0);
+    std::size_t Pages() const { return pages_.size(); }
+
+private:
+    std::string text_;
+    std::size_t letters_ = 0, bytes_ = 0;
+    std::vector<std::string> pages_;
+    std::uint64_t since_ms_ = 0;
+};
 
 // The heading a row is under (a part's group on Customize Link: "Tunic", "Hylian Shield"; in a colour's mixer its
 // own heading, "Hylian Shield: Face"), "" none.

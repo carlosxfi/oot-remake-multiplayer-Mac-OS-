@@ -14,9 +14,11 @@
 #include <vector>
 
 #include "coop_i18n.h"
+#include "coop_list_pages.h"
 #include "coop_lobby_tab.h"
 #include "coop_pause_menu.h"
 #include "coop_pause_tab.h"
+#include "coop_text_fit.h"
 #include "coop_title_native.h"
 
 namespace {
@@ -1129,4 +1131,154 @@ TEST_CASE("coop i18n: the Gold Skulltulas row's joined help lines are translated
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The - page's caption holds 4 lines of some 40 letters (CoopPauseTab::HelpText). Before 0.11.13 a longer help (the
+// Settings page's Saves, Microphone, Relay, Local co-op's steps: 24 of the menu's helps) was cut with "...", the rest
+// never readable (native-ui-audit). Now it shows a page at a time (HelpPager), the same words in every language.
+namespace {
+
+std::string NoSpaces(const std::string& s) {
+    std::string out;
+    for (const char c : s) {
+        if (c != ' ' && c != '\n') out += c;
+    }
+    return out;
+}
+
+// Every help co-op's menu shows for a row: each page, each row, idle, hosting and joined, each switch both ways.
+std::vector<std::string> MenuHelps() {
+    using CoopPauseMenu::Input;
+    using CoopPauseMenu::Page;
+    std::vector<std::string> out;
+    std::vector<CoopPauseMenu::Session> sessions(3);
+    sessions[1].state = CoopPauseMenu::Session::State::kHosting;
+    sessions[1].hosting = true, sessions[1].players = 2, sessions[1].code = "ABCDE-FGHJK", sessions[1].code_done = true;
+    sessions[2].state = CoopPauseMenu::Session::State::kJoined;
+    sessions[2].players = 2;
+    for (const auto& session : sessions) {
+        for (const Page page : {Page::kMain, Page::kHost, Page::kJoin, Page::kLocal, Page::kSettings, Page::kCommands,
+                                Page::kCustomize, Page::kFind}) {
+            CoopPauseMenu::Menu m;
+            m.Show(CoopTitleMenu::Options{});
+            m.SetSession(session);
+            m.Open(page);
+            const std::size_t rows = m.view().rows.size();
+            for (std::size_t r = 0; r < rows && r < 64; ++r) {
+                m.Select(r);
+                if (m.view().typing) continue;
+                out.push_back(m.view().help);
+                for (const Input step : {Input::kRight, Input::kLeft}) {
+                    m.Select(r);
+                    m.Press(step);
+                    (void)m.TakeRequest();
+                    if (m.page() == page && !m.view().typing) out.push_back(m.view().help);
+                }
+            }
+        }
+    }
+    for (const auto& c : CoopPauseMenu::Commands()) out.emplace_back(c.help);
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    out.erase(std::remove(out.begin(), out.end(), std::string()), out.end());
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("coop i18n (help pages): a help longer than the caption turns its pages, round again, a new one at page 1") {
+    CoopPauseTab::HelpPager pager;
+    CHECK(pager.Shown("", 0).empty());
+    const std::string shortish = "Two players on this PC.";
+    CHECK(pager.Shown(shortish, 100) == shortish);
+    CHECK(pager.Shown(shortish, 100 + 5 * CoopPauseTab::kHelpPageMs) == shortish);   // (one page: it stays)
+    std::string longer;
+    for (int i = 0; i < 12; ++i) longer += "Sentence number " + std::to_string(i) + " is here. ";
+    const std::string first = pager.Shown(longer, 1000);
+    REQUIRE(pager.Pages() >= 3);
+    CHECK(first.find("Sentence number 0") == 0);
+    CHECK(pager.Shown(longer, 1000 + CoopPauseTab::kHelpPageMs - 1) == first);
+    const std::string second = pager.Shown(longer, 1000 + CoopPauseTab::kHelpPageMs);
+    CHECK(second != first);
+    CHECK(pager.Shown(longer, 1000 + pager.Pages() * CoopPauseTab::kHelpPageMs) == first);   // (round again)
+    CHECK(pager.Shown(shortish, 1000 + CoopPauseTab::kHelpPageMs) == shortish);
+    CHECK(pager.Shown(longer, 50000) == first);   // (back to it: from its first page)
+    CHECK(pager.Shown("", 50001).empty());
+}
+
+TEST_CASE("coop i18n (help pages): every help of co-op's menu shows whole on the caption, English and Chinese") {
+    const std::vector<std::string> helps = MenuHelps();
+    REQUIRE(helps.size() > 40);
+    std::size_t paged = 0;
+    for (const std::string& en : helps) {
+        std::vector<std::string> texts{en};
+        for (const char* code : {"zh-Hans", "zh-Hant"}) {
+            const CoopI18n::Lang* lang = ByCode(code);
+            REQUIRE(lang != nullptr);
+            if (std::string zh = Line(*lang, en.c_str()); !zh.empty()) texts.push_back(std::move(zh));
+        }
+        for (const std::string& text : texts) {
+            CoopPauseTab::HelpPager pager;
+            std::string all;
+            (void)pager.Shown(text, 0);
+            paged += pager.Pages() > 1;
+            for (std::size_t p = 0; p < pager.Pages(); ++p) {
+                const std::string shown = pager.Shown(text, p * CoopPauseTab::kHelpPageMs);
+                CHECK_MESSAGE(std::count(shown.begin(), shown.end(), '\n') < static_cast<long>(CoopPauseTab::kHelpLines),
+                              "page " << p << " past the caption: " << text);
+                all += shown;
+            }
+            // (no "..." added, nothing lost: the pages hold the help's words, in order)
+            CHECK_MESSAGE(NoSpaces(all) == NoSpaces(text), "words lost or added: " << text);
+        }
+    }
+    CHECK(paged > 0);   // (the long ones, e.g. Settings > Saves, do take pages)
+}
+
+// The title's hint line is one centred line under the buttons: a help as long as Fit's 159 letters ran past both
+// edges of the screen (native-ui-audit). Every help now shows in parts of at most kHintLetters, the page in front.
+TEST_CASE("coop i18n (help pages): the title's hint line shows every help in parts that fit the screen") {
+    const std::string lead = CoopListPages::Line(9, 16, true) + "   ";   // (a long front: "Page 10/16 (ZL/ZR)")
+    const std::size_t letters = CoopTitleNative::kHintLetters - (CoopTextFit::Halves(lead) + 1) / 2;
+    const std::size_t bytes = CoopTitleNative::kHintBytes - lead.size();
+    for (const std::string& en : MenuHelps()) {
+        std::vector<std::string> texts{en};
+        for (const char* code : {"zh-Hans", "zh-Hant"}) {
+            if (std::string zh = Line(*ByCode(code), en.c_str()); !zh.empty()) texts.push_back(std::move(zh));
+        }
+        for (const std::string& text : texts) {
+            std::string all;
+            for (const std::string& part : CoopPauseTab::LinePages(text, letters, bytes)) {
+                CHECK_MESSAGE(CoopTextFit::Halves(part) <= 2 * letters, "too wide: " << part);
+                CHECK_MESSAGE(part.size() <= bytes, "too long: " << part);
+                CHECK(!part.empty());
+                all += part;
+            }
+            CHECK_MESSAGE(NoSpaces(all) == NoSpaces(text), "words lost or added: " << text);
+        }
+    }
+    // On the title: the selected row's long help, a part at a time, the page in front of each.
+    CoopPauseMenu::View v;
+    for (int i = 0; i < 30; ++i) {
+        CoopPauseMenu::Row r;
+        r.name = "Row " + std::to_string(i);
+        v.rows.push_back(r);
+    }
+    v.selected = 0;
+    v.help = "The microphone your voice is recorded from. Default: the one Longshot's Insert menu chooses (Gameplay: "
+             "Microphone), the Ocarina's too. Left and Right go through the microphones plugged in now. One unplugged: "
+             "the others hear nothing until it is back.";
+    CoopPauseTab::HelpPager pager;
+    const CoopTitleNative::Look first = CoopTitleNative::LookFor(v, 0, CoopTitleNative::kButtons, &pager, 0);
+    REQUIRE(first.pages > 1);
+    CHECK(first.hint.rfind(CoopListPages::Line(0, first.pages, true) + "   The microphone", 0) == 0);
+    CHECK(first.hint.find("...") == std::string::npos);
+    CHECK(CoopTextFit::Halves(first.hint) <= 2 * CoopTitleNative::kHintLetters);
+    REQUIRE(pager.Pages() > 1);
+    const CoopTitleNative::Look next =
+        CoopTitleNative::LookFor(v, 0, CoopTitleNative::kButtons, &pager, CoopPauseTab::kHelpPageMs);
+    CHECK(next.hint != first.hint);
+    CHECK(next.hint.rfind(CoopListPages::Line(0, first.pages, true) + "   ", 0) == 0);
+    CHECK(CoopTitleNative::LookFor(v, 0).hint == first.hint);   // (no pager: the first part)
 }

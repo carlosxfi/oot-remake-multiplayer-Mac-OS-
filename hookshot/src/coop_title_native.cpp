@@ -4,6 +4,7 @@
 #include "coop_i18n.h"
 #include "coop_list_pages.h"
 #include "coop_menu_nav.h"
+#include "coop_pause_tab.h"
 #include "coop_text_fit.h"
 
 #include <algorithm>
@@ -128,7 +129,7 @@ std::vector<int> Shown(const CoopPauseMenu::View& v, int* at) {
 
 }  // namespace
 
-Look LookFor(const CoopPauseMenu::View& v, int top, int buttons) {
+Look LookFor(const CoopPauseMenu::View& v, int top, int buttons, CoopPauseTab::HelpPager* pager, std::uint64_t now_ms) {
     Look l;
     buttons = std::clamp(buttons, kButtons, kMaxButtons);
     const int per_page = buttons - 1;   // (the last button: Back)
@@ -166,11 +167,22 @@ Look LookFor(const CoopPauseMenu::View& v, int top, int buttons) {
     // before the cut: the page is the table's shape, the row's help its line. The buttons in words: the title's
     // archive has no icon pane of the game's (coop_list_pages.h), and the game's letters in this words pane drew as
     // empty boxes, row 264)
+    // A help longer than what is left of the line: a part at a time (CoopPauseTab::HelpPager), never cut with "..."
+    // and never past the screen's edges (native-ui-audit: 159 letters in one line ran off both).
     const std::string paged = CoopListPages::Line(l.page, l.pages, true);
-    l.hint = Fit(paged.empty()   ? CoopI18n::Tr(v.help)
-                 : v.help.empty() ? paged
-                                  : paged + "   " + CoopI18n::Tr(v.help),
-                 kHintBytes);
+    const std::string lead = paged.empty() || v.help.empty() ? paged : paged + "   ";
+    const std::size_t lead_letters = (CoopTextFit::Halves(lead) + 1) / 2;
+    std::string help;
+    if (!v.help.empty() && lead_letters + 8 < kHintLetters && lead.size() + 8 < kHintBytes) {
+        const std::string said = CoopI18n::Tr(v.help);
+        const std::size_t letters = kHintLetters - lead_letters, bytes = kHintBytes - lead.size();
+        if (pager != nullptr) {
+            help = pager->Shown(said, now_ms, letters, bytes);
+        } else if (const auto parts = CoopPauseTab::LinePages(said, letters, bytes); !parts.empty()) {
+            help = parts.front();
+        }
+    }
+    l.hint = Fit(lead + help, kHintBytes);
     return l;
 }
 

@@ -2884,7 +2884,14 @@ void MinusWords(void* ctx, std::uint64_t layout, std::uint64_t gen, int tab) {
         at.game = view == View::kLan && pick >= 1 && CellIndex(v.s, pick - 1) >= 0;
     }
     const std::string help_en = MinusHelp(at, v.s);
-    std::string help = help_en.empty() ? std::string() : HelpText(CoopI18n::Tr(help_en));
+    // (a help past the caption's 4 lines: a page at a time, never cut with "...", HelpPager)
+    std::string help;
+    {
+        static std::mutex pager_mutex;
+        static HelpPager pager;
+        std::lock_guard pager_lock(pager_mutex);
+        help = pager.Shown(help_en.empty() ? std::string() : CoopI18n::Tr(help_en), NowMs());
+    }
     // (the words: the rows' Coop_Minus_00..04, the lines' 05.. a name and a value each)
     std::array<std::string, kRows> texts{};
     for (std::size_t k = 0; k < texts.size(); ++k) texts[k] = rows[k];
