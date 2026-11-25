@@ -35,10 +35,13 @@ const std::string& ExefsList();
 
 // Each game frame (HOS_COOP_SITE_FRAME), shown or not: what follows from
 // co-op's state (the invite code copied, a connected join remembered and the
-// host's save loaded at the title). At most every 250 ms.
+// host's save loaded at the title). At most every 250 ms. Also each frame: the
+// presses Hookshot's menu queued on its tabs, carried out, and their pages
+// published (coop_menu_handoff.h).
 void Tick();
 
-// hos_coop_menu.h's exports.
+// hos_coop_menu.h's exports, on Hookshot's present thread under its menu lock: they take no co-op lock (row 279). Page
+// and Picture read the page Tick last published; Input queues the press for Tick and answers from that page.
 int Tabs();
 const char* TabName(int tab);
 bool Page(int tab, HosCoopMenuPage* out);

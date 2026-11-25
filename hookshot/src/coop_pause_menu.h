@@ -197,6 +197,9 @@ public:
     // One press; false when nothing took it (a Back on the first page: the
     // caller closes the whole menu). A request may be waiting after it.
     bool Press(Input input);
+    // Whether a Back now would be taken (Press(kBack) true): typing ends, or a page under the first goes back. Hookshot's
+    // menu is answered from it at once while the press waits for the game's thread (coop_menu_handoff.h, row 279).
+    bool BackTaken() const { return typing_ || page_ != Page::kMain; }
     // The mouse: over a row, and a click on its name (side 0) or on the left
     // (-1) or right (1) half of its value.
     void Select(std::size_t row);

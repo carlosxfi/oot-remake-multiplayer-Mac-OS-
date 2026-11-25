@@ -34,6 +34,7 @@
 #include "coop_lan_net.h"
 #include "coop_lobby_game.h"
 #include "coop_lobby_tab.h"
+#include "coop_menu_handoff.h"
 #include "coop_look.h"
 #include "coop_look_view.h"
 #include "coop_mods_tab.h"
@@ -1073,55 +1074,6 @@ void ShowTab() {
     RefreshSession(true);
 }
 
-// The page for Hookshot, kept until this thread's next call (hos_coop_menu.h).
-struct Drawn {
-    CoopPauseMenu::View view;
-    std::vector<HosCoopMenuRow> rows;
-};
-
-// The page's text in the player's language (coop_i18n.h). Hookshot keeps the
-// pointers until its next call, so they point into this thread's copy; it is
-// reserved up front so no push moves a string an earlier row points at.
-thread_local std::vector<std::string> g_page_text;
-const char* Keep(const std::string& text) {
-    g_page_text.push_back(CoopI18n::Tr(text));
-    return g_page_text.back().c_str();
-}
-
-// The page's prompt words ("Choose", "Close"...). A null pointer means "no
-// prompt"; an empty one is a prompt with no words, which Hookshot reads as its
-// own default, so the words go through Keep like the rest.
-const char* KeepWords(const std::string& text) {
-    return text.empty() ? nullptr : Keep(text);
-}
-
-// Another tab's page (Mods, Lobby) in the player's language: its rows copied
-// with their words looked up, as the Multiplayer page's (a null stays null;
-// the hint, a code or a path, as it is).
-bool Translated(bool filled, HosCoopMenuPage* out) {
-    if (!filled || out == nullptr || CoopI18n::Current() == nullptr) {
-        return filled;
-    }
-    thread_local std::vector<HosCoopMenuRow> rows;
-    const int n = out->rows != nullptr && out->rows_n > 0 ? out->rows_n : 0;
-    rows.assign(out->rows, out->rows + n);
-    g_page_text.clear();
-    g_page_text.reserve(std::size_t(n) * 2 + 16);
-    const auto keep = [](const char* text) { return text == nullptr ? nullptr : Keep(text); };
-    for (HosCoopMenuRow& r : rows) {
-        r.name = keep(r.name);
-        r.value = keep(r.value);
-    }
-    out->rows = n > 0 ? rows.data() : out->rows;
-    out->help_title = keep(out->help_title);
-    out->help = keep(out->help);
-    out->gold = keep(out->gold);
-    out->change = keep(out->change);
-    out->confirm = keep(out->confirm);
-    out->back = keep(out->back);
-    return true;
-}
-
 }  // namespace
 
 // Nucleus's "Join a game on this network" (tools/nucleus/OoTCoop.js): coop.ini's join_lan ("first", or a host's
@@ -1285,7 +1237,8 @@ void RefreshFound(std::uint64_t now) {
     g_menu.SetFound(std::move(games), std::move(state));
 }
 
-void Tick() {
+// The follow-ups of the Multiplayer tab and the session (Tick, the game's main thread).
+static void FollowStep() {
     std::lock_guard lock(g_mutex);
     Delivered();   // (each frame: a finished copy or paste shows at once)
     const std::uint64_t now = NowMs();
@@ -1320,6 +1273,12 @@ void Tick() {
 // Tab 2: Mods (coop_mods_tab.h), once the mod loader runs.
 constexpr int kLobbyTab = 1;
 constexpr int kModsTab = 2;
+constexpr int kTabsMax = 3;
+
+// Hookshot's menu asks the pages and hands the presses on its present's thread, under its menu lock (row 279): there
+// they only go through these (coop_menu_handoff.h). Tick carries the presses out and publishes the pages.
+static CoopMenuHandoff::Handoff g_handoff[kTabsMax];
+static bool g_tab_shown[kTabsMax] = {};   // (Tick only) the Lobby and Mods tabs: SHOW came and no HIDE since
 
 int Tabs() {
     return CoopModsTab::Available() ? 3 : 2;
@@ -1344,62 +1303,160 @@ const char* TabName(int tab) {
     return name.c_str();
 }
 
-bool Page(int tab, HosCoopMenuPage* out) {
-    if (tab == kModsTab) {
-        return Translated(CoopModsTab::Page(out), out);
+namespace {
+
+// The page's words in the player's language (coop_i18n.h), looked up here on the game's main thread so the present's
+// thread copies them as they are. The hint (a code, an address, a path) as it is.
+CoopMenuHandoff::Page InLanguage(CoopPauseMenu::View v, bool back_taken, bool empty_words_none) {
+    if (CoopI18n::Current() != nullptr) {
+        const auto tr = [](std::string& text) {
+            if (!text.empty()) text = CoopI18n::Tr(text);
+        };
+        for (CoopPauseMenu::Row& r : v.rows) {
+            tr(r.name);
+            tr(r.value);
+        }
+        tr(v.help_title);
+        tr(v.help);
+        tr(v.gold);
+        tr(v.change);
+        tr(v.confirm);
+        tr(v.back);
     }
-    if (tab == kLobbyTab) {
-        return Translated(CoopLobbyTab::Page(out), out);
-    }
-    if (tab != kMultiplayerTab || out == nullptr || out->size < sizeof(HosCoopMenuPage)) {
-        return false;
-    }
-    thread_local Drawn drawn;
-    {
-        std::lock_guard lock(g_mutex);
-        RefreshSession(false);   // (reads only: no file is written from Hookshot's present thread)
-        drawn.view = g_menu.view();
-    }
-    const CoopPauseMenu::View& v = drawn.view;
-    g_page_text.clear();
-    g_page_text.reserve(v.rows.size() * 3 + 16);   // (+ the help, the gold line and the prompts)
-    drawn.rows.resize(v.rows.size());
-    for (std::size_t i = 0; i < v.rows.size(); ++i) {
-        const CoopPauseMenu::Row& r = v.rows[i];
-        HosCoopMenuRow& h = drawn.rows[i];
-        h = HosCoopMenuRow{};
-        h.name = Keep(r.name);
-        h.value = Keep(r.value);
-        h.kind = static_cast<std::uint8_t>(r.kind);
-        h.on = r.on ? 1 : 0;
-        h.left = r.left ? 1 : 0;
-        h.right = r.right ? 1 : 0;
-        h.fixed = r.fixed ? 1 : 0;
-    }
-    out->rows_n = static_cast<std::int32_t>(drawn.rows.size());
-    out->rows = drawn.rows.data();
-    out->selected = v.selected;
-    out->typing = v.typing ? 1 : 0;
-    out->help_title = Keep(v.help_title);
-    out->help = Keep(v.help);
-    out->hint = v.hint.c_str();   // (a code or an address: never translated)
-    out->gold = Keep(v.gold);
-    out->change = KeepWords(v.change);
-    out->confirm = KeepWords(v.confirm);
-    out->back = KeepWords(v.back);
-    return true;
+    CoopMenuHandoff::Page page;
+    page.view = std::move(v);
+    page.back_taken = back_taken;
+    page.empty_words_none = empty_words_none;
+    return page;
 }
 
+// One press on the Multiplayer tab, carried out; whether it was taken (Back: false on the first page, nothing to go
+// back to). Under g_mutex.
+bool MultiplayerPress(const CoopMenuHandoff::Event& e) {
+    bool taken = true;
+    switch (e.event) {
+    case HOS_COOP_MENU_UP: g_menu.Press(Input::kUp); break;
+    case HOS_COOP_MENU_DOWN: g_menu.Press(Input::kDown); break;
+    case HOS_COOP_MENU_LEFT: g_menu.Press(Input::kLeft); break;
+    case HOS_COOP_MENU_RIGHT: g_menu.Press(Input::kRight); break;
+    case HOS_COOP_MENU_CONFIRM: g_menu.Press(Input::kDecide); break;
+    case HOS_COOP_MENU_BACK: taken = g_menu.Press(Input::kBack); break;
+    case HOS_COOP_MENU_SHOW: ShowTab(); break;
+    case HOS_COOP_MENU_HIDE:
+        g_shown = false;
+        g_menu.Hide();
+        WearChosenLook();
+        break;
+    case HOS_COOP_MENU_SELECT:
+        if (e.arg >= 0) {
+            g_menu.Select(static_cast<std::size_t>(e.arg));
+        }
+        break;
+    case HOS_COOP_MENU_CLICK:
+        if (e.arg >= 0) {
+            g_menu.Click(static_cast<std::size_t>(e.arg), e.arg2 < 0 ? -1 : e.arg2 > 0 ? 1 : 0);
+        }
+        break;
+    default: return false;
+    }
+    Settle();
+    return taken;
+}
+
+// Whether the tab shows after these presses (SHOW / HIDE).
+bool ShownAfter(bool shown, const std::vector<CoopMenuHandoff::Event>& events) {
+    for (const CoopMenuHandoff::Event& e : events) {
+        if (e.event == HOS_COOP_MENU_SHOW) shown = true;
+        if (e.event == HOS_COOP_MENU_HIDE) shown = false;
+    }
+    return shown;
+}
+
+}  // namespace
+
+// The Mods tab's paste: the clipboard (PasteThen: on Linux it may come a few frames later, then on Tick) goes to
+// the field that asked, if the player is still on it (Tab::Paste drops it otherwise). Under g_mutex, as the
+// Multiplayer tab's own paste is; the tab's own lock is taken inside, never the other way round.
+static void ModsPaste(bool into_typing) {
+    std::lock_guard lock(g_mutex);
+    PasteThen([into_typing](std::optional<std::string> clip) { CoopModsTab::Paste(clip, into_typing); });
+}
+
+// Hookshot's menu, on the game's main thread (Tick): the presses its present's thread queued, carried out, and each
+// tab's page published while it shows (and once after a press). Not under g_mutex: the Lobby tab's presses take it
+// (JoinRoomNow) and its reads take the network lock; the Multiplayer tab's part takes it, the Mods paste too.
+static void MenuStep() {
+    {
+        const std::vector<CoopMenuHandoff::Event> events = g_handoff[kMultiplayerTab].Take();
+        std::lock_guard lock(g_mutex);
+        for (const CoopMenuHandoff::Event& e : events) {
+            MultiplayerPress(e);
+        }
+        if (g_shown || !events.empty()) {
+            RefreshSession(false);   // (reads only: the files are written by the presses and Follow)
+            CoopMenuHandoff::Page page = InLanguage(g_menu.view(), g_menu.BackTaken(), true);
+            page.picture = g_menu.Picture();
+            g_handoff[kMultiplayerTab].Publish(std::move(page));
+        }
+    }
+    {
+        const std::vector<CoopMenuHandoff::Event> events = g_handoff[kLobbyTab].Take();
+        g_tab_shown[kLobbyTab] = ShownAfter(g_tab_shown[kLobbyTab], events);
+        for (const CoopMenuHandoff::Event& e : events) {
+            CoopLobbyTab::MenuInput(e.event, e.arg, e.arg2);
+        }
+        CoopPauseMenu::View view;
+        bool back_taken = false;
+        if ((g_tab_shown[kLobbyTab] || !events.empty()) && CoopLobbyTab::View(&view, &back_taken)) {
+            g_handoff[kLobbyTab].Publish(InLanguage(std::move(view), back_taken, false));
+        }
+    }
+    {
+        const std::vector<CoopMenuHandoff::Event> events = g_handoff[kModsTab].Take();
+        g_tab_shown[kModsTab] = ShownAfter(g_tab_shown[kModsTab], events);
+        for (const CoopMenuHandoff::Event& e : events) {
+            CoopModsTab::MenuInput(e.event, e.arg, e.arg2);
+            if (CoopModsTab::TakePasteRequest()) {   // a text row's Paste (pad: Left / Right; mouse: its sides)
+                ModsPaste(false);
+            }
+        }
+        if (g_tab_shown[kModsTab] || !events.empty()) {
+            CoopPauseMenu::View view;
+            bool on_mod_page = false;
+            if (CoopModsTab::View(&view, &on_mod_page)) {
+                const bool back_taken = on_mod_page || view.typing;   // (Tab::Press: Back ends typing, then the list)
+                g_handoff[kModsTab].Publish(InLanguage(std::move(view), back_taken, false));
+            } else {
+                g_handoff[kModsTab].Clear();
+            }
+        }
+    }
+}
+
+void Tick() {
+    FollowStep();
+    MenuStep();
+}
+
+// The present's thread (hos_coop_menu.h): the page last published, with no co-op lock (coop_menu_handoff.h).
+bool Page(int tab, HosCoopMenuPage* out) {
+    if (tab < 0 || tab >= kTabsMax || (tab == kModsTab && !CoopModsTab::Available())) {
+        return false;
+    }
+    thread_local CoopMenuHandoff::Held held[kTabsMax];
+    return CoopMenuHandoff::Fill(g_handoff[tab], held[tab], out);
+}
+
+// The present's thread: the Customize page's picture from the page last published; the live window's questions go to
+// CoopLookView, whose own lock is held around its state only.
 bool Picture(int tab, HosCoopMenuPicture* out) {
     if (tab != kMultiplayerTab || out == nullptr || out->size < sizeof(HosCoopMenuPicture)) {
         return false;
     }
     thread_local std::vector<HosCoopMenuShape> shapes;   // (Hookshot copies them before the next call on its thread)
-    std::vector<CoopLookMenu::Shape> picture;
-    {
-        std::lock_guard lock(g_mutex);
-        picture = g_menu.Picture();
-    }
+    const std::shared_ptr<const CoopMenuHandoff::Page> page = g_handoff[kMultiplayerTab].Read();
+    static const std::vector<CoopLookMenu::Shape> kNone;
+    const std::vector<CoopLookMenu::Shape>& picture = page != nullptr ? page->picture : kNone;
     shapes.clear();
     if (picture.empty()) {
         return false;   // (not the Customize page)
@@ -1438,57 +1495,12 @@ bool Picture(int tab, HosCoopMenuPicture* out) {
     return !shapes.empty();
 }
 
-// The Mods tab's paste: the clipboard (PasteThen: on Linux it may come a few frames later, then on Tick) goes to
-// the field that asked, if the player is still on it (Tab::Paste drops it otherwise). Under g_mutex, as the
-// Multiplayer tab's own paste is; the tab's own lock is taken inside, never the other way round.
-static void ModsPaste(bool into_typing) {
-    std::lock_guard lock(g_mutex);
-    PasteThen([into_typing](std::optional<std::string> clip) { CoopModsTab::Paste(clip, into_typing); });
-}
-
+// The present's thread: the press queued for Tick; the answer from the page last published (coop_menu_handoff.h).
 bool Input(int tab, int event, int arg, int arg2) {
-    if (tab == kModsTab) {
-        const bool taken = CoopModsTab::MenuInput(event, arg, arg2);
-        if (CoopModsTab::TakePasteRequest()) {   // a text row's Paste (pad: Left / Right; mouse: its sides)
-            ModsPaste(false);
-        }
-        return taken;
-    }
-    if (tab == kLobbyTab) {
-        return CoopLobbyTab::MenuInput(event, arg, arg2);
-    }
-    if (tab != kMultiplayerTab) {
+    if (tab < 0 || tab >= kTabsMax || (tab == kModsTab && !CoopModsTab::Available())) {
         return false;
     }
-    std::lock_guard lock(g_mutex);
-    bool taken = true;
-    switch (event) {
-    case HOS_COOP_MENU_UP: g_menu.Press(Input::kUp); break;
-    case HOS_COOP_MENU_DOWN: g_menu.Press(Input::kDown); break;
-    case HOS_COOP_MENU_LEFT: g_menu.Press(Input::kLeft); break;
-    case HOS_COOP_MENU_RIGHT: g_menu.Press(Input::kRight); break;
-    case HOS_COOP_MENU_CONFIRM: g_menu.Press(Input::kDecide); break;
-    case HOS_COOP_MENU_BACK: taken = g_menu.Press(Input::kBack); break;
-    case HOS_COOP_MENU_SHOW: ShowTab(); break;
-    case HOS_COOP_MENU_HIDE:
-        g_shown = false;
-        g_menu.Hide();
-        WearChosenLook();
-        break;
-    case HOS_COOP_MENU_SELECT:
-        if (arg >= 0) {
-            g_menu.Select(static_cast<std::size_t>(arg));
-        }
-        break;
-    case HOS_COOP_MENU_CLICK:
-        if (arg >= 0) {
-            g_menu.Click(static_cast<std::size_t>(arg), arg2 < 0 ? -1 : arg2 > 0 ? 1 : 0);
-        }
-        break;
-    default: return false;
-    }
-    Settle();
-    return taken;
+    return g_handoff[tab].Press(event, arg, arg2);
 }
 
 int Wanted() {
@@ -1603,12 +1615,11 @@ void OpenNative(CoopPauseMenu::Page page) {
     LOG_INFO(Core, "coop: multiplayer tab: its page on the title's own rows (no overlay)");
 }
 
+// (the game's main thread: carried out at once, not through Hookshot's queue)
 bool NativeInput(int event, int arg, int arg2) {
-    {
-        std::lock_guard lock(g_mutex);
-        if (!g_native) return false;
-    }
-    return CoopPause::Input(kMultiplayerTab, event, arg, arg2);
+    std::lock_guard lock(g_mutex);
+    if (!g_native) return false;
+    return MultiplayerPress(CoopMenuHandoff::Event{event, arg, arg2});
 }
 
 CoopPauseMenu::View NativeView() {

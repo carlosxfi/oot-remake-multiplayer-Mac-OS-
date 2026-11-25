@@ -92,6 +92,7 @@ TEST_CASE("pause tab: the first page is Host, Join, Local co-op, Settings and Co
     CHECK(v.help_title == "Multiplayer");
     CHECK(v.confirm == "Open");
     CHECK(v.back == "Close");
+    CHECK_FALSE(m.BackTaken());   // (Hookshot's menu is answered from it at once: coop_menu_handoff.h)
     CHECK_FALSE(m.Press(Input::kBack));   // nothing to go back to: Hookshot closes the menu
     CHECK_FALSE(m.TakeRequest().has_value());
 }
@@ -238,6 +239,7 @@ TEST_CASE("pause tab: Join: a room name or an address, its port and the password
         SelectRow(m, row);
         m.Press(Input::kDecide);
         REQUIRE(m.typing());
+        CHECK(m.BackTaken());   // (Back ends the typing)
         for (const char c : text) m.Char(static_cast<unsigned char>(c));
         m.Press(Input::kDecide);
     };
@@ -2376,4 +2378,22 @@ TEST_CASE("pause tab: Settings: Shared floor switches, on unless turned off, kep
     m.options().Write(coop, options);
     CHECK(options.find("floor_switches") == std::string::npos);  // on: no line
     CHECK(CoopTitleMenu::Options::Read(coop, options).floor_switches);
+}
+
+TEST_CASE("pause tab: BackTaken says what a Back would do, on every page (Hookshot's menu is answered from it, row 279)") {
+    for (const bool title : {false, true}) {
+        for (const Page page : {Page::kMain, Page::kHost, Page::kJoin, Page::kLocal, Page::kSettings, Page::kCommands,
+                                Page::kCustomize, Page::kFind}) {
+            CAPTURE(static_cast<int>(page));
+            CAPTURE(title);
+            Menu m;
+            m.SetTitle(title);
+            m.Show(CoopTitleMenu::Options{});
+            m.Open(page);
+            while (m.TakeRequest()) {
+            }
+            const bool predicted = m.BackTaken();
+            CHECK(m.Press(Input::kBack) == predicted);
+        }
+    }
 }
