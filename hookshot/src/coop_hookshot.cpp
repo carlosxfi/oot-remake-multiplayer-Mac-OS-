@@ -46,6 +46,7 @@
 #include "coop_gear_params.h"
 #include "coop_chatbox.h"
 #include "coop_draw.h"
+#include "coop_map_icons.h"
 #include "coop_dbno_draw.h"
 #include "coop/host/map_drop_log.hpp"
 #include "coop/host/save_transfer.hpp"
@@ -544,6 +545,10 @@ private:
 };
 std::atomic<bool> g_tags_drawn{false};   // true: the overlay draws the name text (native off or failed)
 CoopNativeTags::Balloons g_balloons;     // the game's thread only
+// The others on the maps as the game's own map icons (coop_map_icons.h, item 8 / #255). LICHII_COOP_MAP_NATIVE=0: the
+// overlay's map names instead. g_map_native: the copies were found (the pack has them): the overlay draws none.
+CoopMapIcons::Icons g_map_icons;         // the game's thread only
+std::atomic<bool> g_map_native{false};
 
 // B8's probe (LICHII_COOP_MAP_PROBE=1, off by default): every 5 s, the MapIcon layouts the HUD's map screen holds
 // and the balloon screen's shown parts, into the log (how the game makes its own map icons; whether our balloons stay).
@@ -559,6 +564,18 @@ void MapProbe(void* ctx) {
         held += fmt::format(" +{:#x}={:#x} {}", h.offset, h.layout, h.name);
     }
     LOG_INFO(Core, "coop: map icons probe: map screen {:#x}, MapIcon layouts:{}", map, held.empty() ? " none" : held);
+    // Item 8's rotation-offset probe: each held PaMapIcon_00's arrow N_PlayerRotate_00, its words +0x60..+0xa0 (two
+    // facings of Link tell the turn), and how far our copies got.
+    for (const auto& h : CoopNativeTags::LayoutsHeld(game, map, 0x3000, "PaMapIcon_00")) {
+        const std::uint64_t turn = g_map_icons.ArrowTurnPane(game, h.layout);
+        float w[16] = {};
+        if (turn != 0) CoopRuntime::Read(turn + 0x60, w, sizeof w);
+        std::string words;
+        for (const float f : w) words += fmt::format(" {:.3f}", f);
+        LOG_INFO(Core, "coop: map icons probe: {:#x} arrow turn pane {:#x} +0x60:{}", h.layout, turn, words);
+    }
+    LOG_INFO(Core, "coop: map icons probe: copies up {} shown {} copy0 {:#x} ({})", g_map_icons.Up(), g_map_icons.shown(),
+             g_map_icons.copy(0), g_map_icons.why());
     const std::uint64_t balloons = CoopNativeTags::ScreenByVtable(game, CoopNativeTags::addr::kBalloonVtable);
     std::string parts;
     for (std::size_t i = 0; i < CoopNativeTags::addr::kParts && balloons != 0; ++i) {
@@ -579,10 +596,28 @@ void MapProbe(void* ctx) {
     LOG_INFO(Core, "coop: map icons probe: balloon screen {:#x} parts{} (ours shown: {})", balloons, parts, g_balloons.shown());
 }
 
+void MapIcons(void* ctx) {
+    static const bool on = Env("LICHII_COOP_MAP_NATIVE") != "0";
+    static const std::uint64_t turn_at = std::strtoull(Env("LICHII_COOP_MAP_TURN_AT").c_str(), nullptr, 16);
+    static std::string said;
+    if (!on) return;
+    const auto frame = CoopMapIcons::Taken();
+    if (frame.marks.empty() && g_map_icons.shown() == 0) return;   // solo, or nobody on the map: nothing touched
+    TagsGame game(ctx);
+    if (turn_at != 0) g_map_icons.TurnAt(turn_at);
+    g_map_icons.Step(game, frame);
+    if (g_map_icons.Up()) g_map_native.store(true);
+    if (g_map_icons.why() != said) {
+        said = g_map_icons.why();
+        LOG_INFO(Core, "coop: map icons: {}", said.empty() ? fmt::format("on the game's map icons ({} shown)", g_map_icons.shown()) : said);
+    }
+}
+
 void NativeTags(void* ctx) {
     static const bool on = Env("LICHII_COOP_NATIVE_TAGS") != "0";
     static bool said = false, said_fail = false;
     MapProbe(ctx);
+    MapIcons(ctx);
     if (!on) {
         g_tags_drawn.store(true);
         return;
@@ -1395,6 +1430,8 @@ CoopDraw::Scene DrawScene() {
             self = row.self ? row.number : self;
         }
         s.map = MapScene(s.markers.has_value(), self);
+        CoopMapIcons::Publish(s.map ? CoopDraw::MapMarks(*s.map) : CoopMapIcons::Frame{});
+        if (g_map_native.load()) s.map = nullptr;   // (the game's own icons show them: nothing drawn)
     }
     return s;
 }

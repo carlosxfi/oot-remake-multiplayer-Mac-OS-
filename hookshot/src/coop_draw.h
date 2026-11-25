@@ -29,6 +29,7 @@
 #include "coop_dbno_game.h"
 #include "coop_hook.h"
 #include "coop_i18n.h"
+#include "coop_map_icons.h"
 #include "coop_voice.h"
 #include "hos_coop_draw.h"
 
@@ -182,6 +183,9 @@ coop::overlay::map::Box LayoutToScreen(const coop::overlay::map::Box& layout, fl
 // The words after a name for a player `delta` floors from the one shown
 // ("" on the same floor): floors count down as floor_of's do.
 std::string FloorWords(int delta);
+// The others on the maps for the game's own map icons (coop_map_icons.h): where DrawMap puts them, in the layout's
+// units (the picture as the layout: 3840 x 2160), with their names (and floor words) and our own place.
+CoopMapIcons::Frame MapMarks(const MapShown& m);
 
 // What to draw this present.
 struct Scene {
