@@ -16,6 +16,9 @@ mark row-coop-settings
 press A
 wait 150
 mark settings
+press DRIGHT            # into the list on the right (A only picks the left button again)
+wait 60
+mark in-list
 press DDOWN
 wait 30
 mark line01-a
