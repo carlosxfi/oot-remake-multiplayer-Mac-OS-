@@ -71,7 +71,7 @@ def server_bind(args):
     each build, raised Windows Firewall's prompt over the windows the runs screenshot (crash-cookie-4-run)."""
     args = list(args)
     return args if "--bind" in args else args + ["--bind", "127.0.0.1"]
-HERE =os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 # build-game.lock: a game build (a cache miss) is running; it stops both test lanes (tools/autotest/lanes.py), whose
 # runs hold lane1.lock / lane2.lock. A module build (build-hs.lock alone) stops no lane.
