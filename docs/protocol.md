@@ -452,7 +452,7 @@ The other players hear every sound the game itself starts on a player's Link, fr
 - Body: the player field and an emote id, 1 to `kMaxEmoteId` (32). The id is the number in `CoopEmote::Table()`; an id is never reused or renumbered. A reader that does not know an id ignores it, so the table grows with no version bump.
 - The sender's game sends it only when connected with another player in the game, and at most one every 1.5 s (a notice in the chat box otherwise). Alone: nothing is sent.
 - The server relays it to everyone else with the sender's number, like `CHAT`. It is never kept and never replayed: a player who joins later gets nothing (tests/server/session_test.cpp).
-- A receiver that shows the sender's puppet holds the emote's AS command on the puppet and starts its sound ([puppet.md](puppet.md), "Emotes"). The sender's own Link is not touched.
+- A receiver that shows the sender's puppet holds the emote's AS command on the puppet ([puppet.md](puppet.md), "Emotes"); a call is said by the sender's Navi where she is shown. On the sender's own screen their own Link plays the gesture while he stands idle, and their own Navi says the call.
 
 ### Field grass (`GRASS_CUT`)
 

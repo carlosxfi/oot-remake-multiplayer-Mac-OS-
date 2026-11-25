@@ -10,17 +10,20 @@
 //    is sent. Otherwise EMOTE (the emote's id) goes to the server, which
 //    relays it to everyone else like LINK_SOUND. It is never kept: a player
 //    who joins later gets nothing.
-// 2. A game that shows the sender's puppet starts the emote's sound on it
-//    (the Link sounds' own path, coop_link_sound.h) and holds the puppet on
-//    the emote's AS command (the game's own animation, slot 0) for the
+// 2. A game that shows the sender's puppet holds the puppet on the emote's
+//    AS command (the game's own animation, slot 0) for the
 //    emote's hold time (Holds). The hold ends early when the sender's own
-//    animation changes from what it was when the emote started (they moved
-//    or did something), and at once when the sender leaves.
+//    animation changes to another than the emote's (they moved or did
+//    something), and at once when the sender leaves. The sender's own Link
+//    plays the gesture too (4.), so their samples show it: the hold is kept
+//    as long as they do.
 // 3. A call (Def::heard: /here) also reaches every other game's chat, and
 //    flies the caller's Navi up over their head for a few seconds where she
-//    is shown (coop_emote_game.h TakeCalls, CoopFairy::Follower::Call).
-// The sender's own screen shows only a chat notice: their own Link is never
-// animated by the emote (their own game controls it). Solo: nothing is sent.
+//    is shown (coop_emote_game.h TakeCalls, CoopFairy::Follower::Call), and
+//    she says it (Def::navi, coop_emote_body.h).
+// 4. On the sender's own screen: a chat notice, their own Link's gesture (if
+//    he stands idle) and their own Navi's call (coop_emote_body.h). Alone:
+//    nothing is sent or played.
 #pragma once
 
 #include <array>
@@ -41,7 +44,7 @@ struct Def {
     const char* name = "";      // the command: "wave" for /wave
     const char* alias = "";     // a second name, or ""
     const char* command = "";   // the game's AS command the puppet plays (slot 0)
-    const char* sound = "";     // the game's Link sound started on the puppet, or "" for none
+    const char* navi = "";      // the game's sound the sender's Navi says (her own sound user), or "" for none
     std::uint32_t hold_ms = 0;  // how long the puppet is held on `command`
     const char* notice = "";    // our chat notice: "you wave"
     // What the other players read in the chat, after the sender's name ("calls: over here"), or "" for none. Only
@@ -102,6 +105,8 @@ private:
     struct Hold {
         const Def* def = nullptr;
         std::uint64_t until_ms = 0;
+        std::uint64_t cap_ms = 0;  // the longest it lasts while the samples show the emote's own command
+        bool shown = false;        // the samples show it (the sender's own Link plays it)
         bool base_known = false;
         std::string base;
     };

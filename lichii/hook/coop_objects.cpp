@@ -73,6 +73,8 @@
 #include "coop_pvp_native.h"
 #include "coop_pvp_native_game.h"
 #include "coop_dbno_body.h"
+#include "coop_emote_body.h"
+#include "coop_fairy.h"
 #include "coop_dbno_game.h"
 #include "coop_svc.h"
 #include "coop_testinput.h"
@@ -5292,6 +5294,20 @@ private:
             return true;
         }();
         (void)body_caller;
+        // Our Link's emote gesture and the Navis' calls (coop_emote_body.h): the first use registers the caller; it
+        // asks the game for nothing until an emote is sent or heard.
+        static const bool emote_caller = [] {
+            CoopEmote::TheBody().SetNaviActor([](CoopPuppet::Guest& guest, std::uint8_t number) {
+                return number != 0 ? CoopFairy::FairyActor(number)
+                                   : CoopFairy::FindActor(guest, TheBossMain().load(), "Npc_Navi");
+            });
+            CoopSvc::AddCaller(CoopCallerOrders::kEmote, [](CoopPuppet::Guest& guest, bool after_call,
+                                                            std::uint64_t result, std::uint64_t now_ms) {
+                return CoopEmote::TheBody().Next(guest, after_call, result, now_ms, TheBossMain().load());
+            });
+            return true;
+        }();
+        (void)emote_caller;
         const auto want = CoopDbno::TakeLifeWrite();
         if (!want || life < 0 || *want == life || memory_ == nullptr ||
             !memory_->IsValidVirtualAddressRange(life_at, 4)) {

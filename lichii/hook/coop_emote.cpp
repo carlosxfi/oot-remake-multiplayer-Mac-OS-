@@ -10,14 +10,14 @@ namespace CoopEmote {
 namespace {
 
 // AS commands: names in the game's own Player_Adult and Player_Child animation sets (the talk gestures Link
-// plays in a conversation). The sound is a Link sound name (docs/puppet.md "Link sounds"); one the puppet's
-// sound user does not have is not played, so a wrong name is silent, not an error.
+// plays in a conversation). The call is a name of the sound users Npc_Navi and Dm_Npc_Navi (the game's "Hey!");
+// Link's own users (Player_Child, Player_Adult) have no call. A name she does not have is not played (it is logged).
 constexpr Def kTable[] = {
     {1, "wave", "hi", "EvtTalkHello", "", 2500, "you wave", ""},
     {2, "yes", "nod", "EvtTalkYes", "", 2000, "you nod", ""},
     {3, "no", "shake", "EvtTalkNo", "", 2000, "you shake your head", ""},
     {4, "look", "around", "EvtLookAround", "", 3000, "you look around", ""},
-    {5, "here", "ping", "EvtLookAroundAttention", "Pl_Voice_Attack_00", 2500, "you call: over here", "calls: over here"},
+    {5, "here", "ping", "EvtLookAroundAttention", "Voice_LockOnEnemy_Hey", 2500, "you call: over here", "calls: over here"},
     {6, "wow", "surprise", "EvtSurprise", "", 2000, "you are surprised", ""},
 };
 
@@ -135,6 +135,8 @@ bool Holds::Start(std::uint8_t number, std::uint8_t id, std::uint64_t now_ms) {
     Hold& h = holds_[number];
     h.def = d;
     h.until_ms = now_ms + std::min(d->hold_ms, kMaxHoldMs);
+    h.cap_ms = now_ms + kMaxHoldMs;
+    h.shown = false;
     h.base_known = false;
     h.base.clear();
     return true;
@@ -148,8 +150,14 @@ const Def* Holds::Apply(std::uint8_t number, std::string_view sampled, std::uint
     if (h.def == nullptr) {
         return nullptr;
     }
-    if (now_ms >= h.until_ms) {
-        h = Hold{};
+    // The sender's own Link plays it (coop_emote_body.h): held as long as their samples show it, so the puppet does not
+    // start it a second time from the samples.
+    if (sampled == h.def->command && now_ms < h.cap_ms) {
+        h.shown = true;
+        return h.def;
+    }
+    if (h.shown || now_ms >= h.until_ms) {
+        h = Hold{};  // over, or the sender moved on
         return nullptr;
     }
     if (!h.base_known) {

@@ -438,6 +438,19 @@ void Publish(std::uint64_t main_base, const std::optional<std::string>& scene,
         glue.follower->Follow(puppets, now_ms, CoopPuppet::LivePuppets(), position));
 }
 
+std::uint64_t FairyActor(std::uint8_t number) {
+    Glue& glue = TheGlue();
+    if (!glue.on) {
+        return 0;
+    }
+    for (const auto& slot : glue.director->Slots()) {
+        if (slot.number == number && slot.phase == CoopPuppet::Phase::live) {
+            return slot.actor;
+        }
+    }
+    return 0;
+}
+
 CoopRooms::Table RoomTable() {
     return LoadRooms();
 }

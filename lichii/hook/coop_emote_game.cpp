@@ -12,6 +12,7 @@
 #include "coop/host/session.hpp"
 #include "coop/net/client.hpp"
 #include "coop_emote.h"
+#include "coop_emote_body.h"
 
 namespace CoopEmote {
 namespace {
@@ -68,6 +69,9 @@ bool OnChat(std::string_view text, coop::host::Session& session) {
             }
             if (client.send(coop::protocol::Emote{coop::protocol::kPlayerSelf, command->def->id})) {
                 line = command->def->notice;
+                // Our own screen: our Link's gesture, our Navi's call.
+                TheBody().Play(*command->def);
+                TheBody().Say(0, *command->def, SteadyMs());
             } else {
                 line = "emote: could not be sent";
             }
@@ -106,6 +110,7 @@ void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
     if (line.empty()) {
         return;
     }
+    TheBody().Say(emote->player_number, *def, SteadyMs());  // where their Navi is shown
     Glue& g = TheGlue();
     std::lock_guard lock(g.mutex);
     g.Line(std::move(line));
