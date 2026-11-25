@@ -1,0 +1,14 @@
+# hs-menu-close-236 (player row 236, "leaving any menu is slow"): A hosts, B joins; each game opens and leaves the
+# pause (+) menu, the Minus menu and the Minus menu's co-op tabs, with shots 15 and 60 frames after each close
+# (hs-menu-close-236.menus.txt). Played on a module before and after fix-279 (row 236's close path: the menu's lock off
+# network/file work); the after build logs each menu-lock wait or hold over 20 ms ("the menu's lock ... ms in ...").
+#! switches LICHII_COOP_DEBUG_OBJECTS=1
+start A B
+load A B
+sleep 30
+shot joined
+play A hs-menu-close-236.menus.txt
+play B hs-menu-close-236.menus.txt
+shot end
+lines lock-a A max=0 the menu's lock \w+ [0-9]+ ms in
+lines lock-b B max=0 the menu's lock \w+ [0-9]+ ms in
