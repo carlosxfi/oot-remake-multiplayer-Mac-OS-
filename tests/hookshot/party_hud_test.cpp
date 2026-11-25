@@ -363,7 +363,8 @@ TEST_CASE("party hud: our own voice line goes first on the game's text part, the
     CHECK(game.texts["Pa_CoopSelf_0/T_Text_01"] == "You (talking)");
     CHECK(game.Shown("Pa_CoopSelf_0"));
     const float top = party::TopFrom(0.15, true);
-    CHECK(top < party::TopFrom(0.15, false));
+    CHECK(top == party::TopFrom(0.15, false));   // (our line takes the first place; only the stack's lowest start moves up)
+    CHECK(party::TopFrom(0.95, true) > party::TopFrom(0.95, false));
     CHECK(game.Where("Pa_CoopSelf_0") == std::array<float, 2>{party::kLabelX, top - party::kLabelHeight / 2.0f});
     // the blocks start under it
     CHECK(game.Where(HeartName(0, 0)) == party::HeartAt(top - (party::kLabelHeight + party::kBlockGap), 0));
