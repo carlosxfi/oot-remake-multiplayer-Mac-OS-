@@ -3849,6 +3849,13 @@ std::vector<Action> Session::take_actions() {
   return std::exchange(actions_, {});
 }
 
+std::string Session::world_tag() const {
+  if (!host_) return {};
+  const auto it = connections_.find(*host_);
+  if (it == connections_.end() || !it->second.mods) return {};
+  return coop::protocol::world_tag(*it->second.mods, mod_settings_ ? &mod_settings_->settings : nullptr);
+}
+
 std::size_t Session::player_count() const {
   return static_cast<std::size_t>(std::count_if(
       connections_.begin(), connections_.end(),

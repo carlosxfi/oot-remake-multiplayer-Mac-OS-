@@ -1137,6 +1137,7 @@ TEST_CASE("relay loopback: a host's link lists its room, the game's list_rooms_o
     e.version = 15;
     return e;
   };
+  listed_config.tag = [] { return std::string("Randomizer KOKIRI (keysanity)"); };   // (row 281)
   RelayLink listed(listed_config);
   RelayLink unlisted(link_config("lake_gang"));
   std::string why;
@@ -1163,13 +1164,17 @@ TEST_CASE("relay loopback: a host's link lists its room, the game's list_rooms_o
       unlisted.service();
     }
   });
-  const auto list = list_rooms_on_relay(relay_at, {}, false, 0x7F000001u);
+  const auto list = list_rooms_on_relay(relay_at, {}, false, 0x7F000001u, true);
   done = true;
   serve.join();
   REQUIRE(list.has_value());
   CHECK(list->total == 1);
   REQUIRE(list->rooms.size() == 1);
   CHECK(list->rooms[0] == RoomEntry{"Forest-Gang", "Saria", 1, 4, 15, true});
+  // Its tag came with the listing (row 281: what world it plays), the unlisted room has none.
+  CHECK(list->tags_answered);
+  REQUIRE(list->tags.size() == 1);
+  CHECK(list->tags[0] == coop::server::relay::RoomTag{"Forest-Gang", "Randomizer KOKIRI (keysanity)"});
 
   // Its host stops: off the list at once.
   listed.stop();
@@ -1456,3 +1461,122 @@ TEST_CASE("relay: a listed room's proof is kept and passed on as given, none for
 }
 
 }  // namespace room_proof_tests
+
+// Row 281: a listed room's tag (kRoomTag / kListTags / kRoomTags), what world it plays.
+namespace room_tag_tests {
+
+using coop::server::relay::decode;
+using coop::server::relay::encode;
+using coop::server::relay::Message;
+using coop::server::relay::RoomTag;
+using room_list_tests::ask_list;
+using room_list_tests::host_at;
+using room_list_tests::list_room_message;
+
+namespace {
+
+Message tag_message(std::uint64_t token, std::string tag) {
+  Message m;
+  m.kind = Kind::kRoomTag;
+  m.token = token;
+  m.tag.tag = std::move(tag);
+  return m;
+}
+
+std::optional<Message> ask_tags(Fixture& f, Endpoint from = kGuest, std::uint64_t now = 0) {
+  Message ask;
+  ask.kind = Kind::kListTags;
+  auto out = f.relay.received(from, encode(ask), now);
+  if (out.empty()) return std::nullopt;
+  REQUIRE(out.size() == 1);
+  CHECK(out[0].to == from);
+  CHECK(out[0].bytes.size() <= kMaxPayloadBytes);
+  return decoded(out[0]);
+}
+
+}  // namespace
+
+TEST_CASE("relay wire: a room's tag and the tags' ask and answer go through encode and decode") {
+  auto back = decode(encode(tag_message(77, "Randomizer KOKIRI (keysanity)")));
+  REQUIRE(back.has_value());
+  CHECK(back->kind == Kind::kRoomTag);
+  CHECK(back->token == 77);
+  CHECK(back->tag.tag == "Randomizer KOKIRI (keysanity)");
+  REQUIRE(decode(encode(tag_message(77, ""))).has_value());   // (empty: "no tag any more")
+  CHECK_FALSE(decode(encode(tag_message(77, "seed\x07"))).has_value());   // (printable ASCII only)
+  CHECK_FALSE(decode(encode(tag_message(77, "caf\xc3\xa9"))).has_value());
+  std::vector<std::uint8_t> cut = encode(tag_message(77, "abc"));
+  cut.pop_back();
+  CHECK_FALSE(decode(cut).has_value());   // (a byte short)
+  // Longer than kMaxRoomTagBytes: cut when sent; a datagram saying more is not one.
+  back = decode(encode(tag_message(1, std::string(60, 'a'))));
+  REQUIRE(back.has_value());
+  CHECK(back->tag.tag.size() == coop::server::relay::kMaxRoomTagBytes);
+  std::vector<std::uint8_t> big = encode(tag_message(1, std::string(48, 'a')));
+  big[big.size() - 49] = 49;
+  big.push_back('a');
+  CHECK_FALSE(decode(big).has_value());
+
+  Message ask;
+  ask.kind = Kind::kListTags;
+  std::vector<std::uint8_t> bytes = encode(ask);
+  CHECK(bytes.size() == kListRequestBytes);   // (padded as the list's ask)
+  REQUIRE(decode(bytes).has_value());
+  CHECK(decode(bytes)->kind == Kind::kListTags);
+  bytes[200] = 1;
+  CHECK_FALSE(decode(bytes).has_value());
+  bytes.resize(100);
+  CHECK_FALSE(decode(bytes).has_value());
+
+  Message answer;
+  answer.kind = Kind::kRoomTags;
+  answer.tags = {RoomTag{"squadala", "Randomizer A1B2"}, RoomTag{"Forest-Gang", "Randomizer X (default)"}};
+  back = decode(encode(answer));
+  REQUIRE(back.has_value());
+  CHECK(back->tags == answer.tags);
+  answer.tags[0].room = "no spaces";
+  CHECK_FALSE(decode(encode(answer)).has_value());
+  answer.tags[0] = RoomTag{"squadala", ""};
+  CHECK_FALSE(decode(encode(answer)).has_value());   // (an answer never has an empty tag)
+}
+
+TEST_CASE("relay: a listed room's tag is kept and passed on, dropped with the listing, none for join codes") {
+  Fixture f;
+  REQUIRE(f.register_room(1, "squadala", host_at(1)).kind == Kind::kRegisteredName);
+  REQUIRE(f.register_room(2, "forest-4821", host_at(2)).kind == Kind::kRegisteredName);
+  CHECK_FALSE(f.register_host(3, host_at(3)).empty());
+  auto page = ask_tags(f);
+  REQUIRE(page.has_value());
+  CHECK(page->tags.empty());
+  CHECK(f.relay.received(host_at(1), encode(list_room_message(1, true, "squadala")), 10).empty());
+  CHECK(f.relay.received(host_at(1), encode(tag_message(1, "Randomizer KOKIRI (keysanity)")), 11).empty());
+  CHECK(f.relay.received(host_at(2), encode(list_room_message(2, true, "forest")), 12).empty());   // (base game: no tag)
+  CHECK(f.relay.received(host_at(3), encode(tag_message(3, "Randomizer JOIN")), 13).empty());   // (a join code)
+  f.relay.received(host_at(9), encode(tag_message(99, "Randomizer NOBODY")), 14);   // (an unknown token)
+  page = ask_tags(f, kGuest, 20);
+  REQUIRE(page.has_value());
+  REQUIRE(page->tags.size() == 1);
+  CHECK(page->tags[0] == RoomTag{"squadala", "Randomizer KOKIRI (keysanity)"});
+  auto list = ask_list(f, 0, kGuest, 21);
+  REQUIRE(list.has_value());
+  CHECK(list->total == 2);   // (the list itself as before: old kits read it unchanged)
+  // A new tag replaces it; an empty one clears it; unlisted, a room's tag is not passed on.
+  CHECK(f.relay.received(host_at(1), encode(tag_message(1, "Randomizer DEKU")), 30).empty());
+  page = ask_tags(f, kGuest, 31);
+  REQUIRE(page.has_value());
+  REQUIRE(page->tags.size() == 1);
+  CHECK(page->tags[0].tag == "Randomizer DEKU");
+  CHECK(f.relay.received(host_at(1), encode(tag_message(1, "")), 32).empty());
+  page = ask_tags(f, kGuest, 33);
+  REQUIRE(page.has_value());
+  CHECK(page->tags.empty());
+  CHECK(f.relay.received(host_at(1), encode(tag_message(1, "Randomizer DEKU")), 34).empty());
+  CHECK(f.relay.received(host_at(1), encode(list_room_message(1, false, "")), 40).empty());
+  page = ask_tags(f, kGuest, 41);
+  REQUIRE(page.has_value());
+  CHECK(page->tags.empty());
+  CHECK(f.relay.stats().tags_kept == 4);
+  CHECK(f.relay.stats().tags_answered == 5);
+}
+
+}  // namespace room_tag_tests

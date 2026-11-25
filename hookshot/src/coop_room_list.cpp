@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <string_view>
 #include <thread>
 
 #include <enet/enet.h>
@@ -57,6 +58,10 @@ std::string DetailText(const Room& r, int my_protocol) {
                                               : Tr("Players") + " " + std::to_string(r.players) + "/" +
                                                     std::to_string(r.max));
     }
+    if (!r.tag.empty()) {   // (row 281: the seed and settings names as the host's randomizer gave them)
+        constexpr std::string_view kRando = "Randomizer ";
+        out += Tr(", ") + (r.tag.rfind(kRando, 0) == 0 ? Tr("Randomizer") + " " + r.tag.substr(kRando.size()) : r.tag);
+    }
     return out;
 }
 
@@ -77,6 +82,8 @@ std::thread g_thread;              // under g_mutex
 // (a relay before 0.11.8 never does: asked again every kProofsRetryMs, not with every refresh).
 constexpr std::uint64_t kProofsRetryMs = 10 * 60 * 1000;
 std::atomic<std::uint64_t> g_proofs_silent_until_ms{0};
+// The same for the rooms' tags (row 281; a relay before 0.11.13 never answers), asked of any relay.
+std::atomic<std::uint64_t> g_tags_silent_until_ms{0};
 
 std::string KitsRelayName() {
     std::string host;
@@ -110,9 +117,14 @@ void Ask(std::string relay) {
             const std::string kits = KitsRelayName();
             // (proofs only from the kit's own relay: the official game is listed nowhere else)
             const bool ask_proofs = asked == kits && SteadyMs() >= g_proofs_silent_until_ms.load();
-            if (const auto list = relay_ns::list_rooms_on_relay(at, [] { return g_stop.load(); }, ask_proofs, coop::net::test_bind())) {
+            const bool ask_tags = SteadyMs() >= g_tags_silent_until_ms.load();
+            if (const auto list = relay_ns::list_rooms_on_relay(at, [] { return g_stop.load(); }, ask_proofs,
+                                                                coop::net::test_bind(), ask_tags)) {
                 if (ask_proofs && !list->rooms.empty() && !list->proofs_answered && !g_stop.load()) {
                     g_proofs_silent_until_ms = SteadyMs() + kProofsRetryMs;
+                }
+                if (ask_tags && !list->rooms.empty() && !list->tags_answered && !g_stop.load()) {
+                    g_tags_silent_until_ms = SteadyMs() + kProofsRetryMs;
                 }
                 for (const auto& e : list->rooms) {
                     s.rooms.push_back(FromListing(e.room, e.host, e.players, e.max_players, e.version));
@@ -123,6 +135,9 @@ void Ask(std::string relay) {
                     proofs.push_back(Proof{p.room, coop::protocol::OfficialProof{p.time_s, p.signature}});
                 }
                 Order(s.rooms, proofs, coop::protocol::official_now_s(), asked, kits);
+                std::vector<Tag> tags;
+                for (const auto& t : list->tags) tags.push_back(Tag{t.room, t.tag});
+                ApplyTags(s.rooms, tags);
                 if (s.rooms.empty()) s.state = kNoGames;
             } else {
                 s.state = kCantReach;   // (no answer: no internet, the server down, or one from before the list)

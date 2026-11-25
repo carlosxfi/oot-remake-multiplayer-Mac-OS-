@@ -185,6 +185,7 @@ void Relay::control(Endpoint from, const Message& m, std::uint64_t now_ms,
         by_room_[key] = s.token;
         s.room = *room;
         s.proof.reset();  // (a proof is for one room)
+        s.tag.clear();    // (so is a tag)
         say("host " + address_text(from.host) + " holds room \"" + s.room + "\" (" +
             std::to_string(by_room_.size()) + " room(s) now)");
       }
@@ -280,6 +281,26 @@ void Relay::control(Endpoint from, const Message& m, std::uint64_t now_ms,
       }
       ++stats_.proofs_answered;
       return reply(proofs_page());
+    }
+    case Kind::kListTags: {
+      if (over_limit(lists_, from.host, config_.lists_per_window, now_ms, true, config_.list_window_ms)) {
+        ++stats_.lists_limited;
+        return;  // (as kListRooms: one limit for all list asks)
+      }
+      ++stats_.tags_answered;
+      return reply(tags_page());
+    }
+    case Kind::kRoomTag: {
+      // As kRoomProof: sent with each listing; no answer either way.
+      if (over_limit(listings_, from.host, config_.listings_per_window, now_ms, true, config_.list_window_ms)) {
+        ++stats_.listings_limited;
+        return;
+      }
+      auto it = sessions_.find(m.token);
+      if (it == sessions_.end() || it->second.room.empty()) return;
+      it->second.tag = m.tag.tag;
+      ++stats_.tags_kept;
+      return;
     }
     case Kind::kRoomProof: {
       // As often as kListRoom (its host's link sends it with each listing); no answer either way.
@@ -406,6 +427,26 @@ Message Relay::proofs_page() const {
     if (bytes + more > kMaxPayloadBytes || page.proofs.size() >= kMaxListedRooms) break;
     bytes += more;
     page.proofs.push_back(*s->proof);
+  }
+  return page;
+}
+
+Message Relay::tags_page() const {
+  std::vector<const Session*> listed;
+  for (const auto& [token, s] : sessions_) {
+    if (s.listed && !s.room.empty() && !s.tag.empty()) listed.push_back(&s);
+  }
+  std::sort(listed.begin(), listed.end(),
+            [](const Session* a, const Session* b) { return a->listed_since > b->listed_since; });
+  Message page;
+  page.kind = Kind::kRoomTags;
+  std::size_t bytes = kMagic.size() + 2;  // (the kind and the count)
+  for (const Session* s : listed) {
+    const RoomTag t{s->room, s->tag};
+    const std::size_t more = tag_bytes(t);
+    if (bytes + more > kMaxPayloadBytes || page.tags.size() >= kMaxListedRooms) break;
+    bytes += more;
+    page.tags.push_back(t);
   }
   return page;
 }

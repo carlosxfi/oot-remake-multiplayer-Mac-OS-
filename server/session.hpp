@@ -629,6 +629,9 @@ class Session {
   // Addresses with recent wrong join passwords (max_wrong_passwords).
   std::size_t wrong_guess_addresses() const { return wrong_guesses_.size(); }
   std::size_t player_count() const;
+  // Row 281: the room list's tag for the host's world (coop/protocol/mod_world.hpp world_tag): its randomizer seed
+  // and settings name; empty while the host plays none or its MOD_LIST is not in yet.
+  std::string world_tag() const;
   // How much the session holds now (row 260: the host's memory line, every 30 s): each a count of entries, the
   // deferred one also in bytes. Each is bounded (its own cap); a number that only grows is the one to look at.
   struct Sizes {

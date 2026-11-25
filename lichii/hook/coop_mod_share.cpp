@@ -157,21 +157,7 @@ std::string SeedExtraLine(std::uint8_t number, std::string_view name, std::strin
 }
 
 std::string RandoSettingsName(const std::optional<std::vector<proto::ModSetting>>& host_values) {
-    if (!host_values) return {};
-    std::string preset, settings;
-    bool any = false;
-    for (const proto::ModSetting& s : *host_values) {
-        if (s.mod_id != kRandoModId) continue;
-        any = true;
-        if (s.key == "preset") preset = s.value;
-        if (s.key == "settings") settings = s.value;
-    }
-    if (!any) return {};
-    while (!settings.empty() && settings.front() == ' ') settings.erase(settings.begin());
-    if (settings.rfind("OOTRR", 0) == 0) {
-        return "settings string " + (settings.size() > 20 ? settings.substr(0, 20) + "..." : settings);
-    }
-    return preset.empty() ? std::string("default") : preset;
+    return host_values ? proto::rando_settings_name(*host_values) : std::string();   // (one home: mod_world)
 }
 
 std::string HeldLine(const proto::World& world, std::string_view host_seed, std::string_view settings) {

@@ -82,6 +82,40 @@ std::string seed_extra(const ModList& host, const ModList& theirs) {
   return {};
 }
 
+std::string rando_settings_name(const std::vector<ModSetting>& values) {
+  std::string preset, settings;
+  bool any = false;
+  for (const ModSetting& s : values) {
+    if (s.mod_id != kRandoModId) continue;
+    any = true;
+    if (s.key == "preset") preset = s.value;
+    if (s.key == "settings") settings = s.value;
+  }
+  if (!any) return {};
+  while (!settings.empty() && settings.front() == ' ') settings.erase(settings.begin());
+  if (settings.rfind("OOTRR", 0) == 0) {
+    return "settings string " + (settings.size() > 20 ? settings.substr(0, 20) + "..." : settings);
+  }
+  return preset.empty() ? std::string("default") : preset;
+}
+
+std::string world_tag(const ModList& host, const std::vector<ModSetting>* values) {
+  const std::string seed = seed_missing(host, ModList{});  // (the host's seed: what a player without any misses)
+  if (seed.empty()) return {};
+  std::string tag = "Randomizer " + seed;
+  std::string name = values != nullptr ? rando_settings_name(*values) : std::string();
+  for (char& c : name) {
+    if (c < 0x20 || c > 0x7E) c = '?';
+  }
+  if (!name.empty()) {
+    const std::size_t room = kMaxWorldTagBytes > tag.size() + 3 ? kMaxWorldTagBytes - tag.size() - 3 : 0;
+    if (name.size() > room) name = room > 3 ? name.substr(0, room - 3) + "..." : std::string();
+    if (!name.empty()) tag += " (" + name + ")";
+  }
+  if (tag.size() > kMaxWorldTagBytes) tag.resize(kMaxWorldTagBytes);
+  return tag;
+}
+
 World world_of(const ModList& host, const ModList& theirs) {
   if (std::string s = seed_missing(host, theirs); !s.empty()) return {WorldDiff::missing, std::move(s)};
   if (std::string s = seed_files_other(host, theirs); !s.empty()) return {WorldDiff::other_files, std::move(s)};

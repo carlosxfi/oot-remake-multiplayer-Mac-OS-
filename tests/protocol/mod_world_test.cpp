@@ -3,6 +3,7 @@
 #include <doctest/doctest.h>
 
 #include <string>
+#include <vector>
 
 #include "coop/protocol/mod_world.hpp"
 
@@ -64,4 +65,30 @@ TEST_CASE("mod world: the hash way mark") {
   CHECK(proto::hash_way(h) == 1);
   proto::mark_hash_way(h);
   CHECK(proto::hash_way(h) == proto::kHashWay);
+}
+
+TEST_CASE("mod world: the host's settings name and the room list's tag (one home with coop_mod_share's lines)") {
+  using S = proto::ModSetting;
+  CHECK(proto::rando_settings_name({}).empty());
+  CHECK(proto::rando_settings_name({S{"hud", "preset", "x"}}).empty());   // (no randomizer value: not known)
+  CHECK(proto::rando_settings_name({S{proto::kRandoModId, "on", "1"}}) == "default");
+  CHECK(proto::rando_settings_name({S{proto::kRandoModId, "preset", "keysanity"}}) == "keysanity");
+  CHECK(proto::rando_settings_name({S{proto::kRandoModId, "settings", " OOTRR1-ABCDEFGHIJKLMNOPQRSTU"}}) ==
+        "settings string OOTRR1-ABCDEFGHIJKLMN...");
+
+  const proto::ModList base{1, {entry("hud", 7)}};
+  const proto::ModList rando{1, {entry("hud", 7), entry("randomizer-n2bteykm", 5)}};
+  const std::vector<S> keys{S{proto::kRandoModId, "preset", "keysanity"}};
+  CHECK(proto::world_tag(base, &keys).empty());   // (the base game: no tag)
+  CHECK(proto::world_tag(rando, nullptr) == "Randomizer N2BTEYKM");
+  CHECK(proto::world_tag(rando, &keys) == "Randomizer N2BTEYKM (keysanity)");
+  // Never more than kMaxWorldTagBytes, printable ASCII only (the relay passes nothing else on).
+  const std::vector<S> odd{S{proto::kRandoModId, "preset", std::string(60, 'k') + "\x01\xc3\xa9"}};
+  const std::string tag = proto::world_tag(rando, &odd);
+  CHECK(tag.size() == proto::kMaxWorldTagBytes);
+  CHECK(tag.rfind("Randomizer N2BTEYKM (kkk", 0) == 0);
+  CHECK(tag.substr(tag.size() - 4) == "...)");
+  const std::vector<S> bad{S{proto::kRandoModId, "preset", "a\x01\xc3"}};
+  CHECK(proto::world_tag(rando, &bad) == "Randomizer N2BTEYKM (a??)");
+  for (const char c : tag) CHECK((c >= 0x20 && c <= 0x7E));
 }

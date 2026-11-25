@@ -104,6 +104,8 @@ struct RelayStats {
   std::uint64_t lists_limited = 0;   // room list asks over the limit (not answered)
   std::uint64_t proofs_kept = 0;     // kRoomProof taken for a held room
   std::uint64_t proofs_answered = 0; // kRoomProofs sent
+  std::uint64_t tags_kept = 0;       // kRoomTag taken for a held room
+  std::uint64_t tags_answered = 0;   // kRoomTags sent
   std::uint64_t listings_limited = 0;  // LIST_ROOM over a limit (not taken)
 };
 
@@ -138,6 +140,7 @@ class Relay {
     RoomEntry listing;               // what it lists (room: filled from `room`)
     std::uint64_t listed_since = 0;  // when it was first listed (newest first)
     std::optional<RoomProof> proof;  // its host's latest kRoomProof for `room` (passed on, never checked here)
+    std::string tag;                 // its host's latest kRoomTag for `room` (empty: none)
     Endpoint link;
     std::uint64_t last_ms = 0;
     std::map<std::uint16_t, Flow> flows;
@@ -169,6 +172,8 @@ class Relay {
   Message list_page(std::uint8_t start) const;
   // kRoomProofs: the listed rooms' proofs, newest listing first, as many as fit in a datagram.
   Message proofs_page() const;
+  // kRoomTags: the listed rooms' tags (rooms without one left out), newest listing first, as many as fit.
+  Message tags_page() const;
   std::string new_code();
   void say(const std::string& text) const;
 

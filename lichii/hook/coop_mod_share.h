@@ -75,7 +75,7 @@ std::string SeedBackLine(std::uint8_t number, std::string_view name);
 // mod_world.hpp world_of; the server holds it by the same rule). SeedExtraLine: about player `number`, who plays a seed
 // the host does not. This game's own lines: HeldLine (what differs, what its game does now and what to do: the host's
 // seed `host_seed`, empty when the host plays none, and its settings, RandoSettingsName) and HeldEndLine.
-inline constexpr const char* kRandoModId = "oot-remake-randomizer";  // (hookshot/src/coop_rando.h kId)
+inline constexpr const char* kRandoModId = coop::protocol::kRandoModId;  // (hookshot/src/coop_rando.h kId)
 std::string SeedExtraLine(std::uint8_t number, std::string_view name, std::string_view seed);
 std::string HeldLine(const coop::protocol::World& world, std::string_view host_seed, std::string_view settings);
 std::string HeldEndLine();

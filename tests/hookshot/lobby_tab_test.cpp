@@ -522,3 +522,19 @@ TEST_CASE("public games: only a room with a proof that checks is the official ga
     older.protocol = proto::kProtocolVersion - 1;
     CHECK_FALSE(CoopRoomList::Proven(older, {Proof{"squadala", good}}, now, kits, kits, key));
 }
+
+TEST_CASE("public games: each room's tag (row 281, its randomizer seed) by its name in any case, none for the rest") {
+    using CoopRoomList::Room;
+    using CoopRoomList::Tag;
+    std::vector<Room> rooms(3);
+    rooms[0].room = "Forest-Gang";
+    rooms[1].room = "kokiri";
+    rooms[2].room = "zora";
+    rooms[2].tag = "Randomizer OLD";   // (a tag from an earlier ask: replaced or dropped each time)
+    CoopRoomList::ApplyTags(rooms, {Tag{"forest-gang", "Randomizer N2BTEYKM (keysanity)"}, Tag{"nobody", "Randomizer X"}});
+    CHECK(rooms[0].tag == "Randomizer N2BTEYKM (keysanity)");
+    CHECK(rooms[1].tag.empty());
+    CHECK(rooms[2].tag.empty());
+    CoopRoomList::ApplyTags(rooms, {});   // (a relay before 0.11.13: no tags)
+    CHECK(rooms[0].tag.empty());
+}

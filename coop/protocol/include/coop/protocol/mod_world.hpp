@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "coop/protocol/messages.hpp"
 
@@ -55,5 +56,17 @@ World world_of(const ModList& host, const ModList& theirs);
 inline bool world_held(const ModList& host, const ModList& theirs) {
   return world_of(host, theirs).diff != WorldDiff::same;
 }
+
+// The randomizer's mod id (hookshot/src/coop_rando.h kId).
+inline constexpr const char* kRandoModId = "oot-remake-randomizer";
+// The host's randomizer settings as a line names them: its preset ("keysanity"), or "settings string OOTRR1-..." cut;
+// empty when `values` (the host's MOD_SETTINGS) have no randomizer setting.
+std::string rando_settings_name(const std::vector<ModSetting>& values);
+// Row 281: the room list's tag for a host playing a randomizer seed (server/relay_wire.hpp kRoomTag): "Randomizer
+// SEED (settings name)", at most kMaxWorldTagBytes printable ASCII bytes (the settings name cut, anything else
+// turned to '?'); empty when the host plays no seed (the base game: no tag). `values`: the host's MOD_SETTINGS
+// values, nullptr when not known yet (the tag names the seed only).
+inline constexpr std::size_t kMaxWorldTagBytes = 48;  // (= relay_wire.hpp kMaxRoomTagBytes)
+std::string world_tag(const ModList& host, const std::vector<ModSetting>* values);
 
 }  // namespace coop::protocol
