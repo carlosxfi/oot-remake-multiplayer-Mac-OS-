@@ -240,6 +240,32 @@ void HomeFrame() {
     }
 }
 
+// Under g_mutex: the session the choice was made for is over (its client idle, stopped or refused, a new client, a
+// role change: SwitchFrame; or no session at all any more, the menu's Leave: SoloFrame). On the title the choice
+// goes (the next session decides again) and HomeFrame takes the game back to its own saves. With a file loaded the
+// choice is kept (g_ended) and nothing of the folder is touched under the game being played: its saves (the
+// autosave, the save prompt, Game Over's) go on into the co-op folder it plays from, never into its own slots; the
+// switch home comes on the title's menu (remount-leave, owner 2026-11-25: a joiner is back on its own saves as soon
+// as it leaves).
+void OverLocked() {
+    if (save::decide_again(g_decided, true, g_in_game)) {
+        g_decided = false;   // the next session (the title menu's Host after a Join, a rejoin) decides again
+        g_decided_client = nullptr;   // (its client may be gone: a new one at the same address is a new session)
+        g_race_dir.clear();   // (row 63: a race save is one session's host's; the next host's race is not it)
+        g_guest = save::GuestSession{};   // and asks for the host's save again: everything of the last one goes
+        g_lines = save::GuestNotices{};
+        g_pending.clear();
+        g_suspended = false;
+        g_ended = false;
+        g_guest_played = false;   // (the title's ask is this session's)
+        g_title_ask = false;
+        g_group_save = false;
+        LOG_INFO(Core, "coop: save: the session is over: the next one chooses the save folder again");
+    } else if (g_decided) {
+        g_ended = true;   // (a file is loaded: the choice is kept for the title, or for a rejoin)
+    }
+}
+
 // Under g_mutex, each frame where the folder can be switched (Hookshot): the folder as mounted, and the choice.
 void SwitchFrame(coop::net::Client& client) {
     if (!g_root || !g_remount) return;
@@ -260,21 +286,7 @@ void SwitchFrame(coop::net::Client& client) {
                      client.is_host() ? "hosts" : "is a guest", client.player_number(), client.host_number(),
                      g_in_game ? " for this session (a file is loaded: no switch under it)" : "");
         }
-        if (save::decide_again(g_decided, over, g_in_game)) {
-            g_decided = false;   // the next session (the title menu's Host after a Join, a rejoin) decides again
-            g_race_dir.clear();   // (row 63: a race save is one session's host's; the next host's race is not it)
-            g_guest = save::GuestSession{};   // and asks for the host's save again: everything of the last one goes
-            g_lines = save::GuestNotices{};
-            g_pending.clear();
-            g_suspended = false;
-            g_ended = false;
-            g_guest_played = false;   // (the title's ask is this session's)
-            g_title_ask = false;
-            g_group_save = false;
-            LOG_INFO(Core, "coop: save: the session is over: the next one chooses the save folder again");
-        } else if (g_decided && over) {
-            g_ended = true;   // (a file is loaded: the choice is kept for the title, or for a rejoin below)
-        }
+        if (over) OverLocked();
         if (!g_dir.empty() && save::rejoined_in_game(g_decided, g_ended, connected, g_in_game)) {
             LOG_INFO(Core, "coop: save: a new session with a file loaded: it chooses again");
             DecideInGame(client);
@@ -656,6 +668,18 @@ bool HostHasNoSave() {
 bool SessionLive() {
     std::lock_guard lock(g_mutex);
     return g_live;
+}
+
+void SoloFrame() {
+    std::lock_guard lock(g_mutex);
+    if (!g_root || !g_remount) return;
+    if (g_dir.empty()) {
+        if (const auto root = g_root(); !root.empty()) NoteSaveDirLocked(fs::path(root));
+    }
+    g_live = false;
+    g_guest_live = false;
+    OverLocked();   // (no session: the one that chose is over, whatever ended it)
+    HomeFrame();    // (on the title's menu: back on this game's own saves)
 }
 
 bool PlaysRaceSave() {

@@ -1246,6 +1246,28 @@ TEST_CASE("hookshot: a guest that joins with a file loaded asks for the host's s
     CHECK(frame.find("HomeFrame();\n    PendingFrame();") != std::string::npos);
     CHECK(frame.find("save::home_due(") == std::string::npos);
     const std::string home = body("void HomeFrame() {");
+    // remount-leave: every session end goes through OverLocked (SwitchFrame's `over`, and SoloFrame with no session:
+    // the menu's Leave drops the session, so its frame never ran again); SoloFrame then goes home on the title.
+    CHECK(frame.find("if (over) OverLocked();") != std::string::npos);
+    CHECK(frame.find("save::decide_again(") == std::string::npos);
+    const std::string over = body("void OverLocked() {");
+    CHECK(over.find("save::decide_again(g_decided, true, g_in_game)") != std::string::npos);
+    CHECK(over.find("Remount") == std::string::npos);   // (never under a game played: HomeFrame decides)
+    const std::string solo = body("void SoloFrame() {");
+    const auto solo_over = solo.find("OverLocked();");
+    REQUIRE(solo_over != std::string::npos);
+    CHECK(solo.find("HomeFrame();", solo_over) != std::string::npos);
+    CHECK(solo.find("g_live = false;") != std::string::npos);
+    CHECK(solo.find("PendingFrame") == std::string::npos);   // (no host's save is written with no session)
+    // Both no-session paths of the frame run it (solo, and solo reading only with a code mod: the folder only).
+    const std::string hook = ReadFile(kRepo / "lichii" / "hook" / "coop_hook.cpp");
+    const auto solo_path = hook.find("case CoopSessionEnd::Path::solo:");
+    const auto read_only = hook.find("case CoopSessionEnd::Path::read_only:");
+    REQUIRE(solo_path != std::string::npos);
+    REQUIRE(read_only != std::string::npos);
+    const auto solo_call = hook.find("CoopSave::SoloFrame();", solo_path);
+    CHECK(solo_call < read_only);
+    CHECK(hook.find("CoopSave::SoloFrame();", read_only) != std::string::npos);
     CHECK(home.find("g_decided && (g_use || g_group_save)") != std::string::npos);
     CHECK(home.find("RemountLocked(own)") != std::string::npos);
     // On the title before the new save is in, a game still on an earlier host's co-op folder goes back to its own
