@@ -22,8 +22,6 @@ constexpr std::uint64_t kMain = 0x80020000;
 constexpr std::uint64_t kManager = 0x96000000, kScreens = 0x97000000, kStatus = 0x93000000, kLayout = 0x94000000;
 constexpr std::uint64_t kBlock = 0x9a000000, kPanes = 0x9b000000, kAnims = 0x9c000000;
 
-std::uint64_t At(std::uint64_t main_offset) { return kMain + main_offset; }
-
 struct FakeGame final : party::Game {
     std::map<std::uint64_t, std::uint8_t> mem;
     std::map<std::string, std::uint64_t> panes, anims;   // made as asked, when `pack` has them
