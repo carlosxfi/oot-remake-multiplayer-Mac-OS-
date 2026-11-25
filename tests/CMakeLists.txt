@@ -38,6 +38,7 @@ add_executable(coop_tests
   host/game_flags_test.cpp
   host/flag_events_test.cpp
   host/game_items_test.cpp
+  host/key_item_tally_test.cpp
   host/lent_keys_test.cpp
   host/map_drop_log_test.cpp
   host/notify_test.cpp
