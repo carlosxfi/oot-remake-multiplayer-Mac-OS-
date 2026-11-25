@@ -1,0 +1,4 @@
+# hs-host-difficulty, A still on the Host page's Difficulty row: right once more, Hard -> Custom (its three sliders
+# show below the row).
+press DRIGHT
+wait 120

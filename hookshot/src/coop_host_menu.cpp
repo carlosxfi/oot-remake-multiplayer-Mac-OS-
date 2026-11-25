@@ -17,6 +17,7 @@
 #include <enet/enet.h>
 
 #include "coop/net/bind_guard.hpp"
+#include "coop/protocol/difficulty.hpp"
 #include "coop/protocol/join_password.hpp"
 #include "coop/protocol/messages.hpp"
 #include "host_service.hpp"
@@ -34,6 +35,18 @@ std::uint8_t HostMaxPlayers(std::uint8_t asked) {
         return coop::server::kDefaultMaxPlayers;
     }
     return asked < coop::protocol::kMaxPlayers ? asked : coop::protocol::kMaxPlayers;
+}
+
+coop::protocol::DifficultyChoice HostDifficulty(std::uint8_t code, std::uint16_t life, std::uint16_t damage,
+                                                std::uint16_t enemies) {
+    using coop::protocol::DifficultyPreset;
+    coop::protocol::DifficultyChoice c;
+    if (code == 0 || code > 4) return c;   // (automatic: an older caller's 0, or a code this module does not know)
+    c.auto_scale = false;
+    c.preset = code == 1 ? DifficultyPreset::easy : code == 2 ? DifficultyPreset::normal
+             : code == 3 ? DifficultyPreset::hard : DifficultyPreset::custom;
+    c.custom = coop::protocol::clamp_difficulty({life, damage, enemies});
+    return c;
 }
 
 namespace nat = coop::server::nat;
@@ -285,6 +298,12 @@ int Menu::HostStart(const HosCoopHostOptions* o) {
     job.upnp = COOP_HAS(o, HosCoopHostOptions, upnp) && o->upnp != 0;
     job.invite = COOP_HAS(o, HosCoopHostOptions, invite) && o->invite != 0;
     job.pvp = COOP_HAS(o, HosCoopHostOptions, pvp) && o->pvp != 0;
+    if (COOP_HAS(o, HosCoopHostOptions, difficulty_enemies)) {   // (an older caller: automatic)
+        job.difficulty = o->difficulty;
+        job.difficulty_life = o->difficulty_life;
+        job.difficulty_damage = o->difficulty_damage;
+        job.difficulty_enemies = o->difficulty_enemies;
+    }
     job.approve_joins = COOP_HAS(o, HosCoopHostOptions, approve_joins) && o->approve_joins != 0;
     job.same_network_open = COOP_HAS(o, HosCoopHostOptions, same_network_open) && o->same_network_open != 0;
     job.relay_via = Trim(COOP_HAS(o, HosCoopHostOptions, relay_via) ? Text(o->relay_via) : std::string());
@@ -353,6 +372,8 @@ void Menu::RunHost(HostJob job) {
         config.helper_bind = coop::net::test_bind();
         config.session.join_password = job.password;
         config.session.pvp = job.pvp;
+        config.session.difficulty = HostDifficulty(job.difficulty, job.difficulty_life, job.difficulty_damage,
+                                                   job.difficulty_enemies);
         config.session.approve_joins = job.approve_joins;
         config.session.same_network_open = job.same_network_open;
         config.session.max_players = job.max_players;

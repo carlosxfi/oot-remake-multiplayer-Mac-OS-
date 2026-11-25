@@ -149,6 +149,7 @@ struct Outside {
     decltype(CoopHook::PlayerList()) players;
     std::vector<std::string> asking;
     CoopDifficulty::State difficulty;
+    CoopDifficulty::Choice next_lobby;   // (the next lobby's: its first read is a file)
     std::uint16_t character = 0;
     std::optional<std::string> ini;                  // coop.ini (every 5 s: Follow's launcher port and last game)
     std::optional<CoopTitleMenu::Options> options;   // the files' settings, with ini
@@ -162,6 +163,7 @@ Outside Gather(bool files) {
     o.players = CoopHook::PlayerList();
     o.asking = CoopLobby::Asking();
     o.difficulty = CoopDifficulty::Get();
+    o.next_lobby = CoopDifficulty::NextLobby();
     o.character = CoopCharColours::ShownCharacter();
     o.mic = CoopVoice::Status();
     if (files) {
@@ -176,6 +178,7 @@ CoopLobby::Seen Lobby() { return g_outside != nullptr ? g_outside->seen : CoopLo
 decltype(CoopHook::PlayerList()) Players() { return g_outside != nullptr ? g_outside->players : CoopHook::PlayerList(); }
 std::vector<std::string> Asking() { return g_outside != nullptr ? g_outside->asking : CoopLobby::Asking(); }
 CoopDifficulty::State Difficulty() { return g_outside != nullptr ? g_outside->difficulty : CoopDifficulty::Get(); }
+CoopDifficulty::Choice NextLobby() { return g_outside != nullptr ? g_outside->next_lobby : CoopDifficulty::NextLobby(); }
 std::uint16_t Character() { return g_outside != nullptr ? g_outside->character : CoopCharColours::ShownCharacter(); }
 // What a page reads from the files and devices as it opens (ShowTab, Open): read before g_mutex too.
 struct Opening {
@@ -391,7 +394,8 @@ void RefreshSession(bool now) {
         g_next_session_ms = NowMs() + 250;
         g_menu.SetSession(SessionNow());
         const CoopDifficulty::State d = Difficulty();
-        g_menu.SetDifficulty({d.connected, d.can_edit, d.choice, d.values}, static_cast<int>(Players().size()));
+        g_menu.SetDifficulty({d.connected, d.can_edit, d.choice, d.values, NextLobby()},
+                             static_cast<int>(Players().size()));
         g_menu.SetCharacter(Character() != 0);   // (#308's Customize page: Link's colours wait)
         // (one home for Link's look: Character Select's Customize screen when his code is in the game)
         g_menu.SetSnailHome(CoopPauseTab::CharselCodeBuiltIn(ExefsList()));
@@ -702,6 +706,13 @@ bool Host(const CoopTitleMenu::Options& o, bool test) {
     h.upnp = test ? 0 : 1;             // the router forward (nothing to set up)
     h.invite = test ? 0 : 1;
     h.pvp = o.pvp ? 1 : 0;
+    // The lobby's difficulty, picked on the Host page (or Host settings) as it is made: the server starts with it, and
+    // the game lists show it (CoopDifficulty::NextLobby: automatic when none was picked).
+    const CoopDifficulty::Choice lobby = CoopDifficulty::NextLobby();
+    h.difficulty = lobby.auto_scale ? 0 : static_cast<std::uint8_t>(static_cast<int>(lobby.preset) + 1);
+    h.difficulty_life = lobby.custom.hp_pct;
+    h.difficulty_damage = lobby.custom.damage_pct;
+    h.difficulty_enemies = lobby.custom.count_pct;
     h.approve_joins = o.approve_joins ? 1 : 0;
     h.same_network_open = o.same_network_open ? 1 : 0;   // (on, the default: this network's players need no password)
     h.max_players = static_cast<std::uint8_t>(o.max_players);
@@ -1144,12 +1155,16 @@ void Act(const Request& r) {
             CoopLanNet::Forget();
         }
         break;
-    case Request::Kind::kDifficulty: {   // the host's choice, for everyone (the chat says it once the server has)
+    case Request::Kind::kDifficulty: {   // the host's choice, for everyone (the chat says it once the server has); with
+                                         // no session, the next lobby's (HostStart gives it to the server)
         const auto choice = CoopDifficulty::ParseChoice(r.text);
-        if (!choice || !CoopDifficulty::Set(*choice)) {
+        const bool live = choice && CoopDifficulty::Set(*choice);
+        const bool lobby = choice && !live && CoopDifficulty::SetNextLobby(*choice);
+        if (!live && !lobby) {
             g_menu.SetNote({"Only the host can change the difficulty, while hosting."});
         }
-        LOG_INFO(Core, "coop: multiplayer tab: difficulty {}", choice && CoopDifficulty::Get().can_edit ? "asked" : "refused");
+        LOG_INFO(Core, "coop: multiplayer tab: difficulty {}", live ? "asked" : lobby ? "kept for the next lobby" : "refused");
+        g_next_session_ms = 0;   // (the rows show the kept one at the next refresh)
         break;
     }
     case Request::Kind::kCharAges: {   // "on", "off", "child=N" or "adult=N" (coop_char_ages.h)

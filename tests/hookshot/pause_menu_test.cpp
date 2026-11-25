@@ -206,7 +206,7 @@ TEST_CASE("pause tab: Host page: Private game is the default, Public game offers
     CHECK(m.options().public_game);
     CHECK_FALSE(m.options().relay_room.empty());   // a ready name, as forest-4821
     CHECK(m.TakeRequest()->kind == Request::Kind::kSave);
-    CHECK(Names(m) == std::vector<std::string>{"Start hosting", "Game", "Room name", "Players", "Port"});
+    CHECK(Names(m) == std::vector<std::string>{"Start hosting", "Game", "Room name", "Players", "Difficulty", "Port"});
     CHECK(m.view().help.find("no password") != std::string::npos);
     Session s = Hosting(1, "");
     s.public_game = true;
@@ -1244,7 +1244,7 @@ TEST_CASE("pause tab: Host Port and Settings Port when you host validate, save, 
     m.Open(Page::kHost);
     REQUIRE(m.TakeRequest()->kind == Request::Kind::kHost);
     m.SetSession(Session{});
-    CHECK(Names(m) == std::vector<std::string>{"Start hosting", "Game", "Players", "Port"});
+    CHECK(Names(m) == std::vector<std::string>{"Start hosting", "Game", "Players", "Difficulty", "Port"});
     SelectRow(m, "Port");
     m.Press(Input::kDecide);
     for (const char c : std::string("28600")) {
@@ -1990,7 +1990,7 @@ TEST_CASE("pause tab: the title's Host opens on its choices, hosts on Start host
     m.SetTitle(true);
     m.Open(Page::kHost);
     CHECK_FALSE(m.TakeRequest().has_value());   // (not hosted on opening)
-    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Start hosting"});
+    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Difficulty", "Start hosting"});
     // (the cursor on Start hosting: one A hosts with the choices as they are, as most hosts want; Up to change them)
     CHECK(Selected(m) == "Start hosting");
     SelectRow(m, "Who can join");
@@ -2002,13 +2002,13 @@ TEST_CASE("pause tab: the title's Host opens on its choices, hosts on Start host
     CHECK(m.view().rows[2].cell == -1);
     m.Press(Input::kRight);   // (Anyone: the room name row)
     (void)m.TakeRequest();
-    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Room name", "Start hosting"});
+    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Room name", "Difficulty", "Start hosting"});
     CHECK(m.view().rows[0].cell == 1);
     CHECK(SelectedValue(m) == "Public");
     m.Press(Input::kDecide);   // (A flips it back, as the left and right do)
     (void)m.TakeRequest();
     CHECK(m.view().rows[0].cell == 0);
-    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Start hosting"});
+    CHECK(Names(m) == std::vector<std::string>{"Who can join", "Players", "Difficulty", "Start hosting"});
     m.Press(Input::kRight);
     (void)m.TakeRequest();
     CHECK(m.view().rows[0].cell == 1);
@@ -2302,16 +2302,76 @@ TEST_CASE("pause tab: Settings: Difficulty: the host changes it, the sliders und
     g.Press(Input::kDecide);
     CHECK_FALSE(g.TakeRequest());
 
-    // Solo (co-op idle): the row says who chooses it; nothing asked.
+    // Solo (co-op idle): the next lobby's choice (Host settings is the lobby-creation step): Automatic until picked.
     Menu s;
     s.Show(CoopTitleMenu::Options{});
     s.Open(Page::kSettings);
     REQUIRE(RowNamed(s.view(), "Difficulty") != nullptr);
-    CHECK(RowNamed(s.view(), "Difficulty")->fixed);
+    CHECK_FALSE(RowNamed(s.view(), "Difficulty")->fixed);
+    CHECK(RowNamed(s.view(), "Difficulty")->value == "Automatic");
     SelectRow(s, "Difficulty");
-    CHECK(s.view().help.find("The host chooses it") != std::string::npos);
+    CHECK(s.view().help.find("For the game you host") != std::string::npos);
     s.Press(Input::kRight);
-    CHECK_FALSE(s.TakeRequest());
+    r = s.TakeRequest();
+    REQUIRE(r);
+    CHECK(r->kind == Request::Kind::kDifficulty);
+    asked = CoopDifficulty::ParseChoice(r->text);
+    REQUIRE(asked);
+    CHECK_FALSE(asked->auto_scale);
+    CHECK(asked->preset == Preset::easy);
+}
+
+// The owner (2026-11-25): difficulty is picked when making the lobby. The Host pages (the title's and the pause
+// menu's) offer it before Start hosting; it is this player's next lobby's (DifficultyState::next, the kept choice),
+// the module gives it to the server (HosCoopHostOptions::difficulty) and the game lists show it.
+TEST_CASE("pause tab: Host page: the lobby's Difficulty is picked before Start hosting, Custom with its sliders") {
+    using CoopDifficulty::Preset;
+    for (const bool title : {false, true}) {
+        INFO(title);
+        Menu m;
+        m.Show(CoopTitleMenu::Options{});
+        if (title) m.SetTitle(true);
+        DifficultyState st;   // (no session)
+        st.next.auto_scale = false;
+        st.next.preset = Preset::hard;
+        m.SetDifficulty(st, 1);
+        m.Open(Page::kHost);
+        const auto names = Names(m);
+        const auto diff = std::find(names.begin(), names.end(), "Difficulty");
+        REQUIRE(diff != names.end());
+        if (title) {
+            CHECK(std::find(diff, names.end(), "Start hosting") != names.end());   // (picked before the start)
+        }
+        REQUIRE(RowNamed(m.view(), "Difficulty") != nullptr);
+        CHECK(RowNamed(m.view(), "Difficulty")->value == "Hard");
+        CHECK_FALSE(RowNamed(m.view(), "Difficulty")->fixed);
+        CHECK(Fits(*RowNamed(m.view(), "Difficulty")));
+        SelectRow(m, "Difficulty");
+        m.Press(Input::kRight);   // Hard -> Custom, at Hard's values
+        auto r = m.TakeRequest();
+        REQUIRE(r);
+        CHECK(r->kind == Request::Kind::kDifficulty);
+        auto asked = CoopDifficulty::ParseChoice(r->text);
+        REQUIRE(asked);
+        CHECK(asked->preset == Preset::custom);
+        CHECK(asked->custom.hp_pct == 200);
+        CHECK(SelectedValue(m) == "Custom");   // (shown until the module has kept it)
+        st.next = *asked;
+        m.SetDifficulty(st, 1);
+        for (const char* name : {"Enemy life", "Enemy damage", "Enemies"}) {
+            INFO(name);
+            REQUIRE(RowNamed(m.view(), name) != nullptr);
+            CHECK(Fits(*RowNamed(m.view(), name)));
+        }
+        CHECK(RowNamed(m.view(), "Enemy life")->value == "200%");
+    }
+    // Hosting: the title's Host page is the code and Stop; the lobby's difficulty is the session's then.
+    Menu h;
+    h.Show(CoopTitleMenu::Options{});
+    h.SetTitle(true);
+    h.SetSession(Hosting(1));
+    h.Open(Page::kHost);
+    CHECK(RowNamed(h.view(), "Difficulty") == nullptr);
 }
 
 TEST_CASE("pause tab: Settings: Character by age shows only with the mod, then the two rows pick round the list") {

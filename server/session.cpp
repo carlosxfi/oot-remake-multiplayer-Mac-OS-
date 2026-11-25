@@ -93,6 +93,7 @@ std::uint64_t Stats::dropped() const {
 
 Session::Session(SessionConfig config) : config_(std::move(config)), pvp_(config_.pvp), dbno_(config_.dbno) {
   dbno_.set_by = 0;
+  difficulty_ = lobby_difficulty();
   for (const std::string& id : config_.kept_bans) {
     if (id.rfind("k:", 0) == 0) banned_ids_.insert(id);   // (SessionConfig::kept_bans: keys only)
   }
@@ -1053,6 +1054,13 @@ void Session::on_difficulty(ConnectionId id, Connection& c, const Difficulty& m)
       (now.auto_scale ? "automatic" : "fixed") + ", life " + std::to_string(now.values.hp_pct) +
       "%, damage " + std::to_string(now.values.damage_pct) + "%, enemies " +
       std::to_string(now.values.count_pct) + "%");
+}
+
+DifficultyChoice Session::lobby_difficulty() const {
+  DifficultyChoice c = config_.difficulty;
+  if (static_cast<std::uint8_t>(c.preset) >= kDifficultyPresets) c.preset = DifficultyPreset::normal;
+  c.custom = clamp_difficulty(c.custom);
+  return c;
 }
 
 void Session::tell_difficulty_change(ConnectionId except) {
@@ -3687,7 +3695,7 @@ void Session::remove_player(ConnectionId id, LeaveReason reason, std::uint64_t n
     pvp_set_by_ = 0;
     dbno_ = config_.dbno;
     dbno_.set_by = 0;
-    difficulty_ = {};
+    difficulty_ = lobby_difficulty();
     difficulty_set_by_ = 0;
     difficulty_told_ = {};
     mod_settings_.reset();

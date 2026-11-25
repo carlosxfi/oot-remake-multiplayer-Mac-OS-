@@ -355,6 +355,7 @@ int main(int argc, char** argv) {
     }
     config.session.join_password = line->password;
     config.session.pvp = line->pvp;
+    config.session.difficulty = line->difficulty;
     config.session.dbno.on = line->dbno;
     config.session.approve_joins = line->approve_joins;
     config.session.dedicated = line->dedicated;

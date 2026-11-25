@@ -128,6 +128,42 @@ constexpr DifficultyValues difficulty_in_force(const DifficultyChoice& choice, s
   return preset_difficulty(choice.preset);
 }
 
+// A lobby's difficulty on the relay's room list (docs/protocol.md, "Difficulty"): the host picks it when making
+// the lobby, and the listing carries it so joiners see it before they join. The relay repeats a listing's
+// version u16 as given (the public bit, messages.hpp kPublicListingBit, rides the same way), so the choice goes in
+// bits 8 to 10 of it and the relay needs no change: 0 is a listing that says none (an older host), then
+// automatic, easy, normal, hard, custom. The protocol version is the low byte.
+inline constexpr std::uint16_t kListingDifficultyShift = 8;
+inline constexpr std::uint16_t kListingDifficultyMask = 0x0700;
+inline constexpr std::uint16_t kListingProtocolMask = 0x00FF;
+enum class ListedDifficulty : std::uint8_t { none = 0, automatic = 1, easy = 2, normal = 3, hard = 4, custom = 5 };
+
+constexpr ListedDifficulty listed_difficulty(const DifficultyChoice& choice) {
+  if (choice.auto_scale) return ListedDifficulty::automatic;
+  switch (choice.preset) {
+    case DifficultyPreset::easy: return ListedDifficulty::easy;
+    case DifficultyPreset::hard: return ListedDifficulty::hard;
+    case DifficultyPreset::custom: return ListedDifficulty::custom;
+    case DifficultyPreset::normal: break;
+  }
+  return ListedDifficulty::normal;
+}
+// `version` (the protocol, with the public bit or not) with `choice` in it.
+constexpr std::uint16_t with_listed_difficulty(std::uint16_t version, const DifficultyChoice& choice) {
+  return static_cast<std::uint16_t>((version & ~kListingDifficultyMask) |
+                                    (static_cast<std::uint16_t>(listed_difficulty(choice)) << kListingDifficultyShift));
+}
+// What a listing's version says; a code past custom (a later kit's) is none.
+constexpr ListedDifficulty listing_difficulty(std::uint16_t version) {
+  const auto code = static_cast<std::uint8_t>((version & kListingDifficultyMask) >> kListingDifficultyShift);
+  return code <= static_cast<std::uint8_t>(ListedDifficulty::custom) ? static_cast<ListedDifficulty>(code)
+                                                                     : ListedDifficulty::none;
+}
+constexpr std::uint16_t listing_protocol(std::uint16_t version) { return version & kListingProtocolMask; }
+static_assert(listing_protocol(with_listed_difficulty(0x8000 | 17, {false, DifficultyPreset::hard, {}})) == 17);
+static_assert(listing_difficulty(with_listed_difficulty(17, {})) == ListedDifficulty::automatic);
+static_assert(listing_difficulty(17) == ListedDifficulty::none);
+
 // (Navi) New Game+ (lichii/hook/coop_ngplus.h): each level after Ganon is
 // beaten multiplies the values in force, on top of the players' or the
 // host's: enemy and boss life by 1 + 0.5 x level, the damage they deal by

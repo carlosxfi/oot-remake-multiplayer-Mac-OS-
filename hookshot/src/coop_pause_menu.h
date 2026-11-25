@@ -84,6 +84,8 @@ struct DifficultyState {
     bool can_edit = false;    // we host
     coop::protocol::DifficultyChoice choice;
     coop::protocol::DifficultyValues values;
+    // Not in a session: this player's next lobby's (CoopDifficulty::NextLobby), what the lobby-creation rows set.
+    coop::protocol::DifficultyChoice next;
 };
 
 struct Request {
@@ -391,6 +393,9 @@ private:
     coop::protocol::DifficultyChoice DifficultyShown() const;
     coop::protocol::DifficultyValues DifficultyValuesShown() const;
     void DifficultyLines(std::vector<Line>& out) const;
+    // Whether this player's Difficulty rows change something: the host's in the session, or the next lobby's while
+    // in none (a guest's and a joining game's are read only).
+    bool DifficultyEditable() const;
     bool character_ = false;  // SetCharacter
     bool snail_home_ = false;  // SetSnailHome
     bool title_ = false;      // SetTitle

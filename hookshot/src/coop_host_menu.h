@@ -23,6 +23,10 @@
 #include "hos_coop_host.h"
 #include "nat_codes.hpp"
 
+namespace coop::protocol {
+struct DifficultyChoice;
+}
+
 namespace CoopHostMenu {
 
 // Where this game's own co-op client connects.
@@ -61,6 +65,12 @@ struct Hooks {
 // or with 0 the server's own default (coop::server::kDefaultMaxPlayers, as coop_server without --max-players).
 std::uint8_t HostMaxPlayers(std::uint8_t asked);
 
+// The server's start difficulty from HosCoopHostOptions::difficulty and its custom values (life, damage, enemies):
+// 0 or a code past custom automatic; custom values kept within the sliders' ends. (Declared with the protocol type
+// incomplete: coop/protocol/difficulty.hpp's std::min would meet windows.h's macro in coop_hookshot.cpp.)
+coop::protocol::DifficultyChoice HostDifficulty(std::uint8_t code, std::uint16_t life, std::uint16_t damage,
+                                                std::uint16_t enemies);
+
 class Menu {
 public:
     explicit Menu(Hooks hooks);
@@ -95,6 +105,9 @@ private:
         bool public_game = false;   // (HosCoopHostOptions::public_game)
         std::string bans_file;      // (HosCoopHostOptions::bans_file)
         bool loopback = false;      // (LoopbackNextHost: listen on 127.0.0.1 only)
+        // (HosCoopHostOptions::difficulty and its custom values, as given: the server's start choice, RunHost)
+        std::uint8_t difficulty = 0;
+        std::uint16_t difficulty_life = 100, difficulty_damage = 100, difficulty_enemies = 100;
     };
     struct JoinJob {
         std::string name, password;

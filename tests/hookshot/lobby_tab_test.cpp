@@ -524,4 +524,47 @@ TEST_CASE("public games: only a room with a proof that checks is the official ga
     Room older = room("squadala", true);
     older.protocol = proto::kProtocolVersion - 1;
     CHECK_FALSE(CoopRoomList::Proven(older, {Proof{"squadala", good}}, now, kits, kits, key));
+    // The lobby's difficulty is in the listed version too: the proof the host signed with it checks, read back
+    // through FromListing; another difficulty than the one signed does not.
+    proto::DifficultyChoice hard;
+    hard.auto_scale = false;
+    hard.preset = proto::DifficultyPreset::hard;
+    const std::uint16_t listed = proto::with_listed_difficulty(proto::public_listing_version(), hard);
+    const proto::OfficialProof signed_hard = proto::official_sign(seed, kits, "squadala", listed, now - 5);
+    Room heard = CoopRoomList::FromListing("squadala", "Squadala", 3, 16, listed);
+    CHECK(heard.protocol == proto::kProtocolVersion);
+    CHECK(heard.is_public);
+    CHECK(heard.difficulty == static_cast<int>(proto::ListedDifficulty::hard));
+    CHECK(CoopRoomList::Proven(heard, {Proof{"squadala", signed_hard}}, now, kits, kits, key));
+    heard.difficulty = static_cast<int>(proto::ListedDifficulty::easy);
+    CHECK_FALSE(CoopRoomList::Proven(heard, {Proof{"squadala", signed_hard}}, now, kits, kits, key));
+}
+
+// The owner (2026-11-25): the lobby's difficulty, picked as it was made, shows in the game lists (the Lobby, Find a
+// game and co-op's menu all use DetailText) before anyone joins; an older host's listing says none.
+TEST_CASE("room list: a listing's difficulty is read from its version and shown on the room's line") {
+    namespace proto = coop::protocol;
+    proto::DifficultyChoice custom;
+    custom.auto_scale = false;
+    custom.preset = proto::DifficultyPreset::custom;
+    const auto hard_room = CoopRoomList::FromListing(
+        "kokiri", "Saria", 2, 4,
+        proto::with_listed_difficulty(proto::kProtocolVersion, {false, proto::DifficultyPreset::hard, {}}));
+    CHECK_FALSE(hard_room.is_public);
+    CHECK(hard_room.protocol == proto::kProtocolVersion);
+    CHECK(CoopRoomList::DetailText(hard_room, proto::kProtocolVersion) == "Needs the host's password, Players 2/4, Hard");
+    CHECK(CoopRoomList::Joinable(hard_room, proto::kProtocolVersion));
+    const auto auto_room = CoopRoomList::FromListing("zora", "Ruto", 1, 4,
+                                                     proto::with_listed_difficulty(proto::public_listing_version(), {}));
+    CHECK(CoopRoomList::DetailText(auto_room, proto::kProtocolVersion) == "Public game, Players 1/4, Automatic");
+    const auto custom_room =
+        CoopRoomList::FromListing("lake", "Ruto", 1, 4, proto::with_listed_difficulty(proto::kProtocolVersion, custom));
+    CHECK(CoopRoomList::DetailText(custom_room, proto::kProtocolVersion).find(", Custom") != std::string::npos);
+    // An older host (0.11.12: no bits) says none; a code past custom (a later kit's) is none too.
+    const auto older = CoopRoomList::FromListing("goron", "Darunia", 1, 4, proto::kProtocolVersion);
+    CHECK(older.difficulty == 0);
+    CHECK(CoopRoomList::DetailText(older, proto::kProtocolVersion) == "Needs the host's password, Players 1/4");
+    const auto later = CoopRoomList::FromListing("gerudo", "Nabooru", 1, 4, proto::kProtocolVersion | 0x0700);
+    CHECK(later.difficulty == 0);
+    CHECK(later.protocol == proto::kProtocolVersion);
 }

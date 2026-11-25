@@ -1,0 +1,17 @@
+# hs-difficulty-lobby (W:difficulty-lobby-2, C #114 run A): a lobby made with a difficulty has it from the first
+# player. The server starts with --difficulty hard (the same SessionConfig::difficulty the Host page's choice fills);
+# both games join; neither game's kept coop-difficulty.ini replaces it (OffersKept: only an automatic session).
+# Shots (A and B, from hs-difficulty-lobby.A.txt / .B.txt): <x>-dl-chat (the /difficulty reply says Hard),
+# <x>-dl-settings / -dl-settings-2 / -dl-settings-3 (Co-op settings, its Difficulty row on Hard).
+# Run: tools\autotest\run.ps1 -Runtime hookshot -Scenario hs-difficulty-lobby
+#! switches LICHII_COOP_PUPPET=1
+#! timeout 420
+#! server --difficulty hard
+start A B
+load A B
+sleep 10
+play A hs-difficulty-lobby.A.txt B hs-difficulty-lobby.B.txt
+lines hard-A A min=1 coop: difficulty: Hard
+lines hard-B B min=1 coop: difficulty: Hard
+lines no-auto-A A max=0 coop: difficulty: Automatic
+shot end

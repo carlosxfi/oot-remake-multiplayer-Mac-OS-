@@ -259,8 +259,9 @@ Choice Applied(const Choice& now, const Command& change) {
     return c;
 }
 
-bool OffersKept(bool hosts, std::uint8_t set_by, const std::optional<Choice>& kept, bool offered) {
-    return hosts && set_by == 0 && kept && !kept->auto_scale && !offered;
+bool OffersKept(bool hosts, std::uint8_t set_by, const std::optional<Choice>& kept, bool offered,
+                bool session_auto) {
+    return hosts && set_by == 0 && session_auto && kept && !kept->auto_scale && !offered;
 }
 
 std::int32_t EnemyTakes(std::int32_t sum, std::uint16_t hp_pct, std::int32_t& carry) {

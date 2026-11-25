@@ -5358,6 +5358,37 @@ TEST_CASE("difficulty: automatic by the number of players until the host chooses
   CHECK(h.session.difficulty() == two);
 }
 
+// The owner (2026-11-25): the host picks the difficulty when making the lobby (HosCoopHostOptions::difficulty,
+// coop_server --difficulty): in force from the first player on, and the lobby's again when the session empties.
+TEST_CASE("difficulty: the lobby's choice from the start, and again when the session empties") {
+  SessionConfig config;
+  config.difficulty.auto_scale = false;
+  config.difficulty.preset = DifficultyPreset::hard;
+  Harness h(config);
+  CHECK(h.session.difficulty_choice() == config.difficulty);
+  h.join(1, "Link");
+  const Difficulty hard{0, false, DifficultyPreset::hard, {200, 150, 150, 200, 150}};
+  CHECK(h.difficulty_to(1) == std::vector<Difficulty>{hard});   // (the first player, the host, is told it at join)
+  h.clear();
+  h.join(2, "Zelda");
+  CHECK(h.difficulty_to(2) == std::vector<Difficulty>{hard});   // (fixed: the second player changes nothing)
+  CHECK(h.difficulty_to(1).empty());
+  // The host changes it in the session; the session empties: the lobby's again.
+  h.receive(1, Difficulty{0, false, DifficultyPreset::easy, {}}, kChannelSession);
+  CHECK(h.session.difficulty().preset == DifficultyPreset::easy);
+  h.session.disconnected(2, h.now);
+  h.session.disconnected(1, h.now);
+  h.collect();
+  CHECK(h.session.difficulty_choice() == config.difficulty);
+  // Custom values past a slider's end are kept within it (the module clamps them too).
+  SessionConfig wild;
+  wild.difficulty.auto_scale = false;
+  wild.difficulty.preset = DifficultyPreset::custom;
+  wild.difficulty.custom = {900, 10, 100, 900, 10};
+  Harness w(wild);
+  CHECK(w.session.difficulty().values == DifficultyValues{500, 25, 100, 500, 25});
+}
+
 TEST_CASE("difficulty: the host's choice is fixed, whoever joins or leaves") {
   Harness h;
   h.join(1, "Link");
