@@ -107,6 +107,29 @@ try {
     $said = @(Sync-KitLocalInstance $game $inst)
     Check ((Read-File (Join-Path $inst 'mods\m.txt')) -eq 'mod') "instance: a link to a folder that is gone is made again ($($said -join ' | '))"
 
+    # --- What player 2's game will see through its links (run local-coop-count-run: games 2 and 3 started with an
+    # empty mods folder and stopped at their start) ---
+    $blind = @(Test-KitLocalLinks $game $inst)
+    Check ($blind.Count -eq 0) "links: every linked folder shows the game's ($($blind -join ' | '))"
+    [System.IO.Directory]::Delete((Join-Path $inst 'mods'), $false)
+    $empty = Join-Path $root 'empty-mods'
+    New-Item -ItemType Directory -Path $empty | Out-Null
+    New-Item -ItemType Junction -Path (Join-Path $inst 'mods') -Target $empty | Out-Null
+    $blind = @(Test-KitLocalLinks $game $inst)
+    Check ($blind.Count -eq 1 -and $blind[0] -match 'mods' -and $blind[0] -match 'shows 0 of the 1') "links: a mods link that shows nothing is said ($($blind -join ' | '))"
+    [System.IO.Directory]::Delete((Join-Path $inst 'mods'), $false)
+    [void](Sync-KitLocalInstance $game $inst)
+    Check (@(Test-KitLocalLinks $game $inst).Count -eq 0) 'links: made again, all shown'
+
+    # --- Which player a running game is (its exe's folder); the pattern parses (it ended in one \ before) ---
+    $lp = (Join-Path $game 'local-players') + '\'
+    Check ((Get-KitLocalPlayerOfPath $lp (Join-Path $lp 'player3\longshot.exe')) -eq 3) 'running: local-players\player3\longshot.exe is player 3'
+    Check ((Get-KitLocalPlayerOfPath $lp (Join-Path $lp 'PLAYER2\longshot.exe')) -eq 2) 'running: the folder''s case does not matter'
+    Check ((Get-KitLocalPlayerOfPath $lp (Join-Path $lp 'player1\longshot.exe')) -eq 0) 'running: player1 is not one of the games it starts'
+    Check ((Get-KitLocalPlayerOfPath $lp (Join-Path $lp 'player2x\longshot.exe')) -eq 0) 'running: player2x is not player 2'
+    Check ((Get-KitLocalPlayerOfPath $lp (Join-Path $game 'longshot.exe')) -eq 0) 'running: game 1 is not a local player'
+    Check ((Get-KitLocalPlayerOfPath $lp '') -eq 0) 'running: a process without a path'
+
     # --- Copies of this game folder never take the local players (review: robocopy follows the junctions) ---
     # hookshot-build.ps1's copy from another kit's game: its command as written, run on this game folder.
     $hb = Read-File (Join-Path $scripts 'hookshot-build.ps1')
