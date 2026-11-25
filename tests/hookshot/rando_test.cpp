@@ -2455,7 +2455,7 @@ void MarkLayouts(const fs::path& mods, const std::string& mod) {
 
 TEST_CASE("rando (row 288): a layout archive that wins without the Characters page's layouts is found") {
     World w;
-    const std::string pack = "contents\0400486024DEC000\coop-puppet";
+    const std::string pack = "contents\\0400486024DEC000\\coop-puppet";
     Put(w.mods / kPackFolder / "romfs" / kLayouts, "game layouts + co-op's");
     Put(w.mods / "OoT Character Select" / "romfs" / kLayouts, "game layouts + the Characters page's");
     Put(w.mods / "randomizer-S1" / "romfs" / kLayouts, "game layouts, the seed's");
