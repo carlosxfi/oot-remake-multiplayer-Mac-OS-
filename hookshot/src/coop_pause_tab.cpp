@@ -1665,15 +1665,47 @@ std::string HelpText(const std::string& utf8, std::size_t columns, std::size_t l
     return text;
 }
 
-std::string HelpPager::Shown(const std::string& utf8, std::uint64_t now_ms) {
-    if (utf8 != text_) {
-        text_ = utf8;
-        pages_ = utf8.empty() ? std::vector<std::string>{} : CoopModsTab::HelpPages(utf8);
+std::vector<std::string> LinePages(const std::string& utf8, std::size_t letters, std::size_t bytes) {
+    std::vector<std::string> out;
+    const auto blank = [&](std::size_t i) { return utf8[i] == ' ' || utf8[i] == '\n'; };
+    std::size_t at = 0;
+    while (at < utf8.size()) {
+        if (blank(at)) {
+            ++at;
+            continue;
+        }
+        std::size_t end = at + CoopTextFit::PrefixEnd(std::string_view(utf8).substr(at), bytes, 2 * letters);
+        if (end < utf8.size() && !blank(end)) {   // (a word left whole when a space is in the page's second half)
+            const std::size_t space = utf8.find_last_of(" \n", end);
+            if (space != std::string::npos && space > at && (space - at) * 2 >= end - at) end = space;
+        }
+        if (end == at) {   // (no letter fits: one, so the loop moves on)
+            std::size_t n = 1;
+            CoopTextFit::Decode(utf8, at, &n);
+            end = at + n;
+        }
+        std::string page = utf8.substr(at, end - at);
+        std::replace(page.begin(), page.end(), '\n', ' ');
+        while (!page.empty() && page.back() == ' ') page.pop_back();
+        out.push_back(std::move(page));
+        at = end;
+    }
+    return out;
+}
+
+std::string HelpPager::Shown(const std::string& utf8, std::uint64_t now_ms, std::size_t line_letters,
+                             std::size_t line_bytes) {
+    if (utf8 != text_ || line_letters != letters_ || line_bytes != bytes_) {
+        text_ = utf8, letters_ = line_letters, bytes_ = line_bytes;
+        pages_ = utf8.empty()        ? std::vector<std::string>{}
+                 : line_letters == 0 ? CoopModsTab::HelpPages(utf8)
+                                     : LinePages(utf8, line_letters, line_bytes);
         since_ms_ = now_ms;
     }
     if (pages_.empty()) return {};
     const std::uint64_t turns = now_ms >= since_ms_ ? (now_ms - since_ms_) / kHelpPageMs : 0;
-    return HelpText(pages_[static_cast<std::size_t>(turns % pages_.size())]);
+    const std::string& page = pages_[static_cast<std::size_t>(turns % pages_.size())];
+    return line_letters == 0 ? HelpText(page) : page;
 }
 
 const char* ActionWords(RowAction a) {

@@ -969,7 +969,8 @@ void StepNative(void* ctx, std::uint64_t screen) {
             const std::string& letters = CoopTitleNative::Letters();
             look = CoopTitleNative::TypingLook(v, letters[g_native_letter % letters.size()], g_native_key);
         } else {
-            look = CoopTitleNative::LookFor(v, g_native_top, g_page_buttons.load());
+            static CoopPauseTab::HelpPager hint_pager;   // (g_mutex: a long help's parts in turn on the hint line)
+            look = CoopTitleNative::LookFor(v, g_native_top, g_page_buttons.load(), &hint_pager, NowMs());
             g_native_top = look.top;
         }
         refocus = std::exchange(g_native_refocus, false);

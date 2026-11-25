@@ -898,14 +898,20 @@ std::string HelpText(const std::string& utf8, std::size_t columns = kHelpColumns
 // one every kHelpPageMs, round again after the last; a new help starts at its first page. Any language: the words
 // stay as they are (a shorter English line would lose its Chinese one).
 inline constexpr std::uint64_t kHelpPageMs = 6000;
+// A help as one-line pages (the title's hint line): each at most `letters` letters of width and `bytes` bytes
+// (CoopTextFit's measure), ending at a space where one is in its second half; line ends read as spaces.
+std::vector<std::string> LinePages(const std::string& utf8, std::size_t letters, std::size_t bytes);
 class HelpPager {
 public:
-    // The caption's text now (HelpText's lines), "" for an empty help.
-    std::string Shown(const std::string& utf8, std::uint64_t now_ms);
+    // The text shown now, "" for an empty help: with `line_letters` 0 the caption's (HelpText's lines), else one line
+    // of LinePages(utf8, line_letters, line_bytes).
+    std::string Shown(const std::string& utf8, std::uint64_t now_ms, std::size_t line_letters = 0,
+                      std::size_t line_bytes = 0);
     std::size_t Pages() const { return pages_.size(); }
 
 private:
     std::string text_;
+    std::size_t letters_ = 0, bytes_ = 0;
     std::vector<std::string> pages_;
     std::uint64_t since_ms_ = 0;
 };
