@@ -9,22 +9,11 @@
 #   stitching stays); adult-zora: the Zora hood's pattern and rope red, the rest blue. B's b-* shots: A's puppet the
 #   same at each step. A's log: "the Cap trim paints N blocks of 6 tunic textures (3 of the Goron and Zora tunics)".
 #   FAIL: a Goron or Zora hood with no red trim on either game (the row), or red on the body cloth (wrong blocks).
-#! noload
-#! start coop: test warp done
 #! switches LICHII_COOP_DEBUG_ANIM=1,LICHII_COOP_CHEATS=1
 #! timeout 480
 mark start
 warp KakarikoVillage_Child Kakariko_WellSide
-wait 1200
-mark title
-press A
-wait 180
-press A
-wait 180
-press A
-wait 300
-press A
-wait 2400
+wait 1200               # the warp lands
 mark after
 wait 600
 stick 0 0.6 100
@@ -33,6 +22,7 @@ stick 0 -0.4 12
 wait 60
 mark child-kokiri
 wait 240
+setflag Sequence_IsChildhood 0  # set AFTER the save is loaded (run.ps1 loads it first): at the title the load put the save's age back
 warp KakarikoVillage_Adult Kakariko_WellSide
 wait 1500
 stick 0 0.6 100

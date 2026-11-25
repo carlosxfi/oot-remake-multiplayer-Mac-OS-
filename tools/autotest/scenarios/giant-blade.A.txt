@@ -1,22 +1,12 @@
 # giant-blade (proof-0116, O4 puppet-looks-0116-3): ADULT A wears Weapon_Sword_Giant, draws facing B, then Weapon_Sword_BrokenGiant.
 # PASS (B's shots b-giant / b-broken): the blade (broken: the stub) on A's puppet; run once with looks on, once with B
 # LICHII_COOP_LOOK_ITEMS=0 (B log 'wears weapon ...Blade1').
-#! noload
-#! start coop: test warp done
 #! switches LICHII_COOP_DEBUG_OBJECTS=1
 #! timeout 360
 mark start
+setflag Sequence_IsChildhood 0  # set AFTER the save is loaded (run.ps1 loads it first): at the title the load put the save's age back
 warp HyruleField_Adult HyruleField_FrontOfKakarikoVillage
-wait 1200
-mark title
-press A
-wait 180
-press A
-wait 180
-press A
-wait 300
-press A
-wait 2400
+wait 1200               # the warp lands
 mark field
 wait 600
 # Field spot 5 m off the Kokiri Forest exit (the old 199.43 was ON the exit: a map change to KokiriForest_Adult).
