@@ -243,3 +243,61 @@ TEST_CASE("voice microphone: chosen by its name, kept on one line, a missing one
     b.mic = "Webcam";
     CHECK_FALSE(a == b);   // a change of microphone is a change of settings
 }
+
+TEST_CASE("voice: row 229: the microphone's state, the first that holds") {
+    MicFacts f;
+    CHECK(MicStatusFrom(f) == MicStatus::unknown);   // not opened yet
+    f.heard = true;
+    CHECK(MicStatusFrom(f) == MicStatus::ok);
+    f.heard = false, f.silent = true;
+    CHECK(MicStatusFrom(f) == MicStatus::silent);
+    f.start_failed = true;
+    CHECK(MicStatusFrom(f) == MicStatus::not_started);
+    f.game_mic = 0;   // Default and the Insert menu's Microphone Off: that is why
+    CHECK(MicStatusFrom(f) == MicStatus::game_off);
+    f.default_mic = false;   // a microphone of its own: the Insert menu does not count
+    CHECK(MicStatusFrom(f) == MicStatus::not_started);
+    f.chosen_missing = true;
+    CHECK(MicStatusFrom(f) == MicStatus::not_connected);
+    f.backend = false;
+    CHECK(MicStatusFrom(f) == MicStatus::no_voice);
+    MicFacts on;
+    on.game_mic = 1, on.heard = true;
+    CHECK(MicStatusFrom(on) == MicStatus::ok);
+    // Every state that reaches nobody says so in both places; ok and unknown say nothing.
+    for (MicStatus s : {MicStatus::no_voice, MicStatus::not_connected, MicStatus::game_off, MicStatus::not_started,
+                        MicStatus::silent}) {
+        CHECK_FALSE(MicStatusNote(s).empty());
+        CHECK_FALSE(MicStatusWords(s).empty());
+        CHECK(MicStatusWords(s).size() <= 22);
+    }
+    CHECK(MicStatusWords(MicStatus::ok).empty());
+    CHECK(MicStatusNote(MicStatus::unknown).empty());
+    CHECK(MicStatusNote(MicStatus::game_off).find("Audio: Microphone") != std::string::npos);
+}
+
+TEST_CASE("voice: row 229: silence on an open microphone") {
+    SilenceWatch w;
+    const std::int16_t zeros[960] = {};
+    w.feed(zeros, 960, 10'000'000);
+    CHECK_FALSE(w.silent);   // closed: nothing counts
+    w.open(1'000'000);
+    w.feed(zeros, 960, 3'000'000);
+    CHECK_FALSE(w.silent);   // not its time yet
+    w.feed(nullptr, 0, 5'000'000);   // no samples at all for 4 s: silence too
+    CHECK(w.silent);
+    std::int16_t hiss[960] = {};
+    hiss[500] = -40;   // a real microphone's own noise
+    w.feed(hiss, 960, 5'100'000);
+    CHECK(w.heard);
+    CHECK_FALSE(w.silent);
+    w.feed(zeros, 960, 20'000'000);   // a noise-cancelling headset's zeros between words: still heard
+    CHECK(w.heard);
+    CHECK_FALSE(w.silent);
+    w.close();
+    w.open(30'000'000);   // muted since: each opening asks again
+    CHECK_FALSE(w.heard);
+    const std::int16_t quiet[4] = {3, -3, 2, 0};   // at most kQuiet: nothing
+    w.feed(quiet, 4, 34'000'000);
+    CHECK(w.silent);
+}

@@ -2397,3 +2397,29 @@ TEST_CASE("pause tab: BackTaken says what a Back would do, on every page (Hooksh
         }
     }
 }
+
+TEST_CASE("pause tab: Settings: row 229, the Voice rows say when the microphone reaches nobody") {
+    using CoopPauseMenu::MicWords;
+    CHECK(MicWords("", {"A"}, "") == "Default");
+    CHECK(MicWords("", {"A"}, "(Off in Longshot)") == "Default (Off in Longshot)");
+    CHECK(MicWords("A", {}, "(only silence)") == "A (not connected)");   // the name says it already
+    CHECK(MicWords("A", {"A"}, "(not connected)") == "A");
+    Menu m;
+    CoopTitleMenu::Options o;
+    o.voice = true;
+    m.Show(o);
+    m.Open(Page::kSettings);
+    m.SetMicrophones(std::vector<std::string>{"Webcam"});
+    SelectRow(m, "Proximity voice chat");
+    const std::string plain = m.view().help;
+    m.SetVoiceStatus("(Off in Longshot)", "Voice chat: the others hear nothing.");
+    CHECK(Selected(m) == "Proximity voice chat");   // the cursor stays
+    CHECK(m.view().help.find("Voice chat: the others hear nothing.") != std::string::npos);
+    CHECK(m.view().help.find(plain) == 0);   // after the row's own help
+    auto names = Names(m);
+    const auto at = std::find(names.begin(), names.end(), "Microphone");
+    REQUIRE(at != names.end());
+    CHECK(m.view().rows[static_cast<std::size_t>(at - names.begin())].value == "Default (Off in Longshot)");
+    m.SetVoiceStatus("", "");
+    CHECK(m.view().help == plain);
+}

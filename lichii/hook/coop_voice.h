@@ -93,6 +93,46 @@ std::string MicName(std::string_view name);
 // back (or choose another in Settings)."; "" when none is chosen or it is
 // there. (No other microphone stands in: only the one chosen is opened.)
 std::string MicMissingNote(const std::string& chosen, const std::vector<std::string>& listed);
+
+// Row 229: whether what the voice records reaches the others, for the
+// settings' Voice rows and one chat note, so a silent microphone is never
+// silent about it. In order (the first that holds): no_voice (this game hands
+// the voice no microphone: no backend), not_connected (the chosen microphone
+// is not plugged in), game_off (Default, and Longshot's Insert menu has its
+// Microphone Off or its gain at 0: the game's microphone hears silence),
+// not_started (the stream did not start), silent (open SilenceWatch's time
+// and nothing but silence came: Windows' microphone privacy, a muted or dead
+// device), ok (a voice-like level came), unknown (not opened yet).
+enum class MicStatus : std::uint8_t { unknown, ok, no_voice, not_connected, game_off, not_started, silent };
+struct MicFacts {
+    bool backend = true;          // SetBackend came
+    bool chosen_missing = false;  // a chosen microphone not listed (MicMissingNote)
+    int game_mic = -1;            // the Insert menu's microphone: -1 not known, 0 Off (or gain 0), 1 on
+    bool default_mic = true;      // the voice records from the game's (Default)
+    bool start_failed = false;    // mic_start said no
+    bool silent = false;          // SilenceWatch: only silence
+    bool heard = false;           // SilenceWatch: a level came
+};
+MicStatus MicStatusFrom(const MicFacts& f);
+// The Microphone row's words after its name: "" (ok, unknown), else a short
+// "(...)" of at most 22 characters.
+std::string MicStatusWords(MicStatus s);
+// One sentence for the Voice row's help and the chat; "" for ok and unknown.
+std::string MicStatusNote(MicStatus s);
+// Silence on an open microphone: samples at most kQuiet (a real microphone's
+// own hiss is above it; a source that is Off, blocked or muted gives zeros)
+// for kSilentAfterUs of reading, or no samples at all that long. Any louder
+// sample: heard until the next opening (a noise-cancelling headset's zeros
+// between words are not silence).
+struct SilenceWatch {
+    static constexpr int kQuiet = 3;
+    static constexpr std::uint64_t kSilentAfterUs = 4'000'000;
+    std::uint64_t quiet_from_us = 0;   // 0: closed
+    bool silent = false, heard = false;
+    void open(std::uint64_t now_us);
+    void close();
+    void feed(const std::int16_t* pcm, int n, std::uint64_t now_us);
+};
 // The push-to-talk key as the player reads it: "V", "7", else "the
 // push-to-talk key".
 std::string KeyName(std::uint32_t vk);
@@ -179,6 +219,14 @@ void SetMicrophone(const std::string& name);
 void SetHostMuted(bool muted);
 // The turned-on tip once, for the chat as a notice; "" when there is none.
 std::string TakeNotice();
+// Row 229: Longshot's Insert-menu microphone (MicFacts::game_mic: -1 not
+// known, 0 Off or gain 0, 1 on), any thread; the host game reads it with no
+// lock of ours held.
+void SetGameMic(int state);
+// Any thread: what the voice's microphone gives now (MicStatusFrom). While
+// voice is on, each status that reaches nobody also goes to the chat once a
+// run (TakeNotice, MicStatusNote).
+MicStatus Status();
 
 // The network thread: VOICE_FRAME in, a player gone.
 void OnEvent(const coop::net::Event& event);

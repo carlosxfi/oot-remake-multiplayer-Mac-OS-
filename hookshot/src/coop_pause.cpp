@@ -152,6 +152,7 @@ struct Outside {
     std::uint16_t character = 0;
     std::optional<std::string> ini;                  // coop.ini (every 5 s: Follow's launcher port and last game)
     std::optional<CoopTitleMenu::Options> options;   // the files' settings, with ini
+    CoopVoice::MicStatus mic = CoopVoice::MicStatus::unknown;   // (row 229) the voice's microphone, its own lock
 };
 Outside Gather(bool files) {
     Outside o;
@@ -162,6 +163,7 @@ Outside Gather(bool files) {
     o.asking = CoopLobby::Asking();
     o.difficulty = CoopDifficulty::Get();
     o.character = CoopCharColours::ShownCharacter();
+    o.mic = CoopVoice::Status();
     if (files) {
         o.ini = ReadText(CoopIni());
         o.options = ReadOptions();
@@ -841,10 +843,21 @@ void Leave() {
     g_menu.SetNote({"Co-op stopped. You play on alone."});
 }
 
+// Row 229: what the voice's microphone gives now, on the Voice rows (the Microphone row's words, the Proximity voice
+// chat row's help). g_mutex; Tick's follow-up reads it from its Gather (off g_mutex), else CoopVoice's own lock is
+// taken under ours (it takes none of ours).
+void VoiceStatusRows() {
+    const CoopVoice::MicStatus s = !g_menu.options().voice ? CoopVoice::MicStatus::unknown
+                                 : g_outside != nullptr  ? g_outside->mic
+                                                         : CoopVoice::Status();
+    g_menu.SetVoiceStatus(CoopVoice::MicStatusWords(s), CoopVoice::MicStatusNote(s));
+}
+
 // The Settings page's Microphone row (voice on): the microphones there now, listed only while voice is on (none
 // opened); none when this game cannot choose one (an older patch 0009).
 void MicRows() {
     g_menu.SetMicrophones(g_menu.options().voice ? CoopVoice::Microphones() : std::nullopt);
+    VoiceStatusRows();
 }
 
 void Save() {
@@ -1366,6 +1379,7 @@ static void FollowStep() {
         }
         g_outside = &*outside;
         now = NowMs();
+        VoiceStatusRows();   // (row 229: a microphone found silent while the page shows says so there)
         Follow(Status());
         RefreshFound(now);
         LocalHostStep();
