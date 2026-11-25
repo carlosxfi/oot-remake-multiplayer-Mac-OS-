@@ -64,8 +64,10 @@ class Clock:
 
 class FakeGame:
     def __init__(self, clock=None, mem=True, camera=0.0, refuse_teleports=0, drop_teleports=0, maps=None,
-                 redirect=None):
+                 redirect=None, link_stays_child=False):
         self.clock = clock or Clock()
+        self.age = "child"       # Link's age (status game.age): the map's, after a teleport, unless link_stays_child
+        self.link_stays_child = link_stays_child
         self.redirect = redirect or {}   # asked map -> the map the bridge sends to (its age: _Adult in a child game)
         self.maps = maps         # the bridge's own list of maps (None: any); another is not_found
         self.mem = mem
@@ -122,7 +124,7 @@ class FakeGame:
                 return dict(base, released=n, all=False)
             if cmd == "status":
                 return dict(base, state=self.state, map="KokiriForest_Child" if self.state == "play" else None,
-                            game={"event": False, "loading": False, "age": "child"})
+                            game={"event": False, "loading": False, "age": self.age})
             if cmd == "mem_read":
                 if not self.mem:
                     return dict(base, ok=False, error="forbidden", message="HOS_CONTROL_MEM")
@@ -146,6 +148,8 @@ class FakeGame:
                     self.drop -= 1
                     return dict(base, teleport=1, sent=True, accepted=False, map=req["to"])
                 self.map = req["to"]
+                if not self.link_stays_child and req["to"].endswith("_Adult"):
+                    self.age = "adult"
                 return dict(base, teleport=1, sent=True, accepted=True, map=req["to"])
             if cmd == "wait" and req.get("event") == "map":
                 if req.get("map", "").lower() == self.map.lower():
@@ -606,6 +610,18 @@ class PlayerTest(unittest.TestCase):
                                             "map HyruleField_Child") for line in log.lines))
         self.assertFalse(any(line.startswith("coop: test warp done") for line in log.lines))
         self.assertEqual(len(game.cmds("teleport")), 1)   # (not asked again: it never becomes the asked map)
+
+    def test_warp_to_the_right_map_with_the_wrong_age_fails(self):
+        """epona-sync-2195cbd1: HyruleField_Adult reached, Epona there, flag set, Link still a child: not 'warp done'."""
+        game, log, _, p, _ = play("warp HyruleField_Adult HyruleField_FrontOfMarket\nwait 6", FakeGame(link_stays_child=True))
+        self.assertEqual(p.warp_failed, ["HyruleField_Adult -> Link is child"])
+        self.assertTrue(any("Link is still a child" in line for line in log.lines))
+        self.assertFalse(any(line.startswith("coop: test warp done") for line in log.lines))
+
+    def test_warp_to_an_adult_map_with_an_adult_link_is_done(self):
+        game, log, _, p, _ = play("warp HyruleField_Adult HyruleField_FrontOfMarket\nwait 6", FakeGame())
+        self.assertEqual(p.warp_failed, [])
+        self.assertIn("coop: test warp done (map HyruleField_Adult)", log.lines)
 
     def test_warp_to_the_asked_map_is_not_a_failure(self):
         game, log, _, p, _ = play("warp KakarikoVillage_Child\nwait 6", FakeGame())
