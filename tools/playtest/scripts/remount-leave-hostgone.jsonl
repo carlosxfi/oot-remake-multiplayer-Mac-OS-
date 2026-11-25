@@ -1,4 +1,4 @@
-# what: remount-leave, host gone for good: B (a guest on the title with the host's save) loses A and the server. By design the client retries for as long as it runs (coop/net client.hpp: the game decides when to give up, and none does), so B stays in the session on the host's save while it retries; the player's Leave then takes B back to its own saves at once.
+# what: remount-leave, host gone for good: B (a guest on the title with the host's save) loses A and the server. By design the client retries for as long as it runs, so B stays on the host's save; its Leave then takes it back to its own saves at once.
 # scene: HyruleField_Child
 # start: live.py start --boot tools/autotest/scenarios/live-leave-solo --no-load --env LICHII_COOP_DEBUG_FLAGS=1 --env B:LICHII_COOP_HOST_SAVE=1 --env B:LICHII_COOP_TEST_OWN_SAVE=0 (replay --include-reads for the shots).
 # expect: every wait_log ok; shot 1: B's title on the host's save while it retries; shot 2: B's title on its own saves after the Leave.
