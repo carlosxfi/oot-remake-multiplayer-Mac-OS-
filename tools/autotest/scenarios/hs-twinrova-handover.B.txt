@@ -1,0 +1,111 @@
+# hs-twinrova-handover (PR #335 hand-over half, pr335-handover): Twinrova's attacks across forced hand-overs.
+# As hs-twinrova-fire up to the merge; then three stuns of a COPY (`stun`, a DAMAGE of 0: the server hands her to the
+# stunner, issue 150; from the owner it says 'not a copy'): A, 24 shots later B, 24 shots later A. Whoever owns her at
+# the start, at least two hand-overs. 72 paired shots h-01..h-72 about 1.5 s apart on both screens.
+# PASS: at least 2 'now ours' lines in all; every bullet the owner fires in a stretch is fired once by the copy (ice for
+#   ice, fire for fire; NEXT36 was 0 of 3); no bullet twice; 0 crashes; the h-NN shots show the bullet on BOTH screens.
+#   Read too: 'the new owner goes on from seq N', 'own start of verb V held', 'asked again after busy' (does her AI ask
+#   again after a busy answer?), 'made ours mid-move ...: its AI goes on', and no 'held ... stuck' after it.
+# FAIL: a copy's attack with no bullet, a double one, a boss that stands still after a hand-over, a crash.
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_BOSS=1,LICHII_COOP_DEBUG_OBJECTS=1,LICHII_COOP_CHEATS=1
+#! timeout 1100
+mark start
+warp TwinrovaStage TwinrovaStage
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark b-in
+wait 1800               # the intro, then the fight
+hold ZL 240
+hold ZL 60 b-1
+kill Enemy_DungeonBoss_Koume
+wait 60
+kill Enemy_DungeonBoss_Kotake
+wait 600
+mark b-k
+wait 2400               # the merge cutscene
+hold ZL 240
+hold ZL 90 h-01
+hold ZL 90 h-02
+hold ZL 90 h-03
+hold ZL 90 h-04
+hold ZL 90 h-05
+hold ZL 90 h-06
+hold ZL 90 h-07
+hold ZL 90 h-08
+hold ZL 90 h-09
+hold ZL 90 h-10
+hold ZL 90 h-11
+hold ZL 90 h-12
+hold ZL 90 h-13
+hold ZL 90 h-14
+hold ZL 90 h-15
+hold ZL 90 h-16
+hold ZL 90 h-17
+hold ZL 90 h-18
+hold ZL 90 h-19
+hold ZL 90 h-20
+hold ZL 90 h-21
+hold ZL 90 h-22
+hold ZL 90 h-23
+hold ZL 90 h-24
+stun Enemy_DungeonBoss_Twinrova   # she goes to us (from the owner: not a copy)
+hold ZL 90 h-25
+hold ZL 90 h-26
+hold ZL 90 h-27
+hold ZL 90 h-28
+hold ZL 90 h-29
+hold ZL 90 h-30
+hold ZL 90 h-31
+hold ZL 90 h-32
+hold ZL 90 h-33
+hold ZL 90 h-34
+hold ZL 90 h-35
+hold ZL 90 h-36
+hold ZL 90 h-37
+hold ZL 90 h-38
+hold ZL 90 h-39
+hold ZL 90 h-40
+hold ZL 90 h-41
+hold ZL 90 h-42
+hold ZL 90 h-43
+hold ZL 90 h-44
+hold ZL 90 h-45
+hold ZL 90 h-46
+hold ZL 90 h-47
+hold ZL 90 h-48
+hold ZL 90 h-49
+hold ZL 90 h-50
+hold ZL 90 h-51
+hold ZL 90 h-52
+hold ZL 90 h-53
+hold ZL 90 h-54
+hold ZL 90 h-55
+hold ZL 90 h-56
+hold ZL 90 h-57
+hold ZL 90 h-58
+hold ZL 90 h-59
+hold ZL 90 h-60
+hold ZL 90 h-61
+hold ZL 90 h-62
+hold ZL 90 h-63
+hold ZL 90 h-64
+hold ZL 90 h-65
+hold ZL 90 h-66
+hold ZL 90 h-67
+hold ZL 90 h-68
+hold ZL 90 h-69
+hold ZL 90 h-70
+hold ZL 90 h-71
+hold ZL 90 h-72
+wait 600
+mark end
