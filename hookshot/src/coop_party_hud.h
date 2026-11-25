@@ -39,6 +39,7 @@ inline constexpr std::uint64_t kAnimPlayer = 0x20;         // animation+: its pl
 inline constexpr std::uint64_t kAnimLastFrame = 0x2d1340;  // (player) -> s32 its last frame
 inline constexpr std::uint64_t kAnimStopAt = 0x2d2d90;     // (animation, s0 frame): stopped at that frame
 inline constexpr std::uint64_t kPaneShow = 0x8022aea0 - 0x80020000;   // (pane, 0/1)
+inline constexpr std::uint64_t kPaneAlpha = 0x2d8ac0;      // (pane, s0 alpha 0..1): its own alpha (coop_pause_tab.h)
 inline constexpr std::uint64_t kPaneMarkA = 0x815457d0 - 0x80020000;  // what the game's pane mover calls after a move
 inline constexpr std::uint64_t kPaneMarkB = 0x8154d540 - 0x80020000;
 inline constexpr std::uint64_t kPaneXY = 0x6c;             // pane+: f32 x, y
@@ -57,6 +58,7 @@ inline constexpr float kLabelX = kFirstX - 30.0f + 500.0f * kScale;   // the lin
 inline constexpr float kBlockGap = 14.0f;
 inline constexpr float kDefaultTop = -330.0f;              // under two rows of hearts and the magic bar
 inline constexpr float kLayoutHeight = 2160.0f;
+inline constexpr float kDimAlpha = 150.0f / 255.0f;        // a player not connected: as the drawn blocks (coop_draw)
 
 // The module's game: the chat's, and a call with a float in s0.
 class Game : public CoopNativeUi::Game {
@@ -68,6 +70,7 @@ public:
 struct Block {
     std::string text;            // the line over the hearts (name, place, voice)
     std::vector<int> hearts;     // quarters filled in each (CoopHudHearts::Quarters)
+    bool dim = false;            // not connected (CoopHudDim): hearts and line at kDimAlpha
 };
 
 // A player's hearts as the game sets its own: each whole heart's state (0 none, 1 empty, 2 full), and the part heart.
@@ -110,6 +113,7 @@ private:
         std::uint64_t base = 0, heart = 0, gauge = 0;   // its animations
         std::int32_t gauge_last = 0;
         int shown = -1;                                 // what was last set: -1 unknown
+        float alpha = -1.0f;
         int state = -1;
         float frame = -1.0f;
         std::array<float, 2> at{};
@@ -118,6 +122,7 @@ private:
     struct Label {
         std::uint64_t pane = 0;
         int shown = -1;
+        float alpha = -1.0f;
         bool placed = false;
         std::array<float, 2> at{};
         std::string text;
@@ -126,8 +131,10 @@ private:
     bool Find(Game& game, std::uint64_t layout, std::vector<std::string>* log);
     void Show(Game& game, Pane& p, bool shown);
     void Show(Game& game, Label& l, bool shown);
-    void Set(Game& game, Pane& p, int state, float frame, const std::array<float, 2>& at);
-    void SetLabel(Game& game, std::size_t index, const std::string& text, const std::array<float, 2>& at);
+    void Set(Game& game, Pane& p, int state, float frame, const std::array<float, 2>& at, float alpha);
+    void SetLabel(Game& game, std::size_t index, const std::string& text, const std::array<float, 2>& at,
+                  float alpha);
+    static void Alpha(Game& game, std::uint64_t pane, float& had, float alpha);
     std::uint64_t Name(Game& game, const std::string& text);
 
     std::uint64_t layout_ = 0;     // the layout the panes below were found on (the HUD made again: found again)
@@ -139,7 +146,8 @@ private:
 };
 
 // Test builds, COOP_TEST_PARTY_HUD=1 (scenario hs-party-hud): the blocks of four made-up players, their life going
-// down a quarter of a heart every kTestStepMs and round again, so one game alone shows every fill on screenshots.
+// down a quarter of a heart every kTestStepMs and round again, so one game alone shows every fill on screenshots;
+// the third ("Three") not connected (dimmed).
 inline constexpr std::uint64_t kTestStepMs = 1500;
 std::vector<Block> TestBlocks(std::uint64_t now_ms);
 

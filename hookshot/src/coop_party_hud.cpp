@@ -170,7 +170,12 @@ void Hud::Show(Game& game, Label& l, bool shown) {
     if (game.Call(game.At(addr::kPaneShow), {l.pane, shown ? 1u : 0u, 0, 0, 0})) l.shown = shown ? 1 : 0;
 }
 
-void Hud::Set(Game& game, Pane& p, int state, float frame, const std::array<float, 2>& at) {
+void Hud::Alpha(Game& game, std::uint64_t pane, float& had, float alpha) {
+    if (pane == 0 || had == alpha) return;
+    if (game.CallFloat(game.At(addr::kPaneAlpha), pane, alpha)) had = alpha;
+}
+
+void Hud::Set(Game& game, Pane& p, int state, float frame, const std::array<float, 2>& at, float alpha) {
     if (!p.placed || p.at != at) {
         if (MovePane(game, p.pane, at)) p.placed = true, p.at = at;
     }
@@ -182,10 +187,12 @@ void Hud::Set(Game& game, Pane& p, int state, float frame, const std::array<floa
     if (p.gauge != 0 && p.frame != frame) {   // as f_833dcb60
         if (game.CallFloat(game.At(addr::kAnimStopAt), p.gauge, frame)) p.frame = frame;
     }
+    Alpha(game, p.pane, p.alpha, alpha);
     Show(game, p, true);
 }
 
-void Hud::SetLabel(Game& game, std::size_t index, const std::string& text, const std::array<float, 2>& at) {
+void Hud::SetLabel(Game& game, std::size_t index, const std::string& text, const std::array<float, 2>& at,
+                   float alpha) {
     Label& l = labels_[index];
     if (l.pane == 0) return;
     if (!l.placed || l.at != at) {
@@ -209,6 +216,7 @@ void Hud::SetLabel(Game& game, std::size_t index, const std::string& text, const
             if (set) l.text = text, l.has_text = true;
         }
     }
+    Alpha(game, l.pane, l.alpha, alpha);
     Show(game, l, true);
 }
 
@@ -236,14 +244,15 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
         }
         const Block& b = blocks[static_cast<std::size_t>(s)];
         const Plan plan = PlanHearts(b.hearts);
-        SetLabel(game, static_cast<std::size_t>(s), b.text, {kLabelX, top - kLabelHeight / 2.0f});
+        const float alpha = b.dim ? kDimAlpha : 1.0f;
+        SetLabel(game, static_cast<std::size_t>(s), b.text, {kLabelX, top - kLabelHeight / 2.0f}, alpha);
         for (int i = 0; i < kHearts; ++i) {
             Pane& p = hearts[static_cast<std::size_t>(i)];
-            if (i < plan.hearts) Set(game, p, plan.whole[static_cast<std::size_t>(i)], 0.0f, HeartAt(top, i));
+            if (i < plan.hearts) Set(game, p, plan.whole[static_cast<std::size_t>(i)], 0.0f, HeartAt(top, i), alpha);
             else Show(game, p, false);
         }
         if (plan.part_at >= 0) {
-            Set(game, gauge, 2, GaugeFrame(plan.part_quarters, gauge.gauge_last), HeartAt(top, plan.part_at));
+            Set(game, gauge, 2, GaugeFrame(plan.part_quarters, gauge.gauge_last), HeartAt(top, plan.part_at), alpha);
         } else {
             Show(game, gauge, false);
         }
@@ -251,20 +260,21 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
     }
     const std::string more = MoreText(blocks.size());
     if (more.empty()) Show(game, labels_[kSlots], false);
-    else SetLabel(game, kSlots, more, {kLabelX, top - kLabelHeight / 2.0f});
+    else SetLabel(game, kSlots, more, {kLabelX, top - kLabelHeight / 2.0f}, 1.0f);
     return true;
 }
 
 std::vector<Block> TestBlocks(std::uint64_t now_ms) {
     const int step = static_cast<int>(now_ms / kTestStepMs);
-    const auto block = [&](const char* name, int max_quarters) {
+    const auto block = [&](const char* name, int max_quarters, bool dim = false) {
         Block b;
+        b.dim = dim;
         const int life = max_quarters - step % (max_quarters + 1);
         b.text = std::string(name) + " " + std::to_string(life) + "/" + std::to_string(max_quarters);
         for (int i = 0; i < (max_quarters + 3) / 4; ++i) b.hearts.push_back(std::clamp(life - 4 * i, 0, 4));
         return b;
     };
-    return {block("Twenty", 80), block("Ten", 40), block("Three", 12), block("Four", 16)};
+    return {block("Twenty", 80), block("Ten", 40), block("Three", 12, true), block("Four", 16)};
 }
 
 }  // namespace CoopPartyHud

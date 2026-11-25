@@ -473,6 +473,8 @@ void DrawPlayers(const HosCoopDraw& d, const std::vector<CoopHook::PlayerRow>& r
     }
 }
 
+}  // namespace
+
 // The voice state after a name (docs/voice.md, "Who is talking"), as words in the game's font: " (talking)",
 // " (muted)", nothing while quiet. (Before 2026-11-21 a drawn microphone: no own-drawn shapes on the HUD, owner.)
 std::string VoiceWords(CoopVoice::Icon icon) {
@@ -482,6 +484,8 @@ std::string VoiceWords(CoopVoice::Icon icon) {
     default: return "";
     }
 }
+
+namespace {
 
 // The game look's chat: the top of its lines and box (the picture's bottom
 // when there are none), so the HUD blocks stop above it.

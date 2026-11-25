@@ -29,6 +29,7 @@ struct FakeGame final : party::Game {
     std::map<std::string, std::uint64_t> panes, anims;   // made as asked, when `pack` has them
     std::map<std::uint64_t, int> shown;                  // pane -> 0/1
     std::map<std::uint64_t, float> frames;               // animation -> the frame it is stopped at
+    std::map<std::uint64_t, float> alphas;               // pane -> its own alpha (kPaneAlpha)
     std::map<std::string, std::string> texts;            // text pane path -> text
     bool pack = true;
     std::int32_t gauge_last = 100;
@@ -89,6 +90,10 @@ struct FakeGame final : party::Game {
     std::uint64_t Main() const override { return kMain; }
     std::optional<std::uint64_t> CallFloat(std::uint64_t f, std::uint64_t x0, float s0) override {
         ++calls;
+        if (f == At(party::addr::kPaneAlpha)) {
+            alphas[x0] = s0;
+            return 0;
+        }
         if (f != At(party::addr::kAnimStopAt)) return std::nullopt;
         frames[x0] = s0;
         return 0;
@@ -104,6 +109,7 @@ struct FakeGame final : party::Game {
         Put(kStatus, At(party::addr::kStatusVtable));
         Put(kStatus + ui::addr::kScreenLayout, layout);
     }
+    float Alpha(const std::string& pane) { return alphas.at(panes.at(pane)); }
     bool Shown(const std::string& pane) { return panes.count(pane) != 0 && shown[panes[pane]] == 1; }
     float Frame(const std::string& anim) { return frames.at(anims.at(anim)); }
     std::array<float, 2> Where(const std::string& pane) {
@@ -256,6 +262,23 @@ TEST_CASE("party hud: shows, sets and hides the copies") {
     game.shown.clear();
     REQUIRE(hud.Step(game, party::TestBlocks(0), std::nullopt, &log));
     CHECK(game.Shown(HeartName(0, 19)));
+}
+
+TEST_CASE("party hud: a player not connected is dimmed, and lit again") {
+    FakeGame game;
+    game.Hud();
+    party::Hud hud;
+    std::vector<party::Block> blocks = {{"Saria", Quarters(11, 20)}, {"Ruto", Quarters(12, 12), true}};
+    REQUIRE(hud.Step(game, blocks, 0.15));
+    CHECK(game.Alpha("Pa_CoopName_0") == 1.0f);
+    CHECK(game.Alpha(HeartName(0, 0)) == 1.0f);
+    CHECK(game.Alpha("Pa_CoopGauge_0") == 1.0f);
+    CHECK(game.Alpha("Pa_CoopName_1") == party::kDimAlpha);
+    CHECK(game.Alpha(HeartName(1, 2)) == party::kDimAlpha);
+    blocks[1].dim = false;                          // back: lit again
+    REQUIRE(hud.Step(game, blocks, 0.15));
+    CHECK(game.Alpha("Pa_CoopName_1") == 1.0f);
+    CHECK(game.Alpha(HeartName(1, 2)) == 1.0f);
 }
 
 TEST_CASE("party hud: the test players go through every fill") {

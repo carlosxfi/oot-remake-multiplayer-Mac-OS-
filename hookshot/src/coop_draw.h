@@ -182,6 +182,9 @@ coop::overlay::map::Box LayoutToScreen(const coop::overlay::map::Box& layout, fl
 // The words after a name for a player `delta` floors from the one shown
 // ("" on the same floor): floors count down as floor_of's do.
 std::string FloorWords(int delta);
+// The voice state after a name as words (" (talking)", " (muted)", "" quiet): the HUD blocks' and the game's
+// own heart lines' (coop_party_hud.h).
+std::string VoiceWords(CoopVoice::Icon icon);
 
 // What to draw this present.
 struct Scene {

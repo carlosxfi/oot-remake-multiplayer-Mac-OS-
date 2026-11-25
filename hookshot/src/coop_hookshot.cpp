@@ -55,6 +55,7 @@
 #include "coop_game_build.h"
 #include "coop_i18n.h"
 #include "coop_native_ui.h"
+#include "coop_party_hud.h"
 #include "coop_save.h"
 #include "coop_hold.h"
 #include "coop_counters.h"
@@ -1112,6 +1113,69 @@ bool NativeOn() {
     return on;
 }
 
+// The other players' hearts on the game's own HUD (coop_party_hud.h). DrawScene (the present's thread) makes the
+// blocks; NativeStep (the game's thread) sets the game's heart parts from them. While the game's HUD shows them,
+// DrawScene draws no blocks of its own, so nothing shows twice.
+class PartyGame final : public CoopPartyHud::Game {
+public:
+    PartyGame(NativeGame& game, void* ctx) : game_(game), ctx_(ctx) {}
+    bool Read(std::uint64_t a, void* out, std::size_t n) override { return game_.Read(a, out, n); }
+    bool Write(std::uint64_t a, const void* in, std::size_t n) override { return game_.Write(a, in, n); }
+    std::optional<std::uint64_t> Call(std::uint64_t f, const std::array<std::uint64_t, 5>& x) override {
+        return game_.Call(f, x);
+    }
+    std::uint64_t Main() const override { return game_.Main(); }
+    std::optional<std::uint64_t> CallFloat(std::uint64_t f, std::uint64_t x0, float s0) override {
+        HosCoopCall k{};
+        k.function = f;
+        k.x[0] = x0;
+        k.s0 = s0;
+        std::uint64_t r = 0;
+        if (g_api == nullptr || g_api->call(ctx_, &k, &r) == 0) return std::nullopt;
+        return r;
+    }
+
+private:
+    NativeGame& game_;
+    void* ctx_;
+};
+
+struct PartyShared {
+    std::mutex mutex;
+    std::vector<CoopPartyHud::Block> blocks;   // DrawScene's last
+    std::optional<double> game_hud_bottom;
+    bool game_menu_up = false;
+    std::uint64_t ms = 0;                      // when DrawScene left them (SteadyMs): older than a second = none
+};
+PartyShared g_party;
+std::atomic<bool> g_party_native{false};     // the game's HUD showed the blocks last frame (Hud::Step true)
+
+bool PartyTest() {
+    static const bool on = EnvOn("COOP_TEST_PARTY_HUD");   // scenario hs-party-hud: four made-up players
+    return on;
+}
+
+void PartyStep(NativeGame& game, void* ctx, std::uint64_t now) {
+    static CoopPartyHud::Hud hud;
+    std::vector<CoopPartyHud::Block> blocks;
+    std::optional<double> bottom;
+    bool menu_up = false;
+    {
+        std::lock_guard lock(g_party.mutex);
+        if (now < g_party.ms + 1000) blocks = g_party.blocks;
+        bottom = g_party.game_hud_bottom;
+        menu_up = g_party.game_menu_up;
+    }
+    if (PartyTest() && !menu_up) blocks = CoopPartyHud::TestBlocks(now);
+    PartyGame party(game, ctx);
+    std::vector<std::string> log;
+    const bool on = hud.Step(party, blocks, bottom, &log);
+    for (const auto& l : log) LOG_INFO(Core, "{}", l);
+    if (g_party_native.exchange(on) != on) {
+        LOG_INFO(Core, "coop: party hud: {}", on ? "on the game's HUD" : "drawn blocks (the game's HUD has none of ours now)");
+    }
+}
+
 using Colours = std::map<std::string, std::uint32_t, std::less<>>;
 
 // The speakers' colours by the names chat lines call them (the HUD's and tags' colours: CoopPuppet::NameColor).
@@ -1170,9 +1234,11 @@ bool NativeTyping(CoopNativeUi::Game& game, std::uint64_t now, const Colours& co
 }
 
 void NativeStep(void* ctx) {
-    if (!NativeOn() || g_native.block == Native::Block::kFailed) return;
+    if (!NativeOn()) return;
     NativeGame game(ctx);
     const std::uint64_t now = SteadyMs();
+    PartyStep(game, ctx, now);   // (its own memory: on even when the chat's texts got none)
+    if (g_native.block == Native::Block::kFailed) return;
     if (g_native.block == Native::Block::kNone) {
         const auto block =
             game.Call(game.At(CoopNativeUi::addr::kMalloc), {CoopNativeUi::TextRing::kBlockBytes + 16, 0, 0, 0, 0});
@@ -1379,8 +1445,28 @@ CoopDraw::Scene DrawScene() {
         b.dim = dim_hold.Dim(row.number, row.state == "connected", dim_now);
         s.hud.push_back(std::move(b));
     }
-    if (!s.hud.empty()) {   // row 141: the blocks go below the game's own HUD as it is laid out now
-        s.game_hud_bottom = CoopMapPage::GameHudBottom();
+    {   // row 141: the blocks go below the game's own HUD as it is laid out now
+        const std::optional<double> bottom =
+            !s.hud.empty() || PartyTest() ? CoopMapPage::GameHudBottom() : std::optional<double>{};
+        if (!s.hud.empty()) s.game_hud_bottom = bottom;
+        // The same blocks for the game's own heart parts (PartyStep): the line is the drawn block's name, voice words
+        // and place.
+        std::vector<CoopPartyHud::Block> party;
+        for (const auto& b : s.hud) {
+            CoopPartyHud::Block p;
+            p.text = b.name + CoopDraw::VoiceWords(b.voice) + (b.place.empty() ? std::string() : "  " + b.place);
+            p.hearts = b.hearts;
+            p.dim = b.dim;
+            party.push_back(std::move(p));
+        }
+        {
+            std::lock_guard lock(g_party.mutex);
+            g_party.blocks = std::move(party);
+            g_party.game_hud_bottom = bottom;
+            g_party.game_menu_up = game_menu_up;
+            g_party.ms = SteadyMs();
+        }
+        if (g_party_native.load()) s.hud.clear();   // (the game's HUD shows them: none drawn)
     }
     // F6 (ui-audit-01112 B5): the game's own - menu, Multiplayer > Players (coop_players_open.h), when we are in a
     // scene (never on the title or a file screen, where Minus is not the - menu); the drawn list only when the pack has
