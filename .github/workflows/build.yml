@@ -111,6 +111,8 @@ jobs:
         run: python tools/autotest/tests/test_hookshot.py -v
       - name: Live play-test kit tests (desync check, MCP server)
         run: python tools/autotest/tests/test_playtest.py -v
+      - name: Sync digest compare tests
+        run: python tools/autotest/tests/test_compare_digest.py -v
       - name: Play-test bridge client and MCP tools tests (fake bridge)
         run: python tools/autotest/tests/test_playtest_bridge.py -v
       - name: Test game window placement tests

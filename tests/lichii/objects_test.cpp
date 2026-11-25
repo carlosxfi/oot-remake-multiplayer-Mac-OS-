@@ -8948,3 +8948,30 @@ TEST_CASE("objects: a boss part its boss holds 10 s past the grace is said once,
     CHECK(said(copy) == 0);  // once
     CHECK(copy.Removes().empty());
 }
+
+TEST_CASE("objects: the sync digest lists shared objects only, by id, with the owner's life for a copy") {
+    Sync sync;
+    Tick(sync, 0, {Enemy(0x100, 0x11, 2), Enemy(0x200, 0x22, 2)});
+    CHECK(sync.DigestEntries().empty());  // no owner news yet: not shared
+    Own(sync, *sync.IdOf(0x100), 1, 3);
+    Own(sync, *sync.IdOf(0x200), 2);
+    Tick(sync, 100 * kMs, {Enemy(0x100, 0x11, 1), Enemy(0x200, 0x22, 2)});
+    const auto entries = sync.DigestEntries();
+    REQUIRE(entries.size() == 2);
+    const auto field = [](const CoopDigest::Entry& e, const std::string& key) {
+        for (const auto& [k, v] : e.fields) {
+            if (k == key) return v;
+        }
+        return std::string("(none)");
+    };
+    CHECK(entries[0].id.value == 0x11);
+    CHECK(field(entries[0], "name") == "Enemy_Stalchild");
+    CHECK(field(entries[0], "owner") == "1");
+    CHECK(field(entries[0], "epoch") == "3");
+    CHECK(field(entries[0], "life") == "1");
+    CHECK(field(entries[0], "dead") == "0");
+    CHECK(field(entries[0], "local.owner_life") == "(none)");  // ours: no owner samples
+    CHECK(entries[1].id.value == 0x22);
+    CHECK(field(entries[1], "owner") == "2");
+    CHECK(field(entries[1], "life") == "2");
+}
