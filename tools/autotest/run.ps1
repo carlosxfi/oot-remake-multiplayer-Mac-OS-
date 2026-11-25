@@ -24,7 +24,8 @@ param(
     [string]$Game = "",
     # An emulator build to copy into both kits as emulator\lichii.exe first (optional).
     [string]$Exe = "",
-    [string]$Server = "$PSScriptRoot\..\..\build\server\coop_server.exe",
+    # (default set below: in an advanced script, [Parameter(Mandatory)], $PSScriptRoot is empty in a param default on Windows PowerShell 5.1)
+    [string]$Server = "",
     [int]$Port = 27560,
     [string]$Shots = "",
     # Seconds between screenshots while the scenario plays.
@@ -180,6 +181,7 @@ if ($Kit.Count) {
     if ($PSBoundParameters.ContainsKey('Runtime') -and $Runtime -ne 'hookshot') { throw "-Kit is for -Runtime hookshot" }
     $Runtime = 'hookshot'
 }
+if (-not $Server) { $Server = Join-Path $PSScriptRoot "..\..\build\server\coop_server.exe" }
 $Server = Resolve $Server
 if (-not $TakeBaseline -and -not $NoCoop -and -not ($DryRun -and $Runtime -eq 'hookshot') -and -not (Test-Path $Server)) { throw "no server at $Server; build it or pass -Server" }
 
