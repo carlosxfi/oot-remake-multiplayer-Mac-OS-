@@ -2772,6 +2772,92 @@ TEST_CASE("client: dropped by the server for a backlog, the reason is backlog, a
   REQUIRE(wait_event(client, server, events, EventKind::reconnected));
 }
 
+TEST_CASE("client world hold (row 281): held, no world message is sent, what comes is taken, chat goes on") {
+  FakeServer server;
+  Client client(config_for(server));
+  Events events;
+  REQUIRE(client.start());
+  welcome_as(client, server, events, 2, {{1, "Saria"}});
+  CHECK_FALSE(client.world_held());
+  client.set_world_held(true);
+  server.send(proto::FlagState{1, {bool_flag(7, true)}}, proto::kChannelProgress);
+  REQUIRE(wait_event(client, server, events, EventKind::flag_state));  // the host's world still comes in
+  const std::size_t from = server.received.size();
+  CHECK(client.set_flags(std::vector<proto::FlagEntry>{bool_flag(10, true)}));
+  CHECK(client.send_chat("hi"));
+  REQUIRE(pump(client, server, [&] { return server.find<proto::Chat>(from).has_value(); }));
+  CHECK_FALSE(server.find<proto::FlagSet>(from).has_value());
+  CHECK(client.held_dropped() == 1);
+  client.set_world_held(false);
+  const std::size_t later = server.received.size();
+  CHECK(client.set_flags(std::vector<proto::FlagEntry>{bool_flag(11, true)}));
+  REQUIRE(pump(client, server, [&] { return server.find<proto::FlagSet>(later).has_value(); }));
+}
+
+TEST_CASE("client world hold (row 281): the flags set while held go out when it ends, once") {
+  const auto delta = [](std::uint32_t hash, std::int32_t change) {
+    return proto::FlagEntry{hash, 0, proto::FlagKind::count_delta, static_cast<std::uint32_t>(change)};
+  };
+  FakeServer server;
+  Client client(config_for(server));
+  Events events;
+  REQUIRE(client.start());
+  welcome_as(client, server, events, 2, {{1, "Saria"}, {3, "Zelda"}});
+  CHECK(client.set_flag(bool_flag(1, true)));  // before: sent, not answered yet
+  wait_received<proto::FlagSet>(client, server, 0);
+  client.set_world_held(true);
+  CHECK(client.set_flags(std::vector{bool_flag(10, true), bool_flag(11, true), delta(7, 2)}));
+  CHECK(client.set_flags(std::vector{bool_flag(11, false), delta(7, 3)}));
+  // The host's own word on 10 meanwhile settles it; its total of 7 has none of our changes.
+  server.send(proto::FlagState{1, {bool_flag(10, true), s32_flag(7, 50)}}, proto::kChannelProgress);
+  REQUIRE(wait_event(client, server, events, EventKind::flag_state));
+  std::size_t from = server.received.size();
+  client.set_world_held(false);
+  std::size_t at = wait_received<proto::FlagSet>(client, server, from);
+  CHECK(std::get<proto::FlagSet>(server.received[at].message).flags ==
+        std::vector<proto::FlagEntry>{delta(7, 5), bool_flag(11, false)});
+  CHECK(client.pending_flags().size() == 3);  // (1, 7 and 11: unanswered)
+  client.set_world_held(false);
+  CHECK(client.send_chat("hi"));
+  REQUIRE(pump(client, server, [&] { return server.find<proto::Chat>(from).has_value(); }));
+  CHECK(count_received<proto::FlagSet>(server, from) == 1);
+
+  // Held while the host changes: the new host gets everything unanswered once it ends.
+  client.set_world_held(true);
+  from = server.received.size();
+  server.send(proto::Host{3}, proto::kChannelProgress);
+  REQUIRE(wait_event(client, server, events, EventKind::host_changed));
+  CHECK(client.world_held());
+  CHECK(count_received<proto::FlagSet>(server, from) == 0);
+  client.set_world_held(false);
+  at = wait_received<proto::FlagSet>(client, server, from);
+  CHECK(std::get<proto::FlagSet>(server.received[at].message).flags.size() == 3);
+}
+
+TEST_CASE("client world hold (row 281): a held guest that becomes the host is not held, and its world goes out") {
+  FakeServer server;
+  Client client(config_for(server));
+  Events events;
+  REQUIRE(client.start());
+  welcome_as(client, server, events, 2, {{1, "Saria"}});
+  client.set_world_held(true);
+  CHECK(client.set_flag(bool_flag(10, true)));
+  const std::size_t from = server.received.size();
+  server.send(proto::PlayerLeft{1, proto::LeaveReason::left}, proto::kChannelSession);
+  server.send(proto::Host{2}, proto::kChannelProgress);
+  REQUIRE(wait_event(client, server, events, EventKind::host_changed));
+  CHECK_FALSE(client.world_held());
+  std::size_t at = wait_received<proto::FlagState>(client, server, from);  // (sent by the host change itself)
+  CHECK(std::get<proto::FlagState>(server.received[at].message).flags ==
+        std::vector<proto::FlagEntry>{bool_flag(10, true)});
+  CHECK(client.pending_flags().empty());
+  client.set_world_held(true);  // (the game's word from just before the change: the host is never held)
+  CHECK_FALSE(client.world_held());
+  const std::size_t later = server.received.size();
+  CHECK(client.send_flag_snapshot(std::vector<proto::FlagEntry>{bool_flag(10, true)}));
+  wait_received<proto::FlagSnapshot>(client, server, later);
+}
+
 TEST_CASE("client race mode: the host's setting stops world messages both ways, chat goes on") {
   FakeServer server;
   Client client(config_for(server));

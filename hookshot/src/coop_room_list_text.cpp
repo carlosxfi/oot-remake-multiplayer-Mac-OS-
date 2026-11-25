@@ -3,6 +3,7 @@
 // coop_room_list.cpp (the relay asks) so the unit tests link them.
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "coop/protocol/messages.hpp"
@@ -67,6 +68,10 @@ std::string DetailText(const Room& r, int my_protocol) {
     }
     // (the lobby's difficulty, the host's pick when making it: the Difficulty row's own words)
     if (const char* word = DifficultyWord(r.difficulty); word[0] != 0) out += Tr(", ") + Tr(word);
+    if (!r.tag.empty()) {   // (row 281: the seed and settings names as the host's randomizer gave them)
+        constexpr std::string_view kRando = "Randomizer ";
+        out += Tr(", ") + (r.tag.rfind(kRando, 0) == 0 ? Tr("Randomizer") + " " + r.tag.substr(kRando.size()) : r.tag);
+    }
     return out;
 }
 

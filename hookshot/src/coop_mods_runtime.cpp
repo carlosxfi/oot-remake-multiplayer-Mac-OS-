@@ -50,7 +50,8 @@ std::atomic<bool> g_running{false};
 std::atomic<std::uint64_t> g_hooks{0};
 // Co-op's list of our mods (coop_mod_share.h): made by g_hasher, read by the present thread.
 std::mutex g_mine_mutex;
-std::optional<coop::protocol::ModList> g_mine;
+std::optional<coop::protocol::ModList> g_mine;   // (the mods with zero hashes until g_hashed)
+bool g_hashed = false;                           // (g_mine_mutex)
 std::thread g_hasher;
 std::atomic<bool> g_stop_hashing{false};
 // (mod API v2) The module's table and co-op's own busy answer (SetGame).
@@ -225,6 +226,11 @@ coop::protocol::ModHash Combined(const CoopMods::Hashes& h) {
     return out;
 }
 
+// A mod's entry in this game's list (the hash: zero until it is known).
+coop::protocol::ModEntry Entry(const CoopMods::Mod& m, const coop::protocol::ModHash& hash) {
+    return {m.manifest.id, m.manifest.version.substr(0, coop::protocol::kMaxModVersionChars), hash};
+}
+
 void Hash(std::vector<CoopMods::Mod> mods) {
     coop::protocol::ModList list;
     const std::function<bool()> stop = [] { return g_stop_hashing.load(); };
@@ -244,11 +250,12 @@ void Hash(std::vector<CoopMods::Mod> mods) {
         }
         coop::protocol::ModHash hash = Combined(*h);
         if (hash != coop::protocol::ModHash{}) CoopModShare::MarkHashWay(hash);
-        list.mods.push_back({m.manifest.id, m.manifest.version.substr(0, coop::protocol::kMaxModVersionChars), hash});
+        list.mods.push_back(Entry(m, hash));
     }
     CoopRuntime::Log("coop: mods: " + std::to_string(list.mods.size()) + " shared mods ready for co-op");
     const std::lock_guard lock(g_mine_mutex);
     g_mine = std::move(list);
+    g_hashed = true;
 }
 
 void StartSharing() {
@@ -256,6 +263,10 @@ void StartSharing() {
     p.mine = []() -> std::optional<coop::protocol::ModList> {
         const std::lock_guard lock(g_mine_mutex);
         return g_mine;
+    };
+    p.hashed = [] {
+        const std::lock_guard lock(g_mine_mutex);
+        return g_hashed;
     };
     p.shared = [] {
         std::vector<coop::protocol::ModSetting> out;
@@ -288,8 +299,20 @@ void StartSharing() {
         if (g_rando) g_rando->Recheck();
     };
     p.notes = [] { return g_rando ? g_rando->TakeLines() : std::vector<std::string>{}; };
+    // The mods (and the seed played) are known now, their hashes in a while: the others are told at once which seed
+    // this game plays, so nobody on another one is let into its world meanwhile (row 281).
+    std::vector<CoopMods::Mod> mods = SharedMods();
+    coop::protocol::ModList early;
+    for (const CoopMods::Mod& m : mods) {
+        if (early.mods.size() == coop::protocol::kMaxModEntries) break;
+        early.mods.push_back(Entry(m, {}));
+    }
+    {
+        const std::lock_guard lock(g_mine_mutex);
+        g_mine = std::move(early);
+    }
     CoopModShare::SetProvider(std::move(p));
-    g_hasher = std::thread(Hash, SharedMods());
+    g_hasher = std::thread(Hash, std::move(mods));
 }
 
 }  // namespace
@@ -316,6 +339,8 @@ void Start() {
     };
     // (chat goes to every player: the host's chat shows this guest's name with the line)
     rando.tell_others = [](const std::string& line) { return CoopHook::SendChat(line); };
+    // (row 281: back in the host's game after it)
+    rando.restart_for_host = [](bool due) { CoopPause::RejoinAfterRestart(due); };
     rando.entropy = [] {
         return static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) * 31 +
                ThisProcess();

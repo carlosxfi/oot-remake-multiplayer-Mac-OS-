@@ -197,7 +197,8 @@ DirectResult direct_on_relay(const ENetAddress& relay, const RelayJoin& join, co
 
 namespace {
 
-// One page of the room list (kListRooms, start) or the proofs (kListProofs): `tries` tries, `wait_ms` apart, from `s`.
+// One page of the room list (kListRooms, start), the proofs (kListProofs) or the tags (kListTags): `tries` tries,
+// `wait_ms` apart, from `s`.
 std::optional<Message> ask_page(ENetSocket s, const ENetAddress& relay, std::uint8_t start,
                                 const std::function<bool()>& stop, Kind kind = Kind::kListRooms, int tries = 3,
                                 int wait_ms = 1000) {
@@ -205,7 +206,9 @@ std::optional<Message> ask_page(ENetSocket s, const ENetAddress& relay, std::uin
   ask.kind = kind;
   ask.start = start;
   const std::vector<std::uint8_t> bytes = encode(ask);
-  const Kind answer = kind == Kind::kListProofs ? Kind::kRoomProofs : Kind::kRoomList;
+  const Kind answer = kind == Kind::kListProofs ? Kind::kRoomProofs
+                     : kind == Kind::kListTags   ? Kind::kRoomTags
+                                                 : Kind::kRoomList;
   for (int attempt = 0; attempt < tries; ++attempt) {
     if (stop && stop()) return std::nullopt;
     ENetBuffer out;
@@ -225,7 +228,7 @@ std::optional<Message> ask_page(ENetSocket s, const ENetAddress& relay, std::uin
       const int got = enet_socket_receive(s, &from, &in, 1);
       if (got <= 0 || from.host != relay.host || from.port != relay.port) continue;
       auto m = decode(std::span<const std::uint8_t>(data, static_cast<std::size_t>(got)));
-      if (m && m->kind == answer && (answer == Kind::kRoomProofs || m->start == start || m->total <= start)) return m;
+      if (m && m->kind == answer && (answer != Kind::kRoomList || m->start == start || m->total <= start)) return m;
     }
   }
   return std::nullopt;
@@ -234,7 +237,7 @@ std::optional<Message> ask_page(ENetSocket s, const ENetAddress& relay, std::uin
 }  // namespace
 
 std::optional<RoomList> list_rooms_on_relay(const ENetAddress& relay, const std::function<bool()>& stop,
-                                            bool ask_proofs, std::optional<std::uint32_t> bind) {
+                                            bool ask_proofs, std::optional<std::uint32_t> bind, bool ask_tags) {
   ENetSocket s = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
   if (s == ENET_SOCKET_NULL) return std::nullopt;
   std::optional<RoomList> result;
@@ -256,6 +259,13 @@ std::optional<RoomList> list_rooms_on_relay(const ENetAddress& relay, const std:
       if (const auto p = ask_page(s, relay, 0, stop, Kind::kListProofs, 2, 500)) {
         result->proofs = p->proofs;
         result->proofs_answered = true;
+      }
+    }
+    // The tags (row 281: what world each room plays), the same way; a relay before 0.11.13 never answers.
+    if (ask_tags && result && !result->rooms.empty()) {
+      if (const auto t = ask_page(s, relay, 0, stop, Kind::kListTags, 2, 500)) {
+        result->tags = t->tags;
+        result->tags_answered = true;
       }
     }
   }
@@ -586,6 +596,18 @@ void RelayLink::service() {
         p.token = token_;
         p.proof = *proof;
         send_relay(p);
+      }
+    }
+    if (config_.tag) {
+      std::string tag = entry ? config_.tag() : std::string();
+      if (tag.size() > kMaxRoomTagBytes) tag.resize(kMaxRoomTagBytes);
+      if (valid_room_tag(tag) && (!tag.empty() || !tag_sent_.empty())) {
+        Message t;
+        t.kind = Kind::kRoomTag;
+        t.token = token_;
+        t.tag.tag = tag;
+        send_relay(t);
+        tag_sent_ = tag;
       }
     }
   }

@@ -560,6 +560,14 @@ TEST_CASE("room list: a listing's difficulty is read from its version and shown 
     const auto custom_room =
         CoopRoomList::FromListing("lake", "Ruto", 1, 4, proto::with_listed_difficulty(proto::kProtocolVersion, custom));
     CHECK(CoopRoomList::DetailText(custom_room, proto::kProtocolVersion).find(", Custom") != std::string::npos);
+    // A randomizer room (row 281): the difficulty, then the seed; another tag as it came.
+    auto seeded = hard_room;
+    seeded.tag = "Randomizer KOKIRI (keysanity)";
+    CHECK(CoopRoomList::DetailText(seeded, proto::kProtocolVersion) ==
+          "Needs the host's password, Players 2/4, Hard, Randomizer KOKIRI (keysanity)");
+    seeded.tag = "Other world";
+    CHECK(CoopRoomList::DetailText(seeded, proto::kProtocolVersion) ==
+          "Needs the host's password, Players 2/4, Hard, Other world");
     // An older host (0.11.12: no bits) says none; a code past custom (a later kit's) is none too.
     const auto older = CoopRoomList::FromListing("goron", "Darunia", 1, 4, proto::kProtocolVersion);
     CHECK(older.difficulty == 0);
@@ -567,4 +575,20 @@ TEST_CASE("room list: a listing's difficulty is read from its version and shown 
     const auto later = CoopRoomList::FromListing("gerudo", "Nabooru", 1, 4, proto::kProtocolVersion | 0x0700);
     CHECK(later.difficulty == 0);
     CHECK(later.protocol == proto::kProtocolVersion);
+}
+
+TEST_CASE("public games: each room's tag (row 281, its randomizer seed) by its name in any case, none for the rest") {
+    using CoopRoomList::Room;
+    using CoopRoomList::Tag;
+    std::vector<Room> rooms(3);
+    rooms[0].room = "Forest-Gang";
+    rooms[1].room = "kokiri";
+    rooms[2].room = "zora";
+    rooms[2].tag = "Randomizer OLD";   // (a tag from an earlier ask: replaced or dropped each time)
+    CoopRoomList::ApplyTags(rooms, {Tag{"forest-gang", "Randomizer N2BTEYKM (keysanity)"}, Tag{"nobody", "Randomizer X"}});
+    CHECK(rooms[0].tag == "Randomizer N2BTEYKM (keysanity)");
+    CHECK(rooms[1].tag.empty());
+    CHECK(rooms[2].tag.empty());
+    CoopRoomList::ApplyTags(rooms, {});   // (a relay before 0.11.13: no tags)
+    CHECK(rooms[0].tag.empty());
 }

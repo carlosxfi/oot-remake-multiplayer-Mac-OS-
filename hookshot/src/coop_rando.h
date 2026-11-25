@@ -357,6 +357,10 @@ public:
         // and why: one chat line (any thread). False when it could not be sent (not connected): tried again at the
         // next Recheck. Empty: said only in this game.
         std::function<bool(const std::string& line)> tell_others;
+        // Row 281: whether a restart is due now to play the host's values (its seed, or its switch): the next start
+        // joins the host's game again once (CoopPause::RejoinAfterRestart). Told at each check, also when it is due no
+        // more. Any thread. Empty: nothing.
+        std::function<void(bool due)> restart_for_host;
         // The clock for repeating the restart line (tests); empty: steady_clock.
         std::function<std::chrono::steady_clock::time_point()> now;
         // Try every preset once per OOTRR before its first build (#16): the Settings row then offers only the ones it
@@ -415,6 +419,7 @@ private:
     void TellOthers();                    // sends tell_ and outside_tell_ (Hooks::tell_others)
     void SayOutside();                    // outside_line_ into the chat again, outside_tell_ armed (mutex_ not held)
     void SayRestart(std::string line);    // a restart line for the chat, kept to repeat (mutex_ not held)
+    void RestartForHost(bool due);        // Hooks::restart_for_host, false without a host's values (mutex_ free)
     void RepeatRestart();                 // restart_ into the chat now (mutex_ not held)
     std::chrono::steady_clock::time_point Now() const;
     std::string CurrentTables() const;    // TablesStamp of the other mods' size tables now

@@ -67,9 +67,11 @@ struct RelayConfig {
   std::uint32_t lookups_per_window = 10;      // wrong codes from one address
   std::uint32_t registers_per_window = 6;     // new hosts from one address
   std::uint64_t window_ms = 10 * 60'000;
-  std::uint32_t lists_per_window = 30;        // room list pages asked from one address
+  // Room list pages asked from one address; LIST_PROOFS and LIST_TAGS, asked with each list: as many, counted apart.
+  std::uint32_t lists_per_window = 30;
   // LIST_ROOM from one address (a host's link sends one each 5 seconds: 24 a
   // minute for the 2 hosts an address may have); more are not taken.
+  // ROOM_PROOF and ROOM_TAG go with each listing: as many of each, counted apart.
   std::uint32_t listings_per_window = 30;
   std::uint64_t list_window_ms = 60'000;      // (for both)
   // Rooms put on the list from one address in window_ms, each listing that was
@@ -112,6 +114,8 @@ struct RelayStats {
   std::uint64_t lists_limited = 0;   // room list asks over the limit (not answered)
   std::uint64_t proofs_kept = 0;     // kRoomProof taken for a held room
   std::uint64_t proofs_answered = 0; // kRoomProofs sent
+  std::uint64_t tags_kept = 0;       // kRoomTag taken for a held room
+  std::uint64_t tags_answered = 0;   // kRoomTags sent
   std::uint64_t listings_limited = 0;  // LIST_ROOM over a limit (not taken)
   std::uint64_t directs_passed = 0;    // answer codes passed to a host's link
   std::uint64_t directs_answered = 0;  // host replies passed back to the guest
@@ -150,6 +154,7 @@ class Relay {
     RoomEntry listing;               // what it lists (room: filled from `room`)
     std::uint64_t listed_since = 0;  // when it was first listed (newest first)
     std::optional<RoomProof> proof;  // its host's latest kRoomProof for `room` (passed on, never checked here)
+    std::string tag;                 // its host's latest kRoomTag for `room` (empty: none)
     Endpoint link;
     std::uint64_t last_ms = 0;
     std::map<std::uint16_t, Flow> flows;
@@ -190,6 +195,8 @@ class Relay {
   Message list_page(std::uint8_t start) const;
   // kRoomProofs: the listed rooms' proofs, newest listing first, as many as fit in a datagram.
   Message proofs_page() const;
+  // kRoomTags: the listed rooms' tags (rooms without one left out), newest listing first, as many as fit.
+  Message tags_page() const;
   std::string new_code();
   void say(const std::string& text) const;
 
@@ -203,7 +210,9 @@ class Relay {
   std::map<std::uint32_t, Tries> lookups_;
   std::map<std::uint32_t, Tries> registers_;
   std::map<std::uint32_t, Tries> lists_;
+  std::map<std::uint32_t, Tries> proof_lists_, tag_lists_;  // LIST_PROOFS, LIST_TAGS (lists_per_window each)
   std::map<std::uint32_t, Tries> listings_;
+  std::map<std::uint32_t, Tries> proofs_in_, tags_in_;  // ROOM_PROOF, ROOM_TAG (listings_per_window each)
   std::map<std::uint32_t, Tries> new_listings_;
   std::map<std::uint32_t, Tries> directs_by_address_;
   std::map<std::uint32_t, Direct> directs_;  // by ticket

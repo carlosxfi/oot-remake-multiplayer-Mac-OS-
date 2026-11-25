@@ -4,6 +4,8 @@
 // lines, and the host's seed in co-op.
 #include <doctest/doctest.h>
 
+#include <atomic>
+
 #include <algorithm>
 #include <cstring>
 #include <cstdlib>
@@ -565,12 +567,16 @@ TEST_CASE("rando: switching it on or off says to restart, in the chat and in the
     World w;
     CoopMods::Loader loader(w.mods, {nullptr, 1, nullptr, nullptr});
     loader.Start();
-    Rando rando(loader, w.Hooks());
+    std::atomic<bool> for_host{false};
+    auto hooks = w.Hooks();
+    hooks.restart_for_host = [&](bool due) { for_host = due; };
+    Rando rando(loader, std::move(hooks));
     rando.Start();
     w.Settings(loader);
     REQUIRE(loader.Set(kFolder, "on", "1"));
     rando.Wait();
     CHECK(rando.TakeLines() == std::vector<std::string>{SwitchLine(true), ReadyLine(loader.Value(kId, "seed"))});
+    CHECK_FALSE(for_host.load());   // (row 281: our own switch, alone: no rejoin after the restart)
     CHECK(SwitchLine(true).find("until this chat says the seed is ready") != std::string::npos);
     const auto why = loader.RestartNeeded().why;
     CHECK(std::find(why.begin(), why.end(), SwitchLine(true)) != why.end());
@@ -590,13 +596,33 @@ TEST_CASE("rando: a host's switch reaching a guest says to restart") {
     World w;
     CoopMods::Loader loader(w.mods, {nullptr, 1, nullptr, nullptr});
     loader.Start();
-    Rando rando(loader, w.Hooks());
+    std::atomic<bool> for_host{false};
+    auto hooks = w.Hooks();
+    hooks.restart_for_host = [&](bool due) { for_host = due; };
+    Rando rando(loader, std::move(hooks));
     rando.Start();
     w.Settings(loader);
     loader.SetHostValues(std::vector<CoopMods::SharedValue>{{kId, "on", "1"}, {kId, "seed", "HOST8"}});
     rando.Wait();
     CHECK(rando.TakeLines() == std::vector<std::string>{SwitchLine(true), ReadyLine("HOST8")});
     CHECK(On(loader, "randomizer-HOST8"));
+    CHECK(for_host.load());   // (row 281: the host's seed after a restart: the next start joins the host again once)
+    loader.SetHostValues(std::vector<CoopMods::SharedValue>{{kId, "on", "0"}});   // the host switches it off again
+    rando.Recheck();
+    rando.Wait();
+    CHECK_FALSE(for_host.load());   // (as this run started: no restart is due any more)
+    loader.SetHostValues(std::vector<CoopMods::SharedValue>{{kId, "on", "1"}, {kId, "seed", "HOST8"}});
+    rando.Recheck();
+    rando.Wait();
+    CHECK(for_host.load());
+    loader.SetHostValues(std::nullopt);   // left (or dropped): the seed is off again, so is the rejoin
+    rando.Recheck();
+    rando.Wait();
+    CHECK_FALSE(for_host.load());
+    loader.SetHostValues(std::vector<CoopMods::SharedValue>{{kId, "on", "1"}, {kId, "seed", "HOST8"}});
+    rando.Recheck();
+    rando.Wait();
+    CHECK(for_host.load());   // (the same host joined again: due again)
 }
 
 TEST_CASE("rando: a guest of a host without the randomizer plays without it") {

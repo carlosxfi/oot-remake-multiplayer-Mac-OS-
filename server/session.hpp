@@ -443,6 +443,7 @@ struct Stats {
   std::uint64_t difficulty_refused = 0;  // DIFFICULTY from a player who does not host
   std::uint64_t mod_settings_refused = 0;  // MOD_SETTINGS from a player who does not host
   std::uint64_t race_dropped = 0;          // race mode: world messages neither relayed nor sent
+  std::uint64_t world_held_dropped = 0;    // a held player's world messages (another randomizer seed, row 281)
   // The Lobby (docs/protocol.md "Lobby"): the host's kicks, bans and mutes.
   std::uint64_t lobby_done = 0;      // LOBBY_ACTIONs carried out
   std::uint64_t lobby_refused = 0;   // LOBBY_ACTION from a player who does not host
@@ -633,6 +634,9 @@ class Session {
   // Addresses with recent wrong join passwords (max_wrong_passwords).
   std::size_t wrong_guess_addresses() const { return wrong_guesses_.size(); }
   std::size_t player_count() const;
+  // Row 281: the room list's tag for the host's world (coop/protocol/mod_world.hpp world_tag): its randomizer seed
+  // and settings name; empty while the host plays none or its MOD_LIST is not in yet.
+  std::string world_tag() const;
   // How much the session holds now (row 260: the host's memory line, every 30 s): each a count of entries, the
   // deferred one also in bytes. Each is bounded (its own cap); a number that only grows is the one to look at.
   struct Sizes {
@@ -755,6 +759,9 @@ class Session {
     std::string nickname;
     // Its last MOD_LIST, with its number (docs/protocol.md, "Mods").
     std::optional<protocol::ModList> mods;
+    // Held out of the host's world (coop/protocol/mod_world.hpp, row 281): its list and the host's are known and its
+    // randomizer seed is not the host's. Its world messages (race_private's list) are neither kept nor relayed.
+    bool world_held = false;
     // The scene the player is in, from its latest OBJECT_PRESENT or
     // PLAYER_SAMPLE scene; empty while not known.
     std::string scene;
@@ -977,6 +984,8 @@ class Session {
   // SessionConfig::difficulty with its custom values kept within the sliders' ends.
   protocol::DifficultyChoice lobby_difficulty() const;
   void on_mods(ConnectionId id, Connection& c, protocol::Message& message);
+  // Each player's world_held again, after a MOD_LIST or a host change (logged when it changes).
+  void update_world_held();
   // The Lobby: the host's kick, ban and mutes (docs/protocol.md "Lobby").
   void on_lobby(ConnectionId id, const protocol::LobbyAction& a, std::uint64_t now_us);
   // A kick, ban or mute on player a.target, by the host (`actor`: its connection, which may not be its own target)

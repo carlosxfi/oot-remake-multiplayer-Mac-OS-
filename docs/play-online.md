@@ -74,6 +74,13 @@ join. A private one says *Needs the host's password*: pressing it opens Join wit
 field chosen. If nothing is listed it says *No public games right now*; if the list cannot be reached it says so and
 what to do.
 
+**A randomizer game says its seed (0.11.13, row 281).** A host playing a randomizer seed is listed with it: *Public
+game, Players 2/8, Randomizer N2BTEYKM (keysanity)* (the seed word and the host's settings: its preset, or the start of
+its `OOTRR1-` settings string). Pick a game on the seed you play, or join any: a player on another seed is held out of
+the host's world until it plays the host's seed (docs/mods.md). A game without a tag plays the base game. The tag
+needs a relay of 0.11.13 or later (relay messages `ROOM_TAG` 0x0A, `LIST_TAGS` 0x15, `ROOM_TAGS` 0x94); an older
+relay drops it and the list shows no tags.
+
 **More games than fit: pages.** Every list of games turns its pages the same way (row 264): **ZL** the page before,
 **ZR** the page after, round at both ends (ZR on the last page goes to the first). The list says it pages only when it
 does: on the - menu's Find a game the list's heading says **Page 2/3** with the game's own ZL and ZR button icons

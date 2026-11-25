@@ -58,6 +58,10 @@ struct RelayLinkConfig {
   // punches toward the guest started; nothing otherwise (the guest then comes through the relay). Unset: every
   // answer code gets "no direct way" (a public game: nobody learns the host's address).
   std::function<std::optional<DirectAddress>(const std::string& answer)> direct;
+  // Set: the listed room's tag (kRoomTag, row 281: its randomizer seed and settings name), sent with each listing
+  // while it is not empty, and once empty when it was not (the relay forgets it). Printable ASCII, cut to
+  // kMaxRoomTagBytes; anything else is not sent.
+  std::function<std::string()> tag;
   // The session token; std::random_device when empty.
   std::function<std::uint64_t()> random;
 };
@@ -118,6 +122,9 @@ struct RoomList {
   // does not answer (a short wait, then the list as it is).
   std::vector<RoomProof> proofs;
   bool proofs_answered = false;
+  // The listed rooms' tags (kListTags, asked once after the proofs; row 281): empty from a relay before 0.11.13.
+  std::vector<RoomTag> tags;
+  bool tags_answered = false;
 };
 // Asks the relay at `relay` (ENet's form) for its room list, a page at a time
 // (about 20 rooms a page; three tries a second apart for each, from a socket
@@ -127,9 +134,11 @@ struct RoomList {
 // early. Blocks for up to about 3 s a page: call it off the game's threads.
 // `ask_proofs`: also ask the listed rooms' proofs (kListProofs) after the pages, two tries 500 ms apart;
 // proofs_answered says whether the relay answered (a relay before 0.11.8 never does: the caller need not ask it again).
-// `bind`: as for lookup_on_relay.
+// `bind`: as for lookup_on_relay. `ask_tags`: also ask the listed rooms' tags (kListTags) the same way; tags_answered
+// as proofs_answered (a relay before 0.11.13 never answers).
 std::optional<RoomList> list_rooms_on_relay(const ENetAddress& relay, const std::function<bool()>& stop = {},
-                                            bool ask_proofs = false, std::optional<std::uint32_t> bind = std::nullopt);
+                                            bool ask_proofs = false, std::optional<std::uint32_t> bind = std::nullopt,
+                                            bool ask_tags = false);
 
 class RelayLink {
  public:
@@ -179,6 +188,7 @@ class RelayLink {
   std::uint64_t last_heard_ms_ = 0;
   std::uint64_t first_try_ms_ = 0;
   std::uint64_t last_waiting_note_ms_ = 0;
+  std::string tag_sent_;  // the last kRoomTag sent (empty: none, or none any more)
   std::uint64_t last_list_ms_ = 0;  // the last kListRoom (0: send one at the next service)
   std::map<std::uint16_t, Flow> flows_;
 };

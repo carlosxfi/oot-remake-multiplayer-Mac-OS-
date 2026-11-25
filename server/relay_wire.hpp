@@ -83,6 +83,10 @@ enum class Kind : std::uint8_t {
                          // answer to kDirectAnswer: its internet address
                          // (first part in the highest byte), or ip 0 when it
                          // did not take the answer code (or has no direct way)
+  kRoomTag = 0x0A,       // token, tag length u8, tag: the listed room's short
+                         // tag (RoomTag: what world it plays, e.g. a randomizer
+                         // seed and settings name; empty = none). A relay before
+                         // 0.11.13 drops it; this one keeps it beside the listing.
   // Guest -> relay.
   kLookup = 0x10,      // the 8-letter code: lets this address join that host
   kLookupName = 0x11,  // name length u8, name: the same with a room name
@@ -93,6 +97,8 @@ enum class Kind : std::uint8_t {
   kDirect = 0x14,      // by u8 (0 a join code, 1 a room name), length u8 and the
                        // code or name, answer length u8, answer code: "pass my
                        // answer code to that host" (the direct way)
+  kListTags = 0x15,    // zeros up to kListRequestBytes in all: "the listed
+                       // rooms' tags" (a relay before 0.11.13 does not answer)
   // Relay -> host link.
   kRegistered = 0x81,      // token, code
   kRefused = 0x82,         // token, Refusal u8
@@ -110,6 +116,8 @@ enum class Kind : std::uint8_t {
                        // time u64, signature (64 bytes); as many as fit
   kDirectFound = 0x93,  // LookupResult u8, ip u32, port u16: the host's address
                         // when it took the answer code (kOk and ip 0: it did not)
+  kRoomTags = 0x94,  // count u8, then count tags: room length u8, room,
+                     // tag length u8, tag; as many as fit
 };
 
 enum class Refusal : std::uint8_t {
@@ -160,6 +168,20 @@ struct RoomProof {
 // What a kRoomProofs proof adds to the datagram, in bytes.
 std::size_t proof_bytes(const RoomProof& proof);
 
+// A listed room's tag (kRoomTag, kRoomTags): a short line saying what world the room plays (its
+// randomizer seed and settings name), shown in the room list so players pick a matching game. At most
+// kMaxRoomTagBytes printable ASCII bytes; kRoomTag may be empty ("no tag any more"), kRoomTags never.
+inline constexpr std::size_t kMaxRoomTagBytes = 48;
+struct RoomTag {
+  std::string room;  // kRoomTags: the room it was given for (kRoomTag: the relay knows it)
+  std::string tag;
+  bool operator==(const RoomTag&) const = default;
+};
+// Whether `tag` can be passed on: at most kMaxRoomTagBytes bytes, each printable ASCII (0x20-0x7E).
+bool valid_room_tag(std::string_view tag);
+// What a kRoomTags tag adds to the datagram, in bytes.
+std::size_t tag_bytes(const RoomTag& tag);
+
 struct Message {
   Kind kind = Kind::kKeepalive;
   std::uint64_t token = 0;
@@ -182,6 +204,8 @@ struct Message {
   std::uint32_t ticket = 0; // kDirectAnswer, kDirectReply: which guest's (the relay's number)
   std::uint32_t ip = 0;     // kDirectReply, kDirectFound: the host's internet address; 0 none
   std::uint16_t port = 0;
+  RoomTag tag;                    // kRoomTag (room unused)
+  std::vector<RoomTag> tags;      // kRoomTags
 };
 
 bool has_magic(std::span<const std::uint8_t> bytes);

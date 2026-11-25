@@ -124,7 +124,7 @@ bool has_magic(std::span<const std::uint8_t> bytes) {
 }
 
 std::vector<std::uint8_t> encode(const Message& m) {
-  if (m.kind == Kind::kListRooms || m.kind == Kind::kListProofs) {
+  if (m.kind == Kind::kListRooms || m.kind == Kind::kListProofs || m.kind == Kind::kListTags) {
     // Fixed-size request (zero padded), so the reply is never bigger than it: built at full size, fields by index.
     std::vector<std::uint8_t> req(kListRequestBytes, std::uint8_t{0});
     std::copy(kMagic.begin(), kMagic.end(), req.begin());
@@ -217,7 +217,21 @@ std::vector<std::uint8_t> encode(const Message& m) {
       break;
     case Kind::kListRooms:
     case Kind::kListProofs:
+    case Kind::kListTags:
       break;  // (built above)
+    case Kind::kRoomTag:
+      put64(out, m.token);
+      put_text(out, m.tag.tag, kMaxRoomTagBytes);
+      break;
+    case Kind::kRoomTags: {
+      const std::size_t n = std::min<std::size_t>(m.tags.size(), 255);
+      out.push_back(static_cast<std::uint8_t>(n));
+      for (std::size_t i = 0; i < n; ++i) {
+        put_text(out, m.tags[i].room, kMaxRoomLength);
+        put_text(out, m.tags[i].tag, kMaxRoomTagBytes);
+      }
+      break;
+    }
     case Kind::kRoomProof:
       put64(out, m.token);
       put64(out, m.proof.time_s);
@@ -247,6 +261,15 @@ std::vector<std::uint8_t> encode(const Message& m) {
 
 std::size_t proof_bytes(const RoomProof& p) {
   return 1 + std::min(p.room.size(), kMaxRoomLength) + 8 + kProofSignatureBytes;
+}
+
+bool valid_room_tag(std::string_view tag) {
+  return tag.size() <= kMaxRoomTagBytes &&
+         std::all_of(tag.begin(), tag.end(), [](char c) { return c >= 0x20 && c <= 0x7E; });
+}
+
+std::size_t tag_bytes(const RoomTag& t) {
+  return 1 + std::min(t.room.size(), kMaxRoomLength) + 1 + std::min(t.tag.size(), kMaxRoomTagBytes);
 }
 
 std::size_t entry_bytes(const RoomEntry& e) {
@@ -386,7 +409,8 @@ std::optional<Message> decode(std::span<const std::uint8_t> bytes) {
       if (std::any_of(pad.begin(), pad.end(), [](std::uint8_t b) { return b != 0; })) return std::nullopt;
       break;
     }
-    case Kind::kListProofs: {
+    case Kind::kListProofs:
+    case Kind::kListTags: {
       if (bytes.size() < kListRequestBytes) return std::nullopt;  // (not padded: no answer)
       const std::vector<std::uint8_t> pad = r.rest();
       if (std::any_of(pad.begin(), pad.end(), [](std::uint8_t b) { return b != 0; })) return std::nullopt;
@@ -397,6 +421,22 @@ std::optional<Message> decode(std::span<const std::uint8_t> bytes) {
       m.proof.time_s = r.u64();
       for (auto& b : m.proof.signature) b = r.u8();
       break;
+    case Kind::kRoomTag:
+      m.token = r.u64();
+      m.tag.tag = r.sized_text(kMaxRoomTagBytes);
+      if (r.ok && !valid_room_tag(m.tag.tag)) return std::nullopt;
+      break;
+    case Kind::kRoomTags: {
+      const std::uint8_t n = r.u8();
+      for (std::uint8_t i = 0; i < n && r.ok; ++i) {
+        RoomTag t;
+        t.room = r.sized_text(kMaxRoomLength);
+        t.tag = r.sized_text(kMaxRoomTagBytes);
+        if (r.ok && (!normalize_room(t.room) || t.tag.empty() || !valid_room_tag(t.tag))) return std::nullopt;
+        m.tags.push_back(std::move(t));
+      }
+      break;
+    }
     case Kind::kRoomProofs: {
       const std::uint8_t n = r.u8();
       for (std::uint8_t i = 0; i < n && r.ok; ++i) {

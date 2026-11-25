@@ -26,9 +26,28 @@ struct Room {
     // The lobby's difficulty as listed (coop::protocol::ListedDifficulty: 0 none said, an older host; 1 automatic,
     // 2 easy, 3 normal, 4 hard, 5 custom), the host's choice when making the lobby or since.
     int difficulty = 0;
+    std::string tag;          // what world it plays (row 281, server/relay_wire.hpp kRoomTags): "Randomizer SEED
+                              // (settings)"; empty: the base game, or a relay before 0.11.13
 };
 // The listing's difficulty bits (coop::protocol::kListingDifficultyShift; checked equal in coop_room_list_text.cpp).
 inline constexpr int kListingDifficultyShift = 8;
+// A listed room's tag as the relay passed it on (kRoomTags).
+struct Tag {
+    std::string room, tag;
+};
+// Each room's tag from `tags`, by room name in lower case (as Proven matches proofs); rooms without one keep none.
+inline void ApplyTags(std::vector<Room>& rooms, const std::vector<Tag>& tags) {
+    const auto lower = [](std::string s) {
+        for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    };
+    for (Room& r : rooms) {
+        r.tag.clear();
+        for (const Tag& t : tags) {
+            if (lower(t.room) == lower(r.room)) r.tag = t.tag;
+        }
+    }
+}
 
 // A public listing's version bit (coop::protocol::kPublicListingBit; checked equal in coop_room_list_text.cpp).
 inline constexpr int kPublicListingBit = 0x8000;
@@ -75,7 +94,8 @@ Room FromListing(std::string room, std::string host, int players, int max, int v
 std::string CellText(const Room& r, int my_protocol);
 // The line under it, plain words: "Public game, Players 2/4, Hard" or "Needs the host's password, Players 2/4,
 // Automatic" (and "Full", "Needs an update" / "Another version"; no difficulty from an older host), as the Lobby
-// and Find a game both show it.
+// and Find a game both show it; then the room's tag (", Randomizer SEED (settings)", row 281) so players pick a game
+// on their seed.
 std::string DetailText(const Room& r, int my_protocol);
 // Whether it can be joined from here (same protocol, room for one more).
 bool Joinable(const Room& r, int my_protocol);

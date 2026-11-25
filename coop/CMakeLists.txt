@@ -3,6 +3,7 @@
 add_library(coop_protocol STATIC
   protocol/src/codec.cpp
   protocol/src/join_password.cpp
+  protocol/src/mod_world.cpp
   protocol/src/official_mark.cpp
   protocol/src/race.cpp
   protocol/src/traffic_crypto.cpp
