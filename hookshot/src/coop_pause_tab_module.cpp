@@ -6,6 +6,7 @@
 // tests drive Page and Probe themselves).
 #include "coop_i18n.h"
 #include "coop_pause_tab.h"
+#include "coop_chat_history.h"
 #include "coop_list_pages.h"
 #include "coop_text_fit.h"
 #include "coop_players_open.h"
@@ -85,6 +86,7 @@ std::atomic<bool> g_confirm_by_mouse{false};   // (the waiting A came from a cli
 bool g_act_clicked = false;                    // (Act's row came from a click; Act's thread only)
 // The Players view's page, and the player whose view shows (their number; the views kPlayer, kPlayerHost).
 std::atomic<int> g_players_page{0}, g_player{0};
+std::atomic<int> g_chat_page{CoopChatHistory::kNewest};   // the Players view's chat list: its page (row 282)
 std::atomic<int> g_lan_page{0};   // the games on this network: the view's page
 // The game picked on that list, for its own view (View::kLanGame): where it is, and its row's words. g_mutex.
 struct LanPick {
@@ -867,6 +869,10 @@ SessionView ViewNow(View view) {
     v.players = seen.connected ? static_cast<int>(seen.players.size()) : 0;
     v.s.listed = v.players;
     v.s.page = g_players_page.load();
+    if (view == View::kPlayers && v.s.in_one) {   // (the session's chat to look back at, row 282: as the banner words it)
+        v.s.chat_page = g_chat_page.load();
+        for (const CoopHook::ChatLine& l : CoopHook::ChatHistory()) v.chat.push_back(l.notice ? CoopI18n::Tr(l.text) : l.text);
+    }
     if (seen.connected) {
         for (const CoopLobby::PlayerSeen& p : seen.players) {
             if (p.self && v.s.self < 0) v.s.self = static_cast<int>(&p - seen.players.data());
@@ -2929,7 +2935,8 @@ void MinusWords(void* ctx, std::uint64_t layout, std::uint64_t gen, int tab) {
     g_page.SetMinusLines(pickable, raw);
     g_page.SetMinusRawBack(raw_back);
     if (mods_read) g_mods_reading.Fill(mods_sent, std::move(mods_pickable), mods_selected);
-    g_page.SetMinusPageable(!mods && view == View::kLan && CellPages(BrowseListed(v.s)) > 1);
+    g_page.SetMinusPageable(!mods && ((view == View::kLan && CellPages(BrowseListed(v.s)) > 1) ||
+                                      (view == View::kPlayers && lines[0].paged)));   // (row 282: the chat list's pages)
     for (int i = 0; i < kLinePanes; ++i) g_minus_lines[static_cast<std::size_t>(i)] = lines[static_cast<std::size_t>(i)];
     // (the cursor's part of what was read: the frames and the alphas from it at each update, ApplyMinusPage)
     g_minus_pickable = pickable, g_minus_words_picked = picked, g_minus_raw = raw;
@@ -3426,8 +3433,12 @@ bool g_click_held = false;
 constexpr std::uint64_t kClickThroughMs = 450;
 
 void SetView(View v) {
-    if (g_view.exchange(static_cast<int>(v)) != static_cast<int>(v)) {
+    if (const int was = g_view.exchange(static_cast<int>(v)); was != static_cast<int>(v)) {
         g_live_poke = true;       // (its rows and list at the next update: the list's place too)
+        // (the Players view opens its chat on the newest page; back from a player's view it stays where it was)
+        if (v == View::kPlayers && was != static_cast<int>(View::kPlayer) && was != static_cast<int>(View::kPlayerHost)) {
+            g_chat_page = CoopChatHistory::kNewest;
+        }
         g_view_ms = NowMs();
         g_confirm_until = 0;      // (a new view: no A waited)
         g_show_password = false;  // (and the password hidden again)
@@ -3550,6 +3561,11 @@ void FollowMenu(bool shown) {
 
 // A row's action, or (line >= 0) a line of the details list's (DetailLines' act: their Auto-rejoin) (after the lock:
 // co-op's menu, the Lobby and the chat take their own).
+// The Players view's chat list: how many pages its rows take (coop_chat_history.h).
+static int ChatPages(const SessionView& v) {
+    return CoopChatHistory::Pages(static_cast<int>(CoopChatHistory::Rows(v.chat, kListLineChars).size()));
+}
+
 void Act(int row, int line = -1, bool clicked = false, RowAction forced = RowAction::kNone) {
     g_act_clicked = clicked;
     const View view = ViewShown();
@@ -3585,6 +3601,10 @@ void Act(int row, int line = -1, bool clicked = false, RowAction forced = RowAct
         break;
     }
     case RowAction::kMorePlayers: g_players_page = (v.s.page + 1) % PlayerPages(v.s.listed); break;
+    case RowAction::kChatPage:   // (the chat list's heading: older lines, round)
+        g_chat_page = CoopChatHistory::Step(v.s.chat_page, ChatPages(v), -1);
+        g_live_poke = true;
+        break;
     case RowAction::kHostControls: SetView(View::kPlayerHost); break;
     case RowAction::kViewLetIn: SetView(View::kLetIn); break;
     case RowAction::kViewJoin: SetView(View::kJoin); break;
@@ -5040,6 +5060,13 @@ std::uint64_t OnPad(std::uint64_t buttons, std::int32_t stick[4]) noexcept {
                 const int pages = CellPages(BrowseListed(lan.s));
                 if (pages > 1) {
                     g_cell_page = CoopListPages::Step(lan.s.cell_page, pages, minus_page_step), g_cell = -1;   // (round)
+                    g_live_poke = true;
+                }
+            }
+            if (minus_page_step != 0 && view == View::kPlayers) {   // (ZL / ZR: the chat list's older / newer page)
+                const SessionView players = ViewNow(View::kPlayers);
+                if (const int pages = ChatPages(players); pages > 1) {
+                    g_chat_page = CoopChatHistory::Step(players.s.chat_page, pages, minus_page_step);
                     g_live_poke = true;
                 }
             }
