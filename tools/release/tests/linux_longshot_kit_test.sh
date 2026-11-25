@@ -514,6 +514,9 @@ export CS_RECS=$(cs_recs "$CS/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips
 check 'Character Select: a 0.11.8 full copy keeps its NPC part, his patch stripped, his own kept aside, no download' \
     bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && grep -q "^v1 .* full cz2v$" "$2/coop-charsel.txt" &&
         [ "$CS_RECS" = 2 ] && cmp -s "$2/coop-charsel-code.ips" "$3" && ! grep -q downloading "$1"' _ "$tmp/build-cs5.txt" "$CS" "$tmp/cs-his.ips"
+# launcher-clarity checks, in a copy of the kit (its Character Select, pack and game stamps are changed here; the checks
+# below read the kit as it was).
+kit_lc=$kit; rm -rf "$tmp/kit-lc"; cp -a "$kit" "$tmp/kit-lc"; kit=$tmp/kit-lc D=$tmp/kit-lc/data CS="$tmp/kit-lc/data/game/mods/OoT Character Select"
 # launcher-clarity: no answer kept (a reinstalled kit) and the kit's copy there has the NPC part: kept, not asked.
 sed -i '/^character_select = /d' "$D/coop-options.ini"; rm -f "$D/character-select-answer.txt"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs5k.txt" 2>&1; export CODE=$?
@@ -547,6 +550,7 @@ sed -i 's/^character_select = off$/character_select = yes/' "$D/coop-options.ini
 cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >/dev/null 2>&1
 check 'Character Select: back on after the uninstall checks' grep -q "^v1 .* full cz2v$" "$CS/coop-charsel.txt"
+kit=$kit_lc D=$kit_lc/data CS="$kit_lc/data/game/mods/OoT Character Select"; rm -rf "$tmp/kit-lc"
 # A newer patch of his laid out otherwise (no record at cz_head): refused, the copy there kept as it was.
 cs_ips "$D/builder/charsel/code.ips" 0
 cs_pin https://example.invalid/code.ips "$(sha256sum "$D/builder/charsel/code.ips" | cut -d' ' -f1)"

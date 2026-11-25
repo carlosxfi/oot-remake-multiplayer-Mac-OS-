@@ -1196,31 +1196,6 @@ try {
         Check ((Test-KitCharacterSelectHasNpc $cmNpc 'CS') -and (Test-KitCharacterSelectHasNpc $cmNpc 'CS08') -and -not (Test-KitCharacterSelectHasNpc $cmNpc 'CSui') -and
                -not (Test-KitCharacterSelectHasNpc $cmNpc 'none')) 'Character Select: the NPC part there is found (full stamp, a 0.11.8 four-field stamp), not in a ui copy or none'
         Remove-Item -LiteralPath $cmNpc -Recurse -Force
-        # "Uninstall Character Select.bat": off, and the start takes the kit's copy out (kept as .prev until the game is built).
-        Check ((Set-KitCharacterSelectFiles $ck $cg 'uninstall') -eq '' -and (Get-KitCharacterSelectChoice $ck) -eq 'off' -and
-               (Read-KitFirstLine (Join-Path $ck 'hookshot\character-select-answer.txt')) -eq 'off') 'Uninstall Character Select: the answer is off (coop-options.ini''s line too)'
-        $csPrev = Join-Path $cm '_OoT Character Select.prev'
-        Check ((Invoke-KitCharacterSelectStep $ck $cg) -and -not (Test-Path -LiteralPath $csDir) -and (Test-Path -LiteralPath $csPrev)) 'Uninstall Character Select: the start takes it out (kept until the game is built without it)'
-        Check (-not (Invoke-KitCharacterSelectStep $ck $cg) -and -not (Test-Path -LiteralPath $csDir)) 'Uninstall Character Select: later starts do not put it back'
-        Check ((Undo-KitCharacterSelect $ck $cm) -and (Test-Path -LiteralPath $csDir)) 'Uninstall Character Select: a failed build puts it back as it was'
-        # "Reinstall Character Select.bat": the copy set aside, the zip fetched again, asked again.
-        $csZipNow = Join-Path $cDl (Get-KitCharacterSelectPin $ck).zip
-        $csZipHad = Test-Path -LiteralPath $csZipNow
-        if ($csZipHad) { Copy-Item -LiteralPath $csZipNow -Destination "$csZipNow.kept" -Force }
-        Check ((Set-KitCharacterSelectFiles $ck $cg 'reinstall') -eq '' -and (Get-KitCharacterSelectChoice $ck) -eq 'ask' -and -not (Test-Path -LiteralPath $csDir) -and
-               (Test-Path -LiteralPath $csPrev) -and -not (Test-Path -LiteralPath $csZipNow)) 'Reinstall Character Select: the copy set aside, its zip gone (fetched again), asked again'
-        Check ((Undo-KitCharacterSelect $ck $cm) -and (Test-Path -LiteralPath $csDir)) 'Reinstall Character Select: a failed build puts the old copy back'
-        if ($csZipHad) { Move-Item -LiteralPath "$csZipNow.kept" -Destination $csZipNow -Force }
-        $csOwnStamp = Join-Path $csDir 'coop-charsel.txt'; $csOwnKept = [System.IO.File]::ReadAllBytes($csOwnStamp); Remove-Item -LiteralPath $csOwnStamp -Force
-        Check ((Set-KitCharacterSelectFiles $ck $cg 'reinstall') -like '*your own copy*' -and (Test-Path -LiteralPath $csDir)) 'Reinstall Character Select: the player''s own copy is never set aside'
-        [System.IO.File]::WriteAllBytes($csOwnStamp, $csOwnKept)
-        $csMake = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\make_kit_hookshot.ps1')
-        foreach ($csBat in 'Uninstall Character Select.bat', 'Reinstall Character Select.bat') {
-            $csCode = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot "..\kit\$csBat") | Where-Object { $_.Trim() -and $_ -notmatch '^\s*rem\b' -and $_ -ne '@echo off' })
-            Check ($csCode.Count -eq 1 -and $csCode[0] -like '*scripts\character-select.ps1*' -and $csCode[0] -like '*Start Squadala.bat*' -and $csMake.Contains("'$csBat'")) "$($csBat): one command line (an update may replace it while it runs), runs the start, in the kit"
-        }
-        Write-File (Join-Path $ck 'coop-options.ini') "character_select = no`n"
-        Set-KitCharacterSelectChoice $ck 'no'
         # Row 242: a default part made by the old rule (0.11.9/0.11.10: its stamp has no ui-rule field, all of romfs/Tex
         # gone, Link's own textures too) is made again from his release, never copied from, so Link's textures come back.
         # (its own mods folder: the kept copies of $cm stay as the checks below expect them)
@@ -1254,6 +1229,31 @@ try {
                (Read-KitFirstLine (Join-Path $csDir 'coop-charsel.txt')) -eq $want) 'Character Select undo: a failed build after the change puts the full copy back, its files whole'
         Check ((Invoke-KitCharacterSelectStep $ck $cg) -and -not (Test-Path -LiteralPath (Join-Path $csDir $csNpcFiles[0]))) 'Character Select: the default part again'
         Confirm-KitCharacterSelect $ck $cm
+        # "Uninstall Character Select.bat": off, and the start takes the kit's copy out (kept as .prev until the game is built).
+        Check ((Set-KitCharacterSelectFiles $ck $cg 'uninstall') -eq '' -and (Get-KitCharacterSelectChoice $ck) -eq 'off' -and
+               (Read-KitFirstLine (Join-Path $ck 'hookshot\character-select-answer.txt')) -eq 'off') 'Uninstall Character Select: the answer is off (coop-options.ini''s line too)'
+        $csPrev = Join-Path $cm '_OoT Character Select.prev'
+        Check ((Invoke-KitCharacterSelectStep $ck $cg) -and -not (Test-Path -LiteralPath $csDir) -and (Test-Path -LiteralPath $csPrev)) 'Uninstall Character Select: the start takes it out (kept until the game is built without it)'
+        Check (-not (Invoke-KitCharacterSelectStep $ck $cg) -and -not (Test-Path -LiteralPath $csDir)) 'Uninstall Character Select: later starts do not put it back'
+        Check ((Undo-KitCharacterSelect $ck $cm) -and (Test-Path -LiteralPath $csDir)) 'Uninstall Character Select: a failed build puts it back as it was'
+        # "Reinstall Character Select.bat": the copy set aside, the zip fetched again, asked again.
+        $csZipNow = Join-Path $cDl (Get-KitCharacterSelectPin $ck).zip
+        $csZipHad = Test-Path -LiteralPath $csZipNow
+        if ($csZipHad) { Copy-Item -LiteralPath $csZipNow -Destination "$csZipNow.kept" -Force }
+        Check ((Set-KitCharacterSelectFiles $ck $cg 'reinstall') -eq '' -and (Get-KitCharacterSelectChoice $ck) -eq 'ask' -and -not (Test-Path -LiteralPath $csDir) -and
+               (Test-Path -LiteralPath $csPrev) -and -not (Test-Path -LiteralPath $csZipNow)) 'Reinstall Character Select: the copy set aside, its zip gone (fetched again), asked again'
+        Check ((Undo-KitCharacterSelect $ck $cm) -and (Test-Path -LiteralPath $csDir)) 'Reinstall Character Select: a failed build puts the old copy back'
+        if ($csZipHad) { Move-Item -LiteralPath "$csZipNow.kept" -Destination $csZipNow -Force }
+        $csOwnStamp = Join-Path $csDir 'coop-charsel.txt'; $csOwnKept = [System.IO.File]::ReadAllBytes($csOwnStamp); Remove-Item -LiteralPath $csOwnStamp -Force
+        Check ((Set-KitCharacterSelectFiles $ck $cg 'reinstall') -like '*your own copy*' -and (Test-Path -LiteralPath $csDir)) 'Reinstall Character Select: the player''s own copy is never set aside'
+        [System.IO.File]::WriteAllBytes($csOwnStamp, $csOwnKept)
+        $csMake = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\make_kit_hookshot.ps1')
+        foreach ($csBat in 'Uninstall Character Select.bat', 'Reinstall Character Select.bat') {
+            $csCode = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot "..\kit\$csBat") | Where-Object { $_.Trim() -and $_ -notmatch '^\s*rem\b' -and $_ -ne '@echo off' })
+            Check ($csCode.Count -eq 1 -and $csCode[0] -like '*scripts\character-select.ps1*' -and $csCode[0] -like '*Start Squadala.bat*' -and $csMake.Contains("'$csBat'")) "$($csBat): one command line (an update may replace it while it runs), runs the start, in the kit"
+        }
+        Write-File (Join-Path $ck 'coop-options.ini') "character_select = no`n"
+        Set-KitCharacterSelectChoice $ck 'no'
         Check ((Get-Content -LiteralPath (Join-Path $csDir $csUiFiles[0]) -Raw) -match 'v2' -and -not (Test-Path -LiteralPath $csPrev)) 'Character Select: confirmed: the linked files stay whole when the kept copy goes'
         # Turned on again later: the default part cannot give the NPC part, so his release is downloaded again.
         Write-File (Join-Path $ck 'coop-options.ini') "character_select = yes`n"
