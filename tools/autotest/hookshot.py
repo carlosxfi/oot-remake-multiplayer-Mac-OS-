@@ -418,8 +418,8 @@ def parse(text):
                 fail("want: assign ITEM")
             s.kind, s.name = "assign", w[1]
         elif cmd == "MENU":
-            if len(w) != 2 or w[1].lower() not in ("customize", "close", "host"):
-                fail("want: menu customize|close|host")
+            if len(w) != 2 or w[1].lower() not in ("customize", "close", "host", "leave"):
+                fail("want: menu customize|close|host|leave")
             s.kind, s.name = "menu", w[1].lower()
         elif cmd == "AWAIT":
             # Row 325: "await TICKS REGEX": until a NEW line of this game's own log (written after the step began)

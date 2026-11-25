@@ -2090,6 +2090,10 @@ bool TestMenu(const std::string& page) {
         g_wanted = HOS_COOP_MENU_WANT_CLOSE;
         return true;
     }
+    if (page == "leave") {   // (remount-leave: the Multiplayer page's Leave row, as a player leaves)
+        LeaveNow();
+        return true;
+    }
     return false;
 }
 
