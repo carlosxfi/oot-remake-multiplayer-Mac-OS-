@@ -1654,7 +1654,9 @@ function Read-KitCharacterSelectAnswer([int]$Seconds = 15, [scriptblock]$ReadKey
 # The two parts of Snail's mod folder (owner, 0.11.9). A file of the NPC part (the opt-in download): the characters'
 # models (Model/Player_<age>_C<nnn>.*), their textures, cloth and voices (Tex, Phive, Sound), and his Dark Link
 # (Pack/Actor/Enemy_MiddleBoss_DarkLink names his cloth file Phive/Cloth/Player_Adult_Dark, so it goes with Phive;
-# Model/Player_Dark_* is its skeleton). Everything else is the default part every kit gets: the Characters page and
+# row 280: NOT Model/Player_Dark_Animation.Skeleton, the one Player_Dark_* file of his release: his adult Link packs
+# Pack/Actor/Player_Adult and PouchPlayer_Adult name it, the game has only the .anim of that name, and without it every
+# adult load waited for it for good, the world black). Everything else is the default part every kit gets: the Characters page and
 # Customize screen (UI, Sequence, Mals, RSDB, GameData, SLink2, the size table), Link's own models and packs, and
 # the code patch (exefs) without his customizer. No file of the default part names a file of the NPC part except
 # through the stored character, which the module keeps on an installed one (coop_char_slots.h). $Rel: '/' or '\'.
@@ -1674,7 +1676,7 @@ function Test-KitCharacterSelectNpcFile([string]$Rel) {
     $r = $Rel.Replace('\', '/')
     if ($r -match '^romfs/Tex/([^/]*_Player_|Angin_Tile_)') { return $false }
     return [bool]($r -match '^romfs/(Tex|Phive|Sound)/' -or $r -match '^romfs/Model/Player_(Adult|Child)_C\d{3}\.' -or
-                   $r -match '^romfs/Model/Player_Dark_' -or $r -eq 'romfs/Pack/Actor/Enemy_MiddleBoss_DarkLink.pack.zs')
+                   $r -eq 'romfs/Pack/Actor/Enemy_MiddleBoss_DarkLink.pack.zs')
 }
 
 # Snail's customizer in his code patch, left out (owner, 0.11.9: co-op's customization is the one; his customizer code is
@@ -1694,8 +1696,9 @@ $script:KitCharselIpsShift = 0x8001FF00L
 # (in the stamp: another list of regions, or another default-part file rule, makes the kit make his folder again.
 # cz2, row 242: the default part keeps Link's own textures; a default part stamped with an older one lost them, so it
 # is never copied from: his release is unpacked again. cz2v: his release's voice files are deleted, so a copy that
-# has them is made again.)
-$script:KitCharselStrip = 'cz2v'
+# has them is made again. cz3, row 280: the default part keeps Model/Player_Dark_Animation.Skeleton, which his adult Link
+# packs name; a default part stamped with an older one has no adult Link, so it is made again.)
+$script:KitCharselStrip = 'cz3'
 
 # An IPS32 file's records: @{ At (offset); Size (bytes it changes); From; To (the record's bytes in the file) }, or a
 # throw when it is not one. IPS32: 'IPS32', records (u32 BE offset, u16 BE size, the bytes; size 0: u16 BE run length
@@ -1836,7 +1839,7 @@ function Complete-KitCharacterSelectFolder([string]$New, $Op, [string]$Part, [st
 # The NPC part as player.py's --exclude (paths below romfs/, '/'): must say exactly what Test-KitCharacterSelectNpcFile
 # says for romfs files (launch_test.ps1 checks the two agree); change both together. Link's own textures in Tex/ (named
 # *_Player_* or Angin_Tile_*) stay in the ui part (row 242).
-$KitCharselToolExclude = '^(Phive|Sound)/|^Tex/(?![^/]*_Player_|Angin_Tile_)|^Model/Player_(Adult|Child)_C\d{3}\.|^Model/Player_Dark_|^Pack/Actor/Enemy_MiddleBoss_DarkLink\.pack\.zs$'
+$KitCharselToolExclude = '^(Phive|Sound)/|^Tex/(?![^/]*_Player_|Angin_Tile_)|^Model/Player_(Adult|Child)_C\d{3}\.|^Pack/Actor/Enemy_MiddleBoss_DarkLink\.pack\.zs$'
 # One argument line for CreateProcess (no shell: '|', '&', '^' and '%' are plain characters in it): each argument
 # quoted when it is empty or has a space, a tab or a quote; backslashes right before a quote, and at the end of a quoted
 # argument, doubled; a quote escaped. The program gets each argument back byte for byte (the C runtime's rules).
