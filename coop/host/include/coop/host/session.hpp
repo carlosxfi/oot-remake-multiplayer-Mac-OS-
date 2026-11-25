@@ -13,8 +13,10 @@
 //   client, and hands what came in to presence (at once) and to the flag
 //   watcher (queued for the next frame()).
 // - any thread may call with_client() and with_presence() to look in.
-// Lock order: the network lock, then the presence lock. frame() never holds
-// both at once and never holds either while it touches the game.
+// The calc thread exchanges mail through mailbox_mutex_ and reads an atomic
+// client snapshot; it never waits for ENet service or event callbacks.
+// Lock order: client_mutex_, then presence_mutex_. mailbox_mutex_ is never
+// held while either client or presence work runs.
 //
 // The client is borrowed: once it is given to a Session, use it only through
 // service() and with_client(), and keep it alive as long as the Session.
@@ -34,6 +36,7 @@
 // While not connected frame() reads nothing and sends nothing; changes the
 // game made meanwhile are found at the first connected frame.
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -43,6 +46,7 @@
 #include <vector>
 
 #include "coop/host/flag_watcher.hpp"
+#include "coop/host/frame_trace.hpp"
 #include "coop/host/flags.hpp"
 #include "coop/host/game_memory.hpp"
 #include "coop/host/player_reader.hpp"
@@ -157,10 +161,14 @@ class Session {
   // Ends a wait() early (to stop the network thread).
   void wake();
 
-  // Runs `f(client)` under the network lock. Any thread.
+  // Runs `f(client)` under the client lock. Any thread. Game-frame callers
+  // are timed so an uncommon explicit client borrow remains visible in traces.
   template <typename F>
   decltype(auto) with_client(F&& f) {
-    std::lock_guard lock(net_mutex_);
+    auto* trace = FrameTrace::active;
+    const auto start = trace ? FrameTrace::Clock::now() : FrameTrace::Clock::time_point{};
+    std::unique_lock lock(client_mutex_);
+    if (trace) trace->net_lock_wait_ms += FrameTrace::since_ms(start);
     return f(client_);
   }
   // Runs `f(presence)` under the presence lock. Any thread; frame() does not
@@ -296,8 +304,8 @@ class Session {
   };
   using Outbound = std::variant<protocol::Message, FlagChanges, FlagTable>;
 
-  void handle(const net::Event& event);  // network thread, under net_mutex_
-  void send(Outbound& out);              // network thread, under net_mutex_
+  void handle(const net::Event& event, std::vector<Inbound>& inbox);  // client lock held
+  void send(Outbound& out);                                      // client lock held
   void queue_flags(const std::vector<Outgoing>& out, std::vector<Outbound>& to);
 
   // Emulator thread only.
@@ -308,11 +316,19 @@ class Session {
   bool title_up_ = false;       // set_title_up
   PlayerReader::DrawnState drawn_state_{};  // frame(GameMemory&)'s readers share it
 
-  // Guarded by net_mutex_.
-  std::mutex net_mutex_;
+  // ENet/client state is used only under client_mutex_. frame() consumes the
+  // published snapshot instead of joining that critical section.
+  std::mutex client_mutex_;
+  net::Client& client_;
+  std::atomic<bool> connected_{false};
+  std::atomic<std::uint64_t> server_now_us_{0};
+  std::atomic<std::uint8_t> player_number_{0};
+
+  // Short calc/network handoff only. No ENet calls, decoding, callbacks, or
+  // presence work happen while this mutex is held.
+  std::mutex mailbox_mutex_;
   std::condition_variable wake_;
   bool woken_ = false;
-  net::Client& client_;
   std::vector<Outbound> outbox_;
   std::vector<Inbound> inbox_;
   std::function<void(const net::Event&, net::Client&)> on_event_;

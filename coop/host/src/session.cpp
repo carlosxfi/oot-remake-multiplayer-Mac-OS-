@@ -19,17 +19,21 @@ Session::Session(net::Client& client, SessionSettings settings)
     watcher_->set_learn_pickups(settings.learn_pickups);
     if (settings.clock) watcher_->set_clock(settings.clock);
   }
+  const bool connected = client_.state() == net::State::connected;
+  server_now_us_.store(connected ? client_.server_now_us() : 0, std::memory_order_relaxed);
+  player_number_.store(client_.player_number(), std::memory_order_relaxed);
+  connected_.store(connected, std::memory_order_release);
 }
 
 FrameReport Session::frame(const std::optional<PlayerReading>& reading, FlagStore* flags) {
   FrameReport report;
   std::vector<Inbound> inbox;
-  std::uint8_t number = 0;
+  const bool connected = connected_.load(std::memory_order_acquire);
+  report.connected = connected;
+  report.server_now_us = connected ? server_now_us_.load(std::memory_order_relaxed) : 0;
+  const std::uint8_t number = player_number_.load(std::memory_order_relaxed);
   {
-    std::lock_guard lock(net_mutex_);
-    report.connected = client_.state() == net::State::connected;
-    if (report.connected) report.server_now_us = client_.server_now_us();
-    number = client_.player_number();
+    std::lock_guard lock(mailbox_mutex_);
     inbox.swap(inbox_);
   }
 
@@ -106,7 +110,7 @@ FrameReport Session::frame(const std::optional<PlayerReading>& reading, FlagStor
 
   if (!out.empty()) {
     {
-      std::lock_guard lock(net_mutex_);
+      std::lock_guard lock(mailbox_mutex_);
       for (auto& o : out) outbox_.push_back(std::move(o));
     }
     wake_.notify_one();
@@ -139,14 +143,36 @@ void Session::queue_flags(const std::vector<Outgoing>& out, std::vector<Outbound
 }
 
 void Session::service() {
-  std::lock_guard lock(net_mutex_);
-  for (auto& out : outbox_) send(out);
-  outbox_.clear();
-  client_.service(0);
-  while (auto event = client_.next_event()) {
-    handle(*event);
-    if (on_event_) on_event_(*event, client_);
+  std::vector<Outbound> outbox;
+  {
+    std::lock_guard lock(mailbox_mutex_);
+    outbox.swap(outbox_);
   }
+
+  std::vector<Inbound> inbox;
+  bool connected = false;
+  std::uint64_t server_now_us = 0;
+  std::uint8_t player_number = 0;
+  {
+    std::lock_guard lock(client_mutex_);
+    for (auto& out : outbox) send(out);
+    client_.service(0);
+    while (auto event = client_.next_event()) {
+      handle(*event, inbox);
+      if (on_event_) on_event_(*event, client_);
+    }
+    connected = client_.state() == net::State::connected;
+    if (connected) server_now_us = client_.server_now_us();
+    player_number = client_.player_number();
+  }
+
+  if (!inbox.empty()) {
+    std::lock_guard lock(mailbox_mutex_);
+    for (auto& in : inbox) inbox_.push_back(std::move(in));
+  }
+  server_now_us_.store(server_now_us, std::memory_order_relaxed);
+  player_number_.store(player_number, std::memory_order_relaxed);
+  connected_.store(connected, std::memory_order_release);
 }
 
 void Session::send(Outbound& out) {
@@ -167,13 +193,13 @@ void Session::send(Outbound& out) {
   }
 }
 
-void Session::handle(const net::Event& event) {
+void Session::handle(const net::Event& event, std::vector<Inbound>& inbox) {
   using net::EventKind;
   const bool sharing = sharing_;
   switch (event.kind) {
     case EventKind::welcomed:
     case EventKind::reconnected: {
-      inbox_.emplace_back(Control::reset);
+      inbox.emplace_back(Control::reset);
       std::lock_guard lock(presence_mutex_);
       presence_.on_welcome(event.welcome);
       break;
@@ -195,25 +221,25 @@ void Session::handle(const net::Event& event) {
       // FLAG_STATE comes to the watcher as its flag_state event, which the
       // client also gives for its own answers as host.
       if (sharing && std::holds_alternative<protocol::FlagSnapshot>(event.message)) {
-        inbox_.emplace_back(event.message);
+        inbox.emplace_back(event.message);
       }
       // Who made a shared change (the chat notices): the server's FLAG_ORIGIN,
       // or, as host, the asker of a FLAG_SET our client answers next.
       if (sharing && std::holds_alternative<protocol::FlagOrigin>(event.message)) {
-        inbox_.emplace_back(event.message);
+        inbox.emplace_back(event.message);
       } else if (const auto* set = std::get_if<protocol::FlagSet>(&event.message); sharing && set) {
-        inbox_.emplace_back(protocol::Message{protocol::FlagOrigin{set->player_number, set->flags}});
+        inbox.emplace_back(protocol::Message{protocol::FlagOrigin{set->player_number, set->flags}});
       }
       break;
     }
     case EventKind::flag_state:
-      if (sharing) inbox_.emplace_back(protocol::Message{protocol::FlagState{event.player, event.flags}});
+      if (sharing) inbox.emplace_back(protocol::Message{protocol::FlagState{event.player, event.flags}});
       break;
     case EventKind::flag_reset:
-      if (sharing) inbox_.emplace_back(protocol::Message{protocol::FlagReset{event.player, event.flags}});
+      if (sharing) inbox.emplace_back(protocol::Message{protocol::FlagReset{event.player, event.flags}});
       break;
     case EventKind::host_changed:
-      inbox_.emplace_back(client_.is_host() ? Control::become_host : Control::become_player);
+      inbox.emplace_back(client_.is_host() ? Control::become_host : Control::become_player);
       break;
     default:
       break;
@@ -221,7 +247,7 @@ void Session::handle(const net::Event& event) {
 }
 
 void Session::wait(std::uint32_t max_ms) {
-  std::unique_lock lock(net_mutex_);
+  std::unique_lock lock(mailbox_mutex_);
   wake_.wait_for(lock, std::chrono::milliseconds(max_ms),
                  [this] { return woken_ || !outbox_.empty(); });
   woken_ = false;
@@ -229,7 +255,7 @@ void Session::wait(std::uint32_t max_ms) {
 
 void Session::wake() {
   {
-    std::lock_guard lock(net_mutex_);
+    std::lock_guard lock(mailbox_mutex_);
     woken_ = true;
   }
   wake_.notify_all();
