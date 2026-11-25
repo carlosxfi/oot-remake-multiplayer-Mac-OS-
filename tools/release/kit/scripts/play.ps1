@@ -197,6 +197,12 @@ if ($Hookshot) {
     # needs your tunic tile there (row 265). The original game (coop-options.ini original_game) touches no size table.
     $originalGame = @(Get-Content (Join-Path $kit 'coop-options.ini') -ErrorAction SilentlyContinue |
         Where-Object { $_ -match '^\s*original_game\s*=\s*(on|1|yes|true)\s*$' }).Count -gt 0
+    # The game's mods list in step with that switch before any build check reads it (row 266: a list an older kit
+    # wrote, the switch set or taken out by hand; kit-paths.ps1 Sync-KitOriginalMods, the module's CoopOriginal::Sync).
+    if ($exe) {
+        $l = Sync-KitOriginalMods (Join-Path (Split-Path -Parent $exe) 'mods') $originalGame
+        if ($l) { Write-Host $l }
+    }
     function Invoke-KitStartMerge {
         if (-not $exe -or $originalGame) { return }
         foreach ($l in @(Invoke-KitSizeTableMerge $kit (Split-Path -Parent $exe))) { Write-Host $l }

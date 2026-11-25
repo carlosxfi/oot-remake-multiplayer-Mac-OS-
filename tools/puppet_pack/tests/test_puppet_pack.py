@@ -1058,8 +1058,10 @@ class BuildPackTest(unittest.TestCase):
         self.assertEqual(build.STAND_IN_XLINK, ("CoopShotFx_Seed", "CoopShotFx_Arrow"))
         pack, ap, names = build.build_stand_in(members, "Shootable_DekuSeed", "CoopShotFx_Seed")
         comps = byml.loads(ap)["Components"]
-        for k in ("ModelInfoRef", "ELinkRef", "SLinkRef", "XLinkRef"):
+        for k in ("ModelInfoRef", "ELinkRef", "XLinkRef"):
             self.assertEqual(comps[k], seed["Components"][k])
+        # Its sound user is the shared ReactionHit (the wall-hit sounds), in its own SLink param.
+        self.assertEqual(comps["SLinkRef"], "?" + build.slink_path("CoopShotFx_Seed"))
         for k in ("PhysicsRef", "AIInfoRef", "AttackRef", "ShootableRef", "SensorRef", "LifeRef"):
             self.assertNotIn(k, comps)
         # Nothing that can hit, be hit, sense or move by itself: only the model, the xlink users and
@@ -1069,7 +1071,10 @@ class BuildPackTest(unittest.TestCase):
         files = sarc.read(pack)
         self.assertIn("Component/ELink/Seed.engine__component__ELinkParam.bgyml", files)
         self.assertIn("Component/XLink/Seed.engine__component__XLinkParam.bgyml", files)
+        self.assertEqual(byml.loads(files[build.slink_path("CoopShotFx_Seed")]), {"UserName": "ReactionHit"})
         self.assertFalse([n for n in names if n.startswith("AI/")])
+        self.assertEqual(build.STAND_IN_SLINK_USER, {"CoopShotFx_Seed": "ReactionHit",
+                                                     "CoopShotFx_Arrow": "ReactionHit"})
         # The plain stand-in of the same shootable is unchanged: the shared XLink param, no users.
         _, plain, _ = build.build_stand_in(members, "Shootable_DekuSeed", "CoopShot_Seed")
         plain = byml.loads(plain)["Components"]
@@ -1079,7 +1084,7 @@ class BuildPackTest(unittest.TestCase):
                       "ELinkUserName": "Shootable_DekuSeed", "SLinkUserName": "Shootable_DekuSeed"}
         row = build.stand_in_row(source_row, "CoopShotFx_Seed")
         self.assertEqual(row["ELinkUserName"], "Shootable_DekuSeed")
-        self.assertEqual(row["SLinkUserName"], "Shootable_DekuSeed")
+        self.assertEqual(row["SLinkUserName"], "ReactionHit")
         self.assertNotIn("ActorName", row)
         self.assertEqual(row["__RowId"], "CoopShotFx_Seed")
         self.assertNotIn("ELinkUserName", build.stand_in_row(source_row, "CoopShot_Seed"))

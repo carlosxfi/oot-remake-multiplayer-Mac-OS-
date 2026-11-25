@@ -216,6 +216,85 @@ TEST_CASE("difficulty: enemy life is how much of each hit an enemy takes") {
   CHECK(EnemyTakes(INT32_MAX, 25, carry) == INT32_MAX);  // no overflow
 }
 
+TEST_CASE("difficulty: an enemy's hits to kill are its life times the setting, rounded to the nearest hit") {
+  // Player report 2026-11-24 (2 players, automatic: enemy life 140%, count 125%): "at 125% mobs took way
+  // more hits". The carry started at 0, so the first hit always rounded down: a one-life enemy took two
+  // sword hits at 125% and 140%, as at 200%. Now it starts at half the first hit (kEnemyFirstCarry).
+  using CoopDifficulty::Kind;
+  using CoopDifficulty::Kinds;
+  const auto none = [] { return std::uint64_t{0}; };
+  const auto hits_to_kill = [&](Kind kind, std::int32_t life, std::int32_t hit, const Values& values) {
+    auto kinds = std::make_unique<Kinds>();
+    constexpr std::uint64_t kLife = 0x40'0000'1000;
+    REQUIRE(kinds->Mark(kLife, kind));
+    int hits = 0;
+    while (life > 0 && hits < 1000) {
+      life -= kinds->Step(kLife, hit, values, 0, none);
+      ++hits;
+    }
+    return hits;
+  };
+  const auto enemy = [&](std::int32_t life, std::int32_t hit, std::uint16_t pct) {
+    return hits_to_kill(Kind::enemy_life, life, hit, Values{pct, 100, 100});
+  };
+  struct Row {
+    std::int32_t life, hit;
+    std::uint16_t pct;
+    int hits;
+  };
+  for (const Row r : {
+           // a 1-life Keese or Skulltula with the Kokiri Sword (1 a hit)
+           Row{1, 1, 100, 1}, Row{1, 1, 125, 1}, Row{1, 1, 140, 1}, Row{1, 1, 150, 1}, Row{1, 1, 175, 2},
+           Row{1, 1, 200, 2}, Row{1, 1, 300, 3},
+           // a 2-life Deku Baba
+           Row{2, 1, 100, 2}, Row{2, 1, 125, 2}, Row{2, 1, 140, 3}, Row{2, 1, 150, 3}, Row{2, 1, 200, 4},
+           // an 8-life enemy (a Lizalfos): 8 hits at 100%, 10 at 125%, 12 at 150%
+           Row{8, 1, 100, 8}, Row{8, 1, 125, 10}, Row{8, 1, 140, 11}, Row{8, 1, 150, 12}, Row{8, 1, 175, 14},
+           Row{8, 1, 200, 16},
+           // the Master Sword (2 a hit)
+           Row{1, 2, 125, 1}, Row{1, 2, 200, 1}, Row{2, 2, 200, 2}, Row{8, 2, 100, 4}, Row{8, 2, 125, 5},
+           Row{8, 2, 140, 6}, Row{8, 2, 150, 6}, Row{8, 2, 200, 8},
+       }) {
+    CAPTURE(r.life);
+    CAPTURE(r.hit);
+    CAPTURE(r.pct);
+    CHECK(enemy(r.life, r.hit, r.pct) == r.hits);
+  }
+  // At every slider mark, for lives 1..24 and hits 1..4 of one size: never further than half a hit from
+  // life * pct / 100 / hit, and never fewer hits than at 100% (a big hit at a small step cannot kill sooner).
+  for (std::uint16_t pct = coop::protocol::kMinHpPct; pct <= coop::protocol::kMaxHpPct;
+       pct += coop::protocol::kDifficultyStep) {
+    for (std::int32_t life = 1; life <= 24; ++life) {
+      for (std::int32_t hit = 1; hit <= 4; ++hit) {
+        CAPTURE(pct);
+        CAPTURE(life);
+        CAPTURE(hit);
+        const int hits = enemy(life, hit, pct);
+        const double exact = static_cast<double>(life) * pct / 100.0 / hit;
+        if (50 * hit < pct) {  // (half the hit fits under one life point)
+          CHECK(std::abs(hits - exact) <= 0.5);
+        }
+        CHECK(hits >= 1);
+        if (pct >= 100) {
+          CHECK(hits >= enemy(life, hit, 100));
+        }
+      }
+    }
+  }
+  // The same rule for enemies folded in a dungeon (life x count) and bosses. Automatic, 2 players: enemies
+  // 140%, count 125% (a no-spot enemy with its one extra folds to 280%), bosses 200%.
+  const Values two = proto::auto_difficulty(2);
+  CHECK(two.hp_pct == 140);
+  CHECK(two.count_pct == 125);
+  CHECK(two.boss_hp_pct == 200);
+  CHECK(hits_to_kill(Kind::enemy_life, 1, 1, two) == 1);         // was 2
+  CHECK(hits_to_kill(Kind::folded_enemy_life, 1, 1, two) == 2);  // a Treatment::fold enemy: 175% (1.75 hits)
+  CHECK(hits_to_kill(Kind::boss_life, 1, 1, two) == 2);
+  // Gohma (life 21, the Kokiri Sword's 1 a hit on her eye, 2 players): 42 hits, as at 200%.
+  CHECK(hits_to_kill(Kind::boss_life, 21, 1, two) == 42);
+  CHECK(hits_to_kill(Kind::boss_life, 21, 1, Values{}) == 21);
+}
+
 TEST_CASE("difficulty: enemy damage on Link carries the parts of a quarter heart") {
   using CoopDifficulty::LinkTakes;
   std::int32_t carry = 0;
@@ -282,7 +361,7 @@ TEST_CASE("difficulty: the Life step scales enemies' hits, and enemies' hits on 
     ++asked;
     return attacker;
   };
-  // An enemy: a third of each hit, the parts carried.
+  // An enemy: a third of each hit, the parts carried (from half its first hit: 150, 250, 350).
   CHECK(kinds->Step(kKeeseLife, 1, hard, kNow, attacker_of) == 0);
   CHECK(kinds->Step(kKeeseLife, 1, hard, kNow, attacker_of) == 0);
   CHECK(kinds->Step(kKeeseLife, 1, hard, kNow, attacker_of) == 1);
@@ -312,8 +391,8 @@ TEST_CASE("difficulty: the Life step scales enemies' hits, and enemies' hits on 
   CHECK(kinds->EnemyHits() == 3);
   CHECK(kinds->LinkHits() == 2);
   // A carry made at other values is dropped: at 200% the Keese starts afresh.
-  CHECK(kinds->Step(kKeeseLife, 1, hard, kNow, attacker_of) == 0);  // carry 100 at 300
-  CHECK(kinds->Step(kKeeseLife, 1, Values{200, 100, 100}, kNow, attacker_of) == 0);  // 100 / 200, not 200 / 200
+  CHECK(kinds->Step(kKeeseLife, 1, hard, kNow, attacker_of) == 0);  // carry 150 at 300
+  CHECK(kinds->Step(kKeeseLife, 1, Values{200, 100, 100}, kNow, attacker_of) == 0);  // 150 / 200, not 250 / 200
   CHECK(kinds->Step(kKeeseLife, 1, Values{200, 100, 100}, kNow, attacker_of) == 1);
   // Marked again as something else (the address is another actor's now): its carry goes.
   CHECK(kinds->Step(kKeeseLife, 1, hard, kNow, attacker_of) == 0);
@@ -394,13 +473,13 @@ TEST_CASE("difficulty: a slot is kept while its address is marked, and through a
   const auto none = [] { return std::uint64_t{0}; };
   const std::uint64_t kLife = 0x7000'0100;
   CHECK(kinds->Mark(kLife, Kind::enemy_life));
-  CHECK(kinds->Step(kLife, 1, hard, 0, none) == 0);  // 1 at 150% life: 0 now, 2/3 carried
+  CHECK(kinds->Step(kLife, 1, hard, 0, none) == 1);  // 1 at 150% life, from half a point: 1 now, none carried
   for (std::uint64_t walk = 0; walk + 1 < Kinds::kKeepWalks; ++walk) {
     kinds->Sweep();  // (walks that do not read it: a load, a missed read)
   }
   CHECK(kinds->Of(kLife) == Kind::enemy_life);
   CHECK(kinds->Mark(kLife, Kind::enemy_life));  // read again: the same slot, its carry kept
-  CHECK(kinds->Step(kLife, 1, hard, 0, none) == 1);
+  CHECK(kinds->Step(kLife, 1, hard, 0, none) == 0);  // 100 / 150 (afresh it would take 1 again)
   for (std::uint64_t walk = 0; walk < Kinds::kKeepWalks; ++walk) {
     kinds->Sweep();
   }

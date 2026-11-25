@@ -1619,8 +1619,21 @@ bool Start(const HosCoopApi* api) {
     }
     // Original game (coop_original.h): the module stays off, all of it, and Longshot's F1 menu gets one tab with the
     // switch alone, so the player can turn it back.
-    if (const auto options = CoopTitle::KitOptionsFile();
-        options && CoopOriginal::OnIn(CoopTitle::ReadKitOptions())) {
+    // The mods list in step with the switch first (CoopOriginal::Sync: a list an older kit wrote, the switch set or
+    // taken out by hand in coop-options.ini; report 266), for the next start: Longshot read the list before the module.
+    const auto options = CoopTitle::KitOptionsFile();
+    const bool original = options && CoopOriginal::OnIn(CoopTitle::ReadKitOptions());
+    if (options) {
+        bool changed = false;
+        std::string why;
+        if (!CoopOriginal::Sync(CoopRuntime::GameDir() / "mods", original, changed, why)) {
+            LOG_WARNING(Core, "coop: original game: the mods list is not in step with the switch: {}", why);
+        } else if (changed) {
+            LOG_INFO(Core, "coop: original game {}: the mods list put in step with it (from the next start)",
+                     original ? "on" : "off");
+        }
+    }
+    if (original) {
         g_original.Open(*options, CoopRuntime::GameDir() / "mods");
         g_original_on = true;
         LOG_INFO(Core, "coop: original game ({}): the module stays off; F1's \"Original game\" tab turns it back",
@@ -1753,6 +1766,12 @@ void Frame(void* ctx, int site) {
         CoopPlaytest::AtFrame();
     }
     CoopWindowBrand::Tick(CoopRuntime::GameDir());  // the window's title and icon, co-op on or idle (solo too)
+    if (site == HOS_COOP_SITE_FRAME) {  // row 271: this game's memory once a minute, solo too (coop_host_menu.h)
+        static std::uint64_t next_memory_ms = 0;
+        if (CoopHostMenu::MemoryLineDue(SteadyMs(), next_memory_ms)) {
+            LOG_INFO(Core, "coop: memory: {}", CoopHostMenu::ProcessMemoryText());
+        }
+    }
     if (!g_on) {
         return;
     }

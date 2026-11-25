@@ -2377,3 +2377,93 @@ TEST_CASE("pause tab: Settings: Shared floor switches, on unless turned off, kep
     CHECK(options.find("floor_switches") == std::string::npos);  // on: no line
     CHECK(CoopTitleMenu::Options::Read(coop, options).floor_switches);
 }
+
+TEST_CASE("pause tab: Settings: Shared floor switches says race mode shares none, chosen or in the session") {
+    Menu m;
+    m.Show(CoopTitleMenu::Options{});
+    m.Open(Page::kSettings);
+    SelectRow(m, "Shared floor switches");
+    CHECK(m.view().help.find("Race mode") == std::string::npos);
+    CHECK(m.view().help.rfind("On: another player", 0) == 0);
+    SelectRow(m, "Race mode");
+    m.Press(Input::kRight);   // race mode chosen for the next Host
+    REQUIRE(m.options().race);
+    SelectRow(m, "Shared floor switches");
+    CHECK(m.view().help.rfind("Race mode is on, so floor switches are not shared", 0) == 0);
+    SelectRow(m, "Race mode");
+    m.Press(Input::kLeft);
+    // A host in a race session whose own next choice is no race: the session's mode decides, and no "stop
+    // hosting, then start again" (that would not share them in this game's mode).
+    Session s = Hosting(2);
+    s.rules = true;
+    s.race = true;
+    s.floor_switches = true;
+    m.SetSession(s);
+    SelectRow(m, "Shared floor switches");
+    CHECK(m.view().help.rfind("Race mode is on, so floor switches are not shared", 0) == 0);
+    CHECK(m.view().help.find("stop hosting") == std::string::npos);
+    CHECK(m.view().help.size() <= 160);   // (the caption's room: a longer help is cut)
+    // A guest there reads the session's state.
+    Session g = Joined();
+    g.rules = true;
+    g.race = true;
+    g.floor_switches = true;
+    m.SetSession(g);
+    SelectRow(m, "Shared floor switches");
+    CHECK(m.view().help.find("This game: Off (race mode).") != std::string::npos);
+    // A host live in a session with no race whose next Host is a race: the next-Host part follows the choice (a
+    // race shares none), the "This game:" part the session.
+    s.race = false;
+    m.SetSession(s);
+    SelectRow(m, "Race mode");
+    m.Press(Input::kRight);
+    REQUIRE(m.options().race);
+    SelectRow(m, "Shared floor switches");
+    CHECK(m.view().help.rfind("Race mode is on, so floor switches are not shared", 0) == 0);
+    CHECK(m.view().help.find("This game: On.") != std::string::npos);
+    CHECK(m.view().help.find("holds it down") == std::string::npos);
+    CHECK(m.view().help.size() <= 160);
+}
+
+TEST_CASE("pause tab: Settings: Gold Skulltulas says race mode shares none, chosen or in the session") {
+    Menu m;
+    m.Show(CoopTitleMenu::Options{});
+    m.Open(Page::kSettings);
+    SelectRow(m, "Gold Skulltulas");
+    CHECK(m.view().help.rfind("Shared: a kill drops the token", 0) == 0);
+    SelectRow(m, "Race mode");
+    m.Press(Input::kRight);   // race mode chosen for the next Host
+    REQUIRE(m.options().race);
+    SelectRow(m, "Gold Skulltulas");
+    CHECK(m.view().help.rfind("Race mode is on, so Gold Skulltulas are not shared", 0) == 0);
+    // Live in a session with no race, next Host a race: the note, and this game's own state.
+    Session s = Hosting(2);
+    s.rules = true;
+    m.SetSession(s);
+    SelectRow(m, "Gold Skulltulas");
+    CHECK(m.view().help.rfind("Race mode is on, so Gold Skulltulas are not shared", 0) == 0);
+    CHECK(m.view().help.find("This game: Shared.") != std::string::npos);
+    CHECK(m.view().help.size() <= 160);
+    // A race session whose next choice is no race (and Gold Skulltulas set to differ): the session's race decides,
+    // no "stop hosting" advice.
+    SelectRow(m, "Race mode");
+    m.Press(Input::kLeft);
+    REQUIRE_FALSE(m.options().race);
+    SelectRow(m, "Gold Skulltulas");
+    m.Press(Input::kRight);
+    s.race = true;
+    m.SetSession(s);
+    SelectRow(m, "Gold Skulltulas");
+    CHECK(m.view().help.rfind("Race mode is on, so Gold Skulltulas are not shared", 0) == 0);
+    CHECK(m.view().help.find("This game: Not shared (race mode).") != std::string::npos);
+    CHECK(m.view().help.find("stop hosting") == std::string::npos);
+    CHECK(m.view().help.size() <= 160);
+    // A guest there reads the session's state.
+    Session g = Joined();
+    g.rules = true;
+    g.race = true;
+    m.SetSession(g);
+    SelectRow(m, "Gold Skulltulas");
+    CHECK(m.view().help.find("This game: Not shared (race mode).") != std::string::npos);
+    CHECK(m.view().help.size() <= 160);
+}

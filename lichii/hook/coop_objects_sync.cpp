@@ -1649,6 +1649,33 @@ std::vector<std::pair<std::uint64_t, std::string>> Sync::Owned() const {
     return out;
 }
 
+std::vector<CoopDigest::Entry> Sync::DigestEntries() const {
+    std::map<proto::ObjectId, CoopDigest::Entry> by_id;
+    for (const auto& [address, o] : objects_) {
+        const auto owner = owners_.find(o.id);
+        if (owner == owners_.end() || by_id.contains(o.id)) {
+            continue;  // not shared yet (no owner news), or a second actor of one id: the first is written
+        }
+        CoopDigest::Entry e{o.id, {}};
+        e.fields.emplace_back("name", o.name);
+        e.fields.emplace_back("owner", std::to_string(owner->second.player));
+        e.fields.emplace_back("epoch", std::to_string(owner->second.epoch));
+        e.fields.emplace_back("life", o.life ? std::to_string(*o.life) : std::string("-"));
+        e.fields.emplace_back("max", std::to_string(o.max));
+        e.fields.emplace_back("dead", o.life ? (*o.life <= 0 ? "1" : "0") : "-");
+        if (owner->second.player != self_ && o.owner_life) {
+            e.fields.emplace_back("local.owner_life", std::to_string(*o.owner_life));
+        }
+        by_id.emplace(o.id, std::move(e));
+    }
+    std::vector<CoopDigest::Entry> out;
+    out.reserve(by_id.size());
+    for (auto& [id, e] : by_id) {
+        out.push_back(std::move(e));
+    }
+    return out;
+}
+
 void Sync::Written(std::uint64_t address, std::int32_t life, std::uint64_t now_us) {
     const auto it = objects_.find(address);
     if (it == objects_.end()) {

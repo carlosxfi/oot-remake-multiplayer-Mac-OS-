@@ -333,12 +333,17 @@ Error encode_body(const PlayerLife& m, Writer& w) {
 
 Error check_player_ride(const PlayerRide& m) {
   if (!valid_player_or_self(m.player_number)) return Error::bad_value;
-  if ((m.flags & ~kRideRiding) != 0) return Error::bad_value;
+  if ((m.flags & ~(kRideRiding | kRideFree)) != 0) return Error::bad_value;
+  const bool unridden = (m.flags & kRideFree) != 0;
+  if (unridden && (m.flags & kRideRiding) != 0) return Error::bad_value;  // ridden or free, never both
   COOP_TRY(check_string(m.horse, kMaxRideHorseChars));
-  if ((m.flags & kRideRiding) != 0 && m.horse.empty()) return Error::bad_value;
-  if (!all_finite(m.offset) || !all_finite(m.rotation)) return Error::bad_value;
+  if (m.flags != 0 && m.horse.empty()) return Error::bad_value;
+  if (!all_finite(m.offset) || !all_finite(m.rotation) || !all_finite(m.place)) return Error::bad_value;
   for (float f : m.offset) {
-    if (std::fabs(f) > kMaxRideOffset) return Error::bad_value;
+    if (std::fabs(f) > kMaxRideOffset || (unridden && f != 0.0f)) return Error::bad_value;
+  }
+  for (float f : m.place) {
+    if (std::fabs(f) > kMaxRidePlace || (!unridden && f != 0.0f)) return Error::bad_value;
   }
   if (m.animation) {
     COOP_TRY(check_string(m.animation->name, kMaxAnimationChars));
@@ -350,7 +355,7 @@ Error check_player_ride(const PlayerRide& m) {
 }
 
 // u8 player, u8 flags, horse name, offset 3 x f32, rotation 4 x f32, u8 1 when an
-// animation follows (name, f32 frame, f32 rate), else 0.
+// animation follows (name, f32 frame, f32 rate), else 0; with kRideFree, place 3 x f32.
 Error encode_body(const PlayerRide& m, Writer& w) {
   COOP_TRY(check_player_ride(m));
   w.u8(m.player_number);
@@ -363,6 +368,9 @@ Error encode_body(const PlayerRide& m, Writer& w) {
     w.str(m.animation->name);
     w.f32(m.animation->frame);
     w.f32(m.animation->rate);
+  }
+  if ((m.flags & kRideFree) != 0) {
+    for (float f : m.place) w.f32(f);
   }
   return Error::none;
 }
@@ -653,6 +661,43 @@ void write_object_id(const ObjectId& id, Writer& w) {
   w.u64(id.value);
 }
 
+// Components 25-28 (KeyedValues): keys rising (owner, then name), each once; no remove in a full list; finite.
+bool keyed_before(const KeyedValue& a, const KeyedValue& b) {
+  return a.owner != b.owner ? a.owner < b.owner : a.name < b.name;
+}
+
+Error check_keyed_value(const KeyedValue& v, bool full) {
+  if (std::holds_alternative<KeyedRemove>(v.value)) return full ? Error::bad_value : Error::none;
+  if (const auto* f = std::get_if<float>(&v.value); f && !std::isfinite(*f)) return Error::bad_value;
+  if (const auto* p = std::get_if<Vec3>(&v.value); p && !all_finite(*p)) return Error::bad_value;
+  return Error::none;
+}
+
+Error check_keyed(const KeyedValues& k) {
+  if (k.values.size() > kMaxKeyedValues) return Error::bad_value;
+  for (std::size_t i = 0; i < k.values.size(); ++i) {
+    if (i > 0 && !keyed_before(k.values[i - 1], k.values[i])) return Error::bad_value;
+    COOP_TRY(check_keyed_value(k.values[i], k.full));
+  }
+  return Error::none;
+}
+
+void write_keyed(const KeyedValues& k, Writer& w) {
+  w.u8(k.full ? 1 : 0);
+  w.u16(static_cast<std::uint16_t>(k.values.size()));
+  for (const KeyedValue& v : k.values) {
+    w.u64(v.owner);
+    w.u32(v.name);
+    w.u8(static_cast<std::uint8_t>(v.value.index()));
+    if (const auto* i = std::get_if<std::int32_t>(&v.value)) w.u32(static_cast<std::uint32_t>(*i));
+    if (const auto* f = std::get_if<float>(&v.value)) w.f32(*f);
+    if (const auto* p = std::get_if<Vec3>(&v.value)) {
+      for (float f : *p) w.f32(f);
+    }
+    if (const auto* t = std::get_if<std::uint64_t>(&v.value)) w.u64(*t);
+  }
+}
+
 Error check_object_state(const ObjectState& s) {
   if (s.position && !all_finite(*s.position)) return Error::bad_value;
   if (s.velocity && !all_finite(*s.velocity)) return Error::bad_value;
@@ -688,6 +733,9 @@ Error check_object_state(const ObjectState& s) {
       }
       before = v.seq;
     }
+  }
+  for (const auto* k : {&s.brain, &s.plugs, &s.clocks, &s.events}) {
+    if (*k) COOP_TRY(check_keyed(**k));
   }
   if (s.orders) {
     if (s.orders->recent.size() > kMaxBossOrders) return Error::bad_value;
@@ -845,6 +893,10 @@ void write_object_state(const ObjectState& s, Writer& w) {
       }
     });
   }
+  if (s.brain) component(ObjectComponent::brain, [&] { write_keyed(*s.brain, w); });
+  if (s.plugs) component(ObjectComponent::plugs, [&] { write_keyed(*s.plugs, w); });
+  if (s.clocks) component(ObjectComponent::clocks, [&] { write_keyed(*s.clocks, w); });
+  if (s.events) component(ObjectComponent::events, [&] { write_keyed(*s.events, w); });
 }
 
 }  // namespace
@@ -855,6 +907,43 @@ bool ValidVariantName(std::string_view name) {
     if (ch < 0x21 || ch > 0x7e) return false;  // printable ASCII, no space
   }
   return true;
+}
+
+KeyedValues MergeKeyed(const KeyedValues* kept, const KeyedValues& in, std::size_t& dropped) {
+  KeyedValues out;
+  out.full = true;
+  if (!in.full && kept) out.values = kept->values;
+  for (const KeyedValue& v : in.values) {
+    const auto at = std::lower_bound(out.values.begin(), out.values.end(), v, keyed_before);
+    const bool there = at != out.values.end() && at->owner == v.owner && at->name == v.name;
+    if (std::holds_alternative<KeyedRemove>(v.value)) {
+      if (there) out.values.erase(at);
+    } else if (there) {
+      at->value = v.value;
+    } else if (out.values.size() >= kMaxKeyedValues) {
+      ++dropped;
+    } else {
+      out.values.insert(at, v);
+    }
+  }
+  return out;
+}
+
+std::size_t KeepKeyed(const ObjectState* kept, ObjectState& s) {
+  std::size_t dropped = 0;
+  auto keep = [&](std::optional<KeyedValues> ObjectState::*list) {
+    const std::optional<KeyedValues>* old = kept ? &(kept->*list) : nullptr;
+    if (!(s.*list)) {
+      if (old && *old) s.*list = **old;
+      return;
+    }
+    s.*list = MergeKeyed(old && *old ? &**old : nullptr, *(s.*list), dropped);
+  };
+  keep(&ObjectState::brain);
+  keep(&ObjectState::plugs);
+  keep(&ObjectState::clocks);
+  keep(&ObjectState::events);
+  return dropped;
 }
 
 namespace {
@@ -1192,6 +1281,12 @@ Error decode_body(Reader& r, PlayerRide& m) {
   m = PlayerRide{};
   COOP_READ(r.u8(m.player_number));
   COOP_READ(r.u8(m.flags));
+  // The flags say what follows (a place with kRideFree), so a bad flags byte is refused as a bad value
+  // here, before it can make the reader run past the end looking for a place that was never sent.
+  if ((m.flags & ~(kRideRiding | kRideFree)) != 0 ||
+      (m.flags & (kRideRiding | kRideFree)) == (kRideRiding | kRideFree)) {
+    return Error::bad_value;
+  }
   COOP_TRY(r.str(m.horse, kMaxRideHorseChars));
   for (float& f : m.offset) COOP_READ(r.f32(f));
   for (float& f : m.rotation) COOP_READ(r.f32(f));
@@ -1204,6 +1299,9 @@ Error decode_body(Reader& r, PlayerRide& m) {
     COOP_READ(r.f32(a.frame));
     COOP_READ(r.f32(a.rate));
     m.animation = std::move(a);
+  }
+  if ((m.flags & kRideFree) != 0) {
+    for (float& f : m.place) COOP_READ(r.f32(f));
   }
   return check_player_ride(m);
 }
@@ -1510,6 +1608,45 @@ Error read_boss_action(Reader& c, BossAction& a) {
   return Error::none;
 }
 
+Error read_keyed(Reader& c, KeyedValues& k) {
+  std::uint8_t mode = 0;
+  std::uint16_t count = 0;
+  COOP_READ(c.u8(mode));
+  COOP_READ(c.u16(count));
+  if (mode > 1 || count > kMaxKeyedValues) return Error::bad_value;
+  k.full = mode == 1;
+  if (c.left() < std::size_t{count} * 13) return Error::truncated;
+  k.values.reserve(count);
+  for (std::uint16_t i = 0; i < count; ++i) {
+    KeyedValue& v = k.values.emplace_back();
+    std::uint8_t type = 0;
+    COOP_READ(c.u64(v.owner));
+    COOP_READ(c.u32(v.name));
+    COOP_READ(c.u8(type));
+    switch (type) {
+      case 0: v.value = KeyedRemove{}; break;
+      case 1: {
+        std::uint32_t word = 0;
+        COOP_READ(c.u32(word));
+        v.value = static_cast<std::int32_t>(word);
+        break;
+      }
+      case 2: {
+        float f = 0;
+        COOP_READ(c.f32(f));
+        v.value = f;
+        break;
+      }
+      case 3: COOP_TRY(read_floats(c, v.value.emplace<Vec3>())); break;
+      case 4: COOP_READ(c.u64(v.value.emplace<std::uint64_t>())); break;
+      default: return Error::bad_value;
+    }
+    if (i > 0 && !keyed_before(k.values[i - 1], v)) return Error::bad_value;
+    COOP_TRY(check_keyed_value(v, k.full));
+  }
+  return Error::none;
+}
+
 Error decode_component(ObjectComponent id, Reader& c, ObjectState& s, bool& known) {
   known = true;
   switch (id) {
@@ -1614,6 +1751,14 @@ Error decode_component(ObjectComponent id, Reader& c, ObjectState& s, bool& know
       }
       return Error::none;
     }
+    case ObjectComponent::brain:
+      return read_keyed(c, s.brain.emplace());
+    case ObjectComponent::plugs:
+      return read_keyed(c, s.plugs.emplace());
+    case ObjectComponent::clocks:
+      return read_keyed(c, s.clocks.emplace());
+    case ObjectComponent::events:
+      return read_keyed(c, s.events.emplace());
     case ObjectComponent::strike: {
       ObjectStrike& k = s.strike.emplace();
       COOP_READ(c.u32(k.seq));

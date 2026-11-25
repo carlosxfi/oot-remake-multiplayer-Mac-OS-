@@ -36,7 +36,9 @@ wait 210
 chat /here
 wait 30
 mark b-own-here
-wait 210
+wait 60
+mark b-own-here-navi
+wait 150
 chat /wow
 wait 30
 mark b-own-wow

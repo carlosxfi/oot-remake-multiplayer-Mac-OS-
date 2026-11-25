@@ -13,12 +13,12 @@ namespace {
 // plays in a conversation). The sound is a Link sound name (docs/puppet.md "Link sounds"); one the puppet's
 // sound user does not have is not played, so a wrong name is silent, not an error.
 constexpr Def kTable[] = {
-    {1, "wave", "hi", "EvtTalkHello", "", 2500, "you wave"},
-    {2, "yes", "nod", "EvtTalkYes", "", 2000, "you nod"},
-    {3, "no", "shake", "EvtTalkNo", "", 2000, "you shake your head"},
-    {4, "look", "around", "EvtLookAround", "", 3000, "you look around"},
-    {5, "here", "ping", "EvtLookAroundAttention", "Pl_Voice_Attack_00", 2500, "you call: over here"},
-    {6, "wow", "surprise", "EvtSurprise", "", 2000, "you are surprised"},
+    {1, "wave", "hi", "EvtTalkHello", "", 2500, "you wave", ""},
+    {2, "yes", "nod", "EvtTalkYes", "", 2000, "you nod", ""},
+    {3, "no", "shake", "EvtTalkNo", "", 2000, "you shake your head", ""},
+    {4, "look", "around", "EvtLookAround", "", 3000, "you look around", ""},
+    {5, "here", "ping", "EvtLookAroundAttention", "Pl_Voice_Attack_00", 2500, "you call: over here", "calls: over here"},
+    {6, "wow", "surprise", "EvtSurprise", "", 2000, "you are surprised", ""},
 };
 
 std::string Lower(std::string_view s) {
@@ -105,6 +105,17 @@ std::string ListLine() {
         line += d.name;
         first = false;
     }
+    return line;
+}
+
+std::string HeardLine(const Def& def, std::string_view name, std::uint8_t number) {
+    if (def.heard[0] == '\0') {
+        return {};
+    }
+    name = Trim(name);
+    std::string line = name.empty() ? "Player " + std::to_string(number) : std::string(name);
+    line += ' ';
+    line += def.heard;
     return line;
 }
 

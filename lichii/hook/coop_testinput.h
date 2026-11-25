@@ -419,7 +419,8 @@ FlagReading ReadFlag(Core::System& system, std::string_view name);
 bool SetEnumHash(Core::System& system, std::string_view name, std::uint32_t value);
 
 // The menu step's doer: the Hookshot module sets it (coop_pause.cpp); "customize" opens
-// the Multiplayer tab's Customize page, "close" closes the menu. True when asked.
+// the Multiplayer tab's Customize page, "close" closes the menu, "host" hosts, "paste" joins with the
+// clipboard's code. True when asked.
 // Unset (the emulator): the step logs that it is not here.
 using MenuOpener = std::function<bool(const std::string& page)>;
 void SetMenuOpener(MenuOpener opener);

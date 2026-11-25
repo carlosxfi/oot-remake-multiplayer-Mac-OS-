@@ -56,6 +56,7 @@
 #include "coop_boss.h"
 #include "coop_hit_replay.h"
 #include "coop_presence_gates.h"
+#include "coop_digest.h"
 #include "coop_every.h"
 #include "coop_event_result.h"
 #include "coop_cheat_items.h"
@@ -2128,6 +2129,7 @@ public:
                     }
                 }
                 sync_.Reset();
+                digest_.Reset();
                 world_.Reset();
                 ForgetGold();  // issue 89: the next save's keys are read afresh
                 block_retry_.clear();
@@ -2313,6 +2315,14 @@ public:
             sync_.SetDying(g_dying);
         }
         sync_.Tick(*scene, self, server_now_us, seen, send, writes);
+        // Sync digest (coop_digest.h): what we hold of each shared object, every 2 s of server time, for
+        // tools/autotest/compare_digest.py to compare with the other games' logs. The entries are built only
+        // when a beat is due, not every frame.
+        if (digest_.Due(server_now_us)) {
+            for (const std::string& line : digest_.Take(server_now_us, *scene, self, sync_.DigestEntries())) {
+                LOG_INFO(Core, "{}", line);
+            }
+        }
         for (const CoopObjects::Sync::LinkStrike& k : sync_.TakeLinkStrikes()) {
             // Row 230: another game's Redead or Gibdo froze its owner's Link with our Link in its reach: ours takes
             // that scream's hit, no life (its game's SleepParalysis reaction).
@@ -3604,6 +3614,7 @@ private:
             CoopActorEvents::TheKeptDeaths().Clear();
 #endif
             sync_.Reset();
+            digest_.Reset();
             world_.Reset();
             ForgetGold();  // issue 89: a new game process, its own keys
             block_retry_.clear();
@@ -6833,6 +6844,7 @@ private:
         gold_sweep_.Reset();
     }
     Sync sync_;
+    CoopDigest::Log digest_;  // sync digest lines (Share)
     Kernel::KProcess* process_ = nullptr;
     u64 main_ = 0;
     bool first_ = true;  // Walk()'s first pass (debug only): no "+" lines for what was there already

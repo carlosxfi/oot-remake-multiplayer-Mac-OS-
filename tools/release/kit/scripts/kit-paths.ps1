@@ -2092,6 +2092,70 @@ function Confirm-KitCharacterSelect([string]$Kit, [string]$ModsDir) {
     Remove-Item -LiteralPath (Join-Path $ModsDir "_$($op.folder).none") -Force -ErrorAction SilentlyContinue
 }
 
+# Original game (coop-options.ini original_game; hookshot/src/coop_original.h): the game's mods list in step with the
+# switch before the game starts, as the module's CoopOriginal::Sync does at its start (that one is a start late:
+# Longshot reads the list first). On: the list that names every mod in the folder off with "default off" (OffList, byte
+# for byte), the player's list kept once as coop-mods.list.before-original (none: an empty file; a list of ours is
+# never kept as the player's); off: the kept list back (or none). A list an older kit wrote had no "default off", and
+# the switch set or taken out by hand wrote nothing: mods put in later loaded (player report 266). The line said, or ''.
+function Sync-KitOriginalMods([string]$ModsDir, [bool]$On) {
+    if (-not $ModsDir -or -not (Test-Path -LiteralPath $ModsDir -PathType Container)) { return '' }
+    $list = Join-Path $ModsDir 'coop-mods.list'
+    $kept = Join-Path $ModsDir 'coop-mods.list.before-original'
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    $write = {
+        param([string]$Path, [string]$Text)
+        $tmp = "$Path.new"
+        [System.IO.File]::WriteAllText($tmp, $Text, $enc)
+        Move-Item -LiteralPath $tmp -Destination $Path -Force
+    }
+    try {
+        if (-not $On) {
+            if (-not (Test-Path -LiteralPath $kept -PathType Leaf)) {
+                # (no kept file, but a list of ours left behind (the kept file lost, an older kit's): it would leave
+                # every mod off with the switch off, so it goes, as CoopOriginal::ApplyMods)
+                $now = if (Test-Path -LiteralPath $list -PathType Leaf) { [System.IO.File]::ReadAllText($list) } else { '' }
+                if ($now -notmatch "^[^`n]*`n# Original game") { return '' }
+                Remove-Item -LiteralPath $list -Force
+                return 'Original game is off: the mods list it left is gone, every mod is back.'
+            }
+            $before = [System.IO.File]::ReadAllText($kept)
+            if ($before -eq '') { Remove-Item -LiteralPath $list -Force -ErrorAction SilentlyContinue }
+            else { & $write $list $before }
+            Remove-Item -LiteralPath $kept -Force
+            return 'Original game is off: the mods list you had is back.'
+        }
+        # The mods Longshot would load (CoopOriginal::ModNames): each folder at the top but contents, each one under
+        # contents\<title id>\; none starting with '_' or '-'. Sorted by their bytes (std::sort).
+        $names = New-Object System.Collections.Generic.List[string]
+        foreach ($top in @(Get-ChildItem -LiteralPath $ModsDir -Directory -Force -ErrorAction SilentlyContinue)) {
+            if ($top.Name -match '^[_-]') { continue }
+            if ($top.Name -cne 'contents') { $names.Add($top.Name); continue }
+            foreach ($title in @(Get-ChildItem -LiteralPath $top.FullName -Directory -Force -ErrorAction SilentlyContinue)) {
+                foreach ($mod in @(Get-ChildItem -LiteralPath $title.FullName -Directory -Force -ErrorAction SilentlyContinue)) {
+                    if ($mod.Name -notmatch '^[_-]') { $names.Add("contents/$($title.Name)/$($mod.Name)") }
+                }
+            }
+        }
+        $sorted = $names.ToArray()
+        [Array]::Sort($sorted, [StringComparer]::Ordinal)
+        $text = "coop-mods 1`n# Original game (co-op's Co-op settings): every mod left out. The list before is in " +
+            "coop-mods.list.before-original; it comes back when the switch is turned off.`ndefault off`n"
+        foreach ($n in $sorted) { $text += "off $n`n" }
+        $now = if (Test-Path -LiteralPath $list -PathType Leaf) { [System.IO.File]::ReadAllText($list) } else { $null }
+        $haveKept = Test-Path -LiteralPath $kept -PathType Leaf
+        if ($haveKept -and $now -ceq $text) { return '' }
+        if (-not $haveKept) {
+            $before = if ($null -eq $now -or $now -match "^[^`n]*`n# Original game") { '' } else { $now }
+            & $write $kept $before
+        }
+        & $write $list $text
+        return 'Original game is on: the mods list leaves every mod out (one put in later too).'
+    } catch {
+        return "Original game: the mods list could not be put in step ($($_.Exception.Message))."
+    }
+}
+
 # The Mods tab's list (<mods>\coop-mods.list, "coop-mods 1") names $Name (the path under mods with '/') off: the first
 # row for it, as the game reads it. No list, another version, or no row: on; no row in a list with the "default off"
 # line (Original game, hos_coop_mods.h): off.

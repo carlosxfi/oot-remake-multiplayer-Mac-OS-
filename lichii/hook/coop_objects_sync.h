@@ -40,6 +40,7 @@
 #include <vector>
 
 #include "coop/protocol/messages.hpp"
+#include "coop_digest.h"
 #include "coop_npc_anim.h"
 #include "coop_guard.h"
 #include "coop_show_delay.h"
@@ -1363,6 +1364,9 @@ public:
     std::vector<std::pair<std::uint64_t, coop::protocol::BossOrders>> BossOrdersIn() const;
     // The actors of the enemies we own, with their names (for the test drive).
     std::vector<std::pair<std::uint64_t, std::string>> Owned() const;
+    // Sync digest (coop_digest.h): every shared object we hold (owner known), once per id, by id: name, owner,
+    // epoch, life, max, dead; for a copy also local.owner_life, its owner's last life as its samples said.
+    std::vector<CoopDigest::Entry> DigestEntries() const;
     // The player who owns the object at `address` (0: the server, none: not
     // known). For coop_enemy_shots.
     std::optional<std::uint8_t> OwnerOf(std::uint64_t address) const;

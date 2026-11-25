@@ -207,6 +207,11 @@ STAND_IN_COMPONENTS = ("ModelInfoRef", "LODRef")
 # itself; the hook's CoopSpawn::EffectStandIn has the same names.
 STAND_IN_XLINK = ("CoopShotFx_Seed", "CoopShotFx_Arrow")
 STAND_IN_XLINK_COMPONENTS = ("ELinkRef", "SLinkRef", "XLinkRef")
+# Issue 166: their sound user is the shared `ReactionHit` (not the shootable's, which has only
+# `Shoot` for the seed): its `Hit_SlingShot_Bullet` / `Hit_Bow_Arrow` are the sounds the shootable's
+# own hit code plays where it lands. The hook plays that key on the copy with the game's own SLink
+# emit (CoopProjectiles::HitSound). The copy never shoots, so the `Shoot` key is not missed.
+STAND_IN_SLINK_USER = {"CoopShotFx_Seed": "ReactionHit", "CoopShotFx_Arrow": "ReactionHit"}
 # Components some stand-ins keep beyond the model (by stand-in name): the animation set, so the
 # hook can play the owner's animation on it (the bomb's Bomb_Blink; the hookshot tip's chain, whose
 # length is its animation set's ChainExtend, issue 85).
@@ -1263,6 +1268,11 @@ def build_stand_in(members, source, name, template=None):
         extra, comps = effect_files(template, name, effect[0], None, effect[1])
         files.update(extra)
         doc["Components"].update(comps)
+    sound_user = STAND_IN_SLINK_USER.get(name)
+    if sound_user:  # its own SLink param in place of the shootable's
+        path = slink_path(name)
+        files[path] = byml.dumps({"UserName": sound_user})
+        doc["Components"]["SLinkRef"] = "?" + path
     ap = byml.dumps(doc)
     files[actor_param_path(name)] = ap
     return sarc.write(files), ap, sorted(files)
@@ -1322,6 +1332,8 @@ def stand_in_row(source_row, name, with_effect=False):
     row = {k: v for k, v in source_row.items() if k not in drop}
     if with_effect and name in STAND_IN_EFFECTS:
         row["ELinkUserName"] = STAND_IN_EFFECTS[name][0]
+    if name in STAND_IN_SLINK_USER:
+        row["SLinkUserName"] = STAND_IN_SLINK_USER[name]
     row.update(INFO_OVERRIDES)  # calculated wherever it is, as the puppet (a far shot)
     row["__RowId"] = name
     return row

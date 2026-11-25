@@ -2268,5 +2268,53 @@ try {
 } finally {
     Remove-Item -LiteralPath $dl -Recurse -Force -ErrorAction SilentlyContinue
 }
+# Original game (row 266): Sync-KitOriginalMods puts the game's mods list in step with the switch before the game
+# starts, the same text as the module's CoopOriginal::OffList (tests/hookshot/original_test.cpp, byte for byte).
+$om = Join-Path ([System.IO.Path]::GetTempPath()) ('oot-original-mods-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+try {
+    foreach ($d in 'save-profiles', 'oot-remake-randomizer', '_parked', 'contents\0400486024DEC000\coop-puppet\romfs',
+            'contents\0400486024DEC000\my-texture-mod\romfs') {
+        New-Item -ItemType Directory -Force -Path (Join-Path $om $d) | Out-Null
+    }
+    $omList = Join-Path $om 'coop-mods.list'
+    $omKept = Join-Path $om 'coop-mods.list.before-original'
+    $want = "coop-mods 1`n# Original game (co-op's Co-op settings): every mod left out. The list before is in " +
+        "coop-mods.list.before-original; it comes back when the switch is turned off.`ndefault off`n" +
+        "off contents/0400486024DEC000/coop-puppet`noff contents/0400486024DEC000/my-texture-mod`n" +
+        "off oot-remake-randomizer`noff save-profiles`n"
+    # 0.11.11's list (no "default off") with the player's kept: rewritten, the player's list stays the kept one
+    $mine = "coop-mods 1`non oot-remake-randomizer`n"
+    Write-File $omKept $mine
+    Write-File $omList "coop-mods 1`n# Original game (co-op's Co-op settings): every mod left out.`noff save-profiles`n"
+    $l = Sync-KitOriginalMods $om $true
+    Check ($l -ne '' -and (Read-File $omList) -ceq $want) "original sync: an older kit's list -> OffList's text with default off [$l]"
+    Check ((Read-File $omKept) -ceq $mine) 'original sync: the player''s kept list is not overwritten'
+    Check ((Sync-KitOriginalMods $om $true) -eq '') 'original sync: in step -> nothing written'
+    New-Item -ItemType Directory -Force -Path (Join-Path $om 'randomizer-SpeedyKokiri\exefs') | Out-Null
+    [void](Sync-KitOriginalMods $om $true)
+    Check ((Read-File $omList).Contains("`noff randomizer-SpeedyKokiri`n")) 'original sync: a mod put in later is named off'
+    $l = Sync-KitOriginalMods $om $false
+    Check ($l -ne '' -and (Read-File $omList) -ceq $mine -and -not (Test-Path $omKept)) "original sync: off -> the player's list back [$l]"
+    Check ((Sync-KitOriginalMods $om $false) -eq '' -and (Read-File $omList) -ceq $mine) 'original sync: off again -> nothing'
+    # The switch set by hand with no list: an empty kept file; taken out by hand: no list left
+    Remove-Item -LiteralPath $omList -Force
+    [void](Sync-KitOriginalMods $om $true)
+    Check ((Test-Path $omKept) -and (Get-Item $omKept).Length -eq 0 -and (Read-File $omList).StartsWith("coop-mods 1`n")) 'original sync: set by hand, no list -> ours, an empty kept file'
+    [void](Sync-KitOriginalMods $om $false)
+    Check (-not (Test-Path $omList) -and -not (Test-Path $omKept)) 'original sync: taken out by hand -> no list, as before'
+    # A list of ours whose kept file is gone is never kept as the player's
+    [void](Sync-KitOriginalMods $om $true); Remove-Item -LiteralPath $omKept -Force
+    [void](Sync-KitOriginalMods $om $true)
+    Check ((Get-Item $omKept).Length -eq 0) 'original sync: our own list is never kept as the player''s'
+    # Switch off, the kept file gone and our list left: the list goes (not every mod off for good); a player's own stays
+    Remove-Item -LiteralPath $omKept -Force
+    $l = Sync-KitOriginalMods $om $false
+    Check ($l -ne '' -and -not (Test-Path $omList)) 'original sync: off, kept gone, our list left -> removed'
+    Check ((Sync-KitOriginalMods $om $false) -eq '') 'original sync: off, nothing left -> nothing'
+    [IO.File]::WriteAllText($omList, "coop-mods 1`noff some-mod`n", (New-Object System.Text.UTF8Encoding($false)))
+    Check ((Sync-KitOriginalMods $om $false) -eq '' -and (Read-File $omList) -ceq "coop-mods 1`noff some-mod`n") 'original sync: off, a player''s own list, no kept file -> untouched'
+} finally {
+    Remove-Item -LiteralPath $om -Recurse -Force -ErrorAction SilentlyContinue
+}
 if ($failed) { Write-Host "$failed failed"; exit 1 }
 Write-Host 'all passed'

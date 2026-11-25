@@ -660,10 +660,24 @@ TEST_CASE("host menu: the process memory line reads this process's numbers (row 
 #ifdef _WIN32
   CHECK(line.find(" private ") != std::string::npos);
   CHECK(line.find(", handles ") != std::string::npos);
+  // Row 271: every heap summed, and private outside them (Longshot's and the driver's own blocks)
+  CHECK(line.find(" heaps: allocated ") != std::string::npos);
+  CHECK(line.find("; outside the heaps ") != std::string::npos);
 #else
   CHECK(line.find("VmRSS") != std::string::npos);
 #endif
   CHECK(CoopHostMenu::kMemoryLineMs == 30'000);
+}
+
+TEST_CASE("host menu: every game's memory line is due once a minute, the first at once (row 271)") {
+  std::uint64_t next = 0;
+  CHECK(CoopHostMenu::MemoryLineDue(5'000, next));
+  CHECK(next == 5'000 + CoopHostMenu::kGameMemoryLineMs);
+  CHECK_FALSE(CoopHostMenu::MemoryLineDue(5'001, next));
+  CHECK_FALSE(CoopHostMenu::MemoryLineDue(64'999, next));
+  CHECK(CoopHostMenu::MemoryLineDue(65'000, next));
+  CHECK(next == 125'000);
+  CHECK(CoopHostMenu::kGameMemoryLineMs == 60'000);
 }
 
 TEST_CASE("host menu: the autotest's in-game host reads PORT:PASSWORD and nothing else (row 260)") {

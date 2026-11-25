@@ -100,7 +100,7 @@ def parse_steps(text):
             continue
         w = line.split()
         verb, rest = w[0], w[1:]
-        if verb in ("start", "load"):
+        if verb in ("start", "launch", "load"):
             if not rest:
                 raise StepsError("line %d: %s A [B]" % (n, verb))
             steps.append(Step(n, verb, [_game(n, x) for x in rest], line))
@@ -305,6 +305,13 @@ class Runner:
         for x in s.args:
             self.g.wait_joined(x)
 
+    def do_launch(self, s):
+        # like start, but only until each game draws: for a game that starts before the server (no welcome yet)
+        for x in s.args:
+            self.g.start(x, self.password(x), wait=False)
+        for x in s.args:
+            self.g.wait_joined(x, join=False)
+
     def do_load(self, s):
         for x, ok, why in self.g.load(s.args):
             if not ok:
@@ -408,8 +415,8 @@ class DryGames:
     def start(self, x, password, wait=True):
         self.say("  would start %s (save baseline back, fresh log%s)" % (x, ", join password set" if password else ""))
 
-    def wait_joined(self, x):
-        self.say("  would wait for %s: '%s'" % (x, JOINED))
+    def wait_joined(self, x, join=True):
+        self.say("  would wait for %s: %s" % (x, "'%s'" % JOINED if join else "its renderer only"))
 
     def load(self, xs):
         self.say("  would load %s (title to the save)" % " ".join(xs))
@@ -598,7 +605,7 @@ class HookshotGames:
         if wait:
             self.wait_joined(x)
 
-    def wait_joined(self, x):
+    def wait_joined(self, x, join=True):
         # Drawing first: a game whose shaders still compile reads no controller and joins only after (a cold driver
         # cache: minutes, its length not fixed), so this wait follows the compile's progress (hookshot.wait_renderer)
         # and the join's own timeout counts from there.
@@ -607,6 +614,8 @@ class HookshotGames:
         self.say("%s: renderer ready (%.0f s waited)" % (x, waited))
         if getattr(self.hk, "place_games", None):   # (the game can move its window when its renderer comes up)
             self.hk.place_games({x: self.procs[x].pid}, self.display, self.say)
+        if not join:
+            return
         t0 = time.monotonic()
         while JOINED not in self.log(x):
             if not self.alive(x):
@@ -854,7 +863,7 @@ def _dry(steps):
     games = DryGames(say)
     for s in steps:
         say("step %d: %s" % (s.n, s.line))
-        if s.verb == "start":
+        if s.verb in ("start", "launch"):
             for x in s.args:
                 games.start(x, "")
         elif s.verb == "load":

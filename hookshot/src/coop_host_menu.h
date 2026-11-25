@@ -143,18 +143,30 @@ void CopyText(char* out, std::size_t size, const std::string& text);
 // Row 260: this process's memory as one log line: private (commit) bytes, the working set, the process heap's
 // allocated and committed bytes, the handle count (Windows); resident and virtual bytes (Linux). Read-only, cheap
 // (no heap walk). The host's game logs it every kMemoryLineMs with the server's sizes (HostService::memory_line).
+// Row 271: on Windows also every heap of the process summed (HeapSummary each: the driver's and other DLLs' heaps
+// too) and the private bytes outside them (taken straight from Windows: Longshot's and the driver's own blocks).
 std::string ProcessMemoryText();
+// Row 271: every game (solo, guest, host) logs `coop: memory: <ProcessMemoryText>` once per kGameMemoryLineMs from its
+// frame hook, so a player's log shows whether private grows in the heaps (allocations, ours among them) or outside.
+// True when the line is due at now_ms (then next_ms moves on by kGameMemoryLineMs; the first call is due at once).
+bool MemoryLineDue(std::uint64_t now_ms, std::uint64_t& next_ms);
 // The autotest's in-game host (tools/autotest hookshot.py --host-in-game, scenario step `menu host`): the game hosts
 // through its own Multiplayer > Host (CoopPause::TestHost), on the port and with the password the harness gives in
 // LICHII_COOP_TEST_HOST=PORT:PASSWORD (a password of 1 to 64 printable letters). Nothing for any other text. Test
 // only: such a host listens on 127.0.0.1 alone (Menu::RunHost) and opens no router port or invite.
 inline constexpr const char* kTestHostEnv = "LICHII_COOP_TEST_HOST";
 std::optional<std::pair<std::uint16_t, std::string>> ParseTestHost(std::string_view text);
+// The autotest's relay room host (private-lobby-fix): with LICHII_COOP_TEST_RELAY=<host:port> (CoopTitleMenu::RelayOk)
+// and LICHII_COOP_TEST_RELAY_ROOM=<room> (RoomNameOk) also set, `menu host` holds that private room on that relay
+// (a loopback relay in every run), so a guest's `menu paste` joins it as a player's paste does. Test only.
+inline constexpr const char* kTestRelayEnv = "LICHII_COOP_TEST_RELAY";
+inline constexpr const char* kTestRelayRoomEnv = "LICHII_COOP_TEST_RELAY_ROOM";
 // Local co-op's host (the kit's scripts\local-coop.ps1, CoopPause's LocalHostStep): game 1 of 2 to 4 games on one PC
 // hosts at its start, OOT_COOP_LOCAL_HOST=PORT:PASSWORD (as ParseTestHost reads it). That host alone listens on
 // 127.0.0.1 only (Menu::LoopbackNextHost): the session is this PC's.
 inline constexpr const char* kLocalHostEnv = "OOT_COOP_LOCAL_HOST";
 inline constexpr std::uint64_t kMemoryLineMs = 30'000;
+inline constexpr std::uint64_t kGameMemoryLineMs = 60'000;
 
 } // namespace CoopHostMenu
 
