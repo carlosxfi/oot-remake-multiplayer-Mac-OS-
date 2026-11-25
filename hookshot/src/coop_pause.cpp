@@ -2035,7 +2035,7 @@ std::string PageSays(std::uint64_t* gen) {
 }
 
 // The autotest's in-game host (CoopHostMenu::ParseTestHost): the Multiplayer page's Host, on the harness's port and
-// password, a private game with no relay, router port or invite. The host thread listens on 127.0.0.1 only.
+// password, a private game with no router port or invite, and no relay unless the harness names its relay room. The host thread listens on 127.0.0.1 only.
 bool TestHost() {
     const char* text = std::getenv(CoopHostMenu::kTestHostEnv);
     const auto test = text != nullptr ? CoopHostMenu::ParseTestHost(text) : std::nullopt;
@@ -2058,6 +2058,20 @@ bool TestHost() {
     o.relay_key.clear();
     o.relay_room.clear();
     o.list_room = false;
+    // (the harness's relay room, both or neither: a private room on its loopback relay, as a player's Room name row)
+    const char* relay = std::getenv(CoopHostMenu::kTestRelayEnv);
+    const char* room = std::getenv(CoopHostMenu::kTestRelayRoomEnv);
+    if (relay != nullptr || room != nullptr) {
+        if (relay == nullptr || room == nullptr || *relay == 0 || !CoopTitleMenu::RelayOk(relay) ||
+            !CoopTitleMenu::RoomNameOk(room)) {
+            LOG_WARNING(Core, "coop: multiplayer tab: test host: {} and {} want a relay host:port and a room name: not hosting",
+                        CoopHostMenu::kTestRelayEnv, CoopHostMenu::kTestRelayRoomEnv);
+            return false;
+        }
+        o.relay = relay;
+        o.relay_room = room;
+        LOG_INFO(Core, "coop: multiplayer tab: test host: private room {} on relay {}", o.relay_room, o.relay);
+    }
     LOG_INFO(Core, "coop: multiplayer tab: test host on port {} (Multiplayer > Host, as the page's Host row)", o.host_port);
     return Host(o, true);
 }
@@ -2081,6 +2095,10 @@ CoopMenuState::Tab MenuTab() {
 bool TestMenu(const std::string& page) {
     if (page == "host") {
         return TestHost();
+    }
+    if (page == "paste") {   // (the Multiplayer page's "Paste code and join", with this PC's clipboard)
+        JoinPasteNow();
+        return true;
     }
     if (page == "customize") {
         Open(CoopPauseMenu::Page::kCustomize);

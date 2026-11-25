@@ -7,6 +7,7 @@
 #include <chrono>
 #include <mutex>
 #include <utility>
+#include <variant>
 
 #include "coop/host/session.hpp"
 #include "coop/net/client.hpp"
@@ -18,6 +19,7 @@ namespace {
 struct Glue {
     std::mutex mutex;
     std::vector<std::string> lines;  // any thread -> chat box
+    std::vector<std::uint8_t> calls;  // the network thread -> the fairies (TakeCalls)
     Limiter limiter;
 
     void Line(std::string text) {
@@ -78,11 +80,53 @@ bool OnChat(std::string_view text, coop::host::Session& session) {
     return true;
 }
 
+void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
+    if (event.kind != coop::net::EventKind::message) {
+        return;
+    }
+    const auto* emote = std::get_if<coop::protocol::Emote>(&event.message);
+    if (emote == nullptr) {
+        return;
+    }
+    const Def* def = ById(emote->id);
+    if (def == nullptr) {
+        return;  // an id this build does not know
+    }
+    std::string name;
+    for (const auto& p : client.players()) {
+        if (p.number == emote->player_number) {
+            if (p.self) {
+                return;  // our own: the sender has its own notice
+            }
+            name = p.nickname;
+            break;
+        }
+    }
+    std::string line = HeardLine(*def, name, emote->player_number);
+    if (line.empty()) {
+        return;
+    }
+    Glue& g = TheGlue();
+    std::lock_guard lock(g.mutex);
+    g.Line(std::move(line));
+    if (g.calls.size() < 16) {
+        g.calls.push_back(emote->player_number);
+    }
+}
+
 std::vector<std::string> TakeLines() {
     Glue& g = TheGlue();
     std::lock_guard lock(g.mutex);
     std::vector<std::string> out;
     out.swap(g.lines);
+    return out;
+}
+
+std::vector<std::uint8_t> TakeCalls() {
+    Glue& g = TheGlue();
+    std::lock_guard lock(g.mutex);
+    std::vector<std::uint8_t> out;
+    out.swap(g.calls);
     return out;
 }
 

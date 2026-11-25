@@ -105,6 +105,7 @@ add_executable(coop_tests
   lichii/testinput_test.cpp
   lichii/time_test.cpp
   lichii/every_test.cpp
+  lichii/digest_test.cpp
   lichii/hud_test.cpp
   lichii/game_build_test.cpp
   lichii/game_scan_test.cpp

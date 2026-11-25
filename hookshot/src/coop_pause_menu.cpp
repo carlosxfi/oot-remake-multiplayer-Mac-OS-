@@ -231,7 +231,8 @@ const std::vector<Command>& Commands() {
         {"/emote", "Lists the emotes."},
         {"/wave, /yes, /no, /look, /here, /wow",
          "Your Link plays a gesture on the other players' screens, as they see you (/emote wave is the same). /here "
-         "also calls out. It stops when you move. Nothing happens when you play alone."},
+         "also calls out, and every player reads the call in the chat. It stops when you move. Nothing happens "
+         "when you play alone."},
         {"/pvp", "Says whether players can hurt each other (PvP) in this game."},
         {"/pvp on, /pvp off", "The host only: lets players hurt each other, or stops it, for everyone."},
         // Down but not out (docs/play-online.md "Down but not out"; lichii/hook/coop_dbno.cpp Parse).
@@ -398,19 +399,31 @@ void Menu::HostRuleLines(std::vector<Line>& out, bool guest) const {
                          : std::string("On: each player who asks to join waits until you let them in or refuse them "
                                        "(Let in on Your game, or /allow and /deny in the chat). Applies at your next "
                                        "Host.")});
+    // Rows race mode overrides (coop/protocol/race.hpp: a race keeps every Gold Skulltula and floor switch in each
+    // game whatever those rows say). One rule for both: their help follows the race mode of the next Host (the one
+    // chosen here, or the session's while it is a race: a restart there would not share them either, so no "stop
+    // hosting" advice), and the "This game:" part the session's mode. The race note stands alone (not before the
+    // On/Off text): a help longer than the caption's 160 characters is cut.
+    const bool race_rules = options_.race || (live && session_.race);
+    auto ruled_help = [&](bool differs, const char* race_note, const std::string& now, const char* usual) {
+        if (guest) return std::string(kYourNextHost) + " " + now;
+        if (race_rules) return std::string(race_note) + (live ? " " + now : std::string());
+        if (live && differs) return "Applies at your next Host: stop hosting, then start again. " + now;
+        return std::string(usual);
+    };
     // Row 63 (coop_gold_mode.h): this player's choice for the next Host, as Approve joins; the session's mode
     // holds until it ends.
     const std::string gold_now =
-        live ? std::string(session_.gold_own ? "This game: Not shared." : "This game: Shared.") : std::string();
+        !live           ? std::string()
+        : session_.race ? std::string("This game: Not shared (race mode).")
+                        : std::string(session_.gold_own ? "This game: Not shared." : "This game: Shared.");
     out.push_back({Choice("Gold Skulltulas", options_.gold_own ? "Not shared" : "Shared"), Act::kGoldSkulltulas,
-                   guest ? std::string(kYourNextHost) + " " + gold_now
-                   : live && options_.gold_own != session_.gold_own
-                       ? "Applies at your next Host: stop hosting, then start again. " + gold_now
-                       : std::string(options_.gold_own
-                                         ? "Not shared: a race. Each player's Gold Skulltulas, tokens and count are "
-                                           "their own. Applies at your next Host."
-                                         : "Shared: a kill drops the token in every game, and one pickup counts once "
-                                           "for everyone. Applies at your next Host.")});
+                   ruled_help(options_.gold_own != session_.gold_own,
+                              "Race mode is on, so Gold Skulltulas are not shared whatever is set here.", gold_now,
+                              options_.gold_own ? "Not shared: a race. Each player's Gold Skulltulas, tokens and "
+                                                  "count are their own. Applies at your next Host."
+                                                : "Shared: a kill drops the token in every game, and one pickup "
+                                                  "counts once for everyone. Applies at your next Host.")});
     // Race mode (coop_race_mode.h), as Gold Skulltulas: the choice for the next Host; a session keeps its mode.
     const std::string race_now = live ? std::string(session_.race ? "This game: On." : "This game: Off.") : std::string();
     out.push_back({Toggle("Race mode", options_.race), Act::kRace,
@@ -422,18 +435,20 @@ void Menu::HostRuleLines(std::vector<Line>& out, bool guest) const {
                                            "no items, enemies, doors, switches or saves are shared. PvP works as "
                                            "set below. Applies at your next Host."
                                          : "Off: the world is shared (the usual co-op). Applies at your next Host.")});
-    // Shared floor switches (coop_switch_stand_mode.h), the same way: on by default.
+    // Shared floor switches (coop_switch_stand_mode.h), the same way: on by default (the stander in coop_objects.cpp
+    // shares none in a race).
     const std::string switches_now =
-        live ? std::string(session_.floor_switches ? "This game: On." : "This game: Off.") : std::string();
+        !live           ? std::string()
+        : session_.race ? std::string("This game: Off (race mode).")
+                        : std::string(session_.floor_switches ? "This game: On." : "This game: Off.");
     out.push_back({Toggle("Shared floor switches", options_.floor_switches), Act::kFloorSwitches,
-                   guest ? std::string(kYourNextHost) + " " + switches_now
-                   : live && options_.floor_switches != session_.floor_switches
-                       ? "Applies at your next Host: stop hosting, then start again. " + switches_now
-                       : std::string(options_.floor_switches
-                                         ? "On: another player standing on a floor switch holds it down in every "
-                                           "game. Applies at your next Host."
-                                         : "Off: a floor switch is held only by your own Link or a block. Applies at "
-                                           "your next Host.")});
+                   ruled_help(options_.floor_switches != session_.floor_switches,
+                              "Race mode is on, so floor switches are not shared whatever is set here.", switches_now,
+                              options_.floor_switches
+                                  ? "On: another player standing on a floor switch holds it down in every game. "
+                                    "Applies at your next Host."
+                                  : "Off: a floor switch is held only by your own Link or a block. Applies at your "
+                                    "next Host.")});
     Row pvp = Toggle("PvP", live ? session_.pvp : options_.pvp);
     pvp.fixed = guest;
     out.push_back({pvp, Act::kPvp,

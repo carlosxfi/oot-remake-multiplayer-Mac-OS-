@@ -3,6 +3,7 @@
 #include "coop_host_menu.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
@@ -93,6 +94,12 @@ std::optional<std::pair<std::uint16_t, std::string>> ParseTestHost(std::string_v
     return std::pair{static_cast<std::uint16_t>(port), std::string(password)};
 }
 
+bool MemoryLineDue(std::uint64_t now_ms, std::uint64_t& next_ms) {
+    if (now_ms < next_ms) return false;
+    next_ms = now_ms + kGameMemoryLineMs;
+    return true;
+}
+
 #ifdef _WIN32
 std::string ProcessMemoryText() {
     // (kernel32's K32 names and HeapSummary looked up by name: no psapi link, and builds whose headers lack them)
@@ -128,6 +135,26 @@ std::string ProcessMemoryText() {
     h.cb = sizeof h;
     if (summary != nullptr && summary(GetProcessHeap(), 0, &h)) {
         out += ", heap allocated " + mb(h.cbAllocated) + ", committed " + mb(h.cbCommitted);
+    }
+    // Row 271: every heap of the process (the C runtime's, which holds all of co-op's and Longshot's own allocations,
+    // and the ones the graphics driver and other DLLs made), then what private holds outside them: memory taken
+    // straight from Windows (Longshot's guest memory and Vulkan blocks, the driver's pipelines, thread stacks).
+    if (summary != nullptr) {
+        std::array<HANDLE, 256> heaps{};
+        const DWORD n = GetProcessHeaps(static_cast<DWORD>(heaps.size()), heaps.data());
+        std::uint64_t allocated = 0, committed = 0;
+        for (DWORD i = 0; i < n && i < heaps.size(); ++i) {
+            Summary s{};
+            s.cb = sizeof s;
+            if (summary(heaps[i], 0, &s)) {
+                allocated += s.cbAllocated;
+                committed += s.cbCommitted;
+            }
+        }
+        out += "; all " + std::to_string(n) + " heaps: allocated " + mb(allocated) + ", committed " + mb(committed);
+        if (c.PrivateUsage != 0) {
+            out += "; outside the heaps " + mb(c.PrivateUsage > committed ? c.PrivateUsage - committed : 0);
+        }
     }
     using HandleCount = BOOL(WINAPI*)(HANDLE, PDWORD);
     const auto count = kernel ? reinterpret_cast<HandleCount>(

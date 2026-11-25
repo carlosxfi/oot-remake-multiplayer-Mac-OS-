@@ -809,6 +809,9 @@ public:
             Log(event);
         }
         CoopPuppet::OnEvent(event);
+        if (!left) {
+            CoopEmote::OnEvent(event, client);  // a call (/here) is read in the chat too (coop_emote_game.h)
+        }
         CoopPose::OnEvent(event, SteadyMs());
         if (!left) {
             Chat(event, client);

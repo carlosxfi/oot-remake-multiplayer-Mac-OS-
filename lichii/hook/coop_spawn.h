@@ -121,6 +121,9 @@ struct Copy {
     // director emits once on it with the game's own search and emit, where
     // it is.
     std::string effect;
+    // Issue 166: not empty: a key of the actor's own SLink user, played
+    // once on it the same way after `effect` (the landing sound).
+    std::string sound;
     // Always the game's own actor of that name, never the pack's stand-in:
     // the shootable the game makes has the effect user the key belongs to.
     bool real = false;
@@ -353,6 +356,7 @@ private:
         bool impacted = false;        // its impacts asked for once (issue 166)
         bool effect_asked = false;    // its hit effect was asked for once (issue 166)
         std::string effect;           // ... and, in copy mode, the key its copy plays from then on
+        std::string sound;            // ... and its landing sound's key (HitSound)
         bool live = false;            // the director had it on the list
         // Issue 169: in the owner's hands (shown as the held stand-in, along
         // `held_path` kHeldBehindUs late), and the owner's animation.
@@ -575,6 +579,7 @@ private:
         bool stand_in = false;
         bool effects = false;   // the EffectStandIn: it has the shootable's ELink user
         bool emitted = false;   // Copy::effect was played (or could not be) once
+        bool sounded = false;   // Copy::sound was played (or could not be) once
         std::string copy_of;  // the shared actor's name (Copy::actor)
         bool reflected = false;  // row 177: our Link sent this shot copy back (said once)
         int hits_noted = 0;      // row 177: its hit lists logged (at most 3 times, when not empty)
@@ -595,6 +600,9 @@ private:
     std::optional<CoopPuppet::Call> EmitCall(CoopPuppet::Guest& guest, std::size_t i);
     std::uint64_t NameCellOf(CoopPuppet::Guest& guest, const std::string& name);
     std::uint64_t ELinkUser(CoopPuppet::Guest& guest, std::uint64_t actor) const;
+    // The SLink user (the sound's: XLink component + 0x78), or 0.
+    std::uint64_t SLinkUser(CoopPuppet::Guest& guest, std::uint64_t actor) const;
+    std::uint64_t XLinkUser(CoopPuppet::Guest& guest, std::uint64_t actor, std::uint64_t at) const;
     std::uint64_t SlotBase(std::size_t i) const { return block_ + i * kSlotSize; }
     const Copy* Wanted(std::uint64_t key) const;
     void Say(const std::string& text) const;
@@ -632,6 +640,8 @@ private:
     std::vector<std::size_t> plays_;    // slots with an animation this frame
     std::vector<std::size_t> emits_;    // slots with an effect to play this frame
     bool emit_found_ = false;           // the search found the key: emit next
+    bool emit_sound_ = false;           // the search/emit under way is Copy::sound's (SLink user)
+    std::size_t sounds_done_ = 0;
     std::map<std::string, int> effect_fails_;  // EffectStandIn failures in a row, by shared actor
     std::set<std::string> no_effects_;         // ... kStandInTries times: the plain stand-in again
     std::size_t emits_done_ = 0;

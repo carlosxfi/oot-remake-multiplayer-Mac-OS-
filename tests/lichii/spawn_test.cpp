@@ -1114,6 +1114,89 @@ TEST_CASE("spawn: a landed seed copy plays its hit effect through the game's own
     }));
 }
 
+TEST_CASE("spawn: a landed seed copy plays its landing sound on its sound user after its hit effect") {
+    using R = FxRig;
+    constexpr std::uint64_t sound_user = 0x41006000;
+    constexpr std::uint64_t sound_resource = 0x41007000;
+    constexpr std::uint64_t sound_accessor = 0x41008000;
+    FxRig rig;
+    rig.guest.Map(sound_user, 0x100);
+    rig.guest.Map(sound_resource, 0x100);
+    rig.guest.Set(R::xlink + 0x78, sound_user);  // the stand-in's SLink user (ReactionHit)
+    rig.guest.Set(sound_user + 0x58, sound_resource);
+    rig.guest.Set(sound_resource + 0x18, sound_accessor);
+    std::vector<std::string> said;
+    CoopSpawn::Director d([&](const std::string& s) { said.push_back(s); });
+    d.SetStandIns({"CoopShot_Seed", "CoopShotFx_Seed"});
+    Copy copy;
+    copy.key = 7;
+    copy.actor = "Shootable_DekuSeed";
+    rig.MakeLive(d, copy);
+    copy.effect = "Hit_AdditionalAttacker";
+    copy.sound = "Hit_SlingShot_Bullet";
+    d.SetInput(R::base, {copy});
+    // The effect first: search and emit on the ELink user, as ever.
+    auto c = d.Step(rig.guest, false, 0, 50);
+    REQUIRE(c);
+    REQUIRE(c->function == R::base + R::kSearch);
+    CHECK(c->x[0] == R::accessor);
+    rig.guest.Set(c->x[1], R::found);
+    c = d.Step(rig.guest, true, 1, 50);
+    REQUIRE(c);
+    REQUIRE(c->function == R::base + R::kEmit);
+    CHECK(c->x[0] == R::user);
+    // Then the sound: the same search and emit, on the SLink user with its key.
+    c = d.Step(rig.guest, true, 0, 50);
+    REQUIRE(c);
+    REQUIRE(c->function == R::base + R::kSearch);
+    CHECK(c->x[0] == sound_accessor);
+    char key[32]{};
+    REQUIRE(rig.guest.Read(c->x[2], key, 31));
+    CHECK(std::string(key) == "Hit_SlingShot_Bullet");
+    rig.guest.Set(c->x[1], R::found);
+    c = d.Step(rig.guest, true, 1, 50);
+    REQUIRE(c);
+    REQUIRE(c->function == R::base + R::kEmit);
+    CHECK(c->x[0] == sound_user);
+    CHECK(c->x[3] == 0);
+    CHECK_FALSE(d.Step(rig.guest, true, 0, 50));
+    // Once for a copy.
+    for (std::uint64_t ms = 66; ms < 200; ms += 16) {
+        d.SetInput(R::base, {copy});
+        CHECK_FALSE(d.Step(rig.guest, false, 0, ms));
+    }
+    CHECK(std::any_of(said.begin(), said.end(), [](const std::string& s) {
+        return s.find("played its landing sound through the game's own emit") != std::string::npos;
+    }));
+    CHECK(std::any_of(said.begin(), said.end(), [](const std::string& s) {
+        return s.find("played its hit effect through the game's own emit") != std::string::npos;
+    }));
+}
+
+TEST_CASE("spawn: a copy with no sound user still plays its hit effect, and says why it has no sound") {
+    using R = FxRig;
+    FxRig rig;  // (no SLink user at xlink + 0x78)
+    std::vector<std::string> said;
+    CoopSpawn::Director d([&](const std::string& s) { said.push_back(s); });
+    d.SetStandIns({"CoopShot_Seed", "CoopShotFx_Seed"});
+    Copy copy;
+    copy.key = 7;
+    copy.actor = "Shootable_DekuSeed";
+    rig.MakeLive(d, copy);
+    copy.effect = "Hit_AdditionalAttacker";
+    copy.sound = "Hit_SlingShot_Bullet";
+    d.SetInput(R::base, {copy});
+    auto c = d.Step(rig.guest, false, 0, 50);
+    REQUIRE(c);
+    REQUIRE(c->function == R::base + R::kSearch);
+    CHECK_FALSE(d.Step(rig.guest, true, 0, 50));  // the effect's search answered false; no sound user
+    CHECK(std::any_of(said.begin(), said.end(), [](const std::string& s) {
+        return s.find("has no sound user; no landing sound") != std::string::npos;
+    }));
+    d.SetInput(R::base, {copy});
+    CHECK_FALSE(d.Step(rig.guest, false, 0, 66));  // and neither is asked again
+}
+
 TEST_CASE("spawn: no emit when the game's search does not know the key, or the copy has no effect user") {
     using R = FxRig;
     {

@@ -533,10 +533,15 @@ TEST_CASE("shots: an arrow copy flies the owner's arc on the server clock") {
     CHECK(copies[0].act == Act::show);
     // Issue 166: at the spot the copy itself plays the arrow's own hit effect (the director emits it once).
     CHECK(copies[0].effect == "Hit_AdditionalAttacker");
+    // ... and the wall-hit sound on its own sound user (the stand-in's ReactionHit).
+    CHECK(copies[0].sound == "Hit_Bow_Arrow");
     CHECK_FALSE(copies[0].real);
     CHECK(sync.HitEffects() == 1);
     CHECK(shots::HitEffect(shots::Kind::seed) == "Hit_AdditionalAttacker");
     CHECK(shots::HitEffect(shots::Kind::bomb).empty());
+    CHECK(shots::HitSound(shots::Kind::seed) == "Hit_SlingShot_Bullet");
+    CHECK(shots::HitSound(shots::Kind::arrow) == "Hit_Bow_Arrow");
+    CHECK(shots::HitSound(shots::Kind::bomb).empty());
     copies.clear();
     sync.Tick(kScene, 2, got + hold, {}, live, send, copies);
     REQUIRE(copies.size() == 1);
@@ -582,6 +587,7 @@ TEST_CASE("shots: a nut copy bursts where the owner's nut burst (#248)") {
     CHECK(copies[0].act == Act::show);
     CHECK(copies[0].position[0] == doctest::Approx(2.0f));
     CHECK(copies[0].effect == "Chemical_Light");
+    CHECK(copies[0].sound == "Chemical_Light");  // (its AI plays the key on both users)
     CHECK(sync.HitEffects() == 1);
     // Then gone, as on the owner's screen.
     copies.clear();
@@ -595,6 +601,10 @@ TEST_CASE("shots: a nut copy bursts where the owner's nut burst (#248)") {
     CHECK(shots::HitEffect(shots::Kind::boomerang).empty());
     CHECK(shots::HitEffect(shots::Kind::hook).empty());
     CHECK(shots::HitEffect(shots::Kind::hook_long).empty());
+    CHECK(shots::HitSound(shots::Kind::nut) == "Chemical_Light");
+    CHECK(shots::HitSound(shots::Kind::boomerang).empty());
+    CHECK(shots::HitSound(shots::Kind::hook).empty());
+    CHECK(shots::HitSound(shots::Kind::hook_long).empty());
 }
 
 TEST_CASE("shots: a bounce is a turn of over 45 degrees at speed") {
