@@ -89,6 +89,6 @@ TEST_CASE("mod world: the host's settings name and the room list's tag (one home
   CHECK(tag.rfind("Randomizer N2BTEYKM (kkk", 0) == 0);
   CHECK(tag.substr(tag.size() - 4) == "...)");
   const std::vector<S> bad{S{proto::kRandoModId, "preset", "a\x01\xc3"}};
-  CHECK(proto::world_tag(rando, &bad) == "Randomizer N2BTEYKM (a??)");
+  CHECK(proto::world_tag(rando, &bad) == "Randomizer N2BTEYKM (a?" "?)");
   for (const char c : tag) CHECK((c >= 0x20 && c <= 0x7E));
 }
