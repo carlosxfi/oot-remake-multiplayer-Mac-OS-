@@ -439,7 +439,7 @@ std::optional<std::string> SeedPlacement(std::string_view text, std::string_view
             std::string item;
             for (std::size_t i = v + 1; i < body.size(); ++i) {
                 if (body[i] == '"') return item;
-                if (body[i] == '\' && i + 1 < body.size()) ++i;
+                if (body[i] == '\\' && i + 1 < body.size()) ++i;
                 item += body[i];
             }
             return std::nullopt;
