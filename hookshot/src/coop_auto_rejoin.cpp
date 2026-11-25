@@ -3,6 +3,18 @@
 
 namespace CoopAutoRejoin {
 
+std::optional<bool> RestartMark::Tick(bool due, const Facts& f) {
+    bool want = kept_;
+    if (!due || f.launcher || f.player_left || f.player_acted || f.turned_away) {
+        want = false;
+    } else if (f.guest_in && f.code) {
+        want = true;
+    }
+    if (want == kept_) return std::nullopt;
+    kept_ = want;
+    return want;
+}
+
 bool Planner::Tick(const Facts& f, std::uint64_t now_ms) {
     if (first_ms_ == 0) {
         first_ms_ = now_ms == 0 ? 1 : now_ms;

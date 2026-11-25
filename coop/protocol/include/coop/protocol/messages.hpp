@@ -1940,8 +1940,8 @@ struct ModEntry {
 };
 
 // MOD_LIST: the mods a game runs that every player needs alike (mod.json
-// "coop" not "own"), in its load order. Sent once per connection, when the
-// game has hashed its mods; the server writes the sender's number, keeps the
+// "coop" not "own"), in its load order. Sent on each connection, its hashes
+// zero until the game has hashed its mods, then again with them; the server writes the sender's number, keeps the
 // last one of each player and gives a joiner everyone else's.
 struct ModList {
   std::uint8_t player_number = kPlayerSelf;  // 0 from the sender, 1 to 16 relayed

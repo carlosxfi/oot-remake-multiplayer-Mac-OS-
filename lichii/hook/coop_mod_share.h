@@ -83,9 +83,19 @@ std::string HeldEndLine();
 // empty when the host's values have no randomizer (or are not known).
 std::string RandoSettingsName(const std::optional<std::vector<coop::protocol::ModSetting>>& host_values);
 
+// Whether this guest's client is held now. `host`: the host's list, null while it is not in; `mine`: this game's list
+// (its mods and seed are known from the start), null without a mod loader: held by nothing, as on the server; `hashed`:
+// mine has its hashes. Held: another seed than the host's (world_of), or not known yet whether it is (we play a seed
+// and the host's list is not in, or the host plays one and ours is not hashed): what we do meanwhile goes out once
+// it is known to be the same (Client::set_world_held).
+bool HeldNow(const coop::protocol::ModList* host, const coop::protocol::ModList* mine, bool hashed);
+
 struct Provider {
-    // This game's list once its mods are hashed (any thread, often: cheap); nullopt until then.
+    // This game's list (any thread, often: cheap): its mods from the start, all hashes zero ("not known") until
+    // `hashed`, then with them; nullopt: this game shares none.
     std::function<std::optional<coop::protocol::ModList>()> mine;
+    // The mods are hashed: `mine` is final. Empty: it is from the start.
+    std::function<bool()> hashed;
     // This game's own values of its shared settings (the present thread).
     std::function<std::vector<coop::protocol::ModSetting>()> shared;
     // The host's values for a guest's game; nullopt when this game hosts, is alone or left (the present thread).
@@ -98,8 +108,8 @@ void SetProvider(Provider provider);
 
 // Network thread, from the session's on_event (the network lock is held).
 void OnEvent(const coop::net::Event& event, coop::net::Client& client);
-// Present thread, once per frame: sends our list once per connection, the host's shared settings when they change,
-// hands the host's values on, and compares. `session` null when not connected.
+// Present thread, once per frame: sends our list on each connection (again once hashed), the host's shared
+// settings when they change, hands the host's values on, and compares. `session` null when not connected.
 void Frame(coop::host::Session* session);
 // The chat lines since the last call.
 std::vector<std::string> TakeLines();

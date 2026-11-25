@@ -37,7 +37,7 @@ struct Glue {
     std::uint8_t host_number = 0;
     std::map<std::uint8_t, proto::ModList> lists;  // the others', by number
     std::map<std::uint8_t, std::string> names;
-    bool list_sent = false;  // on this connection
+    std::optional<proto::ModList> list_sent;  // on this connection
     std::optional<std::vector<proto::ModSetting>> shared_sent;
     bool host_values_due = false;  // the present thread hands host_values on
     std::optional<std::vector<proto::ModSetting>> host_values;
@@ -59,7 +59,7 @@ struct Glue {
         host_number = 0;
         lists.clear();
         names.clear();
-        list_sent = false;
+        list_sent.reset();
         shared_sent.reset();
         host_values.reset();
         host_values_due = true;
@@ -219,6 +219,13 @@ std::string SeedBackLine(std::uint8_t number, std::string_view name) {
     return "Mods: " + Who(number, name) + " runs the host's randomizer seed now";
 }
 
+bool HeldNow(const proto::ModList* host, const proto::ModList* mine, bool hashed) {
+    if (mine == nullptr) return false;
+    const proto::ModList none;
+    if (host == nullptr) return !proto::seed_missing(*mine, none).empty();  // (we play a seed)
+    return proto::world_held(*host, *mine) || (!hashed && !proto::seed_missing(*host, none).empty());
+}
+
 void SetProvider(Provider provider) {
     Glue& g = TheGlue();
     std::lock_guard lock(g.mutex);
@@ -240,6 +247,7 @@ void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
         g.Reset();  // each connection starts with nothing; the server gives the rest
         g.connected = event.kind != EventKind::disconnected;
         g.hosting = g.connected && client.is_host();
+        if (g.hosting) g.held = {};
         if (event.kind == EventKind::welcomed) {
             // A new session: Shared until its host says (a rejoin keeps it). The first player in is the host
             // from here and gets no host change: its own choice is in force now.
@@ -257,6 +265,7 @@ void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
         g.host_number = client.host_number();
         g.shared_sent.reset();  // a new host sends its own values
         if (g.hosting) {
+            g.held = {};  // (the host's world is ours: the client holds nothing back, Client::on_host)
             g.host_values.reset();
             g.host_values_due = true;
             CoopGoldMode::OnHosting();  // our choice, unless a host before us told the session's mode
@@ -310,9 +319,10 @@ void Frame(coop::host::Session* session) {
             host_values = g.provider.host_values;
         }
         if (session != nullptr && g.connected) {
+            const bool hashed = !g.provider.hashed || g.provider.hashed();  // (asked first: true, then `mine` is final)
             const std::optional<proto::ModList> mine = g.provider.mine ? g.provider.mine() : std::nullopt;
-            if (mine && !g.list_sent) {
-                g.list_sent = true;
+            if (mine && g.list_sent != mine) {
+                g.list_sent = mine;
                 send_list = *mine;
             }
             if (g.hosting) {
@@ -345,7 +355,7 @@ void Frame(coop::host::Session* session) {
             }
             if (!g.hosting) {
                 // Row 281: held out of the host's world while our seed is not its (coop/protocol/mod_world.hpp, the
-                // server's rule too). Our own list not hashed yet: held when the host plays a seed, nothing said.
+                // server's rule too). Not known yet (HeldNow): held too, nothing said.
                 const auto host = g.lists.find(g.host_number);
                 if (host != g.lists.end()) {
                     const std::string host_seed = proto::seed_missing(host->second, proto::ModList{});
@@ -358,10 +368,10 @@ void Frame(coop::host::Session* session) {
                         }
                         g.held = std::move(now);
                     }
-                    set_held = g.held.diff != proto::WorldDiff::same || (!mine && !host_seed.empty());
                 }
+                set_held = HeldNow(host != g.lists.end() ? &host->second : nullptr, mine ? &*mine : nullptr, hashed);
             }
-            if (mine && !g.hosting) {
+            if (mine && hashed && !g.hosting) {
                 const auto host = g.lists.find(g.host_number);
                 if (host != g.lists.end()) {
                     std::vector<std::string> diff = Compare(host->second, *mine);
@@ -423,7 +433,7 @@ void Frame(coop::host::Session* session) {
                                         : SeedBackLine(number, who));
                 }
             }
-            if (mine && g.hosting) {
+            if (mine && hashed && g.hosting) {
                 for (const auto& [number, list] : g.lists) {
                     const std::size_t n = Compare(*mine, list, 1000).size();
                     const auto told = g.guests_told.find(number);
@@ -462,7 +472,7 @@ void Frame(coop::host::Session* session) {
         if (!sent) {
             std::lock_guard lock(g.mutex);
             if (m == &send_list) {
-                g.list_sent = false;  // the next frame tries again
+                g.list_sent.reset();  // the next frame tries again
             } else {
                 g.shared_sent.reset();
             }

@@ -1579,4 +1579,40 @@ TEST_CASE("relay: a listed room's tag is kept and passed on, dropped with the li
   CHECK(f.relay.stats().tags_answered == 5);
 }
 
+TEST_CASE("relay: two hosts on one address, each listing with proof and tag every 5 s, are all taken (row 281)") {
+  Fixture f;
+  const Endpoint a{0x0800000Au, 1}, b{0x0800000Au, 2};   // (one address, two ports)
+  REQUIRE(f.register_room(1, "squadala", a).kind == Kind::kRegisteredName);
+  REQUIRE(f.register_room(2, "forest-4821", b).kind == Kind::kRegisteredName);
+  for (std::uint64_t t = 1000; t < 1000 + 2 * RelayConfig{}.list_window_ms; t += 5000) {
+    for (const auto& [token, from] : {std::pair{std::uint64_t{1}, a}, std::pair{std::uint64_t{2}, b}}) {
+      const auto players = static_cast<std::uint8_t>(1 + (t / 5000) % 2);
+      CHECK(f.relay.received(from, encode(list_room_message(token, true, "Saria", players, 4)), t).empty());
+      Message proof;
+      proof.kind = Kind::kRoomProof;
+      proof.token = token;
+      proof.proof.time_s = t;
+      CHECK(f.relay.received(from, encode(proof), t).empty());
+      CHECK(f.relay.received(from, encode(tag_message(token, "Randomizer KOKIRI")), t).empty());
+    }
+  }
+  CHECK(f.relay.stats().listings_limited == 0);
+  CHECK(f.relay.stats().tags_kept == 48);
+  CHECK(f.relay.stats().proofs_kept == 48);
+  // Each kind still has its limit.
+  Fixture g;
+  REQUIRE(g.register_room(1, "squadala", a).kind == Kind::kRegisteredName);
+  for (std::uint32_t i = 0; i <= RelayConfig{}.listings_per_window; ++i)
+    g.relay.received(a, encode(tag_message(1, "Randomizer KOKIRI")), 1000);
+  CHECK(g.relay.stats().tags_kept == RelayConfig{}.listings_per_window);
+  CHECK(g.relay.stats().listings_limited == 1);
+  // The list's asks and the tags' asks too: 30 of each a minute from one address.
+  for (std::uint32_t i = 0; i < RelayConfig{}.lists_per_window; ++i) {
+    CHECK(ask_list(g, 0, kGuest, 1000).has_value());
+    CHECK(ask_tags(g, kGuest, 1000).has_value());
+  }
+  CHECK_FALSE(ask_tags(g, kGuest, 1000).has_value());
+  CHECK(g.relay.stats().lists_limited == 1);
+}
+
 }  // namespace room_tag_tests

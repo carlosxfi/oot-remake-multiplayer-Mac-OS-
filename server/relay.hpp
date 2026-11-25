@@ -62,9 +62,11 @@ struct RelayConfig {
   std::uint32_t lookups_per_window = 10;      // wrong codes from one address
   std::uint32_t registers_per_window = 6;     // new hosts from one address
   std::uint64_t window_ms = 10 * 60'000;
-  std::uint32_t lists_per_window = 30;        // room list pages asked from one address
+  // Room list pages asked from one address; LIST_PROOFS and LIST_TAGS, asked with each list: as many, counted apart.
+  std::uint32_t lists_per_window = 30;
   // LIST_ROOM from one address (a host's link sends one each 5 seconds: 24 a
   // minute for the 2 hosts an address may have); more are not taken.
+  // ROOM_PROOF and ROOM_TAG go with each listing: as many of each, counted apart.
   std::uint32_t listings_per_window = 30;
   std::uint64_t list_window_ms = 60'000;      // (for both)
   // Rooms put on the list from one address in window_ms, each listing that was
@@ -187,7 +189,9 @@ class Relay {
   std::map<std::uint32_t, Tries> lookups_;
   std::map<std::uint32_t, Tries> registers_;
   std::map<std::uint32_t, Tries> lists_;
+  std::map<std::uint32_t, Tries> proof_lists_, tag_lists_;  // LIST_PROOFS, LIST_TAGS (lists_per_window each)
   std::map<std::uint32_t, Tries> listings_;
+  std::map<std::uint32_t, Tries> proofs_in_, tags_in_;  // ROOM_PROOF, ROOM_TAG (listings_per_window each)
   std::map<std::uint32_t, Tries> new_listings_;
   std::uint64_t list_order_ = 0;  // a number that goes up with each new listing (newest first)
 };

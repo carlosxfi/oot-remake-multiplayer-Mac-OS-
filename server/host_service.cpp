@@ -11,6 +11,7 @@
 
 #include "coop/protocol/join_password.hpp"
 #include "coop/protocol/messages.hpp"
+#include "coop/protocol/mod_world.hpp"
 #include "join_helper.hpp"
 #include "options.hpp"
 #include "nat_net.hpp"
@@ -292,6 +293,7 @@ bool HostService::start(std::string& error) {
           e.version = config_.public_game ? protocol::public_listing_version() : protocol::kProtocolVersion;
           return e;
         };
+        static_assert(coop::protocol::kMaxWorldTagBytes == relay::kMaxRoomTagBytes);
         c.tag = [this]() { return server_->session().world_tag(); };
         if (config_.public_game && config_.official_key) {
           const protocol::OfficialSeed key = *config_.official_key;

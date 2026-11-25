@@ -240,3 +240,44 @@ TEST_CASE("auto-rejoin: the restart's one join is never made with no last game, 
         CHECK_FALSE(any);
     }
 }
+
+TEST_CASE("auto-rejoin: the restart's one join (row 281) is taken back by the player's choice or when none is due") {
+    Facts in = IdleOn();
+    in.enabled = false;
+    in.idle = false;
+    in.guest_in = true;
+    const auto marked = [&] {
+        RestartMark m;
+        CHECK_FALSE(m.Tick(false, in).has_value());
+        CHECK(m.Tick(true, in) == std::optional<bool>(true));
+        CHECK_FALSE(m.Tick(true, in).has_value());   // (written once)
+        return m;
+    };
+    for (int which = 0; which < 4; ++which) {
+        RestartMark m = marked();
+        Facts f = in;
+        f.guest_in = false;
+        f.idle = true;
+        if (which == 0) f.player_left = true;
+        if (which == 1) f.player_acted = true;   // (Host, or Join of another game)
+        if (which == 2) f.turned_away = true;
+        CHECK(m.Tick(which != 3, f) == std::optional<bool>(false));   // (3: no restart is due any more)
+        Facts after = in;   // out of the game: the old word that it is due does not bring it back
+        after.guest_in = false;
+        after.idle = true;
+        CHECK_FALSE(m.Tick(true, after).has_value());
+        CHECK(m.Tick(true, in) == std::optional<bool>(true));   // (in a game again with a restart due: again)
+    }
+    // A drop alone (the client tries again by itself) changes nothing while the restart is still due.
+    RestartMark dropped = marked();
+    Facts out = in;
+    out.guest_in = false;
+    CHECK_FALSE(dropped.Tick(true, out).has_value());
+    // Never with no last game kept, or co-op from the game's start.
+    for (const bool launcher : {false, true}) {
+        RestartMark m;
+        Facts f = in;
+        (launcher ? f.launcher : f.code) = launcher;
+        CHECK_FALSE(m.Tick(true, f).has_value());
+    }
+}

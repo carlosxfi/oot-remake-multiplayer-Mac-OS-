@@ -275,24 +275,24 @@ void Relay::control(Endpoint from, const Message& m, std::uint64_t now_ms,
       return reply(list_page(m.start));
     }
     case Kind::kListProofs: {
-      if (over_limit(lists_, from.host, config_.lists_per_window, now_ms, true, config_.list_window_ms)) {
+      if (over_limit(proof_lists_, from.host, config_.lists_per_window, now_ms, true, config_.list_window_ms)) {
         ++stats_.lists_limited;
-        return;  // (as kListRooms: one limit for both)
+        return;  // (as kListRooms)
       }
       ++stats_.proofs_answered;
       return reply(proofs_page());
     }
     case Kind::kListTags: {
-      if (over_limit(lists_, from.host, config_.lists_per_window, now_ms, true, config_.list_window_ms)) {
+      if (over_limit(tag_lists_, from.host, config_.lists_per_window, now_ms, true, config_.list_window_ms)) {
         ++stats_.lists_limited;
-        return;  // (as kListRooms: one limit for all list asks)
+        return;  // (as kListRooms)
       }
       ++stats_.tags_answered;
       return reply(tags_page());
     }
     case Kind::kRoomTag: {
-      // As kRoomProof: sent with each listing; no answer either way.
-      if (over_limit(listings_, from.host, config_.listings_per_window, now_ms, true, config_.list_window_ms)) {
+      // As kRoomProof: sent with each listing (its own count); no answer either way.
+      if (over_limit(tags_in_, from.host, config_.listings_per_window, now_ms, true, config_.list_window_ms)) {
         ++stats_.listings_limited;
         return;
       }
@@ -304,7 +304,7 @@ void Relay::control(Endpoint from, const Message& m, std::uint64_t now_ms,
     }
     case Kind::kRoomProof: {
       // As often as kListRoom (its host's link sends it with each listing); no answer either way.
-      if (over_limit(listings_, from.host, config_.listings_per_window, now_ms, true, config_.list_window_ms)) {
+      if (over_limit(proofs_in_, from.host, config_.listings_per_window, now_ms, true, config_.list_window_ms)) {
         ++stats_.listings_limited;
         return;
       }
@@ -510,7 +510,11 @@ std::vector<Outgoing> Relay::tick(std::uint64_t now_ms) {
   // either)
   for (auto [table, window] : {std::pair{&lookups_, config_.window_ms}, std::pair{&registers_, config_.window_ms},
                                std::pair{&new_listings_, config_.window_ms}, std::pair{&lists_, config_.list_window_ms},
-                               std::pair{&listings_, config_.list_window_ms}}) {
+                               std::pair{&listings_, config_.list_window_ms},
+                               std::pair{&proof_lists_, config_.list_window_ms},
+                               std::pair{&tag_lists_, config_.list_window_ms},
+                               std::pair{&proofs_in_, config_.list_window_ms},
+                               std::pair{&tags_in_, config_.list_window_ms}}) {
     for (auto t = table->begin(); t != table->end();) {
       if (now_ms - t->second.window_start >= window) {
         t = table->erase(t);

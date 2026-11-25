@@ -121,10 +121,11 @@ bool RelaySet();
 bool AutoRejoin();
 void SetAutoRejoin(bool on);
 bool AutoRejoining();
-// Row 281: the randomizer asked for a restart to play the host's seed (a guest held out of the host's world): the next
-// start joins the last game again once (coop.ini rejoin_once), Auto-rejoin on or off. Any thread; written at the next
-// update, only while this game is in a friend's game it joined itself (never with co-op from the game's start).
-void RejoinAfterRestart();
+// Row 281: a restart to play the host's seed is due or not (a guest held out of the host's world): the next start joins
+// the last game again once (coop.ini rejoin_once), Auto-rejoin on or off. Any thread; written at the next update, only
+// while this game is in a friend's game it joined itself (never with co-op from the game's start), and taken back when
+// it is due no more or the player leaves, hosts or joins (CoopAutoRejoin::RestartMark).
+void RejoinAfterRestart(bool due);
 // Hosting with a relay room puts it on the relay's public room list (coop-options.ini list_room), or not; saved at once.
 bool ListRoom();
 // The kit's relay ("host" or "host:port", coop-options.ini relay), "" none: the files' setting.

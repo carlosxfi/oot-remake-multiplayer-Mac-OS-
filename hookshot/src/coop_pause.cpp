@@ -114,9 +114,10 @@ CoopAutoRejoin::Planner g_rejoin;
 bool g_player_acted = false, g_player_left = false, g_auto_join = false;
 std::uint64_t g_last_game_ms = 0;   // when coop.ini's last_invite and the setting were last read
 bool g_last_game = false;           // a last game is kept (coop.ini last_invite)
-// Row 281: the randomizer asked for a restart to play the host's seed (RejoinAfterRestart, any thread: written to
-// coop.ini rejoin_once at the next update); this start follows one (read once at the first update, then cleared).
-std::atomic<bool> g_rejoin_mark{false};
+// Row 281: a restart to play the host's seed is due (RejoinAfterRestart, any thread; coop.ini rejoin_once follows it at
+// the next update); this start follows one (read once at the first update, then cleared).
+std::atomic<bool> g_rejoin_due{false};
+CoopAutoRejoin::RestartMark g_rejoin_mark;
 bool g_rejoin_once_read = false, g_rejoin_once = false;
 // The setting as the files have it (ReadOptions, with last_invite): g_menu's own settings are read only when co-op's
 // menu opens, so at the game's start they are the defaults (a run: the switch saved them over coop.ini's name).
@@ -512,11 +513,6 @@ void Follow(const HosCoopStatus& st) {
                            "randomizer seed: the last game is joined again once");
         }
     }
-    if (g_rejoin_mark.exchange(false) && g_doing == "joined" && !g_coop_on && g_last_game) {
-        WriteText(CoopIni(), CoopTitleMenu::IniSet(ReadText(CoopIni()), "rejoin_once", "1", true));
-        LOG_INFO(Core, "coop: multiplayer tab: auto-rejoin: the randomizer asked for a restart for the host's seed: "
-                       "the next start joins this game again once");
-    }
     CoopAutoRejoin::Facts f;
     f.enabled = g_auto_rejoin_on;
     f.once = g_rejoin_once;
@@ -568,6 +564,14 @@ void Follow(const HosCoopStatus& st) {
             // title's Join page, and the page opened later in the game on that old line)
             if (!g_native || !CoopTitle::Up()) SayOnPage(why.c_str());
         }
+    }
+    if (const std::optional<bool> mark = g_rejoin_mark.Tick(g_rejoin_due.load(), f)) {
+        WriteText(CoopIni(), CoopTitleMenu::IniSet(ReadText(CoopIni()), "rejoin_once", *mark ? "1" : "0", true));
+        LOG_INFO(Core, "coop: multiplayer tab: auto-rejoin: {}",
+                 *mark ? "the randomizer asked for a restart for the host's seed: the next start joins this game again "
+                         "once"
+                       : "no restart for the host's seed any more (or the player's own choice): the next start does "
+                         "not join by itself");
     }
     if (g_rejoin.Tick(f, now)) {
         const auto code = CoopTitleMenu::IniGet(ReadText(CoopIni()), "last_invite");
@@ -1859,8 +1863,8 @@ void SetListRoom(bool on) {
     Save();
 }
 
-void RejoinAfterRestart() {
-    g_rejoin_mark = true;
+void RejoinAfterRestart(bool due) {
+    g_rejoin_due = due;
 }
 
 bool AutoRejoining() {

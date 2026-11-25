@@ -1503,7 +1503,12 @@ std::chrono::steady_clock::time_point Rando::Now() const {
     return hooks_.now ? hooks_.now() : std::chrono::steady_clock::now();
 }
 
+void Rando::RestartForHost(bool due) {
+    if (hooks_.restart_for_host) hooks_.restart_for_host(due && loader_.HostValuesSet());
+}
+
 void Rando::SayRestart(std::string line) {
+    RestartForHost(true);  // (said already too: it may be another join to the same host)
     const auto now = Now();
     {
         const std::lock_guard lock(mutex_);
@@ -1513,7 +1518,6 @@ void Rando::SayRestart(std::string line) {
         restart_said_ = now;
     }
     if (hooks_.log) hooks_.log("randomizer: " + line);
-    if (hooks_.restart_for_host && loader_.HostValuesSet()) hooks_.restart_for_host();   // (row 281)
 }
 
 void Rando::RepeatRestart() {
@@ -1793,6 +1797,7 @@ void Rando::Check() {
         const std::lock_guard lock(mutex_);
         if (!tell_.empty() && (!seed_locked || !loader_.HostValuesSet() || want.seed != tell_seed_)) tell_.clear();
     }
+    bool due = false;
     {
         // Said once per change of the switch, in the tab until the restart and in the chat.
         const std::lock_guard lock(mutex_);
@@ -1803,10 +1808,11 @@ void Rando::Check() {
             if (want.on != on_now_) {
                 lines_.push_back(SwitchLine(want.on));
                 if (hooks_.log) hooks_.log("randomizer: " + lines_.back());
-                if (hooks_.restart_for_host && loader_.HostValuesSet()) hooks_.restart_for_host();   // (row 281)
             }
         }
+        due = want.on != on_now_ || !restart_.empty();
     }
+    RestartForHost(due);   // (row 281)
     loader_.NoteChanged(std::string(kFolder) + "/switch", want.on == on_now_ ? std::string() : SwitchLine(want.on));
     {
         // A settings string that is not one (#48): said once per value; the preset is used meanwhile.
