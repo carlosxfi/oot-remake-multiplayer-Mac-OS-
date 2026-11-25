@@ -158,6 +158,32 @@ TEST_CASE("game flags: a matching hash slot is read in one memory call") {
   CHECK(reads == 1);
 }
 
+TEST_CASE("game flags: frame-scoped reuse caches manager, table metadata and hash probes") {
+  auto w = game();
+  unsigned manager_reads = 0;
+  unsigned table_reads = 0;
+  unsigned probe_reads = 0;
+  w.on_read = [&](std::uint64_t address, std::size_t) {
+    if (address == FakeMemory::kBase + 0x4e842a8) ++manager_reads;
+    if (address == kMgr + 0x10 || address == kMgr + 0x20 || address == kMgr + 0x2c) {
+      ++table_reads;
+    }
+    if (address >= kBoolSlots && address < kBoolSlots + 8 * kCap) ++probe_reads;
+  };
+
+  GameFlags flags(w, true);
+  CHECK(flags.get_bool(0x11) == false);
+  CHECK(flags.get_bool(0x18) == false);
+  CHECK(manager_reads == 1);
+  CHECK(table_reads == 3);
+  CHECK(probe_reads == 3);  // 0x18 probes past 0x11.
+
+  CHECK(flags.get_bool(0x11) == false);
+  CHECK(manager_reads == 1);
+  CHECK(table_reads == 3);
+  CHECK(probe_reads == 3);
+}
+
 TEST_CASE("game flags: nothing before the manager is up or on bad memory") {
   auto w = game();
   w.mem.put_u64(FakeMemory::kBase + 0x4e842a8, 0);

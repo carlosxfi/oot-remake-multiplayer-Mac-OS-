@@ -9,6 +9,7 @@
 #include <atomic>
 #include <bit>
 #include <cstring>
+#include <limits>
 #include <span>
 
 // Offsets: docs/flags.md, read from main of build e0f3ccfaf50065ae.
@@ -90,13 +91,46 @@ std::optional<std::uint32_t> waiting(GameFlagType type, std::uint64_t id) {
 }
 
 // The entry index of `hash` in table `t`, as 0x833920 probes it.
+using TableViews = std::unordered_map<std::uint64_t, std::array<std::uint64_t, 3>>;
+using NamedLookups = std::unordered_map<std::uint64_t, std::uint64_t>;
+
 std::optional<std::uint32_t> find(GameMemory& m, std::uint64_t mgr, const Table& t,
-                                  std::uint32_t hash) {
+                                  std::uint32_t hash, TableViews* views = nullptr,
+                                  NamedLookups* lookups = nullptr) {
   if (hash == 0) return std::nullopt;
-  const auto slots = read_ptr(m, mgr + t.slots);
-  const auto cap = read_u32(m, mgr + t.capacity);
-  const auto count = read_u32(m, mgr + t.count);
+  const std::uint64_t lookup_key = (static_cast<std::uint64_t>(hash) << 32) | t.slots;
+  if (lookups) {
+    if (const auto cached = lookups->find(lookup_key); cached != lookups->end()) {
+      return cached->second == std::numeric_limits<std::uint64_t>::max()
+                 ? std::nullopt
+                 : std::optional(static_cast<std::uint32_t>(cached->second));
+    }
+  }
+
+  std::optional<std::uint64_t> slots;
+  std::optional<std::uint32_t> cap;
+  std::optional<std::uint32_t> count;
+  if (views) {
+    if (const auto cached = views->find(t.slots); cached != views->end()) {
+      slots = cached->second[0];
+      cap = static_cast<std::uint32_t>(cached->second[1]);
+      count = static_cast<std::uint32_t>(cached->second[2]);
+    }
+  }
+  if (!slots) {
+    slots = read_ptr(m, mgr + t.slots);
+    cap = read_u32(m, mgr + t.capacity);
+    count = read_u32(m, mgr + t.count);
+    if (slots && cap && count && *cap != 0 && views) {
+      views->emplace(t.slots, std::array<std::uint64_t, 3>{*slots, *cap, *count});
+    }
+  }
   if (!slots || !cap || !count || *cap == 0) return std::nullopt;
+
+  const auto cache_miss = [&] {
+    if (lookups) (*lookups)[lookup_key] = std::numeric_limits<std::uint64_t>::max();
+    return std::optional<std::uint32_t>{};
+  };
   const std::uint32_t start = hash % *cap;
   std::uint32_t i = start;
   do {
@@ -106,16 +140,18 @@ std::optional<std::uint32_t> find(GameMemory& m, std::uint64_t mgr, const Table&
     const auto slot = read_u64(m, address);
     const auto h = slot ? std::optional(static_cast<std::uint32_t>(*slot))
                         : read_u32(m, address);
-    if (!h || *h == 0) return std::nullopt;
+    if (!h) return std::nullopt;
+    if (*h == 0) return cache_miss();
     if (*h == hash) {
       const auto index = slot ? std::optional(static_cast<std::uint32_t>(*slot >> 32))
                               : read_u32(m, address + 4);
       if (!index || *index >= *count) return std::nullopt;
+      if (lookups) (*lookups)[lookup_key] = *index;
       return *index;
     }
     i = i + 1 >= *cap ? 0 : i + 1;
   } while (i != start);
-  return std::nullopt;
+  return cache_miss();
 }
 
 // The record index of `key`, by binary search as 0x838960 does.
@@ -297,10 +333,20 @@ std::optional<std::string> queued_string(GameMemory& m, std::uint64_t mgr, std::
 
 }  // namespace
 
+std::optional<std::uint64_t> GameFlags::cached_manager() {
+  if (!reuse_key_lookups_) return manager(memory_);
+  if (!manager_checked_) {
+    manager_ = manager(memory_);
+    manager_checked_ = true;
+  }
+  return manager_;
+}
+
 std::optional<bool> GameFlags::get_bool(std::uint32_t hash) {
-  const auto mgr = manager(memory_);
+  const auto mgr = cached_manager();
   if (!mgr) return std::nullopt;
-  const auto index = find(memory_, *mgr, kBool, hash);
+  const auto index = find(memory_, *mgr, kBool, hash, reuse_key_lookups_ ? &table_views_ : nullptr,
+                          reuse_key_lookups_ ? &named_lookups_ : nullptr);
   if (!index) return std::nullopt;
   if (const auto w = waiting(GameFlagType::boolean, hash)) return (*w & 0xff) != 0;
   if (const auto q = queued(memory_, *mgr, kBool.queue_cap, kBool.queue_buf, kBool.queue_word,
@@ -314,9 +360,10 @@ std::optional<bool> GameFlags::get_bool(std::uint32_t hash) {
 }
 
 std::optional<std::int32_t> GameFlags::get_int(std::uint32_t hash) {
-  const auto mgr = manager(memory_);
+  const auto mgr = cached_manager();
   if (!mgr) return std::nullopt;
-  const auto index = find(memory_, *mgr, kInt, hash);
+  const auto index = find(memory_, *mgr, kInt, hash, reuse_key_lookups_ ? &table_views_ : nullptr,
+                          reuse_key_lookups_ ? &named_lookups_ : nullptr);
   if (!index) return std::nullopt;
   if (const auto w = waiting(GameFlagType::int32, hash)) return static_cast<std::int32_t>(*w);
   if (const auto q = queued(memory_, *mgr, kInt.queue_cap, kInt.queue_buf, kInt.queue_word,
@@ -330,9 +377,10 @@ std::optional<std::int32_t> GameFlags::get_int(std::uint32_t hash) {
 }
 
 std::optional<std::int32_t> GameFlags::get_int_live(std::uint32_t hash) {
-  const auto mgr = manager(memory_);
+  const auto mgr = cached_manager();
   if (!mgr) return std::nullopt;
-  const auto index = find(memory_, *mgr, kInt, hash);
+  const auto index = find(memory_, *mgr, kInt, hash, reuse_key_lookups_ ? &table_views_ : nullptr,
+                          reuse_key_lookups_ ? &named_lookups_ : nullptr);
   if (!index) return std::nullopt;
   const auto entries = read_ptr(memory_, *mgr + kInt.entries);
   if (!entries) return std::nullopt;
@@ -342,9 +390,10 @@ std::optional<std::int32_t> GameFlags::get_int_live(std::uint32_t hash) {
 }
 
 std::optional<float> GameFlags::get_float(std::uint32_t hash) {
-  const auto mgr = manager(memory_);
+  const auto mgr = cached_manager();
   if (!mgr) return std::nullopt;
-  const auto index = find(memory_, *mgr, kFloat, hash);
+  const auto index = find(memory_, *mgr, kFloat, hash, reuse_key_lookups_ ? &table_views_ : nullptr,
+                          reuse_key_lookups_ ? &named_lookups_ : nullptr);
   if (!index) return std::nullopt;
   if (const auto w = waiting(GameFlagType::float32, hash)) return std::bit_cast<float>(*w);
   if (const auto q = queued(memory_, *mgr, kFloat.queue_cap, kFloat.queue_buf, kFloat.queue_word,
@@ -358,9 +407,10 @@ std::optional<float> GameFlags::get_float(std::uint32_t hash) {
 }
 
 std::optional<std::uint32_t> GameFlags::get_uint(std::uint32_t hash) {
-  const auto mgr = manager(memory_);
+  const auto mgr = cached_manager();
   if (!mgr) return std::nullopt;
-  const auto index = find(memory_, *mgr, kUInt, hash);
+  const auto index = find(memory_, *mgr, kUInt, hash, reuse_key_lookups_ ? &table_views_ : nullptr,
+                          reuse_key_lookups_ ? &named_lookups_ : nullptr);
   if (!index) return std::nullopt;
   if (const auto w = waiting(GameFlagType::uint32, hash)) return *w;
   if (const auto q = queued(memory_, *mgr, kUInt.queue_cap, kUInt.queue_buf, kUInt.queue_word,
@@ -372,9 +422,10 @@ std::optional<std::uint32_t> GameFlags::get_uint(std::uint32_t hash) {
 }
 
 std::optional<std::uint32_t> GameFlags::get_enum(std::uint32_t hash) {
-  const auto mgr = manager(memory_);
+  const auto mgr = cached_manager();
   if (!mgr) return std::nullopt;
-  const auto index = find(memory_, *mgr, kEnum, hash);
+  const auto index = find(memory_, *mgr, kEnum, hash, reuse_key_lookups_ ? &table_views_ : nullptr,
+                          reuse_key_lookups_ ? &named_lookups_ : nullptr);
   if (!index) return std::nullopt;
   if (const auto w = waiting(GameFlagType::enum32, hash)) return *w;
   if (const auto q = queued(memory_, *mgr, kEnum.queue_cap, kEnum.queue_buf, kEnum.queue_word,
@@ -386,7 +437,7 @@ std::optional<std::uint32_t> GameFlags::get_enum(std::uint32_t hash) {
 }
 
 std::optional<bool> GameFlags::get_key64(std::uint64_t key) {
-  const auto mgr = manager(memory_);
+  const auto mgr = cached_manager();
   if (!mgr) return std::nullopt;
   const auto index = find_key(memory_, *mgr, key, reuse_key_lookups_ ? &key_probes_ : nullptr);
   if (!index) return std::nullopt;
@@ -401,9 +452,10 @@ std::optional<bool> GameFlags::get_key64(std::uint64_t key) {
 }
 
 std::optional<bool> GameFlags::get_bool_array(std::uint32_t hash, std::uint32_t index) {
-  const auto mgr = manager(memory_);
+  const auto mgr = cached_manager();
   if (!mgr) return std::nullopt;
-  const auto entry_index = find(memory_, *mgr, kBoolArray, hash);
+  const auto entry_index = find(memory_, *mgr, kBoolArray, hash, reuse_key_lookups_ ? &table_views_ : nullptr,
+                          reuse_key_lookups_ ? &named_lookups_ : nullptr);
   if (!entry_index) return std::nullopt;
   const auto entries = read_ptr(memory_, *mgr + kBoolArray.entries);
   if (!entries) return std::nullopt;
@@ -417,9 +469,10 @@ std::optional<bool> GameFlags::get_bool_array(std::uint32_t hash, std::uint32_t 
 }
 
 std::optional<std::string> GameFlags::get_string64(std::uint32_t hash) {
-  const auto mgr = manager(memory_);
+  const auto mgr = cached_manager();
   if (!mgr) return std::nullopt;
-  const auto entry_index = find(memory_, *mgr, kString64, hash);
+  const auto entry_index = find(memory_, *mgr, kString64, hash, reuse_key_lookups_ ? &table_views_ : nullptr,
+                          reuse_key_lookups_ ? &named_lookups_ : nullptr);
   if (!entry_index) return std::nullopt;
   // A write still waiting for the game's setter, then one in its queue, as the other getters.
   if (const GameFlagCalls* calls = g_calls.load(std::memory_order_acquire)) {
@@ -485,7 +538,7 @@ bool GameFlags::set_int_now(WritableGameMemory& m, std::uint32_t hash, std::int3
 }
 
 std::optional<GameFlags::QueueSizes> GameFlags::queue_sizes() {
-  const auto mgr = manager(memory_);
+  const auto mgr = cached_manager();
   if (!mgr) return std::nullopt;
   const auto b = read_u32(memory_, *mgr + kBool.queue_cap);
   const auto i = read_u32(memory_, *mgr + kInt.queue_cap);
@@ -568,12 +621,13 @@ std::size_t queued_flag_writes(GameMemory& m, std::uint64_t mgr,
 }
 
 std::optional<int> GameFlags::find_type(std::uint32_t hash) {
-  const auto mgr = manager(memory_);
+  const auto mgr = cached_manager();
   if (!mgr) return std::nullopt;
   for (int type = 0; type <= 25; ++type) {
     const std::uint64_t base = 0x10 + 0x60ull * static_cast<std::uint64_t>(type);
     const Table t{base, base + 8, base + 0x10, base + 0x1c, 0, 0, 0, 0, 0, 0};
-    if (find(memory_, *mgr, t, hash)) return type;
+    if (find(memory_, *mgr, t, hash, reuse_key_lookups_ ? &table_views_ : nullptr,
+             reuse_key_lookups_ ? &named_lookups_ : nullptr)) return type;
   }
   return std::nullopt;
 }
@@ -690,7 +744,7 @@ bool GameFlagStore::busy(FlagKey key) {
   // here: the writes wait in our own list, and the calc thread hands them
   // over as the queues have room.
   if (const GameFlagCalls* calls = g_calls.load(std::memory_order_acquire)) return calls->full();
-  const auto mgr = manager(memory_);
+  const auto mgr = cached_manager();
   if (!mgr) return false;
   if (key.kind == FlagKeyKind::key64) return no_room(memory_, *mgr, kKeyQueueCap, kKeyQueueWord);
   if (key.kind != FlagKeyKind::named || key.index != 0) return false;

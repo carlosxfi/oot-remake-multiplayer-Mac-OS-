@@ -8,6 +8,7 @@
 // the game applies them on its next GameData update with its own bookkeeping
 // (saved copy, save-file mask). Reads see a queued write that is not applied
 // yet, as the game's 0x20fd90 does.
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -140,8 +141,15 @@ class GameFlags {
   std::optional<QueueSizes> queue_sizes();
 
  private:
+  std::optional<std::uint64_t> cached_manager();
   GameMemory& memory_;
   bool reuse_key_lookups_;
+  bool manager_checked_ = false;
+  std::optional<std::uint64_t> manager_;
+  // Frame-scoped metadata and lookup reuse. Values are valid only because the
+  // nxnative store that enables this cache is rebuilt for every calc frame.
+  std::unordered_map<std::uint64_t, std::array<std::uint64_t, 3>> table_views_;
+  std::unordered_map<std::uint64_t, std::uint64_t> named_lookups_;
   std::unordered_map<std::uint64_t, std::uint64_t> key_probes_;
 };
 
