@@ -268,7 +268,7 @@ void Frame(coop::host::Session* session) {
         if (g.wish) {
             send = std::exchange(g.wish, std::nullopt);
             g.offered = true;  // the host chose here: the kept one is this one
-        } else if (OffersKept(g.state.can_edit, g.state.set_by, Kept(g), g.offered)) {
+        } else if (OffersKept(g.state.can_edit, g.state.set_by, Kept(g), g.offered, g.state.choice.auto_scale)) {
             send = g.kept;
             g.offered = true;
         }

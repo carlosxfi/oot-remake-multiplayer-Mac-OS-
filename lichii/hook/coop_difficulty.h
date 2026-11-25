@@ -585,8 +585,11 @@ private:
 // Whether a game that hosts sends its kept choice: once per connection, when
 // it was a choice of its own (not the automatic scaler) and nobody has
 // chosen for this session yet. A host who takes over a session keeps what
-// the host before set.
-bool OffersKept(bool hosts, std::uint8_t set_by, const std::optional<Choice>& kept, bool offered);
+// the host before set. `session_auto`: the session is automatic as the server
+// said it; a lobby made with a difficulty (the Host page, coop_server
+// --difficulty) is not, and is never overridden by a kept file at connect.
+bool OffersKept(bool hosts, std::uint8_t set_by, const std::optional<Choice>& kept, bool offered,
+                bool session_auto);
 
 // Network thread, from the session's on_event (the network lock is held):
 // DIFFICULTY; a new connection starts with the game as it is.
