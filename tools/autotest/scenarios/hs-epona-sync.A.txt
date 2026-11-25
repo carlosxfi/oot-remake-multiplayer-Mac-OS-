@@ -4,21 +4,12 @@
 # arrives) stays A's own: nothing of B's horse is made as a real Epona here.
 #! switches LICHII_COOP_PUPPET=1,LICHII_COOP_DEBUG_ANIM=1,LICHII_COOP_OBJECTS=1,LICHII_COOP_CHEATS=1
 #! timeout 420
-#! noload
-#! start coop: test warp done
 mark start
-setflag Sequence_IsChildhood 0
+setflag Sequence_IsChildhood 0  # adult AFTER the save is loaded (run.ps1 loads it first): set at the
+# title, the save's load put the child age back and the warp landed in HyruleField_Child
+wait 60                 # the flag takes 30+ frames before the warp (kit_setup: Link loads at the flag's age)
 warp HyruleField_Adult HyruleField_FrontOfMarket
-wait 1200               # the title screen
-mark title
-press A
-wait 180
-press A
-wait 180
-press A
-wait 300
-press A                 # loads the save, then the warp
-wait 2400               # the save loads, then the warp lands (about 30 s)
+wait 1200               # the warp lands
 mark field
 place -100.5 151.0 254.5 # 10 m south of Epona
 wait 240
