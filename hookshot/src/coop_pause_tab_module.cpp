@@ -99,6 +99,7 @@ std::atomic<int> g_browse_filter{0}, g_browse_sort{0};   // the browser's filter
 std::atomic<int> g_browse_listed{0};        // the games the browser's list keeps now (its pages)
 std::atomic<std::uint64_t> g_head_click_ms{0};   // the left button last down on the browser's heading
 std::atomic<int> g_cell_page{0};
+std::atomic<int> g_detail_page{0};   // row 223: the details list's page (0 session, 1 key items)
 std::atomic<int> g_cell{-1};
 std::atomic<int> g_cell_games{0};   // the cells on this page that hold a game (LiveCells)
 // Settings and look (View::kMenu): co-op's menu's page shown on the list (kMenuTabNames' row), whether the list has the
@@ -848,6 +849,10 @@ SessionView ViewNow(View view) {
     v.port_open = v.s.hosting && st.upnp_open != 0;
     v.port = v.s.hosting ? st.port : 0;
     v.note = CoopPause::PageNote();
+    if (view == View::kMain || view == View::kSession) {   // (row 223: the key items, page 2 of the details list)
+        v.tally_ok = CoopHookshot::KeyItemTallyNow(v.tally);
+        v.detail_page = g_detail_page.load();
+    }
     if (const std::string& title = CoopWindowBrand::TitleOf(CoopRuntime::GameDir()); title != CoopWindowBrand::kTitle) {
         v.version = title;   // the kit's release (0.11.6), as the title bar
     }
@@ -2929,7 +2934,8 @@ void MinusWords(void* ctx, std::uint64_t layout, std::uint64_t gen, int tab) {
     g_page.SetMinusLines(pickable, raw);
     g_page.SetMinusRawBack(raw_back);
     if (mods_read) g_mods_reading.Fill(mods_sent, std::move(mods_pickable), mods_selected);
-    g_page.SetMinusPageable(!mods && view == View::kLan && CellPages(BrowseListed(v.s)) > 1);
+    g_page.SetMinusPageable(!mods && ((view == View::kLan && CellPages(BrowseListed(v.s)) > 1) ||
+                                       ((view == View::kMain || view == View::kSession) && v.tally_ok)));
     for (int i = 0; i < kLinePanes; ++i) g_minus_lines[static_cast<std::size_t>(i)] = lines[static_cast<std::size_t>(i)];
     // (the cursor's part of what was read: the frames and the alphas from it at each update, ApplyMinusPage)
     g_minus_pickable = pickable, g_minus_words_picked = picked, g_minus_raw = raw;
@@ -5042,6 +5048,10 @@ std::uint64_t OnPad(std::uint64_t buttons, std::int32_t stick[4]) noexcept {
                     g_cell_page = CoopListPages::Step(lan.s.cell_page, pages, minus_page_step), g_cell = -1;   // (round)
                     g_live_poke = true;
                 }
+            }
+            if (minus_page_step != 0 && (view == View::kMain || view == View::kSession) && ViewNow(view).tally_ok) {
+                g_detail_page = CoopListPages::Step(g_detail_page.load(), 2, minus_page_step);   // (ZL / ZR, round)
+                g_live_poke = true;
             }
             if (minus_line >= 0 && view == View::kLan && minus_line >= 1) {
                 ActCell(minus_line - 1);

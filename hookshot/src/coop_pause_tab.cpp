@@ -1970,6 +1970,27 @@ std::vector<ListLine> DetailLines(View view, const SessionView& v) {
     const bool launcher_view = v.s.by_launcher && (view == View::kHost || view == View::kJoin);
     if (view != View::kMain && view != View::kSession && view != View::kPassword && !launcher_view) return lines;
     std::size_t at = 1;
+    // Row 223: the details list's pages (ZL / ZR), on the Main and Session views only: page 1 is the session's lines
+    // below, page 2 the key items the game holds, "Songs  8 of 13" (a list of ours, English keys through Tr; only
+    // with a game loaded, else the list has the one page).
+    const bool paged_details = (view == View::kMain || view == View::kSession) && v.tally_ok;
+    const int detail_pages = paged_details ? 2 : 1;
+    const int detail_page = CoopListPages::Wrap(v.detail_page, detail_pages);
+    if (detail_page == 1) {
+        using coop::host::TallyGroup;
+        lines[0] = ListLine{CoopListPages::Heading(CoopI18n::Tr("Key items"), CoopListPages::Line(1, 2), kListNameChars),
+                            "", RowAction::kNone};
+        lines[0].paged = true;
+        for (const TallyGroup g : {TallyGroup::songs, TallyGroup::medallions, TallyGroup::stones, TallyGroup::dungeon_items}) {
+            const auto& n = v.tally.at(g);
+            if (at < lines.size())
+                lines[at++] = ListLine{FitTo(CoopI18n::Tr(std::string(coop::host::tally_group_label(g))), kListNameChars),
+                                       FitTo(std::to_string(n.owned) + CoopI18n::Tr(" of ") + std::to_string(n.total),
+                                             kListValueChars)};
+        }
+        MarkShown(&lines);
+        return lines;
+    }
     // (each line in the player's language before the cut: the names and the short values are
     // the table's words, a room's own name comes back as it is)
     // (`own`: the value is a room's, a host's or a password: shown as it is, never looked up)
@@ -2101,6 +2122,11 @@ std::vector<ListLine> DetailLines(View view, const SessionView& v) {
         for (const std::string& l : Wrap(why, all ? left : left - 1, kListLineChars)) lines[at++] = ListLine{l, ""};
     }
     if (!release.empty()) add("Release", release);
+    // (page 1 of two: the heading says so, with the game's ZL / ZR icons beside it)
+    if (detail_pages > 1) {
+        lines[0].name = CoopListPages::Heading(CoopI18n::Tr(header), CoopListPages::Line(0, 2), kListNameChars);
+        lines[0].paged = true;
+    }
     MarkShown(&lines);
     return lines;
 }

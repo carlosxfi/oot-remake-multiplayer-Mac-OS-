@@ -2103,6 +2103,32 @@ bool HasWrap(std::uint32_t id) {
     return id < 64 && (g_world_wraps.load() >> id & 1) != 0;
 }
 
+bool KeyItemTallyNow(coop::host::KeyItemTally& out) {
+    static std::mutex lock;
+    static coop::host::KeyItemTally cached;
+    static bool cached_ok = false;
+    static std::chrono::steady_clock::time_point at{};
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> guard(lock);
+    if (at == std::chrono::steady_clock::time_point{} || now - at > std::chrono::milliseconds(500)) {
+        at = now;
+        cached_ok = false;
+        if (CoopRuntime::MainBase() != 0) {
+            CoopHook::EmulatorMemory memory(g_system.ApplicationMemory(), CoopRuntime::MainBase());
+            coop::host::GameFlags flags(memory);
+            bool any_flag_table = false;   // (the manager is not up: get_bool says nothing for every flag)
+            cached = coop::host::key_item_tally([&](std::uint32_t hash) {
+                const auto v = flags.get_bool(hash);
+                any_flag_table = any_flag_table || v.has_value();
+                return v.value_or(false);
+            });
+            cached_ok = any_flag_table;
+        }
+    }
+    if (cached_ok) out = cached;
+    return cached_ok;
+}
+
 // The wrapped game functions (patch 0005, nx2/coop_world_wraps.py). The game's function always runs (0 at phase 0).
 int Wrap(std::uint32_t id, int phase, std::uint64_t* x, void* /*ctx*/) {
     if (!g_on || x == nullptr) {
