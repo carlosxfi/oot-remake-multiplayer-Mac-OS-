@@ -21,7 +21,8 @@ Tab* TheTab() {  // under g_mutex
         s.loader = CoopModsRuntime::Loader();
         s.coop = [] {
             const CoopModShare::View v = CoopModShare::Now();
-            std::vector<std::string> out;
+            // (row 280: a part with files left out says so first, solo too: coop_part_fallback.h)
+            std::vector<std::string> out = CoopModsRuntime::PartFallbackLines();
             if (!v.connected) return out;
             if (!v.hosting && !v.host_list_known) out.push_back("Co-op: waiting for the host's list of mods.");
             for (const std::string& d : v.differences) out.push_back("Co-op: " + d);

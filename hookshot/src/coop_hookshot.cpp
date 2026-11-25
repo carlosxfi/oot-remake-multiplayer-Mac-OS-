@@ -70,6 +70,7 @@
 #include "coop_enemy_shots.h"
 #include "coop_mod_api.h"
 #include "coop_mods_runtime.h"
+#include "coop_part_fallback.h"
 #include "coop_pad_order.h"
 #include "coop_rando.h"
 #include "coop_hook.h"
@@ -1200,6 +1201,22 @@ void NativeStep(void* ctx) {
     const auto lines = CoopHook::ChatLines();
     const Colours colours = SpeakerColours();
     std::vector<CoopNativeUi::ChatIn> in;
+    {  // row 280 (coop_part_fallback.h): a mod part with files left out (the game's own used) says so on the banner,
+       // once each time play starts from the title, solo too. Its arrival time is fixed, so the feed takes it once;
+       // the feed's first Update (primed) has been, so it is not swallowed as a line from before.
+        static CoopPartFallback::OncePerLoad once;
+        static std::uint64_t came = 0;
+        static bool fed = false;
+        static std::optional<std::vector<std::string>> part;
+        if (!part && CoopModsRuntime::Loader() != nullptr) part = CoopModsRuntime::PartFallbackLines();
+        if (fed && part && !part->empty()) {
+            if (once.Step(CoopSave::TitleUp(), CoopObjects::OurLinkActor().has_value())) came = now;
+            if (came != 0 && now - came < CoopNativeUi::ChatFeed::kStaleMs) {
+                for (const std::string& t : *part) in.push_back({t, true, now - came, 0});
+            }
+        }
+        fed = true;
+    }
     for (const auto& l : lines) {
         // (a notice is the module's own words: in the player's language; chat is as typed)
         CoopNativeUi::ChatIn c{l.notice ? CoopI18n::Tr(l.text) : l.text, l.notice, l.age_ms, 0};

@@ -6,6 +6,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
+#include <vector>
 
 #include "coop_mods.h"
 #include "coop_rando.h"
@@ -23,6 +25,10 @@ void Stop();
 // nullptr before Start.
 CoopMods::Loader* Loader();
 CoopRando::Rando* Rando();  // the built-in randomizer: its status line for the tab
+// Row 280 (coop_part_fallback.h): the line of each mod the running game uses whose part the kit made with files left
+// out (the game's own used), for the banner and the Mods tab. Read once, at the first call after Start (the kit
+// writes it before the game starts); empty before Start.
+std::vector<std::string> PartFallbackLines();
 
 // The module's exports' parts. Each is cheap when no code mod registered for it.
 void Frame();                                   // the calc thread, every frame (HOS_COOP_SITE_FRAME)
