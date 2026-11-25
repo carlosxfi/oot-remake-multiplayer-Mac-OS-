@@ -76,6 +76,19 @@ struct RelayConfig {
   std::function<std::uint64_t()> random;
 };
 
+// --relay-max-per-address N (test relays; the default 2 stays for public ones):
+// N sessions from one address, and the per-address rate limits for new hosts, new
+// listings and LIST_ROOM raised to match so N hosts can register and list at once.
+inline void allow_sessions_per_address(RelayConfig& c, std::size_t n) {
+  c.max_sessions_per_address = n;
+  if (c.max_sessions < n) c.max_sessions = n;
+  const auto count = static_cast<std::uint32_t>(n);
+  if (c.registers_per_window < count) c.registers_per_window = count;
+  if (c.new_listings_per_window < count) c.new_listings_per_window = count;
+  if (c.listings_per_window < count * 12) c.listings_per_window = count * 12;
+  if (c.lists_per_window < count * 12) c.lists_per_window = count * 12;
+}
+
 struct RelayStats {
   std::uint64_t to_host = 0;    // guest datagrams forwarded
   std::uint64_t to_guest = 0;   // host datagrams forwarded

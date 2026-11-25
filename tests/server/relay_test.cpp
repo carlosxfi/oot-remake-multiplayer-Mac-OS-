@@ -17,6 +17,7 @@
 
 #include <enet/enet.h>
 
+#include "bind_host.hpp"
 #include "coop/protocol/codec.hpp"
 #include "coop/protocol/join_password.hpp"
 #include "coop/protocol/traffic_crypto.hpp"
@@ -461,6 +462,28 @@ TEST_CASE("relay: host key, per-address limit and bye") {
   CHECK(relay.sessions() == 1);
 }
 
+TEST_CASE("relay: --relay-max-per-address 9 lets 9 hosts in from one address, the default refuses the 3rd (row 264)") {
+  for (const bool raised : {false, true}) {
+    RelayConfig config;
+    if (raised) allow_sessions_per_address(config, 9);
+    Relay relay(config);
+    std::size_t in = 0;
+    for (std::uint64_t i = 1; i <= 10; ++i) {
+      auto out = relay.received(Endpoint{kHost.host, static_cast<std::uint16_t>(i)},
+                                encode(register_message(i, "")), 0);
+      REQUIRE(out.size() == 1);
+      if (decoded(out[0]).kind == Kind::kRegistered) {
+        ++in;
+      } else {
+        CHECK(static_cast<Refusal>(decoded(out[0]).status) == Refusal::kTooMany);
+      }
+    }
+    CHECK(in == (raised ? 9u : 2u));
+    CHECK(config.lists_per_window == (raised ? 108u : 30u));
+    CHECK(relay.sessions() == in);
+  }
+}
+
 TEST_CASE("relay: link addresses") {
   std::string host;
   std::uint16_t port = 0;
@@ -577,6 +600,7 @@ TEST_CASE("relay loopback: a guest joins the host's server through the relay wit
   RelayLinkConfig link_config;
   link_config.relay_host = "127.0.0.1";
   link_config.relay_port = relay_port;
+  link_config.bind = 0x7F000001u;  // (127.0.0.1 only)
   link_config.server_port = server.port();
   std::string announced;
   link_config.on_code = [&](const std::string& code) { announced = code; };
@@ -606,9 +630,7 @@ TEST_CASE("relay loopback: a guest joins the host's server through the relay wit
 
   ENetSocket lookup_socket = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
   REQUIRE(lookup_socket != ENET_SOCKET_NULL);
-  ENetAddress any{};
-  any.host = ENET_HOST_ANY;
-  REQUIRE(enet_socket_bind(lookup_socket, &any) == 0);
+  REQUIRE(bind_socket(lookup_socket, 0x7F000001u, 0) == 0);  // (127.0.0.1 only)
   enet_socket_set_option(lookup_socket, ENET_SOCKOPT_NONBLOCK, 1);
 
   // A wrong code first: no luck.
@@ -664,6 +686,7 @@ TEST_CASE("relay loopback: a host's link holds a room name and a second host can
     RelayLinkConfig c;
     c.relay_host = "127.0.0.1";
     c.relay_port = relay_port;
+    c.bind = 0x7F000001u;  // (127.0.0.1 only)
     c.server_port = 1;  // no game here: only the registration is tested
     c.room = std::move(room);
     return c;
@@ -702,9 +725,7 @@ TEST_CASE("relay loopback: a host's link holds a room name and a second host can
   // A guest finds the room by name.
   ENetSocket lookup_socket = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
   REQUIRE(lookup_socket != ENET_SOCKET_NULL);
-  ENetAddress any{};
-  any.host = ENET_HOST_ANY;
-  REQUIRE(enet_socket_bind(lookup_socket, &any) == 0);
+  REQUIRE(bind_socket(lookup_socket, 0x7F000001u, 0) == 0);  // (127.0.0.1 only)
   enet_socket_set_option(lookup_socket, ENET_SOCKOPT_NONBLOCK, 1);
   CHECK(socket_lookup(lookup_socket, relay_port, lookup_room_message("lake-gang"), pump) == LookupResult::kUnknown);
   CHECK(socket_lookup(lookup_socket, relay_port, lookup_room_message("forest-gang"), pump) == LookupResult::kOk);
@@ -729,13 +750,13 @@ TEST_CASE("relay loopback: a host's link holds a room name and a second host can
   });
   auto parsed = parse_relay_join("FOREST-GANG@127.0.0.1:" + std::to_string(relay_port));
   REQUIRE(parsed.has_value());
-  CHECK(lookup_on_relay(relay_at, *parsed) == LookupResult::kOk);
+  CHECK(lookup_on_relay(relay_at, *parsed, {}, 0x7F000001u) == LookupResult::kOk);
   parsed = parse_relay_join(show_code(first.code()) + "@127.0.0.1:" + std::to_string(relay_port));
   REQUIRE(parsed.has_value());
-  CHECK(lookup_on_relay(relay_at, *parsed) == LookupResult::kOk);
+  CHECK(lookup_on_relay(relay_at, *parsed, {}, 0x7F000001u) == LookupResult::kOk);
   parsed = parse_relay_join("lakegang@127.0.0.1:" + std::to_string(relay_port));
   REQUIRE(parsed.has_value());
-  CHECK(lookup_on_relay(relay_at, *parsed) == LookupResult::kUnknown);
+  CHECK(lookup_on_relay(relay_at, *parsed, {}, 0x7F000001u) == LookupResult::kUnknown);
   done = true;
   serve.join();
 
@@ -756,6 +777,7 @@ TEST_CASE("relay loopback: a game without the code never reaches the host") {
   RelayLinkConfig link_config;
   link_config.relay_host = "127.0.0.1";
   link_config.relay_port = relay_server.port();
+  link_config.bind = 0x7F000001u;  // (127.0.0.1 only)
   link_config.server_port = server.port();
   RelayLink link(link_config);
   std::string why;
@@ -1054,6 +1076,7 @@ TEST_CASE("relay loopback: a host's link lists its room, the game's list_rooms_o
     RelayLinkConfig c;
     c.relay_host = "127.0.0.1";
     c.relay_port = relay_port;
+    c.bind = 0x7F000001u;  // (127.0.0.1 only)
     c.server_port = 1;  // no game here: only the room and its listing are tested
     c.room = std::move(room);
     return c;
@@ -1094,7 +1117,7 @@ TEST_CASE("relay loopback: a host's link lists its room, the game's list_rooms_o
       unlisted.service();
     }
   });
-  const auto list = list_rooms_on_relay(relay_at);
+  const auto list = list_rooms_on_relay(relay_at, {}, false, 0x7F000001u);
   done = true;
   serve.join();
   REQUIRE(list.has_value());
@@ -1114,7 +1137,7 @@ TEST_CASE("relay loopback: a host's link lists its room, the game's list_rooms_o
   nobody.port = 1;
   const auto started = std::chrono::steady_clock::now();
   std::atomic<int> asked{0};
-  CHECK_FALSE(list_rooms_on_relay(nobody, [&] { return ++asked > 20; }).has_value());   // (stopped early)
+  CHECK_FALSE(list_rooms_on_relay(nobody, [&] { return ++asked > 20; }, false, 0x7F000001u).has_value());   // (stopped early)
   CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(3));
 }
 
@@ -1215,6 +1238,7 @@ TEST_CASE("public game: listed with the public bit, relay only, a guest joins wi
   c.relay_via = "127.0.0.1:" + std::to_string(relay_port);
   c.relay_room = "Forest-4821";
   c.session.join_password = "ignored";  // a public game's password is the room's
+  c.helper_bind = 0x7F000001u;          // (the relay link on 127.0.0.1 only)
   c.upnp = true;                        // all forced off: relay only
   c.invite = true;
   c.session.same_network_open = true;
@@ -1241,7 +1265,7 @@ TEST_CASE("public game: listed with the public bit, relay only, a guest joins wi
       host.service(0);
     }
   });
-  const auto list = list_rooms_on_relay(relay_at);
+  const auto list = list_rooms_on_relay(relay_at, {}, false, 0x7F000001u);
   done = true;
   serve.join();
   REQUIRE(list.has_value());

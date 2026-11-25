@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "bind_host.hpp"
+
 namespace coop::server::relay {
 
 namespace {
@@ -96,14 +98,11 @@ std::optional<LookupResult> ask_relay(ENetSocket s, const ENetAddress& relay, co
 }  // namespace
 
 std::optional<LookupResult> lookup_on_relay(const ENetAddress& relay, const RelayJoin& join,
-                                            const std::function<bool()>& stop) {
+                                            const std::function<bool()>& stop, std::optional<std::uint32_t> bind) {
   ENetSocket s = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
   if (s == ENET_SOCKET_NULL) return std::nullopt;
-  ENetAddress any{};
-  any.host = ENET_HOST_ANY;
-  any.port = 0;
   std::optional<LookupResult> result;
-  if (enet_socket_bind(s, &any) == 0) {
+  if (bind_socket(s, bind, 0) == 0) {
     enet_socket_set_option(s, ENET_SOCKOPT_NONBLOCK, 1);
     if (!join.code.empty()) {
       Message m;
@@ -163,14 +162,11 @@ std::optional<Message> ask_page(ENetSocket s, const ENetAddress& relay, std::uin
 }  // namespace
 
 std::optional<RoomList> list_rooms_on_relay(const ENetAddress& relay, const std::function<bool()>& stop,
-                                            bool ask_proofs) {
+                                            bool ask_proofs, std::optional<std::uint32_t> bind) {
   ENetSocket s = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
   if (s == ENET_SOCKET_NULL) return std::nullopt;
-  ENetAddress any{};
-  any.host = ENET_HOST_ANY;
-  any.port = 0;
   std::optional<RoomList> result;
-  if (enet_socket_bind(s, &any) == 0) {
+  if (bind_socket(s, bind, 0) == 0) {
     enet_socket_set_option(s, ENET_SOCKOPT_NONBLOCK, 1);
     for (int page = 0; page < 8; ++page) {
       const std::size_t start = result ? result->rooms.size() : 0;
@@ -279,10 +275,7 @@ bool RelayLink::start(std::string& error) {
     error = "cannot open a network socket for the relay";
     return false;
   }
-  ENetAddress any{};
-  any.host = ENET_HOST_ANY;
-  any.port = 0;
-  if (enet_socket_bind(socket_, &any) != 0) {
+  if (bind_socket(socket_, config_.bind, 0) != 0) {
     error = "cannot open a network socket for the relay";
     return false;
   }
@@ -374,10 +367,7 @@ void RelayLink::handle(const Message& m, std::uint64_t now) {
         Flow flow;
         flow.socket = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
         if (flow.socket == ENET_SOCKET_NULL) return;
-        ENetAddress local{};
-        enet_address_set_host_ip(&local, "127.0.0.1");
-        local.port = 0;
-        if (enet_socket_bind(flow.socket, &local) != 0) {
+        if (bind_socket(flow.socket, net::kLoopbackIp, 0) != 0) {
           enet_socket_destroy(flow.socket);
           return;
         }
