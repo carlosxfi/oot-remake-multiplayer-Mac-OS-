@@ -263,6 +263,21 @@ std::optional<std::pair<std::string, std::string>> OutsideActorRows(const std::f
 int PutBackKeptRows(const std::filesystem::path& folder);
 // Its chat line (repeats when joining).
 std::string RowsLine(std::string_view mod, std::string_view table);
+// Row 288: Longshot serves the menus' layout archive (romfs/UI/Layout2Archive/Common.Product.*.blarc.zs) whole from
+// the winning mod (OutsideSizeTable's order). The Characters page's layouts are in the copy of the mod whose code
+// makes the page: Character Select's, or the puppet pack's (co-op's own Characters tab). When another mod's copy wins
+// (a seed made in the game, then the game started again without the kit's start, whose merge puts every mod's
+// members into the winner: merge_tables.py merge_members) the page's layouts are not in the game, and opening the
+// page makes a layout from nothing: the game crashes. Merged by the kit = the winner's
+// `_coop-archives/UI/Layout2Archive/<file>.txt` stamp still names the file (KeptCopy's rule).
+enum class CharactersCode { none, character_select, pack };  // whose Characters tab code the game holds
+// The mod whose layout archive wins without the Characters page's layouts; none when the page's own mod wins, the
+// winner was merged by the kit, no mod has the archive, or no Characters code is in the game.
+std::optional<std::string> OutsideLayouts(const std::filesystem::path& mods_root,
+                                          const std::vector<CoopMods::Row>& rows,
+                                          const std::vector<std::string>* indexed, CharactersCode code);
+// Its chat line (at the start, and again when the page is asked for).
+std::string LayoutsLine(std::string_view mod);
 // This game's chat line for it (it repeats when joining), and the line the other players get (at most kTellChars).
 std::string OutsideLine(std::string_view mod);
 std::string OutsideTellLine(std::string_view mod);
@@ -374,6 +389,9 @@ public:
         std::function<int(const std::filesystem::path& program, const std::vector<std::string>& args,
                           const std::filesystem::path& log_file)>
             probe_run;
+        // Row 288: whose Characters tab code this game holds (its exefs_patches.txt; coop_pause_tab.h
+        // SnailCodeBuiltIn / CharselCodeBuiltIn). Asked once, at Start. Empty: none.
+        std::function<CharactersCode()> characters_code;
     };
     Rando(CoopMods::Loader& loader, Hooks hooks);
     ~Rando();  // waits for a build that runs
@@ -411,6 +429,11 @@ public:
     bool HoldPack() const { return hold_pack_.load() || outside_.load() || rows_out_.load(); }
     // A mod's RSDB table wins without the pack's rows this run (OutsideActorRows): the game would refuse the puppets.
     bool RowsMissing() const { return rows_out_.load(); }
+    // Row 288: another mod's layout archive wins without the Characters page's layouts this run (OutsideLayouts): the
+    // page must not be opened (the pause tab keeps the game from it: coop_pause_tab.h CharactersHold). Set at Start.
+    bool LayoutsMissing() const { return layouts_out_.load(); }
+    // LayoutsLine into the chat again (the page was asked for). Any thread.
+    void SayLayouts();
     // The host's MOD_SETTINGS value for the hand-put seed this run plays (kHandSeedKey), once its files are hashed (the
     // first call starts that, off the caller's thread); nullopt meanwhile and when none. Cheap: called every frame.
     std::optional<std::string> HandValue();
@@ -462,6 +485,8 @@ private:
     std::string outside_mod_;         // that mod (mutex_): empty when none
     std::atomic<bool> rows_out_{false};  // a pack actor table wins without the pack's rows (RowsMissing)
     std::string rows_mod_, rows_table_;  // that mod and table (mutex_): empty when none
+    std::atomic<bool> layouts_out_{false};  // a layout archive wins without the Characters page's (LayoutsMissing)
+    std::string layouts_mod_;         // that mod (mutex_): empty when none
     bool outside_tell_ = false;       // OutsideTellLine not sent yet (mutex_)
     std::string bad_settings_;        // the "settings" value said to be no settings string (mutex_)
     std::string restart_;             // the restart line until this game restarts (mutex_): empty when none

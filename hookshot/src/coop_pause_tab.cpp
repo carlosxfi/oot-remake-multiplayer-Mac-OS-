@@ -849,6 +849,26 @@ HopStep CharactersHopNext(CharactersHop& h, bool ours, bool minus_open, int lit,
     return HopStep::kTapL;
 }
 
+std::uint64_t CharactersHoldPad(CharactersHold& h, bool minus_open, bool ours, int category, std::uint64_t buttons,
+                                std::uint64_t now_ms, bool* held) {
+    constexpr std::uint64_t left = kPadL | kPadZL;
+    const std::uint64_t now_left = buttons & left;
+    const std::uint64_t down = now_left & ~h.last;
+    h.last = now_left;
+    h.kept &= now_left;   // (let go: decided again at its next press)
+    if (held != nullptr) *held = false;
+    if (down != 0 && minus_open && !ours) {
+        const bool settled = h.passed_ms == 0 || now_ms < h.passed_ms || now_ms - h.passed_ms >= kHoldSettleMs;
+        if ((category == 1 || category == 2) && settled) {
+            h.passed_ms = now_ms;   // (Map to Threads of Time, or Threads of Time to Key Items: never the page)
+        } else {
+            h.kept |= down;
+            if (held != nullptr) *held = true;
+        }
+    }
+    return buttons & ~h.kept;
+}
+
 SnailEdge SnailEdgeFrom(bool open, std::uint64_t edge_ms, int strip_state, std::uint64_t strip_seen_ms, std::uint64_t now_ms) {
     const bool up = MenuUpFrom(strip_state, strip_seen_ms, now_ms);
     if (open) {

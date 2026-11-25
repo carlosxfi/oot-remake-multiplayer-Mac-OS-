@@ -1076,6 +1076,26 @@ inline constexpr std::uint64_t kHopMaxMs = 8000, kHopGapMs = 500;
 // screen, a load, typing) ends the hop at once with no more taps (kGiveUp); `lit`: the - menu's current category
 // (-1 not readable: waits).
 HopStep CharactersHopNext(CharactersHop& h, bool ours, bool minus_open, int lit, std::uint64_t now_ms);
+// Row 288: the Characters page held while its layouts are not in the game (coop_rando.h OutsideLayouts: opening it
+// would crash). The page is the - menu's tab left of Key Items and the game's graph steps to it on its own L (ZL as
+// well: its tab keys come in pairs, MinusPad's R / ZR); the mouse's clicks on the strip are L and R taps through this
+// same pad filter (patch 0030), so the pad is the one way in. An L or ZL pressed in the - menu on a game tab reaches
+// the game only where the step is known not to land on the page: the category read is Threads of Time (1) or Map (2),
+// and the last L let through is kHoldSettleMs old (the category is read while the pages slide, so right after a step
+// from Threads of Time it may still read 1 on Key Items; the hop's own 500 ms gap trusts the same reading). Anything
+// else (Key Items 6, not readable, not known) keeps it. Decided at the press and kept until that button is let go, so
+// a held L is never a late press. R is never kept; nor is anything outside the - menu or on our own tabs.
+inline constexpr std::uint64_t kHoldSettleMs = 600;
+struct CharactersHold {
+    std::uint64_t last = 0;        // L / ZL at the last read
+    std::uint64_t kept = 0;        // of those, the ones kept from the game until let go
+    std::uint64_t passed_ms = 0;   // when an L last went through to the game (0 none)
+};
+// The buttons the game gets. `minus_open`: the - menu is the open screen (Page::MinusStripOpen); `ours`: one of our
+// tabs shows (Page::MinusTab() >= 0); `category`: the - menu's current category (-1 not readable). `*held`: a press
+// was kept at this read (the module says why in the chat, once).
+std::uint64_t CharactersHoldPad(CharactersHold& h, bool minus_open, bool ours, int category, std::uint64_t buttons,
+                                std::uint64_t now_ms, bool* held = nullptr);
 // One update ahead of `now`, from its step since `prev`, and not past `limit` when it heads for it. The module reads
 // the fourth tab's place and fades before the strip's own update, so they are one update old: the Character tab takes
 // them one update ahead to move with the fourth, not a frame after it.

@@ -2673,6 +2673,65 @@ TEST_CASE("pause tab (cs-customize-0119, lane gc198-l5b): a stall keeps Characte
     CHECK(SnailPadFrom(2000, 1000) == SnailPadState::kDrive);   // (a clock that went back)
 }
 
+TEST_CASE("pause tab (row 288): L never reaches the game on Key Items while the Characters page's layouts are missing") {
+    using namespace CoopPauseTab;
+    const std::uint64_t other = kPadA | kPadR;
+    {
+        CharactersHold h;
+        bool held = false;
+        // Key Items (6): L and ZL kept, the rest goes through; said once per press, kept while held.
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadL | other, 1000, &held) == other);
+        CHECK(held);
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadL | other, 1016, &held) == other);
+        CHECK_FALSE(held);
+        // Still held when the category reads another tab: a held L is never a late press.
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 5000, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, 0, 5016, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadZL, 5032, &held) == 0);
+        CHECK(held);
+    }
+    {
+        CharactersHold h;
+        bool held = false;
+        // Map (2) and Threads of Time (1): L is the game's, and stays the game's while held.
+        CHECK(CharactersHoldPad(h, true, false, 2, kPadL, 1000, &held) == kPadL);
+        CHECK_FALSE(held);
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 1016, &held) == kPadL);
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadL, 3000, &held) == kPadL);   // (no new press)
+        CHECK(CharactersHoldPad(h, true, false, 6, 0, 3016, &held) == 0);
+        // Threads of Time, L through; a second L before the pages settled is kept (the category may still read 1 on
+        // Key Items); after kHoldSettleMs the reading counts again.
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 4000, &held) == kPadL);
+        CHECK(CharactersHoldPad(h, true, false, 1, 0, 4100, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 4200, &held) == 0);
+        CHECK(held);
+        CHECK(CharactersHoldPad(h, true, false, 1, 0, 4300, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 4000 + kHoldSettleMs, &held) == kPadL);
+        CHECK_FALSE(held);
+    }
+    {
+        CharactersHold h;
+        bool held = false;
+        // A category not readable or not known: kept. Our own tabs, the + menu, no menu: never touched.
+        CHECK(CharactersHoldPad(h, true, false, -1, kPadL, 1000, &held) == 0);
+        CHECK(held);
+        CHECK(CharactersHoldPad(h, true, false, -1, 0, 1016) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 9, kPadL, 1032, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 9, 0, 1048) == 0);
+        CHECK(CharactersHoldPad(h, true, true, 6, kPadL, 2000, &held) == kPadL);
+        CHECK_FALSE(held);
+        CHECK(CharactersHoldPad(h, true, true, 6, 0, 2016) == 0);
+        CHECK(CharactersHoldPad(h, false, false, 6, kPadL | kPadZL, 3000, &held) == (kPadL | kPadZL));
+        CHECK_FALSE(held);
+        // Pressed before the - menu came and still down on Key Items: no press of the game's there, left alone.
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadL | kPadZL, 3016, &held) == (kPadL | kPadZL));
+        CHECK(CharactersHoldPad(h, true, false, 6, 0, 3032) == 0);
+        // R is never kept.
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadR | kPadZR, 4000, &held) == (kPadR | kPadZR));
+        CHECK_FALSE(held);
+    }
+}
+
 TEST_CASE("pause tab (#322): the hop to the Characters tab taps L until the strip reads it, or the left edge") {
     using namespace CoopPauseTab;
     CharactersHop h;

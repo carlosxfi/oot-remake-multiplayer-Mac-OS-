@@ -22,6 +22,7 @@
 #include "coop_mod_share.h"
 #include "coop_part_fallback.h"
 #include "coop_pause.h"
+#include "coop_pause_tab.h"
 #include "coop_rando.h"
 #include "coop_shop_sale.h"
 #include "coop_story.h"
@@ -343,6 +344,13 @@ void Start() {
     rando.tell_others = [](const std::string& line) { return CoopHook::SendChat(line); };
     // (row 281: back in the host's game after it)
     rando.restart_for_host = [](bool due) { CoopPause::RejoinAfterRestart(due); };
+    // (row 288: whose Characters tab the game's code makes, for the layouts it needs)
+    rando.characters_code = [] {
+        const std::string& list = CoopPause::ExefsList();
+        return CoopPauseTab::SnailCodeBuiltIn(list)     ? CoopRando::CharactersCode::character_select
+               : CoopPauseTab::CharselCodeBuiltIn(list) ? CoopRando::CharactersCode::pack
+                                                        : CoopRando::CharactersCode::none;
+    };
     rando.entropy = [] {
         return static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) * 31 +
                ThisProcess();
