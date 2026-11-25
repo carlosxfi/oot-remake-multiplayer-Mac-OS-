@@ -233,47 +233,22 @@ const char* TabName() {
     return "Lobby";
 }
 
-bool Page(HosCoopMenuPage* out) {
-    if (out == nullptr || out->size < sizeof(HosCoopMenuPage)) {
+// The tab's page, refreshed (the session's reads: the network lock, then this tab's), and whether Back on it goes
+// somewhere (a player's page: the list). The game's main thread only (CoopPause::Tick): never the present's (row 279).
+bool MenuView(CoopPauseMenu::View* out, bool* back_taken) {
+    if (out == nullptr || back_taken == nullptr) {
         return false;
     }
     Refresh(false);
-    thread_local CoopPauseMenu::View view;
-    thread_local std::vector<HosCoopMenuRow> rows;
-    {
-        std::lock_guard lock(g_mutex);
-        view = g_tab.view();
-    }
-    rows.resize(view.rows.size());
-    for (std::size_t i = 0; i < view.rows.size(); ++i) {
-        const CoopPauseMenu::Row& r = view.rows[i];
-        HosCoopMenuRow& h = rows[i];
-        h = HosCoopMenuRow{};
-        h.name = r.name.c_str();
-        h.value = r.value.c_str();
-        h.kind = static_cast<std::uint8_t>(r.kind);
-        h.on = r.on ? 1 : 0;
-        h.left = r.left ? 1 : 0;
-        h.right = r.right ? 1 : 0;
-        h.fixed = r.fixed ? 1 : 0;
-    }
-    out->rows_n = static_cast<std::int32_t>(rows.size());
-    out->rows = rows.data();
-    out->selected = view.selected;
-    out->typing = view.typing ? 1 : 0;
-    out->help_title = view.help_title.c_str();
-    out->help = view.help.c_str();
-    out->hint = view.hint.c_str();
-    out->gold = view.gold.c_str();
-    out->change = view.change.c_str();
-    out->confirm = view.confirm.c_str();
-    out->back = view.back.c_str();
+    std::lock_guard lock(g_mutex);
+    *out = g_tab.view();
+    *back_taken = g_tab.BackTaken();
     return true;
 }
 
 bool MenuInput(int event, int arg, int arg2) {
     if (event == HOS_COOP_MENU_SHOW) {
-        const int max_players = CoopFiles::ReadOptions().max_players;   // the menu tick: files are fine here
+        const int max_players = CoopFiles::ReadOptions().max_players;   // (the game's main thread: files are fine)
         {
             std::lock_guard lock(g_mutex);
             g_max_players = max_players;

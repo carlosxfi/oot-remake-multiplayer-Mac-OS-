@@ -114,6 +114,67 @@ std::string MicMissingNote(const std::string& chosen, const std::vector<std::str
            "in Settings).";
 }
 
+MicStatus MicStatusFrom(const MicFacts& f) {
+    if (!f.backend) return MicStatus::no_voice;
+    if (f.chosen_missing) return MicStatus::not_connected;
+    if (f.default_mic && f.game_mic == 0) return MicStatus::game_off;
+    if (f.start_failed) return MicStatus::not_started;
+    if (f.silent && !f.heard) return MicStatus::silent;
+    if (f.heard) return MicStatus::ok;
+    return MicStatus::unknown;
+}
+
+std::string MicStatusWords(MicStatus s) {
+    switch (s) {
+    case MicStatus::no_voice: return "(no microphone here)";
+    case MicStatus::not_connected: return "(not connected)";
+    case MicStatus::game_off: return "(Off in Longshot)";
+    case MicStatus::not_started: return "(did not start)";
+    case MicStatus::silent: return "(only silence)";
+    default: return {};
+    }
+}
+
+std::string MicStatusNote(MicStatus s) {
+    switch (s) {
+    case MicStatus::no_voice:
+        return "Voice chat: this game hands co-op no microphone (an older Longshot): the others hear nothing.";
+    case MicStatus::not_connected:
+        return "Voice chat: the chosen microphone is not connected: the others hear nothing until it is back.";
+    case MicStatus::game_off:
+        return "Voice chat: the others hear nothing: Longshot's Insert menu has the Microphone Off or its gain at 0 "
+               "(Audio: Microphone). Turn it on there, or choose a microphone here.";
+    case MicStatus::not_started:
+        return "Voice chat: the microphone did not start: the others hear nothing.";
+    case MicStatus::silent:
+        return "Voice chat: your microphone gives only silence: check Windows' microphone privacy setting (desktop "
+               "apps), that the device is not muted, Longshot's Insert menu (Audio: Microphone and its gain), or "
+               "choose a microphone here.";
+    default: return {};
+    }
+}
+
+void SilenceWatch::open(std::uint64_t now_us) {
+    quiet_from_us = now_us == 0 ? 1 : now_us;
+    heard = false;   // (each opening asks again: a microphone muted since shows; `silent` stays until a level comes)
+}
+
+void SilenceWatch::close() { quiet_from_us = 0; }
+
+void SilenceWatch::feed(const std::int16_t* pcm, int n, std::uint64_t now_us) {
+    if (quiet_from_us == 0 || heard) return;   // (once heard in an opening: a noise-cancelling headset's own zeros
+                                               // between words are not "only silence")
+    for (int i = 0; i < n; ++i) {
+        if (pcm[i] > kQuiet || pcm[i] < -kQuiet) {
+            heard = true, silent = false;
+            return;
+        }
+    }
+    if (now_us >= quiet_from_us && now_us - quiet_from_us >= kSilentAfterUs) {
+        silent = true, heard = false;
+    }
+}
+
 const char* ModeName(coop::voice::Mode mode) {
     switch (mode) {
     case coop::voice::Mode::push_to_talk:
@@ -291,6 +352,11 @@ std::string g_mic_notice;   // the chosen microphone not connected at the start 
 bool g_mic_checked = false; // (whether it is there: looked once, when voice is first on with one chosen)
 std::atomic<std::uint64_t> g_mic_said{0};
 std::atomic<bool> g_mic_opened{false};
+SilenceWatch g_watch;            // (row 229) the open microphone's level, under g_mutex
+bool g_start_failed = false;     // mic_start said no (since the last start that worked)
+bool g_chosen_missing = false;   // the chosen microphone not listed when last looked
+std::atomic<int> g_game_mic{-1}; // SetGameMic
+std::uint32_t g_status_said = 0; // the statuses already noted in the chat (a bit each)
 
 std::uint64_t SteadyUs() {
     return static_cast<std::uint64_t>(
@@ -417,6 +483,8 @@ void SetLocked(const Settings& settings) {
     if (mic_changed && g_backend.mic_choose) {
         g_backend.mic_choose(g_settings.mic);
         g_mic_checked = true;   // (chosen in the menu, which shows whether it is there)
+        g_chosen_missing = false;   // (the row says "(not connected)" itself)
+        g_start_failed = false, g_watch.silent = false;   // (another microphone: asked again at its opening)
         LOG_INFO(Core, "coop: voice: microphone now {}",
                  g_settings.mic.empty() ? std::string("the game's (the Insert menu's)") : g_settings.mic);
     }
@@ -466,6 +534,53 @@ void SetHostMuted(bool muted) { g_host_muted.store(muted); }
 std::string TakeNotice() {
     std::lock_guard lock(g_mutex);
     return std::exchange(!g_notice.empty() ? g_notice : g_mic_notice, {});
+}
+
+namespace {
+
+MicStatus StatusLocked() {   // under g_mutex
+    MicFacts f;
+    f.backend = g_engine.load() != nullptr;
+    f.chosen_missing = g_chosen_missing && !g_settings.mic.empty();
+    f.game_mic = g_game_mic.load();
+    f.default_mic = g_settings.mic.empty();
+    f.start_failed = g_start_failed;
+    f.silent = g_watch.silent;
+    f.heard = g_watch.heard;
+    return MicStatusFrom(f);
+}
+
+// Each status that reaches nobody, once a run in the chat and the log, while voice is on (the game thread).
+void NoteStatus() {
+    std::lock_guard lock(g_mutex);
+    if (g_settings.mode == coop::voice::Mode::off || g_settings.test == Test::tone) {
+        return;
+    }
+    const MicStatus s = StatusLocked();
+    const std::uint32_t bit = 1u << static_cast<unsigned>(s);
+    std::string note = MicStatusNote(s);
+    if (note.empty() || (g_status_said & bit) != 0 || !g_mic_notice.empty()) {
+        return;
+    }
+    g_status_said |= bit;
+    LOG_WARNING(Core, "coop: voice: microphone {}: the others hear nothing", MicStatusWords(s));
+    g_mic_notice = std::move(note);
+}
+
+} // namespace
+
+void SetGameMic(int state) {
+    const int was = g_game_mic.exchange(state);
+    if (was != state) {
+        LOG_INFO(Core, "coop: voice: Longshot's Insert-menu microphone {}",
+                 state < 0 ? "not known" : state == 0 ? "Off (or its gain 0)" : "on");
+    }
+}
+
+MicStatus Status() {
+    std::lock_guard lock(g_mutex);
+    ReadSettingsOnce();
+    return StatusLocked();
 }
 
 std::optional<std::vector<std::string>> Microphones() {
@@ -560,6 +675,10 @@ void Frame(const std::optional<std::array<float, 3>>& our_feet,
         const bool want = MicWanted(g_settings, can_send, key, e->talking(), g_host_muted.load());
         if (want && !g_mic_on) {
             g_mic_on = g_backend.mic_start();
+            g_start_failed = !g_mic_on;
+            if (g_mic_on) {
+                g_watch.open(Now());
+            }
             if (!g_mic_on && g_mic_said.exchange(1) == 0) {
                 LOG_WARNING(Core, "coop: voice: the microphone did not start; the others hear nothing");
             } else if (g_mic_on && g_settings.test != Test::tone && g_mic_opened.exchange(true) == false) {
@@ -573,13 +692,18 @@ void Frame(const std::optional<std::array<float, 3>>& our_feet,
                 g_backend.mic_stop();
             }
             g_mic_on = false;
+            g_watch.close();
         }
         if (g_mic_on) {
             std::array<std::int16_t, 4800> buffer{};
+            g_watch.feed(nullptr, 0, Now());   // (no samples at all for its time: silence too)
             for (int round = 0; round < 4; ++round) {  // at most 400 ms a frame
                 const int n = g_backend.mic_read(buffer.data(), static_cast<int>(buffer.size()));
                 if (n <= 0) {
                     break;
+                }
+                if (g_settings.test != Test::tone) {
+                    g_watch.feed(buffer.data(), n, Now());
                 }
                 e->capture(std::span<const std::int16_t>(buffer.data(), static_cast<std::size_t>(n)), key,
                            out);
@@ -594,8 +718,11 @@ void Frame(const std::optional<std::array<float, 3>>& our_feet,
             LOG_WARNING(Core, "coop: voice: microphone {} is not connected; silence until it is back", now_set.mic);
             std::lock_guard lock(g_mutex);
             g_mic_notice = std::move(note);
+            g_chosen_missing = true;
+            g_status_said |= 1u << static_cast<unsigned>(MicStatus::not_connected);   // (that note said it)
         }
     }
+    NoteStatus();
     if (!out.empty() && session != nullptr) {
         session->with_client([&](coop::net::Client& c) {
             for (const auto& v : out) {

@@ -92,6 +92,7 @@ TEST_CASE("pause tab: the first page is Host, Join, Local co-op, Settings and Co
     CHECK(v.help_title == "Multiplayer");
     CHECK(v.confirm == "Open");
     CHECK(v.back == "Close");
+    CHECK_FALSE(m.BackTaken());   // (Hookshot's menu is answered from it at once: coop_menu_handoff.h)
     CHECK_FALSE(m.Press(Input::kBack));   // nothing to go back to: Hookshot closes the menu
     CHECK_FALSE(m.TakeRequest().has_value());
 }
@@ -238,6 +239,7 @@ TEST_CASE("pause tab: Join: a room name or an address, its port and the password
         SelectRow(m, row);
         m.Press(Input::kDecide);
         REQUIRE(m.typing());
+        CHECK(m.BackTaken());   // (Back ends the typing)
         for (const char c : text) m.Char(static_cast<unsigned char>(c));
         m.Press(Input::kDecide);
     };
@@ -2466,4 +2468,48 @@ TEST_CASE("pause tab: Settings: Gold Skulltulas says race mode shares none, chos
     SelectRow(m, "Gold Skulltulas");
     CHECK(m.view().help.find("This game: Not shared (race mode).") != std::string::npos);
     CHECK(m.view().help.size() <= 160);
+}
+
+TEST_CASE("pause tab: BackTaken says what a Back would do, on every page (Hookshot's menu is answered from it, row 279)") {
+    for (const bool title : {false, true}) {
+        for (const Page page : {Page::kMain, Page::kHost, Page::kJoin, Page::kLocal, Page::kSettings, Page::kCommands,
+                                Page::kCustomize, Page::kFind}) {
+            CAPTURE(static_cast<int>(page));
+            CAPTURE(title);
+            Menu m;
+            m.SetTitle(title);
+            m.Show(CoopTitleMenu::Options{});
+            m.Open(page);
+            while (m.TakeRequest()) {
+            }
+            const bool predicted = m.BackTaken();
+            CHECK(m.Press(Input::kBack) == predicted);
+        }
+    }
+}
+
+TEST_CASE("pause tab: Settings: row 229, the Voice rows say when the microphone reaches nobody") {
+    using CoopPauseMenu::MicWords;
+    CHECK(MicWords("", {"A"}, "") == "Default");
+    CHECK(MicWords("", {"A"}, "(Off in Longshot)") == "Default (Off in Longshot)");
+    CHECK(MicWords("A", {}, "(only silence)") == "A (not connected)");   // the name says it already
+    CHECK(MicWords("A", {"A"}, "(not connected)") == "A");
+    Menu m;
+    CoopTitleMenu::Options o;
+    o.voice = true;
+    m.Show(o);
+    m.Open(Page::kSettings);
+    m.SetMicrophones(std::vector<std::string>{"Webcam"});
+    SelectRow(m, "Proximity voice chat");
+    const std::string plain = m.view().help;
+    m.SetVoiceStatus("(Off in Longshot)", "Voice chat: the others hear nothing.");
+    CHECK(Selected(m) == "Proximity voice chat");   // the cursor stays
+    CHECK(m.view().help.find("Voice chat: the others hear nothing.") != std::string::npos);
+    CHECK(m.view().help.find(plain) == 0);   // after the row's own help
+    auto names = Names(m);
+    const auto at = std::find(names.begin(), names.end(), "Microphone");
+    REQUIRE(at != names.end());
+    CHECK(m.view().rows[static_cast<std::size_t>(at - names.begin())].value == "Default (Off in Longshot)");
+    m.SetVoiceStatus("", "");
+    CHECK(m.view().help == plain);
 }

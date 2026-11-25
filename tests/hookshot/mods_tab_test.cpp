@@ -92,6 +92,7 @@ TEST_CASE("mods tab: the list shows each mod with its switch, and Left / Right s
     CHECK(v.rows[0].name.rfind("Restart needed: ", 0) == 0);
     tab.Press(Input::kRight);
     CHECK(tab.view().rows[RowNamed(tab.view(), "Big HUD 2")].on);
+    CHECK_FALSE(tab.BackTaken());  // (Hookshot's menu is answered from it: coop_menu_handoff.h)
     CHECK_FALSE(tab.Press(Input::kBack));  // the list: the menu closes
 }
 
@@ -156,8 +157,10 @@ TEST_CASE("mods tab: a mod's page moves it and changes each kind of setting") {
     tab.Press(Input::kDecide);
     CHECK(m.Value("glow") == "1");
 
+    CHECK(tab.BackTaken());
     CHECK(tab.Press(Input::kBack));
     CHECK_FALSE(tab.on_mod_page());
+    CHECK_FALSE(tab.BackTaken());
     // back on Big HUD's row, the first under the restart note's rows (the note breaks at the list's width: 1 or more)
     v = tab.view();
     int notes = 0;
@@ -307,8 +310,10 @@ TEST_CASE("mods tab: the randomizer's row is its name and a Settings button that
     const int sw = RowNamed(v, "Randomizer");
     REQUIRE(sw > 0);
     CHECK(v.rows[sw].kind == RowKind::kToggle);
+    CHECK(tab.BackTaken());
     CHECK(tab.Press(Input::kBack));
     CHECK_FALSE(tab.on_mod_page());
+    CHECK_FALSE(tab.BackTaken());
     tab.Select(static_cast<std::size_t>(row));
     CHECK(tab.Press(Input::kRight));  // Left / Right on the button change nothing
     CHECK_FALSE(tab.on_mod_page());

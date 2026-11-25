@@ -76,6 +76,7 @@ TEST_CASE("lobby tab: out of a game it says where to host or join, and lists Pub
     CHECK(v.rows[4].name == "Looking for public games...");   // (nothing heard yet)
     CHECK(v.rows[5].name == "Refresh list");
     CHECK(v.selected == 5);
+    CHECK_FALSE(t.BackTaken());  // (Hookshot's menu is answered from it: coop_menu_handoff.h)
     CHECK_FALSE(t.Press(Input::kBack));  // the menu closes
 }
 
@@ -286,8 +287,10 @@ TEST_CASE("lobby tab: our own page has no actions") {
     CHECK_FALSE(Has(v, "Mute their voice (only you)"));
     CHECK_FALSE(Has(v, "Teleport to them"));
     CHECK(v.selected == -1);
+    CHECK(t.BackTaken());
     CHECK(t.Press(Input::kBack));
     CHECK(t.shown_player() == 0);
+    CHECK_FALSE(t.BackTaken());
     CHECK(t.view().rows[t.view().selected].name == "Saria (you)");  // back on that row
 }
 

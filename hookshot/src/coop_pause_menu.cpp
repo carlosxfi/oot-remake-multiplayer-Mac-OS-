@@ -333,6 +333,13 @@ std::string MicWords(const std::string& chosen, const std::vector<std::string>& 
     return there ? words : words + " (not connected)";
 }
 
+std::string MicWords(const std::string& chosen, const std::vector<std::string>& listed, const std::string& status) {
+    std::string words = MicWords(chosen, listed);
+    const std::string gone = " (not connected)";
+    const bool says_gone = words.size() >= gone.size() && words.compare(words.size() - gone.size(), gone.size(), gone) == 0;
+    return status.empty() || says_gone || status == "(not connected)" ? words : words + " " + status;
+}
+
 const char* PageWord(Page page) {
     switch (page) {
     case Page::kMain: return "main";
@@ -792,11 +799,18 @@ std::vector<Menu::Line> Menu::Lines() const {
                        "Only on a network you trust: a tunnel, a VPN or a port forward can bring others in that way."});
         HostRuleLines(out, guest);
         DifficultyLines(out);   // (the host's rows: the host changes them, everyone else sees them)
-        out.push_back({Toggle("Proximity voice chat", options_.voice), Act::kVoice,
-                       "Talk with players near your Link through your microphone; they sound quieter the farther away "
-                       "they are. Off: you neither send nor hear voices."});
+        {
+            const char* voice_help = "Talk with players near your Link through your microphone; they sound quieter the "
+                                     "farther away they are. Off: you neither send nor hear voices.";
+            if (options_.voice && !voice_note_.empty()) {   // (row 229: a microphone that reaches nobody says so)
+                out.push_back({Toggle("Proximity voice chat", options_.voice), Act::kVoice,
+                               CoopI18n::Tr(voice_help) + " " + CoopI18n::Tr(voice_note_), true});
+            } else {
+                out.push_back({Toggle("Proximity voice chat", options_.voice), Act::kVoice, voice_help});
+            }
+        }
         if (options_.voice && microphones_) {
-            out.push_back({Choice("Microphone", MicWords(options_.voice_mic, *microphones_)), Act::kMic,
+            out.push_back({Choice("Microphone", MicWords(options_.voice_mic, *microphones_, voice_words_)), Act::kMic,
                            "The microphone your voice is recorded from. Default: the one Longshot's Insert menu "
                            "chooses (Gameplay: Microphone), the Ocarina's too. Left and Right go through the "
                            "microphones plugged in now. One unplugged: the others hear nothing until it is back."});
@@ -1191,6 +1205,10 @@ void Menu::SetRejoin(std::string host, std::string code) {
     const auto same = std::find_if(after.begin(), after.end(), [act](const Line& l) { return l.act == act; });
     selected_ = same != after.end() ? static_cast<std::size_t>(same - after.begin()) : 0;
     Clamp();
+}
+
+void Menu::SetVoiceStatus(std::string words, std::string note) {
+    voice_words_ = std::move(words), voice_note_ = std::move(note);   // (the same rows: the cursor stays)
 }
 
 void Menu::SetMicrophones(std::optional<std::vector<std::string>> listed) {
