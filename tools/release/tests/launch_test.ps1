@@ -1514,7 +1514,23 @@ exit 0
             Check (-not (Find-KitHookshotGameToCopy $cp $want @($hk))) 'dlss: a kit without DLSS never copies a game with NVIDIA''s files'
             Check ((Find-KitHookshotGameToCopy $cp $want @($hk) -Dlss $true) -eq (Join-Path ([System.IO.Path]::GetFullPath($hk)) 'hookshot\game')) 'dlss: a kit with DLSS on copies a game with it'
         } finally { Remove-Item -LiteralPath $hkNgx -Recurse -Force -ErrorAction SilentlyContinue }
-        # the license link follows the pinned tools' scripts\ngx_sdk.py; without them, NVIDIA's repository
+        # AMD FSR 4 (#326), the same way: make_game.py --fsr's mark .longshot_fsr says the game has it
+        Check (-not (Find-KitHookshotGameToCopy $cp $want @($hk) -Fsr4 $true)) 'fsr4: a kit with FSR 4 on does not copy a game without it'
+        $hkFsr = Join-Path $hk 'hookshot\game\.longshot_fsr'
+        Write-File $hkFsr ''
+        try {
+            Check ((Test-KitHookshotFsr4 (Join-Path $hk 'hookshot\game')) -and -not (Test-KitHookshotFsr4 $cg)) 'fsr4: a game with .longshot_fsr has FSR 4, one without has not'
+            Check (-not (Find-KitHookshotGameToCopy $cp $want @($hk))) 'fsr4: a kit without FSR 4 never copies a game built with it'
+            Check ((Find-KitHookshotGameToCopy $cp $want @($hk) -Fsr4 $true) -eq (Join-Path ([System.IO.Path]::GetFullPath($hk)) 'hookshot\game')) 'fsr4: a kit with FSR 4 on copies a game with it'
+            Check (-not (Find-KitHookshotGameToCopy $cp $want @($hk) -Dlss $true -Fsr4 $true)) 'fsr4: DLSS and FSR 4 both chosen: a game with FSR 4 only is not copied'
+        } finally { Remove-Item -LiteralPath $hkFsr -Force -ErrorAction SilentlyContinue }
+        # the license links: the pinned tools' scripts\fetch.py (v3.2.0 and later: DLSS_COMMIT, FSR_COMMIT)
+        $fetchTools = Join-Path $cp 'fetch-tools'
+        Write-File (Join-Path $fetchTools 'scripts\fetch.py') "DLSS_COMMIT = `"$('cd' * 20)`"   # (v310)`nFSR_COMMIT = `"$('ef' * 20)`"    # (tag v2.4.0)`n"
+        Check ((Get-KitNgxLicenseUrl $fetchTools) -eq "https://github.com/NVIDIA/DLSS/blob/$('cd' * 20)/LICENSE.txt") 'dlss: the license link is the pinned fetch.py''s DLSS_COMMIT (Longshot v3.2.0 has no ngx_sdk.py)'
+        Check ((Get-KitFfxLicenseUrl $fetchTools) -eq "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/$('ef' * 20)/Kits/FidelityFX/docs/license.md") 'fsr4: the license link is the pinned fetch.py''s FSR_COMMIT'
+        Check ((Get-KitFfxLicenseUrl (Join-Path $cp 'no-tools')) -like '*/FidelityFX-SDK/blob/main/Kits/FidelityFX/docs/license.md') 'fsr4: no tools -> the license in AMD''s repository'
+        # the license link follows the pinned tools' scripts\ngx_sdk.py (before v3.2.0); without them, NVIDIA's repository
         $ngxTools = Join-Path $cp 'ngx-tools'
         Write-File (Join-Path $ngxTools 'scripts\ngx_sdk.py') "COMMIT = `"$('ab' * 20)`"   # (v1)`n"
         Check ((Get-KitNgxLicenseUrl $ngxTools) -eq "https://github.com/NVIDIA/DLSS/blob/$('ab' * 20)/LICENSE.txt") 'dlss: the license link is the pinned ngx_sdk.py''s commit'
@@ -2008,9 +2024,17 @@ try {
     Write-File "$cache\0123456789abcdef0123\game\ngx\nvngx_dlss.dll" 'NVIDIA'
     Check ((Find-KitHookshotCachedGame $stampOld $cache -Dlss $true) -eq "$cache\0123456789abcdef0123\game" -and
         -not (Find-KitHookshotCachedGame $stampOld $cache)) 'dlss: a cached game with DLSS goes only to a kit with DLSS on'
+    # AMD FSR 4 (#326): the same for a cached game built with --fsr (its .longshot_fsr)
+    Check (-not (Find-KitHookshotCachedGame $stampOld $cache -Dlss $true -Fsr4 $true)) 'fsr4: a kit with FSR 4 on does not take a cached game without it'
+    Write-File "$cache\0123456789abcdef0123\game\.longshot_fsr" ''
+    Check ((Find-KitHookshotCachedGame $stampOld $cache -Dlss $true -Fsr4 $true) -eq "$cache\0123456789abcdef0123\game" -and
+        -not (Find-KitHookshotCachedGame $stampOld $cache -Dlss $true)) 'fsr4: a cached game with FSR 4 goes only to a kit with FSR 4 on'
+    Remove-Item -LiteralPath "$cache\0123456789abcdef0123\game\.longshot_fsr" -Force
     Remove-Item -LiteralPath "$cache\0123456789abcdef0123\game\ngx" -Recurse -Force
     # (this kit's game had DLSS once; the kit has no dlss.txt: the copy without DLSS takes NVIDIA's runtime away too)
     Write-File "$g5\ngx\nvngx_dlss.dll" 'NVIDIA'
+    # (and FSR 4 once, no fsr4.txt now: its mark goes with the copy, as a build without --fsr removes it)
+    Write-File "$g5\.longshot_fsr" ''
     $env:LOCALAPPDATA = "$kc\appdata"; $env:OOT_COOP_NO_SHORTCUT = '1'; $env:OOT_COOP_NO_LONGSHOT_ASK = '1'; $env:OOT_COOP_HS_CACHE = $cache
     $ErrorActionPreference = 'Continue'
     try { $out = (& powershell -NoProfile -ExecutionPolicy Bypass -File "$k5\scripts\hookshot-build.ps1" 2>&1) -join '|'; $code = $LASTEXITCODE }
@@ -2018,6 +2042,7 @@ try {
     Check ($code -eq 0 -and $out -match 'from the game cache on this PC' -and $out -notmatch 'Building the game' -and (Read-File "$g5\longshot.exe") -eq 'OLDER BUILD') "revert game: the cached build is copied in, not built [$code $out]"
     Check ((Read-File "$g5\coop-built-from.txt") -eq $stampOld) 'revert game: the game''s stamp is this version''s'
     Check (-not (Test-Path -LiteralPath "$g5\ngx")) 'dlss: a copy without DLSS into a kit without it leaves no NVIDIA runtime behind'
+    Check (-not (Test-Path -LiteralPath "$g5\.longshot_fsr")) 'fsr4: a copy without FSR 4 into a kit without it leaves no FSR 4 mark behind'
     Check ((Read-File "$g5\save\slot_00\progress.sav") -eq 'MY SAVE' -and (Read-File "$g5\longshot_options.ini") -eq 'my graphics' -and
         (Read-File "$g5\romfs\Actor\x.bin") -eq 'my game files' -and (Read-File "$g5\coop.ini") -match 'Saria') 'revert game: saves, settings, coop.ini and the game files stay the player''s'
 } finally {
