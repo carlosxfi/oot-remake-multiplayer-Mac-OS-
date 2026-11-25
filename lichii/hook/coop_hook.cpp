@@ -1950,7 +1950,13 @@ public:
         CoopRide::Frame(system, view.game ? base_ : 0, report.connected ? session_.get() : nullptr,
                         view.scene, event, view.position,
                         reading ? reading->rotation : std::nullopt,
-                        reading ? reading->animation : std::nullopt, report.server_now_us);
+                        reading ? reading->animation : std::nullopt, report.server_now_us,
+                        // epona-sync: Get_Epona (Enum 0x92431c55) at Complete (0x4c0a63f4): Epona is this
+                        // game's own, so she is sent while nobody rides her too (coop_ride.h).
+                        [&memory]() {
+                            return memory && coop::host::GameFlags(*memory).get_enum(0x92431c55u) ==
+                                                 std::optional<std::uint32_t>{0x4c0a63f4u};
+                        });
         // Race mode (coop/protocol/race.hpp): the world's parts run as alone, so this game owns all its enemies,
         // bosses, drops, spawns and its clock; the players still see each other, chat and talk.
         coop::host::Session* const world = report.connected && !report.race ? session_.get() : nullptr;

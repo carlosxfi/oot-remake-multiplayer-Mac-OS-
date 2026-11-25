@@ -8915,3 +8915,64 @@ TEST_CASE("world: entries counts every scene's breaks, places, hits and cuts (ro
   world.forget("spot04");
   CHECK(world.entries() == 0);
 }
+
+namespace {
+ObjectState keyed_state(float x, std::optional<KeyedValues> plugs) {
+  ObjectState s = state_at(x, 12);
+  s.plugs = std::move(plugs);
+  return s;
+}
+}  // namespace
+
+TEST_CASE("keyed values (components 25-28, protocol 18) are kept merged, relayed as sent, handed over") {
+  ObjectHarness h;
+  h.receive(1, present_in("Graveyard", {placed(7)}), kChannelOwnership);
+  h.receive(2, present_in("Graveyard", {placed(7)}), kChannelOwnership);
+  h.clear();
+
+  h.receive(1, ObjectSample{0, placed(7), 0,
+                            keyed_state(1, KeyedValues{true, {{7, 1, std::int32_t{1}}, {7, 2, std::int32_t{2}}}})},
+            kChannelObjectSamples);
+  // A delta: relayed as it came (copies apply the change), kept merged.
+  const ObjectSample delta{0, placed(7), 0,
+                           keyed_state(2, KeyedValues{false, {{7, 2, KeyedRemove{}}, {7, 3, 4.5f}}})};
+  h.clear();
+  h.receive(1, delta, kChannelObjectSamples);
+  REQUIRE(h.sent.size() == 1);
+  ObjectSample relayed = delta;
+  relayed.player_number = 1;
+  CHECK(std::get<ObjectSample>(h.sent[0].message) == relayed);
+  // A sample with no keyed values keeps them.
+  h.receive(1, ObjectSample{0, placed(7), 0, keyed_state(3, std::nullopt)}, kChannelObjectSamples);
+  h.clear();
+
+  h.session.disconnected(1, h.now);
+  h.collect();
+  CHECK(h.session.object_owner(placed(7)) == owned(2, 1));
+  const auto handed = messages_to<HandoverState>(h, 2);
+  REQUIRE(handed.size() == 1);
+  CHECK(handed[0].state == keyed_state(3, KeyedValues{true, {{7, 1, std::int32_t{1}}, {7, 3, 4.5f}}}));
+  CHECK(h.session.stats().keyed_dropped == 0);
+}
+
+TEST_CASE("a late player gets a placed object's merged keyed values with its spawn (protocol 18)") {
+  ObjectHarness h;
+  h.receive(1, present_in("Graveyard", {placed(7)}), kChannelOwnership);
+  h.receive(1, ObjectSpawn{0, placed(7), "Room", 0,
+                           keyed_state(0, KeyedValues{true, {{7, 1, std::int32_t{1}}}})},
+            kChannelOwnership);
+  // The owner's spawn again (its own state kept): only its keyed values merge in.
+  h.receive(1, ObjectSpawn{0, placed(7), "Room", 0,
+                           keyed_state(5, KeyedValues{false, {{7, 2, std::uint64_t{99}}}})},
+            kChannelOwnership);
+  h.receive(1, ObjectSample{0, placed(7), 0, keyed_state(1, KeyedValues{false, {{7, 1, std::int32_t{0}}}})},
+            kChannelObjectSamples);
+  h.clear();
+
+  h.receive(2, present_in("Graveyard", {placed(7)}), kChannelOwnership);
+  const auto spawns = messages_to<ObjectSpawn>(h, 2);
+  REQUIRE(spawns.size() == 1);
+  CHECK(spawns[0].state.plugs ==
+        KeyedValues{true, {{7, 1, std::int32_t{0}}, {7, 2, std::uint64_t{99}}}});
+  CHECK(spawns[0].state.position == Vec3{1, 0, 0});
+}

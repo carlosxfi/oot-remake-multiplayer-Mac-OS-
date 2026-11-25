@@ -1812,7 +1812,17 @@ void Session::on_object_message(ConnectionId id, Connection& c, std::uint8_t cha
     Object& o = it->second;
     o.actor = spawn->actor;
     o.spawn_flags = spawn->flags;
-    if (!o.last_state) o.last_state = spawn->state;
+    // Protocol 18: its keyed values (25-28) are merged into what is kept (a room's, sync plan S4) either way.
+    ObjectState next = spawn->state;
+    stats_.keyed_dropped += KeepKeyed(o.last_state ? &*o.last_state : nullptr, next);
+    if (!o.last_state) {
+      o.last_state = std::move(next);
+    } else {
+      o.last_state->brain = std::move(next.brain);
+      o.last_state->plugs = std::move(next.plugs);
+      o.last_state->clocks = std::move(next.clocks);
+      o.last_state->events = std::move(next.events);
+    }
   } else if (spawn) {
     oid = spawn->id;
     if (spawn->id.maker != c.number || objects_.count(oid)) {
@@ -1833,6 +1843,7 @@ void Session::on_object_message(ConnectionId id, Connection& c, std::uint8_t cha
     o.actor = spawn->actor;
     o.spawn_flags = spawn->flags;
     o.last_state = spawn->state;
+    stats_.keyed_dropped += KeepKeyed(nullptr, *o.last_state);  // protocol 18: 25-28 kept as full lists
   } else if (const auto* sample = std::get_if<ObjectSample>(&message)) {
     oid = sample->id;
     auto it = objects_.find(oid);
@@ -1854,7 +1865,11 @@ void Session::on_object_message(ConnectionId id, Connection& c, std::uint8_t cha
         (o.hit_at == 0 || now_us - o.hit_at > config_.hit_window_us)) {
       o.owner_hit_at = stamp(now_us);
     }
-    o.last_state = sample->state;
+    // Protocol 18: keyed values (25-28) are kept merged (a delta changes the keys it names, a list the sample
+    // lacks stays), so the last state holds all of them; the sample is relayed as it came.
+    ObjectState next = sample->state;
+    stats_.keyed_dropped += KeepKeyed(o.last_state ? &*o.last_state : nullptr, next);
+    o.last_state = std::move(next);
   } else {
     auto& remove = std::get<ObjectRemove>(message);
     oid = remove.id;
@@ -2747,6 +2762,7 @@ void Session::finish_handover(const ObjectId& oid, Object& o, const ObjectState*
       if (!s.life) s.life = old.life;
       if (!s.fuse) s.fuse = old.fuse;  // a bomb's (BOMB_TAKE); enemies have none
     }
+    stats_.keyed_dropped += KeepKeyed(o.last_state ? &*o.last_state : nullptr, s);  // protocol 18: 25-28
     // The answer's life is the owner's with every DAMAGE it had when it read
     // the ask (its pending replays included). What was passed on after the
     // ask it read later, and as a copy: taken off here, or the new owner

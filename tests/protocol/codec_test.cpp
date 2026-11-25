@@ -2604,8 +2604,36 @@ TEST_CASE("player ride: type 385, samples channel, horse and offset, both ways")
   Bytes out;
   PlayerRide bad = ride;
   bad.player_number = 0;
-  bad.flags = 0x02;
+  bad.flags = 0x04;
   CHECK(encode(Message{bad}, out) == Error::bad_value);  // unknown flag bit
+  bad.flags = kRideRiding | kRideFree;
+  CHECK(encode(Message{bad}, out) == Error::bad_value);  // ridden or free, never both
+
+  // Protocol 18 (epona-sync): the player's own Epona while nobody rides her, at a place in the world.
+  CHECK(kProtocolVersion >= 17);
+  const PlayerRide free_horse{4, kRideFree, "Animal_Epona_Adult", {}, {0.0f, 0.7f, 0.0f, 0.7f},
+                              Animation{"Wait", 3.0f, 1.0f}, {-100.5f, 150.6f, 264.5f}};
+  const Bytes fb = must_encode(Message{free_horse});
+  // type, length; u8 player, u8 flags, name (2 + 18), 7 floats, u8 1, anim (2 + 4 + 8), place 3 floats
+  CHECK(fb.size() == 4 + 2 + 20 + 28 + 1 + 14 + 12);
+  REQUIRE(decode(fb, back) == Error::none);
+  CHECK(back == Message{free_horse});
+  CHECK(sender_of(back) == std::optional<std::uint8_t>{4});
+  bad = free_horse;
+  bad.offset[0] = 1.0f;
+  CHECK(encode(Message{bad}, out) == Error::bad_value);  // a free horse has no rider to be offset from
+  bad = free_horse;
+  bad.place[2] = kMaxRidePlace + 1.0f;
+  CHECK(encode(Message{bad}, out) == Error::bad_value);  // outside any world
+  bad = free_horse;
+  bad.horse.clear();
+  CHECK(encode(Message{bad}, out) == Error::bad_value);
+  bad = ride;
+  bad.place[0] = 5.0f;
+  CHECK(encode(Message{bad}, out) == Error::bad_value);  // a place only with kRideFree
+  Bytes short_free = fb;
+  short_free.pop_back();
+  CHECK(decode(short_free, back) != Error::none);
   bad = ride;
   bad.player_number = 0;
   bad.horse.clear();
@@ -2622,8 +2650,12 @@ TEST_CASE("player ride: type 385, samples channel, horse and offset, both ways")
   short_one.pop_back();
   CHECK(decode(short_one, back) != Error::none);
   Bytes flag_two = b;
-  flag_two[4 + 1] = 0x03;  // flags byte
+  flag_two[4 + 1] = 0x03;  // flags byte: both bits, refused as a bad value before any place is looked for
   CHECK(decode(flag_two, back) == Error::bad_value);
+  flag_two[4 + 1] = 0x04;  // a bit nobody knows
+  CHECK(decode(flag_two, back) == Error::bad_value);
+  flag_two[4 + 1] = kRideFree;  // free, but the place was never sent
+  CHECK(decode(flag_two, back) != Error::none);
 }
 
 TEST_CASE("platform clock: type 400, object samples channel, checked keys and floats (platforms-b)") {
@@ -3165,4 +3197,112 @@ TEST_CASE("pvp on real bodies: types 540 to 542, round-trip and refuse bad value
   Message answered = result;
   CHECK_FALSE(set_sender(answered, 1));
   CHECK(set_sender(answered, 2));
+}
+
+TEST_CASE("object components 25-28 carry keyed values (protocol 18, sync plan S1)") {
+  CHECK(kProtocolVersion == 18);  // one bump for the whole sync plan: 25-28 kept by the server
+  CHECK(static_cast<int>(ObjectComponent::brain) == 25);
+  CHECK(static_cast<int>(ObjectComponent::plugs) == 26);
+  CHECK(static_cast<int>(ObjectComponent::clocks) == 27);
+  CHECK(static_cast<int>(ObjectComponent::events) == 28);
+  ObjectSample s{0, test::kPlacedId, 3, {}};
+  s.state.time = {100, 1};
+  s.state.plugs = KeyedValues{true, {{7, 1, std::int32_t{1}}, {7, 2, std::int32_t{-5}}, {9, 1, 2.5f}}};
+  s.state.clocks = KeyedValues{false, {{3, 0xc0, Vec3{1, 2, 3}}, {3, 0xc4, KeyedRemove{}}}};
+  s.state.events = KeyedValues{true, {{0x1234567890abcdefull, 0xffffffffu, std::uint64_t{123456789012}}}};
+  s.state.brain = KeyedValues{false, {{0, 0x9e3779b9u, std::int32_t{3}}, {0, 0xa1b2c3d4u, std::int32_t{1}}}};
+  const Bytes bytes = must_encode(s);
+  Message back;
+  REQUIRE(decode(bytes, back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == s);
+  // An older build skips each by its length: the same sample with the ids turned into ones it does not know.
+  ObjectSample older = s;
+  older.state.plugs.reset();
+  older.state.clocks.reset();
+  older.state.events.reset();
+  older.state.brain.reset();
+  Bytes probe = bytes;
+  int patched = 0;
+  // The time component comes first (4 + 12 bytes after the message header); walk the component headers.
+  ObjectState time_only{};
+  time_only.time = {100, 1};
+  const Bytes header = must_encode(ObjectSample{0, test::kPlacedId, 3, time_only});
+  for (std::size_t at = header.size(); at + 4 <= probe.size();) {
+    const std::uint16_t id = static_cast<std::uint16_t>(probe[at] | (probe[at + 1] << 8));
+    const std::uint16_t length = static_cast<std::uint16_t>(probe[at + 2] | (probe[at + 3] << 8));
+    if (id >= 25 && id <= 28) {
+      probe[at] = static_cast<std::uint8_t>(id + 5);  // 30-33: ids no build knows
+      ++patched;
+    }
+    at += 4 + length;
+  }
+  CHECK(patched == 4);
+  REQUIRE(decode(probe, back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == older);
+  // Refused: keys not rising or twice, a remove in a full list, a float not finite, more than kMaxKeyedValues.
+  Bytes out;
+  ObjectSample bad = s;
+  bad.state.clocks.reset();
+  bad.state.events.reset();
+  bad.state.brain.reset();
+  bad.state.plugs = KeyedValues{false, {{7, 2, std::int32_t{1}}, {7, 1, std::int32_t{1}}}};
+  CHECK(encode(bad, out) == Error::bad_value);
+  bad.state.plugs = KeyedValues{false, {{7, 1, std::int32_t{1}}, {7, 1, std::int32_t{2}}}};
+  CHECK(encode(bad, out) == Error::bad_value);
+  bad.state.plugs = KeyedValues{true, {{7, 1, KeyedRemove{}}}};
+  CHECK(encode(bad, out) == Error::bad_value);
+  bad.state.plugs = KeyedValues{false, {{7, 1, std::numeric_limits<float>::infinity()}}};
+  CHECK(encode(bad, out) == Error::bad_value);
+  bad.state.plugs = KeyedValues{false, {{7, 1, Vec3{0, std::numeric_limits<float>::quiet_NaN(), 0}}}};
+  CHECK(encode(bad, out) == Error::bad_value);
+  bad.state.plugs = KeyedValues{false, {}};
+  for (std::uint32_t i = 0; i <= kMaxKeyedValues; ++i) bad.state.plugs->values.push_back({1, i, std::int32_t{0}});
+  CHECK(encode(bad, out) == Error::bad_value);
+  bad.state.plugs->values.pop_back();
+  CHECK(encode(bad, out) == Error::none);  // kMaxKeyedValues fit
+  // The decoder refuses an unknown value type and a mode other than 0 or 1.
+  bad.state.plugs = KeyedValues{false, {{7, 1, std::int32_t{1}}}};
+  Bytes raw = must_encode(bad);
+  raw[raw.size() - 5] = 5;  // the type byte before the s32
+  CHECK(decode_bytes(raw) == Error::bad_value);
+  raw = must_encode(bad);
+  raw[raw.size() - 1 - 4 - 1 - 4 - 8 - 2] = 2;  // the mode byte
+  CHECK(decode_bytes(raw) == Error::bad_value);
+}
+
+TEST_CASE("keyed values merge: a full list replaces, a delta changes the keys it names (protocol 18)") {
+  std::size_t dropped = 0;
+  const KeyedValues kept{true, {{1, 1, std::int32_t{1}}, {1, 2, std::int32_t{2}}, {2, 1, 1.5f}}};
+  // A delta: one changed, one removed, one added (in key order), the rest kept.
+  KeyedValues merged = MergeKeyed(&kept, KeyedValues{false, {{1, 1, std::int32_t{9}}, {1, 2, KeyedRemove{}},
+                                                              {1, 5, std::uint64_t{77}}}},
+                                  dropped);
+  CHECK(merged == KeyedValues{true, {{1, 1, std::int32_t{9}}, {1, 5, std::uint64_t{77}}, {2, 1, 1.5f}}});
+  // A full list replaces all; a remove of a key not kept changes nothing.
+  merged = MergeKeyed(&kept, KeyedValues{true, {{3, 3, std::int32_t{3}}}}, dropped);
+  CHECK(merged == KeyedValues{true, {{3, 3, std::int32_t{3}}}});
+  merged = MergeKeyed(nullptr, KeyedValues{false, {{4, 4, KeyedRemove{}}, {5, 5, std::int32_t{5}}}}, dropped);
+  CHECK(merged == KeyedValues{true, {{5, 5, std::int32_t{5}}}});
+  CHECK(dropped == 0);
+  // Past kMaxKeyedValues new keys are left out and counted; changes to kept keys still go in.
+  KeyedValues full{true, {}};
+  for (std::uint32_t i = 0; i < kMaxKeyedValues; ++i) full.values.push_back({1, i, std::int32_t{0}});
+  merged = MergeKeyed(&full, KeyedValues{false, {{1, 0, std::int32_t{8}}, {2, 0, std::int32_t{1}}}}, dropped);
+  CHECK(merged.values.size() == kMaxKeyedValues);
+  CHECK(merged.values.front().value == KeyedData{std::int32_t{8}});
+  CHECK(dropped == 1);
+  // KeepKeyed: a list the new state lacks stays as kept; one it has is merged; others are left alone.
+  ObjectState old;
+  old.plugs = kept;
+  old.events = KeyedValues{true, {{9, 9, std::uint64_t{1}}}};
+  old.brain = KeyedValues{true, {{0, 5, std::int32_t{2}}}};
+  ObjectState next;
+  next.plugs = KeyedValues{false, {{2, 1, KeyedRemove{}}}};
+  next.position = Vec3{1, 2, 3};
+  CHECK(KeepKeyed(&old, next) == 0);
+  CHECK(next.plugs == KeyedValues{true, {{1, 1, std::int32_t{1}}, {1, 2, std::int32_t{2}}}});
+  CHECK(next.events == old.events);
+  CHECK(next.brain == old.brain);
+  CHECK_FALSE(next.clocks);
+  CHECK(next.position == Vec3{1, 2, 3});
 }
