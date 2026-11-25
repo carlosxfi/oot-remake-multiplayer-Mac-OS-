@@ -955,3 +955,66 @@ runs 20261120-180245/-184021; the attack-sequence bit already keeps most of it a
 a brain re-choice, mid-attack still the start-over). **Not proven in game.** Check: kd-roll-hold-325 again: no
 `made ours mid-move: its move (slot 0 verb 1|104) starts over`, the row 325 line instead; KD's y stays 73.2-73.5
 (no `diag 325` / roll centre at y 75.03) and every roll ends; screenshots on both games.
+
+## Blackboard move state: a boss made ours goes on from its old owner's state (tracker row 149, 0.11.13)
+
+**Seen.** Geno, 0.11.12 (2026-11-24): "Dodongo dragon boss bugged out on us and kept rolling in the lava". Row 325's
+fix is in 0.11.12, so it was not the cause. Reproduced before in kd-roll-hold-325, run 20261123-043946: player B last
+owned King Dodongo at corner (9.2, -48); A then rolled him to (38, -48.2); B, made his owner again, rolled him from
+(33.59, -48.26) in direction (-0.64, -0.77), exactly the line to corner (9.2, -77.6), B's own next corner from when
+it last owned him, straight into the pit, and held there for good. With one game (run -051747) 18 of 18 rolls go
+wall, corner, wall and end.
+
+**Why (root cause).** King Dodongo's roll does not follow the walls by itself. It rolls straight to a corner number
+kept in his AI blackboard (pack `Enemy_DungeonBoss_Dodongo`, `AI/DungeonBossDodongo.action.spinattack.module.ainb`:
+`QueryDungeonBossDodongoSelectNextCornerNumber`, `QueryDungeonBossDodongoGetCornerPosFromNumber`,
+`OneShotTargetSetFromPosAndRot`; keys `DungeonBossDodongo_CurrentTargetCornerNum`, an s32 from 0 to 3, and
+`DungeonBossDodongo_IsReverse`, the way round). A blackboard is each game's own. The native boss sync carried his
+verbs and the mover his place, never that number: a copy counts corners by itself, apart from the owner's, and the
+game made his owner rolls to its own stale corner from wherever he stands. Across the pit no wall ends the roll.
+
+**Now** (`lichii/hook/coop_boss_board.h`, module only, no game patch). The move state goes with the boss:
+
+- the owner's game reads the carried keys of its boss each frame and sends them in the boss's samples (object
+  component 25 `board`, [protocol.md](protocol.md)); the server keeps them with the boss's last state and gives
+  them to a new owner in `HANDOVER_STATE`;
+- a copy keeps the owner's last values and changes nothing in its own game;
+- a game made the owner puts them into its own blackboard through the game's own setters (main+0x264f170 for an
+  s32, main+0xd6cb40 for a bool: found by name, a locked key left alone, the change counted), called on the game's
+  calc thread by a caller that runs before the boss table's (`kBossBoard` 43 before `kBossTable` 45), so they are in
+  before its brain chooses or a move starts over. Until they are in, its samples carry the old owner's values, never
+  its stale own. A hand-over state that comes after the owner news goes in the same way.
+
+Log: `<boss>: blackboard: ours now: player N's move state is put in first`, `put in: <key>=<value>, ...`,
+`its old owner's move state is ours: P put in, S the same`. An owner on an older build sends none: `no move state
+came from its old owner: our own stays`, as before.
+
+**Cases sharing the cause** (move state in the per-game blackboard; every boss's table read from its pack's
+`BlackboardParamTable`; carried: counters, indexes, the way round, a phase, a forced next move; not carried: the
+one-frame triggers a boss's actions raise from its own contacts, what follows from its place or animation, actor and
+perception ids):
+
+| Boss | Carried keys |
+|---|---|
+| King Dodongo | `CurrentTargetCornerNum`, `IsReverse`, `IsAfterRollingSpawn` |
+| Volvagia | `BattleState`, `ContinuousGroundActionNum`, `HoldingAppearHoleIndex`, `ForceSkyAttackType`, `IsTurnLeft`, `IsActFirstSkyAttack`, `IsInfinitySkyAttack`, `IsAppearFromCenter`, `IsOnceAppearSign`, `IsActFallRockOnce` |
+| Gohma | `EggIndex`, `GroundModeEnterLife`, `IsForceLandBattle`, `IsForceClimb`, `IsForceCeilingBattle`, `IsClimbFromOutside`, `IsJumpOffImmediately` |
+| Phantom Ganon | `Ganondorf_Common_ShootLioghtBallIndex`, `_CurrentDarknessAuraType`, `_IsCompletedFirstRally`, `_IsFirstAttackSecondHalfBattle`, `_IsDoFirstAttackAfterForceSpecialAttack`, `_IsForceSpecialAttack`, `DamageCountInLandBattle` |
+| Ganondorf | the same `Ganondorf_Common_` keys, his own `ShootLioghtBallIndex`, `FinalPhaseAttackActionNum`, `UseForceSpecialAttack`, `IsFinalPhaseStart`, `IsUnlockedBasicAttack` |
+| Morpha | `CheapCount`, `NextTentacleAttack`, `NowTentacleAttack`, `IsHalfPhase`, `IsHalfPhaseStart`, `IsHalfPhaseStartExecuted`, `IsFirstAttackExeced`, `IsSlamCleared`, `IsSpinCleared` |
+| Bongo Bongo | `ForceAttackCommand`, `IsForceRightHand`, `IsForceLeftHand`, `IsForceWait` |
+| Ganon | `CurrentSequenceType`, `FinalRushCurrentHitNum`, `LifeAtChanceWaitStart`, the three weak points' life and broken flags, `IsForbidChargeAttack`, `CanRushAttack` |
+| Barinade | `CurrentFormType`, `CurrentJellyfishActionType`, `RemainArmCount`, `IsBeamAttackAfterChanceTime`, `IsKnockBackAfterChanceTime` |
+
+Twinrova's battle state is already carried as her manager's orders (row 222). A key a build does not know is passed
+over by its id, so the table can grow without a protocol change. Solo or co-op idle: no boss is listed, nothing is
+read or written.
+
+**Tests.** `boss_board_test` (the table; the plan; the owner's read; King Dodongo made ours takes corner and way
+round in the frame of the hand-over, through the setters, by the blackboard's own name pointers; a late hand-over
+state; an older owner; a locked key; a call not made; no blackboard; a new game), `codec_test` (component 25, also
+in `HANDOVER_STATE`). **Not proven in game.** Check: kd-roll-hold-325 again: after every hand-over the
+`blackboard: ... put in` or `the same` line, every roll ends at a wall, King Dodongo's y stays 73.2 to 73.5, no
+`held 'Rolling_Loop'`; screenshots on both games. Not known: whether a roll started over mid-leg (a forced hand-over
+during the roll) goes to the corner it was heading for or to the one after it; the other bosses' keys are carried
+by the same rule and were not each seen in a hand-over.

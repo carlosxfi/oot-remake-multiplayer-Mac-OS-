@@ -861,6 +861,7 @@ enum class ObjectComponent : std::uint16_t {
   strike = 22,  // row 230: a Redead's or Gibdo's scream that froze the owner's Link (ObjectStrike below)
   orders = 23,  // protocol 16, row 222: the battle manager's orders this enemy took (BossOrders below)
   variants = 24,  // row 222 part 2: the variation (plug name) of the owner's boss actions (BossVariants below)
+  board = 25,  // row 149: the move state in the owner's boss AI blackboard (BossBoard below)
 };
 
 struct ObjectLife {
@@ -1020,6 +1021,24 @@ struct BossVariants {
 // Whether a plug name may go on the wire (empty, or 1 to kMaxBossVariantChars printable ASCII characters).
 bool ValidVariantName(std::string_view name);
 
+// Component 25 (row 149, protocol 17): the move state a boss keeps in its AI blackboard, which is each game's own:
+// King Dodongo's roll goes straight to a corner number kept there (DungeonBossDodongo_CurrentTargetCornerNum, with
+// _IsReverse), so a new owner rolled to its own stale corner, across the lava pit. The owner sends the values of the
+// keys its build knows for that boss (coop_boss_board.h: the key ids and their names); a game made the boss's owner
+// puts the last ones into its own blackboard, through the game's setters, before its brain decides. Each value is
+// the key's id (from 1, rising, each once; a reader passes over ids it does not know) and 32 bits: an s32 as it is,
+// a bool as 0 or 1. At most kMaxBossBoardValues.
+inline constexpr std::size_t kMaxBossBoardValues = 16;
+struct BossBoardValue {
+  std::uint16_t key = 0;
+  std::int32_t value = 0;
+  bool operator==(const BossBoardValue&) const = default;
+};
+struct BossBoard {
+  std::vector<BossBoardValue> values;
+  bool operator==(const BossBoard&) const = default;
+};
+
 // The components of OBJECT_SAMPLE, OBJECT_SPAWN and HANDOVER_STATE. time is
 // always sent; the others when the sender has them. Floats must be finite.
 struct ObjectState {
@@ -1037,6 +1056,7 @@ struct ObjectState {
   std::optional<ObjectStrike> strike;               // row 230: the owner's Link frozen by its scream
   std::optional<BossOrders> orders;                 // protocol 16: its battle manager's orders (row 222)
   std::optional<BossVariants> variants;             // row 222 part 2: its owner's action variations (protocol 17)
+  std::optional<BossBoard> board;                   // row 149: its owner's blackboard move state (protocol 17)
   bool operator==(const ObjectState&) const = default;
 };
 

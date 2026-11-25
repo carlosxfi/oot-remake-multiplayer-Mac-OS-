@@ -1226,6 +1226,56 @@ TEST_CASE("object samples carry a battle manager's orders, component 23 (protoco
   CHECK(decode_bytes(raw) == Error::bad_value);
 }
 
+TEST_CASE("object samples carry the owner's boss blackboard move state, component 25 (row 149, protocol 17)") {
+  CHECK(kProtocolVersion >= 17);  // (0.11.12 is 16: its server would not keep the component for a hand-over)
+  CHECK(static_cast<int>(ObjectComponent::board) == 25);
+  ObjectSample s{0, test::kPlacedId, 3, {}};
+  s.state.time = {100, 1};
+  s.state.board = BossBoard{{{1, 3}, {2, 1}, {40, -7}}};
+  const Bytes bytes = must_encode(s);
+  Message back;
+  REQUIRE(decode(bytes, back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == s);
+  // The hand-over state gives it to the new owner.
+  HandoverState h{};
+  h.id = test::kPlacedId;
+  h.state = s.state;
+  REQUIRE(decode(must_encode(h), back) == Error::none);
+  CHECK(std::get<HandoverState>(back).state.board == s.state.board);
+  // No component: none after decoding (an older sender). An empty one stays one.
+  ObjectSample plain{0, test::kPlacedId, 3, {}};
+  plain.state.time = {100, 1};
+  REQUIRE(decode(must_encode(plain), back) == Error::none);
+  CHECK_FALSE(std::get<ObjectSample>(back).state.board);
+  plain.state.board = BossBoard{};
+  REQUIRE(decode(must_encode(plain), back) == Error::none);
+  CHECK(std::get<ObjectSample>(back).state.board == BossBoard{});
+  // Refused: key ids from 1, rising, each once; at most kMaxBossBoardValues.
+  Bytes out;
+  s.state.board = BossBoard{{{0, 3}}};
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.board = BossBoard{{{2, 3}, {2, 4}}};
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.board = BossBoard{{{3, 3}, {2, 4}}};
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.board = BossBoard{};
+  for (std::size_t i = 0; i <= kMaxBossBoardValues; ++i) {
+    s.state.board->values.push_back({static_cast<std::uint16_t>(i + 1), 0});
+  }
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.board->values.pop_back();
+  CHECK(encode(s, out) == Error::none);
+  // The decoder refuses them too: a count above the limit, and a key not above the one before.
+  s.state.board = BossBoard{};
+  Bytes raw = must_encode(s);
+  raw.back() = static_cast<std::uint8_t>(kMaxBossBoardValues + 1);
+  CHECK(decode_bytes(raw) == Error::bad_value);
+  s.state.board = BossBoard{{{1, 0}, {2, 0}}};
+  raw = must_encode(s);
+  raw[raw.size() - 6] = 1;  // the second key's low byte (u16 key, then 4 bytes of value)
+  CHECK(decode_bytes(raw) == Error::bad_value);
+}
+
 TEST_CASE("object samples carry the owner's boss action variations, component 24 (row 222 part 2, protocol 17)") {
   CHECK(kProtocolVersion >= 17);  // 17: component 24 (0.11.12 is 16 and keeps only the components it knows)
   CHECK(static_cast<int>(ObjectComponent::variants) == 24);

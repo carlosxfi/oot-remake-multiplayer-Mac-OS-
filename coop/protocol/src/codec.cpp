@@ -689,6 +689,14 @@ Error check_object_state(const ObjectState& s) {
       before = v.seq;
     }
   }
+  if (s.board) {
+    if (s.board->values.size() > kMaxBossBoardValues) return Error::bad_value;
+    std::uint16_t before = 0;
+    for (const BossBoardValue& v : s.board->values) {
+      if (v.key == 0 || v.key <= before) return Error::bad_value;  // (ids from 1, rising, each once)
+      before = v.key;
+    }
+  }
   if (s.orders) {
     if (s.orders->recent.size() > kMaxBossOrders) return Error::bad_value;
     std::uint32_t before = 0;
@@ -842,6 +850,15 @@ void write_object_state(const ObjectState& s, Writer& w) {
           }
         }
         w.u32(v.kind);  // (row 222: the ask's place kind)
+      }
+    });
+  }
+  if (s.board) {
+    component(ObjectComponent::board, [&] {
+      w.u8(static_cast<std::uint8_t>(s.board->values.size()));
+      for (const BossBoardValue& v : s.board->values) {
+        w.u16(v.key);
+        w.u32(static_cast<std::uint32_t>(v.value));
       }
     });
   }
@@ -1611,6 +1628,23 @@ Error decode_component(ObjectComponent id, Reader& c, ObjectState& s, bool& know
         }
         COOP_READ(c.u32(v.kind));
         before = v.seq;
+      }
+      return Error::none;
+    }
+    case ObjectComponent::board: {
+      BossBoard& b = s.board.emplace();
+      std::uint8_t count = 0;
+      COOP_READ(c.u8(count));
+      if (count > kMaxBossBoardValues) return Error::bad_value;
+      std::uint16_t before = 0;
+      for (std::uint8_t i = 0; i < count; ++i) {
+        BossBoardValue& v = b.values.emplace_back();
+        std::uint32_t value = 0;
+        COOP_READ(c.u16(v.key));
+        COOP_READ(c.u32(value));
+        if (v.key == 0 || v.key <= before) return Error::bad_value;
+        v.value = static_cast<std::int32_t>(value);
+        before = v.key;
       }
       return Error::none;
     }
