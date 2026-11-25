@@ -1236,6 +1236,9 @@ std::optional<CoopPuppet::Call> Director::Step(CoopPuppet::Guest& guest, bool af
                     stand_in_fails_[slot.copy_of] = 0;
                 }
                 Say(slot.actor + ": copy " + std::to_string(slot.key) + " is actor " + Hex(result));
+                if (on_made_) {
+                    on_made_(slot.key);  // (issue 337: the CrawlAnchor live; SetOnMade)
+                }
             }
             slot.request = 0;
             break;
@@ -2061,6 +2064,7 @@ Director& TheDirector() {
 #include "coop/net/client.hpp"
 #include "coop/host/game_flags.hpp"
 #include "coop/host/player_reader.hpp"
+#include "coop_dbno_body.h"
 #include "coop_boss_native.h"  // NoteOwnShotEnd (issue 150)
 #include "coop_objects.h"  // OurLinkActor (row 177)
 #include "coop_flags.h"  // EmulatorMemory
@@ -2190,6 +2194,17 @@ public:
                      f.velocity[1], f.velocity[2]);
         }
         CoopProjectiles::TheLures().Set(sync_.OwnLures());  // issue 151, for the objects sync
+        if (const auto anchor = CoopDbno::Body::Anchor()) {
+            // Issue 337: the game's own CrawlAnchor at our downed child (coop_dbno_body.h), ours only.
+            Copy a;
+            a.key = CoopDbno::Body::kAnchorKey + anchor->down;
+            a.remakes = CoopDbno::Body::kAnchorRemakes;
+            a.actor = std::string(CoopDbno::Body::kAnchorActor);
+            a.position = anchor->position;
+            a.rotation = anchor->rotation;
+            a.real = true;
+            copies.push_back(std::move(a));
+        }
         TheDirector().SetInput(main_, std::move(copies));
         if (const auto fuse = sync_.Fuse().Fuse(); fuse && fuse != logged_fuse_) {
             LOG_INFO(Core, "coop: shots: our bombs' fuse is {:.2f} s", double(*fuse) / 1e6);
@@ -2557,6 +2572,16 @@ Glue& TheGlue() {
 Director& TheDirector() {
     static Director director(
         [](const std::string& text) { LOG_INFO(Core, "coop: {}", text); });
+    static const bool wired = [] {
+        director.SetOnMade([](std::uint64_t key) {
+            if ((key & ~std::uint64_t{0xffffffff}) == CoopDbno::Body::kAnchorKey) {
+                // Issue 337: our downed child's Crawl is asked only once this down's anchor is live.
+                CoopDbno::Body::AnchorLive(static_cast<std::uint32_t>(key - CoopDbno::Body::kAnchorKey));
+            }
+        });
+        return true;
+    }();
+    (void)wired;
     return director;
 }
 

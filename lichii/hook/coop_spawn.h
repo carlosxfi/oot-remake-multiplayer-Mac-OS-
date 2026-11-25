@@ -15,6 +15,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -554,6 +555,9 @@ public:
     // Row 177: our Link's actor (CoopObjects::OurLinkActor; 0 none), and the keys of the shot copies it sent back
     // since the last take (CoopShotReflect::OurHit on the copy's own hit lists), each once.
     void SetOurLink(std::uint64_t link) { our_link_.store(link, std::memory_order_relaxed); }
+    // Told each copy's key when its actor is made (the calc thread, in the director's own step). Issue 337: our
+    // downed child's Crawl waits for the CrawlAnchor copy to be live (coop_dbno_body.h AnchorLive). Set once at start.
+    void SetOnMade(std::function<void(std::uint64_t key)> on_made) { on_made_ = std::move(on_made); }
     std::vector<std::uint64_t> TakeReflected();
     // A stand-in that failed this many times in a row (create failed, timed
     // out or dropped, or no actor taken) is not asked for again this session.
@@ -608,6 +612,7 @@ private:
     void Say(const std::string& text) const;
 
     Log log_;
+    std::function<void(std::uint64_t key)> on_made_;  // SetOnMade
     mutable std::mutex mutex_;
     std::uint64_t next_base_ = 0;  // guarded
     std::vector<Copy> next_;       // guarded

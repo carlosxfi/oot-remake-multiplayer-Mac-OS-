@@ -196,6 +196,47 @@ struct AsSlot {
     float rate = 1.0f;
 };
 std::optional<AsSlot> ReadSlot0(CoopPuppet::Guest& guest, std::uint64_t actor);
+// Issue 337: whether an AS command of our child Link's is one of the game's
+// own crawl (Player.action.crawl plays the Tunnel_* clips under it). A Crawl
+// verb "taken" by the BSA is only the crawl when slot 0 shows one of these.
+bool CrawlCommand(std::string_view as_command);
+
+// Issue 337: the game enters its crawl from a CrawlAnchor's attention (the
+// actor at each crawlspace mouth: AttentionSender ClientParam "Crawl",
+// ActionType Crawl, child only by Sequence_IsChildhood). The verb alone is
+// taken by the BSA but does not crawl. So a downed child gets the game's own
+// CrawlAnchor, made by the copy director (coop_spawn.h, a real actor, never
+// sent), kAnchorAhead in front of him and facing him, the way a mouth's
+// anchor faces an arriving Link (the scenes' anchors: +Z out of the tunnel).
+// Moved with him each frame; deleted when he is up, in an event, or adult
+// (an adult has no crawl: the anchor's check is childhood only).
+inline constexpr std::string_view kAnchorActor = "CrawlAnchor";
+inline constexpr float kAnchorAhead = 0.3f;
+// The copy director's key: kAnchorKey + the down's number (a key it made once
+// is never made anew), remade after it went by itself (a scene load) up to
+// kAnchorRemakes times.
+inline constexpr std::uint64_t kAnchorKey = 0x337c0000'00000000ull;
+inline constexpr std::uint8_t kAnchorRemakes = 8;
+struct AnchorSpot {
+    std::array<float, 3> position{};
+    CoopPuppet::Mat3 rotation{1, 0, 0, 0, 1, 0, 0, 0, 1};  // rows, a turn about Y only
+    std::uint32_t down = 0;  // SetAnchor numbers each new one (none before it)
+    bool operator==(const AnchorSpot&) const = default;
+};
+// Where the anchor goes for our Link at `link` turned by `rows` (his actor's
+// rotation rows; +Z is his front), or nothing when no anchor is wanted.
+std::optional<AnchorSpot> AnchorFor(bool lying, bool event, bool adult, const std::array<float, 3>& link,
+                                    const CoopPuppet::Mat3& rows);
+// The frame sets it, the copy director's feeder (coop_spawn) reads it.
+void SetAnchor(std::optional<AnchorSpot> spot);
+std::optional<AnchorSpot> Anchor();
+// Issue 337: the copy director (coop_spawn, at "is actor") says the anchor of down `down` is a live actor. The
+// game reads a Crawl ask against the CrawlAnchor's attention, so a child's Crawl is asked only once the anchor of
+// this down is live (asked before it, verb 234 was taken and slot 0 stayed DamageS: run crawl-337-2-r2).
+void AnchorLive(std::uint32_t down);
+// The anchor of the current down is a live actor (a down with no anchor wanted: false). A child's Crawl waits
+// only while an anchor is wanted and not live (no anchor wanted, e.g. no rotation read: asked as before).
+bool AnchorReady();
 constexpr bool Passes(std::int32_t v) {
     for (const std::int32_t p : kPassVerbs) {
         if (p == v) {
@@ -286,11 +327,15 @@ public:
         std::uint64_t poses = 0;       // kLyingPose played held on our adult Link (again: the game played another)
         std::uint64_t releases = 0;    // ... played on at kPlayRate (getting up)
         std::uint64_t riding = 0;      // frames lying on a horse (no crawl asked)
+        std::uint64_t game_crawl = 0;  // frames a child's slot 0 showed the game's own crawl (issue 337)
         std::vector<std::int32_t> skipped_verbs;  // the first distinct ones (the log)
     };
     Counts Totals() const;
     // Log lines since the last call.
     std::vector<std::string> TakeNotes();
+    // Any thread (issue 337): our lying child's slot 0 shows the game's own
+    // crawl now (CrawlCommand): the pad then gives the game the full stick.
+    bool GameCrawl() const noexcept { return game_crawl_.load(std::memory_order_acquire); }
 
     // Ask again at most this often while lying and not known to crawl.
     static constexpr std::uint64_t kAskEveryMs = 500;
@@ -350,6 +395,9 @@ private:
     bool held_back_ = false;    // ... as the caller read it at this frame's start
     // The adult's lying pose (kLyingPose).
     bool riding_ = false;              // slot 0 plays a horse command (read each frame, adults)
+    bool anchor_wait_noted_ = false;  // (calc thread) the wait for this down's anchor logged once
+    std::atomic<bool> game_crawl_{false};  // slot 0 plays the game's crawl (read each frame, a lying child)
+    std::string crawl_seen_;           // slot 0's command when game_crawl_ last changed (the log)
     bool pose_tried_ = false;          // this frame's pose step done
     float pending_rate_ = 0.0f;        // the play call in flight
     std::uint64_t posed_actor_ = 0;    // the actor the pose was last held on (0: none)

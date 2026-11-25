@@ -1,0 +1,28 @@
+# hs-dbno-child (issue 337, the CHILD case): a downed child is put in the game's own crawl. The module makes the game's
+# own CrawlAnchor just in front of him (the actor at a crawlspace's mouth, whose attention starts the crawl) and asks
+# Crawl (234). A hosts, sets the bleed-out to 10 s and stays up in Kokiri Forest (child, open ground in front of the
+# Deku Tree); B is downed by the game's own hits (hurt 4 x5), lies, pushes the stick forward then sideways, bleeds
+# out, spectates A, respawns beside A and stands up. See hs-dbno-child.B.txt for B's checks.
+# Checks (log): B "CrawlAnchor: create copy", "our downed Link: Crawl (234) asked and taken", "our downed Link: the
+# game's own crawl runs ('<command>')" (FAIL: "Crawl taken but not crawling"), "CrawlAnchor: copy ... deleted" after
+# the respawn, B still in KokiriForest_Child at every mark.
+# Shots (the proof, on both games): B-lying / B-stick / B-side: B on all fours in the crawl pose, the crawl camera,
+# moved at crawl speed; A's see-b-* shots: B's puppet crawling the same; B-after-respawn: B standing beside A.
+#! timeout 420
+mark start
+setflag Sequence_IsChildhood 1  # child (run.ps1 loads the save first)
+warp KokiriForest_Child FrontDekuTree
+wait 1200
+mark field
+chat /dbno time 10
+wait 300
+mark b-hurt                     # B is hurt from here
+wait 480
+mark see-b-lying                # B's puppet, crawling, in A's window
+wait 200
+mark see-b-stick
+wait 1200                       # B bleeds out, spectates, respawns beside A
+mark a-after
+chat /dbno time 45
+wait 120
+mark end

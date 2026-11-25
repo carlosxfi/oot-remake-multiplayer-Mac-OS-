@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 #include <utility>
 
 namespace CoopDbno::Body {
@@ -49,6 +50,64 @@ void Raising::Drop() noexcept {
 bool Riding(std::string_view c) {
     const auto starts = [c](std::string_view p) { return c.substr(0, p.size()) == p; };
     return starts("Horse") || starts("AimHorse") || starts("Rideon") || starts("RideOn") || c == "DismountHorse";
+}
+
+bool CrawlCommand(std::string_view c) {
+    // The AS root's crawl commands (the Tunnel_* clips' own; the log names them).
+    const auto starts = [c](std::string_view p) { return c.substr(0, p.size()) == p; };
+    return starts("Tunnel") || starts("Crawl");
+}
+
+std::optional<AnchorSpot> AnchorFor(bool lying, bool event, bool adult, const std::array<float, 3>& link,
+                                    const CoopPuppet::Mat3& rows) {
+    if (!lying || event || adult) {
+        return std::nullopt;
+    }
+    // His front on the ground: the rotation's +Z column, flat.
+    float fx = rows[2], fz = rows[8];
+    const float len = std::sqrt(fx * fx + fz * fz);
+    if (!std::isfinite(len) || len < 1e-4f || !std::isfinite(link[0]) || !std::isfinite(link[1]) ||
+        !std::isfinite(link[2])) {
+        return std::nullopt;
+    }
+    fx /= len;
+    fz /= len;
+    AnchorSpot spot;
+    spot.position = {link[0] + fx * kAnchorAhead, link[1], link[2] + fz * kAnchorAhead};
+    // Facing him: +Z = -front. A turn about Y by yaw maps +Z to (sin, 0, cos).
+    const float s = -fx, c = -fz;
+    spot.rotation = {c, 0, s, 0, 1, 0, -s, 0, c};
+    return spot;
+}
+
+namespace {
+std::mutex g_anchor_mutex;
+std::optional<AnchorSpot> g_anchor;
+std::uint32_t g_anchor_downs = 0;
+std::uint32_t g_anchor_live = 0;  // the down whose anchor the copy director made a live actor
+}  // namespace
+
+void SetAnchor(std::optional<AnchorSpot> spot) {
+    std::lock_guard lock(g_anchor_mutex);
+    if (spot) {
+        spot->down = g_anchor ? g_anchor->down : ++g_anchor_downs;
+    }
+    g_anchor = spot;
+}
+
+std::optional<AnchorSpot> Anchor() {
+    std::lock_guard lock(g_anchor_mutex);
+    return g_anchor;
+}
+
+void AnchorLive(std::uint32_t down) {
+    std::lock_guard lock(g_anchor_mutex);
+    g_anchor_live = down;
+}
+
+bool AnchorReady() {
+    std::lock_guard lock(g_anchor_mutex);
+    return g_anchor && g_anchor->down != 0 && g_anchor->down == g_anchor_live;
 }
 
 std::optional<AsSlot> ReadSlot0(CoopPuppet::Guest& guest, std::uint64_t actor) {
@@ -281,7 +340,34 @@ std::optional<CoopPuppet::Call> Crawl::StepPose(CoopPuppet::Guest& guest, std::u
         return std::nullopt;
     }
     pose_tried_ = true;
-    if (!want_.adult || want_.actor == 0 || (!want_.lying && releases_left_ == 0)) {
+    if (!want_.adult) {
+        // Issue 337: a child's crawl is the game's own; slot 0 tells whether it runs.
+        riding_ = false;
+        const std::optional<AsSlot> slot =
+            want_.lying && want_.actor != 0 ? ReadSlot0(guest, want_.actor) : std::nullopt;
+        const bool now = slot && CrawlCommand(slot->name);
+        if (now) {
+            ++counts_.game_crawl;
+        }
+        if (now != game_crawl_.load(std::memory_order_relaxed)) {
+            game_crawl_.store(now, std::memory_order_release);
+            crawl_seen_ = slot ? slot->name : std::string("-");
+            if (now) {
+                Note("our downed Link: the game's own crawl runs ('" + crawl_seen_ + "')");
+            } else if (want_.lying && crawling_) {
+                Note("our downed Link: Crawl taken but not crawling ('" + crawl_seen_ + "')");
+            }
+        } else if (want_.lying && crawling_ && !now && crawl_seen_.empty()) {
+            crawl_seen_ = slot ? slot->name : std::string("-");  // once a down (the log)
+            Note("our downed Link: Crawl taken but not crawling ('" + crawl_seen_ + "')");
+        }
+        if (!want_.lying) {
+            crawl_seen_.clear();
+        }
+        return std::nullopt;
+    }
+    game_crawl_.store(false, std::memory_order_release);
+    if (want_.actor == 0 || (!want_.lying && releases_left_ == 0)) {
         riding_ = false;
         return std::nullopt;
     }
@@ -563,6 +649,7 @@ std::optional<CoopPuppet::Call> Crawl::Next(CoopPuppet::Guest& guest, bool after
         ground_seen_ = false;
         stand_due_ = !want_.lying && crawling_ && !standing_;
         crawling_ = false;
+        anchor_wait_noted_ = false;
     }
     if (want_.event) {
         crawling_ = false;  // the event moves our Link; asked again after it
@@ -623,6 +710,17 @@ std::optional<CoopPuppet::Call> Crawl::Next(CoopPuppet::Guest& guest, bool after
         return Ask(guest, UpVerb(false), main_base);
     }
     if (want_.lying && !crawling_ && !airborne_ && !blocked_ && !riding_ && asks_ < kMaxAsks && now_ms >= next_ask_ms_) {
+        if (!want_.adult && Anchor() && !AnchorReady()) {
+            // Issue 337: the game reads verb 234 against the CrawlAnchor's attention; asked before the anchor
+            // (made async by the copy director) is live, it is taken and nothing crawls (slot 0 stays DamageS).
+            if (!std::exchange(anchor_wait_noted_, true)) {
+                Note("our downed Link: Crawl waits for this down's CrawlAnchor to be a live actor");
+            }
+            return std::nullopt;
+        }
+        if (!want_.adult && AnchorReady() && std::exchange(anchor_wait_noted_, false)) {
+            Note("our downed Link: this down's CrawlAnchor is live: Crawl asked");  // (never live: no ask; the
+        }                                                                      // director logs its request)
         if (held_back_) {
             // The game's own request ran on our slot this frame (a round
             // that starts now, or a kPassVerbs verb): the slot is busy.

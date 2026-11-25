@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -1071,4 +1072,89 @@ TEST_CASE("dbno body (row 177): a teammate's puppet is unseen while they are in 
     CHECK_FALSE(c.PuppetUnseen(3));
     c.Want(Crawl::Wanted{});
     CHECK_FALSE(c.PuppetUnseen(2));
+}
+
+TEST_CASE("dbno body: issue 337, the game's own CrawlAnchor in front of a downed child, facing him") {
+    const CoopPuppet::Mat3 identity{1, 0, 0, 0, 1, 0, 0, 0, 1};  // his front: +Z
+    const std::array<float, 3> at{10.0f, 2.0f, -5.0f};
+    const auto spot = AnchorFor(true, false, false, at, identity);
+    REQUIRE(spot);
+    CHECK(spot->position[0] == doctest::Approx(10.0f));
+    CHECK(spot->position[1] == doctest::Approx(2.0f));
+    CHECK(spot->position[2] == doctest::Approx(-5.0f + kAnchorAhead));
+    // The anchor's +Z (its rotation's third column) points back at him.
+    CHECK(spot->rotation[2] == doctest::Approx(0.0f));
+    CHECK(spot->rotation[8] == doctest::Approx(-1.0f));
+    CHECK(spot->rotation[4] == doctest::Approx(1.0f));
+
+    // Turned 90 degrees (front +X), tilted rows still give a flat front.
+    const CoopPuppet::Mat3 east{0, 0, 1, 0, 1, 0, -1, 0, 0};
+    const auto e = AnchorFor(true, false, false, at, east);
+    REQUIRE(e);
+    CHECK(e->position[0] == doctest::Approx(10.0f + kAnchorAhead));
+    CHECK(e->position[2] == doctest::Approx(-5.0f));
+    CHECK(e->rotation[2] == doctest::Approx(-1.0f));  // +Z column = (-1, 0, 0)
+    CHECK(e->rotation[8] == doctest::Approx(0.0f));
+    // Still a rotation: rows unit and orthogonal.
+    CHECK(e->rotation[0] * e->rotation[0] + e->rotation[2] * e->rotation[2] == doctest::Approx(1.0f));
+
+    // None: up, in an event, an adult (no crawl for him), no flat front, a bad place.
+    CHECK_FALSE(AnchorFor(false, false, false, at, identity));
+    CHECK_FALSE(AnchorFor(true, true, false, at, identity));
+    CHECK_FALSE(AnchorFor(true, false, true, at, identity));
+    CHECK_FALSE(AnchorFor(true, false, false, at, CoopPuppet::Mat3{1, 0, 0, 0, 0, 1, 0, -1, 0}));
+    CHECK_FALSE(AnchorFor(true, false, false, {NAN, 0, 0}, identity));
+}
+
+TEST_CASE("dbno body: issue 337, each down gets its own anchor key, kept while he stays down") {
+    SetAnchor(std::nullopt);
+    const CoopPuppet::Mat3 identity{1, 0, 0, 0, 1, 0, 0, 0, 1};
+    SetAnchor(AnchorFor(true, false, false, {0, 0, 0}, identity));
+    const auto first = Anchor();
+    REQUIRE(first);
+    SetAnchor(AnchorFor(true, false, false, {1, 0, 0}, identity));  // he crawls on: same anchor, moved
+    REQUIRE(Anchor());
+    CHECK(Anchor()->down == first->down);
+    CHECK(Anchor()->position[0] == doctest::Approx(1.0f));
+    SetAnchor(std::nullopt);  // up
+    CHECK_FALSE(Anchor());
+    SetAnchor(AnchorFor(true, false, false, {0, 0, 0}, identity));  // down again: a new one
+    REQUIRE(Anchor());
+    CHECK(Anchor()->down == first->down + 1);
+    SetAnchor(std::nullopt);
+}
+
+TEST_CASE("dbno body: issue 337, the game's own crawl commands") {
+    CHECK(CrawlCommand("Tunnel_Move_F"));
+    CHECK(CrawlCommand("TunnelWait"));
+    CHECK(CrawlCommand("Crawl"));
+    CHECK_FALSE(CrawlCommand("Wait"));
+    CHECK_FALSE(CrawlCommand("Walk"));
+    CHECK_FALSE(CrawlCommand("DamageLStand"));
+    CHECK_FALSE(CrawlCommand(""));
+}
+
+TEST_CASE("dbno body: issue 337, a child's Crawl waits until this down's anchor is a live actor") {
+    // Run crawl-337-2-r2: Crawl (234) was asked and taken before the async CrawlAnchor existed; slot 0 stayed
+    // DamageS. The copy director's on_made (coop_spawn) marks this down's anchor live; the ask waits for it.
+    const CoopPuppet::Mat3 identity{1, 0, 0, 0, 1, 0, 0, 0, 1};
+    SetAnchor(std::nullopt);
+    CHECK_FALSE(AnchorReady());  // no anchor wanted
+    SetAnchor(AnchorFor(true, false, false, {0, 0, 0}, identity));
+    REQUIRE(Anchor());
+    const std::uint32_t down = Anchor()->down;
+    CHECK_FALSE(AnchorReady());  // wanted, not made yet: the Crawl waits
+    AnchorLive(down - 1);        // an older down's copy: not this one
+    CHECK_FALSE(AnchorReady());
+    AnchorLive(down);
+    CHECK(AnchorReady());
+    SetAnchor(AnchorFor(true, false, false, {1, 0, 0}, identity));  // moved with him: still live
+    CHECK(AnchorReady());
+    SetAnchor(std::nullopt);  // up
+    CHECK_FALSE(AnchorReady());
+    SetAnchor(AnchorFor(true, false, false, {0, 0, 0}, identity));  // a new down: waits for its own anchor
+    CHECK_FALSE(AnchorReady());
+    AnchorLive(Anchor()->down);
+    CHECK(AnchorReady());
+    SetAnchor(std::nullopt);
 }
