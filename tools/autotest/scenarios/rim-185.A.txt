@@ -46,38 +46,5 @@ mark a-child-drawn
 wait 200
 mark a-child-drawn-late
 wait 240
-warp KakarikoVillage_Adult Kakariko_WellSide
-wait 1500
-give PouchData.Weapon_Shield_Hylian.StockNum
-wait 60
-wear shield Weapon_Shield_Hylian
-wait 30
-dress shield
-wait 120
-mark a-adult-back
-stick 0 0.6 70
-mark a-adult-walk
-stick 0 0.6 30
-stick 0.7 0 30
-stick 0 -0.4 12
-wait 60
-press Y
-wait 40
-mark a-adult-drawn
-wait 200
-mark a-adult-drawn-late
-give PouchData.Armor_Adult_Goron.StockNum
-give PouchData.Armor_Adult_Zora.StockNum
-wait 120
-wear armor Armor_Adult_Goron
-wait 30
-dress armor
-wait 300
-mark a-adult-goron
-wear armor Armor_Adult_Zora
-wait 30
-dress armor
-wait 300
-mark a-adult-zora
 wait 120
 mark end
