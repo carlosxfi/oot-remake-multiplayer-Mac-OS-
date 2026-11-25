@@ -160,6 +160,8 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
             p.glow_state = anim(name + "/GlowState");
             p.glow = anim(name + "/Glow", &p.glow_last);
             p.pinch = anim(name + "/Pinch", &p.pinch_last);
+            p.defence[0] = anim(name + "/IsDoubleDefense", &p.defence_last[0]);
+            p.defence[1] = anim(name + "/DefenceBorn", &p.defence_last[1]);
             all = all && p.pane != 0 && p.base != 0 && p.heart != 0 && (!part || p.gauge != 0);
         }
         labels_[static_cast<std::size_t>(s)].pane = pane(PaneName("Name", s));
@@ -201,7 +203,14 @@ void Hud::StopAt(Game& game, std::uint64_t anim, float& had, float frame) {
 
 // The glow (f_833dc830: GlowState 3, Glow played; ended as f_833dc8f0, GlowState 0) and the pinch (Pinch played round
 // while life is low), set frame by frame: no game object plays our copies.
-void Hud::Effects(Game& game, Pane& p, bool glowing, std::uint64_t glow_ms, bool pinch, std::uint64_t now_ms) {
+// Double defence: IsDoubleDefense and DefenceBorn (the heart's white rim coming) held at their end with it, at 0
+// without; which of them the game's own hearts use was not read (the run's log gives their last frames).
+void Hud::Effects(Game& game, Pane& p, bool glowing, std::uint64_t glow_ms, bool pinch, std::uint64_t now_ms,
+                  bool defence) {
+    for (std::size_t i = 0; i < p.defence.size(); ++i) {
+        StopAt(game, p.defence[i], p.defence_at[i],
+               defence ? static_cast<float>(std::max<std::int32_t>(p.defence_last[i], 0)) : 0.0f);
+    }
     if (p.glow != 0 && p.glow_state != 0) {
         StopAt(game, p.glow_state, p.glow_state_at, glowing ? kGlowState : 0.0f);
         StopAt(game, p.glow, p.glow_at, glowing ? PlayedFrame(glow_ms, p.glow_last, false) : 0.0f);
@@ -303,14 +312,15 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
             if (i < plan.hearts) {
                 const int state = plan.whole[static_cast<std::size_t>(i)];
                 Set(game, p, state, 0.0f, HeartAt(top, i), alpha);
-                Effects(game, p, glow.heart == i && plan.part_at != i, glow_ms, pinch && state == 2, now_ms);
+                Effects(game, p, glow.heart == i && plan.part_at != i, glow_ms, pinch && state == 2, now_ms,
+                        b.double_defence);
             } else {
                 Show(game, p, false);
             }
         }
         if (plan.part_at >= 0) {
             Set(game, gauge, 2, GaugeFrame(plan.part_quarters, gauge.gauge_last), HeartAt(top, plan.part_at), alpha);
-            Effects(game, gauge, glow.heart == plan.part_at, glow_ms, pinch, now_ms);
+            Effects(game, gauge, glow.heart == plan.part_at, glow_ms, pinch, now_ms, b.double_defence);
         } else {
             Show(game, gauge, false);
         }

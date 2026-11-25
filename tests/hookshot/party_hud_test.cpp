@@ -307,6 +307,20 @@ TEST_CASE("party hud: a hit glows on the heart that lost, the pinch plays at low
     CHECK(game.Frame(HeartName(0, 0) + "/Pinch") == 0.0f);
 }
 
+TEST_CASE("party hud: double defence on every heart, and off") {
+    FakeGame game;
+    game.Hud();
+    party::Hud hud;
+    std::vector<party::Block> blocks = {{"Saria", Quarters(10, 12)}};
+    blocks[0].double_defence = true;
+    REQUIRE(hud.Step(game, blocks, 0.15));
+    CHECK(game.Frame(HeartName(0, 0) + "/DefenceBorn") == static_cast<float>(game.gauge_last));
+    CHECK(game.Frame("Pa_CoopGauge_0/DefenceBorn") == static_cast<float>(game.gauge_last));
+    blocks[0].double_defence = false;
+    REQUIRE(hud.Step(game, blocks, 0.15));
+    CHECK(game.Frame(HeartName(0, 0) + "/DefenceBorn") == 0.0f);
+}
+
 TEST_CASE("party hud: a player not connected is dimmed, and lit again") {
     FakeGame game;
     game.Hud();

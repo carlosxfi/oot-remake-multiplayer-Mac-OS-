@@ -1167,6 +1167,11 @@ void PartyStep(NativeGame& game, void* ctx, std::uint64_t now) {
         menu_up = g_party.game_menu_up;
     }
     if (PartyTest() && !menu_up) blocks = CoopPartyHud::TestBlocks(now);
+    if (!blocks.empty()) {   // double defence is one for all players (shared flag): ours is theirs
+        CoopHook::EmulatorMemory memory(g_system.ApplicationMemory(), CoopRuntime::MainBase());
+        const bool defence = coop::host::GameFlags(memory).get_bool(CoopPartyHud::kDefenceUpHash).value_or(false);
+        for (auto& b : blocks) b.double_defence = defence;
+    }
     PartyGame party(game, ctx);
     std::vector<std::string> log;
     const bool on = hud.Step(party, blocks, bottom, &log, now);

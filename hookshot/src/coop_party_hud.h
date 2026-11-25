@@ -71,7 +71,12 @@ struct Block {
     std::string text;            // the line over the hearts (name, place, voice)
     std::vector<int> hearts;     // quarters filled in each (CoopHudHearts::Quarters)
     bool dim = false;            // not connected (CoopHudDim): hearts and line at kDimAlpha
+    bool double_defence = false; // the Great Fairy's double defence (PlayerStatus.IsDefenseUP: one for all players)
 };
+
+// PlayerStatus.IsDefenseUP (docs/items.md): shared by every player (game_items.cpp, R::any), so our own value is
+// everyone's.
+inline constexpr std::uint32_t kDefenceUpHash = 0x56bbe07cu;
 
 // A player's hearts as the game sets its own: each whole heart's state (0 none, 1 empty, 2 full), and the part heart.
 struct Plan {
@@ -128,6 +133,10 @@ private:
         std::uint64_t glow_state = 0, glow = 0, pinch = 0;   // the glow and pinch animations (0: not there)
         std::int32_t glow_last = -1, pinch_last = -1;
         float glow_state_at = -1.0f, glow_at = -1.0f, pinch_at = -1.0f;
+        // Double defence's look (each one there: at its last frame with it, 0 without)
+        std::array<std::uint64_t, 2> defence{};
+        std::array<std::int32_t, 2> defence_last{};
+        std::array<float, 2> defence_at{-1.0f, -1.0f};
         int shown = -1;                                 // what was last set: -1 unknown
         float alpha = -1.0f;
         int state = -1;
@@ -148,7 +157,8 @@ private:
     void Show(Game& game, Pane& p, bool shown);
     void Show(Game& game, Label& l, bool shown);
     void Set(Game& game, Pane& p, int state, float frame, const std::array<float, 2>& at, float alpha);
-    void Effects(Game& game, Pane& p, bool glowing, std::uint64_t glow_ms, bool pinch, std::uint64_t now_ms);
+    void Effects(Game& game, Pane& p, bool glowing, std::uint64_t glow_ms, bool pinch, std::uint64_t now_ms,
+                 bool defence);
     static void StopAt(Game& game, std::uint64_t anim, float& had, float frame);
     void SetLabel(Game& game, std::size_t index, const std::string& text, const std::array<float, 2>& at,
                   float alpha);
