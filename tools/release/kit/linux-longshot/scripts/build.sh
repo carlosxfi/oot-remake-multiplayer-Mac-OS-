@@ -150,8 +150,11 @@ make_game() {
 # OoT Character Select by Snail (data/longshot/CHARACTER-SELECT.txt; owner, 0.11.8 and 0.11.9), as kit-paths.ps1's
 # Invoke-KitCharacterSelectStep: every kit gets his Characters page (the default part); his NPC characters (a 145 MB download, 1.1 GB on disk)
 # only on the player's yes (asked once: y is yes; Enter, n, 15 s or no terminal: no; data/coop-options.ini
-# character_select = yes|no|ask wins, data/character-select-answer.txt keeps the answer; every later start in a terminal
-# shows one line and n within 2 s changes it). Snail's own release and his characters.json are downloaded from his GitHub
+# character_select = yes|no|off|ask wins, data/character-select-answer.txt keeps the answer; every later start in a
+# terminal shows one line: off, n or y within 3 s downloads them (the in-game page says "press N at the kit's start"), on,
+# n takes them out). off: uninstall-character-select.sh (his mod out, until reinstall-character-select.sh: that one sets
+# the copy aside and asks again). A kit with no answer whose game has the kit's copy with the NPC part keeps it, no
+# question (a reinstall: launcher-clarity). The kit's one rule for a timed question: its line says what y, n and no key do. Snail's own release and his characters.json are downloaded from his GitHub
 # pages onto this PC, SHA-256 checked, his customizer left out of his code patch (co-op's own Customize fills his
 # screen), and the mod's folder goes into data/game/mods, on (the Mods tab switches
 # it off; the list is never written here). The kit carries none of its files. Before the game's stamp
@@ -353,7 +356,7 @@ elif cmd == "complete":
     fresh(os.path.join(ex, code[0]), data)
     fresh(os.path.join(new, "characters.json"), rd(js))
     fresh(os.path.join(new, "coop-charsel.txt"), (want + "\n").encode())
-    npcs = "with its NPC characters" if part == "full" else "without its NPC characters (character_select = yes in data/coop-options.ini gets them)"
+    npcs = "with its NPC characters" if part == "full" else "without its NPC characters (reinstall-character-select.sh in the kit folder gets them)"
     fresh(os.path.join(new, "CREDITS-coop.txt"), "\n".join([
         f"OoT Character Select {rel} by snaildev99 (Snail): https://github.com/snaildev99/OoT-Character-Select",
         f"Downloaded by the Squadala co-op kit from his own release page onto this PC, {npcs}; the kit carries none of its files.",
@@ -484,38 +487,71 @@ charsel_step() {
         say 'Character Select (the Characters page) is put in at the next start, once the game is built: its files are made from your game, and that start builds the game again (a few minutes) with its code patch.'
         return 0
     fi
-    line=$(sed -n 's/^[[:space:]]*character_select[[:space:]]*=[[:space:]]*\(yes\|no\|ask\)[[:space:]]*\([#;].*\)\{0,1\}$/\1/p' "$DATA/coop-options.ini" 2>/dev/null | head -n1 || true)
-    if [[ -n $line ]]; then choice=$line; [[ $choice == ask ]] && rm -f "$DATA/character-select-answer.txt"
-    else choice=$(head -n1 "$DATA/character-select-answer.txt" 2>/dev/null | tr -d '\r[:space:]' || true); [[ $choice == yes || $choice == no ]] || choice=ask
+    if [[ -f $DATA/character-select-reinstall.txt ]]; then
+        # (reinstall-character-select.sh: the kit's copy set aside, kept until the game is built again, and his zip fetched again)
+        if [[ -d $dir && ! -f $dir/coop-charsel.txt ]]; then
+            warn "Character Select: $dir is your own copy (the kit did not put it in): remove it yourself, then run reinstall-character-select.sh again."
+        else
+            [[ -d $dir ]] && charsel_save_previous "$folder"
+            rm -f "$B/charsel/$zip"
+        fi
+        rm -f "$DATA/character-select-reinstall.txt"
     fi
-    if [[ $choice == ask ]]; then
+    line=$(sed -n 's/^[[:space:]]*character_select[[:space:]]*=[[:space:]]*\(yes\|no\|off\|ask\)[[:space:]]*\([#;].*\)\{0,1\}$/\1/p' "$DATA/coop-options.ini" 2>/dev/null | head -n1 || true)
+    if [[ -n $line ]]; then choice=$line; [[ $choice == ask ]] && rm -f "$DATA/character-select-answer.txt"
+    else choice=$(head -n1 "$DATA/character-select-answer.txt" 2>/dev/null | tr -d '\r[:space:]' || true); [[ $choice == yes || $choice == no || $choice == off ]] || choice=ask
+    fi
+    local get_later='  To get them later: run reinstall-character-select.sh in the kit folder, or press n (for NPC) at a start while the kit shows the NPC characters line.'
+    local take_out='  To take them out later: press n at a start while the kit shows the NPC characters line.'
+    if [[ $choice == off ]]; then
+        dir=$CS_HOME/$folder
+        if [[ ! -f $dir/coop-charsel.txt ]]; then
+            [[ -d $dir ]] && say "Character Select: uninstalled ($dir is your own copy, used as it is). To put it back: run reinstall-character-select.sh." \
+                          || say 'Character Select: uninstalled. To put it back: run reinstall-character-select.sh.'
+            return 0
+        fi
+        charsel_save_previous "$folder"
+        say 'Character Select: uninstalled now (the game is built again without it). To put it back: run reinstall-character-select.sh.'
+        return 0
+    fi
+    have=$(head -n1 "$CS_HOME/$folder/coop-charsel.txt" 2>/dev/null | tr -d '\r' || true)
+    local -a hf0=()
+    read -r -a hf0 <<<"$have"
+    if [[ $choice == ask && -d $CS_HOME/$folder/romfs && ${#hf0[@]} -ge 4 && ${hf0[4]:-full} == full ]]; then
+        # (a reinstalled kit, or one pointed at a game made before: the characters there stay, no question)
+        choice=yes
+        say 'NPC characters (Characters page): found in your game from before, kept.'
+        say "$take_out"
+        printf '%s\n' "$choice" >"$DATA/character-select-answer.txt"
+    elif [[ $choice == ask ]]; then
         say ''
         say 'The Characters page (in the - menu) comes with the kit: Character Select by Snail (snaildev99).'
         say "  Its NPC characters (Saria, Sheik, Darunia and over a hundred more) are an extra download from Snail's own"
         say '  GitHub page (a 145 MB download, about 1.1 GB on disk, made from your game in a few minutes, once). Without them you play as Link, and the page tells you when a character is not'
         say '  downloaded. The Legend of Zelda: Ocarina of Time and its characters belong to Nintendo.'
-        local q='Download the NPC characters for the Characters page? [y/N]' s
+        local q='NPC characters: press y to download them, n to skip' s
         choice=no
         if kit_tty; then
             for ((s = ${OOT_COOP_CHARSEL_WAIT:-15}; s > 0; s--)); do
-                printf '\r%s (no in %d s)  ' "$q" "$s"
+                printf '\r%s (no key in %d s: skip)  ' "$q" "$s"
                 if IFS= read -r -s -n 1 -t 1 a; then break; fi
                 a=timeout
             done
             [[ $a == [yY] ]] && choice=yes
-            printf '%s\n' "${choice:0:1}"
+            if [[ $choice == yes ]]; then printf 'y\n'; elif [[ $a == timeout ]]; then printf 'no key\n'; else printf 'n\n'; fi
         else
-            say "$q n (no terminal: no)"
+            say "$q: skipped (no terminal)"
         fi
         printf '%s\n' "$choice" >"$DATA/character-select-answer.txt"
-        [[ $choice == no ]] && say '  Not downloaded. To get them later: press n at the next start, while the kit shows the NPC line.'
+        if [[ $choice == yes ]]; then say '  Downloading them now (once).'; say "$take_out"
+        else say '  Skipped: you play as Link.'; say "$get_later"; fi
     elif kit_tty; then
-        # (row 206: on or off from the kit itself, no file to edit; coop-options.ini's line follows the change)
-        if [[ $choice == yes ]]; then say 'Characters page, NPC characters: on (press n to take them out)'
-        else say 'Characters page, NPC characters: off (press n to make them, a 145 MB download and about 1.1 GB on disk)'; fi
-        if IFS= read -r -s -n 1 -t 2 a && [[ $a == [nN] ]]; then
-            if [[ $choice == yes ]]; then choice=no; else choice=yes; fi
-            say '  changed.'
+        # (row 206: on or off from the kit itself, no file to edit; coop-options.ini's line follows the change. Off: n (the
+        # in-game page says "press N at the kit's start") or y downloads them; on: n takes them out; another key goes on)
+        if [[ $choice == yes ]]; then say 'NPC characters (Characters page): on. To take them out press n within 3 s (no key: they stay).'
+        else say 'NPC characters (Characters page): not downloaded. To download them now (145 MB, about 1.1 GB on disk) press n or y within 3 s (no key: the game starts without them).'; fi
+        if IFS= read -r -s -n 1 -t 3 a && [[ $a == [nN] || ( $choice == no && $a == [yY] ) ]]; then
+            if [[ $choice == yes ]]; then choice=no; say '  n: taking them out now.'; else choice=yes; say "  $a: downloading them now."; fi
             printf '%s\n' "$choice" >"$DATA/character-select-answer.txt"
             [[ -f $DATA/coop-options.ini ]] && sed -i "s/^[[:space:]]*character_select[[:space:]]*=.*/character_select = $choice/" "$DATA/coop-options.ini"
         fi
@@ -523,7 +559,7 @@ charsel_step() {
     part=ui
     [[ $choice == yes ]] && part=full
     want="$rel $zsha $osha ${isha:--} $part cz2v"   # (cz2, row 242: the default part keeps Link own textures; an older ui copy is never derived from. cz2v: his voice files deleted)
-    local what='the Characters page (NPC characters not downloaded)'
+    local what='the Characters page (NPC characters not downloaded: reinstall-character-select.sh or n at a start gets them)'
     [[ $part == full ]] && what='with its NPC characters'
     if [[ -d $dir && ! -f $dir/coop-charsel.txt ]]; then say "Character Select: your own copy in $dir is used as it is."; return 0; fi
     have=$(head -n1 "$dir/coop-charsel.txt" 2>/dev/null | tr -d '\r' || true)

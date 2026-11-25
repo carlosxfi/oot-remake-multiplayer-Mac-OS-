@@ -75,7 +75,7 @@ function Read-YesNo([string]$Question, [int]$Seconds) {
         $line = [Console]::In.ReadLine()
         return -not ($line -and $line.Trim() -match '^(?i)(n|no)$')
     }
-    Write-Host -NoNewline "$Question [Y/n] (yes in $Seconds s) "
+    Write-Host -NoNewline "$Question [Y/n] (press Y or N; no key in $Seconds s: yes) "
     $end = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $end) {
         if ([Console]::KeyAvailable) {

@@ -1166,6 +1166,14 @@ try {
         Check (-not (Read-KitCharacterSelectAnswer 1 { $null })) 'Character Select question: no key in time is no'
         Check (Read-KitCharacterSelectAnswer 5 { [pscustomobject]@{ Key = 'Y' } }) 'Character Select question: Y is yes'
         Check (Read-KitCharacterSelectToggle 'no' 2 { [pscustomobject]@{ Key = 'N' } }) 'Character Select toggle: N at the start changes it'
+        # (launcher-clarity: off, N (the in-game page's "press N at the kit's start") or Y downloads them; on, only N takes them out)
+        Check (Read-KitCharacterSelectToggle 'no' 2 { [pscustomobject]@{ Key = 'Y' } }) 'Character Select toggle: off, Y downloads them too'
+        Check (Read-KitCharacterSelectToggle 'yes' 2 { [pscustomobject]@{ Key = 'N' } }) 'Character Select toggle: on, N takes them out'
+        Check (-not (Read-KitCharacterSelectToggle 'yes' 2 { [pscustomobject]@{ Key = 'Y' } })) 'Character Select toggle: on, Y changes nothing (they stay)'
+        $csSaid = @(& { [void](Read-KitCharacterSelectAnswer 1 { $null }) } 6>&1 | ForEach-Object { "$_" }) -join ' '
+        Check ($csSaid -like '*press Y to download them, N to skip*' -and $csSaid -like '*no key in 1 s: skip*' -and $csSaid -like '*no key*') "Character Select question: says what Y, N and no key do [$csSaid]"
+        $csSaid = @(& { [void](Read-KitCharacterSelectToggle 'no' 1 { $null }) } 6>&1 | ForEach-Object { "$_" }) -join ' '
+        Check ($csSaid -like '*not downloaded*press N or Y within 1 s*no key: the game starts without them*') "Character Select toggle: off, says which key downloads them and what no key does [$csSaid]"
         Check (-not (Read-KitCharacterSelectToggle 'yes' 1 { $null })) 'Character Select toggle: no key, no change'
         Check (-not (Read-KitCharacterSelectToggle 'yes' 2 { [pscustomobject]@{ Key = 'Enter' } })) 'Character Select toggle: another key goes on at once, no change'
         Check ((Read-KitOptions (Join-Path $ck 'coop-options.ini')).Count -eq 0) 'Character Select: coop-options.ini''s character_select is no game switch (not passed, not "skipped")'
@@ -1178,6 +1186,41 @@ try {
                @($csUiFiles | Where-Object { -not (Test-Path -LiteralPath (Join-Path $csDir $_)) }).Count -eq 0 -and
                -not (Test-Path -LiteralPath (Join-Path $csDir 'romfs\Phive')) -and -not (Test-Path -LiteralPath (Join-Path $csDir 'romfs\Sound')) -and
                (Test-Path -LiteralPath $csIps)) 'Character Select: character_select = no keeps the Characters page and Link''s own textures, takes the NPC part out (from the copy there, no download)'
+        # launcher-clarity: a kit with no answer whose game has the kit's copy with the NPC characters keeps them (a reinstall:
+        # before, the question's timer stripped them, "installed but not downloaded"); a ui copy or the player's own: asked.
+        Check (-not (Test-KitCharacterSelectHasNpc $cm 'OoT Character Select')) 'Character Select: a default-part copy has no NPC part'
+        $cmNpc = Join-Path $cg 'mods-npc'
+        Write-File (Join-Path $cmNpc 'CS\coop-charsel.txt') "v1 a b - full cz2v`n"; New-Item -ItemType Directory -Force -Path (Join-Path $cmNpc 'CS\romfs') | Out-Null
+        Write-File (Join-Path $cmNpc 'CS08\coop-charsel.txt') "v1 a b -`n"; New-Item -ItemType Directory -Force -Path (Join-Path $cmNpc 'CS08\romfs') | Out-Null
+        Write-File (Join-Path $cmNpc 'CSui\coop-charsel.txt') "v1 a b - ui cz2v`n"; New-Item -ItemType Directory -Force -Path (Join-Path $cmNpc 'CSui\romfs') | Out-Null
+        Check ((Test-KitCharacterSelectHasNpc $cmNpc 'CS') -and (Test-KitCharacterSelectHasNpc $cmNpc 'CS08') -and -not (Test-KitCharacterSelectHasNpc $cmNpc 'CSui') -and
+               -not (Test-KitCharacterSelectHasNpc $cmNpc 'none')) 'Character Select: the NPC part there is found (full stamp, a 0.11.8 four-field stamp), not in a ui copy or none'
+        Remove-Item -LiteralPath $cmNpc -Recurse -Force
+        # "Uninstall Character Select.bat": off, and the start takes the kit's copy out (kept as .prev until the game is built).
+        Check ((Set-KitCharacterSelectFiles $ck $cg 'uninstall') -eq '' -and (Get-KitCharacterSelectChoice $ck) -eq 'off' -and
+               (Read-KitFirstLine (Join-Path $ck 'hookshot\character-select-answer.txt')) -eq 'off') 'Uninstall Character Select: the answer is off (coop-options.ini''s line too)'
+        $csPrev = Join-Path $cm '_OoT Character Select.prev'
+        Check ((Invoke-KitCharacterSelectStep $ck $cg) -and -not (Test-Path -LiteralPath $csDir) -and (Test-Path -LiteralPath $csPrev)) 'Uninstall Character Select: the start takes it out (kept until the game is built without it)'
+        Check (-not (Invoke-KitCharacterSelectStep $ck $cg) -and -not (Test-Path -LiteralPath $csDir)) 'Uninstall Character Select: later starts do not put it back'
+        Check ((Undo-KitCharacterSelect $ck $cm) -and (Test-Path -LiteralPath $csDir)) 'Uninstall Character Select: a failed build puts it back as it was'
+        # "Reinstall Character Select.bat": the copy set aside, the zip fetched again, asked again.
+        $csZipNow = Join-Path $cDl (Get-KitCharacterSelectPin $ck).zip
+        $csZipHad = Test-Path -LiteralPath $csZipNow
+        if ($csZipHad) { Copy-Item -LiteralPath $csZipNow -Destination "$csZipNow.kept" -Force }
+        Check ((Set-KitCharacterSelectFiles $ck $cg 'reinstall') -eq '' -and (Get-KitCharacterSelectChoice $ck) -eq 'ask' -and -not (Test-Path -LiteralPath $csDir) -and
+               (Test-Path -LiteralPath $csPrev) -and -not (Test-Path -LiteralPath $csZipNow)) 'Reinstall Character Select: the copy set aside, its zip gone (fetched again), asked again'
+        Check ((Undo-KitCharacterSelect $ck $cm) -and (Test-Path -LiteralPath $csDir)) 'Reinstall Character Select: a failed build puts the old copy back'
+        if ($csZipHad) { Move-Item -LiteralPath "$csZipNow.kept" -Destination $csZipNow -Force }
+        $csOwnStamp = Join-Path $csDir 'coop-charsel.txt'; $csOwnKept = [System.IO.File]::ReadAllBytes($csOwnStamp); Remove-Item -LiteralPath $csOwnStamp -Force
+        Check ((Set-KitCharacterSelectFiles $ck $cg 'reinstall') -like '*your own copy*' -and (Test-Path -LiteralPath $csDir)) 'Reinstall Character Select: the player''s own copy is never set aside'
+        [System.IO.File]::WriteAllBytes($csOwnStamp, $csOwnKept)
+        $csMake = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\make_kit_hookshot.ps1')
+        foreach ($csBat in 'Uninstall Character Select.bat', 'Reinstall Character Select.bat') {
+            $csCode = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot "..\kit\$csBat") | Where-Object { $_.Trim() -and $_ -notmatch '^\s*rem\b' -and $_ -ne '@echo off' })
+            Check ($csCode.Count -eq 1 -and $csCode[0] -like '*scripts\character-select.ps1*' -and $csCode[0] -like '*Start Squadala.bat*' -and $csMake.Contains("'$csBat'")) "$($csBat): one command line (an update may replace it while it runs), runs the start, in the kit"
+        }
+        Write-File (Join-Path $ck 'coop-options.ini') "character_select = no`n"
+        Set-KitCharacterSelectChoice $ck 'no'
         # Row 242: a default part made by the old rule (0.11.9/0.11.10: its stamp has no ui-rule field, all of romfs/Tex
         # gone, Link's own textures too) is made again from his release, never copied from, so Link's textures come back.
         # (its own mods folder: the kept copies of $cm stay as the checks below expect them)

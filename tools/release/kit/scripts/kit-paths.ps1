@@ -1597,13 +1597,14 @@ function Get-KitCharacterSelectPin([string]$Kit) {
     return $op
 }
 
-# The player's answer: coop-options.ini 'character_select = yes|no|ask' wins (ask: the question again); else the answer
+# The player's answer: coop-options.ini 'character_select = yes|no|off|ask' wins (ask: the question again; off: his mod
+# uninstalled, "Uninstall Character Select.bat"); else the answer
 # kept in hookshot\character-select-answer.txt (written at the question; no kit file has that name, so Update.bat keeps it;
 # not character-select.txt: Windows names ignore case, and that is the pin CHARACTER-SELECT.txt);
 # else 'ask'.
 function Get-KitCharacterSelectChoice([string]$Kit) {
     foreach ($line in @(Get-Content -LiteralPath (Join-Path $Kit 'coop-options.ini') -ErrorAction SilentlyContinue)) {
-        if ($line -match '^\s*character_select\s*=\s*(yes|no|ask)\s*([#;].*)?$') {
+        if ($line -match '^\s*character_select\s*=\s*(yes|no|off|ask)\s*([#;].*)?$') {
             $v = $Matches[1].ToLowerInvariant()
             if ($v -eq 'ask') { Remove-Item -LiteralPath (Join-Path $Kit 'hookshot\character-select-answer.txt') -Force -ErrorAction SilentlyContinue }
             return $v
@@ -1612,7 +1613,7 @@ function Get-KitCharacterSelectChoice([string]$Kit) {
     $kept = Join-Path $Kit 'hookshot\character-select-answer.txt'
     if (Test-Path -LiteralPath $kept) {
         $v = (Read-KitFirstLine $kept).ToLowerInvariant()
-        if ($v -eq 'yes' -or $v -eq 'no') { return $v }
+        if ($v -eq 'yes' -or $v -eq 'no' -or $v -eq 'off') { return $v }
     }
     return 'ask'
 }
@@ -1624,8 +1625,10 @@ function Set-KitCharacterSelectChoice([string]$Kit, [string]$Value) {
 # The question at a start (owner, 0.11.9: the NPC characters are an opt-in download): Y is yes; Enter, N or no key in
 # $Seconds is no. No console (input redirected: a scripted or unattended start) is no. $ReadKey: tests (a scriptblock
 # giving a key object or $null). The Characters page itself comes with every kit either way.
+# The kit's one rule for a timed question (launcher-clarity, 0.11.13): its line says what Y does, what N does and what
+# no key does, with the seconds left; after the answer one line says what happened and how to change it later.
 function Read-KitCharacterSelectAnswer([int]$Seconds = 15, [scriptblock]$ReadKey = $null) {
-    $q = 'Download the NPC characters for the Characters page? [y/N]'
+    $q = 'NPC characters: press Y to download them, N to skip'
     Write-Host ''
     Write-Host 'The Characters page (in the - menu) comes with the kit: Character Select by Snail (snaildev99).'
     Write-Host '  Its NPC characters (Saria, Sheik, Darunia and over a hundred more) are an extra download from Snail''s own'
@@ -1633,23 +1636,27 @@ function Read-KitCharacterSelectAnswer([int]$Seconds = 15, [scriptblock]$ReadKey
     Write-Host '  downloaded. The Legend of Zelda: Ocarina of Time and its characters belong to Nintendo.'
     $redirected = $true
     try { $redirected = [Console]::IsInputRedirected } catch { }
-    if ($redirected -and -not $ReadKey) { Write-Host "$q n (no console: no)"; return $false }
+    if ($redirected -and -not $ReadKey) { Write-Host "$($q): skipped (no console)"; return $false }
     if (-not $ReadKey) { try { while ([Console]::KeyAvailable) { [void][Console]::ReadKey($true) } } catch { } }
     $end = (Get-Date).AddSeconds($Seconds)
     $left = -1
     while ((Get-Date) -lt $end) {
         $now = [int][Math]::Ceiling(($end - (Get-Date)).TotalSeconds)
-        if ($now -ne $left) { $left = $now; Write-Host -NoNewline "`r$q (no in $left s)  " }
+        if ($now -ne $left) { $left = $now; Write-Host -NoNewline "`r$q (no key in $left s: skip)  " }
         $key = if ($ReadKey) { & $ReadKey } elseif ([Console]::KeyAvailable) { [Console]::ReadKey($true) } else { $null }
         if ($key) {
-            if ("$($key.Key)" -eq 'Y') { Write-Host 'y'; return $true }
-            if ("$($key.Key)" -eq 'N' -or "$($key.Key)" -eq 'Enter') { Write-Host 'n'; return $false }
+            if ("$($key.Key)" -eq 'Y') { Write-Host 'Y'; return $true }
+            if ("$($key.Key)" -eq 'N' -or "$($key.Key)" -eq 'Enter') { Write-Host 'N'; return $false }
         }
         Start-Sleep -Milliseconds 100
     }
-    Write-Host 'n'
+    Write-Host 'no key'
     return $false
 }
+
+# How to change the NPC characters later, said after the answer or a change (build.sh says the same lines).
+$script:KitCharselGetLater = '  To get them later: double-click "Reinstall Character Select.bat" in this folder, or press N (for NPC) at a start while the kit shows the NPC characters line.'
+$script:KitCharselTakeOut = '  To take them out later: press N at a start while the kit shows the NPC characters line.'
 
 # The two parts of Snail's mod folder (owner, 0.11.9). A file of the NPC part (the opt-in download): the characters'
 # models (Model/Player_<age>_C<nnn>.*), their textures, cloth and voices (Tex, Phive, Sound), and his Dark Link
@@ -1815,7 +1822,7 @@ function Complete-KitCharacterSelectFolder([string]$New, $Op, [string]$Part, [st
     Write-KitFreshFile $code[0].FullName $s.Bytes
     Write-KitFreshFile (Join-Path $New 'characters.json') ([System.IO.File]::ReadAllBytes($Json))
     Write-KitFreshFile (Join-Path $New 'coop-charsel.txt') ([System.Text.Encoding]::ASCII.GetBytes("$Want`n"))
-    $npc = if ($Part -eq 'full') { 'with its NPC characters' } else { 'without its NPC characters (character_select = yes in coop-options.ini gets them)' }
+    $npc = if ($Part -eq 'full') { 'with its NPC characters' } else { 'without its NPC characters ("Reinstall Character Select.bat" in the kit folder gets them)' }
     Write-KitFreshFile (Join-Path $New 'CREDITS-coop.txt') ([System.Text.Encoding]::UTF8.GetBytes(((@(
         "OoT Character Select $($Op.release) by snaildev99 (Snail): https://github.com/snaildev99/OoT-Character-Select",
         "Downloaded by the Squadala co-op kit from his own release page onto this PC, $npc; the kit carries none of its files.",
@@ -1972,7 +1979,7 @@ function Install-KitCharacterSelect([string]$Kit, [string]$ModsDir, [string]$Dow
     $dir = Join-Path $ModsDir $op.folder
     $stamp = Join-Path $dir 'coop-charsel.txt'
     $want = Get-KitCharacterSelectWant $op $Part
-    $what = if ($Part -eq 'full') { 'with its NPC characters' } else { 'the Characters page (NPC characters not downloaded)' }
+    $what = if ($Part -eq 'full') { 'with its NPC characters' } else { 'the Characters page (NPC characters not downloaded: "Reinstall Character Select.bat" or N at a start gets them)' }
     if ((Test-Path -LiteralPath $dir) -and -not (Test-Path -LiteralPath $stamp)) {
         $r.Ok = $true
         $r.Lines += "Character Select: your own copy in $dir is used as it is."
@@ -2254,23 +2261,79 @@ function Get-KitPackCharactersKey($Json) {
     return "$($p.mod)|$(if ($p.colours) { "$($p.colours.offset)|$("$($p.colours.head)".ToLowerInvariant())" } else { '|' })|$models"
 }
 
-# Every start after the question (row 206: the NPC characters on or off without editing a file): one line, and N within
-# $Seconds changes it. $true when N was pressed. No console (a scripted start): no wait, no change. $ReadKey: tests.
-function Read-KitCharacterSelectToggle([string]$Choice, [int]$Seconds = 2, [scriptblock]$ReadKey = $null) {
-    $now = if ($Choice -eq 'yes') { 'on (press N to take them out)' } else { 'off (press N to make them, a 145 MB download and about 1.1 GB on disk)' }
+# Every start after the question (row 206: the NPC characters on or off without editing a file): one line, and a key
+# within $Seconds changes it. Off: N (the in-game page says "press N at the kit's start") or Y downloads them; on: N
+# takes them out. Any other key goes on at once. $true when changed. No console (a scripted start): no wait, no change.
+# $ReadKey: tests.
+function Read-KitCharacterSelectToggle([string]$Choice, [int]$Seconds = 3, [scriptblock]$ReadKey = $null) {
+    $now = if ($Choice -eq 'yes') { "on. To take them out press N within $Seconds s (no key: they stay)." }
+           else { "not downloaded. To download them now (145 MB, about 1.1 GB on disk) press N or Y within $Seconds s (no key: the game starts without them)." }
     $redirected = $true
     try { $redirected = [Console]::IsInputRedirected } catch { }
     if ($redirected -and -not $ReadKey) { return $false }
-    Write-Host "Characters page, NPC characters: $now"
+    Write-Host "NPC characters (Characters page): $now"
     if (-not $ReadKey) { try { while ([Console]::KeyAvailable) { [void][Console]::ReadKey($true) } } catch { } }
     $end = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $end) {
         $key = if ($ReadKey) { & $ReadKey } elseif ([Console]::KeyAvailable) { [Console]::ReadKey($true) } else { $null }
-        if ($key -and "$($key.Key)" -eq 'N') { Write-Host '  changed.'; return $true }
-        if ($key) { return $false }
+        if ($key) {
+            $k = "$($key.Key)"
+            if ($k -eq 'N' -or ($k -eq 'Y' -and $Choice -ne 'yes')) {
+                Write-Host $(if ($Choice -eq 'yes') { '  N: taking them out now.' } else { "  $($k): downloading them now." })
+                return $true
+            }
+            return $false
+        }
         Start-Sleep -Milliseconds 100
     }
     return $false
+}
+
+# The NPC part already in the game's mods folder: the kit's own copy (stamped) of any release, made with its NPC
+# characters (a 0.11.8 stamp has four fields: full). A new or reinstalled kit with no kept answer then keeps them
+# instead of asking: before, a missed question there stripped the 1.1 GB the player had made (launcher-clarity: "it
+# says I have the character mod installed but also says it doesn't have the characters downloaded" after a reinstall).
+function Test-KitCharacterSelectHasNpc([string]$ModsDir, [string]$Folder) {
+    $dir = Join-Path $ModsDir $Folder
+    $stamp = Join-Path $dir 'coop-charsel.txt'
+    if (-not (Test-Path -LiteralPath $stamp) -or -not (Test-Path -LiteralPath (Join-Path $dir 'romfs'))) { return $false }
+    $f = @((Read-KitFirstLine $stamp) -split ' ' | Where-Object { $_ })
+    if ($f.Count -lt 4) { return $false }
+    return ($f.Count -lt 5 -or $f[4] -eq 'full')
+}
+
+# "Uninstall Character Select.bat" / "Reinstall Character Select.bat" (owner, 0.11.13): the answer they set, kept and
+# in coop-options.ini's line when it has one. The start that follows does the work with the step below (the same
+# install, the same keep-until-built and undo): Uninstall = 'off' (his mod taken out of the game, the game built
+# without it, nothing put back until Reinstall); Reinstall = his copy set aside (the download zip too, so it is fetched
+# again) and the question asked again. Saves, settings and the character picks (coop-player.ini) are not touched.
+# '' or why not.
+function Set-KitCharacterSelectFiles([string]$Kit, [string]$GameDir, [ValidateSet('uninstall', 'reinstall')][string]$Do) {
+    $op = Get-KitCharacterSelectPin $Kit
+    if (-not $op) { return 'this kit has no Character Select (no CHARACTER-SELECT.txt)' }
+    if ($GameDir) {
+        $run = @(Get-Process longshot, hookshot -ErrorAction SilentlyContinue | Where-Object {
+            $_.Path -and $_.Path.StartsWith(([System.IO.Path]::GetFullPath($GameDir)).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) })
+        if ($run.Count) { return 'the game is running: close it first, then double-click this file again' }
+    }
+    if ($Do -eq 'uninstall') {
+        Set-KitCharacterSelectChoice $Kit 'off'
+        Set-KitOptionsCharacterSelect $Kit 'off'
+        return ''
+    }
+    if ($GameDir) {
+        $mods = Join-Path $GameDir 'mods'
+        $dir = Join-Path $mods $op.folder
+        if ((Test-Path -LiteralPath $dir) -and -not (Test-Path -LiteralPath (Join-Path $dir 'coop-charsel.txt'))) {
+            return "mods\$($op.folder) is your own copy (the kit did not put it in): remove it yourself first, then double-click this file again"
+        }
+        try { if (Test-Path -LiteralPath $dir) { Save-KitCharacterSelectPrevious $mods $op.folder } }
+        catch { return "mods\$($op.folder) could not be set aside ($("$($_.Exception.Message)".Trim())): close the game and try again" }
+    }
+    Remove-Item -LiteralPath (Join-Path $Kit "hookshot\downloads\$($op.zip)") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $Kit 'hookshot\character-select-answer.txt') -Force -ErrorAction SilentlyContinue
+    Set-KitOptionsCharacterSelect $Kit 'ask'
+    return ''
 }
 
 # A character_select line in coop-options.ini set to $Value (when there is one: it wins over the kept answer).
@@ -2382,18 +2445,39 @@ function Resolve-KitCharacterSelectCopies([string]$Kit, [string]$ModsDir) {
 }
 
 # The start's step (play.ps1, before Get-KitHookshotNeed): every kit with the pin gets the Characters page (Snail's
-# default part); the NPC characters only on the player's yes (asked once; character_select = yes|no in
-# coop-options.ini or NPC-characters.bat changes it). $true when the mods folder changed (the game build and the pack
+# default part); the NPC characters only on the player's yes (asked once; N at a start, character_select = yes|no in
+# coop-options.ini, or "Reinstall Character Select.bat" changes it). 'off' ("Uninstall Character Select.bat"): the
+# kit's copy is taken out (kept as _<folder>.prev until the game is built without it) and nothing is asked. $true when the mods folder changed (the game build and the pack
 # then follow from their stamps). $GameDir: longshot.exe's folder.
 function Invoke-KitCharacterSelectStep([string]$Kit, [string]$GameDir, [int]$Seconds = 15) {
-    if (-not (Get-KitCharacterSelectPin $Kit)) { return $false }
+    $op = Get-KitCharacterSelectPin $Kit
+    if (-not $op) { return $false }
     $mods = Join-Path $GameDir 'mods'
     $choice = Get-KitCharacterSelectChoice $Kit
+    if ($choice -eq 'off') {
+        $dir = Join-Path $mods $op.folder
+        if (-not (Test-Path -LiteralPath (Join-Path $dir 'coop-charsel.txt'))) {
+            $own = if (Test-Path -LiteralPath $dir) { " (mods\$($op.folder) is your own copy, used as it is)" } else { '' }
+            Write-Host "Character Select: uninstalled$own. To put it back: double-click ""Reinstall Character Select.bat""."
+            return $false
+        }
+        Save-KitCharacterSelectPrevious $mods $op.folder
+        Write-Host 'Character Select: uninstalled now (the game is built again without it). To put it back: double-click "Reinstall Character Select.bat".'
+        return $true
+    }
     if ($choice -eq 'ask') {
-        $choice = if (Read-KitCharacterSelectAnswer $Seconds) { 'yes' } else { 'no' }
+        if (Test-KitCharacterSelectHasNpc $mods $op.folder) {
+            # (a reinstalled kit, or one pointed at a game made before: the characters there stay, no question)
+            $choice = 'yes'
+            Write-Host 'NPC characters (Characters page): found in your game from before, kept.'
+            Write-Host $script:KitCharselTakeOut
+        } else {
+            $choice = if (Read-KitCharacterSelectAnswer $Seconds) { 'yes' } else { 'no' }
+            if ($choice -eq 'yes') { Write-Host '  Downloading them now (once).'; Write-Host $script:KitCharselTakeOut }
+            else { Write-Host '  Skipped: you play as Link.'; Write-Host $script:KitCharselGetLater }
+        }
         Set-KitCharacterSelectChoice $Kit $choice
-        if ($choice -eq 'no') { Write-Host '  Not downloaded. To get them later: press N at the next start, while the kit shows the NPC line.' }
-    } elseif (Read-KitCharacterSelectToggle $choice 2) {
+    } elseif (Read-KitCharacterSelectToggle $choice 3) {
         # (row 206: on or off from the kit itself, no file to edit; coop-options.ini's line, if any, would win again)
         $choice = if ($choice -eq 'yes') { 'no' } else { 'yes' }
         Set-KitCharacterSelectChoice $Kit $choice

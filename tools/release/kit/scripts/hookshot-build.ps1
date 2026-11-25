@@ -386,7 +386,8 @@ if (-not $Longshot -and $lsFresh -and -not $env:OOT_COOP_NO_LONGSHOT_ASK) {
     if (Test-Path -LiteralPath $lsNote) { $Longshot = "$(Get-Content -LiteralPath $lsNote -TotalCount 1)".Trim() }
     else {
         Write-Host ''
-        Write-Host 'Built Longshot yourself? The co-op game is a separate build (co-op is built into its source), but your own'
+        Write-Host 'Built Longshot yourself? (Not needed: the kit downloads and builds its own Longshot; your own, of any version, is not used.)'
+        Write-Host 'The co-op game is a separate build (co-op is built into its source), but your own'
         Write-Host 'Longshot can lend it your saves and its downloads. Your Longshot game folder (the one with longshot.exe): paste'
         Write-Host 'its path with Ctrl+V or right-click, or drag the folder here, then press Enter; just Enter (or 60 s) for no.'
         Write-Host '(Asked once: hookshot\longshot-folder.txt keeps the answer; delete that file to be asked again before a build.)'
