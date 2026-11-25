@@ -5,6 +5,7 @@
 #include "coop_browse.h"
 #include "coop_i18n.h"
 #include "coop_list_pages.h"
+#include "coop_mods_tab.h"
 #include "coop_text_fit.h"
 
 #include "hos_coop_host.h"
@@ -1662,6 +1663,17 @@ std::string HelpText(const std::string& utf8, std::size_t columns, std::size_t l
     std::string text;
     for (std::size_t k = 0; k < out.size(); ++k) text += (k ? "\n" : "") + out[k];
     return text;
+}
+
+std::string HelpPager::Shown(const std::string& utf8, std::uint64_t now_ms) {
+    if (utf8 != text_) {
+        text_ = utf8;
+        pages_ = utf8.empty() ? std::vector<std::string>{} : CoopModsTab::HelpPages(utf8);
+        since_ms_ = now_ms;
+    }
+    if (pages_.empty()) return {};
+    const std::uint64_t turns = now_ms >= since_ms_ ? (now_ms - since_ms_) / kHelpPageMs : 0;
+    return HelpText(pages_[static_cast<std::size_t>(turns % pages_.size())]);
 }
 
 const char* ActionWords(RowAction a) {
