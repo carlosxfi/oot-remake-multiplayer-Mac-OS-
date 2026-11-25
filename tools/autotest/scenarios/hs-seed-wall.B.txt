@@ -1,7 +1,7 @@
 # hs-seed-wall, B (see hs-seed-wall.A.txt): B shoots three seeds at the map chest / the wall behind it,
-# ~3-4 m ahead. A seed flies ~74 m/s, so it lands ~3 ticks after the shot; A shows the copy kBehindUs
-# late and holds it 0.2 s at the spot: hitNa..hitNf (every 3 ticks from the shot) span the landing on
-# both screens.
+# ~3-4 m ahead. After each release B is held and shot every frame or two for 45 shots (burst ownN):
+# its own seed's flight, wall hit and the game's own effect there. A's spark comes at the seed's REMOVE
+# (1.5-5 s on in run -r3: the seed bounces and lies), so A bursts on its own log line (hs-seed-wall.A.txt).
 mark start
 warp InsideTheDekuTree Entrance
 wait 1200
@@ -23,48 +23,14 @@ press ZL 10
 wait 60
 mark ready
 hold ZR 90
-mark aim1
-wait 3
-mark hit1a
-wait 3
-mark hit1b
-wait 3
-mark hit1c
-wait 3
-mark hit1d
-wait 3
-mark hit1e
-wait 3
-mark hit1f
-wait 90
+burst own1 45        # B held: its own seed's flight and wall hit, frame by frame
+wait 1500            # A's burst on its emit line ends before the next shot
 hold ZR 90
-wait 3
-mark hit2a
-wait 3
-mark hit2b
-wait 3
-mark hit2c
-wait 3
-mark hit2d
-wait 3
-mark hit2e
-wait 3
-mark hit2f
-wait 90
+burst own2 45        # B held: its own seed's flight and wall hit, frame by frame
+wait 1500            # A's burst on its emit line ends before the next shot
 hold ZR 90
-wait 3
-mark hit3a
-wait 3
-mark hit3b
-wait 3
-mark hit3c
-wait 3
-mark hit3d
-wait 3
-mark hit3e
-wait 3
-mark hit3f
-wait 90
+burst own3 45        # B held: its own seed's flight and wall hit, frame by frame
+wait 1500            # A's burst on its emit line ends before the next shot
 press B
 wait 30
 mark end

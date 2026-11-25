@@ -9,8 +9,9 @@
 # Run: tools\autotest\run.ps1 -Runtime hookshot -Scenario hs-seed-wall
 # Pass, A's log: "CoopShotFx_Seed: copy N played its hit effect through the game's own emit" AND
 # "CoopShotFx_Seed: copy N played its landing sound through the game's own emit" (the sound is log proof
-# only), and A's shots B-hitNx-A show the spark at the hit spot (compare B's own B-hitNx-B: the shooter's
-# own seed's spark/debris). No "has no sound user", no "its sound user has no such key".
+# only), and A's burst shots hs-seed-wall-A-hitN-NNN-A (30 frames before the emit line, 60 after) show the spark
+# at the spot (compare B's own burst hs-seed-wall-B-ownN-NNN-B: the shooter's own seed's spark/debris, and where).
+# Run -r3 (2026-11-25): A's emit came at the owner's remove, 1.5-5 s after the shot; marks 3-18 ticks on missed it. No "has no sound user", no "its sound user has no such key".
 mark start
 warp InsideTheDekuTree Entrance
 wait 1200
@@ -31,5 +32,14 @@ toward 6.51 7.25 4        # face the chest (a step, not a walk)
 press ZL 10
 wait 60
 mark ready
-wait 1500
+await 3000 got Shootable_DekuSeed
+burst fly1 20        # the copy's flight and bounce
+burst hit1 60 900 CoopShotFx_Seed: copy [0-9]+ played its hit effect   # 30 before the emit, 60 after
+await 3000 got Shootable_DekuSeed
+burst fly2 20        # the copy's flight and bounce
+burst hit2 60 900 CoopShotFx_Seed: copy [0-9]+ played its hit effect   # 30 before the emit, 60 after
+await 3000 got Shootable_DekuSeed
+burst fly3 20        # the copy's flight and bounce
+burst hit3 60 900 CoopShotFx_Seed: copy [0-9]+ played its hit effect   # 30 before the emit, 60 after
+wait 120
 mark end

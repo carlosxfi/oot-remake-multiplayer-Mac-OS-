@@ -147,6 +147,9 @@ class FakeGame:
                     return dict(base, state="play", waited=1, map=self.map)
                 self.clock.t += req.get("timeout", 60)
                 return dict(base, ok=False, error="timeout", message="map", state="play", map=self.map)
+            if cmd in ("pause", "step", "resume"):
+                self.frame = getattr(self, "frame", 100) + (req.get("frames", 0) if cmd == "step" else 0)
+                return dict(base, frame=self.frame, paused=cmd != "resume")
             if cmd in ("shot", "wait", "quit"):
                 return dict(base)
             return dict(base, ok=False, error="unknown_cmd", message=cmd)
@@ -1094,16 +1097,88 @@ class AwaitTest(unittest.TestCase):
         self.assertEqual(shots, ["after"])
 
 
+class BurstTest(unittest.TestCase):
+    """Issue 166: `burst NAME FRAMES [TICKS REGEX]`, the game held and shot frame by frame (the runner's own step)."""
+
+    LINE = "coop: spawn: CoopShotFx_Seed: copy 1 played its hit effect through the game's own emit"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def path(self, name):
+        p = os.path.join(self.tmp, name + ".png")
+        with open(p, "wb") as f:   # (the fake bridge writes no file: the burst's deletes are checked on these)
+            f.write(b"png")
+        return p
+
+    def test_parse(self):
+        s = hs.parse("burst hit 60 600 played its hit effect\n")[0]
+        self.assertEqual((s.kind, s.name, s.radius, s.ticks, s.start), ("burst", "hit", 60, 600, "played its hit effect"))
+        s = hs.parse("burst own 45   # B's own seed\n")[0]
+        self.assertEqual((s.kind, s.radius, s.start), ("burst", 45, ""))
+        self.assertNotIn("burst", hs.MODULE_ONLY)
+
+    def cmds(self, game):
+        return [r.get("cmd") for _, r in game.got if r.get("cmd") in ("pause", "step", "shot", "resume")]
+
+    def test_fixed_burst_holds_steps_and_shoots_then_lets_go(self):
+        game = FakeGame()
+        _, log, shots, _, _ = play("burst own 3\nmark after\n", game, burst_path=self.path)
+        self.assertEqual(self.cmds(game), ["pause", "step", "shot", "step", "shot", "step", "shot", "resume"])
+        steps = [r for _, r in game.got if r.get("cmd") == "step"]
+        self.assertTrue(all(r.get("frames") == 1 for r in steps))
+        paths = [r.get("path") for _, r in game.got if r.get("cmd") == "shot"]
+        self.assertEqual([os.path.basename(p) for p in paths], ["own-000.png", "own-001.png", "own-002.png"])
+        self.assertEqual(shots, ["after"])
+        self.assertTrue(any("burst own: 3 shots" in ln for ln in log.lines), log.lines)
+
+    def test_line_burst_keeps_the_shots_before_the_line_and_the_frames_after(self):
+        game = FakeGame()
+        text = [self.LINE]   # an old match does not start it
+        reads = []
+
+        def read_log():
+            reads.append(1)
+            if len(reads) == 50:
+                text.append(self.LINE)
+            return "\n".join(text)
+
+        _, log, _, _, _ = play("burst hit 5 600 played its hit effect\n", game, burst_path=self.path, read_log=read_log)
+        n = sum(1 for _, r in game.got if r.get("cmd") == "shot")
+        self.assertEqual(n, 49 + 5)   # the line seen after the 49th shot, then 5 more
+        left = sorted(os.listdir(self.tmp))
+        self.assertEqual(len(left), hs.BURST_BEFORE + 5, left)   # the older ones deleted
+        self.assertEqual(left[0], "hit-%03d.png" % (49 - hs.BURST_BEFORE))
+        self.assertEqual(self.cmds(game)[-1], "resume")
+        self.assertTrue(any("line seen at shot 48" in ln for ln in log.lines), log.lines)
+
+    def test_no_line_stops_at_ticks_and_lets_go(self):
+        game = FakeGame()
+        _, log, _, _, _ = play("burst hit 5 10 never\nmark after\n", game, burst_path=self.path, read_log=lambda: "")
+        self.assertEqual(sum(1 for _, r in game.got if r.get("cmd") == "shot"), 11)
+        self.assertEqual(self.cmds(game)[-1], "resume")
+        self.assertTrue(any("no line after 11 frames" in ln for ln in log.lines), log.lines)
+
+    def test_no_shots_no_burst(self):
+        game = FakeGame()
+        _, log, _, _, _ = play("burst own 3\n", game)
+        self.assertEqual(self.cmds(game), [])
+        self.assertTrue(any("burst own skipped" in ln for ln in log.lines), log.lines)
+
+
 class GrammarTest(unittest.TestCase):
     """Row 325 review: one scenario grammar for both readers. The same lists are in tests/lichii/testinput_test.cpp
     ('testinput: the runner's grammar'): every line here is taken by both parsers or refused by both."""
 
     TAKEN = ("wait 1", "wait 36000", "wait 0007", "hold A 36000", "press A 1", "stick -1 +1 5", "stick .5 -0.5 5",
              "toward 1 2 36000", "goto 1.5 -2 0.2 600", "goto .5 5. 1", "goto 1e3 -1E-2", "goto 1000000 -1000000",
-             "await 0 x", "await 99999999999 x", "hit X 80", "drop X 500", "hurt 1", "setflag F -2147483648",
+             "burst b 1", "burst hit-1.a_B 600", "burst b 60 600 played its (hit) effect", "burst b 0060 0 x", "await 0 x", "await 99999999999 x", "hit X 80", "drop X 500", "hurt 1", "setflag F -2147483648",
              "setflag F 2147483647", "setflag F 007")
     REFUSED = ("wait 0", "wait 36001", "wait +5", "wait -0", "wait 1_0", "wait 0000000001", "hold A 0", "press A 0",
-               "stick 0 0 0", "toward 1 2 0", "toward 1 2 36001", "goto 1 2 1 0", "await -1 x", "await +1 x",
+               "stick 0 0 0", "toward 1 2 0", "toward 1 2 36001", "goto 1 2 1 0", "burst b 0", "burst b 601", "burst b 0000000601", "burst b 60 600", "burst b", "burst b/x 60", "burst b +5", "burst b 60 -1 x", "await -1 x", "await +1 x",
                "await 1_0 x", "goto 0x10 2", "goto 1_0 2", "goto inf 2", "goto nan 2", "goto 1000001 2", "goto 1e7 2",
                "goto . 2", "goto 1e 2", "stick 0x1 0 5", "hit X 0", "hit X 81", "hit X ²", "drop X 501",
                "hurt 81", "hurt ³", "setflag F 2147483648", "setflag F -2147483649", "setflag F --5",

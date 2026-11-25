@@ -151,7 +151,7 @@ class BridgeError(Exception):
 
 class Step:
     def __init__(self, kind, line, ticks=0):
-        self.kind = kind          # timed, mark, goto, toward, warp, await, or one of MODULE_ONLY
+        self.kind = kind          # timed, mark, goto, toward, warp, await, burst, or one of MODULE_ONLY
         self.line = line
         self.ticks = ticks
         self.buttons = []         # the bridge's names
@@ -172,6 +172,9 @@ class Step:
 # numbers, so a line one of them plays is never refused by the other. Whole numbers are plain digits (no sign, no
 # underscore), numbers plain decimals (no hex, no underscore, no inf/nan).
 _WHOLE = re.compile(r"[0-9]+")
+_BURST_NAME = re.compile(r"[A-Za-z0-9_.-]+")   # a burst's shots are files: NAME-NNN
+BURST_MAX = 600           # shots in one burst (each a PNG)
+BURST_BEFORE = 30         # a burst on a line: the shots kept from before it
 _DECIMAL = re.compile(r"[-+]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][-+]?[0-9]+)?")
 
 
@@ -434,6 +437,27 @@ def parse(text):
             except re.error as e:
                 fail("await: bad REGEX: %s" % e)
             s.kind, s.ticks, s.name = "await", _await_ticks(w[1]), pattern
+        elif cmd == "BURST":
+            # Issue 166: "burst NAME FRAMES [TICKS REGEX]": this game held and a shot of it every frame or two (one
+            # frame run, then the shot), FRAMES shots; with REGEX they start when a NEW line of this game's log
+            # matches, at most TICKS frames on, and the last BURST_BEFORE shots before that line are kept. The
+            # runner's own step (no module step): an effect a mark's quarter-second shot misses is seen frame by frame.
+            pattern = ""
+            if len(w) >= 5:
+                rest = line.strip()
+                for word in w[:4]:
+                    rest = rest[rest.index(word) + len(word):]
+                pattern = rest.strip()
+            if not (len(w) == 3 or len(w) >= 5) or not _BURST_NAME.fullmatch(w[1]) or _await_ticks(w[2]) is None                     or not 1 <= int(w[2]) <= BURST_MAX or (len(w) >= 5 and _await_ticks(w[3]) is None):
+                fail("want: burst NAME FRAMES [TICKS REGEX] (FRAMES 1..%d)" % BURST_MAX)
+            if pattern:
+                try:
+                    re.compile(pattern)
+                except re.error as e:
+                    fail("burst: bad REGEX: %s" % e)
+            s.kind, s.name, s.start = "burst", w[1], pattern
+            s.ticks = int(w[3]) if pattern else 0
+            s.radius = int(w[2])          # (the shots after the line, or all of them)
         elif cmd == "MARK":
             if len(w) != 2:
                 fail("want: mark NAME (one word)")
@@ -609,8 +633,9 @@ class Player:
 
     def __init__(self, bridge, log, shot=None, connect=None, clock=time.monotonic, sleep=time.sleep,
                  main_base=MAIN_BASE, steer_every=0.1, warp_for=90.0, commands=None, take_for=5.0, read_log=None,
-                 await_every=0.25):
+                 await_every=0.25, burst_path=None):
         self.b = bridge
+        self.burst_path = burst_path  # burst_path(name) -> a PNG path for one of this game's burst shots, or None
         self.read_log = read_log      # () -> this game's log text so far ('' if none yet), or None: await skipped
         self.await_every = await_every
         self.commands = commands      # the game's LICHII_COOP_TEST_COMMANDS file, or None: module steps skipped
@@ -933,6 +958,58 @@ class Player:
                 return now
             self._until(min(end, now + self.await_every))
 
+    def burst(self, s, t0):
+        """burst NAME FRAMES [TICKS REGEX] (issue 166): this game held, then one frame run and one shot at a time.
+        No REGEX: FRAMES shots. REGEX: shots from t0 on, the last BURST_BEFORE kept (older ones deleted), until a new
+        line of this game's log matches (at most TICKS frames), then FRAMES more. Let go after, whatever happened."""
+        self._until(t0)
+        if self.burst_path is None:
+            self.log("coop: test burst %s skipped (line %d: this run takes no shots)" % (s.name, s.line))
+            return t0
+        rx = re.compile(s.start) if s.start else None
+        if rx is not None and self.read_log is None:
+            self.log("coop: test burst %s skipped (line %d: this run reads no game log)" % (s.name, s.line))
+            return t0
+        before = self._log_matches(rx)[0] if rx is not None else 0
+        kept, taken, seen_at, after, frame = [], 0, None if rx is not None else 0, 0, None
+        try:
+            self.b.request("pause")
+            while True:
+                if seen_at is None and taken > s.ticks:
+                    self.log("coop: test burst %s: no line after %d frames (line %d: %s)" % (s.name, taken, s.line, s.start))
+                    break
+                if seen_at is not None and after >= s.radius:
+                    break
+                r = self.b.request("step", frames=1)
+                frame = r.get("frame", frame)
+                path = self.burst_path("%s-%03d" % (s.name, taken))
+                self.b.request("shot", reply_timeout=30.0, path=path, timeout=20)
+                taken += 1
+                if seen_at is None:
+                    kept.append(path)
+                    if len(kept) > BURST_BEFORE:
+                        old = kept.pop(0)
+                        try:
+                            os.remove(old)
+                        except OSError:
+                            pass
+                    n, last = self._log_matches(rx)
+                    if n > before:
+                        seen_at = taken
+                        self.log("coop: test burst %s: line seen at shot %d (frame %s): %s" % (s.name, taken - 1, frame,
+                                                                                         last.strip()))
+                else:
+                    after += 1
+        except Exception as e:   # a shot or step that fails ends the burst, not the script
+            self.log("coop: test burst %s failed at shot %d: %s" % (s.name, taken, e))
+        finally:
+            try:
+                self.b.request("resume")
+            except Exception as e:
+                self.log("coop: test burst %s: resume failed: %s" % (s.name, e))
+        self.log("coop: test burst %s: %d shots, last frame %s" % (s.name, taken, frame))
+        return self.clock()
+
     def play(self, steps):
         self.log("coop: test script %d steps" % len(steps))
         t = self.clock()
@@ -962,6 +1039,8 @@ class Player:
                 t = max(t, self.steer(s, max(t, self.clock())))
             elif s.kind == "await":
                 t = max(t, self.await_line(s, max(t, self.clock())))
+            elif s.kind == "burst":
+                t = max(t, self.burst(s, max(t, self.clock())))
             elif s.kind == "warp":
                 self.warp(s)
         self.log("coop: test script done")
@@ -1509,7 +1588,8 @@ def run(a):
                 try:
                     p = Player(pb, Log(os.path.join(out, "player-%s.txt" % x)), shot=shooter(x, a.name),
                                connect=lambda: Bridge.connect(bridges[x][0]), commands=commands[x],
-                               read_log=game_log(x))
+                               read_log=game_log(x),
+                               burst_path=lambda m, x=x: os.path.join(out, "%s-%s-%s-%s.png" % (a.name, x, m, x)))
                     players[x] = p
                     p.play(parsed[x])
                 finally:
