@@ -1402,6 +1402,10 @@ print("Done: 1 file. The mod folder is ready.")
             Remove-Item -LiteralPath $pcDir -Recurse -Force
             Remove-Item -LiteralPath $csDir -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -Path (Join-Path $cm '_OoT Character Select.*') -Recurse -Force -ErrorAction SilentlyContinue
+            # (the cases after this one use the plain tool release and its pin again)
+            Remove-Item -LiteralPath $zipT -Force -ErrorAction SilentlyContinue
+            & "$env:SystemRoot\System32\tar.exe" -a -c -f $zipT -C $src2 'CS-t'
+            Write-File (Join-Path $ck 'hookshot\CHARACTER-SELECT.txt') $pinT
             # Arguments reach a program exactly as given (no shell between): '&', '|', '^', '%', spaces, quotes, a trailing backslash.
             $argsT = @('a b&c', 'x|y^z %PATH%', 'q"uote', 'tail\', 'two\\"', '', 'plain')
             $echoOut = Join-Path $ck 'argv-echo.txt'

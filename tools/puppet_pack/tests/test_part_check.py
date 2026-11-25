@@ -99,6 +99,7 @@ class NoteTest(unittest.TestCase):
                 self.assertTrue(f.read().startswith("Character Select: the game's own Player_Adult used"))
             # (made again with the file it needs: no note)
             for rel in (PACK, SKEL):
+                os.makedirs(os.path.dirname(os.path.join(mod, "romfs", rel)), exist_ok=True)
                 with open(os.path.join(mod, "romfs", rel), "wb") as f:
                     f.write(b"..Player_Dark_Animation..")
             self.assertEqual(pc.cmd_check(mod, game, "Character Select", said.append), 0)
