@@ -217,9 +217,15 @@ std::size_t PaintCap(const Cap& cap, const std::string& name, CoopLookPaint::For
                      double base);
 // The same by any rule (the gear's: its tunic's tones, shaded against that
 // part's average in the game's own texels): `rule`'s colour and base taken as given.
+// Row 185's cause in the cap (row 278 follow-up): a cap block is wholly the cap's
+// (look_cap: only cap triangles cover it), but its end colours are the encoder's;
+// beside the Goron hood's red it often put a grey or dark end no tone takes, so the
+// block came out half painted (specks of the old colour). Every cap block is the
+// rule's region: it also takes each Forceable end (no tone of `tones`, every part's
+// tone in the texture; pale or dark), as the shield frame's region blocks do.
 std::size_t PaintCap(const Cap& cap, const std::string& name, CoopLookPaint::Format format,
                      std::span<const std::uint8_t> original, std::vector<std::uint8_t>& texels,
-                     const CoopLookPaint::Rule& rule);
+                     const CoopLookPaint::Rule& rule, std::uint32_t tones);
 
 // The boots in Link's own model (the adult's Kokiri boots, the child's
 // leather, which holds his belts too): not an item, so no item copies. Every

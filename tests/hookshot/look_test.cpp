@@ -1980,6 +1980,39 @@ TEST_CASE("look parts (row 278): the Goron and Zora tunics' hood trims take the 
     CoopLookParts::UseCap(nullptr);
 }
 
+TEST_CASE("look parts (row 185 in the cap): a cap block takes the encoder's grey end beside the hood's red") {
+    using CoopLookPaint::Format;
+    // BC1 blocks as the Goron hood's trim has them (offline, the game's own texture: 753 of its 14367 cap blocks
+    // had a grey or dark end beside the red, painted at the red end only). 565 ends, every texel index used.
+    const auto block = [](std::uint16_t c0, std::uint16_t c1) {
+        std::vector<std::uint8_t> b{static_cast<std::uint8_t>(c0), static_cast<std::uint8_t>(c0 >> 8),
+                                    static_cast<std::uint8_t>(c1), static_cast<std::uint8_t>(c1 >> 8),
+                                    0xE4, 0xE4, 0xE4, 0xE4};
+        return b;
+    };
+    const std::uint16_t red = 0xC945, grey = 0x8C71, gold = 0xDDA5;   // (206, 40, 41), (140, 142, 140), (222, 182, 41)
+    std::vector<std::uint8_t> original;
+    for (const auto& b : {block(red, grey), block(gold, red), block(grey, 0x8C70), block(red, grey)}) {
+        original.insert(original.end(), b.begin(), b.end());
+    }
+    const char* const kGoron = "Mt_Vest_Armor_Adult_Goron_Alb";
+    const auto cap = *CoopLookParts::ParseCap(CapFile({{kGoron, 8, {0, 8, 16}}}));   // block 3 is not the cap's
+    std::vector<std::uint8_t> t = original;
+    const CoopLookPaint::Rule rule{CoopLookPaint::kRed, 0x2040C0u, CoopLookPaint::Takes::tones, 0.2};
+    CHECK(CoopLookParts::PaintCap(cap, kGoron, Format::bc1, original, t, rule, CoopLookPaint::kRed) == 3);
+    const auto tones_at = [&](std::size_t at) {
+        std::uint32_t tones = 0;
+        for (const auto& e : CoopLookPaint::Ends(Format::bc1, std::span<const std::uint8_t>(t.data() + at, 8))) {
+            tones |= CoopLookPaint::ToneOf(e);
+        }
+        return tones;
+    };
+    CHECK(tones_at(0) == CoopLookPaint::kBlue);                             // both ends: no grey speck left
+    CHECK(tones_at(8) == (CoopLookPaint::kBlue | CoopLookPaint::kGold));    // a coloured end (gold) is kept
+    CHECK(tones_at(16) == CoopLookPaint::kBlue);                            // a grey cap block: the trim's
+    CHECK(std::equal(t.begin() + 24, t.end(), original.begin() + 24));     // not a cap block: untouched
+}
+
 TEST_CASE("look tunic: the wardrobe draws the tunic and the Cap trim as one painting") {
     using CoopLookParts::TunicPaint;
     FakeTextures m(kBase, 0x10000);

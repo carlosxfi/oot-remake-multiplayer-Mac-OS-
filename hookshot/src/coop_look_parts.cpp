@@ -292,7 +292,8 @@ CoopLookTunic::Texels Painted(const CoopLookTunic::Texels& gear, const CoopLook:
             }
             if (n != 0 && sum > 0) {
                 PaintCap(*cap, t.name, entry->format, original, t.texels,
-                         CoopLookPaint::Rule{tones, *trim & 0xFFFFFFu, T::Takes::tones, sum / static_cast<double>(n)});
+                         CoopLookPaint::Rule{tones, *trim & 0xFFFFFFu, T::Takes::tones, sum / static_cast<double>(n)},
+                         tones);
             }
         }
     }
@@ -448,13 +449,16 @@ std::optional<Cap> ParseCap(const std::vector<std::uint8_t>& file, std::string* 
 std::size_t PaintCap(const Cap& cap, const std::string& name, CoopLookPaint::Format format,
                      std::span<const std::uint8_t> green, std::vector<std::uint8_t>& texels, std::uint32_t colour,
                      double base) {
-    return PaintCap(cap, name, format, green, texels, CoopLookPaint::Rule{0, colour & 0xFFFFFFu, T::Takes::green, base});
+    return PaintCap(cap, name, format, green, texels, CoopLookPaint::Rule{0, colour & 0xFFFFFFu, T::Takes::green, base},
+                    T::kGreen);
 }
 
 std::size_t PaintCap(const Cap& cap, const std::string& name, CoopLookPaint::Format format,
                      std::span<const std::uint8_t> original, std::vector<std::uint8_t>& texels,
-                     const CoopLookPaint::Rule& rule) {
+                     const CoopLookPaint::Rule& rule, std::uint32_t tones) {
     const std::size_t step = CoopLookPaint::BlockBytes(format);
+    static constexpr std::int8_t kTheRule[] = {0};   // each cap block, painted alone, is the rule's region
+    const CoopLookPaint::Region region{kTheRule, tones};
     const std::size_t size = std::min(original.size(), texels.size());
     const std::span<std::uint8_t> out(texels);
     std::size_t changed = 0;
@@ -466,7 +470,7 @@ std::size_t PaintCap(const Cap& cap, const std::string& name, CoopLookPaint::For
             if (at % step != 0 || at > size || size - at < step) {
                 continue;
             }
-            changed += CoopLookPaint::Recolour(format, original.subspan(at, step), out.subspan(at, step), {rule});
+            changed += CoopLookPaint::Recolour(format, original.subspan(at, step), out.subspan(at, step), {rule}, region);
         }
     }
     return changed;
