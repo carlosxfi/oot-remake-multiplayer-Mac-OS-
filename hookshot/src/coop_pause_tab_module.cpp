@@ -46,7 +46,9 @@
 #include "coop_lobby_game.h"
 #include "coop_look.h"
 #include "coop_char_colours.h"
+#include "coop_mods_runtime.h"
 #include "coop_mods_tab.h"
+#include "coop_rando.h"
 #include "coop_snail_custom.h"
 #include "hos_coop_menu.h"
 #include "coop_longshot_settings.h"
@@ -2970,6 +2972,21 @@ int MinusCategoryNow() {
     return manager != 0 ? Read<std::int32_t>(manager + 0x52c) : -1;
 }
 std::atomic<bool> g_hop_on{false};   // (a hop to the Characters tab runs: OnPad taps L for it)
+// Row 288: the Characters page's layouts are not in the game this run (coop_rando.h OutsideLayouts, set at the
+// randomizer's Start): the page is held (CharactersHoldPad in OnPad, no hop) and the chat says why when it is asked for.
+CoopPauseTab::CharactersHold g_characters_hold;   // (OnPad, the input thread)
+bool CharactersHeld() {
+    const CoopRando::Rando* r = CoopModsRuntime::Rando();
+    return r != nullptr && r->LayoutsMissing();
+}
+void SayCharactersHeld(const char* how) {
+    static std::atomic<bool> said{false};
+    if (said.exchange(true)) return;   // (once a run: the line is also in the chat from the start)
+    LOG_WARNING(Core, "coop: pause tab: the Characters page is held ({}): the menus' layout archive the game reads "
+                      "has not its layouts (see the randomizer line at the start), opening it would crash the game",
+                how);
+    if (CoopRando::Rando* r = CoopModsRuntime::Rando(); r != nullptr) r->SayLayouts();
+}
 // F6 (coop_players_open.h): the - menu opened on our Multiplayer tab's Players view. g_players_mutex: the run (F6 on the
 // window's or present's thread, OnPad on the input thread). g_players_no_tabs: a - menu opened without tabs of ours.
 std::mutex g_players_mutex;
@@ -2993,6 +3010,10 @@ void MinusDecide(int tab, int row) {
     if (tab < 0 || tab >= kMinusTabs) return;
     if (ViewShown() == View::kMenu) {
         if (row == 0 && CoopPause::SnailHome()) {   // (Customize Link, with Character Select in the game: its screen is the home)
+            if (CharactersHeld()) {   // (row 288: its layouts are not in the game: no hop, the chat says why)
+                SayCharactersHeld("Customize Link");
+                return;
+            }
             std::lock_guard lock(g_mutex);
             g_hop = {};
             g_hop_on = true;
@@ -4458,8 +4479,16 @@ std::uint64_t OnPad(std::uint64_t buttons, std::int32_t stick[4]) noexcept {
                 }
                 g_page.SetMinusRawEnds(can_up, can_down);
             }
+            const bool minus_ours = g_page.MinusTab() >= 0;   // (before the pad: an L off our first tab is the game's)
             out = g_page.OnPad(in, NowMs());
             minus_tab = g_page.MinusTab();
+            if (CharactersHeld()) {   // (row 288: no L of the game's on Key Items, where it opens the Characters page)
+                bool held = false;
+                out = CoopPauseTab::CharactersHoldPad(g_characters_hold, g_page.MinusStripOpen(),
+                                                      minus_ours || minus_tab >= 0, MinusCategoryNow(), out, NowMs(),
+                                                      &held);
+                if (held) SayCharactersHeld("L on the tab left of it");
+            }
             if (minus_tab >= 0) {
                 minus_back = g_page.TakeMinusBack(), minus_list_back = g_page.TakeMinusListBack();
                 minus_line = g_page.TakeMinusLineDecide(), minus_moves = g_page.TakeMinusMoves();

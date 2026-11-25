@@ -1,0 +1,39 @@
+# charpage-288-hold (row 288, part B). Run only through tools\autotest\proof-charpage-288.ps1 -Mode hold: it puts
+# a mod whose menus' layout archive wins unmerged into game A and starts the games without the merge. The lane kit
+# must have a Characters tab's code in the game (Character Select ON, or co-op's own). A only; B idles.
+# Path: - menu (opens on Map) -> L (Threads of Time) -> L (Key Items) -> L three times: KEPT from the game, the tab
+# stays Key Items -> R (Threads of Time: the game's own keys still work) -> Minus out -> Link in the field.
+# PASS (read the shots and the log):
+# 1. no crash in the whole run;
+# 2. shots held-1, held-2, held-3: the Key Items tab, as shot key-items (the Characters page never opens);
+# 3. shot held-1 or later: the chat line "Co-op: the Characters page is held. The mod ..." shows once;
+# 4. shot threads-again: Threads of Time (R went through); shot field: Link in the field;
+# 5. log: "randomizer: the game reads the menus' layout archive", "coop: pause tab: the Characters page is held".
+mark start
+wait 300
+press MINUS
+wait 150
+mark minus-open
+press L
+wait 150
+mark threads
+press L
+wait 150
+mark key-items
+press L
+wait 150
+mark held-1
+press L
+wait 150
+mark held-2
+press ZL
+wait 150
+mark held-3
+press R
+wait 150
+mark threads-again
+press MINUS
+wait 180
+mark field
+wait 120
+mark end

@@ -2673,6 +2673,91 @@ TEST_CASE("pause tab (cs-customize-0119, lane gc198-l5b): a stall keeps Characte
     CHECK(SnailPadFrom(2000, 1000) == SnailPadState::kDrive);   // (a clock that went back)
 }
 
+TEST_CASE("pause tab (row 288): no tab key of the game's lands on the Characters page while its layouts are missing") {
+    using namespace CoopPauseTab;
+    const std::uint64_t other = kPadA | kPadUp;
+    {
+        CharactersHold h;
+        bool held = false;
+        // Key Items (6): L and ZL kept, the rest goes through; said at the press only.
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadL | other, 1000, &held) == other);
+        CHECK(held);
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadL | other, 1016, &held) == other);
+        CHECK_FALSE(held);
+        // Still kept when the category reads another tab: a held L is never a late press.
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 5000, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, 0, 5016, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadZL, 5032, &held) == 0);
+        CHECK(held);
+    }
+    {
+        CharactersHold h;
+        bool held = false;
+        // Map (2): L is the game's, as a tap: the read it is pressed at, never while held (a step that repeated on a
+        // held L would walk Map, Threads of Time, Key Items, the page).
+        CHECK(CharactersHoldPad(h, true, false, 2, kPadL, 1000, &held) == kPadL);
+        CHECK_FALSE(held);
+        CHECK(CharactersHoldPad(h, true, false, 2, kPadL, 1016, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 2500, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadL, 4000, &held) == 0);
+        CHECK_FALSE(held);   // (no press there: nothing asked for)
+        CHECK(CharactersHoldPad(h, true, false, 6, 0, 4016, &held) == 0);
+        // Threads of Time (1), a tap through; a second L before the slide ended is kept (the category is written at
+        // the slide's end: it may still read 1 on Key Items); kHoldSettleMs after the tap the reading counts again.
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 6000, &held) == kPadL);
+        CHECK(CharactersHoldPad(h, true, false, 1, 0, 6100, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 6200, &held) == 0);
+        CHECK_FALSE(held);   // (kept for the slide, not for the page: nothing said)
+        CHECK(CharactersHoldPad(h, true, false, 1, 0, 6300, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 6000 + kHoldSettleMs, &held) == kPadL);
+    }
+    {
+        CharactersHold h;
+        bool held = false;
+        // R: from Key Items and Threads of Time a tap; on Map (the game's last tab: a strip that went round would
+        // land on the page) and where the category is not known, kept. Our own tab taking R on Map is `ours`.
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadR, 1000, &held) == kPadR);
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadR, 1016, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, 0, 1032, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadZR, 1000 + kHoldSettleMs, &held) == kPadZR);
+        CHECK(CharactersHoldPad(h, true, false, 1, 0, 2100, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 2, kPadR, 5000, &held) == 0);
+        CHECK_FALSE(held);
+        CHECK(CharactersHoldPad(h, true, false, 2, 0, 5016, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, true, 2, kPadR, 6000, &held) == kPadR);
+        CHECK(CharactersHoldPad(h, true, true, 2, kPadR, 6016, &held) == kPadR);   // (on our tabs: Page's own pad)
+        CHECK(CharactersHoldPad(h, true, true, 2, 0, 6032, &held) == 0);
+        // L and R at once: only where both are safe (Threads of Time).
+        CHECK(CharactersHoldPad(h, true, false, 2, kPadL | kPadR, 8000, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 2, 0, 8016, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL | kPadR, 9000, &held) == (kPadL | kPadR));
+    }
+    {
+        CharactersHold h;
+        bool held = false;
+        // A category not readable or not known: kept, nothing said (not known to be the step onto the page).
+        CHECK(CharactersHoldPad(h, true, false, -1, kPadL, 1000, &held) == 0);
+        CHECK_FALSE(held);
+        CHECK(CharactersHoldPad(h, true, false, -1, 0, 1016) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 9, kPadL, 1032, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 9, 0, 1048) == 0);
+        // Our own tabs, the + menu, no menu: never touched, held or not.
+        CHECK(CharactersHoldPad(h, true, true, 6, kPadL, 2000, &held) == kPadL);
+        CHECK_FALSE(held);
+        // ... but that L still down once a game tab shows (our first tab's L back to Map) is no press of the
+        // game's any more.
+        CHECK(CharactersHoldPad(h, true, false, 2, kPadL, 2016, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 2, 0, 2032) == 0);
+        CHECK(CharactersHoldPad(h, false, false, 6, kPadL | kPadZL, 3000, &held) == (kPadL | kPadZL));
+        CHECK(CharactersHoldPad(h, false, false, 6, kPadL | kPadZL, 3016, &held) == (kPadL | kPadZL));
+        CHECK_FALSE(held);
+        // Down before the - menu came and still down on Key Items: kept until let go.
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadL | kPadZL, 3032, &held) == 0);
+        CHECK_FALSE(held);
+        CHECK(CharactersHoldPad(h, true, false, 6, 0, 3048) == 0);
+    }
+}
+
 TEST_CASE("pause tab (#322): the hop to the Characters tab taps L until the strip reads it, or the left edge") {
     using namespace CoopPauseTab;
     CharactersHop h;

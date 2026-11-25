@@ -1327,7 +1327,10 @@ def pack_start(game, env, say):
                                        env.get("LICHII_COOP_TUNICS", ""))
         got = self_tunic.put(pack, color)
         lines.append("own tunic files: %s" % (got or "none (the game's green)"))
-        if os.path.isdir(mods):
+        if env.get("OOT_TEST_NO_MERGE", "") == "1":
+            # (row 288's proof: a game started again without the kit's merge, as the Insert menu's Restart now)
+            lines.append("merge NOT run (OOT_TEST_NO_MERGE=1)")
+        elif os.path.isdir(mods):
             merge_tables.main(["--mods", mods] + (["--romfs", romfs] if romfs else []))
     except Exception as e:  # (the kit's start never stops on it either)
         lines.append("pack start failed (%s: %s)" % (type(e).__name__, e))

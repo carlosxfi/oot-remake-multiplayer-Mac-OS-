@@ -651,6 +651,54 @@ class MenuGuardTest(unittest.TestCase):
         self.put(os.path.join(self.pack, "coop_puppet.json"), b"{")
         self.assertFalse(mt.charsel_native_parked(self.pack))
 
+    def test_in_the_game_menus_kept_aside_stay_aside_and_are_still_taken_out(self):
+        """--in-game (player report 288: the game runs the merge itself at a start the kit did not make): the game was
+        built without the code that goes with menu files kept aside, so they stay there; taking them out still works."""
+        old = PACK + ".old-b26"
+        self.put_table(old, {self.crc(MALS): self.mals, 7: 70})
+        self.assertEqual(mt.guard_menus(self.mods, self.romfs, self.lines.append, put_back=False), 0)
+        self.assertTrue(self.kept(MALS) and self.kept(TITLE))            # (taken out: the game cannot load them)
+        self.assertFalse(self.in_play(MALS) or self.in_play(TITLE))
+        shutil.rmtree(os.path.join(self.mods, *old.split("/")))
+        self.lines = []
+        self.assertEqual(mt.guard_menus(self.mods, self.romfs, self.lines.append, put_back=False), 0)
+        self.assertTrue(self.kept(MALS) and self.kept(TITLE))            # (they stay aside)
+        self.assertFalse(self.in_play(MALS) or self.in_play(TITLE))
+        self.assertIn("Start Squadala", " ".join(self.lines))
+        self.assertEqual(self.guard(), 0)                                 # (the kit's start puts them back)
+        self.assertTrue(self.in_play(MALS) and self.in_play(TITLE))
+        self.lines = []
+        self.assertEqual(mt.guard_menus(self.mods, self.romfs, self.lines.append, put_back=False), 0)
+        self.assertEqual(self.lines, [])                                  # (nothing aside: nothing to say)
+        self.assertTrue(self.in_play(MALS) and self.in_play(TITLE))
+
+    def test_one_merge_at_a_time_on_a_mods_folder(self):
+        """merge_lock (player report 288): two games of one folder started together do not both write the merged
+        files; another folder is not held up; a merge that ended holds nothing."""
+        first = mt.merge_lock(self.mods)
+        self.assertTrue(first)
+        try:
+            self.assertIsNone(mt.merge_lock(self.mods, wait=0.3))        # (held: the second start waits, then gives up)
+            wait, mt.LOCK_WAIT = mt.LOCK_WAIT, 0.3
+            try:
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(mt.main(["--mods", self.mods, "--romfs", self.romfs, "--in-game"]), 1)
+            finally:
+                mt.LOCK_WAIT = wait
+            self.assertIn("Size tables: not merged (another start", out.getvalue())
+            self.assertTrue(self.in_play(MALS) and self.in_play(TITLE))   # (nothing moved by the start that waited)
+            other = os.path.join(self.dir, "mods2")
+            os.makedirs(other)
+            second = mt.merge_lock(other, wait=0.3)
+            self.assertTrue(second)
+            second.close()
+        finally:
+            first.close()
+        again = mt.merge_lock(self.mods, wait=0.3)
+        self.assertTrue(again)
+        again.close()
+        self.assertEqual(os.listdir(self.mods), ["contents"])             # (nothing of the lock in the mods folder)
+
     def test_the_pack_reading_its_own_table_keeps_its_menus(self):
         self.assertEqual(self.guard(), 0)
         self.assertTrue(self.in_play(MALS) and self.in_play(TITLE))

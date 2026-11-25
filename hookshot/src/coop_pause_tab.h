@@ -1076,6 +1076,30 @@ inline constexpr std::uint64_t kHopMaxMs = 8000, kHopGapMs = 500;
 // screen, a load, typing) ends the hop at once with no more taps (kGiveUp); `lit`: the - menu's current category
 // (-1 not readable: waits).
 HopStep CharactersHopNext(CharactersHop& h, bool ours, bool minus_open, int lit, std::uint64_t now_ms);
+// Row 288: the Characters page held while its layouts are not in the game (coop_rando.h OutsideLayouts: opening it
+// would crash). The page is the - menu's tab left of Key Items and the game's graph steps to it on its own L (ZL as
+// well: its tab keys come in pairs, MinusPad's R / ZR); the mouse's clicks on the strip are L and R taps through this
+// same pad filter (patch 0030), so the pad is the one way in. Whether the strip goes round (R on Map, the last of the
+// game's tabs, to the page) is not known, so that way is kept too. While the - menu shows a game tab, a tab key
+// reaches the game only as a TAP (the read it was pressed at, as the hop's own taps; never while held: whether the
+// game's step repeats on a held key is not known), and only where the step is known not to land on the page: L or ZL
+// when the category read is Threads of Time (1) or Map (2), R or ZR when it is Key Items (6) or Threads of Time (1),
+// and the last tap let through is kHoldSettleMs old (the game writes the category when the pages' slide ends,
+// docs/game-ui.md "The page step", so right after a step the reading is still the tab left). Anything else (the edge
+// tab, not readable, not known) is kept. A key held from before (our own tab's L back to Map, a key down when the
+// menu came) is kept as well until let go. Nothing is touched outside the - menu or on our own tabs.
+inline constexpr std::uint64_t kHoldSettleMs = 1000;
+struct CharactersHold {
+    std::uint64_t last = 0;        // the tab keys (L, ZL, R, ZR) at the last read
+    std::uint64_t kept = 0;        // of those, the ones kept from the game until let go
+    std::uint64_t passed_ms = 0;   // when a tap last went through to the game (0 none)
+};
+// The buttons the game gets. `minus_open`: the - menu is the open screen (Page::MinusStripOpen); `ours`: one of our
+// tabs shows or took this read's press (Page::MinusTab() >= 0 before or after its pad); `category`: the - menu's
+// current category (-1 not readable). `*held`: an L or ZL was kept on Key Items at this read, the step onto the
+// page (the module says why in the chat, once).
+std::uint64_t CharactersHoldPad(CharactersHold& h, bool minus_open, bool ours, int category, std::uint64_t buttons,
+                                std::uint64_t now_ms, bool* held = nullptr);
 // One update ahead of `now`, from its step since `prev`, and not past `limit` when it heads for it. The module reads
 // the fourth tab's place and fades before the strip's own update, so they are one update old: the Character tab takes
 // them one update ahead to move with the fourth, not a frame after it.

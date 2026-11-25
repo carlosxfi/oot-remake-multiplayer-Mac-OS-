@@ -874,6 +874,60 @@ std::optional<std::pair<std::string, std::string>> OutsideActorRows(const fs::pa
 }
 
 namespace {
+// A mod folder's copy of the menus' layout archive, as found (romfs/UI/Layout2Archive/Common.Product.*.blarc.zs: the
+// number in the name is the game version's); empty when it has none.
+fs::path LayoutArchive(const fs::path& folder) {
+    std::error_code ec;
+    for (fs::directory_iterator f(folder / "romfs" / "UI" / "Layout2Archive", ec), last; !ec && f != last;
+         f.increment(ec)) {
+        std::string name = CoopMods::ToUtf8(f->path().filename());
+        for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        constexpr std::string_view head = "common.product.", tail = ".blarc.zs";
+        std::error_code fec;
+        if (name.size() > head.size() + tail.size() && name.compare(0, head.size(), head) == 0 &&
+            name.compare(name.size() - tail.size(), tail.size(), tail) == 0 && f->is_regular_file(fec)) {
+            return f->path();
+        }
+    }
+    return {};
+}
+}  // namespace
+
+std::optional<std::string> OutsideLayouts(const fs::path& mods_root, const std::vector<CoopMods::Row>& rows,
+                                          const std::vector<std::string>* indexed, CharactersCode code) {
+    if (code == CharactersCode::none) return std::nullopt;
+    const auto folder_of = [&](const std::string& name) { return mods_root / CoopMods::FromUtf8(Slashed(name)); };
+    const auto own = [&](const std::string& name) {   // (the mod whose code makes the page)
+        return code == CharactersCode::pack ? CoopMods::NameSame(Slashed(name), kPackFolder)
+                                            : IsCharacterSelectMod(folder_of(name));
+    };
+    const std::string winner =
+        WinnerOf(rows, indexed, [&](const std::string& name) { return !LayoutArchive(folder_of(name)).empty(); });
+    if (winner.empty() || own(winner)) return std::nullopt;   // (none over the pack's or the game's own; or the page's)
+    // The page's mod has no copy among the mods the game reads: its screens are not in the game either, no page.
+    const bool there =
+        code == CharactersCode::pack
+            ? !LayoutArchive(mods_root / CoopMods::FromUtf8(kPackFolder)).empty()
+            : !WinnerOf(rows, indexed, [&](const std::string& name) {
+                   return own(name) && !LayoutArchive(folder_of(name)).empty();
+               }).empty();
+    if (!there) return std::nullopt;
+    const fs::path folder = folder_of(winner), file = LayoutArchive(folder);
+    const fs::path rel_path = fs::path("UI") / "Layout2Archive" / file.filename();
+    std::string rel = CoopMods::ToUtf8(rel_path);
+    std::replace(rel.begin(), rel.end(), '\\', '/');
+    for (char& c : rel) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (!KitKeptCopy(folder, file, rel_path, rel).empty()) return std::nullopt;   // (the kit merged every mod's in)
+    return winner;
+}
+
+std::string LayoutsLine(std::string_view mod) {
+    return "Co-op: the Characters page is held. The mod \"" + ShortName(mod) +
+           "\" has its own menu layouts, without the page's, so opening it would crash the game. Close the game and "
+           "start it with Start Squadala (it merges them in).";
+}
+
+namespace {
 // Every file kept under `keep` (but the stamps, *.txt) back over the same path under `to_root`; the kept folder goes.
 bool PutBackKeptTree(const fs::path& keep, const fs::path& to_root) {
     std::error_code ec;
@@ -1432,6 +1486,22 @@ void Rando::Start() {
             rows_table_ = missing->second;
             lines_.push_back(ChatSafe(RowsLine(rows_mod_, rows_table_), 300));
         }
+        // Row 288: another mod's layout archive wins without the Characters page's layouts (a seed made in the game,
+        // then the game started again without the kit's start): the page is held this run and the chat says why.
+        if (const auto layouts = OutsideLayouts(loader_.Root(), loader_.Rows(),
+                                                loader_.ExeReadsList() ? &indexed : nullptr,
+                                                hooks_.characters_code ? hooks_.characters_code()
+                                                                       : CharactersCode::none)) {
+            layouts_out_ = true;
+            if (hooks_.log) {
+                hooks_.log("randomizer: the game reads the menus' layout archive (UI/Layout2Archive/Common) of the mod " +
+                           *layouts + ", without the Characters page's layouts (no _coop-archives stamp from the "
+                           "kit's start for it): opening the page would crash the game; it is held this run");
+            }
+            const std::lock_guard lock(mutex_);
+            layouts_mod_ = *layouts;
+            lines_.push_back(ChatSafe(LayoutsLine(layouts_mod_), 300));
+        }
         const std::lock_guard lock(mutex_);
         on_now_ = on_said_ = on_now;
     }
@@ -1527,6 +1597,11 @@ void Rando::TellOthers() {
     if (!hooks_.tell_others(line)) return;  // not connected: the next Recheck tries again
     const std::lock_guard lock(mutex_);
     if (tell_ == line) tell_.clear();
+}
+
+void Rando::SayLayouts() {
+    const std::lock_guard lock(mutex_);
+    if (!layouts_mod_.empty()) lines_.push_back(ChatSafe(LayoutsLine(layouts_mod_), 300));
 }
 
 void Rando::SayOutside() {
