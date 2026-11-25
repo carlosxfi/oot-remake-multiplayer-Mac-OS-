@@ -22,6 +22,15 @@ Such a flag is the game's own invariant: once the event has played, it holds tha
 sets it through the game's own Bool setter (lichii/hook/coop_hook.cpp MendStory, co-op idle too). Everything
 else the walk finds is written into the file as a comment with why it is left out.
 
+Row 228: an event also sets a Bool through the UI. UISystemActor's EventTriggerOpenLocationUI (an area's first
+scene shows the area's name) feeds its LocationName to OneShotSetIsVisitLocation in UISystemActor.event.root.ainb,
+which sets the saved Bool `IsVisitLocation.<location>` (`Work/Location/<location>.game__location__Location.gyml`).
+The pause menu's Map page shows an area's map only once that area is visited ("Unavailable right now." otherwise),
+and the area's own entry banner is skipped where its first scene shows it. So a guest whose Dm_HrlField_0000 was
+played by the host never had the Hyrule Field map. Each such open on the unconditional path is taken as a write of
+`IsVisitLocation.<location>` = 1 and goes through the same rules. (EventTriggerOpenCurrentSmallLocationUI names no
+location in the flow: it is left out, with why.)
+
 Only flag and event names, and their Murmur3 hashes, go in the file.
 """
 import argparse
@@ -44,6 +53,26 @@ PLAYED_SOURCES = ("lichii/hook/coop_story.cpp", "lichii/hook/coop_dungeon.cpp")
 SHARED_SOURCES = PLAYED_SOURCES + ("lichii/hook/coop_quests.cpp", "lichii/hook/coop_chests.cpp",
                                    "coop/host/src/game_items.cpp")
 SET_BOOL = "EventTriggerSetGameDataBool"
+OPEN_LOCATION = "EventTriggerOpenLocationUI"   # row 228: sets IsVisitLocation.<location> (UISystemActor's graph)
+OPEN_CURRENT_LOCATION = "EventTriggerOpenCurrentSmallLocationUI"   # the same for the location where Link is
+
+
+def visit_flag(location):
+    """`IsVisitLocation.<name>` for a LocationName parameter (Work/Location/<name>.game__location__Location.gyml)."""
+    if not isinstance(location, str) or not location:
+        return None
+    return "IsVisitLocation." + location.replace("\\", "/").split("/")[-1].split(".")[0]
+
+
+def bool_writes(actions):
+    """[(flag, value, conditional)] the Bools a walk's actions set: SetGameDataBool, and the location UI's visit."""
+    out = []
+    for _actor, action, params, cond in actions:
+        if action == SET_BOOL:
+            out.append((params.get("GameDataName"), params.get("Value"), cond))
+        elif action == OPEN_LOCATION:
+            out.append((visit_flag(params.get("LocationName")), True, cond))
+    return out
 
 
 def quoted_names(text):
@@ -110,16 +139,21 @@ def walk(flows, flow, entry, load, transition):
 
 
 def flow_writes(charts):
-    """{flag: {value, ...}} every SetGameDataBool of every event flow."""
+    """{flag: {value, ...}} every SetGameDataBool of every event flow, and every location UI's visit (1)."""
     out = {}
     for chart in charts:
         for ev in chart.events:
             if ev.type != 0 or ev.actor >= len(chart.actors) or ev.action >= len(chart.actors[ev.actor][2]):
                 continue
-            if "SetGameDataBool" in chart.actors[ev.actor][2][ev.action]:
-                name = ev.params.get("GameDataName")
-                if isinstance(name, str):
-                    out.setdefault(name, set()).add(ev.params.get("Value"))
+            action = chart.actors[ev.actor][2][ev.action]
+            if "SetGameDataBool" in action:
+                name, value = ev.params.get("GameDataName"), ev.params.get("Value")
+            elif action == OPEN_LOCATION:
+                name, value = visit_flag(ev.params.get("LocationName")), True
+            else:
+                continue
+            if isinstance(name, str):
+                out.setdefault(name, set()).add(value)
     return out
 
 
@@ -143,11 +177,13 @@ def classify(setting, actions, bools, shared, writes, setters):
     """([(flag, value)], [(flag, value, why)]) the effects kept and the Bool writes left out, for one setting's
     walked actions (`walk`). `bools`: {hash: (ResetTypeValue, default)}."""
     asked = {p.get("GameDataName") for _a, act, p, _c in actions if act.startswith("EventQuery")}
+    if any(act == "EventQueryIsNotVisitCurrentBaseLocation" for _a, act, _p, _c in actions):
+        asked |= {f for f, _v, _c in bool_writes(actions) if isinstance(f, str) and f.startswith("IsVisitLocation.")}
     kept, out = {}, {}
-    for _actor, action, params, cond in actions:
-        if action != SET_BOOL:
-            continue
-        flag, value = params.get("GameDataName"), params.get("Value")
+    if any(act == OPEN_CURRENT_LOCATION for _a, act, _p, _c in actions):
+        out["IsVisitLocation.<current>"] = ("IsVisitLocation.<current>", True,
+                                            "the location where Link is (no name in the flow)")
+    for flag, value, cond in bool_writes(actions):
         if not isinstance(flag, str) or not isinstance(value, bool) or flag in kept or flag in out:
             continue
         row = bools.get(murmur3(flag))

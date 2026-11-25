@@ -641,6 +641,9 @@ keyboard of its own. These layouts of `Common` can frame one (pane names, kind 1
 
 ### The Map page
 
+- An area's map shows only once `IsVisitLocation.<location>` is 1, else "Unavailable right now." (`MapMenu_00`
+  `T_NoMap_00`; the menu state `UnopenMap`). The area's banner sets it ([flags.md](flags.md), "An area's visit", row 228).
+  (romfs: UISystemActor's graph; the code's read of it is inferred)
 - The Map page has no screen of its own: its pictures are kept by the HUD's `UIMapMenuScreen`. Its set-up, slot 93
   `f_833fed60` (checked), keeps 18 map panes from `+0x1470`: `P_ReplaceMap_00` `+0x1470`, `P_ReplaceMapAll_00`
   `+0x1478`, `P_ReplaceField_00` `+0x1490`, `P_ReplaceFieldMini_00` `+0x1498`, `P_ReplaceDungeon_00` `+0x14a8`,

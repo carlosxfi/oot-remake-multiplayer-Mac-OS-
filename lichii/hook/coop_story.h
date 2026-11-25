@@ -214,7 +214,7 @@ private:
     std::vector<std::uint32_t> given_;  // flags given since this load
     std::vector<std::uint32_t> said_;   // of those, set back and said
 };
-inline constexpr std::size_t kEffectsMax = 32;  // Effects().size() stays under it (story_test)
+inline constexpr std::size_t kEffectsMax = 64;  // Effects().size() stays under it (story_test; 34 with row 228)
 
 // The effects due now: the played flag is 1 and the effect's flag is known
 // and not its value. `read` gives a Bool's value, nothing when unread
