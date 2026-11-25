@@ -147,8 +147,7 @@ std::string Who(std::uint8_t number, std::string_view name) {
 
 std::string SeedlessLine(std::uint8_t number, std::string_view name, std::string_view seed) {
     return "Mods: " + Who(number, name) + " runs WITHOUT the randomizer seed " + std::string(seed) +
-           ": the base game, another world (other items in chests), so it is held out of the host's world "
-           "until it plays the seed; its chat says why";
+           ": the base game (other items in chests), so it is held out of the host's world until it plays the seed";
 }
 
 std::string SeedExtraLine(std::uint8_t number, std::string_view name, std::string_view seed) {

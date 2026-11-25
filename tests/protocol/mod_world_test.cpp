@@ -74,7 +74,7 @@ TEST_CASE("mod world: the host's settings name and the room list's tag (one home
   CHECK(proto::rando_settings_name({S{proto::kRandoModId, "on", "1"}}) == "default");
   CHECK(proto::rando_settings_name({S{proto::kRandoModId, "preset", "keysanity"}}) == "keysanity");
   CHECK(proto::rando_settings_name({S{proto::kRandoModId, "settings", " OOTRR1-ABCDEFGHIJKLMNOPQRSTU"}}) ==
-        "settings string OOTRR1-ABCDEFGHIJKLMN...");
+        "settings string OOTRR1-ABCDEFGHIJKLM...");
 
   const proto::ModList base{1, {entry("hud", 7)}};
   const proto::ModList rando{1, {entry("hud", 7), entry("randomizer-n2bteykm", 5)}};

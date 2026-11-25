@@ -5684,8 +5684,8 @@ TEST_CASE("row 281: a player on another randomizer seed is held: its world is no
   h.receive(2, FlagSet{0, {flag(1, 1)}}, kChannelProgress);
   h.receive(3, FlagSet{0, {flag(2, 1)}}, kChannelProgress);
   h.receive(2, Chat{0, "why"}, kChannelSession);
-  CHECK(messages_of<FlagSet>(h, 1).size() == 1);  // Saria's only
-  CHECK(messages_of<FlagSet>(h, 2).size() == 1);  // a held player still gets the world
+  CHECK(messages_of<FlagSet>(h, 1).size() == 1);  // Saria's only (a FLAG_SET goes to the host)
+  CHECK(messages_of<FlagOrigin>(h, 2).size() == 1);  // a held player still gets the world (Saria's, who did it)
   CHECK(messages_of<Chat>(h, 1).size() == 1);
   CHECK(h.session.stats().world_held_dropped == 1);
 
@@ -5695,8 +5695,8 @@ TEST_CASE("row 281: a player on another randomizer seed is held: its world is no
   h.clear();
   h.receive(2, FlagSet{0, {flag(3, 1)}}, kChannelProgress);
   h.receive(3, FlagSet{0, {flag(4, 1)}}, kChannelProgress);
-  CHECK(messages_of<FlagSet>(h, 3).size() == 1);  // Zelda's
-  CHECK(messages_of<FlagSet>(h, 2).empty());
+  CHECK(messages_of<FlagSet>(h, 2).size() == 1);  // Zelda's own, back to the host; Saria's dropped
+  CHECK(messages_of<FlagOrigin>(h, 3).size() == 1);  // (Zelda's, to held Saria)
   CHECK(h.session.stats().world_held_dropped == 2);
 }
 
