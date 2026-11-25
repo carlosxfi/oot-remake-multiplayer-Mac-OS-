@@ -3177,7 +3177,9 @@ TEST_CASE("object components 25-28 carry keyed values (protocol 18, sync plan S1
   Bytes probe = bytes;
   int patched = 0;
   // The time component comes first (4 + 12 bytes after the message header); walk the component headers.
-  const Bytes header = must_encode(ObjectSample{0, test::kPlacedId, 3, {{100, 1}}});
+  ObjectState time_only{};
+  time_only.time = {100, 1};
+  const Bytes header = must_encode(ObjectSample{0, test::kPlacedId, 3, time_only});
   for (std::size_t at = header.size(); at + 4 <= probe.size();) {
     const std::uint16_t id = static_cast<std::uint16_t>(probe[at] | (probe[at + 1] << 8));
     const std::uint16_t length = static_cast<std::uint16_t>(probe[at + 2] | (probe[at + 3] << 8));
