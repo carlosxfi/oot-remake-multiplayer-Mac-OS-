@@ -191,6 +191,10 @@ std::string SeedSettings(std::string_view seed_file_text);
 // Whether a seed file (.ootrr, JSON) places shop items (shopsanity: a top-level "shops" object with an entry). Such a seed
 // sells its one-time shelves once (lichii/hook/coop_shop_sale.h: co-op shares their sold counters).
 bool SeedShops(std::string_view seed_file_text);
+// The item a seed file (.ootrr, JSON) places at `location` (its top-level "placements" object, OOTRR settings/seed.rs:
+// location name -> item name), or none when the location is not listed (it keeps its vanilla item) or the file has
+// no placements. lichii/hook/coop_story.h GiftShuffled (row 237): Saria's gift and the moat's ocarina.
+std::optional<std::string> SeedPlacement(std::string_view seed_file_text, std::string_view location);
 std::vector<std::string> BuildArgs(const std::filesystem::path& seed_file, const std::filesystem::path& game_folder,
                                    const std::filesystem::path& mods_root, const std::string& folder);
 // The game uses one resource size table, the one of the mod that wins (the seed), so the seed's must hold every
@@ -398,6 +402,12 @@ public:
     // Also when a pack actor table wins without the pack's rows (OutsideActorRows, RowsMissing).
     // This run plays one of our seeds whose seed file places shop items (SeedShops; set at Start).
     bool SeedHasShops() const { return seed_shops_.load(); }
+    // Whether this run plays a seed (one of ours on, or a hand-put seed folder), and whether its seed file was read
+    // (a hand-put folder has none). Set at Start.
+    bool PlaysSeed() const;
+    bool SeedRead() const;
+    // The item this run's seed places at `location` (SeedPlacement of its seed file), none when not listed or unread.
+    std::optional<std::string> PlacementAt(std::string_view location) const;
     bool HoldPack() const { return hold_pack_.load() || outside_.load() || rows_out_.load(); }
     // A mod's RSDB table wins without the pack's rows this run (OutsideActorRows): the game would refuse the puppets.
     bool RowsMissing() const { return rows_out_.load(); }
@@ -470,6 +480,8 @@ private:
     std::thread hasher_;                            // hand_mutex_
     std::atomic<bool> stop_hash_{false};
     std::string hand_playing_;  // set at Start: HandPlaying
+    bool plays_seed_ = false;   // set at Start (mutex_): PlaysSeed
+    std::string seed_text_;     // set at Start (mutex_): the seed file of the seed this run plays, empty when unread
     std::string hand_said_;     // the host's folder the guest's chat line was said for, with its match (mutex_)
     std::string hand_tell_;     // a HandTellLine not sent yet (mutex_)
 };

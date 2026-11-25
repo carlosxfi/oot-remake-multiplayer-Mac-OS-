@@ -24,6 +24,7 @@
 #include "coop_pause.h"
 #include "coop_rando.h"
 #include "coop_shop_sale.h"
+#include "coop_story.h"
 #include "coop_runtime.h"
 #include "coop_title.h"
 
@@ -349,6 +350,21 @@ void Start() {
     g_rando = std::make_unique<CoopRando::Rando>(*g_loader, std::move(rando));
     g_rando->Start();  // before the list for co-op is made: it may switch seeds
     CoopShopSale::SetSeedHasShops(g_rando->SeedHasShops());  // docs/items.md "One-time sales": read at Host/Join
+    {
+        // Row 237 (coop_story.h GiftShuffled): a story gift whose spot this run's seed gives another item is neither
+        // held nor mended; a seed whose placements are not read (a hand-put folder) counts as shuffled everywhere.
+        const auto gifts = CoopStory::Gifts();
+        for (std::size_t i = 0; i < gifts.size() && i < CoopStory::kGiftsMax; ++i) {
+            const bool shuffled = g_rando->PlaysSeed() &&
+                                  (!g_rando->SeedRead() ||
+                                   !CoopStory::GiftKeepsVanilla(g_rando->PlacementAt(gifts[i].location)));
+            CoopStory::SetGiftShuffled(i, shuffled);
+            if (shuffled) {
+                CoopRuntime::Log(std::string("coop: randomizer: ") + gifts[i].where +
+                                 " gives the seed's item: shared as the scene that gave it, never held or mended");
+            }
+        }
+    }
     StartSharing();
     if (Env("HOS_COOP_MODS_CODE") == "0") {
         CoopRuntime::Log("coop: mods: code mods not loaded (HOS_COOP_MODS_CODE=0)");

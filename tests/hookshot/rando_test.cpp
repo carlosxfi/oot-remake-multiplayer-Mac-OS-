@@ -1683,6 +1683,24 @@ TEST_CASE("rando: a seed file that places shop items (coop_shop_sale.h)") {
     CHECK_FALSE(SeedShops(""));
 }
 
+TEST_CASE("rando: the item a seed file places at a location (row 237, coop_story.h GiftShuffled)") {
+    // OOTRR settings/seed.rs: "placements" is an object, location name -> item name.
+    const std::string seed = "{\n  \"format\": \"ootrr-seed\",\n  \"settings\": \"OOTRR1-AB\",\n  \"placements\": {\n"
+                             "    \"HF Ocarina of Time Item\": \"Ocarina\",\n"
+                             "    \"KF Midos Top Left Chest\": \"LW Gift from Saria\",\n"
+                             "    \"LW Gift from Saria\" : \"Progressive Hookshot\"\n  },\n  \"shops\": {}\n}\n";
+    CHECK(SeedPlacement(seed, "LW Gift from Saria") == std::optional<std::string>("Progressive Hookshot"));
+    CHECK(SeedPlacement(seed, "HF Ocarina of Time Item") == std::optional<std::string>("Ocarina"));
+    CHECK(SeedPlacement(seed, "KF Midos Top Left Chest") == std::optional<std::string>("LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement(seed, "GC Darunias Joy").has_value());  // not listed: vanilla
+    CHECK(SeedPlacement("{\"placements\":{\"A\":\"Say \\\"hi\\\"\"}}", "A") == std::optional<std::string>("Say \"hi\""));
+    CHECK_FALSE(SeedPlacement("{\"hint\": \"placements\", \"LW Gift from Saria\": \"Bow\"}", "LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement("{\"placements\": []}", "LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement("{\"placements\": {\"LW Gift from Saria\": 3}}", "LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement("{\"placements\": {\"LW Gift from Saria\": \"Bo", "LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement("", "LW Gift from Saria"));
+}
+
 TEST_CASE("rando: the settings string of a seed file") {
     // As OOTRR 0.6.1 writes it (generate default abc); 0.6.2 and 0.7.0 to 0.8.1 write the same layout (settings/seed.rs is unchanged).
     CHECK(SeedSettings("{\n  \"format\": \"ootrr-seed\",\n  \"version\": 1,\n  \"generator\": \"ootrr-core 0.6.1\",\n"
