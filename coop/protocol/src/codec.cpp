@@ -2596,6 +2596,39 @@ Error decode_body(Reader& r, ModSettings& m) {
   return check_mod_settings(m);
 }
 
+Error check_mod_data(const ModData& m) {
+  if (!valid_player_or_self(m.player_number) || !valid_mod_id(m.mod_id) || !valid_mod_key(m.key) ||
+      m.value.size() > kMaxModDataBytes) {
+    return Error::bad_value;
+  }
+  return Error::none;
+}
+
+// MOD_DATA: u8 player, str mod id, str key, u8 length (0 to 64), then the value's bytes.
+Error encode_body(const ModData& m, Writer& w) {
+  COOP_TRY(check_mod_data(m));
+  w.u8(m.player_number);
+  w.str(m.mod_id);
+  w.str(m.key);
+  w.u8(static_cast<std::uint8_t>(m.value.size()));
+  w.bytes(m.value.data(), m.value.size());
+  return Error::none;
+}
+
+Error decode_body(Reader& r, ModData& m) {
+  m = ModData{};
+  std::uint8_t size = 0;
+  COOP_READ(r.u8(m.player_number));
+  COOP_TRY(r.str(m.mod_id, kMaxModIdChars));
+  COOP_TRY(r.str(m.key, kMaxModSettingKeyChars));
+  COOP_READ(r.u8(size));
+  if (size > kMaxModDataBytes) return Error::bad_value;
+  std::span<const std::uint8_t> bytes;
+  COOP_READ(r.take(size, bytes));
+  m.value.assign(bytes.begin(), bytes.end());
+  return check_mod_data(m);
+}
+
 // LOCAL_LEAVE: u8 seat.
 Error encode_body(const LocalLeave& m, Writer& w) {
   if (!valid_seat(m.seat)) return Error::bad_value;
@@ -3622,7 +3655,7 @@ MessageType type_of(const Message& message) {
       MessageType::dbno_threat,
       MessageType::difficulty,
       MessageType::voice_frame,
-      MessageType::mod_list,      MessageType::mod_settings,
+      MessageType::mod_list,      MessageType::mod_settings, MessageType::mod_data,
       MessageType::lobby_action,  MessageType::lobby_mutes, MessageType::lobby_result,
       MessageType::local_join,
       MessageType::local_joined,
@@ -3734,6 +3767,7 @@ bool allowed_on_channel(MessageType type, std::uint8_t channel) {
     case MessageType::difficulty:
     case MessageType::mod_list:
     case MessageType::mod_settings:
+    case MessageType::mod_data:
     case MessageType::lobby_action:
     case MessageType::lobby_mutes:
     case MessageType::lobby_result:
@@ -3881,6 +3915,7 @@ bool may_send(Sender from, MessageType type) {
     case MessageType::difficulty:
     case MessageType::mod_list:
     case MessageType::mod_settings:
+    case MessageType::mod_data:
     case MessageType::pvp_hit:
     case MessageType::pvp_hurt:
     case MessageType::ocarina_note:
@@ -3941,6 +3976,7 @@ auto* player_field(M& message) {
                       std::is_same_v<T, DbnoThreat> ||
                       std::is_same_v<T, VoiceFrame> ||
                       std::is_same_v<T, ModList> || std::is_same_v<T, ModSettings> ||
+                      std::is_same_v<T, ModData> ||
                       std::is_same_v<T, LinkSound> ||
                       std::is_same_v<T, BossScene> || std::is_same_v<T, BossHeart> ||
                       std::is_same_v<T, BossAlive> || std::is_same_v<T, Emote> || std::is_same_v<T, PlayerLook> || std::is_same_v<T, LiftAsk> ||
@@ -4086,6 +4122,7 @@ Error decode(std::span<const std::uint8_t> bytes, Message& out) {
     case MessageType::voice_frame: return decode_as<VoiceFrame>(body, out);
     case MessageType::mod_list: return decode_as<ModList>(body, out);
     case MessageType::mod_settings: return decode_as<ModSettings>(body, out);
+    case MessageType::mod_data: return decode_as<ModData>(body, out);
     case MessageType::lobby_action: return decode_as<LobbyAction>(body, out);
     case MessageType::lobby_mutes: return decode_as<LobbyMutes>(body, out);
     case MessageType::lobby_result: return decode_as<LobbyResult>(body, out);
@@ -4160,6 +4197,9 @@ bool GrassCut::operator==(const GrassCut& o) const {
 }  // namespace coop::protocol
 
 namespace coop::protocol {
+
+bool is_mod_id(std::string_view id) { return valid_mod_id(id); }
+bool is_mod_key(std::string_view key) { return valid_mod_key(key); }
 
 std::uint32_t flag_hash(std::string_view name) {
   // MurmurHash3_x86_32 (Austin Appleby, public domain), seed 0, written out

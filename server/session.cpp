@@ -524,6 +524,16 @@ void Session::admit(ConnectionId id, Connection& c, const Hello& hello,
     }
   }
   if (mod_settings_) send(id, kChannelSession, *mod_settings_);
+  // The mods' values of everyone else (MOD_DATA, protocol 18).
+  for (const auto& entry : connections_) {
+    if (entry.first == id || entry.second.state != State::joined) continue;
+    // What the others have of it; a value that still waits for the budget goes to the joiner with them.
+    for (const auto& [mod_id, keys] : entry.second.mod_data_shown) {
+      for (const auto& [key, value] : keys) {
+        send(id, kChannelSession, ModData{entry.second.number, mod_id, key, value});
+      }
+    }
+  }
   // The Lobby: who the host muted (the joiner too, when it was muted before
   // it left); the others learn it of the joiner.
   for (const auto& entry : connections_) {
@@ -790,6 +800,10 @@ void Session::dispatch_player_message(ConnectionId id, Connection& c, std::uint8
   }
   if (std::holds_alternative<ModList>(message) || std::holds_alternative<ModSettings>(message)) {
     on_mods(id, c, message);
+    return;
+  }
+  if (auto* data = std::get_if<ModData>(&message)) {
+    on_mod_data(id, c, *data, now_us);
     return;
   }
   if (std::holds_alternative<PvpHit>(message)) {
@@ -1117,6 +1131,110 @@ void Session::update_world_held() {
                      : w.diff == WorldDiff::other_files ? " built unlike the host's"
                                                         : " not the host's")
               : " plays the host's world now"));
+  }
+}
+
+namespace {
+const std::vector<std::uint8_t>* mod_data_value(const ModDataValues& values, const std::string& mod_id,
+                                                const std::string& key) {
+  const auto mod = values.find(mod_id);
+  if (mod == values.end()) return nullptr;
+  const auto value = mod->second.find(key);
+  return value == mod->second.end() ? nullptr : &value->second;
+}
+}  // namespace
+
+// MOD_DATA (protocol 18, issue 250; docs/protocol.md "Mods"): a player's own values, by mod id and key. Kept per
+// player (forgotten when it leaves), relayed when they change, given to joiners; the bytes are never read.
+//
+// The send budget never loses a value: a game marks what it sent as the server's and does not send it again, so a
+// change over the budget (sends bunched by a stall, a relay hiccup or ENet resends) is kept like any other and its
+// key waits until the budget lets one go (run_held_mod_data); the others then get the key's value of that moment.
+// Only the count limits refuse, and a game keeps those itself (coop_mod_data.h Store::Set), so no answer is needed.
+//
+// Only a key whose kept value is not what the others have (mod_data_shown) waits: one set and cleared, or changed and
+// changed back, before its turn has nothing left to tell and stops waiting. Waiting clears go first, so a new key goes
+// out only when every shown key is a kept one: the others never hold more of a player than the limits either, and at
+// most kMaxModDataHeld keys wait whatever a game sends.
+void Session::on_mod_data(ConnectionId id, Connection& c, ModData& data, std::uint64_t now_us) {
+  auto mod = c.mod_data.find(data.mod_id);
+  if (data.value.empty()) {  // clears the key
+    if (mod == c.mod_data.end() || mod->second.erase(data.key) == 0) return;
+    if (mod->second.empty()) c.mod_data.erase(mod);
+  } else {
+    if (mod == c.mod_data.end()) {
+      if (c.mod_data.size() >= kMaxModDataMods) {
+        ++stats_.mod_data_refused;
+        return;
+      }
+      mod = c.mod_data.emplace(data.mod_id, std::map<std::string, std::vector<std::uint8_t>>{}).first;
+    }
+    auto key = mod->second.find(data.key);
+    if (key == mod->second.end()) {
+      if (mod->second.size() >= kMaxModDataKeysPerMod) {
+        ++stats_.mod_data_refused;
+        return;
+      }
+      mod->second.emplace(data.key, data.value);
+    } else if (key->second == data.value) {
+      return;  // no change
+    } else {
+      key->second = data.value;
+    }
+  }
+  std::pair<std::string, std::string> held{data.mod_id, data.key};
+  const auto waiting = std::find(c.mod_data_held.begin(), c.mod_data_held.end(), held);
+  const auto* kept = mod_data_value(c.mod_data, data.mod_id, data.key);
+  const auto* shown = mod_data_value(c.mod_data_shown, data.mod_id, data.key);
+  if (kept == nullptr ? shown == nullptr : shown != nullptr && *kept == *shown) {  // the others have it so
+    if (waiting != c.mod_data_held.end()) c.mod_data_held.erase(waiting);
+    return;
+  }
+  if (waiting != c.mod_data_held.end()) return;  // it goes when its turn comes, with its value then
+  if (!c.mod_data_held.empty() || !take_mod_data_slot(c, now_us)) {  // others already wait, or over the budget
+    c.mod_data_held.push_back(std::move(held));
+    ++stats_.mod_data_held;
+    stats_.mod_data_held_most = std::max<std::uint64_t>(stats_.mod_data_held_most, c.mod_data_held.size());
+    return;
+  }
+  relay_mod_data(id, c, data.mod_id, data.key);
+}
+
+// The budget: a burst of kModDataSendsPerSecond, then one each gap (a game sends at most one each gap anyway).
+bool Session::take_mod_data_slot(Connection& c, std::uint64_t now_us) {
+  constexpr std::uint64_t kGapUs = 1'000'000 / kModDataSendsPerSecond;
+  const std::uint64_t due = std::max(c.mod_data_due_us, now_us);
+  if (due - now_us > kGapUs * (kModDataSendsPerSecond - 1)) return false;
+  c.mod_data_due_us = due + kGapUs;
+  return true;
+}
+
+// The key's value as the server keeps it now (none: the key was cleared), with the player's number.
+void Session::relay_mod_data(ConnectionId id, Connection& c, const std::string& mod_id, const std::string& key) {
+  ModData out{c.number, mod_id, key, {}};
+  if (const auto* value = mod_data_value(c.mod_data, mod_id, key)) {
+    out.value = *value;
+    c.mod_data_shown[mod_id][key] = *value;
+  } else if (const auto mod = c.mod_data_shown.find(mod_id); mod != c.mod_data_shown.end()) {
+    mod->second.erase(key);
+    if (mod->second.empty()) c.mod_data_shown.erase(mod);
+  }
+  send_to_others(id, kChannelSession, out);
+  ++stats_.mod_data_relayed;
+}
+
+void Session::run_held_mod_data(std::uint64_t now_us) {
+  for (auto& [id, c] : connections_) {
+    if (c.state != State::joined) continue;
+    while (!c.mod_data_held.empty() && take_mod_data_slot(c, now_us)) {
+      auto next = std::find_if(c.mod_data_held.begin(), c.mod_data_held.end(), [&kept = c.mod_data](const auto& key) {
+        return mod_data_value(kept, key.first, key.second) == nullptr;  // a clear first
+      });
+      if (next == c.mod_data_held.end()) next = c.mod_data_held.begin();
+      const auto held = *next;
+      c.mod_data_held.erase(next);
+      relay_mod_data(id, c, held.first, held.second);
+    }
   }
 }
 
@@ -3766,6 +3884,7 @@ void Session::remove_player(ConnectionId id, LeaveReason reason, std::uint64_t n
 
 void Session::tick(std::uint64_t now_us) {
   run_deferred(now_us);  // reliable messages that waited for their sender's rate
+  run_held_mod_data(now_us);  // MOD_DATA changes that waited for their sender's budget
   // Wrong-password counts whose window and block are both over.
   for (auto it = wrong_guesses_.begin(); it != wrong_guesses_.end();) {
     const WrongGuesses& g = it->second;

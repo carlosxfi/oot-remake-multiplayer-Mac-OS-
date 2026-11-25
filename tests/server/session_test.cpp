@@ -5652,6 +5652,224 @@ TEST_CASE("mods: each player's list is passed on and given to joiners, and share
   CHECK(messages_to<ModSettings>(h, 5).empty());
 }
 
+// MOD_DATA (protocol 18, issue 250): each player's own values, kept by the server per player, mod and key.
+TEST_CASE("mod data: relayed with the sender's number, kept for joiners, cleared, forgotten when the player leaves") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.clear();
+  const std::vector<std::uint8_t> malon{'m', 'a', 'l', 'o', 'n'};
+  h.receive(2, ModData{0, "coop", "skin", malon}, kChannelSession);
+  CHECK(only_message_to<ModData>(h, 1) == ModData{2, "coop", "skin", malon});
+  CHECK(messages_to<ModData>(h, 2).empty());  // never back to the sender
+  CHECK(h.session.stats().mod_data_relayed == 1);
+  // The same value again changes nothing: not relayed.
+  h.clear();
+  h.now += kSecond;
+  h.receive(2, ModData{0, "coop", "skin", malon}, kChannelSession);
+  CHECK(messages_to<ModData>(h, 1).empty());
+  // A player cannot speak for another: a claimed number is refused before it is read (check_received).
+  h.now += kSecond;
+  h.receive(1, ModData{2, "hello-mod", "wave", {1}}, kChannelSession);
+  CHECK(h.sent.empty());
+  CHECK(h.session.stats().errors(Error::wrong_sender) == 1);
+  // The server writes the sender's number.
+  h.receive(1, ModData{0, "hello-mod", "wave", {1}}, kChannelSession);
+  CHECK(only_message_to<ModData>(h, 2) == ModData{1, "hello-mod", "wave", {1}});
+
+  // A joiner gets every value the others have.
+  h.clear();
+  h.join(3, "Saria");
+  const auto told = messages_to<ModData>(h, 3);
+  CHECK(told.size() == 2);
+  CHECK(std::find(told.begin(), told.end(), ModData{2, "coop", "skin", malon}) != told.end());
+  CHECK(std::find(told.begin(), told.end(), ModData{1, "hello-mod", "wave", {1}}) != told.end());
+
+  // An empty value clears the key: relayed once, and a joiner no longer gets it.
+  h.clear();
+  h.now += kSecond;
+  h.receive(1, ModData{0, "hello-mod", "wave", {}}, kChannelSession);
+  CHECK(only_message_to<ModData>(h, 2) == ModData{1, "hello-mod", "wave", {}});
+  h.clear();
+  h.now += kSecond;
+  h.receive(1, ModData{0, "hello-mod", "wave", {}}, kChannelSession);  // nothing to clear
+  CHECK(h.sent.empty());
+  // A player who leaves takes its values along.
+  h.session.disconnected(2, h.now);
+  h.collect();
+  h.clear();
+  h.join(4, "Ruto");
+  CHECK(messages_to<ModData>(h, 4).empty());
+}
+
+TEST_CASE("mod data: at most 8 keys per mod, 16 mods per player, a burst of 4 sends then 4 a second") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.clear();
+  const auto send = [&](const std::string& mod, const std::string& key, std::vector<std::uint8_t> value) {
+    h.now += kSecond;  // past the send budget
+    h.clear();
+    h.receive(1, ModData{0, mod, key, std::move(value)}, kChannelSession);
+    return messages_to<ModData>(h, 2).size() == 1;
+  };
+  for (std::size_t k = 0; k < kMaxModDataKeysPerMod; ++k) CHECK(send("m", "k" + std::to_string(k), {1}));
+  CHECK_FALSE(send("m", "k9", {1}));  // a 9th key
+  CHECK(h.session.stats().mod_data_refused == 1);
+  CHECK(send("m", "k0", {2}));        // a kept key still changes
+  CHECK(send("m", "k0", {}));         // and a clear makes room
+  CHECK(send("m", "k9", {1}));
+  for (std::size_t m = 1; m < kMaxModDataMods; ++m) CHECK(send("mod" + std::to_string(m), "k", {1}));
+  CHECK_FALSE(send("mod99", "k", {1}));  // a 17th mod
+  CHECK(h.session.stats().mod_data_refused == 2);
+
+  // The budget: 4 at once, then one each quarter second. A change over it is never lost (the game marks a sent
+  // value as the server's and does not send it again): 20 sends bunched in one tick by a stall all arrive, in turn.
+  h.now += kSecond;
+  h.clear();
+  const auto key_of = [](int i) { return std::pair<std::string, std::string>{"b" + std::to_string(i / 8), "k" + std::to_string(i % 8)}; };
+  for (int i = 0; i < 20; ++i) {
+    const auto [mod, key] = key_of(i);
+    h.receive(2, ModData{0, mod, key, {static_cast<std::uint8_t>(i + 1)}}, kChannelSession);
+  }
+  CHECK(messages_to<ModData>(h, 1).size() == kModDataSendsPerSecond);
+  CHECK(h.session.stats().mod_data_refused == 2);  // the budget refuses nothing
+  CHECK(h.session.stats().mod_data_held == 16);
+  // A held key that changes again goes once, with its newest value.
+  h.receive(2, ModData{0, "b2", "k3", {77}}, kChannelSession);
+  CHECK(h.session.stats().mod_data_held == 16);
+  for (int step = 0; step < 16; ++step) {
+    h.now += 1'000'000 / kModDataSendsPerSecond;
+    h.session.tick(h.now);
+    h.collect();
+  }
+  const auto told = messages_to<ModData>(h, 1);
+  CHECK(told.size() == 20);
+  for (int i = 0; i < 20; ++i) {
+    const auto [mod, key] = key_of(i);
+    const std::uint8_t value = i == 19 ? 77 : static_cast<std::uint8_t>(i + 1);
+    CHECK(std::count(told.begin(), told.end(), ModData{2, mod, key, {value}}) == 1);
+  }
+  // A joiner gets the newest values too.
+  h.clear();
+  h.join(3, "Saria");
+  const auto joiner = messages_to<ModData>(h, 3);
+  CHECK(std::count(joiner.begin(), joiner.end(), ModData{2, "b2", "k3", {77}}) == 1);
+  // A held clear goes as a clear.
+  h.clear();
+  h.now += kSecond;
+  for (int i = 0; i < 5; ++i) {
+    const auto [mod, key] = key_of(i);
+    h.receive(2, ModData{0, mod, key, {}}, kChannelSession);
+  }
+  h.now += kSecond;
+  h.session.tick(h.now);
+  h.collect();
+  const auto cleared = messages_to<ModData>(h, 1);
+  CHECK(cleared.size() == 5);
+  CHECK(std::count(cleared.begin(), cleared.end(), ModData{2, "b0", "k4", {}}) == 1);
+}
+
+TEST_CASE("mod data: what waits for the budget is bounded whatever a game sends, and the others end with what it keeps") {
+  SessionConfig config;
+  config.reliable_per_second = 100'000;  // the general rate must not be what holds the flood back
+  config.bytes_per_second = 100u << 20;
+  config.silence_timeout_us = 3600 * kSecond;
+  Harness h(config);
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.clear();
+  using Seen = std::map<std::pair<std::string, std::string>, std::vector<std::uint8_t>>;
+  Seen seen, joiner;         // player 2's values in player 1's and player 3's game
+  bool over_limits = false;  // a game held more of player 2 than a player may have
+  const auto take = [&] {
+    for (auto [id, values] : {std::pair<ConnectionId, Seen*>{1, &seen}, std::pair<ConnectionId, Seen*>{3, &joiner}}) {
+      for (const ModData& d : messages_to<ModData>(h, id)) {
+        if (d.value.empty()) values->erase({d.mod_id, d.key});
+        else (*values)[{d.mod_id, d.key}] = d.value;
+        std::map<std::string, std::size_t> keys;
+        for (const auto& entry : *values) ++keys[entry.first.first];
+        over_limits |= keys.size() > kMaxModDataMods || keys[d.mod_id] > kMaxModDataKeysPerMod;
+      }
+    }
+    h.clear();
+  };
+  const auto send = [&](const std::string& mod, const std::string& key, std::vector<std::uint8_t> value) {
+    h.receive(2, ModData{0, mod, key, std::move(value)}, kChannelSession);
+  };
+  const auto steps = [&](int count) {  // a budget slot each
+    for (int i = 0; i < count; ++i) {
+      h.now += 1'000'000 / kModDataSendsPerSecond;
+      h.session.tick(h.now);
+      h.collect();
+      take();
+    }
+  };
+
+  // New keys set and cleared without end: each frees its place in the store at once, so none may wait for ever.
+  for (int i = 0; i < 10'000; ++i) {
+    send("m", "k" + std::to_string(i), {1});
+    send("m", "k" + std::to_string(i), {});
+    h.now += 5'000;
+    h.session.tick(h.now);
+    h.collect();
+    take();
+  }
+  CHECK(h.session.stats().mod_data_refused == 0);
+  CHECK(h.session.stats().mod_data_held_most <= 2);
+  send("m", "last", {9});
+  steps(8);
+  CHECK(seen == Seen{{{"m", "last"}, {9}}});  // and the next value does not wait behind them
+
+  // A key that changes all the time does not keep a later one back; one that is back at what the others have goes not.
+  const auto relayed = h.session.stats().mod_data_relayed;
+  for (int i = 0; i < 4; ++i) send("m", "p" + std::to_string(i), {1});  // the burst
+  send("m", "last", {10});
+  send("m", "last", {9});
+  send("m", "a", {1});
+  send("m", "z", {1});
+  for (std::uint8_t i = 2; i < 6; ++i) {
+    send("m", "a", {i});
+    steps(1);
+  }
+  CHECK(seen.contains({"m", "z"}));
+  steps(4);
+  CHECK(h.session.stats().mod_data_relayed - relayed <= 4 + 1 + 4);
+  CHECK(seen[{"m", "a"}] == std::vector<std::uint8_t>{5});
+  for (const char* key : {"last", "p0", "p1", "p2", "p3", "a", "z"}) send("m", key, {});
+  steps(8);
+  CHECK(seen.empty());
+
+  // The most that can wait: every key the others have is cleared and as many new ones come, all at once.
+  const auto each = [](const std::string& prefix, const auto& f) {
+    for (std::size_t m = 0; m < kMaxModDataMods; ++m) {
+      for (std::size_t k = 0; k < kMaxModDataKeysPerMod; ++k) f("w" + std::to_string(m), prefix + std::to_string(k));
+    }
+  };
+  each("k", [&](const std::string& mod, const std::string& key) { send(mod, key, {1}); });
+  steps(128);
+  CHECK(seen.size() == 128);
+  each("k", [&](const std::string& mod, const std::string& key) { send(mod, key, {}); });
+  Seen kept;
+  each("n", [&](const std::string& mod, const std::string& key) {
+    send(mod, key, {2});
+    kept[{mod, key}] = {2};
+  });
+  CHECK(h.session.stats().mod_data_refused == 0);
+  CHECK(h.session.stats().mod_data_held_most > kMaxModDataHeld / 2);
+  CHECK(h.session.stats().mod_data_held_most <= kMaxModDataHeld);
+  steps(60);
+  h.join(3, "Saria");  // gets what the others have; what still waits goes to it with them
+  take();
+  CHECK(joiner == seen);
+  send("w0", "n0", {});  // still waited: never told, to the joiner neither
+  kept.erase({"w0", "n0"});
+  steps(256);
+  CHECK(seen == kept);
+  CHECK(joiner == kept);
+  CHECK_FALSE(over_limits);
+}
+
 // Race mode (coop/protocol/race.hpp): the world stays in each game. 3 players, one joining mid-game.
 TEST_CASE("race mode: no flag is relayed, kept or given to a joiner, chat still goes, on until the session empties") {
   Harness h;

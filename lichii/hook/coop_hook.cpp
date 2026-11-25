@@ -72,6 +72,7 @@
 #include "coop_dbno_game.h"
 #include "coop_hallway.h"
 #include "coop_mod_share.h"
+#include "coop_mod_data.h"
 #include "coop_pack_notice.h"
 #include "coop_name_privacy.h"
 #include "coop_scene_probe.h"
@@ -827,6 +828,7 @@ public:
         CoopDbno::OnEvent(event, client);  // down but not out (docs/play-online.md)
         CoopDifficulty::OnEvent(event, client);  // docs/play-online.md "Difficulty"
         CoopModShare::OnEvent(event, client);  // mods (docs/mods.md "Mods in co-op")
+        CoopModData::OnEvent(event, client);  // the mods' data channel (MOD_DATA, issue 250)
         if (event.kind == coop::net::EventKind::welcomed ||
             (event.kind == coop::net::EventKind::message && !client.is_host() &&
              std::holds_alternative<coop::protocol::ModSettings>(event.message))) {
@@ -2057,6 +2059,7 @@ public:
         }
         // Mods (docs/mods.md "Mods in co-op"): our list, the host's shared settings, a warning when they differ.
         CoopModShare::Frame(report.connected ? session_.get() : nullptr);
+        CoopModData::Frame(report.connected ? session_.get() : nullptr, SteadyMs());  // MOD_DATA (issue 250)
         for (auto& line : CoopModShare::TakeLines()) {
             chat_.Add(std::move(line), true);
         }

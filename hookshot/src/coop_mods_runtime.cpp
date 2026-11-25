@@ -18,6 +18,7 @@
 #include "coop_hook.h"
 #include "coop_mod_plugins.h"
 #include "coop_mod_screens.h"
+#include "coop_mod_data.h"
 #include "coop_mod_share.h"
 #include "coop_part_fallback.h"
 #include "coop_pause.h"
@@ -378,6 +379,30 @@ void Start() {
         return true;
     };
     game.now_ms = SteadyMs;
+    // (API v4) The data channel (MOD_DATA, issue 250): lichii/hook/coop_mod_data.h.
+    game.data_set = [](const std::string& id, const std::string& key, const std::vector<std::uint8_t>& value) {
+        const CoopModData::SetResult r = CoopModData::Set(id, key, value);
+        return r == CoopModData::SetResult::done ? std::string() : std::string(CoopModData::Words(r));
+    };
+    game.data_get = [](std::uint8_t player, const std::string& id, const std::string& key) {
+        return CoopModData::Get(player, id, key);
+    };
+    game.players = [] {
+        std::vector<CoopModPlugins::Game::PlayerInfo> out;
+        const std::uint8_t me = CoopModData::MyNumber();
+        for (auto& [number, name] : CoopModData::Players()) {
+            out.push_back({number, number == me, std::move(name)});
+        }
+        return out;
+    };
+    game.my_number = [] { return CoopModData::MyNumber(); };
+    game.take_data = [] {
+        std::vector<CoopModPlugins::Game::DataChange> out;
+        for (auto& c : CoopModData::TakeChanges()) {
+            out.push_back({c.player, std::move(c.mod_id), std::move(c.key), std::move(c.value)});
+        }
+        return out;
+    };
     g_host = std::make_unique<CoopModPlugins::Host>(*g_loader, CoopModPlugins::SystemLibrary(), std::move(game));
     g_pending = true;  // started at the first frame: the exe has told its hooks by then
 }

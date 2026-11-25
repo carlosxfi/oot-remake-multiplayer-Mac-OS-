@@ -190,6 +190,7 @@ enum class MessageType : std::uint16_t {
   voice_frame = 420,  // 420 to 424: proximity voice chat (docs/protocol.md, "Voice")
   mod_list = 490,  // 490 to 499: mods (docs/protocol.md, "Mods")
   mod_settings = 491,
+  mod_data = 492,  // protocol 18 (issue 250): the mods' own small values per player
   lobby_action = 510,  // 510 to 519: the Lobby's host moderation (docs/protocol.md, "Lobby")
   lobby_mutes = 511,
   lobby_result = 512,
@@ -1966,6 +1967,23 @@ struct ModSettings {
   bool operator==(const ModSettings&) const = default;
 };
 
+// MOD_DATA (protocol 18, issue 250; docs/protocol.md "Mods"): one small value a mod gives for its own player, by key.
+// The server writes the sender's number, keeps the latest value per player, mod and key, relays it to the others,
+// gives a joiner every value it keeps and forgets a player's values when the player leaves. It never reads the bytes.
+// An empty value clears the key. A game hands a value only to the mod of the same id (co-op's own keys: mod id "coop").
+inline constexpr std::size_t kMaxModDataBytes = 64;
+inline constexpr std::size_t kMaxModDataKeysPerMod = 8;   // per player and mod; the server refuses a 9th key
+inline constexpr std::size_t kMaxModDataMods = 16;        // per player; the server refuses a 17th mod id
+inline constexpr unsigned kModDataSendsPerSecond = 4;     // the server's limit per player (a burst of 4, then 4 a second)
+inline constexpr unsigned kModDataSendGapMs = 250;        // a game sends a changed key at most this often
+struct ModData {
+  std::uint8_t player_number = kPlayerSelf;  // 0 from the sender, 1 to 16 relayed
+  std::string mod_id;                        // as ModEntry::id
+  std::string key;                           // as ModSetting::key: 1 to kMaxModSettingKeyChars, [a-z0-9_]
+  std::vector<std::uint8_t> value;           // 0 to kMaxModDataBytes; empty clears the key
+  bool operator==(const ModData&) const = default;
+};
+
 // The Lobby (protocol 11, docs/protocol.md "Lobby"): the host's moderation,
 // all of it carried out by the server, which takes a LOBBY_ACTION from the
 // host only. A player's own (local) mutes never reach the wire.
@@ -2283,7 +2301,7 @@ using Message = std::variant<Hello, Welcome, Refused, PlayerJoined, PlayerLeft,
                              PvpMode, PvpHit, PvpHurt, FishLure, RejoinToken, RejoinClaim, DungeonEvent, PlayerRide,
                              OcarinaNote, PlatformClock, PlatformCounter,
                              DbnoMode, DbnoStatus, DbnoRevive, DbnoThreat, Difficulty, VoiceFrame,
-                             ModList, ModSettings, LobbyAction, LobbyMutes, LobbyResult,
+                             ModList, ModSettings, ModData, LobbyAction, LobbyMutes, LobbyResult,
                              LocalJoin, LocalJoined, LocalLeave, LocalSample, LocalMessage, LinkSound,
                              BossScene, BossHeart, PlayerLook, SwitchState, JoinKnock, JoinAllow,
                              BombTake, BombAnswer, BombShare, LiftAsk, LiftAnswer, LiftPlace,

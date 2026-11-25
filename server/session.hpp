@@ -34,6 +34,11 @@ using ConnectionId = std::uint32_t;
 // session numbers them from here (a transport id this high is refused).
 inline constexpr ConnectionId kLocalPlayerIds = 0xF000'0000u;
 
+// MOD_DATA values by mod id and key, and the most keys of one player that can wait for its send budget: every key it
+// keeps now plus every key the others still have of it (Session::on_mod_data).
+using ModDataValues = std::map<std::string, std::map<std::string, std::vector<std::uint8_t>>>;
+inline constexpr std::size_t kMaxModDataHeld = 2 * protocol::kMaxModDataMods * protocol::kMaxModDataKeysPerMod;
+
 // An IPv4 address or a range of them ("25.1.2.3", "25.0.0.0/8"), as numbers
 // with the first dotted part highest. For --allow.
 struct AddressRange {
@@ -442,6 +447,10 @@ struct Stats {
   std::uint64_t dbno_revives_dropped = 0;  // mode off, to nobody, or to themselves
   std::uint64_t difficulty_refused = 0;  // DIFFICULTY from a player who does not host
   std::uint64_t mod_settings_refused = 0;  // MOD_SETTINGS from a player who does not host
+  std::uint64_t mod_data_relayed = 0;      // MOD_DATA kept and passed on (a change)
+  std::uint64_t mod_data_refused = 0;      // MOD_DATA over its limits: a 9th key or a 17th mod (never answered: the game keeps the same limits)
+  std::uint64_t mod_data_held = 0;         // MOD_DATA changes kept but relayed later (over the send budget)
+  std::uint64_t mod_data_held_most = 0;    // the most keys one player ever had waiting (at most kMaxModDataHeld)
   std::uint64_t race_dropped = 0;          // race mode: world messages neither relayed nor sent
   std::uint64_t world_held_dropped = 0;    // a held player's world messages (another randomizer seed, row 281)
   // The Lobby (docs/protocol.md "Lobby"): the host's kicks, bans and mutes.
@@ -762,6 +771,17 @@ class Session {
     // Held out of the host's world (coop/protocol/mod_world.hpp, row 281): its list and the host's are known and its
     // randomizer seed is not the host's. Its world messages (race_private's list) are neither kept nor relayed.
     bool world_held = false;
+    // Its MOD_DATA values (protocol 18, issue 250), by mod id and key; forgotten with the connection. And its send
+    // budget: the theoretical arrival time of its next MOD_DATA (a burst of kModDataSendsPerSecond, then one each
+    // 1/kModDataSendsPerSecond of a second). A change over the budget is kept all the same and its key waits in
+    // mod_data_held (mod id, key; first come, first served) until the budget lets it go: the others then get the value
+    // it has by then, so a bunch of sends after a stall is never lost (the game marks a sent value as the server's and
+    // does not resend it). mod_data_shown is what the others have; mod_data_held is exactly the keys whose kept value
+    // is not the shown one, so it is never more than the keys of both (kMaxModDataHeld).
+    ModDataValues mod_data;
+    ModDataValues mod_data_shown;
+    std::uint64_t mod_data_due_us = 0;
+    std::deque<std::pair<std::string, std::string>> mod_data_held;
     // The scene the player is in, from its latest OBJECT_PRESENT or
     // PLAYER_SAMPLE scene; empty while not known.
     std::string scene;
@@ -986,6 +1006,10 @@ class Session {
   void on_mods(ConnectionId id, Connection& c, protocol::Message& message);
   // Each player's world_held again, after a MOD_LIST or a host change (logged when it changes).
   void update_world_held();
+  void on_mod_data(ConnectionId id, Connection& c, protocol::ModData& data, std::uint64_t now_us);
+  bool take_mod_data_slot(Connection& c, std::uint64_t now_us);
+  void relay_mod_data(ConnectionId id, Connection& c, const std::string& mod_id, const std::string& key);
+  void run_held_mod_data(std::uint64_t now_us);
   // The Lobby: the host's kick, ban and mutes (docs/protocol.md "Lobby").
   void on_lobby(ConnectionId id, const protocol::LobbyAction& a, std::uint64_t now_us);
   // A kick, ban or mute on player a.target, by the host (`actor`: its connection, which may not be its own target)
