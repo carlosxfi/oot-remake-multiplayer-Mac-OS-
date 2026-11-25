@@ -1161,8 +1161,10 @@ TEST_CASE("dbno body: issue 337, a child's Crawl waits until this down's anchor 
 
 namespace {
 // Our Link's work object as the game keeps it ([actor+0x270]+0x358), with its do action.
+// [actor+0x270] is also the first link of MakeAs's animation chain, so both write the same table (actor+0x100):
+// either order keeps the other's part.
 void SetDoAction(Guest& g, std::uint32_t action, std::uint64_t actor = kActor) {
-    const std::uint64_t parts = actor + 0x8000, work = actor + 0xa000;
+    const std::uint64_t parts = actor + 0x100, work = actor + 0xa000;
     g.Write(actor + addr::kActorComponents, &parts, sizeof parts);
     g.Write(parts + addr::kComponentWork, &work, sizeof work);
     g.Write(work + addr::kWorkDoAction, &action, sizeof action);
