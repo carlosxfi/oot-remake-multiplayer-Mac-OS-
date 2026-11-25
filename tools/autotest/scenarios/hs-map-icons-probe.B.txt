@@ -12,5 +12,5 @@ wait 300
 press A
 wait 2400
 stick 0 1 30
-wait 3600
+wait 4500               # (A's Map page is held 14 s longer now: B stays on A's map till A's end)
 mark b-end

@@ -87,7 +87,9 @@ public:
     const std::string& why() const { return why_; }
     // The rotation-offset probe: an icon layout's (a PaMapIcon_00 the map screen holds) arrow N_PlayerRotate_00; 0
     // when not found.
-    std::uint64_t ArrowTurnPane(CoopNativeTags::Game& game, std::uint64_t icon_layout);                      // what Step last missed (the log)
+    std::uint64_t ArrowTurnPane(CoopNativeTags::Game& game, std::uint64_t icon_layout);
+    // The probe's lines (coop_map_icons.cpp Icons::Probe): the game's own icon part and its run-time copies.
+    std::vector<std::string> Probe(CoopNativeTags::Game& game);                      // what Step last missed (the log)
     bool Up() const { return up_; }
     std::size_t shown() const { return shown_.size(); }
     std::uint64_t copy(std::size_t i) const { return i < kCopies ? copies_[i].pane : 0; }

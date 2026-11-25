@@ -559,20 +559,11 @@ void MapProbe(void* ctx) {
     next = SteadyMs() + 5000;
     TagsGame game(ctx);
     const std::uint64_t map = CoopNativeTags::ScreenByVtable(game, CoopNativeTags::kMapMenuVtable);
-    std::string held;
-    for (const auto& h : CoopNativeTags::LayoutsHeld(game, map, 0x3000, "MapIcon")) {
-        held += fmt::format(" +{:#x}={:#x} {}", h.offset, h.layout, h.name);
-    }
-    LOG_INFO(Core, "coop: map icons probe: map screen {:#x}, MapIcon layouts:{}", map, held.empty() ? " none" : held);
-    // Item 8's rotation-offset probe: each held PaMapIcon_00's arrow N_PlayerRotate_00, its words +0x60..+0xa0 (two
-    // facings of Link tell the turn), and how far our copies got.
-    for (const auto& h : CoopNativeTags::LayoutsHeld(game, map, 0x3000, "PaMapIcon_00")) {
-        const std::uint64_t turn = g_map_icons.ArrowTurnPane(game, h.layout);
-        float w[16] = {};
-        if (turn != 0) CoopRuntime::Read(turn + 0x60, w, sizeof w);
-        std::string words;
-        for (const float f : w) words += fmt::format(" {:.3f}", f);
-        LOG_INFO(Core, "coop: map icons probe: {:#x} arrow turn pane {:#x} +0x60:{}", h.layout, turn, words);
+    // (the screen itself holds only its own layout: the icon parts' layouts hang under their panes and the game's
+    // run-time copies one level down, so the probe walks them as Step does: Icons::Probe)
+    if (map == 0) LOG_INFO(Core, "coop: map icons probe: no map screen");
+    for (const std::string& line : map != 0 ? g_map_icons.Probe(game) : std::vector<std::string>{}) {
+        LOG_INFO(Core, "coop: map icons probe: {}", line);
     }
     LOG_INFO(Core, "coop: map icons probe: copies up {} shown {} copy0 {:#x} ({})", g_map_icons.Up(), g_map_icons.shown(),
              g_map_icons.copy(0), g_map_icons.why());

@@ -26,6 +26,7 @@ constexpr const char* kEntranceHidden[] = {"N_Mini_00", "N_Loacal_00", "T_Locati
 constexpr const char* kIconLayout = "PaMapIcon_00";
 constexpr const char* kEntranceLayout = "PaMapIconEntrance_00";
 constexpr const char* kPlayerLayout = "PaMapIconPlayer_00";
+constexpr const char* kGamePart = "Pa_MapIcon_00";   // the layout's own icon part (the game copies it)
 
 // A message reference as the game's text setter reads it (as coop_native_tags.cpp's).
 struct Ref {
@@ -44,6 +45,15 @@ bool ReadValue(CoopNativeTags::Game& game, std::uint64_t address, T& out) {
 std::string CopyName(std::size_t i) {
     char text[32];
     std::snprintf(text, sizeof text, kCopyName, static_cast<int>(i));
+    return text;
+}
+
+// The probe's line pieces (printf: this file has no fmt, its test links none).
+unsigned long long U(std::uint64_t v) { return static_cast<unsigned long long>(v); }
+template <typename... A>
+std::string Text(const char* format, A... args) {
+    char text[256];
+    std::snprintf(text, sizeof text, format, args...);
     return text;
 }
 
@@ -125,7 +135,7 @@ bool Icons::Block(CoopNativeTags::Game& game) {
     for (const char* n : kIconHidden) names_.emplace_back(n);
     for (const char* n : kEntranceHidden) names_.emplace_back(n);
     for (const char* n : {"N_Player_00", "Pa_Player_00", "N_Entrance_00", "Pa_Entrance_00", "N_Location_00",
-                          "T_Location_00", "N_Type_00", "N_Type_01", "N_PlayerRotate_00"}) {
+                          "T_Location_00", "N_Type_00", "N_Type_01", "N_PlayerRotate_00", kGamePart}) {
         names_.emplace_back(n);
     }
     const auto got = game.Call(game.MainBase() + addr::kMalloc, {kBlockBytes, 0, 0, 0, 0});
@@ -257,6 +267,53 @@ std::uint64_t Icons::ArrowTurnPane(CoopNativeTags::Game& game, std::uint64_t ico
     if (!Block(game)) return 0;
     const std::uint64_t player = PartLayout(game, Find(game, icon_layout, "Pa_Player_00"), kPlayerLayout);
     return Find(game, player, "N_PlayerRotate_00");
+}
+
+// The probe (LICHII_COOP_MAP_PROBE=1) on the game's own icons, the way Step finds the copies: the screen's layout, its
+// S_MapIcon_00 and Pa_MapIcon_00 panes, the layouts that part pane holds (all names: which one is the icon's), and the
+// icon layouts held one level under the screen (the game's run-time copies, one per icon shown: Link's arrow among
+// them), each with its arrow N_PlayerRotate_00's words +0x60..+0x9c.
+std::vector<std::string> Icons::Probe(CoopNativeTags::Game& game) {
+    std::vector<std::string> out;
+    const std::uint64_t screen = CoopNativeTags::ScreenByVtable(game, CoopNativeTags::kMapMenuVtable);
+    std::uint64_t layout = 0;
+    if (screen != 0) ReadValue(game, screen + addr::kScreenLayout, layout);
+    if (screen == 0 || layout == 0 || !Block(game)) {
+        out.push_back(Text("screen %#llx layout %#llx: nothing to read", U(screen), U(layout)));
+        return out;
+    }
+    const std::uint64_t clip = Find(game, layout, kClipPane), part = Find(game, layout, kGamePart);
+    std::string held;
+    for (const auto& h : CoopNativeTags::LayoutsHeld(game, part, 0x200, "")) {
+        held += Text(" +%#llx=%#llx %s", U(h.offset), U(h.layout), h.name.c_str());
+    }
+    out.push_back(Text("screen %#llx layout %#llx S_MapIcon_00 %#llx Pa_MapIcon_00 %#llx holds:", U(screen), U(layout),
+                       U(clip), U(part)) + (held.empty() ? " none" : held));
+    std::vector<std::uint64_t> icons;
+    if (const std::uint64_t own = PartLayout(game, part, kIconLayout); own != 0) icons.push_back(own);
+    std::vector<std::uint64_t> words(0x3000 / 8);
+    if (game.Read(screen, words.data(), words.size() * 8)) {
+        std::vector<std::uint64_t> seen;
+        for (std::size_t i = 0; i < words.size() && icons.size() < 24; ++i) {
+            const std::uint64_t p = words[i];
+            if (p < 0x80000000ull || (p & 7) != 0 || std::find(seen.begin(), seen.end(), p) != seen.end()) continue;
+            seen.push_back(p);
+            for (const auto& h : CoopNativeTags::LayoutsHeld(game, p, 0x200, kIconLayout)) {
+                if (std::find(icons.begin(), icons.end(), h.layout) != icons.end()) continue;
+                icons.push_back(h.layout);
+                out.push_back(Text("icon %#llx (%s) at screen+%#llx -> +%#llx", U(h.layout), h.name.c_str(), U(i * 8), U(h.offset)));
+            }
+        }
+    }
+    for (const std::uint64_t icon : icons) {
+        const std::uint64_t turn = ArrowTurnPane(game, icon);
+        float w[16] = {};
+        if (turn != 0) game.Read(turn + 0x60, w, sizeof w);
+        std::string text;
+        for (const float f : w) text += Text(" %.3f", static_cast<double>(f));
+        out.push_back(Text("%#llx arrow turn pane %#llx +0x60:", U(icon), U(turn)) + text);
+    }
+    return out;
 }
 
 void Icons::HideAll(CoopNativeTags::Game& game) {
