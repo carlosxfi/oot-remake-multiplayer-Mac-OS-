@@ -56,6 +56,7 @@
 #include "coop_i18n.h"
 #include "coop_native_ui.h"
 #include "coop_party_hud.h"
+#include "coop_race_mode.h"
 #include "coop_save.h"
 #include "coop_hold.h"
 #include "coop_counters.h"
@@ -1167,7 +1168,9 @@ void PartyStep(NativeGame& game, void* ctx, std::uint64_t now) {
         menu_up = g_party.game_menu_up;
     }
     if (PartyTest() && !menu_up) blocks = CoopPartyHud::TestBlocks(now);
-    if (!blocks.empty()) {   // double defence is one for all players (shared flag): ours is theirs
+    // Double defence is one for all players (a shared flag): ours is theirs. Race mode shares no flag and no message
+    // carries theirs, so it is off on their hearts then.
+    if (!blocks.empty() && !CoopRaceMode::InForce()) {
         CoopHook::EmulatorMemory memory(g_system.ApplicationMemory(), CoopRuntime::MainBase());
         const bool defence = coop::host::GameFlags(memory).get_bool(CoopPartyHud::kDefenceUpHash).value_or(false);
         for (auto& b : blocks) b.double_defence = defence;
@@ -1177,7 +1180,7 @@ void PartyStep(NativeGame& game, void* ctx, std::uint64_t now) {
     const bool on = hud.Step(party, blocks, bottom, &log, now);
     for (const auto& l : log) LOG_INFO(Core, "{}", l);
     if (g_party_native.exchange(on) != on) {
-        LOG_INFO(Core, "coop: party hud: {}", on ? "on the game's HUD" : "drawn blocks (the game's HUD has none of ours now)");
+        LOG_INFO(Core, "coop: party hud: {}", on ? "on the game's HUD" : "hidden (the game's HUD has none of ours now; nothing drawn instead)");
     }
 }
 
@@ -1471,7 +1474,9 @@ CoopDraw::Scene DrawScene() {
             g_party.game_menu_up = game_menu_up;
             g_party.ms = SteadyMs();
         }
-        if (g_party_native.load()) s.hud.clear();   // (the game's HUD shows them: none drawn)
+        // Never drawn by us (owner: nothing hand-drawn): the game's own heart parts show them (PartyStep), and with
+        // an older pack that has none they are hidden (PartyStep logs why).
+        s.hud.clear();
     }
     // F6 (ui-audit-01112 B5): the game's own - menu, Multiplayer > Players (coop_players_open.h), when we are in a
     // scene (never on the title or a file screen, where Minus is not the - menu); the drawn list only when the pack has

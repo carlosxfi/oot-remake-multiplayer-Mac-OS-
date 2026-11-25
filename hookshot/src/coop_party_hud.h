@@ -71,11 +71,12 @@ struct Block {
     std::string text;            // the line over the hearts (name, place, voice)
     std::vector<int> hearts;     // quarters filled in each (CoopHudHearts::Quarters)
     bool dim = false;            // not connected (CoopHudDim): hearts and line at kDimAlpha
-    bool double_defence = false; // the Great Fairy's double defence (PlayerStatus.IsDefenseUP: one for all players)
+    bool double_defence = false; // the Great Fairy's double defence (PlayerStatus.IsDefenseUP; see kDefenceUpHash)
 };
 
 // PlayerStatus.IsDefenseUP (docs/items.md): shared by every player (game_items.cpp, R::any), so our own value is
-// everyone's.
+// everyone's. Not in race mode (coop_race_mode.h: no flag is shared, and no message carries another player's): then
+// nobody's hearts show it but our own game's.
 inline constexpr std::uint32_t kDefenceUpHash = 0x56bbe07cu;
 
 // A player's hearts as the game sets its own: each whole heart's state (0 none, 1 empty, 2 full), and the part heart.
@@ -118,8 +119,8 @@ std::string MoreText(std::size_t players);
 class Hud {
 public:
     // Each frame on the game's thread: the blocks shown on the game's HUD. False when the HUD has no copies of ours
-    // (an older pack) or is not there now: the caller draws its own blocks then. `log` gets a line for each thing
-    // learnt once (found or not, last frames).
+    // (an older pack) or is not there now: the other players' hearts are hidden then (nothing is drawn instead).
+    // `log` gets a line for each thing learnt once (found or not, last frames).
     // `now_ms` (any steady clock) plays the glow on a change of life and the pinch at low life.
     bool Step(Game& game, const std::vector<Block>& blocks, std::optional<double> game_hud_bottom,
               std::vector<std::string>* log = nullptr, std::uint64_t now_ms = 0);
@@ -182,7 +183,7 @@ private:
 
 // Test builds, COOP_TEST_PARTY_HUD=1 (scenario hs-party-hud): the blocks of four made-up players, their life going
 // down a quarter of a heart every kTestStepMs and round again, so one game alone shows every fill on screenshots;
-// the third ("Three") not connected (dimmed).
+// the third ("Three") not connected (dimmed); the second has the longest line a player can have (it must fit).
 inline constexpr std::uint64_t kTestStepMs = 1500;
 std::vector<Block> TestBlocks(std::uint64_t now_ms);
 

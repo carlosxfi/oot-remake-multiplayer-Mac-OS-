@@ -186,7 +186,7 @@ TEST_CASE("party hud: the blocks stay on the picture") {
     CHECK(party::MoreText(5) == "+2");
 }
 
-TEST_CASE("party hud: an older pack keeps the drawn blocks") {
+TEST_CASE("party hud: an older pack hides the hearts (nothing drawn instead)") {
     FakeGame game;
     party::Hud hud;
     std::vector<std::string> log;
@@ -198,6 +198,7 @@ TEST_CASE("party hud: an older pack keeps the drawn blocks") {
     CHECK_FALSE(hud.native());
     REQUIRE(log.size() == 1);
     CHECK(log[0].find("older pack") != std::string::npos);
+    CHECK(log[0].find("hidden") != std::string::npos);
     const int calls = game.calls;
     CHECK_FALSE(hud.Step(game, one, std::nullopt, &log));   // asked once per HUD
     CHECK(game.calls == calls);
@@ -345,6 +346,7 @@ TEST_CASE("party hud: the test players go through every fill") {
     REQUIRE(a.size() == 4);
     CHECK(a[0].hearts.size() == 20);
     CHECK(a[2].hearts == std::vector<int>{4, 4, 4});
+    CHECK(a[1].text.rfind(std::string(16, 'W') + " (talking)  Inside Ganondorf's Castle ", 0) == 0);   // the longest line
     CHECK(b[2].hearts == std::vector<int>{4, 4, 1});
     CHECK(party::TestBlocks(party::kTestStepMs * 12)[2].hearts == std::vector<int>{0, 0, 0});
     CHECK(party::TestBlocks(party::kTestStepMs * 13)[2].hearts == std::vector<int>{4, 4, 4});

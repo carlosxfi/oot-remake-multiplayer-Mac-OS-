@@ -144,7 +144,11 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
         return *a;
     };
     if (pane(PaneName("Heart", 0, 0)) == 0) {
-        if (log) log->push_back(std::string(kSay) + "the HUD has no hearts of ours (an older pack): the drawn blocks stay");
+        if (log) {
+            log->push_back(std::string(kSay) +
+                           "the HUD has no hearts of ours (an older pack): the other players' hearts are hidden (nothing "
+                           "drawn instead)");
+        }
         return false;
     }
     bool all = true;
@@ -344,7 +348,9 @@ std::vector<Block> TestBlocks(std::uint64_t now_ms) {
         for (int i = 0; i < (max_quarters + 3) / 4; ++i) b.hearts.push_back(std::clamp(life - 4 * i, 0, 4));
         return b;
     };
-    return {block("Twenty", 80), block("Ten", 40), block("Three", 12, true), block("Four", 16)};
+    // (the second: the longest line a player can have, 16 wide letters + voice words + the longest place name)
+    const std::string longest = std::string(16, 'W') + " (talking)  Inside Ganondorf's Castle";
+    return {block("Twenty", 80), block(longest.c_str(), 40), block("Three", 12, true), block("Four", 16)};
 }
 
 }  // namespace CoopPartyHud
