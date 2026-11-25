@@ -84,6 +84,7 @@ namespace {
 std::mutex g_anchor_mutex;
 std::optional<AnchorSpot> g_anchor;
 std::uint32_t g_anchor_downs = 0;
+std::uint32_t g_anchor_live = 0;  // the down whose anchor the copy director made a live actor
 }  // namespace
 
 void SetAnchor(std::optional<AnchorSpot> spot) {
@@ -97,6 +98,16 @@ void SetAnchor(std::optional<AnchorSpot> spot) {
 std::optional<AnchorSpot> Anchor() {
     std::lock_guard lock(g_anchor_mutex);
     return g_anchor;
+}
+
+void AnchorLive(std::uint32_t down) {
+    std::lock_guard lock(g_anchor_mutex);
+    g_anchor_live = down;
+}
+
+bool AnchorReady() {
+    std::lock_guard lock(g_anchor_mutex);
+    return g_anchor && g_anchor->down != 0 && g_anchor->down == g_anchor_live;
 }
 
 std::optional<AsSlot> ReadSlot0(CoopPuppet::Guest& guest, std::uint64_t actor) {
@@ -350,8 +361,21 @@ std::optional<CoopPuppet::Call> Crawl::StepPose(CoopPuppet::Guest& guest, std::u
             crawl_seen_ = slot ? slot->name : std::string("-");  // once a down (the log)
             Note("our downed Link: Crawl taken but not crawling ('" + crawl_seen_ + "')");
         }
+        if (want_.lying && crawling_ && !now) {
+            if (++not_crawling_frames_ == kNotCrawlingFrames && crawl_rechecks_ < kCrawlRechecks) {
+                ++crawl_rechecks_;
+                not_crawling_frames_ = 0;
+                recheck_due_.store(true, std::memory_order_release);
+                Note("our downed Link: Crawl taken but slot 0 is '" + (slot ? slot->name : std::string("-")) +
+                     "', not the game's crawl: asked again (" + std::to_string(crawl_rechecks_) + " of " +
+                     std::to_string(kCrawlRechecks) + ")");
+            }
+        } else {
+            not_crawling_frames_ = 0;
+        }
         if (!want_.lying) {
             crawl_seen_.clear();
+            crawl_rechecks_ = 0;
         }
         return std::nullopt;
     }
@@ -638,6 +662,14 @@ std::optional<CoopPuppet::Call> Crawl::Next(CoopPuppet::Guest& guest, bool after
         ground_seen_ = false;
         stand_due_ = !want_.lying && crawling_ && !standing_;
         crawling_ = false;
+        anchor_ready_ms_ = 0;
+        anchor_wait_noted_ = false;
+        recheck_due_.store(false, std::memory_order_relaxed);
+    }
+    if (crawling_ && recheck_due_.exchange(false, std::memory_order_acq_rel)) {
+        crawling_ = false;  // (StepPose: taken but slot 0 never became the game's crawl) a fresh ask
+        asks_ = 0;
+        next_ask_ms_ = 0;
     }
     if (want_.event) {
         crawling_ = false;  // the event moves our Link; asked again after it
@@ -698,6 +730,25 @@ std::optional<CoopPuppet::Call> Crawl::Next(CoopPuppet::Guest& guest, bool after
         return Ask(guest, UpVerb(false), main_base);
     }
     if (want_.lying && !crawling_ && !airborne_ && !blocked_ && !riding_ && asks_ < kMaxAsks && now_ms >= next_ask_ms_) {
+        if (!want_.adult) {
+            // Issue 337: the game reads verb 234 against the CrawlAnchor's attention; asked before the anchor
+            // (made async by the copy director) is live, it is taken and nothing crawls (slot 0 stays DamageS).
+            if (Anchor() && !AnchorReady()) {
+                anchor_ready_ms_ = 0;
+                if (!std::exchange(anchor_wait_noted_, true)) {
+                    Note("our downed Link: Crawl waits for this down's CrawlAnchor to be a live actor");
+                }
+                return std::nullopt;
+            }
+            if (anchor_ready_ms_ == 0 && AnchorReady()) {
+                anchor_ready_ms_ = now_ms == 0 ? 1 : now_ms;
+                Note("our downed Link: the CrawlAnchor is live: Crawl asked after " + std::to_string(kAnchorSettleMs) +
+                     " ms");
+            }
+            if (anchor_ready_ms_ != 0 && now_ms < anchor_ready_ms_ + kAnchorSettleMs) {
+                return std::nullopt;
+            }
+        }
         if (held_back_) {
             // The game's own request ran on our slot this frame (a round
             // that starts now, or a kPassVerbs verb): the slot is busy.

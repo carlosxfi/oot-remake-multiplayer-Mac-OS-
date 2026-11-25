@@ -230,6 +230,13 @@ std::optional<AnchorSpot> AnchorFor(bool lying, bool event, bool adult, const st
 // The frame sets it, the copy director's feeder (coop_spawn) reads it.
 void SetAnchor(std::optional<AnchorSpot> spot);
 std::optional<AnchorSpot> Anchor();
+// Issue 337: the copy director (coop_spawn, at "is actor") says the anchor of down `down` is a live actor. The
+// game reads a Crawl ask against the CrawlAnchor's attention, so a child's Crawl is asked only once the anchor of
+// this down is live (asked before it, verb 234 was taken and slot 0 stayed DamageS: run crawl-337-2-r2).
+void AnchorLive(std::uint32_t down);
+// The anchor of the current down is a live actor (a down with no anchor wanted: false). A child's Crawl waits
+// only while an anchor is wanted and not live (no anchor wanted, e.g. no rotation read: asked as before).
+bool AnchorReady();
 constexpr bool Passes(std::int32_t v) {
     for (const std::int32_t p : kPassVerbs) {
         if (p == v) {
@@ -332,6 +339,12 @@ public:
 
     // Ask again at most this often while lying and not known to crawl.
     static constexpr std::uint64_t kAskEveryMs = 500;
+    // Issue 337: a child's Crawl waits for the live anchor of this down, then kAnchorSettleMs for the game's
+    // attention to see it. A Crawl taken while slot 0 is not the game's crawl for kNotCrawlingFrames reads is
+    // asked again (a logged guard; at most kCrawlRechecks a down): the order fix above is the cause's fix.
+    static constexpr std::uint64_t kAnchorSettleMs = 250;
+    static constexpr int kNotCrawlingFrames = 30;
+    static constexpr int kCrawlRechecks = 3;
     static constexpr int kMaxAsks = 6;  // then left until our Link's next Walk/Wait (see kRetryMs)
     // A round that ended refused (or out of asks) on the spot starts again on
     // the ground only this long after its last ask (moved by the world: at once).
@@ -388,6 +401,11 @@ private:
     bool held_back_ = false;    // ... as the caller read it at this frame's start
     // The adult's lying pose (kLyingPose).
     bool riding_ = false;              // slot 0 plays a horse command (read each frame, adults)
+    std::uint64_t anchor_ready_ms_ = 0;   // (calc thread) when this down's anchor was first seen live; 0: not yet
+    bool anchor_wait_noted_ = false;      // (calc thread) the wait for the anchor logged once a down
+    int not_crawling_frames_ = 0;         // (StepPose) reads of a taken Crawl with slot 0 not crawling
+    int crawl_rechecks_ = 0;              // (StepPose) re-asks this down
+    std::atomic<bool> recheck_due_{false};  // StepPose -> calc thread: ask the Crawl again
     std::atomic<bool> game_crawl_{false};  // slot 0 plays the game's crawl (read each frame, a lying child)
     std::string crawl_seen_;           // slot 0's command when game_crawl_ last changed (the log)
     bool pose_tried_ = false;          // this frame's pose step done

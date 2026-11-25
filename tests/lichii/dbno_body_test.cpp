@@ -1133,3 +1133,28 @@ TEST_CASE("dbno body: issue 337, the game's own crawl commands") {
     CHECK_FALSE(CrawlCommand("DamageLStand"));
     CHECK_FALSE(CrawlCommand(""));
 }
+
+TEST_CASE("dbno body: issue 337, a child's Crawl waits until this down's anchor is a live actor") {
+    // Run crawl-337-2-r2: Crawl (234) was asked and taken before the async CrawlAnchor existed; slot 0 stayed
+    // DamageS. The copy director's on_made (coop_spawn) marks this down's anchor live; the ask waits for it.
+    const CoopPuppet::Mat3 identity{1, 0, 0, 0, 1, 0, 0, 0, 1};
+    SetAnchor(std::nullopt);
+    CHECK_FALSE(AnchorReady());  // no anchor wanted
+    SetAnchor(AnchorFor(true, false, false, {0, 0, 0}, identity));
+    REQUIRE(Anchor());
+    const std::uint32_t down = Anchor()->down;
+    CHECK_FALSE(AnchorReady());  // wanted, not made yet: the Crawl waits
+    AnchorLive(down - 1);        // an older down's copy: not this one
+    CHECK_FALSE(AnchorReady());
+    AnchorLive(down);
+    CHECK(AnchorReady());
+    SetAnchor(AnchorFor(true, false, false, {1, 0, 0}, identity));  // moved with him: still live
+    CHECK(AnchorReady());
+    SetAnchor(std::nullopt);  // up
+    CHECK_FALSE(AnchorReady());
+    SetAnchor(AnchorFor(true, false, false, {0, 0, 0}, identity));  // a new down: waits for its own anchor
+    CHECK_FALSE(AnchorReady());
+    AnchorLive(Anchor()->down);
+    CHECK(AnchorReady());
+    SetAnchor(std::nullopt);
+}

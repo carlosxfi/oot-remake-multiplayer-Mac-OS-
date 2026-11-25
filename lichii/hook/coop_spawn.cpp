@@ -1233,6 +1233,9 @@ std::optional<CoopPuppet::Call> Director::Step(CoopPuppet::Guest& guest, bool af
                     stand_in_fails_[slot.copy_of] = 0;
                 }
                 Say(slot.actor + ": copy " + std::to_string(slot.key) + " is actor " + Hex(result));
+                if (on_made_) {
+                    on_made_(slot.key);  // (issue 337: the CrawlAnchor live; SetOnMade)
+                }
             }
             slot.request = 0;
             break;
@@ -2536,6 +2539,16 @@ Glue& TheGlue() {
 Director& TheDirector() {
     static Director director(
         [](const std::string& text) { LOG_INFO(Core, "coop: {}", text); });
+    static const bool wired = [] {
+        director.SetOnMade([](std::uint64_t key) {
+            if ((key & ~std::uint64_t{0xffffffff}) == CoopDbno::Body::kAnchorKey) {
+                // Issue 337: our downed child's Crawl is asked only once this down's anchor is live.
+                CoopDbno::Body::AnchorLive(static_cast<std::uint32_t>(key - CoopDbno::Body::kAnchorKey));
+            }
+        });
+        return true;
+    }();
+    (void)wired;
     return director;
 }
 
