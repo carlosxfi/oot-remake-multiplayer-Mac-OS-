@@ -1,0 +1,50 @@
+# rim-185 (see rim-185.A.txt): B faces up the path and watches A's puppet; marks follow A's timeline.
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_ANIM=1
+#! timeout 540
+mark start
+warp KakarikoVillage_Child Kakariko_WellSide
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark after
+wait 200
+stick 0 -0.6 30         # walk back toward the camera
+stick 0 0.3 8           # turn to face up the path
+press ZL                # camera behind B
+wait 640
+mark b-child-back       # ~880: A walking up the path, its back (the shield) to B
+wait 130
+mark b-child-turned
+wait 60
+mark b-child-drawn      # ~1070: A's shield in hand, front to B
+wait 200
+mark b-child-drawn-late
+wait 240
+warp KakarikoVillage_Adult Kakariko_WellSide
+wait 1500
+stick 0 -0.6 30
+stick 0 0.3 8
+press ZL
+wait 172
+mark b-adult-back       # ~3220 (A ~3070 back, walking away)
+wait 60
+mark b-adult-back-2
+wait 100
+mark b-adult-drawn      # ~3380
+wait 200
+mark b-adult-drawn-late
+wait 460
+mark b-adult-goron      # ~4040
+wait 330
+mark b-adult-zora       # ~4370
+wait 120
+mark end

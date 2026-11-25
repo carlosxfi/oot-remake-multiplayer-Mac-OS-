@@ -1,0 +1,83 @@
+# rim-185 (row 185 reopened + the same cause in row 278's Cap trim, branch row-185-rim): no grey specks left on
+# the Hylian Shield's frame (child and adult, on the back and drawn) or on the Goron/Zora hood trims, A's own Link
+# and B's puppet of A. Before the run: BOTH kits' puppet pack made again from this branch (region.bin, cap.bin with
+# the Goron/Zora trims); A's lane1-A coop-options.ini: look_hylian_frame = #E06020, look_cap_trim = #E0E020, no
+# color (B's none). Run: offline/row-185-rim/rim-185-run.ps1 (unattended).
+# PASS (shots, both games): a-child-back / a-child-walk / a-adult-back and B's b-child-back / b-adult-back: the frame
+#   one even orange on the back, no grey dots; a-child-drawn / a-adult-drawn and b-child-drawn / b-adult-drawn: the
+#   same in hand (front: the Triforce stays gold); a-adult-goron / b-adult-goron: the Goron hood's trims even yellow
+#   over red, no red/grey dots in them (gold stitching stays); a-adult-zora / b-adult-zora: the Zora hood's pattern and
+#   rope even yellow. A's log: "part region block lists" (> 0) and "the Cap trim paints N blocks of 6 tunic textures".
+#   FAIL: grey/old-colour dots inside the orange frame or the yellow trims on either game.
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_ANIM=1,LICHII_COOP_CHEATS=1
+#! timeout 540
+mark start
+warp KakarikoVillage_Child Kakariko_WellSide
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark after
+wait 600
+give PouchData.Weapon_Shield_Hylian.StockNum
+wait 60
+wear shield Weapon_Shield_Hylian
+wait 30
+dress shield
+wait 120
+mark a-child-back      # frame ~810 after 'after': own camera behind A, the shield on A's back
+stick 0 0.6 70         # walk up the path, away from B (B sees the back)
+mark a-child-walk
+stick 0 0.6 30
+stick 0.7 0 30
+stick 0 -0.4 12        # turn toward B
+wait 60
+press Y                # draw: the shield in hand, its front to B
+wait 40
+mark a-child-drawn
+wait 200
+mark a-child-drawn-late
+wait 240
+warp KakarikoVillage_Adult Kakariko_WellSide
+wait 1500
+give PouchData.Weapon_Shield_Hylian.StockNum
+wait 60
+wear shield Weapon_Shield_Hylian
+wait 30
+dress shield
+wait 120
+mark a-adult-back
+stick 0 0.6 70
+mark a-adult-walk
+stick 0 0.6 30
+stick 0.7 0 30
+stick 0 -0.4 12
+wait 60
+press Y
+wait 40
+mark a-adult-drawn
+wait 200
+mark a-adult-drawn-late
+give PouchData.Armor_Adult_Goron.StockNum
+give PouchData.Armor_Adult_Zora.StockNum
+wait 120
+wear armor Armor_Adult_Goron
+wait 30
+dress armor
+wait 300
+mark a-adult-goron
+wear armor Armor_Adult_Zora
+wait 30
+dress armor
+wait 300
+mark a-adult-zora
+wait 120
+mark end
