@@ -163,6 +163,11 @@ std::string ProcessMemoryText();
 // only: such a host listens on 127.0.0.1 alone (Menu::RunHost) and opens no router port or invite.
 inline constexpr const char* kTestHostEnv = "LICHII_COOP_TEST_HOST";
 std::optional<std::pair<std::uint16_t, std::string>> ParseTestHost(std::string_view text);
+// The autotest's relay room host (private-lobby-fix): with LICHII_COOP_TEST_RELAY=<host:port> (CoopTitleMenu::RelayOk)
+// and LICHII_COOP_TEST_RELAY_ROOM=<room> (RoomNameOk) also set, `menu host` holds that private room on that relay
+// (a loopback relay in every run), so a guest's `menu paste` joins it as a player's paste does. Test only.
+inline constexpr const char* kTestRelayEnv = "LICHII_COOP_TEST_RELAY";
+inline constexpr const char* kTestRelayRoomEnv = "LICHII_COOP_TEST_RELAY_ROOM";
 // Local co-op's host (the kit's scripts\local-coop.ps1, CoopPause's LocalHostStep): game 1 of 2 to 4 games on one PC
 // hosts at its start, OOT_COOP_LOCAL_HOST=PORT:PASSWORD (as ParseTestHost reads it). That host alone listens on
 // 127.0.0.1 only (Menu::LoopbackNextHost): the session is this PC's.

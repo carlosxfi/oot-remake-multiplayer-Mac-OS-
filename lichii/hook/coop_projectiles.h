@@ -210,6 +210,12 @@ std::vector<std::string_view> ImpactActors(Kind kind);
 // its code emits where it hits (the spark), played on the copy through the
 // game's own emit where the copy lands (CoopSpawn::Director). Empty: none.
 std::string_view HitEffect(Kind kind);
+// Issue 166: the key of the landing sound a copy of `kind` plays on its own
+// SLink user where it lands (the director, after HitEffect): the shared
+// ReactionHit user's wall-hit sounds for the seed and the arrow (their
+// stand-ins' sound user, tools/puppet_pack STAND_IN_SLINK_USER), the nut's
+// own burst. Empty: none.
+std::string_view HitSound(Kind kind);
 bool IsImpact(std::string_view actor);
 // How long an impact actor is kept before it is deleted: its effect and
 // sound are one-shots, over by then. Short, and at most kMaxImpacts live at

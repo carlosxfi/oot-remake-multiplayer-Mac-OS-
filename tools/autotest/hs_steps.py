@@ -103,7 +103,7 @@ def parse_steps(text):
             continue
         w = line.split()
         verb, rest = w[0], w[1:]
-        if verb in ("start", "load"):
+        if verb in ("start", "launch", "load"):
             idle = verb == "start" and rest[-1:] == ["idle"]
             if idle:
                 rest = rest[:-1]
@@ -310,6 +310,13 @@ class Runner:
             self.g.start(x, self.password(x), wait=False, idle=s.idle)
         for x in s.args:
             (self.g.wait_ready if s.idle else self.g.wait_joined)(x)
+
+    def do_launch(self, s):
+        # like start, but only until each game draws: for a game that starts before the server (no welcome yet)
+        for x in s.args:
+            self.g.start(x, self.password(x), wait=False)
+        for x in s.args:
+            self.g.wait_ready(x)
 
     def do_load(self, s):
         for x, ok, why in self.g.load(s.args):
@@ -870,7 +877,7 @@ def _dry(steps):
     games = DryGames(say)
     for s in steps:
         say("step %d: %s" % (s.n, s.line))
-        if s.verb == "start":
+        if s.verb in ("start", "launch"):
             for x in s.args:
                 games.start(x, "", idle=s.idle)
         elif s.verb == "load":

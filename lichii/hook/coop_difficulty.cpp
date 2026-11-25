@@ -437,7 +437,7 @@ void Kinds::Clear() noexcept {
     held_.store(0, std::memory_order_relaxed);
 }
 
-std::int32_t Kinds::Scaled(Slot& s, std::int32_t sum, std::uint16_t pct, Rule rule,
+std::int32_t Kinds::Scaled(Slot& s, std::int32_t sum, std::uint16_t pct, Rule rule, std::int32_t first,
                            std::atomic<std::uint64_t>& hits) noexcept {
     if (pct == 100) {
         return sum;
@@ -445,7 +445,9 @@ std::int32_t Kinds::Scaled(Slot& s, std::int32_t sum, std::uint16_t pct, Rule ru
     // The game steps each component once a frame, one at a time, so a plain
     // load and store of its carry is enough.
     const std::uint32_t packed = s.carry.load(std::memory_order_relaxed);
-    std::int32_t carry = (packed >> 16) == pct ? static_cast<std::int32_t>(packed & 0xffff) : 0;
+    std::int32_t carry = (packed >> 16) == pct
+                             ? static_cast<std::int32_t>(packed & 0xffff)
+                             : static_cast<std::int32_t>(std::min<std::int64_t>(std::int64_t{first} * sum, 0xffff));
     const std::int32_t taken = rule(sum, pct, carry);
     s.carry.store(static_cast<std::uint32_t>(pct) << 16 | static_cast<std::uint32_t>(carry & 0xffff),
                   std::memory_order_relaxed);

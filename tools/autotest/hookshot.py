@@ -418,8 +418,8 @@ def parse(text):
                 fail("want: assign ITEM")
             s.kind, s.name = "assign", w[1]
         elif cmd == "MENU":
-            if len(w) != 2 or w[1].lower() not in ("customize", "close", "host"):
-                fail("want: menu customize|close|host")
+            if len(w) != 2 or w[1].lower() not in ("customize", "close", "host", "paste"):
+                fail("want: menu customize|close|host|paste")
             s.kind, s.name = "menu", w[1].lower()
         elif cmd == "AWAIT":
             # Row 325: "await TICKS REGEX": until a NEW line of this game's own log (written after the step began)
@@ -1412,7 +1412,12 @@ def run(a):
             open(commands[x], "w").close()
             env = dict(os.environ, OOT_COOP_KIT_START="1", HOS_CONTROL=sock, HOS_CONTROL_MEM="ro", LICHII_COOP_TEST_COMMANDS=commands[x])
             test_game_defaults(env)   # its own save, no crash ask on the title (TEST_GAME_DEFAULTS): a switch can undo it
-            if a.server or getattr(a, "only", None) or (a.host_in_game and x != "A"):   # (--only: the session's server)
+            b_pastes = a.host_in_game and x == "B" and getattr(a, "b_joins_in_game", False)
+            if b_pastes:
+                # private-lobby-fix: B also starts with co-op off and joins through its own Multiplayer page (its
+                # script's `menu paste`: the code A's host put on this PC's clipboard), as a friend's paste does.
+                env["LICHII_COOP_NAME"] = x
+            elif a.server or getattr(a, "only", None) or (a.host_in_game and x != "A"):   # (--only: the session's server)
                 env["LICHII_COOP_SERVER"] = "127.0.0.1:%d" % a.port
                 env["LICHII_COOP_NAME"] = x   # "A", "B": the scripts type /teleport A, /teleport B
                 env["LICHII_COOP_PASSWORD"] = a.password
@@ -1630,6 +1635,9 @@ def main(argv=None):
     r.add_argument("--host-in-game", action="store_true",
                    help="no coop_server: game A hosts through its own Multiplayer > Host (script step `menu host`) on "
                         "--port with --password, on 127.0.0.1 only; B joins it (row 260)")
+    r.add_argument("--b-joins-in-game", action="store_true",
+                   help="with --host-in-game: B too starts with co-op off and joins through its own Multiplayer page "
+                        "(script step `menu paste`: the code A's host copied; private-lobby-fix)")
     r.add_argument("--port", type=int, help="default 27560 (a lane: its own)")
     r.add_argument("--password", default="autotest-pass",
                    help="the join password of the server it starts, given to both games (every session has one)")
@@ -1700,6 +1708,8 @@ def main(argv=None):
             p.error("--host-in-game needs --script-b (B joins A)")
         if not re.fullmatch(r"[!-~]{1,64}", a.password):
             p.error("--host-in-game: --password of 1 to 64 printable letters")
+    elif getattr(a, "b_joins_in_game", False):
+        p.error("--b-joins-in-game needs --host-in-game")
     if not a.lane:
         if not ((a.game_a or a.game_b) and a.out):
             p.error("--game-a and/or --game-b, and --out (or --lane N)")

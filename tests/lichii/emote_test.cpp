@@ -136,3 +136,16 @@ TEST_CASE("emote: a late joiner has nothing: a fresh Holds plays nothing") {
         CHECK(late.Apply(n, "Wait", 5000) == nullptr);
     }
 }
+
+TEST_CASE("emote: only a call is read in the others' chat, with the sender's name") {
+    const auto* here = CoopEmote::ByName("here");
+    REQUIRE(here != nullptr);
+    CHECK(CoopEmote::HeardLine(*here, "Saria", 2) == "Saria calls: over here");
+    CHECK(CoopEmote::HeardLine(*here, "  Saria ", 2) == "Saria calls: over here");
+    CHECK(CoopEmote::HeardLine(*here, "", 3) == "Player 3 calls: over here");   // no name known yet
+    for (const auto& d : CoopEmote::Table()) {
+        if (&d != here) {
+            CHECK(CoopEmote::HeardLine(d, "Saria", 2).empty());   // a gesture is seen, not read
+        }
+    }
+}

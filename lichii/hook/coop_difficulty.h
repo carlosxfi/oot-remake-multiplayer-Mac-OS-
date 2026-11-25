@@ -128,6 +128,16 @@ Choice Applied(const Choice& now, const Command& change);
 // the enemy's next hit, so small hits add up to what one big one takes. A
 // heal (0 or less) is passed on as it is.
 std::int32_t EnemyTakes(std::int32_t sum, std::uint16_t hp_pct, std::int32_t& carry);
+// The carry an enemy's first scaled hit starts from, per point of that hit:
+// half the hit (EnemyTakes keeps it below one life point), so with hits of
+// one size its hits to kill are life * hp_pct / 100 / hit rounded to the
+// nearest (a half rounds down) instead of always up, and never fewer than at
+// 100%. From 0 a one-life enemy at 125% or 140% took two sword hits, as at
+// 200% (player report 2026-11-24: 'at 125% mobs took way more hits'): an
+// enemy is hit only a few times, so its first hit's round-up was most of
+// what it gained. Our Link's carry lasts across all his hits, so LinkTakes
+// starts from 0: what he takes adds up to damage_pct.
+inline constexpr std::int32_t kEnemyFirstCarry = 50;
 // Enemy damage: our Link takes damage_pct / 100 of what an enemy dealt him
 // (quarter hearts), the parts of a quarter carried in `carry` (hundredths,
 // below 100) to his next hit from an enemy.
@@ -232,7 +242,7 @@ public:
                                                    FoldCount(s->fold_key.load(std::memory_order_acquire), values.count_pct));
             const std::int32_t passed = Passed(*s, sum, now_ms);
             const std::int32_t took =
-                passed == sum ? sum : passed + Scaled(*s, sum - passed, pct, &EnemyTakes, enemy_hits_);
+                passed == sum ? sum : passed + Scaled(*s, sum - passed, pct, &EnemyTakes, kEnemyFirstCarry, enemy_hits_);
             if (kind == Kind::boss_life) {
                 // (traced apart: does a boss's damage reach this step, and what of it is taken)
                 boss_steps_.fetch_add(1, std::memory_order_relaxed);
@@ -250,7 +260,7 @@ public:
                     : by == Kind::boss ? values.boss_damage_pct
                                        : Folded(values.damage_pct,
                                                 FoldCount(a->fold_key.load(std::memory_order_acquire), values.count_pct));
-                return Scaled(*s, sum, pct, &LinkTakes, link_hits_);  // (100: unchanged)
+                return Scaled(*s, sum, pct, &LinkTakes, 0, link_hits_);  // (100: unchanged)
             }
         }
         return sum;
@@ -281,7 +291,8 @@ private:
         std::atomic<std::uint64_t> pass_until{0};
     };
     using Rule = std::int32_t (*)(std::int32_t, std::uint16_t, std::int32_t&);
-    static std::int32_t Scaled(Slot& s, std::int32_t sum, std::uint16_t pct, Rule rule,
+    // `first`: the carry a hit starts from, per point of it, when the slot has none at `pct`.
+    static std::int32_t Scaled(Slot& s, std::int32_t sum, std::uint16_t pct, Rule rule, std::int32_t first,
                                std::atomic<std::uint64_t>& hits) noexcept;
     static std::int32_t Passed(Slot& s, std::int32_t sum, std::uint64_t now_ms) noexcept;
     static std::size_t Hash(std::uint64_t address) noexcept;

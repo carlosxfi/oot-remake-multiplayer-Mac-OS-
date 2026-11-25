@@ -180,3 +180,112 @@ TEST_CASE("original game: the F1 tab turns it back, and on again") {
     // Back: nothing to go back to (Longshot closes the menu)
     CHECK_FALSE(tab.Input(HOS_COOP_MENU_BACK, 0, 0));
 }
+
+TEST_CASE("original game: the list as OffList writes it, byte for byte (kit-paths.ps1 Sync-KitOriginalMods the same)") {
+    Folder f;
+    // (the same text is in tools/release/tests/launch_test.ps1's Sync-KitOriginalMods block)
+    CHECK(CoopOriginal::OffList(CoopOriginal::ModNames(f.mods)) ==
+          "coop-mods 1\n"
+          "# Original game (co-op's Co-op settings): every mod left out. The list before is in "
+          "coop-mods.list.before-original; it comes back when the switch is turned off.\n"
+          "default off\n"
+          "off contents/0400486024DEC000/coop-puppet\n"
+          "off contents/0400486024DEC000/my-texture-mod\n"
+          "off oot-remake-randomizer\n"
+          "off save-profiles\n");
+}
+
+TEST_CASE("original game: each start puts a list an older kit wrote in step (no \"default off\", report 266)") {
+    Folder f;
+    const std::string mine = "coop-mods 1\non oot-remake-randomizer\n";
+    // 0.11.11's OffList: every mod then off, no "default off" line, the player's list kept
+    const std::string old_ours = "coop-mods 1\n# Original game (co-op's Co-op settings): every mod left out. The list "
+                                 "before is in coop-mods.list.before-original; it comes back when the switch is turned "
+                                 "off.\noff oot-remake-randomizer\noff save-profiles\n";
+    Put(f.mods / "coop-mods.list", old_ours);
+    Put(f.mods / CoopOriginal::kBackupFile, mine);
+    fs::create_directories(f.mods / "randomizer-SpeedyKokiri" / "exefs");   // put in after, under 0.11.11: it loaded
+    bool changed = false;
+    std::string why;
+    REQUIRE(CoopOriginal::Sync(f.mods, true, changed, why));
+    CHECK(changed);
+    const std::string text = Slurp(f.mods / "coop-mods.list");
+    CHECK(text == CoopOriginal::OffList(CoopOriginal::ModNames(f.mods)));
+    auto list = std::make_unique<HosCoopModsList>();
+    REQUIRE(hos_coop_mods_parse(text.data(), text.size(), list.get()));
+    CHECK(list->default_off == 1);
+    CHECK(hos_coop_mods_rank(list.get(), "randomizer-SpeedyKokiri") == -1);
+    CHECK(hos_coop_mods_rank(list.get(), "a-mod-put-in-later") == -1);
+    CHECK(Slurp(f.mods / CoopOriginal::kBackupFile) == mine);   // the player's list stays the one kept
+    // In step now: the next start writes nothing
+    REQUIRE(CoopOriginal::Sync(f.mods, true, changed, why));
+    CHECK_FALSE(changed);
+    // A mod taken out: its row goes
+    fs::remove_all(f.mods / "randomizer-SpeedyKokiri");
+    REQUIRE(CoopOriginal::Sync(f.mods, true, changed, why));
+    CHECK(changed);
+    CHECK(Slurp(f.mods / "coop-mods.list").find("SpeedyKokiri") == std::string::npos);
+    // Off: the player's own list back
+    REQUIRE(CoopOriginal::Sync(f.mods, false, changed, why));
+    CHECK(changed);
+    CHECK(Slurp(f.mods / "coop-mods.list") == mine);
+    CHECK_FALSE(fs::exists(f.mods / CoopOriginal::kBackupFile));
+    REQUIRE(CoopOriginal::Sync(f.mods, false, changed, why));
+    CHECK_FALSE(changed);
+    CHECK(Slurp(f.mods / "coop-mods.list") == mine);
+}
+
+TEST_CASE("original game: the switch set and taken out by hand in coop-options.ini (the list follows at a start)") {
+    Folder f;
+    bool changed = false;
+    std::string why;
+    // Set by hand: no list of ours, none kept
+    REQUIRE(CoopOriginal::Sync(f.mods, true, changed, why));
+    CHECK(changed);
+    CHECK(Slurp(f.mods / "coop-mods.list") == CoopOriginal::OffList(CoopOriginal::ModNames(f.mods)));
+    CHECK(Slurp(f.mods / CoopOriginal::kBackupFile).empty());
+    // Taken out by hand ('#' put back): none before, so none after
+    REQUIRE(CoopOriginal::Sync(f.mods, false, changed, why));
+    CHECK(changed);
+    CHECK_FALSE(fs::exists(f.mods / "coop-mods.list"));
+    CHECK_FALSE(fs::exists(f.mods / CoopOriginal::kBackupFile));
+}
+
+TEST_CASE("original game: a list of ours whose kept file is gone is never kept as the player's") {
+    Folder f;
+    std::string why;
+    REQUIRE(CoopOriginal::ApplyMods(f.mods, true, why));
+    fs::remove(f.mods / CoopOriginal::kBackupFile);
+    bool changed = false;
+    REQUIRE(CoopOriginal::Sync(f.mods, true, changed, why));
+    CHECK(changed);
+    CHECK(Slurp(f.mods / CoopOriginal::kBackupFile).empty());
+    REQUIRE(CoopOriginal::ApplyMods(f.mods, false, why));
+    CHECK_FALSE(fs::exists(f.mods / "coop-mods.list"));   // (not every mod off for good)
+}
+
+TEST_CASE("original game: switch off, the kept file gone and our list left: the list goes (every mod back)") {
+    Folder f;
+    std::string why;
+    REQUIRE(CoopOriginal::ApplyMods(f.mods, true, why));
+    fs::remove(f.mods / CoopOriginal::kBackupFile);
+    bool changed = false;
+    REQUIRE(CoopOriginal::Sync(f.mods, false, changed, why));   // (a start with the switch off)
+    CHECK(changed);
+    CHECK_FALSE(fs::exists(f.mods / "coop-mods.list"));
+    REQUIRE(CoopOriginal::Sync(f.mods, false, changed, why));
+    CHECK_FALSE(changed);
+    // the F1 tab's way back the same
+    REQUIRE(CoopOriginal::ApplyMods(f.mods, true, why));
+    fs::remove(f.mods / CoopOriginal::kBackupFile);
+    REQUIRE(CoopOriginal::ApplyMods(f.mods, false, why));
+    CHECK_FALSE(fs::exists(f.mods / "coop-mods.list"));
+    // a player's own list with no kept file is never touched
+    const std::string mine = "coop-mods 1\noff some-mod\n";
+    {
+        std::ofstream(f.mods / "coop-mods.list", std::ios::binary) << mine;
+    }
+    REQUIRE(CoopOriginal::Sync(f.mods, false, changed, why));
+    CHECK_FALSE(changed);
+    CHECK(Slurp(f.mods / "coop-mods.list") == mine);
+}

@@ -203,6 +203,17 @@ class RunnerTest(unittest.TestCase):
         self.assertIn(("start", "A", right), self.g.calls)
         self.assertEqual(sum(1 for c in self.g.calls if c[0] == "kill" and str(c[2]).startswith("try")), 7)  # each try ends B, log kept
 
+    def test_launch_waits_for_the_renderer_only(self):
+        # Row 124 (save-refresh-list): the games start before the server, so `start` would wait for a welcome that
+        # cannot come; `launch` stops at the renderer.
+        self.g.join_rule = lambda x, pw: "none"
+        steps = hs.parse_steps("launch A B")
+        self.assertEqual([s.verb for s in steps], ["launch"])
+        self.assertEqual(self.r.run(steps), 0)
+        self.assertEqual([c for c in self.g.calls if c[0] in ("wait", "ready")], [("ready", "A"), ("ready", "B")])
+        with self.assertRaises(hs.StepsError):
+            hs.parse_steps("launch")
+
     def test_a_once_per_process_line_said_again_is_a_fail(self):
         # Row 267: "coop: objects: list head" at every object scan flooded a tester's log.
         head = "[hos] coop: objects: list head 0x105f302870, 8 entries, 7 actors\n"
