@@ -647,44 +647,101 @@ void RunCalls(void* ctx) {
 // the file on disk is only as new as our last door. Our game is asked for its own autosave with the call its
 // EventTriggerRequestAutoSave node makes at the end of an event (the node's body, main+0x31f2f50): the AutoSaveMgr is
 // the game system's component 0xc (main+0xba7880(system, 0xc), 0 when there is none), then
-// main+0xba7730(mgr, 5, 0). That call runs the game's own gate first (main+0xba72d0: refused while the game's
-// autosave is off, in its cooldown after a save, or in a player state it does not save in) and otherwise only marks
-// the request in the manager's state; the manager saves at its own next step, into the slot it always uses. We write
-// nothing in the game; the send waits for a save written after the ask (save::Planner's round), at most
-// save::Planner::kFreshSaveUs, then our last save on disk goes as before.
+// main+0xba7730(mgr, 5, 0). That call runs the game's own gate first (main+0xba72d0) and, only when the gate lets it,
+// marks the request: bit 0 of the byte at *(mgr+0x130)+5; the manager saves at its own next step, into the slot it
+// always uses. The gate refuses (nothing marked) while mgr+0x158 has bit 2 or 3, while the game's autosave-off Bool
+// is set, in its cooldown after a save (the float mgr+0x15c above 0) or in a player state it does not save in.
+// rejoin-host-273-3: a refusal is often only for a moment (the cooldown right after a load or a scene change), so the
+// ask is made again every kAutoSaveRetryUs until the mark is there or its window ends (the guests' round:
+// save::Planner::kFreshSaveUs; the test commands' autosave: kTestAutoSaveUs). Each answer is logged, with the gate's
+// own inputs on a refusal. We write nothing in the game; the send waits for a save written after the ask (the
+// Planner's round), and after its window our last save on disk goes as before.
 constexpr std::uint64_t kGameSystemGot = 0x4c7e178;    // main+: GOT -> the global that holds the game system
 constexpr std::uint64_t kSystemComponent = 0xba7880;   // main+: (system, index) -> the component, or 0
 constexpr std::uint64_t kAutoSaveMgrIndex = 0xc;       // the AutoSaveMgr's index (the node's own)
 constexpr std::uint64_t kRequestAutoSave = 0xba7730;   // main+: (mgr, kind, 0): the gate, then the request mark
 constexpr std::uint64_t kAutoSaveKindEvent = 5;        // EventTriggerRequestAutoSave's kind
 constexpr std::uint64_t kAutoSaveMgrState = 0x130;     // mgr: -> the state the request marks (0 before it is made)
+constexpr std::uint64_t kAutoSaveMark = 5;             // state+: the request byte; bit 0 is the mark (main+0xba77dc)
+constexpr std::uint64_t kAutoSaveMgrOff = 0x158;       // mgr: u32; bit 2 or 3 and the gate refuses at once
+constexpr std::uint64_t kAutoSaveCooldown = 0x15c;     // mgr: float; above 0 and the gate refuses (after a save)
+constexpr std::uint64_t kAutoSaveRetryUs = 250'000;
+constexpr std::uint64_t kTestAutoSaveUs = 30'000'000;
+
+struct AutoSaveAsk {   // the calc thread's ask still open (RequestHostAutoSave only)
+    CoopSave::SaveRequest kind = CoopSave::SaveRequest::none;
+    std::uint64_t until_us = 0;
+    std::uint64_t next_us = 0;
+    unsigned refusals = 0;
+};
+AutoSaveAsk g_autosave_ask;
+
+std::uint64_t AutoSaveNowUs() {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
+// The gate's inputs we can read (main+0xba72d0): why it refused, for the log.
+std::string AutoSaveRefusal(std::uint64_t mgr) {
+    std::uint32_t off = 0;
+    float cooldown = 0.0f;
+    g_api->read(mgr + kAutoSaveMgrOff, &off, sizeof off);
+    g_api->read(mgr + kAutoSaveCooldown, &cooldown, sizeof cooldown);
+    if ((off & 0xc) != 0) return fmt::format("the manager's own off bits, +0x158 = {:#x}", off);
+    if (cooldown > 0.0f) return fmt::format("its cooldown after a save, +0x15c = {}", cooldown);
+    return fmt::format("the game's autosave-off setting or a player state it does not save in, +0x158 = {:#x}, "
+                       "no cooldown",
+                       off);
+}
 
 void RequestHostAutoSave(void* ctx) {
     const auto request = CoopSave::TakeSaveRequest();
-    if (request == CoopSave::SaveRequest::none) return;
+    if (request == CoopSave::SaveRequest::none && g_autosave_ask.kind == CoopSave::SaveRequest::none) return;
+    const std::uint64_t now = AutoSaveNowUs();
+    if (request != CoopSave::SaveRequest::none) {   // (a new ask: its own window; a guests' ask wins over a test's)
+        if (g_autosave_ask.kind != CoopSave::SaveRequest::guests || request == CoopSave::SaveRequest::guests) {
+            g_autosave_ask.kind = request;
+        }
+        g_autosave_ask.until_us =
+            now + (g_autosave_ask.kind == CoopSave::SaveRequest::test ? kTestAutoSaveUs
+                                                                       : coop::host::save::Planner::kFreshSaveUs);
+        g_autosave_ask.next_us = now;
+        g_autosave_ask.refusals = 0;
+    }
+    if (now < g_autosave_ask.next_us) return;
     // (the test commands' `autosave`, rejoin-host-273-2: the same call; no guest waits for it)
-    const bool test = request == CoopSave::SaveRequest::test;
+    const bool test = g_autosave_ask.kind == CoopSave::SaveRequest::test;
+    const bool first = g_autosave_ask.refusals == 0;
     const char* const without = test ? "the test's autosave is not asked" : "the guests get our last save on disk";
+    const auto end = [&](const char* why) {
+        if (why != nullptr) LOG_WARNING(Core, "coop: save: {}: {}", why, without);
+        g_autosave_ask = AutoSaveAsk{};
+    };
+    if (now >= g_autosave_ask.until_us) {
+        return end("our game's own gate refused the autosave the whole window");
+    }
+    g_autosave_ask.next_us = now + kAutoSaveRetryUs;
     const std::uint64_t base = CoopRuntime::MainBase();
     const auto read64 = [](std::uint64_t at) {
         std::uint64_t v = 0;
         return g_api->read(at, &v, sizeof v) != 0 ? v : 0;
     };
+    const auto marked = [](std::uint64_t state) {
+        std::uint8_t v = 0;
+        return g_api->read(state + kAutoSaveMark, &v, sizeof v) != 0 && (v & 1) != 0;
+    };
     const std::uint64_t got = read64(base + kGameSystemGot);
     const std::uint64_t system = got != 0 ? read64(got) : 0;
-    if (system == 0) {
-        LOG_WARNING(Core, "coop: save: our game has no game system yet: {}", without);
-        return;
-    }
+    if (system == 0) return end("our game has no game system yet");
     HosCoopCall k{};
     k.function = base + kSystemComponent;
     k.x[0] = system;
     k.x[1] = kAutoSaveMgrIndex;
     std::uint64_t mgr = 0;
-    if (!g_api->call(ctx, &k, &mgr) || mgr == 0 || read64(mgr + kAutoSaveMgrState) == 0) {
-        LOG_WARNING(Core, "coop: save: our game's autosave manager is not there: {}", without);
-        return;
-    }
+    const std::uint64_t state = g_api->call(ctx, &k, &mgr) && mgr != 0 ? read64(mgr + kAutoSaveMgrState) : 0;
+    if (state == 0) return end("our game's autosave manager is not there");
+    const bool before = marked(state);
     k = HosCoopCall{};
     k.function = base + kRequestAutoSave;
     k.x[0] = mgr;
@@ -692,17 +749,29 @@ void RequestHostAutoSave(void* ctx) {
     k.x[2] = 0;
     std::uint64_t x0 = 0;
     if (!g_api->call(ctx, &k, &x0)) {
-        LOG_WARNING(Core, "coop: no game function at {:#x}: {}", k.function, without);
-        return;
+        LOG_WARNING(Core, "coop: no game function at {:#x}", k.function);
+        return end("the autosave call is not there");
     }
-    if (test) {
-        LOG_INFO(Core, "coop: save: asked our game for its own autosave (an event's end request), for the test "
-                       "commands' autosave: the game's own gate may refuse it");
-        return;
+    if (first) {
+        if (test) {
+            LOG_INFO(Core, "coop: save: asked our game for its own autosave (an event's end request), for the test "
+                           "commands' autosave: the game's own gate may refuse it");
+        } else {
+            LOG_INFO(Core, "coop: save: asked our game for its own autosave (an event's end request): the guests' "
+                           "send waits for that save, at most {} s",
+                     coop::host::save::Planner::kFreshSaveUs / 1'000'000);
+        }
     }
-    LOG_INFO(Core, "coop: save: asked our game for its own autosave (an event's end request): the guests' send waits "
-                   "for that save, at most {} s",
-             coop::host::save::Planner::kFreshSaveUs / 1'000'000);
+    if (marked(state)) {
+        LOG_INFO(Core, "coop: save: our game's gate took the autosave ask{} after {} refusals: it saves at its own "
+                       "next step",
+                 before ? " (an earlier ask was still marked)" : "", g_autosave_ask.refusals);
+        return end(nullptr);
+    }
+    if (g_autosave_ask.refusals++ == 0) {
+        LOG_INFO(Core, "coop: save: our game's gate refused the autosave ask ({}): asked again every {} ms for {} s",
+                 AutoSaveRefusal(mgr), kAutoSaveRetryUs / 1000, (g_autosave_ask.until_us - now) / 1'000'000);
+    }
 }
 
 }  // namespace
