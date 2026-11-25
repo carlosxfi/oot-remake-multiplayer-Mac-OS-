@@ -16,6 +16,8 @@ press A
 wait 2400
 mark after
 place -55.0 114.6 -8.0
+wait 60
+face -49.4 -8.0          # B looks at the plate A stands on (run 205733: B frames showed the Baba room, no switch)
 wait 700
 mark b-held
 wait 1800

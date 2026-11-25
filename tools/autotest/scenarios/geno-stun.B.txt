@@ -24,6 +24,8 @@ assign DekuNut
 wait 300
 goto -66.5 5.0 1.0 900
 toward -71.33 3.5 10
+wait 60
+face -71.33 3.5          # the Baba in B frame (run 210037: moss wall only)
 wait 120
 mark b-ready
 press ZR 4
