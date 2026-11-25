@@ -22,12 +22,7 @@ wait 150
 press R
 wait 120
 mark b-tab
-press DDOWN
-wait 30
-press DDOWN
-wait 30
-press DDOWN
-wait 40
+wait 100                        # (Players is the top row: no key)
 mark b-players-row
 press A
 wait 90

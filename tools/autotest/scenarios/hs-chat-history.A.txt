@@ -3,7 +3,7 @@
 # far, "Chat  Page 3/3" with the game's own ZL and ZR icons beside it, six rows a page. A hosts; A and B each say five
 # lines in turn (A's third a long one, on over several rows), then both open the history and page through it; B says
 # one more line while A looks at the newest page.
-# Checks (log, both games): "coop: pause tab: row 3 chosen (view 0): " (Players), no "Players view" errors.
+# Checks (log, both games): "coop: pause tab: the - menu's Multiplayer row 0 chosen: the Players view", no "Players view" errors.
 # Shots (the proof; a log line alone is no PASS), each game:
 #   a-tab: the - menu on Multiplayer. a-players-row: the cursor on Players.
 #   a-hist-newest: Players view, list "Chat  Page 3/3" (or N/N), ZL and ZR icons beside it, the newest rows: B's
@@ -30,12 +30,7 @@ wait 150
 press R
 wait 120
 mark a-tab
-press DDOWN
-wait 30
-press DDOWN
-wait 30
-press DDOWN
-wait 40
+wait 100                        # (Players is the top row: no key)
 mark a-players-row
 press A
 wait 90
