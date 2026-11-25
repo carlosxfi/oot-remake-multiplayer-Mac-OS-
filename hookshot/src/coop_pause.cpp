@@ -2279,6 +2279,9 @@ bool TestMenu(const std::string& page) {
         return TestHost();
     }
     if (page == "paste") {   // (the Multiplayer page's "Paste code and join", with this PC's clipboard)
+        // (the row is on the Multiplayer page: a player has it open, and the refusal note is drawn there, so the test
+        // opens it too; the note is then on screen for a shot)
+        Open(CoopPauseMenu::Page::kMain);
         JoinPasteNow();
         return true;
     }
