@@ -438,12 +438,16 @@ struct Pad {
     bool operator==(const Pad&) const = default;
 };
 
-// How far a downed Link's stick reaches: a slow walk under the crawl.
+// How far a downed Link's stick reaches while the game is not crawling him
+// (an adult in the lying pose, a child before the game's crawl runs): a slow
+// walk. Issue 337: in the game's own crawl the stick is whole: the crawl's
+// speed is the game's (PlayerCrawlMoveRate).
 inline constexpr std::int32_t kCrawlStickPercent = 30;
 
 // What the game gets from a downed player: the pause buttons, the camera,
-// and the left stick held to a slow walk. No items, no sword, no roll.
-Pad DownedPad(const Pad& in);
+// and the left stick (held to a slow walk unless `game_crawl`). No items, no
+// sword, no roll.
+Pad DownedPad(const Pad& in, bool game_crawl = false);
 // What it gets from a spectating player: the pause buttons and the camera
 // stick; Link does not move (A, the switch button, is ours).
 Pad SpectatorPad(const Pad& in);

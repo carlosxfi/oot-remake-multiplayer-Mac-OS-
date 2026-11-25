@@ -437,6 +437,11 @@ void Frame(const std::optional<std::string>& scene, const std::optional<coop::ho
     }
     CoopHallway::SetCannotMove(cannot_move);
     Body::TheCrawl().Want(body);
+    // Issue 337: the game's own CrawlAnchor in front of our downed child (coop_dbno_body.h).
+    Body::SetAnchor(reading && reading->rotation
+                        ? Body::AnchorFor(body.lying, body.event, body.adult, reading->position,
+                                          CoopPuppet::QuatToMatrix(*reading->rotation))
+                        : std::nullopt);
     for (auto& note : Body::TheCrawl().TakeNotes()) {
         LOG_INFO(Core, "coop: dbno: {}", note);
     }
@@ -644,7 +649,7 @@ Pad OnPad(const Pad& in) {
     g.button.store((in.buttons & pad::a) != 0, std::memory_order_relaxed);
     switch (g.pad_mode.load(std::memory_order_relaxed)) {
     case PadMode::downed:
-        return DownedPad(in);
+        return DownedPad(in, Body::TheCrawl().GameCrawl());
     case PadMode::reviver:
         return ReviverPad(in);
     case PadMode::spectating:

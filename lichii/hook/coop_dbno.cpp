@@ -646,9 +646,12 @@ Reviver::Out Reviver::Frame(std::uint64_t now_us, bool able, bool button, const 
 
 // --- The pad ---
 
-Pad DownedPad(const Pad& in) {
+Pad DownedPad(const Pad& in, bool game_crawl) {
     Pad out = in;
     out.buttons &= pad::plus | pad::minus | pad::stick_l_dirs | pad::stick_r_dirs;
+    if (game_crawl) {
+        return out;
+    }
     out.stick[0] = in.stick[0] * kCrawlStickPercent / 100;
     out.stick[1] = in.stick[1] * kCrawlStickPercent / 100;
     return out;
