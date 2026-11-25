@@ -1,0 +1,55 @@
+# hs-chat-history, B (see hs-chat-history.A.txt): says five lines between A's, then opens the history as A does; says
+# a sixth while A looks at its newest page (and before B opens its own), so both lists end with it.
+# Shots: b-hist-newest (B's "you: six from B, said while A looks" last: a sent line shows as "you: "),
+# b-hist-older, b-hist-oldest, b-hist-round, b-hist-zr, b-closed: as A's.
+#! timeout 480
+mark start
+wait 260
+chat one from B
+wait 120
+chat two from B
+wait 120
+chat three from B
+wait 120
+chat four from B
+wait 120
+chat five from B
+wait 760                        # (A looks at its newest page from about 1380 to 1680)
+chat six from B, said while A looks
+wait 120
+press MINUS
+wait 150
+press R
+wait 120
+mark b-tab
+press DDOWN
+wait 30
+press DDOWN
+wait 30
+press DDOWN
+wait 40
+mark b-players-row
+press A
+wait 90
+mark b-hist-newest
+press ZL
+wait 60
+mark b-hist-older
+press ZL
+wait 60
+mark b-hist-oldest
+press ZL
+wait 60
+mark b-hist-round
+press ZR
+wait 60
+mark b-hist-zr
+press B
+wait 60
+press B
+wait 60
+press MINUS
+wait 150
+mark b-closed
+wait 200
+mark b-end
