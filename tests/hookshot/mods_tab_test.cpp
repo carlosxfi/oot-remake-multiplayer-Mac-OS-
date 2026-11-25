@@ -383,9 +383,9 @@ TEST_CASE("mods tab: a text longer than a row is handed over as several note row
 }
 
 namespace {
-// Whole in the help box (40 x 4): a fifth line would be the cut.
+// Whole in the help box (kHelpWidth x kHelpLines): a fifth line would be the cut.
 bool FitsHelpBox(const std::string& text) {
-    const std::string shown = CoopPauseTab::HelpText(text, CoopPauseTab::kHelpColumns, CoopPauseTab::kHelpLines + 1);
+    const std::string shown = CoopPauseTab::HelpText(text, CoopPauseTab::kHelpWidth, CoopPauseTab::kHelpLines + 1);
     return std::count(shown.begin(), shown.end(), '\n') < static_cast<std::ptrdiff_t>(CoopPauseTab::kHelpLines);
 }
 }  // namespace

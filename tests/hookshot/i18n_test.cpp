@@ -16,6 +16,7 @@
 #include "coop_i18n.h"
 #include "coop_list_pages.h"
 #include "coop_lobby_tab.h"
+#include "coop_native_ui.h"
 #include "coop_pause_menu.h"
 #include "coop_pause_tab.h"
 #include "coop_text_fit.h"
@@ -826,6 +827,41 @@ TEST_CASE("coop i18n: the title's Host and Join pages, Who can join (title-join,
     CHECK(CoopI18n::Tr(hant, "Customize Link  < 4 of 4 >") == "自訂林克  < 4/4 >");
 }
 
+namespace {
+
+std::string NoSpaces(const std::string& s) {
+    std::string out;
+    for (const char c : s) {
+        if (c != ' ' && c != '\n') out += c;
+    }
+    return out;
+}
+
+// A help on the - page's caption (HelpPager): every page within kHelpLines lines, every line no wider than the caption's
+// pane (kHelpWidth: a 40-letter line ran off the screen's left edge, native-ui-help-bb852f626), no word lost or added
+// (so no "..."). Returns its pages.
+std::size_t CheckHelpPages(const std::string& text) {
+    CoopPauseTab::HelpPager pager;
+    std::string all;
+    (void)pager.Shown(text, 0);
+    for (std::size_t p = 0; p < pager.Pages(); ++p) {
+        const std::string shown = pager.Shown(text, p * CoopPauseTab::kHelpPageMs);
+        CHECK_MESSAGE(std::count(shown.begin(), shown.end(), '\n') < static_cast<long>(CoopPauseTab::kHelpLines),
+                      "page " << p << " past the caption: " << text);
+        for (std::size_t at = 0; at <= shown.size();) {
+            const std::size_t end = std::min(shown.find('\n', at), shown.size());
+            const std::string line = shown.substr(at, end - at);
+            CHECK_MESSAGE(CoopNativeUi::Width(line) <= CoopPauseTab::kHelpWidth, "off the caption: " << line);
+            at = end + 1;
+        }
+        all += shown;
+    }
+    CHECK_MESSAGE(NoSpaces(all) == NoSpaces(text), "words lost or added: " << text);
+    return pager.Pages();
+}
+
+}  // namespace
+
 TEST_CASE("coop i18n (help-lines): every row's help on the - page has a line in both Chinese tables and fits the caption") {
     const CoopI18n::Lang* hans = ByCode("zh-Hans");
     const CoopI18n::Lang* hant = ByCode("zh-Hant");
@@ -849,10 +885,9 @@ TEST_CASE("coop i18n (help-lines): every row's help on the - page has a line in 
         for (const CoopI18n::Lang* lang : {hans, hant}) {
             const std::string zh = Line(*lang, en.c_str());
             CHECK_MESSAGE(!zh.empty(), lang->code << " has no line for: " << en);
-            // The caption holds a few short lines: the help, wrapped, is not cut with "..." in any language.
-            CHECK_MESSAGE(CoopPauseTab::HelpText(zh).find("...") == std::string::npos, lang->code << " too long: " << en);
+            CheckHelpPages(zh);
         }
-        CHECK_MESSAGE(CoopPauseTab::HelpText(en).find("...") == std::string::npos, "English too long: " << en);
+        CheckHelpPages(en);
     }
 }
 
@@ -1134,18 +1169,10 @@ TEST_CASE("coop i18n: the Gold Skulltulas row's joined help lines are translated
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// The - page's caption holds 4 lines of some 40 letters (CoopPauseTab::HelpText). Before 0.11.13 a longer help (the
+// The - page's caption holds 4 lines of 18.6 em (CoopPauseTab::HelpText). Before 0.11.13 a longer help (the
 // Settings page's Saves, Microphone, Relay, Local co-op's steps: 24 of the menu's helps) was cut with "...", the rest
 // never readable (native-ui-audit). Now it shows a page at a time (HelpPager), the same words in every language.
 namespace {
-
-std::string NoSpaces(const std::string& s) {
-    std::string out;
-    for (const char c : s) {
-        if (c != ' ' && c != '\n') out += c;
-    }
-    return out;
-}
 
 // Every help co-op's menu shows for a row: each page, each row, idle, hosting and joined, each switch both ways.
 std::vector<std::string> MenuHelps() {
@@ -1187,6 +1214,18 @@ std::vector<std::string> MenuHelps() {
 
 }  // namespace
 
+TEST_CASE("coop i18n (help pages): the caption's lines end by the letters' width, not their number") {
+    // (40 letters each: wide ones take more lines than narrow ones, both inside the pane)
+    std::string wide, narrow;
+    for (int i = 0; i < 8; ++i) wide += "WWWW ", narrow += "iiii ";
+    const std::string w = CoopPauseTab::HelpText(wide), n = CoopPauseTab::HelpText(narrow);
+    CHECK(std::count(w.begin(), w.end(), '\n') > std::count(n.begin(), n.end(), '\n'));
+    CheckHelpPages(wide + wide + narrow);
+    // The run's help: its first line of 40 letters was cut at the screen's left edge.
+    CheckHelpPages("When you host with a room name, the room shows on your relay's public list (Browse games), so "
+                   "players can pick it. Never your join password. Off: only players who know the name find it.");
+}
+
 TEST_CASE("coop i18n (help pages): a help longer than the caption turns its pages, round again, a new one at page 1") {
     CoopPauseTab::HelpPager pager;
     CHECK(pager.Shown("", 0).empty());
@@ -1218,20 +1257,7 @@ TEST_CASE("coop i18n (help pages): every help of co-op's menu shows whole on the
             REQUIRE(lang != nullptr);
             if (std::string zh = Line(*lang, en.c_str()); !zh.empty()) texts.push_back(std::move(zh));
         }
-        for (const std::string& text : texts) {
-            CoopPauseTab::HelpPager pager;
-            std::string all;
-            (void)pager.Shown(text, 0);
-            paged += pager.Pages() > 1;
-            for (std::size_t p = 0; p < pager.Pages(); ++p) {
-                const std::string shown = pager.Shown(text, p * CoopPauseTab::kHelpPageMs);
-                CHECK_MESSAGE(std::count(shown.begin(), shown.end(), '\n') < static_cast<long>(CoopPauseTab::kHelpLines),
-                              "page " << p << " past the caption: " << text);
-                all += shown;
-            }
-            // (no "..." added, nothing lost: the pages hold the help's words, in order)
-            CHECK_MESSAGE(NoSpaces(all) == NoSpaces(text), "words lost or added: " << text);
-        }
+        for (const std::string& text : texts) paged += CheckHelpPages(text) > 1;
     }
     CHECK(paged > 0);   // (the long ones, e.g. Settings > Saves, do take pages)
 }

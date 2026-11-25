@@ -905,13 +905,16 @@ struct HelpAt {
 };
 // The English help the - page shows there, "" none (the help hidden).
 std::string MinusHelp(const HelpAt& at, const Session& s);
-// The help as the game's own captions are (their message files hold them as a few short lines, a new line after some
-// 40 letters): broken at spaces into lines of at most `columns` letters (a Chinese letter counts two, as it is about
-// twice as wide; it may break anywhere), at most `lines` of them, the last cut with "..." when the help is longer.
-inline constexpr std::size_t kHelpColumns = 40, kHelpLines = 4;
-std::string HelpText(const std::string& utf8, std::size_t columns = kHelpColumns, std::size_t lines = kHelpLines);
+// The help as the game's own captions are (a few short lines): broken at spaces (Chinese anywhere) into lines of at most
+// `width_max` (CoopNativeUi::Width, hundredths of an em in the game's font), at most `lines` of them, the last cut with
+// "..." when the help is longer. The caption's pane (PaActorCaption_00's T_Caption_00) is 1120 wide and its words are 60
+// an em (proof shots of native-ui-help-bb852f626: 5 lines at 19.8 to 20.4 px an em of a 1280 wide shot of the 3840 layout), so
+// a line holds 18.6 em. It was 40 letters whatever their width: "When you host with a room name, the room" is 19.7 em
+// and ran off the screen's left edge.
+inline constexpr std::size_t kHelpWidth = 1860, kHelpLines = 4;
+std::string HelpText(const std::string& utf8, std::size_t width_max = kHelpWidth, std::size_t lines = kHelpLines);
 // A help longer than the caption, shown whole a page at a time instead of cut with "...": the pages the Mods tab's
-// About text uses (CoopModsTab::HelpPages: each fits kHelpColumns x kHelpLines, ending at a stop or a space), the next
+// About text uses (CoopModsTab::HelpPages: each fits kHelpWidth x kHelpLines, ending at a stop or a space), the next
 // one every kHelpPageMs, round again after the last; a new help starts at its first page. Any language: the words
 // stay as they are (a shorter English line would lose its Chinese one).
 inline constexpr std::uint64_t kHelpPageMs = 6000;
