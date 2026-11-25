@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <utility>
 
 namespace CoopMapIcons {
 
@@ -55,6 +56,39 @@ std::string Text(const char* format, A... args) {
     char text[256];
     std::snprintf(text, sizeof text, format, args...);
     return text;
+}
+
+// A part object keeps its layout inside it at +0x40 (the balloons' kPartRootPane(part + 0x40)).
+constexpr std::uint64_t kPartLayoutAt = 0x40;
+
+// The resource name of the layout at `at` (layout+0xf8 -> resource, +0x18 -> name, as LayoutsHeld reads it); "" when
+// it is not one.
+std::string LayoutName(CoopNativeTags::Game& game, std::uint64_t at) {
+    std::uint64_t res = 0, name_at = 0;
+    if (!ReadValue(game, at + 0xf8, res) || res < 0x80000000ull || !ReadValue(game, res + 0x18, name_at) ||
+        name_at < 0x80000000ull) {
+        return {};
+    }
+    char text[48] = {};
+    if (!game.Read(name_at, text, sizeof text - 1)) return {};
+    std::string name(text);
+    bool readable = name.size() >= 4;
+    for (const char c : name) readable = readable && c > 0x20 && c < 0x7f;
+    return readable ? name : std::string{};
+}
+
+// The layout of the part object named `part_layout` held by `owner` (a part object: in its first 0x800 bytes or its
+// layout's); 0: none.
+std::uint64_t PartObjectLayout(CoopNativeTags::Game& game, std::uint64_t owner, const char* part_layout) {
+    for (const std::uint64_t from : {owner, owner + kPartLayoutAt}) {
+        std::vector<std::uint64_t> words(0x800 / 8);
+        if (owner == 0 || !game.Read(from, words.data(), words.size() * 8)) continue;
+        for (const std::uint64_t q : words) {
+            if (q < 0x80000000ull || (q & 7) != 0) continue;
+            if (LayoutName(game, q + kPartLayoutAt).rfind(part_layout, 0) == 0) return q + kPartLayoutAt;
+        }
+    }
+    return 0;
 }
 
 // The layout object a part's pane points at (in its first 0x200 bytes) whose resource is `part_layout`; 0: none.
@@ -283,35 +317,40 @@ std::vector<std::string> Icons::Probe(CoopNativeTags::Game& game) {
         return out;
     }
     const std::uint64_t clip = Find(game, layout, kClipPane), part = Find(game, layout, kGamePart);
-    std::string held;
-    for (const auto& h : CoopNativeTags::LayoutsHeld(game, part, 0x200, "")) {
-        held += Text(" +%#llx=%#llx %s", U(h.offset), U(h.layout), h.name.c_str());
-    }
-    out.push_back(Text("screen %#llx layout %#llx S_MapIcon_00 %#llx Pa_MapIcon_00 %#llx holds:", U(screen), U(layout),
-                       U(clip), U(part)) + (held.empty() ? " none" : held));
-    std::vector<std::uint64_t> icons;
-    if (const std::uint64_t own = PartLayout(game, part, kIconLayout); own != 0) icons.push_back(own);
-    std::vector<std::uint64_t> words(0x3000 / 8);
-    if (game.Read(screen, words.data(), words.size() * 8)) {
-        std::vector<std::uint64_t> seen;
-        for (std::size_t i = 0; i < words.size() && icons.size() < 24; ++i) {
+    out.push_back(Text("screen %#llx layout %#llx S_MapIcon_00 %#llx Pa_MapIcon_00 %#llx", U(screen), U(layout),
+                       U(clip), U(part)));
+    // Probe 2: a part pane (0xb0 bytes) holds no pointer to its part layout. The game keeps a part as its own object
+    // with the layout inside it at +0x40 (the balloons: kPartRootPane(part + 0x40)); look for those under the screen
+    // and its layout, every name once, and walk the icon ones down to the arrow.
+    std::vector<std::uint64_t> seen;
+    std::vector<std::string> names;
+    int lines = 0;
+    for (const auto& [from, bytes] : {std::pair{screen, std::size_t{0x3000}}, std::pair{layout, std::size_t{0x800}}}) {
+        std::vector<std::uint64_t> words(bytes / 8);
+        if (!game.Read(from, words.data(), bytes)) continue;
+        for (std::size_t i = 0; i < words.size() && lines < 40; ++i) {
             const std::uint64_t p = words[i];
             if (p < 0x80000000ull || (p & 7) != 0 || std::find(seen.begin(), seen.end(), p) != seen.end()) continue;
             seen.push_back(p);
-            for (const auto& h : CoopNativeTags::LayoutsHeld(game, p, 0x200, kIconLayout)) {
-                if (std::find(icons.begin(), icons.end(), h.layout) != icons.end()) continue;
-                icons.push_back(h.layout);
-                out.push_back(Text("icon %#llx (%s) at screen+%#llx -> +%#llx", U(h.layout), h.name.c_str(), U(i * 8), U(h.offset)));
-            }
+            const std::string name = LayoutName(game, p + kPartLayoutAt);
+            if (name.empty() || name.rfind("MapMenu_00", 0) == 0) continue;
+            const bool icon = name.rfind(kIconLayout, 0) == 0;
+            if (!icon && std::find(names.begin(), names.end(), name) != names.end()) continue;
+            names.push_back(name);
+            const auto root = game.Call(game.MainBase() + addr::kPartRootPane, {p + kPartLayoutAt, 0, 0, 0, 0});
+            const std::uint64_t r = root ? *root : 0;
+            ++lines;
+            out.push_back(Text("part %#llx (%s) at %s+%#llx root pane %#llx%s", U(p), name.c_str(),
+                               from == screen ? "screen" : "layout", U(i * 8), U(r), r != 0 && r == part ? " = Pa_MapIcon_00" : ""));
+            if (!icon) continue;
+            const std::uint64_t player = PartObjectLayout(game, p, kPlayerLayout);
+            const std::uint64_t turn = Find(game, player, "N_PlayerRotate_00");
+            float w[16] = {};
+            if (turn != 0) game.Read(turn + 0x60, w, sizeof w);
+            std::string text;
+            for (const float f : w) text += Text(" %.3f", static_cast<double>(f));
+            out.push_back(Text("%#llx arrow layout %#llx turn pane %#llx +0x60:", U(p), U(player), U(turn)) + text);
         }
-    }
-    for (const std::uint64_t icon : icons) {
-        const std::uint64_t turn = ArrowTurnPane(game, icon);
-        float w[16] = {};
-        if (turn != 0) game.Read(turn + 0x60, w, sizeof w);
-        std::string text;
-        for (const float f : w) text += Text(" %.3f", static_cast<double>(f));
-        out.push_back(Text("%#llx arrow turn pane %#llx +0x60:", U(icon), U(turn)) + text);
     }
     return out;
 }
