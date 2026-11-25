@@ -357,6 +357,9 @@ public:
         // and why: one chat line (any thread). False when it could not be sent (not connected): tried again at the
         // next Recheck. Empty: said only in this game.
         std::function<bool(const std::string& line)> tell_others;
+        // Row 281: a restart is due to play the host's values (its seed, or its switch): the next start joins the
+        // host's game again once (CoopPause::RejoinAfterRestart). Any thread. Empty: nothing.
+        std::function<void()> restart_for_host;
         // The clock for repeating the restart line (tests); empty: steady_clock.
         std::function<std::chrono::steady_clock::time_point()> now;
         // Try every preset once per OOTRR before its first build (#16): the Settings row then offers only the ones it

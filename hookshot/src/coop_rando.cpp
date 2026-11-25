@@ -1513,6 +1513,7 @@ void Rando::SayRestart(std::string line) {
         restart_said_ = now;
     }
     if (hooks_.log) hooks_.log("randomizer: " + line);
+    if (hooks_.restart_for_host && loader_.HostValuesSet()) hooks_.restart_for_host();   // (row 281)
 }
 
 void Rando::RepeatRestart() {
@@ -1802,6 +1803,7 @@ void Rando::Check() {
             if (want.on != on_now_) {
                 lines_.push_back(SwitchLine(want.on));
                 if (hooks_.log) hooks_.log("randomizer: " + lines_.back());
+                if (hooks_.restart_for_host && loader_.HostValuesSet()) hooks_.restart_for_host();   // (row 281)
             }
         }
     }

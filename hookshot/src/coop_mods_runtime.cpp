@@ -315,6 +315,7 @@ void Start() {
     };
     // (chat goes to every player: the host's chat shows this guest's name with the line)
     rando.tell_others = [](const std::string& line) { return CoopHook::SendChat(line); };
+    rando.restart_for_host = [] { CoopPause::RejoinAfterRestart(); };   // (row 281: back in the host's game after it)
     rando.entropy = [] {
         return static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) * 31 +
                ThisProcess();

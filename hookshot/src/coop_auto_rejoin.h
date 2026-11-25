@@ -3,7 +3,8 @@
 // again by itself (coop.ini's last_invite, the page's "Join <host> again"): once a few seconds after the game starts,
 // and when the connection to that game drops without the player leaving it (a few tries, further apart). Never when
 // co-op came with the game's start (Host.bat, Join.bat, coop.ini), and every Host, Join or Leave of the player's own
-// stops what is planned. The logic only: CoopPause feeds it co-op's state every update and joins when it says so.
+// stops what is planned. Row 281: a restart the randomizer asked for to play the host's seed (a guest held out of the
+// host's world) joins that game again once at the next start, with the setting on or off (Facts::once). The logic only: CoopPause feeds it co-op's state every update and joins when it says so.
 #pragma once
 
 #include <cstdint>
@@ -27,6 +28,8 @@ struct Facts {
     bool player_acted = false;  // the player hosted or joined since the last update
     bool turned_away = false;   // the session turned this game away since the last update (the host's Kick or ban,
                                 // a full server, a wrong password): the host's choice, not a drop to undo
+    bool once = false;          // this start follows a restart the randomizer asked for to play the host's seed (row
+                                // 281, coop.ini rejoin_once): the start's join is made even with the setting off
 };
 
 class Planner {

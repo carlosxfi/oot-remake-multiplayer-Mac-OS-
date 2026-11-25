@@ -114,6 +114,10 @@ CoopAutoRejoin::Planner g_rejoin;
 bool g_player_acted = false, g_player_left = false, g_auto_join = false;
 std::uint64_t g_last_game_ms = 0;   // when coop.ini's last_invite and the setting were last read
 bool g_last_game = false;           // a last game is kept (coop.ini last_invite)
+// Row 281: the randomizer asked for a restart to play the host's seed (RejoinAfterRestart, any thread: written to
+// coop.ini rejoin_once at the next update); this start follows one (read once at the first update, then cleared).
+std::atomic<bool> g_rejoin_mark{false};
+bool g_rejoin_once_read = false, g_rejoin_once = false;
 // The setting as the files have it (ReadOptions, with last_invite): g_menu's own settings are read only when co-op's
 // menu opens, so at the game's start they are the defaults (a run: the switch saved them over coop.ini's name).
 bool g_auto_rejoin_on = false;
@@ -498,8 +502,24 @@ void Follow(const HosCoopStatus& st) {
         g_last_game = code && !code->empty();
         g_auto_rejoin_on = ReadOptions().auto_rejoin;
     }
+    if (!g_rejoin_once_read) {   // (once, and cleared at once: a later start does not join again by itself)
+        g_rejoin_once_read = true;
+        const std::string coop = ReadText(CoopIni());
+        if (const auto once = CoopTitleMenu::IniGet(coop, "rejoin_once"); once && *once == "1") {
+            g_rejoin_once = true;
+            WriteText(CoopIni(), CoopTitleMenu::IniSet(coop, "rejoin_once", "0", true));
+            LOG_INFO(Core, "coop: multiplayer tab: auto-rejoin: this start follows the restart for the host's "
+                           "randomizer seed: the last game is joined again once");
+        }
+    }
+    if (g_rejoin_mark.exchange(false) && g_doing == "joined" && !g_coop_on && g_last_game) {
+        WriteText(CoopIni(), CoopTitleMenu::IniSet(ReadText(CoopIni()), "rejoin_once", "1", true));
+        LOG_INFO(Core, "coop: multiplayer tab: auto-rejoin: the randomizer asked for a restart for the host's seed: "
+                       "the next start joins this game again once");
+    }
     CoopAutoRejoin::Facts f;
     f.enabled = g_auto_rejoin_on;
+    f.once = g_rejoin_once;
     f.code = g_last_game;
     f.launcher = g_coop_on;
     f.idle = !Busy();
@@ -1837,6 +1857,10 @@ void SetListRoom(bool on) {
     LOG_INFO(Core, "coop: multiplayer tab: this game's room {} the relay's public list when it hosts (from the pause "
                    "menu's Multiplayer page)", on ? "goes on" : "stays off");
     Save();
+}
+
+void RejoinAfterRestart() {
+    g_rejoin_mark = true;
 }
 
 bool AutoRejoining() {
