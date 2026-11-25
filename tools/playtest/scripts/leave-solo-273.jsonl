@@ -1,7 +1,7 @@
 # what: Row 273 / gate NS-leave-solo: B is a guest on the host's save, A and the server go, B rejoins alone as the host on its own save, changes scene, restarts and has its progress.
 # scene: HyruleField_Child
 # start: live.py start --boot tools/autotest/scenarios/live-leave-solo --no-load --env LICHII_COOP_DEBUG_FLAGS=1 --env B:LICHII_COOP_HOST_SAVE=1 --env B:LICHII_COOP_TEST_OWN_SAVE=0 (replay --include-reads for the shots).
-# expect: every wait_log ok (a warp never saves: before the ask B has written no slot; B asks for its own autosave, its gate takes the ask (asked again while it refuses, rejoin-host-273-3), then the game writes a slot: Longshot v3.2.0 logs `fs: write save:/slot_..`); shot after the save and after the restart: B in Hyrule Field (the kit's warp runs Longshot's teleport destination 1); B's own save folder changed
+# expect: every wait_log ok (no slot written before the ask; B asks for its own autosave, its gate takes it, then one slot write: v3.2.0 fs: write save:/slot_); shot after the save and after the restart: B in Hyrule Field; B own save folder changed
 # kit: 1
 {"server":"live","tool":"wait_log","args":{"player":"B","pattern":"coop: save: now playing from the co-op save folder","timeout_s":120}}
 {"server":"live","tool":"shot","args":{}}
