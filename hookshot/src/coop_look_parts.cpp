@@ -695,8 +695,10 @@ CoopLookTunic::Texels PuppetTunicsTexels(const std::vector<std::pair<std::string
         std::optional<CoopLookTunic::Texels> darker;   // (the dark tile's: the main tile in the darker colour)
         for (std::size_t i = 0; i < texels.size(); ++i) {
             CoopLookTunic::Texture t = texels[i];   // (its name and offset: the copy's)
+            bool from_green = false;
             if (i < painted.size() && painted[i].texels.size() == t.texels.size()) {
                 t.texels = painted[i].texels;
+                from_green = true;
             } else if (t.name.find("_Dark_") != std::string::npos && !painted.empty() &&   // (by its name: any order)
                        texels[0].texels.size() == t.texels.size()) {
                 if (!darker) {
@@ -709,7 +711,13 @@ CoopLookTunic::Texels PuppetTunicsTexels(const std::vector<std::pair<std::string
                     darker = TunicPainted(green, own_dark ? *own_dark
                                                            : darkened(own ? 0x30D040u : *paint->second.tunic));
                 }
-                if (!darker->empty() && (*darker)[0].texels.size() == t.texels.size()) t.texels = (*darker)[0].texels;
+                if (!darker->empty() && (*darker)[0].texels.size() == t.texels.size()) {
+                    t.texels = (*darker)[0].texels;
+                    from_green = true;
+                }
+            }
+            if (from_green && !t.texels.empty()) {
+                t.texels.back() ^= kSelfMark ^ kTunicMark;   // (from green: marked as the copy's, never your Link's; row 198)
             }
             out.push_back(std::move(t));
         }

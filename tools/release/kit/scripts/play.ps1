@@ -476,6 +476,10 @@ if ($inviteJoin) {
     # The invite code holds the join password: nothing to type.
     $Password = $inviteJoin.Password
 }
+elseif ($relayJoin -and $relayJoin.Password) {
+    # The host's relay line with its join password after it (as the game's host copies it): nothing to type.
+    $Password = $relayJoin.Password
+}
 elseif ($Mode -eq 'host') {
     $hostAccess = Read-KitServerAccess $optionsFile
     $Password = $hostAccess.Password

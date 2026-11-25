@@ -287,6 +287,10 @@ class ParseTest(unittest.TestCase):
         steps = hs.parse("menu Customize\nmenu close\nmenu Host\n")
         self.assertEqual([(s.kind, s.name) for s in steps], [("menu", "customize"), ("menu", "close"), ("menu", "host")])
         self.assertIn("menu", hs.MODULE_ONLY)
+        self.assertIn("autosave", hs.MODULE_ONLY)   # rejoin-host-273-2: the game's own autosave, asked
+        self.assertEqual(hs.parse("autosave\n")[0].kind, "autosave")
+        with self.assertRaises(hs.ScriptError):
+            hs.parse("autosave now\n")
 
     def test_host_in_game_env(self):  # row 260: A hosts through its own Multiplayer > Host
         self.assertEqual(hs.host_in_game_env(27520, "autotest-pass"),
@@ -815,6 +819,11 @@ class RendererWaitTest(unittest.TestCase):
         self.assertEqual(hs.renderer_progress(text), (894 + 768, "vk: start-up: pipelines 894 of 36753"))
         self.assertEqual(hs.renderer_progress("nothing"), (0, ""))
 
+    def test_progress_matches_the_shaders_wording(self):
+        # the game's line since the lane-2 boot of 2026-11-24: "vk: start-up: shaders N of M"
+        text = "vk: start-up: shaders 120 of 38809, 2% of all" + chr(10) + "vk: start-up: shaders 980 of 38809, 3% of all" + chr(10)
+        self.assertEqual(hs.renderer_progress(text), (980, "vk: start-up: shaders 980 of 38809"))
+
     def test_run_options_have_the_progress_defaults(self):
         import argparse
         p = argparse.ArgumentParser()
@@ -1234,13 +1243,13 @@ class PackStartTest(unittest.TestCase):
 class WindowPlacementTest(unittest.TestCase):
     """hookshot.py run puts the game windows on the chosen monitor and never starts a game without one."""
 
-    def test_missing_monitor_stops_the_run_before_any_game_starts(self):
+    def test_no_monitor_at_all_stops_the_run_before_any_game_starts(self):
         import tempfile
         from unittest import mock
         started = []
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(hs, "WINDOWS", True), \
-                mock.patch.object(hs.placement, "monitors", lambda: [{"name": "\\\\.\\DISPLAY1", "work": (0, 0, 1, 1)}]), \
+                mock.patch.object(hs.placement, "monitors", lambda: []), \
                 mock.patch.object(hs.subprocess, "Popen", lambda *a, **k: started.append(a)):
             open(os.path.join(tmp, "s.txt"), "w").close()
             with self.assertRaises(SystemExit) as c:
@@ -1264,6 +1273,16 @@ class WindowPlacementTest(unittest.TestCase):
                 mock.patch.object(hs.placement, "place_pids", side_effect=hs.placement.PlacementError("no monitor")):
             hs.place_games({"A": 1}, "DISPLAY9", said.append)
         self.assertEqual(said, ["window placement: no monitor"])
+
+    def test_the_placed_line_names_the_monitor_actually_used(self):
+        from unittest import mock
+        said = []
+        one = [{"name": "\\\\.\\DISPLAY1", "work": (0, 0, 1920, 1040), "primary": True}]
+        with mock.patch.object(hs, "WINDOWS", True),                 mock.patch.object(hs.placement, "monitors", lambda: one),                 mock.patch.object(hs.placement, "place_pids", return_value=[(1, (0, 0, 960, 600))]):
+            hs.place_games({"A": 1}, "DISPLAY2", said.append)
+        self.assertEqual(len(said), 1)
+        self.assertIn("on \\\\.\\DISPLAY1", said[0])
+        self.assertNotIn("DISPLAY2", said[0])
 
 
 class WarpSceneCheckTest(unittest.TestCase):

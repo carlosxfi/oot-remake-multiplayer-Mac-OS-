@@ -3154,3 +3154,55 @@ function Suspend-KitStartLog {
 function Resume-KitStartLog([bool]$Was) {
     if ($Was) { [void](Start-KitStartLog '') }
 }
+
+# The Nucleus Co-op handler (nucleus\OoTCoop.js in the kit) is copied into Nucleus's handlers folder by hand once, and
+# an update of the kit did not replace it there: the instances kept an old handler's ways (only DLLs brought over).
+# So every build and every Update.bat puts the kit's handler over each copy found. Found: the Nucleus folder of each
+# instance the handler noted (<game>\nucleus-players\instances.txt, "<player>=<Nucleus>\content\<game>\Instance<n>"),
+# and "<drive>:\Nucleus Coop" and "<drive>:\Nucleus" (where the handler's README puts it) on each fixed drive. Only a handlers folder that already has OoTCoop.js is changed (a
+# Nucleus the player never set up for co-op is left alone). Returns the handlers files replaced; never throws.
+function Update-KitNucleusHandler([string]$Kit, [string]$Game = '', [string[]]$Roots = $null) {
+    $done = @()
+    try {
+        $src = Join-Path $Kit 'nucleus\OoTCoop.js'
+        if (-not (Test-Path -LiteralPath $src)) { return $done }
+        if (-not $Game) { $Game = Get-KitHookshotGame $Kit }
+        $dirs = @()
+        $noted = Join-Path $Game 'nucleus-players\instances.txt'
+        if (Test-Path -LiteralPath $noted) {
+            foreach ($l in Get-Content -LiteralPath $noted) {
+                $i = $l.IndexOf('=')
+                if ($i -lt 1) { continue }
+                $inst = $l.Substring($i + 1).Trim()
+                $up = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $inst))
+                if ($up) { $dirs += Join-Path $up 'handlers' }
+            }
+        }
+        if ($null -eq $Roots) {
+            $Roots = @([System.IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady } |
+                       ForEach-Object { $r = $_.RootDirectory.FullName; (Join-Path $r 'Nucleus Coop'), (Join-Path $r 'Nucleus') })
+        }
+        foreach ($r in $Roots) { $dirs += Join-Path $r 'handlers' }
+        $want = [System.IO.File]::ReadAllBytes($src)
+        $seen = @{}
+        foreach ($d in $dirs) {
+            $to = Join-Path $d 'OoTCoop.js'
+            $key = $to.ToLowerInvariant()
+            if ($seen[$key]) { continue }
+            $seen[$key] = $true
+            if (-not (Test-Path -LiteralPath $to)) { continue }
+            $have = [System.IO.File]::ReadAllBytes($to)
+            if ([System.Linq.Enumerable]::SequenceEqual($have, $want)) { continue }
+            try {
+                [System.IO.File]::WriteAllBytes($to, $want)
+                Write-Host "Nucleus Co-op: its OoT Co-op handler is now this kit's ($to)."
+                $done += $to
+            } catch {
+                Write-Host "Nucleus Co-op: could not replace $to ($($_.Exception.Message)); copy the kit's nucleus\OoTCoop.js there."
+            }
+        }
+    } catch {
+        Write-Host "Nucleus Co-op: its handler was not checked: $($_.Exception.Message)"
+    }
+    return $done
+}

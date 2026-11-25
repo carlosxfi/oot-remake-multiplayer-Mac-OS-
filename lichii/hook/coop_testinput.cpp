@@ -554,6 +554,14 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             }
             step.kind = Kind::event;
             step.mark = std::string(w[1]);
+        } else if (cmd == "AUTOSAVE") {
+            // autosave: our game asked for its own autosave, the call its EventTriggerRequestAutoSave node makes
+            // (Hookshot; CoopSave::AskOwnAutoSave). Test only. rejoin-host-273-2: a `warp` is a scene change the game
+            // never saves on (no save in any run after one), so a scenario that checks a save on disk asks for it.
+            if (w.size() != 1) {
+                return fail("want: autosave");
+            }
+            step.kind = Kind::autosave;
         } else if (cmd == "SETFLAG") {
             // setflag NAME VALUE: this game's Int or Bool flag NAME (a GameDataList
             // name) to VALUE, through the game's queue. Test only.
@@ -758,7 +766,7 @@ void Runner::Advance(double now_s, std::optional<std::array<float, 2>> player,
             s.kind == Kind::assign || s.kind == Kind::dress || s.kind == Kind::chat || s.kind == Kind::kill || s.kind == Kind::drop || s.kind == Kind::hurt ||
             s.kind == Kind::hit || s.kind == Kind::stun ||
             s.kind == Kind::setflag || s.kind == Kind::setenum || s.kind == Kind::menu || s.kind == Kind::dump ||
-            s.kind == Kind::event) {
+            s.kind == Kind::event || s.kind == Kind::autosave) {
             requests_.push_back(Request{s.kind, s.mark, s.start, {}, s.id});
             ++index_;
             continue;
@@ -935,10 +943,11 @@ const char* KindWord(Kind kind) {
     case Kind::drop: return "drop";
     case Kind::setflag: return "setflag";
     case Kind::setenum: return "setenum";
+    case Kind::event: return "event";
     case Kind::sync: return "sync";
     case Kind::menu: return "menu";
     case Kind::dump: return "dump";
-    case Kind::event: return "event";
+    case Kind::autosave: return "autosave";
     }
     return "?";
 }
@@ -982,6 +991,7 @@ std::string NotAllowed(const Script& script, const std::vector<Kind>& allowed) {
 #include "coop_dungeon.h"
 #include "coop_hook.h"
 #include "coop_objects.h"
+#include "coop_save.h"
 #include "coop_story.h"
 #include "core/arm/debug.h"
 #include "core/core.h"
@@ -1560,7 +1570,7 @@ bool NowKind(Kind k) {
     case Kind::mark: case Kind::give: case Kind::wear: case Kind::assign: case Kind::dress: case Kind::chat:
     case Kind::place: case Kind::face: case Kind::aim: case Kind::kill: case Kind::hurt: case Kind::hit:
     case Kind::stun: case Kind::drop: case Kind::setflag: case Kind::setenum: case Kind::menu: case Kind::dump:
-    case Kind::event:
+    case Kind::event: case Kind::autosave:
         return true;
     default:
         return false;
@@ -1602,6 +1612,12 @@ void Do(Core::System& system, const Runner::Request& request, double now,
         // requester's own lines say when it was asked and whether the game took it.
         CoopBoss::WantEvent(request.name);
         LOG_INFO(Core, "coop: test event {}: handed to the live-event requester", request.name);
+    } else if (request.kind == Kind::autosave) {
+        // (the game's own gate may still refuse it: its autosave off, its cooldown, a state it does not save in; the
+        // save itself shows as "fs: save: published" (a second one after the load's))
+        LOG_INFO(Core, "coop: test autosave: {}", CoopSave::AskOwnAutoSave()
+                                                      ? "our game is asked for its own autosave at its next step"
+                                                      : "not asked (no file played, or no way to ask in this runtime)");
     } else if (request.kind == Kind::place && !request.name.empty()) {
         const auto on = CoopObjects::TestPlatformPlace(request.name);
         const bool ok = on && CoopBoss::MoveLink(system, g_state.main,

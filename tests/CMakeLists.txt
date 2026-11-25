@@ -18,6 +18,7 @@ add_executable(coop_tests
   protocol/fuzz_test.cpp
   protocol/join_password_test.cpp
   protocol/official_mark_test.cpp
+  protocol/race_test.cpp
   protocol/traffic_crypto_test.cpp
   net/clock_test.cpp
   net/client_test.cpp
@@ -113,6 +114,7 @@ add_executable(coop_tests
   lichii/boss_orders_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_boss_orders.cpp
   lichii/boss_scenes_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_boss_scenes.cpp
   lichii/teleport_test.cpp
+  lichii/emote_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_emote.cpp
   lichii/hallway_test.cpp
   lichii/pivot_test.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_hallway.cpp
@@ -187,6 +189,8 @@ add_executable(coop_tests
   ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_difficulty.cpp
   lichii/mod_share_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_mod_share.cpp
   lichii/gold_mode_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_gold_mode.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_race_mode.cpp
+  lichii/switch_stand_mode_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_switch_stand_mode.cpp
   lichii/pack_notice_test.cpp
   lichii/name_privacy_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_name_privacy.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_time_sync.cpp
@@ -235,6 +239,7 @@ target_sources(coop_tests PRIVATE hookshot/module_test.cpp hookshot/draw_test.cp
   hookshot/title_native_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_title_native.cpp
   hookshot/problem_ask_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_problem_ask.cpp
   hookshot/stuck_load_test.cpp
+  hookshot/auto_press_test.cpp
   hookshot/text_fit_test.cpp
   hookshot/list_pages_test.cpp
   hookshot/menu_nav_test.cpp

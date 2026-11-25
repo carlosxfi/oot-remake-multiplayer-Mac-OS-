@@ -74,6 +74,7 @@ $hs = Join-Path $kit 'hookshot'
 . (Join-Path $PSScriptRoot 'coop-ini.ps1')
 . (Join-Path $PSScriptRoot 'console-mode.ps1')   # (Read-KitPath: the questions for a path, pasted, dragged or typed)
 Set-KitTls   # (kit-mirror: Tls12 added to what Windows enables, and Tls13 where .NET has it; was Tls12 alone)
+[void](Update-KitNucleusHandler $kit)   # (every build and every Update.bat: Nucleus's copy of the handler is the kit's)
 if ($Repair) {
     # Velvet (2026-11-19): Update.bat updated the kit, but the game's tools\ootrr stayed broken until a start the player
     # never watched. Now Update.bat repairs the game's co-op parts itself (the module step below, seconds) while the game

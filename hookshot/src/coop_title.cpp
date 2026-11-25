@@ -20,8 +20,11 @@
 #include <fmt/format.h>
 
 #include "common/logging.h"
+#include "coop_auto_press.h"
 #include "coop_hook.h"
 #include "coop_i18n.h"
+#include "coop_lobby.h"
+#include "coop_lobby_game.h"
 #include "coop_pack_notice.h"
 #include "coop_mod_screens.h"
 #include "coop_mods_runtime.h"
@@ -199,9 +202,7 @@ std::atomic<std::uint64_t> g_auto_load_until{0};   // LoadHostSaveOnTitle: Conti
 std::atomic<bool> g_auto_load_test{false};          // (a test's: no session to wait for)
 std::atomic<std::uint64_t> g_auto_press_ms{0};      // the presses that load it began (0: none)
 // (the game's Continue, then its save list's newest save (the host's, the co-op folder's only one), then Load: an A
-// each, at these times after the focus went to Continue; the player's buttons wait meanwhile)
-constexpr std::array<std::uint64_t, 4> kAutoPressAt{400, 2900, 5400, 7900};   // (the last again: Load came late once)
-constexpr std::uint64_t kAutoPressHold = 100, kAutoPressEnd = 9000;
+// each, at CoopAutoPress::kAtMs after the focus went to Continue; the player's pad, keys and mouse wait meanwhile)
 std::uint64_t g_title_since = 0;   // when the title's menu came up (0: not up)
 const char* g_sound = nullptr;     // a sound to play at the next step
 std::uint64_t g_swallow = 0;       // pad bits kept from the game until let go (the rows the module answers)
@@ -1190,10 +1191,20 @@ void StepMenu(void* ctx, std::uint64_t screen) {
                                 ? CoopTitleMenu::MenuHint(look.rows[static_cast<std::size_t>(f)].action)
                                 : nullptr;
         if (words == nullptr && !sub && CoopPackNotice::DirectOn()) words = CoopPackNotice::kDirectHint;   // (player report 225: solo has no chat box)
+        std::string host_line;   // (in a session: who hosts, so the player knows whose save Continue loads)
+        if (words == nullptr && !sub && wait_line.empty()) {
+            const CoopLobby::Seen seen = CoopLobby::Now();
+            std::string host_name;
+            for (const auto& p : seen.players) {
+                if (p.host) host_name = p.name;
+            }
+            host_line = CoopLobby::TitleHostLine(seen.connected && seen.host != 0, seen.host == seen.self, host_name);
+        }
         // (the host's save on its way after a Join here comes first: "Loading Saria's save...", the name is data)
         const std::string said = !wait_line.empty() ? CoopI18n::Tr(wait_line)
                                  : words != nullptr  ? CoopI18n::Tr(words)
-                                                     : std::string();
+                                 : !host_line.empty() ? host_line
+                                                      : std::string();
         const bool hint = !said.empty() && layout != 0 && g_column.hint != 0 && SetLiveText(ctx, layout, kHintSlot, said);
         g_wait_on_hint.store(hint && !wait_line.empty());
         ShowColumn(ctx, screen, CoopTitleNative::kButtons, hint, {});
@@ -1242,6 +1253,12 @@ void RefreshSaveList(void* ctx) {
     const std::uint64_t mgr = CaptionMgr();
     std::uint8_t state = 0;
     const bool found = mgr != 0 && CoopRuntime::Read(mgr + kCaptionState, &state, 1);
+    // (rejoin-host-273-2) the title's slot fixes went into the folder the game mounted: it is mounted again, only
+    // while the game is not reading its list; the switch marks the list stale, read again just below
+    if (found && CoopSave::RestageDue()) {
+        const auto busy = GameCall(ctx, Main(kCaptionBusy), mgr);
+        if (busy && (*busy & 1) == 0) CoopSave::RestageSaveFolder();
+    }
     R::Input in;
     in.stale = CoopSave::TakeSaveListStale();
     in.stale = g_mod_asked.exchange(false) || in.stale;
@@ -1803,15 +1820,12 @@ std::uint64_t OnPad(std::uint64_t buttons, std::int32_t stick[4]) {
     }
     if (const std::uint64_t t0 = g_auto_press_ms.load(); t0 != 0) {   // (the host's save loading by itself)
         const std::uint64_t e = NowMs() - t0;
-        if (e >= kAutoPressEnd || InGame()) {
+        if (e >= CoopAutoPress::kEndMs || InGame()) {
             g_auto_press_ms = 0;
             LOG_INFO(Core, "coop: title: the host's save: the presses that load it are done ({})",
                      InGame() ? "Link is in the game" : "the player has the pad again");
         } else {
-            for (const std::uint64_t at : kAutoPressAt) {
-                if (e >= at && e < at + kAutoPressHold) return kA;
-            }
-            return 0;
+            return CoopAutoPress::Pad(e, kA);   // (only the presses' A: the player's buttons wait)
         }
     }
     {   // (the mouse's left button: when it last went down, so a press it made is told from the pad's; when the mouse
@@ -2025,6 +2039,11 @@ void StopSaveWait() {
     std::lock_guard lock(g_mutex);
     g_wait.Stop();
     g_auto_load_until = 0;
+}
+
+bool MenuMouseHeld() {
+    const std::uint64_t t0 = g_auto_press_ms.load();
+    return CoopAutoPress::Running(t0, NowMs()) && !InGame();
 }
 
 void LoadHostSaveOnTitle(bool test) {

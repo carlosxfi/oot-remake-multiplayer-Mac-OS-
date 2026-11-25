@@ -121,6 +121,16 @@ Choice Applied(const Choice& now, const Command& change);
 // the enemy's next hit, so small hits add up to what one big one takes. A
 // heal (0 or less) is passed on as it is.
 std::int32_t EnemyTakes(std::int32_t sum, std::uint16_t hp_pct, std::int32_t& carry);
+// The carry an enemy's first scaled hit starts from, per point of that hit:
+// half the hit (EnemyTakes keeps it below one life point), so with hits of
+// one size its hits to kill are life * hp_pct / 100 / hit rounded to the
+// nearest (a half rounds down) instead of always up, and never fewer than at
+// 100%. From 0 a one-life enemy at 125% or 140% took two sword hits, as at
+// 200% (player report 2026-11-24: 'at 125% mobs took way more hits'): an
+// enemy is hit only a few times, so its first hit's round-up was most of
+// what it gained. Our Link's carry lasts across all his hits, so LinkTakes
+// starts from 0: what he takes adds up to damage_pct.
+inline constexpr std::int32_t kEnemyFirstCarry = 50;
 // Enemy damage: our Link takes damage_pct / 100 of what an enemy dealt him
 // (quarter hearts), the parts of a quarter carried in `carry` (hundredths,
 // below 100) to his next hit from an enemy.
@@ -164,10 +174,17 @@ inline constexpr std::uint64_t kHitAttacker = 0x240;
 
 // Addresses and their Kind, with each Life component's carry. One writer
 // (the object walk, present thread: Mark and Clear), any number of readers
-// (the game's threads: Step and Pass); no lock. A full table marks nothing
-// more (its hits then go through unscaled, counted in Unmarked) until Clear
-// (a new scene). An address that holds another actor now is marked again
-// (Kind::none when it is no enemy).
+// (the game's threads: Step and Pass); no lock. An address that holds another
+// actor now is marked again (Kind::none when it is no enemy).
+//
+// Row 270: a slot is its address's only while the walk keeps marking it. The
+// walk ends with Sweep, and an address no walk marked for kKeepWalks walks
+// (its actor deleted: a night's Stalchildren, a boss's shots) gives its slot
+// back for the next new address. Before, a slot was an address's until Clear
+// (a new scene), so a long stay in one scene with enemies coming and going
+// filled the table and every later enemy went unscaled. A table full of live
+// addresses still marks nothing more (those hits go through unscaled,
+// counted in Unmarked).
 class Kinds {
 public:
     static constexpr std::size_t kSlots = 1024;
@@ -188,6 +205,13 @@ public:
     void Pass(std::uint64_t component, std::int32_t amount, std::uint64_t now_ms) noexcept;
     Kind Of(std::uint64_t address) const noexcept;
     void Clear() noexcept;
+    // The end of one whole walk (the writer's thread): frees the slots of the
+    // addresses no walk marked for kKeepWalks walks, and closes the walk's
+    // count of refused marks (Unmarked).
+    void Sweep() noexcept;
+    // An address no walk marked for this many walks is gone: a few seconds
+    // of walks, so a walk that misses one read frees nothing.
+    static constexpr std::uint64_t kKeepWalks = 120;
 
     // One Life step of `component` with `sum` (the frame's damage): what the
     // game takes at `values`. `attacker()` reads the hit's attacker actor;
@@ -211,7 +235,7 @@ public:
                                                    FoldCount(s->fold_key.load(std::memory_order_acquire), values.count_pct));
             const std::int32_t passed = Passed(*s, sum, now_ms);
             const std::int32_t took =
-                passed == sum ? sum : passed + Scaled(*s, sum - passed, pct, &EnemyTakes, enemy_hits_);
+                passed == sum ? sum : passed + Scaled(*s, sum - passed, pct, &EnemyTakes, kEnemyFirstCarry, enemy_hits_);
             if (kind == Kind::boss_life) {
                 // (traced apart: does a boss's damage reach this step, and what of it is taken)
                 boss_steps_.fetch_add(1, std::memory_order_relaxed);
@@ -229,7 +253,7 @@ public:
                     : by == Kind::boss ? values.boss_damage_pct
                                        : Folded(values.damage_pct,
                                                 FoldCount(a->fold_key.load(std::memory_order_acquire), values.count_pct));
-                return Scaled(*s, sum, pct, &LinkTakes, link_hits_);  // (100: unchanged)
+                return Scaled(*s, sum, pct, &LinkTakes, 0, link_hits_);  // (100: unchanged)
             }
         }
         return sum;
@@ -241,8 +265,11 @@ public:
     std::uint64_t BossSteps() const noexcept { return boss_steps_.load(std::memory_order_relaxed); }
     std::uint64_t BossDamageIn() const noexcept { return boss_in_.load(std::memory_order_relaxed); }
     std::uint64_t BossDamageTaken() const noexcept { return boss_took_.load(std::memory_order_relaxed); }
-    // Marks the full table refused since the last Clear.
-    std::uint64_t Unmarked() const noexcept { return unmarked_.load(std::memory_order_relaxed); }
+    // Marks the full table refused in the last whole walk (Sweep): that many
+    // actors or Life components are unscaled now.
+    std::uint64_t Unmarked() const noexcept { return unmarked_last_.load(std::memory_order_relaxed); }
+    // Slots that hold an address now, as of the last Sweep.
+    std::uint64_t Held() const noexcept { return held_.load(std::memory_order_relaxed); }
 
 private:
     struct Slot {
@@ -257,14 +284,24 @@ private:
         std::atomic<std::uint64_t> pass_until{0};
     };
     using Rule = std::int32_t (*)(std::int32_t, std::uint16_t, std::int32_t&);
-    static std::int32_t Scaled(Slot& s, std::int32_t sum, std::uint16_t pct, Rule rule,
+    // `first`: the carry a hit starts from, per point of it, when the slot has none at `pct`.
+    static std::int32_t Scaled(Slot& s, std::int32_t sum, std::uint16_t pct, Rule rule, std::int32_t first,
                                std::atomic<std::uint64_t>& hits) noexcept;
     static std::int32_t Passed(Slot& s, std::int32_t sum, std::uint64_t now_ms) noexcept;
     static std::size_t Hash(std::uint64_t address) noexcept;
     Slot* Find(std::uint64_t address) noexcept;
     const Slot* Find(std::uint64_t address) const noexcept;
 
+    // A freed slot's key: no address, and not the end of a probe run (a
+    // reader goes on past it; the writer puts the next new address there).
+    static constexpr std::uint64_t kFreed = 1;
+
     std::array<Slot, kSlots> slots_{};
+    // The writer's own: the walk that last marked each slot, and the walk now.
+    std::array<std::uint64_t, kSlots> marked_{};
+    std::uint64_t walk_ = 1;
+    std::atomic<std::uint64_t> unmarked_last_{0};
+    std::atomic<std::uint64_t> held_{0};
     std::atomic<std::uint64_t> enemy_hits_{0};
     std::atomic<std::uint64_t> link_hits_{0};
     std::atomic<std::uint64_t> boss_steps_{0};

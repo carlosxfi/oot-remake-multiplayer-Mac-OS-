@@ -940,7 +940,7 @@ $failed = $null
 $stepFails = 0
 $stepUnproven = 0
 # The emulator runtime's games and their window placement use Python (placement.py); a monitor name that does not
-# exist stops the run here, before any game window can open anywhere else.
+# exist goes to the primary monitor (placement.py says so); no monitor at all stops the run here.
 $py = @(Find-Python)
 $pyArgs = @($py | Select-Object -Skip 1)
 $mon = (& $py[0] @pyArgs -I "$here\placement.py" rects @(Display-Args) 2>&1 | Out-String).Trim()

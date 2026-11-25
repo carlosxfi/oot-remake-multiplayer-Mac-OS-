@@ -1226,6 +1226,88 @@ TEST_CASE("object samples carry a battle manager's orders, component 23 (protoco
   CHECK(decode_bytes(raw) == Error::bad_value);
 }
 
+TEST_CASE("object samples carry the owner's boss action variations, component 24 (row 222 part 2, protocol 17)") {
+  CHECK(kProtocolVersion >= 17);  // 17: component 24 (0.11.12 is 16 and keeps only the components it knows)
+  CHECK(static_cast<int>(ObjectComponent::variants) == 24);
+  ObjectSample s{0, test::kPlacedId, 3, {}};
+  s.state.time = {100, 1};
+  s.state.variants = BossVariants{{BossVariant{7, ""}, BossVariant{9, "Ice"}, BossVariant{12, "1FeintFire"}}};
+  const Bytes bytes = must_encode(s);
+  Message back;
+  REQUIRE(decode(bytes, back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == s);
+  // An older build (no component 24) skips it by its length and reads the rest: the same sample with the
+  // component's id turned into one it does not know.
+  ObjectSample older = s;
+  older.state.variants.reset();
+  older.state.life = ObjectLife{3, 10};
+  s.state.life = older.state.life;
+  Bytes raw = must_encode(s);
+  const Bytes without = must_encode(older);
+  bool patched = false;
+  for (std::size_t i = 0; i + 1 < raw.size(); ++i) {
+    // The component header: u16 id 24 (little-endian) then u16 length; the one that is not in `without`.
+    if (raw[i] == 24 && raw[i + 1] == 0 && raw.size() > without.size()) {
+      Bytes probe = raw;
+      probe[i] = 30;  // an id no build knows yet
+      Message m;
+      if (decode(probe, m) == Error::none && std::get<ObjectSample>(m) == older) {
+        patched = true;
+        break;
+      }
+    }
+  }
+  CHECK(patched);
+  // No component: none after decoding (an older sender).
+  REQUIRE(decode(without, back) == Error::none);
+  CHECK_FALSE(std::get<ObjectSample>(back).state.variants);
+  // Refused: seqs from 1 and rising, at most kMaxBossVariants, names printable ASCII up to kMaxBossVariantChars.
+  Bytes out;
+  s.state.variants = BossVariants{{BossVariant{0, "Ice"}}};
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.variants = BossVariants{{BossVariant{3, "Ice"}, BossVariant{3, "Fire"}}};
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.variants = BossVariants{{BossVariant{1, "with space"}}};
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.variants = BossVariants{{BossVariant{1, std::string(kMaxBossVariantChars + 1, 'a')}}};
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.variants = BossVariants{std::vector<BossVariant>(kMaxBossVariants + 1)};
+  for (std::size_t i = 0; i < s.state.variants->recent.size(); ++i) {
+    s.state.variants->recent[i].seq = static_cast<std::uint32_t>(i + 1);
+  }
+  CHECK(encode(s, out) == Error::bad_value);
+  CHECK(ValidVariantName(""));
+  CHECK(ValidVariantName("StartBattle"));
+  CHECK_FALSE(ValidVariantName("a	b"));
+}
+
+TEST_CASE("component 24 carries a named ask's places (row 222: Twinrova's 'Ice' aims at the Link they name)") {
+  ObjectSample s{0, test::kPlacedId, 3, {}};
+  s.state.time = {100, 1};
+  BossVariant ice{9, "Ice"};
+  ice.places[0] = Vec3{-0.79f, 142.16f, -158.71f};
+  ice.places[1] = Vec3{-0.60f, 142.47f, -158.53f};
+  ice.kind = 0;  // (run 20261124-011531: Twinrova's 121 node asks with place kind 0)
+  BossVariant other_kind{7, ""};
+  other_kind.kind = 0x10;
+  s.state.variants = BossVariants{{other_kind, ice}};
+  const Bytes bytes = must_encode(s);
+  Message back;
+  REQUIRE(decode(bytes, back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == s);
+  CHECK(std::get<ObjectSample>(back).state.variants->recent[1].kind == 0);
+  CHECK(std::get<ObjectSample>(back).state.variants->recent[0].kind == 0x10);
+  // Refused: places on a plain ask (bsa's action has them), a place not finite.
+  Bytes out;
+  BossVariant plain{7, ""};
+  plain.places[0] = Vec3{1.0f, 2.0f, 3.0f};
+  s.state.variants = BossVariants{{plain}};
+  CHECK(encode(s, out) == Error::bad_value);
+  ice.places[2] = Vec3{std::numeric_limits<float>::infinity(), 0.0f, 0.0f};
+  s.state.variants = BossVariants{{ice}};
+  CHECK(encode(s, out) == Error::bad_value);
+}
+
 TEST_CASE("object id layout on the wire") {
   const Bytes b = must_encode(ObjectOwner{test::kMadeId, 2, 0x0102, 0x0a0b0c0d});
   REQUIRE(b.size() == kHeaderSize + 10 + 1 + 2 + 4);
@@ -1530,6 +1612,27 @@ TEST_CASE("a Link sound has its number, channel and layout, and only the game's 
   bad[kHeaderSize + 1 + 2] = '%';  // a name the game never has
   Message m;
   CHECK(decode(bad, m) == Error::bad_value);
+}
+
+TEST_CASE("an emote has its number, channel and layout, and only a known range of ids passes") {
+  CHECK(static_cast<int>(MessageType::emote) == 615);
+  CHECK(channel_of(MessageType::emote) == kChannelSession);
+  CHECK_FALSE(allowed_on_channel(MessageType::emote, kChannelPlayerSamples));
+  CHECK(may_send(Sender::client, MessageType::emote));
+  CHECK(may_send(Sender::server, MessageType::emote));
+  Message n = Emote{0, 3};
+  CHECK(check_received(n, Sender::client, kChannelSession) == Error::none);
+  CHECK(set_sender(n, 7));
+  CHECK(sender_of(n) == 7);
+  const Bytes b = must_encode(Emote{7, kMaxEmoteId});
+  REQUIRE(b.size() == kHeaderSize + 2);
+  Message back;
+  REQUIRE(decode(b, back) == Error::none);
+  CHECK(std::get<Emote>(back) == Emote{7, kMaxEmoteId});
+  Bytes out;
+  CHECK(encode(Emote{0, 0}, out) == Error::bad_value);
+  CHECK(encode(Emote{0, kMaxEmoteId + 1}, out) == Error::bad_value);
+  CHECK(encode(Emote{17, 1}, out) == Error::bad_value);
 }
 
 TEST_CASE("a player's look has its number, channel and layout, each part once") {

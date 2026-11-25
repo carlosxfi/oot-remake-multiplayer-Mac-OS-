@@ -929,6 +929,18 @@ TEST_CASE("testinput: event hands the hook an event setting's name (boss-route-0
     CHECK(requests[0].name == "DreamBossStage_Rematch_Barinade_Start");
 }
 
+TEST_CASE("testinput: autosave asks our game for its own autosave, at once (rejoin-host-273-2)") {
+    std::string error;
+    CHECK_FALSE(Parse("autosave now\n", error));
+    CHECK(error.find("want: autosave") != std::string::npos);
+    Runner r(Must("autosave\nmark after\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::autosave);
+}
+
 TEST_CASE("testinput: menu host hands the hook the in-game host (row 260)") {
     std::string error;
     CHECK_FALSE(Parse("menu host now\n", error));

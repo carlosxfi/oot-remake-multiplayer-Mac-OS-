@@ -23,6 +23,8 @@
 #include "coop_dbno_game.h"
 #include "coop_difficulty.h"
 #include "coop_gold_mode.h"
+#include "coop_race_mode.h"
+#include "coop_switch_stand_mode.h"
 #include "coop_hook.h"
 #include "coop_hookshot.h"
 #include "coop_host_menu.h"
@@ -218,7 +220,7 @@ void Joined() {
 }
 
 // What co-op is doing, for the tab.
-std::string ShareCode(const HosCoopStatus& st);   // (below: the code a host gives its friends)
+std::string ShareCode(const HosCoopStatus& st, bool copied);   // (below: the code a host gives its friends)
 
 CoopPauseMenu::Session SessionNow() {
     const HosCoopStatus st = Status();
@@ -238,7 +240,7 @@ CoopPauseMenu::Session SessionNow() {
     s.by_launcher = g_coop_on;
     if (s.hosting) {
         s.players = st.players;
-        s.code = ShareCode(st);
+        s.code = ShareCode(st, false);   // (shown: never with the join password)
         s.code_done = st.invite_done != 0;
         // (the Host page's Join password row, shown on A, and its Let in and Refuse rows; the password is never logged)
         if (st.state == HOS_COOP_HOSTING) s.password.assign(st.password, strnlen(st.password, sizeof st.password));
@@ -254,6 +256,8 @@ CoopPauseMenu::Session SessionNow() {
         s.rules = true;
         s.pvp = CoopPvp::On();
         s.gold_own = CoopGoldMode::NotShared();
+        s.race = CoopRaceMode::InForce();
+        s.floor_switches = CoopSwitchStandMode::InForce();
         s.dbno = rules.on;
         s.dbno_bleed_s = rules.bleed_s;
         s.dbno_revive_tenths = rules.revive_tenths;
@@ -359,13 +363,18 @@ std::string g_name_suffix;
 int g_name_tries = 0;
 bool g_name_retry = false;   // (the Join now is that one: its suffix kept)
 
-// The code a host gives its friends: its room on the relay ("<room>@<relay>"), else the relay's join code
-// ("<CODE>@<relay>"), else the invite code; "" none yet. Join takes each of them.
+// The code a host gives its friends (CoopTitleMenu::HostShareText): its room on the relay ("<room>@<relay>"), else the
+// relay's join code ("<CODE>@<relay>"), else the invite code; "" none yet. Join takes each of them. `copied` (the
+// clipboard): the join password after a relay line, so a friend's paste joins (a line without it never did); shown on
+// the Host page: bare (the password only when the player asks for it).
 constexpr std::uint64_t kRelayWaitMs = 6000;
-std::string ShareCode(const HosCoopStatus& st) {
-    if (st.relay_room[0] != 0) return std::string(st.relay_room, strnlen(st.relay_room, sizeof st.relay_room));
-    if (st.relay_code[0] != 0) return std::string(st.relay_code, strnlen(st.relay_code, sizeof st.relay_code));
-    return std::string(st.invite, strnlen(st.invite, sizeof st.invite));
+std::string ShareCode(const HosCoopStatus& st, bool copied) {
+    return CoopTitleMenu::HostShareText(std::string_view(st.relay_room, strnlen(st.relay_room, sizeof st.relay_room)),
+                                        std::string_view(st.relay_code, strnlen(st.relay_code, sizeof st.relay_code)),
+                                        std::string_view(st.invite, strnlen(st.invite, sizeof st.invite)),
+                                        copied ? std::string_view(st.password, strnlen(st.password, sizeof st.password))
+                                               : std::string_view(),
+                                        copied);
 }
 
 // What follows from co-op's state, whether the tab is shown or not: the code to give friends on the clipboard once
@@ -383,7 +392,7 @@ void Follow(const HosCoopStatus& st) {
     if (waited_session != session) waited_session = session, wait_from = NowMs();
     const bool relay_in = st.relay_room[0] != 0 || st.relay_code[0] != 0;
     const bool relay_out = st.problem == HOS_COOP_PROBLEM_RELAY_FAILED || NowMs() - wait_from > kRelayWaitMs;
-    const std::string share = ShareCode(st);
+    const std::string share = ShareCode(st, true);
     if (host && !share.empty() && (relay_in || relay_out) && !g_copied && !g_copy_tried) {
 #ifndef _WIN32
         g_copy_tried = true;   // one try per code (Windows tries again each round: a busy clipboard frees up)
@@ -584,6 +593,8 @@ bool Host(const CoopTitleMenu::Options& o, bool test) {
     CoopHookshot::HostMenu().Leave();   // (a failed start: clear it)
     CoopFiles::SetCoopEnvironment(o);
     CoopGoldMode::SetChoice(o.gold_own ? CoopGoldMode::Mode::own : CoopGoldMode::Mode::shared);   // (row 63)
+    CoopRaceMode::SetChoice(o.race);
+    CoopSwitchStandMode::SetChoice(o.floor_switches);
     HosCoopHostOptions h{};
     h.size = sizeof h;
     h.name = o.name.c_str();
@@ -1394,10 +1405,15 @@ bool Picture(int tab, HosCoopMenuPicture* out) {
         return false;   // (not the Customize page)
     }
     // Your own Link in the game, through a clear window, the camera around him (coop_look_view.h); the flat picture
-    // when he cannot be shown (the title screen, a cutscene).
+    // when he cannot be shown (the title screen, a cutscene), or while the camera's eye is blocked with no clear
+    // view yet (it is still asked for, so the camera keeps turning toward one).
     const CoopLookView::Window window{out->window[0], out->window[1], out->window[2], out->window[3], out->aspect};
-    if (window.Valid() && CoopLookView::LinkShown()) {
+    bool clear = true;
+    const bool shown = window.Valid() && CoopLookView::LinkShown(&clear);
+    if (shown) {
         CoopLookView::Ask(window);
+    }
+    if (shown && clear) {
         out->live = 1;
         out->shapes_n = 0;
         out->shapes = nullptr;
@@ -1788,6 +1804,14 @@ void JoinPasteNow() {
             SayOnPage(kSayRefused);
             return;
         }
+        if (CoopTitleMenu::RelayLineWithoutPassword(line)) {
+            // (an older host's room line: the room, not its password; Join alone would only say "type the password")
+            LOG_INFO(Core, "coop: multiplayer tab: join: the pasted relay line has no join password after it");
+            g_menu.SetNote({"That room line has no password after it. Ask the host for the join password, then "
+                            "type the room and the password in Join a game."});
+            SayOnPage(kSayRefused);
+            return;
+        }
         if (!Join(line)) SayOnPage(kSayRefused);
     });
 }
@@ -1958,7 +1982,7 @@ void PageCopyNow(PageCopy what) {
     switch (what) {
     case PageCopy::kCode:
         // (a relay room's name first: friends type it; then the relay's join code, then the invite code)
-        text = st.relay_room[0] != 0 ? st.relay_room : st.relay_code[0] != 0 ? st.relay_code : st.invite;
+        text = ShareCode(st, true);   // (a relay line with the join password after it: a friend's paste joins at once)
         words = st.relay_room[0] != 0 ? "room name" : st.relay_code[0] != 0 ? "join code" : "invite code";
         break;
     case PageCopy::kAnswer:
