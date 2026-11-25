@@ -627,6 +627,7 @@ class Player:
         self.warp_for = warp_for
         self.mem_ok = None            # guest memory reads answered (None: not tried)
         self.warps = []
+        self.warp_failed = []         # "ASKED -> GOT": warps the bridge sent to another map (the run FAILs on them)
         self.angle = 0.0              # camera model: world direction = stick direction turned by this
         self.learned = False
 
@@ -819,6 +820,16 @@ class Player:
                         continue
                     if r.get("sent"):
                         to = r.get("map") or s.name
+                        if to.lower() != s.name.lower():
+                            # The bridge's teleport keeps the game's age: `warp HyruleField_Adult` in a child game
+                            # goes to HyruleField_Child ('sent (map HyruleField_Child, not accepted)'), and waiting for
+                            # that map used to say 'warp done' (epona-sync-1db5e721-r2: B child, no Epona, graded as
+                            # if the scenario had played). Another map than the one asked is a failed warp.
+                            self.warp_failed.append("%s -> %s" % (s.name, to))
+                            self.log("coop: test warp %s FAILED: the bridge sends the game to map %s, not the one "
+                                     "asked (it keeps the game's age: set Sequence_IsChildhood after the save is "
+                                     "loaded, then warp)" % (s.name, to))
+                            return
                         if s.start and not said_start[0]:
                             said_start[0] = True
                             self.log("coop: test warp %s: start %s not used on hookshot (the map's own)"
@@ -1534,6 +1545,9 @@ def run(a):
             raise RuntimeError("play: " + ", ".join("%s %s" % kv for kv in errs.items()))
         time.sleep(1)
         both("end")
+        wrong = ["%s %s" % (x, ", ".join(p.warp_failed)) for x, p in sorted(players.items()) if p.warp_failed]
+        if wrong:   # (the shots are taken: they show where the game went instead)
+            raise RuntimeError("warp landed on another map than asked: " + "; ".join(wrong))
         say("scenario played")
     except Exception as e:
         failed = str(e) or e.__class__.__name__
