@@ -22,6 +22,10 @@
 #                                                   accept AMD's license once, then every build of this kit is made with
 #                                                   FSR 4 and fetches AMD's FSR runtime (hookshot\fsr4.txt remembers it)
 #   Build-Hookshot-Coop.bat -NoFsr4                 without FSR 4 again (the game is built again without it)
+#   Build-Hookshot-Coop.bat -Xess                   with Intel XeSS ("Intel XeSS.bat", #326): asks you to accept Intel's
+#                                                   license once, then Intel's libxess.dll is put beside the game (no
+#                                                   build: every Windows game has XeSS; hookshot\xess.txt remembers it)
+#   Build-Hookshot-Coop.bat -NoXess                 without Intel XeSS again (Intel's library taken out of the game)
 #   (for tools\hookshot\hs.py) -Tools <folder> -Work <folder>: Hookshot's tools and source, and its work folder,
 #   somewhere else than this kit's hookshot\ (one of each per pin, shared by every kit: hs-build-speed)
 #
@@ -63,6 +67,8 @@ param(
     [switch]$NoDlss,
     [switch]$Fsr4,
     [switch]$NoFsr4,
+    [switch]$Xess,
+    [switch]$NoXess,
     # (Update.bat, after an update or when the kit is already the newest: the game's co-op parts the kit pins (module,
     # puppet pack, the randomizer OOTRR, stale seeds) put in now when only they are missing or stale; a game build is
     # left to the next start, which asks first)
@@ -568,6 +574,23 @@ if ($NoFsr4) {
 }
 $wantFsr4 = -not $NoFsr4 -and (Test-Path -LiteralPath $fsr4Note)
 $ffxSdk = Join-Path $work 'ffx-sdk'
+# Intel XeSS (#326, owner 2026-11-25), asked the same way: every Windows game of this Longshot has XeSS (gpu/vk/vk_xess.cpp),
+# it needs only Intel's libxess.dll beside longshot.exe (Intel's, under Intel's license; Longshot's fetch.py downloads it,
+# SHA-256 checked). Nothing is built for it: the co-op step puts it in or takes it out (Sync-KitHookshotXess), so every game
+# the kit puts in place matches hookshot\xess.txt. -NoXess takes it back.
+$xessNote = Join-Path $hs 'xess.txt'
+if ($NoXess) {
+    Remove-Item -LiteralPath $xessNote -Force -ErrorAction SilentlyContinue
+} elseif ($Xess -and -not (Test-Path -LiteralPath $xessNote)) {
+    Write-Host ''
+    Write-Host 'Intel XeSS (Intel Arc, and most AMD and NVIDIA graphics cards too): Intel''s library is downloaded, under Intel''s own license:' -ForegroundColor Yellow
+    Write-Host "  $(Get-KitXessLicenseUrl $tools) (the download prints Intel's notice too)."
+    Write-Host '  The game folder then holds Intel''s libxess.dll (saved with Intel''s license beside it). No game build is needed.'
+    $answer = "$(Read-Host '  Accept Intel''s license and put Intel XeSS in the game? (y/n)')".Trim()
+    if ($answer -notmatch '^(?i)(y|yes|j|ja)$') { Fail 'Intel''s license not accepted: nothing changed (the game stays as it is, without Intel XeSS).' }
+    [System.IO.File]::WriteAllText($xessNote, "intel-license=accepted`n")
+}
+$wantXess = -not $NoXess -and (Test-Path -LiteralPath $xessNote)
 
 # A second kit on this PC (unzipped twice, or a Windows copy of a kit): another kit's game made from the same
 # release, pin and patches is copied into this kit's own hookshot\game (a minute or two) instead of built again
@@ -935,6 +958,9 @@ $outNote = if ($Out.StartsWith($kitFull, [StringComparison]::OrdinalIgnoreCase))
 # --- 4: co-op into the game ----------------------------------------------------------------
 Step 'Co-op into the game'
 $exeDir = Split-Path -Parent $exe
+# (Intel XeSS: Intel's library beside longshot.exe exactly when hookshot\xess.txt says so; a failed download only warns)
+$xessSaid = Sync-KitHookshotXess $exeDir $wantXess $python $tools (Join-Path $work 'xess-sdk')
+if ($xessSaid) { $xessSaid | ForEach-Object { Write-Host $_ } }
 # The module and the Visual C++ runtime it needs (when the kit carries it), beside longshot.exe.
 # (a kit always has it; a hand-made test folder may not yet: the game is built, and co-op is off until it is there)
 $module = Join-Path $hs 'hookshot_coop.dll'

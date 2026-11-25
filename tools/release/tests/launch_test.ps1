@@ -1530,6 +1530,37 @@ exit 0
         Check ((Get-KitNgxLicenseUrl $fetchTools) -eq "https://github.com/NVIDIA/DLSS/blob/$('cd' * 20)/LICENSE.txt") 'dlss: the license link is the pinned fetch.py''s DLSS_COMMIT (Longshot v3.2.0 has no ngx_sdk.py)'
         Check ((Get-KitFfxLicenseUrl $fetchTools) -eq "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/$('ef' * 20)/Kits/FidelityFX/docs/license.md") 'fsr4: the license link is the pinned fetch.py''s FSR_COMMIT'
         Check ((Get-KitFfxLicenseUrl (Join-Path $cp 'no-tools')) -like '*/FidelityFX-SDK/blob/main/Kits/FidelityFX/docs/license.md') 'fsr4: no tools -> the license in AMD''s repository'
+        # Intel XeSS (#326, owner 2026-11-25): no build; Sync-KitHookshotXess puts Intel's library in or takes it out through
+        # the pinned fetch.py (a fake one here: a .cmd as the Python, writing what fetch.py xess --game writes, and its args)
+        Add-Content -LiteralPath (Join-Path $fetchTools 'scripts\fetch.py') -Value "XESS_COMMIT = `"$('12' * 20)`"   # (main after v3.0.2)"
+        Check ((Get-KitXessLicenseUrl $fetchTools) -eq "https://github.com/intel/xess/blob/$('12' * 20)/LICENSE.txt") 'xess: the license link is the pinned fetch.py''s XESS_COMMIT'
+        Check ((Get-KitXessLicenseUrl (Join-Path $cp 'no-tools')) -eq 'https://github.com/intel/xess/blob/main/LICENSE.txt') 'xess: no tools -> the license in Intel''s repository'
+        $xg = Join-Path $cp 'xess-game'; $xf = Join-Path $cp 'xess-sdk'; $xArgs = Join-Path $cp 'xess-args.txt'
+        $fakePy = Join-Path $cp 'fake-python.cmd'
+        Write-File $fakePy ("@echo off`r`necho %*> `"$xArgs`"`r`nif `"%FAKE_XESS_FAIL%`"==`"1`" (echo xess-sdk: no connection 1>&2& exit /b 1)`r`n" +
+            "echo Intel XeSS: this downloads Intel's library`r`necho dll> `"%~6\libxess.dll`"`r`necho lic> `"%~6\LICENSE-INTEL-XESS-SDK.txt`"`r`n" +
+            "echo tp> `"%~6\THIRD-PARTY-INTEL-XESS-SDK.txt`"`r`nexit /b 0`r`n")
+        Write-File (Join-Path $xg 'longshot.exe') 'EXE'
+        Check ($null -eq (Sync-KitHookshotXess $xg $false $fakePy $fetchTools $xf) -and -not (Test-Path -LiteralPath $xArgs)) 'xess: off and nothing of Intel''s there -> nothing done'
+        $said = @(Sync-KitHookshotXess $xg $true $fakePy $fetchTools $xf) -join '|'
+        Check ((Test-KitHookshotXess $xg) -and $said -match 'beside the game') "xess: on -> Intel's library beside the game [$said]"
+        Check (((Read-File $xArgs) -replace '"', '').Trim() -eq "-I $(Join-Path $fetchTools 'scripts\fetch.py') xess --accept-intel-license --game $xg $xf") "xess: fetch.py xess with Intel's license, --game the exe folder, the work folder [$(Read-File $xArgs)]"
+        Remove-Item -LiteralPath $xArgs -Force
+        Check ($null -eq (Sync-KitHookshotXess $xg $true $fakePy $fetchTools $xf) -and -not (Test-Path -LiteralPath $xArgs)) 'xess: on and already there -> no download'
+        $said = @(Sync-KitHookshotXess $xg $false $fakePy $fetchTools $xf) -join '|'
+        Check (-not (Test-KitHookshotXess $xg) -and -not (Test-Path -LiteralPath (Join-Path $xg 'LICENSE-INTEL-XESS-SDK.txt')) -and
+            -not (Test-Path -LiteralPath (Join-Path $xg 'THIRD-PARTY-INTEL-XESS-SDK.txt')) -and $said -match 'taken out' -and
+            (Read-File (Join-Path $xg 'longshot.exe')) -eq 'EXE') "xess: off -> the three Intel files go, the game stays [$said]"
+        Write-File (Join-Path $xg 'libxess.dll') 'MINE'
+        Check ($null -eq (Sync-KitHookshotXess $xg $false $fakePy $fetchTools $xf) -and (Read-File (Join-Path $xg 'libxess.dll')) -eq 'MINE') 'xess: off never takes a libxess.dll the player put there alone'
+        $said = @(Sync-KitHookshotXess $xg $true $fakePy $fetchTools $xf) -join '|'
+        Check ((Read-File (Join-Path $xg 'libxess.dll')) -eq 'MINE' -and $said -match 'your own' -and -not (Test-Path -LiteralPath $xArgs)) "xess: on, the player's own libxess.dll is left as it is [$said]"
+        Remove-Item -LiteralPath (Join-Path $xg 'libxess.dll') -Force
+        $env:FAKE_XESS_FAIL = '1'
+        try { $said = @(Sync-KitHookshotXess $xg $true $fakePy $fetchTools $xf) -join '|' } finally { Remove-Item Env:\FAKE_XESS_FAIL }
+        Check (-not (Test-KitHookshotXess $xg) -and $said -match 'could not be downloaded \(exit 1' -and $said -match 'no connection' -and $said -match '-NoXess') "xess: a failed download warns (the vendor's words, -NoXess) and does not stop [$said]"
+        $said = @(Sync-KitHookshotXess $xg $true $fakePy (Join-Path $cp 'no-tools') $xf) -join '|'
+        Check ($said -match 'not in' -and -not (Test-KitHookshotXess $xg)) "xess: no Longshot tools yet -> says so, nothing fetched [$said]"
         # the license link follows the pinned tools' scripts\ngx_sdk.py (before v3.2.0); without them, NVIDIA's repository
         $ngxTools = Join-Path $cp 'ngx-tools'
         Write-File (Join-Path $ngxTools 'scripts\ngx_sdk.py') "COMMIT = `"$('ab' * 20)`"   # (v1)`n"

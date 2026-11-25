@@ -60,6 +60,7 @@ On Linux the same is `bash revert.sh` and `bash scripts/update.sh --version <tag
 | `coop-options.ini` | Co-op switches; the game's Co-op Settings write it too |
 | `NVIDIA DLSS.bat` | Builds the game again with NVIDIA DLSS ([below](#nvidia-dlss)) |
 | `AMD FSR 4.bat` | Builds the game again with AMD FSR 4 and its native AA ([below](#amd-fsr-4)) |
+| `Intel XeSS.bat` | Puts Intel's XeSS library beside the game, no build ([below](#intel-xess)) |
 | `start-server.cmd`, `server\` | A dedicated co-op server, only if you want one (Host in the game needs neither) |
 | `hookshot\` | The co-op module and Longshot's pin and patches; after the first start also `tools\` (1.1 GB), `downloads\` (0.3 GB), `work\` (0.7 GB; kept so updates are quick, deleting them makes the next build take the full time) and `game\` (your built game, 35 GB) |
 | `scripts\`, `tools\` | What the start runs; `scripts\collect-logs.cmd` makes a log zip for a bug report |
@@ -160,6 +161,16 @@ Every build has **AMD FSR 3.1**. Longshot has **AMD FSR 4** and **AMD FSR 4 Nati
 3. In the game: **Graphics → Upscaler: AMD FSR 4** or **AMD FSR 4 Native AA**. If the row says AMD's files have no FSR 4 for this GPU, your card cannot run it: keep AMD FSR 3.1.
 
 The kit remembers the choice (`hookshot\fsr4.txt`): the builds after an update keep FSR 4. `"AMD FSR 4.bat" -NoFsr4` builds the game again without it. DLSS and FSR 4 can both be in one game. Linux: `bash start-squadala.sh --fsr4` ([setup-linux.md](setup-linux.md#amd-fsr-4)).
+
+## Intel XeSS
+
+Every game also has **Intel XeSS** and **Intel XeSS Native AA** on the Upscaler row, once Intel's XeSS library (`libxess.dll`, Intel's, under Intel's own license) is beside the game. The kit does not carry it. XeSS runs on Intel Arc cards and on most AMD and NVIDIA cards too:
+
+1. Double-click `Intel XeSS.bat` in the kit folder. It shows Intel's license and asks whether you accept it (**y**).
+2. It downloads Intel's library (XeSS 2.0.2, about 78 MB, into `hookshot\work\xess-sdk`, each file checked against its SHA-256) and puts it beside the game. No game build: it takes a minute. If the download fails (offline?), the game works as before; run `Intel XeSS.bat` again later.
+3. In the game: **Graphics → Upscaler: Intel XeSS** or **Intel XeSS Native AA**. If the row says XeSS cannot run on this GPU, keep another upscaler.
+
+The kit remembers the choice (`hookshot\xess.txt`): every game it builds or copies after that gets Intel's library too. `"Intel XeSS.bat" -NoXess` takes it out again (a `libxess.dll` you put there yourself is left alone). Linux has no XeSS: Intel publishes no Linux library.
 
 ## Low frame rate
 

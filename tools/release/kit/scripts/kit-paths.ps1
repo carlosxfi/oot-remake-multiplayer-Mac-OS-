@@ -915,6 +915,55 @@ function Get-KitFfxLicenseUrl([string]$Tools) {
     return "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/$(if ($c) { $c } else { 'main' })/Kits/FidelityFX/docs/license.md"
 }
 
+# Intel XeSS (#326, owner 2026-11-25): every Windows build of Longshot v3.2.0 has it (gpu/vk/vk_xess.cpp, no build flag);
+# it runs once Intel's libxess.dll is beside longshot.exe. Longshot's own fetch (scripts\fetch.py xess, each file SHA-256
+# checked) saves Intel's license beside it as LICENSE-INTEL-XESS-SDK.txt: that file says the library is the kit's fetch,
+# not a libxess.dll the player put there alone (theirs: never touched).
+function Test-KitHookshotXess([string]$ExeDir) {
+    return [bool]($ExeDir -and (Test-Path -LiteralPath (Join-Path $ExeDir 'libxess.dll') -PathType Leaf))
+}
+
+# Intel's XeSS license at the commit the pinned Longshot fetches libxess.dll from (fetch.py XESS_COMMIT), as Get-KitNgxLicenseUrl.
+function Get-KitXessLicenseUrl([string]$Tools) {
+    $c = Get-KitVendorCommit $Tools 'XESS'
+    return "https://github.com/intel/xess/blob/$(if ($c) { $c } else { 'main' })/LICENSE.txt"
+}
+
+# Intel's XeSS library in or out of the game folder ($ExeDir, beside longshot.exe) as the kit's choice ($Want, hookshot\xess.txt)
+# says. In: the pinned Longshot's fetch.py downloads it into $Folder once (later runs keep each file whose SHA-256 is the pinned
+# one) and copies it beside the game; nothing is built. Out: only the files that fetch put there go. Every game the kit puts in
+# place (built, copied from another kit or the cache, a kept build put back) passes here, so it always matches the choice.
+# Returns the lines to show ($null when nothing changed); a failed download is a warning, never a stop (XeSS just stays off).
+function Sync-KitHookshotXess([string]$ExeDir, [bool]$Want, [string]$Python, [string]$Tools, [string]$Folder) {
+    $intel = @('libxess.dll', 'LICENSE-INTEL-XESS-SDK.txt', 'THIRD-PARTY-INTEL-XESS-SDK.txt')
+    $fetched = Test-Path -LiteralPath (Join-Path $ExeDir $intel[1]) -PathType Leaf
+    if (-not $Want) {
+        if (-not $fetched) { return $null }
+        foreach ($n in $intel) { Remove-Item -LiteralPath (Join-Path $ExeDir $n) -Force -ErrorAction SilentlyContinue }
+        return "  Intel XeSS off: Intel's library taken out of the game."
+    }
+    if (Test-KitHookshotXess $ExeDir) {
+        if ($fetched) { return $null }
+        return "  Intel XeSS: the libxess.dll in $ExeDir is your own (no Intel license file beside it): left as it is."
+    }
+    $fetch = if ($Tools) { Join-Path $Tools 'scripts\fetch.py' } else { '' }
+    if (-not $Python -or -not (Test-Path -LiteralPath $Python) -or -not $fetch -or -not (Test-Path -LiteralPath $fetch)) {
+        return "  Intel XeSS: Longshot's tools (scripts\fetch.py) are not in $Tools yet, so Intel's library is not in the game. ""Start Squadala.bat"" gets them; then ""Intel XeSS.bat"" again."
+    }
+    $lines = @("  Intel XeSS: getting Intel's library (libxess.dll, about 78 MB the first time) into the game ...")
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $said = @(& $Python -I $fetch xess --accept-intel-license --game $ExeDir $Folder 2>&1 | ForEach-Object { "$_" })
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $eap }
+    if ($code -eq 0 -and (Test-KitHookshotXess $ExeDir)) {
+        return $lines + "  Intel XeSS: Intel's libxess.dll is beside the game (Intel's, under Intel's license, saved beside it)."
+    }
+    $last = @($said | Where-Object { $_ -match '\S' } | Select-Object -Last 2)
+    return $lines + @($last | ForEach-Object { "    $_" }) + "  Intel XeSS: Intel's library could not be downloaded (exit $code; offline?). The game works without it; ""Intel XeSS.bat"" tries again, ""Intel XeSS.bat"" -NoXess turns it off."
+}
+
 # longshot.exe of a game folder (a builder's game folder has it in bin\), or $null.
 function Get-KitHookshotExe([string]$Game) {
     foreach ($p in (Join-Path $Game 'bin\longshot.exe'), (Join-Path $Game 'longshot.exe')) {
