@@ -421,7 +421,7 @@ class LiveLifecycle(unittest.TestCase):
             return FakeProc(44)
         out = live.server_cmd(self.args(action="start"), alive=self.alive, popen=popen, sleep=lambda s: None)
         self.assertEqual(out["pid"], 44)
-        self.assertEqual(seen["cmd"], ["srv.exe", "--port", "27520", "--password-env", "OOT_COOP_TEST_PASSWORD"])
+        self.assertEqual(seen["cmd"], ["srv.exe", "--port", "27520", "--password-env", "OOT_COOP_TEST_PASSWORD", "--bind", "127.0.0.1"])
         self.assertEqual(seen["env"]["OOT_COOP_TEST_PASSWORD"], "pw-of-session")   # (the session's, review-01112-h 3)
         self.assertEqual(live.game_pids(self.d), ({"A": 11, "B": 22}, 44))
         self.assertEqual(live.load(self.d)["planned"], {})
