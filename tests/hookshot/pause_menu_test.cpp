@@ -604,7 +604,7 @@ TEST_CASE("pause tab: Local co-op from the game: pick how many games, Start host
     CHECK(Names(m) == std::vector<std::string>{"Games on this PC", "Start the games"});
     CHECK(Selected(m) == "Games on this PC");
     CHECK(SelectedValue(m) == "2");
-    CHECK(m.view().help.find("Start") != std::string::npos);   // (the offered page's own help, not the by-hand steps)
+    CHECK(m.view().help.find("How many games run on this PC") != std::string::npos);   // (the row's help, not the by-hand steps)
     // 2, 3, 4, then 2 again (Right, and A as on every choice); Left back
     m.Press(Input::kRight);
     CHECK(SelectedValue(m) == "3");
