@@ -59,6 +59,8 @@ std::vector<std::string> MicChoices(const std::vector<std::string>& listed, cons
 // ("..." at its end), with " (not connected)" when it is not listed.
 constexpr std::size_t kMicChars = 28;
 std::string MicWords(const std::string& chosen, const std::vector<std::string>& listed);
+// With the voice's state after it (SetVoiceStatus's words), unless the name already says "(not connected)".
+std::string MicWords(const std::string& chosen, const std::vector<std::string>& listed, const std::string& status);
 // The most bytes one of the title's own buttons shows (CoopTitleNative::RowText cuts a longer row, "..." at its end).
 constexpr std::size_t kTitleRowBytes = 40;
 // A game's name on a title row that has `rest` bytes after it ("1/4  Public", " asks for a password"), so the row's own
@@ -228,6 +230,10 @@ public:
     // (CoopVoice::Microphones). None: this game cannot choose one for the
     // voice (an older patch 0009), so the row is not shown.
     void SetMicrophones(std::optional<std::vector<std::string>> listed);
+    // Row 229: what the voice's microphone gives now (CoopVoice::MicStatus): the Microphone row's words after its
+    // name ("(Off in Longshot)", MicStatusWords) and one sentence after the Proximity voice chat row's help
+    // (MicStatusNote); both "" when it reaches the others or is not known yet.
+    void SetVoiceStatus(std::string words, std::string note);
     // The look shown now (the one waiting for the menu to close, else the one
     // worn): the Customize page opens on it.
     void SetLook(const CoopLook::Look& look);
@@ -368,6 +374,7 @@ private:
     std::string rejoin_host_, rejoin_code_;
     std::string controller_row_, keyboard_row_;
     std::optional<std::vector<std::string>> microphones_;
+    std::string voice_words_, voice_note_;   // SetVoiceStatus
     int ngplus_level_ = 0, ngplus_unlocked_ = 0, ngplus_hearts_ = 0;   // (Navi) New Game+ (SetNgPlus)
     struct CharAges {   // SetCharacterAges
         bool shown = false, on = false;

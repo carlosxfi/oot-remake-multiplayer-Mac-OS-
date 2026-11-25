@@ -185,3 +185,9 @@ inline bool RefuseUnarmed(const std::string& actor, bool armed, const std::strin
 }
 
 }  // namespace CoopHookshot
+
+// Row 229 (coop_voice_hookshot.cpp): Longshot's Insert-menu microphone for the voice's Default (CoopVoice::SetGameMic),
+// read on the game frame with no lock of ours held, at most every 3 s while voice is on.
+namespace CoopVoiceGameMic {
+void Poll();
+}  // namespace CoopVoiceGameMic

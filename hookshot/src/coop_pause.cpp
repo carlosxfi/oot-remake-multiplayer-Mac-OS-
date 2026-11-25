@@ -742,10 +742,18 @@ void Leave() {
     g_menu.SetNote({"Co-op stopped. You play on alone."});
 }
 
+// Row 229: what the voice's microphone gives now, on the Voice rows (the Microphone row's words, the Proximity voice
+// chat row's help). g_mutex; CoopVoice's own lock is taken under it (it takes none of ours).
+void VoiceStatusRows() {
+    const CoopVoice::MicStatus s = g_menu.options().voice ? CoopVoice::Status() : CoopVoice::MicStatus::unknown;
+    g_menu.SetVoiceStatus(CoopVoice::MicStatusWords(s), CoopVoice::MicStatusNote(s));
+}
+
 // The Settings page's Microphone row (voice on): the microphones there now, listed only while voice is on (none
 // opened); none when this game cannot choose one (an older patch 0009).
 void MicRows() {
     g_menu.SetMicrophones(g_menu.options().voice ? CoopVoice::Microphones() : std::nullopt);
+    VoiceStatusRows();
 }
 
 void Save() {
@@ -1293,6 +1301,7 @@ void Tick() {
         return;
     }
     g_next_follow_ms = now + 250;
+    VoiceStatusRows();   // (row 229: a microphone found silent while the page shows says so there)
     Follow(Status());
     RefreshFound(now);
     LocalHostStep();

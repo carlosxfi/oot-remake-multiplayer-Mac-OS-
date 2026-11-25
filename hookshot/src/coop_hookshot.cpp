@@ -1759,6 +1759,7 @@ void Frame(void* ctx, int site) {
     if (site == HOS_COOP_SITE_FRAME) {
         CoopFrameClock::Note();  // jitter-b: the game frame the next present reads (coop_frame_clock.h)
         CoopModsRuntime::Frame();
+        CoopVoiceGameMic::Poll();   // (row 229) Longshot's Insert-menu microphone, for the voice's Default
         CoopPause::Tick();   // the Multiplayer tab's follow-ups, also while the menu is closed
         TestState();         // (LICHII_COOP_TEST_STATE=1 only)
         CoopLook::Frame();   // a look chosen in the pause menu, once it closed
