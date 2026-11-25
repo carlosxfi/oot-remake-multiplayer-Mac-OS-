@@ -66,6 +66,7 @@
 #include "coop_boss_native.h"
 #include "coop_boss_orders.h"
 #include "coop_difficulty.h"
+#include "coop_shooter_probe.h"
 #include "coop_puppet.h"
 #include "coop_shot_reflect.h"
 #include "coop_pvp.h"
@@ -2140,6 +2141,7 @@ public:
                     bosses.Publish({});
                 }
                 CoopBossOrders::TheTable().Publish({});  // row 222: no owner or copy: our managers decide again
+                CoopShooterProbe::TheProbe().Publish({});
                 sharing_ = false;
             }
             if (CoopWorldSnapshot::TheStore().Enabled() && scene && !scene->empty() && Ready(system)) {
@@ -2527,6 +2529,15 @@ public:
                 for (const std::string& note : orders.TakeNotes()) {
                     LOG_INFO(Core, "coop: bosses: {}", note);
                 }
+            }
+            // Row 286's probe (coop_shooter_probe.h, log only): the same bosses, whose shooters it looks at.
+            if (CoopShooterProbe::Probe& probe = CoopShooterProbe::TheProbe(); probe.On()) {
+                std::vector<CoopShooterProbe::Member> members;
+                members.reserve(list.size());
+                for (const CoopBossNative::Boss& b : list) {
+                    members.push_back({b.actor, b.role == CoopBossNative::Role::owner, b.owner, b.name});
+                }
+                probe.Publish(std::move(members));
             }
         }
         if (sync_.BlastDrops() != blast_drops_logged_) {
@@ -3625,6 +3636,7 @@ private:
             pvp_watch_.Reset();
             CoopProjectiles::TheOwnShots().Reset();
             CoopBossOrders::TheTable().Reset();  // row 222: its block and nodes were the old game's
+            CoopShooterProbe::TheProbe().Reset();
             extras_.Reset();  // difficulty: that run's extra enemies are gone with it
             horde_.Reset();
             {

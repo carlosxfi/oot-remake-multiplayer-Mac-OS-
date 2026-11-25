@@ -64,6 +64,7 @@
 #include "coop_boss_native.h"
 #include "coop_boss_orders.h"
 #include "coop_boss_scenes.h"
+#include "coop_shooter_probe.h"
 #include "coop_hallway.h"
 #include "coop_dbno_body.h"
 #include "coop_dbno_game.h"
@@ -127,6 +128,7 @@
 #include "hos_coop_nodes.h"
 #include "hos_coop_bosses.h"
 #include "hos_coop_boss_orders.h"
+#include "hos_coop_boss_shooter.h"
 #include "hos_coop_pads.h"
 #include "hos_coop_save_load.h"
 #include "hos_coop_sound.h"
@@ -462,6 +464,38 @@ void SetBossOrders() {
     LOG_INFO(Core, "coop: bosses: battle manager orders {} ({})", on ? "shared" : "each game's own",
              WrapIn(HOS_COOP_WRAP_BOSS_ORDER) ? (on ? "wrapped" : "wrapped, off by LICHII_COOP_BOSS_ORDERS")
                                               : "not wrapped in this hookshot.exe");
+}
+
+// Row 286's probe (coop_shooter_probe.h): log only, with LICHII_COOP_SHOOTER_PROBE=1 in a hookshot.exe with patch
+// 0045's wraps. Asked with SetBossNative.
+void SetShooterProbe() {
+    if (Env("LICHII_COOP_SHOOTER_PROBE") != "1") {
+        return;
+    }
+    const bool prepare = WrapIn(HOS_COOP_WRAP_SHOOTER_PREPARE);
+    const bool shoot = WrapIn(HOS_COOP_WRAP_SHOOTER_SHOOT);
+    const bool sleep = WrapIn(HOS_COOP_WRAP_SHOOTER_SLEEP);
+    CoopShooterProbe::Probe& probe = CoopShooterProbe::TheProbe();
+    const bool on = prepare || shoot || sleep;
+    static bool said = false;
+    if (probe.On() == on && std::exchange(said, true)) {
+        return;
+    }
+    said = true;
+    probe.SetOn(on);
+    LOG_INFO(Core, "coop: shooterprobe: {} (prepare {}, shoot {}, sleep {})", on ? "on" : "off",
+             prepare ? "wrapped" : "not wrapped", shoot ? "wrapped" : "not wrapped", sleep ? "wrapped" : "not wrapped");
+}
+void ShooterProbe() {
+    CoopShooterProbe::Probe& probe = CoopShooterProbe::TheProbe();
+    if (!probe.On()) {
+        return;
+    }
+    probe.Look([](std::uint64_t a, void* out, std::size_t n) { return CoopRuntime::Read(a, out, n); },
+               CoopRuntime::MainBase(), SteadyMs());
+    for (const std::string& line : probe.TakeLines()) {
+        LOG_INFO(Core, "coop: shooterprobe: {}", line);
+    }
 }
 
 // Every 10 s while orders move: the counts (the probe run's lines).
@@ -1817,6 +1851,7 @@ void Frame(void* ctx, int site) {
         NativeTags(ctx);            // the name tags on the game's balloons (coop_native_tags.h)
         LogBossNative();
         LogBossOrders();
+        ShooterProbe();
         CoopMapPage::Frame(ctx, g_api);   // the Map page's panes, found once while the game plays
         if (const auto menu = CoopMapPage::MenuState()) {  // minimap-b: the drop log's menu state (patch 0018)
             coop::host::map_drop_log().set_menu(menu->menu_open, menu->map_page);
@@ -1850,6 +1885,7 @@ int World(std::uint32_t event, std::uint64_t a, std::uint64_t b) {
         g_world_wraps.store(level.wraps);
         SetBossNative();
         SetBossOrders();
+        SetShooterProbe();
         if (g_world_version.exchange(level.version) != level.version) {
             LOG_INFO(Core, "coop: world hooks: hookshot.exe has level {} (this module {}), wraps {:#x}{}", level.version,
                      HOS_COOP_WORLD_VERSION, level.wraps,
@@ -2273,6 +2309,34 @@ int Wrap(std::uint32_t id, int phase, std::uint64_t* x, void* /*ctx*/) {
         }
         x[0] = 1;
         return 1;
+    }
+    if (id == HOS_COOP_WRAP_SHOOTER_PREPARE || id == HOS_COOP_WRAP_SHOOTER_SHOOT ||
+        id == HOS_COOP_WRAP_SHOOTER_SLEEP) {
+        // Row 286's probe: read and logged, nothing changed, both phases on the same game thread. A call inside a
+        // call (a woken bullet's own) gets its own place: phase 1 ends the newest of its function.
+        thread_local std::vector<std::pair<std::uint32_t, CoopShooterProbe::Call>> calls;
+        CoopShooterProbe::Probe& probe = CoopShooterProbe::TheProbe();
+        const CoopShooterProbe::Reader read = [](std::uint64_t a, void* out, std::size_t n) {
+            return CoopRuntime::Read(a, out, n);
+        };
+        if (phase == 0) {
+            if (probe.On()) {
+                if (calls.size() >= 8) {  // (a call that never ended)
+                    calls.clear();
+                }
+                const CoopShooterProbe::Fn fn = id == HOS_COOP_WRAP_SHOOTER_PREPARE ? CoopShooterProbe::Fn::prepare
+                                                : id == HOS_COOP_WRAP_SHOOTER_SHOOT ? CoopShooterProbe::Fn::shoot
+                                                                                    : CoopShooterProbe::Fn::sleep;
+                calls.emplace_back(id, CoopShooterProbe::Begin(read, fn, x[0], x[1], x[2], x[30], t_own_call));
+            }
+            return 0;
+        }
+        if (!calls.empty() && calls.back().first == id) {
+            const CoopShooterProbe::Call call = std::move(calls.back().second);
+            calls.pop_back();
+            probe.End(read, call, x[0], CoopRuntime::MainBase(), SteadyMs());
+        }
+        return 0;
     }
     if (id == HOS_COOP_WRAP_ACTION_VERB && phase == 0) {
         // Native boss sync: a boss's action verb request (x0 BSA, x1 the request in guest memory).
