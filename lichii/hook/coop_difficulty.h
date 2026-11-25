@@ -62,6 +62,13 @@ State Get();
 // the server has answered (Get). False when we do not host a session now.
 bool Set(const Choice& choice);
 
+// Any thread: this player's lobby difficulty, the one the next lobby they make starts with (docs/play-online.md
+// "Difficulty"; HosCoopHostOptions::difficulty): the kept choice (coop-difficulty.ini), automatic when none.
+Choice NextLobby();
+// Any thread: the lobby difficulty picked on the lobby-creation rows while not hosting, kept as Set keeps it. False
+// while in a session (the host's change then goes through Set, a guest's nowhere).
+bool SetNextLobby(const Choice& choice);
+
 // Any thread: the values in force now (the game as it is while not in a
 // session or before the server said them).
 Values Now();
@@ -589,8 +596,11 @@ private:
 // Whether a game that hosts sends its kept choice: once per connection, when
 // it was a choice of its own (not the automatic scaler) and nobody has
 // chosen for this session yet. A host who takes over a session keeps what
-// the host before set.
-bool OffersKept(bool hosts, std::uint8_t set_by, const std::optional<Choice>& kept, bool offered);
+// the host before set. `session_auto`: the session is automatic as the server
+// said it; a lobby made with a difficulty (the Host page, coop_server
+// --difficulty) is not, and is never overridden by a kept file at connect.
+bool OffersKept(bool hosts, std::uint8_t set_by, const std::optional<Choice>& kept, bool offered,
+                bool session_auto);
 
 // Network thread, from the session's on_event (the network lock is held):
 // DIFFICULTY; a new connection starts with the game as it is.

@@ -8,6 +8,8 @@ run.ps1 -Runtime hookshot calls `run` when the scenario is a steps file. The ver
   start A [B]           boot the games named (again: a running one is ended first), with the save baseline put back
                         and a fresh longshot_log.txt (the old one kept as hookshot_log-<x>-<n>.txt); wait until each
                         logs "coop: welcomed as player"
+  start A [B] idle      the same with no server for them (no LICHII_COOP_SERVER, co-op idle at the title, as a player
+                        who has not hosted or joined yet: the Host page before hosting); waits for the renderer only
   load A [B]            title to the save in each (hookshot.py to_play); the `#! start` regex checked after it
   play A f [B f]        play scenarios/<f> in A (and B), both at once, and wait for both
   close B / kill B      B quits through its control bridge (it leaves the server) / B ends at once (a crash)
@@ -67,8 +69,9 @@ class StepsError(Exception):
 
 
 class Step:
-    def __init__(self, n, verb, args, line, pattern=None):
+    def __init__(self, n, verb, args, line, pattern=None, idle=False):
         self.n, self.verb, self.args, self.line, self.pattern = n, verb, args, line, pattern
+        self.idle = idle   # start ... idle: no server for these games
 
     def __repr__(self):
         return "Step(%d, %r, %r)" % (self.n, self.verb, self.args)
@@ -101,9 +104,12 @@ def parse_steps(text):
         w = line.split()
         verb, rest = w[0], w[1:]
         if verb in ("start", "launch", "load"):
+            idle = verb == "start" and rest[-1:] == ["idle"]
+            if idle:
+                rest = rest[:-1]
             if not rest:
-                raise StepsError("line %d: %s A [B]" % (n, verb))
-            steps.append(Step(n, verb, [_game(n, x) for x in rest], line))
+                raise StepsError("line %d: %s A [B]%s" % (n, verb, " [idle]" if verb == "start" else ""))
+            steps.append(Step(n, verb, [_game(n, x) for x in rest], line, idle=idle))
         elif verb == "play":
             if not rest or len(rest) % 2:
                 raise StepsError("line %d: play A file [B file]" % n)
@@ -301,16 +307,16 @@ class Runner:
 
     def do_start(self, s):
         for x in s.args:
-            self.g.start(x, self.password(x), wait=False)
+            self.g.start(x, self.password(x), wait=False, idle=s.idle)
         for x in s.args:
-            self.g.wait_joined(x)
+            (self.g.wait_ready if s.idle else self.g.wait_joined)(x)
 
     def do_launch(self, s):
         # like start, but only until each game draws: for a game that starts before the server (no welcome yet)
         for x in s.args:
             self.g.start(x, self.password(x), wait=False)
         for x in s.args:
-            self.g.wait_joined(x, join=False)
+            self.g.wait_ready(x)
 
     def do_load(self, s):
         for x, ok, why in self.g.load(s.args):
@@ -412,11 +418,15 @@ class DryGames:
     def __init__(self, say=print):
         self.say = say
 
-    def start(self, x, password, wait=True):
-        self.say("  would start %s (save baseline back, fresh log%s)" % (x, ", join password set" if password else ""))
+    def start(self, x, password, wait=True, idle=False):
+        self.say("  would start %s (save baseline back, fresh log%s)" % (
+            x, ", no server: co-op idle" if idle else ", join password set" if password else ""))
 
-    def wait_joined(self, x, join=True):
-        self.say("  would wait for %s: %s" % (x, "'%s'" % JOINED if join else "its renderer only"))
+    def wait_ready(self, x):
+        self.say("  would wait for %s's renderer" % x)
+
+    def wait_joined(self, x):
+        self.say("  would wait for %s: '%s'" % (x, JOINED))
 
     def load(self, xs):
         self.say("  would load %s (title to the save)" % " ".join(xs))
@@ -560,7 +570,7 @@ class HookshotGames:
                 pass
             del self.bridges[x]
 
-    def start(self, x, password, wait=True):
+    def start(self, x, password, wait=True, idle=False):
         hk, g = self.hk, self.games[x]
         self._end(x, "kill")
         self.expected_exit.discard(x)
@@ -577,6 +587,9 @@ class HookshotGames:
         env = dict(os.environ, HOS_CONTROL=sock, HOS_CONTROL_MEM="ro", LICHII_COOP_TEST_COMMANDS=self.commands[x],
                    LICHII_COOP_SERVER="127.0.0.1:%d" % self.port, LICHII_COOP_NAME=x)   # "A", "B": /teleport B
         env.pop("LICHII_COOP_PASSWORD", None)
+        if idle:   # (co-op idle: no server from the run nor from the environment; it hosts or joins only when told)
+            env.pop("LICHII_COOP_SERVER", None)
+            password = ""
         # Its own save, no crash ask on the title (TEST_GAME_DEFAULTS, as hookshot.py's): a switch can undo it.
         for k, v in TEST_GAME_DEFAULTS:
             env.setdefault(k, v)
@@ -603,9 +616,9 @@ class HookshotGames:
             hk.place_games({x: self.procs[x].pid}, self.display, self.say, wait=30.0)
         self.bridges[x] = (sock, hk.Bridge.connect(sock, timeout=120))
         if wait:
-            self.wait_joined(x)
+            (self.wait_ready if idle else self.wait_joined)(x)
 
-    def wait_joined(self, x, join=True):
+    def wait_ready(self, x):
         # Drawing first: a game whose shaders still compile reads no controller and joins only after (a cold driver
         # cache: minutes, its length not fixed), so this wait follows the compile's progress (hookshot.wait_renderer)
         # and the join's own timeout counts from there.
@@ -614,8 +627,9 @@ class HookshotGames:
         self.say("%s: renderer ready (%.0f s waited)" % (x, waited))
         if getattr(self.hk, "place_games", None):   # (the game can move its window when its renderer comes up)
             self.hk.place_games({x: self.procs[x].pid}, self.display, self.say)
-        if not join:
-            return
+
+    def wait_joined(self, x):
+        self.wait_ready(x)
         t0 = time.monotonic()
         while JOINED not in self.log(x):
             if not self.alive(x):
@@ -865,7 +879,7 @@ def _dry(steps):
         say("step %d: %s" % (s.n, s.line))
         if s.verb in ("start", "launch"):
             for x in s.args:
-                games.start(x, "")
+                games.start(x, "", idle=s.idle)
         elif s.verb == "load":
             games.load(s.args)
         elif s.verb == "play":

@@ -31,6 +31,32 @@ const char* password_problem(std::string_view password) {
   return nullptr;
 }
 
+std::optional<protocol::DifficultyChoice> parse_difficulty(const std::string& text) {
+  using protocol::DifficultyPreset;
+  protocol::DifficultyChoice c;
+  if (text == "auto") return c;
+  c.auto_scale = false;
+  if (text == "easy" || text == "normal" || text == "hard") {
+    c.preset = text == "easy" ? DifficultyPreset::easy : text == "hard" ? DifficultyPreset::hard : DifficultyPreset::normal;
+    return c;
+  }
+  if (text.rfind("custom:", 0) != 0) return std::nullopt;
+  std::uint16_t v[3] = {};
+  std::size_t start = 7;
+  for (int k = 0; k < 3; ++k) {
+    const std::size_t comma = k < 2 ? text.find(',', start) : text.size();
+    if (comma == std::string::npos || !parse_number(text.substr(start, comma - start), v[k]) ||
+        v[k] % protocol::kDifficultyStep != 0) {
+      return std::nullopt;
+    }
+    start = comma + 1;
+  }
+  c.preset = DifficultyPreset::custom;
+  c.custom = protocol::bosses_as_enemies({v[0], v[1], v[2]});
+  if (!(protocol::clamp_difficulty(c.custom) == c.custom)) return std::nullopt;   // (each within its slider's ends)
+  return c;
+}
+
 std::optional<CommandLine> parse_command_line(const std::vector<std::string>& args,
                                               std::string& error) {
   CommandLine line;
@@ -125,6 +151,14 @@ std::optional<CommandLine> parse_command_line(const std::vector<std::string>& ar
         error = "--pvp needs on or off";
         return std::nullopt;
       }
+      ++i;
+    } else if (arg == "--difficulty") {
+      const auto choice = parse_difficulty(has_value ? args[i + 1] : std::string());
+      if (!choice) {
+        error = "--difficulty needs auto, easy, normal, hard or custom:LIFE,DAMAGE,ENEMIES (percent, steps of 25)";
+        return std::nullopt;
+      }
+      line.difficulty = *choice;
       ++i;
     } else if (arg == "--dbno") {
       const std::string value = has_value ? args[i + 1] : std::string();
@@ -312,7 +346,7 @@ const char* usage() {
          "                   [--game-build ID] [--max-players N] [--max-half-open N]\n"
          "                   [--pose-upload-kbps N] [--run-for-ms N]\n"
          "                   [--password TEXT | --password-env NAME] [--pvp on|off]\n"
-         "                   [--dbno on|off] [--approve-joins] [--same-network-open]\n"
+         "                   [--difficulty WHICH] [--dbno on|off] [--approve-joins] [--same-network-open]\n"
          "  --port N         UDP port to listen on (default 27510, 0 for any)\n"
          "  --bind ADDRESS   listen only on this IPv4 address of this PC, for\n"
          "                   example its Hamachi or Radmin address (default: all)\n"
@@ -373,6 +407,10 @@ const char* usage() {
          "                   code: the game connects to 127.0.0.1:N (27512)\n"
          "  --pvp on|off     players can hurt each other (default: off); the\n"
          "                   host can change it in the game with /pvp\n"
+         "  --difficulty WHICH  auto, easy, normal, hard or custom:LIFE,DAMAGE,\n"
+         "                   ENEMIES (percent, steps of 25; default: auto, more\n"
+         "                   as more players join); the host can change it in\n"
+         "                   the game with /difficulty\n"
          "  --dbno on|off    down but not out: a player at no hearts crawls and\n"
          "                   can be revived (default: on); the host can change\n"
          "                   it in the game with /dbno\n"

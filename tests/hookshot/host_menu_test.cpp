@@ -21,6 +21,7 @@
 #include <enet/enet.h>
 
 #include "coop/net/client.hpp"
+#include "coop/protocol/difficulty.hpp"
 #include "coop/protocol/join_password.hpp"
 #include "coop_host_menu.h"
 #include "coop_title_menu.h"
@@ -517,6 +518,23 @@ TEST_CASE("host menu: Host takes up to 16 players by default, as coop_server") {
     CHECK(CoopHostMenu::HostMaxPlayers(4) == 4);
     CHECK(CoopHostMenu::HostMaxPlayers(16) == 16);
     CHECK(CoopHostMenu::HostMaxPlayers(40) == 16);  // more than the protocol has numbers for
+}
+
+// HosCoopHostOptions::difficulty (the lobby's, picked as it was made) as the server's start choice.
+TEST_CASE("host menu: the lobby's difficulty from the host options, automatic for an older caller") {
+    using coop::protocol::DifficultyPreset;
+    CHECK(CoopHostMenu::HostDifficulty(0, 0, 0, 0) == coop::protocol::DifficultyChoice{});   // (older caller: 0)
+    CHECK(CoopHostMenu::HostDifficulty(9, 100, 100, 100) == coop::protocol::DifficultyChoice{});
+    const auto easy = CoopHostMenu::HostDifficulty(1, 0, 0, 0);
+    CHECK_FALSE(easy.auto_scale);
+    CHECK(easy.preset == DifficultyPreset::easy);
+    CHECK(CoopHostMenu::HostDifficulty(2, 0, 0, 0).preset == DifficultyPreset::normal);
+    CHECK(CoopHostMenu::HostDifficulty(3, 0, 0, 0).preset == DifficultyPreset::hard);
+    const auto custom = CoopHostMenu::HostDifficulty(4, 150, 900, 100);
+    CHECK(custom.preset == DifficultyPreset::custom);
+    CHECK(custom.custom == coop::protocol::DifficultyValues{150, 400, 100, 150, 400});   // (within the sliders' ends)
+    // The struct's tail: an older caller's size stops before it.
+    CHECK(offsetof(HosCoopHostOptions, difficulty) >= offsetof(HosCoopHostOptions, bans_file) + sizeof(const char*));
 }
 
 TEST_CASE("host menu: the same helper nonce and port for the same invite on this PC, others differ") {

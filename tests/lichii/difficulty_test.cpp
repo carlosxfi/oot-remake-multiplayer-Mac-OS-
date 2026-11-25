@@ -158,12 +158,14 @@ TEST_CASE("difficulty: the host's choice is kept as text and read back") {
 
 TEST_CASE("difficulty: a new host offers its kept choice once, and only when nobody chose") {
   const std::optional<Choice> hard = CoopDifficulty::WithPreset(Choice{}, Preset::hard);
-  CHECK(CoopDifficulty::OffersKept(true, 0, hard, false));
-  CHECK_FALSE(CoopDifficulty::OffersKept(false, 0, hard, false));  // a guest never
-  CHECK_FALSE(CoopDifficulty::OffersKept(true, 2, hard, false));   // the host before chose
-  CHECK_FALSE(CoopDifficulty::OffersKept(true, 0, hard, true));    // once
-  CHECK_FALSE(CoopDifficulty::OffersKept(true, 0, std::nullopt, false));
-  CHECK_FALSE(CoopDifficulty::OffersKept(true, 0, Choice{}, false));  // automatic is the default already
+  CHECK(CoopDifficulty::OffersKept(true, 0, hard, false, true));
+  CHECK_FALSE(CoopDifficulty::OffersKept(false, 0, hard, false, true));  // a guest never
+  CHECK_FALSE(CoopDifficulty::OffersKept(true, 2, hard, false, true));   // the host before chose
+  CHECK_FALSE(CoopDifficulty::OffersKept(true, 0, hard, true, true));    // once
+  CHECK_FALSE(CoopDifficulty::OffersKept(true, 0, std::nullopt, false, true));
+  CHECK_FALSE(CoopDifficulty::OffersKept(true, 0, Choice{}, false, true));  // automatic is the default already
+  // the lobby was made with a difficulty (Host page / coop_server --difficulty): the server says it, not automatic
+  CHECK_FALSE(CoopDifficulty::OffersKept(true, 0, hard, false, false));
 }
 
 TEST_CASE("difficulty: enemy life is how much of each hit an enemy takes") {

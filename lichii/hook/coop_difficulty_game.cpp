@@ -133,6 +133,26 @@ bool Set(const Choice& choice) {
     return true;
 }
 
+Choice NextLobby() {
+    Glue& g = TheGlue();
+    std::lock_guard lock(g.mutex);
+    return Kept(g).value_or(Choice{});
+}
+
+bool SetNextLobby(const Choice& choice) {
+    Glue& g = TheGlue();
+    {
+        std::lock_guard lock(g.mutex);
+        if (g.state.connected) {
+            return false;
+        }
+        g.kept = choice;
+        g.kept_read = true;
+    }
+    Keep(choice);
+    return true;
+}
+
 void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
     using coop::net::EventKind;
     Glue& g = TheGlue();
@@ -248,7 +268,7 @@ void Frame(coop::host::Session* session) {
         if (g.wish) {
             send = std::exchange(g.wish, std::nullopt);
             g.offered = true;  // the host chose here: the kept one is this one
-        } else if (OffersKept(g.state.can_edit, g.state.set_by, Kept(g), g.offered)) {
+        } else if (OffersKept(g.state.can_edit, g.state.set_by, Kept(g), g.offered, g.state.choice.auto_scale)) {
             send = g.kept;
             g.offered = true;
         }
