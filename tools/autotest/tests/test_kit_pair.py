@@ -207,6 +207,25 @@ class KitStart(unittest.TestCase):
         self.assertIn("Not now", str(e.exception))
         self.assertIn("exit 1", str(e.exception))
 
+    def test_a_start_that_times_out_says_so(self):
+        seen = {}
+
+        def fake(cmd, cwd, env, input, stdout, stderr, timeout):
+            seen["timeout"] = timeout
+            stdout.write(b"== Building the game: the mods' code patches changed\r\n")
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        with self.assertRaises(RuntimeError) as e:
+            hs.kit_start(r"C:\kits\kit-A", {}, self.tmp, "A", run_cmd=fake)
+        self.assertIn("timed out", str(e.exception))
+        self.assertIn("Building the game", str(e.exception))
+        self.assertEqual(seen["timeout"], hs.KIT_START_TIMEOUT)   # (a real player's build fits: an hour)
+        self.assertGreaterEqual(hs.KIT_START_TIMEOUT, 3600)
+
+    def test_the_real_start_stops_its_whole_tree(self):
+        self.assertIs(hs.kit_start.__defaults__[-1], None)   # run_cmd: lanes.hs.run_tree unless a test passes one
+        import inspect
+        self.assertIn("lanes.hs.run_tree", inspect.getsource(hs.kit_start))
+
     def test_an_old_kit_without_the_hook(self):
         def fake(cmd, cwd, env, input, stdout, stderr, timeout):
             return subprocess.CompletedProcess(cmd, 0)
