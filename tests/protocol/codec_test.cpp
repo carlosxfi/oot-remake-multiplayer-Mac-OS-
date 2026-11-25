@@ -1226,12 +1226,13 @@ TEST_CASE("object samples carry a battle manager's orders, component 23 (protoco
   CHECK(decode_bytes(raw) == Error::bad_value);
 }
 
-TEST_CASE("object samples carry the owner's boss blackboard move state, component 25 (row 149, protocol 17)") {
-  CHECK(kProtocolVersion >= 17);  // (0.11.12 is 16: its server would not keep the component for a hand-over)
-  CHECK(static_cast<int>(ObjectComponent::board) == 25);
+TEST_CASE("object samples carry the owner's blackboard move state by key name hash, component 25 (row 149)") {
+  CHECK(kProtocolVersion >= 17);  // (0.11.12 is 16: refused at HELLO, it never sees the component)
+  CHECK(static_cast<int>(ObjectComponent::brain) == 25);
   ObjectSample s{0, test::kPlacedId, 3, {}};
   s.state.time = {100, 1};
-  s.state.board = BossBoard{{{1, 3}, {2, 1}, {40, -7}}};
+  s.state.brain = BrainState{{{0x00000000u, kBrainS32, 3}, {0x10203040u, kBrainBool, 1}, {0xfffffff0u, kBrainS32, -7},
+                              {0xffffffffu, kBrainF32, 0x3f800000}}};
   const Bytes bytes = must_encode(s);
   Message back;
   REQUIRE(decode(bytes, back) == Error::none);
@@ -1241,38 +1242,47 @@ TEST_CASE("object samples carry the owner's boss blackboard move state, componen
   h.id = test::kPlacedId;
   h.state = s.state;
   REQUIRE(decode(must_encode(h), back) == Error::none);
-  CHECK(std::get<HandoverState>(back).state.board == s.state.board);
+  CHECK(std::get<HandoverState>(back).state.brain == s.state.brain);
   // No component: none after decoding (an older sender). An empty one stays one.
   ObjectSample plain{0, test::kPlacedId, 3, {}};
   plain.state.time = {100, 1};
   REQUIRE(decode(must_encode(plain), back) == Error::none);
-  CHECK_FALSE(std::get<ObjectSample>(back).state.board);
-  plain.state.board = BossBoard{};
+  CHECK_FALSE(std::get<ObjectSample>(back).state.brain);
+  plain.state.brain = BrainState{};
   REQUIRE(decode(must_encode(plain), back) == Error::none);
-  CHECK(std::get<ObjectSample>(back).state.board == BossBoard{});
-  // Refused: key ids from 1, rising, each once; at most kMaxBossBoardValues.
+  CHECK(std::get<ObjectSample>(back).state.brain == BrainState{});
+  // Refused: key hashes rising, each once; a type we do not have; a bool that is not 0 or 1; too many.
   Bytes out;
-  s.state.board = BossBoard{{{0, 3}}};
+  s.state.brain = BrainState{{{2, kBrainS32, 3}, {2, kBrainS32, 4}}};
   CHECK(encode(s, out) == Error::bad_value);
-  s.state.board = BossBoard{{{2, 3}, {2, 4}}};
+  s.state.brain = BrainState{{{3, kBrainS32, 3}, {2, kBrainS32, 4}}};
   CHECK(encode(s, out) == Error::bad_value);
-  s.state.board = BossBoard{{{3, 3}, {2, 4}}};
+  s.state.brain = BrainState{{{3, 3, 0}}};
   CHECK(encode(s, out) == Error::bad_value);
-  s.state.board = BossBoard{};
-  for (std::size_t i = 0; i <= kMaxBossBoardValues; ++i) {
-    s.state.board->values.push_back({static_cast<std::uint16_t>(i + 1), 0});
+  s.state.brain = BrainState{{{3, kBrainBool, 2}}};
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.brain = BrainState{};
+  for (std::size_t i = 0; i <= kMaxBrainValues; ++i) {
+    s.state.brain->values.push_back({static_cast<std::uint32_t>(i + 1), kBrainS32, 0});
   }
   CHECK(encode(s, out) == Error::bad_value);
-  s.state.board->values.pop_back();
+  s.state.brain->values.pop_back();
   CHECK(encode(s, out) == Error::none);
-  // The decoder refuses them too: a count above the limit, and a key not above the one before.
-  s.state.board = BossBoard{};
+  // The decoder refuses them too. A value is 9 bytes: u32 key, u8 type, 4 bytes.
+  s.state.brain = BrainState{};
   Bytes raw = must_encode(s);
-  raw.back() = static_cast<std::uint8_t>(kMaxBossBoardValues + 1);
+  raw.back() = static_cast<std::uint8_t>(kMaxBrainValues + 1);
   CHECK(decode_bytes(raw) == Error::bad_value);
-  s.state.board = BossBoard{{{1, 0}, {2, 0}}};
+  s.state.brain = BrainState{{{1, kBrainS32, 0}, {2, kBrainS32, 0}}};
   raw = must_encode(s);
-  raw[raw.size() - 6] = 1;  // the second key's low byte (u16 key, then 4 bytes of value)
+  raw[raw.size() - 9] = 1;  // the second key's low byte: not above the first
+  CHECK(decode_bytes(raw) == Error::bad_value);
+  raw = must_encode(s);
+  raw[raw.size() - 5] = 3;  // the second value's type
+  CHECK(decode_bytes(raw) == Error::bad_value);
+  s.state.brain = BrainState{{{1, kBrainBool, 1}}};
+  raw = must_encode(s);
+  raw[raw.size() - 4] = 2;  // a bool's value
   CHECK(decode_bytes(raw) == Error::bad_value);
 }
 

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// A boss's move state goes with the boss (row 149): coop_boss_board.h.
-#include "coop_boss_board.h"
+// A boss's move state goes with the boss (row 149): coop_brain_state.h.
+#include "coop_brain_state.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <utility>
 
-namespace CoopBossBoard {
+namespace CoopBrainState {
 
 namespace {
 
@@ -18,8 +18,8 @@ std::string Hex(std::uint64_t v) {
     return text;
 }
 
-const BossBoardValue* ValueOf(const BossBoard& board, std::uint16_t id) {
-    for (const BossBoardValue& v : board.values) {
+const BrainValue* ValueOf(const BrainState& board, std::uint32_t id) {
+    for (const BrainValue& v : board.values) {
         if (v.key == id) {
             return &v;
         }
@@ -27,9 +27,9 @@ const BossBoardValue* ValueOf(const BossBoard& board, std::uint16_t id) {
     return nullptr;
 }
 
-std::string Text(std::span<const Key> keys, const std::vector<BossBoardValue>& values) {
+std::string Text(std::span<const Key> keys, const std::vector<BrainValue>& values) {
     std::string out;
-    for (const BossBoardValue& v : values) {
+    for (const BrainValue& v : values) {
         for (const Key& k : keys) {
             if (k.id == v.key) {
                 out += (out.empty() ? "" : ", ") + std::string(k.name) + "=" + std::to_string(v.value);
@@ -48,20 +48,21 @@ std::vector<Key> KeysOf(std::string_view boss) {
             out.push_back(k);
         }
     }
+    std::sort(out.begin(), out.end(), [](const Key& a, const Key& b) { return a.id < b.id; });
     return out;
 }
 
-std::vector<BossBoardValue> Plan(std::span<const Key> keys, const BossBoard& theirs, const BossBoard& ours) {
-    std::vector<BossBoardValue> out;
+std::vector<BrainValue> Plan(std::span<const Key> keys, const BrainState& theirs, const BrainState& ours) {
+    std::vector<BrainValue> out;
     for (const Key& k : keys) {
-        const BossBoardValue* want = ValueOf(theirs, k.id);
-        const BossBoardValue* have = ValueOf(ours, k.id);
-        if (want == nullptr || have == nullptr) {
-            continue;  // (not sent by that owner's build, or not read here)
+        const BrainValue* want = ValueOf(theirs, k.id);
+        const BrainValue* have = ValueOf(ours, k.id);
+        if (want == nullptr || have == nullptr || want->type != static_cast<std::uint8_t>(k.kind)) {
+            continue;  // (not sent by that owner's build or as another type, or not read here)
         }
         const std::int32_t value = k.kind == Kind::boolean ? (want->value != 0 ? 1 : 0) : want->value;
         if (value != have->value) {
-            out.push_back({k.id, value});
+            out.push_back({k.id, static_cast<std::uint8_t>(k.kind), value});
         }
     }
     return out;
@@ -106,7 +107,7 @@ void Table::Publish(std::span<const Member> members) {
     entries_ = std::move(next);
 }
 
-void Table::Receive(std::uint64_t actor, const BossBoard& board) {
+void Table::Receive(std::uint64_t actor, const BrainState& board) {
     std::lock_guard lock(mutex_);
     const auto it = entries_.find(actor);
     if (it == entries_.end() || board == it->second.in) {
@@ -123,7 +124,7 @@ void Table::Receive(std::uint64_t actor, const BossBoard& board) {
     }
 }
 
-std::optional<BossBoard> Table::OwnerBoard(std::uint64_t actor) const {
+std::optional<BrainState> Table::OwnerBoard(std::uint64_t actor) const {
     std::lock_guard lock(mutex_);
     const auto it = entries_.find(actor);
     if (it == entries_.end() || it->second.member.role != Role::owner) {
@@ -134,9 +135,9 @@ std::optional<BossBoard> Table::OwnerBoard(std::uint64_t actor) const {
         return e.mine;
     }
     // Still to put in: the old owner's, as they came (our keys only), never our stale own.
-    BossBoard out;
+    BrainState out;
     for (const Slot& s : e.slots) {
-        if (const BossBoardValue* v = ValueOf(e.in, s.key.id)) {
+        if (const BrainValue* v = ValueOf(e.in, s.key.id)) {
             out.values.push_back(*v);
         }
     }
@@ -201,14 +202,14 @@ bool Table::Find(CoopPuppet::Guest& guest, Entry& e) {
     return found();
 }
 
-std::optional<BossBoard> Table::ReadValues(CoopPuppet::Guest& guest, const Entry& e) {
+std::optional<BrainState> Table::ReadValues(CoopPuppet::Guest& guest, const Entry& e) {
     std::uint64_t s32_at = 0;
     std::uint64_t bool_at = 0;
     if (e.blackboard == 0 || !guest.Read(e.blackboard + addr::kS32Values, &s32_at, sizeof s32_at) ||
         !guest.Read(e.blackboard + addr::kBoolValues, &bool_at, sizeof bool_at)) {
         return std::nullopt;
     }
-    BossBoard out;
+    BrainState out;
     for (const Slot& s : e.slots) {
         if (s.name_at == 0) {
             continue;
@@ -216,12 +217,12 @@ std::optional<BossBoard> Table::ReadValues(CoopPuppet::Guest& guest, const Entry
         if (s.key.kind == Kind::s32) {
             std::int32_t value = 0;
             if (s32_at != 0 && guest.Read(s32_at + s.index * sizeof value, &value, sizeof value)) {
-                out.values.push_back({s.key.id, value});
+                out.values.push_back({s.key.id, coop::protocol::kBrainS32, value});
             }
         } else {
             std::uint8_t value = 0;
             if (bool_at != 0 && guest.Read(bool_at + s.index, &value, sizeof value)) {
-                out.values.push_back({s.key.id, value != 0 ? 1 : 0});
+                out.values.push_back({s.key.id, coop::protocol::kBrainBool, value != 0 ? 1 : 0});
             }
         }
     }
@@ -261,16 +262,16 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
         case Pending::set:
             if (const auto it = entries_.find(pending_actor_); it != entries_.end() && !it->second.todo.empty()) {
                 Entry& e = it->second;
-                const BossBoardValue asked = e.todo.front();
+                const BrainValue asked = e.todo.front();
                 e.todo.erase(e.todo.begin());
-                const std::optional<BossBoard> now = ReadValues(guest, e);
-                const BossBoardValue* have = now ? ValueOf(*now, asked.key) : nullptr;
+                const std::optional<BrainState> now = ReadValues(guest, e);
+                const BrainValue* have = now ? ValueOf(*now, asked.key) : nullptr;
                 if (have != nullptr && have->value == asked.value) {
                     ++counts_.put;
                     ++e.put;
                 } else {
                     ++counts_.refused;  // (a locked key: the game's own rule; ours stays)
-                    Note(e.member.name + ": blackboard: the game left key " + std::to_string(asked.key) + " alone");
+                    Note(e.member.name + ": blackboard: the game left key " + Hex(asked.key) + " alone");
                 }
             }
             break;
@@ -307,7 +308,7 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
             keys.push_back(s.key);
         }
         if (e.due) {
-            const std::optional<BossBoard> ours = ReadValues(guest, e);
+            const std::optional<BrainState> ours = ReadValues(guest, e);
             if (!ours) {
                 continue;
             }
@@ -316,7 +317,7 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
                 e.planned = true;
                 e.put = 0;
                 e.same = 0;
-                for (const BossBoardValue& v : e.in.values) {
+                for (const BrainValue& v : e.in.values) {
                     if (ValueOf(*ours, v.key) != nullptr) {
                         ++e.same;
                     }
@@ -332,7 +333,7 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
                 continue;  // (no block this frame: asked again; our stale values are not sent meanwhile)
             }
             if (!e.todo.empty()) {
-                const BossBoardValue& v = e.todo.front();
+                const BrainValue& v = e.todo.front();
                 const auto slot = std::find_if(e.slots.begin(), e.slots.end(),
                                                [&v](const Slot& s) { return s.key.id == v.key && s.name_at != 0; });
                 if (slot == e.slots.end()) {
@@ -396,4 +397,4 @@ Table& TheTable() {
     return table;
 }
 
-}  // namespace CoopBossBoard
+}  // namespace CoopBrainState

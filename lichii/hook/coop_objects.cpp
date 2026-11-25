@@ -63,7 +63,7 @@
 #include "coop_hold.h"
 #include "coop_actor_events.h"
 #include "coop_boss_native.h"
-#include "coop_boss_board.h"
+#include "coop_brain_state.h"
 #include "coop_boss_orders.h"
 #include "coop_difficulty.h"
 #include "coop_puppet.h"
@@ -2139,7 +2139,7 @@ public:
                     bosses.Publish({});
                 }
                 CoopBossOrders::TheTable().Publish({});  // row 222: no owner or copy: our managers decide again
-                CoopBossBoard::TheTable().Publish({});   // row 149: nothing to hand over
+                CoopBrainState::TheTable().Publish({});   // row 149: nothing to hand over
                 sharing_ = false;
             }
             if (CoopWorldSnapshot::TheStore().Enabled() && scene && !scene->empty() && Ready(system)) {
@@ -2227,11 +2227,11 @@ public:
                                        return CoopBossNative::TheTable().Step(guest, after_call, result,
                                                                               TheBossMain().load());
                                    });
-                // Row 149: a boss made ours takes its old owner's blackboard move state (coop_boss_board.h).
-                CoopSvc::AddCaller(CoopBossBoard::Table::kCallerOrder,
+                // Row 149: a boss made ours takes its old owner's blackboard move state (coop_brain_state.h).
+                CoopSvc::AddCaller(CoopBrainState::Table::kCallerOrder,
                                    [](CoopPuppet::Guest& guest, bool after_call,
                                       std::uint64_t result, std::uint64_t) {
-                                       return CoopBossBoard::TheTable().Step(guest, after_call, result,
+                                       return CoopBrainState::TheTable().Step(guest, after_call, result,
                                                                              TheBossMain().load());
                                    });
                 // Row 222: the owner's battle manager orders put into our copies (coop_boss_orders.h).
@@ -2508,19 +2508,19 @@ public:
             for (const std::string& note : bosses.TakeNotes()) {
                 LOG_INFO(Core, "coop: bosses: {}", note);
             }
-            // Row 149 (coop_boss_board.h): the same bosses for their blackboard move state, then the owner's.
+            // Row 149 (coop_brain_state.h): the same bosses for their blackboard move state, then the owner's.
             {
-                CoopBossBoard::Table& board = CoopBossBoard::TheTable();
-                std::vector<CoopBossBoard::Member> members;
+                CoopBrainState::Table& board = CoopBrainState::TheTable();
+                std::vector<CoopBrainState::Member> members;
                 members.reserve(list.size());
                 for (const CoopBossNative::Boss& b : list) {
                     members.push_back({b.actor,
-                                       b.role == CoopBossNative::Role::owner ? CoopBossBoard::Role::owner
-                                                                             : CoopBossBoard::Role::copy,
+                                       b.role == CoopBossNative::Role::owner ? CoopBrainState::Role::owner
+                                                                             : CoopBrainState::Role::copy,
                                        b.owner, b.name});
                 }
                 board.Publish(members);
-                for (const auto& [address, state] : sync_.BossBoardIn()) {
+                for (const auto& [address, state] : sync_.BrainStateIn()) {
                     board.Receive(address, state);
                 }
                 for (const std::string& note : board.TakeNotes()) {
@@ -3642,7 +3642,7 @@ private:
             pvp_watch_.Reset();
             CoopProjectiles::TheOwnShots().Reset();
             CoopBossOrders::TheTable().Reset();  // row 222: its block and nodes were the old game's
-            CoopBossBoard::TheTable().Reset();   // row 149: its block and blackboards too
+            CoopBrainState::TheTable().Reset();   // row 149: its block and blackboards too
             extras_.Reset();  // difficulty: that run's extra enemies are gone with it
             horde_.Reset();
             {
@@ -4893,7 +4893,7 @@ private:
                     }
                     s.bsa = CoopBossNative::TheTable().OwnerState(a, &s.variants);
                     s.orders = CoopBossOrders::TheTable().OwnerOrders(a);  // row 222: its manager's orders, ours
-                    s.board = CoopBossBoard::TheTable().OwnerBoard(a);     // row 149: its blackboard move state
+                    s.brain = CoopBrainState::TheTable().OwnerBoard(a);     // row 149: its blackboard move state
                     if (own_hit_life) {
                         s.hit_at = NewOwnHitAt(r, a, *own_hit_life, s.position, own_hit_took_life);
                     } else if (CoopBossNative::TheTable().OwnShotNear(s.position)) {

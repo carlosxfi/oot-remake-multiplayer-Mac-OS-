@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Row 149: a boss's blackboard move state goes with the boss (coop_boss_board.h).
+// Row 149: an actor's blackboard move state goes with the actor (coop_brain_state.h).
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <map>
 #include <optional>
@@ -10,9 +11,9 @@
 #include <utility>
 #include <vector>
 
-#include "coop_boss_board.h"
+#include "coop_brain_state.h"
 
-using namespace CoopBossBoard;
+using namespace CoopBrainState;
 
 namespace {
 
@@ -24,10 +25,24 @@ constexpr char kKing[] = "Enemy_DungeonBoss_Dodongo";
 constexpr char kCorner[] = "DungeonBossDodongo_CurrentTargetCornerNum";
 constexpr char kReverse[] = "DungeonBossDodongo_IsReverse";
 constexpr char kSpawn[] = "DungeonBossDodongo_IsAfterRollingSpawn";
-// Their ids on the wire.
-constexpr std::uint16_t kCornerId = 1;
-constexpr std::uint16_t kReverseId = 2;
-constexpr std::uint16_t kSpawnId = 3;
+// Their numbers on the wire: the hash of the key's name.
+constexpr std::uint32_t kCornerId = KeyId(kCorner);
+constexpr std::uint32_t kReverseId = KeyId(kReverse);
+constexpr std::uint32_t kSpawnId = KeyId(kSpawn);
+static_assert(kCornerId == 0x44f0ae37u && kReverseId == 0x9419f2ceu && kSpawnId == 0xaa89a18fu);
+
+BrainValue C(std::int32_t corner) { return {kCornerId, coop::protocol::kBrainS32, corner}; }
+BrainValue R(std::int32_t reverse) { return {kReverseId, coop::protocol::kBrainBool, reverse}; }
+BrainValue S(std::int32_t spawn) { return {kSpawnId, coop::protocol::kBrainBool, spawn}; }
+// A component as it goes on the wire: its values by rising key.
+BrainState State(std::vector<BrainValue> values) {
+    std::sort(values.begin(), values.end(), [](const BrainValue& a, const BrainValue& b) { return a.key < b.key; });
+    return BrainState{std::move(values)};
+}
+std::vector<std::string> Sorted(std::vector<std::string> names) {
+    std::sort(names.begin(), names.end());
+    return names;
+}
 
 using Named = std::vector<std::pair<std::string, std::int32_t>>;
 
@@ -174,22 +189,33 @@ void Publish(Table& t, Member m) { t.Publish(std::vector<Member>{std::move(m)});
 
 }  // namespace
 
-TEST_CASE("row 149: the carried keys have fixed ids, and King Dodongo's roll corner is one") {
-    std::set<std::uint16_t> ids;
+TEST_CASE("row 149: keys are named on the wire by the hash of their name, and King Dodongo's roll corner is one") {
+    // Murmur3 x86_32, seed 0 (the reference values).
+    CHECK(KeyId("") == 0u);
+    CHECK(KeyId("abc") == 0xb3dd93fau);
+    CHECK(KeyId("Hello, world!") == 0xc0363e43u);
+    CHECK(KeyId(kCorner) == 0x44f0ae37u);
     for (const Key& k : kKeys) {
-        CHECK(k.id != 0);
-        CHECK(ids.insert(k.id).second);
-        CHECK(KeysOf(k.boss).size() <= coop::protocol::kMaxBossBoardValues);
+        CHECK(k.id == KeyId(k.name));
+        const std::vector<Key> of = KeysOf(k.boss);
+        CHECK(of.size() <= coop::protocol::kMaxBrainValues);
+        std::set<std::uint32_t> ids;
+        for (std::size_t i = 0; i < of.size(); ++i) {
+            CHECK(ids.insert(of[i].id).second);         // no two keys of an actor share a hash
+            CHECK((i == 0 || of[i - 1].id < of[i].id)); // the wire's order
+        }
     }
     const std::vector<Key> king = KeysOf(kKing);
     REQUIRE(king.size() == 3);
-    CHECK(king[0].id == kCornerId);
-    CHECK(king[0].name == kCorner);
-    CHECK(king[0].kind == Kind::s32);
-    CHECK(king[1].id == kReverseId);
-    CHECK(king[1].name == kReverse);
-    CHECK(king[1].kind == Kind::boolean);
-    CHECK(king[2].id == kSpawnId);
+    const auto kind_of = [&king](std::string_view name) -> std::optional<Kind> {
+        for (const Key& k : king) {
+            if (k.name == name) return k.kind;
+        }
+        return std::nullopt;
+    };
+    CHECK(kind_of(kCorner) == Kind::s32);
+    CHECK(kind_of(kReverse) == Kind::boolean);
+    CHECK(kind_of(kSpawn) == Kind::boolean);
     // Every boss whose AI keeps move state in its blackboard (Twinrova's is carried as orders, row 222).
     for (const char* boss : {"Enemy_DungeonBoss_Volvagia", "Enemy_DungeonBoss_Gohma", "Enemy_DungeonBoss_PhantomGanon",
                              "Enemy_DungeonBoss_Ganondorf", "Enemy_DungeonBoss_Morpha",
@@ -202,19 +228,19 @@ TEST_CASE("row 149: the carried keys have fixed ids, and King Dodongo's roll cor
     CHECK(KeysOf("Enemy_DungeonBoss_Dodongo_Attention").empty());  // (the exact name only)
 }
 
-TEST_CASE("row 149: the plan puts in only what differs, only known and read keys, bools as 0 or 1") {
+TEST_CASE("row 149: the plan puts in only what differs, only carried and read keys of the same type") {
     const std::vector<Key> king = KeysOf(kKing);
-    const BossBoard ours{{{kCornerId, 0}, {kReverseId, 0}, {kSpawnId, 1}}};
-    CHECK(Plan(king, BossBoard{{{kCornerId, 2}, {kReverseId, 1}, {kSpawnId, 1}}}, ours) ==
-          std::vector<BossBoardValue>{{kCornerId, 2}, {kReverseId, 1}});
+    const BrainState ours = State({C(0), R(0), S(1)});
+    CHECK(State(Plan(king, State({C(2), R(1), S(1)}), ours)) == State({C(2), R(1)}));
     CHECK(Plan(king, ours, ours).empty());
-    // A bool that came as another non-zero value is true; a key of another boss or of a newer build is passed over.
-    CHECK(Plan(king, BossBoard{{{kReverseId, 7}, {10, 5}, {999, 1}}}, ours) ==
-          std::vector<BossBoardValue>{{kReverseId, 1}});
-    CHECK(Plan(king, BossBoard{{{kSpawnId, 255}}}, ours).empty());
+    // A key of another actor or of a newer build is passed over.
+    const BrainValue other{KeyId("DungeonBossVolvagia_BattleState"), coop::protocol::kBrainS32, 5};
+    CHECK(State(Plan(king, State({R(1), other}), ours)) == State({R(1)}));
+    // A key that came as another type than ours is not put in.
+    CHECK(Plan(king, State({BrainValue{kCornerId, coop::protocol::kBrainBool, 1}}), ours).empty());
+    CHECK(Plan(king, State({BrainValue{kCornerId, coop::protocol::kBrainF32, 0x40000000}}), ours).empty());
     // A key our game could not read is left alone.
-    CHECK(Plan(king, BossBoard{{{kCornerId, 2}, {kReverseId, 1}}}, BossBoard{{{kReverseId, 0}}}) ==
-          std::vector<BossBoardValue>{{kReverseId, 1}});
+    CHECK(State(Plan(king, State({C(2), R(1)}), State({R(0)}))) == State({R(1)}));
 }
 
 TEST_CASE("row 149: the owner's game reads its boss's move state for its samples") {
@@ -226,12 +252,12 @@ TEST_CASE("row 149: the owner's game reads its boss's move state for its samples
     const auto calls = Frame(t, g);
     REQUIRE(calls.size() == 1);  // the value block, made once
     CHECK(calls[0].function == kMain + addr::kMalloc);
-    CHECK(t.OwnerBoard(kDodongo) == BossBoard{{{kCornerId, 3}, {kReverseId, 1}, {kSpawnId, 0}}});
+    CHECK(t.OwnerBoard(kDodongo) == State({C(3), R(1), S(0)}));
     // The game moves on: the next frame's read follows it, with no call.
     g.SetS32(kBoard, 2, 0);
     g.SetBool(kBoard, 3, false);
     CHECK(Frame(t, g).empty());
-    CHECK(t.OwnerBoard(kDodongo) == BossBoard{{{kCornerId, 0}, {kReverseId, 0}, {kSpawnId, 0}}});
+    CHECK(t.OwnerBoard(kDodongo) == State({C(0), R(0), S(0)}));
     CHECK(g.sets.empty());
     CHECK(t.GetCounts().handed == 0);
 }
@@ -242,7 +268,7 @@ TEST_CASE("row 149: King Dodongo made ours rolls on from his old owner's corner,
     // Our copy counted corners by itself: corner 0, the other way round. The owner's is at corner 2, reversed.
     King(g, 0, false);
     Publish(t, Theirs());
-    t.Receive(kDodongo, BossBoard{{{kCornerId, 2}, {kReverseId, 1}, {kSpawnId, 0}}});
+    t.Receive(kDodongo, State({C(2), R(1), S(0)}));
     // A copy: nothing of its own game is changed (only the block is made, ahead of the hand-over).
     CHECK(Frame(t, g).size() == 1);
     CHECK(Frame(t, g).empty());
@@ -252,19 +278,22 @@ TEST_CASE("row 149: King Dodongo made ours rolls on from his old owner's corner,
 
     // Made ours: until the values are in, his samples carry the old owner's, never our stale corner.
     Publish(t, Ours());
-    CHECK(t.OwnerBoard(kDodongo) == BossBoard{{{kCornerId, 2}, {kReverseId, 1}, {kSpawnId, 0}}});
+    CHECK(t.OwnerBoard(kDodongo) == State({C(2), R(1), S(0)}));
     // The same frame: both go in through the game's own setters, by the blackboard's own name pointers.
     const auto calls = Frame(t, g);
     REQUIRE(calls.size() == 2);
-    CHECK(calls[0].function == kMain + addr::kSetS32);
-    CHECK(calls[0].x[0] == kBoard);
-    CHECK(calls[0].x[1] == g.Get<std::uint64_t>(kBoard + addr::kS32Names) + 2 * 8);
-    CHECK(calls[0].x[2] == kBlock);
-    CHECK_FALSE(calls[0].copy_game);
-    CHECK(calls[1].function == kMain + addr::kSetBool);
-    CHECK(calls[1].x[0] == kBoard);
-    CHECK(calls[1].x[1] == g.Get<std::uint64_t>(kBoard + addr::kBoolNames) + 3 * 8);
-    CHECK(g.sets == std::vector<std::string>{kCorner, kReverse});
+    const bool corner_first = kCornerId < kReverseId;  // (the wire's order: by key hash)
+    const CoopPuppet::Call& corner = calls[corner_first ? 0 : 1];
+    const CoopPuppet::Call& reverse = calls[corner_first ? 1 : 0];
+    CHECK(corner.function == kMain + addr::kSetS32);
+    CHECK(corner.x[0] == kBoard);
+    CHECK(corner.x[1] == g.Get<std::uint64_t>(kBoard + addr::kS32Names) + 2 * 8);
+    CHECK(corner.x[2] == kBlock);
+    CHECK_FALSE(corner.copy_game);
+    CHECK(reverse.function == kMain + addr::kSetBool);
+    CHECK(reverse.x[0] == kBoard);
+    CHECK(reverse.x[1] == g.Get<std::uint64_t>(kBoard + addr::kBoolNames) + 3 * 8);
+    CHECK(Sorted(g.sets) == Sorted({kCorner, kReverse}));
     CHECK(g.S32(kBoard, 2) == 2);
     CHECK(g.Bool(kBoard, 3));
     CHECK(g.Bool(kBoard, 0));        // (the longer key that starts the same: untouched)
@@ -277,8 +306,8 @@ TEST_CASE("row 149: King Dodongo made ours rolls on from his old owner's corner,
     // From here on it is our game's: read each frame, nothing put in again.
     g.SetS32(kBoard, 2, 3);
     CHECK(Frame(t, g).empty());
-    CHECK(t.OwnerBoard(kDodongo) == BossBoard{{{kCornerId, 3}, {kReverseId, 1}, {kSpawnId, 0}}});
-    t.Receive(kDodongo, BossBoard{{{kCornerId, 2}, {kReverseId, 1}, {kSpawnId, 0}}});  // (the same again: nothing)
+    CHECK(t.OwnerBoard(kDodongo) == State({C(3), R(1), S(0)}));
+    t.Receive(kDodongo, State({C(2), R(1), S(0)}));  // (the same again: nothing)
     CHECK(Frame(t, g).empty());
     CHECK(g.S32(kBoard, 2) == 3);
     CHECK(t.GetCounts().handed == 1);
@@ -289,16 +318,16 @@ TEST_CASE("row 149: a copy follows the owner's newest values, and a hand-over st
     FakeGuest g;
     King(g, 0, false);
     Publish(t, Theirs());
-    t.Receive(kDodongo, BossBoard{{{kCornerId, 1}, {kReverseId, 0}}});
-    t.Receive(kDodongo, BossBoard{{{kCornerId, 2}, {kReverseId, 0}}});  // the newest counts
+    t.Receive(kDodongo, State({C(1), R(0)}));
+    t.Receive(kDodongo, State({C(2), R(0)}));  // the newest counts
     (void)Frame(t, g);
     Publish(t, Ours());
     (void)Frame(t, g);
     CHECK(g.S32(kBoard, 2) == 2);
     CHECK(g.sets == std::vector<std::string>{kCorner});
     // The server's hand-over state came after the owner news, one corner on.
-    t.Receive(kDodongo, BossBoard{{{kCornerId, 3}, {kReverseId, 1}}});
-    CHECK(t.OwnerBoard(kDodongo) == BossBoard{{{kCornerId, 3}, {kReverseId, 1}}});
+    t.Receive(kDodongo, State({C(3), R(1)}));
+    CHECK(t.OwnerBoard(kDodongo) == State({C(3), R(1)}));
     (void)Frame(t, g);
     CHECK(g.S32(kBoard, 2) == 3);
     CHECK(g.Bool(kBoard, 3));
@@ -315,11 +344,11 @@ TEST_CASE("row 149: no move state from the old owner (an older build): our own s
     Publish(t, Ours());
     CHECK(Frame(t, g).empty());
     CHECK(g.sets.empty());
-    CHECK(t.OwnerBoard(kDodongo) == BossBoard{{{kCornerId, 1}, {kReverseId, 1}, {kSpawnId, 0}}});
+    CHECK(t.OwnerBoard(kDodongo) == State({C(1), R(1), S(0)}));
     CHECK(t.GetCounts().handed == 0);
     // An empty component changes nothing either.
     Publish(t, Theirs());
-    t.Receive(kDodongo, BossBoard{});
+    t.Receive(kDodongo, BrainState{});
     Publish(t, Ours());
     CHECK(Frame(t, g).empty());
     CHECK(g.sets.empty());
@@ -331,7 +360,7 @@ TEST_CASE("row 149: a key the game holds locked is left to the game, once") {
     King(g, 0, false);
     g.locked.insert(kCorner);
     Publish(t, Theirs());
-    t.Receive(kDodongo, BossBoard{{{kCornerId, 2}, {kReverseId, 1}}});
+    t.Receive(kDodongo, State({C(2), R(1)}));
     (void)Frame(t, g);
     Publish(t, Ours());
     CHECK(Frame(t, g).size() == 2);
@@ -340,7 +369,7 @@ TEST_CASE("row 149: a key the game holds locked is left to the game, once") {
     CHECK(t.GetCounts().refused == 1);
     CHECK(t.GetCounts().put == 1);
     CHECK(Frame(t, g).empty());  // not asked again
-    CHECK(t.OwnerBoard(kDodongo) == BossBoard{{{kCornerId, 0}, {kReverseId, 1}, {kSpawnId, 0}}});
+    CHECK(t.OwnerBoard(kDodongo) == State({C(0), R(1), S(0)}));
 }
 
 TEST_CASE("row 149: a call the runtime did not make is asked again, and with no block no stale values are sent") {
@@ -349,12 +378,12 @@ TEST_CASE("row 149: a call the runtime did not make is asked again, and with no 
     King(g, 0, false);
     g.malloc_gives = 0;  // the game's malloc gives nothing yet
     Publish(t, Theirs());
-    t.Receive(kDodongo, BossBoard{{{kCornerId, 2}, {kReverseId, 0}}});
+    t.Receive(kDodongo, State({C(2), R(0)}));
     CHECK(Frame(t, g).size() == 1);
     Publish(t, Ours());
     CHECK(Frame(t, g).size() == 1);  // asked again, nothing put in
     CHECK(g.sets.empty());
-    CHECK(t.OwnerBoard(kDodongo) == BossBoard{{{kCornerId, 2}, {kReverseId, 0}}});  // still the old owner's
+    CHECK(t.OwnerBoard(kDodongo) == State({C(2), R(0)}));  // still the old owner's
     g.malloc_gives = kBlock;
     // A call the runtime did not make (its limit) is asked again the next frame.
     REQUIRE(t.Step(g, false, 0, kMain));
@@ -382,13 +411,13 @@ TEST_CASE("row 149: an actor with no carried key, a boss with no blackboard, and
     CHECK(t.GetCounts().unread == 1);
     King(g, 2, false);
     (void)Frame(t, g);
-    CHECK(t.OwnerBoard(kDodongo) == BossBoard{{{kCornerId, 2}, {kReverseId, 0}, {kSpawnId, 0}}});
+    CHECK(t.OwnerBoard(kDodongo) == State({C(2), R(0), S(0)}));
     // A blackboard without his keys (another build's): nothing carried, nothing written.
     FakeGuest other;
     Table t2;
     other.Blackboard(kDodongo, kBoard, {{"Other", 1}}, {{"OtherFlag", 1}});
     Publish(t2, Theirs());
-    t2.Receive(kDodongo, BossBoard{{{kCornerId, 2}, {kReverseId, 1}}});
+    t2.Receive(kDodongo, State({C(2), R(1)}));
     (void)Frame(t2, other);
     Publish(t2, Ours());
     (void)Frame(t2, other);
@@ -410,6 +439,6 @@ TEST_CASE("row 149: an actor with no carried key, a boss with no blackboard, and
 }
 
 TEST_CASE("row 149: the hand-over goes before the boss table's caller") {
-    CHECK(CoopCallerOrders::kBossBoard < CoopCallerOrders::kBossTable);
-    CHECK(Table::kCallerOrder == CoopCallerOrders::kBossBoard);
+    CHECK(CoopCallerOrders::kBrainState < CoopCallerOrders::kBossTable);
+    CHECK(Table::kCallerOrder == CoopCallerOrders::kBrainState);
 }

@@ -973,15 +973,15 @@ kept in his AI blackboard (pack `Enemy_DungeonBoss_Dodongo`, `AI/DungeonBossDodo
 verbs and the mover his place, never that number: a copy counts corners by itself, apart from the owner's, and the
 game made his owner rolls to its own stale corner from wherever he stands. Across the pit no wall ends the roll.
 
-**Now** (`lichii/hook/coop_boss_board.h`, module only, no game patch). The move state goes with the boss:
+**Now** (`lichii/hook/coop_brain_state.h`, module only, no game patch). The move state goes with the boss:
 
 - the owner's game reads the carried keys of its boss each frame and sends them in the boss's samples (object
-  component 25 `board`, [protocol.md](protocol.md)); the server keeps them with the boss's last state and gives
+  component 25 `brain`, [protocol.md](protocol.md)); the server keeps them with the boss's last state and gives
   them to a new owner in `HANDOVER_STATE`;
 - a copy keeps the owner's last values and changes nothing in its own game;
 - a game made the owner puts them into its own blackboard through the game's own setters (main+0x264f170 for an
   s32, main+0xd6cb40 for a bool: found by name, a locked key left alone, the change counted), called on the game's
-  calc thread by a caller that runs before the boss table's (`kBossBoard` 43 before `kBossTable` 45), so they are in
+  calc thread by a caller that runs before the boss table's (`kBrainState` 43 before `kBossTable` 45), so they are in
   before its brain chooses or a move starts over. Until they are in, its samples carry the old owner's values, never
   its stale own. A hand-over state that comes after the owner news goes in the same way.
 
@@ -1006,11 +1006,13 @@ perception ids):
 | Ganon | `CurrentSequenceType`, `FinalRushCurrentHitNum`, `LifeAtChanceWaitStart`, the three weak points' life and broken flags, `IsForbidChargeAttack`, `CanRushAttack` |
 | Barinade | `CurrentFormType`, `CurrentJellyfishActionType`, `RemainArmCount`, `IsBeamAttackAfterChanceTime`, `IsKnockBackAfterChanceTime` |
 
-Twinrova's battle state is already carried as her manager's orders (row 222). A key a build does not know is passed
-over by its id, so the table can grow without a protocol change. Solo or co-op idle: no boss is listed, nothing is
+Twinrova's battle state is already carried as her manager's orders (row 222). The component is generic (sync step
+S2): a value names its key by the Murmur3 hash of the blackboard key's name, with its type, so any actor's keys can be
+listed in `kKeys` (actor name, key name, kind) and a build that does not carry a key passes it over: the table can
+grow, or be generated from the packs, without a protocol change. Listed today: the bosses below, hand-judged. Solo or co-op idle: no boss is listed, nothing is
 read or written.
 
-**Tests.** `boss_board_test` (the table; the plan; the owner's read; King Dodongo made ours takes corner and way
+**Tests.** `brain_state_test` (the table; the plan; the owner's read; King Dodongo made ours takes corner and way
 round in the frame of the hand-over, through the setters, by the blackboard's own name pointers; a late hand-over
 state; an older owner; a locked key; a call not made; no blackboard; a new game), `codec_test` (component 25, also
 in `HANDOVER_STATE`). **Not proven in game.** Check: kd-roll-hold-325 again: after every hand-over the

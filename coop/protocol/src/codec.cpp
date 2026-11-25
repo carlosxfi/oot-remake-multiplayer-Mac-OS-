@@ -689,11 +689,14 @@ Error check_object_state(const ObjectState& s) {
       before = v.seq;
     }
   }
-  if (s.board) {
-    if (s.board->values.size() > kMaxBossBoardValues) return Error::bad_value;
-    std::uint16_t before = 0;
-    for (const BossBoardValue& v : s.board->values) {
-      if (v.key == 0 || v.key <= before) return Error::bad_value;  // (ids from 1, rising, each once)
+  if (s.brain) {
+    if (s.brain->values.size() > kMaxBrainValues) return Error::bad_value;
+    bool first = true;
+    std::uint32_t before = 0;
+    for (const BrainValue& v : s.brain->values) {
+      if (!first && v.key <= before) return Error::bad_value;  // (key hashes rising, each once)
+      if (v.type > kBrainF32 || (v.type == kBrainBool && v.value != 0 && v.value != 1)) return Error::bad_value;
+      first = false;
       before = v.key;
     }
   }
@@ -853,11 +856,12 @@ void write_object_state(const ObjectState& s, Writer& w) {
       }
     });
   }
-  if (s.board) {
-    component(ObjectComponent::board, [&] {
-      w.u8(static_cast<std::uint8_t>(s.board->values.size()));
-      for (const BossBoardValue& v : s.board->values) {
-        w.u16(v.key);
+  if (s.brain) {
+    component(ObjectComponent::brain, [&] {
+      w.u8(static_cast<std::uint8_t>(s.brain->values.size()));
+      for (const BrainValue& v : s.brain->values) {
+        w.u32(v.key);
+        w.u8(v.type);
         w.u32(static_cast<std::uint32_t>(v.value));
       }
     });
@@ -1631,19 +1635,21 @@ Error decode_component(ObjectComponent id, Reader& c, ObjectState& s, bool& know
       }
       return Error::none;
     }
-    case ObjectComponent::board: {
-      BossBoard& b = s.board.emplace();
+    case ObjectComponent::brain: {
+      BrainState& b = s.brain.emplace();
       std::uint8_t count = 0;
       COOP_READ(c.u8(count));
-      if (count > kMaxBossBoardValues) return Error::bad_value;
-      std::uint16_t before = 0;
+      if (count > kMaxBrainValues) return Error::bad_value;
+      std::uint32_t before = 0;
       for (std::uint8_t i = 0; i < count; ++i) {
-        BossBoardValue& v = b.values.emplace_back();
+        BrainValue& v = b.values.emplace_back();
         std::uint32_t value = 0;
-        COOP_READ(c.u16(v.key));
+        COOP_READ(c.u32(v.key));
+        COOP_READ(c.u8(v.type));
         COOP_READ(c.u32(value));
-        if (v.key == 0 || v.key <= before) return Error::bad_value;
         v.value = static_cast<std::int32_t>(value);
+        if (i != 0 && v.key <= before) return Error::bad_value;
+        if (v.type > kBrainF32 || (v.type == kBrainBool && v.value != 0 && v.value != 1)) return Error::bad_value;
         before = v.key;
       }
       return Error::none;
