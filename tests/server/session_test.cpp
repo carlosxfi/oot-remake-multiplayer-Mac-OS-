@@ -5637,9 +5637,13 @@ TEST_CASE("mod data: relayed with the sender's number, kept for joiners, cleared
   h.now += kSecond;
   h.receive(2, ModData{0, "coop", "skin", malon}, kChannelSession);
   CHECK(messages_to<ModData>(h, 1).empty());
-  // A player cannot speak for another: the number is the sender's.
+  // A player cannot speak for another: a claimed number is refused before it is read (check_received).
   h.now += kSecond;
   h.receive(1, ModData{2, "hello-mod", "wave", {1}}, kChannelSession);
+  CHECK(h.sent.empty());
+  CHECK(h.session.stats().errors(Error::wrong_sender) == 1);
+  // The server writes the sender's number.
+  h.receive(1, ModData{0, "hello-mod", "wave", {1}}, kChannelSession);
   CHECK(only_message_to<ModData>(h, 2) == ModData{1, "hello-mod", "wave", {1}});
 
   // A joiner gets every value the others have.

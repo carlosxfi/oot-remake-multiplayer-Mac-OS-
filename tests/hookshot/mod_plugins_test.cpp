@@ -514,7 +514,7 @@ TEST_CASE("mod plugins: the sample mod (hookshot/samples/hello-mod) through the 
 
 TEST_CASE("mod plugins v2: each menu screen reaches the mods that asked, with its kind, focus and save list") {
     Run r;
-    CHECK(g.api[1]->version == 3);
+    CHECK(g.api[1]->version == COOP_MOD_API_VERSION);
     CHECK(g.api[1]->size >= offsetof(CoopModApi, hold_input) + sizeof(void*));
     CHECK(r.host->WantsScreens());
     g.calls.clear();
