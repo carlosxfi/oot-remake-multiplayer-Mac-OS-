@@ -20,7 +20,7 @@ void Put(const std::filesystem::path& p, const std::string& text) {
 
 }  // namespace
 
-TEST_CASE("part fallback: each named mod's first line, in order; none without the file") {
+TEST_CASE("part fallback: each named mod's first line, in order, none without the file") {
     const auto root = ModTestDir("part-fallback");
     Put(root / "OoT Character Select" / "coop-fallback.txt",
         "Character Select: the game's own Player_Adult used: the mod's need a file it does not have.\r\nmore\n");
