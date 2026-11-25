@@ -1145,6 +1145,7 @@ struct PartyShared {
     std::mutex mutex;
     std::vector<CoopPartyHud::Block> blocks;   // DrawScene's last
     std::optional<double> game_hud_bottom;
+    std::string own;                           // our own line ("You" + voice words), "" none
     bool game_menu_up = false;
     std::uint64_t ms = 0;                      // when DrawScene left them (SteadyMs): older than a second = none
 };
@@ -1160,14 +1161,15 @@ void PartyStep(NativeGame& game, void* ctx, std::uint64_t now) {
     static CoopPartyHud::Hud hud;
     std::vector<CoopPartyHud::Block> blocks;
     std::optional<double> bottom;
+    std::string own;
     bool menu_up = false;
     {
         std::lock_guard lock(g_party.mutex);
-        if (now < g_party.ms + 1000) blocks = g_party.blocks;
+        if (now < g_party.ms + 1000) blocks = g_party.blocks, own = g_party.own;
         bottom = g_party.game_hud_bottom;
         menu_up = g_party.game_menu_up;
     }
-    if (PartyTest() && !menu_up) blocks = CoopPartyHud::TestBlocks(now);
+    if (PartyTest() && !menu_up) blocks = CoopPartyHud::TestBlocks(now), own = CoopPartyHud::TestOwn();
     // Double defence is one for all players (a shared flag): ours is theirs. Race mode shares no flag and no message
     // carries theirs, so it is off on their hearts then.
     if (!blocks.empty() && !CoopRaceMode::InForce()) {
@@ -1177,7 +1179,7 @@ void PartyStep(NativeGame& game, void* ctx, std::uint64_t now) {
     }
     PartyGame party(game, ctx);
     std::vector<std::string> log;
-    const bool on = hud.Step(party, blocks, bottom, &log, now);
+    const bool on = hud.Step(party, blocks, bottom, &log, now, own);
     for (const auto& l : log) LOG_INFO(Core, "{}", l);
     if (g_party_native.exchange(on) != on) {
         LOG_INFO(Core, "coop: party hud: {}", on ? "on the game's HUD" : "hidden (the game's HUD has none of ours now; nothing drawn instead)");
@@ -1435,8 +1437,12 @@ CoopDraw::Scene DrawScene() {
     // The blocks for the game's own heart parts (PartyStep): per player the line is the name, voice words and place.
     // Never drawn by us (owner: nothing hand-drawn); with an older pack that has none they are hidden (PartyStep logs why).
     std::vector<CoopPartyHud::Block> party;
+    std::string own;
     for (const auto& row : game ? rows : std::vector<CoopHook::PlayerRow>{}) {
-        if (row.self) {
+        if (row.self) {   // our own line over the blocks: "You" and our voice state
+            const auto icon = CoopVoice::IconFor(voice_on, CoopVoice::Get().muted || voice_muted(row.number),
+                                                 CoopVoice::Talking(), true);
+            if (icon != CoopVoice::Icon::none) own = CoopI18n::Tr("You") + CoopDraw::VoiceWords(icon);
             continue;
         }
         if (game_menu_up) continue;
@@ -1460,6 +1466,7 @@ CoopDraw::Scene DrawScene() {
             !party.empty() || PartyTest() ? CoopMapPage::GameHudBottom() : std::optional<double>{};
         std::lock_guard lock(g_party.mutex);
         g_party.blocks = std::move(party);
+        g_party.own = std::move(own);
         g_party.game_hud_bottom = bottom;
         g_party.game_menu_up = game_menu_up;
         g_party.ms = SteadyMs();

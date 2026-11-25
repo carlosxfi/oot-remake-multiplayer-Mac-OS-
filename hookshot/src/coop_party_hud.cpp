@@ -14,7 +14,9 @@ constexpr const char* kSay = "coop: party hud: ";
 constexpr std::size_t kNameBytes = 64;                    // block+0: a name for one call
 constexpr std::size_t kTextBytes = 200;                   // a line's text at most
 constexpr std::size_t kLineBytes = sizeof(CoopNativeUi::Ref) + kTextBytes + 8;
-constexpr std::size_t kBlockBytes = kNameBytes + kLineBytes * (kSlots + 1);
+constexpr std::size_t kBlockBytes = kNameBytes + kLineBytes * (kSlots + 2);
+constexpr std::size_t kMore = kSlots, kSelf = kSlots + 1;   // labels_ after the players' lines
+
 
 template <typename T>
 bool ReadValue(Game& game, std::uint64_t at, T& out) {
@@ -26,6 +28,12 @@ std::string PaneName(const char* what, int slot, int index = -1) {
     if (index < 0) std::snprintf(b, sizeof b, "Pa_Coop%s_%d", what, slot);
     else std::snprintf(b, sizeof b, "Pa_Coop%s_%d_%02d", what, slot, index);
     return b;
+}
+
+std::string LabelPart(std::size_t index) {
+    return index < static_cast<std::size_t>(kSlots) ? PaneName("Name", static_cast<int>(index))
+           : index == kMore                          ? std::string("Pa_CoopMore_0")
+                                                     : std::string("Pa_CoopSelf_0");
 }
 
 // As the game's pane mover (f_8022a3e0, coop_native_tags.cpp MovePane): x, y at +0x6c, then the layout is told.
@@ -97,10 +105,11 @@ float BlockHeight(int hearts) {
     return kLabelHeight + kStepY * static_cast<float>(rows) + kBlockGap;
 }
 
-float TopFrom(std::optional<double> game_hud_bottom) {
+float TopFrom(std::optional<double> game_hud_bottom, bool own) {
+    const float own_line = own ? kLabelHeight + kBlockGap : 0.0f;
     if (!game_hud_bottom || !(*game_hud_bottom > 0.0) || !(*game_hud_bottom < 1.0)) return kDefaultTop;
-    // (never so low that the fullest stack, three blocks of two rows and the "+N" line, leaves the picture)
-    const float lowest = -kLayoutHeight + kSlots * BlockHeight(kHearts) + kLabelHeight + kBlockGap;
+    // (never so low that the fullest stack, our own line, three blocks of two rows and the "+N" line, leaves the picture)
+    const float lowest = -kLayoutHeight + own_line + kSlots * BlockHeight(kHearts) + kLabelHeight + kBlockGap;
     return std::max(-static_cast<float>(*game_hud_bottom) * kLayoutHeight - kBlockGap, lowest);
 }
 
@@ -173,7 +182,8 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
         labels_[static_cast<std::size_t>(s)].pane = pane(PaneName("Name", s));
         all = all && labels_[static_cast<std::size_t>(s)].pane != 0;
     }
-    labels_[kSlots].pane = pane("Pa_CoopMore_0");
+    labels_[kMore].pane = pane(LabelPart(kMore));
+    labels_[kSelf].pane = pane(LabelPart(kSelf));   // (an older pack without it: no own line, the hearts still show)
     if (log) {
         // What the screenshots are read against: every animation of the two heart layouts, and its last frame.
         for (const char* part : {"Pa_CoopHeart_0_00", "Pa_CoopGauge_0"}) {
@@ -260,8 +270,7 @@ void Hud::SetLabel(Game& game, std::size_t index, const std::string& text, const
         r.text = ref + sizeof r;
         r.bytes = static_cast<std::uint32_t>(clean.size());
         if (game.Write(r.text, clean.c_str(), clean.size() + 1) && game.Write(ref, &r, sizeof r)) {
-            const std::string part = index < static_cast<std::size_t>(kSlots)
-                                         ? PaneName("Name", static_cast<int>(index)) : std::string("Pa_CoopMore_0");
+            const std::string part = LabelPart(index);
             bool set = true;
             for (const char* pane : {"/T_Text_00", "/T_Text_01"}) {
                 const std::uint64_t n = Name(game, part + pane);
@@ -275,7 +284,7 @@ void Hud::SetLabel(Game& game, std::size_t index, const std::string& text, const
 }
 
 bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<double> game_hud_bottom,
-               std::vector<std::string>* log, std::uint64_t now_ms) {
+               std::vector<std::string>* log, std::uint64_t now_ms, const std::string& own) {
     const std::uint64_t screen = CoopNativeUi::ScreenByVtable(game, addr::kStatusVtable);
     std::uint64_t layout = 0;
     if (screen == 0 || !ReadValue(game, screen + CoopNativeUi::addr::kScreenLayout, layout) || layout == 0) {
@@ -285,7 +294,14 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
     }
     if (layout != layout_ && !Find(game, layout, log)) return false;
     if (!native_) return false;
-    float top = TopFrom(game_hud_bottom);
+    const bool own_shown = !own.empty() && !blocks.empty();
+    float top = TopFrom(game_hud_bottom, own_shown);
+    if (own_shown) {
+        SetLabel(game, kSelf, own, {kLabelX, top - kLabelHeight / 2.0f}, 1.0f);
+        top -= kLabelHeight + kBlockGap;
+    } else {
+        Show(game, labels_[kSelf], false);
+    }
     for (int s = 0; s < kSlots; ++s) {
         auto& hearts = hearts_[static_cast<std::size_t>(s)];
         Pane& gauge = gauges_[static_cast<std::size_t>(s)];
@@ -333,10 +349,12 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
         top -= BlockHeight(plan.hearts);
     }
     const std::string more = MoreText(blocks.size());
-    if (more.empty()) Show(game, labels_[kSlots], false);
-    else SetLabel(game, kSlots, more, {kLabelX, top - kLabelHeight / 2.0f}, 1.0f);
+    if (more.empty()) Show(game, labels_[kMore], false);
+    else SetLabel(game, kMore, more, {kLabelX, top - kLabelHeight / 2.0f}, 1.0f);
     return true;
 }
+
+std::string TestOwn() { return "You (talking)"; }
 
 std::vector<Block> TestBlocks(std::uint64_t now_ms) {
     const int step = static_cast<int>(now_ms / kTestStepMs);

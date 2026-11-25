@@ -28,7 +28,7 @@ def status():
 class PartyHudTest(unittest.TestCase):
     def test_names(self):
         names = ph.names()
-        self.assertEqual(len(names), ph.SLOTS * (ph.HEARTS + 2) + 1)
+        self.assertEqual(len(names), ph.SLOTS * (ph.HEARTS + 2) + 2)
         self.assertEqual(len(set(names)), len(names))
         for s in range(ph.SLOTS):   # (a slot's part heart after its whole hearts: drawn over them)
             self.assertGreater(names.index(ph.gauge(s)), names.index(ph.heart(s, ph.HEARTS - 1)))

@@ -8,7 +8,7 @@
 # the shots: three blocks under the game's own hearts and magic, each a line (name + n/max) over its hearts, two
 # rows for 20 hearts, whole / empty / 1/4 / 1/2 / 3/4 hearts, "+1" under the third, "Three" dimmed, the second line
 # (16 W + " (talking)" + the longest place name, the longest a player can have) whole on screen, nothing off the
-# picture; menu-open: none of ours over the game's menu; menu-closed: back. No drawn blocks at the same time.
+# picture; "You (talking)" (our own line, game text part Pa_CoopSelf_0) first over the blocks; menu-open: none of ours over the game's menu; menu-closed: back. No drawn blocks at the same time.
 # PASS needs the shots. No PASS from the log alone.
 wait 300
 mark fill-01

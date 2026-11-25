@@ -5,7 +5,7 @@ at run time: 20 whole hearts (PaHeartGaugeChildNoGauge_00) and one part heart (P
 onto the heart that is partly filled. The game's gauge object sets those from Link's own life every time it changes, so
 they cannot show another player. This step adds our own copies of the same two part layouts to PlayerStatus_00, for
 SLOTS other players: HEARTS whole hearts and one part heart each, and one line of the game's text (PaEnemyLocation_00)
-for the player's name; and one more line for "+N" when more players are there than slots. Every copy is stored hidden
+for the player's name; and one more line for "+N" when more players are there than slots, and one for our own "You" and voice state. Every copy is stored hidden
 and at the source's place: the co-op module (hookshot/src/coop_party_hud.h) places, shows and sets them with the
 game's own calls, as the game sets its own. A game without the module looks as it always did.
 
@@ -41,6 +41,7 @@ def label(slot):
 
 
 MORE = "Pa_CoopMore_0"
+SELF = "Pa_CoopSelf_0"                           # our own line: "You" and our voice state
 
 
 def names():
@@ -51,6 +52,7 @@ def names():
         out.extend(heart(s, i) for i in range(HEARTS))
         out.append(gauge(s))    # (after its slot's whole hearts: drawn over them)
     out.append(MORE)
+    out.append(SELF)
     return out
 
 

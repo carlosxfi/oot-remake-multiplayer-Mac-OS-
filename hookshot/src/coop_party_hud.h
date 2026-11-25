@@ -10,7 +10,7 @@
 // That object reads Link's own life and sets its hearts again itself, so they cannot show another player (the HUD
 // probe's second run). The pack (tools/puppet_pack/party_hud.py) adds our own copies of the same two part layouts to
 // PlayerStatus_00, hidden: kSlots players x (kHearts whole hearts + one part heart + one line of the game's text), and
-// one more line. This file places, shows and sets them with the same calls. No game object owns the copies, so
+// two more lines ("+N" and our own). This file places, shows and sets them with the same calls. No game object owns the copies, so
 // nothing sets them back. A pack without the copies: Step answers false and the drawn blocks stay (coop_draw).
 //
 // Split for tests (tests/hookshot/party_hud_test.cpp): everything goes through Game.
@@ -111,7 +111,8 @@ inline constexpr float kGlowState = 3.0f;         // GlowState while glowing (f_
 std::array<float, 2> HeartAt(float top, int index);
 float BlockHeight(int hearts);
 // The first block's top from the bottom of the game's own HUD (a fraction of the picture height), kDefaultTop none.
-float TopFrom(std::optional<double> game_hud_bottom);
+// `own`: our own line ("You" and our voice state) goes first, so the blocks start one line lower.
+float TopFrom(std::optional<double> game_hud_bottom, bool own = false);
 
 // "+N" for the players past the slots, in the player's language by the caller; "" none.
 std::string MoreText(std::size_t players);
@@ -122,8 +123,9 @@ public:
     // (an older pack) or is not there now: the other players' hearts are hidden then (nothing is drawn instead).
     // `log` gets a line for each thing learnt once (found or not, last frames).
     // `now_ms` (any steady clock) plays the glow on a change of life and the pinch at low life.
+    // `own`: our own line over the blocks ("You", our voice state as words), "" none; shown only with blocks.
     bool Step(Game& game, const std::vector<Block>& blocks, std::optional<double> game_hud_bottom,
-              std::vector<std::string>* log = nullptr, std::uint64_t now_ms = 0);
+              std::vector<std::string>* log = nullptr, std::uint64_t now_ms = 0, const std::string& own = {});
     bool native() const { return native_; }
 
 private:
@@ -178,7 +180,7 @@ private:
         std::uint64_t since = 0;
     };
     std::array<Glow, kSlots> glows_{};
-    std::array<Label, kSlots + 1> labels_{};   // the last: "+N"
+    std::array<Label, kSlots + 2> labels_{};   // then "+N", then our own line
 };
 
 // Test builds, COOP_TEST_PARTY_HUD=1 (scenario hs-party-hud): the blocks of four made-up players, their life going
@@ -186,5 +188,7 @@ private:
 // the third ("Three") not connected (dimmed); the second has the longest line a player can have (it must fit).
 inline constexpr std::uint64_t kTestStepMs = 1500;
 std::vector<Block> TestBlocks(std::uint64_t now_ms);
+// Our own line then ("You" and a voice state), so the shot shows it over the blocks.
+std::string TestOwn();
 
 }  // namespace CoopPartyHud

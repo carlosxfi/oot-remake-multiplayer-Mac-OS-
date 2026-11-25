@@ -351,3 +351,31 @@ TEST_CASE("party hud: the test players go through every fill") {
     CHECK(party::TestBlocks(party::kTestStepMs * 12)[2].hearts == std::vector<int>{0, 0, 0});
     CHECK(party::TestBlocks(party::kTestStepMs * 13)[2].hearts == std::vector<int>{4, 4, 4});
 }
+
+TEST_CASE("party hud: our own voice line goes first on the game's text part, the blocks one line lower") {
+    FakeGame game;
+    game.Hud();
+    party::Hud hud;
+    std::vector<std::string> log;
+    const std::vector<party::Block> blocks = {{"Saria", Quarters(11, 20)}};
+    REQUIRE(hud.Step(game, blocks, 0.15, &log, 0, "You (talking)"));
+    CHECK(game.texts["Pa_CoopSelf_0/T_Text_00"] == "You (talking)");
+    CHECK(game.texts["Pa_CoopSelf_0/T_Text_01"] == "You (talking)");
+    CHECK(game.Shown("Pa_CoopSelf_0"));
+    const float top = party::TopFrom(0.15, true);
+    CHECK(top < party::TopFrom(0.15, false));
+    CHECK(game.Where("Pa_CoopSelf_0") == std::array<float, 2>{party::kLabelX, top - party::kLabelHeight / 2.0f});
+    // the blocks start under it
+    CHECK(game.Where(HeartName(0, 0)) == party::HeartAt(top - (party::kLabelHeight + party::kBlockGap), 0));
+    CHECK(game.Where("Pa_CoopName_0")[1] == top - (party::kLabelHeight + party::kBlockGap) - party::kLabelHeight / 2.0f);
+
+    REQUIRE(hud.Step(game, blocks, 0.15, &log, 0, "You (muted)"));   // the voice state changes: the line's text does
+    CHECK(game.texts["Pa_CoopSelf_0/T_Text_00"] == "You (muted)");
+
+    REQUIRE(hud.Step(game, blocks, 0.15, &log, 0, ""));             // no voice: no line, the blocks back up
+    CHECK_FALSE(game.Shown("Pa_CoopSelf_0"));
+    CHECK(game.Where(HeartName(0, 0)) == party::HeartAt(party::TopFrom(0.15), 0));
+
+    REQUIRE(hud.Step(game, {}, 0.15, &log, 0, "You"));              // nobody else: no row of our own either
+    CHECK_FALSE(game.Shown("Pa_CoopSelf_0"));
+}
