@@ -1169,7 +1169,7 @@ void PartyStep(NativeGame& game, void* ctx, std::uint64_t now) {
     if (PartyTest() && !menu_up) blocks = CoopPartyHud::TestBlocks(now);
     PartyGame party(game, ctx);
     std::vector<std::string> log;
-    const bool on = hud.Step(party, blocks, bottom, &log);
+    const bool on = hud.Step(party, blocks, bottom, &log, now);
     for (const auto& l : log) LOG_INFO(Core, "{}", l);
     if (g_party_native.exchange(on) != on) {
         LOG_INFO(Core, "coop: party hud: {}", on ? "on the game's HUD" : "drawn blocks (the game's HUD has none of ours now)");

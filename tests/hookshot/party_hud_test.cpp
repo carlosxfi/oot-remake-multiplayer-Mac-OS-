@@ -264,6 +264,49 @@ TEST_CASE("party hud: shows, sets and hides the copies") {
     CHECK(game.Shown(HeartName(0, 19)));
 }
 
+TEST_CASE("party hud: low life, the glowing heart, played frames") {
+    CHECK_FALSE(party::LowLife(0, 12));            // down: not low
+    CHECK(party::LowLife(4, 12));                  // 1 heart of 3
+    CHECK_FALSE(party::LowLife(5, 20));
+    CHECK(party::LowLife(6, 40));                  // 1 1/2 of 10
+    CHECK(party::LowLife(8, 60));
+    CHECK(party::LowLife(11, 80));
+    CHECK_FALSE(party::LowLife(12, 80));
+    CHECK(party::GlowHeart(-1, 10, 5) == -1);      // first sight: no glow
+    CHECK(party::GlowHeart(10, 10, 5) == -1);
+    CHECK(party::GlowHeart(12, 11, 5) == 2);       // hurt from 3 hearts: the third lost a quarter
+    CHECK(party::GlowHeart(12, 8, 5) == 2);        // a whole heart lost: the third, now empty
+    CHECK(party::GlowHeart(8, 9, 5) == 2);         // healed a quarter: the third
+    CHECK(party::GlowHeart(19, 20, 5) == 4);       // healed full: the last
+    CHECK(party::GlowHeart(20, 0, 5) == 0);
+    CHECK(party::PlayedFrame(0, 20, false) == 0.0f);
+    CHECK(party::PlayedFrame(500, 20, false) == 15.0f);
+    CHECK(party::PlayedFrame(5000, 20, false) == 20.0f);   // held at its end
+    CHECK(party::PlayedFrame(1000, 20, true) == 9.0f);     // round again: 30 % 21
+    CHECK(party::PlayedFrame(1000, 0, true) == 0.0f);
+}
+
+TEST_CASE("party hud: a hit glows on the heart that lost, the pinch plays at low life") {
+    FakeGame game;
+    game.Hud();
+    party::Hud hud;
+    std::vector<party::Block> blocks = {{"Saria", Quarters(12, 20)}};
+    REQUIRE(hud.Step(game, blocks, 0.15, nullptr, 1000));
+    CHECK(game.Frame(HeartName(0, 2) + "/GlowState") == 0.0f);   // first sight: no glow
+    blocks[0].hearts = Quarters(4, 20);                          // hit to 1 heart: low
+    REQUIRE(hud.Step(game, blocks, 0.15, nullptr, 2000));
+    CHECK(game.Frame(HeartName(0, 1) + "/GlowState") == party::kGlowState);   // the heart that lost (now empty)
+    CHECK(game.Frame(HeartName(0, 2) + "/GlowState") == 0.0f);
+    CHECK(game.Frame(HeartName(0, 0) + "/Pinch") == party::PlayedFrame(2000, game.gauge_last, true));   // its own clock
+    REQUIRE(hud.Step(game, blocks, 0.15, nullptr, 2500));
+    CHECK(game.Frame(HeartName(0, 1) + "/Glow") == 15.0f);
+    REQUIRE(hud.Step(game, blocks, 0.15, nullptr, 2000 + 60000));   // long after: the glow over
+    CHECK(game.Frame(HeartName(0, 1) + "/GlowState") == 0.0f);
+    blocks[0].hearts = Quarters(20, 20);                         // healed: no pinch
+    REQUIRE(hud.Step(game, blocks, 0.15, nullptr, 70000));
+    CHECK(game.Frame(HeartName(0, 0) + "/Pinch") == 0.0f);
+}
+
 TEST_CASE("party hud: a player not connected is dimmed, and lit again") {
     FakeGame game;
     game.Hud();

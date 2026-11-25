@@ -89,6 +89,18 @@ Plan PlanHearts(const std::vector<int>& quarters);
 // 0..3, a long one the fraction of its length.
 float GaugeFrame(int quarters, std::int32_t last_frame);
 
+// Low life, as the game's own pinching hearts start (the original game's rule, Health_IsCritical: at most 1 heart left
+// with up to 5, 1 1/2 with up to 10, 2 with up to 15, 2 3/4 above; not read from this game yet). Nothing left (0) is
+// not low: the player is down.
+bool LowLife(int life_quarters, int max_quarters);
+// The heart a change of life glows on (damage: the heart that lost, heal: the heart that filled), -1 none.
+int GlowHeart(int was_quarters, int now_quarters, int hearts);
+// The frame of a played animation `ms` after it began, at the layouts' 30 frames a second: held at `last` (once), or
+// round again (`loop`).
+float PlayedFrame(std::uint64_t ms, std::int32_t last, bool loop);
+inline constexpr std::uint64_t kGlowMs = 600;     // a glow's time when its animation has no last frame we could read
+inline constexpr float kGlowState = 3.0f;         // GlowState while glowing (f_833dc830)
+
 // Where a heart of a block goes, and a block's height, in the parent's frame; `top` is the block's top edge.
 std::array<float, 2> HeartAt(float top, int index);
 float BlockHeight(int hearts);
@@ -103,8 +115,9 @@ public:
     // Each frame on the game's thread: the blocks shown on the game's HUD. False when the HUD has no copies of ours
     // (an older pack) or is not there now: the caller draws its own blocks then. `log` gets a line for each thing
     // learnt once (found or not, last frames).
+    // `now_ms` (any steady clock) plays the glow on a change of life and the pinch at low life.
     bool Step(Game& game, const std::vector<Block>& blocks, std::optional<double> game_hud_bottom,
-              std::vector<std::string>* log = nullptr);
+              std::vector<std::string>* log = nullptr, std::uint64_t now_ms = 0);
     bool native() const { return native_; }
 
 private:
@@ -112,6 +125,9 @@ private:
         std::uint64_t pane = 0;
         std::uint64_t base = 0, heart = 0, gauge = 0;   // its animations
         std::int32_t gauge_last = 0;
+        std::uint64_t glow_state = 0, glow = 0, pinch = 0;   // the glow and pinch animations (0: not there)
+        std::int32_t glow_last = -1, pinch_last = -1;
+        float glow_state_at = -1.0f, glow_at = -1.0f, pinch_at = -1.0f;
         int shown = -1;                                 // what was last set: -1 unknown
         float alpha = -1.0f;
         int state = -1;
@@ -132,6 +148,8 @@ private:
     void Show(Game& game, Pane& p, bool shown);
     void Show(Game& game, Label& l, bool shown);
     void Set(Game& game, Pane& p, int state, float frame, const std::array<float, 2>& at, float alpha);
+    void Effects(Game& game, Pane& p, bool glowing, std::uint64_t glow_ms, bool pinch, std::uint64_t now_ms);
+    static void StopAt(Game& game, std::uint64_t anim, float& had, float frame);
     void SetLabel(Game& game, std::size_t index, const std::string& text, const std::array<float, 2>& at,
                   float alpha);
     static void Alpha(Game& game, std::uint64_t pane, float& had, float alpha);
@@ -142,6 +160,13 @@ private:
     std::uint64_t block_ = 0;      // guest memory of ours: a name's scratch, then the lines' texts
     std::array<std::array<Pane, kHearts>, kSlots> hearts_{};
     std::array<Pane, kSlots> gauges_{};
+    struct Glow {
+        std::string who;          // whose life it was (another player in the slot: no glow for the move)
+        int life = -1;            // their last life in quarters, -1 none
+        int heart = -1;           // glowing on this heart since `since`
+        std::uint64_t since = 0;
+    };
+    std::array<Glow, kSlots> glows_{};
     std::array<Label, kSlots + 1> labels_{};   // the last: "+N"
 };
 

@@ -67,6 +67,25 @@ float GaugeFrame(int quarters, std::int32_t last_frame) {
     return static_cast<float>(last_frame) * static_cast<float>(q) / 4.0f;
 }
 
+bool LowLife(int life, int max) {
+    if (life <= 0 || max <= 0) return false;
+    const int at = max <= 20 ? 4 : max <= 40 ? 6 : max <= 60 ? 8 : 11;
+    return life <= at;
+}
+
+int GlowHeart(int was, int now, int hearts) {
+    if (was < 0 || was == now || hearts <= 0) return -1;
+    const int heart = now < was ? now / 4 : (now - 1) / 4;
+    return std::clamp(heart, 0, std::min(hearts, kHearts) - 1);
+}
+
+float PlayedFrame(std::uint64_t ms, std::int32_t last, bool loop) {
+    if (last <= 0) return 0.0f;
+    const std::uint64_t f = ms * 30 / 1000;
+    if (loop) return static_cast<float>(f % (static_cast<std::uint64_t>(last) + 1));
+    return static_cast<float>(std::min<std::uint64_t>(f, static_cast<std::uint64_t>(last)));
+}
+
 std::array<float, 2> HeartAt(float top, int index) {
     const int i = std::clamp(index, 0, kHearts - 1);
     return {kFirstX + kStepX * static_cast<float>(i % kPerRow),
@@ -97,6 +116,7 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
     native_ = false;
     hearts_ = {};
     gauges_ = {};
+    glows_ = {};
     labels_ = {};
     if (block_ == 0) {
         const auto block = game.Call(game.At(CoopNativeUi::addr::kMalloc), {kBlockBytes, 0, 0, 0, 0});
@@ -136,6 +156,10 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
             p.base = anim(name + "/BaseState");
             p.heart = anim(name + "/HeartState");
             if (part) p.gauge = anim(name + "/HeartGauge", &p.gauge_last);
+            // (glow and pinch: played when there; the hearts show without them)
+            p.glow_state = anim(name + "/GlowState");
+            p.glow = anim(name + "/Glow", &p.glow_last);
+            p.pinch = anim(name + "/Pinch", &p.pinch_last);
             all = all && p.pane != 0 && p.base != 0 && p.heart != 0 && (!part || p.gauge != 0);
         }
         labels_[static_cast<std::size_t>(s)].pane = pane(PaneName("Name", s));
@@ -168,6 +192,21 @@ void Hud::Show(Game& game, Pane& p, bool shown) {
 void Hud::Show(Game& game, Label& l, bool shown) {
     if (l.pane == 0 || l.shown == (shown ? 1 : 0)) return;
     if (game.Call(game.At(addr::kPaneShow), {l.pane, shown ? 1u : 0u, 0, 0, 0})) l.shown = shown ? 1 : 0;
+}
+
+void Hud::StopAt(Game& game, std::uint64_t anim, float& had, float frame) {
+    if (anim == 0 || had == frame) return;
+    if (game.CallFloat(game.At(addr::kAnimStopAt), anim, frame)) had = frame;
+}
+
+// The glow (f_833dc830: GlowState 3, Glow played; ended as f_833dc8f0, GlowState 0) and the pinch (Pinch played round
+// while life is low), set frame by frame: no game object plays our copies.
+void Hud::Effects(Game& game, Pane& p, bool glowing, std::uint64_t glow_ms, bool pinch, std::uint64_t now_ms) {
+    if (p.glow != 0 && p.glow_state != 0) {
+        StopAt(game, p.glow_state, p.glow_state_at, glowing ? kGlowState : 0.0f);
+        StopAt(game, p.glow, p.glow_at, glowing ? PlayedFrame(glow_ms, p.glow_last, false) : 0.0f);
+    }
+    StopAt(game, p.pinch, p.pinch_at, pinch ? PlayedFrame(now_ms, p.pinch_last, true) : 0.0f);
 }
 
 void Hud::Alpha(Game& game, std::uint64_t pane, float& had, float alpha) {
@@ -221,7 +260,7 @@ void Hud::SetLabel(Game& game, std::size_t index, const std::string& text, const
 }
 
 bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<double> game_hud_bottom,
-               std::vector<std::string>* log) {
+               std::vector<std::string>* log, std::uint64_t now_ms) {
     const std::uint64_t screen = CoopNativeUi::ScreenByVtable(game, addr::kStatusVtable);
     std::uint64_t layout = 0;
     if (screen == 0 || !ReadValue(game, screen + CoopNativeUi::addr::kScreenLayout, layout) || layout == 0) {
@@ -236,7 +275,9 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
         auto& hearts = hearts_[static_cast<std::size_t>(s)];
         Pane& gauge = gauges_[static_cast<std::size_t>(s)];
         Label& label = labels_[static_cast<std::size_t>(s)];
+        Glow& glow = glows_[static_cast<std::size_t>(s)];
         if (static_cast<std::size_t>(s) >= blocks.size()) {   // nobody there (solo: every slot)
+            glow = {};
             for (Pane& p : hearts) Show(game, p, false);
             Show(game, gauge, false);
             Show(game, label, false);
@@ -245,14 +286,31 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
         const Block& b = blocks[static_cast<std::size_t>(s)];
         const Plan plan = PlanHearts(b.hearts);
         const float alpha = b.dim ? kDimAlpha : 1.0f;
+        int life = 0;
+        for (int i = 0; i < plan.hearts; ++i) life += std::clamp(b.hearts[static_cast<std::size_t>(i)], 0, 4);
+        const std::string who = b.text.substr(0, b.text.find("  "));   // (the name: the place may change)
+        if (glow.who != who) glow = Glow{who};
+        if (const int h = GlowHeart(glow.life, life, plan.hearts); h >= 0) glow.heart = h, glow.since = now_ms;
+        glow.life = life;
+        const std::uint64_t glow_ms = now_ms - glow.since;
+        const std::int32_t glow_last = hearts[0].glow_last;
+        const std::uint64_t glow_for = glow_last > 0 ? static_cast<std::uint64_t>(glow_last) * 1000 / 30 + 1 : kGlowMs;
+        if (glow.heart >= 0 && glow_ms > glow_for) glow.heart = -1;
+        const bool pinch = LowLife(life, plan.hearts * 4);
         SetLabel(game, static_cast<std::size_t>(s), b.text, {kLabelX, top - kLabelHeight / 2.0f}, alpha);
         for (int i = 0; i < kHearts; ++i) {
             Pane& p = hearts[static_cast<std::size_t>(i)];
-            if (i < plan.hearts) Set(game, p, plan.whole[static_cast<std::size_t>(i)], 0.0f, HeartAt(top, i), alpha);
-            else Show(game, p, false);
+            if (i < plan.hearts) {
+                const int state = plan.whole[static_cast<std::size_t>(i)];
+                Set(game, p, state, 0.0f, HeartAt(top, i), alpha);
+                Effects(game, p, glow.heart == i && plan.part_at != i, glow_ms, pinch && state == 2, now_ms);
+            } else {
+                Show(game, p, false);
+            }
         }
         if (plan.part_at >= 0) {
             Set(game, gauge, 2, GaugeFrame(plan.part_quarters, gauge.gauge_last), HeartAt(top, plan.part_at), alpha);
+            Effects(game, gauge, glow.heart == plan.part_at, glow_ms, pinch, now_ms);
         } else {
             Show(game, gauge, false);
         }
