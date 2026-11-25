@@ -743,6 +743,23 @@ Log lines: the rider's game `coop: ride: we ride Animal_Epona_Adult, sending PLA
 
 **Every adult rides their own Epona.** Each game keeps its own Epona (`Animal_Epona_Adult` is never a shared object, [objects.md](objects.md)), so two players ride at the same time, each on the horse of their own game, and each sees the other's as the stand-in copy. Nothing of another player's horse is made as the game's real Epona, so no save sees a second one. What kept a second player from riding was the quest: `Get_Epona` (the race against Ingo) was each game's own, so only the player who won her had a horse that lets Link stay on. Its end is now shared ([flags.md](flags.md), `Quest::complete_only`): once one player has won Epona, every game's quest is `Complete`. A child gets no horse copy (only an adult rides her), a player who joins or changes scene during a ride gets the horse with the next `PLAYER_RIDE` (30 a second), and our place unread for a frame is not sent as getting off. When a ride finds no horse, the log line lists the actors within 6 m (`within 6 m: ...`), and getting off logs how long the ride was. Scenario `epona-own` (both ride at once).
 
+**Epona seen while nobody rides her (epona-sync, protocol 17).** Each player's own Epona is shown to the others from the moment she comes (called with Epona's Song) until she is gone, not only under a rider.
+
+| Case | What happens |
+|---|---|
+| Epona's Song | The call is the caller's game's own: only that game makes a real Epona. Once she is on its actor list it sends her free (`PLAYER_RIDE` bit 1, her place in the world); the others draw the stand-in `CoopRide_Epona` there, never a second real Epona |
+| Getting on and off | One copy for a player's horse from her first message until she is gone: riding puts it under the puppet (offset in the rider's frame), free puts it at her own place. The key does not change, so no blink |
+| Gallop, carrots, jumps | The copy plays the real horse's AS slot 0 (name, frame, rate), so gallop and fence jumps are her own animations; carrots are the rider's game only |
+| Scene change while riding | The rider's game keeps sending; a game draws the copy only for a puppet that is live in its own place, so she goes with the rider and comes with the next message (30 a second) |
+| Lon Lon quest, Ingo's race | A game that has not won her (`Get_Epona` below `Complete`) sends only while it rides, as before: the ranch's Epona is every game's own placement, and a free copy would stand inside the real one. Copies have no AI, physics or riding, so nothing of another player's horse reaches the quest (row 150's fix is the quest catch-up, [flags.md](flags.md)) |
+| A player without Epona (child, or before the quest) | Sees the others' Eponas as copies; has none of their own to send. A child owner is in the past: no adult Epona is drawn for them |
+| Horseback archery | The rider's game only; the others see rider and horse |
+| Bumping | The copy has no body: it cannot push another game's Link or its Epona |
+| Solo, or co-op idle | Nothing is sent or read without a session (`Frame` returns before the walk) |
+| Race mode | The horse is part of how a player looks, like the puppet, not world state: it is drawn wherever that player's puppet is drawn, and nothing of it is kept or shared |
+
+Whether the game has won her is asked once a second through the game's own Enum getter (`Get_Epona`, 0x92431c55, `Complete`). Log lines: `coop: ride: Epona is ours (Get_Epona Complete)...`, `coop: ride: our Epona is out with nobody on her at X Y Z, sending PLAYER_RIDE free`, `our Epona has us on her again`, `our Epona is gone, off sent`; the other games `coop: ride: P<n>'s Animal_Epona_Adult is here, nobody on her (horse copy CoopRide_Epona)`, `P<n> rides Animal_Epona_Adult (horse copy CoopRide_Epona, the same copy)`, `P<n>'s Animal_Epona_Adult waits, nobody on her (the same copy)`, `P<n>'s horse gone (copy deleted)`.
+
 Not checked in game: that the rider's place while riding is the saddle (the offset copes either way), that `Animal_Epona_Adult` is the horse you ride (Epona's adult pack; the child one cannot be ridden), and that the stand-in plays the horse's commands by the names slot 0 shows.
 
 ## Ocarina

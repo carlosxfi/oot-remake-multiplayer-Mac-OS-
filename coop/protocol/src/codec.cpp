@@ -333,12 +333,17 @@ Error encode_body(const PlayerLife& m, Writer& w) {
 
 Error check_player_ride(const PlayerRide& m) {
   if (!valid_player_or_self(m.player_number)) return Error::bad_value;
-  if ((m.flags & ~kRideRiding) != 0) return Error::bad_value;
+  if ((m.flags & ~(kRideRiding | kRideFree)) != 0) return Error::bad_value;
+  const bool unridden = (m.flags & kRideFree) != 0;
+  if (unridden && (m.flags & kRideRiding) != 0) return Error::bad_value;  // ridden or free, never both
   COOP_TRY(check_string(m.horse, kMaxRideHorseChars));
-  if ((m.flags & kRideRiding) != 0 && m.horse.empty()) return Error::bad_value;
-  if (!all_finite(m.offset) || !all_finite(m.rotation)) return Error::bad_value;
+  if (m.flags != 0 && m.horse.empty()) return Error::bad_value;
+  if (!all_finite(m.offset) || !all_finite(m.rotation) || !all_finite(m.place)) return Error::bad_value;
   for (float f : m.offset) {
-    if (std::fabs(f) > kMaxRideOffset) return Error::bad_value;
+    if (std::fabs(f) > kMaxRideOffset || (unridden && f != 0.0f)) return Error::bad_value;
+  }
+  for (float f : m.place) {
+    if (std::fabs(f) > kMaxRidePlace || (!unridden && f != 0.0f)) return Error::bad_value;
   }
   if (m.animation) {
     COOP_TRY(check_string(m.animation->name, kMaxAnimationChars));
@@ -350,7 +355,7 @@ Error check_player_ride(const PlayerRide& m) {
 }
 
 // u8 player, u8 flags, horse name, offset 3 x f32, rotation 4 x f32, u8 1 when an
-// animation follows (name, f32 frame, f32 rate), else 0.
+// animation follows (name, f32 frame, f32 rate), else 0; with kRideFree, place 3 x f32.
 Error encode_body(const PlayerRide& m, Writer& w) {
   COOP_TRY(check_player_ride(m));
   w.u8(m.player_number);
@@ -363,6 +368,9 @@ Error encode_body(const PlayerRide& m, Writer& w) {
     w.str(m.animation->name);
     w.f32(m.animation->frame);
     w.f32(m.animation->rate);
+  }
+  if ((m.flags & kRideFree) != 0) {
+    for (float f : m.place) w.f32(f);
   }
   return Error::none;
 }
@@ -1273,6 +1281,12 @@ Error decode_body(Reader& r, PlayerRide& m) {
   m = PlayerRide{};
   COOP_READ(r.u8(m.player_number));
   COOP_READ(r.u8(m.flags));
+  // The flags say what follows (a place with kRideFree), so a bad flags byte is refused as a bad value
+  // here, before it can make the reader run past the end looking for a place that was never sent.
+  if ((m.flags & ~(kRideRiding | kRideFree)) != 0 ||
+      (m.flags & (kRideRiding | kRideFree)) == (kRideRiding | kRideFree)) {
+    return Error::bad_value;
+  }
   COOP_TRY(r.str(m.horse, kMaxRideHorseChars));
   for (float& f : m.offset) COOP_READ(r.f32(f));
   for (float& f : m.rotation) COOP_READ(r.f32(f));
@@ -1285,6 +1299,9 @@ Error decode_body(Reader& r, PlayerRide& m) {
     COOP_READ(r.f32(a.frame));
     COOP_READ(r.f32(a.rate));
     m.animation = std::move(a);
+  }
+  if ((m.flags & kRideFree) != 0) {
+    for (float& f : m.place) COOP_READ(r.f32(f));
   }
   return check_player_ride(m);
 }

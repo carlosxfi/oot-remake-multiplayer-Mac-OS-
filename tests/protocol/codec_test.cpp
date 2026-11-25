@@ -2604,8 +2604,36 @@ TEST_CASE("player ride: type 385, samples channel, horse and offset, both ways")
   Bytes out;
   PlayerRide bad = ride;
   bad.player_number = 0;
-  bad.flags = 0x02;
+  bad.flags = 0x04;
   CHECK(encode(Message{bad}, out) == Error::bad_value);  // unknown flag bit
+  bad.flags = kRideRiding | kRideFree;
+  CHECK(encode(Message{bad}, out) == Error::bad_value);  // ridden or free, never both
+
+  // Protocol 18 (epona-sync): the player's own Epona while nobody rides her, at a place in the world.
+  CHECK(kProtocolVersion >= 17);
+  const PlayerRide free_horse{4, kRideFree, "Animal_Epona_Adult", {}, {0.0f, 0.7f, 0.0f, 0.7f},
+                              Animation{"Wait", 3.0f, 1.0f}, {-100.5f, 150.6f, 264.5f}};
+  const Bytes fb = must_encode(Message{free_horse});
+  // type, length; u8 player, u8 flags, name (2 + 18), 7 floats, u8 1, anim (2 + 4 + 8), place 3 floats
+  CHECK(fb.size() == 4 + 2 + 20 + 28 + 1 + 14 + 12);
+  REQUIRE(decode(fb, back) == Error::none);
+  CHECK(back == Message{free_horse});
+  CHECK(sender_of(back) == std::optional<std::uint8_t>{4});
+  bad = free_horse;
+  bad.offset[0] = 1.0f;
+  CHECK(encode(Message{bad}, out) == Error::bad_value);  // a free horse has no rider to be offset from
+  bad = free_horse;
+  bad.place[2] = kMaxRidePlace + 1.0f;
+  CHECK(encode(Message{bad}, out) == Error::bad_value);  // outside any world
+  bad = free_horse;
+  bad.horse.clear();
+  CHECK(encode(Message{bad}, out) == Error::bad_value);
+  bad = ride;
+  bad.place[0] = 5.0f;
+  CHECK(encode(Message{bad}, out) == Error::bad_value);  // a place only with kRideFree
+  Bytes short_free = fb;
+  short_free.pop_back();
+  CHECK(decode(short_free, back) != Error::none);
   bad = ride;
   bad.player_number = 0;
   bad.horse.clear();
@@ -2622,8 +2650,12 @@ TEST_CASE("player ride: type 385, samples channel, horse and offset, both ways")
   short_one.pop_back();
   CHECK(decode(short_one, back) != Error::none);
   Bytes flag_two = b;
-  flag_two[4 + 1] = 0x03;  // flags byte
+  flag_two[4 + 1] = 0x03;  // flags byte: both bits, refused as a bad value before any place is looked for
   CHECK(decode(flag_two, back) == Error::bad_value);
+  flag_two[4 + 1] = 0x04;  // a bit nobody knows
+  CHECK(decode(flag_two, back) == Error::bad_value);
+  flag_two[4 + 1] = kRideFree;  // free, but the place was never sent
+  CHECK(decode(flag_two, back) != Error::none);
 }
 
 TEST_CASE("platform clock: type 400, object samples channel, checked keys and floats (platforms-b)") {
