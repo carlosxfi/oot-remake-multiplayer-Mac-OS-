@@ -76,6 +76,31 @@ bool Ticks(std::string_view word, std::uint32_t& out) {
 // A runner-only step's TICKS (await): hookshot.py's _await_ticks, any whole number from 0 up (the most it waits; 0: no
 // wait). Not Ticks: that is the rule of the module's own timed steps (1 up to kMaxStepTicks), and a line the runner
 // plays must not be refused here.
+// A burst's NAME and FRAMES (hookshot.py _BURST_NAME, BURST_MAX): the shots' file names, 1..600 shots.
+bool BurstName(std::string_view word) {
+    if (word.empty()) {
+        return false;
+    }
+    for (const char c : word) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ||
+                        c == '.' || c == '-';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool RunnerTicks(std::string_view word);
+
+bool BurstFrames(std::string_view word) {
+    if (!RunnerTicks(word) || word.size() > 9) {
+        return false;
+    }
+    const long n = std::stol(std::string(word));
+    return n >= 1 && n <= 600;
+}
+
 bool RunnerTicks(std::string_view word) {
     if (word.empty()) {
         return false;
@@ -662,6 +687,14 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             // verb the runner reads is one of this parser's).
             if (w.size() < 3 || !RunnerTicks(w[1])) {
                 return fail("want: await TICKS REGEX (the runner's own step)");
+            }
+            continue;
+        } else if (cmd == "BURST") {
+            // tools/autotest/hookshot.py's own step too (issue 166): "burst NAME FRAMES [TICKS REGEX]", the game held
+            // and shot frame by frame through the bridge; nothing for the module. Its shape only.
+            if (!(w.size() == 3 || w.size() >= 5) || !BurstName(w[1]) || !BurstFrames(w[2]) ||
+                (w.size() >= 5 && !RunnerTicks(w[3]))) {
+                return fail("want: burst NAME FRAMES [TICKS REGEX] (the runner's own step)");
             }
             continue;
         } else {
