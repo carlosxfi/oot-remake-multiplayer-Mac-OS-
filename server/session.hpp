@@ -438,6 +438,8 @@ struct Stats {
   std::uint64_t dbno_revives_dropped = 0;  // mode off, to nobody, or to themselves
   std::uint64_t difficulty_refused = 0;  // DIFFICULTY from a player who does not host
   std::uint64_t mod_settings_refused = 0;  // MOD_SETTINGS from a player who does not host
+  std::uint64_t mod_data_relayed = 0;      // MOD_DATA kept and passed on (a change)
+  std::uint64_t mod_data_refused = 0;      // MOD_DATA over its limits: too often, a 9th key or a 17th mod
   std::uint64_t race_dropped = 0;          // race mode: world messages neither relayed nor sent
   // The Lobby (docs/protocol.md "Lobby"): the host's kicks, bans and mutes.
   std::uint64_t lobby_done = 0;      // LOBBY_ACTIONs carried out
@@ -748,6 +750,11 @@ class Session {
     std::string nickname;
     // Its last MOD_LIST, with its number (docs/protocol.md, "Mods").
     std::optional<protocol::ModList> mods;
+    // Its MOD_DATA values (protocol 18, issue 250), by mod id and key; forgotten with the connection. And its send
+    // budget: the theoretical arrival time of its next MOD_DATA (a burst of kModDataSendsPerSecond, then one each
+    // 1/kModDataSendsPerSecond of a second).
+    std::map<std::string, std::map<std::string, std::vector<std::uint8_t>>> mod_data;
+    std::uint64_t mod_data_due_us = 0;
     // The scene the player is in, from its latest OBJECT_PRESENT or
     // PLAYER_SAMPLE scene; empty while not known.
     std::string scene;
@@ -968,6 +975,7 @@ class Session {
   // values in force are the ones told before, as with the host's own choice.
   void tell_difficulty_change(ConnectionId except);
   void on_mods(ConnectionId id, Connection& c, protocol::Message& message);
+  void on_mod_data(ConnectionId id, Connection& c, protocol::ModData& data, std::uint64_t now_us);
   // The Lobby: the host's kick, ban and mutes (docs/protocol.md "Lobby").
   void on_lobby(ConnectionId id, const protocol::LobbyAction& a, std::uint64_t now_us);
   // A kick, ban or mute on player a.target, by the host (`actor`: its connection, which may not be its own target)

@@ -5621,6 +5621,86 @@ TEST_CASE("mods: each player's list is passed on and given to joiners, and share
   CHECK(messages_to<ModSettings>(h, 5).empty());
 }
 
+// MOD_DATA (protocol 18, issue 250): each player's own values, kept by the server per player, mod and key.
+TEST_CASE("mod data: relayed with the sender's number, kept for joiners, cleared, forgotten when the player leaves") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.clear();
+  const std::vector<std::uint8_t> malon{'m', 'a', 'l', 'o', 'n'};
+  h.receive(2, ModData{0, "coop", "skin", malon}, kChannelSession);
+  CHECK(only_message_to<ModData>(h, 1) == ModData{2, "coop", "skin", malon});
+  CHECK(messages_to<ModData>(h, 2).empty());  // never back to the sender
+  CHECK(h.session.stats().mod_data_relayed == 1);
+  // The same value again changes nothing: not relayed.
+  h.clear();
+  h.now += kSecond;
+  h.receive(2, ModData{0, "coop", "skin", malon}, kChannelSession);
+  CHECK(messages_to<ModData>(h, 1).empty());
+  // A player cannot speak for another: the number is the sender's.
+  h.now += kSecond;
+  h.receive(1, ModData{2, "hello-mod", "wave", {1}}, kChannelSession);
+  CHECK(only_message_to<ModData>(h, 2) == ModData{1, "hello-mod", "wave", {1}});
+
+  // A joiner gets every value the others have.
+  h.clear();
+  h.join(3, "Saria");
+  const auto told = messages_to<ModData>(h, 3);
+  CHECK(told.size() == 2);
+  CHECK(std::find(told.begin(), told.end(), ModData{2, "coop", "skin", malon}) != told.end());
+  CHECK(std::find(told.begin(), told.end(), ModData{1, "hello-mod", "wave", {1}}) != told.end());
+
+  // An empty value clears the key: relayed once, and a joiner no longer gets it.
+  h.clear();
+  h.now += kSecond;
+  h.receive(1, ModData{0, "hello-mod", "wave", {}}, kChannelSession);
+  CHECK(only_message_to<ModData>(h, 2) == ModData{1, "hello-mod", "wave", {}});
+  h.clear();
+  h.now += kSecond;
+  h.receive(1, ModData{0, "hello-mod", "wave", {}}, kChannelSession);  // nothing to clear
+  CHECK(h.sent.empty());
+  // A player who leaves takes its values along.
+  h.session.disconnected(2, h.now);
+  h.collect();
+  h.clear();
+  h.join(4, "Ruto");
+  CHECK(messages_to<ModData>(h, 4).empty());
+}
+
+TEST_CASE("mod data: at most 8 keys per mod, 16 mods per player, a burst of 4 sends then 4 a second") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.clear();
+  const auto send = [&](const std::string& mod, const std::string& key, std::vector<std::uint8_t> value) {
+    h.now += kSecond;  // past the send budget
+    h.clear();
+    h.receive(1, ModData{0, mod, key, std::move(value)}, kChannelSession);
+    return messages_to<ModData>(h, 2).size() == 1;
+  };
+  for (std::size_t k = 0; k < kMaxModDataKeysPerMod; ++k) CHECK(send("m", "k" + std::to_string(k), {1}));
+  CHECK_FALSE(send("m", "k9", {1}));  // a 9th key
+  CHECK(h.session.stats().mod_data_refused == 1);
+  CHECK(send("m", "k0", {2}));        // a kept key still changes
+  CHECK(send("m", "k0", {}));         // and a clear makes room
+  CHECK(send("m", "k9", {1}));
+  for (std::size_t m = 1; m < kMaxModDataMods; ++m) CHECK(send("mod" + std::to_string(m), "k", {1}));
+  CHECK_FALSE(send("mod99", "k", {1}));  // a 17th mod
+  CHECK(h.session.stats().mod_data_refused == 2);
+
+  // The budget: 4 at once, then one each quarter second.
+  h.now += kSecond;
+  h.clear();
+  for (int i = 0; i < 6; ++i) h.receive(2, ModData{0, "b", "k", {static_cast<std::uint8_t>(i + 1)}}, kChannelSession);
+  CHECK(messages_to<ModData>(h, 1).size() == kModDataSendsPerSecond);
+  CHECK(h.session.stats().mod_data_refused == 4);
+  h.clear();
+  h.now += 1'000'000 / kModDataSendsPerSecond;
+  h.receive(2, ModData{0, "b", "k", {9}}, kChannelSession);
+  h.receive(2, ModData{0, "b", "k", {10}}, kChannelSession);
+  CHECK(messages_to<ModData>(h, 1) == std::vector<ModData>{ModData{2, "b", "k", {9}}});
+}
+
 // Race mode (coop/protocol/race.hpp): the world stays in each game. 3 players, one joining mid-game.
 TEST_CASE("race mode: no flag is relayed, kept or given to a joiner, chat still goes, on until the session empties") {
   Harness h;

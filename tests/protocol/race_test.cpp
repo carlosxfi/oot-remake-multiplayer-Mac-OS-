@@ -57,7 +57,7 @@ using Private = List<FlagSet, FlagState, FlagSnapshot, FlagReset, FlagOrigin, Sa
 using Public = List<Hello, Welcome, Refused, PlayerJoined, PlayerLeft, Ping, Pong, PlayerStatus, Chat, PlayerSample,
                     TestPayload, Host, PlayerEquip, PlayerPose, JoinChallenge, JoinProof, PlayerLife, PvpMode, PvpHit,
                     PvpHurt, RejoinToken, RejoinClaim, PlayerRide, OcarinaNote, DbnoMode, DbnoStatus, DbnoRevive,
-                    DbnoThreat, Difficulty, VoiceFrame, ModList, ModSettings, LobbyAction, LobbyMutes, LobbyResult,
+                    DbnoThreat, Difficulty, VoiceFrame, ModList, ModSettings, ModData, LobbyAction, LobbyMutes, LobbyResult,
                     LocalJoin, LocalJoined, LocalLeave, LinkSound, PlayerLook, JoinKnock, JoinAllow, PvpStrike,
                     PvpResult, PvpNative, Emote>;
 using Envelope = List<LocalSample, LocalMessage>;   // judged by what they carry

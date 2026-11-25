@@ -522,6 +522,15 @@ void Session::admit(ConnectionId id, Connection& c, const Hello& hello,
     }
   }
   if (mod_settings_) send(id, kChannelSession, *mod_settings_);
+  // The mods' values of everyone else (MOD_DATA, protocol 18).
+  for (const auto& entry : connections_) {
+    if (entry.first == id || entry.second.state != State::joined) continue;
+    for (const auto& [mod_id, keys] : entry.second.mod_data) {
+      for (const auto& [key, value] : keys) {
+        send(id, kChannelSession, ModData{entry.second.number, mod_id, key, value});
+      }
+    }
+  }
   // The Lobby: who the host muted (the joiner too, when it was muted before
   // it left); the others learn it of the joiner.
   for (const auto& entry : connections_) {
@@ -784,6 +793,10 @@ void Session::dispatch_player_message(ConnectionId id, Connection& c, std::uint8
   }
   if (std::holds_alternative<ModList>(message) || std::holds_alternative<ModSettings>(message)) {
     on_mods(id, c, message);
+    return;
+  }
+  if (auto* data = std::get_if<ModData>(&message)) {
+    on_mod_data(id, c, *data, now_us);
     return;
   }
   if (std::holds_alternative<PvpHit>(message)) {
@@ -1084,6 +1097,47 @@ void Session::on_mods(ConnectionId id, Connection& c, Message& message) {
   }
   send_to_others(id, kChannelSession, message);
   ++stats_.relayed;
+}
+
+// MOD_DATA (protocol 18, issue 250; docs/protocol.md "Mods"): a player's own values, by mod id and key. Kept per
+// player (forgotten when it leaves), relayed when they change, given to joiners; the bytes are never read.
+void Session::on_mod_data(ConnectionId id, Connection& c, ModData& data, std::uint64_t now_us) {
+  // The budget: a burst of kModDataSendsPerSecond, then one each gap (a game sends at most one each gap anyway).
+  constexpr std::uint64_t kGapUs = 1'000'000 / kModDataSendsPerSecond;
+  const std::uint64_t due = std::max(c.mod_data_due_us, now_us);
+  if (due - now_us > kGapUs * (kModDataSendsPerSecond - 1)) {
+    ++stats_.mod_data_refused;
+    return;
+  }
+  c.mod_data_due_us = due + kGapUs;
+  auto mod = c.mod_data.find(data.mod_id);
+  if (data.value.empty()) {  // clears the key
+    if (mod == c.mod_data.end() || mod->second.erase(data.key) == 0) return;
+    if (mod->second.empty()) c.mod_data.erase(mod);
+  } else {
+    if (mod == c.mod_data.end()) {
+      if (c.mod_data.size() >= kMaxModDataMods) {
+        ++stats_.mod_data_refused;
+        return;
+      }
+      mod = c.mod_data.emplace(data.mod_id, std::map<std::string, std::vector<std::uint8_t>>{}).first;
+    }
+    auto key = mod->second.find(data.key);
+    if (key == mod->second.end()) {
+      if (mod->second.size() >= kMaxModDataKeysPerMod) {
+        ++stats_.mod_data_refused;
+        return;
+      }
+      mod->second.emplace(data.key, data.value);
+    } else if (key->second == data.value) {
+      return;  // no change
+    } else {
+      key->second = data.value;
+    }
+  }
+  data.player_number = c.number;
+  send_to_others(id, kChannelSession, data);
+  ++stats_.mod_data_relayed;
 }
 
 // To the victim only, and only while PvP is on: a game with PvP off never

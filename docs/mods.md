@@ -222,6 +222,17 @@ Version 3 adds two things to the menu screens. A mod that uses either says `"api
 - `play_sound(api, name)` starts one of the game's own menu sounds on the screen being updated, as its own screens do: `button_on` (a cursor step), `button_decide` (a choice), `Pa_Button_00_decide` (the title's Continue), `mc_TabToRight` and `mc_TabToLeft` (the pause menu's tabs). Letters, digits and `_` only; 1 when the screen had that sound and the game started it. Only inside the mod's own `on_screen` call, as the version 2 calls.
 - `screen->focused_ready` is 1 when the focused button takes a choice now: the title has Continue focused while its opening scene plays and its menu fades in, and it is 0 then (the player's first A goes to the title, to bring its menu in). Read it only when the table's `version` is 3 or more.
 
+### Talking to the other players (version 4)
+
+Version 4 gives a mod a data channel (issue 250): small values of its own, by key, that every other player's game in the session gets, also a player who joins later. A mod that uses it says `"api": 4` in `mod.json`.
+
+- `data_set(api, key, value, len)` sets this player's value of `key` (1 to 32 of `a-z 0-9 _`), 0 to 64 bytes; `len` 0 clears it. 1 when kept, 0 when refused (a bad key, more than 64 bytes, a 9th key: one line in the log says why, once). Kept alone too, and sent when a session starts. `data_set_text(api, key, text)` does the same with a string (without its 0).
+- `data_get(api, player, key, out, cap)` reads a player's value (player 0: this game's own): its length, -1 when it has none; copies at most `cap` bytes (`out` may be NULL to ask the length). `data_get_text` reads it into a string with its 0, cut to `cap - 1`.
+- `on_data(api, fn, user)` (only inside `coop_mod_start`): `fn(user, player, key, value, len)` when another player's value of this mod changes, once per frame on the game's calc thread before the frame callbacks; `len` 0 when it was cleared, also when that player left or this game left the session.
+- `players(api, out, cap)` fills `CoopModPlayer` entries (number, `self`, name) of everyone in the session, by number, and answers how many there are (0 when not in a session); `my_number(api)` is this game's player number, 0 when not in a session.
+
+The rules: a mod sets only its own player's values and only under its own id, and gets only values of its own id; a player has at most 8 keys per mod and 16 mods with values. Values are state (who wears what, a mode, a score), not a stream: a game sends a changed value at most every quarter second and only the newest value of each key, and the server refuses a player past 4 sends a second. Nothing is sent to anyone outside the session, and nothing is kept after a player leaves. Co-op keeps the mod id `coop` for its own values (the puppet skin, key `skin`). The wire is `MOD_DATA` (492) in [protocol.md](protocol.md), "Mods".
+
 The mod never sees an address: the module finds the game's functions itself (the button's decide, the save list's read, the screens' classes). The same entries are meant to carry over to the add-on interface of co-op 1.0, where only the runtime under them changes. On Hookshot the screens come through patch 0030's menu screen hook; no other game patch is needed.
 
 A whole sample is in `hookshot/samples/hello-mod` (`mod.json` + `hello_mod.c`; the tests build it as `hello_mod.dll`): copy both files into `mods\hello-mod`, start the game, and F7 shows its message in the corner.

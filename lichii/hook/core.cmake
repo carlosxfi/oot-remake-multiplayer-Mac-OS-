@@ -26,6 +26,7 @@ target_sources(core PRIVATE
     "${_coop_hook}/coop_lobby.cpp"
     "${_coop_hook}/coop_lobby_game.cpp"
     "${_coop_hook}/coop_mod_share.cpp"
+    "${_coop_hook}/coop_mod_data.cpp"
     "${_coop_hook}/coop_gold_mode.cpp"
     "${_coop_hook}/coop_race_mode.cpp"
     "${_coop_hook}/coop_switch_stand_mode.cpp"

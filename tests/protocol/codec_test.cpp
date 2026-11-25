@@ -2786,6 +2786,53 @@ TEST_CASE("mod settings: type 491, session channel, unique keys (modloader)") {
   CHECK(encode(longer, out) == Error::string_too_long);
 }
 
+TEST_CASE("mod data: type 492, session channel, 0 to 64 bytes, a mod id and key (issue 250)") {
+  CHECK(static_cast<int>(MessageType::mod_data) == 492);
+  CHECK(channel_of(MessageType::mod_data) == kChannelSession);
+  CHECK(allowed_on_channel(MessageType::mod_data, kChannelSession));
+  CHECK_FALSE(allowed_on_channel(MessageType::mod_data, kChannelPlayerSamples));
+  CHECK(may_send(Sender::client, MessageType::mod_data));
+  CHECK(may_send(Sender::server, MessageType::mod_data));
+  ModData m{2, "hello-mod", "wave_2", Bytes(kMaxModDataBytes, 0x5a)};
+  const Bytes b = must_encode(Message{m});
+  Message back;
+  REQUIRE(decode(b, back) == Error::none);
+  CHECK(back == Message{m});
+  const ModData clear{0, "hello-mod", "wave_2", {}};
+  REQUIRE(decode(must_encode(Message{clear}), back) == Error::none);
+  CHECK(back == Message{clear});
+  // The server writes the sender's number.
+  Message relayed{clear};
+  CHECK(set_sender(relayed, 5));
+  CHECK(std::get<ModData>(relayed).player_number == 5);
+  Bytes out;
+  const auto bad = [&](auto change) {
+    ModData c = m;
+    change(c);
+    return encode(c, out) == Error::bad_value;
+  };
+  CHECK(bad([](ModData& c) { c.value.push_back(0); }));  // 65 bytes
+  CHECK(bad([](ModData& c) { c.key = "Wave"; }));
+  CHECK(bad([](ModData& c) { c.key.clear(); }));
+  CHECK(bad([](ModData& c) { c.key = std::string(kMaxModSettingKeyChars + 1, 'k'); }));
+  CHECK(bad([](ModData& c) { c.mod_id = "x y"; }));
+  CHECK(bad([](ModData& c) { c.mod_id.clear(); }));
+  CHECK(bad([](ModData& c) { c.player_number = kMaxPlayers + 1; }));
+  // A length past 64 or past the end does not decode.
+  Bytes cut = must_encode(Message{ModData{1, "a", "k", {1, 2, 3}}});
+  const std::size_t len_at = kHeaderSize + 1 + 2 + 1 + 2 + 1;  // player, "a", "k" (u16 length each)
+  REQUIRE(cut.size() == len_at + 1 + 3);
+  CHECK(cut[len_at] == 3);
+  cut[len_at] = 4;
+  CHECK(decode(cut, back) != Error::none);
+  cut[len_at] = 65;
+  CHECK(decode(cut, back) != Error::none);
+  CHECK(is_mod_id("oot-remake-randomizer"));
+  CHECK_FALSE(is_mod_id("-x"));
+  CHECK(is_mod_key("skin"));
+  CHECK_FALSE(is_mod_key("a.b"));
+}
+
 TEST_CASE("local players: types 460 to 464, their channels and senders (split screen)") {
   CHECK(static_cast<int>(MessageType::local_join) == 460);
   CHECK(static_cast<int>(MessageType::local_message) == 464);

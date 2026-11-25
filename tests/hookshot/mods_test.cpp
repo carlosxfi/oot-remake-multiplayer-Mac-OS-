@@ -299,18 +299,18 @@ TEST_CASE("mods: a code file must exist inside the mod's folder and want no newe
     }
 }
 
-TEST_CASE("mods: a code mod written for interface 1, 2 or 3 loads, one for 4 waits for a newer co-op") {
+TEST_CASE("mods: a code mod written for interface 1 to 4 loads, one for 5 waits for a newer co-op") {
     TempMods t("coop-mods-api-test");
-    for (const char* v : {"1", "2", "3", "4"}) {
+    for (const char* v : {"1", "2", "3", "4", "5"}) {
         const std::string name = std::string("api") + v;
         t.Json(name, std::string(R"({"code": "m.dll", "api": )") + v + "}");
         Put(t.root / name / "m.dll", "MZ");
     }
     for (const auto& m : Scan(t.root)) {
         INFO(m.name);
-        if (m.name == "api4") {
+        if (m.name == "api5") {
             CHECK(m.code.empty());
-            CHECK(m.problem == "its code needs a newer co-op (plugin interface 4, this one has 3)");
+            CHECK(m.problem == "its code needs a newer co-op (plugin interface 5, this one has 4)");
         } else {
             CHECK_FALSE(m.code.empty());
             CHECK(m.problem.empty());

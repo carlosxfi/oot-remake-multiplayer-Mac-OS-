@@ -6,6 +6,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <set>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -56,6 +58,9 @@ struct Host::Slot {
     std::vector<Callback<coop_mod_setting_fn>> setting;
     std::vector<std::pair<std::uint32_t, Callback<coop_mod_hook_fn>>> hook;
     std::vector<Callback<coop_mod_screen_fn>> screen;  // (API v2)
+    std::vector<Callback<coop_mod_data_fn>> data;      // (API v4)
+    std::mutex said_mutex;                             // (API v4) the data_set refusals logged, once each
+    std::set<std::string> said;
     bool file_select = false;                          // (its mod.json's "file_select")
     std::atomic<std::uint64_t> hold{0};                // (API v2) the buttons it holds from the game
     // (API v2) The screen the hold was set on (object and kind) and when that screen last updated: the hold ends when
@@ -365,6 +370,125 @@ void ApiRestartNeeded(const CoopModApi* self, const char* reason) {
     }
 }
 
+// ---- (API v4) the data channel ----
+
+// Co-op's own values go under this id; a mod that calls itself so gets no data channel.
+constexpr std::string_view kCoopId = "coop";
+
+struct DataCall {
+    coop_mod_data_fn fn;
+    void* user;
+    std::uint8_t player;
+    const char* key;
+    const void* value;
+    std::size_t len;
+};
+void RunData(void* p) {
+    auto* c = static_cast<DataCall*>(p);
+    c->fn(c->user, c->player, c->key, c->value, c->len);
+}
+
+int DataSet(Slot* s, const char* key, const void* value, std::size_t len) {
+    if (s == nullptr || key == nullptr || (value == nullptr && len != 0)) {
+        return 0;
+    }
+    std::string problem;
+    if (s->id == kCoopId) {
+        problem = "the mod id \"coop\" is co-op's own";
+    } else if (len > COOP_MOD_DATA_MAX_BYTES) {
+        problem = "longer than 64 bytes";
+    } else if (!s->game->data_set) {
+        problem = "this runtime has no data channel";
+    } else {
+        const auto* bytes = static_cast<const std::uint8_t*>(value);
+        problem = s->game->data_set(s->id, key, std::vector<std::uint8_t>(bytes, bytes + len));
+    }
+    if (problem.empty()) {
+        return 1;
+    }
+    bool first = false;
+    {
+        std::lock_guard lock(s->said_mutex);
+        first = s->said.insert(problem).second;
+    }
+    if (first) {
+        s->Say(std::string("data_set(\"") + key + "\") refused: " + problem + " (said once)");
+    }
+    return 0;
+}
+
+std::optional<std::vector<std::uint8_t>> DataGet(Slot* s, std::uint8_t player, const char* key) {
+    if (s == nullptr || key == nullptr || s->id == kCoopId || !s->game->data_get) {
+        return std::nullopt;
+    }
+    return s->game->data_get(player, s->id, key);
+}
+
+int ApiDataSet(const CoopModApi* self, const char* key, const void* value, std::size_t len) {
+    return DataSet(Slot::Of(self), key, value, len);
+}
+
+int ApiDataGet(const CoopModApi* self, std::uint8_t player, const char* key, void* out, std::size_t cap) {
+    const auto value = DataGet(Slot::Of(self), player, key);
+    if (!value) {
+        return -1;
+    }
+    if (out != nullptr && cap > 0 && !value->empty()) {
+        std::memcpy(out, value->data(), value->size() < cap ? value->size() : cap);
+    }
+    return static_cast<int>(value->size());
+}
+
+int ApiOnData(const CoopModApi* self, coop_mod_data_fn fn, void* user) {
+    Slot* s = Registering(self, reinterpret_cast<const void*>(fn), "data");
+    return s != nullptr ? (s->data.push_back({fn, user}), 1) : 0;
+}
+
+int ApiPlayers(const CoopModApi* self, CoopModPlayer* out, int cap) {
+    Slot* s = Slot::Of(self);
+    if (s == nullptr || !s->game->players) {
+        return 0;
+    }
+    const auto players = s->game->players();
+    for (int i = 0; out != nullptr && i < cap && i < static_cast<int>(players.size()); ++i) {
+        const auto& p = players[static_cast<std::size_t>(i)];
+        CoopModPlayer& o = out[i];
+        o = CoopModPlayer{};
+        o.number = p.number;
+        o.self = p.self ? 1 : 0;
+        const std::size_t n = p.name.size() < sizeof o.name - 1 ? p.name.size() : sizeof o.name - 1;
+        std::memcpy(o.name, p.name.data(), n);
+        o.name[n] = 0;
+    }
+    return static_cast<int>(players.size());
+}
+
+int ApiMyNumber(const CoopModApi* self) {
+    Slot* s = Slot::Of(self);
+    return s != nullptr && s->game->my_number ? s->game->my_number() : 0;
+}
+
+int ApiDataSetText(const CoopModApi* self, const char* key, const char* text) {
+    if (text == nullptr) {
+        return 0;
+    }
+    return DataSet(Slot::Of(self), key, text, std::strlen(text));
+}
+
+int ApiDataGetText(const CoopModApi* self, std::uint8_t player, const char* key, char* out, std::size_t cap) {
+    const auto value = DataGet(Slot::Of(self), player, key);
+    if (!value) {
+        if (out != nullptr && cap > 0) out[0] = 0;
+        return -1;
+    }
+    if (out != nullptr && cap > 0) {
+        const std::size_t n = value->size() < cap - 1 ? value->size() : cap - 1;
+        if (n > 0) std::memcpy(out, value->data(), n);
+        out[n] = 0;
+    }
+    return static_cast<int>(value->size());
+}
+
 }  // namespace
 
 // ---- the system's libraries ----
@@ -512,6 +636,13 @@ bool Host::Begin(Slot& s, const CoopMods::Mod& m) {
     api.reload_save_list = ApiReloadSaveList;
     api.hold_input = ApiHoldInput;
     api.play_sound = ApiPlaySound;
+    api.data_set = ApiDataSet;
+    api.data_get = ApiDataGet;
+    api.on_data = ApiOnData;
+    api.players = ApiPlayers;
+    api.my_number = ApiMyNumber;
+    api.data_set_text = ApiDataSetText;
+    api.data_get_text = ApiDataGetText;
 
     s.starting = true;
     s.on = true;
@@ -528,6 +659,7 @@ bool Host::Begin(Slot& s, const CoopMods::Mod& m) {
         s.setting.clear();
         s.hook.clear();
         s.screen.clear();
+        s.data.clear();
         s.stop = nullptr;
         s.Say(problem);
         loader_.NoteCode(m.name, problem);
@@ -535,7 +667,7 @@ bool Host::Begin(Slot& s, const CoopMods::Mod& m) {
     }
     s.Say("started (" +
           std::to_string(s.frame.size() + s.overlay.size() + s.key.size() + s.setting.size() + s.hook.size() +
-                         s.screen.size()) +
+                         s.screen.size() + s.data.size()) +
           " callbacks)");
     loader_.NoteCode(m.name, "");
     return true;
@@ -559,6 +691,26 @@ void Host::Stop() {
 void Host::Frame() {
     if (!started_ || stopped_) {
         return;
+    }
+    // (API v4) The others' changed values, each to the mod of its id.
+    if (game_.take_data) {
+        for (const Game::DataChange& change : game_.take_data()) {
+            for (auto& s : slots_) {
+                if (s->id != change.mod_id) {
+                    continue;
+                }
+                for (const auto& cb : s->data) {
+                    if (!s->on) {
+                        break;
+                    }
+                    DataCall c{cb.fn, cb.user, change.player, change.key.c_str(),
+                               change.value.empty() ? nullptr : change.value.data(), change.value.size()};
+                    if (!Guarded(RunData, &c)) {
+                        s->Crashed("data callback");
+                    }
+                }
+            }
+        }
     }
     for (auto& s : slots_) {
         for (const auto& cb : s->frame) {

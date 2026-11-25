@@ -13,6 +13,7 @@
 #include <functional>
 #include <map>
 #include <stdexcept>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -65,6 +66,12 @@ int StartA(const CoopModApi* api) {
     api->on_setting(api, [](void*, const char* k, const char* v) {
         g.calls.push_back(std::string("setting a ") + k + "=" + v);
     }, nullptr);
+    if (api->version >= 4) {  // (API v4) the data channel: alpha hears the others' values of its own id
+        api->on_data(api, [](void*, std::uint8_t player, const char* key, const void* value, std::size_t len) {
+            g.calls.push_back("data a " + std::to_string(player) + " " + key + "=" +
+                              std::string(static_cast<const char*>(value), len));
+        }, nullptr);
+    }
     api->hook(api, 3, [](void*, std::uint32_t, int phase, std::uint64_t* x) {
         g.calls.push_back("hook a " + std::to_string(phase) + " " + std::to_string(x[0]));
         x[0] += 1;
@@ -737,4 +744,82 @@ TEST_CASE("mod plugins v2: a hold made again on the next screen moves with it") 
         r.Screen(COOP_MOD_SCREEN_LOAD_LIST, "Pa_Save_00", true, 0, 0x7000);
     }
     CHECK(r.host->HeldButtons() == COOP_MOD_HOLD_ALL);
+}
+
+// (API v4) The data channel (issue 250): a fake game side stands in for lichii/hook/coop_mod_data.
+TEST_CASE("mod plugins v4: data_set and data_get go under the mod's own id, on_data hears only its own id") {
+    std::map<std::string, std::string> kept;  // "player/mod/key" -> value
+    std::vector<Game::DataChange> changes;
+    Run r([&](Run& run) {
+        run.game.data_set = [&](const std::string& id, const std::string& key, const std::vector<std::uint8_t>& v) {
+            if (key == "bad.key") return std::string("not a key");
+            kept["0/" + id + "/" + key] = std::string(v.begin(), v.end());
+            return std::string();
+        };
+        run.game.data_get = [&](std::uint8_t player, const std::string& id, const std::string& key)
+            -> std::optional<std::vector<std::uint8_t>> {
+            const auto it = kept.find(std::to_string(player) + "/" + id + "/" + key);
+            if (it == kept.end()) return std::nullopt;
+            return std::vector<std::uint8_t>(it->second.begin(), it->second.end());
+        };
+        run.game.players = [] {
+            return std::vector<Game::PlayerInfo>{{1, false, "Zelda"}, {2, true, std::string(80, 'L')}};
+        };
+        run.game.my_number = [] { return std::uint8_t{2}; };
+        run.game.take_data = [&] { return std::exchange(changes, {}); };
+    });
+    const CoopModApi* a = g.api[0];
+    const CoopModApi* b = g.api[1];
+    REQUIRE(a->version >= 4);
+    CHECK(a->data_set(a, "skin", "malon", 5) == 1);
+    CHECK(kept["0/alpha/skin"] == "malon");
+    CHECK(b->data_set_text(b, "skin", "ruto") == 1);  // bee's own, apart from alpha's
+    CHECK(kept["0/bee/skin"] == "ruto");
+    char buf[8] = {};
+    CHECK(a->data_get(a, 0, "skin", buf, sizeof buf) == 5);
+    CHECK(std::string(buf, 5) == "malon");
+    CHECK(a->data_get(a, 0, "skin", nullptr, 0) == 5);   // the length only
+    CHECK(a->data_get_text(a, 0, "skin", buf, 4) == 5);  // cut, with its 0
+    CHECK(std::string(buf) == "mal");
+    CHECK(a->data_get(a, 1, "skin", buf, sizeof buf) == -1);
+    CHECK(a->data_get_text(a, 1, "skin", buf, sizeof buf) == -1);
+    CHECK(buf[0] == 0);
+
+    // Refusals answer 0 with one line each, said once.
+    const std::string long_value(COOP_MOD_DATA_MAX_BYTES + 1, 'x');
+    CHECK(a->data_set(a, "big", long_value.data(), long_value.size()) == 0);
+    CHECK(a->data_set_text(a, "big", long_value.c_str()) == 0);
+    CHECK(r.Count("mod alpha: data_set(\"big\") refused: longer than 64 bytes") == 1);
+    CHECK(a->data_set(a, "bad.key", "1", 1) == 0);
+    CHECK(r.Logged("refused: not a key"));
+    CHECK(a->data_set(a, "skin", nullptr, 3) == 0);
+    CHECK(a->data_set(a, "skin", nullptr, 0) == 1);  // a clear
+    CHECK(kept["0/alpha/skin"].empty());
+
+    CoopModPlayer players[1];
+    CHECK(a->players(a, players, 1) == 2);  // two in the session, one asked for
+    CHECK(players[0].number == 1);
+    CHECK(players[0].self == 0);
+    CHECK(std::string(players[0].name) == "Zelda");
+    CoopModPlayer all[2];
+    CHECK(a->players(a, all, 2) == 2);
+    CHECK(all[1].self == 1);
+    CHECK(std::string(all[1].name).size() == sizeof all[1].name - 1);  // cut to fit, with its 0
+    CHECK(a->my_number(a) == 2);
+
+    // The others' changes reach only the mod of their id, at the frame, before its frame callback.
+    changes = {{1, "alpha", "skin", {'z', 'e'}}, {1, "nobody", "skin", {'q'}}, {3, "alpha", "wave", {}}};
+    g.calls.clear();
+    r.host->Frame();
+    CHECK(g.calls == std::vector<std::string>{"data a 1 skin=ze", "data a 3 wave=", "frame a", "frame b", "frame crash"});
+}
+
+TEST_CASE("mod plugins v4: without the game's data channel the calls answer as alone") {
+    Run r;
+    const CoopModApi* a = g.api[0];
+    CHECK(a->data_set(a, "skin", "x", 1) == 0);
+    CHECK(r.Logged("refused: this runtime has no data channel"));
+    CHECK(a->data_get(a, 0, "skin", nullptr, 0) == -1);
+    CHECK(a->players(a, nullptr, 0) == 0);
+    CHECK(a->my_number(a) == 0);
 }
