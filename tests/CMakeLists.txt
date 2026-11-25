@@ -226,6 +226,7 @@ target_sources(coop_tests PRIVATE hookshot/module_test.cpp hookshot/draw_test.cp
   ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_mod_guard.cpp
   hookshot/rando_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_rando.cpp
   hookshot/mods_tab_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_mods_tab.cpp
+  hookshot/part_fallback_test.cpp
   hookshot/look_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_look.cpp
   hookshot/look_paint_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_look_paint.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_look_parts.cpp

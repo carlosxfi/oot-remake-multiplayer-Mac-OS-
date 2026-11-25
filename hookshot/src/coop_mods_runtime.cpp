@@ -19,6 +19,7 @@
 #include "coop_mod_plugins.h"
 #include "coop_mod_screens.h"
 #include "coop_mod_share.h"
+#include "coop_part_fallback.h"
 #include "coop_pause.h"
 #include "coop_rando.h"
 #include "coop_shop_sale.h"
@@ -378,6 +379,23 @@ CoopMods::Loader* Loader() {
 
 CoopRando::Rando* Rando() {
     return g_rando.get();
+}
+
+std::vector<std::string> PartFallbackLines() {
+    static std::mutex m;
+    static std::optional<std::vector<std::string>> lines;
+    CoopMods::Loader* loader = g_loader.get();
+    if (loader == nullptr) return {};
+    const std::lock_guard<std::mutex> lock(m);
+    if (!lines) {
+        std::vector<std::string> used;
+        for (const CoopMods::Row& r : loader->Rows()) {
+            if (r.on_now && r.has_files) used.push_back(r.name);
+        }
+        lines = CoopPartFallback::Lines(loader->Root(), used);
+        for (const std::string& l : *lines) CoopRuntime::Log("coop: mods: part check: " + l);
+    }
+    return *lines;
 }
 
 void Frame() {

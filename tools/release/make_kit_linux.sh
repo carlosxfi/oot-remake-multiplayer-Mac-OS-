@@ -95,7 +95,7 @@ done
 # The puppet pack tool: make_kit_hookshot.ps1's list, plus every module build.py imports.
 pack=$repo/tools/puppet_pack
 files=(ainb.py build.py __init__.py byml.py dumpcheck.py dungeon_rooms.py hud.py nup.py rstb.py sarc.py texture.py
-    title_menu.py tunic.py tunic_extra.py zs.py self_tunic.py merge_tables.py)   # (self_tunic.py, merge_tables.py: start.sh)
+    title_menu.py tunic.py tunic_extra.py zs.py self_tunic.py merge_tables.py part_check.py)   # (self_tunic.py, merge_tables.py: start.sh; part_check.py: build.sh, row 280)
 # Followed through every module they import, and theirs (title_menu.py -> ui_pack.py -> msbt.py): one missing from
 # the kit stops build.py at its first import, and the pack is never made on the players' PCs.
 imports_of() {   # the modules a file imports from its own package, one per line

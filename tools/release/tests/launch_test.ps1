@@ -957,11 +957,13 @@ try {
     # The two parts (Test-KitCharacterSelectNpcFile): NPC files go only with a yes; the rest every kit gets.
     $csNpcFiles = @('romfs\Tex\Npc_A.bntx.zs', 'romfs\Phive\Cloth\Player_Adult_CAC.Nin_Ounce_NVN2.bphcl', 'romfs\Sound\Resource\PlayerVoice_Adult_X.bars.zs',
                     'romfs\Sound\Resource\Stream\VXxPlChild_Jump_S_01.bwav', 'romfs\Sound\Resource\Npc_X.bars.zs',
-                    'romfs\Pack\Actor\Enemy_MiddleBoss_DarkLink.pack.zs', 'romfs\Model\Player_Dark_Animation.Skeleton.bfres.zs', 'romfs\Model\Player_Adult_C115.Player_Adult.bfres.zs')
+                    'romfs\Pack\Actor\Enemy_MiddleBoss_DarkLink.pack.zs', 'romfs\Model\Player_Adult_C115.Player_Adult.bfres.zs')
     $csUiFiles = @('romfs\UI\LayoutArchiveCategory.Product.100.byml.zs', 'romfs\Sequence\CharacterMenu.module.ainb', 'romfs\RSDB\UIScreen.Product.111.rstbl.byml.zs',
                    'romfs\Model\Player_Child.Player_Child.bfres.zs', 'romfs\Model\Player_Adult_Cba_Animation.Skeleton.bfres.zs', 'romfs\Pack\Actor\Player_Child.pack.zs',
                    # (row 242: Link's own textures, named by his Link models, stay in the default part)
-                   'romfs\Tex\Mt_Vest_Player_Child_Ac1.bntx.zs', 'romfs\Tex\Mt_Hairs_Player_Adult_Ah9.bntx.zs', 'romfs\Tex\Angin_Tile_A_Dark_Ac7.bntx.zs')
+                   'romfs\Tex\Mt_Vest_Player_Child_Ac1.bntx.zs', 'romfs\Tex\Mt_Hairs_Player_Adult_Ah9.bntx.zs', 'romfs\Tex\Angin_Tile_A_Dark_Ac7.bntx.zs',
+                   # (row 280: the skeleton his adult Link packs name, his release's only Player_Dark_* file)
+                   'romfs\Model\Player_Dark_Animation.Skeleton.bfres.zs')
     # His code patch as IPS32: a kept record, one record in each customizer region his source names, a kept run record,
     # then $Extra (@(offset, bytes) pairs).
     $New_CsIps = {
@@ -997,7 +999,7 @@ try {
         Write-File (Join-Path $ck 'hookshot\CHARACTER-SELECT.txt') ("# pin`nrelease=$Tag`nurl=https://example.invalid/cs`nzip=CS-$Tag.zip`nzip_sha256=$zsha`n" +
             "zip_folder=CS-$Tag/mods/OoT Character Select`nfolder=OoT Character Select`noverlay_url=https://example.invalid/characters.json`n" +
             "overlay_sha256=$osha`nips_url=$IpsUrl`nips_sha256=$IpsSha`n")
-        return "$Tag $zsha $osha $(if ($IpsUrl) { $IpsSha } else { '-' }) full cz2v"
+        return "$Tag $zsha $osha $(if ($IpsUrl) { $IpsSha } else { '-' }) full cz3g"
     }
     $csJson = '{"format": 1, "mod": "OoT Character Select", "puppet_colours": {"offset": 62574416, "head": "FD7BBFA9000100B40B2C40B96B1D0051"}, "characters": []}'
     $onlineWas = $env:OOT_COOP_OFFLINE; $env:OOT_COOP_OFFLINE = '0'
@@ -1197,7 +1199,7 @@ try {
         $csNew = Install-KitCharacterSelect $ck $cm242 '' 'ui'
         Check ($csNew.Ok -and (Test-Path -LiteralPath $csLinkTex) -and -not (Test-Path -LiteralPath (Join-Path $cs242 $csNpcFiles[0])) -and
                (Read-KitFirstLine (Join-Path $cs242 'coop-charsel.txt')) -eq $want242) "Character Select: a new default part keeps Link's own textures (row 242) [$($csNew.Why)]"
-        Write-File (Join-Path $cs242 'coop-charsel.txt') (($want242 -replace ' cz2v$', ' cz1') + "`n")
+        Write-File (Join-Path $cs242 'coop-charsel.txt') (($want242 -replace ' cz3g$', ' cz1') + "`n")
         Remove-Item -LiteralPath (Join-Path $cs242 'romfs\Tex') -Recurse -Force -ErrorAction SilentlyContinue
         Copy-Item -LiteralPath $csZipKept -Destination $csZip242 -Force
         $csOld = Install-KitCharacterSelect $ck $cm242 '' 'ui'
@@ -1370,6 +1372,40 @@ print("Done: 1 file. The mod folder is ready.")
             & "$env:SystemRoot\System32\tar.exe" -a -c -f $zipT -C $src2 'CS-t'   # (the zip is deleted after an install)
             $r = Install-KitCharacterSelect $ck $cm '' 'ui'
             Check ($r.Ok -and (Get-Content -LiteralPath $made -Raw).EndsWith("--exclude $KitCharselToolExclude")) 'Character Select tool: part ui passes --exclude, the NPC rule byte for byte (its | ( ) ^ $ reach the tool as written)'
+            # Row 280: a kept file that names a file of the release neither the part nor the game has (here the tool's
+            # recipes.json lists Model\Gone_Skel.Skeleton, which it did not make) is left out, so the game's own is used,
+            # coop-fallback.txt holds the module's line and the kit says it; the files the release has are listed.
+            Remove-Item -LiteralPath $csDir -Recurse -Force -ErrorAction SilentlyContinue
+            $pcDir = Join-Path $ck 'tools\puppet_pack'
+            New-Item -ItemType Directory -Force -Path $pcDir | Out-Null
+            Copy-Item -Path (Join-Path (Split-Path -Parent $release) 'puppet_pack\*.py') -Destination $pcDir
+            $src5 = Join-Path $ck 'src-tool5'
+            Copy-Item -LiteralPath (Join-Path $src2 'CS-t') -Destination (Join-Path $src5 'CS-t') -Recurse
+            Write-File (Join-Path $src5 'CS-t\mods\OoT Character Select\romfs\Pack\Actor\Player_Adult.pack.zs') 'pack: Model/Gone_Skel.Skeleton.bfres'
+            Write-File (Join-Path $src5 'CS-t\mods\OoT Character Select\romfs\Pack\Actor\Player_Child.pack.zs') 'pack: Model/Player_Child.Player_Child.bfres'
+            Write-File (Join-Path $src5 'CS-t\build-from-your-game\recipes.json') '{"files": [{"path": "Model/Gone_Skel.Skeleton.bfres.zs"}, {"path": "Model/Made_By_Tool.bin"}]}'
+            Remove-Item -LiteralPath $zipT -Force -ErrorAction SilentlyContinue
+            & "$env:SystemRoot\System32\tar.exe" -a -c -f $zipT -C $src5 'CS-t'
+            $zshaG = (Get-FileHash -LiteralPath $zipT -Algorithm SHA256).Hash.ToLowerInvariant()
+            Write-File (Join-Path $ck 'hookshot\CHARACTER-SELECT.txt') ($pinT -replace $zshaT, $zshaG)
+            $r = Install-KitCharacterSelect $ck $cm
+            $note = Join-Path $csDir 'coop-fallback.txt'
+            $listed = if (Test-Path -LiteralPath (Join-Path $csDir 'coop-release-files.txt')) { Get-Content -LiteralPath (Join-Path $csDir 'coop-release-files.txt') } else { @() }
+            Check ($r.Ok -and -not (Test-Path -LiteralPath (Join-Path $csDir 'romfs\Pack\Actor\Player_Adult.pack.zs')) -and
+                   (Test-Path -LiteralPath (Join-Path $csDir 'romfs\Pack\Actor\Player_Child.pack.zs')) -and (Test-Path -LiteralPath $note) -and
+                   (Read-File $note) -match "^Character Select: the game's own Player_Adult used" -and ($r.Lines -join ' ') -match "the game's own Player_Adult used" -and
+                   $listed -contains 'Model/Gone_Skel.Skeleton.bfres.zs' -and $listed -contains 'Pack/Actor/Player_Adult.pack.zs') "Character Select part check (row 280): a pack naming a released file neither the part nor the game has is left out, coop-fallback.txt + the kit line say so, the release's files listed [$($r.Lines -join ' | ')]"
+            # The same part made again from that copy (derive: ui from full): the list comes along, the check runs again.
+            $r = Install-KitCharacterSelect $ck $cm '' 'ui'
+            Check ($r.Ok -and -not (Test-Path -LiteralPath (Join-Path $csDir 'romfs\Pack\Actor\Player_Adult.pack.zs')) -and (Test-Path -LiteralPath $note) -and
+                   (Test-Path -LiteralPath (Join-Path $csDir 'coop-release-files.txt'))) "Character Select part check: a part derived from a checked copy keeps the list and is checked again [$($r.Lines -join ' | ')]"
+            Remove-Item -LiteralPath $pcDir -Recurse -Force
+            Remove-Item -LiteralPath $csDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path (Join-Path $cm '_OoT Character Select.*') -Recurse -Force -ErrorAction SilentlyContinue
+            # (the cases after this one use the plain tool release and its pin again)
+            Remove-Item -LiteralPath $zipT -Force -ErrorAction SilentlyContinue
+            & "$env:SystemRoot\System32\tar.exe" -a -c -f $zipT -C $src2 'CS-t'
+            Write-File (Join-Path $ck 'hookshot\CHARACTER-SELECT.txt') $pinT
             # Arguments reach a program exactly as given (no shell between): '&', '|', '^', '%', spaces, quotes, a trailing backslash.
             $argsT = @('a b&c', 'x|y^z %PATH%', 'q"uote', 'tail\', 'two\\"', '', 'plain')
             $echoOut = Join-Path $ck 'argv-echo.txt'

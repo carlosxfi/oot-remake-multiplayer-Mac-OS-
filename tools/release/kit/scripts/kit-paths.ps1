@@ -1654,7 +1654,9 @@ function Read-KitCharacterSelectAnswer([int]$Seconds = 15, [scriptblock]$ReadKey
 # The two parts of Snail's mod folder (owner, 0.11.9). A file of the NPC part (the opt-in download): the characters'
 # models (Model/Player_<age>_C<nnn>.*), their textures, cloth and voices (Tex, Phive, Sound), and his Dark Link
 # (Pack/Actor/Enemy_MiddleBoss_DarkLink names his cloth file Phive/Cloth/Player_Adult_Dark, so it goes with Phive;
-# Model/Player_Dark_* is its skeleton). Everything else is the default part every kit gets: the Characters page and
+# row 280: NOT Model/Player_Dark_Animation.Skeleton, the one Player_Dark_* file of his release: his adult Link packs
+# Pack/Actor/Player_Adult and PouchPlayer_Adult name it, the game has only the .anim of that name, and without it every
+# adult load waited for it for good, the world black). Everything else is the default part every kit gets: the Characters page and
 # Customize screen (UI, Sequence, Mals, RSDB, GameData, SLink2, the size table), Link's own models and packs, and
 # the code patch (exefs) without his customizer. No file of the default part names a file of the NPC part except
 # through the stored character, which the module keeps on an installed one (coop_char_slots.h). $Rel: '/' or '\'.
@@ -1674,7 +1676,7 @@ function Test-KitCharacterSelectNpcFile([string]$Rel) {
     $r = $Rel.Replace('\', '/')
     if ($r -match '^romfs/Tex/([^/]*_Player_|Angin_Tile_)') { return $false }
     return [bool]($r -match '^romfs/(Tex|Phive|Sound)/' -or $r -match '^romfs/Model/Player_(Adult|Child)_C\d{3}\.' -or
-                   $r -match '^romfs/Model/Player_Dark_' -or $r -eq 'romfs/Pack/Actor/Enemy_MiddleBoss_DarkLink.pack.zs')
+                   $r -eq 'romfs/Pack/Actor/Enemy_MiddleBoss_DarkLink.pack.zs')
 }
 
 # Snail's customizer in his code patch, left out (owner, 0.11.9: co-op's customization is the one; his customizer code is
@@ -1694,8 +1696,11 @@ $script:KitCharselIpsShift = 0x8001FF00L
 # (in the stamp: another list of regions, or another default-part file rule, makes the kit make his folder again.
 # cz2, row 242: the default part keeps Link's own textures; a default part stamped with an older one lost them, so it
 # is never copied from: his release is unpacked again. cz2v: his release's voice files are deleted, so a copy that
-# has them is made again.)
-$script:KitCharselStrip = 'cz2v'
+# has them is made again. cz3, row 280: the default part keeps Model/Player_Dark_Animation.Skeleton, which his adult Link
+# packs name; a default part stamped with an older one has no adult Link, so it is made again. cz3g, row 280: each part
+# is checked (tools\puppet_pack\part_check.py: a kept file naming a file neither the part nor the game has is left out,
+# the game's own used); a part stamped with an older one was never checked, so it is made again.)
+$script:KitCharselStrip = 'cz3g'
 
 # An IPS32 file's records: @{ At (offset); Size (bytes it changes); From; To (the record's bytes in the file) }, or a
 # throw when it is not one. IPS32: 'IPS32', records (u32 BE offset, u16 BE size, the bytes; size 0: u16 BE run length
@@ -1836,7 +1841,7 @@ function Complete-KitCharacterSelectFolder([string]$New, $Op, [string]$Part, [st
 # The NPC part as player.py's --exclude (paths below romfs/, '/'): must say exactly what Test-KitCharacterSelectNpcFile
 # says for romfs files (launch_test.ps1 checks the two agree); change both together. Link's own textures in Tex/ (named
 # *_Player_* or Angin_Tile_*) stay in the ui part (row 242).
-$KitCharselToolExclude = '^(Phive|Sound)/|^Tex/(?![^/]*_Player_|Angin_Tile_)|^Model/Player_(Adult|Child)_C\d{3}\.|^Model/Player_Dark_|^Pack/Actor/Enemy_MiddleBoss_DarkLink\.pack\.zs$'
+$KitCharselToolExclude = '^(Phive|Sound)/|^Tex/(?![^/]*_Player_|Angin_Tile_)|^Model/Player_(Adult|Child)_C\d{3}\.|^Pack/Actor/Enemy_MiddleBoss_DarkLink\.pack\.zs$'
 # One argument line for CreateProcess (no shell: '|', '&', '^' and '%' are plain characters in it): each argument
 # quoted when it is empty or has a space, a tab or a quote; backslashes right before a quote, and at the end of a quoted
 # argument, doubled; a quote escaped. The program gets each argument back byte for byte (the C runtime's rules).
@@ -1911,11 +1916,30 @@ function Invoke-KitToolLimited([string]$Exe, [string[]]$ArgList, [int]$IdleSecon
 # 100 files, the slowest first) or runs longer than 2 hours (the whole set took about 140 s on a 24-thread PC).
 $KitCharselToolIdle = 900
 $KitCharselToolMax = 7200
+# The game's RomFS for a mods folder: beside longshot.exe or a folder up, as Get-KitHookshotNeed looks; '' when none.
+function Get-KitGameRomfs([string]$ModsDir) {
+    $exeDir = Split-Path -Parent $ModsDir
+    $r = @((Join-Path $exeDir 'romfs'), (Join-Path (Split-Path -Parent $exeDir) 'romfs')) |
+         Where-Object { Test-Path -LiteralPath (Join-Path $_ 'Pack\ZsDic.pack.zs') } | Select-Object -First 1
+    if ($r) { return "$r" } else { return '' }
+}
+
+# Row 280: tools\puppet_pack\part_check.py on a part the kit makes. 'list' (before any file is left out: the files of
+# its release, <mod>\coop-release-files.txt) or 'check' (after: a kept file naming a released file neither the part nor
+# the game has is left out, the game's own used, and <mod>\coop-fallback.txt holds one line the module shows).
+# @{ Code (0 done, 2 could not, -1 no tool or Python); Lines }.
+function Invoke-KitPartCheck([string]$Kit, [string]$What, [string]$Mod, [string[]]$More = @()) {
+    $python = Join-Path $Kit 'hookshot\tools\python\python.exe'
+    $tool = Join-Path $Kit 'tools\puppet_pack\part_check.py'
+    if (-not (Test-Path -LiteralPath $tool) -or -not (Test-Path -LiteralPath $python)) { return @{ Code = -1; Lines = @() } }
+    $out = @(& $python -I -B $tool $What --mod $Mod @More 2>&1 | ForEach-Object { "$_" })
+    return @{ Code = $LASTEXITCODE; Lines = $out }
+}
+
 function Invoke-KitCharacterSelectTool([string]$Kit, [string]$Zip, $Op, [string]$New, [string]$ModsDir, [string]$Downloads, [string]$Part) {
     $python = Join-Path $Kit 'hookshot\tools\python\python.exe'
-    $exeDir = Split-Path -Parent $ModsDir     # (the game's files: beside longshot.exe or a folder up, as Get-KitHookshotNeed looks)
-    $romfs = @((Join-Path $exeDir 'romfs'), (Join-Path (Split-Path -Parent $exeDir) 'romfs')) |
-             Where-Object { Test-Path -LiteralPath (Join-Path $_ 'Pack\ZsDic.pack.zs') } | Select-Object -First 1
+    $exeDir = Split-Path -Parent $ModsDir
+    $romfs = Get-KitGameRomfs $ModsDir
     if (-not (Test-Path -LiteralPath $python)) { return "no $python to make its files with" }
     if (-not $romfs) { return "no game RomFS beside $exeDir to make its files from" }
     $tool = Join-Path $Downloads 'charsel-tool'
@@ -1937,6 +1961,9 @@ function Invoke-KitCharacterSelectTool([string]$Kit, [string]$Zip, $Op, [string]
     # (stdout and stderr are read as text, not error records: a warning on its stderr is only text. The exit code decides.)
     $run = Invoke-KitToolLimited $python $a $KitCharselToolIdle $KitCharselToolMax
     $out = $run.Out; $code = $run.Code
+    # (row 280: the files of the release, the ones its tool made and the ones it was told to leave out, before any is
+    # left out; the check after Complete-KitCharacterSelectFolder reads them)
+    if ($code -eq 0 -and -not $run.Stopped) { [void](Invoke-KitPartCheck $Kit 'list' $New @('--recipes', (Join-Path $tool 'recipes.json'))) }
     Remove-Item -LiteralPath $tool -Recurse -Force -ErrorAction SilentlyContinue
     if ($run.Stopped) {
         return "making its files from your game was stopped ($($run.Stopped)): its tool stopped answering. The game files it reads may be damaged (dump the game again); nothing of it was put in"
@@ -2003,6 +2030,8 @@ function Install-KitCharacterSelect([string]$Kit, [string]$ModsDir, [string]$Dow
             # (its characters.json and, with a newer patch pinned, that patch come from the folder there)
             New-Item -ItemType Directory -Force -Path $new | Out-Null
             $skip = if ($Part -eq 'ui') { { param($rel) Test-KitCharacterSelectNpcFile $rel } } else { { param($rel) Test-KitCharacterSelectVoiceFile $rel } }
+            # (row 280: a copy made before the release list was kept lists what it has; the copy below takes the list along)
+            if (-not (Test-Path -LiteralPath (Join-Path $dir 'coop-release-files.txt'))) { [void](Invoke-KitPartCheck $Kit 'list' $dir) }
             Copy-KitTreeLinked $dir $new $skip
             $json = Join-Path $dir 'characters.json'
             $ips = ''
@@ -2025,9 +2054,24 @@ function Install-KitCharacterSelect([string]$Kit, [string]$ModsDir, [string]$Dow
                 if ($LASTEXITCODE -ne 0) { $why = "unpacking $($op.zip) failed (tar $LASTEXITCODE)" }
                 elseif (-not (Test-Path -LiteralPath (Join-Path $new 'romfs'))) { $why = "$($op.zip) has no $($op.zip_folder)/romfs" }
                 elseif ($op.tool_folder) { $why = Invoke-KitCharacterSelectTool $Kit $zip $op $new $ModsDir $Downloads $Part }
+                else { [void](Invoke-KitPartCheck $Kit 'list' $new) }
             }
         }
         if (-not $why) { $why = Complete-KitCharacterSelectFolder $new $op $Part $json $ips $want }
+        if (-not $why) {
+            # (row 280: a kept file that names a file neither this part nor the game has makes every load of it wait for
+            # good (a black world); such files are left out, so the game's own are used, and the module says so. Character
+            # models are guarded by the module itself (coop_char_slots). Never stops the install.)
+            $gr = Get-KitGameRomfs $ModsDir
+            if ($gr) {
+                $pc = Invoke-KitPartCheck $Kit 'check' $new @('--romfs', $gr, '--name', 'Character Select', '--guarded', '^Model/Player_(Adult|Child)_C\d{3}\.')
+                if ($pc.Code -eq 2) { $r.Lines += "Character Select: its files could not be checked ($(@($pc.Lines | Where-Object { "$_".Trim() }) | Select-Object -Last 1)); it is put in as it is." }
+                elseif ($pc.Code -eq 0) {
+                    $note = Join-Path $new 'coop-fallback.txt'
+                    if (Test-Path -LiteralPath $note) { $r.Lines += (Read-KitFirstLine $note) }
+                }
+            }
+        }
         if (-not $why) {
             if (-not $derive) {
                 $lic = Join-Path $Downloads 'charsel-LICENSE.txt'
