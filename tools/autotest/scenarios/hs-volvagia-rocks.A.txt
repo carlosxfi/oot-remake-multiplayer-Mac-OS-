@@ -37,5 +37,6 @@ wait 12
 hold ZL+Y 8
 wait 1500
 mark a-3
-wait 1800
+await 10800 objects: rocks:   # row 234: stay in the arena until our game logs falling rocks (at most 3 min; none = FAIL by the count)
+wait 600
 mark end
