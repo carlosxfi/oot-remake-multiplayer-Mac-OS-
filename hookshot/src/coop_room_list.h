@@ -27,10 +27,10 @@ struct Room {
     // 2 easy, 3 normal, 4 hard, 5 custom), the host's choice when making the lobby or since.
     int difficulty = 0;
 };
-// The listing's difficulty bits (coop::protocol::kListingDifficultyShift; checked equal in coop_room_list.cpp).
+// The listing's difficulty bits (coop::protocol::kListingDifficultyShift; checked equal in coop_room_list_text.cpp).
 inline constexpr int kListingDifficultyShift = 8;
 
-// A public listing's version bit (coop::protocol::kPublicListingBit; checked equal in coop_room_list.cpp).
+// A public listing's version bit (coop::protocol::kPublicListingBit; checked equal in coop_room_list_text.cpp).
 inline constexpr int kPublicListingBit = 0x8000;
 // A listed room's proof as the relay passed it on (server/relay_wire.hpp kRoomProofs).
 struct Proof {
