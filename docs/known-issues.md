@@ -132,6 +132,7 @@ In 0.11.8. Watched working in a two-game run (marked *seen*): the Gold Skulltula
 
 - **The pause menu's Multiplayer page and the title's Host and Join rows** (new in 0.11.6, DrHammer79, [PR #281](https://github.com/daurosk/oot-remake-multiplayer/pull/281) and the PRs after it): the page and the rows are drawn in both games and the game starts with them (0.11.5 made its pack without them because they crashed the game at start). Typing a room name on the Join rows, the list of games on this network, rejoining by itself and the page through a stall are in the code, not yet checked in a game. The Multiplayer tab opens as before (**−** and **+**, Home or F1).
 - **Redead and Gibdo freeze only one player**, **Meg's decoys can differ per game** and **Dead Hand's hands grab only one player** (tracker rows 230 to 232): not fixed yet, planned for a later release.
+- **Race mode: no double defence on the other players' hearts**: in race mode the other players' hearts in the party list never show double defence (the extra heart outline), only their normal hearts.
 
 ## Not yet checked in a game, or only partly
 
