@@ -11,6 +11,27 @@ wait 300
 press A
 wait 2400
 mark b-in
+# Link must live to see the rocks: ten more heart containers (the cheats window's give), each one fills its heart
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
 wait 1800
 press ZL 10
 mark b-1

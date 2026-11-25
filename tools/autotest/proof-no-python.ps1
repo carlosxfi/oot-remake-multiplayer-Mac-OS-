@@ -6,7 +6,7 @@
 #   proof-no-python.ps1 -KitA <kit-A> -KitB <kit-B>        runs, then puts the kit's Python back (always, also on error)
 #
 # PASS = no "FATAL: the game aborted" in A's log, the puppets show (the run's screenshot checks hs-puppets-A/-B OK),
-# and the kit start text says the menu files were parked. Exit 0 PASS, 1 FAIL, 2 UNPROVEN (owner rule: no PASS from
+# and the kit start text says the menu files were parked. Exit 0 PASS, 1 FAIL, 4 NO REFS (proof-refs empty: judge by eye), 2 UNPROVEN (owner rule: no PASS from
 # log lines alone). The screenshot of the title: the run folder's shots (read them).
 param(
     [Parameter(Mandatory)][string]$KitA,
@@ -64,7 +64,13 @@ $state = if ($fatal -or -not $text) { 'FAIL' } elseif (-not $runDir) { 'UNPROVEN
     $out = @(& $py -I (Join-Path $here 'proof.py') --kit-root $coopKit grade $runDir @See | ForEach-Object { "$_" })
     $code = $LASTEXITCODE
     $out | ForEach-Object { Write-Host "  $_" }
-    switch ($code) { 0 { 'PASS' } 3 { 'FAIL' } default { 'UNPROVEN' } }
+    # No good/bad reference shots in proof-refs: the grader cannot judge, which is not a failed run. Say so and exit 4.
+    if ($code -ne 0 -and $code -ne 3 -and ($out -match 'needs good and bad references')) { 'NO-REFS' }
+    else { switch ($code) { 0 { 'PASS' } 3 { 'FAIL' } default { 'UNPROVEN' } } }
+}
+if ($state -eq 'NO-REFS') {
+    Write-Host "NO REFS no-python: the run finished and the kit start text is above, but proof-refs has no good/bad reference shots to grade with; judge the shots by eye [shots in $runDir]"
+    exit 4
 }
 Write-Host "$state no-python: the kit without Python reaches the title with the size mod on [shots in $runDir]"
 exit $(switch ($state) { 'PASS' { 0 } 'FAIL' { 1 } default { 2 } })

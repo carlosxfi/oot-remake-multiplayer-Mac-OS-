@@ -22,6 +22,27 @@ wait 300
 press A                 # loads the save, then the warp
 wait 2400
 mark a-in
+# Link must live to see the rocks: ten more heart containers (the cheats window's give), each one fills its heart
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
 wait 1800               # the intro, then the fight
 press ZL 10             # lock on
 mark a-1
