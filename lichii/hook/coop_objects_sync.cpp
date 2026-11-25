@@ -1548,6 +1548,16 @@ std::optional<proto::BossVariants> Sync::BossVariantsIn(std::uint64_t address) c
     return it->second.variants_in;
 }
 
+std::vector<std::pair<std::uint64_t, proto::KeyedValues>> Sync::BrainStateIn() const {
+    std::vector<std::pair<std::uint64_t, proto::KeyedValues>> out;
+    for (const auto& [address, o] : objects_) {
+        if (o.brain_in) {
+            out.emplace_back(address, *o.brain_in);
+        }
+    }
+    return out;
+}
+
 std::vector<std::pair<std::uint64_t, proto::BossOrders>> Sync::BossOrdersIn() const {
     std::vector<std::pair<std::uint64_t, proto::BossOrders>> out;
     for (const auto& [address, o] : objects_) {
@@ -1834,6 +1844,9 @@ proto::ObjectState Sync::StateOf(Object& o, std::uint64_t now_us) {
     }
     if (o.orders) {
         state.orders = o.orders;  // row 222: its battle manager's orders
+    }
+    if (o.brain) {
+        state.brain = o.brain;  // row 149: its blackboard move state (every sample: the server's hand-over state)
     }
     if (o.rotation) {
         state.rotation = QuatOf(*o.rotation);
@@ -2520,6 +2533,10 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         o.bsa = s.bsa;
         o.variants = s.variants;
         o.orders = s.orders;
+        o.brain = s.brain;
+        if (s.brain) {
+            o.brain_in.reset();  // row 149: our own values are sent from here on
+        }
         o.attacking = AttackWithRally(s, rally_makers);
         const bool rally_held = o.attacking.value_or(false) && !s.attacking.value_or(true);
         if (rally_held && !o.rally_held) {
@@ -2915,6 +2932,10 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         o.bsa = s->bsa;
         o.variants = s->variants;
         o.orders = s->orders;
+        o.brain = s->brain;
+        if (s->brain) {
+            o.brain_in.reset();  // row 149: our own values are sent from here on
+        }
         o.attacking = AttackWithRally(*s, rally_makers);
         o.seen_at = now_us;
         o.name = s->name;
@@ -4328,6 +4349,11 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
             if (sample->state.orders) {
                 o->orders_in = sample->state.orders;  // row 222: the owner's battle manager orders
             }
+            if (sample->state.brain) {
+                // Row 149: the owner's blackboard move state (a full list replaces ours, a delta changes it).
+                std::size_t dropped = 0;
+                o->brain_in = proto::MergeKeyed(o->brain_in ? &*o->brain_in : nullptr, *sample->state.brain, dropped);
+            }
             if (sample->state.position && Finite(*sample->state.position)) {
                 const std::uint64_t t = sample->state.time.server_time_us;
                 if (o->received.empty() || t > o->received.back().time) {
@@ -4533,6 +4559,9 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
             send.emplace_back(std::move(state));
         } else if (const auto* handed = std::get_if<proto::HandoverState>(&m)) {
             Object* o = find(handed->id);
+            if (o != nullptr && handed->state.brain) {
+                o->brain_in = handed->state.brain;  // row 149: the old owner's blackboard move state, ours to take
+            }
             // The old owner's life never has our own hits of the last kDamageSumUs in it (summed here, not sent
             // yet): they come off it, or the hand-over gives that life back. A boss always takes its old owner's
             // life; an enemy only where that is the lower one (its own life has our hits in it otherwise).

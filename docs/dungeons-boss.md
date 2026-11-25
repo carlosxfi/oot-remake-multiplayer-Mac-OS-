@@ -955,3 +955,82 @@ runs 20261120-180245/-184021; the attack-sequence bit already keeps most of it a
 a brain re-choice, mid-attack still the start-over). **Not proven in game.** Check: kd-roll-hold-325 again: no
 `made ours mid-move: its move (slot 0 verb 1|104) starts over`, the row 325 line instead; KD's y stays 73.2-73.5
 (no `diag 325` / roll centre at y 75.03) and every roll ends; screenshots on both games.
+
+## Blackboard move state: a boss made ours goes on from its old owner's state (tracker row 149, 0.11.13)
+
+**Seen.** Geno, 0.11.12 (2026-11-24): "Dodongo dragon boss bugged out on us and kept rolling in the lava". Row 325's
+fix is in 0.11.12, so it was not the cause. Reproduced before in kd-roll-hold-325, run 20261123-043946: player B last
+owned King Dodongo at corner (9.2, -48); A then rolled him to (38, -48.2); B, made his owner again, rolled him from
+(33.59, -48.26) in direction (-0.64, -0.77), exactly the line to corner (9.2, -77.6), B's own next corner from when
+it last owned him, straight into the pit, and held there for good. With one game (run -051747) 18 of 18 rolls go
+wall, corner, wall and end.
+
+**Why (root cause).** King Dodongo's roll does not follow the walls by itself. It rolls straight to a corner number
+kept in his AI blackboard (pack `Enemy_DungeonBoss_Dodongo`, `AI/DungeonBossDodongo.action.spinattack.module.ainb`:
+`QueryDungeonBossDodongoSelectNextCornerNumber`, `QueryDungeonBossDodongoGetCornerPosFromNumber`,
+`OneShotTargetSetFromPosAndRot`; keys `DungeonBossDodongo_CurrentTargetCornerNum`, an s32 from 0 to 3, and
+`DungeonBossDodongo_IsReverse`, the way round). A blackboard is each game's own. The native boss sync carried his
+verbs and the mover his place, never that number: a copy counts corners by itself, apart from the owner's, and the
+game made his owner rolls to its own stale corner from wherever he stands. Across the pit no wall ends the roll.
+
+**Now** (`lichii/hook/coop_brain_state.h`, module only, no game patch). The move state goes with the boss:
+
+- the owner's game reads the carried keys of its boss each frame and sends them in the boss's samples (object
+  component 25 `brain`, [protocol.md](protocol.md)); the server keeps them with the boss's last state and gives
+  them to a new owner in `HANDOVER_STATE`;
+- a copy keeps the owner's last values and changes nothing in its own game;
+- a game made the owner puts them into its own blackboard through the game's own setters (main+0x264f170 for an
+  s32, main+0xd6cb40 for a bool: found by name, a locked key left alone, the change counted), called on the game's
+  calc thread by a caller that runs before the boss table's (`kBrainState` 43 before `kBossTable` 45), so they are in
+  before its brain chooses or a move starts over. Until they are in, its samples carry the old owner's values, never
+  its stale own. A hand-over state that comes after the owner news goes in the same way.
+
+Log: `<boss>: blackboard: ours now: player N's move state is put in first`, `put in: <key>=<value>, ...`,
+`its old owner's move state is ours: P put in, S the same`. An owner on an older build sends none: `no move state
+came from its old owner: our own stays`, as before.
+
+**Cases sharing the cause** (move state in the per-game blackboard; every boss's table read from its pack's
+`BlackboardParamTable`; carried: counters, indexes, the way round, a phase, a forced next move; not carried: the
+one-frame triggers a boss's actions raise from its own contacts, what follows from its place or animation, actor and
+perception ids):
+
+| Boss | Carried keys |
+|---|---|
+| King Dodongo | `CurrentTargetCornerNum`, `IsReverse`, `IsAfterRollingSpawn` |
+| Volvagia | `BattleState`, `ContinuousGroundActionNum`, `HoldingAppearHoleIndex`, `ForceSkyAttackType`, `IsTurnLeft`, `IsActFirstSkyAttack`, `IsInfinitySkyAttack`, `IsAppearFromCenter`, `IsOnceAppearSign`, `IsActFallRockOnce` |
+| Gohma | `EggIndex`, `GroundModeEnterLife`, `IsForceLandBattle`, `IsForceClimb`, `IsForceCeilingBattle`, `IsClimbFromOutside`, `IsJumpOffImmediately` |
+| Phantom Ganon | `Ganondorf_Common_ShootLioghtBallIndex`, `_CurrentDarknessAuraType`, `_IsCompletedFirstRally`, `_IsFirstAttackSecondHalfBattle`, `_IsDoFirstAttackAfterForceSpecialAttack`, `_IsForceSpecialAttack`, `DamageCountInLandBattle` |
+| Ganondorf | the same `Ganondorf_Common_` keys, his own `ShootLioghtBallIndex`, `FinalPhaseAttackActionNum`, `UseForceSpecialAttack`, `IsFinalPhaseStart`, `IsUnlockedBasicAttack` |
+| Morpha | `CheapCount`, `NextTentacleAttack`, `NowTentacleAttack`, `IsHalfPhase`, `IsHalfPhaseStart`, `IsHalfPhaseStartExecuted`, `IsFirstAttackExeced`, `IsSlamCleared`, `IsSpinCleared` |
+| Bongo Bongo | `ForceAttackCommand`, `IsForceRightHand`, `IsForceLeftHand`, `IsForceWait` |
+| Ganon | `CurrentSequenceType`, `FinalRushCurrentHitNum`, `LifeAtChanceWaitStart`, the three weak points' life and broken flags, `IsForbidChargeAttack`, `CanRushAttack` |
+| Barinade | `CurrentFormType`, `CurrentJellyfishActionType`, `RemainArmCount`, `IsBeamAttackAfterChanceTime`, `IsKnockBackAfterChanceTime` |
+
+Twinrova's battle state is already carried as her manager's orders (row 222). The component is generic (sync step
+S2): a value names its key by the Murmur3 hash of the blackboard key's name, with its type, so any actor's keys can be
+listed in `kKeys` (actor name, key name, kind) and a build that does not carry a key passes it over: the table can
+grow, or be generated from the packs, without a protocol change. Listed today: the bosses below, hand-judged. Solo or co-op idle: no boss is listed, nothing is
+read or written.
+
+**Tests.** `brain_state_test` (the table; the plan; the owner's read; King Dodongo made ours takes corner and way
+round in the frame of the hand-over, through the setters, by the blackboard's own name pointers; a late hand-over
+state; an older owner; a locked key; a call not made; no blackboard; a new game), `codec_test` (component 25, also
+in `HANDOVER_STATE`). **Not proven in game.** Check: kd-roll-hold-325 again: after every hand-over the
+`blackboard: ... put in` or `the same` line, every roll ends at a wall, King Dodongo's y stays 73.2 to 73.5, no
+`held 'Rolling_Loop'`; screenshots on both games. Not known: whether a roll started over mid-leg (a forced hand-over
+during the roll) goes to the corner it was heading for or to the one after it; the other bosses' keys are carried
+by the same rule and were not each seen in a hand-over.
+
+**A resumed move chosen from the stale state (KD proof r2 round 3, run 20261125-080748).** B's Link died in the lava
+and B's game reloaded: a fresh King Dodongo with its own blackboard. B's stun made B his owner between moves (its own
+walk, verb 1): the boss table's plan was *resume* (its own AI goes on, nothing asked again), and only after that the
+old owner's corner went in (`put in: CurrentTargetCornerNum=3`, 1 put in). The walk went on to the corner its AI had
+chosen as a copy from its own stale value: straight across the lava pit (his fire from 30.05 76.16 -61.66; every
+other fire in the run and in the solo reference is at a wall, x 9.2 or z -77.6). A, made owner again in the pit,
+fired and rolled from there (roll centre y 75.03) and was held 3 x 25 s. **Now:** a boss resumed on a hand-over
+whose move state then differs (any key put in, `CoopBrainState::Table::TakeChanged`) chooses again
+(`CoopBossNative::Table::StateChanged`: its brain verb set again, as row 325's re-choice) within `kStartSteps` of the
+hand-over. Log: `<boss>: its old owner's move state differed from ours: the move its AI goes on with was chosen
+from our stale state, its AI chooses again (row 149)`. Every boss with carried keys, every resume; a start-over
+(attack) and a re-choice already decide after the values. Tests: `boss_native_test` (row 149 resumed then
+differed), `brain_state_test` (a hand-over that changed a value names its boss once).

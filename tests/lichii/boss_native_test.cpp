@@ -2542,6 +2542,57 @@ TEST_CASE("native boss: boss turns: handed to us between moves, its own brain go
     }
 }
 
+TEST_CASE("native boss: row 149: resumed between moves, then its old owner's move state differed: it chooses again") {
+    // KD proof r2 round 3 (run 20261125-080748): B's game reloaded (a fresh King Dodongo, its own stale corner), was
+    // made his owner between moves (its own walk, verb 1: resume) and only then got the old owner's corner put in
+    // (coop_brain_state.h: 1 put in). The walk its AI went on with was chosen from the stale corner: across the lava
+    // pit; his next roll from inside the pit never ended. A resume whose move state then differs chooses again.
+    FakeGuest g;
+    const std::int32_t brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    auto walk = ActionFromRequest(GameRequest(1, 0));
+    REQUIRE(walk);
+    walk->flags = 0;
+    const auto resumed = [&](Table& t) {
+        t.SetOn(true, true);
+        t.SetTurns(true);
+        t.Publish({Phantom(Role::copy)});
+        CHECK_FALSE(t.OnActionVerb(kBsa, GameRequest(1, kNode), true, false));  // its own AI asks the same walk
+        t.Receive(kActor, BossBsa{3, 6, walk, {}});
+        REQUIRE(t.Step(g, false, 0, kMain));
+        REQUIRE(t.Step(g, true, kBlock, kMain));
+        CHECK_FALSE(t.Step(g, true, 0, kMain));
+        Boss ours = Phantom(Role::owner);
+        ours.attacking = false;
+        t.Publish({ours});
+        CHECK_FALSE(t.Step(g, false, 0, kMain));  // resume: nothing asked
+    };
+    {
+        Table t;
+        resumed(t);
+        t.StateChanged(kActor);
+        const auto c = t.Step(g, false, 0, kMain);
+        REQUIRE(c);
+        CHECK(c->function == kMain + addr::kSetBrainVerb);  // its brain chooses again from the values put in
+        CHECK(c->x[0] == kBsa);
+        CHECK(c->x[1] == 6u);
+        CHECK(c->x[2] == 1u);
+        CHECK_FALSE(t.Step(g, true, 0, kMain));
+        t.StateChanged(kActor);  // (once per hand-over)
+        CHECK_FALSE(t.Step(g, false, 0, kMain));
+    }
+    {
+        // Its move state came long after the hand-over: its AI chose since; nothing.
+        Table t;
+        resumed(t);
+        for (std::uint64_t i = 0; i <= Table::kStartSteps; ++i) {
+            CHECK_FALSE(t.Step(g, false, 0, kMain));
+        }
+        t.StateChanged(kActor);
+        CHECK_FALSE(t.Step(g, false, 0, kMain));
+    }
+}
+
 TEST_CASE("native boss: row 325: made ours mid-move that is no attack: its AI chooses again, nothing started over") {
     // Run 20261123-043946: King Dodongo's turn after a roll (verb 104) and his walk (verb 1), handed over while the
     // copy's own AI had asked another move, were started over (row 178): the turn became a roll on in his old facing to

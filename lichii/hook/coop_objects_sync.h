@@ -86,6 +86,9 @@ struct Seen {
     // Row 222 (coop_boss_orders.h): for one of ours, the battle manager's orders our game gave it (sent in its
     // samples, component 23).
     std::optional<coop::protocol::BossOrders> orders;
+    // Row 149 (coop_brain_state.h): for one of ours, the move state in its AI blackboard (sent in its samples,
+    // component 25).
+    std::optional<coop::protocol::KeyedValues> brain;
     // Boss turns (0.11.8): an enemy's attack as its own game says (CoopBossNative::AttackFlagsAt: its BSA's current
     // action verb attribute Attack). nullopt: not read (no BSA, not an enemy).
     std::optional<bool> attacking;
@@ -1362,6 +1365,9 @@ public:
     std::optional<coop::protocol::BossVariants> BossVariantsIn(std::uint64_t address) const;
     // Row 222: the owner's battle manager orders for our copies (by address), as BossVerbsIn.
     std::vector<std::pair<std::uint64_t, coop::protocol::BossOrders>> BossOrdersIn() const;
+    // Row 149 (coop_brain_state.h): the last owner's blackboard move state (by address), for our copies and for one
+    // just made ours (until our own values are sent).
+    std::vector<std::pair<std::uint64_t, coop::protocol::KeyedValues>> BrainStateIn() const;
     // The actors of the enemies we own, with their names (for the test drive).
     std::vector<std::pair<std::uint64_t, std::string>> Owned() const;
     // Sync digest (coop_digest.h): every shared object we hold (owner known), once per id, by id: name, owner,
@@ -1440,6 +1446,10 @@ private:
         std::optional<coop::protocol::BossVariants> variants_in;  // row 222 part 2: a copy's, with bsa_in
         std::optional<coop::protocol::BossOrders> orders;     // row 222: ours, as last read
         std::optional<coop::protocol::BossOrders> orders_in;  // row 222: a copy's, the owner's latest
+        std::optional<coop::protocol::KeyedValues> brain;       // row 149: ours, as last read
+        // Row 149: the last owner's blackboard move state, from its samples or the hand-over state. Kept across
+        // the hand-over to us (it is what our game then takes); dropped once our own values are sent.
+        std::optional<coop::protocol::KeyedValues> brain_in;
         bool boss_native = false;  // a bsa came for it once: its AI runs (never held), across owners
         coop::protocol::Vec3 velocity{};
         std::uint64_t seen_at = 0;

@@ -396,6 +396,7 @@ void Table::Publish(const std::vector<Boss>& bosses) {
                     e.react_until = std::max(e.react_until, steps_ + kStartSteps);
                     Note(b.name + ": made a copy during its own start (appear): it runs on, then the owner's state");
                 }
+                e.resumed_at.reset();
                 const bool own_ask_same =
                     e.put_action && e.own_asks.contains({e.put_action->slot, e.put_action->verb});
                 const MadeOurs plan = PlanMadeOurs(turns_, b.attacking, actions_on_ && e.put_action.has_value(),
@@ -406,6 +407,7 @@ void Table::Publish(const std::vector<Boss>& bosses) {
                     // attack) and its own brain asked that same move, in the owner's brain verb: it goes on from here.
                     Note(b.name + ": made ours between moves (verb " + std::to_string(e.put_action->verb) +
                          ", no attack): its own AI goes on, nothing started over (boss turns)");
+                    e.resumed_at = steps_;  // (row 149: its AI chooses again if the old owner's move state differs)
                 } else if (e.role == Role::copy && b.role == Role::owner && e.wanted && !b.plain && !OwnTime(e)) {
                     if (plan == MadeOurs::restart_move) {
                         // Row 178: made ours in the middle of the owner's move (Phantom Ganon handed over mid
@@ -1900,6 +1902,20 @@ Counts Table::Totals() const {
     return c;
 }
 
+void Table::StateChanged(std::uint64_t actor) {
+    std::lock_guard lock(mutex_);
+    Entry* e = FindActor(actor);
+    if (e == nullptr || e->role != Role::owner || !e->resumed_at) {
+        return;
+    }
+    const bool fresh = steps_ - *std::exchange(e->resumed_at, std::nullopt) <= kStartSteps;
+    if (!fresh || e->dying || e->plain) {
+        return;  // (long after its hand-over: its AI chose since, from the values in by then)
+    }
+    e->rechoose = true;
+    Note(e->name + ": its old owner's move state differed from ours: the move its AI goes on with was chosen from "
+                   "our stale state, its AI chooses again (row 149)");
+}
 std::vector<std::string> Table::TakeNotes() {
     std::lock_guard lock(mutex_);
     return std::exchange(notes_, {});
