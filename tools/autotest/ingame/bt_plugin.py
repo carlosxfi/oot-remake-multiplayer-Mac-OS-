@@ -284,7 +284,6 @@ def _kind(reports):
     return "PASS"
 
 
-@pytest.hookimpl(tryfirst=True)
 def _past_deadline(config):
     n = config.getoption("deadline_min")
     return n is not None and time.time() - config._bt_started >= n * 60
@@ -314,6 +313,7 @@ def _stop_at_deadline(item):
     return True
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_runtest_protocol(item, nextitem):
     if _past_deadline(item.config):
         return _stop_at_deadline(item)

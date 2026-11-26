@@ -291,6 +291,17 @@ class DeadlineMin(unittest.TestCase):
         self.assertIsNone(s["stopped"])
 
 
+class HookOrder(unittest.TestCase):
+    """bt_plugin's runtest protocol must answer before pytest's own (both are firstresult): without tryfirst the FLAKY
+    rerun, NOT-RUN and --deadline-min logic could be skipped silently (review-c123-6, 646484a63)."""
+
+    def test_runtest_protocol_is_tryfirst(self):
+        import bt_plugin as B
+        opts = getattr(B.pytest_runtest_protocol, "pytest_impl", None) or {}
+        self.assertTrue(opts.get("tryfirst"), "bt_plugin.pytest_runtest_protocol lost @pytest.hookimpl(tryfirst=True)")
+        self.assertFalse(hasattr(B._past_deadline, "pytest_impl"), "the hookimpl decorator sits on a helper")
+
+
 class SetupLimit(unittest.TestCase):
     """Pair.setup's 30 s limit holds for the calls inside it (review-c123-6 point 2): a hung bridge in a set-up is a
     SETUP-FAIL at the limit, not a FAIL at the test's budget. A fake clock: no real waiting."""
