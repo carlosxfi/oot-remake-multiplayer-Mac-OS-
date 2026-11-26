@@ -3310,36 +3310,43 @@ static CoopMenuTabsRule::Now MenuNow() {
     now.tab_shown = CoopPause::TabShown();
     return now;
 }
+// A key press, the window's (hos_coop_key, on the window's thread) or the play-test bridge's `key` (CoopHookshot::
+// BridgeKey, on the bridge's thread): the same steps and lines either way. 1: co-op took it. Only hos_coop_key marks
+// its thread as SDL's (Linux: the window's event loop, where SDL's clipboard may be read); the bridge's thread is not
+// SDL's, so a paste there takes the tools' way (review-c123-13 17:56, port-g7 follow-up).
+static int KeyPress(uint32_t vk, bool repeat) {
+    if (CoopHookshot::TypeKey(vk, repeat) || CoopModsRuntime::Key(vk, repeat)) return 1;
+    // F1 in free play: co-op's home, the - menu's Multiplayer tab (menu-polish-01113, owner O5). Where the - menu
+    // cannot open now (an event, a load, the title, a file screen: f1-event-c31) Longshot's menu, on co-op's
+    // Multiplayer tab (its tabs are there then, hos_coop_menu_tabs), as in 0.11.12: Leave from a stuck event. F1
+    // with one of co-op's tabs showing, or an old pack without our - tabs: Longshot's own F1. Not in original game.
+    if (vk == 0x70 /* F1 */ && !repeat && g_on) {
+        const CoopMenuTabsRule::Now now = MenuNow();
+        CoopMenuTabsRule::F1 route = CoopMenuTabsRule::OnF1(now);
+        if (route == CoopMenuTabsRule::F1::kMinusMenu) {
+            if (CoopPauseTab::OpenMultiplayer()) {
+                LOG_INFO(Core, "coop: F1: the - menu's Multiplayer tab (free play)");
+                CoopPause::WantClose();
+                return 1;
+            }
+            route = now.tab_shown ? CoopMenuTabsRule::F1::kLongshot : CoopMenuTabsRule::F1::kLongshotOnCoop;   // (refused now)
+        }
+        if (route == CoopMenuTabsRule::F1::kLongshotOnCoop) {
+            LOG_INFO(Core, "coop: F1: Longshot's menu on co-op's Multiplayer tab (our - menu cannot open now)");
+            CoopPause::WantMultiplayerTab();
+            return 1;
+        }
+        LOG_INFO(Core, "coop: F1: Longshot's own ({})", now.minus_tabs ? "co-op's tab shows: it closes" : "no - tabs of ours");
+    }
+    return 0;
+}
 COOP_HOOKSHOT_EXPORT int hos_coop_key(uint32_t vk, int repeat) {
     static CoopBoundary::Site site{"hos_coop_key"};
     return CoopExportGuard::Guard(site, static_cast<int>(0), [&]() -> int {
     #ifndef _WIN32
         const CoopClipboard::OnSdlThread sdl_thread;
     #endif
-        if (CoopHookshot::TypeKey(vk, repeat != 0) || CoopModsRuntime::Key(vk, repeat != 0)) return 1;
-        // F1 in free play: co-op's home, the - menu's Multiplayer tab (menu-polish-01113, owner O5). Where the - menu
-        // cannot open now (an event, a load, the title, a file screen: f1-event-c31) Longshot's menu, on co-op's
-        // Multiplayer tab (its tabs are there then, hos_coop_menu_tabs), as in 0.11.12: Leave from a stuck event. F1
-        // with one of co-op's tabs showing, or an old pack without our - tabs: Longshot's own F1. Not in original game.
-        if (vk == 0x70 /* F1 */ && repeat == 0 && g_on) {
-            const CoopMenuTabsRule::Now now = MenuNow();
-            CoopMenuTabsRule::F1 route = CoopMenuTabsRule::OnF1(now);
-            if (route == CoopMenuTabsRule::F1::kMinusMenu) {
-                if (CoopPauseTab::OpenMultiplayer()) {
-                    LOG_INFO(Core, "coop: F1: the - menu's Multiplayer tab (free play)");
-                    CoopPause::WantClose();
-                    return 1;
-                }
-                route = now.tab_shown ? CoopMenuTabsRule::F1::kLongshot : CoopMenuTabsRule::F1::kLongshotOnCoop;   // (refused now)
-            }
-            if (route == CoopMenuTabsRule::F1::kLongshotOnCoop) {
-                LOG_INFO(Core, "coop: F1: Longshot's menu on co-op's Multiplayer tab (our - menu cannot open now)");
-                CoopPause::WantMultiplayerTab();
-                return 1;
-            }
-            LOG_INFO(Core, "coop: F1: Longshot's own ({})", now.minus_tabs ? "co-op's tab shows: it closes" : "no - tabs of ours");
-        }
-        return 0;
+        return KeyPress(vk, repeat != 0);
     });
 }
 COOP_HOOKSHOT_EXPORT int hos_coop_char(uint32_t ch) {
@@ -3693,10 +3700,12 @@ COOP_HOOKSHOT_EXPORT void hos_coop_draw2(const HosCoopDraw* d) {
 }
 
 namespace CoopHookshot {
-// (port-g7: f1-event C3-1 as a bridge test; B #137: any host key) The play-test bridge's `key`: the window's own
-// entry, as Longshot's WM_KEYDOWN calls it (ls32-src/host/display.c: hos_coop_key first, a key co-op takes never
-// reaches Longshot), so what it does and logs is a real key press's (F1's route, F6's Players, the chat key).
+// (port-g7: f1-event C3-1 as a bridge test; B #137: any host key) The play-test bridge's `key`: the steps of the
+// window's own entry (KeyPress, as hos_coop_key runs them for Longshot's WM_KEYDOWN: ls32-src/host/display.c, a key
+// co-op takes never reaches Longshot), so what it does and logs is a real key press's (F1's route, F6's Players, the
+// chat key). Not hos_coop_key itself: that marks its thread as SDL's on Linux, and this is the bridge's thread.
 bool BridgeKey(std::uint32_t vk) {
-    return hos_coop_key(vk, 0) != 0;
+    static CoopBoundary::Site site{"bridge_key"};
+    return CoopExportGuard::Guard(site, static_cast<int>(0), [&]() -> int { return KeyPress(vk, false); }) != 0;
 }
 }  // namespace CoopHookshot

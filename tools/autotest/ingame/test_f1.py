@@ -39,7 +39,6 @@ import re
 
 import pytest
 
-import pair as pair_mod
 import solo
 from pair import READY_FRAMES
 # the way to the title and back, ONE source: test_smoke.py's lines (coop_pause.cpp to-title.now; coop_hook.cpp the
@@ -136,18 +135,6 @@ def games(pair):
     return [x for x in ("A", "B") if x in pair.c]
 
 
-def boot_place(pair):
-    """Pair.need_boot_place (both games in play in the boot's scene); on the SOLO boot game A alone, by the same rule:
-    need_boot_place steps until_in_play's default games ("A", "B"), which a solo pair (pair.c == {'A'}) has not."""
-    if len(games(pair)) == 2:
-        return pair.need_boot_place()
-    pair.until_in_play("A in play before the test", games=games(pair), max_frames=READY_FRAMES)
-    st = pair.state("A")
-    if pair.boot_scene and (st.get("scene") or "").lower() != pair.boot_scene.lower():
-        raise pair_mod.SetupFail("not at the boot's place: A is in %s, not the boot's %s" % (st.get("scene"),
-                                                                                         pair.boot_scene))
-    return {"A": st}
-
 
 def to_title(pair):
     """test_smoke.py's way to the title: to-title.now in each game's folder, its line, then each game AT the title (the
@@ -188,7 +175,7 @@ def load_again(pair, at_title):
 
 def run_title(pair, shot):
     with pair.setup():
-        boot_place(pair)
+        pair.need_boot_place()
     done, at_title = False, None
     try:
         at_title = to_title(pair)
@@ -205,7 +192,7 @@ def run_title(pair, shot):
 
 def run_event(pair, shot):
     with pair.setup():
-        boot_place(pair)
+        pair.need_boot_place()
         before = pair.flag_read("A", CHEST).get("value")
         # f1-event.A.txt: the chest put back CLOSED, then a warp into the Deku Tree loads it closed (its chests spawn
         # at the scene load: that run's '+ Obj_TBox' came before 'mark after'). The old row set the flag after its
@@ -278,7 +265,7 @@ def test_f1_event(pair):
 @pytest.mark.row("C3-1 rc-01113 F1 in free play: the game's - menu on co-op's Multiplayer tab (f1-event free)")
 def test_f1_free_play(pair):
     with pair.setup():
-        boot_place(pair)
+        pair.need_boot_place()
         s = pair.state("A")
         assert s.get("event") is False, "A not in free play at the start (an event)"
         assert last_free_play(pair, "A") == "yes", "the module's free play word is %r, not yes (the old 'state A free')" % (
