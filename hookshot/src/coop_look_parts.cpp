@@ -71,7 +71,7 @@ bool IsGear(Part p) {
     // painting's name (16 pieces) and a set vest or leather makes no painting that paints nothing. vest-link: the
     // vest is the TUNIC wardrobe's, as the Cap trim (its textures are tunic textures, green.bin: TunicPainted), so no
     // gear painting is made for it. leather-link brings the leather in with its textures, named last and only when
-    // set; hair-link the hair the same way.)
+    // set; hair-link brings the hair in the same way.)
 }
 }  // namespace
 

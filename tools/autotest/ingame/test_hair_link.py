@@ -272,7 +272,8 @@ def test_hair_without_character_select(pair):
 
 def to_age(pair, scene, age):
     pair.warp_both(scene)
-    for x in ("A", "B"):
+    pair.until_in_play("both games in play after warp %s" % scene)   # (a stale sample right after the load)
+    for x in pair.c:
         s = pair.state(x)
         assert s.get("age") == age, "%s is %s after warp %s (want %s)" % (x, s.get("age"), scene, age)
 
@@ -318,8 +319,7 @@ def test_hair_solo(pair):
     (coop_look_live.cpp Wear -> g_gear->Wear, which does not look at the session). Only A's own line and A's shots."""
     with pair.setup():
         solo.prove(pair)
-        s = pair.state("A")
-        assert pair.in_play(s), "A not in play (%s)" % s.get("not_ready")
+        pair.need_boot_place()   # (stepped until in play, never one read; pair.c = {'A'} in a --solo run)
         set_hair(pair, "A", "none")
         pair.step_both(60)
     done, low = False, []

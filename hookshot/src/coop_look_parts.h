@@ -289,7 +289,8 @@ using Wearers = std::map<char, std::uint32_t>;
 struct Wearer {
     std::optional<char> letter;
     std::optional<std::uint32_t> boots;
-    std::optional<std::uint32_t> hair;   // hair-link (part 19)
+    std::optional<std::uint32_t> hair = std::nullopt;   // hair-link (part 19); unset = the game's hair (0.11.12), so
+    // a {letter, boots} init is complete (-Wmissing-field-initializers, as TunicPaint::vest)
 };
 Wearers Assign(const Wearer& own, const std::vector<Wearer>& others);
 // hair-link: the same for the hair (the first of a letter has it, with or without a hair colour).

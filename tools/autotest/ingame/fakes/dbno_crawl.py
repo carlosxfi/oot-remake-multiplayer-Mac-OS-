@@ -18,6 +18,7 @@ import hookshot   # noqa: E402  (BOTTLE_ITEMS: the one bottle list, as the test 
 
 BOTTLES = hookshot.BOTTLE_ITEMS
 CHARSEL = "CharacterMenu_SelectedCharacter"
+NO_CS = "COOP_TEST_NO_CHARACTER_SELECT=1"   # (ingame/no_cs.py SWITCH: lane game B booted without the mod)
 FPS = 30                 # (pair.FPS: the fake's frames -> seconds)
 CRAWL_M, WALK_M = 0.01, 0.08   # metres a frame (the fake's numbers: a crawl well under a walk)
 
@@ -128,6 +129,8 @@ def act(game, words):
 
 def command(game, m):
     if m.get("cmd") == "flag_read" and m.get("name") == CHARSEL:
+        if game.env_on(NO_CS):   # (a game booted without Character Select has no such Int: no_cs.has_character_select)
+            return {"ok": True, "kind": "unknown", "value": None}
         return {"ok": True, "kind": "int", "value": game.dbno["charsel"]}
     if m.get("cmd") == "flag" and m.get("name") == CHARSEL:
         was, game.dbno["charsel"] = game.dbno["charsel"], int(m["value"])
