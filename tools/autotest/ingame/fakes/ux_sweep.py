@@ -1,16 +1,16 @@
 """Fake-game reactions for ux-sweep-0120's rows (ingame/test_ux_sweep.py; owner ux-sweep-0120). Hooks: fakegame.py
 docstring. Each reacts only to its own flag or scene.
 
-- Gift (rows 171/179): both logs get coop_hook.cpp:572's 'coop: gifts: sharing 22 one-time gift flags' at the
-  connect; a 0 -> 1 of HavePlayedEvent.Dm_Title_0096 reaches the other game 12 frames later (pickup rule,
-  coop_shop_sale.h); a 1 -> 0 goes nowhere.
+- Gift (rows 171/179): HavePlayedEvent.Dm_Title_0096 is a kOnceGifts Bool, so the share line and the relay are
+  fakes/gifts_237.py's (the ONE gifts fake, its share(); its BT_FAKE_GIFTS=off/back modes are this row's bugs too):
+  this file adds nothing for it.
 - Scrub (row 100), LostWood_Child: the rear and front Business Scrubs (Banc LostWood_Child_Static) in the world list,
   owner null (CoopObjects::IsOwnPuzzle). After a `hit` the rear one offers 'Talk'; A starts a talk, the talk ends
   after 3 more presses.
 - Lock (row 73), ForestTemple: adult Link; the first door's lock (Banc ForestTemple_Static) in each game until that
   game opens it: leaning in with a key spends it (the count is shared: the other game's goes down too); with no key
   and the lock already opened by the other game, the lent key opens it (docs/dungeon.md "Locked doors").
-BT_FAKE_UX (the bugs the tests must catch): gift-unshared (no 0 -> 1 share), gift-back (B's 0 reaches A),
+BT_FAKE_UX (the bugs the tests must catch):
 scrub-shared (the scrubs have owner 2 in A), scrub-softlock (the second talk never ends), lock-stuck (no lent key),
 lock-double (the lent key reaches the group as a found key: +1 in both).
 - Final blow (row 283), TwinrovaStage: Koume and Kotake (coop_boss.cpp:41) alive in the world list until a `kill`
@@ -19,7 +19,6 @@ lock-double (the lent key reaches the group as a found key: +1 in both).
 import math
 import os
 
-GIFT = "HavePlayedEvent.Dm_Title_0096"
 KEYS = "DungeonInfo.ForestTemple.SmallKeyNum"
 REAR, FRONT = (8.79, 82.89, -89.41), (7.30, 82.89, -85.59)
 LOCK = (-0.04, 103.03, 44.59)
@@ -34,18 +33,7 @@ def setup(game):
     game.ux_dead, game.ux_strike = set(), None
 
 
-def lane(fakelane):
-    for g in fakelane.g.values():
-        g.say("coop: gifts: sharing 22 one-time gift flags (Great Fairies, cows, Medigoron, frogs)")
-
-
 def after(game, m, r):
-    if m.get("cmd") == "flag" and m.get("name") == GIFT:
-        o, v, was = game.other, m.get("value"), r.get("was", 0)
-        if v == 1 and was in (0, None) and _mode() != "gift-unshared":
-            o.later(12, lambda: o.flags.__setitem__(GIFT, 1))
-        if v == 0 and _mode() == "gift-back":
-            o.later(12, lambda: o.flags.__setitem__(GIFT, 0))
     if m.get("cmd") == "flag" and m.get("name") == KEYS:
         o, v = game.other, m.get("value")
         o.later(12, lambda: o.flags.__setitem__(KEYS, v))      # a set count reaches the group

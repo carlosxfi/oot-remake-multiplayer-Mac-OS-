@@ -20,9 +20,11 @@ class UxSweep(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_one(self, k, mode="", extra=()):
+    def run_one(self, k, mode="", extra=(), gifts=""):
+        # (gifts: fakes/gifts_237.py's BT_FAKE_GIFTS mode, the one gifts fake's bugs; mode: fakes/ux_sweep.py's)
         out = os.path.join(self.tmp, "o")
-        T.pytest_run([".", "--fake", "--out", out, "-q", "-k", k, "--no-rerun"] + list(extra), env={"BT_FAKE_UX": mode})
+        T.pytest_run([".", "--fake", "--out", out, "-q", "-k", k, "--no-rerun"] + list(extra),
+                     env={"BT_FAKE_UX": mode, "BT_FAKE_GIFTS": gifts})
         return T.summary(out)
 
     def check(self, s, result, why=None):
@@ -34,10 +36,11 @@ class UxSweep(unittest.TestCase):
         self.check(self.run_one("great_fairy_gift"), "PASS")
 
     def test_gift_fails_when_not_shared(self):
-        self.check(self.run_one("great_fairy_gift", "gift-unshared"), "FAIL", "the gift is the group's")
+        # (the one gifts fake's 'off' = the module's bug: no share line either, so the row's set-up proof catches it)
+        self.check(self.run_one("great_fairy_gift", gifts="off"), "SETUP-FAIL", "the gifts are not shared")
 
     def test_gift_fails_when_a_zero_goes_back(self):
-        self.check(self.run_one("great_fairy_gift", "gift-back"), "FAIL", "went back to 0")
+        self.check(self.run_one("great_fairy_gift", gifts="back"), "FAIL", "went back to 0")
 
     def test_scrub_passes(self):
         self.check(self.run_one("business_scrub"), "PASS")
