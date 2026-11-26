@@ -1309,7 +1309,7 @@ TEST_CASE("object samples carry the owner's boss action variations, component 24
     // The component header: u16 id 24 (little-endian) then u16 length; the one that is not in `without`.
     if (raw[i] == 24 && raw[i + 1] == 0 && raw.size() > without.size()) {
       Bytes probe = raw;
-      probe[i] = 30;  // an id no build knows yet
+      probe[i] = 31;  // an id no build knows yet (30 is the boss shooter's)
       Message m;
       if (decode(probe, m) == Error::none && std::get<ObjectSample>(m) == older) {
         patched = true;
@@ -1426,8 +1426,8 @@ TEST_CASE("bad object messages are refused") {
 
 TEST_CASE("an object sample needs its time component, and skips unknown ones") {
   Bytes b = must_encode(ObjectSample{0, test::kMadeId, 1, {}});
-  // Unknown component 30 with 2 bytes: skipped.
-  put_u16(b, 30);
+  // Unknown component 31 with 2 bytes: skipped (30 is the boss shooter's).
+  put_u16(b, 31);
   put_u16(b, 2);
   b.push_back(0xaa);
   b.push_back(0xbb);
@@ -3291,7 +3291,7 @@ TEST_CASE("object components 25-28 carry keyed values (protocol 18, sync plan S1
     const std::uint16_t id = static_cast<std::uint16_t>(probe[at] | (probe[at + 1] << 8));
     const std::uint16_t length = static_cast<std::uint16_t>(probe[at + 2] | (probe[at + 3] << 8));
     if (id >= 25 && id <= 28) {
-      probe[at] = static_cast<std::uint8_t>(id + 5);  // 30-33: ids no build knows
+      probe[at] = static_cast<std::uint8_t>(id + 6);  // 31-34: ids no build knows (30 is the boss shooter's)
       ++patched;
     }
     at += 4 + length;

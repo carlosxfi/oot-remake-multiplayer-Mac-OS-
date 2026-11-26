@@ -1150,7 +1150,7 @@ TEST_CASE("hookshot: the boss orders wrap (patch 0036) is one row in 0005's tabl
           std::string::npos);
 }
 
-TEST_CASE("hookshot: the shooter wraps (patch 0045, row 286's probe) are three rows at the table's end, reads only") {
+TEST_CASE("hookshot: the shooter wraps (patch 0045, row 286's probe) are three rows at the table's end, the probe reads only, rows 222/286's table answers a copy's own call") {
     const std::string patch = ReadFile(kRepo / "hookshot" / "patches" / "0045-coop-shooter-wraps.patch");
     CHECK(NewFile(patch, "host/hos_coop_boss_shooter.h") ==
           ReadFile(kRepo / "hookshot" / "src" / "hos_coop_boss_shooter.h"));
@@ -1168,14 +1168,24 @@ TEST_CASE("hookshot: the shooter wraps (patch 0045, row 286's probe) are three r
     CHECK(patch.find("     (27, 0x377a990,") != std::string::npos);
     const std::string module = ReadFile(kRepo / "hookshot" / "src" / "coop_hookshot.cpp");
     CHECK(module.find("if (Env(\"LICHII_COOP_SHOOTER_PROBE\") != \"1\") {") != std::string::npos);
-    // Nothing in its branch of Wrap writes a register or answers 1.
+    // The probe writes nothing. The branch answers once: rows 222/286's table skips a copy's own AI call with the
+    // game's "nothing free" (x0 only, coop_boss_shooter_table.h); no other register and no guest memory is written.
     const std::size_t from = module.find("if (id == HOS_COOP_WRAP_SHOOTER_PREPARE ||");
     REQUIRE(from != std::string::npos);
     const std::size_t to = module.find("if (id == HOS_COOP_WRAP_ACTION_VERB && phase == 0) {", from);
     REQUIRE(to != std::string::npos);
     const std::string branch = module.substr(from, to - from);
-    CHECK(branch.find("return 1") == std::string::npos);
-    CHECK(branch.find("] = ") == std::string::npos);
+    const std::size_t answer = branch.find("return 1");
+    REQUIRE(answer != std::string::npos);
+    CHECK(branch.find("return 1", answer + 1) == std::string::npos);
+    const std::size_t write = branch.find("] = ");
+    REQUIRE(write != std::string::npos);
+    CHECK(branch.find("] = ", write + 1) == std::string::npos);
+    CHECK(branch.compare(write - 3, 12, "x[0] = a.x0;") == 0);
+    const std::size_t skip = branch.find("if (a.skip) {");
+    REQUIRE(skip != std::string::npos);
+    CHECK(skip < write);
+    CHECK(write < answer);
     CHECK(branch.find("Write(") == std::string::npos);
 }
 

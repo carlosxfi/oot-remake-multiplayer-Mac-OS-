@@ -17,9 +17,10 @@ bool Get(const Reader& read, std::uint64_t address, T& out) {
     return address != 0 && read(address, &out, sizeof out);
 }
 
+// (0x even for 0: "%#x" prints a bare 0, and the probe's lines read as one hex form)
 std::string Hex(std::uint64_t v) {
     char text[24];
-    std::snprintf(text, sizeof text, "%#" PRIx64, v);
+    std::snprintf(text, sizeof text, "0x%" PRIx64, v);
     return text;
 }
 
