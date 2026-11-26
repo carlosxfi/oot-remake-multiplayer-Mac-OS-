@@ -44,10 +44,9 @@ KIT_UP = 5   # (hos_coop_mods.h HOS_COOP_MODS_KIT_UP)
 
 def seed_in(pair):
     """Set-up proof that game A runs with the test seed's archive over Character Select's, and B without it."""
-    for x in ("A", "B"):
-        # (steps to a fresh in-play sample: a held game's first state right after the boot has no Link sample yet, the
-        # gifts-237 SETUP-FAIL 2026-11-26; this file may run alone with -k, without the smoke tier before it)
-        pair.until("%s in play" % x, lambda x=x: pair.in_play(pair.state(x)), max_frames=600)
+    # (steps to a fresh in-play sample: a held game's first state right after the boot has no Link sample yet, the
+    # gifts-237 SETUP-FAIL 2026-11-26; this file may run alone with -k, without the smoke tier before it)
+    pair.until_in_play("both games in play")
     a_mods = os.path.join(pair.games["A"]["folder"], "mods")
     assert os.path.isdir(os.path.join(a_mods, SEED_MOD)), "A: no %s (hookshot.py seed_layout did not run)" % SEED_MOD
     with open(os.path.join(a_mods, "coop-mods.list"), encoding="utf-8", errors="replace") as f:
