@@ -1569,8 +1569,17 @@ CoopDraw::Scene DrawScene() {
     {   // Free play for F6's Minus, each frame: our Link's frame is fresh (none in a load or on the title) and no event
         // (cutscene, talk) has control (CoopHook::CurrentMapView); the pause tab also reads the event manager itself.
         thread_local CoopHook::MapView view;
-        const bool free_play = !CoopTitle::Up() && CoopHook::CurrentMapView(view) && !view.event;
+        const bool title = CoopTitle::Up();
+        const bool fresh = !title && CoopHook::CurrentMapView(view);
+        const bool free_play = fresh && !view.event;
         CoopPauseTab::SetFreePlay(free_play);
+        // Each change, for tests (tools/autotest/hs_steps.py `state`, f1-event-c31): what F1 and the - menu go by.
+        const char* why = free_play ? "yes" : title ? "no (title)" : fresh ? "no (event)" : "no (load, no Link)";
+        thread_local const char* told = nullptr;
+        if (told != why) {
+            told = why;
+            LOG_INFO(Core, "coop: free play: {}", why);
+        }
     }
     if (list_press) {
         const bool in_scene = !CoopTitle::Up() && std::any_of(rows.begin(), rows.end(), [](const CoopHook::PlayerRow& r) {

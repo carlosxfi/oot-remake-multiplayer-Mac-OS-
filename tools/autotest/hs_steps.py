@@ -31,6 +31,9 @@ run.ps1 -Runtime hookshot calls `run` when the scenario is a steps file. The ver
   key A F1              a key press posted to game A's window (WM_KEYDOWN, WM_KEYUP: Longshot's wndproc, patch 0001,
                         hands it to hos_coop_key); proven landed by the module's line for it (KEYS_POSTED) within
                         10 s, else SETUP-FAIL and the run stops (Windows only)
+  state A event|free|title|load [S]   game A's last "coop: free play: ..." line (the module's, at each change)
+                        says that state within S s (default 60), else SETUP-FAIL and the run stops: a run that
+                        relies on a state proves it before it acts on it
 Results go to counts.txt (PASS/FAIL/UNPROVEN lines as run.ps1 writes them); a step that cannot run is a FAIL there too.
 Owner rule (2026-11-18), no PASS from log lines alone: puppets and fairies are visible, so an expect step whose
 counts match is PASS only when its see= checks are all OK (FAIL when a shot shows the wrong result), else UNPROVEN.
@@ -73,6 +76,17 @@ PROCESS_START = re.compile(r"(?m)^.*coop: build ")
 # GetAsyncKeyState in the module, so a posted message never reaches it).
 KEYS_POSTED = {"F1": (0x70, 0x3B, r"coop: F1: ")}
 KEY_LAND_WAIT = 10.0
+# `state`: the game's play state as the module logs each change of it (hookshot/src/coop_hookshot.cpp, the free play
+# block of the frame: "coop: free play: yes|no (event)|no (title)|no (load, no Link)"), the last such line counted.
+STATE_LINE = re.compile(r"(?m)^.*coop: free play: (.+?)\s*$")
+STATES = {"free": "yes", "event": "no (event)", "title": "no (title)", "load": "no (load, no Link)"}
+STATE_WAIT = 60.0
+
+
+def last_state(text):
+    """The last play state the module logged ("yes", "no (event)", ...), or None."""
+    found = STATE_LINE.findall(text or "")
+    return found[-1] if found else None
 
 
 class SetupFail(Exception):
@@ -177,6 +191,14 @@ def parse_steps(text):
             if len(rest) != 1:
                 raise StepsError("line %d: shot NAME" % n)
             steps.append(Step(n, verb, rest, line))
+        elif verb == "state":
+            try:
+                secs = float(rest[2]) if len(rest) == 3 else STATE_WAIT
+            except ValueError:
+                secs = None
+            if len(rest) not in (2, 3) or rest[1] not in STATES or secs is None or secs <= 0:
+                raise StepsError("line %d: state A %s [SECONDS]" % (n, "|".join(sorted(STATES))))
+            steps.append(Step(n, verb, [_game(n, rest[0]), rest[1], secs], line))
         elif verb == "key":
             if len(rest) != 2 or rest[1] not in KEYS_POSTED:
                 raise StepsError("line %d: key A %s" % (n, "|".join(sorted(KEYS_POSTED))))
@@ -422,6 +444,20 @@ class Runner:
 
     def do_shot(self, s):
         self.g.shot("s%d-%s" % (s.n, s.args[0]))
+
+    def do_state(self, s):
+        x, name, secs = s.args
+        want = STATES[name]
+        deadline = self.clock() + secs
+        while True:
+            got = last_state(self.g.log(x))
+            if got == want:
+                self.say("  %s: play state %s ('coop: free play: %s')" % (x, name, got))
+                return
+            if self.clock() >= deadline:
+                raise SetupFail("%s is not in %s after %d s: its last 'coop: free play:' line says %s" % (
+                    x, name, secs, repr(got) if got else "nothing"))
+            self.sleep(0.5)
 
     def do_key(self, s):
         x, key = s.args
@@ -960,6 +996,9 @@ def _dry(steps):
                 " ".join(s.args[2]) if s.args[2] else "no see= check (UNPROVEN)"))
         elif s.verb == "see":
             say("  would grade %s on the shots so far" % " ".join(s.args))
+        elif s.verb == "state":
+            say("  would wait %d s for %s's 'coop: free play: %s' (else SETUP-FAIL)" % (
+                s.args[2], s.args[0], STATES[s.args[1]]))
         elif s.verb == "key":
             games.key(s.args[0], *KEYS_POSTED[s.args[1]][:2])
             say("  then would wait %d s for '%s' in %s's log (else SETUP-FAIL)" % (

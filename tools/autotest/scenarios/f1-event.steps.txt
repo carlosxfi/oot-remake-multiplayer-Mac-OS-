@@ -4,13 +4,16 @@
 # (hookshot/src/coop_menu_tabs_rule.h): whenever the - menu cannot open now, Longshot's menu carries co-op's tabs and F1
 # opens it on Multiplayer.
 # Run: tools\autotest\run.ps1 -Scenario f1-event (Windows: `key` posts WM_KEYDOWN to the game's window).
-# Setup proof: each `key A F1` waits 10 s for the module's own "coop: F1: <route>" line (hs_steps.py KEYS_POSTED,
-# from coop_hookshot.cpp hos_coop_key), else SETUP-FAIL and the run stops; the first one is on the title, within a
-# minute or two of the start.
+# Setup proof, before each F1 (each SETUP-FAIL stops the run):
+#  - `state A title|event|free`: the module's last "coop: free play: ..." line (coop_hookshot.cpp, logged at each
+#    change) says that state (review-b119 7: a noload warp stays on the title until the four A presses, so the state
+#    is never taken from the scenario's lines alone).
+#  - `key A F1`: the module's own "coop: F1: <route>" line within 10 s (hs_steps.py KEYS_POSTED, from hos_coop_key).
+#  The first two come on the title within a minute or two of the start.
 # The checks (counts.txt), and the shots to read (each game's window):
-#  - title (session): route "Longshot's menu on co-op's Multiplayer tab"; shot f1-title: Longshot's menu, Multiplayer tab.
-#  - event (session, the Deku Tree's opening text up): the same route; shot f1-event: Longshot's menu on Multiplayer
-#    over the event (Leave reachable).
+#  - title (session): route "Longshot's menu on co-op's Multiplayer tab"; shot f1-title: Longshot's menu, Multiplayer.
+#  - event (session, the chest's item get in the Deku Tree): the same route; shot f1-event: Longshot's menu on
+#    Multiplayer over the item get (Leave reachable).
 #  - free play (session): route "the - menu's Multiplayer tab (free play)", Longshot's menu has 0 of co-op's tabs;
 #    shot f1-free: the game's - menu on co-op's Multiplayer tab.
 #  - solo (co-op idle, no server): the title and the event as above; shots f1-solo-title, f1-solo-event.
@@ -21,6 +24,7 @@
 #! switches LICHII_COOP_DEBUG_FLAGS=1,A:LICHII_COOP_CHEATS=1
 #! timeout 1800
 start A B
+state A title 120
 key A F1
 sleep 3
 shot f1-title
@@ -28,6 +32,7 @@ lines f1-title-route A min=1 coop: F1: Longshot's menu on co-op's Multiplayer ta
 lines f1-title-tabs A min=1 coop: Longshot's menu: [1-9] of co-op's tabs
 start A B
 play A f1-event.A.txt
+state A event 30
 key A F1
 sleep 3
 shot f1-event
@@ -35,20 +40,22 @@ lines f1-event-route A min=1 coop: F1: Longshot's menu on co-op's Multiplayer ta
 lines f1-event-minus A max=0 coop: F1: the - menu's Multiplayer tab
 start A B
 play A f1-free.A.txt
+state A free 30
 key A F1
 sleep 5
 shot f1-free
 lines f1-free-route A min=1 coop: F1: the - menu's Multiplayer tab \(free play\)
 lines f1-free-tabs A min=1 coop: Longshot's menu: 0 of co-op's tabs
 start A idle
-sleep 15
+state A title 120
 key A F1
 sleep 3
 shot f1-solo-title
 lines f1-solo-title-route A min=1 coop: F1: Longshot's menu on co-op's Multiplayer tab \(our - menu cannot open now\)
 start A idle
-sleep 15
+state A title 120
 play A f1-event.A.txt
+state A event 30
 key A F1
 sleep 3
 shot f1-solo-event

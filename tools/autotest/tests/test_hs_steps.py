@@ -305,6 +305,27 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(self.g.shots, [])   # (the run stopped at the failed setup)
         self.assertEqual(fails, 1)
 
+    def test_state_gate(self):
+        # (f1-event-c31, review-b119 7) the LAST "coop: free play:" line counts: an event that came and went is not one.
+        self.g.logs["A"] = "coop: free play: no (title)\ncoop: free play: yes\ncoop: free play: no (event)\n"
+        self.r.run(hs.parse_steps("state A event 5\nlines after A min=1 free play\n"))
+        self.assertEqual(self.counts(), ["PASS after (A: 3 lines match 'free play', at least 1)"])
+        self.g.logs["A"] += "coop: free play: yes\n"
+        fails = self.r.run(hs.parse_steps("state A event 5\nshot never\n"))
+        c = self.counts()
+        self.assertTrue(c[-1].startswith("FAIL SETUP-FAIL step 1 (state A event 5): A is not in event after 5 s: "
+                                         "its last 'coop: free play:' line says 'yes'"), c[-1])
+        self.assertEqual(self.g.shots, [])
+        self.assertEqual(fails, 1)
+        self.assertEqual(hs.last_state("x coop: free play: no (load, no Link)\r\n"), "no (load, no Link)")
+        self.assertIsNone(hs.last_state("nothing\n"))
+
+    def test_state_parse(self):
+        self.assertEqual(hs.parse_steps("state B free\n")[0].args, ["B", "free", hs.STATE_WAIT])
+        for bad in ("state A\n", "state A cutscene\n", "state A free 0\n", "state A free x\n"):
+            with self.assertRaises(hs.StepsError):
+                hs.parse_steps(bad)
+
     def test_key_parse(self):
         self.assertEqual(hs.parse_steps("key B F1\n")[0].args, ["B", "F1"])
         for bad in ("key A\n", "key A F6\n", "key A F1 F1\n"):
