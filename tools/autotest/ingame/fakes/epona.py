@@ -15,6 +15,7 @@
 Selftest switches (tests/test_ingame_epona.py): BT_FAKE_EPONA_BUG=blink -> A makes a second horse copy at the
 remount (its line still says the same copy);
 =gone -> A drops B's waiting horse at the get-off (the copy deleted, no 'waits'); =nosong -> the song brings nobody.
+A Get_Epona written lower than Complete comes back to Complete 30 frames on (so a --repeat round 2 finds her won).
 """
 import math
 import os
@@ -68,6 +69,9 @@ def after(game, m, r):
     cmd = m.get("cmd")
     if cmd == "flag" and m.get("name") == "Get_Epona" and m.get("value") in ("Complete", COMPLETE_HASH):
         game.other.flags["Get_Epona"] = "Complete"          # shared by its end
+    elif cmd == "flag" and m.get("name") == "Get_Epona" and r.get("was") in ("Complete", COMPLETE_HASH):
+        # written lower: the group's Complete comes back (co-op never lowers it, docs/flags.md "Shared by its end")
+        game.later(30, lambda: game.flags.__setitem__("Get_Epona", "Complete"))
     elif cmd == "flag_read" and m.get("name") == "Get_Epona":
         v = game.flags.get("Get_Epona")
         r.update(kind="enum", value=COMPLETE_HASH if v in ("Complete", COMPLETE_HASH) else (v or "0x00000000"))

@@ -26,7 +26,9 @@ class Epona(unittest.TestCase):
         env = {"BT_FAKE_REFS": os.path.join(self.tmp, "no-refs")}
         if bug:
             env["BT_FAKE_EPONA_BUG"] = bug
-        p = T.pytest_run([".", "--fake", "--out", out] + (ROW if row else []) + [
+        # a bug run: no FLAKY rerun (the rerun of test_epona_sync on the same boot finds Epona won and SKIPs, and the
+        # summary would keep that run's empty why; the rerun rule is bt_plugin's own, tested in test_ingame.py)
+        p = T.pytest_run([".", "--fake", "--out", out] + (ROW if row else []) + (["--no-rerun"] if bug else []) + [
             "-q", "-p", "no:cacheprovider", "-k", "test_epona_"], env=env)
         return p, T.summary(out)
 
@@ -58,6 +60,17 @@ class Epona(unittest.TestCase):
         r = T.results(s)
         for t in BOTH:
             self.assertEqual(r[t], "FAIL", p.stdout[-2000:])
+
+    def test_repeat_round_two_sync_skips(self):
+        """review-rows-c130: Get_Epona stays Complete after round 1, so round 2's sync is SKIP (not SETUP-FAIL) and
+        seen still runs."""
+        out = os.path.join(self.tmp, "rep")
+        p = T.pytest_run([".", "--fake", "--out", out] + ROW + ["--repeat", "2", "--no-smoke-gate", "-q", "-p",
+                                                                "no:cacheprovider", "-k", "test_epona_"],
+                         env={"BT_FAKE_REFS": os.path.join(self.tmp, "no-refs")})
+        r = T.results(T.summary(out))
+        self.assertEqual(r, {"test_epona_sync[r1]": "NO-REF", "test_epona_seen[r1]": "NO-REF",
+                             "test_epona_sync[r2]": "SKIP", "test_epona_seen[r2]": "NO-REF"}, p.stdout[-2000:])
 
     def test_no_song_is_no_ref(self):
         p, s = self.run_fake("nosong", bug="nosong")

@@ -155,9 +155,10 @@ def way_back(pair, was, done, b_start):
             pair.step_both(120)
         for x in ("A", "B"):
             if was.get(x) is not None and was[x] != COMPLETE_HASH:
-                r = pair.c[x].request("flag", check=False, reply_timeout=10, name=GET_EPONA, value=was[x])
-                if not r.get("ok"):
-                    pair.notes.append("%s: Get_Epona not put back to %s: %s" % (x, was[x], r.get("message")))
+                try:
+                    pair.flag(x, GET_EPONA, was[x])
+                except Exception as e:            # (a refusal is not the row: noted)
+                    pair.notes.append("%s: Get_Epona not put back to %s: %s: %s" % (x, was[x], type(e).__name__, e))
             pair.flag(x, AGE_FLAG, 1)
         pair.step_both(60)
         pair.warp_both(SCENE_CHILD, entrance=GATE)
@@ -207,14 +208,18 @@ def one_copy(pair, start):
 @pytest.mark.needs_env(*ROW_ENV)
 @pytest.mark.row("#150/#199 another player's own Epona seen while ridden and while she waits (hs-epona-sync)")
 def test_epona_sync(pair):
-    was, b_start = {}, pair.log["B"].mark()
+    b_start = pair.log["B"].mark()
+    with pair.setup():
+        need_child_in_play(pair)
+        was = {x: quest(pair, x) for x in ("A", "B")}
+    if was["B"] == COMPLETE_HASH:
+        # review-rows-c130: co-op never lowers Get_Epona, so after test_epona_seen (an earlier round of --repeat, or an
+        # earlier test on this boot) no field Epona stands: SKIP (nothing to judge here), not SETUP-FAIL
+        pytest.skip("the boot's Epona is won (Get_Epona %s, an earlier test or round): the field Epona does not stand"
+                    % was["B"])
     done = False
     try:
         with pair.setup():
-            need_child_in_play(pair)
-            was = {x: quest(pair, x) for x in ("A", "B")}
-            assert was["B"] != COMPLETE_HASH, ("B has won Epona already (Get_Epona %s): no field Epona stands; this test "
-                                               "needs a boot nobody won her in (it runs before test_epona_seen)" % was["B"])
             to_field(pair)
             h = horse_pos(pair)
             assert h and math.dist(h[::2], EPONA_FIELD[::2]) < 5, "no %s standing at the field spot in B's world list (%s)" % (
@@ -255,7 +260,10 @@ def test_epona_seen(pair):
             pair.give("B", SONG_ITEM)
             pair.flag("B", GET_EPONA, COMPLETE)       # the won save's state (epona-seen-run.ps1: Get_Epona Complete)
             to_field(pair)
-            pair.expect_log("B", B_OWNS, max_frames=180)
+            if was["B"] != COMPLETE_HASH:
+                pair.expect_log("B", B_OWNS, max_frames=180)
+            else:                                 # won before this test: the module said it once, at the change
+                assert pair.log["B"].find(B_OWNS, pos=0), "B: Get_Epona Complete but never /%s/ this boot" % B_OWNS
             assert quest(pair, "B") == COMPLETE_HASH, "B's Get_Epona is %s, not Complete" % quest(pair, "B")
             pair.act("B", "place %.2f %.2f %.2f" % EPONA_FIELD)   # hs-epona-seen.B.txt 'place -99.0 151.0 264.5'
             pair.act("B", "face %.2f %.2f" % (EPONA_FIELD[0], EPONA_FIELD[2] + 25))   # 'face -99.0 290.0': north, away
