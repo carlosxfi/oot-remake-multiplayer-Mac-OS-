@@ -40,6 +40,10 @@ lib=$src/scripts/lib.sh
 check 'versions: v0.1.0 > v0.1.0-beta2 > v0.1.0-beta1; beta9 < beta10' bash -c '. "$1"
     [ "$(kit_version_compare v0.1.0 v0.1.0-beta2)" = 1 ] && [ "$(kit_version_compare v0.1.0-beta2 v0.1.0-beta1)" = 1 ] &&
     [ "$(kit_version_compare v0.1.0-beta9 v0.1.0-beta10)" = -1 ] && [ "$(kit_version_compare ci-1234 v0.1.0)" = -1 ]' _ "$lib"
+check 'versions: v0.12.0 > v0.11.12 > v0.11.9; v0.12.1 > v0.12.0 (the release after 0.11.12 is 0.12.0)' bash -c '. "$1"
+    [ "$(kit_version_compare v0.12.0 v0.11.12)" = 1 ] && [ "$(kit_version_compare v0.11.12 v0.12.0)" = -1 ] &&
+    [ "$(kit_version_compare v0.11.12 v0.11.9)" = 1 ] && [ "$(kit_version_compare v0.12.1 v0.12.0)" = 1 ] &&
+    [ "$(kit_version_compare v0.12.0-test-1234abcd v0.11.12)" = 1 ]' _ "$lib"
 printf '# a comment\ntag=v3.0.0-rc.3\nurl=https://x/y=z\n' >"$tmp/pin"
 check 'pin_get reads key=value lines (a value may hold =)' bash -c '. "$1"; [ "$(pin_get "$2" tag)" = v3.0.0-rc.3 ] && [ "$(pin_get "$2" url)" = https://x/y=z ] && ! pin_get "$2" nope' _ "$lib" "$tmp/pin"
 check 'kit_offline: 1 offline, 0 online; behind a proxy (https_proxy, ALL_PROXY) online with no probe' bash -c '. "$1"
