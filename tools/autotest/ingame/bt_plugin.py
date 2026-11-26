@@ -167,7 +167,28 @@ def _rep_of(item):
     return cs.params.get("bt_rep", 0) if cs else 0
 
 
+# pytest-timeout is only the backstop for a call that never returns (pytest.ini: timeout 1800, thread method: it ends
+# the whole worker). It times the test FUNCTION only (timeout_func_only: the pair fixture's recovery, up to
+# Pair.RECOVER_RELAUNCH_S, is not in it), so each test's backstop is its own budget plus this margin, never under the
+# ini's: the budget's own deadline always FAILs the test first. (Was the ini's 1800 s for all: test_host_menu's
+# budget 2400 and test_lan251's 3000 could be ended by the backstop first; review-c123-15 22:37 on crawl-337-11.)
+BACKSTOP_MARGIN_S = 300
+
+
+def _backstop(config, items):
+    try:
+        floor = float(config.getini("timeout") or 0)
+    except (ValueError, TypeError):      # (no pytest-timeout in this environment: no ini key)
+        floor = 0.0
+    for it in items:
+        m = it.get_closest_marker("budget")
+        budget = m.args[0] if m else DEFAULT_BUDGET
+        if not it.get_closest_marker("timeout"):
+            it.add_marker(pytest.mark.timeout(max(floor, budget + BACKSTOP_MARGIN_S)))
+
+
 def pytest_collection_modifyitems(config, items):
+    _backstop(config, items)
     order = {id(it): i for i, it in enumerate(items)}
     items.sort(key=lambda it: (_rep_of(it), 1 if it.get_closest_marker("leaves_play") else 0,
                                0 if it.get_closest_marker("smoke") else 1, order[id(it)]))
@@ -289,7 +310,7 @@ def boot_scene(name=DEFAULT_BOOT):
     return boot_place(name)[0]
 
 
-BOOT_READY_S = 240    # the boot proof's own deadline (out of a load, a warp of a game left elsewhere, an event's end)
+BOOT_READY_S = P.BOOT_READY_S   # the boot proof's own deadline (one value, pair.py: Pair.recover's relaunch uses it too)
 RECOVER_S = P.RECOVER_BASE_S + 2 * P.RECOVER_WARP_S   # the recovery's ceiling: both games warped (Pair.recover)
 
 
@@ -703,6 +724,11 @@ def lane_pair(request):
         pair.lane, pair.info, pair.session = lane, dict(info, boot_s=round(time.monotonic() - t0, 1)), session
         pair.live = _live                       # (Pair.rejoin: live.py quit + relaunch in this session)
         pair.boot = dict(zip(("A", "B"), boot_paths(config.getoption("boot"))))   # (rejoin: the lane's own boot)
+        if config.getoption("boot") in HOST_IN_GAME_BOOTS:
+            # (A hosts the session itself: relaunching A ends B's session, and boot_ready alone would not see it;
+            # review-c123-15 22:37. The recovery never relaunches A here: a stuck A loses the lane)
+            pair.no_relaunch = {"A": "A hosts the session in game (boot %s): its relaunch would end B's session"
+                                     % config.getoption("boot")}
         pair.window_shooter = windowshot.Shooter(session)   # (screen-shot.ps1 on the session's game pids)
         pair.has_switch = boot_switch_check(config)          # (Pair.ocarina_out: the probe switch on this boot)
         _module_proof(pair, lane)               # (before any bridge call: a game with no module refuses the connection)
@@ -800,6 +826,10 @@ def env_has(have, want):
 
 @pytest.fixture
 def pair(request, lane_pair):
+    lost = getattr(request.config, "_bt_lane_lost", None)
+    if lost:
+        # (the recovery and its one relaunch failed after an earlier test: no doomed recovery per test, crawl-337-11)
+        raise P.SetupFail("lane lost after %s" % lost)
     have = boot_env(request.config)
     for m in request.node.iter_markers("needs_env"):
         lack = [e for e in m.args if not env_has(have, e)]
@@ -808,10 +838,15 @@ def pair(request, lane_pair):
     if getattr(request.config, "_bt_dirty", False):
         # (the test before did not pass, or left play on purpose: the lane's recovery first, as its own set-up)
         # (on state, bounded per game it warps: Pair.recover; was setup(limit=30 s), and two warps measure 27-31 s)
-        lane_pair.begin(RECOVER_S + 5)
+        # (its bound covers the one relaunch of a stuck game, P.Pair.RECOVER_RELAUNCH_S; the stepped part keeps its own)
+        lane_pair.begin(P.Pair.RECOVER_RELAUNCH_S + 5)
         try:
             lane_pair.recover(boot_scene(request.config.getoption("boot")), max_frames=P.READY_FRAMES * 2)
         except P.SetupFail as e:
+            # (its notes go on this test either way: they were dropped on a failed recovery, tb-pilot-f9f3b9c2 'notes: []')
+            request.node.user_properties.append(("notes", list(lane_pair.notes)))
+            if isinstance(e, P.LaneLost):
+                request.config._bt_lane_lost = "%s: %s" % (request.node.nodeid.split("::")[-1], e)
             raise P.SetupFail("recovery after the test before: %s" % e) from e
         request.config._bt_dirty = False
         request.node.user_properties.append(("recovery", list(lane_pair.notes)))

@@ -39,6 +39,11 @@ FPS = 30              # Ocarina of Time's calc rate on Hookshot: frames -> secon
 WARP_PAIR_MEASURED_S = 31.0
 RECOVER_WARP_S = WARP_PAIR_MEASURED_S   # one game's warp in a recovery: the worst TWO-game warp = 2x one game's (margin)
 RECOVER_BASE_S = SETUP_LIMIT_S          # a recovery's other part: out of a load, an event's end, in play (stepped)
+BOOT_READY_S = 240.0  # the boot proof's own deadline (out of a load, a warp of a game left elsewhere, an event's end)
+# A recovery whose stepped part failed relaunches each game not in play at the boot's place ONCE (Pair.recover,
+# crawl-337-11): a game left waiting for input (a pause page, tb-gate-ui-f9f3b9c2 test_pause; the ocarina UI,
+# tb-pilot-f9f3b9c2 test_ocarina_notes) never comes back by stepping. Its bound: each game's live.py quit + relaunch
+# (Pair.REJOIN_QUIT_S + REJOIN_BOOT_S, set on Pair below) and the boot proof again (BOOT_READY_S).
 # A warp inside a test's set-up (Pair.setup) gets the same allowance on top of SETUP_LIMIT_S: one warp_one = game x's
 # warp (13.5-15.5 s) + the other game stepped to the same frames (about as long: tb-gate-look-f9f3b9c2-2 SETUP-FAIL,
 # warp_one(A) ~16 s then step_other(B) needed 14.5 s with 13.5 s of the 30 left). The 30 s still bounds the rest.
@@ -79,6 +84,12 @@ OCARINA_PLAYS_FRAMES = 240
 
 class SetupFail(Exception):
     """The test could not be set up (the lane, a warp, a give, the set-up took more than 30 s): SETUP-FAIL, not FAIL."""
+
+
+class LaneLost(SetupFail):
+    """The lane's recovery failed and so did its one relaunch of the stuck game(s) (Pair.recover): the pair cannot be
+    brought back, so bt_plugin SETUP-FAILs every later test of this lane at once ('lane lost after <test>') instead of
+    repeating the same doomed recovery for each (tb-pilot-f9f3b9c2: 26 cascade SETUP-FAILs of ~28 s each)."""
 
 
 class NoRef(Exception):
@@ -528,18 +539,46 @@ class Pair:
         return "%s: scene=%s loading=%s event=%s not_ready=%s" % (x, st.get("scene"), st.get("loading"), st.get("event"),
                                                                st.get("not_ready"))
 
+    def why_now(self, x, seconds=AWAY_CHECK_S):
+        """why_not(x) for a failure's text, read on its OWN short deadline (as away_from_boot): the test's is often
+        spent by then, and a read with 0 s left raised 'state not sent', which REPLACED the real reason (which game,
+        in what state: tb-pilot-f9f3b9c2, 26 recoveries 'state not sent'). Never raises: a failed read names itself."""
+        outer = self.deadline
+        self.deadline = Deadline(seconds, clock=outer.clock)
+        try:
+            return self.why_not(x)
+        except Exception as e:
+            return "%s: no state (%s: %s)" % (x, type(e).__name__, e)
+        finally:
+            self.deadline = outer
+
+    def at_place(self, x, scene, seconds=AWAY_CHECK_S):
+        """Game x in play (and in `scene` when given), on one read on its own short deadline; a failed read is False."""
+        outer = self.deadline
+        self.deadline = Deadline(seconds, clock=outer.clock)
+        try:
+            st = self.state(x)
+        except Exception:
+            return False
+        finally:
+            self.deadline = outer
+        return self.in_play(st) and (not scene or (st.get("scene") or "").lower() == scene.lower())
+
     def until_in_play(self, what, games=None, max_frames=600):
         """Steps both games until every one of `games` is in play (a fresh Link sample, a scene, no load, no event).
         `games` defaults to the pair's OWN games (self.c): a --solo pair has game A only, and a fixed ('A', 'B')
         read state('B') -> KeyError instead of a SETUP-FAIL (review-rows-c130-3 16:38, need_boot_place).
         A stale sample ('Link sample older than the frame'), a load or an event is a game not ready YET: it is stepped,
         never judged from one read (pilot test-bridge-pilot-fa63e90f: test_boot / test_pause read once, failed on a
-        stale sample). After max_frames: AssertionError naming each game's state."""
+        stale sample). After max_frames: AssertionError naming each game's state. On the deadline (TestTimeout, an
+        AssertionError too) the same, still a TestTimeout: each game's state is read on its own short deadline
+        (why_now), so the timeout keeps its text and gains the games' states (was why_not on the spent deadline: its
+        'state not sent' replaced both, crawl-337-11)."""
         games = tuple(self.c) if games is None else tuple(games)
         try:
             return self.until(what, lambda: all(self.in_play(self.state(x)) for x in games), max_frames)
         except AssertionError as e:
-            raise AssertionError("%s; %s" % (e, "; ".join(self.why_not(x) for x in games))) from None
+            raise type(e)("%s; %s" % (e, "; ".join(self.why_now(x) for x in games))) from None
 
     def boot_ready(self, scene=None, max_frames=BOOT_FRAMES):
         """The lane's boot proof (bt_plugin.lane_pair, NO REPEAT VOIDS after test-bridge-pilot-fa63e90f r1: B was left
@@ -633,34 +672,96 @@ class Pair:
         (the only games boot_ready warps). Was one fixed 30 s for everything: two warps measure 27-31 s, so a
         recovery that warped both games timed out 3/3 (party-hud-bridge-6947aa3d). Every frame wait stays frame-
         bounded (max_frames); every bridge wait stays inside this bound. Anything wrong: SetupFail('recovery: ...')
-        or boot_ready's SetupFail('boot: ...'). Returns boot_ready's states; notes the time and the bound."""
+        or boot_ready's SetupFail('boot: ...'). Returns boot_ready's states; notes the time and the bound.
+        When that stepped part fails, each game not in play at the boot's place is relaunched ONCE (_relaunch_stuck);
+        if that cannot bring the pair back: LaneLost (bt_plugin then SETUP-FAILs the lane's later tests at once)."""
         outer = self.deadline
         clock = outer.clock
         t0 = clock()
-        limit = RECOVER_BASE_S
-        self.deadline = Deadline(max(0.0, min(limit, outer.left())), clock=clock)
+        box = {"limit": RECOVER_BASE_S, "away": []}
         try:
-            try:
-                self.until("both games out of a load before the recovery",
-                           lambda: all(_loaded(self.state(x)) for x in self.c), max_frames)
-                away = [x for x in self.c
-                        if scene and (self.state(x).get("scene") or "").lower() != scene.lower()]
-            except SetupFail:
-                raise
-            except Exception as e:
-                raise SetupFail("recovery: %s: %s" % (type(e).__name__, e)) from e
-            limit = RECOVER_BASE_S + RECOVER_WARP_S * len(away)
-            self.deadline = Deadline(max(0.0, min(limit - (clock() - t0), outer.left())), clock=clock)
-            try:
-                st = self.boot_ready(scene, max_frames)
-            except SetupFail:
-                raise
-            except Exception as e:
-                raise SetupFail("recovery: %s: %s" % (type(e).__name__, e)) from e
+            st = self._recover_stepped(scene, max_frames, outer, t0, box)
+        except Exception as e:
+            fail = e if isinstance(e, SetupFail) else SetupFail("recovery: %s: %s" % (type(e).__name__, e))
+            self.deadline = outer
+            return self._relaunch_stuck(scene, fail, outer, t0)
         finally:
             self.deadline = outer
-        self.notes.append("recovery %.1f s (bound %.0f s, %d warp%s)" % (clock() - t0, limit, len(away),
+        away = box["away"]
+        self.notes.append("recovery %.1f s (bound %.0f s, %d warp%s)" % (clock() - t0, box["limit"], len(away),
                                                                         "" if len(away) == 1 else "s"))
+        return st
+
+    def _recover_stepped(self, scene, max_frames, outer, t0, box):
+        """Pair.recover's stepped part (no relaunch): out of a load, then boot_ready, inside its per-warp bound."""
+        clock = outer.clock
+        self.deadline = Deadline(max(0.0, min(box["limit"], outer.left())), clock=clock)
+        try:
+            self.until("both games out of a load before the recovery",
+                       lambda: all(_loaded(self.state(x)) for x in self.c), max_frames)
+            box["away"] = [x for x in self.c
+                           if scene and (self.state(x).get("scene") or "").lower() != scene.lower()]
+        except SetupFail:
+            raise
+        except Exception as e:
+            raise SetupFail("recovery: %s: %s; %s" % (type(e).__name__, e,
+                                                      "; ".join(self.why_now(x) for x in self.c))) from e
+        box["limit"] = RECOVER_BASE_S + RECOVER_WARP_S * len(box["away"])
+        self.deadline = Deadline(max(0.0, min(box["limit"] - (clock() - t0), outer.left())), clock=clock)
+        try:
+            return self.boot_ready(scene, max_frames)
+        except SetupFail:
+            raise
+        except Exception as e:
+            raise SetupFail("recovery: %s: %s" % (type(e).__name__, e)) from e
+
+    def _relaunch_stuck(self, scene, fail, outer, t0):
+        """The stepped recovery failed (`fail`): each game NOT in play at the boot's place (one read each, own short
+        deadline) is relaunched ONCE through the lane's own boot (Pair.rejoin: live.py quit + relaunch with the boot
+        script x booted with), then the boot proof again (boot_ready, BOOT_READY_S / BOOT_FRAMES). A game left
+        waiting for input (a pause page, the ocarina UI) never comes back by stepping (tb-gate-ui-f9f3b9c2 test_pause,
+        tb-pilot-f9f3b9c2 test_ocarina_notes); no blind button escape (NO GUESSED VALUES). Both games at the place on
+        that read: the recovery holds after all (noted). A game in Pair.no_relaunch ({x: why}, bt_plugin: game A on a
+        host-in-game boot, whose relaunch would end B's session) is never relaunched: LaneLost at once. A relaunch, or the boot proof after it, that fails: LaneLost,
+        with `fail` first in its text. Every step is noted (bt_plugin puts the notes on the test either way)."""
+        clock = outer.clock
+        self.notes.append("recovery: stepped part failed: %s" % fail)
+        whys = {x: self.why_now(x) for x in self.c}
+        bad = [x for x in self.c if not self.at_place(x, scene)]
+        if not bad:
+            self.notes.append("recovery: then both games in play at the boot's place on a fresh read (%.1f s)"
+                              % (clock() - t0))
+            self.deadline = Deadline(AWAY_CHECK_S, clock=clock)
+            try:
+                return {x: self.state(x) for x in self.c}
+            finally:
+                self.deadline = outer
+        never = {x: why for x, why in (getattr(self, "no_relaunch", None) or {}).items() if x in bad}
+        if never:
+            self.notes.append("recovery: not relaunched: %s" % "; ".join("%s (stuck: %s)" % (w, whys[x])
+                                                                     for x, w in never.items()))
+            raise LaneLost("%s; %s" % (fail, "; ".join("%s stuck (%s), not relaunched: %s" % (x, whys[x], w)
+                                                       for x, w in never.items())))
+        try:
+            for x in bad:
+                self.deadline = Deadline(max(0.0, min(self.REJOIN_QUIT_S + self.REJOIN_BOOT_S, outer.left())),
+                                         clock=clock)
+                try:
+                    self.rejoin(x)
+                except Exception as e:
+                    self.notes.append("recovery: %s stuck (%s): relaunch failed: %s: %s" % (x, whys[x], type(e).__name__, e))
+                    raise LaneLost("%s; relaunch of %s (stuck: %s) failed: %s: %s"
+                                   % (fail, x, whys[x], type(e).__name__, e)) from e
+                self.notes.append("recovery: %s stuck (%s): relaunched" % (x, whys[x]))
+            self.deadline = Deadline(max(0.0, min(BOOT_READY_S, outer.left())), clock=clock)
+            try:
+                st = self.boot_ready(scene, BOOT_FRAMES)
+            except Exception as e:
+                self.notes.append("recovery: boot proof after the relaunch failed: %s: %s" % (type(e).__name__, e))
+                raise LaneLost("%s; after relaunching %s: %s: %s" % (fail, ", ".join(bad), type(e).__name__, e)) from e
+        finally:
+            self.deadline = outer
+        self.notes.append("recovery %.1f s with a relaunch of %s" % (clock() - t0, ", ".join(bad)))
         return st
 
     def load_both(self, at_title, max_frames=3600):
@@ -798,7 +899,7 @@ class Pair:
         this start of game x only (live.py relaunch --env, after the session's own: it wins; row 251:
         LICHII_COOP_SERVER=<LAN IP>:<port>, LICHII_COOP_PASSWORD=); the next rejoin without it starts game x with the
         session's own env again. Returns live.py relaunch's answer; AssertionError if a step did not hold."""
-        if not (self.session and self.live):
+        if not (getattr(self, "session", None) and getattr(self, "live", None)):
             raise SetupFail("rejoin %s: no live.py session (Pair.session / Pair.live) for live.py quit/relaunch" % x)
         live = self.live
         boot = boot or self.boot.get(x)
@@ -832,6 +933,10 @@ class Pair:
         assert h.get("control"), "%s: after the relaunch the bridge has no Longshot control: %s" % (x, h)
         self.notes.append("%s rejoined: quit %s; relaunch %s" % (x, q.get("how"), r.get("boot")))
         return r
+
+    # Pair.recover's ceiling with its one relaunch (_relaunch_stuck): the stepped part (both games warped), then
+    # each game's quit + relaunch, then the boot proof again (bt_plugin's pair fixture gives a recovery this much).
+    RECOVER_RELAUNCH_S = RECOVER_BASE_S + 2 * RECOVER_WARP_S + 2 * (REJOIN_QUIT_S + REJOIN_BOOT_S) + BOOT_READY_S
 
     SERVER_RESTART_S = 30    # live.py server stop (a kill) + start (its own 1 s settle): the call's wall-clock limit
 

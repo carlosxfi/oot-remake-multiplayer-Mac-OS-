@@ -186,6 +186,12 @@ pytest-timeout (pytest.ini, 1800 s) is only the backstop for a call that never r
   scene (the worst warp measured, `warp_both` 26.9-31.0 s for both games on a full lane, party-hud-bridge-6947aa3d),
   so 92 s at most. It is the lane's boot proof, not a test's set-up. A test's set-up that warps gets the same
   31 s (`SETUP_WARP_S`) per game it warps (`warp_one`; `warp_both` = two) on top of its 30 s, inside the test's budget.
+- When that stepped recovery fails, each game not in play at the boot's place is relaunched ONCE through the lane's
+  own boot (`Pair.rejoin`: live.py quit + relaunch), then the boot proof runs again: a game left waiting for input (a
+  pause page, the ocarina UI) never comes back by stepping (tb-gate-ui / tb-pilot-f9f3b9c2). If the relaunch fails
+  too, the lane is lost: that test is SETUP-FAIL with the recovery's notes, and every later test of the lane is
+  SETUP-FAIL `lane lost after <test>: <reason>` at once (was the same doomed recovery for each: 26 in the pilot).
+  A timeout's text keeps its reason and each game's state (read on its own short deadline, `Pair.why_now`).
 - Module proof, before any bridge call: each game's log must have the module's `coop: playtest: listening on
   127.0.0.1:<its port>` line, else every test is SETUP-FAIL `lane N boot: X: the module never started` (with the
   log's last line). `hookshot.py run` counts a game ready only at Longshot's `rx: renderer: Vulkan (` line, not the
