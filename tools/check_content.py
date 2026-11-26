@@ -183,6 +183,9 @@ def unlisted_python_tests(paths, workflow_text, runner_text=""):
         # tools/autotest/tests/test_ingame.py (docs/ingame-tests.md): a workflow naming that one runs every row file
         if q.startswith(INGAME_DIR) and INGAME_SELFTEST in workflow_text:
             continue
+        # a row port's own selftests (tools/autotest/tests/test_ingame_<row>.py) run inside test_ingame.py (load_tests)
+        if re.match(r"^tools/autotest/tests/test_ingame_[^/]+\.py$", q) and INGAME_SELFTEST in workflow_text:
+            continue
         if q in workflow_text or re.search(r"(?<![A-Za-z0-9_.-])" + re.escape(name) + r"(?![A-Za-z0-9_-])", runner_text):
             continue
         out.append(p)

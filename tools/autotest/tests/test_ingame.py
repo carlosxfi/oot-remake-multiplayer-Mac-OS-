@@ -489,6 +489,51 @@ class BootCommand(unittest.TestCase):
             self.assertIn(want, out["runner"])
 
 
+HOOK_TESTS = 'import pytest\n\ndef test_hooks(pair):\n    pair.act("A", "frob 3")\n    pair.expect_log("A", r"fake hook: frob 3 on A", max_frames=30)\n    st = pair.state("B")\n    assert any(a.get("name") == "HookActor_B" for a in st["world"]["actors"]), st["world"]\n    assert st.get("hooked") == "shared-1"\n    r = pair.call("A", "ping_hook")\n    assert r.get("pong") is True\n    pair.press("A", ["ZR"], frames=2)\n    pair.expect_log("A", r"fake hook: pressed ZR", max_frames=30)\n\n    import playtest_client as pc\n    with pytest.raises(pc.BridgeError):           # (a plain warp: the boss intro event makes it a timeout)\n        pair.warp_both("BossStage_Test")\n    st = pair.warp_both("BossStage_Test", arrive_in_event=True)\n    assert st["A"]["scene"] == st["B"]["scene"] == "BossStage_Test"\n    assert any("answered timeout in the arrival event" in n for n in pair.notes), pair.notes\n    pair.act("A", "place 0 0 0")\n    pair.call("A", "move", yaw=90, strength=1.0, frames=30)\n    assert pair.state("A")["pos"][0] == 1.0, pair.state("A")["pos"]      # (move_step: the wall at x 1.0)\n'
+HOOK_MODULE = 'def setup(game):\n    game.hook_seen = []\n\ndef lane(fl):\n    fl.g["A"].shared = fl.g["B"].shared = {"n": 1}\n\ndef command(game, m):\n    if m.get("cmd") == "ping_hook":\n        return {"ok": True, "pong": True}\n    if m.get("cmd") == "warp" and m.get("scene") == "BossStage_Test":\n        game.run(40)\n        game.scene = "BossStage_Test"           # (there, but its intro event runs: the bridge says timeout)\n        return {"ok": False, "error": "timeout", "message": "still in an event"}\n    return None\n\ndef move_step(game, pos):\n    if game.scene == "BossStage_Test" and pos[0] > 1.0:\n        return [1.0, pos[1], pos[2]]\n    return None\n\ndef after(game, m, r):\n    if m.get("cmd") == "state":\n        r["hooked"] = "shared-%d" % game.shared["n"]\n\ndef press(game, buttons):\n    if "ZR" in buttons:\n        game.say("fake hook: pressed ZR")\n        return True\n    return False\n\ndef act(game, words):\n    if words[0] == "frob":\n        game.say("fake hook: frob %s on %s" % (words[1], game.tag))\n        return True\n    return False\n\ndef actors(game):\n    return [{"id": 99, "name": "HookActor_%s" % game.tag, "kind": "enemy", "pos": [0.0, 0.0, 0.0]}]\n'
+
+
+class FakeHooks(unittest.TestCase):
+    """A row port's fake reactions live in ingame/fakes/<name>.py (fakegame.py hooks), never in fakegame.py itself."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        d, f = os.path.join(self.tmp, "t"), os.path.join(self.tmp, "fakes")
+        os.makedirs(d)
+        os.makedirs(f)
+        with open(os.path.join(d, "conftest.py"), "w", encoding="utf-8") as fh:
+            fh.write("import sys\nsys.path.insert(0, %r)\npytest_plugins = ['bt_plugin']\n" % INGAME)
+        with open(os.path.join(d, "test_hooks.py"), "w", encoding="utf-8") as fh:
+            fh.write(HOOK_TESTS)
+        with open(os.path.join(f, "myrow.py"), "w", encoding="utf-8") as fh:
+            fh.write(HOOK_MODULE)
+        with open(os.path.join(f, "_helper.py"), "w", encoding="utf-8") as fh:
+            fh.write("raise RuntimeError('a _ module is not a hook module')\n")
+        self.dir, self.fakes = d, f
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_every_hook(self):
+        out = os.path.join(self.tmp, "o")
+        p = pytest_run([".", "--fake", "--out", out, "-q", "-p", "no:cacheprovider"], cwd=self.dir,
+                       env={"BT_FAKE_FAKES_DIR": self.fakes})
+        self.assertEqual(results(summary(out)), {"test_hooks": "PASS"}, p.stdout[-2000:])
+
+    def test_without_the_module_the_test_fails(self):
+        os.remove(os.path.join(self.fakes, "myrow.py"))
+        out = os.path.join(self.tmp, "o")
+        pytest_run([".", "--fake", "--no-rerun", "--out", out, "-q", "-p", "no:cacheprovider"], cwd=self.dir,
+                   env={"BT_FAKE_FAKES_DIR": self.fakes})
+        self.assertNotEqual(results(summary(out))["test_hooks"], "PASS")
+
+    def test_repo_fakes_folder_loads(self):
+        sys.path.insert(0, INGAME)
+        import fakegame
+        for m in fakegame.load_fakes():          # (every port's module imports without error)
+            self.assertTrue(m.__name__.startswith("fakes_"))
+
+
 class SetupLimit(unittest.TestCase):
     """Pair.setup's 30 s limit holds for the calls inside it (review-c123-6 point 2): a hung bridge in a set-up is a
     SETUP-FAIL at the limit, not a FAIL at the test's budget. A fake clock: no real waiting."""
@@ -631,6 +676,20 @@ class ImageCompare(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertTrue(r["why"].startswith("NO-REF"))
         self.assertTrue(os.path.exists(os.path.join(keep, "new", "x-A.png")))
+
+
+def load_tests(loader, tests, pattern):
+    """unittest (CI: python tools/autotest/tests/test_ingame.py) also runs every row port's own selftests,
+    tests/test_ingame_<row>.py: a port adds its file and never edits this one (one owner per file)."""
+    import glob
+    import importlib.util
+    for path in sorted(glob.glob(os.path.join(HERE, "test_ingame_*.py"))):
+        name = os.path.splitext(os.path.basename(path))[0]
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        tests.addTests(loader.loadTestsFromModule(mod))
+    return tests
 
 
 if __name__ == "__main__":

@@ -188,8 +188,11 @@ class UnlistedPythonTests(unittest.TestCase):
 
     def test_ingame_rows_count_when_their_selftest_runs(self):
         """tools/autotest/ingame/test_*.py are played whole by tools/autotest/tests/test_ingame.py (row-53-ocarina-5)."""
-        paths = ["tools/autotest/ingame/test_row53.py", "tools/autotest/tests/test_ingame.py"]
+        paths = ["tools/autotest/ingame/test_row53.py", "tools/autotest/tests/test_ingame.py",
+                 "tools/autotest/tests/test_ingame_row53.py"]      # (a port's own selftests: test_ingame.py load_tests)
         self.assertEqual(check_content.unlisted_python_tests(paths, "run: python tools/autotest/tests/test_ingame.py -v"), [])
+        self.assertEqual(check_content.unlisted_python_tests(["tools/autotest/tests/test_ingame_row53.py"], "run: x"),
+                         ["tools/autotest/tests/test_ingame_row53.py"])
         self.assertEqual(check_content.unlisted_python_tests(paths, "run: python tools/other.py"), paths)
 
     def test_runner_names_match_whole_words(self):

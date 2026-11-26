@@ -146,8 +146,12 @@ function (or a few, one per thing it proves) in a `test_<area>.py` file in `tool
    (`pair.step_both(6)`, `<name>-2`) where animation must show. The first run gives NO-REF and keeps candidates under
    `<out>/lane<L>/new/`; a person looks and copies the good ones into `tools/autotest/ingame/refs/` (never the test).
    Tolerance: start at 0.80 for scenes with moving things, 0.85-0.90 for still UI; say why in the test.
-7. **Fake game + selftest.** Make the test pass on `fakegame.py` (add the few log lines / state the fake must give,
-   cited to the module source) so `pytest tools/autotest/ingame --fake` and CI's `tests/test_ingame.py` cover it.
+7. **Fake game + selftest, in your own files only** (one owner per file; never edit `fakegame.py`, `pair.py`,
+   `bt_plugin.py` or `tests/test_ingame.py`: ask test-bridge for a harness change). The fake's reactions for your row go
+   in `tools/autotest/ingame/fakes/<row>.py` (hooks `setup lane command after press act actors state`, listed in
+   `fakegame.py`'s docstring; react only in your row's scene / switch / `BT_FAKE_*` variable), each line cited to the
+   module source. Your row's selftests (e.g. that the test FAILs under the bug) go in
+   `tools/autotest/tests/test_ingame_<row>.py`: CI's `tests/test_ingame.py` runs every such file (`load_tests`).
 8. **Prove it, then retire the old row.** `--lane-check-only` (setup proof) on the lane, then one lane run
    (`--repeat 3` for a new row) through preflight + the queue. When it PASSes, say so in COORD-LOG; retiring the old
    `.ps1` and its group line is the coordinator's call.

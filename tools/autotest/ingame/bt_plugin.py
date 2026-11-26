@@ -300,7 +300,8 @@ def lane_pair(request):
         if os.environ.get("BT_FAKE_BOOT_CRASH"):        # (selftest: a game crashed in the boot's save load)
             raise GameCrash("lane%d boot: game A ended; A: %s" % (lane, os.environ["BT_FAKE_BOOT_CRASH"]))
         import fakegame
-        lanefake = fakegame.FakeLane(out)
+        lanefake = fakegame.FakeLane(out, env=boot_env(config),     # (fakes/*.py hooks see the boot's switches)
+                                     fakes_dir=os.environ.get("BT_FAKE_FAKES_DIR") or fakegame.FAKES)
         pair = P.Pair(lanefake.games(), out_dir=out, refs_dir=os.environ.get("BT_FAKE_REFS", refs))
         pair.lane, pair.info = lane, {"fake": True}
         yield pair
@@ -509,6 +510,8 @@ def pytest_sessionstart(session):
 
 def pytest_sessionfinish(session, exitstatus):
     config = session.config
+    if config.option.collectonly:
+        return     # (--collect-only: no summary, no ingame-out/, pytest's own exit status: test-speed-c127-4)
     if getattr(config, "_bt_setup", None) is not None:
         session.exitstatus = 0 if config._bt_setup["ok"] else 1      # (--lane-check-only: no summary.json)
         return
