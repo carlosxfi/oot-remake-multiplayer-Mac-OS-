@@ -1384,6 +1384,62 @@ def pack_folders(game):
     return mods, pack, romfs
 
 
+# ------------------------------------------------------------------------------- row 288 / 207: a seed's menus
+# A randomizer seed made in the game is a new mod folder at the top of the co-op Mods list whose
+# romfs/UI/Layout2Archive/Common.Product.*.blarc.zs (the game's own, without Character Select's layouts) then wins
+# (player log mr.bons4i-20261125-202634: 'Common.Product.100...blarc.zs <- mods\randomizer-<pc>-open_fast', list of 4
+# rows). OOT_TEST_SEED_LAYOUT=1 (a test switch, --env A:OOT_TEST_SEED_LAYOUT=1, tools/autotest/ingame/test_charpage.py)
+# makes that state before the game starts: SEED_MOD with the game's own archive, first row of coop-mods.list (the
+# list's first row wins: hos_coop_mods.h hos_coop_mods_rank; an unlisted mod ranks under every listed one). Every start
+# without the switch takes both away again, so a run that died leaves no seed for the next boot of that lane.
+SEED_MOD = "zz-test-seed-layout"
+SEED_ROW = "on " + SEED_MOD
+
+
+def _write_rows(path, rows):
+    """The list written anew (a new file put in its place: a hard link to another lane's list is never changed)."""
+    tmp = path + ".seed-tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write("".join(r + "\n" for r in rows))
+    os.replace(tmp, path)
+
+
+def seed_layout(game, env, say):
+    """Puts the test seed's layout archive in (switch on) or takes it away (switch off). Returns the lines said."""
+    mods, _, romfs = pack_folders(game)
+    folder, lst = os.path.join(mods, SEED_MOD), os.path.join(mods, "coop-mods.list")
+    rows = []
+    if os.path.isfile(lst):
+        with open(lst, encoding="utf-8", errors="replace") as f:
+            rows = f.read().splitlines()
+    kept = [r for r in rows if r.strip() != SEED_ROW]
+    lines = []
+    if env.get("OOT_TEST_SEED_LAYOUT", "") != "1":
+        if os.path.isdir(folder):
+            shutil.rmtree(folder, ignore_errors=True)
+            lines.append("test seed layout taken away (%s)" % folder)
+        if len(kept) != len(rows):
+            _write_rows(lst, kept)
+            lines.append("test seed row taken out of %s" % lst)
+    else:
+        src_dir = os.path.join(romfs or os.path.join(game, "romfs"), "UI", "Layout2Archive")
+        own = sorted(n for n in (os.listdir(src_dir) if os.path.isdir(src_dir) else [])
+                     if n.lower().startswith("common.product.") and n.lower().endswith(".blarc.zs"))
+        if not own or not kept or not kept[0].startswith("coop-mods "):
+            # (the test's set-up says SETUP-FAIL: it looks for the 'test seed layout in' line)
+            lines.append("test seed layout NOT made (game archive %s, list head %r)" % (own or "none in " + src_dir,
+                                                                                       kept[:1]))
+        else:
+            dst = os.path.join(folder, "romfs", "UI", "Layout2Archive")
+            os.makedirs(dst, exist_ok=True)
+            shutil.copyfile(os.path.join(src_dir, own[0]), os.path.join(dst, own[0]))
+            _write_rows(lst, [kept[0], SEED_ROW] + kept[1:])
+            lines.append("test seed layout in: %s (the game's own %s), first row of %s" % (folder, own[0], lst))
+    for line in lines:
+        say(line)
+    return lines
+
+
 def pack_start(game, env, say):
     """The kit's start of the pack for one game (env: the game's switches). Returns the lines said."""
     mods, pack, romfs = pack_folders(game)
@@ -1663,6 +1719,7 @@ def run(a):
                 say("%s: the kit's own start (%s)" % (x, kits[x]))
                 procs[x] = PidProcess(kit_start(kits[x], env, out, x))
             else:
+                seed_layout(g, env, lambda line, x=x: say("%s: %s" % (x, line)))   # (row 288's test seed, or none)
                 pack_start(g, env, lambda line, x=x: say("%s: %s" % (x, line)))   # (the kit's start does it: row 265)
                 mismatch = code_mods_mismatch(exe_dir(g))
                 if mismatch:   # (charsel-tab-0119: a code mod's menus without its code; the run says so first)
