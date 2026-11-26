@@ -48,9 +48,6 @@ def after(game, m, r):
 
 
 def act(game, words):
-    if words[:1] == ["chat"] and words[1:] == ["/dbno", "time", "10"]:
-        game.later(2, lambda: game.say("coop: test chat '/dbno time 10': sent"))
-        return True
     if words[:1] == ["hurt"] and game.scene in STAGES:
         downed(game)
         return True
