@@ -112,6 +112,8 @@ class FakeGame:
                     continue
                 self.at_title = True
                 self.say("coop: live events: the title: the game's earlier event requests are forgotten")
+                self.say("coop: native ui: the title's menu is up: no play scene, no screen is called into until play is back")
+                self.say("coop: map: the title is up: the panes found are forgotten, looked for again after it")
 
     def in_play(self):
         return not self.at_title and not self.menu_pause and self.frame >= self.stale_until
