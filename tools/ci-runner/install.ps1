@@ -33,6 +33,7 @@ param(
     [string]$User = 'oot-ci',
     [string]$Repo = 'daurosk/oot-remake-multiplayer',
     [string]$Gh = 'C:\Program Files\GitHub CLI\gh.exe',
+    # Runner name and label. Never the PC name: it is the owner's name, and runner names show in public job logs.
     [string]$Label = 'squadala-win'
 )
 $ErrorActionPreference = 'Stop'
@@ -134,7 +135,7 @@ $token = (& $Gh api -X POST "repos/$Repo/actions/runners/registration-token" --j
 if (-not $token) { throw 'No registration token.' }
 Push-Location $Root
 try {
-    & .\config.cmd --unattended --url "https://github.com/$Repo" --token $token --name "$env:COMPUTERNAME-ci" `
+    & .\config.cmd --unattended --url "https://github.com/$Repo" --token $token --name $Label `
         --labels $Label --work _work --replace --disableupdate --runasservice `
         --windowslogonaccount $acct --windowslogonpassword $plain
     if ($LASTEXITCODE -ne 0) { throw "config.cmd failed ($LASTEXITCODE)." }

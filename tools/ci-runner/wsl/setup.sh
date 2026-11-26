@@ -10,6 +10,7 @@ SHA256=baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
 RUNNERS=${RUNNERS:-3}
 CI=/opt/squadala-ci
 U=squadala-ci
+HOSTNAME_CI=squadala-ci
 # Everything the Build workflow's Linux jobs install with sudo or call, plus the runner's own needs (libicu).
 PACKAGES="build-essential cmake ninja-build ccache gcc-12 g++-12 gcc-13 g++-13 clang llvm lld zip unzip xz-utils zstd
  file patch curl ca-certificates git jq python3 python3-venv python3-pip pkg-config squashfs-tools libicu74 rsync"
@@ -35,6 +36,8 @@ default_user=$(sed -n 's/^[[:space:]]*default[[:space:]]*=[[:space:]]*//p' /etc/
     echo "[boot]"; echo "systemd=true"
     echo "[automount]"; echo "enabled=false"; echo "mountFsTab=false"
     echo "[interop]"; echo "enabled=false"; echo "appendWindowsPath=false"
+    # Not the Windows PC name: it is the owner's name, and public job logs print the runner's machine name.
+    echo "[network]"; echo "hostname=$HOSTNAME_CI"; echo "generateHosts=true"
     if [ -n "$default_user" ]; then echo "[user]"; echo "default=$default_user"; fi
 } > /etc/wsl.conf
 

@@ -62,6 +62,10 @@ Get-ScheduledTask -TaskName 'squadala-ci status feed' -ErrorAction SilentlyConti
 & $wsl --terminate $Distro | Out-Null
 $check = (& $wsl -d $Distro -u root -- sh -c 'test -e /mnt/c/Windows && echo DRIVE; command -v cmd.exe >/dev/null && echo PATH; (/init /bin/true 2>/dev/null; true); systemctl is-system-running 2>/dev/null || true') -join ' '
 if ($check -match 'DRIVE|PATH') { throw "wsl.conf did not apply ($check): Windows drives or programs still reachable." }
+# Public job logs print the machine name: it must be squadala-ci, never the PC (owner's) name.
+$hn = ((& $wsl -d $Distro -u root -- hostname) -join '').Trim()
+if ($hn -ne 'squadala-ci' -or $hn -ieq $env:COMPUTERNAME) { throw "distro hostname is '$hn', not squadala-ci." }
+"distro hostname: $hn"
 "distro restarted: no Windows drives or programs; systemd: $check"
 
 # 4. Register the runners (token piped on stdin only).
