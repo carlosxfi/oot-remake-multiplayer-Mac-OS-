@@ -326,6 +326,94 @@ def swap_left(n, kit=None):
     return out
 
 
+# --- orphan games: a lane game up while no lock of its lane is live ---------------------------------------------
+# C #133 2026-11-26 (STOP-OFFLINE-QUEUE 11:12): party-hud-bridge-fa63e90f's SETUP-FAIL at 11:05 left both lane-2 games
+# running (47 GB commit) with lane2.lock gone and their parent dead: the next job saw a free lane. Every lane job start
+# (lane-prep, the queue) runs `lanes.py orphans --lane N --close` first: each game process started from the lane's
+# folders while neither laneN.lock nor laneN-<X>.lock is live is asked to close (its main window, as a player would),
+# then killed if still up. Never while a game build holds build-game.lock (hs.py may run a lane's game to warm it).
+
+def game_procs(folder):
+    """[(pid, exe path)] of the game processes started from inside folder (Windows only; elsewhere none known)."""
+    if not hs.WINDOWS:
+        return []
+    r = hs.run_quiet(["powershell", "-NoProfile", "-Command",
+                      "Get-Process %s -ErrorAction SilentlyContinue | ForEach-Object { '{0} {1}' -f $_.Id, $_.Path }"
+                      % ",".join(GAME_EXES)], capture_output=True, text=True)
+    want = os.path.normcase(os.path.abspath(folder)) + os.sep
+    out = []
+    for ln in (r.stdout or "").splitlines():
+        pid, _, path = ln.strip().partition(" ")
+        if pid.isdigit() and path and os.path.normcase(path.strip()).startswith(want):
+            out.append((int(pid), path.strip()))
+    return out
+
+
+def live_lock(root, name, alive=hs.pid_alive, now=None):
+    """The owner of a live lock named name ('' when it is absent or stale). An owner pid of this host that is alive
+    = live at ANY age (C #133 / review-c123-9 11:29: bt_plugin's default session is 240 min; hs.lock_stale's 4 h
+    rule would call a longer run's lock stale and its games orphans); otherwise hs.lock_stale decides."""
+    p = os.path.join(root, hs.LOCK_NAMES[name])
+    if not os.path.isdir(p):
+        return ""
+    info = hs.lock_info(p)
+    if info.get("pid") and info.get("host") in (hs.host_id(), hs.socket.gethostname()) and alive(int(info["pid"])):
+        return info.get("owner", "?")
+    if not hs.lock_stale(p, now=now, alive=alive):
+        return info.get("owner", "?")
+    return ""
+
+
+def orphans(n, kit=None, root=None, procs=game_procs, alive=hs.pid_alive, now=None):
+    """(orphan games [{'game', 'pid', 'path'}], why none may be closed now or ''). A game is an orphan when neither the
+    pair's lock nor its own game lock is live."""
+    L = lane(n, kit)
+    root = root or hs.main_root(REPO)
+    build = live_lock(root, "game", alive, now)
+    found = []
+    for x in ("A", "B"):
+        held = live_lock(root, lock_name(n), alive, now) or live_lock(root, lock_name(n, x), alive, now)
+        if held:
+            continue
+        for pid, path in procs(L[x.lower()]):
+            found.append({"game": x, "pid": pid, "path": path})
+    return found, ("build-game.lock is held by %s (a game build may run a lane's game)" % build) if build else ""
+
+
+def close_window(pid):
+    """Asks a game to close as a player would (its main window: the crash watch stays quiet; memory close-games-gently)."""
+    hs.run_quiet(["powershell", "-NoProfile", "-Command",
+                  "$p = Get-Process -Id %d -ErrorAction SilentlyContinue; if ($p) { [void]$p.CloseMainWindow() }" % pid],
+                 capture_output=True, text=True)
+
+
+def close_orphans(found, wait=30.0, closer=close_window, killer=None, alive=hs.pid_alive, clock=time.monotonic,
+                  sleep=time.sleep):
+    """Each orphan asked to close, killed if still up after wait s. {pid: 'closed' | 'killed' | 'still up'}."""
+    import signal
+    killer = killer or (lambda pid: os.kill(pid, signal.SIGTERM))
+    out = {}
+    for o in found:
+        try:
+            closer(o["pid"])
+        except Exception:
+            pass
+    end = clock() + wait
+    while clock() < end and any(alive(o["pid"]) for o in found):
+        sleep(0.5)
+    for o in found:
+        if not alive(o["pid"]):
+            out[o["pid"]] = "closed"
+            continue
+        try:
+            killer(o["pid"])
+        except OSError:
+            pass
+        sleep(1)
+        out[o["pid"]] = "killed" if not alive(o["pid"]) else "still up"
+    return out
+
+
 # --- the lane's run lock -----------------------------------------------------------------------------------------
 
 def blockers(root, alive=hs.pid_alive, now=None):
@@ -407,6 +495,11 @@ def main(argv=None):
     n.add_argument("--lane", type=int, required=True)
     n.add_argument("--dll", required=True)
     n.add_argument("--dry-run", action="store_true")
+    o = sub.add_parser("orphans", help="lane games running while no lock of the lane is live (a job that died); "
+                       "--close: close them (main window, then kill). Exit 0 when none is left up")
+    o.add_argument("--lane", type=int, required=True)
+    o.add_argument("--close", action="store_true")
+    o.add_argument("--wait", type=float, default=30.0, help="s to wait for a closed window before the kill")
     k = sub.add_parser("lock")
     k.add_argument("action", choices=["status", "acquire", "release"])
     k.add_argument("--lane", type=int)
@@ -445,6 +538,17 @@ def main(argv=None):
             for p, w in zip(module_paths(a.lane), swap_back(a.lane)):
                 print("%s: %s" % (p, w))
             return 0
+        if a.cmd == "orphans":
+            found, hold = orphans(a.lane)
+            res = {"lane": a.lane, "orphans": found, "closed": {}, "not_closed": hold}
+            if found and a.close and not hold:
+                res["closed"] = {str(k): v for k, v in close_orphans(found, wait=a.wait).items()}
+                res["swap_left"] = swap_left(a.lane)   # (a live session's module swap: lanes.py restore --lane N)
+                if res["swap_left"]:
+                    res["restored"] = swap_back(a.lane)
+            print(json.dumps(res))
+            up = [o for o in found if res["closed"].get(str(o["pid"])) not in ("closed", "killed")]
+            return 1 if up else 0
         root = hs.main_root(REPO)
         if a.action == "status":
             b = blockers(root)
