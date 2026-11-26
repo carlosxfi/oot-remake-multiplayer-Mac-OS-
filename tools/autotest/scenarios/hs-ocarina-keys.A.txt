@@ -7,5 +7,5 @@ warp HyruleField_Adult HyruleField_FrontOfMarket
 wait 1200
 mark field
 place -100.5 151.0 254.5
-wait 2100
+wait 3300                # longer than B's two passes (hs-ocarina-keys.B.txt, about 2700 ticks after its field mark)
 mark end
