@@ -15,6 +15,7 @@ Smoke gate: a smoke test (marker `smoke`) that FAILs or SETUP-FAILs stops the ru
 --no-smoke-gate.
 """
 import json
+import re
 import os
 import subprocess
 import sys
@@ -44,6 +45,9 @@ def pytest_addoption(parser):
     g.addoption("--kit-ls", default=None, help="the lanes folder (default: lanes.py's kit root + ls)")
     g.addoption("--expect-commit", default=None, help="SETUP-FAIL unless the lane's lane-server.txt commit starts so")
     g.addoption("--session-minutes", type=float, default=240, help="live.py --max-minutes of each lane's session")
+    g.addoption("--env", action="append", default=[], metavar="NAME=VALUE", help="a game switch for this boot, set at "
+                "the game launch (live.py start --env; repeatable): NAME=VALUE for both games, A:NAME=VALUE / "
+                "B:NAME=VALUE for one; a scenario's '#! switches' line. Kept in summary.json 'identity'")
     g.addoption("--lane-check-only", action="store_true", help="the setup proof of every --lanes lane (lane_check + "
                 "--expect-commit + the tests collect; no game boot, no test run): one SETUP-OK/SETUP-FAIL line per "
                 "lane, OUT/setup.json; exit 0 only if every lane is OK (pytest's own --setup-only is another thing)")
@@ -54,7 +58,12 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "budget(seconds): the test's own hard deadline (default %d)" % DEFAULT_BUDGET)
     config.addinivalue_line("markers", "row(text): the rc row the test proves (in the summary)")
     config.addinivalue_line("markers", "look: a user-facing look check (bridge shots on each game, compared to refs)")
+    config.addinivalue_line("markers", "needs_env(*'NAME=VALUE'): game switches the test needs; a boot without them "
+                            "(--env) is SETUP-FAIL for it")
     config._bt_rows = []
+    if config.getoption("lane_check_only") and getattr(config.option, "numprocesses", None):
+        raise pytest.UsageError("--lane-check-only runs in one process: leave out -n (it checks every --lanes lane)")
+    boot_env(config)        # (a malformed --env stops the run before any boot)
     config._bt_started = time.time()
 
 
@@ -171,8 +180,11 @@ def lane_pair(request):
     t0 = time.monotonic()
     info = _real_lane_info(config, lane)                    # (SetupFail: every test of this lane is SETUP-FAIL)
     session = os.path.join(out, "session")
+    extra = []
+    for e in boot_env(config)[2:]:
+        extra += ["--env", e]
     started = _live(["start", "--session", session, "--lane", str(lane), "--playtest", "--server", info["server"],
-                     "--env", "LICHII_COOP_PUPPET=1", "--env", "LICHII_COOP_TEST_TO_TITLE=1",
+                     "--env", "LICHII_COOP_PUPPET=1", "--env", "LICHII_COOP_TEST_TO_TITLE=1"] + extra + [
                      "--max-minutes", str(config.getoption("session_minutes")), "--idle-minutes", "15"], timeout=1200)
     if not started.get("ok"):
         raise P.SetupFail("lane%d boot: %s" % (lane, started.get("error") or started.get("boot")))
@@ -189,8 +201,45 @@ def lane_pair(request):
         _live(["stop", "--session", session], timeout=180)
 
 
+BASE_ENV = ["LICHII_COOP_PUPPET=1", "LICHII_COOP_TEST_TO_TITLE=1"]   # every boot (lane_pair's live.py start)
+
+
+ENV_RX = re.compile(r"^(?:[AB]:)?[A-Za-z_][A-Za-z0-9_]*=[^\r\n]*$")
+
+
+def boot_env(config):
+    """The boot's game switches: BASE_ENV + --env, each NAME=VALUE or A:/B:NAME=VALUE (live.py start --env's form)."""
+    out = list(BASE_ENV)
+    for e in config.getoption("env") or []:
+        if not ENV_RX.match(e.strip()):
+            raise pytest.UsageError("--env %r is not NAME=VALUE, A:NAME=VALUE or B:NAME=VALUE" % e)
+        out.append(e.strip())
+    return out
+
+
+def env_has(have, want):
+    """Does the boot's env give `want`? 'X=1' needs X=1 on both games ('X=1', or both 'A:X=1' and 'B:X=1');
+    'A:X=1' needs it on A ('A:X=1' or 'X=1'). The last setting of a name on a game wins, as in live.py's argv."""
+    def per_game(g):
+        d = {}
+        for e in have:
+            tag, _, kv = e.partition(":") if re.match(r"^[AB]:", e) else ("", "", e)
+            if tag in ("", g):
+                k, _, v = kv.partition("=")
+                d[k] = v
+        return d
+    tag, _, kv = want.partition(":") if re.match(r"^[AB]:", want) else ("", "", want)
+    k, _, v = kv.partition("=")
+    return all(per_game(g).get(k) == v for g in ([tag] if tag else ["A", "B"]))
+
+
 @pytest.fixture
 def pair(request, lane_pair):
+    have = boot_env(request.config)
+    for m in request.node.iter_markers("needs_env"):
+        lack = [e for e in m.args if not env_has(have, e)]
+        if lack:
+            raise P.SetupFail("this boot lacks the switch(es) %s (run it with --env %s)" % (", ".join(lack), lack[0]))
     m = request.node.get_closest_marker("budget")
     lane_pair.begin(m.args[0] if m else DEFAULT_BUDGET)
     if getattr(lane_pair, "session", None):
@@ -295,6 +344,7 @@ def pytest_sessionfinish(session, exitstatus):
     summary = {"started": config._bt_started, "minutes": round((time.time() - config._bt_started) / 60, 2),
                "lanes": config.getoption("lanes"), "fake": bool(config.getoption("fake")),
                "repeat": config.getoption("repeat"), "counts": counts, "tests": rows,
+               "identity": {"env": boot_env(config), "expect_commit": config.getoption("expect_commit")},
                "verdict": "PASS" if rows and counts["PASS"] == len(rows) else "NOT PASS"}
     with open(os.path.join(out, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=1)

@@ -183,6 +183,64 @@ class LaneCheckOnly(unittest.TestCase):
         self.assertIn("lane-server.txt", p.stdout)       # lane_check first: the lane is not installed
 
 
+ENV_TESTS = """
+import pytest
+
+@pytest.mark.needs_env("LICHII_COOP_X=1")
+def test_needs_x_both(pair):
+    pass
+
+@pytest.mark.needs_env("A:LICHII_COOP_Y=2")
+def test_needs_y_on_a(pair):
+    pass
+"""
+
+
+class BootEnv(unittest.TestCase):
+    """--env: game switches per boot (both games, or A:/B: one), needs_env, kept in summary.json identity."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        d = os.path.join(self.tmp, "t")
+        os.makedirs(d)
+        with open(os.path.join(d, "conftest.py"), "w", encoding="utf-8") as f:
+            f.write("import sys\nsys.path.insert(0, %r)\npytest_plugins = ['bt_plugin']\n" % INGAME)
+        with open(os.path.join(d, "test_env.py"), "w", encoding="utf-8") as f:
+            f.write(ENV_TESTS)
+        self.dir, self.out = d, os.path.join(self.tmp, "o")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_env_has(self):
+        import bt_plugin as B
+        self.assertTrue(B.env_has(["X=1"], "X=1"))
+        self.assertTrue(B.env_has(["A:X=1", "B:X=1"], "X=1"))
+        self.assertFalse(B.env_has(["A:X=1"], "X=1"))
+        self.assertTrue(B.env_has(["X=1"], "A:X=1"))
+        self.assertFalse(B.env_has(["X=1", "A:X=0"], "A:X=1"))     # the last setting on a game wins
+        self.assertFalse(B.env_has(["X=2"], "X=1"))
+
+    def test_missing_switch_is_setup_fail_and_given_is_pass(self):
+        pytest_run([".", "--fake", "--no-rerun", "--out", self.out, "-q"], cwd=self.dir)
+        s = summary(self.out)
+        self.assertEqual(results(s), {"test_needs_x_both": "SETUP-FAIL", "test_needs_y_on_a": "SETUP-FAIL"})
+        out2 = os.path.join(self.tmp, "o2")
+        p = pytest_run([".", "--fake", "--out", out2, "-q", "--env", "LICHII_COOP_X=1", "--env", "A:LICHII_COOP_Y=2"],
+                       cwd=self.dir)
+        s = summary(out2)
+        self.assertEqual(s["counts"]["PASS"], 2, p.stdout[-2000:])
+        self.assertEqual(s["identity"]["env"][-2:], ["LICHII_COOP_X=1", "A:LICHII_COOP_Y=2"])
+
+    def test_bad_env_and_n_with_lane_check_only_are_refused(self):
+        p = pytest_run([".", "--fake", "--out", self.out, "-q", "--env", "C:X=1"], cwd=self.dir)
+        self.assertEqual(p.returncode, 4, p.stdout[-1000:] + p.stderr[-1000:])     # pytest's usage error
+        p = pytest_run([".", "--fake", "--out", self.out, "-q", "--lane-check-only", "-n", "2", "--lanes", "1,2"],
+                       cwd=self.dir)
+        self.assertEqual(p.returncode, 4, p.stdout[-1000:] + p.stderr[-1000:])
+        self.assertIn("leave out -n", p.stdout + p.stderr)
+
+
 class SetupLimit(unittest.TestCase):
     """Pair.setup's 30 s limit holds for the calls inside it (review-c123-6 point 2): a hung bridge in a set-up is a
     SETUP-FAIL at the limit, not a FAIL at the test's budget. A fake clock: no real waiting."""

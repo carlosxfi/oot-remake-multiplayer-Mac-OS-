@@ -25,7 +25,14 @@ player N on `5000 + 10*L + N` (playtest.md). The boot's setup proof is `pair.lan
 `offline/lib/lane-server.ps1` + `lane-pair.ps1`: both games' module is the one installed, from the same patches
 build, the server exists), then `hello` on both bridges with Longshot's control answering. `--expect-commit` (the lane's module sha, from
 `lane-server.txt`'s `commit=`) is required on a real lane. `--lane-check-only` runs that proof and the collection
-only (no boot, no test): one `SETUP-OK`/`SETUP-FAIL` line per lane, `<dir>/setup.json`, exit 0 only if all are OK.
+only (no boot, no test): one `SETUP-OK`/`SETUP-FAIL` line per lane, `<dir>/setup.json`, exit 0 only if all are OK
+(one process: it refuses `-n` and checks every `--lanes` lane itself).
+
+Game switches are per boot: `--env NAME=VALUE` (both games) or `--env A:NAME=VALUE` / `--env B:NAME=VALUE` (one
+game), repeatable, set at the game launch (`live.py start --env`) next to the base `LICHII_COOP_PUPPET=1` and
+`LICHII_COOP_TEST_TO_TITLE=1`; the boot's whole list is `summary.json` `identity.env`. A test that needs a switch says
+so with `@pytest.mark.needs_env("NAME=VALUE", ...)`: on a boot without it, it is SETUP-FAIL (never a silent pass). A
+malformed `--env` stops the run before any boot (pytest usage error, exit 4).
 
 ## Results
 
@@ -74,6 +81,46 @@ Every key, flag, line and log pattern cites its source in the test (worker-rules
 are imported (`ocarina_notes.KEY_NOTE`), never copied. `pair.step_both(n)` runs both games in step; never let one game
 run alone. The selftests (`tools/autotest/tests/test_ingame.py`, in CI) run the whole suite on two fake bridges
 (`ingame/fakegame.py`).
+
+## Porting a .ps1 row (row workers: follow this)
+
+Owner 2026-11-26 08:35: every in-game check is a test here; no new or re-added `.ps1` run script. One row = one test
+function (or a few, one per thing it proves) in a `test_<area>.py` file in `tools/autotest/ingame/`. Worked examples:
+`test_rows.py` (each pilot row cites the old row it replaces).
+
+1. **Read the old row, cite it.** Its group line (`tools/autotest/groups/*.txt`: `expect=`, `label=`, `see=`,
+   `logonly=`), its scenario files (`tools/autotest/scenarios/<name>.A.txt` / `.B.txt`, the `#! switches` line) and its
+   `.ps1` (what it proves, what counts as pass). Put `@pytest.mark.row("<#issue> <label> (<old name>)")` on the test.
+2. **Fixture and budget.** Take the `pair` fixture (both games of the lane, already booted, in play after the smoke
+   tier). Give `@pytest.mark.budget(seconds)`: the whole test's hard limit, a little over what it needs. Switches from
+   `#! switches` -> `@pytest.mark.needs_env("LICHII_COOP_X=1")` (and the run gets `--env`); `A:`/`B:` for one game.
+3. **Set-up only by the bridge, inside `with pair.setup():`** (SETUP-FAIL if anything fails or it passes 30 s):
+   - place: `pair.warp_both(scene)`, `pair.act(x, "place X Y Z")`, `pair.act(x, "face X Z")`; never walk to a spot
+     (scenario `goto` / `toward` / `hold LSTICK_*` used only to get somewhere -> `place`/`face`).
+   - items and flags: `pair.give(x, item)`, `pair.flag(x, name, value)` (scenario `give` / `setflag` / `setenum`);
+     read back with `pair.flag_read` / `pair.state(x)` and assert it took.
+   - other scenario lines the bridge runs as they are: `pair.act(x, line)` for `kill hit hurt place face aim wear dress
+     assign chat menu setflag setenum` (docs/playtest.md "Commands").
+   - prove the start state: asserts on `pair.state(x)` (scene, age, equips; `test_rows.py`'s `need_child_in_play`).
+4. **Inputs = the old row's keys, in frames.** `press DLEFT 12` -> `pair.press("A", ["LEFT"], frames=12)` (bridge button
+   names: `hookshot.py` KEYS); `hold L 30` -> `pair.press("A", ["L"], frames=30)`; `stick`/`rstick` -> `stick=[angle,
+   strength]`; `wait N` -> `pair.step_both(N)`. Both games always run the same frames (`press`/`step_both` do it). No
+   `sleep`, no OS key, no window focus, no wall-clock wait. Copy the old row's waits in frames unless you cite why not.
+5. **Judge by state.** Each old `expect=` becomes `pair.expect_log(game, pattern, max_frames=N)` with the SAME pattern
+   (old and new judge the same thing); "must not" lines -> `pair.never_log`. Positions, scene, equips, life, players ->
+   `pair.until("what", lambda: <state check>, max_frames=N)`. Shared flags -> `pc.checkpoint` + `desync_check.py`
+   (see `test_story_flag_shared`). `logonly=` rows are state/log only: no shot.
+6. **Shots only for what a player sees** (old `see=` rows that are about looks: other players' Epona animated, menu UI,
+   HUD UI, name tags, balloons, pause pages). Mark the test `@pytest.mark.look`, then at the assert:
+   `pair.check_shot("A", "<name>-1", tolerance=0.80)` and the same on `"B"`, again a few frames later
+   (`pair.step_both(6)`, `<name>-2`) where animation must show. The first run gives NO-REF and keeps candidates under
+   `<out>/lane<L>/new/`; a person looks and copies the good ones into `tools/autotest/ingame/refs/` (never the test).
+   Tolerance: start at 0.80 for scenes with moving things, 0.85-0.90 for still UI; say why in the test.
+7. **Fake game + selftest.** Make the test pass on `fakegame.py` (add the few log lines / state the fake must give,
+   cited to the module source) so `pytest tools/autotest/ingame --fake` and CI's `tests/test_ingame.py` cover it.
+8. **Prove it, then retire the old row.** `--lane-check-only` (setup proof) on the lane, then one lane run
+   (`--repeat 3` for a new row) through preflight + the queue. When it PASSes, say so in COORD-LOG; retiring the old
+   `.ps1` and its group line is the coordinator's call.
 
 ## Tools (yes / no)
 
