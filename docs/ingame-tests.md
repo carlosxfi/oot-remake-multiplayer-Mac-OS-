@@ -31,7 +31,9 @@ only (no boot, no test): one `SETUP-OK`/`SETUP-FAIL` line per lane, `<dir>/setup
 Game switches are per boot: `--env NAME=VALUE` (both games) or `--env A:NAME=VALUE` / `--env B:NAME=VALUE` (one
 game), repeatable, set at the game launch (`live.py start --env`) next to the base `LICHII_COOP_PUPPET=1` and
 `LICHII_COOP_TEST_TO_TITLE=1`; the boot's whole list is `summary.json` `identity.env`. A test that needs a switch says
-so with `@pytest.mark.needs_env("NAME=VALUE", ...)`: on a boot without it, it is SETUP-FAIL (never a silent pass). A
+so with `@pytest.mark.needs_env("NAME=VALUE", ...)`: a run whose `--env` lacks it DESELECTS it, with a
+`deselected: needs_env <switches> <test>` line and a `summary.json` `deselected` entry (never hidden; the rc summary
+makes it NOT-RUN if no env group ran it), so the default run has no SETUP-FAIL from it. A
 malformed `--env` stops the run before any boot (pytest usage error, exit 4).
 
 ## Results
@@ -46,6 +48,9 @@ One summary per run: `<dir>/summary.json` and `summary.md` (add `--junitxml <fil
 | SETUP-FAIL | the lane, the boot, or the test's own set-up (`with pair.setup():`, under 30 s) did not hold; not rerun |
 | NO-REF | a look check has no stored reference yet; its shot is kept under `<dir>/lane<L>/new/` |
 | NOT-RUN | `--deadline-min N` passed before it started (never a pass) |
+
+A game that crashes while the lane boots or loads (its module log has a `CRASH` line) makes every test of the
+lane FAIL with that line, not SETUP-FAIL: that window is what crash rows guard.
 
 A smoke test (`@pytest.mark.smoke`) that FAILs or SETUP-FAILs stops the run: the rc is broken.
 
