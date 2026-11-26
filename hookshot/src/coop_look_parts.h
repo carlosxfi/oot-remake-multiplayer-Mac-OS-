@@ -278,7 +278,7 @@ std::string BootsName(const std::string& name, char letter);
 // textures when set: Owners); nothing: the game's.
 struct BootsPaint {
     std::optional<std::uint32_t> boots;
-    std::optional<std::uint32_t> leather;
+    std::optional<std::uint32_t> leather = std::nullopt;   // (leather-link: a default: {boots} stays whole, -Wmissing-field-initializers)
     bool operator==(const BootsPaint&) const = default;
 };
 // Each colour's paint by its letter; a letter not in it keeps the game's colour.
@@ -289,7 +289,7 @@ using Wearers = std::map<char, BootsPaint>;
 struct Wearer {
     std::optional<char> letter;
     std::optional<std::uint32_t> boots;
-    std::optional<std::uint32_t> leather;   // (leather-link: part 28)
+    std::optional<std::uint32_t> leather = std::nullopt;   // (leather-link: part 28; a default, as BootsPaint::leather)
 };
 Wearers Assign(const Wearer& own, const std::vector<Wearer>& others);
 // The boots wardrobe's base (every colour's copies in the game's colour) and
