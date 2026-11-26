@@ -745,6 +745,20 @@ Error check_object_state(const ObjectState& s) {
       before = o.seq;
     }
   }
+  if (s.shooter) {
+    if (s.shooter->recent.size() > kMaxBossShooterCalls) return Error::bad_value;
+    std::uint32_t before = 0;
+    for (const BossShooterCall& o : s.shooter->recent) {
+      if (o.seq == 0 || o.seq <= before || o.seq > s.shooter->seq) return Error::bad_value;
+      const auto k = static_cast<std::uint8_t>(o.kind);
+      if (k < 1 || k > 3) return Error::bad_value;
+      // Bytes past the kind's wire tail never go out: a list that holds any would not read back the same.
+      for (std::size_t i = BossShooterTailOnWire(o.kind); i < o.tail.size(); ++i) {
+        if (o.tail[i] != 0) return Error::bad_value;
+      }
+      before = o.seq;
+    }
+  }
   if (s.bsa) {
     const auto finite = [](const BossAction& a) {
       for (const auto& p : a.places) {
@@ -897,6 +911,20 @@ void write_object_state(const ObjectState& s, Writer& w) {
   if (s.plugs) component(ObjectComponent::plugs, [&] { write_keyed(*s.plugs, w); });
   if (s.clocks) component(ObjectComponent::clocks, [&] { write_keyed(*s.clocks, w); });
   if (s.events) component(ObjectComponent::events, [&] { write_keyed(*s.events, w); });
+  if (s.shooter) {
+    component(ObjectComponent::shooter, [&] {
+      w.u32(s.shooter->seq);
+      w.u8(static_cast<std::uint8_t>(s.shooter->recent.size()));
+      for (const BossShooterCall& o : s.shooter->recent) {
+        w.u32(o.seq);
+        w.u8(static_cast<std::uint8_t>(o.kind));
+        w.u32(o.key);
+        w.u32(static_cast<std::uint32_t>(o.asked));
+        w.u32(static_cast<std::uint32_t>(o.index));
+        w.bytes(o.tail.data(), BossShooterTailOnWire(o.kind));
+      }
+    });
+  }
 }
 
 }  // namespace
@@ -1723,6 +1751,32 @@ Error decode_component(ObjectComponent id, Reader& c, ObjectState& s, bool& know
         if (o.seq == 0 || o.seq <= before || o.seq > b.seq) return Error::bad_value;
         before = o.seq;
         for (std::uint8_t& byte : o.payload) COOP_READ(c.u8(byte));
+      }
+      return Error::none;
+    }
+    case ObjectComponent::shooter: {
+      BossShooterCalls& b = s.shooter.emplace();
+      std::uint8_t count = 0;
+      COOP_READ(c.u32(b.seq));
+      COOP_READ(c.u8(count));
+      if (count > kMaxBossShooterCalls) return Error::bad_value;
+      std::uint32_t before = 0;
+      for (std::uint8_t i = 0; i < count; ++i) {
+        BossShooterCall& o = b.recent.emplace_back();
+        std::uint8_t kind = 0;
+        std::uint32_t asked = 0;
+        std::uint32_t index = 0;
+        COOP_READ(c.u32(o.seq));
+        COOP_READ(c.u8(kind));
+        COOP_READ(c.u32(o.key));
+        COOP_READ(c.u32(asked));
+        COOP_READ(c.u32(index));
+        if (o.seq == 0 || o.seq <= before || o.seq > b.seq || kind < 1 || kind > 3) return Error::bad_value;
+        before = o.seq;
+        o.kind = static_cast<BossShooterKind>(kind);
+        o.asked = static_cast<std::int32_t>(asked);
+        o.index = static_cast<std::int32_t>(index);
+        for (std::size_t k = 0; k < BossShooterTailOnWire(o.kind); ++k) COOP_READ(c.u8(o.tail[k]));
       }
       return Error::none;
     }

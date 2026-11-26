@@ -1572,6 +1572,20 @@ std::vector<std::pair<std::uint64_t, proto::BossOrders>> Sync::BossOrdersIn() co
     return out;
 }
 
+std::vector<std::pair<std::uint64_t, proto::BossShooterCalls>> Sync::BossShooterIn() const {
+    std::vector<std::pair<std::uint64_t, proto::BossShooterCalls>> out;
+    for (const auto& [address, o] : objects_) {
+        if (!o.shooter_in) {
+            continue;
+        }
+        const auto owner = owners_.find(o.id);
+        if (owner != owners_.end() && owner->second.player != 0 && owner->second.player != self_) {
+            out.emplace_back(address, *o.shooter_in);
+        }
+    }
+    return out;
+}
+
 std::optional<std::uint8_t> Sync::OwnerOf(std::uint64_t address) const {
     const auto it = objects_.find(address);
     if (it == objects_.end()) {
@@ -1844,6 +1858,9 @@ proto::ObjectState Sync::StateOf(Object& o, std::uint64_t now_us) {
     }
     if (o.orders) {
         state.orders = o.orders;  // row 222: its battle manager's orders
+    }
+    if (o.shooter) {
+        state.shooter = o.shooter;  // rows 222, 286: its Shooter's calls
     }
     if (o.brain) {
         state.brain = o.brain;  // row 149: its blackboard move state (every sample: the server's hand-over state)
@@ -2533,6 +2550,7 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         o.bsa = s.bsa;
         o.variants = s.variants;
         o.orders = s.orders;
+        o.shooter = s.shooter;
         o.brain = s.brain;
         if (s.brain) {
             o.brain_in.reset();  // row 149: our own values are sent from here on
@@ -2932,6 +2950,7 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         o.bsa = s->bsa;
         o.variants = s->variants;
         o.orders = s->orders;
+        o.shooter = s->shooter;
         o.brain = s->brain;
         if (s->brain) {
             o.brain_in.reset();  // row 149: our own values are sent from here on
@@ -3401,7 +3420,8 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
                                  Turned(rotation, o.sent_rotation) ||
                                  animation != o.sent_animation || slots != o.sent_slots ||
                                  (o.bsa && o.sent_bsa_seq != o.bsa->seq) ||  // native boss sync: a new boss verb at once
-                                 (o.orders && o.sent_orders_seq != o.orders->seq);  // row 222: a new order at once
+                                 (o.orders && o.sent_orders_seq != o.orders->seq) ||  // row 222: a new order at once
+                                 (o.shooter && o.sent_shooter_seq != o.shooter->seq);  // rows 222, 286: a new shot at once
             if (!o.sent_once || changed || now_us - o.sent_at >= kStillEveryUs) {
                 proto::ObjectSample sample;
                 sample.id = o.id;
@@ -3426,6 +3446,9 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
                 }
                 if (o.orders) {
                     o.sent_orders_seq = o.orders->seq;
+                }
+                if (o.shooter) {
+                    o.sent_shooter_seq = o.shooter->seq;
                 }
             }
         }
@@ -4303,6 +4326,7 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
             o->bsa_in.reset();
             o->variants_in.reset();
             o->orders_in.reset();
+            o->shooter_in.reset();
             if (owner->owner == self) {
                 // Ours now, where it stands here: nothing pulls it. A hit of
                 // ours not yet sent is already in its life, and the others
@@ -4348,6 +4372,9 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
             }
             if (sample->state.orders) {
                 o->orders_in = sample->state.orders;  // row 222: the owner's battle manager orders
+            }
+            if (sample->state.shooter) {
+                o->shooter_in = sample->state.shooter;  // rows 222, 286: the owner's Shooter calls
             }
             if (sample->state.brain) {
                 // Row 149: the owner's blackboard move state (a full list replaces ours, a delta changes it).

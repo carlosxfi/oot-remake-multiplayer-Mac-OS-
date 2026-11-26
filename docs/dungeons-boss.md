@@ -942,6 +942,16 @@ not deleted while its boss lives; with no boss here the grace delete still runs;
 still not given). **Not proven in game:** two games, P2 owns Barinade and kills the jellyfish, the host's copy reaches
 Phase4_St with no crash, and the host's log shows `boss part kills to its Life step 5` and no `1 deletes` after each.
 
+## Shooter probe: what wakes a kept bullet (row 286, log only, not a fix)
+
+A copy of Twinrova plays the attack and no bullet comes. A boss's bullets are made once with the room and kept asleep; its **Shooter** component wakes, shoots and puts them back (read from the game's code, build e0f3ccfaf50065ae):
+
+- main+0x2eb1ed0 prepare(shooter, params): +0 the u32 key (the shootable's), +0x14 the index or -1; returns the record index, below 0 when refused. Every way into the function that wakes the bullet's actor (main+0x2eb4c30) goes through it.
+- main+0x2eb2a40 shoot(shooter, params): +0x1928 the key, +0x192c the index; returns a bool.
+- main+0x2eb26b0 sleep(shooter, key, index); returns a bool.
+
+Patch 0045 wraps the three (ids 28, 29, 30). With `LICHII_COOP_SHOOTER_PROBE=1` the module (`lichii/hook/coop_shooter_probe.{h,cpp}`) logs each call (`coop: shooterprobe: PREPARE`, `SHOOT`, `SLEEP`): the maker, owner or copy, the key's records and their bullets before and after, and the parameters' words; `HOLDS` lines say what each boss's shooter, and its bullets' shooters, hold whenever that changes (looked at five times a second); `COUNTS` each 10 s. It reads only: nothing is written, skipped or answered. Off otherwise. Nothing of it has been seen in the game yet.
+
 ## Not known yet (for the in-game check)
 
 1. Whether the force-set-matrix move into a room of the same scene loads that room's walls and floor, or Link falls through (the dungeon may stream rooms by `DungeonRoomIndex`). If he falls, the fallback is the scene change, which needs an event running.

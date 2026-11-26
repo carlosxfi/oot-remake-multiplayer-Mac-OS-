@@ -66,7 +66,9 @@
 #include "coop_boss_native.h"
 #include "coop_brain_state.h"
 #include "coop_boss_orders.h"
+#include "coop_boss_shooter_table.h"
 #include "coop_difficulty.h"
+#include "coop_shooter_probe.h"
 #include "coop_puppet.h"
 #include "coop_shot_reflect.h"
 #include "coop_pvp.h"
@@ -2147,7 +2149,9 @@ public:
                     bosses.Publish({});
                 }
                 CoopBossOrders::TheTable().Publish({});  // row 222: no owner or copy: our managers decide again
+                CoopBossShooter::TheTable().Publish({});  // rows 222, 286: our bosses' AI shoots again
                 CoopBrainState::TheTable().Publish({});   // row 149: nothing to hand over
+                CoopShooterProbe::TheProbe().Publish({});
                 sharing_ = false;
             }
             if (CoopWorldSnapshot::TheStore().Enabled() && scene && !scene->empty() && Ready(system)) {
@@ -2248,6 +2252,13 @@ public:
                                       std::uint64_t result, std::uint64_t) {
                                        return CoopBossOrders::TheTable().Step(guest, after_call, result,
                                                                               TheBossMain().load());
+                                   });
+                // Rows 222, 286: the owner's boss shots made on our copies (coop_boss_shooter_table.h).
+                CoopSvc::AddCaller(CoopBossShooter::Table::kCallerOrder,
+                                   [](CoopPuppet::Guest& guest, bool after_call,
+                                      std::uint64_t result, std::uint64_t now_ms) {
+                                       return CoopBossShooter::TheTable().Step(guest, after_call, result,
+                                                                               TheBossMain().load(), now_ms);
                                    });
                 CoopSvc::AddCaller(kGrassCallerOrder,
                                    [](CoopPuppet::Guest& guest, bool after_call,
@@ -2585,6 +2596,34 @@ public:
                 for (const std::string& note : orders.TakeNotes()) {
                     LOG_INFO(Core, "coop: bosses: {}", note);
                 }
+            }
+            // Rows 222, 286 (coop_boss_shooter_table.h): the same parts' Shooter calls, then the owner's.
+            CoopBossShooter::Table& shooter = CoopBossShooter::TheTable();
+            if (shooter.On()) {
+                std::vector<CoopBossShooter::Member> members;
+                members.reserve(list.size());
+                for (const CoopBossNative::Boss& b : list) {
+                    members.push_back({b.actor,
+                                       b.role == CoopBossNative::Role::owner ? CoopBossShooter::Role::owner
+                                                                             : CoopBossShooter::Role::copy,
+                                       b.owner, b.name});
+                }
+                shooter.Publish(members);
+                for (const auto& [address, state] : sync_.BossShooterIn()) {
+                    shooter.Receive(address, state);
+                }
+                for (const std::string& note : shooter.TakeNotes()) {
+                    LOG_INFO(Core, "coop: bosses: {}", note);
+                }
+            }
+            // Row 286's probe (coop_shooter_probe.h, log only): the same bosses, whose shooters it looks at.
+            if (CoopShooterProbe::Probe& probe = CoopShooterProbe::TheProbe(); probe.On()) {
+                std::vector<CoopShooterProbe::Member> members;
+                members.reserve(list.size());
+                for (const CoopBossNative::Boss& b : list) {
+                    members.push_back({b.actor, b.role == CoopBossNative::Role::owner, b.owner, b.name});
+                }
+                probe.Publish(std::move(members));
             }
         }
         if (sync_.BlastDrops() != blast_drops_logged_) {
@@ -3685,7 +3724,9 @@ private:
             pvp_watch_.Reset();
             CoopProjectiles::TheOwnShots().Reset();
             CoopBossOrders::TheTable().Reset();  // row 222: its block and nodes were the old game's
+            CoopBossShooter::TheTable().Reset();  // rows 222, 286: its block, templates and records too
             CoopBrainState::TheTable().Reset();   // row 149: its block and blackboards too
+            CoopShooterProbe::TheProbe().Reset();
             extras_.Reset();  // difficulty: that run's extra enemies are gone with it
             horde_.Reset();
             {
@@ -4955,6 +4996,7 @@ private:
                     }
                     s.bsa = CoopBossNative::TheTable().OwnerState(a, &s.variants);
                     s.orders = CoopBossOrders::TheTable().OwnerOrders(a);  // row 222: its manager's orders, ours
+                    s.shooter = CoopBossShooter::TheTable().OwnerShots(a, SteadyNowMs());  // rows 222, 286: ours
                     if (own_hit_life) {
                         s.hit_at = NewOwnHitAt(r, a, *own_hit_life, s.position, own_hit_took_life);
                     } else if (CoopBossNative::TheTable().OwnShotNear(s.position)) {

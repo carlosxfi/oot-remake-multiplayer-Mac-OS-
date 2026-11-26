@@ -1190,6 +1190,62 @@ TEST_CASE("object samples carry a scream that froze the owner's Link, component 
   CHECK(encode(s, out) == Error::bad_value);
 }
 
+TEST_CASE("object samples carry a boss Shooter's calls, component 30 (rows 222, 286)") {
+  CHECK(static_cast<int>(ObjectComponent::shooter) == 30);
+  ObjectSample s{0, test::kPlacedId, 3, {}};
+  s.state.time = {100, 1};
+  BossShooterCall p{3, BossShooterKind::prepare, 0x1234u, -1, 2, {}};
+  for (std::size_t i = 0; i < p.tail.size(); ++i) p.tail[i] = static_cast<std::uint8_t>(0x10 + i);
+  BossShooterCall f{4, BossShooterKind::shoot, 0x1234u, 2, 2, {}};
+  for (std::size_t i = 0; i < kBossShooterShootTail; ++i) f.tail[i] = static_cast<std::uint8_t>(0x80 + i);
+  BossShooterCall z{5, BossShooterKind::sleep, 0x1234u, 2, 2, {}};
+  s.state.shooter = BossShooterCalls{5, {p, f, z}};
+  const Bytes bytes = must_encode(s);
+  Message back;
+  REQUIRE(decode(bytes, back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == s);
+  // Only each kind's tail goes out: prepare 0x48, shoot 0x20, sleep none (17 bytes a call before it, 5 for the list).
+  ObjectSample plain{0, test::kPlacedId, 3, {}};
+  plain.state.time = {100, 1};
+  const Bytes none = must_encode(plain);
+  CHECK(bytes.size() == none.size() + 4 + 5 + 3 * 17 + kBossShooterPrepareTail + kBossShooterShootTail);
+  REQUIRE(decode(none, back) == Error::none);
+  CHECK_FALSE(std::get<ObjectSample>(back).state.shooter);
+  // An empty list is valid with any seq (it tells a copy its owner shares shots).
+  s.state.shooter = BossShooterCalls{0, {}};
+  REQUIRE(decode(must_encode(s), back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == s);
+  // Refused: seqs from 1, rising, none above seq; a kind 1 to 3; no bytes past the kind's tail; at most 8.
+  Bytes out;
+  s.state.shooter = BossShooterCalls{5, {p, f, z}};
+  s.state.shooter->recent[0].seq = 0;
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.shooter->recent[0].seq = 4;
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.shooter->recent[0].seq = 3;
+  s.state.shooter->seq = 4;
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.shooter->seq = 5;
+  s.state.shooter->recent[1].kind = static_cast<BossShooterKind>(4);
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.shooter->recent[1].kind = BossShooterKind::shoot;
+  s.state.shooter->recent[1].tail[kBossShooterShootTail] = 1;
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.shooter->recent[1].tail[kBossShooterShootTail] = 0;
+  s.state.shooter->recent[2].tail[0] = 1;
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.shooter = BossShooterCalls{20, std::vector<BossShooterCall>(kMaxBossShooterCalls + 1)};
+  for (std::size_t i = 0; i < s.state.shooter->recent.size(); ++i) {
+    s.state.shooter->recent[i].seq = static_cast<std::uint32_t>(i + 1);
+  }
+  CHECK(encode(s, out) == Error::bad_value);
+  // The decoder refuses a count above the limit too (the count byte follows the u32 seq).
+  s.state.shooter = BossShooterCalls{1, {}};
+  Bytes raw = must_encode(s);
+  raw.back() = static_cast<std::uint8_t>(kMaxBossShooterCalls + 1);
+  CHECK(decode_bytes(raw) == Error::bad_value);
+}
+
 TEST_CASE("object samples carry a battle manager's orders, component 23 (protocol 16, row 222)") {
   CHECK(kProtocolVersion >= 16);
   CHECK(static_cast<int>(ObjectComponent::orders) == 23);
@@ -1253,7 +1309,7 @@ TEST_CASE("object samples carry the owner's boss action variations, component 24
     // The component header: u16 id 24 (little-endian) then u16 length; the one that is not in `without`.
     if (raw[i] == 24 && raw[i + 1] == 0 && raw.size() > without.size()) {
       Bytes probe = raw;
-      probe[i] = 30;  // an id no build knows yet
+      probe[i] = 31;  // an id no build knows yet (30 is the boss shooter's)
       Message m;
       if (decode(probe, m) == Error::none && std::get<ObjectSample>(m) == older) {
         patched = true;
@@ -1370,8 +1426,8 @@ TEST_CASE("bad object messages are refused") {
 
 TEST_CASE("an object sample needs its time component, and skips unknown ones") {
   Bytes b = must_encode(ObjectSample{0, test::kMadeId, 1, {}});
-  // Unknown component 30 with 2 bytes: skipped.
-  put_u16(b, 30);
+  // Unknown component 31 with 2 bytes: skipped (30 is the boss shooter's).
+  put_u16(b, 31);
   put_u16(b, 2);
   b.push_back(0xaa);
   b.push_back(0xbb);
@@ -3235,7 +3291,7 @@ TEST_CASE("object components 25-28 carry keyed values (protocol 18, sync plan S1
     const std::uint16_t id = static_cast<std::uint16_t>(probe[at] | (probe[at + 1] << 8));
     const std::uint16_t length = static_cast<std::uint16_t>(probe[at + 2] | (probe[at + 3] << 8));
     if (id >= 25 && id <= 28) {
-      probe[at] = static_cast<std::uint8_t>(id + 5);  // 30-33: ids no build knows
+      probe[at] = static_cast<std::uint8_t>(id + 6);  // 31-34: ids no build knows (30 is the boss shooter's)
       ++patched;
     }
     at += 4 + length;
