@@ -192,6 +192,29 @@ jobs:
         run: python tools/release/tests/test_apply_patch.py -v
       - name: Kit Discord status tests
         run: python tools/release/tests/test_discord_status.py -v
+      # Test files no step named before (tools/check_content.py now fails any test_*.py under tools/ that no workflow names).
+      - name: Steps file tests
+        run: python tools/autotest/tests/test_hs_steps.py -v
+      - name: Kit setup tests
+        run: python tools/autotest/tests/test_kit_setup.py -v
+      - name: Character Select UI tests
+        run: python tools/puppet_pack/tests/test_charsel_ui.py -v
+      - name: Eye switch tests
+        run: python tools/puppet_pack/tests/test_eye_switches.py -v
+      - name: HUD pack tests
+        run: python tools/puppet_pack/tests/test_hud.py -v
+      - name: Look cap tests
+        run: python tools/puppet_pack/tests/test_look_cap.py -v
+      - name: Look metal tests
+        run: python tools/puppet_pack/tests/test_look_metal.py -v
+      - name: Presence gate tests
+        run: python tools/puppet_pack/tests/test_presence_gates.py -v
+      - name: Room graph tests
+        run: python tools/puppet_pack/tests/test_room_graph.py -v
+      - name: Self tunic tests
+        run: python tools/puppet_pack/tests/test_self_tunic.py -v
+      - name: Shared anchor tests
+        run: python tools/puppet_pack/tests/test_shared_anchors.py -v
       # The Windows kit's puppet pack tool staged as make_kit_hookshot.ps1 stages it (kit_pack.ps1) and run from that
       # copy alone: a module, data folder or strings file the pack needs and the kit misses fails here (the 0.11.12
       # integrate-01110 kit lacked charsel\data and coopmenu\data). Here, not in the windows job: that one may run on the

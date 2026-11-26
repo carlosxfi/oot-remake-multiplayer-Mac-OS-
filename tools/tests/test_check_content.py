@@ -137,5 +137,24 @@ class TestPlaytestLibrary(unittest.TestCase):
         self.assertEqual(found, [])
 
 
+class UnlistedPythonTests(unittest.TestCase):
+    def test_a_test_file_no_workflow_names_is_found(self):
+        wf = "run: python tools/autotest/tests/test_a.py -v\n"
+        paths = ["tools/autotest/tests/test_a.py", "tools/autotest/tests/test_b.py",
+                 "tools/puppet_pack/tests/test_c.py", "tools/autotest/helper.py", "tests/host/x_test.cpp"]
+        self.assertEqual(check_content.unlisted_python_tests(paths, wf),
+                         ["tools/autotest/tests/test_b.py", "tools/puppet_pack/tests/test_c.py"])
+
+    def test_windows_separators_count(self):
+        self.assertEqual(check_content.unlisted_python_tests(["tools\\x\\tests\\test_q.py"], ""), ["tools\\x\\tests\\test_q.py"])
+
+    def test_the_repository_runs_every_python_test_file(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if not os.path.isdir(os.path.join(root, ".github", "workflows")):
+            self.skipTest("no workflows folder (a kit copy)")
+        self.assertEqual(check_content.unlisted_python_tests(check_content.tracked_files(root),
+                                                             check_content.workflow_text(root)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

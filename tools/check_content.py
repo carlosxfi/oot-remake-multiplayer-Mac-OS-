@@ -166,6 +166,23 @@ def test_name_problems(root, path):
     return found
 
 
+def unlisted_python_tests(paths, workflow_text):
+    """Python test files (tools/**/test_*.py) whose path no workflow names: CI runs them by name, so a new one would never run."""
+    return [p for p in paths
+            if re.match(r"^tools/.*/test_[^/]*\.py$", p.replace("\\", "/")) and p.replace("\\", "/") not in workflow_text]
+
+
+def workflow_text(root):
+    text = ""
+    wdir = os.path.join(root, ".github", "workflows")
+    if os.path.isdir(wdir):
+        for name in sorted(os.listdir(wdir)):
+            if name.endswith((".yml", ".yaml")):
+                with open(os.path.join(wdir, name), encoding="utf-8") as f:
+                    text += f.read() + "\n"
+    return text
+
+
 def playtest_output_problems(path):
     """A file a play-test run writes (shot, call log, session file, .mcp.json), wherever it was put in the tree."""
     parts = path.replace("\\", "/").split("/")
@@ -202,7 +219,8 @@ def main():
     private = []
     semicolons = []
     playtest = []
-    for path in tracked_files(root):
+    files = tracked_files(root)
+    for path in files:
         reason = problem(root, path)
         if reason:
             bad.append(f"{path}: {reason}")
@@ -237,7 +255,13 @@ def main():
         print("with no local path, user folder or IP address:")
         for line in playtest:
             print("  " + line)
-    if bad or named or private or semicolons or playtest:
+    unlisted = unlisted_python_tests(files, workflow_text(root)) if os.path.isdir(os.path.join(root, ".github", "workflows")) else []
+    if unlisted:
+        print("Content guard failed. CI runs each Python test file by name (.github/workflows/build.yml, python-tools job);")
+        print("these are named by no workflow, so they would never run. Add a step for each:")
+        for line in unlisted:
+            print("  " + line)
+    if bad or named or private or semicolons or playtest or unlisted:
         return 1
     print("Content guard passed.")
     return 0
