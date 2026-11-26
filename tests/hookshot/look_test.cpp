@@ -2084,6 +2084,13 @@ TEST_CASE("look parts (vest-link): the vest paints only the vest's textures, uns
     }
 }
 
+// A texture painted from green as a puppet's copy holds it (row 198): its last byte marked as the copy's, not green's.
+// (Defined before its first use: the vest-link case below.)
+std::vector<std::uint8_t> CopyMarked(std::vector<std::uint8_t> texels) {
+    if (!texels.empty()) texels.back() ^= CoopLookParts::kSelfMark ^ CoopLookParts::kTunicMark;
+    return texels;
+}
+
 TEST_CASE("look parts (vest-link): the puppets' tunic copies take their player's vest") {
     using Paint = CoopLookParts::TunicPaint;
     const auto green = GreenTunic();
@@ -2298,12 +2305,6 @@ TEST_CASE("look (row 198): where the places lie, and two wardrobes over one text
     CHECK(both[0] == std::pair<std::size_t, std::size_t>{1, 1});
     theirs[1].address = 0x3010;   // right after own[1]: apart
     CHECK(CoopLookTunic::Overlaps(own, theirs).empty());
-}
-
-// A texture painted from green as a puppet's copy holds it (row 198): its last byte marked as the copy's, not green's.
-std::vector<std::uint8_t> CopyMarked(std::vector<std::uint8_t> texels) {
-    if (!texels.empty()) texels.back() ^= CoopLookParts::kSelfMark ^ CoopLookParts::kTunicMark;
-    return texels;
 }
 
 TEST_CASE("look (0.11.9): the puppets' tunic copies, each repainted in the exact colour of the player given it") {
