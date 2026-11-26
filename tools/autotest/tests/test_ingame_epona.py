@@ -10,7 +10,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_ingame as T   # noqa: E402
 
-ROW = ["--env", "LICHII_COOP_PUPPET=1", "--env", "LICHII_COOP_DEBUG_ANIM=1", "--env", "LICHII_COOP_OBJECTS=1"]
+ROW = ["--env", "LICHII_COOP_PUPPET=1", "--env", "LICHII_COOP_DEBUG_ANIM=1", "--env", "LICHII_COOP_OBJECTS=1",
+       "--env", "LICHII_COOP_OCARINA_PROBE=1"]
 BOTH = ("test_epona_sync", "test_epona_seen")
 
 
