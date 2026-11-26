@@ -86,7 +86,8 @@ def way_back(pair, gear, done, warp_child):
     if done:
         for x in ("A", "B"):
             s = pair.state(x)
-            assert pair.in_play(s) and s.get("age") == "child",                 "%s stays %s after the test: the lane's later tests need child Link" % (x, s.get("age"))
+            assert pair.in_play(s) and s.get("age") == "child", (
+                "%s stays %s after the test: the lane's later tests need child Link" % (x, s.get("age")))
 
 
 @pytest.mark.budget(240)
