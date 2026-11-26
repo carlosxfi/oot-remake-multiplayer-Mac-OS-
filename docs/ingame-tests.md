@@ -1,0 +1,139 @@
+# In-game tests (one system, over the play-test bridge)
+
+Every in-game check is a pytest test in `tools/autotest/ingame/`, written once and run every rc. Tests drive the
+games only through the play-test bridge ([playtest.md](playtest.md), "Bridge protocol"): set-up by `warp`, `place`,
+`setflag`/`flag`, `give`; input by the bridge's `input` with frame steps. No OS key presses, no sleeps, no window
+focus, no screen grabs, so the monitor, the display and windows on top cannot break a run.
+
+Maintainer only, like the rest of `tools/autotest`: it needs a test lane (`tools/autotest/lanes.py`) installed by
+`offline/lane-game-for.ps1` (its `lane-server.txt`).
+
+## Running
+
+```sh
+python -I -m pytest tools/autotest/ingame --lanes 1 --expect-commit <sha> --out <dir>   # lane 1
+python -I -m pytest tools/autotest/ingame --lanes 1 --expect-commit <sha> --lane-check-only --out <dir>  # setup proof, no boot
+python -I -m pytest tools/autotest/ingame -n 2 --lanes 1,2 --out <dir>             # both lanes at once
+python -I -m pytest tools/autotest/ingame -m smoke --lanes 1 --out <dir>           # the rc smoke tier only
+python -I -m pytest tools/autotest/ingame --lanes 1 --repeat 10 --no-smoke-gate --out <dir>   # flake rate
+python -I -m pytest tools/autotest/ingame --fake --out <dir>                       # no game: fake bridges
+```
+
+One game pair is booted per lane (`live.py start --lane L --playtest`, the lane's own server from `lane-server.txt`)
+and every test of that lane runs on it. With `-n 2` xdist worker N takes the Nth lane of `--lanes`. Ports: lane L,
+player N on `5000 + 10*L + N` (playtest.md). The boot's setup proof is `pair.lane_check` (the same rule as
+`offline/lib/lane-server.ps1` + `lane-pair.ps1`: both games' module is the one installed, from the same patches
+build, the server exists), then `hello` on both bridges with Longshot's control answering. `--expect-commit` (the lane's module sha, from
+`lane-server.txt`'s `commit=`) is required on a real lane. `--lane-check-only` runs that proof and the collection
+only (no boot, no test): one `SETUP-OK`/`SETUP-FAIL` line per lane, `<dir>/setup.json`, exit 0 only if all are OK
+(one process: it refuses `-n` and checks every `--lanes` lane itself).
+
+Game switches are per boot: `--env NAME=VALUE` (both games) or `--env A:NAME=VALUE` / `--env B:NAME=VALUE` (one
+game), repeatable, set at the game launch (`live.py start --env`) next to the base `LICHII_COOP_PUPPET=1` and
+`LICHII_COOP_TEST_TO_TITLE=1`; the boot's whole list is `summary.json` `identity.env`. A test that needs a switch says
+so with `@pytest.mark.needs_env("NAME=VALUE", ...)`: on a boot without it, it is SETUP-FAIL (never a silent pass). A
+malformed `--env` stops the run before any boot (pytest usage error, exit 4).
+
+## Results
+
+One summary per run: `<dir>/summary.json` and `summary.md` (add `--junitxml <file>` for JUnit).
+
+| Result | When |
+|---|---|
+| PASS | every assert held |
+| FAIL | an assert failed, or the test ran past its `budget` (FAIL `timeout`); a failed test reruns ONCE |
+| FLAKY | failed, then passed on the rerun: never a pass |
+| SETUP-FAIL | the lane, the boot, or the test's own set-up (`with pair.setup():`, under 30 s) did not hold; not rerun |
+| NO-REF | a look check has no stored reference yet; its shot is kept under `<dir>/lane<L>/new/` |
+| NOT-RUN | `--deadline-min N` passed before it started (never a pass) |
+
+A smoke test (`@pytest.mark.smoke`) that FAILs or SETUP-FAILs stops the run: the rc is broken.
+
+`--deadline-min N` is the run's wall-clock limit: set it below the queue job's Minutes (the queue's TIMEOUT kills
+the process tree, which would lose `summary.json` and leave the games and the lane lock). Past N no test starts and
+no FAIL is rerun; each test not started is NOT-RUN, the lane's games are closed at once (`live.py stop`: each game
+quits through its bridge, is killed only if still up, the lane lock is let go), then the summary is written
+(`stopped`, `lane_closed`). Every rc pass sets it. A run whose verdict is NOT PASS never exits 0.
+
+Each test has a hard deadline (`@pytest.mark.budget(seconds)`, default 120): every bridge call checks it, and every
+wait is counted in game frames with a ceiling (`pair.until`, `pair.expect_log`), so a test ends by itself.
+pytest-timeout (pytest.ini, 1800 s) is only the backstop for a call that never returns.
+
+## Judging
+
+- By state: the bridge's state JSON (`scene`, `pos`, `equips`, `coop.players`, `world`, flags by `flag_read`), the
+  module's log lines (`pair.expect_log`: the game's `game-out-X.txt`, only lines written since the test began), and
+  checkpoints with `desync_check.py`.
+- By picture ONLY for what a player sees (worker-rules TEST SYSTEM: other players' Epona animated, menu UI, HUD UI,
+  name tags, balloons, pause pages, a new or changed look): `pair.check_shot(game, name, tolerance)` on EACH game,
+  twice a few frames apart where animation must show. The shot is the game's framebuffer (the bridge's `shot`), and is
+  compared to `tools/autotest/ingame/refs/<name>-<game>.png` by SSIM (scikit-image): the score is the worst of 8 x 8
+  tiles of the SSIM map, so one small missing thing fails its tile. Shots are kept with the result
+  (`<dir>/lane<L>/shots/`). A test never writes a reference: a person checks a NO-REF candidate and copies it into
+  `refs/`.
+
+## Writing a test
+
+```python
+@pytest.mark.budget(120)
+@pytest.mark.row("#91 masks on the other player's puppet")
+def test_x(pair):
+    with pair.setup():                         # SETUP-FAIL if anything here fails or takes > 30 s
+        pair.give("A", "PouchData.Armor_Child_Mask_Skull.StockNum")
+    pair.act("A", "wear head Armor_Child_Mask_Skull")
+    pair.expect_log("B", r"P1 wears head 'Armor_Child_Mask_Skull'", max_frames=300)
+```
+
+Every key, flag, line and log pattern cites its source in the test (worker-rules "no guessed values"); shared tables
+are imported (`ocarina_notes.KEY_NOTE`), never copied. `pair.step_both(n)` runs both games in step; never let one game
+run alone. The selftests (`tools/autotest/tests/test_ingame.py`, in CI) run the whole suite on two fake bridges
+(`ingame/fakegame.py`).
+
+## Porting a .ps1 row (row workers: follow this)
+
+Owner 2026-11-26 08:35: every in-game check is a test here; no new or re-added `.ps1` run script. One row = one test
+function (or a few, one per thing it proves) in a `test_<area>.py` file in `tools/autotest/ingame/`. Worked examples:
+`test_rows.py` (each pilot row cites the old row it replaces).
+
+1. **Read the old row, cite it.** Its group line (`tools/autotest/groups/*.txt`: `expect=`, `label=`, `see=`,
+   `logonly=`), its scenario files (`tools/autotest/scenarios/<name>.A.txt` / `.B.txt`, the `#! switches` line) and its
+   `.ps1` (what it proves, what counts as pass). Put `@pytest.mark.row("<#issue> <label> (<old name>)")` on the test.
+2. **Fixture and budget.** Take the `pair` fixture (both games of the lane, already booted, in play after the smoke
+   tier). Give `@pytest.mark.budget(seconds)`: the whole test's hard limit, a little over what it needs. Switches from
+   `#! switches` -> `@pytest.mark.needs_env("LICHII_COOP_X=1")` (and the run gets `--env`); `A:`/`B:` for one game.
+3. **Set-up only by the bridge, inside `with pair.setup():`** (SETUP-FAIL if anything fails or it passes 30 s):
+   - place: `pair.warp_both(scene)`, `pair.act(x, "place X Y Z")`, `pair.act(x, "face X Z")`; never walk to a spot
+     (scenario `goto` / `toward` / `hold LSTICK_*` used only to get somewhere -> `place`/`face`).
+   - items and flags: `pair.give(x, item)`, `pair.flag(x, name, value)` (scenario `give` / `setflag` / `setenum`);
+     read back with `pair.flag_read` / `pair.state(x)` and assert it took.
+   - other scenario lines the bridge runs as they are: `pair.act(x, line)` for `kill hit hurt place face aim wear dress
+     assign chat menu setflag setenum` (docs/playtest.md "Commands").
+   - prove the start state: asserts on `pair.state(x)` (scene, age, equips; `test_rows.py`'s `need_child_in_play`).
+4. **Inputs = the old row's keys, in frames.** `press DLEFT 12` -> `pair.press("A", ["LEFT"], frames=12)` (bridge button
+   names: `hookshot.py` KEYS); `hold L 30` -> `pair.press("A", ["L"], frames=30)`; `stick`/`rstick` -> `stick=[angle,
+   strength]`; `wait N` -> `pair.step_both(N)`. Both games always run the same frames (`press`/`step_both` do it). No
+   `sleep`, no OS key, no window focus, no wall-clock wait. Copy the old row's waits in frames unless you cite why not.
+5. **Judge by state.** Each old `expect=` becomes `pair.expect_log(game, pattern, max_frames=N)` with the SAME pattern
+   (old and new judge the same thing); "must not" lines -> `pair.never_log`. Positions, scene, equips, life, players ->
+   `pair.until("what", lambda: <state check>, max_frames=N)`. Shared flags -> `pc.checkpoint` + `desync_check.py`
+   (see `test_story_flag_shared`). `logonly=` rows are state/log only: no shot.
+6. **Shots only for what a player sees** (old `see=` rows that are about looks: other players' Epona animated, menu UI,
+   HUD UI, name tags, balloons, pause pages). Mark the test `@pytest.mark.look`, then at the assert:
+   `pair.check_shot("A", "<name>-1", tolerance=0.80)` and the same on `"B"`, again a few frames later
+   (`pair.step_both(6)`, `<name>-2`) where animation must show. The first run gives NO-REF and keeps candidates under
+   `<out>/lane<L>/new/`; a person looks and copies the good ones into `tools/autotest/ingame/refs/` (never the test).
+   Tolerance: start at 0.80 for scenes with moving things, 0.85-0.90 for still UI; say why in the test.
+7. **Fake game + selftest.** Make the test pass on `fakegame.py` (add the few log lines / state the fake must give,
+   cited to the module source) so `pytest tools/autotest/ingame --fake` and CI's `tests/test_ingame.py` cover it.
+8. **Prove it, then retire the old row.** `--lane-check-only` (setup proof) on the lane, then one lane run
+   (`--repeat 3` for a new row) through preflight + the queue. When it PASSes, say so in COORD-LOG; retiring the old
+   `.ps1` and its group line is the coordinator's call.
+
+## Tools (yes / no)
+
+| Tool | | Why |
+|---|---|---|
+| pytest, pytest-xdist, pytest-timeout | yes | owner rule; xdist workers = lanes; timeout as the backstop only (on Windows it can only end the worker) |
+| scikit-image, Pillow | yes | SSIM of shots against references |
+| a virtual display driver | not needed now | bridge shots come from the framebuffer, not the screen; windows still open somewhere (live.py `--display`); worth it only so no window ever lands on the owner's monitor |
+| Toxiproxy / clumsy | later, yes | lag and loss tests (playtest.md "Lag on purpose" has run.ps1's relays today) |
