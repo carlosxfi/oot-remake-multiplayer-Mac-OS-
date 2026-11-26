@@ -236,6 +236,10 @@ def _deselect_needs_env(config, items):
 DEFAULT_BOOT = "live-kakariko-child"
 BOOT_A = os.path.join(AUTOTEST, "scenarios", DEFAULT_BOOT + ".A.txt")
 BOOT_B = os.path.join(AUTOTEST, "scenarios", DEFAULT_BOOT + ".B.txt")
+# Boots whose game A hosts through its own Multiplayer > Host (the A script's `menu host` step, LICHII_COOP_TEST_HOST,
+# 127.0.0.1 only: hookshot/src/coop_host_menu.cpp:401-404) and whose B joins it on 127.0.0.1: live.py start
+# --host-in-game, no --server (rows 292, 170; B #138: B joins on 127.0.0.1, the LAN-list path is test_lan251's).
+HOST_IN_GAME_BOOTS = ("live-kakariko-host",)
 
 
 def boot_paths(name):
@@ -300,12 +304,14 @@ def _opt(config, name):
 def boot_args(config, lane, server, session):
     """live.py start's arguments for this lane's boot (after 'start'): the ONE list lane_pair boots with and
     --lane-check-only proves (live.py start --dry-run = hookshot.py run's own parser + script parse)."""
-    a, b = boot_paths(config.getoption("boot"))
+    boot = config.getoption("boot")
+    a, b = boot_paths(boot)
     if _opt(config, "solo"):         # (solo.py: game A alone, no --server, so no LICHII_COOP_SERVER: hookshot.py run)
         args = ["--session", session, "--lane", str(lane), "--only", solo.GAME, "--playtest", "--boot-a", a, "--no-load"]
     else:
-        args = ["--session", session, "--lane", str(lane), "--playtest", "--server", server, "--boot-a", a,
-                "--boot-b", b, "--no-load"]
+        host = ["--host-in-game"] if boot in HOST_IN_GAME_BOOTS else ["--server", server]
+        args = ["--session", session, "--lane", str(lane), "--playtest"] + host + ["--boot-a", a, "--boot-b", b,
+                                                                                  "--no-load"]
     for e in boot_env(config):
         args += ["--env", e]
     if nocs_wanted(config):           # (live.py resolve: --game-b wins over the lane's B with --lane)

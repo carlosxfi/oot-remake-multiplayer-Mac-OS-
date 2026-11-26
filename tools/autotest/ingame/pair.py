@@ -39,6 +39,14 @@ FPS = 30              # Ocarina of Time's calc rate on Hookshot: frames -> secon
 WARP_PAIR_MEASURED_S = 31.0
 RECOVER_WARP_S = WARP_PAIR_MEASURED_S   # one game's warp in a recovery: the worst TWO-game warp = 2x one game's (margin)
 RECOVER_BASE_S = SETUP_LIMIT_S          # a recovery's other part: out of a load, an event's end, in play (stepped)
+# The shortest reply wait a call is ever sent with (boss-respawn-bridge-e3e6e253, CAUSE 2: a call sent with the 0.2 s
+# left of a spent deadline timed the socket out; playtest_client.request closes it on any OSError and the bridge lets the
+# game RUN FREE mid-arrival, so every later test's recovery met 'teleport still in progress'). Cited parts: a held
+# game's `state` waits up to 300 ms for a snapshot (docs/playtest.md "world"), Longshot's status waits 250 ms for an
+# update (docs/playtest.md, control.c cmd_status), a `shot` runs up to 5 frames; frames at the client's own worst rate,
+# 20 a second (playtest_client.py input/move: timeout + frames / 20.0). 0.3 + 0.25 + 5/20 = 0.8 s, x2.5 margin.
+REPLY_MIN_S = 2.0
+CLIENT_FPS = 20.0     # the client's worst stepping rate (playtest_client.py input/move reply waits)
 
 
 class SetupFail(Exception):
@@ -276,13 +284,44 @@ class Pair:
         self.notes.append("set-up %.1f s" % took)
 
     # -- frames -----------------------------------------------------------------------------------------------
-    def _wait(self):
-        """A reply's wait: what is left of the deadline (at most 60 s, at least 0.2 s so a call can still answer)."""
-        return max(0.2, min(60.0, self.deadline.left()))
+    def _need(self, cmd, frames=0):
+        """The reply wait a call needs: REPLY_MIN_S, plus its frames at CLIENT_FPS (step / input / move run them)."""
+        return REPLY_MIN_S + max(0, int(frames or 0)) / CLIENT_FPS
+
+    def _wait(self, cmd="call", need=REPLY_MIN_S):
+        """A reply's wait: at least what the call needs and at most what is left of the deadline (60 s when the call
+        needs less). If the deadline cannot give it what it needs, the call is NOT sent: TestTimeout naming it, the
+        connection and the hold kept (was max(0.2, left): a bare socket timeout that let the game run free)."""
+        left = self.deadline.left()
+        if left < need:
+            raise TestTimeout("timeout after %.0f s: %s not sent (%.1f s left, its reply needs %.1f s; the game stays "
+                              "held)" % (self.deadline.seconds, cmd, max(0.0, left), need))
+        return min(max(60.0, need), left)
 
     def call(self, x, cmd, **args):
         self.deadline.check(cmd)
-        return self.c[x].request(cmd, reply_timeout=self._wait(), **args)
+        wait = self._wait(cmd, self._need(cmd, args.get("frames")))
+        return self._request(x, cmd, wait, **args)
+
+    def _request(self, x, cmd, wait, **args):
+        """One request; if its reply does not come (a socket timeout, a dropped connection), game x is held again at
+        once before the error goes on (a reconnect holds: playtest_client hold=True), so no game runs free until the
+        next test's recovery (B #138: re-hold after any step timeout)."""
+        try:
+            return self.c[x].request(cmd, reply_timeout=wait, **args)
+        except (OSError, ValueError) as e:
+            self.rehold(x, "%s: %s: %s" % (cmd, type(e).__name__, e))
+            raise
+
+    def rehold(self, x, why):
+        """Game x held again after a failed request (its connection is closed: the next request reconnects and holds).
+        Noted; a failed re-hold is noted too (the next test's recovery reconnects anyway, and SETUP-FAILs if it cannot)."""
+        client = self.c[x]
+        try:
+            client.request("pause", reply_timeout=REPLY_MIN_S)
+            self.notes.append("%s: held again after %s" % (x, why))
+        except Exception as e:                 # noqa: BLE001
+            self.notes.append("%s: NOT held again after %s: %s: %s" % (x, why, type(e).__name__, e))
 
     def step_both(self, frames=1):
         """Both games run `frames` frames, A first then B, in chunks (no game is ever more than CHUNK ahead)."""
@@ -341,11 +380,14 @@ class Pair:
         return "%s: scene=%s loading=%s event=%s not_ready=%s" % (x, st.get("scene"), st.get("loading"), st.get("event"),
                                                                st.get("not_ready"))
 
-    def until_in_play(self, what, games=("A", "B"), max_frames=600):
+    def until_in_play(self, what, games=None, max_frames=600):
         """Steps both games until every one of `games` is in play (a fresh Link sample, a scene, no load, no event).
+        `games` defaults to the pair's OWN games (self.c): a --solo pair has game A only, and a fixed ('A', 'B')
+        read state('B') -> KeyError instead of a SETUP-FAIL (review-rows-c130-3 16:38, need_boot_place).
         A stale sample ('Link sample older than the frame'), a load or an event is a game not ready YET: it is stepped,
         never judged from one read (pilot test-bridge-pilot-fa63e90f: test_boot / test_pause read once, failed on a
         stale sample). After max_frames: AssertionError naming each game's state."""
+        games = tuple(self.c) if games is None else tuple(games)
         try:
             return self.until(what, lambda: all(self.in_play(self.state(x)) for x in games), max_frames)
         except AssertionError as e:
@@ -496,6 +538,7 @@ class Pair:
             self.step_both(52)
             ran += 60
 
+    TELEPORT_GAP_S = 8      # s: Longshot's one teleport per 8 s per game (docs/playtest.md `warp`, 'still in progress')
     ARRIVE_IN_EVENT_WAIT = 12   # s: the bridge's own wait per game for arrive_in_event; it answers 'timeout' in the
     #                             arrival event, then the arrival is waited for on state (warp_one), not judged here
 
@@ -522,10 +565,21 @@ class Pair:
         extra = {} if entrance in (None, "") else {"entrance": entrance}
         before = self.c[x].last_frame or 0
         wait = self.ARRIVE_IN_EVENT_WAIT if arrive_in_event is True else 60
-        t = max(1, int(min(wait, self.deadline.left() - 2)))   # (the bridge answers by t, a little under the deadline)
-        self.deadline.check("warp")
-        r = self.c[x].request("warp", check=False, reply_timeout=max(0.2, min(t + 15, self.deadline.left())),
-                              scene=scene, timeout=t, **extra)        # (the reply wait stays inside the deadline)
+        for attempt in (1, 2):
+            t = max(1, int(min(wait, self.deadline.left() - 2)))   # (the bridge answers by t, a little under the deadline)
+            self.deadline.check("warp")
+            r = self._request(x, "warp", self._wait("warp", t + REPLY_MIN_S), check=False,
+                              scene=scene, timeout=t, **extra)        # (the bridge answers by t; never sent short of it)
+            if attempt == 1 and r.get("error") == "failed" and "still in progress" in (r.get("message") or ""):
+                # (Longshot allows one teleport every TELEPORT_GAP_S per game, docs/playtest.md `warp`: 'another
+                # teleport is still in progress'. After a game ran free mid-teleport (boss-respawn-bridge-e3e6e253's
+                # recoveries) the gap is waited out, game x stepped, and the warp asked once more)
+                self.notes.append("%s: warp %s: %s; the gap waited out, asked again" % (x, scene, r.get("message")))
+                gap_end = self.deadline.clock() + self.TELEPORT_GAP_S
+                while self.deadline.clock() < gap_end:
+                    self.call(x, "step", frames=CHUNK)
+                continue
+            break
         if not r.get("ok"):
             if not (arrive_in_event is not False and r.get("error") == "timeout"):
                 raise pc.BridgeError(r)
@@ -582,7 +636,7 @@ class Pair:
     REJOIN_BOOT_S = 420      # live.py relaunch: the runner's start + the boot script (live-kakariko-child: ~2900
                              # frames of script) inside the session's boot_timeout; the call's own wall-clock limit
 
-    def rejoin(self, x, boot=None):
+    def rejoin(self, x, boot=None, env=()):
         """Game x quits (live.py quit: asked to close, killed after QUIT_WAIT) and starts again into the SAME session
         (live.py relaunch: its save kept, `boot` = a scenario file played as its boot; default the one the lane booted
         x with, Pair.boot), so it joins the session's server again. A boot script takes the title itself, so it goes
@@ -591,7 +645,10 @@ class Pair:
         not answer the rejoiner's save round (docs/flags.md, "The save sent is the host's game now").
         Afterwards game x has a NEW bridge client (same port: relaunch_argv keeps the session's playtest ports) and its
         log is read from the new game-out file's first line (relaunch keeps the old one beside it as game-out-X.txt.N).
-        A hung quit/relaunch (_live's subprocess timeout) is an AssertionError naming the step. Returns live.py relaunch's answer; AssertionError if a step did not hold."""
+        A hung quit/relaunch (_live's subprocess timeout) is an AssertionError naming the step. `env` (K=V each) is for
+        this start of game x only (live.py relaunch --env, after the session's own: it wins; row 251:
+        LICHII_COOP_SERVER=<LAN IP>:<port>, LICHII_COOP_PASSWORD=); the next rejoin without it starts game x with the
+        session's own env again. Returns live.py relaunch's answer; AssertionError if a step did not hold."""
         if not (self.session and self.live):
             raise SetupFail("rejoin %s: no live.py session (Pair.session / Pair.live) for live.py quit/relaunch" % x)
         live = self.live
@@ -607,6 +664,8 @@ class Pair:
                      timeout=max(1.0, min(self.REJOIN_QUIT_S, self.deadline.left())))
             assert q.get("player") == x and not q.get("error"), "%s: live.py quit: %s" % (x, q)
             args = ["relaunch", "--session", self.session, x] + (["--boot", boot, "--no-load"] if boot else [])
+            for kv in env:
+                args.append("--env=%s" % kv)     # (one token: an empty value 'K=' stays one argument)
             step = "relaunch"
             self.deadline.check("rejoin relaunch")
             r = live(args, timeout=max(1.0, min(self.REJOIN_BOOT_S, self.deadline.left())))
@@ -624,6 +683,39 @@ class Pair:
         assert h.get("control"), "%s: after the relaunch the bridge has no Longshot control: %s" % (x, h)
         self.notes.append("%s rejoined: quit %s; relaunch %s" % (x, q.get("how"), r.get("boot")))
         return r
+
+    SERVER_RESTART_S = 30    # live.py server stop (a kill) + start (its own 1 s settle): the call's wall-clock limit
+
+    def server_restart(self, args=()):
+        """The session's coop_server stops (killed) and starts again on the same exe, port and password (live.py server
+        stop + start), with `args` as extra server arguments for this start only (e.g. "--same-network-open",
+        "--bind", "<LAN IP>"; each passed as --server-arg=X); a restart without them puts the session's own server
+        back. The games run in real time meanwhile (bridge `resume`, `pause` after), as in rejoin: a game held between
+        frames does not see its connection drop. Its output goes to the session's server-out-N.txt (N = 1, 2, ...:
+        the boot's own is server-out.txt); returns live.py server start's answer ({server, pid, port, args, out})."""
+        if not (self.session and self.live):
+            raise SetupFail("server_restart: no live.py session (Pair.session / Pair.live) for live.py server")
+        live = self.live
+        for y in self.c:
+            self.c[y].resume()
+        try:
+            self.deadline.check("server restart")
+            t = max(1.0, min(self.SERVER_RESTART_S, self.deadline.left()))
+            q = live(["server", "--session", self.session, "stop"], timeout=t)
+            assert q.get("server") == "stopped", "live.py server stop: %s" % q
+            r = live(["server", "--session", self.session, "start"] + ["--server-arg=%s" % v for v in args], timeout=t)
+            assert r.get("server") == "started", "live.py server start: %s" % r
+        finally:
+            for y in self.c:
+                self.c[y].pause()
+        self.notes.append("server restarted%s -> %s" % (" with " + " ".join(args) if args else "", r.get("out")))
+        return r
+
+    def server_log(self, name):
+        """A Log of the session's server output file `name` (server-out.txt, server-out-N.txt), read from its start."""
+        lg = Log(os.path.join(self.session, name))
+        lg.pos = 0
+        return lg
 
     # -- looks ------------------------------------------------------------------------------------------------
     def check_shot(self, x, name, tolerance=0.90):
