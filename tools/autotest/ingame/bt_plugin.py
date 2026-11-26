@@ -507,8 +507,12 @@ def pytest_runtest_protocol(item, nextitem):
         kind = "FLAKY" if rerun == "PASS" else "FAIL"
         reports = first      # (ALWAYS the first run's failure: review-rows-c130 11:10, a FAIL-then-SKIP kept the
         #                      SKIP's empty why; the rerun's own result goes into the row as 'rerun')
-        rerun_why = next((" ".join(str(getattr(getattr(r.longrepr, "reprcrash", None), "message", None)
-                                       or r.longrepr).split())[:200] for r in again if r.failed or r.skipped), "")
+        def _why(r):          # (a skip's longrepr is a (file, line, message) tuple: review-c123-9 nit)
+            lr = r.longrepr
+            if isinstance(lr, tuple) and len(lr) == 3:
+                return str(lr[2])
+            return str(getattr(getattr(lr, "reprcrash", None), "message", None) or lr)
+        rerun_why = next((" ".join(_why(r).split())[:200] for r in again if r.failed or r.skipped), "")
         for r in reports:
             r.user_properties.append(("rerun", "%s%s" % (rerun, (": " + rerun_why) if rerun_why else "")))
     secs = round(time.monotonic() - t0, 1)
