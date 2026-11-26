@@ -1870,13 +1870,25 @@ TEST_CASE("hookshot: party-hud-crash-c126: the map page and the pause tab call i
     const std::string page = ReadFile(kRepo / "hookshot" / "src" / "coop_map_page.cpp");
     const std::size_t frame = page.find("void Frame(void* ctx, const HosCoopApi* api) {");
     REQUIRE(frame != std::string::npos);
-    const std::size_t gate = page.find("if (CoopNativeUi::SceneLoading()) {", frame);
+    const std::size_t gate = page.find("if (CoopNativeUi::PlayUiDown()) {", frame);   // (c126-6: a load or the title)
     REQUIRE(gate != std::string::npos);
     CHECK(gate < page.find("SearchStatus(ctx, api, *menu);", frame));
     CHECK(gate < page.find("Search(ctx, api, menu->hud_screen, \"HUD\");", frame));
     CHECK(gate < page.find("Search(ctx, api, menu->panel_screen, \"panel's\");", frame));
     CHECK(page.find("ForgetStatus();", gate) < page.find("const auto menu = MenuState();", gate));
     CHECK(page.find("g_hud_at = {}, g_panel_at = {};", gate) != std::string::npos);
+    // party-hud-crash-c126-6: patch 0018's HUD and panel screens are looked in only while they run (a freed one at the
+    // title had its layout word changed: the anew walk called FindPane into it), and the frame site sets the title.
+    CHECK(page.find("if (menu->HudRuns() && anew(g_hud_at, menu->hud_screen)) {", frame) != std::string::npos);
+    CHECK(page.find("if (menu->Runs(menu->panel_screen) && anew(g_panel_at, menu->panel_screen)) {", frame) !=
+          std::string::npos);
+    const std::string site = ReadFile(kRepo / "hookshot" / "src" / "coop_hookshot.cpp");
+    const std::size_t loading = site.find("CoopNativeUi::SetSceneLoading(loading);");
+    REQUIRE(loading != std::string::npos);
+    const std::size_t title = site.find("CoopNativeUi::SetTitleUp(title);", loading);
+    REQUIRE(title != std::string::npos);
+    CHECK(title < site.find("CoopNativeUi::SetRunningScreens(std::move(running), hud_runs);", loading));
+    CHECK(title < site.find("RunFlagSetters(ctx);", loading));
     const std::string tab = ReadFile(kRepo / "hookshot" / "src" / "coop_pause_tab_module.cpp");
     const std::size_t on = tab.find("void OnScreen(void* ctx, std::uint64_t screen) noexcept {");
     REQUIRE(on != std::string::npos);

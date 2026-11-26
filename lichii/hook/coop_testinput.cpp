@@ -507,24 +507,44 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             const auto to = static_cast<std::size_t>(w.back().data() + w.back().size() - line.data());
             step.mark = std::string(line.substr(from, to - from));
         } else if (cmd == "MENU") {
-            // menu customize|close|host|paste|leave: the Customize page opened, the menu closed, the game hosts through the
+            // menu customize|close|host|paste|leave|main: the Customize page opened, the menu closed, the game hosts through the
             // Multiplayer page's Host (hookshot.py --host-in-game: LICHII_COOP_TEST_HOST), joins with the clipboard's
             // code as the page's "Paste code and join" (private-lobby-fix), or leaves the
-            // session as the page's Leave row does (remount-leave). Test only.
+            // session as the page's Leave row does (remount-leave), or the Multiplayer page opened and nothing pressed (its
+            // rows for a shot, row 170); `menu open PAGE` any page so (B #138). Test only.
+            // `menu open PAGE` (B #138): any page of the tab, nothing pressed (kMenuPages, coop_testinput.h).
             // gear-link: menu look KEY=VALUE (a settings key without look_, e.g. link_gear=hidden; VALUE none unsets it):
             // that part chosen as the Customize page chooses it and worn as when the menu closes. Test only.
-            std::string page = w.size() == 2   ? std::string(w[1])
-                               : w.size() == 3 ? std::string(w[1]) + " " + std::string(w[2])
-                                               : std::string{};
-            std::transform(page.begin(), page.end(), page.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            const bool look = page.rfind("look ", 0) == 0 && page.find('=') != std::string::npos;
-            if (page != "customize" && page != "close" && page != "host" && page != "paste" && page != "leave" &&
-                !look) {
-                return fail("want: menu customize|close|host|paste|leave, or menu look KEY=VALUE");
+            const auto low = [](std::string_view v) {
+                std::string out(v);
+                std::transform(out.begin(), out.end(), out.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                return out;
+            };
+            const auto joined = [](const auto& list) {
+                std::string out;
+                for (std::size_t i = 0; i < list.size(); ++i) out += (i ? "|" : "") + std::string(list[i]);
+                return out;
+            };
+            const std::string page = w.size() >= 2 ? low(w[1]) : std::string{};
+            if (page == "open") {
+                const std::string which = w.size() == 3 ? low(w[2]) : std::string{};
+                if (std::find(kMenuPages.begin(), kMenuPages.end(), which) == kMenuPages.end()) {
+                    return fail("want: menu open " + joined(kMenuPages));
+                }
+                step.kind = Kind::menu;
+                step.mark = "open " + which;
+            } else if (page == "look" && w.size() == 3 && w[2].find('=') != std::string_view::npos) {
+                step.kind = Kind::menu;
+                step.mark = "look " + low(w[2]);
+            } else {
+                if (w.size() != 2 || std::find(kMenuWords.begin(), kMenuWords.end(), page) == kMenuWords.end()) {
+                    return fail("want: menu " + joined(kMenuWords) + ", or menu open " + joined(kMenuPages) +
+                                ", or menu look KEY=VALUE");
+                }
+                step.kind = Kind::menu;
+                step.mark = page;
             }
-            step.kind = Kind::menu;
-            step.mark = page;
         } else if (cmd == "KILL") {
             // kill NAME, or kill ID NAME (the ID is the address get_world lists; the NAME is the one it lists with it)
             std::size_t at = 1;
@@ -1007,7 +1027,7 @@ namespace CoopTestInput {
 const std::vector<Kind>& ActKinds() {
     static const std::vector<Kind> kinds = {Kind::kill, Kind::hit,  Kind::hurt,    Kind::place, Kind::face,
                                             Kind::aim,  Kind::wear, Kind::dress,   Kind::assign, Kind::chat,
-                                            Kind::menu, Kind::setflag, Kind::setenum};
+                                            Kind::menu, Kind::setflag, Kind::setenum, Kind::verb};
     return kinds;
 }
 

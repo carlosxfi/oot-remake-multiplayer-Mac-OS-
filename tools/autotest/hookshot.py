@@ -68,6 +68,10 @@ STICK_KEYS = {  # full stick directions: (stick, x, y)
     "RSTICK_UP": ("R", 0, 1), "RSTICK_DOWN": ("R", 0, -1), "RSTICK_LEFT": ("R", -1, 0), "RSTICK_RIGHT": ("R", 1, 0),
 }
 WEAR_SLOTS = ("weapon", "shield", "head", "armor", "boots", "hand")
+# The `menu` step's words: lichii/hook/coop_testinput.h kMenuWords and kMenuPages, the one lists
+# (tests/test_ingame_menu_pages.py checks these copies against them).
+MENU_WORDS = ("customize", "close", "host", "paste", "leave", "main")
+MENU_PAGES = ("main", "host", "join", "local", "settings", "commands", "customize", "find")
 MODULE_ONLY = ("chat", "give", "wear", "dress", "assign", "place", "face", "aim", "kill", "hit", "stun", "drop", "verb", "hurt", "setflag", "setenum", "menu",
                "dump", "event", "autosave")
 
@@ -453,10 +457,17 @@ def parse(text):
             s.kind, s.name = "assign", w[1]
         elif cmd == "MENU":
             # (gear-link: "menu look KEY=VALUE", the module's coop_testinput.cpp MENU: a look part chosen and worn)
-            look = len(w) == 3 and w[1].lower() == "look" and "=" in w[2]
-            if not look and (len(w) != 2 or w[1].lower() not in ("customize", "close", "host", "paste", "leave")):
-                fail("want: menu customize|close|host|paste|leave, or menu look KEY=VALUE")
-            s.kind, s.name = "menu", (" ".join(w[1:]) if look else w[1]).lower()
+            if len(w) == 3 and w[1].lower() == "open":     # `menu open PAGE` (B #138): any page, nothing pressed
+                if w[2].lower() not in MENU_PAGES:
+                    fail("want: menu open " + "|".join(MENU_PAGES))
+                s.kind, s.name = "menu", "open " + w[2].lower()
+            elif len(w) == 3 and w[1].lower() == "look" and "=" in w[2]:
+                s.kind, s.name = "menu", "look " + w[2].lower()
+            else:
+                if len(w) != 2 or w[1].lower() not in MENU_WORDS:
+                    fail("want: menu " + "|".join(MENU_WORDS) + ", or menu open " + "|".join(MENU_PAGES)
+                         + ", or menu look KEY=VALUE")
+                s.kind, s.name = "menu", w[1].lower()
         elif cmd == "AWAIT":
             # Row 325: "await TICKS REGEX": until a NEW line of this game's own log (written after the step began)
             # matches REGEX (the rest of the line, spaces kept), at most TICKS. The runner reads the log itself: no
@@ -703,6 +714,7 @@ class Player:
         self.mem_ok = None            # guest memory reads answered (None: not tried)
         self.warps = []
         self.warp_failed = []         # "ASKED -> GOT": warps the bridge sent to another map (the run FAILs on them)
+        self.not_taken = []           # marks / test commands the module never read (the run FAILs on them: B #137)
         self.angle = 0.0              # camera model: world direction = stick direction turned by this
         self.learned = False
 
@@ -754,6 +766,7 @@ class Player:
         # hookshot_log-X.txt, as it reads the emulator's log.
         if self.commands and not self._send(["mark " + name]):
             self.log("coop: test mark %s NOT taken (no module reading LICHII_COOP_TEST_COMMANDS?)" % name)
+            self.not_taken.append("mark " + name)
         if self.shot:
             try:
                 self.shot(name)
@@ -988,6 +1001,8 @@ class Player:
                          % (s.kind, s.line))
             return
         taken = self._send([s.text for s in batch])
+        if not taken:
+            self.not_taken.extend("%s (line %d)" % (s.kind, s.line) for s in batch)
         for s in batch:
             self.log("coop: test %s %s (line %d: %s)" % (s.kind, "sent" if taken else "NOT taken", s.line,
                                                          "the module's log says what it did" if taken else
@@ -1171,6 +1186,17 @@ class Player:
 
 # ---------------------------------------------------------------------------------------------- the two-game run
 
+def wait_warps(players, slack=30.0):
+    """Waits for every warp thread of each Player (`hookshot.py run`, after its scripts ended): a warp asks on until it
+    is done, failed or gave up (warp_for s), and a run that ended first left it unasked (test-bridge-pilot-fa63e90f).
+    RuntimeError for a warp still alive after warp_for + slack s."""
+    for x, p in sorted(players.items()):
+        for t in p.warps:
+            t.join(p.warp_for + slack)
+            if t.is_alive():
+                raise RuntimeError("game %s: a warp still asking after %.0f s" % (x, p.warp_for + slack))
+
+
 def to_play(bridge, log, timeout, clock=time.monotonic, sleep=time.sleep):
     """Title and file select to the world: A pressed every 2 s until the bridge says play with a map known."""
     deadline = clock() + timeout
@@ -1203,7 +1229,15 @@ def to_play(bridge, log, timeout, clock=time.monotonic, sleep=time.sleep):
 # nothing and reads no controller; with a cold driver cache that is minutes (~170 s seen), so a run waits for it.
 # Longshot rc.4 builds pipelines at their create (RX_VK_LOAD=create) and logs "vk: start-up: the shaders took N s"
 # instead of rc.3's precompile total.
-RENDERER_READY = re.compile(r"vk: precompile: \d+ programs, .* in \d+ ms|vk: start-up: the shaders took \d")
+# The renderer is up once Longshot's rx_start logs "rx: renderer: Vulkan (longshot_vk.dll)": after the back end's start()
+# returned, on every path (window or not; host/rx_backend.c rx_start, v3.0.0-rc.4 to v3.2.0). NOT the precompile's
+# summary line: that one comes BEFORE the start-up ends (the pipeline cache's save, the worker's end, the start screen's
+# fade; gpu/vk/vk_main.cpp prepare_with_screen). party-hud-bridge-85e3b255 (lane 2, B #137 14:57): B logged the summary,
+# then its start-up never ended (no "start-up: the shaders took", prep_running still set at the quit), but it was called
+# ready, its window placed and its boot sent; the module never started and live.py start said ok.
+RENDERER_READY = re.compile(r"rx: renderer: Vulkan \(")
+RENDERER_FAILED = re.compile(r"rx: .*nothing is drawn|rx: the Vulkan back end could not start")
+RENDERER_PRECOMPILED = re.compile(r"vk: precompile: \d+ programs, .* in \d+ ms")
 
 
 def read_text(path):
@@ -1248,6 +1282,9 @@ def wait_renderer(read_log, alive, timeout, stall=RENDERER_STALL, limit=RENDERER
         text = read_log()
         if RENDERER_READY.search(text):
             return clock() - t0
+        bad = RENDERER_FAILED.search(text)
+        if bad:
+            raise RuntimeError("the renderer did not start: %s" % bad.group(0))
         if not alive():
             raise RuntimeError("the game closed before its renderer started")
         now = clock()
@@ -1259,6 +1296,10 @@ def wait_renderer(read_log, alive, timeout, stall=RENDERER_STALL, limit=RENDERER
             raise TimeoutError("renderer not started in %d s (still compiling: %s)" % (max(limit, timeout),
                                                                                        line or "no progress line"))
         if now > deadline:
+            if RENDERER_PRECOMPILED.search(text):
+                raise TimeoutError("renderer not started: the precompile ended but Longshot's start-up did not (no "
+                                   "'rx: renderer: Vulkan' line for %d s after the last progress; party-hud-bridge-85e3b255)"
+                                   % stall)
             if rose is None:
                 raise TimeoutError("renderer not started in %d s (no compile progress logged)" % timeout)
             raise TimeoutError("renderer not started: no compile progress for %d s (last: %s, %.0f s in)"
@@ -1758,6 +1799,12 @@ def run(a):
                 both("%s-%03d" % (a.name, n))
                 n += 1
             time.sleep(0.25)
+        # A script's warp asks on in its own thread (Player.warp) and a script may end before the game took it: the
+        # teleport is dropped while the save's arrival event plays, and was asked again only while the process lived.
+        # test-bridge-pilot-fa63e90f (live.py start): B's 'warp KakarikoVillage_Child' was 'sent, not accepted' 1 s
+        # before the script ended, so B stayed in Graveyard_Child in an event. So each warp is waited for (it ends by
+        # itself within warp_for: done, failed or gave up), as `hookshot.py play` already did.
+        wait_warps(players)
         if errs:
             raise RuntimeError("play: " + ", ".join("%s %s" % kv for kv in errs.items()))
         time.sleep(1)
@@ -1765,6 +1812,11 @@ def run(a):
         wrong = ["%s %s" % (x, ", ".join(p.warp_failed)) for x, p in sorted(players.items()) if p.warp_failed]
         if wrong:   # (the shots are taken: they show where the game went instead)
             raise RuntimeError("warp landed on another map than asked: " + "; ".join(wrong))
+        # (a boot whose marks or test commands the module never read did not set the game up: party-hud-bridge-85e3b255's B
+        # had no module at all, yet this run said 'scenario played' and exited 0, so live.py start answered ok: B #137)
+        lost = ["%s %s" % (x, ", ".join(p.not_taken)) for x, p in sorted(players.items()) if p.not_taken]
+        if lost:
+            raise RuntimeError("NOT taken by the module (not started?): " + "; ".join(lost))
         say("scenario played")
     except Exception as e:
         failed = str(e) or e.__class__.__name__

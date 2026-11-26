@@ -1,6 +1,7 @@
 """One rc run on both test lanes: split the rc's group files into one group file per lane, balanced by minutes.
 
     python -I tools/autotest/rc_plan.py split <groups.txt...> --out-dir DIR [--lanes 2] [--history RUN_ROOT...]
+                                              [--skip-proven RUN_ROOT... --identity KEY... [--kit-root DIR]]
     python -I tools/autotest/rc_plan.py remaining <lane groups.txt> <run root> --out FILE
 
 Why (reports/test-speed-c127.md, 2026-11-26): an rc's rows ran as ~35 separate queue jobs on lane 1 while lane 2 did 3 %
@@ -13,6 +14,13 @@ the lane with the fewest minutes so far, longest first (LPT). Minutes of a scena
 under --history (run.json 'scenario' + the first to last timestamp of steps.txt, + CLOSE_MIN), else DEFAULT_MIN.
 Writes lane1.txt .. laneN.txt (groups.py files: each group's own lines, unchanged) and plan.json (lanes, groups,
 minutes, the source of every estimate). Every written file is parsed again by groups.parse_groups before it is kept.
+
+--skip-proven (B #128 OK, 2026-11-26): a row whose run on the build under test already PASSed (proven.py: same module,
+game, mods pack, kits and server; the same row; every run of it on that build PASS, so never FLAKY / FAIL / SETUP-FAIL /
+UNPROVEN) is not played again. --identity: the key of each lane's build (proven.py identity --lane N); a row is
+skipped only when proven on every key given. plan.json "skipped" lists each skipped row with its proof folders and
+split prints one "skip ..." line for each, so the rc summary says what was not replayed. Merged rows (merge_same_runs)
+are checked with their merged checks.
 
 remaining: the lines of a lane file whose run did not leave a run folder under <run root> (a lane-2 run ended early,
 VOID-COMMIT): a groups.py file of only those, so the other lane plays what is left, not the whole file again.
@@ -215,10 +223,47 @@ def write_checked(path, text):
         f.write(text)
 
 
-def split(files, out_dir, lanes=2, roots=None):
+def skip_proven(us, roots, keys, judge):
+    """(units without the proven rows, [{group, line, scenario, keys, proof: [{folder, result}]}])."""
+    import proven as P
+    if not keys:
+        raise Fail("--skip-proven needs --identity (the key of each lane's build: proven.py identity --lane N)")
+    runs = P.runs_with_identity(roots)
+    out, skipped = [], []
+    for name, lines, src in us:
+        keep = []
+        for line in lines:
+            row = one_run(line)
+            row["scenario_hash"] = P.scenario_hash(row["scenario"])   # a scenario changed since its PASS: played
+            ok, seen = P.proofs(row, keys, runs, judge)
+            if ok:
+                skipped.append({"group": name, "line": line, "scenario": scenario_of(line), "keys": list(keys),
+                                "proof": [{"folder": f, "result": r} for k in keys for f, r in seen[k]]})
+            else:
+                keep.append(line)
+        if keep:
+            out.append((name, keep, src))
+    return out, skipped
+
+
+def judge_run(kit_root):
+    def judge(folder, meta):
+        try:
+            return G.judge(folder, meta, kit_root)[0]
+        except Exception as e:   # a run that cannot be judged proves nothing
+            return "ERROR %s" % e.__class__.__name__
+    return judge
+
+
+def split(files, out_dir, lanes=2, roots=None, proven_roots=None, keys=None, judge=None):
     if lanes < 1:
         raise Fail("--lanes must be at least 1")
     us, merged = merge_same_runs(units(files))
+    skipped = []
+    if proven_roots:
+        us, skipped = skip_proven(us, proven_roots, keys, judge or judge_run(G.find_kit_root()))
+        if not us:
+            raise Fail("every row is proven on this build already (%d skipped): nothing to play" % len(skipped))
     plan = assign(us, history(roots), lanes)
     os.makedirs(out_dir, exist_ok=True)
     for p in plan:
@@ -231,6 +276,7 @@ def split(files, out_dir, lanes=2, roots=None):
             p["file"] = ""   # more lanes than groups: this lane plays nothing
     total = round(sum(p["minutes"] for p in plan), 2)
     doc = {"sources": list(files), "history": list(roots or []), "lanes": plan, "merged": merged,
+           "skip_proven": {"roots": list(proven_roots or []), "keys": list(keys or [])}, "skipped": skipped,
            "total_minutes": total,
            "longest_lane_minutes": max(p["minutes"] for p in plan)}
     with open(os.path.join(out_dir, "plan.json"), "w", encoding="utf-8") as f:
@@ -287,6 +333,9 @@ def main(argv=None):
     s.add_argument("--out-dir", required=True)
     s.add_argument("--lanes", type=int, default=2)
     s.add_argument("--history", nargs="*", default=[], help="run roots of earlier runs (minutes per scenario)")
+    s.add_argument("--skip-proven", nargs="*", default=[], help="run roots: rows PASSed on this build are not played")
+    s.add_argument("--identity", nargs="*", default=[], help="each lane's build key (proven.py identity --lane N)")
+    s.add_argument("--kit-root", help="the folder with proof-refs for judging (default: the first coop-kit above)")
     r = sub.add_parser("remaining")
     r.add_argument("lane_file")
     r.add_argument("run_root")
@@ -294,12 +343,18 @@ def main(argv=None):
     a = ap.parse_args(argv)
     try:
         if a.cmd == "split":
-            doc = split(a.groups, a.out_dir, a.lanes, a.history)
+            kit = os.path.abspath(a.kit_root) if a.kit_root else G.find_kit_root()
+            doc = split(a.groups, a.out_dir, a.lanes, a.history, a.skip_proven, a.identity, judge_run(kit))
+            for s in doc["skipped"]:
+                print("skip %s %s (proven on %s: %s)" % (s["group"], s["scenario"], ",".join(s["keys"]),
+                                                         "; ".join("%s %s" % (x["result"], x["folder"])
+                                                                   for x in s["proof"])))
             for p in doc["lanes"]:
                 print("lane %d: %d group(s), ~%.1f min, %s" % (p["lane"], len(p["groups"]), p["minutes"],
                                                               p["file"] or "(nothing)"))
-            print("total ~%.1f min, longest lane ~%.1f min, %d row(s) merged into an equal run" % (
-                doc["total_minutes"], doc["longest_lane_minutes"], len(doc["merged"])))
+            print("total ~%.1f min, longest lane ~%.1f min, %d row(s) merged into an equal run, %d row(s) skipped "
+                  "(proven on this build)" % (doc["total_minutes"], doc["longest_lane_minutes"], len(doc["merged"]),
+                                              len(doc["skipped"])))
             return 0
         text = remaining(a.lane_file, a.run_root)
         if text is None:
