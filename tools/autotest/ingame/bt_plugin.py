@@ -376,6 +376,7 @@ def lane_pair(request):
     try:
         pair = P.Pair(P.read_session(session), out_dir=out, refs_dir=refs)
         pair.lane, pair.info, pair.session = lane, dict(info, boot_s=round(time.monotonic() - t0, 1)), session
+        pair.live = _live                       # (Pair.rejoin: live.py quit + relaunch in this session)
         for x in ("A", "B"):
             h = pair.c[x].hello()
             if not h.get("control"):
