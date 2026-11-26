@@ -17,6 +17,12 @@ namespace T = CoopNativeTags;
 constexpr std::uint64_t kBase = 0x80020000;
 
 struct FakeGame final : T::Game {
+    // A pretend game in play: the game's play UI is up (patch 0018's HUD screen ran since the last load), so its
+    // listed screens are live (CoopNativeUi::ScreenLive, party-hud-crash-c126).
+    FakeGame() {
+        CoopNativeUi::SetSceneLoading(false);
+        CoopNativeUi::SetRunningScreens(std::vector<std::uint64_t>{}, true);
+    }
     std::map<std::uint64_t, std::uint8_t> mem;
     struct Called {
         std::uint64_t f;
@@ -135,6 +141,12 @@ TEST_CASE("native tags: the balloon screen found by its vtable among the UI mana
     CoopNativeUi::SetSceneLoading(true);   // party-hud-crash-c126: no screen handed out while a scene loads
     CHECK(T::ScreenByVtable(g, T::addr::kBalloonVtable) == 0);
     CoopNativeUi::SetSceneLoading(false);
+    // (after the load: listed but not live until the game's HUD screen has run, or the screen itself runs)
+    CoopNativeUi::SetRunningScreens(std::vector<std::uint64_t>{}, false);
+    CHECK(T::ScreenByVtable(g, T::addr::kBalloonVtable) == 0);
+    CoopNativeUi::SetRunningScreens(std::vector<std::uint64_t>{kScreen}, false);
+    CHECK(T::ScreenByVtable(g, T::addr::kBalloonVtable) == kScreen);
+    CoopNativeUi::SetRunningScreens(std::vector<std::uint64_t>{}, true);
     CHECK(T::ScreenByVtable(g, T::addr::kBalloonVtable) == kScreen);
 }
 

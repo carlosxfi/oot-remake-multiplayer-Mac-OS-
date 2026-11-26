@@ -383,10 +383,11 @@ void Frame(void* ctx, const HosCoopApi* api) {
     if (ctx == nullptr || !CanCall(api)) {
         return;
     }
-    // party-hud-crash-c126 (review-c123-5): while the game loads a scene (CoopNativeUi::SceneLoading, the game's
-    // Sequence_IsLoadingBanc read at the frame site before this) the screens' layouts are torn down while the screens may
-    // still be listed: no FindPane into any of them (Search, SearchStatus, the anew walk), and every pane found before is
-    // forgotten, so nothing reads one; after the load each screen is a new one (trackers reset) and is looked in again.
+    // party-hud-crash-c126: while the game loads a scene (CoopNativeUi::SceneLoading, the game's Sequence_IsLoadingBanc
+    // read at the frame site before this; on through the title too) no FindPane into any screen (Search, SearchStatus,
+    // the anew walk), and every pane found before is forgotten, so nothing reads one; after the load each screen is a new
+    // one (trackers reset) and is looked in again once patch 0018 says it runs (Menu::Runs: a listed screen is not live
+    // before its first update, CoopNativeUi::ScreenLive). Nothing of the maps shows at the title or during a load.
     static bool load_said = false;   // (Frame's thread: said once per load)
     if (CoopNativeUi::SceneLoading()) {
         for (Found* f : {&g_field, &g_dungeon, &g_mini_dungeon, &g_mini_field, &g_mini_window, &g_mini_field_window,

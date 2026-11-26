@@ -30,6 +30,12 @@ constexpr std::uint64_t kOverlay = 0x93100000, kOverlayLayout = 0x94800000, kOve
 constexpr std::uint64_t kLayoutType = 0x95000000, kBareSource = 0x9f400000;
 
 struct FakeGame final : party::Game {
+    // A pretend game in play: the game's play UI is up (patch 0018's HUD screen ran since the last load), so its
+    // listed screens are live (CoopNativeUi::ScreenLive, party-hud-crash-c126).
+    FakeGame() {
+        CoopNativeUi::SetSceneLoading(false);
+        CoopNativeUi::SetRunningScreens(std::vector<std::uint64_t>{}, true);
+    }
     std::map<std::uint64_t, std::uint8_t> mem;
     std::map<std::string, std::uint64_t> panes, anims;   // made as asked, when `pack` has them
     std::map<std::uint64_t, int> shown;                  // pane -> 0/1
@@ -741,6 +747,44 @@ TEST_CASE("party hud: the status screen gone a frame, back with the same layout:
     CHECK(game.made == 8);
 }
 
+// party-hud-crash-c126 (run party-hud-crash-c126-05b2d8c7, probe 967cac67d): the status screen is listed from the
+// title on and Sequence_IsLoadingBanc goes off as the save's load starts, but the screen first runs at the first play
+// frame (patch 0018: its update and the HUD screen's). Between the two (A 534 frames, B 268) nothing is called into
+// it; once the screen runs, or the game's HUD screen has run, the HUD is found.
+TEST_CASE("party hud: a listed status screen that has not run yet is not called into") {
+    FakeGame game;
+    game.Hud();
+    ui::SetSceneLoading(true);    // the title (Sequence_IsLoadingBanc on through it) ...
+    ui::SetSceneLoading(false);   // ... and the save's load starts: the flag off,
+    ui::SetRunningScreens(std::vector<std::uint64_t>{}, false);   // neither the status nor the HUD screen run yet
+    party::Hud hud;
+    std::vector<std::string> log;
+    const std::vector<party::Block> blocks = {{"Saria", Quarters(12, 12)}, {"Ruto", Quarters(8, 12)},
+                                              {"Nabooru", Quarters(4, 12)}, {"Impa", Quarters(16, 16)}};
+    const int calls = game.calls;
+    CHECK_FALSE(hud.Step(game, blocks, 0.15, &log));
+    CHECK(game.calls == calls);   // no Find, no MakeLive: no game function was handed its layout
+    CHECK(ui::ScreenByVtable(game, party::addr::kStatusVtable) == 0);
+    CHECK(ui::ScreenLayout(game, kStatus) == 0);
+    ui::SetRunningScreens(std::vector<std::uint64_t>{0x1234}, false);   // another screen runs: still not this one
+    CHECK_FALSE(hud.Step(game, blocks, 0.15, &log));
+    CHECK(game.calls == calls);
+    ui::SetRunningScreens(std::vector<std::uint64_t>{kStatus}, false);  // its own update ran: live
+    CHECK(ui::ScreenLayout(game, kStatus) == kLayout);
+    CHECK(hud.Step(game, blocks, 0.15, &log));
+    ui::SetRunningScreens(std::vector<std::uint64_t>{}, std::nullopt);  // an exe whose patch 0018 does not say: not live
+    CHECK(ui::ScreenLayout(game, kStatus) == 0);
+    ui::SetRunningScreens(std::vector<std::uint64_t>{}, true);          // the game's HUD screen ran: the play UI is up
+    CHECK(ui::GameUiUp());
+    CHECK(ui::ScreenLayout(game, kStatus) == kLayout);
+    ui::SetSceneLoading(true);
+    CHECK_FALSE(ui::GameUiUp());
+    CHECK(ui::ScreenLayout(game, kStatus) == 0);
+    ui::SetSceneLoading(false);
+    CHECK_FALSE(ui::GameUiUp());   // (up again only once the HUD screen ran after the load)
+    ui::SetRunningScreens(std::vector<std::uint64_t>{}, true);
+}
+
 // party-hud-crash-c126: at 'menu -> loading' the status screen was still listed while the scene loader reused its
 // layout's memory, and the next layout lookup walked into a scene object (both games crashed). While the game's scene
 // load (Sequence_IsLoadingBanc) is on, nothing of a screen's layout is called into; the HUD is found again after it.
@@ -764,6 +808,10 @@ TEST_CASE("party hud: a scene load calls nothing into the HUD's layout") {
     CHECK(game.calls == calls);
     CHECK(std::any_of(log.begin(), log.end(), [](const std::string& l) { return l.find("a scene load began") != std::string::npos; }));
     ui::SetSceneLoading(false);
+    CHECK(ui::ScreenLayout(game, kStatus) == 0);   // (the load forgot the HUD screen's run: not live yet)
+    CHECK_FALSE(hud.Step(game, blocks, 0.15, &log));
+    CHECK(game.calls == calls);
+    ui::SetRunningScreens(std::vector<std::uint64_t>{}, true);   // the game's HUD screen ran after the load
     CHECK(ui::ScreenLayout(game, kStatus) == kLayout + 0x200000);
     CHECK(hud.Step(game, blocks, 0.15, &log));   // found again on the new layout
     CHECK(hud.native());

@@ -2105,16 +2105,37 @@ void Frame(void* ctx, int site) {
         CoopHook::OnFrame(g_system);
     }
     if (w.calls && ctx != nullptr) {
-        {  // party-hud-crash-c126: the game's own scene load, before any screen work this frame (the screens' layouts
-           // are torn down then; CoopNativeUi::SetSceneLoading). Read as CoopStuckLoad does (coop_hook.cpp StuckLoadFrame).
+        {  // party-hud-crash-c126: which listed screens are live (CoopNativeUi::ScreenLive), before any screen work this
+           // frame: the game's own scene load (Sequence_IsLoadingBanc, read as CoopStuckLoad does: coop_hook.cpp
+           // StuckLoadFrame; on through the boot, the title and every load) and patch 0018's running screens and HUD.
             static const std::uint32_t loading_hash = coop::host::flag_hash("Sequence_IsLoadingBanc");
             CoopHook::EmulatorMemory memory(g_system.ApplicationMemory(), CoopRuntime::MainBase());
             const bool loading = coop::host::GameFlags(memory).get_bool(loading_hash).value_or(false);
             if (CoopNativeUi::SceneLoading() != loading) {
                 LOG_INFO(Core, "coop: native ui: scene load {} (Sequence_IsLoadingBanc): {}", loading ? "began" : "ended",
-                         loading ? "no screen's layout is called into until it ends" : "screens looked for again");
+                         loading ? "no screen's layout is called into until it ends"
+                                 : "screens handed out once the game's HUD screen has run");
             }
             CoopNativeUi::SetSceneLoading(loading);
+            const auto menu = CoopMapPage::MenuState();
+            std::optional<std::vector<std::uint64_t>> running;
+            std::optional<bool> hud_runs;
+            if (menu && menu->screens_known) {   // (row 141's struct: the running screens and the HUD's ran time)
+                running.emplace(menu->screens.begin(), menu->screens.begin() + menu->screen_count);
+                hud_runs = menu->HudRuns();
+            }
+            const bool was_up = CoopNativeUi::GameUiUp();
+            CoopNativeUi::SetRunningScreens(std::move(running), hud_runs);
+            if (CoopNativeUi::GameUiUp() != was_up) {
+                LOG_INFO(Core, "coop: native ui: the game's play UI {}", !was_up
+                             ? "is up (patch 0018's HUD screen ran since the load): its screens are live"
+                             : "is down (a scene load): only a screen that runs now is live");
+            }
+            static bool said_unknown = false;
+            if (!hud_runs && !std::exchange(said_unknown, true)) {
+                LOG_WARNING(Core, "coop: native ui: this Longshot's patch 0018 does not say which screens run: no screen is "
+                                  "called into (the native chat, the party HUD and the balloons wait)");
+            }
         }
         RunFlagSetters(ctx);
         LogFlagNative();

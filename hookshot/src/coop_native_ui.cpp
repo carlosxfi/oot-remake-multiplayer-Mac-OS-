@@ -505,19 +505,42 @@ std::uint64_t PaneTextBox(Game& game, std::uint64_t screen, std::uint64_t pane_n
 
 namespace {
 std::atomic<bool> g_scene_loading{false};
+std::atomic<bool> g_ui_up{false};        // patch 0018's HUD screen ran since the last scene load ended
+std::mutex g_running_mutex;
+std::vector<std::uint64_t> g_running;   // patch 0018's running screens (empty: none, or not said)
 }  // namespace
 
-void SetSceneLoading(bool on) { g_scene_loading.store(on); }
+void SetSceneLoading(bool on) {
+    g_scene_loading.store(on);
+    if (on) g_ui_up.store(false);   // (a load: the play UI is up again only once the HUD screen has run after it)
+}
 bool SceneLoading() { return g_scene_loading.load(); }
+
+void SetRunningScreens(std::optional<std::vector<std::uint64_t>> screens, std::optional<bool> hud_runs) {
+    {
+        std::lock_guard lock(g_running_mutex);
+        g_running = screens ? std::move(*screens) : std::vector<std::uint64_t>{};
+    }
+    if (hud_runs.value_or(false) && !SceneLoading()) g_ui_up.store(true);
+}
+
+bool GameUiUp() { return !SceneLoading() && g_ui_up.load(); }
+
+bool ScreenLive(std::uint64_t screen) {
+    if (screen == 0 || SceneLoading()) return false;
+    if (g_ui_up.load()) return true;
+    std::lock_guard lock(g_running_mutex);
+    return std::find(g_running.begin(), g_running.end(), screen) != g_running.end();
+}
 
 std::uint64_t ScreenLayout(Game& game, std::uint64_t screen) {
     std::uint64_t layout = 0;
-    if (screen == 0 || SceneLoading() || !ReadValue(game, screen + addr::kScreenLayout, layout)) return 0;
+    if (!ScreenLive(screen) || !ReadValue(game, screen + addr::kScreenLayout, layout)) return 0;
     return layout;
 }
 
 std::uint64_t ScreenByVtable(Game& game, std::uint64_t vtable_offset) {
-    if (SceneLoading()) return 0;   // (the screens' layouts are torn down now: SetSceneLoading)
+    if (SceneLoading()) return 0;   // (nothing is live: ScreenLive)
     const std::uint64_t vtable = game.At(vtable_offset);
     std::uint64_t got = 0, manager = 0, screens = 0;
     std::uint32_t count = 0;
@@ -528,7 +551,8 @@ std::uint64_t ScreenByVtable(Game& game, std::uint64_t vtable_offset) {
     }
     for (std::uint32_t i = 0; i < count; ++i) {
         std::uint64_t screen = 0, vt = 0;
-        if (ReadValue(game, screens + i * 8ull, screen) && screen != 0 && ReadValue(game, screen, vt) && vt == vtable) {
+        if (ReadValue(game, screens + i * 8ull, screen) && screen != 0 && ReadValue(game, screen, vt) && vt == vtable &&
+            ScreenLive(screen)) {
             return screen;
         }
     }

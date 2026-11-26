@@ -1,5 +1,4 @@
 #! timeout 420
-#! switches LICHII_COOP_PARTY_HUD_PROBE=1
 # hs-party-hud-solo (party-hud-runtime, 0.11.13): alone makes no gauge. ONE game (A, with the pack) on the server
 # alone (`start A` only: B never starts, so nobody else is there), no test players (COOP_TEST_PARTY_HUD not set).
 # The HUD is found ("run-time gauges can be made") but nothing is made: no "run-time gauge N: made" and no
