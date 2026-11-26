@@ -40,6 +40,29 @@ class GameCrash(AssertionError):
     FAIL with that line, never SETUP-FAIL, because that window is what crash rows guard (review-c123-7 08:53)."""
 
 
+class NoRef(Exception):
+    """A look check had no stored reference (raised by the pair fixture's end): NO-REF, never PASS."""
+
+
+def _exc_kind(e):
+    """A failure's kind from its exception TYPE (B #130 / kokiri-band-c124-4 09:41: never from traceback text, which a
+    FAIL's source lines or message can contain): 'crash', 'noref', 'setup' or 'other'."""
+    if isinstance(e, GameCrash):
+        return "crash"
+    if isinstance(e, NoRef):
+        return "noref"
+    if isinstance(e, P.SetupFail):
+        return "setup"
+    return "other"
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    rep = outcome.get_result()
+    rep.bt_kind = _exc_kind(call.excinfo.value) if call.excinfo is not None else None
+
+
 def pytest_addoption(parser):
     g = parser.getgroup("ingame")
     g.addoption("--lanes", default="1", help="test lanes, comma separated; xdist worker N takes the Nth")
@@ -380,29 +403,25 @@ def pair(request, lane_pair):
     request.node.user_properties.append(("notes", list(lane_pair.notes)))
     missing = lane_pair.no_ref()
     if missing:
-        pytest.fail("NO-REF: no stored reference for %s (candidates under new/)" % ", ".join(missing), pytrace=False)
+        raise NoRef("NO-REF: no stored reference for %s (candidates under new/)" % ", ".join(missing))
 
 
 # -- results ---------------------------------------------------------------------------------------------------
 def _kind(reports):
     """One run's result from its setup / call / teardown reports."""
+    kind = lambda r: getattr(r, "bt_kind", None)      # (pytest_runtest_makereport: the exception's type)
     for r in reports:
         if r.when == "setup" and r.failed:
-            return "FAIL" if "GameCrash" in str(r.longrepr) else "SETUP-FAIL"
+            return "FAIL" if kind(r) == "crash" else "SETUP-FAIL"
         if r.when == "setup" and r.skipped:
             return "SKIP"
     for r in reports:
         if r.when == "call" and r.failed:
-            text = str(r.longrepr)
-            if "SetupFail" in text:
-                return "SETUP-FAIL"
-            if "NO-REF" in text and "AssertionError" in text:
-                return "NO-REF"
-            return "FAIL"
+            return {"setup": "SETUP-FAIL", "noref": "NO-REF"}.get(kind(r), "FAIL")
         if r.when == "call" and r.skipped:
             return "SKIP"
     for r in reports:
-        if r.when == "teardown" and r.failed and "NO-REF" in str(r.longrepr):
+        if r.when == "teardown" and r.failed and kind(r) == "noref":
             return "NO-REF"
     if any(r.failed for r in reports):
         return "FAIL"

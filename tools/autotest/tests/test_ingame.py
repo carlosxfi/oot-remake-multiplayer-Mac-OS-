@@ -85,7 +85,7 @@ class Suite(unittest.TestCase):
         self.assertEqual(s["counts"]["SETUP-FAIL"], 0, p.stdout[-2000:])
         self.assertTrue(s["tests"])
         for d in s["deselected"]:
-            self.assertTrue(d["needs_env"], d)
+            self.assertTrue(d["needs_env"] or d.get("needs_boot"), d)     # (pganon-cct-287-3: a boss row's boot)
 
     def test_repeat_keeps_one_boot_and_orders_by_round(self):
         out = os.path.join(self.tmp, "o")
@@ -137,6 +137,9 @@ def test_times_out(pair):
 @pytest.mark.smoke
 def test_smoke_ok(pair):
     pass
+
+def test_fail_naming_noref(pair):
+    assert False, "NO-REF SetupFail GameCrash AssertionError: words in a FAIL's own message"
 '''
 
 
@@ -160,7 +163,7 @@ class Labels(unittest.TestCase):
         r = results(summary(self.out))
         self.assertEqual(r, {"test_smoke_ok": "PASS", "test_ok": "PASS", "test_flaky": "FLAKY",
                              "test_always_fails": "FAIL", "test_setup_fails": "SETUP-FAIL",
-                             "test_times_out": "FAIL"}, p.stdout[-3000:])
+                             "test_times_out": "FAIL", "test_fail_naming_noref": "FAIL"}, p.stdout[-3000:])
         rows = {x["test"].split("::")[-1]: x for x in summary(self.out)["tests"]}
         self.assertIn("timeout", rows["test_times_out"]["why"])
         self.assertIn("set-up: RuntimeError: no such scene", rows["test_setup_fails"]["why"])
@@ -472,6 +475,26 @@ class BootCommand(unittest.TestCase):
         p = pytest_run([".", "--fake", "--out", out, "-q", "--boot", "no-such-boot"], cwd=d)
         self.assertEqual(p.returncode, 4, p.stdout[-1000:] + p.stderr[-1000:])
 
+    def test_every_live_boot_parses(self):
+        """Every --boot NAME a test can ask (scenarios/live-*.A.txt with its .B.txt) through live.py start --dry-run:
+        hookshot.py run's own parser + a parse of both scripts (pganon-cct-287-3: a broken boot is caught here)."""
+        import glob
+        import bt_plugin as B
+        names = sorted(os.path.basename(f)[:-len(".A.txt")] for f in glob.glob(os.path.join(AUTOTEST, "scenarios",
+                                                                                              "live-*.A.txt")))
+        names = [n for n in names if os.path.isfile(os.path.join(AUTOTEST, "scenarios", n + ".B.txt"))]
+        self.assertIn(B.DEFAULT_BOOT, names)
+        for name in names:
+            class Cfg:
+                def getoption(self, opt, name=name):
+                    return {"env": [], "session_minutes": 60, "boot": name}[opt]
+            args = B.boot_args(Cfg(), 1, os.path.join(self.tmp, "coop_server.exe"), os.path.join(self.tmp, "s"))
+            i = args.index("--lane")
+            args[i:i + 2] = self.games()
+            with self.subTest(boot=name):
+                out = self.live(*(args + ["--dry-run"]))
+                self.assertTrue(out["ok"], out)
+
     def test_real_boot_args_parse(self):
         """bt_plugin.boot_args (what lane_pair boots with) through live.py start --dry-run: hookshot.py run's own
         parser + a parse of both boot scripts. The lane pair is swapped for two folders (CI has no lanes)."""
@@ -489,8 +512,8 @@ class BootCommand(unittest.TestCase):
             self.assertIn(want, out["runner"])
 
 
-HOOK_TESTS = 'import pytest\n\ndef test_hooks(pair):\n    pair.act("A", "frob 3")\n    pair.expect_log("A", r"fake hook: frob 3 on A", max_frames=30)\n    st = pair.state("B")\n    assert any(a.get("name") == "HookActor_B" for a in st["world"]["actors"]), st["world"]\n    assert st.get("hooked") == "shared-1"\n    r = pair.call("A", "ping_hook")\n    assert r.get("pong") is True\n    pair.press("A", ["ZR"], frames=2)\n    pair.expect_log("A", r"fake hook: pressed ZR", max_frames=30)\n\n    import playtest_client as pc\n    with pytest.raises(pc.BridgeError):           # (a plain warp: the boss intro event makes it a timeout)\n        pair.warp_both("BossStage_Test")\n    st = pair.warp_both("BossStage_Test", arrive_in_event=True)\n    assert st["A"]["scene"] == st["B"]["scene"] == "BossStage_Test"\n    assert any("answered timeout in the arrival event" in n for n in pair.notes), pair.notes\n    pair.act("A", "place 0 0 0")\n    pair.call("A", "move", yaw=90, strength=1.0, frames=30)\n    assert pair.state("A")["pos"][0] == 1.0, pair.state("A")["pos"]      # (move_step: the wall at x 1.0)\n'
-HOOK_MODULE = 'def setup(game):\n    game.hook_seen = []\n\ndef lane(fl):\n    fl.g["A"].shared = fl.g["B"].shared = {"n": 1}\n\ndef command(game, m):\n    if m.get("cmd") == "ping_hook":\n        return {"ok": True, "pong": True}\n    if m.get("cmd") == "warp" and m.get("scene") == "BossStage_Test":\n        game.run(40)\n        game.scene = "BossStage_Test"           # (there, but its intro event runs: the bridge says timeout)\n        return {"ok": False, "error": "timeout", "message": "still in an event"}\n    return None\n\ndef move_step(game, pos):\n    if game.scene == "BossStage_Test" and pos[0] > 1.0:\n        return [1.0, pos[1], pos[2]]\n    return None\n\ndef after(game, m, r):\n    if m.get("cmd") == "state":\n        r["hooked"] = "shared-%d" % game.shared["n"]\n\ndef press(game, buttons):\n    if "ZR" in buttons:\n        game.say("fake hook: pressed ZR")\n        return True\n    return False\n\ndef act(game, words):\n    if words[0] == "frob":\n        game.say("fake hook: frob %s on %s" % (words[1], game.tag))\n        return True\n    return False\n\ndef actors(game):\n    return [{"id": 99, "name": "HookActor_%s" % game.tag, "kind": "enemy", "pos": [0.0, 0.0, 0.0]}]\n'
+HOOK_TESTS = 'import pytest\n\ndef test_hooks(pair):\n    pair.act("A", "frob 3")\n    pair.expect_log("A", r"fake hook: frob 3 on A", max_frames=30)\n    st = pair.state("B")\n    assert any(a.get("name") == "HookActor_B" for a in st["world"]["actors"]), st["world"]\n    assert st.get("hooked") == "shared-1"\n    r = pair.call("A", "ping_hook")\n    assert r.get("pong") is True\n    pair.press("A", ["ZR"], frames=2)\n    pair.expect_log("A", r"fake hook: pressed ZR", max_frames=30)\n\n    import playtest_client as pc\n    with pytest.raises(pc.BridgeError):           # (a plain warp: the boss intro event makes it a timeout)\n        pair.warp_both("BossStage_Test")\n    st = pair.warp_both("BossStage_Test", arrive_in_event=True)\n    assert st["A"]["scene"] == st["B"]["scene"] == "BossStage_Test"\n    assert any("answered timeout in the arrival event" in n for n in pair.notes), pair.notes\n    pair.act("A", "place 0 0 0")\n    pair.call("A", "move", yaw=90, strength=1.0, frames=30)\n    assert pair.state("A")["pos"][0] == 1.0, pair.state("A")["pos"]      # (move_step: the wall at x 1.0)\n    with pytest.raises(pc.BridgeError):           # (a timeout with NO event is not an arrival: review-c123-8)\n        pair.warp_both("NoEventStage_Test", arrive_in_event=True)\n'
+HOOK_MODULE = 'def setup(game):\n    game.hook_seen = []\n\ndef lane(fl):\n    fl.g["A"].shared = fl.g["B"].shared = {"n": 1}\n\ndef command(game, m):\n    if m.get("cmd") == "ping_hook":\n        return {"ok": True, "pong": True}\n    if m.get("cmd") == "warp" and m.get("scene") in ("BossStage_Test", "NoEventStage_Test"):\n        game.run(40)\n        game.scene = m["scene"]                 # (there, but the bridge says timeout: an intro event, or not)\n        return {"ok": False, "error": "timeout", "message": "still in an event"}\n    return None\n\ndef move_step(game, pos):\n    if game.scene == "BossStage_Test" and pos[0] > 1.0:\n        return [1.0, pos[1], pos[2]]\n    return None\n\ndef after(game, m, r):\n    if m.get("cmd") == "state":\n        r["hooked"] = "shared-%d" % game.shared["n"]\n\ndef press(game, buttons):\n    if "ZR" in buttons:\n        game.say("fake hook: pressed ZR")\n        return True\n    return False\n\ndef act(game, words):\n    if words[0] == "frob":\n        game.say("fake hook: frob %s on %s" % (words[1], game.tag))\n        return True\n    return False\n\ndef actors(game):\n    return [{"id": 99, "name": "HookActor_%s" % game.tag, "kind": "enemy", "pos": [0.0, 0.0, 0.0]}]\n\ndef state(game, st):\n    if game.scene == "BossStage_Test":\n        st["event"] = True                      # (its intro event runs)\n'
 
 
 class FakeHooks(unittest.TestCase):
@@ -586,6 +609,15 @@ class SetupLimit(unittest.TestCase):
                     pair.state("A")
         self.assertIn("timeout after 30 s", str(cm.exception))
         self.assertLessEqual(clock.t, P.SETUP_LIMIT_S + 7.0)
+
+    def test_hung_warp_stops_at_the_limit(self):
+        """warp_both's own bridge call (not Pair.call) keeps its reply wait inside the deadline (review-c123-8)."""
+        pair, clock = self.make(240)
+        with self.assertRaises(P.SetupFail):
+            with pair.setup():
+                pair.warp_both("PhantomGanonStage", arrive_in_event=True)
+        self.assertLessEqual(clock.t, P.SETUP_LIMIT_S)
+        self.assertTrue(all(w <= P.SETUP_LIMIT_S for w in pair.c["A"].waits), pair.c["A"].waits)
 
     def test_short_test_budget_wins(self):
         pair, clock = self.make(10)

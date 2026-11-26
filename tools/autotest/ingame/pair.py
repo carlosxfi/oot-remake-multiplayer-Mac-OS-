@@ -288,18 +288,20 @@ class Pair:
         (entrance=: from boss-respawn 6438836b4, taken by the file's owner.)
         arrive_in_event (twinrova-shots-222-5): a stage whose arrival starts an event (a boss intro). The bridge's warp
         waits for Link in the scene with NO event (coop_playtest_core.cpp WarpArrived), so it answers 'timeout' with
-        Link already there; then a fresh state with that scene and no load counts as the arrival, anything else
-        raises. Each game's wait is ARRIVE_IN_EVENT_WAIT s."""
+        Link already there; then a fresh state with that scene, no load AND an event running counts as the arrival,
+        anything else raises. Each game's wait is ARRIVE_IN_EVENT_WAIT s, and every wait stays inside the deadline."""
         extra = {} if entrance in (None, "") else {"entrance": entrance}
         for x in ("A", "B"):
             before = self.c[x].last_frame or 0
             wait = self.ARRIVE_IN_EVENT_WAIT if arrive_in_event else 60
-            t = max(5, int(min(wait, self.deadline.left())))
+            t = max(1, int(min(wait, self.deadline.left() - 2)))   # (the bridge answers by t, a little under the deadline)
             self.deadline.check("warp")
-            r = self.c[x].request("warp", check=False, reply_timeout=t + 15, scene=scene, timeout=t, **extra)
+            r = self.c[x].request("warp", check=False, reply_timeout=max(0.2, min(t + 15, self.deadline.left())),
+                                  scene=scene, timeout=t, **extra)        # (the reply wait stays inside the deadline)
             if not r.get("ok"):
                 st = self.state(x) if arrive_in_event and r.get("error") == "timeout" else None
-                if not (st and (st.get("scene") or "").lower() == scene.lower() and not st.get("loading")):
+                if not (st and (st.get("scene") or "").lower() == scene.lower() and not st.get("loading")
+                        and st.get("event") is True):      # (review-c123-8: a timeout with no event is not an arrival)
                     raise pc.BridgeError(r)
                 self.notes.append("%s: warp %s answered timeout in the arrival event; in the scene, not loading: "
                                   "arrived (event %s)" % (x, scene, st.get("event")))
