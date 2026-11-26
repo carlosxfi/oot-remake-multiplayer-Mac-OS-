@@ -227,6 +227,19 @@ def test_respawn_black_with_starter_kept(pair, back_after):
         "b-end %.1f, < %.0f; arrival event began %s): the cause is not shown on these steps" % (later, end, BLACK, began)
 
 
+def give_hearts(pair):
+    """hs-volvagia-rocks: ten heart containers (the cheats window's give raises the max only: coop_cheat_give.cpp
+    Wanted +4), then life filled to 56 quarters (16 + 40), so each Link lives through the fight; read back. Inside
+    pair.setup(). Shared: the rows 234 tests (this file, test_volvagia_rocks.py) use this one, never a copy."""
+    for x in ("A", "B"):
+        for _ in range(10):
+            pair.give(x, "PlayerStatus.MaxLife")
+            pair.step_both(4)
+        pair.flag(x, "PlayerStatus.Life", 56)
+    pair.step_both(30)
+    hearts_in(pair, "after ten gives")
+
+
 def hearts_in(pair, when):
     for x in ("A", "B"):
         mx = pair.flag_read(x, "PlayerStatus.MaxLife").get("value")
@@ -243,15 +256,7 @@ def test_volvagia_rocks_each_game(pair, back_after):
     stage = "VolvagiaStage"
     with pair.setup():
         start_check(pair)
-        # hs-volvagia-rocks: ten heart containers (the cheats window's give raises the max only: coop_cheat_give.cpp
-        # Wanted +4), then life filled to 56 quarters (16 + 40), so each Link lives to see the rocks.
-        for x in ("A", "B"):
-            for _ in range(10):
-                pair.give(x, "PlayerStatus.MaxLife")
-                pair.step_both(4)
-            pair.flag(x, "PlayerStatus.Life", 56)
-        pair.step_both(30)
-        hearts_in(pair, "after ten gives")
+        give_hearts(pair)
     boss_arrival(pair, stage, then=lambda: hearts_in(pair, "after the arrival"))   # (the load must not undo them)
     for x in ("A", "B"):
         pair.log[x].mark()
