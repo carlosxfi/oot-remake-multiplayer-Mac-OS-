@@ -61,7 +61,7 @@ namespace {
 // through HoodTrim (C4-4: row 278's Goron and Zora hood trims when cap_trim_hoods is on).
 bool IsGear(Part p) {
     return p != Part::tunic && p != Part::cap_trim && p != Part::cap_trim_hoods && p != Part::eyes &&
-           p != Part::hair && !CoopLook::IsCharacterPart(p);
+           !CoopLook::IsLinkModPart(p) && !CoopLook::IsCharacterPart(p);   // (look-link-cs: the mod's)
 }
 }  // namespace
 

@@ -3063,8 +3063,10 @@ void DressCharacters(void* ctx) {
     // (and Link once he has worn a colour: back to none, the wardrobe puts the game's own back. Without him as a
     // target it never saw the change, and Game's own colour left the last colour on him)
     static bool own_worn = false;
-    own_worn = own_worn || own.eyes || own.hair;
-    if (own_worn || character != 0) {
+    own_worn = own_worn || own.eyes || own.hair || own.custom != 0;
+    // (look-link-cs: with Character Select your Link is always a target too, so his model is looked up and the
+    // Customize screen offers the mod's Link rows his model has: Rows, OwnRows)
+    if (own_worn || character != 0 || CoopCharColours::ModPresent()) {
         // (the model key: the actor name and the character shown, ModelKey, so another pick or age is looked up anew;
         // `picture`: dressed only on the Customize screen, its rows are the page's)
         const auto dress = [&](std::uint64_t actor, std::size_t i, std::uint64_t model) {

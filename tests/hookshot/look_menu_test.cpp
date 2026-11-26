@@ -276,12 +276,13 @@ TEST_CASE("look menu (0.11.9): the Character page: three pages of six, ZL and ZR
     page.Press(Input::kPagePrev);
     page.Press(Input::kPagePrev);
     CHECK(page.GroupShown() == 2u);
-    // Every part is on exactly one page, but the hair: no row (0.11.9 lane, its tint too weak; on the wire still).
+    // Every part is on exactly one page (look-link-cs: the hair on the Link page of Character Select's options,
+    // offered only where the Link model has them; none told here, so 4 pages above).
     std::vector<Part> seen;
     for (const auto& g : CoopLookMenu::Groups()) seen.insert(seen.end(), g.parts.begin(), g.parts.end());
-    CHECK(seen.size() == CoopLook::kParts - 1);
+    CHECK(seen.size() == CoopLook::kParts);
     for (const auto& info : CoopLook::Parts()) {
-        CHECK(std::count(seen.begin(), seen.end(), info.part) == (info.part == Part::hair ? 0 : 1));
+        CHECK(std::count(seen.begin(), seen.end(), info.part) == 1);
     }
     // A on a part: the colour mixer, which a page turn leaves alone; X resets every part.
     page.Press(Input::kDown);
@@ -294,6 +295,54 @@ TEST_CASE("look menu (0.11.9): the Character page: three pages of six, ZL and ZR
     page.Press(Input::kBack);
     page.Press(Input::kResetAll);
     CHECK(page.look() == Look{});
+}
+
+TEST_CASE("look menu (look-link-cs, report 293): Character Select's options on Link, only the rows his model has") {
+    using CoopLookMenu::Input;
+    using CoopLookMenu::Page;
+    Page page;
+    page.SetPaged(true);
+    page.Open(Look{});
+    page.SetCharacter(0, false);
+    CHECK(page.GroupsOffered() == 4u);              // (rows not known: never the mod's rows, never without the mod)
+    // Link's model with the mod: hair palette, eyes, Clothing Color 1 to 3, the equipment (Rows' bits, known).
+    page.SetRows(1 | 2 | 4 | 8 | 16 | 32 | 0x80);
+    CHECK(page.GroupsOffered() == 5u);
+    page.Press(Input::kPageNext);
+    auto v = page.view();
+    CHECK(v.rows[0].name == "Hair and clothes (page 2 of 5)");
+    REQUIRE(v.rows.size() == 5);
+    CHECK(v.rows[1].name == "Hair Colour");
+    CHECK(v.rows[2].name == "Vest Colour");
+    CHECK(v.rows[3].name == "Leather and Boots Colour");
+    CHECK(v.rows[4].name == "Equipment");
+    CHECK(v.rows[4].value == "Shown");
+    // The vest and the leather step through the mod's seven colours; the equipment is a switch.
+    page.Select(2);
+    page.Press(Input::kRight);
+    CHECK(page.look()[Part::link_vest] == CoopColors::Parse("green"));
+    page.Select(3);
+    page.Press(Input::kLeft);
+    CHECK(page.look()[Part::link_leather] == CoopColors::Parse("white"));
+    page.Select(4);
+    page.Press(Input::kRight);
+    CHECK(page.look()[Part::link_gear] == CoopLook::kGearHidden);
+    CHECK(page.view().rows[4].value == "Hidden");
+    // The hair takes any colour (the mixer).
+    page.Select(1);
+    page.Press(Input::kDecide);
+    CHECK(page.editing());
+    page.Press(Input::kBack);
+    // A Link model without the mod's palettes (eyes and the equipment): only the Equipment row.
+    page.SetRows(2 | 32 | 0x80);
+    CHECK(page.GroupsOffered() == 5u);
+    v = page.view();
+    REQUIRE(v.rows.size() == 2);
+    CHECK(v.rows[1].name == "Equipment");
+    // X on Link resets his parts, the mod's among them.
+    page.Press(Input::kResetAll);
+    CHECK_FALSE(page.look()[Part::link_vest]);
+    CHECK_FALSE(page.look()[Part::link_gear]);
 }
 
 TEST_CASE("look menu (npc-customize): a character other than Link: its own parts, only the rows its model has") {

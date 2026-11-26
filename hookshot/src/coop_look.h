@@ -68,8 +68,16 @@ enum class Part : std::uint8_t {
     // too (row 278), only when asked: off (unset, as 0.11.12: those hoods' trims follow their tunic) or on (kOn).
     // A switch, not a colour: the colour is cap_trim's. A kit before it passes it over (its hoods stay as 0.11.12).
     cap_trim_hoods = 26,
+    // look-link-cs (player report 293, KaminoX: lost since 0.11.9 when co-op's rows took Character Select's Customize
+    // screen): the mod's own options on a LINK model, which his screen had and ours had not. Link's hair keeps part 19
+    // (now also the mod's nearest hair palette entry, ForModel). On Link the mod's Clothing Color 2 is the vest and 3
+    // the leather and the boots (README v0.2.1); his Clothing Color 1 (tunic and cap) is co-op's tunic part. Only with
+    // the mod (its palette textures) and only the rows the Link model has. A kit before it passes them over.
+    link_vest = 27,       // the vest: the nearest of the mod's seven palette textures (kClothPresets)
+    link_leather = 28,    // the leather and the boots: the same
+    link_gear = 29,       // the equipment shown (unset) or hidden (kGearHidden)
 };
-inline constexpr std::size_t kParts = 27;
+inline constexpr std::size_t kParts = 30;
 // char_gear's value when the equipment is hidden (any set value hides it; the settings say "hidden").
 inline constexpr std::uint32_t kGearHidden = 1;
 // cap_trim_hoods' value when it is on (any set value is on; the settings say "on").
@@ -79,6 +87,13 @@ inline constexpr bool IsCharacterPart(Part p) {
     return static_cast<std::uint8_t>(p) >= static_cast<std::uint8_t>(Part::char_hair) &&
            static_cast<std::uint8_t>(p) <= static_cast<std::uint8_t>(Part::char_gear);
 }
+// look-link-cs: a Link part that only Character Select's textures or code make work (its Hair, the vest, the leather,
+// the equipment): offered only where the Link model has it (the wardrobe's rows), never without the mod.
+inline constexpr bool IsLinkModPart(Part p) {
+    return p == Part::hair || p == Part::link_vest || p == Part::link_leather || p == Part::link_gear;
+}
+// A part that is shown or hidden, not a colour (the settings say "hidden").
+inline constexpr bool IsGearSwitch(Part p) { return p == Part::char_gear || p == Part::link_gear; }
 // The clothing rows' colours: the mod's palette entries in their order (OoT Character Select v0.2.1 CLOTH_VALUES,
 // 1 = Green .. 7 = White), as CoopColors names them; a colour chosen is worn as the nearest of them.
 inline constexpr std::array<const char*, 7> kClothPresets = {"green", "red", "blue", "purple", "yellow", "black",

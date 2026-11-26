@@ -941,6 +941,21 @@ set he was no longer a site and kept the last colour). The mod's six option Ints
 Not done: a character whose iris texture is not the common blue one (Impa, Sheik) gets an eye colour shifted by its
 texture's hue (the mod's per-character hue table is not read).
 
+### Character Select's options on Link (look-link-cs, player report 293)
+
+Player report (KaminoX, 0.11.12): "double coloured tunics and hair colour" were gone. Since 0.11.9 (022b3bd6a) the mod's
+Customize screen shows co-op's rows, and on Link those had no Hair (9ab9048f1: the hair parameters alone were too weak),
+no vest, no leather and no Equipment, which the mod's own screen had on Link (README v0.2.1: on Link Clothing Color 1 is
+the tunic and cap, 2 the vest, 3 the leather and boots). Root cause: `CoopCharColours::ForModel` gave a Link model only
+the eye and hair parameters and never a palette entry, and the page never offered those rows on Link. Now: parts 27
+`link_vest`, 28 `link_leather` (the mod's seven palette colours, `look_link_vest` / `look_link_leather`), 29 `link_gear`
+(`look_link_gear = hidden`); ForModel puts Link's hair (19) also as the nearest hair palette entry and these three in the
+nibbles a character's take (Clothing Color 1 stays co-op's tunic part). With the mod your Link is always a wardrobe
+target, so his model's rows are known (`Rows`, `OwnRows(0)`), and Character Select's Customize screen offers a "Hair and
+clothes" page on Link with only the rows his model has (`RowOnModel`: none before the rows are known, so never without
+the mod). The pause page's full list keeps its Hair row as in 0.11.12. Per option, in-game proof and the bridge tests:
+branches hair-link, vest-link, leather-link, gear-link.
+
 ### Gear colours on the puppets
 
 Branch `customizer-puppets`, Hookshot only. Every player sees the others' part colours on their puppets, not only the tunic. Files: `tools/puppet_pack/look_items.py` (the copies), `lichii/hook/coop_look_share.*` (slots and copies), `lichii/hook/coop_puppet.*` (which copy a puppet wears), `hookshot/src/coop_look_parts.*` and `coop_look_live.cpp` (`PaintPuppetCopy` and the puppets' wardrobe). No memory of the game is written for it: Longshot's texture overrides (patch 0020, as for your own Link) draw the copies' textures in each player's colours.

@@ -51,6 +51,9 @@ std::uint32_t GameColour(Part part) {
     case Part::char_cloth3: return 0x808080;
     case Part::char_gear: return 0x000000;
     case Part::cap_trim_hoods: return 0x000000;   // (a switch: never a colour)
+    case Part::link_vest: return 0x2E5A2A;        // (Link's darker green vest)
+    case Part::link_leather: return 0x634D38;     // (the boots' leather)
+    case Part::link_gear: return 0x000000;        // (a switch: never a colour)
     }
     return 0x808080;
 }
@@ -89,6 +92,10 @@ const char* Note(Part part) {
     case Part::char_gear: return "Your character's sword, shield and other gear shown or hidden.";
     case Part::cap_trim_hoods:
         return "On: the Cap trim's colour on the Goron and Zora tunics' hood trims too. Off: those trims keep their tunic's colour.";
+    case Part::link_vest: return "Your Link's vest, in one of seven colours. The other players see it too.";
+    case Part::link_leather:
+        return "Your Link's leather and boots, in one of seven colours. The other players see it too.";
+    case Part::link_gear: return "Your Link's sword, shield and other gear shown or hidden.";
     }
     return "";
 }
@@ -97,15 +104,19 @@ const char* Note(Part part) {
 const char* Unset(Part part) { return part == Part::cap_trim ? "Same as tunic" : "Default"; }
 
 std::string ValueText(Part part, const std::optional<std::uint32_t>& colour) {
-    if (part == Part::char_gear) return CoopI18n::Tr(colour ? "Hidden" : "Shown");
+    if (CoopLook::IsGearSwitch(part)) return CoopI18n::Tr(colour ? "Hidden" : "Shown");
     if (part == Part::cap_trim_hoods) return CoopI18n::Tr(colour ? "On" : "Off");
     return colour ? CoopLook::ColourText(colour) : CoopI18n::Tr(Unset(part));
 }
 
 // npc-customize: a character's clothing rows take the mod's seven palette colours only (CoopLook::kClothPresets),
 // and its Equipment row is shown or hidden; neither opens the mixer.
-bool IsCloth(Part p) { return p == Part::char_cloth1 || p == Part::char_cloth2 || p == Part::char_cloth3; }
-bool IsSwitch(Part p) { return p == Part::char_gear || p == Part::cap_trim_hoods; }   // (on or off, no colour)
+// (look-link-cs: Link's vest and leather are the mod's palettes too, and his Equipment the same switch)
+bool IsCloth(Part p) {
+    return p == Part::char_cloth1 || p == Part::char_cloth2 || p == Part::char_cloth3 || p == Part::link_vest ||
+           p == Part::link_leather;
+}
+bool IsSwitch(Part p) { return CoopLook::IsGearSwitch(p) || p == Part::cap_trim_hoods; }   // (on or off, no colour)
 bool PresetOnly(Part p) { return IsCloth(p) || IsSwitch(p); }
 std::optional<std::uint32_t> NextCloth(const std::optional<std::uint32_t>& colour, int step) {
     const int n = static_cast<int>(CoopLook::kClothPresets.size()) + 1;   // (the game's own first)
@@ -117,7 +128,18 @@ std::optional<std::uint32_t> NextCloth(const std::optional<std::uint32_t>& colou
     return at == 0 ? std::nullopt : CoopColors::Parse(CoopLook::kClothPresets[static_cast<std::size_t>(at - 1)]);
 }
 // A character part's row on the model shown (CoopCharColours::Rows' bits; 0: not known yet, every row).
+// look-link-cs: a Link part of the mod's (IsLinkModPart) only once the Link model is known to have it (its rows known:
+// kRowsKnown 0x80), so never without the mod, nor on a page that is not told the model's rows.
 bool RowOnModel(Part p, std::uint8_t rows) {
+    if (CoopLook::IsLinkModPart(p)) {
+        if ((rows & 0x80) == 0) return false;
+        switch (p) {
+        case Part::hair: return (rows & 1) != 0;
+        case Part::link_vest: return (rows & 8) != 0;      // (the mod's Clothing Color 2 on Link)
+        case Part::link_leather: return (rows & 16) != 0;  // (its Clothing Color 3)
+        default: return (rows & 32) != 0;                  // (the equipment)
+        }
+    }
     if (!CoopLook::IsCharacterPart(p) || rows == 0) return true;
     switch (p) {
     case Part::char_hair: return (rows & 1) != 0;
@@ -279,7 +301,8 @@ std::uint32_t ToRgb(const Hsv& c) {
 const std::vector<Group>& Groups() {
     // (0.11.9: Link's own colours first, his hair and eyes among them)
     static const std::vector<Group> kGroups = {
-        // (no Hair row: the lane run showed the hair parameters' tint too weak on Link; never a row that does nothing)
+        // (0.11.9 cut the Hair row: the hair parameters alone were too weak on Link. look-link-cs: with Character
+        // Select its hair palette carries the colour, so Hair is back on the Link mod page below, kLinkModGroup)
         {"Link", {Part::eyes, Part::tunic, Part::cap_trim, Part::cap_trim_hoods, Part::goron_tunic, Part::zora_tunic}},
         {"Shields", {Part::hylian_frame, Part::hylian_face, Part::hylian_emblem, Part::mirror_rim, Part::mirror_face,
                      Part::deku_shield}},
@@ -289,6 +312,9 @@ const std::vector<Group>& Groups() {
         // (npc-customize: a Character Select character's own parts; only the rows its model has are shown)
         {"Character", {Part::char_hair, Part::char_eyes, Part::char_cloth1, Part::char_cloth2, Part::char_cloth3,
                        Part::char_gear}},
+        // (look-link-cs, report 293: Character Select's own options on a Link model, as his screen had them; only the
+        // rows the Link model has, RowOnModel)
+        {"Hair and clothes", {Part::hair, Part::link_vest, Part::link_leather, Part::link_gear}},
     };
     return kGroups;
 }
@@ -311,6 +337,9 @@ std::string PagedName(Part part) {
     case Part::char_cloth2: return "Clothing Colour 2";
     case Part::char_cloth3: return "Clothing Colour 3";
     case Part::char_gear: return "Equipment";
+    case Part::link_vest: return "Vest Colour";
+    case Part::link_leather: return "Leather and Boots Colour";
+    case Part::link_gear: return "Equipment";
     default: break;
     }
     const PartInfo& info = CoopLook::InfoOf(part);
@@ -393,6 +422,9 @@ std::vector<Page::Line> Page::Lines() const {
     std::string item;
     for (const PartInfo& info : CoopLook::Parts()) {
         if (CoopLook::IsCharacterPart(info.part)) continue;   // (Link's list: a character's are on its own page)
+        // (look-link-cs: the mod's vest, leather and equipment only where told the Link model has them; the Hair row
+        // stays in this list as in 0.11.12)
+        if (CoopLook::IsLinkModPart(info.part) && info.part != Part::hair && !RowOnModel(info.part, rows_)) continue;
         if (item != info.item) {
             item = info.item;
             out.push_back({{item, "", 3}, What::kHeading, info.part, ""});
@@ -447,7 +479,12 @@ void Page::SetRows(std::uint8_t rows) {
 }
 
 std::vector<std::size_t> Page::Offered() const {
-    if (character_ == 0) return {0, 1, 2, 3};   // Link: every part but a character's
+    if (character_ == 0) {   // Link: every part but a character's; the mod's Link page once his model has a row of it
+        for (const Part p : Groups()[kLinkModGroup].parts) {
+            if (RowOnModel(p, rows_)) return {0, kLinkModGroup, 1, 2, 3};
+        }
+        return {0, 1, 2, 3};
+    }
     // A character: its own parts (npc-customize; the Equipment row is on every model), then its held gear once shown
     // to work.
     if (gear_shows_) return {kCharacterGroup, 1, 2};
@@ -530,7 +567,7 @@ void Page::Change(std::size_t row, int step) {
     case What::kPart:
         if (IsSwitch(l.part)) {   // (kGearHidden and kOn are both 1: any set value is hidden / on)
             Set(l.part, look_[l.part] ? std::nullopt
-                                      : std::optional<std::uint32_t>(l.part == Part::char_gear ? CoopLook::kGearHidden
+                                      : std::optional<std::uint32_t>(CoopLook::IsGearSwitch(l.part) ? CoopLook::kGearHidden
                                                                                               : CoopLook::kOn));
         } else if (IsCloth(l.part)) {
             Set(l.part, NextCloth(look_[l.part], step));

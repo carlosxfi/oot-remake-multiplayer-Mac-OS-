@@ -272,6 +272,30 @@ TEST_CASE("look: every part has its number, a key and a row, and the numbers nev
     CHECK(CoopCharColours::kCharGearPart == static_cast<int>(Part::char_gear));
     CHECK(CoopCharColours::kLinkEyesPart == static_cast<int>(Part::eyes));
     CHECK(CoopCharColours::kLinkHairPart == static_cast<int>(Part::hair));
+    CHECK(CoopCharColours::kLinkVestPart == static_cast<int>(Part::link_vest));   // (look-link-cs)
+    CHECK(CoopCharColours::kLinkLeatherPart == static_cast<int>(Part::link_leather));
+    CHECK(CoopCharColours::kLinkGearPart == static_cast<int>(Part::link_gear));
+    CHECK(CoopLook::kParts == 30);
+}
+
+TEST_CASE("look (look-link-cs): Link's vest, leather and equipment are saved and read back") {
+    Look look;
+    look[Part::link_vest] = CoopColors::Parse("red");
+    look[Part::link_leather] = CoopColors::Parse("black");
+    look[Part::link_gear] = CoopLook::kGearHidden;
+    std::string ini;
+    CHECK(CoopLook::WriteSettings(look, ini));
+    CHECK(ini.find("look_link_gear = hidden") != std::string::npos);
+    CHECK(ini.find("look_link_vest") != std::string::npos);
+    std::vector<std::string> errors;
+    const Look back = CoopLook::ReadParts(ini, &errors);
+    CHECK(errors.empty());
+    CHECK(back[Part::link_vest] == look[Part::link_vest]);
+    CHECK(back[Part::link_leather] == look[Part::link_leather]);
+    CHECK(back[Part::link_gear] == CoopLook::kGearHidden);
+    CHECK(CoopLook::ReadParts("look_link_gear = maybe
+", &errors)[Part::link_gear] == std::nullopt);
+    CHECK_FALSE(errors.empty());
 }
 
 TEST_CASE("look (npc-customize): a character's parts are saved, read back and sent like the others") {

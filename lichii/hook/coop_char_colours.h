@@ -172,12 +172,18 @@ Result Dress(const Game& game, State& state, const Options& options, bool put_ba
 // for every character): ForModel is the one rule at every site that dresses a model.
 inline constexpr std::uint8_t kLinkEyesPart = 18, kLinkHairPart = 19, kCharHairPart = 20, kCharEyesPart = 21,
                               kCharCloth1Part = 22, kCharGearPart = 25;
+// look-link-cs (report 293): Character Select's options on a Link model, CoopLook's parts 27 to 29 (the vest = the
+// mod's Clothing Color 2 on Link, the leather and boots = its 3, the equipment); Link's hair (19) also as the mod's
+// nearest hair palette entry, which is what carries the colour on Link's hair texture (0.11.9's params alone were too
+// weak). A model without a palette (no mod) leaves the palette alone, as on a character.
+inline constexpr std::uint8_t kLinkVestPart = 27, kLinkLeatherPart = 28, kLinkGearPart = 29;
 struct ModelColours {
     std::uint32_t custom = 0;                 // Options' nibbles: hair palette, gear, the three clothing palettes
     std::optional<std::uint32_t> eyes{}, hair{};  // exact colours (EyeParam / HairParam)
     bool operator==(const ModelColours&) const = default;
 };
-// `part(number)`: the look's colour of that part, if set. A Link model: Link's eyes and hair only. A character's: its
+// `part(number)`: the look's colour of that part, if set. A Link model: Link's eyes and hair (the hair also as its
+// palette entry), his vest, leather and equipment (look-link-cs). A character's: its
 // character parts; with none of them set, `legacy_custom` (a 0.11.8 peer's Character Select options, part 62).
 ModelColours ForModel(bool link_model, const std::function<std::optional<std::uint32_t>(std::uint8_t)>& part,
                       std::uint32_t legacy_custom = 0);
