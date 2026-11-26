@@ -487,6 +487,21 @@ TEST_CASE("testinput: skipto is the runner's own step: its shape checked, no mod
     CHECK_FALSE(Parse("skipto mounted x\n", error));  // (no module step at all: "no steps")
 }
 
+TEST_CASE("testinput: song is the runners' own step: its shape checked, refused when played (epona-seen-2)") {
+    std::string error;
+    const auto script = Parse("press A 12\nsong EponaSong 24 90\nmark sung\n", error);
+    REQUIRE_MESSAGE(script.has_value(), error);
+    REQUIRE(script->steps.size() == 3);  // press, its let-go wait, the mark: nothing of the song
+    CHECK(script->song_line == 2);
+    const auto refused = SongNotWrittenOut(*script);
+    CHECK(refused.rfind("line 2: SETUP-FAIL song not written out", 0) == 0);
+    const auto plain = Parse("press A 12\nmark z\n", error);
+    REQUIRE(plain.has_value());
+    CHECK(SongNotWrittenOut(*plain).empty());
+    CHECK_FALSE(Parse("song EponaSong 24 90 1\nmark z\n", error));
+    CHECK(error.find("song NAME [HOLD [GAP]]") != std::string::npos);
+}
+
 TEST_CASE("testinput: the runner's grammar: every TICKS and number line is taken by both readers or refused by both") {
     // Row 325 review: await's TICKS here was the module's own timed-step rule (1 to 36000) while the runner
     // (tools/autotest/hookshot.py) takes 0 up, so 'await 0' played there and was refused here. The same lists are
@@ -494,11 +509,11 @@ TEST_CASE("testinput: the runner's grammar: every TICKS and number line is taken
     static constexpr std::array kTaken = {
         "wait 1", "wait 36000", "wait 0007", "hold A 36000", "press A 1", "stick -1 +1 5", "stick .5 -0.5 5",
         "toward 1 2 36000", "goto 1.5 -2 0.2 600", "goto .5 5. 1", "goto 1e3 -1E-2", "goto 1000000 -1000000",
-        "burst b 1", "burst hit-1.a_B 600", "burst b 60 600 played its (hit) effect", "burst b 0060 0 x", "await 0 x", "await 99999999999 x", "skipto z coop: ride: we ride (x)", "hit X 80", "drop X 500", "hurt 1", "setflag F -2147483648",
+        "burst b 1", "burst hit-1.a_B 600", "burst b 60 600 played its (hit) effect", "burst b 0060 0 x", "await 0 x", "await 99999999999 x", "skipto z coop: ride: we ride (x)", "song EponaSong", "song EponaSong 24", "song EponaSong 0024 36000", "hit X 80", "drop X 500", "hurt 1", "setflag F -2147483648",
         "setflag F 2147483647", "setflag F 007"};
     static constexpr std::array kRefused = {
         "wait 0", "wait 36001", "wait +5", "wait -0", "wait 1_0", "wait 0000000001", "hold A 0", "press A 0",
-        "stick 0 0 0", "toward 1 2 0", "toward 1 2 36001", "goto 1 2 1 0", "burst b 0", "burst b 601", "burst b 0000000601", "burst b 60 600", "burst b", "burst b/x 60", "burst b +5", "burst b 60 -1 x", "await -1 x", "await +1 x", "skipto z",
+        "stick 0 0 0", "toward 1 2 0", "toward 1 2 36001", "goto 1 2 1 0", "burst b 0", "burst b 601", "burst b 0000000601", "burst b 60 600", "burst b", "burst b/x 60", "burst b +5", "burst b 60 -1 x", "await -1 x", "await +1 x", "skipto z", "song", "song EponaSong 0", "song EponaSong 36001", "song EponaSong +5", "song EponaSong 24 90 1", "song EponaSong 0000000001",
         "await 1_0 x", "goto 0x10 2", "goto 1_0 2", "goto inf 2", "goto nan 2", "goto 1000001 2", "goto 1e7 2",
         "goto . 2", "goto 1e 2", "stick 0x1 0 5", "hit X 0", "hit X 81", "hit X \xc2\xb2", "drop X 501",
         "hurt 81", "hurt \xc2\xb3", "setflag F 2147483648", "setflag F -2147483649", "setflag F --5",

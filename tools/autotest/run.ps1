@@ -279,7 +279,13 @@ if ($Runtime -eq 'hookshot') {
     }
     Write-Host "hookshot: $($py[0]) $($a -join ' ')"
     if ($DryRun -and $steps) { & $py[0] @a; return }   # hs_steps.py --dry-run prints the plan
-    if ($DryRun) { Write-Host "hookshot: dry run, nothing started"; return }
+    if ($DryRun) {
+        # the scripts as hookshot.py reads them (`song` lines written out from ocarina_notes.py): a bad line is a SETUP-FAIL here
+        $chk = @($py | Select-Object -Skip 1) + @('-I', "$here\hookshot.py", 'check', $scA) + @(if (Test-Path $scB) { $scB })
+        & $py[0] @chk
+        if ($LASTEXITCODE) { Write-Host "SETUP-FAIL scenario $Scenario`: a script line hookshot.py refuses (above)"; exit 2 }
+        Write-Host "hookshot: dry run, nothing started"; return
+    }
     $laneOwner = "run.ps1 $Scenario (pid $PID)"
     if ($Lane) {
         # Waits up to 30 min for the lane (another run in it, or a game build); held by this PowerShell's pid, so a
@@ -535,7 +541,10 @@ function Play([hashtable]$files, [string]$phase, [double]$every) {
         $st[$x].Done = Count (Read-Log $x) 'coop: test script done'
         $st[$x].Marks = Count (Read-Log $x) 'coop: test mark '
         # A comment with the time makes the file differ from the last one, so it is played again.
-        Set-Content -Encoding ascii $st[$x].Script ("# $phase $(Get-Date -Format o)`r`n" + (Get-Content -Raw $files[$x]))
+        # `song NAME` lines written out as presses from the ONE key table (ocarina_notes.py; hookshot.py does the same)
+        $body = (& $py[0] @pyArgs -I "$here\ocarina_notes.py" expand $files[$x] | Out-String)
+        if ($LASTEXITCODE) { throw "SETUP-FAIL game ${x}: ocarina_notes.py expand $($files[$x]) failed (a bad song line, above)" }
+        Set-Content -Encoding ascii $st[$x].Script ("# $phase $(Get-Date -Format o)`r`n" + $body)
         $want[$x] = $true
     }
     $start = Get-Date; $next = $start; $n = 0
@@ -962,6 +971,11 @@ function Stop-NetSim {
 $failed = $null
 $stepFails = 0
 $stepUnproven = 0
+# The scenario's `song` lines (ocarina_notes.py expand, as Play writes them out) checked before any game starts.
+foreach ($f in @($scA, $scB) | Where-Object { -not $steps -and (Test-Path $_) }) {
+    & $py[0] @pyArgs -I "$here\ocarina_notes.py" expand $f | Out-Null
+    if ($LASTEXITCODE) { Write-Host "SETUP-FAIL scenario $Scenario`: $f has a bad song line (above)"; exit 2 }
+}
 # The emulator runtime's games and their window placement use Python (placement.py); a monitor name that does not
 # exist goes to the primary monitor (placement.py says so); no monitor at all stops the run here.
 $py = @(Find-Python)

@@ -44,6 +44,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import placement  # noqa: E402  (where the games' windows go: one monitor, no focus stolen)
 import lanes  # noqa: E402  (brings tools/hookshot/hs.py: run_quiet and popen_quiet start a console child with no window)
+import ocarina_notes  # noqa: E402  (the Ocarina's keys and songs, the ONE table: the runner's `song` step)
 
 WINDOWS = os.name == "nt"
 TICKS = 60.0              # script ticks a second
@@ -245,7 +246,11 @@ BOTTLE_ITEMS = ("0x7d48df76", "0x1edd164a", "0xb80c70a8", "0xe4c1b1fc", "0x365e1
 def parse(text):
     """Our test script (coop_testinput.h) as a list of Steps. Raises ScriptError("line N: ...")."""
     steps = []
-    for number, raw in enumerate(text.split("\n"), 1):
+    try:
+        lines = ocarina_notes.expand(text)   # `song NAME [HOLD [GAP]]`: the song's presses from the ONE key table
+    except ocarina_notes.SongError as e:
+        raise ScriptError(str(e))
+    for number, raw in lines:
         line = raw.split("#", 1)[0]
         w = line.split()
         if not w:
@@ -1543,12 +1548,15 @@ def run(a):
     started = {}
     scripts = {"A": a.script_a, "B": a.script_b}
     parsed = {}
-    for x in tags:
-        if scripts[x]:
-            parsed[x] = parse(read_script(scripts[x]))
-    load = None
-    if a.load:
-        load = parse(read_script(a.load))   # (checked; the load itself is "A until play", see to_play)
+    try:   # (before any game starts: a bad line, a bad `song` among them, is a setup failure, not a 30-min run)
+        for x in tags:
+            if scripts[x]:
+                parsed[x] = parse(read_script(scripts[x]))
+        load = None
+        if a.load:
+            load = parse(read_script(a.load))   # (checked; the load itself is "A until play", see to_play)
+    except ScriptError as e:
+        raise SystemExit("SETUP-FAIL script: %s" % e)
     procs, bridges, server, commands = {}, {}, None, {}
     failed = None
 

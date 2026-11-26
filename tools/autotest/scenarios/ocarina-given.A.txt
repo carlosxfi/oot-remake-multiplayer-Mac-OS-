@@ -6,7 +6,7 @@
 # "coop: items: ocarina '' -> 'Item_Ocarina_Fairy' for the held ocarina" after the load, and the
 # shots out / note-* / saria show the ocarina in Link's hands (LICHII_COOP_OCARINA_PROBE=1 also
 # logs "our Link plays the ocarina"). Fail as before the fix: no log line and nothing out at DLEFT.
-# Notes: the module's note keys (lichii/hook/coop_ocarina_sound.cpp NoteOf): L = D, R = F, Y = A, X = B, A = high D (N64: A, C-down, C-right, C-left, C-up). Saria's Song = F, A, B twice = R Y X.
+# Notes: the keys from tools/autotest/ocarina_notes.py, the ONE key table, read from the game: run epona-seen-keys-fec750ad (L = D, R = F, Y = B, X = high D, A = A). Saria's Song = F, A, B twice = R A Y (`song SariaSong`).
 #! switches LICHII_COOP_PUPPET=1,LICHII_COOP_OCARINA_PROBE=1
 # A (who has the ocarina from Saria) only waits.
 mark start
