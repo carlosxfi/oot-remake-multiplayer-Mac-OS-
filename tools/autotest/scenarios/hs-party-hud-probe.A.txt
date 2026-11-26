@@ -3,8 +3,10 @@
 # hs-party-hud-probe (party-hud-runtime, 0.11.13 R2/R3): the run-time gauges and their name lines, with the pack (A)
 # and as without it (B: COOP_TEST_PARTY_HUD_NO_PACK=1, coop_party_hud.h Hud::IgnorePack), on a scene change and a
 # return to the title. Both games: COOP_TEST_PARTY_HUD=1, four made-up players (coop_party_hud.cpp TestBlocks).
-#  A (pack, 3 slots): players 1-3 in the pack's slots, player 4 ("Four") in a run-time gauge WITH its name line.
-#  B (no pack): all four in run-time gauges, each with its name line from the game's MenuOverlay_00 Pa_Category_00 (Hud::BarePart).
+#  Since party-hud-crash-c126 (88f63dfb1) the module makes no run-time gauge or name line (the game's part clone
+#  crashed every game that ran it; reports in coord-multiplayer/reports/party-hud-crash-c126-4.md):
+#  A (pack, 3 slots): players 1-3 in the pack's slots, player 4 ("Four") in "+1".
+#  B (no pack): none of ours (hidden), nothing made. The bridge test tools/autotest/ingame/test_party_hud.py judges it.
 # Values and their sources:
 #  - the kit save: the child in the Graveyard at 10:01 (docs/testing.md "Start place"); run.ps1 loads it first and
 #    checks the default start (a Graveyard object, run.ps1:176).
