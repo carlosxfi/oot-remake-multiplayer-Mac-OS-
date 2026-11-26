@@ -118,6 +118,8 @@ jobs:
         run: python tools/autotest/tests/test_save_flags.py -v
       - name: Hookshot autotest driver tests
         run: python tools/autotest/tests/test_hookshot.py -v
+      - name: Ocarina key/note table tests
+        run: python tools/autotest/tests/test_ocarina_notes.py -v
       - name: Live play-test kit tests (desync check, MCP server)
         run: python tools/autotest/tests/test_playtest.py -v
       - name: Sync digest compare tests
