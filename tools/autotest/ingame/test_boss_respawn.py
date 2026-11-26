@@ -87,11 +87,11 @@ def screen(pair, x, name):
 
 
 def start_check(pair):
-    """The set-up check (inside pair.setup(), <= 30 s): both games in play, no bottled fairy (a fairy revives instead
-    of downing)."""
+    """The set-up check (inside pair.setup(), <= 30 s): both games in play at the boot's place (Pair.need_boot_place:
+    stepped to a fresh in-play sample, never one read; B #139 16:26), no bottled fairy (a fairy revives instead of
+    downing)."""
+    pair.need_boot_place()
     for x in ("A", "B"):
-        s = pair.state(x)
-        assert pair.in_play(s), "%s not in play (%s)" % (x, s.get("not_ready"))
         for h in BOTTLES:
             pair.act(x, "setenum %s Empty" % h)
 
