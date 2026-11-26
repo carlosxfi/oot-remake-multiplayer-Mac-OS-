@@ -12,6 +12,8 @@
 # Values: Sequence_IsChildhood 0 / warp names / wait 900: hs-adult.A.txt, hs-graveyard and 17 (HyruleField_Adult)
 # and 25 (KakarikoVillage_Adult) scenario uses; LICHII_COOP_DEBUG_BOOL + the "coop: flags debug: get_bool(0x...) = V
 # (was W)" line: lichii/hook/coop_flags.cpp FlagDebug; LICHII_COOP_DEBUG_TIME "time: sent": docs/time.md.
+# setup-*-setflag: lichii/hook/coop_testinput.cpp setflag ("coop: test setflag NAME (bool) V: set"); a-no-sync-line leaves out
+# the start line "coop: flags debug off, watching bool 0x..." (lichii/hook/coop_flags.cpp, FlagDebug setup).
 #! switches LICHII_COOP_PUPPET=1,LICHII_COOP_DEBUG_TIME=1,LICHII_COOP_DEBUG_BOOL=0x8592aa82
 start A B
 load A
@@ -22,11 +24,13 @@ play B first-night-c62.B.txt
 shot b-kakariko-cleared
 sleep 60
 shot a-field-60s-after
+lines setup-a-setflag A min=1 coop: test setflag HrlField_HasEnteredFirstTime_Adult \(bool\) 1: set
+lines setup-b-setflag B min=1 coop: test setflag HrlField_HasEnteredFirstTime_Adult \(bool\) 1: set
 lines setup-a-watch A min=1 get_bool\(0x8592aa82\) = 1
 lines setup-b-watch B min=1 get_bool\(0x8592aa82\) = 1
 lines b-cleared B min=1 cleared the first adult night's time lock
 lines b-watch-cleared B min=1 get_bool\(0x8592aa82\) = 0 \(was 1\)
 lines a-never-cleared A max=0 get_bool\(0x8592aa82\) = 0 \(was 1\)
 lines a-not-cleared-by-longshot A max=0 cleared the first adult night's time lock
-lines a-no-sync-line A max=0 ^(?!.*get_bool).*8592aa82
+lines a-no-sync-line A max=0 ^(?!.*(get_bool|watching bool)).*8592aa82
 lines a-time-sent A min=1 time: sent
