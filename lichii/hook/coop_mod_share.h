@@ -31,7 +31,7 @@ struct Event;
 
 namespace CoopModShare {
 
-// How a mod's hash was made, marked in its last three bytes ('S', 'Q', the way's number). Way 2 (0.11.13, row 274):
+// How a mod's hash was made, marked in its last three bytes ('S', 'Q', the way's number). Way 2 (0.12.0, row 274):
 // only what decides the mod's world: its game files, with the files the kit rewrites on each PC read from the mod's own
 // kept copies, and its size tables left out (they hold file sizes, and the kit, OOTRR and the button prompts merge the
 // other mods' entries into them on each PC). Unmarked: way 1 (every file as it was on that PC). Hashes made two ways

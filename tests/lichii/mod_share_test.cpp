@@ -102,7 +102,7 @@ ModEntry Marked(const char* id, std::uint8_t hash) {
 TEST_CASE("mod share: hashes carry how they were made, and two ways are not compared as files (row 274)") {
     ModHash h{};
     h[0] = 5;
-    CHECK(CoopModShare::HashWay(h) == 1);  // unmarked: a kit before 0.11.13
+    CHECK(CoopModShare::HashWay(h) == 1);  // unmarked: a kit before 0.12.0
     CoopModShare::MarkHashWay(h);
     CHECK(CoopModShare::HashWay(h) == CoopModShare::kHashWay);
     CHECK(CoopModShare::kHashWay == 2);

@@ -37,7 +37,7 @@ std::thread g_thread;              // under g_mutex
 // (a relay before 0.11.8 never does: asked again every kProofsRetryMs, not with every refresh).
 constexpr std::uint64_t kProofsRetryMs = 10 * 60 * 1000;
 std::atomic<std::uint64_t> g_proofs_silent_until_ms{0};
-// The same for the rooms' tags (row 281; a relay before 0.11.13 never answers), asked of any relay.
+// The same for the rooms' tags (row 281; a relay before 0.12.0 never answers), asked of any relay.
 std::atomic<std::uint64_t> g_tags_silent_until_ms{0};
 
 std::string KitsRelayName() {

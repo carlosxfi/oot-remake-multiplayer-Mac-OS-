@@ -840,7 +840,7 @@ had its variation (0 not known), the copy's Attack_R fired its FireBullet, and e
 (Attack_L Ice, Attack_R Fire) through two hand-overs. Not this row: right at a hand-over a copy played an attack with
 no bullet twice, and one copy showed fewer attacks than its owner in the same stretch (next section).
 
-## Twinrova hand-over: attacks lost (0.11.13)
+## Twinrova hand-over: attacks lost (0.12.0)
 
 Seen in the second row 222 run: right at a hand-over a copy played an attack with no bullet (one Attack_R, one
 Attack_L), and a copy logged 4 attacks while its owner logged 6. Two causes, both in `Table::Publish` at an owner
@@ -884,7 +884,7 @@ at each own ask), not the requests for one. A copy's own change (its stun, an ev
 and a request the game puts off (main+0x6733b0, not forced: kept at +0x2c) does not. A held start is over when its AI asks
 the owner's move on, runs in its own time, changes brain verb, or asks it no more for 120 frames; before, an old hold made
 a hand-over skip the start-over (row 178) and capped a later start at once. The last-node fallback (`own_node`) is still
-named in a brain verb that has no own ask yet, as before 0.11.13.
+named in a brain verb that has no own ask yet, as before 0.12.0.
 
 No protocol change. Solo play and owners are not touched. Not covered: a copy made
 the owner drops the old owner's moves still queued (its own AI runs the boss from here). Tests: boss_native_test
@@ -981,7 +981,7 @@ a brain re-choice, mid-attack still the start-over). **Not proven in game.** Che
 `made ours mid-move: its move (slot 0 verb 1|104) starts over`, the row 325 line instead; KD's y stays 73.2-73.5
 (no `diag 325` / roll centre at y 75.03) and every roll ends; screenshots on both games.
 
-## Blackboard move state: a boss made ours goes on from its old owner's state (tracker row 149, 0.11.13)
+## Blackboard move state: a boss made ours goes on from its old owner's state (tracker row 149, 0.12.0)
 
 **Seen.** Geno, 0.11.12 (2026-11-24): "Dodongo dragon boss bugged out on us and kept rolling in the lava". Row 325's
 fix is in 0.11.12, so it was not the cause. Reproduced before in kd-roll-hold-325, run 20261123-043946: player B last

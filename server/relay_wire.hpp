@@ -86,7 +86,7 @@ enum class Kind : std::uint8_t {
   kRoomTag = 0x0A,       // token, tag length u8, tag: the listed room's short
                          // tag (RoomTag: what world it plays, e.g. a randomizer
                          // seed and settings name; empty = none). A relay before
-                         // 0.11.13 drops it; this one keeps it beside the listing.
+                         // 0.12.0 drops it; this one keeps it beside the listing.
   // Guest -> relay.
   kLookup = 0x10,      // the 8-letter code: lets this address join that host
   kLookupName = 0x11,  // name length u8, name: the same with a room name
@@ -98,7 +98,7 @@ enum class Kind : std::uint8_t {
                        // code or name, answer length u8, answer code: "pass my
                        // answer code to that host" (the direct way)
   kListTags = 0x15,    // zeros up to kListRequestBytes in all: "the listed
-                       // rooms' tags" (a relay before 0.11.13 does not answer)
+                       // rooms' tags" (a relay before 0.12.0 does not answer)
   // Relay -> host link.
   kRegistered = 0x81,      // token, code
   kRefused = 0x82,         // token, Refusal u8

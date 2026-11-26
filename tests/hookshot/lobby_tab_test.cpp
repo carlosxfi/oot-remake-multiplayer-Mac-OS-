@@ -589,6 +589,6 @@ TEST_CASE("public games: each room's tag (row 281, its randomizer seed) by its n
     CHECK(rooms[0].tag == "Randomizer N2BTEYKM (keysanity)");
     CHECK(rooms[1].tag.empty());
     CHECK(rooms[2].tag.empty());
-    CoopRoomList::ApplyTags(rooms, {});   // (a relay before 0.11.13: no tags)
+    CoopRoomList::ApplyTags(rooms, {});   // (a relay before 0.12.0: no tags)
     CHECK(rooms[0].tag.empty());
 }

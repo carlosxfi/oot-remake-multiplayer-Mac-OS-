@@ -1169,7 +1169,7 @@ TEST_CASE("coop i18n: the Gold Skulltulas row's joined help lines are translated
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// The - page's caption holds 4 lines of 18.6 em (CoopPauseTab::HelpText). Before 0.11.13 a longer help (the
+// The - page's caption holds 4 lines of 18.6 em (CoopPauseTab::HelpText). Before 0.12.0 a longer help (the
 // Settings page's Saves, Microphone, Relay, Local co-op's steps: 24 of the menu's helps) was cut with "...", the rest
 // never readable (native-ui-audit). Now it shows a page at a time (HelpPager), the same words in every language.
 namespace {

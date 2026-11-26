@@ -378,6 +378,10 @@ TEST_CASE("the co-op release a build_id names") {
   CHECK(coop_release("coop hookshot unknown").empty());
   CHECK(coop_release("").empty());
   CHECK(coop_release("coop v.1 1. .2 1..2 v12").empty());
+  // 0.12.0, the release after 0.11.12: its own name, never taken for 0.11.12 (equal names only play together).
+  CHECK(coop_release("coop hookshot v0.12.0") == "v0.12.0");
+  CHECK(coop_release("coop hookshot v0.12.0-3-g1234abcd") == "v0.12.0");
+  CHECK(coop_release("coop hookshot v0.12.0") != coop_release("coop hookshot v0.11.12"));
 }
 
 TEST_CASE("the protocol version check") {
