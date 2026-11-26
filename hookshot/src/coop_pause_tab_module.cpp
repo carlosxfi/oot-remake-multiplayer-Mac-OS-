@@ -5223,9 +5223,9 @@ bool OpenPlayers() noexcept {
         if (!g_players_run.On()) {
             g_players_to_main = false;
             const bool menu_up = GameMenuUp();
-            if (!menu_up && !FreePlayNow()) {
-                LOG_INFO(Core, "coop: pause tab: F6: not in free play (an event, a load or another screen): nothing pressed");
-                return true;
+            if (!menu_up && !FreePlayNow()) {   // (f1-event-c31: the held list, as a pack without our - tabs)
+                LOG_INFO(Core, "coop: pause tab: F6: not in free play (an event, a load or another screen): the held list");
+                return false;
             }
             g_players_run.Start(NowMs(), menu_up);
             LOG_INFO(Core, "coop: pause tab: F6: to the Players view ({})",
@@ -5256,6 +5256,14 @@ bool OpenMultiplayer() noexcept {
 
 bool NoMinusTabs() noexcept {
     return g_players_no_tabs.load();
+}
+
+bool MinusMenuNow() noexcept {
+    try {
+        return !g_players_no_tabs.load() && (GameMenuUp() || FreePlayNow());
+    } catch (...) {
+    }
+    return false;
 }
 
 bool OwnMinusPageShown() noexcept {
