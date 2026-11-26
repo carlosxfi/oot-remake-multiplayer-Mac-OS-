@@ -34,6 +34,7 @@ import pair as P   # noqa: E402
 import testpack    # noqa: E402
 import testsave    # noqa: E402
 import solo        # noqa: E402
+import windowshot  # noqa: E402
 
 RESULTS = ("PASS", "FAIL", "FLAKY", "SETUP-FAIL", "NO-REF", "SKIP", "NOT-RUN")
 DEFAULT_BUDGET = 120
@@ -68,6 +69,16 @@ def pytest_runtest_makereport(item, call):
     # starts with the recovery, the pair fixture's boot_ready; a miss cannot cascade into the tests after it)
     if rep.failed or (rep.when == "call" and item.get_closest_marker("leaves_play")):
         item.config._bt_dirty = True
+
+
+def _fake_window_shooter(lanefake):
+    """The fake lane's Pair.window_shooter. BT_FAKE_WINDOW_COVERED=A[,B] (selftest): that game's window is covered,
+    the SETUP-FAIL windowshot.Shooter gives for screen-shot.ps1's exit 3."""
+    def shoot(x, path):
+        if x in (os.environ.get("BT_FAKE_WINDOW_COVERED") or "").split(","):
+            raise P.SetupFail("window shot %s: not taken (exit 3: COVERED %s: fake cover)" % (x, path))
+        return lanefake.window_picture(x, path)
+    return shoot
 
 
 def pytest_addoption(parser):
@@ -555,6 +566,7 @@ def lane_pair(request):
             games = {solo.GAME: games[solo.GAME]}
         pair = P.Pair(games, out_dir=out, refs_dir=os.environ.get("BT_FAKE_REFS", refs))
         pair.lane, pair.info = lane, {"fake": True}
+        pair.window_shooter = _fake_window_shooter(lanefake)
         try:
             if config.getoption("solo"):
                 _solo_proof(pair, lane)
@@ -594,6 +606,7 @@ def lane_pair(request):
         pair.lane, pair.info, pair.session = lane, dict(info, boot_s=round(time.monotonic() - t0, 1)), session
         pair.live = _live                       # (Pair.rejoin: live.py quit + relaunch in this session)
         pair.boot = dict(zip(("A", "B"), boot_paths(config.getoption("boot"))))   # (rejoin: the lane's own boot)
+        pair.window_shooter = windowshot.Shooter(session)   # (screen-shot.ps1 on the session's game pids)
         for x in pair.c:
             h = pair.c[x].hello()
             if not h.get("control"):
