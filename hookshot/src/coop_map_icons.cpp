@@ -252,6 +252,10 @@ bool Icons::Ready(CoopNativeTags::Game& game, std::size_t i) {
     Show(game, Own(game, c.player, "N_Type_00"), true);
     Show(game, Own(game, c.entrance, "N_Location_00"), true);
     Show(game, c.label, true);
+    c.arrow = Own(game, c.icon, "N_Player_00");
+    Show(game, Own(game, c.icon, "N_Entrance_00"), true);
+    Show(game, c.arrow, true);
+    c.arrow_shown = true;
     c.ready = true;
     return true;
 }
@@ -265,19 +269,24 @@ std::uint64_t Icons::Own(CoopNativeTags::Game& game, std::uint64_t table, const 
 
 bool Icons::Step(CoopNativeTags::Game& game, const Frame& frame) {
     const std::uint64_t screen = CoopNativeTags::ScreenByVtable(game, CoopNativeTags::kMapMenuVtable);
-    if (screen != screen_) {   // a new screen (a load): its panes are new
+    // A new screen, or the same address holding another layout (a load whose new screen reuses the old one's memory):
+    // its panes are new, the old ones may be freed. Forget them without a game call.
+    std::uint64_t layout_now = 0;
+    if (screen != 0 && !ReadValue(game, screen + addr::kScreenLayout, layout_now)) layout_now = 0;
+    if (screen != screen_ || layout_now != layout_) {
+        Forget();
         screen_ = screen;
-        layout_ = clip_ = table_ = 0;
-        copies_ = {};
-        shown_.clear();
+        layout_ = layout_now;
     }
     if (screen == 0) return why_ = "no map screen", up_ = false;
-    if (layout_ == 0 && !ReadValue(game, screen + addr::kScreenLayout, layout_)) layout_ = 0;
     if (layout_ == 0 || !Block(game)) return why_ = layout_ == 0 ? "no map layout" : "no memory", up_ = false;
     if (clip_ == 0) clip_ = Find(game, layout_, kClipPane);
     float m[12] = {};
     const auto inverse = clip_ != 0 && game.Read(clip_ + kPaneMatrix, m, sizeof m) ? Inverse(m) : std::nullopt;
-    if (!inverse) return why_ = clip_ == 0 ? "no S_MapIcon_00" : "S_MapIcon_00 not placed", up_ = up_ && clip_ != 0;
+    if (!inverse) {   // (the clip not placed this frame: the copies are not left at old spots)
+        HideAll(game);
+        return why_ = clip_ == 0 ? "no S_MapIcon_00" : "S_MapIcon_00 not placed", up_ = up_ && clip_ != 0;
+    }
     if (!Ready(game, 0)) return up_ = false;   // (copy 0 missing: no pack; the rest are made with it)
     up_ = true;
     std::vector<std::size_t> now;
@@ -311,8 +320,10 @@ bool Icons::Step(CoopNativeTags::Game& game, const Frame& frame) {
                 }
             }
         }
-        Show(game, Own(game, c.icon, "N_Player_00"), s.arrow);
-        Show(game, Own(game, c.icon, "N_Entrance_00"), true);
+        if (c.arrow_shown != s.arrow) {   // (the arrow and the label panes found once in Ready, shown on a change)
+            Show(game, c.arrow, s.arrow);
+            c.arrow_shown = s.arrow;
+        }
         c.turned.reset();
         if (turn_at_ != 0 && c.turn != 0 && s.turn) {
             const float turn = *s.turn;
@@ -463,6 +474,12 @@ std::vector<std::string> Icons::Probe(CoopNativeTags::Game& game) {
         }
     }
     return out;
+}
+
+void Icons::Forget() {
+    screen_ = layout_ = clip_ = table_ = 0;
+    copies_ = {};
+    shown_.clear();
 }
 
 void Icons::HideAll(CoopNativeTags::Game& game) {

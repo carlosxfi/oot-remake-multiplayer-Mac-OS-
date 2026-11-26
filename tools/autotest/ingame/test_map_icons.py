@@ -10,7 +10,8 @@ place label. They are game panes, so the BRIDGE shot (framebuffer) sees them: ch
 Judged by the state's `map_native` (coop_map_icons.h State, docs/playtest.md): `up` (the copies found through the pause
 tab's proven part route), per shown copy its pane place, the arrow's turn READ BACK from the pane at kPaneTurn and what
 was written, the label's name and whether the game's path setter took it. The probe part (the old probe-3's question,
-kPaneTurn = 0x68 INFERRED from the .buil record order, coop_map_icons.h) is answered by the game's own arrow:
+kPaneTurn is 0 = not turned until proven, B #142; this run tries its candidate +0x68 through
+--env LICHII_COOP_MAP_TURN_AT=68, needs_env) is answered by the game's own arrow:
 `game_arrow_words` (+0x60..+0x7c of its N_PlayerRotate_00) while A turns a quarter at a time; the word that moves a
 quarter (pi/2) per quarter is the turn. Its index goes into the notes; the test FAILS when the word at kPaneTurn does
 not follow while another does (then kPaneTurn is that one), and is NO-REF when none moves (the game turns another pane).
@@ -31,7 +32,9 @@ OPEN_WAIT = 180                     # hs-map-facing.A.txt 'press MINUS; wait 180
 CLOSE_WAIT = 240                    # hs-map-facing.A.txt 'press B; wait 240; mark end'
 QUARTER = math.pi / 2
 QUARTER_TOL = math.radians(30)      # as test_map_arrow's QUARTER_TOL (30 deg): the walk's facing within a few degrees
-TURN_WORD = (0x68 - 0x60) // 4      # coop_map_icons.h kPaneTurn = 0x68: index 2 of game_arrow_words (+0x60..)
+TURN_TRIAL = "LICHII_COOP_MAP_TURN_AT=68"   # the probe's switch: coop_map_icons.h kPaneTurn is 0 (not known) until
+#                                             this run proves +0x68 (its candidate, from the .buil record order)
+TURN_WORD = (0x68 - 0x60) // 4      # index 2 of game_arrow_words (+0x60..)
 SHOT_TOL = 0.90                     # pair.check_shot's default
 # The shots: a few, not one per facing (the harness keeps a test at 8 or fewer, tests/test_ingame.py Suite): the minimap
 # at two opposite facings (the arrow seen turned), the Map page at one; on each game = 6.
@@ -111,6 +114,7 @@ def copy_turns_with(pair, viewer, mover, view, tag):
 
 @pytest.mark.budget(540)   # ESTIMATED: two warps + ~5'000 frames + 6 shots
 @pytest.mark.look
+@pytest.mark.needs_env(TURN_TRIAL)
 @pytest.mark.row("G2b map icons (#255 item 8): the other player on the game's own map icons (arrow turned, name on the place label), minimap and Map page, on each game")
 def test_map_icons_native(pair):
     with pair.setup():

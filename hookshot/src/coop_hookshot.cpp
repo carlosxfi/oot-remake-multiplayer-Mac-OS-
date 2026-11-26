@@ -687,13 +687,21 @@ void MapProbe(void* ctx) {
 
 void MapIcons(void* ctx) {
     static const bool on = Env("LICHII_COOP_MAP_NATIVE") != "0";
-    static const std::uint64_t turn_at = std::strtoull(Env("LICHII_COOP_MAP_TURN_AT").c_str(), nullptr, 16);
+    // (set, 0 included: 0 = not turned, the escape from the inferred kPaneTurn without a rebuild)
+    static const std::string turn_env = Env("LICHII_COOP_MAP_TURN_AT");
+    static const std::uint64_t turn_at = std::strtoull(turn_env.c_str(), nullptr, 16);
     static std::string said;
     if (!on) return;
+    // A load: every pane the copies knew may be freed; forgotten before anything else (also while nothing is shown,
+    // so a load between two co-op map views is seen: the party-hud-crash-c126 rule, as CoopMapPage's).
+    if (CoopNativeUi::SceneLoading()) {
+        g_map_icons.Forget();
+        return;
+    }
     const auto frame = CoopMapIcons::Taken();
     if (frame.marks.empty() && g_map_icons.shown() == 0) return;   // solo, or nobody on the map: nothing touched
     TagsGame game(ctx);
-    if (turn_at != 0) g_map_icons.TurnAt(turn_at);
+    if (!turn_env.empty()) g_map_icons.TurnAt(turn_at);
     g_map_icons.Step(game, frame);
     if (CoopPlaytest::On()) CoopMapIcons::PublishState(CoopMapIcons::Json(g_map_icons.Snapshot(game)));   // (test-only)
     if (g_map_icons.Up()) g_map_native.store(true);

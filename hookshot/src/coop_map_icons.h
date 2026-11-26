@@ -36,12 +36,14 @@ inline constexpr char kCopyName[] = "Pa_CoopMapIcon_%02d";   // (tools/puppet_pa
 inline constexpr std::size_t kCopies = 15;                    // (MAP_ICONS)
 inline constexpr char kClipPane[] = "S_MapIcon_00";
 inline constexpr std::uint64_t kPaneMatrix = 0x28;   // pane+: the global matrix, 3 x 4 by column (CoopMapPage)
-// pane+: the z turn (radians, as the layout files keep it). INFERRED, proven by the bridge test
-// (tools/autotest/ingame/test_map_icons.py: the game's own arrow's word here follows our facing a quarter a turn): a
-// .buil pane record keeps scale +0x10/+0x14, rotation +0x18, translate +0x1c/+0x20 (tools/puppet_pack/ui_pack.py),
-// and a pane in memory has that translate at +0x6c/+0x70 (CoopNativeTags addr::kPaneXY), so the rotation at +0x68.
-// LICHII_COOP_MAP_TURN_AT=<hex> tries another without a rebuild (0: not turned).
-inline constexpr std::uint64_t kPaneTurn = 0x68;
+// pane+: the z turn (radians, as the layout files keep it). 0: NOT KNOWN YET, the arrows are not turned (no guessed
+// value ships, worker-rules "NO GUESSED VALUES", B #142). The candidate is +0x68: a .buil pane record keeps scale
+// +0x10/+0x14, rotation +0x18, translate +0x1c/+0x20 (tools/puppet_pack/ui_pack.py), and a pane in memory has that
+// translate at +0x6c/+0x70 (CoopNativeTags addr::kPaneXY). The probe is the bridge test
+// (tools/autotest/ingame/test_map_icons.py, run with --env LICHII_COOP_MAP_TURN_AT=68): the game's own arrow's word
+// there must follow our facing a quarter a turn; only then is it set here, citing that run.
+// LICHII_COOP_MAP_TURN_AT=<hex> tries one without a rebuild; =0 switches the write off.
+inline constexpr std::uint64_t kPaneTurn = 0;
 
 // One other player on the map shown, in the layout's units (3840 x 2160, x right, y down from the top left).
 struct Mark {
@@ -106,6 +108,8 @@ public:
     // draws nothing on the maps either (CoopHookshot: the overlay's map names only while Up() was never true).
     bool Step(CoopNativeTags::Game& game, const Frame& frame);
     void HideAll(CoopNativeTags::Game& game);
+    // A scene load (or a new map screen): every pane known is dropped, with no game call (they may be freed).
+    void Forget();
     void TurnAt(std::uint64_t pane_offset) { turn_at_ = pane_offset; }   // 0: not turned
     const std::string& why() const { return why_; }
     // The rotation-offset probe: an icon layout's (a PaMapIcon_00 the map screen holds) arrow N_PlayerRotate_00; 0
@@ -131,6 +135,8 @@ private:
         std::uint64_t pane = 0;
         std::uint64_t icon = 0, entrance = 0, player = 0;   // the part layouts inside it
         std::uint64_t turn = 0, label = 0;                  // N_PlayerRotate_00, T_Location_00
+        std::uint64_t arrow = 0;                            // the icon's N_Player_00
+        bool arrow_shown = false;
         bool ready = false, name_set = false;
         std::optional<float> turned;
         std::string named;

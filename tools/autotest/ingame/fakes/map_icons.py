@@ -4,13 +4,13 @@
 - state: each player row says `self` as the real bridge does (coop_playtest.cpp: "self"), and while the scene is
   InsideTheDekuTree with its map flag set, `map_native` (coop_map_icons.h State, docs/playtest.md) as the module
   gives it: the copies up, one shown for the other game with its name set and its turn written = read back at
-  kPaneTurn 0x68 (plan: -facing - a quarter, radians), and the game's own arrow's words with our turn at index 2.
+  +0x68 when the boot has LICHII_COOP_MAP_TURN_AT=68 (else not turned: kPaneTurn 0) (plan: -facing - a quarter, radians), and the game's own arrow's words with our turn at index 2.
 """
 import math
 
 SCENE = "InsideTheDekuTree"
 MAP_FLAG = "DungeonInfo.InsideTheDekuTree.IsGetMap"   # (test_map_icons.MAP_FLAG)
-TURN_AT = 0x68                                          # (coop_map_icons.h kPaneTurn)
+TURN_TRIAL = "LICHII_COOP_MAP_TURN_AT=68"               # (test_map_icons.TURN_TRIAL; kPaneTurn is 0 without it)
 
 
 def move_step(game, pos):
@@ -38,9 +38,10 @@ def state(game, st):
     if st.get("scene") != SCENE or not _flag(game):
         return
     other = game.other
-    t = _turn(other.facing or 0.0)
+    turn_at = 0x68 if game.env_on(TURN_TRIAL) else 0
+    t = _turn(other.facing or 0.0) if turn_at else None
     words = [1.0, 1.0, _turn(game.facing or 0.0), game.pos[0], game.pos[2], 1.0, 1.0, 0.0]
-    st["map_native"] = {"up": True, "why": "", "table": True, "turn_at": TURN_AT, "game_arrow": True,
+    st["map_native"] = {"up": True, "why": "", "table": True, "turn_at": turn_at, "game_arrow": True,
                         "game_arrow_words": words,
                         "shown": [{"copy": 0, "x": other.pos[0], "y": other.pos[2], "turn": t, "wrote_turn": t,
                                    "name": other.tag, "name_set": True}]}

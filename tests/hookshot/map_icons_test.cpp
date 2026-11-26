@@ -3,6 +3,7 @@
 // against a made-up game memory (the UI manager, the map screen, its layout, the copies and their part layouts).
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -35,6 +36,7 @@ struct FakeGame final : T::Game {
     std::map<std::uint64_t, int> shown;                                     // pane -> last kPaneShow
     std::vector<std::pair<std::string, std::string>> texts;                 // (path, text) set
     std::map<std::uint64_t, std::uint64_t> tables;                          // layout -> its pane table
+    std::vector<std::uint64_t> touched;                                     // panes shown, hidden or marked
     std::uint64_t next = 0xc0000000;
 
     std::uint64_t MainBase() const override { return kBase; }
@@ -71,6 +73,7 @@ struct FakeGame final : T::Game {
             return it == panes.end() ? 0 : it->second;
         }
         if (f == kBase + T::addr::kPaneShow) shown[x[0]] = static_cast<int>(x[1]);
+        if (f == kBase + T::addr::kPaneShow || f == kBase + T::addr::kPaneMarkB) touched.push_back(x[0]);
         if (f == kBase + kPathText) {
             std::uint64_t text = 0;
             Read(x[2], &text, 8);
@@ -109,16 +112,16 @@ struct FakeGame final : T::Game {
 constexpr std::uint64_t kScreen = 0xa0002000, kLayout = 0xa0008000;
 
 // The map screen with its layout, the clip at the identity (the layout's middle) and `copies` copies made by the pack.
-void SetUp(FakeGame& g, std::size_t copies) {
+void SetUp(FakeGame& g, std::size_t copies, std::uint64_t layout = kLayout) {
     g.Put<std::uint64_t>(kBase + T::addr::kUiManagerGot, 0xa0000f00);
     g.Put<std::uint64_t>(0xa0000f00, 0xa0000000);
     g.Put<std::uint32_t>(0xa0000000 + T::addr::kUiCount, 1);
     g.Put<std::uint64_t>(0xa0000000 + T::addr::kUiScreens, 0xa0001000);
     g.Put<std::uint64_t>(0xa0001000, kScreen);
     g.Put<std::uint64_t>(kScreen, kBase + T::kMapMenuVtable);
-    g.Put<std::uint64_t>(kScreen + T::addr::kScreenLayout, kLayout);
-    const std::uint64_t clip = g.Pane(kLayout, M::kClipPane);
-    const std::uint64_t table = g.tables[kLayout] = g.Table();
+    g.Put<std::uint64_t>(kScreen + T::addr::kScreenLayout, layout);
+    const std::uint64_t clip = g.Pane(layout, M::kClipPane);
+    const std::uint64_t table = g.tables[layout] = g.Table();
     const std::uint64_t game_icon = g.Part(table, "Pa_MapIcon_00");
     g.Pane(g.Part(game_icon, "Pa_Player_00"), "N_PlayerRotate_00");
     const float id[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
@@ -286,6 +289,7 @@ TEST_CASE("map icons: a facing turns the copy's arrow at kPaneTurn, read back in
     FakeGame g;
     SetUp(g, 1);
     M::Icons icons;
+    icons.TurnAt(0x68);   // (the value under trial: LICHII_COOP_MAP_TURN_AT=68; kPaneTurn stays 0 until proven)
     M::Frame f;
     f.marks = {At(2, 2020, 980, "Saria")};
     f.marks[0].angle = 0.0f;   // facing right on the screen: a quarter turn clockwise from up
@@ -296,5 +300,49 @@ TEST_CASE("map icons: a facing turns the copy's arrow at kPaneTurn, read back in
     REQUIRE(st.shown[0].wrote_turn.has_value());
     CHECK(*st.shown[0].turn == doctest::Approx(*st.shown[0].wrote_turn));
     CHECK(*st.shown[0].turn == doctest::Approx(-1.5707963f));
-    CHECK(st.turn_at == M::kPaneTurn);
+    CHECK(st.turn_at == 0x68);
+}
+
+TEST_CASE("map icons: no turn place known (kPaneTurn 0, or TURN_AT=0): the arrow's turn is never written") {
+    FakeGame g;
+    SetUp(g, 1);
+    M::Icons icons;
+    CHECK(M::kPaneTurn == 0);
+    M::Frame f;
+    f.marks = {At(2, 2020, 980, "Saria")};
+    f.marks[0].angle = 0.0f;
+    REQUIRE(icons.Step(g, f));
+    M::State st = icons.Snapshot(g);
+    REQUIRE(st.shown.size() == 1);
+    CHECK_FALSE(st.shown[0].wrote_turn.has_value());
+    icons.TurnAt(0x68);
+    icons.TurnAt(0);      // (LICHII_COOP_MAP_TURN_AT=0 switches a trial off again)
+    REQUIRE(icons.Step(g, f));
+    st = icons.Snapshot(g);
+    CHECK_FALSE(st.shown[0].wrote_turn.has_value());
+}
+
+TEST_CASE("map icons: a new layout at the same screen address (a load) forgets the old panes, no call into them") {
+    FakeGame g;
+    SetUp(g, 2);
+    M::Icons icons;
+    M::Frame f;
+    f.marks = {At(2, 2020, 980, "Saria")};
+    REQUIRE(icons.Step(g, f));
+    const std::uint64_t old_copy = icons.copy(0);
+    std::vector<std::uint64_t> old_panes;
+    for (const auto& [key, pane] : g.panes) old_panes.push_back(pane);
+    // the load: the screen's memory reused by the new screen, with a new layout and new panes
+    SetUp(g, 2, 0xa0400000);
+    g.touched.clear();
+    REQUIRE(icons.Step(g, f));
+    CHECK(icons.copy(0) != old_copy);
+    for (const std::uint64_t t : g.touched) {
+        CHECK(std::find(old_panes.begin(), old_panes.end(), t) == old_panes.end());
+    }
+    // Forget (the glue calls it at a load) drops everything with no game call
+    g.touched.clear();
+    icons.Forget();
+    CHECK(icons.shown() == 0);
+    CHECK(g.touched.empty());
 }
