@@ -994,8 +994,8 @@ TEST_CASE("look parts: every gear part has a texture, every texture once") {
             parts.insert(r.part);
         }
     }
-    CHECK(parts.size() == CoopLook::kParts - 14);   // (and a character's six: CoopCharColours, no texture of ours; Cap trim on hoods: a switch;
-                                                    //  look-link-cs: Link's vest, leather (no gear texture yet: vest-link, leather-link) and equipment (a switch))
+    CHECK(parts.size() == CoopLook::kParts - 13);   // (and a character's six: CoopCharColours, no texture of ours; Cap trim on hoods: a switch;
+                                                    //  look-link-cs: Link's vest (tunic textures: vest-link) and equipment (a switch); leather-link: the leather has its own)
 }
 
 TEST_CASE("look parts: the gear painted in a look, a painting's name says its colours") {
@@ -1393,7 +1393,7 @@ TEST_CASE("look parts: the boots in Link's own model get a copy per tunic colour
     CoopLookParts::Wearer own{'M', 0xFFFF00u};
     const auto w = CoopLookParts::Assign(own, {{'M', 0x0000FFu}, {'R', 0x00FF00u}, {'R', 0xFF0000u}, {'B', {}},
                                                {std::nullopt, 0x123456u}});
-    CHECK(w == CoopLookParts::Wearers{{'M', 0xFFFF00u}, {'R', 0x00FF00u}});
+    CHECK(w == CoopLookParts::Wearers{{'M', {0xFFFF00u}}, {'R', {0x00FF00u}}});
     CHECK(CoopLookParts::Assign({'B', {}}, {{'B', 0xFF0000u}}).empty());   // your own Link keeps the game's
     CHECK(CoopLookParts::BootsPaintingName({}) == CoopLookParts::kBootsBase);
     CHECK(CoopLookParts::BootsPaintingName(w) == "boots.MFFFF00.R00FF00");
@@ -1424,7 +1424,7 @@ TEST_CASE("look parts: the boots wardrobe draws a colour's copy, and leaves your
     PutFile(m, kBase + 0x1000, kChild, Shield());   // your own Link's (the game's model)
     PutFile(m, kBase + 0x3000, "PM_Leather_Player_Child_Alb", Marked(Shield(), 'M'));   // a pink puppet's
     const auto gear = *CoopLookTunic::Parse(LookFile({{kChild, Shield()}}));
-    const CoopLookParts::Wearers wearers{{'M', 0x2020FFu}};
+    const CoopLookParts::Wearers wearers{{'M', {0x2020FFu}}};
     CoopLookTunic::Wardrobe::Host host;
     host.textures = &m;
     host.file = [&](const std::string& c) -> std::optional<std::vector<std::uint8_t>> {
@@ -1444,6 +1444,106 @@ TEST_CASE("look parts: the boots wardrobe draws a colour's copy, and leaves your
     CHECK(m.Drawn(kBase + 0x1000 + kOffset, kTexels) == Shield());   // your own: not the puppets'
     w.Clear();
     CHECK(m.overrides() == 0);
+}
+
+namespace {
+// leather-link: synthetic leather texels (nothing of the game): ASTC one-colour (void extent) blocks of browns.
+std::vector<std::uint8_t> LeatherTexels() {
+    std::vector<std::uint8_t> texels;
+    for (int k = 0; k < 8; ++k) {
+        std::uint8_t block[16] = {0xFC, 0xFD, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};   // void extent, LDR
+        const int c[4] = {110 + 2 * k, 75 + k, 40, 255};                                 // (orange hue, dark: brown)
+        for (int i = 0; i < 4; ++i) {
+            block[8 + 2 * i] = static_cast<std::uint8_t>(c[i]);
+            block[9 + 2 * i] = static_cast<std::uint8_t>(c[i]);
+        }
+        texels.insert(texels.end(), block, block + 16);
+    }
+    return texels;
+}
+
+const CoopLookTunic::Texture& TexOf(const CoopLookTunic::Texels& t, const std::string& name) {
+    for (const auto& x : t) {
+        if (x.name == name) return x;
+    }
+    FAIL("no texture " << name);
+    return t.front();
+}
+
+// Every end colour of an ASTC texture reddish (red well over green and blue).
+bool AllRed(const std::vector<std::uint8_t>& texels) {
+    const auto ends = CoopLookPaint::Ends(CoopLookPaint::Format::astc, texels);
+    return !ends.empty() && std::all_of(ends.begin(), ends.end(), [](const auto& c) {
+        return c[0] > c[1] + 20 && c[0] > c[2] + 20;
+    });
+}
+}  // namespace
+
+TEST_CASE("look parts (leather-link): Clothing Color 3 on Link, one owner per texture, unset as 0.11.12") {
+    const std::string kChild = "Mt_Leather_Player_Child_Alb", kAdult = "Mt_Boots_Player_Adult_Alb",
+                      kGlove = "Mt_Glove_Player_Adult_Alb", kUpper = "Mt_Leater_Upper_Player_Adult_Alb",
+                      kHover = "Mt_Boots_Armor_Adult_HoverBoot_Alb";
+    for (const std::string& n : {kChild, kAdult, kGlove, kUpper}) {
+        CHECK(CoopLookParts::OwnerOf(n) == Part::link_leather);
+        CHECK(std::any_of(CoopLookParts::Gear().begin(), CoopLookParts::Gear().end(),
+                          [&](const auto& g) { return n == g.name; }));   // a gear texture: gear.bin holds it
+        CHECK(std::find(CoopLookParts::BodyBoots().begin(), CoopLookParts::BodyBoots().end(), n) !=
+              CoopLookParts::BodyBoots().end());   // a copy per colour on the puppets
+    }
+    CHECK_FALSE(CoopLookParts::OwnerOf(kHover).has_value());   // the Hover Boots are the boots part's only
+    CHECK(CoopLookParts::OwnerOf("Mt_Vest_Player_Child_Alb") == Part::link_vest);   // (vest-link's, untouched)
+
+    const auto gear = Colour({{kChild, LeatherTexels()}, {kAdult, LeatherTexels()}, {kGlove, LeatherTexels()},
+                              {kUpper, LeatherTexels()}, {kHover, LeatherTexels()}});
+    Look gold;   // a 0.11.12 look: boots only
+    gold[Part::boots] = 0xFFD700u;
+    Look red = gold;   // + the Leather colour
+    red[Part::link_leather] = 0xC00000u;
+    Look red_only;
+    red_only[Part::link_leather] = 0xC00000u;
+    Look boots_red;
+    boots_red[Part::boots] = 0xC00000u;
+    const auto g = CoopLookParts::Painted(*gear, gold);
+    const auto r = CoopLookParts::Painted(*gear, red);
+    const auto ro = CoopLookParts::Painted(*gear, red_only);
+    const auto br = CoopLookParts::Painted(*gear, boots_red);
+    // unset: the boots part paints the two boots textures, the gloves and upper leather keep the game's
+    CHECK(TexOf(g, kChild).texels != LeatherTexels());
+    CHECK(TexOf(g, kGlove).texels == LeatherTexels());
+    CHECK(TexOf(g, kUpper).texels == LeatherTexels());
+    // set: the Leather colour owns every leather texture (the boots colour does not reach them)
+    for (const std::string& n : {kChild, kAdult}) {
+        CHECK(TexOf(r, n).texels == TexOf(br, n).texels);   // as the boots part would paint them in red
+        CHECK(TexOf(ro, n).texels == TexOf(br, n).texels);
+        CHECK(AllRed(TexOf(r, n).texels));
+    }
+    for (const std::string& n : {kGlove, kUpper}) {
+        CHECK(AllRed(TexOf(r, n).texels));
+        CHECK(TexOf(r, n).texels == TexOf(ro, n).texels);
+    }
+    // the Hover Boots stay the boots part's: gold with or without the Leather colour, the game's with Leather alone
+    CHECK(TexOf(r, kHover).texels == TexOf(g, kHover).texels);
+    CHECK(TexOf(ro, kHover).texels == LeatherTexels());
+
+    // the gear painting's name: 0.11.12's with no Leather colour, the leather last when set
+    CHECK(CoopLookParts::Name(gold).find("leather") == std::string::npos);
+    CHECK(CoopLookParts::Name(red) == CoopLookParts::Name(gold) + ".leather-C00000");
+    CHECK(CoopLookParts::AnyGear(red_only));
+
+    // the puppets: each colour's copies painted in its wearer's boots and Leather colours
+    CoopLookParts::Wearer pink{'M', 0xFFD700u, 0xC00000u}, blue{'B', std::nullopt, 0xC00000u}, red_t{'R', 0xFFD700u};
+    const auto w = CoopLookParts::Assign({}, {pink, blue, red_t});
+    CHECK(w.at('M') == CoopLookParts::BootsPaint{0xFFD700u, 0xC00000u});
+    CHECK(w.at('B') == CoopLookParts::BootsPaint{std::nullopt, 0xC00000u});
+    CHECK(CoopLookParts::BootsPaintingName(w) == "boots.BLC00000.MFFD700LC00000.RFFD700");
+    CHECK(CoopLookParts::BootsPaintingName(CoopLookParts::Assign({}, {red_t})) == "boots.RFFD700");   // (0.11.12's)
+    const auto copies = CoopLookParts::BootsTexels(*gear, w);
+    REQUIRE(copies.size() == 40);   // ten colours, four body leather textures each (the Hover Boots are an item)
+    CHECK(TexOf(copies, "PM_Glove_Player_Adult_Alb").texels == Marked(TexOf(r, kGlove).texels, 'M'));
+    CHECK(TexOf(copies, "PM_Leather_Player_Child_Alb").texels == Marked(TexOf(r, kChild).texels, 'M'));
+    CHECK(TexOf(copies, "PB_Leater_Upper_Player_Adult_Alb").texels == Marked(TexOf(ro, kUpper).texels, 'B'));
+    CHECK(TexOf(copies, "PR_Glove_Player_Adult_Alb").texels == Marked(LeatherTexels(), 'R'));   // no Leather: game's
+    CHECK(TexOf(copies, "PR_Leather_Player_Child_Alb").texels == Marked(TexOf(g, kChild).texels, 'R'));
 }
 
 TEST_CASE("look: a look chosen with the menu open is shown on your own Link at once, applied on unpause") {

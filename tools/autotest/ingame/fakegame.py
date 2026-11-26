@@ -64,6 +64,13 @@ class FakeGame:
         self.menu_pause, self.title_until, self.at_title = False, None, False
         self.head, self.ocarina, self.flags, self.pending = None, False, {GATE: 0}, []
         self.gear_hidden = False   # (gear-link: part 29 worn by this game's player)
+        self.leather, self.boots = None, None   # (leather-link: parts 28 and 15 worn by this game's player, RRGGBB)
+        # (the module's ocarina re-equip after each load, Pair.need_ocarina: BT_FAKE_OCARINA_LATE=N frames after the
+        # boot and after each warp, default 0 = at once; before it D-pad Left takes nothing out, songs-frogs-733c4d8f)
+        self.ocarina_late, self.equipped = int(os.environ.get("BT_FAKE_OCARINA_LATE", "0") or 0), False
+        # (the game's first-use "Ocarina Audio Input" box on the boot's first D-pad Left, Pair.ocarina_out: the free-Ocarina
+        # event line at once, 'plays the ocarina' only after B closes it; probe-ocarina-2f14b333)
+        self.box, self.box_seen = False, False
         self.other = None
         # (selftests of the lane's boot proof, Pair.boot_ready: BT_FAKE_BOOT_EVENT=B leaves B where the save puts it,
         # Graveyard_Child, in an event a warp ends (test-bridge-pilot-fa63e90f r1); BT_FAKE_BOOT_STUCK=B the same but
@@ -84,6 +91,7 @@ class FakeGame:
             self.say("coop: drawing over Hookshot's picture")
         for h in hooks(self.fakes, "setup"):
             h(self)
+        self.equip_later()
         self.srv = socket.socket()
         self.srv.bind(("127.0.0.1", 0))
         self.srv.listen(1)
@@ -93,6 +101,18 @@ class FakeGame:
         if tag not in os.environ.get("BT_FAKE_NO_MODULE", ""):
             self.say("coop: playtest: listening on 127.0.0.1:%d (control on; dumps and shots in %s)" % (self.port, folder))
         threading.Thread(target=self.serve, daemon=True).start()
+
+    def equip_later(self):
+        """The module's ocarina re-equip after a load (Pair.need_ocarina), BT_FAKE_OCARINA_LATE frames later."""
+        self.equipped = False
+
+        def done():
+            self.equipped = True
+            self.say("coop: items: ocarina 'Item_Ocarina_Fairy' equipped by the game from its flags (slots 13, 16)")
+        if self.ocarina_late > 0:
+            self.later(self.ocarina_late, done)
+        else:
+            done()
 
     def say(self, line):
         with open(self.log_path, "a", encoding="utf-8") as f:
@@ -137,11 +157,18 @@ class FakeGame:
             h(self, st)
         return st
 
+    def age(self):
+        """Link's age, from the game's own flag as the real game keeps it (Sequence_IsChildhood: 1 child, 0 adult;
+        unset = a child save). The ONE place a fake game's age comes from: a fake hook changes the flag (setflag, or
+        its boot's save in setup), never st['age'] for every boot (dbno_crawl.py did, so row 286's adult boot read
+        child: integrate-0120-4 18:59)."""
+        return "adult" if self.flags.get("Sequence_IsChildhood", 1) in (0, False) else "child"
+
     def base_state(self):
         live = self.in_play()
         return {"frame": self.frame, "paused": self.paused, "scene": self.scene if not self.at_title else None,
                 "pos": list(self.pos) if live else None, "facing": self.facing if live else None,
-                "age": "child" if live else None, "loading": False if live else None, "event": self.event if live else None,
+                "age": self.age() if live else None, "loading": False if live else None, "event": self.event if live else None,
                 "not_ready": None if live else "no fresh Link sample", "control": True,
                 "equips": {"weapon": "KokiriSword", "shield": None, "head": self.head, "armor": "Kokiri", "boots": "Normal"},
                 "coop": {"players": [{"number": 1, "name": "A", "state": "connected"},
@@ -186,7 +213,15 @@ class FakeGame:
             if self.stuck:     # (the event never ends: the bridge's warp answers timeout, still in it)
                 return {"id": m.get("id"), "ok": False, "error": "timeout", "message": "fake: still in the event",
                         "frame": self.frame, "paused": self.paused}
+            # (the real verb: a name ending in the other age first sets Sequence_IsChildhood, docs/playtest.md 'warp';
+            # so the age follows the flag, FakeGame.age, and no fake hook writes st['age'] for its scenes)
+            want = {"_adult": "adult", "_child": "child"}.get(m["scene"][-6:].lower())
+            if want and want != self.age():
+                self.flags["Sequence_IsChildhood"] = 0 if want == "adult" else 1
             self.scene, self.event = m["scene"], False
+            self.say("coop: native ui: scene load ended (Sequence_IsLoadingBanc): screens handed out once the game's "
+                     "HUD screen has run")
+            self.equip_later()
             r.update(arrived=True, via="teleport", map=m["scene"], state=self.state())
         elif cmd == "move":
             self.walk(float(m["yaw"]), float(m.get("strength", 1.0)), int(m.get("frames", 1)))
@@ -247,9 +282,21 @@ class FakeGame:
             self.later(30, lambda: (setattr(self, "at_title", False), setattr(self, "title_asked", False)))
             return
         if "LEFT" in buttons:
+            if not self.equipped:
+                return                                   # nothing on the D-pad yet: nothing comes out
             self.ocarina = True
-            self.later(20, lambda: self.say("coop: ocarina probe: our Link plays the ocarina"))
+            self.later(2, lambda: self.say("coop: event: the running event is our free Ocarina (by the game's request): "
+                                           "our Link is not held by it, no hide, no hold, no claim"))
+            if not self.box_seen:
+                self.box, self.box_seen = True, True     # the first-use box: no play, no notes until it is closed
+                return
+            self.later(20, lambda: self.say("coop: ocarina probe: our Link plays the ocarina, 8 AS slots"))
             return
+        if self.box:
+            if "B" in buttons and self.tag not in os.environ.get("BT_FAKE_OCARINA_BOX_STUCK", ""):
+                self.box = False
+                self.later(20, lambda: self.say("coop: ocarina probe: our Link plays the ocarina, 8 AS slots"))
+            return                                       # (the box eats every other button: no note)
         if "B" in buttons:
             self.ocarina = False
         notes = {"L": (4, "D"), "R": (8, "F"), "Y": (11, "B"), "X": (16, "HighD"), "A": (14, "A")}
@@ -273,6 +320,9 @@ class FakeGame:
 
     def act(self, line):
         w = line.split()
+        if w[:1] == ["chat"]:      # (every test chat is answered so, whatever it does: lichii/hook/coop_testinput.cpp:1789)
+            text = line.split(None, 1)[1] if len(w) > 1 else ""
+            self.later(2, lambda: self.say("coop: test chat '%s': sent" % text))
         if any(h(self, w) for h in hooks(self.fakes, "act")):
             return
         o, me = self.other, 1 if self.tag == "A" else 2
@@ -297,6 +347,19 @@ class FakeGame:
                 what = "hidden" if hide else "shown again"
                 self.later(2, lambda: self.say("coop: characters: equipment %s on your model (1 piece(s))" % what))
                 o.later(10, lambda: o.say("coop: characters: equipment %s on a puppet (1 piece(s))" % what))
+        elif w[0] == "menu" and len(w) == 3 and w[1] == "look" and w[2].split("=")[0] in ("link_leather", "boots"):
+            # (leather-link: the gear wardrobe's and the puppets' boots wardrobe's lines, hookshot coop_look_tunic.cpp /
+            # coop_look_live.cpp FollowBoots; names as CoopLookParts::Name / BootsPaintingName)
+            key, value = w[2].split("=", 1)
+            colour = None if value == "none" else value.lstrip("#").upper()
+            setattr(self, "leather" if key == "link_leather" else "boots", colour)
+            gear = "gear" if not (self.leather or self.boots) else "gear.%s%s" % (
+                self.boots or "-", ".leather-" + self.leather if self.leather else "")
+            boots = "boots" if not (self.leather or self.boots) else "boots.G%s%s" % (
+                self.boots or "", "L" + self.leather if self.leather else "")
+            if gear != "gear":
+                self.later(2, lambda: self.say("coop: look: your Link's gear is %s now (1 texture(s) drawn)" % gear))
+            o.later(10, lambda: o.say("coop: look: the puppets' boots are %s now" % boots))
         elif w[0] == "chat" and w[1:] == ["/teleport", "B"]:
             self.later(30, lambda: setattr(self, "pos", [o.pos[0] + 1.0, o.pos[1], o.pos[2]]))
 
@@ -309,6 +372,12 @@ class FakeGame:
         d.rectangle([150 + self.frame % 3, 50, 170, 70], fill=(240, 240, 240) if self.head else (40, 90, 40))
         if not (self.gear_hidden or self.other.gear_hidden):   # (gear-link: a "sword" while A's gear is shown)
             d.rectangle([190, 80, 196, 130], fill=(170, 170, 190))
+        # (leather-link: a player's leather/boots, on its own Link and its puppet in the other game: A's first, else
+        # B's, as test_leather_without_character_select has the game without the mod (B) choose)
+        a = self if self.tag == "A" else self.other
+        shown = a.leather or a.boots or a.other.leather or a.other.boots
+        if shown:
+            d.rectangle([150, 140, 172, 156], fill=tuple(int(shown[i:i + 2], 16) for i in (0, 2, 4)))
         im.save(path)
 
     # -- socket -----------------------------------------------------------------------------------------------
