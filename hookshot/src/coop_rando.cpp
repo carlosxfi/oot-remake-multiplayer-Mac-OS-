@@ -215,16 +215,24 @@ std::string SettingsName(std::string_view preset) {
     return "settings " + std::string(preset.substr(0, 16)) + (preset.size() > 16 ? "..." : "");
 }
 
+namespace {
+std::string StringHash(std::string_view settings) {
+    std::uint32_t hash = 0x811c9dc5u;  // FNV-1a
+    for (const char c : settings) hash = (hash ^ static_cast<unsigned char>(c)) * 0x01000193u;
+    char hex[9];
+    std::snprintf(hex, sizeof hex, "%08x", static_cast<unsigned>(hash));
+    return hex;
+}
+} // namespace
+
 std::string FolderFor(std::string_view seed, std::string_view preset) {
     std::string out = std::string(kSeedPrefix) + SeedWord(seed);
     if (IsSettingsString(preset)) {
-        std::uint32_t hash = 0x811c9dc5u;  // FNV-1a
-        for (const char c : preset) hash = (hash ^ static_cast<unsigned char>(c)) * 0x01000193u;
-        char hex[9];
-        std::snprintf(hex, sizeof hex, "%08x", static_cast<unsigned>(hash));
-        out += "-s" + std::string(hex);
+        out += "-s" + StringHash(preset);
     } else if (!preset.empty() && preset != "default") {
         out += "-" + std::string(preset);
+        const std::string_view own = OwnPresetString(preset);
+        if (!own.empty()) out += "-" + StringHash(own);  // a changed string is another world (FolderFor in the .h)
     }
     return out;
 }
