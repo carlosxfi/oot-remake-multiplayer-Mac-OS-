@@ -281,7 +281,7 @@ def boot_scene(name=DEFAULT_BOOT):
     return boot_place(name)[0]
 
 
-BOOT_READY_S = 240    # the boot proof's own deadline (out of a load, a warp of a game left elsewhere, an event's end)
+BOOT_READY_S = P.BOOT_READY_S   # the boot proof's own deadline (one value, pair.py: Pair.recover's relaunch uses it too)
 RECOVER_S = P.RECOVER_BASE_S + 2 * P.RECOVER_WARP_S   # the recovery's ceiling: both games warped (Pair.recover)
 
 
@@ -699,6 +699,10 @@ def env_has(have, want):
 
 @pytest.fixture
 def pair(request, lane_pair):
+    lost = getattr(request.config, "_bt_lane_lost", None)
+    if lost:
+        # (the recovery and its one relaunch failed after an earlier test: no doomed recovery per test, crawl-337-11)
+        raise P.SetupFail("lane lost after %s" % lost)
     have = boot_env(request.config)
     for m in request.node.iter_markers("needs_env"):
         lack = [e for e in m.args if not env_has(have, e)]
@@ -707,10 +711,15 @@ def pair(request, lane_pair):
     if getattr(request.config, "_bt_dirty", False):
         # (the test before did not pass, or left play on purpose: the lane's recovery first, as its own set-up)
         # (on state, bounded per game it warps: Pair.recover; was setup(limit=30 s), and two warps measure 27-31 s)
-        lane_pair.begin(RECOVER_S + 5)
+        # (its bound covers the one relaunch of a stuck game, P.Pair.RECOVER_RELAUNCH_S; the stepped part keeps its own)
+        lane_pair.begin(P.Pair.RECOVER_RELAUNCH_S + 5)
         try:
             lane_pair.recover(boot_scene(request.config.getoption("boot")), max_frames=P.READY_FRAMES * 2)
         except P.SetupFail as e:
+            # (its notes go on this test either way: they were dropped on a failed recovery, tb-pilot-f9f3b9c2 'notes: []')
+            request.node.user_properties.append(("notes", list(lane_pair.notes)))
+            if isinstance(e, P.LaneLost):
+                request.config._bt_lane_lost = "%s: %s" % (request.node.nodeid.split("::")[-1], e)
             raise P.SetupFail("recovery after the test before: %s" % e) from e
         request.config._bt_dirty = False
         request.node.user_properties.append(("recovery", list(lane_pair.notes)))

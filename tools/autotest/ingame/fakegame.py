@@ -275,7 +275,10 @@ class FakeGame:
             return
         o, me = self.other, 1 if self.tag == "A" else 2
         if "PLUS" in buttons:
-            self.menu_pause = not self.menu_pause
+            # (BT_FAKE_PAUSE_STUCK=B: B's pause page opens and never closes again, the game a test left on a pause page,
+            # tb-gate-ui-f9f3b9c2 test_pause FAIL; only a relaunch brings it back: Pair.recover, crawl-337-11)
+            if not (self.menu_pause and self.tag in os.environ.get("BT_FAKE_PAUSE_STUCK", "")):
+                self.menu_pause = not self.menu_pause
         if "A" in buttons and getattr(self, "title_asked", False) and not self.at_title:
             self.say("fake: A pressed in play after the way back was asked")   # (load_both must never: pilot A :7015)
         if self.at_title and "A" in buttons:

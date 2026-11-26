@@ -1590,6 +1590,108 @@ class RecoverOnState(unittest.TestCase):
             pair.warp_one("A", "PhantomGanonStage", arrive_in_event=True)
 
 
+class RecoveryCascade(unittest.TestCase):
+    """crawl-337-11 (tb-pilot-f9f3b9c2: test_ocarina_notes SETUP-FAIL, then all 26 later tests SETUP-FAIL 'recovery
+    after the test before: boot: TestTimeout: timeout after 28 s: state not sent', notes []): (1) a timeout keeps its
+    reason and names each game's state; (2) a game left waiting for input (a pause page) is relaunched once by the
+    recovery; (3) a relaunch that fails loses the lane, and every later test SETUP-FAILs at once with the notes kept."""
+
+    BOOT = RecoverOnState.BOOT
+
+    class Stuck(RecoverOnState.SlowWarp):
+        """A game left on a pause page: never in play by stepping (not_ready, as the real bridge's paused game)."""
+
+        def __init__(self, clock, scene, stuck=False, step_s=0.0):
+            super().__init__(clock, scene, warp_s=0)
+            self.stuck, self.step_s = stuck, step_s
+
+        def request(self, cmd, reply_timeout=None, check=True, **a):
+            if cmd == "step":
+                self.clock.t += self.step_s            # (a slow step: the next state read finds < REPLY_MIN_S left)
+            return super().request(cmd, reply_timeout=reply_timeout, check=check, **a)
+
+        def st(self):
+            return dict(super().st(), not_ready="no fresh Link sample (fake: pause page)" if self.stuck else None)
+
+    def make(self, budget, stuck="B", step_s=0.0):
+        clock = RecoverOnState.Clock()
+        pair = P.Pair.__new__(P.Pair)
+        pair.c = {x: self.Stuck(clock, self.BOOT, stuck=x in stuck, step_s=step_s) for x in "AB"}
+        pair.log, pair.shots, pair.notes = {}, [], []
+        pair.deadline = P.Deadline(budget, clock=clock)
+        return pair, clock
+
+    def test_a_spent_deadline_keeps_its_reason_and_names_each_game(self):
+        # (each game's 10-frame step costs 0.8 s: 5.0 -> 3.4 -> A 2.6 -> B 1.8 s left, under a state read's REPLY_MIN_S
+        # 2.0, so the deadline ends in a 'state not sent', the real runs' case; the old why_not read hit the same)
+        pair, clock = self.make(5.0, step_s=0.7)
+        with self.assertRaises(P.TestTimeout) as cm:
+            pair.until_in_play("both games in play", max_frames=10 ** 6)
+        msg = str(cm.exception)
+        self.assertTrue(msg.startswith("timeout after 5 s: state not sent"), msg)
+        self.assertIn("B: scene=%s loading=False event=False not_ready=no fresh Link sample (fake: pause page)"
+                      % self.BOOT, msg)
+        self.assertIn("A: scene=%s" % self.BOOT, msg)
+        self.assertEqual(pair.deadline.seconds, 5.0)                   # (the test's deadline is back)
+
+    def test_a_game_on_a_pause_page_is_relaunched_once(self):
+        import bt_plugin
+        pair, clock = self.make(P.Pair.RECOVER_RELAUNCH_S + 5)
+        asked = []
+
+        def rejoin(x):
+            asked.append(x)
+            clock.t += 100                                             # (a relaunch's wall time, inside its bound)
+            pair.c[x].stuck = False
+        pair.rejoin = rejoin
+        st = pair.recover(self.BOOT)
+        self.assertEqual(asked, ["B"])                                 # (only the stuck game, once)
+        self.assertTrue(all(pair.in_play(s) for s in st.values()), st)
+        self.assertTrue(any(n.startswith("recovery: B stuck (B: scene=") and n.endswith("): relaunched")
+                            and "pause page" in n for n in pair.notes), pair.notes)
+        self.assertLessEqual(clock.t, P.Pair.RECOVER_RELAUNCH_S)
+        self.assertGreater(P.Pair.RECOVER_RELAUNCH_S, bt_plugin.RECOVER_S + 2 * (P.Pair.REJOIN_QUIT_S + P.Pair.REJOIN_BOOT_S))
+
+    def test_a_failed_relaunch_loses_the_lane_with_its_reason(self):
+        pair, clock = self.make(P.Pair.RECOVER_RELAUNCH_S + 5)
+        # (no live.py session: Pair.rejoin's own SetupFail, as on the fake lane)
+        with self.assertRaises(P.LaneLost) as cm:
+            pair.recover(self.BOOT)
+        msg = str(cm.exception)
+        self.assertIn("relaunch of B (stuck: B: scene=", msg)
+        self.assertIn("pause page", msg)
+        self.assertNotIn("relaunch of A", msg)
+        self.assertTrue(any("relaunch failed" in n for n in pair.notes), pair.notes)
+        self.assertTrue(any(n.startswith("recovery: stepped part failed: ") for n in pair.notes), pair.notes)
+
+    def test_suite_lane_lost_once_then_every_later_test_at_once(self):
+        """The fake lane: B's pause page never closes after test_pause (BT_FAKE_PAUSE_STUCK=B). test_pause FAILs, the
+        next test's recovery cannot relaunch B on the fake lane (no live.py): SETUP-FAIL naming B's state, with its
+        notes; every later test SETUP-FAILs 'lane lost after <that test>' without another recovery."""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        out = os.path.join(tmp, "o")
+        p = pytest_run([".", "--fake", "--out", out, "-q", "-m", "smoke", "--repeat", "2", "--no-smoke-gate",
+                        "--no-rerun"], env={"BT_FAKE_PAUSE_STUCK": "B"})
+        rows = summary(out)["tests"]
+        names = [r["test"].split("::")[-1] for r in rows]
+        i = next(k for k, n in enumerate(names) if n.startswith("test_pause"))
+        self.assertEqual(rows[i]["result"], "FAIL", p.stdout[-3000:])
+        later = rows[i + 1:]
+        self.assertGreaterEqual(len(later), 2, names)
+        first = later[0]
+        self.assertEqual(first["result"], "SETUP-FAIL", first)
+        self.assertIn("recovery after the test before:", first["why"])
+        self.assertIn("not_ready=no fresh Link sample", first["why"])
+        self.assertIn("relaunch of B", first["why"])
+        self.assertTrue(any("relaunch failed" in n for n in first["notes"]), first)
+        lost_after = names[i + 1]
+        for r in later[1:]:
+            self.assertEqual(r["result"], "SETUP-FAIL", r)
+            self.assertIn("lane lost after %s: " % lost_after, r["why"])
+            self.assertLess(r["seconds"], 5, r)
+
+
 class LaneCheck(unittest.TestCase):
     def make(self, root, x, dll=b"module", patches="patches=abc", server=None, **over):
         d = os.path.join(root, "lane1-%s" % x)
