@@ -702,7 +702,9 @@ def relaunch(a, alive=None, runner=None):
         while os.path.exists("%s.%d" % (log, n)):
             n += 1
         os.replace(log, "%s.%d" % (log, n))
-    code = (runner or hookshot.main)(relaunch_argv(r, d, x, a.boot, a.no_load, a.restore))
+    import contextlib
+    with contextlib.redirect_stdout(sys.stderr):      # (the runner's boot lines: stdout is the ONE JSON answer, as start)
+        code = (runner or hookshot.main)(relaunch_argv(r, d, x, a.boot, a.no_load, a.restore))
     s = load(d)
     s["offsets"][x] = 0
     save(d, s)

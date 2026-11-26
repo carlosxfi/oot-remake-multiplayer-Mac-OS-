@@ -34,10 +34,8 @@ import save_flags   # noqa: E402  (tools/autotest/save_flags.py: the progress.sa
 RUPEES = "0xa77921d7"     # PlayerStatus.CurrentRupee (coop/host/src/game_items.cpp:224, int32, per player)
 LIFE = "0x31ab5580"       # PlayerStatus.Life (coop/host/src/game_items.cpp:83, int32, per player)
 OWN_SAVE_OFF = "B:LICHII_COOP_TEST_OWN_SAVE=0"   # coop_save.cpp:154 (hookshot.py TEST_GAME_DEFAULTS sets 1)
-BOOT_B = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scenarios",
-                      "live-kakariko-child.B.txt")      # the lane's default boot (bt_plugin DEFAULT_BOOT)
 ELSEWHERE = "KokiriForest_Child"                         # scenarios/boulder.A.txt "warp KokiriForest_Child"
-HOME, HOME_AT = "KakarikoVillage_Child", "Kakariko_WellSide"   # live-kakariko-child.B.txt's warp
+HOME, HOME_AT = "KakarikoVillage_Child", "Kakariko_WellSide"   # live-kakariko-child.B.txt's warp (the default boot)
 
 # coop_save.cpp:407 / :559 / :566 / :569 (the old scenario's own patterns)
 COOP_FOLDER = re.compile(r"coop: save: now playing from the co-op save folder (.+?)\s*$")
@@ -83,49 +81,57 @@ def test_own_values_kept_over_rejoin(pair):
         assert os.path.isdir(folder), "B's co-op folder %s is not there" % folder
         a0, b0 = pair.state("A"), pair.state("B")
         want = next(v for v in CHOICES if v not in (a0.get("rupees"), b0.get("rupees")))
-        pair.flag("B", RUPEES, want)
-        life = None
-        if (b0.get("max_life") or 0) >= 8:
-            life = b0["max_life"] - 4                     # one heart down (life in the state's own unit)
-            pair.flag("B", LIFE, life)
-        pair.step_both(30)
-        b1 = pair.state("B")
-        assert b1.get("rupees") == want, "B's rupees did not follow the flag: %s, set %d" % (b1.get("rupees"), want)
-        if life is not None and b1.get("life") != life:
-            pair.notes.append("life not judged: B's state life %s after flag %s=%d (another unit)"
-                              % (b1.get("life"), LIFE, life))
+    set_life = (b0.get("max_life") or 0) >= 8
+    try:
+        with pair.setup():
+            pair.flag("B", RUPEES, want)
             life = None
-    # per player: A's own count is not B's (game_items.cpp R::per_player)
-    assert pair.state("A").get("rupees") == a0.get("rupees"), "A's rupees moved with B's: %s -> %s" % (
-        a0.get("rupees"), pair.state("A").get("rupees"))
+            if set_life:
+                life = b0["max_life"] - 4                     # one heart down (life in the state's own unit)
+                pair.flag("B", LIFE, life)
+            pair.step_both(30)
+            b1 = pair.state("B")
+            assert b1.get("rupees") == want, "B's rupees did not follow the flag: %s, set %d" % (b1.get("rupees"), want)
+            if life is not None and b1.get("life") != life:
+                pair.notes.append("life not judged: B's state life %s after flag %s=%d (another unit)"
+                                  % (b1.get("life"), LIFE, life))
+                life = None
+        # per player: A's own count is not B's (game_items.cpp R::per_player)
+        assert pair.state("A").get("rupees") == a0.get("rupees"), "A's rupees moved with B's: %s -> %s" % (
+            a0.get("rupees"), pair.state("A").get("rupees"))
 
-    # B's own autosave writes its values into the co-op folder (a scene change: away and back home)
-    pair.warp_one("B", ELSEWHERE)
-    pair.warp_one("B", HOME, entrance=HOME_AT)
-    slot = pair.until("B's autosave in %s with %d rupees" % (folder, want),
-                      lambda: newest_rupees(folder)[1] == want and newest_rupees(folder)[0], max_frames=900)
-    pair.notes.append("autosave: %s has %d rupees" % (slot, want))
+        # B's own autosave writes its values into the co-op folder (a scene change: away and back home)
+        pair.warp_one("B", ELSEWHERE)
+        pair.warp_one("B", HOME, entrance=HOME_AT)
+        slot = pair.until("B's autosave in %s with %d rupees" % (folder, want),
+                          lambda: newest_rupees(folder)[1] == want and newest_rupees(folder)[0], max_frames=900)
+        pair.notes.append("autosave: %s has %d rupees" % (slot, want))
 
-    pair.rejoin("B", boot=BOOT_B)
-    pair.expect_log("B", WRITTEN, max_frames=900)
-    pair.expect_log("B", KEPT, max_frames=300)
-    pair.never_log("B", NONE_KEPT)
-    pair.expect_log("B", COOP_FOLDER.pattern, max_frames=900)
-    pair.until("B in play after the rejoin", lambda: pair.in_play(pair.state("B")), max_frames=1800)
-    pair.step_both(60)
-    a2, b2 = pair.state("A"), pair.state("B")
-    assert b2.get("rupees") == want, "B's own rupees not kept over the rejoin: %s, had %d (A has %s)" % (
-        b2.get("rupees"), want, a2.get("rupees"))
-    assert a2.get("rupees") == a0.get("rupees"), "A's rupees changed over B's rejoin: %s -> %s" % (
-        a0.get("rupees"), a2.get("rupees"))
-    if life is not None:
-        assert b2.get("life") == life, "B's own life not kept over the rejoin: %s, had %d" % (b2.get("life"), life)
-    for x in ("A", "B"):
-        pair.never_log(x, NO_CRASH)
-    # user-facing: each game's HUD rupee counter (and hearts) after the rejoin
-    for x in ("A", "B"):
-        pair.check_shot(x, "rejoin-hud")
-    # back as the lane had it: B's own count (its next autosave keeps it)
-    pair.flag("B", RUPEES, b0.get("rupees") or 0)
-    if life is not None:
-        pair.flag("B", LIFE, b0["life"])
+        pair.rejoin("B")   # (the lane's own B boot, Pair.boot, with --no-load)
+        pair.expect_log("B", WRITTEN, max_frames=900)
+        pair.expect_log("B", KEPT, max_frames=300)
+        pair.never_log("B", NONE_KEPT)
+        pair.expect_log("B", COOP_FOLDER.pattern, max_frames=900)
+        pair.until("B in play after the rejoin", lambda: pair.in_play(pair.state("B")), max_frames=1800)
+        pair.step_both(60)
+        a2, b2 = pair.state("A"), pair.state("B")
+        assert b2.get("rupees") == want, "B's own rupees not kept over the rejoin: %s, had %d (A has %s)" % (
+            b2.get("rupees"), want, a2.get("rupees"))
+        assert a2.get("rupees") == a0.get("rupees"), "A's rupees changed over B's rejoin: %s -> %s" % (
+            a0.get("rupees"), a2.get("rupees"))
+        if life is not None:
+            assert b2.get("life") == life, "B's own life not kept over the rejoin: %s, had %d" % (b2.get("life"), life)
+        for x in ("A", "B"):
+            pair.never_log(x, NO_CRASH)
+        # user-facing: each game's HUD rupee counter (and hearts) after the rejoin
+        for x in ("A", "B"):
+            pair.check_shot(x, "rejoin-hud")
+    finally:
+        # back as the lane had it, also after a FAIL (review-c123-11): B's own count (its next autosave keeps it)
+        # (B may be down after a failed rejoin: a restore error is a note, never in place of the test's own result)
+        try:
+            pair.flag("B", RUPEES, b0.get("rupees") or 0)
+            if set_life:
+                pair.flag("B", LIFE, b0["life"])
+        except Exception as e:
+            pair.notes.append("restore of B's rupees/life failed: %s: %s" % (type(e).__name__, e))
