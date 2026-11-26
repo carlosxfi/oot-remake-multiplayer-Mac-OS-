@@ -75,13 +75,14 @@ def git(*args):
 
 
 def changed_files(base):
-    """Files changed between HEAD and its merge-base with origin/<base>, or None when that is not known."""
+    """Files changed between HEAD and its merge-base with origin/<base>, or None when that is not known.
+    --no-renames: a file moved out of a C++ path lists its old path too (review-c123-8 10:47), so the move runs full."""
     if not BASE_NAME.match(base or ""):
         return None
     try:
         git("fetch", "--no-tags", "--filter=blob:none", "origin", "+refs/heads/%s:refs/remotes/origin/%s" % (base, base))
         mb = git("merge-base", "HEAD", "origin/" + base).strip()
-        return [l for l in git("diff", "--name-only", mb, "HEAD").splitlines() if l]
+        return [l for l in git("diff", "--name-only", "--no-renames", mb, "HEAD").splitlines() if l]
     except (subprocess.CalledProcessError, OSError):
         return None
 

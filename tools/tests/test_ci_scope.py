@@ -127,6 +127,12 @@ class RealGit(unittest.TestCase):
         run(self.repo, "git", "checkout", "-q", "work")
         self.assertEqual(cs.changed_files("integrate-0120"), ["tools/autotest/x.py"])
 
+    def test_move_out_of_cpp_path_is_full(self):
+        run(self.repo, "git", "mv", "hookshot/src/a.cpp", "tools/autotest/a.cpp")
+        run(self.repo, "git", "commit", "-q", "-m", "move")
+        self.assertEqual(sorted(cs.changed_files("integrate-0120")), ["hookshot/src/a.cpp", "tools/autotest/a.cpp"])
+        self.assertEqual(self.main_out()[0], "full=true")
+
     def test_missing_base_is_full(self):
         self.commit("tools/autotest/x.py")
         self.assertIsNone(cs.changed_files("no-such-branch"))
