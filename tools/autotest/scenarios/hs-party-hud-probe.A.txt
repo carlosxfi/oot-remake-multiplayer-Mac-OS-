@@ -1,4 +1,4 @@
-#! switches COOP_TEST_PARTY_HUD=1,LICHII_COOP_TEST_TO_TITLE=1,B:COOP_TEST_PARTY_HUD_NO_PACK=1
+#! switches COOP_TEST_PARTY_HUD=1,LICHII_COOP_PARTY_HUD_PROBE=1,LICHII_COOP_TEST_TO_TITLE=1,B:COOP_TEST_PARTY_HUD_NO_PACK=1
 #! timeout 600
 # hs-party-hud-probe (party-hud-runtime, 0.11.13 R2/R3): the run-time gauges and their name lines, with the pack (A)
 # and as without it (B: COOP_TEST_PARTY_HUD_NO_PACK=1, coop_party_hud.h Hud::IgnorePack), on a scene change and a
