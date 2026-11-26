@@ -304,6 +304,15 @@ class Orphans(Base):
         found, _ = lanes.orphans(1, self.kit, self.root, procs=self.procs({101}), now=time.time() + 5 * 3600)
         self.assertEqual([o["pid"] for o in found], [101])
 
+    def test_a_lock_whose_owner_pid_is_alive_covers_at_any_age(self):
+        old = time.time() - 6 * 3600          # (past hs.lock_stale's 4 h: a 240+ min bt_plugin session)
+        self.assertTrue(hs.lock_acquire(self.root, "lane1", "long run", pid=os.getpid(), clock=lambda: old,
+                                        say=lambda *a: None))
+        found, _ = lanes.orphans(1, self.kit, self.root, procs=self.procs({101, 202}))
+        self.assertEqual(found, [])
+        found, _ = lanes.orphans(1, self.kit, self.root, procs=self.procs({101, 202}), alive=lambda pid: False)
+        self.assertEqual(len(found), 2)          # (its owner gone: stale, both orphans)
+
     def test_a_game_build_holds_the_close(self):
         self.assertTrue(hs.lock_acquire(self.root, "game", "a game build", say=lambda *a: None))
         found, hold = lanes.orphans(1, self.kit, self.root, procs=self.procs({101}))

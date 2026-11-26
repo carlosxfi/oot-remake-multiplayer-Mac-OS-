@@ -350,10 +350,17 @@ def game_procs(folder):
 
 
 def live_lock(root, name, alive=hs.pid_alive, now=None):
-    """The owner of a live lock named name ('' when it is absent or stale)."""
+    """The owner of a live lock named name ('' when it is absent or stale). An owner pid of this host that is alive
+    = live at ANY age (C #133 / review-c123-9 11:29: bt_plugin's default session is 240 min; hs.lock_stale's 4 h
+    rule would call a longer run's lock stale and its games orphans); otherwise hs.lock_stale decides."""
     p = os.path.join(root, hs.LOCK_NAMES[name])
-    if os.path.isdir(p) and not hs.lock_stale(p, now=now, alive=alive):
-        return hs.lock_info(p).get("owner", "?")
+    if not os.path.isdir(p):
+        return ""
+    info = hs.lock_info(p)
+    if info.get("pid") and info.get("host") in (hs.host_id(), hs.socket.gethostname()) and alive(int(info["pid"])):
+        return info.get("owner", "?")
+    if not hs.lock_stale(p, now=now, alive=alive):
+        return info.get("owner", "?")
     return ""
 
 
