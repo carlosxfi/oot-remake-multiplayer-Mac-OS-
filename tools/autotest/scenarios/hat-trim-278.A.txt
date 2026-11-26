@@ -1,5 +1,6 @@
 # hat-trim-278 (row 278): the Cap trim on every tunic, A's own Link and B's puppet of A. NOT RUN YET (prepared).
-# Before the run: A's coop-options.ini (lane1-A) has `look_cap_trim = red` and no `color` (the Kokiri tunic
+# Before the run: A's coop-options.ini (lane1-A) has `look_cap_trim = red`, `look_cap_trim_hoods = on` (C4-4: off, the
+# hoods follow the tunic as in 0.11.12) and no `color` (the Kokiri tunic
 # green), B's none; both kits' puppet pack made again from this branch (cap.bin with the Goron and Zora trims).
 # Run: tools\autotest\run.ps1 -Runtime hookshot -Lane 1 -Scenario hat-trim-278
 # A and B child in Kakariko by day, then both warp there as adults; A wears the Kokiri, Goron, Zora tunic in turn

@@ -4,8 +4,8 @@
 # rim-185 (row 185 reopened + the same cause in row 278's Cap trim, branch row-185-rim): no grey specks left on
 # the Hylian Shield's frame (child and adult, on the back and drawn) or on the Goron/Zora hood trims, A's own Link
 # and B's puppet of A. Before the run: BOTH kits' puppet pack made again from this branch (region.bin, cap.bin with
-# the Goron/Zora trims); A's lane1-A coop-options.ini: look_hylian_frame = #E06020, look_cap_trim = #E0E020, no
-# color (B's none). Run: offline/row-185-rim/rim-185-run.ps1 (unattended).
+# the Goron/Zora trims); A's lane1-A coop-options.ini: look_hylian_frame = #E06020, look_cap_trim = #E0E020,
+# look_cap_trim_hoods = on (C4-4), no color (B's none). Run: offline/row-185-rim/rim-185-run.ps1 (unattended).
 # PASS (shots, both games): a-adult-back / a-adult-walk / a-adult-back and B's b-adult-back / b-adult-back: the frame
 #   one even orange on the back, no grey dots; a-adult-drawn / a-adult-drawn and b-adult-drawn / b-adult-drawn: the
 #   same in hand (front: the Triforce stays gold); a-adult-goron / b-adult-goron: the Goron hood's trims even yellow

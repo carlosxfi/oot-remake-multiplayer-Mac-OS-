@@ -64,10 +64,16 @@ enum class Part : std::uint8_t {
     char_cloth2 = 23,
     char_cloth3 = 24,
     char_gear = 25,       // the equipment shown (unset) or hidden (kGearHidden)
+    // C4-4 (owner 2026-11-26: a 0.11.12 look shows as in 0.11.12): the Cap trim on the Goron and Zora tunics' hoods
+    // too (row 278), only when asked: off (unset, as 0.11.12: those hoods' trims follow their tunic) or on (kOn).
+    // A switch, not a colour: the colour is cap_trim's. A kit before it passes it over (its hoods stay as 0.11.12).
+    cap_trim_hoods = 26,
 };
-inline constexpr std::size_t kParts = 26;
+inline constexpr std::size_t kParts = 27;
 // char_gear's value when the equipment is hidden (any set value hides it; the settings say "hidden").
 inline constexpr std::uint32_t kGearHidden = 1;
+// cap_trim_hoods' value when it is on (any set value is on; the settings say "on").
+inline constexpr std::uint32_t kOn = 1;
 // A character's part (char_hair .. char_gear): on the Character page only, never on a Link model.
 inline constexpr bool IsCharacterPart(Part p) {
     return static_cast<std::uint8_t>(p) >= static_cast<std::uint8_t>(Part::char_hair) &&

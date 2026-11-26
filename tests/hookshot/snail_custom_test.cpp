@@ -35,15 +35,18 @@ TEST_CASE("snail customize: his six options show co-op's parts, ZL / ZR step the
     CHECK(t.title == "Link (page 1 of 4)  Y: page  A: Fine-tune");
     CHECK(t.labels[0] == "Eye Colour");
     CHECK(t.labels[1] == "Kokiri Tunic");
-    CHECK(t.labels[3] == "Goron Tunic");   // (his right column)
-    CHECK(t.labels[4] == "Zora Tunic");
-    CHECK(t.labels[5].empty());
-    CHECK(t.values[4] == "Red");   // (capitalised as his own values: the UI gate, review-ui-tabs-0119-4)
+    CHECK(t.labels[2] == "Cap Trim");
+    CHECK(t.labels[3] == "Cap Trim on Hoods");   // (his right column; C4-4: off, as 0.11.12)
+    CHECK(t.values[3] == "Off");
+    CHECK(t.labels[4] == "Goron Tunic");
+    CHECK(t.labels[5] == "Zora Tunic");
+    CHECK(t.values[5] == "Red");   // (capitalised as his own values: the UI gate, review-ui-tabs-0119-4)
     CHECK(t.values[1] == "Default");
-    // The d-pad is his (his marker moves); co-op follows: right to Goron Tunic, down to Zora Tunic.
+    // The d-pad is his (his marker moves); co-op follows: right to Cap Trim on Hoods, down twice to Zora Tunic.
     CHECK(d.Pad(kRight) == kRight);
     CHECK(d.Pad(kDown) == kDown);
-    CHECK(d.Focus() == 4);
+    CHECK(d.Pad(kDown) == kDown);
+    CHECK(d.Focus() == 5);
     // ZR: Zora Tunic to the next preset; never his (his option Int stays 0).
     CHECK(d.Pad(kZR) == 0);
     const auto change = d.TakeChange();
@@ -158,14 +161,15 @@ TEST_CASE("snail customize: his screen's texts in the game's language, as co-op'
     CHECK(t.labels[0] == CoopI18n::Tr(hans, "Eye Colour"));
     CHECK(t.labels[0] != "Eye Colour");
     CHECK(t.labels[1] == CoopI18n::Tr(hans, "Kokiri Tunic"));
-    CHECK(t.values[4] == CoopI18n::Tr(hans, "red"));
-    CHECK(t.values[4] != "red");
-    CHECK(t.values[4] != CoopI18n::Tr(hans, "Red"));   // (capitalised after the table: the colour, not a colour's red part)
+    CHECK(t.values[5] == CoopI18n::Tr(hans, "red"));
+    CHECK(t.values[5] != "red");
+    CHECK(t.values[5] != CoopI18n::Tr(hans, "Red"));   // (capitalised after the table: the colour, not a colour's red part)
     CHECK(t.values[1] == CoopI18n::Tr(hans, "Default"));
-    CHECK(t.values[3] == d.Shown(nullptr).values[3]);   // (#123456 stays)
+    CHECK(t.values[3] == CoopI18n::Tr(hans, "Off"));   // (C4-4's switch: its value in the table)
+    CHECK(t.values[4] == d.Shown(nullptr).values[4]);   // (#123456 stays)
     // English (no table): the same texts as before.
     CHECK(d.Shown(nullptr).title == "Link (page 1 of 4)  Y: page  A: Fine-tune");
-    CHECK(d.Shown(nullptr).values[4] == "Red");
+    CHECK(d.Shown(nullptr).values[5] == "Red");
 }
 
 TEST_CASE("snail customize: values capitalised as his own (Red next to Default), the rest unchanged") {

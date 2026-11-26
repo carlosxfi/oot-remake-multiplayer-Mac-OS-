@@ -50,6 +50,7 @@ std::uint32_t GameColour(Part part) {
     case Part::char_cloth2:
     case Part::char_cloth3: return 0x808080;
     case Part::char_gear: return 0x000000;
+    case Part::cap_trim_hoods: return 0x000000;   // (a switch: never a colour)
     }
     return 0x808080;
 }
@@ -86,6 +87,8 @@ const char* Note(Part part) {
     case Part::char_cloth3:
         return "A part of your character's clothes, in one of seven colours. The other players see it too.";
     case Part::char_gear: return "Your character's sword, shield and other gear shown or hidden.";
+    case Part::cap_trim_hoods:
+        return "On: the Cap trim's colour on the Goron and Zora tunics' hood trims too. Off: those trims keep their tunic's colour.";
     }
     return "";
 }
@@ -95,13 +98,15 @@ const char* Unset(Part part) { return part == Part::cap_trim ? "Same as tunic" :
 
 std::string ValueText(Part part, const std::optional<std::uint32_t>& colour) {
     if (part == Part::char_gear) return CoopI18n::Tr(colour ? "Hidden" : "Shown");
+    if (part == Part::cap_trim_hoods) return CoopI18n::Tr(colour ? "On" : "Off");
     return colour ? CoopLook::ColourText(colour) : CoopI18n::Tr(Unset(part));
 }
 
 // npc-customize: a character's clothing rows take the mod's seven palette colours only (CoopLook::kClothPresets),
 // and its Equipment row is shown or hidden; neither opens the mixer.
 bool IsCloth(Part p) { return p == Part::char_cloth1 || p == Part::char_cloth2 || p == Part::char_cloth3; }
-bool PresetOnly(Part p) { return IsCloth(p) || p == Part::char_gear; }
+bool IsSwitch(Part p) { return p == Part::char_gear || p == Part::cap_trim_hoods; }   // (on or off, no colour)
+bool PresetOnly(Part p) { return IsCloth(p) || IsSwitch(p); }
 std::optional<std::uint32_t> NextCloth(const std::optional<std::uint32_t>& colour, int step) {
     const int n = static_cast<int>(CoopLook::kClothPresets.size()) + 1;   // (the game's own first)
     int at = 0;
@@ -275,7 +280,7 @@ const std::vector<Group>& Groups() {
     // (0.11.9: Link's own colours first, his hair and eyes among them)
     static const std::vector<Group> kGroups = {
         // (no Hair row: the lane run showed the hair parameters' tint too weak on Link; never a row that does nothing)
-        {"Link", {Part::eyes, Part::tunic, Part::cap_trim, Part::goron_tunic, Part::zora_tunic}},
+        {"Link", {Part::eyes, Part::tunic, Part::cap_trim, Part::cap_trim_hoods, Part::goron_tunic, Part::zora_tunic}},
         {"Shields", {Part::hylian_frame, Part::hylian_face, Part::hylian_emblem, Part::mirror_rim, Part::mirror_face,
                      Part::deku_shield}},
         {"Swords", {Part::kokiri_blade, Part::kokiri_hilt, Part::master_blade, Part::master_hilt, Part::biggoron_blade,
@@ -292,6 +297,7 @@ std::string PagedName(Part part) {
     switch (part) {
     case Part::tunic: return "Kokiri Tunic";
     case Part::cap_trim: return "Cap Trim";
+    case Part::cap_trim_hoods: return "Cap Trim on Hoods";
     case Part::goron_tunic: return "Goron Tunic";
     case Part::zora_tunic: return "Zora Tunic";
     case Part::boots: return "Boots";
@@ -396,7 +402,7 @@ std::vector<Page::Line> Page::Lines() const {
         // (both go through Tr again by the page's Keep, which changes nothing
         // once they are Chinese).
         const std::string note = CoopI18n::Tr(Note(info.part));
-        const std::string how = CoopI18n::Tr(
+        const std::string how = IsSwitch(info.part) ? CoopI18n::Tr("Left and Right change it.") : CoopI18n::Tr(
             "Left and Right try the colours; Confirm picks any colour of your own. Your Link wears it when you close "
             "the menu. The other players see your gear in this colour, and your tunic in the nearest of the ten tunic colours.");
         out.push_back(
@@ -522,8 +528,10 @@ void Page::Change(std::size_t row, int step) {
     const Line& l = lines[row];
     switch (l.what) {
     case What::kPart:
-        if (l.part == Part::char_gear) {
-            Set(l.part, look_[l.part] ? std::nullopt : std::optional<std::uint32_t>(CoopLook::kGearHidden));
+        if (IsSwitch(l.part)) {   // (kGearHidden and kOn are both 1: any set value is hidden / on)
+            Set(l.part, look_[l.part] ? std::nullopt
+                                      : std::optional<std::uint32_t>(l.part == Part::char_gear ? CoopLook::kGearHidden
+                                                                                              : CoopLook::kOn));
         } else if (IsCloth(l.part)) {
             Set(l.part, NextCloth(look_[l.part], step));
         } else {

@@ -244,13 +244,15 @@ TEST_CASE("look menu (0.11.9): the Character page: three pages of six, ZL and ZR
     start[Part::master_hilt] = *CoopColors::Parse("red");   // (a preset: its name shows)
     page.Open(start);
     auto v = page.view();
-    REQUIRE(v.rows.size() == 6);                    // the heading and five parts: one screen
+    REQUIRE(v.rows.size() == 7);                    // the heading and six parts: one screen (as the Shields page)
     CHECK(v.rows[0].kind == 3);
     CHECK(v.rows[0].name == "Link (page 1 of 4)");
     CHECK(v.rows[1].name == "Eye Colour");
     CHECK(v.rows[2].name == "Kokiri Tunic");
     CHECK(v.rows[3].name == "Cap Trim");
-    CHECK(v.rows[5].name == "Zora Tunic");
+    CHECK(v.rows[4].name == "Cap Trim on Hoods");   // (C4-4: off, as 0.11.12, until asked)
+    CHECK(v.rows[4].value == "Off");
+    CHECK(v.rows[6].name == "Zora Tunic");
     CHECK(v.selected == 1);
     page.Press(Input::kPageNext);
     v = page.view();
@@ -352,4 +354,29 @@ TEST_CASE("look menu (npc-customize): a character other than Link: its own parts
     CHECK(page.view().rows[0].name == "Swords (page 3 of 3)");
     page.SetCharacter(0, true);                     // Link again: every page
     CHECK(page.view().rows[0].name == "Link (page 1 of 4)");
+}
+
+TEST_CASE("look menu (C4-4): Cap Trim on Hoods is a switch, off as 0.11.12, no mixer") {
+    Page page;
+    page.SetPaged(true);
+    page.Open(Look{});
+    page.Select(4);
+    auto v = page.view();
+    REQUIRE(v.rows[4].name == "Cap Trim on Hoods");
+    CHECK(v.rows[4].value == "Off");
+    CHECK_FALSE(page.look()[Part::cap_trim_hoods]);
+    page.Press(Input::kRight);                      // On
+    CHECK(page.look()[Part::cap_trim_hoods] == CoopLook::kOn);
+    CHECK(page.view().rows[4].value == "On");
+    page.Press(Input::kDecide);                     // (no mixer: A steps on) Off again
+    CHECK_FALSE(page.editing());
+    CHECK_FALSE(page.look()[Part::cap_trim_hoods]);
+    page.Press(Input::kLeft);
+    CHECK(page.look()[Part::cap_trim_hoods] == CoopLook::kOn);
+    // The list (not paged) has the row under the Tunic heading, its help a switch's.
+    Page list;
+    list.Open(Look{});
+    const int row = RowOf(list, "Tunic", "Cap trim on hoods");
+    REQUIRE(row >= 0);
+    CHECK(list.view().rows[static_cast<std::size_t>(row)].value == "Off");
 }
