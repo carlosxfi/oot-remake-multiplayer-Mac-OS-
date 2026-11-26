@@ -2186,12 +2186,24 @@ void Frame(void* ctx, int site) {
             static const std::uint32_t loading_hash = coop::host::flag_hash("Sequence_IsLoadingBanc");
             CoopHook::EmulatorMemory memory(g_system.ApplicationMemory(), CoopRuntime::MainBase());
             const bool loading = coop::host::GameFlags(memory).get_bool(loading_hash).value_or(false);
+            const bool was_up = CoopNativeUi::GameUiUp();
             if (CoopNativeUi::SceneLoading() != loading) {
                 LOG_INFO(Core, "coop: native ui: scene load {} (Sequence_IsLoadingBanc): {}", loading ? "began" : "ended",
                          loading ? "no screen's layout is called into until it ends"
                                  : "screens handed out once the game's HUD screen has run");
             }
             CoopNativeUi::SetSceneLoading(loading);
+            // party-hud-crash-c126-6: the title's menu up is no play scene either (a title reached from play by the pause
+            // menu's Title Screen has no scene load: the HUD and panel screens co-op knew are freed under it).
+            static bool title_said = false;
+            const bool title = CoopTitle::Up();
+            if (title != title_said) {
+                title_said = title;
+                LOG_INFO(Core, "coop: native ui: the title's menu is {}", title
+                             ? "up: no play scene, no screen is called into until play is back"
+                             : "gone: screens handed out once the game's HUD screen has run");
+            }
+            CoopNativeUi::SetTitleUp(title);
             const auto menu = CoopMapPage::MenuState();
             std::optional<std::vector<std::uint64_t>> running;
             std::optional<bool> hud_runs;
@@ -2199,12 +2211,11 @@ void Frame(void* ctx, int site) {
                 running.emplace(menu->screens.begin(), menu->screens.begin() + menu->screen_count);
                 hud_runs = menu->HudRuns();
             }
-            const bool was_up = CoopNativeUi::GameUiUp();
             CoopNativeUi::SetRunningScreens(std::move(running), hud_runs);
             if (CoopNativeUi::GameUiUp() != was_up) {
                 LOG_INFO(Core, "coop: native ui: the game's play UI {}", !was_up
                              ? "is up (patch 0018's HUD screen ran since the load): its screens are live"
-                             : "is down (a scene load): only a screen that runs now is live");
+                             : "is down (a scene load or the title): no screen is live");
             }
             static bool said_unknown = false;
             if (!hud_runs && !std::exchange(said_unknown, true)) {
