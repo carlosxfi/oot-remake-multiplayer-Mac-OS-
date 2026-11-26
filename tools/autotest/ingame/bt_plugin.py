@@ -662,6 +662,7 @@ def lane_pair(request):
         pair = P.Pair(games, out_dir=out, refs_dir=os.environ.get("BT_FAKE_REFS", refs))
         pair.lane, pair.info = lane, {"fake": True}
         pair.window_shooter = _fake_window_shooter(lanefake)
+        pair.has_switch = boot_switch_check(config)
         try:
             _module_proof(pair, lane)
             if config.getoption("solo"):
@@ -703,6 +704,7 @@ def lane_pair(request):
         pair.live = _live                       # (Pair.rejoin: live.py quit + relaunch in this session)
         pair.boot = dict(zip(("A", "B"), boot_paths(config.getoption("boot"))))   # (rejoin: the lane's own boot)
         pair.window_shooter = windowshot.Shooter(session)   # (screen-shot.ps1 on the session's game pids)
+        pair.has_switch = boot_switch_check(config)          # (Pair.ocarina_out: the probe switch on this boot)
         _module_proof(pair, lane)               # (before any bridge call: a game with no module refuses the connection)
         for x in pair.c:                        # (a solo pair: A only)
             h = pair.c[x].hello()
@@ -771,6 +773,13 @@ def boot_env(config):
             raise pytest.UsageError("--env %r is not NAME=VALUE, A:NAME=VALUE or B:NAME=VALUE" % e)
         out.append(e.strip())
     return out
+
+
+def boot_switch_check(config):
+    """want -> bool for Pair.has_switch: the boot's switches as the games get them, its A script's '#! switches'
+    header (hookshot.header_switches: they go to both games) then boot_env (an --env of the same name wins, later)."""
+    have = list(boot_identity(config.getoption("boot"))["A"]["switches"]) + boot_env(config)
+    return lambda want: env_has(have, want)
 
 
 def env_has(have, want):

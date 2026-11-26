@@ -145,9 +145,9 @@ AGE_FLAG = "Sequence_IsChildhood"       # 1 child / 0 adult, then the warp (test
 FIELD = "HyruleField_Adult"             # hs-epona-sync.A/B.txt 'warp HyruleField_Adult'
 BOOT = ("KakarikoVillage_Child", "Kakariko_WellSide")   # the default boot (scenarios/live-kakariko-child.A.txt:7)
 WATCH = 10.0                            # hs-epona-sync.A.txt 'place ... # 10 m south'
-# the rows' '#! switches' (hs-epona-seen.A/B.txt), as test_epona.ROW_ENV
-ROW_ENV = ("LICHII_COOP_PUPPET=1", "LICHII_COOP_DEBUG_ANIM=1", "LICHII_COOP_OBJECTS=1")
-OCARINA_OUT = r"ocarina probe: our Link plays the ocarina"          # test_rows.test_ocarina_notes
+# the rows' '#! switches' (hs-epona-seen.A/B.txt), as test_epona.ROW_ENV, + the ocarina probe: the ocarina-out line
+# (pair.OCARINA_PLAYS) is written only with LICHII_COOP_OCARINA_PROBE=1 (coop_objects.cpp:7012 EnvFlag, coop_ocarina.cpp:320; test_songs.ROW_ENV)
+ROW_ENV = ("LICHII_COOP_PUPPET=1", "LICHII_COOP_DEBUG_ANIM=1", "LICHII_COOP_OBJECTS=1", "LICHII_COOP_OCARINA_PROBE=1")
 NOTE_SENT = r"coop: ocarina note \d+ \(Ocarina_%s\) sent"            # test_rows.test_ocarina_notes (coop_ocarina_sound.cpp)
 OUT_FREE = r"coop: ride: our Epona is out with nobody on her"       # coop_ride.cpp:488-491 (hs-epona-seen.B.txt b-free)
 SEEN_HERE = r"coop: ride: P\d+'s Animal_Epona_Adult is here, nobody on her"   # coop_ride.cpp:326-330 (hs-epona-seen.A)
