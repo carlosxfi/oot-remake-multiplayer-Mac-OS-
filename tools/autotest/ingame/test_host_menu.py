@@ -24,7 +24,13 @@ co-op that came with the game's start but is in no game; the player's Host row e
 TestHost must do the same (it checked g_coop_on: refused). On the default boot: B starts again with
 LICHII_COOP_SERVER=127.0.0.1:<a free port> and LICHII_COOP_TEST_HOST=<another free port>:<password>, `menu host`,
 then A starts again on B's host and is welcomed there; the session is put back after. Opt-in: --env OOT_TEST_ROW170=1.
-Needs a module with testhost-170 (715803341); before it, TestHost refuses and the test FAILS at TEST_HOST_ON.
+Needs a module with testhost-170 (715803341); before it, TestHost refuses and the test FAILS at TEST_HOST_ON (the job's
+--expect-commit must contain 715803341).
+Only the Host path is driven. The Join rows on a dead line (JoinPasteNow / JoinLanNow / JoinRoomNow / RejoinNow ->
+Join() EndLauncher) share the same LauncherLive rule but are NOT proven in game here. NOT here either: a shot of B's
+Multiplayer page after the host (Session view hosting, not 'Co-op is on'): no bridge step opens that page without acting
+(TestMenu: host/paste/customize/close/leave; only paste opens kMain, and it joins), so it needs a module `menu main`
+step first (follow-up).
 """
 import json
 import os
@@ -44,9 +50,10 @@ BOOT_B = os.path.join(AUTOTEST, "scenarios", "live-kakariko-child.B.txt")
 HOST_BOOT = "live-kakariko-host"                                            # bt_plugin HOST_IN_GAME_BOOTS
 OPT_IN_170 = "OOT_TEST_ROW170=1"   # (opt-in, as test_lan251/test_rejoin: 4 rejoins; the fakes have no live.py session)
 
-TEST_HOST_ON = r"coop: multiplayer tab: test host on port %d "                     # hookshot/src/coop_pause.cpp:2586
+TEST_HOST_ON = r"coop: multiplayer tab: test host on port %d "    # coop_pause.cpp:2586 (:2588 with testhost-170)
 LISTENING = r"coop: host: test host \(LICHII_COOP_TEST_HOST\): listening on 127\.0\.0\.1 only"   # coop_host_menu.cpp:404
-NOT_HOSTING = r"coop: multiplayer tab: test host: .*not hosting"                  # coop_pause.cpp:2554/2560 (+ testhost-170)
+NOT_HOSTING = r"coop: multiplayer tab: test host: .*not hosting"   # coop_pause.cpp:2554/2560; testhost-170 :2562
+                   # ("... came with the game's start and is in a game: not hosting")
 START_ENDED = r"coop: multiplayer tab: co-op that came with the game's start ended"   # coop_pause.cpp:213
 ANNOUNCED = r"coop: lan: this game is announced on the local network"             # coop_lan_net.cpp:115
 WELCOMED = r"coop: welcomed as player \d+ on "                                    # lichii/hook/coop_hook.cpp:2779

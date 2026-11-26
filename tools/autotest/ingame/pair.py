@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -169,6 +170,7 @@ class Pair:
         self.log = {x: Log(g["log"]) for x, g in games.items()}
         self.session = None    # the live.py session folder (bt_plugin lane_pair sets it; rejoin needs it)
         self.live = None       # live.py runner (args, timeout) -> its JSON answer (bt_plugin lane_pair sets _live)
+        self.boot = {}         # {x: the boot script the lane booted x with} (bt_plugin lane_pair, boot_paths(--boot))
         self.out_dir = out_dir
         self.refs_dir = refs_dir
         self.deadline = Deadline(3600)
@@ -351,33 +353,41 @@ class Pair:
 
     def rejoin(self, x, boot=None, env=()):
         """Game x quits (live.py quit: asked to close, killed after QUIT_WAIT) and starts again into the SAME session
-        (live.py relaunch: its save kept, `boot` = a scenario file played as its boot, e.g. the lane's NAME.B.txt), so
-        it joins the session's server again. The other game runs in real time meanwhile (bridge `resume`, `pause`
-        after): a host held between frames could not answer the rejoiner's save round (docs/flags.md, "The save sent
-        is the host's game now"). Afterwards game x has a NEW bridge client (same port: relaunch_argv keeps the
-        session's playtest ports) and its log is read from the new game-out file's first line (relaunch keeps the old
-        one beside it as game-out-X.txt.N). `env` (K=V each) is for this start of game x only (live.py relaunch --env,
-        after the session's own: it wins; row 251: LICHII_COOP_SERVER=<LAN IP>:<port>, LICHII_COOP_PASSWORD=); the next
-        rejoin without it starts game x with the session's own env again. Returns live.py relaunch's answer;
-        AssertionError if a step did not hold."""
+        (live.py relaunch: its save kept, `boot` = a scenario file played as its boot; default the one the lane booted
+        x with, Pair.boot), so it joins the session's server again. A boot script takes the title itself, so it goes
+        with --no-load, as the lane's own boot (bt_plugin boot_args): never the loader's A presses before the script.
+        The other game runs in real time meanwhile (bridge `resume`, `pause` after): a host held between frames could
+        not answer the rejoiner's save round (docs/flags.md, "The save sent is the host's game now").
+        Afterwards game x has a NEW bridge client (same port: relaunch_argv keeps the session's playtest ports) and its
+        log is read from the new game-out file's first line (relaunch keeps the old one beside it as game-out-X.txt.N).
+        A hung quit/relaunch (_live's subprocess timeout) is an AssertionError naming the step. `env` (K=V each) is for
+        this start of game x only (live.py relaunch --env, after the session's own: it wins; row 251:
+        LICHII_COOP_SERVER=<LAN IP>:<port>, LICHII_COOP_PASSWORD=); the next rejoin without it starts game x with the
+        session's own env again. Returns live.py relaunch's answer; AssertionError if a step did not hold."""
         if not (self.session and self.live):
             raise SetupFail("rejoin %s: no live.py session (Pair.session / Pair.live) for live.py quit/relaunch" % x)
         live = self.live
+        boot = boot or self.boot.get(x)
         others = [y for y in self.c if y != x]
         self.c[x].close()
         for y in others:
             self.c[y].resume()
         try:
+            step = "quit"
             self.deadline.check("rejoin quit")
             q = live(["quit", "--session", self.session, x],
                      timeout=max(1.0, min(self.REJOIN_QUIT_S, self.deadline.left())))
             assert q.get("player") == x and not q.get("error"), "%s: live.py quit: %s" % (x, q)
-            args = ["relaunch", "--session", self.session, x] + (["--boot", boot] if boot else [])
+            args = ["relaunch", "--session", self.session, x] + (["--boot", boot, "--no-load"] if boot else [])
             for kv in env:
                 args.append("--env=%s" % kv)     # (one token: an empty value 'K=' stays one argument)
+            step = "relaunch"
             self.deadline.check("rejoin relaunch")
             r = live(args, timeout=max(1.0, min(self.REJOIN_BOOT_S, self.deadline.left())))
             assert r.get("ok"), "%s: live.py relaunch: %s" % (x, r)
+        except subprocess.TimeoutExpired as e:   # (a hung quit/relaunch: a FAIL with its step, never a raw error)
+            raise AssertionError("%s: live.py %s did not answer in %s s (game %s may be down)"
+                                 % (x, step, e.timeout, x))
         finally:
             for y in others:
                 self.c[y].pause()

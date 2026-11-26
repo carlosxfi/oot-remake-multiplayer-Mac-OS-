@@ -65,7 +65,8 @@ class Rejoin(unittest.TestCase):
         r = self.pair.rejoin("B", boot="boot.B.txt")
         self.assertTrue(r["ok"])
         self.assertEqual([x[0] for x in self.asked], [["quit", "--session", self.tmp, "B"],
-                                                     ["relaunch", "--session", self.tmp, "B", "--boot", "boot.B.txt"]])
+                                                     ["relaunch", "--session", self.tmp, "B", "--boot", "boot.B.txt",
+                                                      "--no-load"]])
         self.assertTrue(old_b.closed)
         self.assertIsNot(self.pair.c["B"], old_b)
         self.assertEqual(self.pair.c["B"].port, old_b.port)
@@ -90,6 +91,37 @@ class Rejoin(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.pair.rejoin("B")
         self.assertEqual([x[0][0] for x in self.asked], ["quit"])
+
+    def test_default_boot_is_the_lanes_own_with_no_load(self):
+        # review-c123-11: the lane boots with --no-load (bt_plugin boot_args); the rejoin replays the lane's own boot
+        self.pair.live = self.live({"quit": {"player": "B", "how": "quit asked"}, "relaunch": {"ok": True, "boot": "played"}})
+        self.pair.boot = {"A": "lane.A.txt", "B": "lane.B.txt"}
+        self.pair.begin(600)
+        self.pair.rejoin("B")
+        self.assertEqual(self.asked[1][0], ["relaunch", "--session", self.tmp, "B", "--boot", "lane.B.txt", "--no-load"])
+
+    def test_no_boot_relaunch_has_no_no_load(self):
+        # (no boot script: the loader takes the title, so no --no-load)
+        self.pair.live = self.live({"quit": {"player": "B", "how": "quit asked"}, "relaunch": {"ok": True, "boot": "played"}})
+        self.pair.begin(600)
+        self.pair.rejoin("B")
+        self.assertEqual(self.asked[1][0], ["relaunch", "--session", self.tmp, "B"])
+
+    def test_a_hung_relaunch_is_a_labelled_fail(self):
+        import subprocess
+
+        def hung(args, timeout):
+            self.asked.append((args, timeout))
+            if args[0] == "relaunch":
+                raise subprocess.TimeoutExpired(args, timeout)
+            return {"player": "B", "how": "quit asked"}
+        self.pair.live = hung
+        a = self.pair.c["A"]
+        self.pair.begin(600)
+        with self.assertRaises(AssertionError) as e:
+            self.pair.rejoin("B")
+        self.assertIn("live.py relaunch did not answer", str(e.exception))
+        self.assertEqual(a.calls, ["resume", "pause"])
 
     def test_no_session_is_setup_fail(self):
         self.pair.session = None
