@@ -519,11 +519,11 @@ void DrawCheats(const HosCoopDraw& d, const CheatsView& c) {
 
 // The others on the maps (MapShown): on the Map page's picture while it is
 // shown, else on the HUD minimap while the game shows it (where the game's
-// own minimap panes are this frame: CoopMapPage::Minimap). An
-// arrow each in their colour, turned the way they face (a dot when that is
-// not known), on a dark rim; a player off the map is held at its edge, a
+// own minimap panes are this frame: CoopMapPage::Minimap). The game's own
+// map arrow each (Look::map_arrow, from the pack), turned the way they face,
+// its inside in their colour; a player off the map is held at its edge, a
 // little paler, and one on another floor paler still. Their name under the
-// icon when the names are on. Our own Link is the game's arrow.
+// arrow (alone where they are without one). Our own Link is the game's arrow.
 void DrawMap(const HosCoopDraw& d, const MapShown& m, const Look* look) {
     namespace map = coop::overlay::map;
     static thread_local std::vector<map::Icon> icons;  // (the present's thread: kept between frames)
@@ -558,9 +558,17 @@ void DrawMap(const HosCoopDraw& d, const MapShown& m, const Look* look) {
         }
         const std::uint32_t rgb = icon.rgb;
         const std::uint32_t fill = Rgba(static_cast<int>(rgb >> 16), static_cast<int>(rgb >> 8), static_cast<int>(rgb), a);
-        // No shapes (the owner's UI rule, as the name tags' B3 in reports/ui-audit-01112.md): no dot and no edge arrow,
-        // the player's name in their colour where the dot was (a player past the map's edge: at the edge, dimmer).
-        // With names off on the maps, "P<n>" marks them.
+        // The game's own map arrow (Link's, from the pack: no drawn shapes, the owner's UI rule) turned the way the
+        // player faces, its inside in their colour, the name under it; a player past the map's edge at the edge,
+        // dimmer. No facing known yet, or a pack without the arrow: the name alone where they are. With names off on
+        // the maps, "P<n>" names them.
+        const bool arrow = look != nullptr && icon.angle && look->MapArrows() && d.draw_image_turned != nullptr;
+        if (arrow) {
+            const float turn = MapArrowTurn(*icon.angle);
+            const float half = r * 1.85f;   // (the picture's 80 px hold the arrow's ~52 across any turn)
+            d.draw_image_turned(d.user, look->map_arrow, icon.x, icon.y, half, half, turn, Rgba(255, 255, 255, a));
+            d.draw_image_turned(d.user, look->map_arrow_fill, icon.x, icon.y, half, half, turn, fill);
+        }
         std::size_t at = 0;
         while (at < m.players.size() && m.players[at].number != icon.number) {
             ++at;
@@ -573,7 +581,7 @@ void DrawMap(const HosCoopDraw& d, const MapShown& m, const Look* look) {
         label += FloorWords(icon.floor_delta);
         const float tw = d.text_width(d.user, px, label.c_str());
         const float x = std::clamp(icon.x - tw / 2, 2.0f, std::max(2.0f, d.width - tw - 2.0f));
-        const float y = std::clamp(icon.y - px / 2, 2.0f, std::max(2.0f, d.height - px - 2.0f));
+        const float y = std::clamp(arrow ? icon.y + r * 1.3f : icon.y - px / 2, 2.0f, std::max(2.0f, d.height - px - 2.0f));
         if (look) {
             GameText(d, x, y, px, fill, label.c_str());
         } else {
@@ -588,6 +596,12 @@ coop::overlay::map::Box LayoutToScreen(const coop::overlay::map::Box& b, float w
     const float s = std::min(width / kLayoutW, height / kLayoutH);
     const float ox = (width - kLayoutW * s) / 2, oy = (height - kLayoutH * s) / 2;
     return {ox + b.x * s, oy + b.y * s, b.w * s, b.h * s};
+}
+
+float MapArrowTurn(float angle) {
+    constexpr float kTwoPi = 6.28318530718f;
+    const float turn = std::fmod(angle + kTwoPi / 4, kTwoPi);   // clockwise from up
+    return turn < 0 ? turn + kTwoPi : turn;
 }
 
 std::string FloorWords(int delta) {

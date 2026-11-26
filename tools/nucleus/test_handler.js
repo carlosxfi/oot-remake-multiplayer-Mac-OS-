@@ -136,7 +136,7 @@ for (var i = 0; i < 3; i++) {
     instances[i] = fso.BuildPath(root, "content\\OoTCoopLongshot\\Instance" + i);
     mkdirs(instances[i]);
     writeFile(fso.BuildPath(instances[i], "longshot_options.ini"),
-              "fullscreen=1\r\nvsync=0\r\ndiscord_status=1\r\nmouse_camera=1\r\n");
+              "fullscreen=1\r\nvsync=0\r\ndiscord_status=1\r\nmouse_camera=1\r\nframe_rate_cap=2\r\n");
 }
 // The game's logs, which an older handler's instance folders linked (instance 0): the link goes, the logs stay.
 // Instance 2 has its own logs folder already: kept.
@@ -285,8 +285,8 @@ var o3 = readFile(fso.BuildPath(instances[2], "coop-player.ini"));
 for (var oi = 0; oi < 3; oi++) {
     check(!fso.FileExists(fso.BuildPath(instances[oi], "coop-options.ini")), "instance " + oi + ": no copy of the options");
     check(readFile(fso.BuildPath(instances[oi], "coop-kit.txt")) === kit + "\r\n", "instance " + oi + ": coop-kit.txt names the kit");
-    check(readFile(fso.BuildPath(instances[oi], "longshot_options.ini")).indexOf("frame_rate_cap=-1") >= 0,
-          "instance " + oi + ": the steady 30 FPS cap");
+    check(readFile(fso.BuildPath(instances[oi], "longshot_options.ini")).indexOf("frame_rate_cap=2\r\n") >= 0,
+          "instance " + oi + ": no local_fps, no cap of ours (the player's own, uncapped as 0.11.12)");
 }
 check(o1.indexOf("LICHII_COOP_PAD=2\r\n") >= 0 && o1.indexOf("LICHII_COOP_KEYBOARD=off") >= 0, "player 1 pad 2: " + o1);
 check(o1.indexOf("color = red") >= 0, "player 1 takes the kit's colour: " + o1);
@@ -646,6 +646,10 @@ writeFile(kitOptions, kitOptionsText + "local_fps = 60\r\n");
 newSession();
 playAs(1);
 check(readFile(fso.BuildPath(instances[1], "longshot_options.ini")).indexOf("frame_rate_cap=0") >= 0, "local_fps = 60");
+writeFile(kitOptions, kitOptionsText + "local_fps = 30\r\n");
+newSession();
+playAs(1);
+check(readFile(fso.BuildPath(instances[1], "longshot_options.ini")).indexOf("frame_rate_cap=-1") >= 0, "local_fps = 30");
 writeFile(kitOptions, kitOptionsText);
 
 // Clean up: the links first (rmdir removes a link, not what it names), then the rest.

@@ -4,6 +4,7 @@
 """
 import json
 import os
+import re
 import shutil
 import struct
 import sys
@@ -266,6 +267,47 @@ class BuildTest(unittest.TestCase):
         self.make_game(with_hearts=False)
         with self.assertRaises(hud.HudError):
             hud.build(hud.DirReader(self.romfs), self.out, log=lambda *_: None)
+
+    def test_no_map_arrow_pictures_names_only(self):
+        self.make_game()
+        made = hud.build(hud.DirReader(self.romfs), self.out, log=lambda *_: None)
+        self.assertEqual(made["map_arrows"], 0)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "map-arrow.png")))
+
+    def test_map_arrows_from_the_game_picture(self):
+        self.make_game()
+        full = swizzle(b"".join(bc4(255, 255, [0] * 16) for _ in range(4)), 16, 2, 0)
+        tex = [(n, 0x1D01, 8, 8, 0, full, (2, 2, 2, 2)) for n in hud.TEXTURES + hud.MAP_ARROW_TEXTURES]
+        self.write("UI/Layout2Archive/Common.Product.100.Nin_Ounce_NVN2.bntx.zs", make_bntx(tex))
+        made = hud.build(hud.DirReader(self.romfs), self.out, log=lambda *_: None)
+        self.assertEqual(made["map_arrows"], 1)
+        for name in hud.MAP_ARROW_FILES:
+            self.assertTrue(os.path.getsize(os.path.join(self.out, name)) > 60, name)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "map-arrow-00.png")))   # (no turned copies)
+
+    def test_map_arrow_files_are_the_modules(self):
+        # One pair of names for both: the module loads these (hookshot/src/coop_hookshot.cpp LoadLook), the pack writes
+        # them; and the module's pictures fit Hookshot's 64 (coop_draw.h Look::kPictures, 0001-coop-bridge.patch image()).
+        src = os.path.join(os.path.dirname(__file__), "..", "..", "..", "hookshot", "src")
+        with open(os.path.join(src, "coop_hookshot.cpp"), encoding="utf-8") as f:
+            module = f.read()
+        for name in hud.MAP_ARROW_FILES:
+            self.assertIn('"' + name + '"', module)
+        with open(os.path.join(src, "coop_draw.h"), encoding="utf-8") as f:
+            m = re.search(r"kPictures = 5 \+ (\d+);", f.read())
+        self.assertIsNotNone(m)
+        self.assertEqual(int(m.group(1)), len(hud.MAP_ARROW_FILES))
+
+    def test_map_arrow_rim_and_inside_from_the_mask(self):
+        # 2 x 1: a white (rim) pixel and a black (inside) pixel, both opaque; Link's arrow: cream rim, red inside.
+        px = {hud.MAP_ARROW: bytes((255, 255, 255, 255, 0, 0, 0, 255)),
+              hud.MAP_ARROW_LINK: bytes((250, 220, 180, 255, 170, 0, 0, 255)),
+              hud.MAP_ARROW_SHADOW: bytes(8)}
+        rim, inside = hud.compose_map_arrow(px, 2, 1)
+        self.assertEqual(rim[0:4], bytes((250, 220, 180, 255)))   # the rim as Link's
+        self.assertEqual(rim[7], 0)                                # no rim inside
+        self.assertEqual(inside[3], 0)                             # no inside on the rim
+        self.assertEqual(inside[4:8], bytes((255, 255, 255, 255)))  # the inside white: the player's colour tints it
 
     def test_compose_hearts_fills_by_quarters(self):
         w = h = 2

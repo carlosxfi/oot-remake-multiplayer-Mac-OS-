@@ -809,15 +809,19 @@ Game.Play = function () {
     // Longshot's own options: in a window (Nucleus places it), no Discord status from every copy. A controller
     // player's camera is its pad's: Mouse camera "As the stick" (0), not Native (1), whose last mouse angles would be
     // put back over the right stick each frame (patch 0015 keeps a game with no mouse out of it as well). A keyboard
-    // player keeps its own choice. The frame cap: every split-screen game at the same steady one (coop-options.ini
-    // local_fps = 30, the default, or 60), as the kit's own local co-op (scripts\local-coop.ps1): two to four games want
-    // more than one PC gives, and Windows hands the window in front the bigger share, so the others got uneven leftovers
-    // and looked choppy (row 83 / #245). Longshot's own cap row, frame_rate_cap: -1 its 30 FPS cap, 0 the console's 60.
+    // player keeps its own choice. The frame cap: the player's own (uncapped, as up to 0.11.12) unless coop-options.ini
+    // local_fps = 30 or 60 gives every split-screen game the same steady one, as the kit's own local co-op
+    // (scripts\local-coop.ps1): on a weak PC two to four games want more than it gives, and Windows hands the window in
+    // front the bigger share, so the others get uneven leftovers and look choppy (row 83 / #245). Longshot's own cap
+    // row, frame_rate_cap: -1 its 30 FPS cap, 0 the console's 60.
     var lsOptions = coopPath(inst, "longshot_options.ini");
     if (System.IO.File.Exists(lsOptions)) {
         var o = coopSetKey(coopRead(lsOptions), "fullscreen", "0");
         o = coopSetKey(o, "discord_status", "0");
-        o = coopSetKey(o, "frame_rate_cap", coopGetKey(kitOptions, "local_fps") === "60" ? "0" : "-1");
+        var localFps = coopGetKey(kitOptions, "local_fps");
+        if (localFps === "30" || localFps === "60") {
+            o = coopSetKey(o, "frame_rate_cap", localFps === "60" ? "0" : "-1");
+        }
         if (!Context.IsKeyboardPlayer) {
             o = coopSetKey(o, "mouse_camera", "0");
         }

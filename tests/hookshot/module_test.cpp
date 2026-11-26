@@ -415,10 +415,17 @@ TEST_CASE("hookshot: co-op draws over the picture through Hookshot's ImGui (chat
     CHECK(module.find("COOP_HOOKSHOT_EXPORT void hos_coop_draw(const HosCoopDraw* d)") != std::string::npos);
     // The game look: the renderer prefers hos_coop_draw2 and hands it the font and picture calls; the module has it.
     CHECK(vk.find("\"hos_coop_draw2\"") != std::string::npos);
-    CHECK(vk.find("font_load, use_font, image, draw_image}") != std::string::npos);
+    CHECK(vk.find("font_load, use_font,") != std::string::npos);
     CHECK(vk.find("AddFontFromFileTTF") != std::string::npos);
     CHECK(vk.find("ImGui::RegisterUserTexture(t)") != std::string::npos);
     CHECK(module.find("COOP_HOOKSHOT_EXPORT void hos_coop_draw2(const HosCoopDraw* d)") != std::string::npos);
+    // Pictures turned natively (the maps' player arrows at any angle): hos_coop_draw3 first, its table with
+    // draw_image_turned (ImGui's AddImageQuad); the module has it and keeps hos_coop_draw2 for an older Hookshot.
+    CHECK(vk.find("\"hos_coop_draw3\"") != std::string::npos);
+    CHECK(vk.find("image, draw_image, draw_image_turned}") != std::string::npos);
+    CHECK(vk.find("if (const auto d3 = draw3_fn.load(std::memory_order_acquire)) d3(&c);") != std::string::npos);
+    CHECK(vk.find("AddImageQuad") != std::string::npos);
+    CHECK(module.find("COOP_HOOKSHOT_EXPORT void hos_coop_draw3(const HosCoopDraw* d)") != std::string::npos);
 }
 
 TEST_CASE("hookshot: the chat box gets Hookshot's keys first, and the game none while it types") {
