@@ -2252,13 +2252,33 @@ TEST_CASE("pause tab: the Settings page's list: a category's settings, its pages
     CHECK(lines[1].name == "Graphics 6");
     CHECK(lines[4].name == "Aspect ratio (restart)");   // (a restart one: says so in words)
     CHECK(lines[5].name.empty());
-    {   // a long name gives way to the tag: "(restart)" stays whole within the name box
+    CHECK(lines[4].name_tail == " (restart)");   // (kept whole by the module's width fit)
+    CHECK(lines[4].name_brief == " *");
+    CHECK(lines[1].name_tail.empty());           // (not a restart one: no tag)
+    {   // a long name keeps 0.11.12's room beside the tag (28), the tag on top, within the live text's bytes
         SettingRow longer = res;
         longer.key = "long", longer.name = "A very long setting name that cannot fit its box", longer.tab = "Audio";
         const auto row = SettingLines(SettingsOf(std::vector<SettingRow>{longer}, 1), 0, "Audio");
-        CHECK(row[1].name.size() <= kListNameChars);
-        CHECK(row[1].name.size() >= 9);
-        CHECK(row[1].name.substr(row[1].name.size() - 9) == "(restart)");
+        CHECK(row[1].name == CoopTextFit::Fit(longer.name, kListNameChars - 2) + " (restart)");
+        CHECK(row[1].name.size() < kListTextBytes);
+    }
+    // menu-restart-c41 (regression C4-1): every restart row of Longshot 3.2 (gpu/vk/menu/*.cpp, ".restart = true")
+    // that 0.11.12 showed whole ("name *" fitted to kListNameChars) shows its whole name in 0.11.13: with " (restart)"
+    // when the pane holds both, else 0.11.12's own text (the brief tag), the cut only past what 0.11.12 showed.
+    for (const char* n : {"Speaker layout", "Button prompts", "Skip title screen", "GPU device", "Robust buffers",
+                          "ASTC as RGBA8", "Intel shader compiles", "Game language", "Aspect ratio", "Output resolution",
+                          "Profile", "Threaded rendering", "Present queue"}) {
+        SettingRow r = res;
+        r.key = n, r.name = n, r.tab = "Audio";
+        const ListLine l = SettingLines(SettingsOf(std::vector<SettingRow>{r}, 1), 0, "Audio")[1];
+        CHECK_MESSAGE(l.name == std::string(n) + " (restart)", n);
+        CHECK_MESSAGE(CoopTextFit::FitShown(l.name, l.name_tail, l.name_brief, true, 0) ==
+                          CoopTextFit::Fit(std::string(n) + " *", kListNameChars), n);   // (0.11.12's row, exactly)
+        CHECK(l.name.size() < kListTextBytes);
+    }
+    {   // the header's page arrows are its tail, kept whole as well
+        CHECK(SettingLines(graphics, 0, "Graphics")[0].name_tail == "  < 1 of 2 >");
+        CHECK(SettingLines(SettingsOf(all, 1), 0, "Audio")[0].name_tail.empty());
     }
     CHECK(SettingLines(SettingsOf(all, 1), 0, "Audio")[0].name == "Audio");   // (one page: no page shown)
 

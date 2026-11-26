@@ -53,6 +53,8 @@ TEST_CASE("list pages: a heading keeps its page line whole, a long name gives wa
     const std::string line = Line(1, 3);
     CHECK(Heading("Public games", "", 30) == "Public games");
     CHECK(Heading("Public games", line, 30) == "Public games  " + line);   // (the - menu's list: it fits)
+    CHECK(Tail(line) == "  " + line);   // (the end the width fit keeps whole: ListLine::name_tail)
+    CHECK(Tail("").empty());
     const std::string cut = Heading("A very long list name for this", line, 30);
     CHECK(cut.size() <= 30u);
     CHECK(CoopTextFit::Halves(cut) <= 60u);
