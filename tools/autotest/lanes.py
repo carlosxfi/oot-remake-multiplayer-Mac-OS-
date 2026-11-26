@@ -272,6 +272,13 @@ def nocs(n, tree=None, dry=False, say=print, kit=None, busy=running_in, pack=mak
                    % (n, commit[:8]))
     leave_rel = {os.path.normcase(os.path.join("mods", CS_MOD)), os.path.normcase(os.path.join("mods", "_" + CS_MOD + ".prev")),
                  os.path.normcase(hs.PACK_DIR), os.path.normcase(SERVER_TXT)}   # (lane B's own: never taken)
+    tp, ts = _test_state()
+    leave_rel |= {os.path.normcase(x) for x in (tp.MANIFEST, tp.KEPT, ts.MANIFEST, ts.KEPT)}
+    if tests_left(src):
+        raise Fail("%s has a test run's %s still in (its pack or saves are not lane B's own): lanes.py install, or a "
+                   "bridge boot, undoes it first" % (src, ", ".join(tests_left(src))))
+    if not dry and os.path.isdir(dst):
+        undo_tests(dst, say)
     leave = lambda rel: os.path.normcase(rel) in leave_rel
     say("nocs: %s -> %s (module %s, tools %s)%s" % (src, dst, commit[:8], tree, " (dry run)" if dry else ""))
     if not dry:
@@ -356,6 +363,10 @@ def problems(n, kit=None, now=None, busy=running_in):
             if os.path.exists(os.path.join(os.path.dirname(hs.find_exe(folder)), MODULE + m)) and not busy(folder):
                 out.append("%s: a live session's module was not put back (%s%s, no game running): lanes.py restore "
                            "--lane %d" % (folder, MODULE, m, n))
+        for m in tests_left(folder):
+            if not busy(folder):
+                out.append("%s: a test run's %s is still in (no game running): lanes.py install undoes it, or the next"
+                           " bridge boot" % (folder, m))
         if not os.path.isfile(os.path.join(hs.warm_dir(folder), "longshot_pipelines.bin.built")):
             out.append("%s: not warmed (no longshot_pipelines.bin.built: the first start prepares every shader)" % folder)
         for top, dirs, files in os.walk(folder):
@@ -376,6 +387,30 @@ def problems(n, kit=None, now=None, busy=running_in):
     return out
 
 
+# --- a test's pack files or save profile left in a lane (bt_plugin --pack / --save of a run that died) ------------
+
+def _test_state():
+    sys.path.insert(0, os.path.join(HERE, "ingame"))
+    import testpack
+    import testsave
+    return testpack, testsave
+
+
+def tests_left(folder):
+    """The manifests a bt_plugin run left in a game folder (a pack or a save profile still in)."""
+    tp, ts = _test_state()
+    return [m for m in (tp.MANIFEST, ts.MANIFEST) if os.path.exists(os.path.join(folder, m))]
+
+
+def undo_tests(folder, say=print):
+    """A left test pack and save profile out of a game folder (testpack.undo / testsave.undo: the lane as it was)."""
+    tp, ts = _test_state()
+    try:
+        return tp.undo(folder, say=say) + ts.undo(folder, say=say)
+    except (tp.PackError, ts.SaveProfileError) as e:
+        raise Fail(str(e))
+
+
 # --- install (module only) ---------------------------------------------------------------------------------------
 
 def install(n, dll, dry=False, say=print, kit=None, busy=running_in):
@@ -392,6 +427,7 @@ def install(n, dll, dry=False, say=print, kit=None, busy=running_in):
         dst = os.path.join(os.path.dirname(exe), "hookshot_coop.dll")
         say("copy %s -> %s" % (dll, dst))
         if not dry:
+            undo_tests(folder, say)   # (review-c123-9 11:36 nit c: a lane prep never leaves a test's pack or save in)
             _put(dll, dst)
             drop_swap(dst)   # this module is the lane's own now: a session's leftover backup must never come back
 

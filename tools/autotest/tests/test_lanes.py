@@ -143,6 +143,29 @@ class Fill(Base):
         with self.assertRaises(lanes.Fail):
             lanes.install(2, dll, say=self.say, kit=self.kit, busy=lambda f: ["running"])
 
+    def test_install_and_check_undo_or_report_a_left_test_pack_and_save(self):
+        """review-c123-9 11:36 nit c: a lane prep (lanes.py install) never leaves a dead run's pack or save in;
+        lanes.py check names one."""
+        tp, ts = lanes._test_state()
+        L = lanes.setup(2, self.game("A1"), self.game("B1"), say=self.say, kit=self.kit, busy=self.idle)
+        hud = os.path.join(L["a"], tp.PACK_REL, "coop_hud")
+        write(os.path.join(hud, "heart.png"), "own")
+        src = os.path.join(self.tmp, "heart.png")
+        write(src, "test")
+        tp.put_in([L["a"]], {"p": {"coop_hud/heart.png": src}}, say=self.say)
+        write(os.path.join(L["b"], ts.MANIFEST), json.dumps({"profile": "x", "files": ["autotest-save/account.sav"]}))
+        write(os.path.join(L["b"], ts.KEPT, "autotest-save", "account.sav"), "baseline")
+        write(os.path.join(L["b"], "autotest-save", "account.sav"), "profile")
+        ps = lanes.problems(2, self.kit, busy=self.idle)
+        self.assertTrue(any("coop-test-pack.json is still in" in p for p in ps), ps)
+        self.assertTrue(any("coop-test-save.json is still in" in p for p in ps), ps)
+        dll = os.path.join(self.tmp, "new", "hookshot_coop.dll")
+        write(dll, "new module")
+        lanes.install(2, dll, say=self.say, kit=self.kit, busy=self.idle)
+        self.assertEqual(read(os.path.join(hud, "heart.png")), "own")
+        self.assertEqual(read(os.path.join(L["b"], "autotest-save", "account.sav")), "baseline")
+        self.assertEqual(lanes.tests_left(L["a"]) + lanes.tests_left(L["b"]), [])
+
 
 class Locks(Base):
     def setUp(self):
@@ -455,6 +478,11 @@ class Nocs(Base):
         self.assertFalse(os.path.exists(self.L["b_nocs"]))
         with self.assertRaisesRegex(lanes.Fail, "a game is running"):
             self.run_nocs(busy=lambda f: ["x"] if f == self.L["b_nocs"] else [])
+
+    def test_a_test_left_in_lane_b_is_refused(self):
+        write(os.path.join(self.L["b"], "coop-test-save.json"), "{\"profile\": \"x\", \"files\": []}")
+        with self.assertRaisesRegex(lanes.Fail, "coop-test-save.json still in"):
+            self.run_nocs()
 
     def test_orphans_cover_the_nocs_game(self):
         procs = lambda folder: [(7, os.path.join(folder, "longshot.exe"))] if folder == self.L["b_nocs"] else []

@@ -32,6 +32,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, AUTOTEST)
 import pair as P   # noqa: E402
 import testpack    # noqa: E402
+import testsave    # noqa: E402
 
 RESULTS = ("PASS", "FAIL", "FLAKY", "SETUP-FAIL", "NO-REF", "SKIP", "NOT-RUN")
 DEFAULT_BUDGET = 120
@@ -86,6 +87,9 @@ def pytest_addoption(parser):
     g.addoption("--pack", action="append", default=[], metavar="NAME[,NAME]", help="pack files for this boot "
                 "(testpack.py: ingame/packs/NAME.py made from the tested sha's tools, put into both lane games' co-op "
                 "pack before the boot, taken out after live.py stop); tests marked needs_pack(NAME) run only with it")
+    g.addoption("--save", default=None, metavar="NAME", help="a save profile for this boot (testsave.py: "
+                "ingame/saves/NAME.py FLAGS set in both lane games' autotest-save before the boot, the baseline put "
+                "back after live.py stop); tests marked needs_save(NAME) run only with it")
     g.addoption("--pack-game", default=None, metavar="NUP", help="the game's .nup for a pack maker (default: the .nup "
                 "beside the kit root, kit_pair.find_game_file; the one lane-game-for.ps1:31 names)")
     g.addoption("--lane-check-only", action="store_true", help="the setup proof of every --lanes lane (lane_check + "
@@ -104,10 +108,18 @@ def pytest_configure(config):
                             "--env lacks them deselects it (named in the output and summary.json 'deselected')")
     config.addinivalue_line("markers", "needs_pack(*NAMES): pack files the test needs (testpack.py); a run whose "
                             "--pack lacks one deselects it")
+    config.addinivalue_line("markers", "needs_save(NAME): the save profile the test needs (testsave.py); a run "
+                            "with another --save, or none, deselects it")
     config._bt_rows, config._bt_deselected, config._bt_pack, config._bt_game_b = [], [], {}, {}
+    config._bt_save = {}
     if config.getoption("lane_check_only") and getattr(config.option, "numprocesses", None):
         raise pytest.UsageError("--lane-check-only runs in one process: leave out -n (it checks every --lanes lane)")
     boot_env(config)        # (a malformed --env stops the run before any boot)
+    if config.getoption("save") and not config.getoption("fake"):
+        try:                # (a bad --save profile too: --lane-check-only shows it; fake runs SETUP-FAIL it per test)
+            testsave.load(config.getoption("save"))
+        except testsave.SaveProfileError as e:
+            raise pytest.UsageError(str(e))
     boot_paths(config.getoption("boot"))   # (an unknown --boot too)
     config._bt_started = time.time()
 
@@ -138,6 +150,8 @@ def pytest_collection_modifyitems(config, items):
 
 
 def _deselect_line(d):
+    if d.get("needs_save"):
+        return "deselected: needs_save %s %s" % (d["needs_save"], d["test"])
     if d.get("needs_pack"):
         return "deselected: needs_pack %s %s" % (" ".join(d["needs_pack"]), d["test"])
     if d.get("needs_boot"):
@@ -160,8 +174,11 @@ def _deselect_needs_env(config, items):
         want = m.args[0] if m else DEFAULT_BOOT
         lack = [e for mk in it.iter_markers("needs_env") for e in mk.args if not env_has(have, e)]
         no_pack = sorted({n for mk in it.iter_markers("needs_pack") for n in mk.args} - packs)
+        ms = it.get_closest_marker("needs_save")
         if want != boot:
             config._bt_deselected.append({"test": it.nodeid, "needs_boot": want, "needs_env": lack})
+        elif ms and ms.args[0] != config.getoption("save"):
+            config._bt_deselected.append({"test": it.nodeid, "needs_save": ms.args[0], "needs_env": lack})
         elif no_pack:
             config._bt_deselected.append({"test": it.nodeid, "needs_pack": no_pack, "needs_env": lack})
         elif lack:
@@ -347,8 +364,14 @@ def _live(args, timeout):
 def _pack_in(config, lane, folders, out, romfs):
     """A test pack left by a run that died is undone first (always, --pack or not: the lane must be as it was);
     then this run's --pack files go into both games. config._bt_pack = {name: {rel: sha256}} (summary identity)."""
+    err = lambda m: print(m, file=sys.stderr, flush=True)
     for f in folders:
-        testpack.undo(f, say=lambda m: print(m, file=sys.stderr, flush=True))
+        testpack.undo(f, say=err)
+        testsave.undo(f, say=err)
+    if config.getoption("save"):
+        config._bt_save = {"name": config.getoption("save"),
+                           "sha256": testsave.put_in(folders, config.getoption("save"),
+                                                     testsave.load(config.getoption("save")), say=err)}
     names = testpack.names_of(config.getoption("pack"))
     if not names:
         return
@@ -369,6 +392,10 @@ def _pack_out(config, folders):
         try:
             testpack.undo(f, say=lambda m: print(m, file=sys.stderr, flush=True))
         except (testpack.PackError, OSError) as e:
+            errs.append(str(e))
+        try:
+            testsave.undo(f, say=lambda m: print(m, file=sys.stderr, flush=True))
+        except (testsave.SaveProfileError, OSError) as e:
             errs.append(str(e))
     if errs:
         config._bt_pack_out = errs
@@ -440,11 +467,15 @@ def lane_pair(request):
                 if not os.path.exists(os.path.join(f, testpack.MANIFEST)):
                     shutil.copytree(os.environ["BT_FAKE_PACK_DIR"], os.path.join(f, testpack.PACK_REL),
                                     dirs_exist_ok=True)
+        if os.environ.get("BT_FAKE_SAVE_DIR"):    # (selftest: the fake games have a save baseline)
+            for f in folders:
+                if not os.path.exists(os.path.join(f, testsave.MANIFEST)):
+                    shutil.copytree(os.environ["BT_FAKE_SAVE_DIR"], os.path.join(f, testsave.BASE), dirs_exist_ok=True)
         try:
             _pack_in(config, lane, folders, out, romfs="")
-        except testpack.PackError as e:
+        except (testpack.PackError, testsave.SaveProfileError, OSError) as e:   # (OSError: review-c123-9 nit a)
             _pack_out(config, folders)
-            raise P.SetupFail("lane%d pack: %s" % (lane, e))
+            raise P.SetupFail("lane%d pack/save: %s" % (lane, e))
         if os.environ.get("BT_FAKE_BOOT_CRASH"):        # (selftest: a game crashed in the boot's save load)
             if os.environ.get("BT_FAKE_BOOT_LOG"):      # (selftest: one line per boot tried)
                 with open(os.environ["BT_FAKE_BOOT_LOG"], "a", encoding="utf-8") as f:
@@ -470,8 +501,8 @@ def lane_pair(request):
     try:
         try:                                    # (after lane_check, before the boot: test-bridge-c127-3 11:18)
             _pack_in(config, lane, folders, out, romfs=os.path.join(Ln["a"], "romfs"))
-        except testpack.PackError as e:
-            raise P.SetupFail("lane%d pack: %s" % (lane, e))
+        except (testpack.PackError, testsave.SaveProfileError, OSError) as e:   # (OSError: review-c123-9 nit a)
+            raise P.SetupFail("lane%d pack/save: %s" % (lane, e))
         started = _live(["start"] + boot_args(config, lane, info["server"], session), timeout=1200)
         if not started.get("ok"):
             crash = _crash_why(session)
@@ -668,6 +699,8 @@ def pytest_testnodedown(node, error):
     tr = config.pluginmanager.get_plugin("terminalreporter")
     wo = getattr(node, "workeroutput", None) or {}
     config._bt_pack.update(wo.get("bt_pack") or {})
+    if wo.get("bt_save"):
+        config._bt_save = dict(wo["bt_save"], sha256=dict(config._bt_save.get("sha256") or {}, **wo["bt_save"]["sha256"]))
     config._bt_game_b.update(wo.get("bt_game_b") or {})
     if wo.get("bt_pack_out"):
         config._bt_pack_out = list(getattr(config, "_bt_pack_out", None) or []) + list(wo["bt_pack_out"])
@@ -694,6 +727,7 @@ def pytest_sessionfinish(session, exitstatus):
     if hasattr(config, "workerinput"):
         config.workeroutput["bt_deselected"] = list(config._bt_deselected)
         config.workeroutput["bt_pack"] = dict(config._bt_pack)
+        config.workeroutput["bt_save"] = dict(config._bt_save)
         config.workeroutput["bt_game_b"] = dict(config._bt_game_b)
         config.workeroutput["bt_pack_out"] = list(getattr(config, "_bt_pack_out", None) or [])   # (merged by the controller, below)
         return     # (xdist: the controller writes the one summary)
@@ -706,7 +740,8 @@ def pytest_sessionfinish(session, exitstatus):
                "repeat": config.getoption("repeat"), "counts": counts, "tests": rows,
                "identity": {"env": boot_env(config), "expect_commit": config.getoption("expect_commit"),
                             "boot": dict(boot_identity(config.getoption("boot")), name=config.getoption("boot")),
-                            "pack": config._bt_pack, "nocs": nocs_wanted(config), "game_b": config._bt_game_b},
+                            "pack": config._bt_pack, "nocs": nocs_wanted(config), "game_b": config._bt_game_b,
+                            "save": config._bt_save},
                "pack_out_errors": getattr(config, "_bt_pack_out", None),
                "deselected": config._bt_deselected,
                "stopped": getattr(config, "_bt_stopped", None),

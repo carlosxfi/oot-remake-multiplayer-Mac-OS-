@@ -741,6 +741,105 @@ def test_plain(pair):
 """
 
 
+SAVE_TESTS = '''import os
+import pytest
+import save_flags as SF
+
+def flag(x):
+    p = os.path.join(os.environ["BT_T_OUT"], "lane1", "fake", "lane1-" + x, "autotest-save", "slot_00", "progress.sav")
+    return SF.get(SF.read_file(p), 0, 0x6b093b51)
+
+@pytest.mark.needs_save("boss")
+def test_save_is_in(pair):
+    assert flag("A") == 0 and flag("B") == 0
+
+def test_plain(pair):
+    pass
+'''
+SAVE_PROFILE = 'FLAGS = ["bool:0x6b093b51=0", "enum:0x7d776b61=0xb5df43cb"]  # (Gohma_DefeatBoss, quest step)\n'
+
+
+class SaveProfile(unittest.TestCase):
+    """--save NAME (testsave.py): FLAGS set in BOTH games' autotest-save before the boot, the baseline back after; a
+    profile left by a run that died is undone at the next boot; needs_save deselects."""
+
+    def setUp(self):
+        sys.path.insert(0, HERE)
+        from test_save_flags import make_save
+        self.tmp = tempfile.mkdtemp()
+        self.dir, self.out = os.path.join(self.tmp, "t"), os.path.join(self.tmp, "o")
+        self.saves, self.tpl = os.path.join(self.tmp, "saves"), os.path.join(self.tmp, "tpl")
+        self.base = bytes(make_save({0: [(0x6b093b51, 1)], 6: [(0x7d776b61, 0x11111111)]}))
+        for d in (self.dir, self.saves, os.path.join(self.tpl, "slot_00"), os.path.join(self.tpl, "slot_01")):
+            os.makedirs(d)
+        for s in ("slot_00", "slot_01"):
+            with open(os.path.join(self.tpl, s, "progress.sav"), "wb") as f:
+                f.write(self.base)
+        with open(os.path.join(self.dir, "conftest.py"), "w", encoding="utf-8") as f:
+            f.write("import sys\nsys.path.insert(0, %r)\nsys.path.insert(0, %r)\npytest_plugins = ['bt_plugin']\n"
+                    % (INGAME, os.path.dirname(INGAME)))
+        with open(os.path.join(self.dir, "test_save.py"), "w", encoding="utf-8") as f:
+            f.write(SAVE_TESTS)
+        with open(os.path.join(self.saves, "boss.py"), "w", encoding="utf-8") as f:
+            f.write(SAVE_PROFILE)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def game(self, x):
+        return os.path.join(self.out, "lane1", "fake", "lane1-%s" % x)
+
+    def run_(self, extra=()):
+        return pytest_run([".", "--fake", "--out", self.out, "-q", "-p", "no:cacheprovider"] + list(extra),
+                          cwd=self.dir, env={"BT_SAVES_DIR": self.saves, "BT_FAKE_SAVE_DIR": self.tpl,
+                                             "BT_T_OUT": self.out})
+
+    def assert_as_before(self):
+        import testsave
+        for x in ("A", "B"):
+            for s in ("slot_00", "slot_01"):
+                with open(os.path.join(self.game(x), "autotest-save", s, "progress.sav"), "rb") as f:
+                    self.assertEqual(f.read(), self.base, (x, s))
+            self.assertFalse(os.path.exists(os.path.join(self.game(x), testsave.MANIFEST)), x)
+            self.assertFalse(os.path.exists(os.path.join(self.game(x), testsave.KEPT)), x)
+
+    def test_save_in_for_the_run_and_out_after(self):
+        p = self.run_(["--save", "boss"])
+        s = summary(self.out)
+        self.assertEqual(results(s), {"test_save_is_in": "PASS", "test_plain": "PASS"}, p.stdout[-3000:] + p.stderr[-2000:])
+        self.assertEqual(s["identity"]["save"]["name"], "boss")
+        self.assertEqual(sorted(s["identity"]["save"]["sha256"]), ["lane1-A", "lane1-B"])
+        self.assertEqual(len(s["identity"]["save"]["sha256"]["lane1-A"]), 2)
+        self.assert_as_before()
+
+    def test_without_save_the_test_is_deselected(self):
+        p = self.run_()
+        s = summary(self.out)
+        self.assertEqual(results(s), {"test_plain": "PASS"}, p.stdout[-2000:])
+        self.assertEqual([d.get("needs_save") for d in s["deselected"]], ["boss"])
+        self.assertIn("deselected: needs_save boss", p.stdout)
+
+    def test_a_flag_not_in_the_save_or_no_profile_is_setup_fail_lane_unchanged(self):
+        with open(os.path.join(self.saves, "bad.py"), "w", encoding="utf-8") as f:
+            f.write('FLAGS = ["bool:0x6b093b51=0", "bool:0x12345678=1"]\n')
+        for name, why in (("bad", "not in this save"), ("none", "no ")):
+            p = self.run_(["--save", name])
+            s = summary(self.out)
+            self.assertEqual(set(results(s).values()), {"SETUP-FAIL"}, p.stdout[-2000:])
+            self.assertIn(why, " ".join(r["why"] for r in s["tests"]))
+            self.assert_as_before()
+
+    def test_a_dead_runs_profile_is_undone_at_the_next_boot(self):
+        import testsave
+        g = self.game("A")
+        shutil.copytree(self.tpl, os.path.join(g, "autotest-save"))
+        testsave.put_in([g], "boss", testsave.load("boss", self.saves), say=lambda m: None)
+        self.assertNotEqual(open(os.path.join(g, "autotest-save", "slot_00", "progress.sav"), "rb").read(), self.base)
+        self.run_()                                         # (no --save: still undone first)
+        self.assert_as_before()
+        testsave.undo(g)                                    # (again: nothing left, no error)
+
+
 class PackFiles(unittest.TestCase):
     """--pack NAME (testpack.py): a maker's files go into BOTH games' co-op pack before the boot and come out after;
     a replaced file is put back; a pack left by a run that died is undone at the next boot; needs_pack deselects."""
@@ -780,6 +879,22 @@ class PackFiles(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(self.hud(x), "map-arrow.png")), x)
             self.assertFalse(os.path.exists(os.path.join(g, "coop-test-pack.json")), x)
             self.assertFalse(os.path.exists(os.path.join(g, "coop-test-pack-kept")), x)
+
+    def test_undo_removes_only_the_folders_it_made(self):
+        """review-c123-9 11:36 nit b: the new folders put_in made go again once empty; a folder that was there
+        before stays, even when empty."""
+        import testpack
+        g = os.path.join(self.tmp, "g")
+        pack = os.path.join(g, testpack.PACK_REL)
+        os.makedirs(os.path.join(pack, "was_empty"))
+        src = os.path.join(self.tmp, "f.bin")
+        with open(src, "w") as f:
+            f.write("x")
+        testpack.put_in([g], {"p": {"new/sub/a.bin": src, "was_empty/b.bin": src}}, say=lambda m: None)
+        self.assertTrue(os.path.isfile(os.path.join(pack, "new", "sub", "a.bin")))
+        testpack.undo(g, say=lambda m: None)
+        self.assertFalse(os.path.exists(os.path.join(pack, "new")))
+        self.assertTrue(os.path.isdir(os.path.join(pack, "was_empty")))
 
     def test_pack_rel_is_hs_pack_dir(self):
         import testpack

@@ -68,6 +68,17 @@ sha256 on each game, and `summary.json` `identity.pack` is `{name: {rel: sha256}
 or without `--pack`. A test that needs a pack: `@pytest.mark.needs_pack(NAME)`; a run without that `--pack`
 deselects it (`deselected: needs_pack NAME <test>`). A maker that fails is a SETUP-FAIL, and the lane is left as it was.
 
+Save profiles: `--save NAME` sets the flags of `tools/autotest/ingame/saves/NAME.py` in every
+`autotest-save/slot_NN/progress.sav` of BOTH lane games. It does this after the lane check and before the boot. At
+its start the game copies that baseline over its own saves (hookshot.py `restore_save`). `FLAGS` holds strings in
+`save_flags.py set` form (`bool:0x6b093b51=0`), and each one cites where its hash comes from. Only flags already in
+the save are changed; a missing flag is a SETUP-FAIL. Each save is kept in `coop-test-save-kept/`. A
+`coop-test-save.json` is written before any change, so every boot undoes a run that died. After `live.py stop` the
+baseline is put back. Every flag is read back on every save. A test that needs a profile:
+`@pytest.mark.needs_save(NAME)`. A run with another `--save`, or none, deselects it. `summary.json` `identity.save`
+is `{name, sha256: {game: {rel: sha256}}}`. `saves/gohma-alive.py` puts Queen Gohma back alive, with the quest at
+her room (rows 137/138).
+
 Game B without Character Select: `--env B:COOP_TEST_NO_CHARACTER_SELECT=1` (the switch in
 `tools/autotest/ingame/no_cs.py`) boots game B from `lane<N>-B-nocs` instead of `lane<N>-B`. That folder is made
 only when someone asks for it, with `python -I tools/autotest/lanes.py nocs --lane N` (`--dry-run` first). It is
