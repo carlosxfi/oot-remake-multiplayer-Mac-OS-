@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "coop_map_icons.h"
+#include "coop_native_ui.h"
 
 namespace {
 
@@ -23,6 +24,12 @@ constexpr std::uint64_t kBase = 0x80020000;
 constexpr std::uint64_t kPaneTable = 0x43c040, kOwnPane = 0x43e300, kPathText = 0xa67d30;
 
 struct FakeGame final : T::Game {
+    // A pretend game in play: its play UI is up, so its listed screens are live (CoopNativeUi::ScreenLive, which
+    // ScreenByVtable asks since party-hud-crash-c126; as native_tags_test.cpp's FakeGame).
+    FakeGame() {
+        CoopNativeUi::SetSceneLoading(false);
+        CoopNativeUi::SetRunningScreens(std::vector<std::uint64_t>{}, true);
+    }
     std::map<std::uint64_t, std::uint8_t> mem;
     std::map<std::pair<std::uint64_t, std::string>, std::uint64_t> panes;   // (layout, name) -> pane
     std::map<std::uint64_t, int> shown;                                     // pane -> last kPaneShow

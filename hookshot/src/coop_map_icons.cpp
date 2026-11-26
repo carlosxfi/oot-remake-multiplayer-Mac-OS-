@@ -25,7 +25,6 @@ constexpr const char* kIconHidden[] = {"N_Door_00",    "N_TreasureRoot_00", "N_B
                                        "N_Collect_00", "N_WaterLevel_00",   "N_Ruto_00"};
 constexpr const char* kEntranceHidden[] = {"N_Mini_00", "N_Loacal_00", "T_Location_01", "T_Location_02"};
 constexpr const char* kIconLayout = "PaMapIcon_00";
-constexpr const char* kEntranceLayout = "PaMapIconEntrance_00";
 constexpr const char* kPlayerLayout = "PaMapIconPlayer_00";
 constexpr const char* kGamePart = "Pa_MapIcon_00";   // the layout's own icon part (the game copies it)
 
