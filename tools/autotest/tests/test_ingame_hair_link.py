@@ -29,6 +29,17 @@ class HairLink(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def test_fake_bridge_refuses_hash_like_the_real_one(self):
+        # hair-link-4217f901 16:48: 'menu look hair=#RRGGBB' was refused on both lane games (coop_playtest_core.cpp
+        # ParseRequest "act": no '#', ';' or control character) while the fakes took it. The fake refuses it now too.
+        import fakegame
+        g = fakegame.FakeGame("A", os.path.join(self.tmp, "game"), 1)
+        for bad in ("menu look hair=#FF0000", "menu look hair=FF0000; kill X", "menu\nlook"):
+            r = g.builtin_answer({"id": 1, "cmd": "act", "lines": bad})
+            self.assertFalse(r["ok"], bad)
+            self.assertEqual(r["error"], "bad_request")
+        self.assertTrue(g.builtin_answer({"id": 2, "cmd": "act", "lines": "menu look hair=FF0000"})["ok"])
+
     def run_it(self, name, env_args, env=None):
         out = os.path.join(self.tmp, name)
         p = pytest_run(TESTS + ["--fake", "--no-rerun", "--out", out, "-q", "-s", "-p", "no:cacheprovider"] + env_args,

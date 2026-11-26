@@ -18,11 +18,12 @@ carries an impossible needs_env placeholder: always DESELECTED (named in summary
 PASS and never a SETUP-FAIL. (`menu leave` is no way there: the lane's next test needs the session back.)
 
 Set-up and judging, each cited where used:
-- `menu look hair=#RRGGBB|none`: test only, the module's MENU verb (lichii/hook/coop_testinput.cpp MENU "look ",
+- `menu look hair=RRGGBB|none`: test only, the module's MENU verb (lichii/hook/coop_testinput.cpp MENU "look ",
   hookshot coop_pause.cpp TestMenu "look "): key `hair` is Part::hair's key (coop_look.cpp Parts), chosen as the
   Customize page chooses it (ChooseLookParts) and worn as when the menu closes (WearChosenLook), so it goes on the wire
   as a player's look does. The colour is read by CoopLook::ReadParts -> CoopColors::Parse (coop_colors.cpp: a leading
-  '#', either case).
+  '#' is optional, either case). Sent WITHOUT the '#': the bridge refuses an act line with '#' or ';'
+  (hookshot/src/coop_playtest_core.cpp ParseRequest "act"; hair-link-4217f901 16:48 bad_request on all 4 tests).
 - Own Link: the gear wardrobe (host.what "gear", coop_look_live.cpp) logs `coop: look: your Link's gear is <painting>
   now (...)` when it draws a painting (coop_look_tunic.cpp Step, drawn != 0); the painting is CoopLookParts::Name:
   `gear...` ending `.hair-RRGGBB` (upper-case hex) when the hair is set (coop_look_parts.cpp Name: the hair piece last).
@@ -88,7 +89,7 @@ def wear(pair, who, colour):
     the other game."""
     other = "B" if who == "A" else "A"
     marks = {x: pair.log[x].mark() for x in ("A", "B")}
-    set_hair(pair, who, "none" if colour is None else "#%06X" % colour)
+    set_hair(pair, who, "none" if colour is None else "%06X" % colour)   # (no '#': the bridge refuses it in an act line)
     if colour is not None:
         wait_since(pair, who, OWN_HAIR % colour, marks[who], 240)
     pup = PUP_NO_HAIR if colour is None else PUP_HAIR % colour
@@ -325,7 +326,7 @@ def test_hair_solo(pair):
     try:
         before = pair.check_shot("A", "hair-link-solo-unset")["path"]
         mark = pair.log["A"].mark()
-        set_hair(pair, "A", "#%06X" % RED)
+        set_hair(pair, "A", "%06X" % RED)
         wait_since(pair, "A", OWN_HAIR % RED, mark, 240)
         pair.step_both(30)
         red = pair.check_shot("A", "hair-link-solo-red")["path"]

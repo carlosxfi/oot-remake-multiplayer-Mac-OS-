@@ -8,7 +8,7 @@ textures, on your own Link and on your puppet in the other game; unset it is the
 | test_vest_without_character_select | the same with B booted without the Character Select mod (both ways) | log + LOOK; needs_env |
 
 Set-up and judging, each cited where used:
-- `menu look link_vest=#RRGGBB|none`: test only, the module's MENU verb (lichii/hook/coop_testinput.cpp MENU "look ",
+- `menu look link_vest=RRGGBB|none`: test only, the module's MENU verb (lichii/hook/coop_testinput.cpp MENU "look ",
   hookshot coop_pause.cpp TestMenu "look "): the part chosen as the Customize page chooses it (ChooseLookParts) and worn
   as when the menu closes (WearChosenLook), so it goes on the wire as a player's look does. The bridge lower-cases the
   line; the colour is read by CoopColors::Parse (lichii/hook/coop_colors.cpp, HexDigit takes either case).
@@ -67,7 +67,7 @@ def wear(pair, who, colour):
     """`who` wears the Vest `colour` (None: unset); waits for its own Link's line and the puppet's line on the other."""
     other = "B" if who == "A" else "A"
     marks = {x: pair.log[x].mark() for x in ("A", "B")}
-    set_vest(pair, who, "none" if colour is None else "#%06X" % colour)
+    set_vest(pair, who, "none" if colour is None else "%06X" % colour)   # (no '#': the bridge refuses it in an act line, coop_playtest_core.cpp ParseRequest)
     own = OWN_NO_VEST if colour is None else OWN_VEST % colour
     pup = PUP_NO_VEST if colour is None else PUP_VEST % colour
     wait_since(pair, who, own, marks[who], 240)
