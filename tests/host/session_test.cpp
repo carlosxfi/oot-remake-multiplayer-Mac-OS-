@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <string>
@@ -301,6 +302,36 @@ TEST_CASE("session: a frame thread and a network thread per player share a flag"
   server_thread.join();
   CHECK(ok);
   CHECK(players == 2);
+}
+
+TEST_CASE("session: a held client lock does not stall the game frame") {
+  net::Client client(config_for(1, "Link"));
+  Session session(client, SessionSettings{});
+  test::FakeMemory memory;
+  test::make_game(memory);
+  FakeStore store;
+
+  std::promise<void> locked_promise;
+  std::promise<void> release_promise;
+  auto locked = locked_promise.get_future();
+  auto release = release_promise.get_future();
+  std::thread holder([&] {
+    session.with_client([&](net::Client&) {
+      locked_promise.set_value();
+      release.wait();
+    });
+  });
+  locked.wait();
+
+  auto frame = std::async(std::launch::async, [&] { return session.frame(memory, &store); });
+  const bool completed_without_client = frame.wait_for(std::chrono::milliseconds(250)) ==
+                                        std::future_status::ready;
+  release_promise.set_value();
+  holder.join();
+  const FrameReport report = frame.get();
+
+  CHECK(completed_without_client);
+  CHECK_FALSE(report.connected);
 }
 
 TEST_CASE("session: reset sends the status again on the next connected frame") {
