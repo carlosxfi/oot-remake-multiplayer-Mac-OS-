@@ -25,8 +25,9 @@ colours). This file works them all out from the user's own romfs, once, when the
   three of its vertices are;
 - the triangles' texture coordinates (`_u0`, the set that samples these unwrapped textures, scale 1)
   over the texture's block grid, every mip level (BC1 4x4, ASTC its own block size; texture
-  coordinates repeat): a block is the cap's when a cap triangle covers some of it and no other
-  triangle of those shapes does.
+  coordinates repeat): a first-level block is the cap's when a cap triangle covers some of it and
+  no other triangle of those shapes does; a smaller level's block when more than half of the used
+  first-level texels under it are the cap's alone (smaller_level).
 
 `coop_look/cap.bin` beside green.bin (green.bin holds the textures' own texels). Little-endian:
 
@@ -181,6 +182,72 @@ def block_size(fmt):
     raise TunicError(f"texture format 0x{fmt:02x} is not read")
 
 
+CAP_TEXEL, OTHER_TEXEL = 1, 2
+
+
+def texels(cap_tris, other_tris, width, height):
+    """The first level's texels as bytes, row by row: CAP_TEXEL where a cap triangle covers the texel's
+    centre, OTHER_TEXEL where another triangle does, both bits where both do, 0 where none does;
+    texture coordinates repeat."""
+    out = bytearray(width * height)
+    for bit, tris in ((CAP_TEXEL, cap_tris), (OTHER_TEXEL, other_tris)):
+        for tri in tris:
+            ox, oy = math.floor(min(p[0] for p in tri)), math.floor(min(p[1] for p in tri))
+            t = tuple(((u - ox) * width, (v - oy) * height) for u, v in tri)
+            for ky in range(math.ceil(max(p[1] for p in t) / height)):
+                for kx in range(math.ceil(max(p[0] for p in t) / width)):
+                    _fill(out, width, height, tuple((x - kx * width, y - ky * height) for x, y in t), bit)
+    return out
+
+
+def _fill(out, width, height, tri, bit):
+    """Sets `bit` on the texels whose centre lies in the triangle (in texels; edges included)."""
+    ys = [p[1] for p in tri]
+    for y in range(max(0, math.ceil(min(ys) - 0.5)), min(height - 1, math.floor(max(ys) - 0.5)) + 1):
+        c = y + 0.5
+        xs = []
+        for k in range(3):
+            (ax, ay), (bx, by) = tri[k], tri[(k + 1) % 3]
+            if ay == by:
+                if ay == c:
+                    xs += [ax, bx]
+                continue
+            if min(ay, by) <= c <= max(ay, by):
+                xs.append(ax + (c - ay) * (bx - ax) / (by - ay))
+        if not xs:
+            continue
+        x0, x1 = max(0, math.ceil(min(xs) - 0.5)), min(width - 1, math.floor(max(xs) - 0.5))
+        row = y * width
+        for x in range(x0, x1 + 1):
+            out[row + x] |= bit
+
+
+def smaller_level(first, w, h, lw, lh, fw, fh):
+    """{(bx, by)} of a smaller mip level's cap blocks (lw x lh texels): a block is the cap's when more than
+    half of the first level's texels under it that any triangle uses are the cap's alone (`first`, from
+    texels()). A smaller level is the first one filtered down, so such a block's colour is mostly the cap's
+    cloth. (kokiri-band-c124: the old rule, no other triangle touching the block at that level, dropped a
+    thin trim's blocks level by level, the adult hood's front band on Mt_Vest_Player_Adult_Alb kept 28% at
+    level 3 and 13% at level 4, so a Link seen from a few metres away, as a puppet is, showed the band in
+    the tunic's colour. Counted by texel, not by first-level block: a block the cap shares with the body
+    still holds the cap's texels, and the filtered level averages them in.)"""
+    wb, hb = (lw + fw - 1) // fw, (lh + fh - 1) // fh
+    out = set()
+    for by in range(hb):
+        # the first level's texels under this block: its texels scaled by w / lw, h / lh
+        y0, y1 = by * fh * h // lh, min(-(-(by + 1) * fh * h // lh), h)
+        for bx in range(wb):
+            x0, x1 = bx * fw * w // lw, min(-(-(bx + 1) * fw * w // lw), w)
+            cap = used = 0
+            for y in range(y0, y1):
+                row = first[y * w + x0:y * w + x1]
+                cap += row.count(CAP_TEXEL)
+                used += len(row) - row.count(0)
+            if 2 * cap > used:
+                out.add((bx, by))
+    return out
+
+
 def blocks(bntx, cap_tris, other_tris):
     """(the byte offsets of the texture's cap blocks, every mip level; (cap blocks, blocks) of the
     first level)."""
@@ -188,10 +255,12 @@ def blocks(bntx, cap_tris, other_tris):
     fw, fh, step = block_size(fmt)
     offs = []
     first = (0, 0)
+    cap0 = covered(cap_tris, w, h, fw, fh) - covered(other_tris, w, h, fw, fh)
+    first_texels = texels(cap_tris, other_tris, w, h) if len(mips) > 1 else None
     for level, start in enumerate(mips):
         lw, lh = max(1, w >> level), max(1, h >> level)
         wb, hb = (lw + fw - 1) // fw, (lh + fh - 1) // fh
-        cap = covered(cap_tris, lw, lh, fw, fh) - covered(other_tris, lw, lh, fw, fh)
+        cap = cap0 if level == 0 else smaller_level(first_texels, w, h, lw, lh, fw, fh)
         if level == 0:
             first = (len(cap), wb * hb)
         g = lm.mip_gobs_tall(bh, hb)
