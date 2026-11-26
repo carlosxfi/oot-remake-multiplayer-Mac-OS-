@@ -22,7 +22,7 @@
 # f1-event-c124 (run f1-event-aebd16089 VOID):
 #  - Longshot's menu is drawn by Longshot's ImGui over the picture, and a bridge `shot` is taken before Longshot's
 #    overlays (vk_replay.cpp shot_ask_record), so s30-f1-title showed the bare title with the menu open (the route and
-#    tab lines PASS). The menu checks use `wshot` (a window shot through offline/lib/window-shot.ps1, OOT_WINDOW_SHOT;
+#    tab lines PASS). The menu checks use `wshot` (a window shot through offline/lib/screen-shot.ps1 Save-WindowShot, OOT_WINDOW_SHOT;
 #    covered = SETUP-FAIL). f1-free stays a bridge `shot` (the game's own - menu is in the picture).
 #  - The event part relied on the lane save's chest being closed. f1-event.A.txt now sets it closed and reloads; the
 #    gate `flag A key64:0x0b66198d17d6584e 0` (the module's watch read, switch above) proves it before the press
