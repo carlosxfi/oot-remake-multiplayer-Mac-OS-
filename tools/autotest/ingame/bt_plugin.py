@@ -479,6 +479,7 @@ def pytest_runtest_logreport(report):
     if cfg is not None:
         cfg._bt_rows.append({"test": report.nodeid, "result": props["result"], "seconds": props.get("seconds"),
                              "why": props.get("why", ""), "shots": props.get("shots", []),
+                             "notes": props.get("notes", []),
                              "worker": getattr(report, "node", None) and getattr(report.node, "gateway", None)
                              and report.node.gateway.id})
 

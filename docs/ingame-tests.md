@@ -39,7 +39,7 @@ malformed `--env` stops the run before any boot (pytest usage error, exit 4).
 
 ## Results
 
-One summary per run: `<dir>/summary.json` and `summary.md` (add `--junitxml <file>` for JUnit). The run also prints one
+One summary per run: `<dir>/summary.json` and `summary.md` (add `--junitxml <file>` for JUnit); each test entry of `summary.json` carries its `notes` (`pair.notes`: the set-up time and what the test wrote down, such as where Link landed). The run also prints one
 line to stdout for the queue log: `RESULT: PASS (...)`, `RESULT: SETUP-FAIL <why>` (nothing got past set-up) or
 `RESULT: NOT PASS (<counts>); first: <test> <result> <why>`.
 

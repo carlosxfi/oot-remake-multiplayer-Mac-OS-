@@ -26,6 +26,16 @@ def pytest_run(args, cwd=INGAME, env=None):
     return p
 
 
+def suite_size(marks=None):
+    """How many tests the real suite runs (its own collection, as a run with no --env deselects): the counts below
+    follow every row added to ingame/, so a new row port does not break these selftests (row-53-ocarina-5)."""
+    out = tempfile.mkdtemp()
+    args = [".", "--fake", "--collect-only", "-q", "-p", "no:cacheprovider", "--out", out] + (["-m", marks] if marks else [])
+    p = pytest_run(args)
+    shutil.rmtree(out, ignore_errors=True)
+    return sum(1 for ln in p.stdout.splitlines() if "::" in ln and not ln.startswith("deselected"))
+
+
 def summary(out):
     with open(os.path.join(out, "summary.json"), encoding="utf-8") as f:
         return json.load(f)
@@ -49,8 +59,9 @@ class Suite(unittest.TestCase):
         os.makedirs(refs)
         p = pytest_run([".", "--fake", "--out", out1, "-q"], env={"BT_FAKE_REFS": refs})
         s = summary(out1)
-        self.assertEqual(s["counts"]["NO-REF"], 3, p.stdout[-2000:])
-        self.assertEqual(s["counts"]["PASS"], 8, p.stdout[-2000:])
+        total, looks = suite_size(), suite_size("look")
+        self.assertEqual(s["counts"]["NO-REF"], looks, p.stdout[-2000:])
+        self.assertEqual(s["counts"]["PASS"], total - looks, p.stdout[-2000:])
         self.assertEqual(s["verdict"], "NOT PASS")
         self.assertNotEqual(p.returncode, 0)
         new = os.path.join(out1, "lane1", "new")
@@ -59,7 +70,7 @@ class Suite(unittest.TestCase):
         out2 = os.path.join(self.tmp, "o2")
         p = pytest_run([".", "--fake", "--out", out2, "-q"], env={"BT_FAKE_REFS": refs})
         s = summary(out2)
-        self.assertEqual(s["counts"]["PASS"], 11, p.stdout[-2000:])
+        self.assertEqual(s["counts"]["PASS"], total, p.stdout[-2000:])
         self.assertEqual(s["verdict"], "PASS")
         self.assertEqual(p.returncode, 0)
         shots = [sh for r in s["tests"] for sh in r["shots"]]
@@ -81,17 +92,18 @@ class Suite(unittest.TestCase):
         pytest_run([".", "--fake", "--out", out, "-q", "--repeat", "2", "--no-smoke-gate"])
         s = summary(out)
         names = [r["test"] for r in s["tests"]]
-        self.assertEqual(len(names), 22)
-        self.assertTrue(all("[r1]" in n for n in names[:11]) and all("[r2]" in n for n in names[11:]), names)
+        n = suite_size()
+        self.assertEqual(len(names), 2 * n)
+        self.assertTrue(all("[r1]" in m for m in names[:n]) and all("[r2]" in m for m in names[n:]), names)
         self.assertIn("test_boot", names[0])     # smoke first in each round
-        self.assertIn("test_boot", names[11])
+        self.assertIn("test_boot", names[n])
 
     def test_two_lanes_at_once(self):
         out = os.path.join(self.tmp, "o")
         p = pytest_run([".", "--fake", "--out", out, "-q", "-n", "2", "--lanes", "1,2", "-m", "not look"])
         s = summary(out)
         self.assertEqual(s["counts"]["PASS"], len(s["tests"]), p.stdout[-2000:])
-        self.assertEqual(len(s["tests"]), 8)
+        self.assertEqual(len(s["tests"]), suite_size("not look"))
         self.assertTrue(os.path.isdir(os.path.join(out, "lane1")) and os.path.isdir(os.path.join(out, "lane2")))
 
 
@@ -181,7 +193,7 @@ class LaneCheckOnly(unittest.TestCase):
         with open(os.path.join(out, "setup.json"), encoding="utf-8") as f:
             s = json.load(f)
         self.assertTrue(s["ok"])
-        self.assertEqual(s["collected"], 11)
+        self.assertEqual(s["collected"], suite_size())
         self.assertFalse(os.path.exists(os.path.join(out, "summary.json")))
 
     def test_real_lane_needs_expect_commit(self):
