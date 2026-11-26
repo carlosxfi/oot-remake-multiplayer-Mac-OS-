@@ -802,6 +802,16 @@ std::string NotReadyReason(const CoopModJson::Value* status) {
     return "";
 }
 
+std::string StickProblem(const std::vector<StickRead>& reads, int frames) {
+    std::string out;
+    for (const auto& r : reads) {
+        if (!r.before || !r.written || !r.after || *r.written == *r.before || *r.after != *r.before) continue;
+        out += (out.empty() ? "did not stick: " : "; ") + r.name + " written " + std::to_string(*r.written) +
+               ", the game put back " + std::to_string(*r.after) + " within " + std::to_string(frames) + " frames";
+    }
+    return out;
+}
+
 std::string GiveRefusal(const CoopModJson::Value* status) {
     const auto* game = GameOf(status);
     if (game && game->Bool("loading") == true) {

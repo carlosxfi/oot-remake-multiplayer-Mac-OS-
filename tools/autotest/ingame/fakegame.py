@@ -47,6 +47,12 @@ def hooks(mods, name):
     return [getattr(m, name) for m in mods if callable(getattr(m, name, None))]
 
 GATE = "Npc_Hylia_Soldier_003_GateOpen"
+# Values the game keeps in our Link's Life component, the flags being only its mirror (coop_cheat_give.h LinkBacked):
+# the module writes the component first and the bridge reads back after STICK_FRAMES (coop_playtest_core.h
+# kStickFrames). BT_FAKE_LIFE_FLAG_ONLY=1 plays the module before give-life-fix: the flag alone is written, the next
+# frame puts Link's value back, and the bridge answers did_not_stick.
+LINK_LIFE = ("PlayerStatus.Life", "PlayerStatus.MaxLife")
+STICK_FRAMES = 2
 
 
 class FakeGame:
@@ -61,6 +67,7 @@ class FakeGame:
         self.pos, self.facing = [0.0 if tag == "A" else 4.0, 0.0, 0.0], 0.0
         self.menu_pause, self.title_until, self.at_title = False, None, False
         self.head, self.ocarina, self.flags, self.pending = None, False, {GATE: 0}, []
+        self.link_life = {"PlayerStatus.Life": 16, "PlayerStatus.MaxLife": 16}   # (our Link's Life component)
         self.other = None
         # (selftests of the lane's boot proof, Pair.boot_ready: BT_FAKE_BOOT_EVENT=B leaves B where the save puts it,
         # Graveyard_Child, in an event a warp ends (test-bridge-pilot-fa63e90f r1); BT_FAKE_BOOT_STUCK=B the same but
@@ -160,6 +167,18 @@ class FakeGame:
             h(self, m, r)
         return r
 
+    def write_link_life(self, name, value):
+        """A give or flag of a Life flag: into Link's component (the fixed module), or, with BT_FAKE_LIFE_FLAG_ONLY=1,
+        the flag alone, which the next frame puts back: then the bridge's did_not_stick reply (else None)."""
+        if os.environ.get("BT_FAKE_LIFE_FLAG_ONLY") == "1":
+            was = self.link_life[name]
+            self.run(STICK_FRAMES)
+            return {"ok": False, "error": "did_not_stick",
+                    "message": "did not stick: %s written %d, the game put back %d within %d frames"
+                               % (name, value, was, STICK_FRAMES)}
+        self.link_life[name] = value
+        return None
+
     def builtin_answer(self, m):
         cmd = m.get("cmd")
         r = {"id": m.get("id"), "ok": True}
@@ -193,7 +212,24 @@ class FakeGame:
             self.act(m["lines"])
             r.update(lines=1, note="ok")
         elif cmd == "give":
-            r["result"] = "given"
+            if m.get("item") in LINK_LIFE:
+                name = m["item"]
+                was = self.link_life[name]
+                lost = self.write_link_life(name, was + 4 if name == "PlayerStatus.MaxLife" else max(was, 1))
+                if lost:
+                    return dict(lost, frame=self.frame, paused=self.paused)
+                r["result"] = "%s %d -> %d" % (name, was, self.link_life[name])
+            else:
+                r["result"] = "given"
+            self.run(STICK_FRAMES)     # (the bridge's read-back)
+        elif cmd == "flag" and m.get("name") in LINK_LIFE:
+            name = m["name"]
+            r["was"] = self.link_life[name]
+            lost = self.write_link_life(name, int(m["value"]))
+            if lost:
+                return dict(lost, frame=self.frame, paused=self.paused)
+            self.run(STICK_FRAMES)
+            r["value"] = self.link_life[name]
         elif cmd == "flag":
             r["was"] = self.flags.get(m["name"], 0)
             self.flags[m["name"]] = m["value"]

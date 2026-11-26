@@ -1075,6 +1075,7 @@ std::string NotAllowed(const Script& script, const std::vector<Kind>& allowed) {
 #include "coop_flags.h"
 #include "coop_dungeon.h"
 #include "coop_hook.h"
+#include "coop_link_life.h"
 #include "coop_objects.h"
 #include "coop_save.h"
 #include "coop_story.h"
@@ -1333,7 +1334,15 @@ void SetFlag(Core::System& system, const std::string& name, int value) {
     coop::host::GameFlags flags(memory);
     bool ok = false;
     const char* type = "unknown";
-    if (flags.get_int(hash)) {
+    if (flags.get_int(hash) && CoopCheatGive::LinkBacked(hash) != CoopCheatGive::LinkWord::none) {
+        // PlayerStatus.Life/MaxLife: the game keeps it in our Link's Life component and writes the flag from it
+        // every frame, so the component is written first (else the next frame puts the old value back).
+        type = "int, our Link's Life component";
+        CoopLinkLife::GameLinkLife link(system, g_state.main);
+        const bool in = CoopCheatGive::LinkBacked(hash) == CoopCheatGive::LinkWord::max ? link.set_max(value)
+                                                                                         : link.set_life(value);
+        ok = in && coop::host::GameFlags::set_int(memory, hash, value);
+    } else if (flags.get_int(hash)) {
         type = "int";
         ok = coop::host::GameFlags::set_int(memory, hash, value);
     } else if (flags.get_bool(hash)) {
@@ -1515,7 +1524,9 @@ void Give(Core::System& system, const std::string& item) {
         LOG_INFO(Core, "coop: test give {}", said);
     } else {
         CoopHook::EmulatorMemory memory(system.ApplicationMemory(), g_state.main);
-        coop::host::GameFlagStore store(memory);
+        coop::host::GameFlagStore flags(memory);
+        CoopLinkLife::GameLinkLife link(system, g_state.main);   // (PlayerStatus.MaxLife and Life: into our Link's component, the flag its mirror)
+        CoopCheatGive::LinkBackedFlags store(flags, &link);
         for (const auto& name : CoopCheatGive::Names(item)) {
             const auto done = CoopCheatGive::Give(store, name);
             // "PARTLY given": the item is in but its IsGet or a grant failed (the bridge answers ok, with the text).

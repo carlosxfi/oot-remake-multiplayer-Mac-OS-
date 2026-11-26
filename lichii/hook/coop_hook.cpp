@@ -81,6 +81,7 @@
 #include "coop_chat.h"
 #include "coop_hud.h"  // the HUD's hearts (PLAYER_LIFE), docs/overlay.md
 #include "coop_cheats.h"
+#include "coop_link_life.h"
 #include "coop_chests.h"
 #include "coop_flags.h"
 #ifdef COOP_HOOKSHOT
@@ -919,7 +920,8 @@ public:
                 }
             }
             if (cheats_) {
-                CoopCheats::Frame(*game_store);
+                CoopLinkLife::GameLinkLife link(system, base_);   // (MaxLife: our Link's component first)
+                CoopCheats::Frame(*game_store, &link);
             }
             if (sharing_ && load_mend_.ready() && CoopStory::On() &&
                 quest_catch_up_.Due(CoopEvery::NowUs())) {
