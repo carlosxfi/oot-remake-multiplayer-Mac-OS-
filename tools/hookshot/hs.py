@@ -121,7 +121,7 @@ LANE_LOCKS = tuple(k for k in LOCK_NAMES if k.startswith("lane"))
 OLD_LOCK = "build.lock"
 # What is per player or per run in a game folder: never cached, never overwritten in a pair.
 PER_PLAYER = {"hookshot_coop.dll", "coop.ini", "coop-options.ini", "user", "save", "autotest-save", "mods",
-              "longshot_log.txt", "longshot_log.old.txt", "control.json"}
+              "longshot_log.txt", "longshot_log.old.txt", "control.json", ".coop-romfs-shared.txt"}
 CACHE_GAME = "game"
 CACHE_NAME = re.compile(r"^[0-9a-f]{20}(\.part|\.build)?$")
 # Caches the game writes while it runs (shaders, pipelines): copied into a pair that has none, never overwritten,
@@ -423,16 +423,23 @@ def link_or_copy(s, d):
         return False
 
 
-def copy_tree(src, dst, skip_top=PER_PLAYER, dry=False, say=print, runtime_too=False, in_cache=False, share=False):
+def copy_tree(src, dst, skip_top=PER_PLAYER, dry=False, say=print, runtime_too=False, in_cache=False, share=False,
+              skip_shared=False, progress=None, _count=None):
     """Copies src into dst: new or changed files (size or mtime) only, links recreated as links (never followed),
     the top-level names in skip_top left alone on both sides; dst's runtime caches (at the top, or in the top's
     cache folder: in_cache) kept unless runtime_too. Returns (files copied, links made).
     A top-level folder in SHARED_TOP (romfs: the game files) is hard-linked file by file, not copied (share): every
     game folder made from one (a pin, the cache's entries, the test pairs) shares one copy of its ~26 GB. Copied in
-    full to every one of them, they filled the disk (longshot-rc6-a's offline run 2: no space left for the next pin)."""
+    full to every one of them, they filled the disk (longshot-rc6-a's offline run 2: no space left for the next pin).
+    skip_shared: the top-level SHARED_TOP folders are left out (cache_restore: the pair's romfs is already the cache's
+    shared copy, romfs_shared). progress(n): called every PROGRESS_EVERY files looked at (a walk of 186,587 romfs files
+    takes minutes when the disk's metadata is cold, and printed nothing: lane-prep-ae97cc77 looked hung)."""
     copied = links = 0
+    count = _count if _count is not None else [0]
     for name in sorted(os.listdir(src)):
         if name.lower() in skip_top:
+            continue
+        if skip_shared and skip_top is PER_PLAYER and name.lower() in SHARED_TOP:
             continue
         s, d = os.path.join(src, name), os.path.join(dst, name)
         if is_link(s):
@@ -448,9 +455,13 @@ def copy_tree(src, dst, skip_top=PER_PLAYER, dry=False, say=print, runtime_too=F
                 os.makedirs(d, exist_ok=True)
             c, n = copy_tree(s, d, set(), dry, say, runtime_too,
                              in_cache=skip_top is PER_PLAYER and name.lower() == CACHE_DIR,
-                             share=share or (skip_top is PER_PLAYER and name.lower() in SHARED_TOP))
+                             share=share or (skip_top is PER_PLAYER and name.lower() in SHARED_TOP),
+                             progress=progress, _count=count)
             copied, links = copied + c, links + n
         else:
+            count[0] += 1
+            if progress and count[0] % PROGRESS_EVERY == 0:
+                progress(count[0])
             if os.path.isfile(d) and not is_link(d):
                 if (skip_top is PER_PLAYER or in_cache) and RUNTIME_CACHE.match(name) and not runtime_too:
                     continue
@@ -485,6 +496,95 @@ def make_link(path, target):
             raise Fail("mklink /J %s failed: %s" % (path, r.stdout + r.stderr))
     else:
         os.symlink(target, path, target_is_directory=os.path.isdir(target))
+
+
+PROGRESS_EVERY = 20000
+# The pair's romfs is the cache's shared copy (C #125, runner-c124-2): a full restore walked all 186,587 romfs files of
+# a pair on every build although they already were hard links of the cache's (~8 stat calls each: minutes when cold,
+# 31.8 min for lane1-A+B under load). A cache entry keeps the list of its romfs files with their file ids
+# (ROMFS_MANIFEST, made after its first full restore); a pair gets ROMFS_MARK after a full restore that ended (removed
+# before one starts, so a broken or half-done restore never has it). The walk is left out only when the mark names the
+# entry's list AND the top-level names match AND every top-level file and an evenly spread sample of the rest are the
+# very files of the list (same file id and size, in the pair and in the cache): else the full restore, as before.
+ROMFS_MARK = ".coop-romfs-shared.txt"
+ROMFS_MANIFEST = "romfs-files.txt"
+ROMFS_SAMPLE = 512
+
+
+def romfs_rows(game):
+    """[(relative path, file id, size)] of every file under game/romfs, sorted by path."""
+    base = os.path.join(game, "romfs")
+    rows = []
+    for top, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if not is_link(os.path.join(top, d))]
+        for f in files:
+            p = os.path.join(top, f)
+            st = os.stat(p)
+            rows.append((os.path.relpath(p, base).replace(os.sep, "/"), st.st_ino, st.st_size))
+    return sorted(rows)
+
+
+def romfs_digest(rows):
+    h = hashlib.sha256()
+    for rel, ino, size in rows:
+        h.update(("%s\t%x\t%d\n" % (rel, ino, size)).encode("utf-8"))
+    return h.hexdigest()
+
+
+def romfs_manifest(entry, make=False):
+    """(digest, rows) of a cache entry's romfs list; made from its game folder when missing and make. (None, []) else."""
+    path = os.path.join(entry, ROMFS_MANIFEST)
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().split("\n")
+        if lines and lines[0].startswith("digest="):
+            rows = []
+            for line in lines[1:]:
+                if line:
+                    rel, ino, size = line.split("\t")
+                    rows.append((rel, int(ino, 16), int(size)))
+            if romfs_digest(rows) == lines[0][7:]:
+                return lines[0][7:], rows
+    if not make:
+        return None, []
+    rows = romfs_rows(os.path.join(entry, CACHE_GAME))
+    d = romfs_digest(rows)
+    tmp = path + ".part"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write("digest=%s\n" % d + "".join("%s\t%x\t%d\n" % r for r in rows))
+    os.replace(tmp, path)
+    return d, rows
+
+
+def romfs_shared(entry, dst):
+    """('', what was checked) when dst's romfs is the cache entry's shared copy, else (why not, '')."""
+    try:
+        with open(os.path.join(dst, ROMFS_MARK), encoding="utf-8") as f:
+            mark = dict(line.split("=", 1) for line in f.read().split("\n") if "=" in line)
+    except OSError:
+        return "no %s (no full restore ended in this pair since)" % ROMFS_MARK, ""
+    digest, rows = romfs_manifest(entry)
+    if not digest:
+        return "the cache entry has no %s yet" % ROMFS_MANIFEST, ""
+    if mark.get("digest") != digest:
+        return "the pair's mark names another romfs list", ""
+    src, d = os.path.join(entry, CACHE_GAME, "romfs"), os.path.join(dst, "romfs")
+    try:
+        if is_link(d) or sorted(os.listdir(src)) != sorted(os.listdir(d)):
+            return "the top-level romfs names differ", ""
+    except OSError as e:
+        return "romfs unreadable (%s)" % e, ""
+    step = max(1, len(rows) // ROMFS_SAMPLE)
+    pick = [r for i, r in enumerate(rows) if "/" not in r[0] or i % step == 0]
+    for rel, ino, size in pick:
+        for base in (src, d):
+            try:
+                st = os.stat(os.path.join(base, *rel.split("/")))
+            except OSError:
+                return "%s missing in %s" % (rel, base), ""
+            if st.st_ino != ino or st.st_size != size:
+                return "%s in %s is not the cache's file" % (rel, base), ""
+    return "", "%d of %d files checked by file id" % (len(pick), len(rows))
 
 
 def cache_store(src, repo=REPO, force=False, dry=False, say=print, want=None):
@@ -546,8 +646,21 @@ def cache_restore(dst, repo=REPO, dry=False, say=print, want=None):
     other = bool(have.strip()) and key_of(have) != k
     if other:
         say("cache: %s held another build (%s): its runtime caches are replaced" % (dst, key_of(have)))
-    c, n = copy_tree(os.path.join(folder, CACHE_GAME), dst, dry=dry, say=lambda *_: None, runtime_too=other)
+    why, how = romfs_shared(folder, dst)
+    if why:
+        say("cache: %s: full romfs walk (%s)" % (dst, why))
+        if not dry and os.path.lexists(os.path.join(dst, ROMFS_MARK)):
+            os.remove(os.path.join(dst, ROMFS_MARK))   # (a walk that does not end leaves no mark)
+    else:
+        say("cache: %s: romfs already the cache's shared copy (%s): not walked" % (dst, how))
+    c, n = copy_tree(os.path.join(folder, CACHE_GAME), dst, dry=dry, say=lambda *_: None, runtime_too=other,
+                     skip_shared=not why, progress=lambda i: say("cache: %s: %d files looked at..." % (dst, i)))
     say("cache: %s -> %s: %d file(s) %s, %d link(s)" % (k, dst, c, "to copy" if dry else "copied", n))
+    if why and not dry and os.path.isdir(os.path.join(dst, "romfs")):
+        digest, _ = romfs_manifest(folder, make=True)
+        with open(os.path.join(dst, ROMFS_MARK), "w", encoding="utf-8") as f:
+            f.write("# hs.py cache_restore: this pair's romfs is the cache's shared copy (romfs_shared checks it)\n"
+                    "digest=%s\nentry=%s\n" % (digest, k))
     # (a build without code patches has no list; an older build's would say the game holds patches it does not: the
     # kit's own restore takes it away too, kit-paths.ps1 Restore-KitGameVariant)
     stale = os.path.join(dst, EXEFS_LIST)
