@@ -1190,6 +1190,62 @@ TEST_CASE("object samples carry a scream that froze the owner's Link, component 
   CHECK(encode(s, out) == Error::bad_value);
 }
 
+TEST_CASE("object samples carry a boss Shooter's calls, component 30 (rows 222, 286)") {
+  CHECK(static_cast<int>(ObjectComponent::shooter) == 30);
+  ObjectSample s{0, test::kPlacedId, 3, {}};
+  s.state.time = {100, 1};
+  BossShooterCall p{3, BossShooterKind::prepare, 0x1234u, -1, 2, {}};
+  for (std::size_t i = 0; i < p.tail.size(); ++i) p.tail[i] = static_cast<std::uint8_t>(0x10 + i);
+  BossShooterCall f{4, BossShooterKind::shoot, 0x1234u, 2, 2, {}};
+  for (std::size_t i = 0; i < kBossShooterShootTail; ++i) f.tail[i] = static_cast<std::uint8_t>(0x80 + i);
+  BossShooterCall z{5, BossShooterKind::sleep, 0x1234u, 2, 2, {}};
+  s.state.shooter = BossShooterCalls{5, {p, f, z}};
+  const Bytes bytes = must_encode(s);
+  Message back;
+  REQUIRE(decode(bytes, back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == s);
+  // Only each kind's tail goes out: prepare 0x48, shoot 0x20, sleep none (17 bytes a call before it, 5 for the list).
+  ObjectSample plain{0, test::kPlacedId, 3, {}};
+  plain.state.time = {100, 1};
+  const Bytes none = must_encode(plain);
+  CHECK(bytes.size() == none.size() + 4 + 5 + 3 * 17 + kBossShooterPrepareTail + kBossShooterShootTail);
+  REQUIRE(decode(none, back) == Error::none);
+  CHECK_FALSE(std::get<ObjectSample>(back).state.shooter);
+  // An empty list is valid with any seq (it tells a copy its owner shares shots).
+  s.state.shooter = BossShooterCalls{0, {}};
+  REQUIRE(decode(must_encode(s), back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == s);
+  // Refused: seqs from 1, rising, none above seq; a kind 1 to 3; no bytes past the kind's tail; at most 8.
+  Bytes out;
+  s.state.shooter = BossShooterCalls{5, {p, f, z}};
+  s.state.shooter->recent[0].seq = 0;
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.shooter->recent[0].seq = 4;
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.shooter->recent[0].seq = 3;
+  s.state.shooter->seq = 4;
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.shooter->seq = 5;
+  s.state.shooter->recent[1].kind = static_cast<BossShooterKind>(4);
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.shooter->recent[1].kind = BossShooterKind::shoot;
+  s.state.shooter->recent[1].tail[kBossShooterShootTail] = 1;
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.shooter->recent[1].tail[kBossShooterShootTail] = 0;
+  s.state.shooter->recent[2].tail[0] = 1;
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.shooter = BossShooterCalls{20, std::vector<BossShooterCall>(kMaxBossShooterCalls + 1)};
+  for (std::size_t i = 0; i < s.state.shooter->recent.size(); ++i) {
+    s.state.shooter->recent[i].seq = static_cast<std::uint32_t>(i + 1);
+  }
+  CHECK(encode(s, out) == Error::bad_value);
+  // The decoder refuses a count above the limit too (the count byte follows the u32 seq).
+  s.state.shooter = BossShooterCalls{1, {}};
+  Bytes raw = must_encode(s);
+  raw.back() = static_cast<std::uint8_t>(kMaxBossShooterCalls + 1);
+  CHECK(decode_bytes(raw) == Error::bad_value);
+}
+
 TEST_CASE("object samples carry a battle manager's orders, component 23 (protocol 16, row 222)") {
   CHECK(kProtocolVersion >= 16);
   CHECK(static_cast<int>(ObjectComponent::orders) == 23);

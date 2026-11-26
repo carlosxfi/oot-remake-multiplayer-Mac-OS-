@@ -17,7 +17,7 @@ void Add(Shots& mine, Kind kind, std::uint32_t key, std::int32_t asked, std::int
     s.asked = asked;
     s.index = index;
     if (tail != nullptr) {
-        std::memcpy(s.tail.data(), tail, std::min(tail_size, s.tail.size()));
+        std::memcpy(s.tail.data(), tail, std::min(tail_size, coop::protocol::BossShooterTailOnWire(kind)));
     }
     mine.recent.push_back(s);
     if (mine.recent.size() > kMaxShots) {

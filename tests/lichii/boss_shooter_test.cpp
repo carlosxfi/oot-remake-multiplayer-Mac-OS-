@@ -48,6 +48,13 @@ TEST_CASE("boss shooter: a tail longer than the shot's is cut, a shorter one lea
     Add(s, Kind::shoot, 1, 0, 0, big.data(), kShootTailSize);
     CHECK(s.recent[1].tail[kShootTailSize - 1] == 0xab);
     CHECK(s.recent[1].tail[kShootTailSize] == 0);
+    // A shoot handed more is cut to its wire tail (component 30), and a sleep keeps none: the copy reads what the
+    // owner kept.
+    Add(s, Kind::shoot, 1, 0, 0, big.data(), big.size());
+    CHECK(s.recent[2].tail[kShootTailSize - 1] == 0xab);
+    CHECK(s.recent[2].tail[kShootTailSize] == 0);
+    Add(s, Kind::sleep, 1, 0, 0, big.data(), big.size());
+    CHECK(s.recent[3].tail[0] == 0);
 }
 
 TEST_CASE("boss shooter: a copy's first sample makes nothing old") {

@@ -86,6 +86,9 @@ struct Seen {
     // Row 222 (coop_boss_orders.h): for one of ours, the battle manager's orders our game gave it (sent in its
     // samples, component 23).
     std::optional<coop::protocol::BossOrders> orders;
+    // Rows 222, 286 (coop_boss_shooter_table.h): for one of ours, the calls its Shooter took on our game (sent in its
+    // samples, component 30).
+    std::optional<coop::protocol::BossShooterCalls> shooter;
     // Row 149 (coop_brain_state.h): for one of ours, the move state in its AI blackboard (sent in its samples,
     // component 25).
     std::optional<coop::protocol::KeyedValues> brain;
@@ -1365,6 +1368,8 @@ public:
     std::optional<coop::protocol::BossVariants> BossVariantsIn(std::uint64_t address) const;
     // Row 222: the owner's battle manager orders for our copies (by address), as BossVerbsIn.
     std::vector<std::pair<std::uint64_t, coop::protocol::BossOrders>> BossOrdersIn() const;
+    // Rows 222, 286: the owner's Shooter calls for our copies (by address), as BossOrdersIn.
+    std::vector<std::pair<std::uint64_t, coop::protocol::BossShooterCalls>> BossShooterIn() const;
     // Row 149 (coop_brain_state.h): the last owner's blackboard move state (by address), for our copies and for one
     // just made ours (until our own values are sent).
     std::vector<std::pair<std::uint64_t, coop::protocol::KeyedValues>> BrainStateIn() const;
@@ -1446,6 +1451,8 @@ private:
         std::optional<coop::protocol::BossVariants> variants_in;  // row 222 part 2: a copy's, with bsa_in
         std::optional<coop::protocol::BossOrders> orders;     // row 222: ours, as last read
         std::optional<coop::protocol::BossOrders> orders_in;  // row 222: a copy's, the owner's latest
+        std::optional<coop::protocol::BossShooterCalls> shooter;     // rows 222, 286: ours, as last read
+        std::optional<coop::protocol::BossShooterCalls> shooter_in;  // rows 222, 286: a copy's, the owner's latest
         std::optional<coop::protocol::KeyedValues> brain;       // row 149: ours, as last read
         // Row 149: the last owner's blackboard move state, from its samples or the hand-over state. Kept across
         // the hand-over to us (it is what our game then takes); dropped once our own values are sent.
@@ -1467,6 +1474,7 @@ private:
         std::string sent_slots;  // issue 150: the slot names last sent
         std::optional<std::uint32_t> sent_bsa_seq;  // native boss sync: the boss verbs' seq last sent
         std::optional<std::uint32_t> sent_orders_seq;  // row 222: the battle orders' seq last sent
+        std::optional<std::uint32_t> sent_shooter_seq;  // rows 222, 286: the Shooter calls' seq last sent
         std::uint32_t sequence = 0;
         // Protocol 14: the newest hit our game took on our own enemy (Seen::hit_record), in its samples until
         // hit_show_until (kHitShowUs; samples may be lost), seq counting from 1 (ObjectHit).

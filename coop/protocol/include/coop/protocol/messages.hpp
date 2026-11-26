@@ -881,6 +881,8 @@ enum class ObjectComponent : std::uint16_t {
   plugs = 26,   // a room's plugs: switches, torches, block seats, held floor switches (sync plan S4)
   clocks = 27,  // a room's platform clocks: mover words on the server clock (sync plan S4)
   events = 28,  // a room's running gimmick events, with their start time (sync plan S4/S6)
+  // 29: the outside PR #335 (boss shots it counts).
+  shooter = 30,  // rows 222, 286: the calls a boss part's Shooter took on its owner's game (BossShooterCalls below)
 };
 
 struct ObjectLife {
@@ -1040,6 +1042,41 @@ struct BossVariants {
 // Whether a plug name may go on the wire (empty, or 1 to kMaxBossVariantChars printable ASCII characters).
 bool ValidVariantName(std::string_view name);
 
+// Component 30 (rows 222 and 286, protocol 18; 0.12.0 is the first release with it, so no bump): the calls a boss
+// part's Shooter took on its owner's game, the game's own three verbs (prepare wakes a kept bullet, shoot fires it,
+// sleep puts it back; hos_coop_boss_shooter.h). A copy runs the same calls through the same verbs
+// (lichii/hook/coop_boss_shooter.h), so the owner's game decides every shot. `asked`: the record the caller asked
+// (-1: the first free one); `index`: the record prepare took (else as asked). `tail` holds the params' plain words:
+// kBossShooterPrepareTail for prepare, kBossShooterShootTail for shoot (the rest 0), none for sleep; on the wire
+// only those bytes. seq is the owner's count for this part, from 1; recent holds the newest kMaxBossShooterCalls,
+// oldest first, seqs rising, nonzero, at most `seq`. An empty list with any seq (also 0) is valid: it tells a copy
+// its owner shares shots.
+inline constexpr std::size_t kBossShooterTail = 0x48;
+inline constexpr std::size_t kBossShooterPrepareTail = 0x48;
+inline constexpr std::size_t kBossShooterShootTail = 0x20;
+inline constexpr std::size_t kMaxBossShooterCalls = 8;
+enum class BossShooterKind : std::uint8_t { prepare = 1, shoot = 2, sleep = 3 };
+struct BossShooterCall {
+  std::uint32_t seq = 0;
+  BossShooterKind kind = BossShooterKind::prepare;
+  std::uint32_t key = 0;
+  std::int32_t asked = -1;
+  std::int32_t index = -1;
+  std::array<std::uint8_t, kBossShooterTail> tail{};
+  bool operator==(const BossShooterCall&) const = default;
+};
+struct BossShooterCalls {
+  std::uint32_t seq = 0;  // the newest call's seq (0: none yet)
+  std::vector<BossShooterCall> recent;
+  bool operator==(const BossShooterCalls&) const = default;
+};
+// The bytes of a call's tail that go on the wire.
+constexpr std::size_t BossShooterTailOnWire(BossShooterKind kind) {
+  return kind == BossShooterKind::prepare ? kBossShooterPrepareTail
+       : kind == BossShooterKind::shoot   ? kBossShooterShootTail
+                                          : 0;
+}
+
 // Components 25-28 (protocol 18, sync plan S1): keyed values of an object (25 its AI blackboard; 26-28 a room's) (docs/protocol.md "Keyed
 // values"). A key is an owner (u64: a placement hash, or 0 for the object itself) and a name (u32: Murmur3 of the
 // game's own name for it: a blackboard key, a plug, a word, an event). The server keeps one merged list per component in the object's
@@ -1088,6 +1125,7 @@ struct ObjectState {
   std::optional<KeyedValues> plugs;
   std::optional<KeyedValues> clocks;
   std::optional<KeyedValues> events;
+  std::optional<BossShooterCalls> shooter;          // rows 222, 286: its Shooter's calls (component 30)
   bool operator==(const ObjectState&) const = default;
 };
 // The server's keep rule for components 25-28: each of s's keyed lists merged onto kept's (MergeKeyed); a list s

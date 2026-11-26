@@ -27,6 +27,8 @@
 #include <optional>
 #include <vector>
 
+#include "coop/protocol/messages.hpp"
+
 namespace CoopBossShooter {
 
 namespace addr {
@@ -51,27 +53,16 @@ inline constexpr std::size_t kShootTailSize = 0x20;                             
 inline constexpr std::size_t kTailSize = kPrepareTailSize;
 inline constexpr std::size_t kMaxShots = 8;  // in one sample
 
-enum class Kind : std::uint8_t { prepare = 1, shoot = 2, sleep = 3 };
+using Kind = coop::protocol::BossShooterKind;
 constexpr bool ValidKind(std::uint8_t k) { return k >= 1 && k <= 3; }
 
-// One call the owner's game took. `asked`: the index the caller asked (prepare: -1 = the first free one; shoot and
-// sleep: the record). `index`: prepare's answer, the record it took (else as asked). tail: the params' plain
-// words (prepare: kPrepareTail on; shoot: kShootTail on, the rest 0; sleep: 0). seq: the owner's count for this
-// boss, from 1.
-struct Shot {
-    std::uint32_t seq = 0;
-    Kind kind = Kind::prepare;
-    std::uint32_t key = 0;
-    std::int32_t asked = -1;
-    std::int32_t index = -1;
-    std::array<std::uint8_t, kTailSize> tail{};
-    bool operator==(const Shot&) const = default;
-};
-struct Shots {
-    std::uint32_t seq = 0;  // the newest shot's seq (0: none yet; sent all the same, so a copy knows its owner)
-    std::vector<Shot> recent;  // the newest kMaxShots, oldest first
-    bool operator==(const Shots&) const = default;
-};
+// One call the owner's game took, and the owner's list (OBJECT_SAMPLE component 30, coop::protocol: `asked`, `index`,
+// `tail` and `seq` as there).
+using Shot = coop::protocol::BossShooterCall;
+using Shots = coop::protocol::BossShooterCalls;
+static_assert(kTailSize == coop::protocol::kBossShooterTail);
+static_assert(kShootTailSize == coop::protocol::kBossShooterShootTail);
+static_assert(kMaxShots == coop::protocol::kMaxBossShooterCalls);
 
 // The owner's list after one more call (seq + 1, the oldest dropped past kMaxShots).
 void Add(Shots& mine, Kind kind, std::uint32_t key, std::int32_t asked, std::int32_t index,
