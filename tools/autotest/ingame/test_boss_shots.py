@@ -2,8 +2,8 @@
 
 | Test | Old row (scenario + run script) | Kind |
 |---|---|---|
-| test_twinrova_shots | row-222-shots-twinrova.{steps,A,B}.txt + offline/row-222-shooter-run.ps1 | log (counts, bullets) + kept shots |
-| test_phantom_ganon_shots | row-286-shots-phantomganon.{steps,A,B}.txt + the same run script | log (counts, bullets) + kept shots |
+| test_twinrova_shots | row-222-shots-twinrova.{steps,A,B}.txt + offline/row-222-shooter-run.ps1 | log (counts, bullets) + LOOK (paired shots on each game) |
+| test_phantom_ganon_shots | row-286-shots-phantomganon.{steps,A,B}.txt + the same run script | log (counts, bullets) + LOOK (paired shots on each game) |
 
 Old and new judge the same thing: each old `lines` check of the .steps.txt is an assert with the SAME pattern, and the
 run script's judge (offline/row-222-shooter-run.ps1, judge block) is `judge_shots` below:
@@ -18,14 +18,14 @@ Waits: the old scripts count TICKS, 60 a second (hookshot.py TICKS); the bridge 
 (pair.FPS), so every old wait / hold is ticks // 2 frames here (`fr`). The old title + save load part (wait 1200,
 press A x4, wait 2400 up to mark a-in) is gone: the lane is in play already; each test starts at the old mark a-in.
 
-Shots: the old run kept paired shots for the owner (a-p1-NN, f-NN, p2-NN on both games at the same moment). A boss
-fight never looks the same twice, so they are not compared to a reference (no `look` marker, no NO-REF): each is a
-bridge shot of the game's framebuffer, kept under <out>/lane<L>/shots-kept/<test>/ and listed in the test's notes.
-The row is judged by the log only, as the old run script judged it.
+Shots (B #130 word 3, 09:43): the boss attacks are user-facing, so every paired shot of the old run (a-p1-NN, f-NN,
+p2-NN on both games at the same moment, and its 'shot end') is a `pair.check_shot` per game, compared to refs/ by the
+harness (tolerance 0.80: a scene with moving things, docs/ingame-tests.md step 6, as boss-respawn's rocks). The first run
+gives NO-REF candidates (<out>/lane<L>/new/); only a reviewer who looked at them adopts them into refs/. The log and
+state judge comes FIRST: a look miss is collected and asserted after it, so a row FAIL always says which one.
 """
 import os
 import re
-import shutil
 import sys
 
 import pytest
@@ -89,33 +89,30 @@ def act_both(pair, line):
         act_note(pair, x, line)
 
 
-class Kept:
-    """The paired shots the old run kept for the owner (A's marks shot both games: hookshot.py shooter()). A shot runs
-    its game up to 5 frames (docs/playtest.md `shot`): the game that ran fewer is stepped to the same count."""
+class Shots:
+    """The row's paired shots through Pair.check_shot (A's marks shot both games in the old run: hookshot.py shooter()).
+    A shot runs its game up to 5 frames (docs/playtest.md `shot`): the game that ran fewer is stepped to the same
+    count. A look miss does not stop the test: it is kept (Pair.shots, ok false) and asserted by check() at the end."""
+    TOLERANCE = 0.80   # moving scene (docs/ingame-tests.md "Porting" step 6; boss-respawn-bridge rocks 0.80)
 
     def __init__(self, pair, test):
-        self.pair, self.paths = pair, []
-        self.dir = os.path.join(pair.out_dir, "shots-kept", test) if pair.out_dir else None   # (out_dir = <out>/lane<L>)
+        self.pair, self.test, self.missed = pair, test, []
 
     def both(self, name):
-        adv = {}
+        before = {x: self.pair.c[x].last_frame or 0 for x in ("A", "B")}
         for x in ("A", "B"):
-            r = self.pair.call(x, "shot", name="%s-%s" % (name, x))
-            adv[x] = int(r.get("advanced") or 0)
-            path = r.get("path")
-            if path and self.dir and os.path.exists(path):
-                os.makedirs(self.dir, exist_ok=True)
-                dst = os.path.join(self.dir, os.path.basename(path))
-                shutil.copyfile(path, dst)
-                path = dst
-            self.paths.append(path)
-        top = max(adv.values())
-        for x, n in adv.items():
+            try:
+                self.pair.check_shot(x, "%s-%s" % (self.test, name), tolerance=self.TOLERANCE)
+            except AssertionError as e:
+                self.missed.append(str(e))
+        ran = {x: (self.pair.c[x].last_frame or 0) - before[x] for x in ("A", "B")}
+        top = max(ran.values())
+        for x, n in ran.items():
             if top > n:
                 self.pair.step_other(x, top - n)
 
-    def note(self):
-        self.pair.notes.append("%d kept shots in %s" % (len(self.paths), self.dir or "(the games' playtest/shots)"))
+    def check(self):
+        assert not self.missed, "%d look miss(es): %s" % (len(self.missed), "; ".join(self.missed[:4]))
 
 
 # -- judging ----------------------------------------------------------------------------------------------------
@@ -194,11 +191,12 @@ TWINROVA_JUDGED = ("Twinrova_Bullet_FireBullet", "Twinrova_Bullet_FireField", "T
 
 
 @pytest.mark.budget(900)        # the old row's '#! timeout 900' (row-222-shots-twinrova.A.txt:13); ~11400 frames here
+@pytest.mark.look
 @pytest.mark.needs_env(*SWITCHES)
 @pytest.mark.row("#222 Twinrova's shots are the owner's in both games (row-222-shots-twinrova)")
 def test_twinrova_shots(pair):
     base = counts_before(pair)
-    kept = Kept(pair, "twinrova")
+    shots = Shots(pair, "twinrova")
     with pair.setup():
         need_in_play(pair)
         shooter_on(pair)
@@ -214,7 +212,7 @@ def test_twinrova_shots(pair):
     hold_both(pair, ["ZL"], fr(240))                  # 'hold ZL 240'
     for i in range(1, 11):                            # 'hold ZL 90 a-p1-NN' + 'wait 510' (none after the 10th)
         hold_both(pair, ["ZL"], fr(90))
-        kept.both("a-p1-%02d" % i)
+        shots.both("a-p1-%02d" % i)
         if i < 10:
             pair.step_both(fr(510))
     act_both(pair, "kill Enemy_DungeonBoss_Koume")    # 'kill Enemy_DungeonBoss_Koume', 'wait 60'
@@ -227,10 +225,11 @@ def test_twinrova_shots(pair):
     hold_both(pair, ["ZL"], fr(240))                  # 'hold ZL 240'
     for i in range(1, 25):                            # 'hold ZL 90 f-NN' + 'wait 60' (A.txt: 24 of them)
         hold_both(pair, ["ZL"], fr(90))
-        kept.both("f-%02d" % i)
+        shots.both("f-%02d" % i)
         pair.step_both(fr(60))
-    kept.note()
     judge_shots(pair, base, TWINROVA_JUDGED, r"Twinrova_Bullet_\w+")
+    shots.both("end")                                 # the .steps.txt 'shot end'
+    shots.check()
     for x in ("A", "B"):
         pair.never_log(x, CRASH)
 
@@ -243,11 +242,12 @@ PG_JUDGED = ("DungeonBossPhantomGanon_Bullet_LightBall",)
 
 
 @pytest.mark.budget(900)        # the old row's '#! timeout 900' (row-286-shots-phantomganon.A.txt:9); ~8700 frames here
+@pytest.mark.look
 @pytest.mark.needs_env(*SWITCHES)
 @pytest.mark.row("#286 Phantom Ganon's light balls are the owner's in both games (row-286-shots-phantomganon)")
 def test_phantom_ganon_shots(pair):
     base = counts_before(pair)
-    kept = Kept(pair, "phantomganon")
+    shots = Shots(pair, "phantomganon")
     with pair.setup():
         need_in_play(pair)
         shooter_on(pair)
@@ -282,9 +282,10 @@ def test_phantom_ganon_shots(pair):
     pair.act("B", "face 0.00 -63.00")
     for i in range(1, 25):
         hold_both(pair, ["ZL"], fr(90))
-        kept.both("p2-%02d" % i)
+        shots.both("p2-%02d" % i)
         pair.step_both(fr(210))
-    kept.note()
     judge_shots(pair, base, PG_JUDGED, r"\w*PhantomGanon_Bullet_\w+")
+    shots.both("end")                                 # the .steps.txt 'shot end'
+    shots.check()
     for x in ("A", "B"):
         pair.never_log(x, CRASH)

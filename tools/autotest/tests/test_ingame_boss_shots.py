@@ -29,12 +29,22 @@ class BossShots(unittest.TestCase):
         p = pytest_run(["test_boss_shots.py", "--fake", "--no-rerun", "--out", out, "-q"] + list(more), env=env)
         return p, summary(out)
 
-    def test_pass_with_the_switches(self):
-        p, s = self.run_bosses("ok", more=self.ENV)
+    def test_no_ref_then_pass_with_refs(self):
+        """First run: the log judge holds, the shots are NO-REF candidates (never PASS); a reviewer adopts them into
+        refs/ (here: all) and the next run PASSes, comparing every paired shot + 'shot end' on each game."""
+        p, s = self.run_bosses("first", env={"BT_FAKE_REFS": os.path.join(self.tmp, "refs")}, more=self.ENV)
+        self.assertEqual(results(s), {"test_twinrova_shots": "NO-REF", "test_phantom_ganon_shots": "NO-REF"},
+                         p.stdout[-2000:])
+        new = os.path.join(self.tmp, "first", "lane1", "new")
+        self.assertEqual(len(os.listdir(new)), 2 * (10 + 24 + 1) + 2 * (24 + 1))
+        os.makedirs(os.path.join(self.tmp, "refs"))
+        for f in os.listdir(new):
+            shutil.copyfile(os.path.join(new, f), os.path.join(self.tmp, "refs", f))
+        p, s = self.run_bosses("ok", env={"BT_FAKE_REFS": os.path.join(self.tmp, "refs")}, more=self.ENV)
         self.assertEqual(results(s), {"test_twinrova_shots": "PASS", "test_phantom_ganon_shots": "PASS"}, p.stdout[-2000:])
-        kept = os.path.join(self.tmp, "ok", "lane1", "shots-kept")     # the old run's paired shots, both games
-        self.assertEqual(len(os.listdir(os.path.join(kept, "twinrova"))), 2 * (10 + 24))
-        self.assertEqual(len(os.listdir(os.path.join(kept, "phantomganon"))), 2 * 24)
+        shots = [sh for r in s["tests"] for sh in r["shots"]]
+        self.assertEqual(len(shots), 2 * 35 + 2 * 25)
+        self.assertTrue(all(sh["ok"] for sh in shots))
 
     def test_fail_when_the_copy_makes_none(self):
         p, s = self.run_bosses("none", env={"BT_FAKE_BOSS_ONE_SIDED": "1"}, more=self.ENV)
