@@ -905,7 +905,7 @@ TEST_CASE("story: a gift spot the seed gives another item is never held nor mend
     CHECK_FALSE(CoopStory::GiftShuffled(CoopStory::kGiftsMax));
 }
 
-TEST_CASE("story: the clock gate's two flags are on no shared list (docs/time.md, Clock gate; C6-2)") {
+TEST_CASE("story: the clock gate's two flags are on no shared list (docs/time.md Clock gate, C6-2)") {
     // Longshot 3.2's oot_first_night_fix clears HrlField_HasEnteredFirstTime_Adult in a game outside
     // Hyrule Field; that clear must stay in that game and never lift another game's first-night lock.
     // Every list coop_hook.cpp joins at the session start, with every switch on.
