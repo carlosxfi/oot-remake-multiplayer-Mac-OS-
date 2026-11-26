@@ -110,12 +110,18 @@ class Log:
         return None
 
 
-def lane_check(kit_ls, lane):
+NOCS = "-nocs"                       # lane<N>-B-nocs: lane B's game without Character Select (lanes.py nocs)
+CS_MOD = "OoT Character Select"
+
+
+def lane_check(kit_ls, lane, nocs=False):
     """The lane's setup proof, the Python twin of offline/lib/lane-server.ps1 + lane-pair.ps1 (one source of the rule:
-    both read lane-server.txt as offline/lane-game-for.ps1 writes it). Returns {server, commit, dll_sha256}; raises
-    SetupFail with the first thing wrong."""
+    both read lane-server.txt as offline/lane-game-for.ps1 writes it). Returns {server, commit, dll_sha256, game_b};
+    raises SetupFail with the first thing wrong. nocs: game B is lane<N>-B-nocs (lanes.py nocs), whose own
+    lane-server.txt must name the same module, commit and server as lane<N>-B's and whose game has no Character
+    Select code (only its exefs= line differs: nocs_check)."""
     got = {}
-    for x in ("A", "B"):
+    for x in ("A", "B") + (("B" + NOCS,) if nocs else ()):
         d = os.path.join(kit_ls, "lane%d-%s" % (lane, x))
         f = os.path.join(d, "lane-server.txt")
         try:
@@ -142,7 +148,11 @@ def lane_check(kit_ls, lane):
         if have_p != want_p:
             raise SetupFail("lane%d-%s game patches line %s is not lane-server.txt's %s (the game was rebuilt after the "
                             "lane's install)" % (lane, x, have_p[:8] or "(none)", want_p[:8]))
-        got[x] = {"server": srv, "commit": commit, "dll_sha256": want, "patches": want_p}
+        got[x] = {"server": srv, "commit": commit, "dll_sha256": want, "patches": want_p, "folder": d,
+                  "nocs_of": field("nocs_of")}
+    if nocs:
+        nocs_check(got["B"], got["B" + NOCS], lane)
+        got["B"] = got["B" + NOCS]
     a, b = got["A"], got["B"]
     if a["dll_sha256"] != b["dll_sha256"]:
         raise SetupFail("lane%d A/B module differ: %s vs %s" % (lane, a["dll_sha256"][:16], b["dll_sha256"][:16]))
@@ -152,7 +162,42 @@ def lane_check(kit_ls, lane):
         raise SetupFail("lane%d A and B name different servers (%s / %s)" % (lane, a["server"], b["server"]))
     if not os.path.exists(a["server"]):
         raise SetupFail("no server %s (lane%d lane-server.txt)" % (a["server"], lane))
-    return a
+    return dict({k: v for k, v in a.items() if k not in ("folder", "nocs_of")}, game_b=b["folder"],
+                game_b_exefs=_exefs_line(os.path.join(b["folder"], "coop-built-from.txt")))
+
+
+def _exefs_line(path):
+    """coop-built-from.txt's exefs= line (the mods' code patches the game was built with), '' when it has none."""
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
+            return next((ln.rstrip("\r\n") for ln in f if ln.startswith("exefs=")), "")
+    except OSError:
+        return ""
+
+
+def nocs_check(b, n, lane):
+    """lane<N>-B-nocs is lane<N>-B's game without Character Select: made by lanes.py nocs from THIS lane B (nocs_of),
+    the same module, commit and server, and a game whose code patches and code-patch list name no Character Select."""
+    tag = "lane%d-B%s" % (lane, NOCS)
+    if os.path.normcase(n["nocs_of"]) != os.path.normcase(os.path.basename(b["folder"])):
+        raise SetupFail("%s lane-server.txt has nocs_of=%s, not %s (made by lanes.py nocs --lane %d?)"
+                        % (tag, n["nocs_of"] or "(none)", os.path.basename(b["folder"]), lane))
+    for k in ("dll_sha256", "commit", "server"):
+        if n[k] != b[k]:
+            raise SetupFail("%s %s %s is not lane%d-B's %s (lane B was installed again: lanes.py nocs --lane %d)"
+                            % (tag, k, n[k][:16], lane, b[k][:16], lane))
+    line = _exefs_line(os.path.join(n["folder"], "coop-built-from.txt"))
+    if CS_MOD.lower() in line.lower():
+        raise SetupFail("%s game was built with Character Select's code (%s)" % (tag, line[:80]))
+    try:
+        with open(os.path.join(n["folder"], "exefs_patches.txt"), encoding="utf-8", errors="replace") as f:
+            rows = [ln for ln in f if not ln.startswith("#") and ln.lower().startswith(CS_MOD.lower() + "\t")]
+    except OSError:
+        rows = []
+    if rows:
+        raise SetupFail("%s exefs_patches.txt still lists Character Select's code patch" % tag)
+    if os.path.isdir(os.path.join(n["folder"], "mods", CS_MOD)):
+        raise SetupFail("%s still has mods/%s" % (tag, CS_MOD))
 
 
 def _sha256_file(path):
@@ -565,10 +610,29 @@ class Pair:
         return self.call(x, "act", lines=line)
 
     def give(self, x, item):
-        return self.call(x, "give", item=item)
+        return self._kept(x, "give", item=item)
 
     def flag(self, x, name, value=1):
-        return self.call(x, "flag", name=name, value=value)
+        return self._kept(x, "flag", name=name, value=value)
+
+    def _kept(self, x, cmd, **args):
+        """A set-up write (give, flag). The bridge reads it back after a few frames of game x (docs/playtest.md):
+        `did_not_stick` (the game put the old value back: a value it keeps elsewhere, as Link's life before
+        give-life-fix) is SETUP-FAIL at once, naming the flag; the other games are stepped by the frames x ran, so
+        the pair stays in step."""
+        before = self.c[x].last_frame or 0
+        try:
+            r = self.call(x, cmd, **args)
+        except pc.BridgeError as e:
+            if e.code == "did_not_stick":
+                raise SetupFail("%s: %s %s did not stick: %s" % (x, cmd, args.get("item") or args.get("name"),
+                                                                 e.reply.get("message"))) from e
+            raise
+        ran = max(0, (self.c[x].last_frame or before) - before)
+        for y in self.c:
+            if y != x and ran:
+                self.step_other(y, ran)
+        return r
 
     def flag_read(self, x, name):
         return self.call(x, "flag_read", name=name)

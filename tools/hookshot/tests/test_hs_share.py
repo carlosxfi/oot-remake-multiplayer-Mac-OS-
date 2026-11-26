@@ -197,5 +197,134 @@ class RomfsFromTest(Base):
         self.assertNotIn("-RomfsFrom", self.build_line(os.path.join(self.tmp, "romfs")))
 
 
+class RestoreSharedTest(Base):
+    """cache_restore: a pair whose romfs already is the cache's shared copy (its mark + file ids) is not walked again;
+    any doubt (no mark, another list, a missing or replaced file, a walk that did not end) = the full restore."""
+    STAMP = "release=v3.2.0\ncommit=%s\npatches=abc" % COMMIT
+
+    def setUp(self):
+        super().setUp()
+        self.entry = os.path.join(self.cache, hs.key_of(self.STAMP))
+        g = os.path.join(self.entry, hs.CACHE_GAME)
+        write(os.path.join(g, "longshot.exe"), "exe")
+        write(os.path.join(g, "coop-built-from.txt"), self.STAMP + "\n")
+        write(os.path.join(g, "romfs", "top.bin"), "top")
+        for i in range(30):
+            write(os.path.join(g, "romfs", "Scene", "s%02d.zs" % i), "scene %d" % i)
+        write(os.path.join(self.entry, "stamp.txt"), self.STAMP + "\n")
+        self.pair = os.path.join(self.tmp, "lane1-A")
+
+    def restore(self):
+        self.out.truncate(0)
+        self.out.seek(0)
+        self.assertTrue(hs.cache_restore(self.pair, want=self.STAMP, say=self.say))
+        return self.out.getvalue()
+
+    def same(self, *rel):
+        return os.path.samefile(os.path.join(self.entry, hs.CACHE_GAME, "romfs", *rel), os.path.join(self.pair, "romfs", *rel))
+
+    def test_first_restore_walks_and_marks_the_second_does_not_walk(self):
+        log = self.restore()
+        self.assertIn("full romfs walk (no %s" % hs.ROMFS_MARK, log)
+        self.assertTrue(os.path.isfile(os.path.join(self.pair, hs.ROMFS_MARK)))
+        digest, rows = hs.romfs_manifest(self.entry)
+        self.assertEqual(len(rows), 31)
+        self.assertIn("digest=%s" % digest, read(os.path.join(self.pair, hs.ROMFS_MARK)))
+        self.assertTrue(self.same("Scene", "s07.zs"))
+        walked = []
+        real = hs.same_file
+
+        def watch(a, b):
+            walked.append(a)
+            return real(a, b)
+        hs.same_file = watch   # (copy_tree asks it for every romfs file it walks)
+        try:
+            log = self.restore()
+        finally:
+            hs.same_file = real
+        self.assertIn("romfs already the cache's shared copy", log)
+        self.assertIn("not walked", log)
+        self.assertEqual([w for w in walked if os.sep + "romfs" + os.sep in w], [])
+        os.remove(os.path.join(self.pair, hs.ROMFS_MARK))   # (without the mark the same pair is walked: the probe works)
+        hs.same_file = watch
+        try:
+            self.assertIn("full romfs walk (no %s" % hs.ROMFS_MARK, self.restore())
+        finally:
+            hs.same_file = real
+        self.assertEqual(len([w for w in walked if os.sep + "romfs" + os.sep in w]), 31)
+
+    def test_a_missing_top_level_file_means_the_full_restore(self):
+        self.restore()
+        os.unlink(os.path.join(self.pair, "romfs", "top.bin"))
+        log = self.restore()
+        self.assertIn("full romfs walk (the top-level romfs names differ)", log)
+        self.assertTrue(self.same("top.bin"))
+
+    def test_a_sampled_file_replaced_by_a_copy_means_the_full_restore(self):
+        self.restore()
+        hs.ROMFS_SAMPLE, old = 1000, hs.ROMFS_SAMPLE   # (every file is sampled in this small romfs)
+        try:
+            f = os.path.join(self.pair, "romfs", "Scene", "s13.zs")
+            os.unlink(f)
+            shutil.copy2(os.path.join(self.entry, hs.CACHE_GAME, "romfs", "Scene", "s13.zs"), f)
+            log = self.restore()
+        finally:
+            hs.ROMFS_SAMPLE = old
+        self.assertIn("Scene/s13.zs in %s is not the cache's file" % os.path.join(self.pair, "romfs"), log)
+        self.assertTrue(self.same("Scene", "s13.zs"))   # (the full walk made it a link again)
+
+    def test_a_missing_sampled_file_means_the_full_restore(self):
+        self.restore()
+        hs.ROMFS_SAMPLE, old = 1000, hs.ROMFS_SAMPLE
+        try:
+            os.unlink(os.path.join(self.pair, "romfs", "Scene", "s02.zs"))
+            log = self.restore()
+        finally:
+            hs.ROMFS_SAMPLE = old
+        self.assertIn("Scene/s02.zs missing in", log)
+        self.assertTrue(self.same("Scene", "s02.zs"))
+
+    def test_a_walk_that_does_not_end_leaves_no_mark(self):
+        self.restore()
+        os.unlink(os.path.join(self.pair, "romfs", "top.bin"))   # (forces a walk)
+        real = hs.copy_tree
+
+        def broken(*a, **k):
+            raise OSError("stopped in the middle")
+        hs.copy_tree = broken
+        try:
+            with self.assertRaises(OSError):
+                hs.cache_restore(self.pair, want=self.STAMP, say=self.say)
+        finally:
+            hs.copy_tree = real
+        self.assertFalse(os.path.exists(os.path.join(self.pair, hs.ROMFS_MARK)))
+        self.assertIn("full romfs walk (no %s" % hs.ROMFS_MARK, self.restore())
+
+    def test_a_mark_of_another_list_or_a_broken_list_means_the_full_restore(self):
+        self.restore()
+        write(os.path.join(self.pair, hs.ROMFS_MARK), "digest=%s\n" % ("0" * 64))
+        self.assertIn("the pair's mark names another romfs list", self.restore())
+        with open(os.path.join(self.entry, hs.ROMFS_MANIFEST), "a", encoding="utf-8") as f:
+            f.write("Scene/extra.zs\t1\t1\n")   # (the list no longer matches its digest: not trusted)
+        self.assertIn("the cache entry has no %s yet" % hs.ROMFS_MANIFEST, self.restore())
+        self.assertIn("not walked", self.restore())   # (the walk made the list again)
+
+    def test_progress_lines_while_walking(self):
+        hs.PROGRESS_EVERY, old = 10, hs.PROGRESS_EVERY
+        try:
+            log = self.restore()
+        finally:
+            hs.PROGRESS_EVERY = old
+        self.assertIn("%s: 10 files looked at..." % self.pair, log)
+        self.assertIn("%s: 30 files looked at..." % self.pair, log)
+
+    def test_the_mark_is_never_stored_into_the_cache(self):
+        self.restore()
+        self.assertIn(hs.ROMFS_MARK, hs.PER_PLAYER)
+        other = os.path.join(self.tmp, "stored")
+        hs.copy_tree(self.pair, other, say=self.say)
+        self.assertFalse(os.path.exists(os.path.join(other, hs.ROMFS_MARK)))
+
+
 if __name__ == "__main__":
     unittest.main()

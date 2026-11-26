@@ -253,6 +253,18 @@ std::string BodyMember(const std::optional<CoopWorldSnapshot::Snapshot>& snapsho
 // was old). No reply at all (no control bridge) is not a refusal: nothing can be told, and the write is safe there.
 std::string GiveRefusal(const CoopModJson::Value* status);
 
+// The read-back of a `give` or a `flag` write (give-life-fix, 2026-11-26): a value the game keeps elsewhere (our Link's
+// Life component, of which PlayerStatus.Life/MaxLife are only the mirror) is put back by the game's next frame, and the
+// write looked done while it was lost. Each flag the call wrote is read before it, right after it, and after
+// kStickFrames frames. One "did not stick" when the write changed the value and those frames put the old one back
+// (a value the game moved on to a third value is its own use, not a lost write); "" when every write kept.
+inline constexpr int kStickFrames = 2;
+struct StickRead {
+    std::string name;
+    std::optional<std::int32_t> before, written, after;
+};
+std::string StickProblem(const std::vector<StickRead>& reads, int frames = kStickFrames);
+
 // `warp`: two ways to change scene. While an event runs, the module's own request (`Sequence_ReservedNextBanc`, the test
 // script's `warp`; the game takes it only then, docs/scenes.md "Free-play scene change"). In free play, Longshot's control
 // bridge `teleport` (the Cheats page's destination list; the game takes it at Link's next update; the way hookshot.py's

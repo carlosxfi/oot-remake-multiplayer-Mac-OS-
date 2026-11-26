@@ -20,6 +20,12 @@ namespace {
 constexpr std::uint64_t kMain = 0x80020000;
 
 struct FakeGame final : ui::Game {
+    // A pretend game in play: the game's play UI is up (patch 0018's HUD screen ran since the last load), so its
+    // listed screens are live (CoopNativeUi::ScreenLive, party-hud-crash-c126).
+    FakeGame() {
+        CoopNativeUi::SetSceneLoading(false);
+        CoopNativeUi::SetRunningScreens(std::vector<std::uint64_t>{}, true);
+    }
     std::map<std::uint64_t, std::uint8_t> mem;
     struct Made {
         std::uint64_t function;
