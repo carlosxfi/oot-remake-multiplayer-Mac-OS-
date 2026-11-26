@@ -134,11 +134,18 @@ class FakeGame:
             h(self, st)
         return st
 
+    def age(self):
+        """Link's age, from the game's own flag as the real game keeps it (Sequence_IsChildhood: 1 child, 0 adult;
+        unset = a child save). The ONE place a fake game's age comes from: a fake hook changes the flag (setflag, or
+        its boot's save in setup), never st['age'] for every boot (dbno_crawl.py did, so row 286's adult boot read
+        child: integrate-0120-4 18:59)."""
+        return "adult" if self.flags.get("Sequence_IsChildhood", 1) in (0, False) else "child"
+
     def base_state(self):
         live = self.in_play()
         return {"frame": self.frame, "paused": self.paused, "scene": self.scene if not self.at_title else None,
                 "pos": list(self.pos) if live else None, "facing": self.facing if live else None,
-                "age": "child" if live else None, "loading": False if live else None, "event": self.event if live else None,
+                "age": self.age() if live else None, "loading": False if live else None, "event": self.event if live else None,
                 "not_ready": None if live else "no fresh Link sample", "control": True,
                 "equips": {"weapon": "KokiriSword", "shield": None, "head": self.head, "armor": "Kokiri", "boots": "Normal"},
                 "coop": {"players": [{"number": 1, "name": "A", "state": "connected"},

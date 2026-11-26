@@ -36,7 +36,7 @@ def setup(game):
 
 
 def adult(game):
-    return game.flags.get("Sequence_IsChildhood", 1) in (0, False)
+    return game.age() == "adult"   # (fakegame.age: the one source of a fake game's age)
 
 
 def say_rules(game):
@@ -163,4 +163,3 @@ def state(game, st):
     if st.get("pos") is None:
         return
     st["life"] = game.dbno["life"]
-    st["age"] = "adult" if adult(game) else "child"
