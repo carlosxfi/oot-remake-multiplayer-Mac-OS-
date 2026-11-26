@@ -68,10 +68,10 @@ bool IsGear(Part p) {
            p != Part::hair && p != Part::link_gear && p != Part::link_vest && p != Part::link_leather &&
            !CoopLook::IsCharacterPart(p);
     // (look-link-cs: Link's new parts have no gear texture here, so none is a gear piece: a 0.11.12 look keeps its
-    // painting's name (16 pieces) and a set leather makes no painting that paints nothing; leather-link brings the
-    // leather in with its textures. vest-link: the vest is the TUNIC wardrobe's, as the Cap trim (its textures are
-    // tunic textures, green.bin: TunicPainted), so no gear painting is made for it. hair-link: the hair is painted
-    // with the gear (Painted, HairRecolour) but named last and only when set (Name), so a 0.11.12 look keeps its names.)
+    // painting's name (16 pieces) and a set vest or leather makes no painting that paints nothing. vest-link: the
+    // vest is the TUNIC wardrobe's, as the Cap trim (its textures are tunic textures, green.bin: TunicPainted), so no
+    // gear painting is made for it. leather-link brings the leather in with its textures, named last and only when
+    // set; hair-link the hair the same way.)
 }
 }  // namespace
 

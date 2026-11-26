@@ -207,7 +207,7 @@ std::size_t GearCapTextures(const Cap& cap);
 struct TunicPaint {
     std::optional<std::uint32_t> tunic;
     std::optional<std::uint32_t> cap;
-    std::optional<std::uint32_t> vest;
+    std::optional<std::uint32_t> vest = std::nullopt;
     bool operator==(const TunicPaint&) const = default;
 };
 
