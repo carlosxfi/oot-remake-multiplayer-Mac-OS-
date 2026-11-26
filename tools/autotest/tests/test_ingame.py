@@ -154,6 +154,35 @@ class Labels(unittest.TestCase):
         self.assertEqual(r, {"test_smoke_ok": "PASS", "test_smoke_bad": "FAIL"})
 
 
+class LaneCheckOnly(unittest.TestCase):
+    """--lane-check-only: the setup proof without a boot (no test runs, no summary.json)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_fake_lane_ok(self):
+        out = os.path.join(self.tmp, "o")
+        p = pytest_run([".", "--fake", "--lane-check-only", "--out", out, "-q"])
+        self.assertEqual(p.returncode, 0, p.stdout[-2000:])
+        self.assertIn("RESULT: SETUP-ONLY OK", p.stdout)
+        with open(os.path.join(out, "setup.json"), encoding="utf-8") as f:
+            s = json.load(f)
+        self.assertTrue(s["ok"])
+        self.assertEqual(s["collected"], 11)
+        self.assertFalse(os.path.exists(os.path.join(out, "summary.json")))
+
+    def test_real_lane_needs_expect_commit(self):
+        out, ls = os.path.join(self.tmp, "o"), os.path.join(self.tmp, "ls")   # (an empty lanes folder)
+        os.makedirs(ls)
+        p = pytest_run([".", "--lane-check-only", "--kit-ls", ls, "--out", out, "-q"])
+        self.assertEqual(p.returncode, 1, p.stdout[-2000:])
+        self.assertIn("RESULT: SETUP-FAIL", p.stdout)
+        self.assertIn("lane-server.txt", p.stdout)       # lane_check first: the lane is not installed
+
+
 class SetupLimit(unittest.TestCase):
     """Pair.setup's 30 s limit holds for the calls inside it (review-c123-6 point 2): a hung bridge in a set-up is a
     SETUP-FAIL at the limit, not a FAIL at the test's budget. A fake clock: no real waiting."""

@@ -11,7 +11,8 @@ Maintainer only, like the rest of `tools/autotest`: it needs a test lane (`tools
 ## Running
 
 ```sh
-python -I -m pytest tools/autotest/ingame --lanes 1 --out <dir>                    # lane 1
+python -I -m pytest tools/autotest/ingame --lanes 1 --expect-commit <sha> --out <dir>   # lane 1
+python -I -m pytest tools/autotest/ingame --lanes 1 --expect-commit <sha> --lane-check-only --out <dir>  # setup proof, no boot
 python -I -m pytest tools/autotest/ingame -n 2 --lanes 1,2 --out <dir>             # both lanes at once
 python -I -m pytest tools/autotest/ingame -m smoke --lanes 1 --out <dir>           # the rc smoke tier only
 python -I -m pytest tools/autotest/ingame --lanes 1 --repeat 10 --no-smoke-gate --out <dir>   # flake rate
@@ -22,7 +23,9 @@ One game pair is booted per lane (`live.py start --lane L --playtest`, the lane'
 and every test of that lane runs on it. With `-n 2` xdist worker N takes the Nth lane of `--lanes`. Ports: lane L,
 player N on `5000 + 10*L + N` (playtest.md). The boot's setup proof is `pair.lane_check` (the same rule as
 `offline/lib/lane-server.ps1` + `lane-pair.ps1`: both games' module is the one installed, from the same patches
-build, the server exists), then `hello` on both bridges with Longshot's control answering.
+build, the server exists), then `hello` on both bridges with Longshot's control answering. `--expect-commit` (the lane's module sha, from
+`lane-server.txt`'s `commit=`) is required on a real lane. `--lane-check-only` runs that proof and the collection
+only (no boot, no test): one `SETUP-OK`/`SETUP-FAIL` line per lane, `<dir>/setup.json`, exit 0 only if all are OK.
 
 ## Results
 

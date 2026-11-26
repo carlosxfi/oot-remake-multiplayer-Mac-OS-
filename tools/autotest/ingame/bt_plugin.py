@@ -44,6 +44,9 @@ def pytest_addoption(parser):
     g.addoption("--kit-ls", default=None, help="the lanes folder (default: lanes.py's kit root + ls)")
     g.addoption("--expect-commit", default=None, help="SETUP-FAIL unless the lane's lane-server.txt commit starts so")
     g.addoption("--session-minutes", type=float, default=240, help="live.py --max-minutes of each lane's session")
+    g.addoption("--lane-check-only", action="store_true", help="the setup proof of every --lanes lane (lane_check + "
+                "--expect-commit + the tests collect; no game boot, no test run): one SETUP-OK/SETUP-FAIL line per "
+                "lane, OUT/setup.json; exit 0 only if every lane is OK (pytest's own --setup-only is another thing)")
 
 
 def pytest_configure(config):
@@ -75,6 +78,52 @@ def _rep_of(item):
 def pytest_collection_modifyitems(config, items):
     order = {id(it): i for i, it in enumerate(items)}
     items.sort(key=lambda it: (_rep_of(it), 0 if it.get_closest_marker("smoke") else 1, order[id(it)]))
+    if config.getoption("lane_check_only"):
+        _lane_check_only(config, items)
+
+
+def _real_lane_info(config, lane):
+    """A real lane's setup proof before any boot: lane-server.txt twin (P.lane_check) + the module commit."""
+    import lanes as L
+    kit_ls = config.getoption("kit_ls") or os.path.join(L.kit_root(), "ls")
+    info = P.lane_check(kit_ls, lane)
+    want = config.getoption("expect_commit")
+    if not want:
+        raise P.SetupFail("--expect-commit is required on a real lane (worker-rules SETUP PROOF: the right module sha)")
+    if not info["commit"].startswith(want):
+        raise P.SetupFail("lane%d runs commit %s, not %s" % (lane, info["commit"], want))
+    return info
+
+
+def _lane_check_only(config, items):
+    lanes = [int(x) for x in str(config.getoption("lanes")).split(",") if x.strip()]
+    res = {"collected": len(items), "smoke": sum(1 for it in items if it.get_closest_marker("smoke")),
+           "look": sum(1 for it in items if it.get_closest_marker("look")), "lanes": {}}
+    for lane in lanes:
+        try:
+            if config.getoption("fake"):
+                info = {"fake": True}
+            else:
+                info = _real_lane_info(config, lane)
+            res["lanes"][str(lane)] = dict(info, ok=True)
+        except P.SetupFail as e:
+            res["lanes"][str(lane)] = {"ok": False, "why": str(e)}
+    res["ok"] = bool(lanes) and bool(items) and all(v["ok"] for v in res["lanes"].values())
+    out = config.getoption("out") or os.path.join(os.getcwd(), "ingame-out")
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(out, "setup.json"), "w", encoding="utf-8") as f:
+        json.dump(res, f, indent=1)
+    tr = config.pluginmanager.get_plugin("terminalreporter")
+    say = tr.write_line if tr else print
+    for lane, v in res["lanes"].items():
+        say("lane%s %s %s" % (lane, "SETUP-OK" if v["ok"] else "SETUP-FAIL",
+                              ("commit %s dll %s" % (v.get("commit"), (v.get("dll_sha256") or "")[:16])) if v["ok"]
+                              and not v.get("fake") else v.get("why", "fake")))
+    say("tests collected %d (smoke %d, look %d); RESULT: %s" % (res["collected"], res["smoke"], res["look"],
+                                                               "SETUP-ONLY OK" if res["ok"] else "SETUP-FAIL"))
+    config._bt_setup = res
+    config.hook.pytest_deselected(items=list(items))
+    items[:] = []
 
 
 # -- the lane: one boot for every test this process runs -------------------------------------------------------
@@ -119,13 +168,8 @@ def lane_pair(request):
         pair.close()
         lanefake.close()
         return
-    import lanes as L
-    kit_ls = config.getoption("kit_ls") or os.path.join(L.kit_root(), "ls")
     t0 = time.monotonic()
-    info = P.lane_check(kit_ls, lane)                       # (SetupFail: every test of this lane is SETUP-FAIL)
-    want = config.getoption("expect_commit")
-    if want and not info["commit"].startswith(want):
-        raise P.SetupFail("lane%d runs commit %s, not %s" % (lane, info["commit"], want))
+    info = _real_lane_info(config, lane)                    # (SetupFail: every test of this lane is SETUP-FAIL)
     session = os.path.join(out, "session")
     started = _live(["start", "--session", session, "--lane", str(lane), "--playtest", "--server", info["server"],
                      "--env", "LICHII_COOP_PUPPET=1", "--env", "LICHII_COOP_TEST_TO_TITLE=1",
@@ -239,6 +283,9 @@ def pytest_sessionstart(session):
 
 def pytest_sessionfinish(session, exitstatus):
     config = session.config
+    if getattr(config, "_bt_setup", None) is not None:
+        session.exitstatus = 0 if config._bt_setup["ok"] else 1      # (--lane-check-only: no summary.json)
+        return
     if hasattr(config, "workerinput"):
         return     # (xdist: the controller writes the one summary)
     rows = config._bt_rows
