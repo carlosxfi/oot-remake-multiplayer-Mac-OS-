@@ -761,7 +761,13 @@ void StartModule() {
     // read from a kit's coop-options.ini only, a game with its coop-options.ini beside longshot.exe (the owner's
     // test pair, Nucleus instances) saved the look there and started without it: the chosen colours never came back.
     std::vector<std::string> part_errors;
-    Look worn = ReadParts(CoopTitle::LookText(), &part_errors);
+    // (LICHII_COOP_LOOK: an in-game test's parts instead of the settings', so a lane file's leftovers never count)
+    const char* env_look = std::getenv("LICHII_COOP_LOOK");
+    Look worn = ReadParts(env_look != nullptr ? EnvParts(env_look, &part_errors) : CoopTitle::LookText(), &part_errors);
+    if (env_look != nullptr) {
+        LOG_INFO(Core, "coop: look: the parts are LICHII_COOP_LOOK's ({}), not the settings': {} part(s) set", env_look,
+                 Wire(worn).size());
+    }
     worn[Part::tunic] = CoopHook::LoadSettings(ini, errors).color;
 
     g_textures = std::make_unique<GameTextures>();
