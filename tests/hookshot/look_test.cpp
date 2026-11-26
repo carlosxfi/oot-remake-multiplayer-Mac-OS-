@@ -981,7 +981,8 @@ TEST_CASE("look parts: every gear part has a texture, every texture once") {
             parts.insert(r.part);
         }
     }
-    CHECK(parts.size() == CoopLook::kParts - 11);   // (and a character's six: CoopCharColours, no texture of ours; Cap trim on hoods: a switch)
+    CHECK(parts.size() == CoopLook::kParts - 14);   // (and a character's six: CoopCharColours, no texture of ours; Cap trim on hoods: a switch;
+                                                    //  look-link-cs: Link's vest, leather (no gear texture yet: vest-link, leather-link) and equipment (a switch))
 }
 
 TEST_CASE("look parts: the gear painted in a look, a painting's name says its colours") {
