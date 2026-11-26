@@ -81,7 +81,7 @@ class SharedPad(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def game(self, mods, boot=""):
-        g = self.fakegame.FakeGame("A", os.path.join(self.tmp, "A"), 1, (), mods, boot)
+        g = self.fakegame.FakeGame("A", os.path.join(self.tmp, "A"), 1, (), mods, boot=boot)
         g.other = g   # (one game is enough here: its state reads the other's place)
         self.addCleanup(g.close)
         return g

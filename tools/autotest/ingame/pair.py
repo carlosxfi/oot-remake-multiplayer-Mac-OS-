@@ -216,6 +216,7 @@ class Pair:
         self.deadline = Deadline(3600)
         self.shots = []        # [{"game", "name", "path", "ref", "score", "ok"}] of the running test
         self.notes = []
+        self.window_shooter = None   # (x, path) -> path: window shots (windowshot.Shooter; the fake lane's own)
 
     # -- per test ---------------------------------------------------------------------------------------------
     def begin(self, seconds):
@@ -340,7 +341,7 @@ class Pair:
         waits for Link in the scene with NO event (coop_playtest_core.cpp WarpArrived), so it answers 'timeout' with
         Link already there; then a fresh state with that scene, no load AND an event running counts as the arrival,
         anything else raises. Each game's wait is ARRIVE_IN_EVENT_WAIT s, and every wait stays inside the deadline."""
-        for x in ("A", "B"):
+        for x in [y for y in ("A", "B") if y in self.c]:     # (a solo pair: A only)
             self.warp_one(x, scene, entrance, arrive_in_event)
         return {x: self.state(x) for x in self.c}
 
@@ -400,6 +401,27 @@ class Pair:
         if res["why"].startswith("NO-REF"):
             return res        # (the test goes on; bt_plugin labels it NO-REF at its end, never PASS)
         assert res["ok"], "shot %s-%s: %s" % (name, x, res["why"])
+        return res
+
+    def window_shot(self, x, name, tolerance=0.90):
+        """A WINDOW shot of game x: the screen's copy of its window, Longshot's ImGui overlays (co-op's map arrows, tabs,
+        name tags, its menu) included, which check_shot's bridge shot never has. Taken by self.window_shooter
+        (windowshot.Shooter: the shared offline/lib/screen-shot.ps1, raise + own-pid cover check), compared like
+        check_shot to refs/<name>-window-<x>.png. No reference: NO-REF, the candidate kept under <out>/new/. A covered,
+        failed or missing shot, or a pair without a shooter: SETUP-FAIL (never PASS). The window shows the last
+        frame the game presented: step the games first if the test needs a newer one."""
+        import imagecheck
+        if self.window_shooter is None:
+            raise SetupFail("window shot %s-%s: this pair has no window shooter" % (name, x))
+        wname = "%s-window" % name
+        path = os.path.join(self.out_dir or os.path.join(HERE, "out"), "window", "%s-%s.png" % (wname, x))
+        path = self.window_shooter(x, path)
+        ref = os.path.join(self.refs_dir or os.path.join(HERE, "refs"), "%s-%s.png" % (wname, x))
+        res = imagecheck.compare(path, ref, tolerance, keep_dir=self.out_dir)
+        self.shots.append(dict(res, game=x, name=wname, window=True))
+        if res["why"].startswith("NO-REF"):
+            return res
+        assert res["ok"], "window shot %s-%s: %s" % (wname, x, res["why"])
         return res
 
     def unproven(self, reason):

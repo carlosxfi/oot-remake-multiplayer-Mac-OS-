@@ -52,7 +52,7 @@ GATE = "Npc_Hylia_Soldier_003_GateOpen"
 
 
 class FakeGame:
-    def __init__(self, tag, folder, lane, env=(), fakes=(), boot=""):
+    def __init__(self, tag, folder, lane, env=(), fakes=(), solo_log=None, boot=""):
         self.tag, self.folder, self.lane, self.boot = tag, folder, lane, boot
         self.env, self.fakes = list(env), list(fakes)
         os.makedirs(os.path.join(folder, "playtest", "dumps"), exist_ok=True)
@@ -67,8 +67,11 @@ class FakeGame:
         open(self.log_path, "w").close()
         me, them = (1, 2) if tag == "A" else (2, 1)
         self.say("coop: multiplayer tab: test: to-title.now in %s starts the way back to the title" % folder)
-        self.say("coop: connected to 127.0.0.1")
-        self.say("coop: puppet: P%d CoopPuppet_Child_Green spawned after 120 ms" % them)
+        if solo_log:     # (bt_plugin --solo: game A alone, what the module logs with no server: solo.IDLE)
+            self.say(solo_log)
+        else:
+            self.say("coop: connected to 127.0.0.1")
+            self.say("coop: puppet: P%d CoopPuppet_Child_Green spawned after 120 ms" % them)
         if tag == "A":
             self.say("coop: drawing over Hookshot's picture")
         for h in hooks(self.fakes, "setup"):
@@ -284,10 +287,11 @@ class FakeGame:
 
 
 class FakeLane:
-    def __init__(self, out_dir, lane=1, env=(), fakes_dir=FAKES, boot=""):
+    def __init__(self, out_dir, lane=1, env=(), fakes_dir=FAKES, solo_log=None, boot=""):
         root = os.path.join(out_dir, "fake")
         mods = load_fakes(fakes_dir)
-        self.g = {x: FakeGame(x, os.path.join(root, "lane%d-%s" % (lane, x)), lane, env, mods, boot)
+        self.g = {x: FakeGame(x, os.path.join(root, "lane%d-%s" % (lane, x)), lane, env, mods, solo_log=solo_log,
+                              boot=boot)
                   for x in ("A", "B")}
         self.g["A"].other, self.g["B"].other = self.g["B"], self.g["A"]
         for h in hooks(mods, "lane"):
@@ -295,6 +299,20 @@ class FakeLane:
 
     def games(self):
         return {x: {"port": g.port, "folder": g.folder, "log": g.log_path} for x, g in self.g.items()}
+
+    def window_picture(self, x, path):
+        """The fake of a WINDOW shot (bt_plugin's fake Pair.window_shooter): game x's picture plus a bar the bridge
+        shot never has (Longshot's ImGui overlay is only in the window). Does not step the game."""
+        from PIL import Image, ImageDraw
+        g = self.g[x]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with g.lock:
+            g.picture(path)
+        with Image.open(path) as im:
+            im = im.convert("RGB")
+        ImageDraw.Draw(im).rectangle([200, 150, 300, 170], fill=(250, 200, 0))   # ("the overlay")
+        im.save(path)
+        return path
 
     def close(self):
         for g in self.g.values():

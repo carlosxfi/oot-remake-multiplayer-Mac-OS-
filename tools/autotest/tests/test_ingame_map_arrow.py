@@ -53,12 +53,16 @@ class MapArrow(unittest.TestCase):
         r = [(t["result"], t["why"]) for t in s["tests"] if t["test"].endswith("test_map_arrow_turns")]
         return r
 
-    def test_fake_no_ref_state_only(self):
+    def test_fake_no_ref_window_shots(self):
+        # (harness-c133's pair.window_shot is in: the arrows get WINDOW shots, NO-REF until the owner's refs; the old
+        # "judged by state only" NO-REF is gone)
         p, s = self.run_fake("ok")
         r = self.result(s)
         self.assertEqual(len(r), 1, (p.stdout, s))
         self.assertEqual(r[0][0], "NO-REF", r)
-        self.assertIn("state only", r[0][1])
+        self.assertIn("no stored reference for map-arrow-mini-0-window-A", r[0][1])
+        self.assertIn("map-arrow-page-3-window-A", r[0][1])
+        self.assertNotIn("state only", r[0][1])
 
     def test_deselected_without_pack(self):
         p, s = self.run_fake("nopack-arg", pack=False)

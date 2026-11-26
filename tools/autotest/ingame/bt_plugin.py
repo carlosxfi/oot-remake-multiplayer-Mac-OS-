@@ -33,6 +33,8 @@ sys.path.insert(0, AUTOTEST)
 import pair as P   # noqa: E402
 import testpack    # noqa: E402
 import testsave    # noqa: E402
+import solo        # noqa: E402
+import windowshot  # noqa: E402
 
 RESULTS = ("PASS", "FAIL", "FLAKY", "SETUP-FAIL", "NO-REF", "SKIP", "NOT-RUN")
 DEFAULT_BUDGET = 120
@@ -65,6 +67,16 @@ def pytest_runtest_makereport(item, call):
     rep.bt_kind = _exc_kind(call.excinfo.value) if call.excinfo is not None else None
 
 
+def _fake_window_shooter(lanefake):
+    """The fake lane's Pair.window_shooter. BT_FAKE_WINDOW_COVERED=A[,B] (selftest): that game's window is covered,
+    the SETUP-FAIL windowshot.Shooter gives for screen-shot.ps1's exit 3."""
+    def shoot(x, path):
+        if x in (os.environ.get("BT_FAKE_WINDOW_COVERED") or "").split(","):
+            raise P.SetupFail("window shot %s: not taken (exit 3: COVERED %s: fake cover)" % (x, path))
+        return lanefake.window_picture(x, path)
+    return shoot
+
+
 def pytest_addoption(parser):
     g = parser.getgroup("ingame")
     g.addoption("--lanes", default="1", help="test lanes, comma separated; xdist worker N takes the Nth")
@@ -90,6 +102,8 @@ def pytest_addoption(parser):
     g.addoption("--save", default=None, metavar="NAME", help="a save profile for this boot (testsave.py: "
                 "ingame/saves/NAME.py FLAGS set in both lane games' autotest-save before the boot, the baseline put "
                 "back after live.py stop); tests marked needs_save(NAME) run only with it")
+    g.addoption("--solo", action="store_true", help="the SOLO boot (solo.py): lane game A alone, no co-op session "
+                "(no server, no Host/Join); only tests marked needs_solo run, every other test is deselected")
     g.addoption("--pack-game", default=None, metavar="NUP", help="the game's .nup for a pack maker (default: the .nup "
                 "beside the kit root, kit_pair.find_game_file; the one lane-game-for.ps1:31 names)")
     g.addoption("--lane-check-only", action="store_true", help="the setup proof of every --lanes lane (lane_check + "
@@ -108,6 +122,7 @@ def pytest_configure(config):
                             "--env lacks them deselects it (named in the output and summary.json 'deselected')")
     config.addinivalue_line("markers", "needs_pack(*NAMES): pack files the test needs (testpack.py); a run whose "
                             "--pack lacks one deselects it")
+    config.addinivalue_line("markers", "needs_solo: the test runs on the SOLO boot only (solo.py, --solo)")
     config.addinivalue_line("markers", "needs_save(NAME): the save profile the test needs (testsave.py); a run "
                             "with another --save, or none, deselects it")
     config._bt_rows, config._bt_deselected, config._bt_pack, config._bt_game_b = [], [], {}, {}
@@ -115,6 +130,8 @@ def pytest_configure(config):
     if config.getoption("lane_check_only") and getattr(config.option, "numprocesses", None):
         raise pytest.UsageError("--lane-check-only runs in one process: leave out -n (it checks every --lanes lane)")
     boot_env(config)        # (a malformed --env stops the run before any boot)
+    if config.getoption("solo") and nocs_wanted(config):
+        raise pytest.UsageError("--solo boots game A only: %s (game B) does not go with it" % NOCS_ENV)
     if config.getoption("save") and not config.getoption("fake"):
         try:                # (a bad --save profile too: --lane-check-only shows it; fake runs SETUP-FAIL it per test)
             testsave.load(config.getoption("save"))
@@ -150,6 +167,10 @@ def pytest_collection_modifyitems(config, items):
 
 
 def _deselect_line(d):
+    if d.get("needs_solo"):
+        return "deselected: needs_solo %s" % d["test"]
+    if d.get("needs_pair"):
+        return "deselected: needs_pair (a --solo run) %s" % d["test"]
     if d.get("needs_save"):
         return "deselected: needs_save %s %s" % (d["needs_save"], d["test"])
     if d.get("needs_pack"):
@@ -175,7 +196,11 @@ def _deselect_needs_env(config, items):
         lack = [e for mk in it.iter_markers("needs_env") for e in mk.args if not env_has(have, e)]
         no_pack = sorted({n for mk in it.iter_markers("needs_pack") for n in mk.args} - packs)
         ms = it.get_closest_marker("needs_save")
-        if want != boot:
+        is_solo = it.get_closest_marker("needs_solo") is not None
+        if is_solo != bool(config.getoption("solo")):
+            config._bt_deselected.append({"test": it.nodeid, ("needs_solo" if is_solo else "needs_pair"): True,
+                                          "needs_env": lack})
+        elif want != boot:
             config._bt_deselected.append({"test": it.nodeid, "needs_boot": want, "needs_env": lack})
         elif ms and ms.args[0] != config.getoption("save"):
             config._bt_deselected.append({"test": it.nodeid, "needs_save": ms.args[0], "needs_env": lack})
@@ -233,12 +258,23 @@ def boot_identity(name=DEFAULT_BOOT):
     return out
 
 
+def _opt(config, name):
+    """An option of this plugin, None where a caller's config has no such option (a test's small config)."""
+    try:
+        return config.getoption(name)
+    except (KeyError, ValueError):
+        return None
+
+
 def boot_args(config, lane, server, session):
     """live.py start's arguments for this lane's boot (after 'start'): the ONE list lane_pair boots with and
     --lane-check-only proves (live.py start --dry-run = hookshot.py run's own parser + script parse)."""
-    args = ["--session", session, "--lane", str(lane), "--playtest", "--server", server,
-            "--boot-a", boot_paths(config.getoption("boot"))[0], "--boot-b", boot_paths(config.getoption("boot"))[1],
-            "--no-load"]
+    a, b = boot_paths(config.getoption("boot"))
+    if _opt(config, "solo"):         # (solo.py: game A alone, no --server, so no LICHII_COOP_SERVER: hookshot.py run)
+        args = ["--session", session, "--lane", str(lane), "--only", solo.GAME, "--playtest", "--boot-a", a, "--no-load"]
+    else:
+        args = ["--session", session, "--lane", str(lane), "--playtest", "--server", server, "--boot-a", a,
+                "--boot-b", b, "--no-load"]
     for e in boot_env(config):
         args += ["--env", e]
     if nocs_wanted(config):           # (live.py resolve: --game-b wins over the lane's B with --lane)
@@ -454,6 +490,14 @@ def _crash_why(session):
     return ("; " + "; ".join(out)) if out else ""
 
 
+def _solo_proof(pair, lane):
+    """The SOLO boot's setup proof: game A only, and its module log says co-op idle (solo.IDLE, no session line)."""
+    try:
+        solo.prove(pair)
+    except AssertionError as e:
+        raise P.SetupFail("lane%d solo: %s" % (lane, e))
+
+
 @pytest.fixture(scope="session")
 def lane_pair(request):
     config = request.config
@@ -484,9 +528,17 @@ def lane_pair(request):
         import fakegame
         lanefake = fakegame.FakeLane(out, env=boot_env(config),     # (fakes/*.py hooks see the boot's switches)
                                      fakes_dir=os.environ.get("BT_FAKE_FAKES_DIR") or fakegame.FAKES,
+                                     solo_log=(os.environ.get("BT_FAKE_SOLO_LOG") or solo.IDLE)
+                                     if config.getoption("solo") else None,
                                      boot=config.getoption("boot"))   # (and its name: game.boot)
-        pair = P.Pair(lanefake.games(), out_dir=out, refs_dir=os.environ.get("BT_FAKE_REFS", refs))
+        games = lanefake.games()
+        if config.getoption("solo"):     # (the fake A logs what the real module logs with no server: solo.IDLE)
+            games = {solo.GAME: games[solo.GAME]}
+        pair = P.Pair(games, out_dir=out, refs_dir=os.environ.get("BT_FAKE_REFS", refs))
         pair.lane, pair.info = lane, {"fake": True}
+        pair.window_shooter = _fake_window_shooter(lanefake)
+        if config.getoption("solo"):
+            _solo_proof(pair, lane)
         yield pair
         pair.close()
         lanefake.close()
@@ -499,6 +551,11 @@ def lane_pair(request):
     began = time.time()
     Ln = _lanes(config, lane)
     folders = [Ln["a"], info.get("game_b") or Ln["b"]]       # (lane<N>-B-nocs with NOCS_ENV: the pack goes where B boots)
+    if config.getoption("solo"):
+        folders = folders[:1]                                 # (--solo: game A only; B is not touched)
+        if os.environ.get("LICHII_COOP_SERVER"):
+            raise P.SetupFail("--solo: this run's environment has LICHII_COOP_SERVER=%s (game A would join it)"
+                              % os.environ["LICHII_COOP_SERVER"])
     try:
         try:                                    # (after lane_check, before the boot: test-bridge-c127-3 11:18)
             _pack_in(config, lane, folders, out, romfs=os.path.join(Ln["a"], "romfs"))
@@ -511,10 +568,13 @@ def lane_pair(request):
             raise GameCrash(why) if crash else P.SetupFail(why)
         pair = P.Pair(P.read_session(session), out_dir=out, refs_dir=refs)
         pair.lane, pair.info, pair.session = lane, dict(info, boot_s=round(time.monotonic() - t0, 1)), session
-        for x in ("A", "B"):
+        pair.window_shooter = windowshot.Shooter(session)   # (screen-shot.ps1 on the session's game pids)
+        for x in pair.c:
             h = pair.c[x].hello()
             if not h.get("control"):
                 raise P.SetupFail("lane%d %s: the bridge has no Longshot control (HOS_CONTROL)" % (lane, x))
+        if config.getoption("solo"):
+            _solo_proof(pair, lane)
         yield pair
         pair.close()
     finally:
@@ -742,7 +802,7 @@ def pytest_sessionfinish(session, exitstatus):
                "identity": {"env": boot_env(config), "expect_commit": config.getoption("expect_commit"),
                             "boot": dict(boot_identity(config.getoption("boot")), name=config.getoption("boot")),
                             "pack": config._bt_pack, "nocs": nocs_wanted(config), "game_b": config._bt_game_b,
-                            "save": config._bt_save},
+                            "save": config._bt_save, "solo": bool(config.getoption("solo"))},
                "pack_out_errors": getattr(config, "_bt_pack_out", None),
                "deselected": config._bt_deselected,
                "stopped": getattr(config, "_bt_stopped", None),

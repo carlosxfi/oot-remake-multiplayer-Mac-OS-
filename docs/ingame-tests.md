@@ -85,6 +85,16 @@ baseline is put back. Every flag is read back on every save. A test that needs a
 is `{name, sha256: {game: {rel: sha256}}}`. `saves/gohma-alive.py` puts Queen Gohma back alive, with the quest at
 her room (rows 137/138).
 
+SOLO boot (owner rule: features that are not multiplayer must also work solo, with co-op idle): `--solo` boots only
+lane game A, with no co-op session. That means `live.py start --only A` without `--server`, so hookshot.py run gives
+it no `LICHII_COOP_SERVER`, and the lane's `coop.ini` has no server line. Only tests marked `@solo.MARK`
+(`tools/autotest/ingame/solo.py`, marker `needs_solo`) run. Every other test is deselected (`needs_pair`), and a
+run without `--solo` deselects the solo tests (`needs_solo`). The pair has game A only (`pair.c == {'A'}`), and
+`step_both`, `press` and `warp_both` run on A. Setup proof, before any test: game A's module log has
+`solo.IDLE` (`coop: no server in coop.ini: co-op idle until Host or Join ...`, hookshot/src/coop_hookshot.cpp).
+It must also have no session line (`coop: on, server`, `connecting`, `welcomed`, `connected`). Otherwise every
+test is a SETUP-FAIL. `--solo` with the no-CS switch is refused. `identity.solo` is true.
+
 Game B without Character Select: `--env B:COOP_TEST_NO_CHARACTER_SELECT=1` (the switch in
 `tools/autotest/ingame/no_cs.py`) boots game B from `lane<N>-B-nocs` instead of `lane<N>-B`. That folder is made
 only when someone asks for it, with `python -I tools/autotest/lanes.py nocs --lane N` (`--dry-run` first). It is
@@ -136,6 +146,13 @@ pytest-timeout (pytest.ini, 1800 s) is only the backstop for a call that never r
   blue (0,60,160) at the same grey scores grey 1.0000, colour 0.1128). Shots are kept with the result
   (`<dir>/lane<L>/shots/`). A test never writes a reference: a person checks a NO-REF candidate and copies it into
   `refs/`.
+- Longshot's ImGui overlays (co-op's map arrows, tabs, name tags, its menu) are drawn after the bridge's `shot` is
+  taken, so they are never in it. For those, `pair.window_shot(game, name, tolerance)`: the screen's copy of the
+  game's window through the shared `coord-multiplayer/offline/lib/screen-shot.ps1` (game raised, cover check;
+  helper from `OOT_WINDOW_SHOT`, else that default path), cut to the window's client area (no title bar, no
+  desktop), compared the same way to `refs/<name>-window-<game>.png`. A covered window, a failed copy, no helper or
+  no pid is SETUP-FAIL, never PASS. It shows the last frame the game presented: step first when a newer one is
+  needed. Code: `ingame/windowshot.py`; selftests `tests/test_ingame_windowshot.py`.
 
 ## Writing a test
 
