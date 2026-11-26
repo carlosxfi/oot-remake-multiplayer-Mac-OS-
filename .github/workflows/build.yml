@@ -202,6 +202,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/kit_pack_test.ps1
+      - name: Windows kit puppet pack without numpy (regression C2-1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/puppet_pack_numpy_test.ps1
       - name: Puppet pack command lines
         run: |
           python tools/puppet_pack/build.py --help
