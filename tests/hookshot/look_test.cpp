@@ -284,7 +284,7 @@ TEST_CASE("look (look-link-cs): Link's vest, leather and equipment are saved and
     look[Part::link_leather] = CoopColors::Parse("black");
     look[Part::link_gear] = CoopLook::kGearHidden;
     std::string ini;
-    CHECK(CoopLook::WriteSettings(look, ini));
+    CHECK(CoopLook::WriteSettings(look, ini, nullptr));
     CHECK(ini.find("look_link_gear = hidden") != std::string::npos);
     CHECK(ini.find("look_link_vest") != std::string::npos);
     std::vector<std::string> errors;
@@ -293,8 +293,7 @@ TEST_CASE("look (look-link-cs): Link's vest, leather and equipment are saved and
     CHECK(back[Part::link_vest] == look[Part::link_vest]);
     CHECK(back[Part::link_leather] == look[Part::link_leather]);
     CHECK(back[Part::link_gear] == CoopLook::kGearHidden);
-    CHECK(CoopLook::ReadParts("look_link_gear = maybe
-", &errors)[Part::link_gear] == std::nullopt);
+    CHECK(CoopLook::ReadParts("look_link_gear = maybe\n", &errors)[Part::link_gear] == std::nullopt);
     CHECK_FALSE(errors.empty());
 }
 
