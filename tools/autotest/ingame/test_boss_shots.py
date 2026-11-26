@@ -229,9 +229,9 @@ def test_twinrova_shots(pair):
         pair.step_both(fr(60))
     judge_shots(pair, base, TWINROVA_JUDGED, r"Twinrova_Bullet_\w+")
     shots.both("end")                                 # the .steps.txt 'shot end'
-    shots.check()
-    for x in ("A", "B"):
+    for x in ("A", "B"):                              # (a crash is never reported as a look miss)
         pair.never_log(x, CRASH)
+    shots.check()
 
 
 # -- row 286 ----------------------------------------------------------------------------------------------------
@@ -286,6 +286,6 @@ def test_phantom_ganon_shots(pair):
         pair.step_both(fr(210))
     judge_shots(pair, base, PG_JUDGED, r"\w*PhantomGanon_Bullet_\w+")
     shots.both("end")                                 # the .steps.txt 'shot end'
-    shots.check()
-    for x in ("A", "B"):
+    for x in ("A", "B"):                              # (a crash is never reported as a look miss)
         pair.never_log(x, CRASH)
+    shots.check()
