@@ -90,8 +90,7 @@ MEASURED = None   # e.g. "run <name> (43444) + run <name> (43228): own net .., p
 
 
 def boxes_apart(own, pup, d):
-    """A box over the other Link would measure that Link: the set-up is wrong, not the band (SETUP-FAIL). (Its own
-    function: bt_plugin._kind reads the traceback's text, and a band FAIL's must not hold this raise.)"""
+    """A box over the other Link would measure that Link: the set-up is wrong, not the band (SETUP-FAIL)."""
     import bandcheck
     if own and pup:
         clash = bandcheck.disjoint(own["box"], own["side"], pup["box"], pup["side"])
@@ -179,7 +178,7 @@ def test_kokiri_hood_band(pair):
             pair.never_log(x, CRASH)
         done = True
         if PROBE_PACK or not MEASURED:
-            raise AssertionError("NO-REF: %s; the bandcheck lines are in the notes" % (
+            pair.unproven("%s; the bandcheck lines are in the notes" % (
                 "probe run on the %s pack" % PROBE_PACK if PROBE_PACK else
                 "the band thresholds are not measured yet (MEASURED: run the probe on the fixed and the old pack)"))
     finally:
