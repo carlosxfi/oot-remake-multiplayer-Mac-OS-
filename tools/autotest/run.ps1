@@ -199,6 +199,21 @@ if ($Kit.Count) {
     if ($PSBoundParameters.ContainsKey('Runtime') -and $Runtime -ne 'hookshot') { throw "-Kit is for -Runtime hookshot" }
     $Runtime = 'hookshot'
 }
+# Python, resolved ONCE here for both runtimes and every check below (hookshot.py, lanes.py, placement.py,
+# ocarina_notes.py, proof.py, netsim.py): -Python, else the .venv beside the repo, else py -3 / python.
+# (review-b120: a song check that ran before the emulator's own lookup had no Python: every emulator run died.)
+function Find-Python {
+    if ($Python) { return @($Python) }
+    for ($d = Get-Item $here; $d; $d = $d.Parent) {
+        $v = Join-Path $d.FullName 'oot-remake-recomp\.venv\Scripts\python.exe'
+        if (Test-Path $v) { return @($v) }
+    }
+    if (Get-Command py -ErrorAction SilentlyContinue) { return @('py', '-3') }
+    if (Get-Command python -ErrorAction SilentlyContinue) { return @('python') }
+    throw "no Python found; pass -Python"
+}
+$py = @(Find-Python)
+$pyArgs = @($py | Select-Object -Skip 1)
 if (-not $Server) { $Server = Join-Path $PSScriptRoot "..\..\build\server\coop_server.exe" }
 $Server = Resolve $Server
 if (-not $TakeBaseline -and -not $NoCoop -and -not ($DryRun -and $Runtime -eq 'hookshot') -and -not (Test-Path $Server)) { throw "no server at $Server; build it or pass -Server" }
@@ -217,15 +232,6 @@ if ($Runtime -eq 'hookshot') {
     # hs_steps.py gives it to every game without a 'password' line, and a hookshot.py that knows
     # --password (every session has one) gets it there.
     if ($ServerPassword) { $env:OOT_COOP_TEST_PASSWORD = $ServerPassword }
-    $py = @()
-    if ($Python) { $py = @($Python) } else {
-        for ($d = Get-Item $here; $d; $d = $d.Parent) {
-            $v = Join-Path $d.FullName 'oot-remake-recomp\.venv\Scripts\python.exe'
-            if (Test-Path $v) { $py = @($v); break }
-        }
-        if (-not $py.Count) { if (Get-Command py -ErrorAction SilentlyContinue) { $py = @('py', '-3') } else { $py = @('python') } }
-    }
-    $pyArgs = @($py | Select-Object -Skip 1)
     if ($Lane) {
         $info = (& $py[0] @pyArgs -I "$here\lanes.py" info --lane $Lane --json | Out-String) | ConvertFrom-Json
         if (-not $info) { throw "lanes.py info --lane $Lane failed" }
@@ -926,16 +932,6 @@ $netPort = @{ A = $Port; B = $Port }
 $NetSimFor = @($NetSimFor | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ })
 $NetSimArgs = @($NetSimArgs | Where-Object { $_ })
 $netOn = (-not $NoCoop) -and ($Lag -or $Jitter -or $Loss -or $Spike -or $NetSimArgs.Count) -and $NetSimFor.Count
-function Find-Python {
-    if ($Python) { return @($Python) }
-    for ($d = Get-Item $here; $d; $d = $d.Parent) {
-        $v = Join-Path $d.FullName 'oot-remake-recomp\.venv\Scripts\python.exe'
-        if (Test-Path $v) { return @($v) }
-    }
-    if (Get-Command py -ErrorAction SilentlyContinue) { return @('py', '-3') }
-    if (Get-Command python -ErrorAction SilentlyContinue) { return @('python') }
-    throw "no Python for the relay (tools\netsim\netsim.py); pass -Python"
-}
 function Start-NetSim {
     if (-not $netOn) { return }
     $py = @(Find-Python)
@@ -973,13 +969,12 @@ $stepFails = 0
 $stepUnproven = 0
 # The emulator runtime's games and their window placement use Python (placement.py); a monitor name that does not
 # exist goes to the primary monitor (placement.py says so); no monitor at all stops the run here.
-$py = @(Find-Python)
-$pyArgs = @($py | Select-Object -Skip 1)
 # The scenario's `song` lines (ocarina_notes.py expand, as Play writes them out) checked before any game starts.
 foreach ($f in @($scA, $scB) | Where-Object { -not $steps -and (Test-Path $_) }) {
     & $py[0] @pyArgs -I "$here\ocarina_notes.py" expand $f | Out-Null
     if ($LASTEXITCODE) { Write-Host "SETUP-FAIL scenario $Scenario`: $f has a bad song line (above)"; exit 2 }
 }
+Write-Host "song lines checked: $Scenario"
 $mon = (& $py[0] @pyArgs -I "$here\placement.py" rects @(Display-Args) 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE) { throw $mon }
 Write-Host "windows go to: $mon"

@@ -103,6 +103,45 @@ class SongStepTest(unittest.TestCase):
                                          "%s: a song typed by hand (%s): use `song NAME`" % (path, " ".join(run[i:i + 6])))
                 run = []
 
+    @unittest.skipUnless(os.name == "nt", "run.ps1 is Windows PowerShell")
+    def test_run_ps1_default_runtime_checks_songs_before_any_game(self):
+        # review-b120: run.ps1's default (emulator) path ran the song check with no Python resolved, so every emulator
+        # run died. Played here as a run is started (no -Python, no -Runtime): fake kits, -NoRestore, -NoCoop, a fake
+        # game file; a bad song line must stop it with SETUP-FAIL (exit 2), a good one must pass the check.
+        import shutil
+        import subprocess
+        import tempfile
+        here = os.path.dirname(HERE)
+        scenarios = os.path.join(here, "scenarios")
+        with tempfile.TemporaryDirectory() as d:
+            for k in ("kitA", "kitB"):
+                os.makedirs(os.path.join(d, k, "emulator", "user", "config"))
+            game = os.path.join(d, "game.nsp")
+            open(game, "w").close()
+            name = "zz-test-song-%d" % os.getpid()
+            script = os.path.join(scenarios, name + ".A.txt")
+
+            def run(text):
+                with open(script, "w", encoding="ascii", newline="") as f:
+                    f.write(text)
+                return subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                                       os.path.join(here, "run.ps1"), "-Scenario", name, "-KitA", os.path.join(d, "kitA"),
+                                       "-KitB", os.path.join(d, "kitB"), "-Game", game, "-NoRestore", "-NoCoop",
+                                       "-Shots", os.path.join(d, "shots"), "-Display", "no-such-display"],
+                                      capture_output=True, text=True, timeout=120)
+            try:
+                r = run("mark start\r\nsong EponaSongg\r\nmark end\r\n")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("SETUP-FAIL scenario %s:" % name, r.stdout)
+                self.assertIn("bad song line", r.stdout)
+                r = run("mark start\r\nsong EponaSong\r\nmark end\r\n")
+                self.assertIn("song lines checked: %s" % name, r.stdout, r.stdout + r.stderr)
+                self.assertNotIn("SETUP-FAIL", r.stdout)
+            finally:
+                if os.path.exists(script):
+                    os.remove(script)
+                shutil.rmtree(os.path.join(d, "shots"), ignore_errors=True)
+
     def test_the_command_line_writes_the_script_out(self):
         # run.ps1 -Runtime emulator: `ocarina_notes.py expand SCRIPT` before the game reads the script
         import subprocess
