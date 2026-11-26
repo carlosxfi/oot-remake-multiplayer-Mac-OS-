@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "coop_brain_state.h"
+#include "coop_move_probe.h"
+#include "coop_move_state.h"
 
 using namespace CoopBrainState;
 
@@ -95,12 +97,64 @@ public:
     void SetBool(std::uint64_t bb, std::uint32_t index, bool value) {
         Put<std::uint8_t>(Get<std::uint64_t>(bb + addr::kBoolValues) + index, value ? 1 : 0);
     }
+    // Row 287: an actor's CCT as the game links it (coop_move_probe.h's chain), in move state `state`. The actor's
+    // component table is the blackboard's when it has one.
+    void Cct(std::uint64_t actor, std::uint64_t at, std::uint32_t state) {
+        namespace m = CoopMoveProbe::addr;
+        std::uint64_t table = Get<std::uint64_t>(actor + m::kActorComponents);
+        if (table == 0) {
+            table = at + 0x800;
+            Put<std::uint64_t>(actor + m::kActorComponents, table);
+        }
+        Put<std::uint64_t>(table + m::kComponentPhysics, at + 0x100);
+        Put<std::uint64_t>(at + 0x100 + m::kPhysicsInner, at + 0x200);
+        Put<std::uint64_t>(at + 0x200 + m::kInnerHolder, at + 0x300);
+        Put<std::uint64_t>(at + 0x300 + m::kHolderCct, at + 0x400);
+        Put<std::uint64_t>(at + 0x400 + m::kCctMachine, at + 0x500);
+        for (std::uint64_t i = 0; i < 3; ++i) {
+            Put<std::uint64_t>(at + 0x500 + m::kMachineStates + i * 8, at + 0x600 + i * 0x40);
+            Put<std::uint32_t>(at + 0x600 + i * 0x40 + m::kStateType, static_cast<std::uint32_t>(10 + i));
+        }
+        Put<std::uint32_t>(at + 0x500 + m::kMachineCurrent, state);
+        Put<std::uint32_t>(at + 0x500 + m::kMachineCurrent + 4, 0);
+    }
+    std::uint32_t MoveState(std::uint64_t at) { return Get<std::uint32_t>(at + 0x500 + CoopMoveProbe::addr::kMachineCurrent); }
+    // The game's own change (main+0x28fff10) as coop_move_state.h reads it: the actor and the next state through
+    // the node's three pointers, the machine through the actor's chain, the result word into the node.
+    std::uint64_t ChangeMove(const CoopPuppet::Call& c) {
+        namespace m = CoopMoveProbe::addr;
+        namespace b = CoopMoveState::block;
+        const std::uint64_t node = c.x[0];
+        moves.push_back(node);
+        const std::uint64_t actor = Get<std::uint64_t>(Get<std::uint64_t>(Get<std::uint64_t>(node + 8) + 8) + 0x1f0);
+        const std::uint32_t next = Get<std::uint32_t>(Get<std::uint64_t>(node + 0x20) & ~std::uint64_t{3});
+        std::uint64_t at = Get<std::uint64_t>(actor + m::kActorComponents);
+        for (const std::uint64_t link : {m::kComponentPhysics, m::kPhysicsInner, m::kInnerHolder, m::kHolderCct,
+                                         m::kCctMachine}) {
+            at = at == 0 ? 0 : Get<std::uint64_t>(at + link);
+        }
+        if (at == 0) {
+            Put<std::uint32_t>(node + b::kResult, 0xc0000000u);
+            return 0;
+        }
+        const std::uint32_t now = Get<std::uint32_t>(at + m::kMachineCurrent);
+        if (now != next && !move_refused) {
+            Put<std::uint32_t>(at + m::kMachineCurrent + 4, now);
+            Put<std::uint32_t>(at + m::kMachineCurrent, next);
+        }
+        Put<std::uint32_t>(node + b::kResult, 0x80000000u);
+        return 0;
+    }
     // The game's malloc and its two setters (main+0x264f170, main+0xd6cb40): the key by its name, a locked key
     // left alone, the value from where x2 points.
     std::uint64_t Invoke(const CoopPuppet::Call& c) {
         if (c.function == game + addr::kMalloc) {
             ++mallocs;
+            malloc_asked = c.x[0];
             return malloc_gives;
+        }
+        if (c.function == game + CoopMoveState::kChangeExecute) {
+            return ChangeMove(c);
         }
         const bool is_s32 = c.function == game + addr::kSetS32;
         REQUIRE((is_s32 || c.function == game + addr::kSetBool));
@@ -130,6 +184,9 @@ public:
     std::uint64_t game = kMain;  // the game the calls must be of
     std::uint64_t malloc_gives = kBlock;
     int mallocs = 0;
+    std::uint64_t malloc_asked = 0;
+    std::vector<std::uint64_t> moves;  // row 287: the nodes the game's move-state change was called with
+    bool move_refused = false;
     std::vector<std::string> sets;   // the keys the setters were asked for, in order
     std::set<std::string> locked;
 
@@ -207,7 +264,7 @@ TEST_CASE("row 149: keys are named on the wire by the hash of their name, and Ki
         }
     }
     const std::vector<Key> king = KeysOf(kKing);
-    REQUIRE(king.size() == 3);
+    REQUIRE(king.size() == 4);  // (his three and every actor's CCT move state, row 287)
     const auto kind_of = [&king](std::string_view name) -> std::optional<Kind> {
         for (const Key& k : king) {
             if (k.name == name) return k.kind;
@@ -225,8 +282,15 @@ TEST_CASE("row 149: keys are named on the wire by the hash of their name, and Ki
         CAPTURE(boss);
         CHECK_FALSE(KeysOf(boss).empty());
     }
-    CHECK(KeysOf("Enemy_Keese").empty());
-    CHECK(KeysOf("Enemy_DungeonBoss_Dodongo_Attention").empty());  // (the exact name only)
+    // Row 287: every actor carries its CCT move state, and nothing else unless listed (the exact name only).
+    for (const char* other : {"Enemy_Keese", "Enemy_DungeonBoss_Dodongo_Attention", "Enemy_DungeonBoss_Koume"}) {
+        CAPTURE(other);
+        const std::vector<Key> of = KeysOf(other);
+        REQUIRE(of.size() == 1);
+        CHECK(of[0].id == kCctMoveKey.id);
+        CHECK(of[0].kind == Kind::cct_move);
+    }
+    CHECK(kCctMoveKey.id == KeyId("Coop_PhysicsCctMoveState"));
 }
 
 TEST_CASE("row 149: the plan puts in only what differs, only carried and read keys, bools as 0 or 1") {
@@ -493,6 +557,169 @@ TEST_CASE("row 149: an actor with no carried key, a boss with no blackboard, and
     t.Reset();
     CHECK(t.GetCounts().put == 0);
     CHECK(t.TakeNotes().empty());
+}
+
+constexpr std::uint64_t kPhantom = 0x6000000;
+constexpr std::uint64_t kCct = 0x7000000;
+constexpr char kKoume[] = "Enemy_DungeonBoss_Koume";  // (no blackboard key of ours: the CCT move state alone)
+BrainValue M(std::int32_t state) { return {kCctMoveKey.id, state}; }
+
+TEST_CASE("row 287: the plan asks the owner's CCT move state only when ours differs and the game has a slot for it") {
+    const std::vector<Key> keys = KeysOf(kKoume);
+    CHECK(Plan(keys, State({M(2)}), State({M(1)})) == std::vector<BrainValue>{M(2)});
+    CHECK(Plan(keys, State({M(0)}), State({M(2)})) == std::vector<BrainValue>{M(0)});
+    CHECK(Plan(keys, State({M(2)}), State({M(2)})).empty());
+    CHECK(Plan(keys, State({M(3)}), State({M(1)})).empty());   // no slot for it
+    CHECK(Plan(keys, State({M(-1)}), State({M(1)})).empty());
+    CHECK(Plan(keys, State({M(2)}), State({})).empty());       // ours not read (no CCT)
+    CHECK(Plan(keys, State({}), State({M(1)})).empty());       // an older owner sent none
+    // With blackboard keys: each by its own rule.
+    const std::vector<Key> king = KeysOf(kKing);
+    CHECK(Plan(king, State({C(2), M(2)}), State({C(1), R(0), S(0), M(1)})) ==
+          State({C(2), M(2)}).values);
+}
+
+TEST_CASE("row 287: our boss's CCT move state is sent, a copy's is left alone") {
+    Table t;
+    FakeGuest g;
+    g.Cct(kPhantom, kCct, 2);
+    Publish(t, Ours(kPhantom, kKoume));
+    const auto calls = Frame(t, g);
+    REQUIRE(calls.size() == 1);  // the block, for a hand-over to come
+    CHECK(calls[0].function == kMain + addr::kMalloc);
+    CHECK(g.malloc_asked == addr::kBlockSize);
+    CHECK(addr::kBlockSize == 0x10 + CoopMoveState::kBlockBytes);
+    CHECK(t.OwnerBoard(kPhantom) == State({M(2)}));
+    g.Cct(kPhantom, kCct, 1);  // (its own fall-down's first step)
+    (void)Frame(t, g);
+    CHECK(t.OwnerBoard(kPhantom) == State({M(1)}));
+    // With blackboard keys: in the wire's order with them.
+    Table k;
+    King(g, 2, false);
+    g.Cct(kDodongo, kCct + 0x10000, 0);
+    Publish(k, Ours());
+    (void)Frame(k, g);
+    CHECK(k.OwnerBoard(kDodongo) == State({C(2), R(0), S(0), M(0)}));
+    // A copy: nothing asked of the game, whatever its owner's state.
+    Table c;
+    FakeGuest gc;
+    gc.Cct(kPhantom, kCct, 1);
+    Publish(c, Theirs(kPhantom, kKoume));
+    (void)Frame(c, gc);
+    c.Receive(kPhantom, State({M(2)}));
+    CHECK(Frame(c, gc).empty());
+    CHECK(gc.moves.empty());
+    CHECK(gc.MoveState(kCct) == 1);
+    CHECK_FALSE(c.OwnerBoard(kPhantom));
+}
+
+TEST_CASE("row 287: a copy made ours takes its old owner's CCT move state through the game's own change") {
+    Table t;
+    FakeGuest g;
+    g.Cct(kPhantom, kCct, 1);  // the copy's own fall-down was cut before its last step
+    Publish(t, Theirs(kPhantom, kKoume));
+    (void)Frame(t, g);  // (the block)
+    t.Receive(kPhantom, State({M(2)}));
+    (void)Frame(t, g);
+    (void)t.TakeNotes();
+    Publish(t, Ours(kPhantom, kKoume));
+    CHECK(t.OwnerBoard(kPhantom) == State({M(2)}));  // until it is in: the old owner's, never our stale own
+    const auto calls = Frame(t, g);
+    REQUIRE(calls.size() == 1);
+    CHECK(calls[0].function == kMain + CoopMoveState::kChangeExecute);
+    const std::uint64_t node = kBlock + addr::kNodeAt;
+    CHECK(calls[0].x[0] == node);
+    CHECK(g.moves == std::vector<std::uint64_t>{node});
+    // The node as the game reads it.
+    CHECK(g.Get<std::uint64_t>(g.Get<std::uint64_t>(g.Get<std::uint64_t>(node + 8) + 8) + 0x1f0) == kPhantom);
+    CHECK(g.Get<std::uint32_t>(g.Get<std::uint64_t>(node + 0x20)) == 2);
+    CHECK(g.MoveState(kCct) == 2);
+    CHECK(t.OwnerBoard(kPhantom) == State({M(2)}));
+    CHECK(t.GetCounts().moves == 1);
+    CHECK(t.GetCounts().put == 1);
+    CHECK(t.GetCounts().refused == 0);
+    CHECK(t.TakeChanged().empty());  // (its body's state alone: its AI does not choose again)
+    bool said = false;
+    for (const std::string& note : t.TakeNotes()) {
+        said = said || note.find("CCT move state 2 asked of the game: in (result 0x80000000)") != std::string::npos;
+    }
+    CHECK(said);
+    // Once: the next frames ask nothing.
+    CHECK(Frame(t, g).empty());
+    CHECK(g.moves.size() == 1);
+}
+
+TEST_CASE("row 287: the same state, a state with no slot, a change the game did not make, the state after the news") {
+    {
+        Table t;
+        FakeGuest g;
+        g.Cct(kPhantom, kCct, 2);
+        Publish(t, Theirs(kPhantom, kKoume));
+        (void)Frame(t, g);
+        t.Receive(kPhantom, State({M(2)}));
+        Publish(t, Ours(kPhantom, kKoume));
+        CHECK(Frame(t, g).empty());
+        CHECK(g.moves.empty());
+        CHECK(t.GetCounts().same == 1);
+    }
+    {
+        Table t;
+        FakeGuest g;
+        g.Cct(kPhantom, kCct, 1);
+        Publish(t, Theirs(kPhantom, kKoume));
+        (void)Frame(t, g);
+        t.Receive(kPhantom, State({M(7)}));
+        Publish(t, Ours(kPhantom, kKoume));
+        CHECK(Frame(t, g).empty());
+        CHECK(g.moves.empty());
+        CHECK(g.MoveState(kCct) == 1);
+    }
+    {
+        Table t;
+        FakeGuest g;
+        g.move_refused = true;
+        g.Cct(kPhantom, kCct, 1);
+        Publish(t, Theirs(kPhantom, kKoume));
+        (void)Frame(t, g);
+        t.Receive(kPhantom, State({M(2)}));
+        Publish(t, Ours(kPhantom, kKoume));
+        CHECK(Frame(t, g).size() == 1);  // asked once, not again
+        CHECK(Frame(t, g).empty());
+        CHECK(t.GetCounts().refused == 1);
+        CHECK(t.GetCounts().moves == 0);
+        CHECK(t.OwnerBoard(kPhantom) == State({M(1)}));  // our own from here on
+    }
+    {
+        // Made ours before its old owner's state came (HANDOVER_STATE after the news).
+        Table t;
+        FakeGuest g;
+        g.Cct(kPhantom, kCct, 1);
+        Publish(t, Theirs(kPhantom, kKoume));
+        (void)Frame(t, g);
+        Publish(t, Ours(kPhantom, kKoume));
+        CHECK(Frame(t, g).empty());
+        t.Receive(kPhantom, State({M(2)}));
+        CHECK(Frame(t, g).size() == 1);
+        CHECK(g.MoveState(kCct) == 2);
+    }
+    {
+        // A boss with blackboard keys: both go in, and only the blackboard value makes its AI choose again.
+        Table t;
+        FakeGuest g;
+        King(g, 1, false);
+        g.Cct(kDodongo, kCct, 1);
+        Publish(t, Theirs());
+        (void)Frame(t, g);
+        t.Receive(kDodongo, State({C(2), R(0), S(0), M(0)}));
+        Publish(t, Ours());
+        const auto calls = Frame(t, g);
+        REQUIRE(calls.size() == 2);
+        CHECK(g.S32(kBoard, 2) == 2);
+        CHECK(g.MoveState(kCct) == 0);
+        CHECK(t.TakeChanged() == std::vector<std::uint64_t>{kDodongo});
+        CHECK(t.GetCounts().moves == 1);
+        CHECK(t.GetCounts().put == 2);
+    }
 }
 
 TEST_CASE("row 149: the hand-over goes before the boss table's caller") {

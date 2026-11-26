@@ -40,6 +40,7 @@
 
 #include "coop/protocol/messages.hpp"
 #include "coop_caller_orders.h"
+#include "coop_move_state.h"
 #include "coop_puppet.h"
 
 namespace CoopBrainState {
@@ -84,13 +85,18 @@ inline constexpr std::uint64_t kSetS32 = 0x264f170;  // main+
 inline constexpr std::uint64_t kSetBool = 0xd6cb40;  // main+
 // Our value block in guest memory (made once with the game's malloc).
 inline constexpr std::uint64_t kMalloc = 0x14c6c90;  // main+, as coop_boss_native.h
-inline constexpr std::size_t kBlockSize = 0x10;
+inline constexpr std::size_t kValueBytes = 0x10;
+// Row 287: behind the value, the node block the game's own move-state change is called with (coop_move_state.h).
+inline constexpr std::size_t kNodeAt = kValueBytes;
+inline constexpr std::size_t kBlockSize = kValueBytes + CoopMoveState::kBlockBytes;
 // A group with more names than this is not read (a wrong pointer).
 inline constexpr std::int32_t kMaxNames = 1024;
 }  // namespace addr
 
-// The kinds carried now (both go as the wire's s32).
-enum class Kind : std::uint8_t { s32, boolean };
+// The kinds carried now (all go as the wire's s32). cct_move (row 287) is no blackboard key: the index of the move
+// state the actor's physics character controller is in (coop_move_probe.h's chain), put in through the game's own
+// change (coop_move_state.h).
+enum class Kind : std::uint8_t { s32, boolean, cct_move };
 
 // A key's number on the wire (a keyed value's name): Murmur3 (x86_32, seed 0) of its name.
 constexpr std::uint32_t KeyId(std::string_view name) {
@@ -146,6 +152,13 @@ struct Key {
 constexpr Key MakeKey(std::string_view actor, std::string_view name, Kind kind) {
     return Key{KeyId(name), actor, name, kind};
 }
+
+// Row 287: every actor of the walk carries its CCT move state (an actor with no CCT carries none). A boss's moves
+// change it in steps (Phantom Ganon's fall-down: 1 at its start, back to 2 only in its last step); a copy's own AI
+// runs those moves cut short, so its body can be left in another state than its owner's, which shows only when
+// the copy is made ours: its body then obeys that state (he fell through the floor). The name is ours, not a
+// blackboard key's; an older build passes the value over (Plan: no key of its own has that number).
+inline constexpr Key kCctMoveKey = MakeKey("", "Coop_PhysicsCctMoveState", Kind::cct_move);
 
 // What a boss chooses its next move from: counters, indexes, the way round, a phase, a forced next move. Not the
 // one-frame triggers its actions raise from its own contacts, not what follows from its place or animation (those
@@ -236,7 +249,8 @@ constexpr bool KeysFit() {
     std::size_t start = 0;
     for (std::size_t i = 0; i < kKeys.size(); ++i) {
         if (i != 0 && kKeys[i].boss != kKeys[i - 1].boss) start = i;
-        if (i - start + 1 > kMaxBrainValues) return false;
+        if (i - start + 2 > kMaxBrainValues) return false;  // (+ kCctMoveKey)
+        if (kKeys[i].id == kCctMoveKey.id) return false;
         for (std::size_t j = start; j < i; ++j) {
             if (kKeys[j].id == kKeys[i].id) return false;
         }
@@ -245,12 +259,13 @@ constexpr bool KeysFit() {
 }
 static_assert(KeysFit());
 
-// The keys of one actor, in id order, the wire's (none: nothing of it is carried).
+// The keys of one actor, in id order, the wire's: its blackboard keys of kKeys and kCctMoveKey.
 std::vector<Key> KeysOf(std::string_view boss);
 
 // The planner, without game memory (tested): which of the old owner's values a game made the owner puts in, in
 // order. Only keys of this boss, each once; a value our game already has is left alone (`ours`: what our blackboard
-// holds now, by key id; a key not in it could not be read and is passed over). A bool goes in as 0 or 1.
+// holds now, by key id; a key not in it could not be read and is passed over). A bool goes in as 0 or 1. The CCT
+// move state goes in by CoopMoveState::AtMadeOurs (never a state the game has no slot for).
 std::vector<BrainValue> Plan(std::span<const Key> keys, const BrainState& theirs, const BrainState& ours);
 
 enum class Role : std::uint8_t { owner, copy };
@@ -269,6 +284,7 @@ struct Counts {
     std::uint64_t same = 0;      // values our game already had
     std::uint64_t refused = 0;   // values the game's setter left alone (a locked key)
     std::uint64_t unread = 0;    // a boss whose blackboard or keys were not found
+    std::uint64_t moves = 0;     // row 287: CCT move states put in through the game's change (counted in `put` too)
 };
 
 class Table {
@@ -318,11 +334,15 @@ private:
         std::optional<BrainState> mine;   // ours: as last read
         std::uint32_t put = 0;           // this hand-over's counts, for its note
         std::uint32_t same = 0;
+        bool board_put = false;          // a blackboard value was put in (TakeChanged; not the CCT move state)
     };
     void Note(std::string text);
     void DropGame();  // (mutex_ held)
-    // Finds the entry's blackboard and its keys in it (false: none now). Reads only.
+    // Finds what the entry carries: its blackboard and its keys in it, and its CCT (false: neither now). Reads only.
     bool Find(CoopPuppet::Guest& guest, Entry& e);
+    bool FindBoard(CoopPuppet::Guest& guest, Entry& e);
+    // The index of the move state the actor's CCT is in (nothing: no CCT, or a link of its chain is not there).
+    static std::optional<std::int32_t> MoveOf(CoopPuppet::Guest& guest, std::uint64_t actor);
     static std::optional<BrainState> ReadValues(CoopPuppet::Guest& guest, const Entry& e);
 
     mutable std::mutex mutex_;

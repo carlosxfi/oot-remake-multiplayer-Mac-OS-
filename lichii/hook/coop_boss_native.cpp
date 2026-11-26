@@ -1269,8 +1269,13 @@ void Table::Fall(Entry& e, const Boss& b) {
     const float below = *e.start_y - y;
     if (below <= kFallBelowStart) {
         e.fallen = false;  // (back in its room: a later fall counts again)
+        if (e.fall_rechoices > 0 && ++e.fall_calm >= kFallCalmWalks) {
+            e.fall_rechoices = 0;  // row 287: a calm stretch: the next falls are guarded as the first were
+            e.fall_calm = 0;
+        }
         return;
     }
+    e.fall_calm = 0;
     if (b.role != Role::owner || e.dying || event_ || std::exchange(e.fallen, true)) {
         return;
     }

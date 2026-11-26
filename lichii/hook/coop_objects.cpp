@@ -4940,6 +4940,11 @@ private:
                         }
                     }
                 }
+                // Row 149: its blackboard move state; row 287: its CCT move state (every actor the table lists: the
+                // bosses and parts, and the plain enemies of the brain path).
+                if (const auto brain = CoopBrainState::TheTable().OwnerBoard(a)) {
+                    s.brain = CoopBrainState::ToKeyed(*brain);
+                }
                 if (IsBossOrPart(s.name)) {
                     s.hit_ours.reset();  // issue 133: whose hit is for plain enemies (bosses: NewOwnHitAt, their sync)
                     s.slots = OtherSlots(r, a);  // issue 150
@@ -4950,9 +4955,6 @@ private:
                     }
                     s.bsa = CoopBossNative::TheTable().OwnerState(a, &s.variants);
                     s.orders = CoopBossOrders::TheTable().OwnerOrders(a);  // row 222: its manager's orders, ours
-                    if (const auto brain = CoopBrainState::TheTable().OwnerBoard(a)) {
-                        s.brain = CoopBrainState::ToKeyed(*brain);  // row 149: its blackboard move state
-                    }
                     if (own_hit_life) {
                         s.hit_at = NewOwnHitAt(r, a, *own_hit_life, s.position, own_hit_took_life);
                     } else if (CoopBossNative::TheTable().OwnShotNear(s.position)) {

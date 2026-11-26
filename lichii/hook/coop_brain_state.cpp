@@ -3,6 +3,8 @@
 // A boss's move state goes with the boss (row 149): coop_brain_state.h.
 #include "coop_brain_state.h"
 
+#include "coop_move_probe.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -75,6 +77,7 @@ std::vector<Key> KeysOf(std::string_view boss) {
             out.push_back(k);
         }
     }
+    out.push_back(kCctMoveKey);  // row 287: every actor's
     std::sort(out.begin(), out.end(), [](const Key& a, const Key& b) { return a.id < b.id; });
     return out;
 }
@@ -86,6 +89,14 @@ std::vector<BrainValue> Plan(std::span<const Key> keys, const BrainState& theirs
         const BrainValue* have = ValueOf(ours, k.id);
         if (want == nullptr || have == nullptr) {
             continue;  // (not sent by that owner's build, or not read here)
+        }
+        if (k.kind == Kind::cct_move) {
+            // Row 287: only a state the game has a slot for, and only when our body is in another one.
+            if (have->value >= 0 && CoopMoveState::AtMadeOurs(static_cast<std::uint32_t>(have->value),
+                                                              static_cast<std::uint32_t>(want->value))) {
+                out.push_back({k.id, want->value});
+            }
+            continue;
         }
         const std::int32_t value = k.kind == Kind::boolean ? (want->value != 0 ? 1 : 0) : want->value;
         if (value != have->value) {
@@ -111,9 +122,6 @@ void Table::Publish(std::span<const Member> members) {
         if (!seen) {
             for (const Key& k : KeysOf(m.name)) {
                 e.slots.push_back(Slot{k, 0, 0});
-            }
-            if (e.slots.empty()) {
-                continue;  // nothing of this actor is carried
             }
         } else if (e.member.role != m.role) {
             e.todo.clear();
@@ -171,7 +179,25 @@ std::optional<BrainState> Table::OwnerBoard(std::uint64_t actor) const {
     return out;
 }
 
+std::optional<std::int32_t> Table::MoveOf(CoopPuppet::Guest& guest, std::uint64_t actor) {
+    const auto move = CoopMoveProbe::Read(
+        [&guest](std::uint64_t at) -> std::optional<std::uint64_t> {
+            std::uint64_t word = 0;
+            return guest.Read(at, &word, sizeof word) ? std::optional<std::uint64_t>(word) : std::nullopt;
+        },
+        actor);
+    if (!move || move->current > 0x7fffffffu) {
+        return std::nullopt;
+    }
+    return static_cast<std::int32_t>(move->current);
+}
+
 bool Table::Find(CoopPuppet::Guest& guest, Entry& e) {
+    const bool board = FindBoard(guest, e);
+    return MoveOf(guest, e.member.actor).has_value() || board;
+}
+
+bool Table::FindBoard(CoopPuppet::Guest& guest, Entry& e) {
     std::uint64_t components = 0;
     std::uint64_t holder = 0;
     std::uint64_t blackboard = 0;
@@ -232,12 +258,18 @@ bool Table::Find(CoopPuppet::Guest& guest, Entry& e) {
 std::optional<BrainState> Table::ReadValues(CoopPuppet::Guest& guest, const Entry& e) {
     std::uint64_t s32_at = 0;
     std::uint64_t bool_at = 0;
-    if (e.blackboard == 0 || !guest.Read(e.blackboard + addr::kS32Values, &s32_at, sizeof s32_at) ||
-        !guest.Read(e.blackboard + addr::kBoolValues, &bool_at, sizeof bool_at)) {
+    if (e.blackboard != 0 && (!guest.Read(e.blackboard + addr::kS32Values, &s32_at, sizeof s32_at) ||
+                              !guest.Read(e.blackboard + addr::kBoolValues, &bool_at, sizeof bool_at))) {
         return std::nullopt;
     }
     BrainState out;
     for (const Slot& s : e.slots) {
+        if (s.key.kind == Kind::cct_move) {
+            if (const auto move = MoveOf(guest, e.member.actor)) {
+                out.values.push_back({s.key.id, *move});  // row 287
+            }
+            continue;
+        }
         if (s.name_at == 0) {
             continue;
         }
@@ -293,9 +325,26 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
                 e.todo.erase(e.todo.begin());
                 const std::optional<BrainState> now = ReadValues(guest, e);
                 const BrainValue* have = now ? ValueOf(*now, asked.key) : nullptr;
-                if (have != nullptr && have->value == asked.value) {
+                if (asked.key == kCctMoveKey.id) {
+                    // Row 287: the game's own result word, and the state its body is in now.
+                    std::uint32_t word = 0;
+                    const bool read = block_ != 0 && guest.Read(block_ + addr::kNodeAt + CoopMoveState::block::kResult,
+                                                                 &word, sizeof word);
+                    const bool in = have != nullptr && have->value == asked.value;
+                    if (in) {
+                        ++counts_.put;
+                        ++counts_.moves;
+                        ++e.put;
+                    } else {
+                        ++counts_.refused;
+                    }
+                    Note(e.member.name + ": CCT move state " + std::to_string(asked.value) + " asked of the game: " +
+                         (in ? "in" : "NOT in") + " (result " + (read ? Hex(word) : std::string("not read")) +
+                         (read && !CoopMoveState::Done(word) ? ", not done" : "") + ")");
+                } else if (have != nullptr && have->value == asked.value) {
                     ++counts_.put;
                     ++e.put;
+                    e.board_put = true;
                 } else {
                     ++counts_.refused;  // (a locked key: the game's own rule; ours stays)
                     Note(e.member.name + ": blackboard: the game left key " + Hex(asked.key) + " alone");
@@ -309,7 +358,11 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
     if (main_base == 0 || entries_.empty()) {
         return std::nullopt;
     }
-    if (block_ == 0 && !allocating_ && !malloc_failed_) {
+    if (block_ == 0 && !allocating_ && !malloc_failed_ &&
+        std::any_of(entries_.begin(), entries_.end(), [&guest](const auto& listed) {
+            // (an actor with a blackboard key of ours, or a CCT: the others carry nothing, so no block for them)
+            return listed.second.slots.size() > 1 || MoveOf(guest, listed.first).has_value();
+        })) {
         // Made while the boss is still a copy, so the values go in the frame it is made ours.
         CoopPuppet::Call c;
         c.function = main_base + addr::kMalloc;
@@ -323,7 +376,7 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
             continue;
         }
         if (!Find(guest, e)) {
-            if (!e.unread_said) {
+            if (!e.unread_said && e.slots.size() > 1) {  // (an actor with no blackboard key and no CCT: silent)
                 e.unread_said = true;
                 ++counts_.unread;
                 Note(e.member.name + ": blackboard: not found, or none of its keys in it: nothing carried");
@@ -344,6 +397,7 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
                 e.planned = true;
                 e.put = 0;
                 e.same = 0;
+                e.board_put = false;
                 for (const BrainValue& v : e.in.values) {
                     if (ValueOf(*ours, v.key) != nullptr) {
                         ++e.same;
@@ -362,13 +416,31 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
             if (!e.todo.empty()) {
                 const BrainValue& v = e.todo.front();
                 const auto slot = std::find_if(e.slots.begin(), e.slots.end(),
-                                               [&v](const Slot& s) { return s.key.id == v.key && s.name_at != 0; });
+                                               [&v](const Slot& s) {
+                                                   return s.key.id == v.key &&
+                                                          (s.name_at != 0 || s.key.kind == Kind::cct_move);
+                                               });
                 if (slot == e.slots.end()) {
                     e.todo.erase(e.todo.begin());  // (its key is gone with a new blackboard)
                     return std::nullopt;
                 }
+                if (slot->key.kind == Kind::cct_move) {
+                    // Row 287: the game's own change of the move state, with a node block of ours (behind the value).
+                    const std::uint64_t node = block_ + addr::kNodeAt;
+                    const auto bytes = CoopMoveState::Block(node, actor, static_cast<std::uint32_t>(v.value));
+                    if (!bytes || !guest.Write(node, bytes->data(), bytes->size())) {
+                        e.todo.erase(e.todo.begin());  // (never: the block is the game's own heap's)
+                        return std::nullopt;
+                    }
+                    CoopPuppet::Call c;
+                    c.function = main_base + CoopMoveState::kChangeExecute;
+                    c.x[0] = node;
+                    pending_ = Pending::set;
+                    pending_actor_ = actor;
+                    return c;
+                }
                 // The value: an s32, or a bool in its first byte.
-                std::array<std::uint8_t, addr::kBlockSize> block{};
+                std::array<std::uint8_t, addr::kValueBytes> block{};
                 std::memcpy(block.data(), &v.value, sizeof v.value);
                 if (!guest.Write(block_, block.data(), block.size())) {
                     return std::nullopt;
@@ -385,7 +457,7 @@ std::optional<CoopPuppet::Call> Table::Step(CoopPuppet::Guest& guest, bool after
             Note(e.member.name + ": blackboard: its old owner's move state is ours: " + std::to_string(e.put) +
                  " put in, " + std::to_string(e.same) + " the same");
             e.due = false;
-            if (e.put > 0) {
+            if (e.board_put) {  // (row 287: its body's move state alone changes no choice of its AI)
                 changed_.push_back(actor);
             }
             e.planned = false;
