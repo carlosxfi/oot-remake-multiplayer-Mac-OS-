@@ -21,6 +21,7 @@ keeps only a hash of the name, so the name itself is not in this file either.
 
 import hashlib
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -174,33 +175,41 @@ def unlisted_python_tests(paths, workflow_text, runner_text=""):
         q = p.replace("\\", "/")
         if not re.match(r"^tools/.*(/test_[^/]*|_test)\.py$", q) or "/" not in q:
             continue
-        if q in workflow_text or q.rsplit("/", 1)[1] in runner_text:
+        name = q.rsplit("/", 1)[1]
+        if q in workflow_text or re.search(r"(?<![A-Za-z0-9_.-])" + re.escape(name) + r"(?![A-Za-z0-9_-])", runner_text):
             continue
         out.append(p)
     return out
 
 
-def unlisted_cpp_tests(paths, cmake_text):
-    """C++ test sources (*_test.cpp) named in no CMakeLists.txt or .cmake file: tests/CMakeLists.txt lists them by name
-    (its GLOB_RECURSE only checks the test names), so a new one would never be built."""
-    out = []
+def listed_cpp_tests(root, paths):
+    """The repository paths of the *_test.cpp files that a CMakeLists.txt or .cmake file names. Each name is resolved
+    against the folder of the file that names it (tests/server/CMakeLists.txt lists bare names), a leading
+    ${CMAKE_CURRENT_SOURCE_DIR}/ is dropped, and '#' comments are skipped: a name in a comment lists nothing."""
+    listed = set()
     for p in paths:
-        name = p.replace("\\", "/").rsplit("/", 1)[-1]
-        if name.endswith("_test.cpp") and name not in cmake_text:
-            out.append(p)
-    return out
+        q = p.replace("\\", "/")
+        if not (q.endswith("CMakeLists.txt") or q.endswith(".cmake")):
+            continue
+        try:
+            with open(os.path.join(root, p), encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        here = q.rsplit("/", 1)[0] if "/" in q else ""
+        for line in lines:
+            code = line.split("#", 1)[0]
+            for tok in re.findall(r"[A-Za-z0-9_./${}-]+_test\.cpp", code):
+                tok = tok.replace("${CMAKE_CURRENT_SOURCE_DIR}/", "")
+                listed.add(posixpath.normpath(posixpath.join(here, tok)))
+    return listed
 
 
-def cmake_text(root, paths):
-    text = ""
-    for p in paths:
-        if p.endswith("CMakeLists.txt") or p.endswith(".cmake"):
-            try:
-                with open(os.path.join(root, p), encoding="utf-8", errors="replace") as f:
-                    text += f.read() + "\n"
-            except OSError:
-                pass
-    return text
+def unlisted_cpp_tests(paths, listed):
+    """C++ test sources (*_test.cpp) that no CMakeLists.txt names by full path (listed_cpp_tests): tests/CMakeLists.txt
+    lists them one by one (its GLOB_RECURSE only checks the test names), so a new one would never be built. Full
+    paths, not file names: session_test.cpp exists in host/ and server/, and flags_test.cpp ends game_flags_test.cpp."""
+    return [p for p in paths if p.replace("\\", "/").endswith("_test.cpp") and p.replace("\\", "/") not in listed]
 
 
 def runner_text(root, paths):
@@ -299,7 +308,7 @@ def main():
         for line in playtest:
             print("  " + line)
     unlisted = unlisted_python_tests(files, workflow_text(root), runner_text(root, files)) if os.path.isdir(os.path.join(root, ".github", "workflows")) else []
-    cpp_unlisted = unlisted_cpp_tests(files, cmake_text(root, files))
+    cpp_unlisted = unlisted_cpp_tests(files, listed_cpp_tests(root, files))
     if unlisted:
         print("Content guard failed. CI runs each Python test file by name (.github/workflows/build.yml, python-tools job);")
         print("these are named by no workflow, so they would never run. Add a step for each:")
