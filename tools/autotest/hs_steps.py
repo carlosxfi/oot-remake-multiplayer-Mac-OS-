@@ -116,6 +116,21 @@ def window_shot_command(helper, pid, path, log):
     return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
 
 
+WINDOW_SHOT_WAIT = 90
+
+
+def run_window_shot(cmd, run=subprocess.run, wait=WINDOW_SHOT_WAIT):
+    """(exit code, output on one line). A helper that hangs past `wait` s (subprocess.run kills it) or cannot start is
+    a SETUP-FAIL with its reason, never an exception out of the steps run (review-c124 on 8614cb1cc)."""
+    try:
+        r = run(cmd, capture_output=True, text=True, timeout=wait)
+    except subprocess.TimeoutExpired:
+        raise SetupFail("the window-shot helper did not end within %d s (ended)" % wait)
+    except OSError as e:
+        raise SetupFail("the window-shot helper did not start: %s" % e)
+    return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip().replace("\n", " | ")
+
+
 def flag_watch(name):
     """'key64:0xKEY' / 'bool:0xHASH' -> (kind, number), else None (a bool hash fits 32 bits, neither is 0)."""
     m = re.match(r"^(key64|bool):0[xX]([0-9a-fA-F]{1,16})$", name or "")
@@ -948,13 +963,11 @@ class HookshotGames:
             if not self.alive(y):
                 continue
             path = os.path.join(self.out, "%s-%s.png" % (name, y))
-            r = subprocess.run(window_shot_command(helper, self.procs[y].pid, path,
-                                                   os.path.join(self.out, "window-shots.txt")),
-                               capture_output=True, text=True, timeout=90)
-            text = (r.stdout + r.stderr).strip().replace("\n", " | ")
-            self.say("  %s window shot %s: exit %d %s" % (y, os.path.basename(path), r.returncode, text))
-            if r.returncode != 0:
-                raise SetupFail("wshot %s: %s's window shot not taken (exit %d: %s)" % (name, y, r.returncode,
+            code, text = run_window_shot(window_shot_command(helper, self.procs[y].pid, path,
+                                                             os.path.join(self.out, "window-shots.txt")))
+            self.say("  %s window shot %s: exit %s %s" % (y, os.path.basename(path), code, text))
+            if code != 0:
+                raise SetupFail("wshot %s: %s's window shot not taken (exit %s: %s)" % (name, y, code,
                                                                                          text or "no output"))
 
     def close(self, x):
