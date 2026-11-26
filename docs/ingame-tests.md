@@ -56,6 +56,18 @@ where the bridge's `warp` answers `not_in_event` in free play). Each test runs w
 unmarked = `live-kakariko-child`; a run with another `--boot` deselects it (`deselected: needs_boot NAME <test>`, in
 `summary.json` `deselected`). An unknown `--boot` is a usage error before any boot.
 
+Pack files: `--pack NAME[,NAME]` (repeatable) makes co-op pack files with the TESTED sha's tools and puts them into
+BOTH lane games' co-op pack (`mods/contents/0400486024DEC000/coop-puppet/<rel>`) after the lane check and before
+the boot. They come out again after `live.py stop` (a file a pack replaced is put back). The maker is
+`tools/autotest/ingame/packs/NAME.py`: `make(out, ctx) -> {rel: src}`, where rel is '/' separated under coop-puppet
+(`coop_hud/map-arrow.png`). Its `ctx` has `tools`, `romfs` (lane A's extracted romfs, read only), `game_nup`
+(`--pack-game`, else the .nup beside the kit root), `lane` and `say`. `packs/hud.py` makes `coop_hud/` with
+`puppet_pack/hud.py` (fonts, hearts, map arrow, place names; about 60 s from the romfs). Every file is checked by
+sha256 on each game, and `summary.json` `identity.pack` is `{name: {rel: sha256}}`. Each game folder gets a
+`coop-test-pack.json` written before any file moves, so a run that dies leaves something the next boot undoes, with
+or without `--pack`. A test that needs a pack: `@pytest.mark.needs_pack(NAME)`; a run without that `--pack`
+deselects it (`deselected: needs_pack NAME <test>`). A maker that fails is a SETUP-FAIL, and the lane is left as it was.
+
 | Result | When |
 |---|---|
 | PASS | every assert held |
@@ -99,6 +111,23 @@ pytest-timeout (pytest.ini, 1800 s) is only the backstop for a call that never r
   games run (`resume`), reads Longshot's own 5 s present windows from the logs (`vi: N frames presented (X fps ...)`,
   `vi: present intervals: ...`) with no bridge call in between, and holds them again (`pause`). It needs each game's
   window behind (Longshot's `hid: game window not in front` line; `live.py` opens the games without the focus).
+
+## The lane's boot proof, recovery and memory
+
+- Boot proof: after `live.py start` and the hello check, inside lane_pair's try (so a miss stops the session),
+  `Pair.boot_ready` steps both games out of the boot's load, warps a game in another scene than the boot scripts'
+  `warp` line there by the bridge, and needs both in play (a fresh Link sample, no load, no event) in that scene.
+  Anything else makes every test of the lane `SETUP-FAIL lane<L> boot: ...`, naming each game's scene, load, event
+  and not_ready. (Pilot test-bridge-pilot-fa63e90f r1: B was left in Graveyard_Child in an event because
+  `hookshot.py run` ended the boot script without waiting for its warp; it now waits, `wait_warps`.)
+- Set-up checks step frames until ready (`pair.until_in_play`, 300 frames at most), never one state read: a stale
+  sample right after a boot or a pause is a game not ready yet, not a FAIL.
+- Recovery: after a test that did not pass, or one marked `leaves_play` (the title test, which runs last in its
+  round), the next test first runs the boot proof again as its own set-up (30 s): a miss cannot cascade.
+- Title test: `load_both` presses A only on a game whose log shows the title line since the way back was asked,
+  never on a game in play (an A there opens and shuts the menu); `back to the title: given up` FAILs it at once.
+- Memory: each game's commit charge is sampled every 30 s from the boot start into `<dir>/lane<L>/commit.csv` and
+  `commit.json` (first, peak and last GB per game), also in summary.json `commit`.
 
 ## Writing a test
 
