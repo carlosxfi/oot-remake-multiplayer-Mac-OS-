@@ -1121,6 +1121,96 @@ class FakeHooks(unittest.TestCase):
             self.assertTrue(m.__name__.startswith("fakes_"))
 
 
+STOP_TESTS = (
+    "import os\n\n"
+    "def test_1_writes_the_stop(pair):\n"
+    "    pair.step_both(5)\n"
+    "    if os.environ.get('STOP_LINE'):\n"
+    "        with open(os.environ['BT_STOP_FILE'], 'w', encoding='utf-8') as f:\n"
+    "            f.write(os.environ['STOP_LINE'] + '\\n')\n\n"
+    "def test_2_after(pair):\n    pair.step_both(5)\n\n"
+    "def test_3_after(pair):\n    pair.step_both(5)\n")
+
+
+class MemwatchStop(unittest.TestCase):
+    """B #141 17:5x (songs-frogs-175889ac booted the lane pair again at 17:51 after the memwatch STOP and the games'
+    close at 17:50): a memory STOP-OFFLINE-QUEUE ends the run (SETUP-FAIL memwatch-stop, then NOT-RUN, the lane closed),
+    a lane's games closed from outside do the same, and a run never boots its lane twice."""
+
+    MEM = "preflight-b2-3 memwatch 17:50:03 UTC: free commit under 4 GB for 30 s"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        d = os.path.join(self.tmp, "t")
+        os.makedirs(d)
+        with open(os.path.join(d, "conftest.py"), "w", encoding="utf-8") as fh:
+            fh.write("import sys\nsys.path.insert(0, %r)\npytest_plugins = ['bt_plugin']\n" % INGAME)
+        with open(os.path.join(d, "test_stop.py"), "w", encoding="utf-8") as fh:
+            fh.write(STOP_TESTS)
+        self.dir, self.stop = d, os.path.join(self.tmp, "STOP-OFFLINE-QUEUE")
+
+    def run_tests(self, line=None, before=None):
+        if before is not None:
+            with open(self.stop, "w", encoding="utf-8") as f:
+                f.write(before + "\n")
+        out = os.path.join(self.tmp, "o")
+        env = {"BT_STOP_FILE": self.stop}
+        if line:
+            env["STOP_LINE"] = line
+        p = pytest_run([".", "--fake", "--no-rerun", "--out", out, "-q", "-p", "no:cacheprovider"], cwd=self.dir,
+                       env=env)
+        return summary(out), p
+
+    def test_a_memory_stop_during_the_run_ends_it(self):
+        s, p = self.run_tests(line=self.MEM)
+        r = results(s)
+        self.assertEqual(r, {"test_1_writes_the_stop": "PASS", "test_2_after": "SETUP-FAIL",
+                             "test_3_after": "NOT-RUN"}, p.stdout[-2000:])
+        row = next(t for t in s["tests"] if t["test"].endswith("test_2_after"))
+        self.assertIn("memwatch-stop: " + self.MEM, row["why"])
+        self.assertTrue(s["stopped"].startswith("memwatch-stop"), s["stopped"])
+        self.assertTrue(s["lane_closed"], s)          # (the lane's session torn down at once)
+
+    def test_a_memory_stop_before_the_run_boots_nothing(self):
+        s, p = self.run_tests(before=self.MEM)
+        r = results(s)
+        self.assertEqual(r["test_1_writes_the_stop"], "SETUP-FAIL", p.stdout[-2000:])
+        self.assertEqual({r["test_2_after"], r["test_3_after"]}, {"NOT-RUN"})
+        self.assertFalse(os.path.isdir(os.path.join(self.tmp, "o", "fake")), "the fake lane was booted")
+
+    def test_another_stop_lets_the_run_go_on(self):
+        s, p = self.run_tests(line="stop asked by hand (runner exit)")
+        self.assertEqual(set(results(s).values()), {"PASS"}, p.stdout[-2000:])
+
+    def test_no_second_boot_in_one_run(self):
+        import bt_plugin
+        from unittest import mock
+        cfg = type("C", (), {})()
+        with mock.patch.dict(os.environ, {"BT_STOP_FILE": self.stop}):
+            bt_plugin._one_boot(cfg, 2)
+            with self.assertRaisesRegex(P.SetupFail, r"lane2: no second boot in one run"):
+                bt_plugin._one_boot(cfg, 2)
+
+    def test_games_closed_from_outside_not_a_crash(self):
+        import bt_plugin
+        sess = os.path.join(self.tmp, "session")
+        os.makedirs(sess)
+        log = os.path.join(sess, "game-out-B.txt")
+        with open(log, "w", encoding="utf-8") as f:
+            f.write("coop: fine\n")
+        with open(os.path.join(sess, "pids.json"), "w", encoding="utf-8") as f:
+            json.dump({"games": {"A": 11, "B": 22}, "server": 33}, f)
+        with open(os.path.join(sess, "session.json"), "w", encoding="utf-8") as f:
+            json.dump({"started": 0, "games": {"B": {"log": log}}}, f)
+        self.assertIsNone(bt_plugin.games_closed(sess, alive=lambda pid: True))
+        self.assertRegex(bt_plugin.games_closed(sess, alive=lambda pid: pid != 22) or "",
+                         r"^games-closed: game B \(pid 22\)")
+        with open(log, "a", encoding="utf-8") as f:
+            f.write("CRASH: exception 0xc0000005\n")        # (a crash stays the crash handling's: FAIL)
+        self.assertIsNone(bt_plugin.games_closed(sess, alive=lambda pid: pid != 22))
+
+
 class SetupLimit(unittest.TestCase):
     """Pair.setup's 30 s limit holds for the calls inside it (review-c123-6 point 2): a hung bridge in a set-up is a
     SETUP-FAIL at the limit, not a FAIL at the test's budget. A fake clock: no real waiting."""

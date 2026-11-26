@@ -510,6 +510,63 @@ def _crash_why(session):
     return ("; " + "; ".join(out)) if out else ""
 
 
+# -- the queue's memory stop (B #141 17:5x, STOP-file contract with the queue runner) ---------------------------------
+# songs-frogs-175889ac (17:50): memwatch wrote STOP-OFFLINE-QUEUE (free commit 1.9 GB), B #141 closed the lane-2 games,
+# and at 17:51 this run's pytest booted the pair AGAIN in the same session folder (its steps.txt: a second 'live.py
+# start' at 17:51:17): free commit 2.1 GB again. The contract both sides follow:
+#   - the file is coord-multiplayer/STOP-OFFLINE-QUEUE (tools/offline-queue.ps1:29); a MEMORY stop is one whose first
+#     line has 'memwatch' or 'free commit' (offline-queue.ps1:207-208, the queue's pause test); any other STOP is the
+#     runner's own exit and lets a running job end, as before.
+#   - on a memory stop a running pytest run boots nothing more: the next test (and every one after it) is not started,
+#     the first gets SETUP-FAIL 'memwatch-stop: <the STOP line>', the rest NOT-RUN, and the lane's session is stopped
+#     at once (live.py stop: the games closed, the lock let go). The runner ends the job's process tree (its side).
+#   - a lane's games that are gone without a crash (closed from outside) end the run the same way ('games-closed').
+#   - one lane boot per pytest run: a second live.py start is refused (SETUP-FAIL), whatever asked for it.
+STOP_NAME = "STOP-OFFLINE-QUEUE"
+MEM_STOP = re.compile(r"memwatch|free commit")
+
+
+def stop_file():
+    """coord-multiplayer/STOP-OFFLINE-QUEUE beside the kit root (lanes.kit_root(): OOT REMAKE/coop-kit); BT_STOP_FILE
+    names another (selftests)."""
+    if os.environ.get("BT_STOP_FILE"):
+        return os.environ["BT_STOP_FILE"]
+    import lanes as L
+    return os.path.join(os.path.dirname(L.kit_root()), "coord-multiplayer", STOP_NAME)
+
+
+def memwatch_stop():
+    """'memwatch-stop: <first line>' while a MEMORY stop file is there, else None (no file, or another stop)."""
+    try:
+        with open(stop_file(), encoding="utf-8", errors="replace") as f:
+            first = f.readline().strip()
+    except OSError:
+        return None
+    return ("memwatch-stop: %s" % first[:200]) if MEM_STOP.search(first) else None
+
+
+def games_closed(session, alive=None):
+    """'games-closed: ...' when a game of the lane's live.py session is no longer running and did not crash (closed
+    from outside: B #141 17:50), else None. A crash is left to the crash handling (GameCrash: FAIL)."""
+    if not session:
+        return None
+    import live
+    alive = alive or live.lanes.hs.pid_alive
+    try:
+        pids = live.game_pids(session)[0]
+    except Exception:            # noqa: BLE001 (no pids.json: nothing known, nothing judged)
+        return None
+    gone = [x for x, pid in sorted(pids.items()) if pid and not alive(pid)]
+    if not gone or _crash_why(session):
+        return None
+    return "games-closed: game %s (pid %s) ended with no crash: closed from outside" % (
+        ", ".join(gone), ", ".join(str(pids[x]) for x in gone))
+
+
+def _stop_why(config):
+    return memwatch_stop() or games_closed(getattr(config, "_bt_session", None))
+
+
 def _solo_proof(pair, lane):
     """The SOLO boot's setup proof: game A only, and its module log says co-op idle (solo.IDLE, no session line)."""
     try:
@@ -524,6 +581,7 @@ def lane_pair(request):
     lane = _lane_for(config)
     out = _out_dir(config, lane)
     refs = os.path.join(HERE, "refs")
+    _one_boot(config, lane)                     # (a memory stop or a second boot: SETUP-FAIL, nothing started)
     if config.getoption("fake"):
         folders = [os.path.join(out, "fake", "lane%d-%s" % (lane, x)) for x in ("A", "B")]   # (FakeLane's folders)
         if os.environ.get("BT_FAKE_PACK_DIR"):    # (selftest: the fake games have a co-op pack to put files into)
@@ -590,6 +648,7 @@ def lane_pair(request):
             crash = _crash_why(session)
             why = "lane%d boot: %s%s" % (lane, started.get("error") or started.get("boot"), crash)
             raise GameCrash(why) if crash else P.SetupFail(why)
+        config._bt_session = session            # (games_closed watches its pids from here on)
         pair = P.Pair(P.read_session(session), out_dir=out, refs_dir=refs)
         pair.lane, pair.info, pair.session = lane, dict(info, boot_s=round(time.monotonic() - t0, 1)), session
         for x in pair.c:
@@ -611,6 +670,18 @@ def lane_pair(request):
         config._bt_lane_closed = _stop_own_session(session, began)
         _pack_out(config, folders)              # (after the games are closed: they hold the pack's files open)
         config._bt_commit = dict(getattr(config, "_bt_commit", None) or {}, **{"lane%d" % lane: mem.stop()})
+
+
+def _one_boot(config, lane):
+    """The lane's boot may start: no memory stop (memwatch_stop) and no boot before it in this run (songs-frogs-175889ac
+    booted the pair a second time after its games were closed from outside); else SetupFail, nothing started."""
+    why = memwatch_stop()
+    if why:
+        raise P.SetupFail("lane%d %s (no boot)" % (lane, why))
+    if getattr(config, "_bt_booted", False):
+        raise P.SetupFail("lane%d: no second boot in one run (this run's first boot's games are gone: closed from "
+                          "outside or by a stop)" % lane)
+    config._bt_booted = True
 
 
 def _boot_proof(config, pair, lane):
@@ -721,6 +792,26 @@ def _not_run(item, why):
     item.ihook.pytest_runtest_logreport(report=rep)
 
 
+def _stop_run(item, why):
+    """A memory stop or the lane's games closed from outside (_stop_why): the first test not started is SETUP-FAIL
+    `why`, every one after it NOT-RUN, and the session's fixtures are torn down at once (lane_pair -> live.py stop:
+    the games closed, the lock let go) so nothing is booted again."""
+    config = item.config
+    first = not getattr(config, "_bt_stopped", None)
+    item.ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
+    if first:
+        from _pytest.reports import TestReport
+        rep = TestReport(item.nodeid, item.location, {}, "failed", why, "teardown",
+                         user_properties=[("result", "SETUP-FAIL"), ("seconds", 0), ("why", why)])
+        item.ihook.pytest_runtest_logreport(report=rep)
+        config._bt_stopped = why
+        item.session._setupstate.teardown_exact(None)
+    else:
+        _not_run(item, "NOT-RUN: %s" % config._bt_stopped)
+    item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
+    return True
+
+
 def _stop_at_deadline(item):
     """Past --deadline-min: this item is NOT-RUN (and so is each one after it, as pytest offers it: under xdist a worker
     sees only its own share). The first time, the session's fixtures are torn down at once (the lane's games: lane_pair
@@ -741,6 +832,10 @@ def _stop_at_deadline(item):
 def pytest_runtest_protocol(item, nextitem):
     if _past_deadline(item.config):
         return _stop_at_deadline(item)
+    stop = getattr(item.config, "_bt_stopped", None)
+    stop = stop if stop and stop.startswith(("memwatch-stop", "games-closed")) else _stop_why(item.config)
+    if stop:
+        return _stop_run(item, stop)
     item.ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
     t0 = time.monotonic()
     reports = runtestprotocol(item, nextitem=nextitem, log=False)
