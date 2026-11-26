@@ -10,10 +10,17 @@ Sources of every value (worker-rules "no guessed values"):
 - PLUS = the Switch '+' (the game's pause screen): coop_playtest_core.cpp kButtons; a held pause runs no Link update,
   so the snapshot goes stale (docs/playtest.md "State": 'a title, a pause or a load: no Link update runs').
 - to-title.now + its two log lines: hookshot/src/coop_pause.cpp (LICHII_COOP_TEST_TO_TITLE=1, set by bt_plugin).
+- TITLE_UP: hookshot/src/coop_hookshot.cpp (the frame site, CoopNativeUi::SetTitleUp); MAP_TITLE: coop_map_page.cpp
+  Frame (party-hud-crash-c126-6: the title reached from play has no scene load; both games crashed there in
+  party-hud-bridge-ece368dd-2, ~2 s after the title came up: game-out-A.txt :6784 'loading -> menu' to :6829 CRASH).
+- CRASH_LINE: bt_plugin.CRASH_LINE (the module's crash handler line).
+- TITLE_HOLD 600 frames (~10 s at 60 fps, pair.FPS) at the title: 5x that crash's ~2 s.
 """
 import os
 
 import pytest
+
+from bt_plugin import CRASH_LINE
 
 pytestmark = pytest.mark.smoke
 
@@ -21,6 +28,9 @@ CONNECTED = r"coop: connected"
 TO_TITLE_ON = r"coop: multiplayer tab: test: to-title\.now in .* starts the way back to the title"
 TO_TITLE_ASKED = r"coop: multiplayer tab: test: back to the title asked \(to-title\.now\)"
 WARP_TO = "KakarikoVillage_Child"
+TITLE_UP = r"coop: native ui: the title's menu is up: no play scene"
+MAP_TITLE = r"coop: map: the title is up: the panes found are forgotten"
+TITLE_HOLD = 600
 
 
 @pytest.mark.budget(60)
@@ -94,10 +104,17 @@ def test_title_and_load_again(pair):
         pair.expect_log(x, TO_TITLE_ASKED, max_frames=300)
     pair.until("both games left play (title)",
                lambda: all(not pair.in_play(pair.state(x)) for x in ("A", "B")), max_frames=900)
+    for x in ("A", "B"):   # (party-hud-crash-c126-6: the title from play is no play scene: nothing is called into)
+        pair.expect_log(x, TITLE_UP, max_frames=300)
+        pair.expect_log(x, MAP_TITLE, max_frames=300)
+    pair.step_both(TITLE_HOLD)   # (frames run at the title: a game that crashed there stops answering)
+    for x in ("A", "B"):
+        pair.never_log(x, CRASH_LINE)
     pair.load_both(max_frames=3600)
     for x in ("A", "B"):
         s = pair.state(x)
         assert pair.in_play(s), "%s not in play after the load" % x
+        pair.never_log(x, CRASH_LINE)
     pair.until("both games list two connected players again",
                lambda: all(len([p for p in ((pair.state(x).get("coop") or {}).get("players") or [])
                                 if p.get("state") == "connected"]) >= 2 for x in ("A", "B")), max_frames=900)

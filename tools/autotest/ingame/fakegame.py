@@ -96,6 +96,8 @@ class FakeGame:
                 os.remove(os.path.join(self.folder, "to-title.now"))
                 self.say("coop: multiplayer tab: test: back to the title asked (to-title.now)")
                 self.at_title = True
+                self.say("coop: native ui: the title's menu is up: no play scene, no screen is called into until play is back")
+                self.say("coop: map: the title is up: the panes found are forgotten, looked for again after it")
 
     def in_play(self):
         return not self.at_title and not self.menu_pause
