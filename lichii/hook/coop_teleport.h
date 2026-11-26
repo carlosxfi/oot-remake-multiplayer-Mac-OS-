@@ -95,6 +95,46 @@ std::vector<std::string> ScenesLike(std::string_view name, std::size_t most = 6)
 // Longshot's teleport table took them from the game), else the plain Dm_SY_BancChangeArrive.
 std::string ArrivalEvent(std::string_view scene, std::string_view start);
 
+// Whether the arrival at `start` in `scene` has a starter: false only for a row of coop_start_points.inc whose scene
+// has no entrance actor (FieldAndDungeonEntranceEventRequestActor) of that name: the 25 boss stages and EnemyMuseum.
+// A start the list lacks is taken to have one (nothing of the game's reservation is changed for it).
+bool ArrivalHasStarter(std::string_view scene, std::string_view start);
+
+// Issue 289. Dm_SY_BancChangeGo reserves the arrival event's starter by the start's name
+// (Sequence_ReservedEventStarterName = its argument NextStartPos), and after the load Sequence/AfterChangeBanc.module
+// looks the entrance actor of that name up (SeqQueryEventSubstituteStarterMgrTryGetActor). A boss stage has none:
+// the arrival event never began there (no event after the load in three runs' logs) and the module's
+// SeqExecuteWaitEventStart kept the loading fade up for good. The game's own entries to those stages reserve the
+// starter '' (DreamBossStage's EventReserveBancChange: EventStarterName ''), which the module answers by asking the
+// arrival event at once with no starter. So for a start with no entrance actor the reserved starter is emptied after
+// the game's event wrote it: the same reservation the game makes. Pure: the glue reads the flags and writes.
+class ArrivalStarter {
+public:
+    // Our map change event was asked for `scene` at `start`. Nothing to do (not active) when that start has a starter.
+    void Begin(std::string_view scene, std::string_view start, std::uint64_t now_us);
+    // Once a frame while active, with the game's Sequence_ReservedNextBanc, Sequence_ReservedEventStarterName and
+    // Sequence_IsLoadingBanc (nothing: not read). True: write '' into Sequence_ReservedEventStarterName now.
+    bool Tick(const std::optional<std::string>& reserved_banc, const std::optional<std::string>& reserved_starter,
+              bool loading, std::uint64_t now_us);
+    bool active() const { return active_; }
+    int writes() const { return writes_; }  // '' asked so far for this map change
+    const std::string& scene() const { return scene_; }
+    const std::string& start() const { return start_; }
+
+    // The game's event reserves within its fade; never seen in this time, the event was not taken.
+    static constexpr std::uint64_t kUnseenUs = 10'000'000;
+    // Seen: the reservation is the game's until its load ended and it cleared it; a load never takes this long.
+    static constexpr std::uint64_t kSeenUs = 120'000'000;
+
+private:
+    bool active_ = false;
+    bool seen_ = false;    // the game's reservation of our scene was read
+    bool loaded_ = false;  // a load ran since
+    int writes_ = 0;
+    std::uint64_t since_us_ = 0;
+    std::string scene_, start_;
+};
+
 // A chat line that is a command, not chat. "/teleport" alone lists players.
 struct Command {
     enum class Kind : std::uint8_t { list, go };

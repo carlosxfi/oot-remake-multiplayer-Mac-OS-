@@ -22,7 +22,7 @@ wait 300
 press A                 # loads the save, then the warp
 wait 2400
 mark a-in
-# Link must live to see the rocks: ten more heart containers (the cheats window's give), each one fills its heart
+# Link must live to see the rocks: ten more heart containers (the cheats window's give; it raises the max only), then life filled
 give PlayerStatus.MaxLife
 wait 120
 give PlayerStatus.MaxLife
@@ -43,6 +43,7 @@ give PlayerStatus.MaxLife
 wait 120
 give PlayerStatus.MaxLife
 wait 120
+setflag PlayerStatus.Life 56   # the gives raise only the max (coop_cheat_give.cpp Wanted: +4); life filled: 16 + 40 quarters
 wait 1800               # the intro, then the fight
 press ZL 10             # lock on
 mark a-1

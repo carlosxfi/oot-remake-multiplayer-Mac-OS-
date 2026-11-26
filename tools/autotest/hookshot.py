@@ -117,6 +117,27 @@ def scene_problem(name, scenes=None):
 INCLUDE_DEPTH = 4
 
 
+def header_switches(path):
+    """The `#! switches NAME=v,NAME=v` header lines of a scenario file (its A script) as [(NAME, v)], as
+    run.ps1 reads them. Here too, so a caller that starts this file without run.ps1 (--script-a) gets them:
+    row 234's run 20261125-114351 came from big-run-01113.ps1 that way, LICHII_COOP_CHEATS=1 never reached
+    the games and every `give` logged 'NOT given (LICHII_COOP_CHEATS is off)'."""
+    out = []
+    if not path:
+        return out
+    with open(path, encoding="utf-8-sig") as f:
+        for line in f.read().split("\n"):
+            m = re.match(r"^#!\s*switches\s+(.+?)\s*$", line)
+            if not m:
+                continue
+            for kv in m.group(1).split(","):
+                kv = kv.strip()
+                if "=" in kv:
+                    k, v = kv.split("=", 1)
+                    out.append((k.strip(), v.strip()))
+    return out
+
+
 def read_script(path, _depth=0):
     """A scenario file's text with each `include FILE` line replaced by that file's text (FILE beside it; an
     include may include, at most INCLUDE_DEPTH deep). One copy of a step several scenarios share (the Gohma kill
@@ -1622,6 +1643,8 @@ def run(a):
                 env["LICHII_COOP_PLAYTEST_PORT"] = str(a.playtest_ports + "AB".index(x) + 1)   # (A p1, B p2, also alone or --only)
                 env["LICHII_COOP_PLAYTEST_VERBS"] = "1"   # act, warp, flag, give: a player's game never gets this
                 env.setdefault("LICHII_COOP_CHEATS", "1")   # the bridge's give goes through the cheats queue
+            for k, v in header_switches(a.script_a):   # both games, as run.ps1; an --env of the same name wins
+                env[k] = v
             for kv in a.env:
                 k, v = kv.split("=", 1)
                 if k[:2] in ("A:", "B:"):

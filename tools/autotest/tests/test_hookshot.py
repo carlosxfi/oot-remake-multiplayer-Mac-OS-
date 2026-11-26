@@ -358,6 +358,22 @@ class ParseTest(unittest.TestCase):
         for f in files:
             hs.parse(hs.read_script(f))
 
+    def test_header_switches_as_run_ps1_reads_them(self):
+        # Row 234: a caller with --script-a (no run.ps1) must still get the A script's `#! switches`.
+        d = tempfile.mkdtemp()
+        try:
+            p = os.path.join(d, "a.txt")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("#! noload\n#! switches LICHII_COOP_DEBUG_BOSS=1, LICHII_COOP_CHEATS=1\n"
+                        "# #! switches NOT_A_HEADER=1\n#!switches X=a=b\nmark start\n")
+            self.assertEqual(hs.header_switches(p),
+                             [("LICHII_COOP_DEBUG_BOSS", "1"), ("LICHII_COOP_CHEATS", "1"), ("X", "a=b")])
+            self.assertEqual(hs.header_switches(None), [])
+        finally:
+            shutil.rmtree(d)
+        rocks = os.path.join(HERE, "..", "scenarios", "hs-volvagia-rocks.A.txt")
+        self.assertIn(("LICHII_COOP_CHEATS", "1"), hs.header_switches(rocks))
+
 
     def test_include_expands_beside_the_file(self):
         d = tempfile.mkdtemp()
