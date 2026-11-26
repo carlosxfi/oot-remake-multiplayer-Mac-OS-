@@ -9,7 +9,8 @@ B a copy), on the copy after 30 frames "the owner's verbs came" (:1512) and "bat
 (coop_hookshot.cpp:601): A sends, B puts in.
 BT_FAKE_BOSS_WAKE=late: a copy that comes in after the owner's intro ended (300 frames or more after it) never takes
 the owner's fight (no verbs, no orders, no put-ins) and its sisters are not in its world list (the bug as reported).
-=copy: the copy never takes it, also when both come in together. The wake tests must FAIL in those modes.
+=copy: the copy never takes it, also when both come in together. =server: B's world list names the server (OwnerJson
+"server") as the sisters' owner. The wake tests must FAIL in those modes.
 """
 import os
 
@@ -83,6 +84,9 @@ def _arrive(game):
 def state(game, st):
     if not _on(game):
         return
+    me = 1 if game.tag == "A" else 2       # (fakegame.py: A is player 1, B player 2)
+    for p in (st.get("coop") or {}).get("players") or []:
+        p.setdefault("self", p.get("number") == me)
     if game.awake_warp and game.scene == STAGE:
         _arrive(game)
     if game.scene != STAGE or game.awake_at is None:
@@ -90,7 +94,9 @@ def state(game, st):
     if game.frame - game.awake_at < INTRO:
         st["event"] = True
     if game.awake_ok:
+        server = game.tag == "B" and os.environ.get("BT_FAKE_BOSS_WAKE") == "server"
         for i, boss in enumerate(SISTERS):
             st["world"]["actors"].append({"id": 0x300 + i, "addr": hex(0x300 + i), "name": boss, "kind": "enemy",
                                           "pos": [-5.0 + 10 * i, 150.0, -160.0], "dist": 12.0, "life": 24,
-                                          "max_life": 24, "owner": 1, "alive": True})
+                                          "max_life": 24, "alive": True,
+                                          "owner": "server" if server else 1})
