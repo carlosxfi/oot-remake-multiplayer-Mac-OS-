@@ -77,6 +77,8 @@ class Split(Base):
     def test_balanced_by_history(self):
         hist = os.path.join(self.tmp, "hist")
         fake_run(hist, "x", "boss", 30)
+        for n in ("o1", "o2", "o3"):   # the median of all measured runs is the default: 4.0 + 0.5 here
+            fake_run(hist, "x", n, 4)
         doc = p.split([self.one, self.two], os.path.join(self.tmp, "out"), 2, [hist])
         lanes = {l["lane"]: [u["name"] for u in l["groups"]] for l in doc["lanes"]}
         boss_lane = [n for n, gs in lanes.items() if "two-g1" in gs][0]
@@ -114,6 +116,68 @@ class Split(Base):
         self.assertTrue(os.path.isfile(os.path.join(self.tmp, "o", "plan.json")))
 
 
+    def test_default_is_median_of_measured_runs(self):
+        hist = os.path.join(self.tmp, "hist")
+        for n, m in (("a", 1), ("b", 2), ("c", 9)):
+            fake_run(hist, "x", n, m)
+        doc = p.split([self.one], os.path.join(self.tmp, "out"), 1, [hist])
+        self.assertAlmostEqual(doc["total_minutes"], 3 * 2.5, places=1)
+        self.assertIn("median", doc["lanes"][0]["groups"][0]["estimates"][0]["from"])
+
+
+class History(Base):
+    def test_run_ps1_folder_without_run_json(self):
+        # run.ps1 alone writes <shots>/<scenario>/<stamp>/steps.txt and no run.json
+        d = os.path.join(self.tmp, "shots", "chest", "20261126-010000")
+        write(os.path.join(d, "steps.txt"), "01:00:00 A: started pid 1\n01:03:00 scenario played\n")
+        write(os.path.join(self.tmp, "shots", "chest", "notastamp", "steps.txt"), "01:00:00 a\n01:30:00 b\n")
+        h = p.history([os.path.join(self.tmp, "shots")])
+        self.assertEqual(h, {"chest": [3.0 + p.CLOSE_MIN]})
+
+
+class Merge(Base):
+    def _split(self, text):
+        f = os.path.join(self.tmp, "m.txt")
+        write(f, text)
+        return p.split([f], os.path.join(self.tmp, "mo"), 1)
+
+    def test_same_run_merged_checks_kept(self):
+        doc = self._split(r"""[a]
+hs-ladder  expect='A:get_bool\(0xb3\) = 1'  label="deku 3"  see=hs-ladder-A
+[b]
+walk
+hs-ladder  expect='A:get_bool\(0xb3\) = 1'  expect='B:result: played'  label="#177 ladder"  see=hs-ladder-B
+""")
+        self.assertEqual(doc["merged"], [{"into": "a", "from": "b", "scenario": "hs-ladder"}])
+        with open(doc["lanes"][0]["file"], encoding="utf-8") as f:
+            runs = dict(g.parse_groups(f.read()))
+        lad = runs["a"][0]
+        self.assertEqual(lad["expects"], [("A", r"get_bool\(0xb3\) = 1"), ("B", "result: played")])
+        self.assertEqual(lad["see"], ["hs-ladder-A", "hs-ladder-B"])
+        self.assertEqual(lad["label"], "deku 3 + #177 ladder")
+        self.assertEqual([r["scenario"] for r in runs["b"]], ["walk"])
+
+    def test_group_emptied_by_merge_dropped(self):
+        doc = self._split("[a]\nwalk  label=x\n[b]\nwalk  label=x\n")
+        self.assertEqual([u["name"] for u in doc["lanes"][0]["groups"]], ["a"])
+        self.assertEqual(len(doc["merged"]), 1)
+
+    def test_different_runs_not_merged(self):
+        doc = self._split("""[a]
+hs-hud  label="HUD blocks"
+hs-tunic  switches=X=1
+hs-sign  logonly="log only"
+chest  timeout=900
+[b]
+hs-hud  switches=LICHII_COOP_HUD=0  label="HUD off"
+hs-tunic  switches=X=2
+hs-sign  see=sign-A
+chest
+""")
+        self.assertEqual(doc["merged"], [])
+        self.assertEqual(sum(len(u["lines"]) for u in doc["lanes"][0]["groups"]), 8)
+
+
 class Remaining(Base):
     def test_only_runs_without_folder(self):
         lane = os.path.join(self.tmp, "lane2.txt")
@@ -142,9 +206,7 @@ class Remaining(Base):
         t = os.path.getmtime(old) - 3600
         os.utime(old, (t, t))
         lane = os.path.join(self.tmp, "lane2.txt")
-        write(lane, "[g3]
-wear
-")
+        write(lane, "[g3]\nwear\n")
         self.assertIn("wear", p.remaining(lane, root))
         fake_run(root, "g3", "wear", 2, stamp="20261126-020000")
         self.assertIsNone(p.remaining(lane, root))

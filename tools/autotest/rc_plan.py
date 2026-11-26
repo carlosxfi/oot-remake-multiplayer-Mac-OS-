@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -33,6 +34,7 @@ import groups as G   # noqa: E402
 DEFAULT_MIN = 4.5
 CLOSE_MIN = 0.5
 TS = re.compile(r"^(\d\d):(\d\d):(\d\d)\b")
+STAMP = re.compile(r"^\d{8}-\d{6}$")   # run.ps1's run folder: <shots>\<scenario>\<yyyyMMdd-HHmmss>
 
 
 class Fail(Exception):
@@ -75,16 +77,24 @@ def steps_minutes(path):
 
 
 def history(roots):
-    """{scenario: [minutes of each earlier run]} from run.json + steps.txt under the run roots."""
+    """{scenario: [minutes of each earlier run]} from the steps.txt of every run folder under the run roots: the
+    scenario from run.json (groups.py runs), else from the folder layout <scenario>/<stamp> (run.ps1 runs alone write
+    no run.json: before 2026-11-26, 66 of the 77 rc rows found no history that way and took DEFAULT_MIN)."""
     seen = {}
     for root in roots or []:
         for d, _, files in os.walk(root):
-            if "run.json" not in files or "steps.txt" not in files:
+            if "steps.txt" not in files:
                 continue
-            try:
-                with open(os.path.join(d, "run.json"), encoding="utf-8") as f:
-                    name = json.load(f).get("scenario")
-            except (OSError, ValueError):
+            name = None
+            if "run.json" in files:
+                try:
+                    with open(os.path.join(d, "run.json"), encoding="utf-8") as f:
+                        name = json.load(f).get("scenario")
+                except (OSError, ValueError):
+                    continue
+            elif STAMP.match(os.path.basename(d)):
+                name = os.path.basename(os.path.dirname(d))
+            if not name:
                 continue
             m = steps_minutes(os.path.join(d, "steps.txt"))
             if name and m is not None:
@@ -96,7 +106,13 @@ def estimate(scenario, hist):
     runs = hist.get(scenario)
     if runs:
         return sum(runs) / len(runs), "mean of %d earlier run(s)" % len(runs)
-    return DEFAULT_MIN, "default %.1f min (no earlier run)" % DEFAULT_MIN
+    # no run of this scenario yet: the median of every measured run (a measured value), DEFAULT_MIN only without any
+    every = sorted(m for v in hist.values() for m in v)
+    if every:
+        mid = len(every) // 2
+        med = every[mid] if len(every) % 2 else (every[mid - 1] + every[mid]) / 2
+        return med, "default: median %.1f min of %d measured run(s) (no run of this scenario)" % (med, len(every))
+    return DEFAULT_MIN, "default %.1f min (no earlier run at all)" % DEFAULT_MIN
 
 
 def units(files):
@@ -119,6 +135,51 @@ def units(files):
     if not out:
         raise Fail("no group in %s" % ", ".join(files))
     return out
+
+
+MERGE_KEY = ("scenario", "switches", "timeout", "password", "logonly")
+
+
+def one_run(line):
+    return G.parse_groups("[x]\n" + line + "\n")[0][1][0]
+
+
+def merge_same_runs(us):
+    """One run for rows that are the same run.ps1 command (scenario, switches, timeout, password) with the same
+    logonly=: the later row's expect=/never=/see= go onto the first row (labels joined with ' + ') and the later row
+    is dropped. Both rows' checks are judged on that one run, so nothing is checked less. Rows that differ in any of
+    those keys stay apart (a logonly= row never lends its log-only pass to a row with pictures).
+    Returns (units, [{"into", "from", "scenario"}])."""
+    first, out, merged = {}, [], []
+    for name, lines, src in us:
+        keep = []
+        for line in lines:
+            run = one_run(line)
+            key = tuple(str(run[k]) for k in MERGE_KEY)
+            if key not in first:
+                first[key] = [name, len(keep), shlex.split(line, posix=True), False]
+                keep.append(line)
+                continue
+            into = first[key]
+            words = into[2]
+            have = set(words)
+            label = next((w for w in words if w.startswith("label=")), None)
+            for w in shlex.split(line, posix=True)[1:]:
+                k = w.partition("=")[0]
+                if k in ("expect", "never", "see") and w not in have:
+                    words.append(w)
+                    have.add(w)
+                elif k == "label" and w[6:] and (label is None or w[6:] not in label):
+                    label = (label + " + " + w[6:]) if label else w
+            words[:] = [w for w in words if not w.startswith("label=")] + ([label] if label else [])
+            into[3] = True
+            merged.append({"into": into[0], "from": name, "scenario": run["scenario"]})
+        out.append([name, keep, src])
+    for name, idx, words, changed in first.values():
+        if changed:
+            u = next(u for u in out if u[0] == name)
+            u[1][idx] = shlex.join(words)
+    return [(n, ls, s) for n, ls, s in out if ls], merged
 
 
 def assign(us, hist, lanes):
@@ -157,7 +218,8 @@ def write_checked(path, text):
 def split(files, out_dir, lanes=2, roots=None):
     if lanes < 1:
         raise Fail("--lanes must be at least 1")
-    plan = assign(units(files), history(roots), lanes)
+    us, merged = merge_same_runs(units(files))
+    plan = assign(us, history(roots), lanes)
     os.makedirs(out_dir, exist_ok=True)
     for p in plan:
         p["file"] = os.path.join(out_dir, "lane%d.txt" % p["lane"])
@@ -168,7 +230,8 @@ def split(files, out_dir, lanes=2, roots=None):
         else:
             p["file"] = ""   # more lanes than groups: this lane plays nothing
     total = round(sum(p["minutes"] for p in plan), 2)
-    doc = {"sources": list(files), "history": list(roots or []), "lanes": plan, "total_minutes": total,
+    doc = {"sources": list(files), "history": list(roots or []), "lanes": plan, "merged": merged,
+           "total_minutes": total,
            "longest_lane_minutes": max(p["minutes"] for p in plan)}
     with open(os.path.join(out_dir, "plan.json"), "w", encoding="utf-8") as f:
         json.dump(doc, f, indent=1)
@@ -235,7 +298,8 @@ def main(argv=None):
             for p in doc["lanes"]:
                 print("lane %d: %d group(s), ~%.1f min, %s" % (p["lane"], len(p["groups"]), p["minutes"],
                                                               p["file"] or "(nothing)"))
-            print("total ~%.1f min, longest lane ~%.1f min" % (doc["total_minutes"], doc["longest_lane_minutes"]))
+            print("total ~%.1f min, longest lane ~%.1f min, %d row(s) merged into an equal run" % (
+                doc["total_minutes"], doc["longest_lane_minutes"], len(doc["merged"])))
             return 0
         text = remaining(a.lane_file, a.run_root)
         if text is None:
