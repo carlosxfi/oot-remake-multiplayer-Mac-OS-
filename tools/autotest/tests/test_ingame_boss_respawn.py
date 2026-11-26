@@ -74,6 +74,8 @@ class BossRespawn(unittest.TestCase):
         self.assertEqual(set(r.values()), {"SETUP-FAIL"}, p.stdout[-2000:])
         for stage in ("VolvagiaStage", "DodongoStage", "LizalfosStage", "GanonStage"):
             self.assertIn("boss arrival in %s" % stage, p.stdout, p.stdout[-2000:])
+        # (boss-respawn-bridge-e3e6e253: a bare 'TimeoutError: timed out' named no phase; now the phase and its time)
+        self.assertIn("boss arrival in VolvagiaStage: in 'warp A' after", p.stdout, p.stdout[-2000:])
 
     def test_beside_respawn_is_no_ref_never_pass(self):
         """The old row's 'UNPROVEN ... not taken': A took the beside move, so the row 289 path never ran (pair.unproven)."""

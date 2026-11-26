@@ -55,12 +55,17 @@ KEEP = "LICHII_COOP_ARRIVAL_STARTER=keep"     # coop_teleport_game.cpp:68-71
 OBJECTS = "LICHII_COOP_DEBUG_OBJECTS=1"
 BACK_TO = "KakarikoVillage_Child"            # test_smoke.WARP_TO: the lane's boot map, so later tests start in play
 BLACK, PICTURE = 5.0, 15.0                    # mean.py thresholds (module docstring)
-BOSS_ARRIVAL_S = 150.0
+WARP_S = 31.0          # worst warp of one game on a lane: 26.9/28.8/31.0 s (party-hud-bridge-6947aa3d test_warp r1-r3, as P.recover)
+ARRIVAL_EVENT_S = 48.0  # B's boss-stage arrival event, run 20261125-114351
+IN_PLAY_FRAMES = 2400   # the old scenarios' 'wait 2400' after the load (br289-volvagia, hs-volvagia-rocks)
+BOSS_ARRIVAL_S = 2 * (2 * (WARP_S + ARRIVAL_EVENT_S) + IN_PLAY_FRAMES / P.FPS)   # = 476 s, a CEILING (2x margin)
 # B #130 (09:43, via review-rows-c130): the owner's 30 s is the SET-UP CHECK (pair.setup(): in play, no fairy, gives),
 # kept first and at the default limit. The boss-stage arrival is a step after it with its own hard limit: a scene load
-# plus the stage's own arrival event, which the warp waits out (coop_playtest.cpp: arrived = in the scene with no event
-# or load), A then B, each with the warp's own 60 s timeout (Pair.warp_both); 48 s of B's arrival event in run
-# 20261125-114351. A miss there is SETUP-FAIL 'boss arrival in <S>: ...' (boss_arrival).
+# plus the stage's own arrival event, A then B, then both in play. A miss there is SETUP-FAIL 'boss arrival in <S>: ...'
+# naming the phase it was in and each phase's time (boss_arrival).
+# boss-respawn-bridge-e3e6e253 (15:46, lane 2): the old 150 s (fit for 13.5-15.5 s warps) ran out on a lane whose
+# warps take 27-31 s; both games were in the stage, its arrival over, Volvagia up (game logs), when the time was gone.
+# The bound is a ceiling only (too short = SETUP-FAIL, never a PASS); the phase times each run notes are the measure.
 
 
 def mean_grey(path):
@@ -98,27 +103,41 @@ def boss_arrival(pair, stage, then=None):
     bridge's 60 s 'no event' wait), then both games run until both are in play there: 2400 frames at most, the old
     scenarios' wait after the load ('wait 2400' before a-in / b-in, br289-volvagia and hs-volvagia-rocks)."""
     outer = pair.deadline
-    pair.deadline = P.Deadline(max(0.0, min(BOSS_ARRIVAL_S, outer.left())), clock=outer.clock)
+    limit = max(0.0, min(BOSS_ARRIVAL_S, outer.left()))
+    pair.deadline = P.Deadline(limit, clock=outer.clock)
     t0 = outer.clock()
+    took = []                                 # (phase, s): the measure, in the notes and in any SETUP-FAIL
+
+    def timed(phase, fn):
+        t = outer.clock()
+        try:
+            return fn()
+        finally:
+            took.append("%s %.1f s" % (phase, outer.clock() - t))
+
+    phase = "warp"
     try:
-        st = pair.warp_both(stage, entrance=stage, arrive_in_event=True)
-        for x in ("A", "B"):
-            assert (st[x].get("scene") or "").lower() == stage.lower(), "%s is in %s, not %s" % (
-                x, st[x].get("scene"), stage)
+        for x in ("A", "B"):                  # (Pair.warp_both's order and rules, one game at a time so each is timed)
+            phase = "warp %s" % x
+            s = timed(phase, lambda: pair.warp_one(x, stage, entrance=stage, arrive_in_event=True))
+            assert (s.get("scene") or "").lower() == stage.lower(), "%s is in %s, not %s" % (x, s.get("scene"), stage)
 
         def both_in_play():
             sts = {x: pair.state(x) for x in ("A", "B")}
             return all(pair.in_play(v) and (v.get("scene") or "").lower() == stage.lower() for v in sts.values())
-        pair.until("both games in play in %s after its arrival event" % stage, both_in_play, max_frames=2400)
+        phase = "both in play"
+        timed(phase, lambda: pair.until("both games in play in %s after its arrival event" % stage, both_in_play,
+                                        max_frames=IN_PLAY_FRAMES))
         if then:
+            phase = "arrival check"
             then()                            # (a check of the arrival itself, e.g. the hearts still in)
-    except P.SetupFail as e:
-        raise P.SetupFail("boss arrival in %s: %s" % (stage, e)) from e
-    except Exception as e:                    # noqa: BLE001  (a timeout, a refused warp, a wrong scene)
-        raise P.SetupFail("boss arrival in %s: %s: %s" % (stage, type(e).__name__, e)) from e
+    except Exception as e:                    # noqa: BLE001  (a timeout, a refused warp, a wrong scene, a SetupFail)
+        why = str(e) if isinstance(e, P.SetupFail) else "%s: %s" % (type(e).__name__, e)
+        raise P.SetupFail("boss arrival in %s: in '%s' after %.1f of %.0f s (%s): %s" % (
+            stage, phase, outer.clock() - t0, limit, "; ".join(took) or "nothing done", why)) from e
     finally:
         pair.deadline = outer
-    pair.notes.append("boss arrival in %s %.1f s" % (stage, outer.clock() - t0))
+    pair.notes.append("boss arrival in %s %.1f s (%s)" % (stage, outer.clock() - t0, "; ".join(took)))
 
 
 def rest_from(pair, x, pattern):
