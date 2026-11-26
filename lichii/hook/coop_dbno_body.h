@@ -55,7 +55,8 @@
 //   up). The others see it through the existing paths: Link puppets copy his
 //   bones (coop_pose.h), Character Select puppets play the AS command, frame
 //   and rate PLAYER_SAMPLE reads from slot 0 (rate 0: held there too). A
-//   child keeps the crawl's own clips: nothing is played on a child.
+//   child keeps the crawl's own clips; once the game's crawl ended (or could
+//   not start) in a down, its lying wait is played on him (kChildLyingPose).
 //   Riding (adult only: slot 0's command a horse one): no crawl is asked and
 //   nothing skipped while our Link is on a horse (the game's ride goes on,
 //   shielded and unseen); the round starts once he is off it.
@@ -206,9 +207,22 @@ std::optional<AsSlot> ReadSlot0(CoopPuppet::Guest& guest, std::uint64_t actor);
 // Issue 337: the actor's do action (addr::kWorkDoAction), or nothing (no actor, no work object).
 std::optional<std::uint32_t> ReadDoAction(CoopPuppet::Guest& guest, std::uint64_t actor);
 // Issue 337: whether an AS command of our child Link's is one of the game's
-// own crawl (Player.action.crawl plays the Tunnel_* clips under it). A Crawl
+// own crawl: Crouch / CrouchLockOnMove / CrouchLockOnMoveEnd, the three
+// commands of AS/Player_Child.root.asb that play the Tunnel_* clips. A Crawl
 // verb "taken" by the BSA is only the crawl when slot 0 shows one of these.
 bool CrawlCommand(std::string_view as_command);
+// Issue 337, part 2: the three by name. kCrawlMove lies him down and moves him (Tunnel_St, Tunnel_Move_F),
+// kCrawlEnd gets him up (Tunnel_Ed, Tunnel_Ed_B), kChildLyingPose is the lying wait (Tunnel_Wait).
+// The game's crawl ends by itself as soon as there is room to stand up (ExecutePlayerCrawl's state 4 leaves on
+// main+0x301ac50, a shape cast of his standing body): in a tunnel never, in open ground at once. A downed child
+// then stood for the rest of the down. So once the game's crawl ran and ended in a down (or could not start:
+// no offer in kOfferWaitReads frames, or kMaxFalseStarts false starts), the child is laid down the way the
+// adult is: our Crawl holds the slot and the game's own kChildLyingPose is played on his AS slot 0 through
+// the game's play call (at kPlayRate: the clip is the game's lying wait), played again whenever slot 0 shows
+// anything else. The crawl's own get-up (kCrawlEnd) is left to finish first: its node waits for that clip's end.
+inline constexpr std::string_view kChildLyingPose = "Crouch";
+inline constexpr std::string_view kCrawlMove = "CrouchLockOnMove";
+inline constexpr std::string_view kCrawlEnd = "CrouchLockOnMoveEnd";
 
 // Issue 337: the game enters its crawl from a CrawlAnchor's attention (the
 // actor at each crawlspace mouth: AttentionSender ClientParam "Crawl",
@@ -337,6 +351,9 @@ public:
         std::uint64_t releases = 0;    // ... played on at kPlayRate (getting up)
         std::uint64_t riding = 0;      // frames lying on a horse (no crawl asked)
         std::uint64_t game_crawl = 0;  // frames a child's slot 0 showed the game's own crawl (issue 337)
+        std::uint64_t crawl_ended = 0; // downs in which the game's crawl ran and ended by itself (issue 337)
+        std::uint64_t lie_downs = 0;   // downs a child was laid down by kChildLyingPose (any reason)
+        std::uint64_t child_poses = 0; // kChildLyingPose played on our child Link (again: slot 0 showed another)
         std::vector<std::int32_t> skipped_verbs;  // the first distinct ones (the log)
     };
     Counts Totals() const;
@@ -354,6 +371,13 @@ public:
     // row a down (a crawl that ran in between starts the count again).
     static constexpr int kCrawlStartReads = 30;
     static constexpr int kMaxFalseStarts = 3;
+    // Issue 337, part 2: a downed child the game offers no Crawl for this many frames is laid down by
+    // kChildLyingPose (180: the patience of the game's own crawl, the timers of ExecutePlayerCrawl's states
+    // 0, 1 and 2). kCrawlEnd's clip is over when its frame stood still for kEndStallReads reads.
+    static constexpr int kOfferWaitReads = 180;
+    static constexpr int kEndStallReads = 2;
+    // Any thread: our child is laid down by kChildLyingPose in this down (the log, the tests).
+    bool LaidDown() const;
     // A round that ended refused (or out of asks) on the spot starts again on
     // the ground only this long after its last ask (moved by the world: at once).
     static constexpr std::uint64_t kRetryMs = 5000;
@@ -379,7 +403,9 @@ private:
     // The adult's lying pose this frame: play it held, or on to get up.
     std::optional<CoopPuppet::Call> StepPose(CoopPuppet::Guest& guest, std::uint64_t main_base);
     void StepOffer(CoopPuppet::Guest& guest);  // (the lock is held) once a frame: awaits_offer_
-    std::optional<CoopPuppet::Call> Play(CoopPuppet::Guest& guest, float rate, std::uint64_t main_base);
+    std::optional<CoopPuppet::Call> Play(CoopPuppet::Guest& guest, std::string_view command, float rate,
+                                         std::uint64_t main_base);
+    void LieDown(std::string why);  // (the lock is held) lie_ on, noted once a down
 
     mutable std::mutex mutex_;
     Wanted want_;
@@ -432,6 +458,14 @@ private:
     std::vector<std::uint32_t> offers_seen_;  // the other do actions read while waiting (the log, once each a down)
     int start_reads_ = 0;    // frames a taken Crawl has not been in slot 0
     int false_starts_ = 0;   // ... times in a row this down
+    // Issue 337, part 2 (a child, this down).
+    bool lie_ = false;         // laid down by kChildLyingPose: no offer is waited for, the slot is not given back
+    bool crawl_ran_ = false;   // slot 0 showed the game's crawl under our taken Crawl
+    int crawl_frames_ = 0;     // ... for this many frames (the log)
+    int offer_waits_ = 0;      // frames waited for the game's offer
+    float end_frame_ = -1.0f;  // kCrawlEnd's frame at the last read
+    int end_stalls_ = 0;       // reads it stood still
+    bool pending_child_ = false;  // the play call in flight is kChildLyingPose
     Hold shield_;
     Hold unseen_;
     std::map<std::uint8_t, Hold> puppets_;  // by player number: their puppet's emitter

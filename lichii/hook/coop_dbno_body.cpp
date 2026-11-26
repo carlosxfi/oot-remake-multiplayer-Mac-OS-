@@ -53,9 +53,12 @@ bool Riding(std::string_view c) {
 }
 
 bool CrawlCommand(std::string_view c) {
-    // The AS root's crawl commands (the Tunnel_* clips' own; the log names them).
-    const auto starts = [c](std::string_view p) { return c.substr(0, p.size()) == p; };
-    return starts("Tunnel") || starts("Crawl");
+    // Read from AS/Player_Child.root.asb (471 commands): none is named Tunnel* or Crawl*. The crawl's clips
+    // are played by three commands: `Crouch` (its root node is the Tunnel_Wait clip itself),
+    // `CrouchLockOnMove` (Tunnel_St, Tunnel_Move_F) and `CrouchLockOnMoveEnd` (Tunnel_Ed, Tunnel_Ed_B).
+    // (Issue 337, 0.11.13: Tunnel* / Crawl* were guessed here, so a crawl that ran was never seen and its
+    // slot was given back to the game's Wait 30 frames after it started.)
+    return c == "Crouch" || c == "CrouchLockOnMove" || c == "CrouchLockOnMoveEnd";
 }
 
 std::optional<AnchorSpot> AnchorFor(bool lying, bool event, bool adult, const std::array<float, 3>& link,
@@ -161,13 +164,20 @@ void Crawl::StepOffer(CoopPuppet::Guest& guest) {
         offers_seen_.clear();
         false_starts_ = 0;
         start_reads_ = 0;
+        lie_ = false;
+        crawl_ran_ = false;
+        crawl_frames_ = 0;
+        offer_waits_ = 0;
     }
     if (!ours || crawling_) {
         awaits_offer_ = false;  // (no anchor wanted: asked as before; taken: StepPose watches slot 0)
         return;
     }
-    if (false_starts_ >= kMaxFalseStarts) {
-        awaits_offer_ = true;  // the game's own verbs run for the rest of this down
+    if (!lie_ && false_starts_ >= kMaxFalseStarts) {
+        LieDown("the game's crawl did not start " + std::to_string(kMaxFalseStarts) + " times");
+    }
+    if (lie_) {
+        awaits_offer_ = false;  // part 2: Crawl is asked as for an adult; StepPose lays him down
         return;
     }
     const std::optional<std::uint32_t> action = AnchorReady() ? ReadDoAction(guest, want_.actor) : std::nullopt;
@@ -181,10 +191,36 @@ void Crawl::StepOffer(CoopPuppet::Guest& guest) {
              std::to_string(addr::kDoActionCrawl) + "): Crawl waits for the game's offer");
     }
     awaits_offer_ = !offered;
+    if (offered) {
+        offer_waits_ = 0;
+    } else if (++offer_waits_ >= kOfferWaitReads) {
+        LieDown("the game offered no Crawl in " + std::to_string(kOfferWaitReads) + " frames");
+        awaits_offer_ = false;
+    }
+}
+
+void Crawl::LieDown(std::string why) {
+    if (std::exchange(lie_, true)) {
+        return;
+    }
+    ++counts_.lie_downs;
+    Note("our downed Link: " + std::move(why) + ": the game's AS '" + std::string(kChildLyingPose) +
+         "' (Tunnel_Wait, its lying wait) is held on slot 0 for the rest of this down");
+}
+
+bool Crawl::LaidDown() const {
+    std::lock_guard lock(mutex_);
+    return lie_;
 }
 
 void Crawl::Want(const Wanted& w) {
     std::lock_guard lock(mutex_);
+    if (w.lying && !want_.lying) {
+        lie_ = false;  // (a new down: the game's crawl is tried first)
+        crawl_ran_ = false;
+        crawl_frames_ = 0;
+        offer_waits_ = 0;
+    }
     if (w.lying && !want_.lying && !w.adult && Anchor().has_value()) {
         awaits_offer_ = true;  // (until this frame's StepOffer: the game's own verbs are not skipped before it)
     }
@@ -345,15 +381,16 @@ std::optional<CoopPuppet::Call> Crawl::Ask(CoopPuppet::Guest& guest, std::int32_
     return c;
 }
 
-std::optional<CoopPuppet::Call> Crawl::Play(CoopPuppet::Guest& guest, float rate, std::uint64_t main_base) {
-    // (the lock is held; the block exists) kLyingPose on our Link's slot 0
+std::optional<CoopPuppet::Call> Crawl::Play(CoopPuppet::Guest& guest, std::string_view command, float rate,
+                                            std::uint64_t main_base) {
+    // (the lock is held; the block exists) The lying pose (kLyingPose, a child's kChildLyingPose) on our Link's slot 0
     // through the game's own play call, as the puppets play a command
     // (coop_puppet.cpp): +0 actor, +8 the name, +0x10 index 0, +0x14 rate,
     // +0x18 / +0x1c -1 (unset), +0x20 skip-if-same 0 (a held command is
     // played again on at rate 1 to get up).
     std::array<char, addr::kTextSize> name{};
-    static_assert(kLyingPose.size() < addr::kTextSize);
-    std::memcpy(name.data(), kLyingPose.data(), kLyingPose.size());
+    static_assert(kLyingPose.size() < addr::kTextSize && kChildLyingPose.size() < addr::kTextSize);
+    std::memcpy(name.data(), command.data(), command.size());
     const std::uint64_t text = block_ + addr::kBlockText;
     if (!guest.Write(text, name.data(), name.size())) {
         return std::nullopt;
@@ -375,12 +412,13 @@ std::optional<CoopPuppet::Call> Crawl::Play(CoopPuppet::Guest& guest, float rate
     c.x[0] = block_ + addr::kBlockPlay;
     pending_ = Pending::pose;
     pending_rate_ = rate;
+    pending_child_ = command == kChildLyingPose;
     return c;
 }
 
 std::optional<CoopPuppet::Call> Crawl::StepPose(CoopPuppet::Guest& guest, std::uint64_t main_base) {
-    // (the lock is held; the block exists) Adults only: a child's crawl has
-    // its own clips, and nothing is read or played on a child.
+    // (the lock is held; the block exists) An adult is held in kLyingPose. A child's crawl is the game's
+    // own; once it ended (or could not start) in this down he is held in kChildLyingPose (lie_).
     if (pose_tried_) {
         return std::nullopt;
     }
@@ -390,12 +428,37 @@ std::optional<CoopPuppet::Call> Crawl::StepPose(CoopPuppet::Guest& guest, std::u
         riding_ = false;
         const std::optional<AsSlot> slot =
             want_.lying && want_.actor != 0 ? ReadSlot0(guest, want_.actor) : std::nullopt;
-        const bool now = slot && CrawlCommand(slot->name);
+        // (Only under our taken Crawl: `Crouch` is also a standing child's own crouch.)
+        const bool crawl = crawling_ && slot && CrawlCommand(slot->name);
+        // The crawl's get-up is over when its clip's frame stands still (its node then ends).
+        bool end_over = false;
+        if (crawl && slot->name == kCrawlEnd) {
+            if (slot->frame == end_frame_) {
+                end_over = ++end_stalls_ >= kEndStallReads;
+            } else {
+                end_frame_ = slot->frame;
+                end_stalls_ = 0;
+            }
+        } else {
+            end_frame_ = -1.0f;
+            end_stalls_ = 0;
+        }
+        // Laid down by us: the lying wait in slot 0 is ours, not the game's crawl (the pad's slow stick).
+        const bool held = lie_ && crawl && slot->name == kChildLyingPose;
+        const bool now = crawl && !end_over && !held;
+        const bool down = want_.lying && !want_.event && crawling_;
         if (now) {
             ++counts_.game_crawl;
+            ++crawl_frames_;
+            crawl_ran_ = true;
             start_reads_ = 0;
             false_starts_ = 0;
-        } else if (want_.lying && !want_.event && crawling_ && Anchor() && ++start_reads_ >= kCrawlStartReads) {
+        } else if (down && !lie_ && crawl_ran_) {
+            // Part 2: it ran and ended by itself (room to stand up). The slot stays ours.
+            ++counts_.crawl_ended;
+            LieDown("the game's crawl ended by itself after " + std::to_string(crawl_frames_) + " frames ('" +
+                    (slot ? slot->name : std::string("-")) + "')");
+        } else if (down && !lie_ && Anchor() && ++start_reads_ >= kCrawlStartReads) {
             // Taken, and the game's crawl is not in slot 0 (its enter failed, or the crawl ended): while
             // crawling_ every verb of the game's is skipped, so our Link would stay as he is for the whole
             // down. The slot is the game's again; StepOffer waits for its next offer.
@@ -412,15 +475,19 @@ std::optional<CoopPuppet::Call> Crawl::StepPose(CoopPuppet::Guest& guest, std::u
             crawl_seen_ = slot ? slot->name : std::string("-");
             if (now) {
                 Note("our downed Link: the game's own crawl runs ('" + crawl_seen_ + "')");
-            } else if (want_.lying && crawling_) {
+            } else if (want_.lying && crawling_ && !lie_) {
                 Note("our downed Link: Crawl taken but not crawling ('" + crawl_seen_ + "')");
             }
-        } else if (want_.lying && crawling_ && !now && crawl_seen_.empty()) {
+        } else if (want_.lying && crawling_ && !now && !held && crawl_seen_.empty()) {
             crawl_seen_ = slot ? slot->name : std::string("-");  // once a down (the log)
             Note("our downed Link: Crawl taken but not crawling ('" + crawl_seen_ + "')");
         }
         if (!want_.lying) {
             crawl_seen_.clear();
+        }
+        if (lie_ && down && !now && !held) {
+            pose_seen_ = slot ? slot->name : std::string("?");
+            return Play(guest, kChildLyingPose, kPlayRate, main_base);
         }
         return std::nullopt;
     }
@@ -445,14 +512,14 @@ std::optional<CoopPuppet::Call> Crawl::StepPose(CoopPuppet::Guest& guest, std::u
             return std::nullopt;
         }
         pose_seen_ = slot ? slot->name : std::string("?");
-        return Play(guest, kHeldRate, main_base);
+        return Play(guest, kLyingPose, kHeldRate, main_base);
     }
     if (!want_.lying && releases_left_ > 0) {
         if (want_.actor != posed_actor_ || !slot || slot->name != kLyingPose) {
             releases_left_ = 0;  // the game plays its own now (or another Link)
         } else if (held) {
             --releases_left_;
-            return Play(guest, kPlayRate, main_base);
+            return Play(guest, kLyingPose, kPlayRate, main_base);
         }
     }
     return std::nullopt;
@@ -579,7 +646,13 @@ std::optional<CoopPuppet::Call> Crawl::Next(CoopPuppet::Guest& guest, bool after
             break;
         }
         case Pending::pose:
-            if (pending_rate_ == kHeldRate) {
+            if (std::exchange(pending_child_, false)) {
+                if (++counts_.child_poses <= 4 || counts_.child_poses % 100 == 0) {
+                    Note("our downed child Link: the game's AS '" + std::string(kChildLyingPose) +
+                         "' played on slot 0 (lying; the game played '" + pose_seen_ + "'; " +
+                         std::to_string(counts_.child_poses) + " so far)");
+                }
+            } else if (pending_rate_ == kHeldRate) {
                 ++counts_.poses;
                 const bool first = posed_actor_ != want_.actor;
                 posed_actor_ = want_.actor;
@@ -769,7 +842,7 @@ std::optional<CoopPuppet::Call> Crawl::Next(CoopPuppet::Guest& guest, bool after
         return Ask(guest, UpVerb(false), main_base);
     }
     if (want_.lying && !crawling_ && !airborne_ && !blocked_ && !riding_ && asks_ < kMaxAsks && now_ms >= next_ask_ms_) {
-        if (!want_.adult && Anchor() && !AnchorReady()) {
+        if (!want_.adult && !lie_ && Anchor() && !AnchorReady()) {  // (laid down: asked as for an adult)
             // Issue 337: the game reads verb 234 against the CrawlAnchor's attention; asked before the anchor
             // (made async by the copy director) is live, it is taken and nothing crawls (slot 0 stays DamageS).
             if (!std::exchange(anchor_wait_noted_, true)) {
