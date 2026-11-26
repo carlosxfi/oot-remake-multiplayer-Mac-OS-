@@ -199,6 +199,12 @@ bool Holding(FakeTextures& m, std::uint64_t at, std::uint8_t seed) {
     return std::memcmp(m.at(at), TexelsOf(seed).data(), kTexels) == 0;
 }
 
+// A texture painted from green as a puppet's copy holds it (row 198; here, before vest-link's and 0.11.9's puppet tunic tests that use it): its last byte marked as the copy's, not green's.
+std::vector<std::uint8_t> CopyMarked(std::vector<std::uint8_t> texels) {
+    if (!texels.empty()) texels.back() ^= CoopLookParts::kSelfMark ^ CoopLookParts::kTunicMark;
+    return texels;
+}
+
 }  // namespace
 
 TEST_CASE("look: a chosen look waits for the pause screen to close") {
@@ -284,7 +290,7 @@ TEST_CASE("look (look-link-cs): Link's vest, leather and equipment are saved and
     look[Part::link_leather] = CoopColors::Parse("black");
     look[Part::link_gear] = CoopLook::kGearHidden;
     std::string ini;
-    CHECK(CoopLook::WriteSettings(look, ini));
+    CHECK(CoopLook::WriteSettings(look, ini, nullptr));
     CHECK(ini.find("look_link_gear = hidden") != std::string::npos);
     CHECK(ini.find("look_link_vest") != std::string::npos);
     std::vector<std::string> errors;
@@ -293,8 +299,7 @@ TEST_CASE("look (look-link-cs): Link's vest, leather and equipment are saved and
     CHECK(back[Part::link_vest] == look[Part::link_vest]);
     CHECK(back[Part::link_leather] == look[Part::link_leather]);
     CHECK(back[Part::link_gear] == CoopLook::kGearHidden);
-    CHECK(CoopLook::ReadParts("look_link_gear = maybe
-", &errors)[Part::link_gear] == std::nullopt);
+    CHECK(CoopLook::ReadParts("look_link_gear = maybe\n", &errors)[Part::link_gear] == std::nullopt);
     CHECK_FALSE(errors.empty());
 }
 
@@ -982,7 +987,8 @@ TEST_CASE("look parts: every gear part has a texture, every texture once") {
             parts.insert(r.part);
         }
     }
-    CHECK(parts.size() == CoopLook::kParts - 11);   // (and a character's six: CoopCharColours, no texture of ours; Cap trim on hoods: a switch)
+    CHECK(parts.size() == CoopLook::kParts - 13);   // (and a character's six: CoopCharColours, no texture of ours; Cap trim on hoods: a switch;
+                                                    //  look-link-cs: Link's vest (tunic textures: vest-link) and equipment (a switch); leather-link: the leather has its own)
 }
 
 TEST_CASE("look parts: the gear painted in a look, a painting's name says its colours") {
@@ -2398,12 +2404,6 @@ TEST_CASE("look (row 198): where the places lie, and two wardrobes over one text
     CHECK(both[0] == std::pair<std::size_t, std::size_t>{1, 1});
     theirs[1].address = 0x3010;   // right after own[1]: apart
     CHECK(CoopLookTunic::Overlaps(own, theirs).empty());
-}
-
-// A texture painted from green as a puppet's copy holds it (row 198): its last byte marked as the copy's, not green's.
-std::vector<std::uint8_t> CopyMarked(std::vector<std::uint8_t> texels) {
-    if (!texels.empty()) texels.back() ^= CoopLookParts::kSelfMark ^ CoopLookParts::kTunicMark;
-    return texels;
 }
 
 TEST_CASE("look (0.11.9): the puppets' tunic copies, each repainted in the exact colour of the player given it") {
