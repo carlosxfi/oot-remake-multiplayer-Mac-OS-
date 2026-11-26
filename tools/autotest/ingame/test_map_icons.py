@@ -5,7 +5,7 @@ place label. They are game panes, so the BRIDGE shot (framebuffer) sees them: ch
 
 | Test | Old row | Boot | Kind |
 |---|---|---|---|
-| test_map_icons_native | map-icons-probe-3 (offline/map-icons-probe-3-run.ps1, never ran: held B #16) | default (lane-prep of this sha: its build.py makes the copies) | state map_native + check_shot A and B, minimap then Map page |
+| test_map_icons_native | map-icons-probe-3 (offline/map-icons-probe-3-run.ps1, never ran: held B #16) | default (lane-prep of this sha: its build.py makes the copies) | state map_native + check_shot A and B, minimap then the Map page on each game |
 
 Judged by the state's `map_native` (coop_map_icons.h State, docs/playtest.md): `up` (the copies found through the pause
 tab's proven part route), per shown copy its pane place, the arrow's turn READ BACK from the pane at kPaneTurn and what
@@ -105,7 +105,7 @@ def copy_turns_with(pair, viewer, mover, view, tag):
     pair.notes.append("%s on %s: turns %s" % (view, viewer, ["%.2f" % t for t in seen]))
 
 
-@pytest.mark.budget(420)   # ESTIMATED: two warps + ~4'000 frames + 18 shots
+@pytest.mark.budget(540)   # ESTIMATED: two warps + ~5'000 frames + 16 shots
 @pytest.mark.look
 @pytest.mark.row("G2b map icons (#255 item 8): the other player on the game's own map icons (arrow turned, name on the place label), minimap and Map page, on each game")
 def test_map_icons_native(pair):
@@ -128,6 +128,11 @@ def test_map_icons_native(pair):
     pair.step_both(OPEN_WAIT)
     copy_turns_with(pair, "A", "B", "page", "page-A")
     pair.press("A", buttons=["B"], frames=8)
+    pair.step_both(CLOSE_WAIT)
+    pair.press("B", buttons=["MINUS"], frames=8)        # (each game's Map page: user-facing shots on both)
+    pair.step_both(OPEN_WAIT)
+    copy_turns_with(pair, "B", "A", "page", "page-B")
+    pair.press("B", buttons=["B"], frames=8)
     pair.step_both(CLOSE_WAIT)
     if follows is not None and follows and TURN_WORD not in follows:
         pytest.fail("the game's own arrow turns at word %s (+0x60 + 4 i), not kPaneTurn's %d: set kPaneTurn" % (follows, TURN_WORD))
