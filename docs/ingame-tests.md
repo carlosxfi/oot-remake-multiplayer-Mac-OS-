@@ -93,6 +93,11 @@ pytest-timeout (pytest.ini, 1800 s) is only the backstop for a call that never r
   (`<dir>/lane<L>/shots/`). A test never writes a reference: a person checks a NO-REF candidate and copies it into
   `refs/`.
 
+- Frame rate, the one wall-clock check (`test_unfocus.py`, row 83): fps is real time, so that test alone lets both
+  games run (`resume`), reads Longshot's own 5 s present windows from the logs (`vi: N frames presented (X fps ...)`,
+  `vi: present intervals: ...`) with no bridge call in between, and holds them again (`pause`). It needs each game's
+  window behind (Longshot's `hid: game window not in front` line; `live.py` opens the games without the focus).
+
 ## Writing a test
 
 ```python
