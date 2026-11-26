@@ -109,11 +109,16 @@ def test_hud_blocks(pair):
 def test_ocarina_notes(pair):
     with pair.setup():
         need_child_in_play(pair)
-        # hs-ocarina.A.txt: 'press DLEFT 12' takes the ocarina out (the kit save has it on d-left), 'press A 12' plays.
-        # DLEFT is the bridge's LEFT (hookshot.py KEYS).
+        # hs-ocarina.A.txt's own steps, in frames (scenarios/hs-ocarina.A.txt:23-30): 'press DLEFT 12' + 'wait 240'
+        # takes the ocarina out (the kit save has it on d-left; DLEFT is the bridge's LEFT, hookshot.py KEYS), then
+        # 'press A 12' + 'wait 120' closes the first-use "Ocarina Audio Input" note that eats L R Y X ('mark ready').
+        # Not taken over: its walk ahead + turn round (:17-22, 'hold LSTICK_UP 40' / 'hold LSTICK_DOWN 4') only make
+        # B's shots show the puppet's front; this row judges the sound log, takes no shot, and a walk is not set-up.
         pair.press("A", ["LEFT"], frames=12)
-        pair.expect_log("A", r"ocarina probe: our Link plays the ocarina", max_frames=300)   # wave2 hs-ocarina-show
-        pair.step_both(60)
+        pair.step_both(240)
+        assert pair.log["A"].find(r"ocarina probe: our Link plays the ocarina"),             "A: no 'ocarina probe: our Link plays the ocarina' 240 frames after DLEFT (wave2 hs-ocarina-show)"
+        pair.press("A", ["A"], frames=12)     # (may send one note itself: each note below has its own log mark)
+        pair.step_both(120)
     for key, note in ON.KEY_NOTE.items():
         pair.log["A"].mark()
         pair.log["B"].mark()

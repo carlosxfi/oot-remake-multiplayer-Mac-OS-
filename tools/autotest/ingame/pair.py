@@ -181,22 +181,30 @@ class Pair:
 
     @contextlib.contextmanager
     def setup(self, limit=SETUP_LIMIT_S):
-        """A test's set-up: anything that goes wrong in it, or more than `limit` seconds, is SETUP-FAIL (not FAIL)."""
-        t0 = time.monotonic()
+        """A test's set-up: anything that goes wrong in it, or more than `limit` seconds, is SETUP-FAIL (not FAIL).
+        While it runs the deadline is min(the test's, `limit`), so every call inside it (reply waits included, see
+        _wait) stops at the limit: a hung set-up is a SETUP-FAIL after `limit` s, not a FAIL at the test's budget."""
+        outer = self.deadline
+        clock = outer.clock
+        self.deadline = Deadline(max(0.0, min(limit, outer.left())), clock=clock)
+        t0 = clock()
         try:
             yield
         except SetupFail:
             raise
         except Exception as e:
             raise SetupFail("set-up: %s: %s" % (type(e).__name__, e)) from e
-        took = time.monotonic() - t0
+        finally:
+            self.deadline = outer
+        took = clock() - t0
         if took > limit:
             raise SetupFail("set-up took %.1f s (limit %.0f s)" % (took, limit))
         self.notes.append("set-up %.1f s" % took)
 
     # -- frames -----------------------------------------------------------------------------------------------
     def _wait(self):
-        return max(1.0, min(60.0, self.deadline.left()))
+        """A reply's wait: what is left of the deadline (at most 60 s, at least 0.2 s so a call can still answer)."""
+        return max(0.2, min(60.0, self.deadline.left()))
 
     def call(self, x, cmd, **args):
         self.deadline.check(cmd)

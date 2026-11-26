@@ -154,6 +154,67 @@ class Labels(unittest.TestCase):
         self.assertEqual(r, {"test_smoke_ok": "PASS", "test_smoke_bad": "FAIL"})
 
 
+class SetupLimit(unittest.TestCase):
+    """Pair.setup's 30 s limit holds for the calls inside it (review-c123-6 point 2): a hung bridge in a set-up is a
+    SETUP-FAIL at the limit, not a FAIL at the test's budget. A fake clock: no real waiting."""
+
+    class Clock:
+        t = 0.0
+
+        def __call__(self):
+            return self.t
+
+    class HungClient:
+        def __init__(self, clock):
+            self.clock, self.waits, self.last_frame = clock, [], 0
+
+        def request(self, cmd, reply_timeout=None, **args):
+            self.waits.append(reply_timeout)
+            self.clock.t += reply_timeout       # waits its whole reply time, then no answer
+            raise TimeoutError("no reply to %s in %.1f s" % (cmd, reply_timeout))
+
+        def close(self):
+            pass
+
+    def make(self, budget):
+        clock = self.Clock()
+        pair = P.Pair.__new__(P.Pair)
+        pair.c = {"A": self.HungClient(clock)}
+        pair.log, pair.shots, pair.notes = {}, [], []
+        pair.deadline = P.Deadline(budget, clock=clock)
+        return pair, clock
+
+    def test_hung_call_stops_at_the_limit(self):
+        pair, clock = self.make(240)
+        with self.assertRaises(P.SetupFail) as cm:
+            with pair.setup():
+                pair.state("A")
+        self.assertLessEqual(pair.c["A"].waits[0], P.SETUP_LIMIT_S)
+        self.assertLessEqual(clock.t, P.SETUP_LIMIT_S)
+        self.assertIn("TimeoutError", str(cm.exception))
+        self.assertEqual(pair.deadline.left(), 240 - clock.t)      # the test's own deadline is back after it
+
+    def test_many_slow_calls_stop_at_the_limit(self):
+        pair, clock = self.make(240)
+        def slow(cmd, reply_timeout=None, **a):
+            clock.t += 7.0
+            return {"ok": True}
+        pair.c["A"].request = slow
+        with self.assertRaises(P.SetupFail) as cm:
+            with pair.setup():
+                while True:
+                    pair.state("A")
+        self.assertIn("timeout after 30 s", str(cm.exception))
+        self.assertLessEqual(clock.t, P.SETUP_LIMIT_S + 7.0)
+
+    def test_short_test_budget_wins(self):
+        pair, clock = self.make(10)
+        with self.assertRaises(P.SetupFail):
+            with pair.setup():
+                pair.state("A")
+        self.assertLessEqual(pair.c["A"].waits[0], 10)
+
+
 class LaneCheck(unittest.TestCase):
     def make(self, root, x, dll=b"module", patches="patches=abc", server=None, **over):
         d = os.path.join(root, "lane1-%s" % x)
