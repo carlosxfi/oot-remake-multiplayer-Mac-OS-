@@ -456,13 +456,17 @@ def parse(text):
                 fail("want: assign ITEM")
             s.kind, s.name = "assign", w[1]
         elif cmd == "MENU":
-            if len(w) == 3 and w[1].lower() == "open":     # `menu open PAGE` (B #138): any page, nothing pressed
+            # (gear-link: "menu look KEY=VALUE", the module's coop_testinput.cpp MENU: a look part chosen and worn)
+            if len(w) == 3 and w[1].lower() == "look" and "=" in w[2]:
+                s.kind, s.name = "menu", " ".join(w[1:]).lower()
+            elif len(w) == 3 and w[1].lower() == "open":     # `menu open PAGE` (B #138): any page, nothing pressed
                 if w[2].lower() not in MENU_PAGES:
                     fail("want: menu open " + "|".join(MENU_PAGES))
                 s.kind, s.name = "menu", "open " + w[2].lower()
             else:
                 if len(w) != 2 or w[1].lower() not in MENU_WORDS:
-                    fail("want: menu " + "|".join(MENU_WORDS) + ", or menu open " + "|".join(MENU_PAGES))
+                    fail("want: menu " + "|".join(MENU_WORDS) + ", menu open " + "|".join(MENU_PAGES)
+                         + ", or menu look KEY=VALUE")
                 s.kind, s.name = "menu", w[1].lower()
         elif cmd == "AWAIT":
             # Row 325: "await TICKS REGEX": until a NEW line of this game's own log (written after the step began)
