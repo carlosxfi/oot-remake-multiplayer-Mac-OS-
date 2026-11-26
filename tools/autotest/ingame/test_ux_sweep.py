@@ -150,8 +150,15 @@ def test_business_scrub_talks_twice(pair):
         owners = sorted({str(a.get("owner")) for a in actors(pair, x, SCRUB, REAR_SCRUB, 8.0)})
         assert owners == ["None"], "%s: Business Scrubs have owner %s: shared copies (row 100's cause)" % (x, owners)
     b_before = rear["B"][0]["pos"]
-    a_id = rear["A"][0].get("id")
-    pair.act("A", "hit %s 1 %s" % (SCRUB, a_id))     # the beating: the scrub's own AI hops out and offers its talk
+    # The beating: 'hit ACTOR N' by name (coop_testinput.cpp:557-566, 'hit [ID] ACTOR N'). No id: an id strike resolves
+    # in the sharing walk only (docs/playtest.md "State": strike; coop_playtest_core.cpp:735) and these scrubs are
+    # each game's own. Nearest of that name = the rear one (A stands 3.0 m from it, 3.76 m from the front one).
+    pair.act("A", "hit %s 1" % SCRUB)
+    def struck():
+        pair.step_both(2)
+        return (pair.state("A").get("strike") or {}).get("result")
+    res = pair.until("A: the strike's answer", struck, max_frames=120)
+    assert res == "done", "A: the hit on the rear scrub answered %r (docs/playtest.md strike)" % res
     def talk_offered():
         pair.step_both(8)
         return pair.state("A").get("prompt") == "Talk" or pair.state("A").get("event")
@@ -199,9 +206,12 @@ def test_small_key_door_opens_for_both(pair):
     with pair.setup():
         pair.warp_both(FT_SCENE, FT_SCENE)
         in_play(pair, "adult")
-        for x in ("A", "B"):
-            pair.flag(x, KEYS, 0)
-        pair.step_both(30)
+        # SmallKeyNum is a counted item (game_items.cpp:199, shared as deltas): the two games hold the same count, and
+        # only A writes it (a write in both would send the change twice).
+        k = {x: value(pair, x, KEYS) for x in ("A", "B")}
+        assert k["A"] == k["B"], "the games' Forest Temple keys differ at the start: %s" % k
+        pair.flag("A", KEYS, 0)
+        pair.until("B: keys 0", lambda: value(pair, "B", KEYS) == 0, max_frames=300)
         missing = [x for x in ("A", "B") if not actors(pair, x, LOCK, LOCK_AT, 1.0)]
         pair.act("A", "place %.2f %.2f %.2f" % (LOCK_AT[0], FT_FLOOR + 0.1, LOCK_AT[1] + 2.0))
         pair.act("B", "place %.2f %.2f %.2f" % (LOCK_AT[0], FT_FLOOR + 0.1, LOCK_AT[1] + 7.0))
@@ -225,3 +235,68 @@ def test_small_key_door_opens_for_both(pair):
     keys = {x: value(pair, x, KEYS) for x in ("A", "B")}
     assert keys == {"A": 0, "B": 0}, "the group's keys after one door: %s (one key per door)" % keys
     pair.notes.append("A opened in %d frames, B in %d; keys %s" % (a, b, keys))
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Row 283: the frame windows and the pass lines are row 83's (test_unfocus.py: Longshot's own 5 s 'vi:' windows,
+# nn_vi.c:704/705; mean >= 90 % of the 60 cap, presents over 22 ms <= 5 %), imported, never copied.
+from test_unfocus import CAP_FPS, MAX_LATE, MIN_SHARE, POLL_S, frame_rate_cap, windows   # noqa: E402
+
+TR_STAGE = "TwinrovaStage"                     # coop_start_points.inc {"TwinrovaStage", "TwinrovaStage", ...}
+TR_PARTS = ("Enemy_DungeonBoss_Koume", "Enemy_DungeonBoss_Kotake", "Enemy_DungeonBoss_Twinrova")   # coop_boss.cpp:41
+FINAL_WINDOWS = 3                              # 15 s of play from the final blow on: the boss's death and its event
+
+
+def judge_windows(x, got):
+    fps = [w[0] for w in got]
+    late = sum(sum(w[2][3:]) for w in got)
+    total = sum(sum(w[2]) for w in got) or 1
+    mean = sum(fps) / len(fps)
+    return mean, late / total, "%s: fps %s, late %.1f %%" % (x, "/".join("%.1f" % f for f in fps), 100.0 * late / total)
+
+
+@pytest.mark.budget(240)
+@pytest.mark.needs_boot("live-twinrova-room")
+@pytest.mark.row("row 283 no frame drops on a boss's final blow (host and guest)")
+def test_boss_final_blow_frames(pair):
+    """Row 283 (Sephiroth guest, PiscesGamer97 NVIDIA host): frame drops on boss final blows; an AMD host saw none.
+    No logs came, so this measures it: Twinrova (the lane's boss boot), the host A strikes every part of the boss
+    dead (the bridge's `kill`, cheats on in the boot), then both games run in real time and each game's 5 s present
+    windows from the blow on must hold row 83's line. Kept: every window's fps and late share (notes)."""
+    import time
+    with pair.setup():
+        for x in ("A", "B"):
+            cap = frame_rate_cap(pair.games[x]["folder"])
+            assert cap == "0", "%s: frame_rate_cap=%s (this row is the 60 cap: 0)" % (x, cap)
+        pair.warp_both(TR_STAGE, TR_STAGE, arrive_in_event=True)
+    pair.until("both games past the intro", lambda: all(pair.in_play(pair.state(x)) for x in ("A", "B")), 3600)
+    parts = [a for n in TR_PARTS for a in actors(pair, "A", n) if a.get("alive", True)]
+    if not parts:
+        pair.unproven("no Twinrova part alive in A's world list after the intro")
+    marks = {x: pair.log[x].mark() for x in ("A", "B")}
+    for a in parts:
+        pair.act("A", "kill %s %s" % (a.get("id"), a["name"]))   # 'kill [ID] ACTOR' (coop_testinput.cpp StrikeId)
+    pair.step_both(2)
+    for x in ("A", "B"):
+        pair.call(x, "resume")
+    got = {}
+    try:
+        while True:
+            got = {x: windows(pair.log[x].since(marks[x])) for x in ("A", "B")}
+            if all(len(w) >= FINAL_WINDOWS for w in got.values()):
+                break
+            pair.deadline.check("%d vi windows per game after the blow (have %s)" % (
+                FINAL_WINDOWS, ", ".join("%s %d" % (x, len(w)) for x, w in sorted(got.items()))))
+            time.sleep(POLL_S)
+    finally:
+        for x in ("A", "B"):
+            pair.call(x, "pause")
+    bad = []
+    for x in ("A", "B"):
+        mean, late, note = judge_windows(x, got[x][:FINAL_WINDOWS])
+        pair.notes.append(note)
+        if mean < MIN_SHARE * CAP_FPS or late > MAX_LATE:
+            bad.append(note)
+    left = [a["name"] for n in TR_PARTS for a in actors(pair, "A", n) if a.get("alive", True)]
+    pair.notes.append("boss parts alive in A after: %s" % (left or "none"))
+    assert not bad, "frame drops after the final blow (row 283): %s" % "; ".join(bad)

@@ -13,6 +13,8 @@ docstring. Each reacts only to its own flag or scene.
 BT_FAKE_UX (the bugs the tests must catch): gift-unshared (no 0 -> 1 share), gift-back (B's 0 reaches A),
 scrub-shared (the scrubs have owner 2 in A), scrub-softlock (the second talk never ends), lock-stuck (no lent key),
 lock-double (the lent key reaches the group as a found key: +1 in both).
+- Final blow (row 283), TwinrovaStage: Koume and Kotake (coop_boss.cpp:41) alive in the world list until a `kill`
+  names them; the frame windows after `resume` are fakes/row83.py's (BT_FAKE_FPS_B=40: the guest drops frames).
 """
 import math
 import os
@@ -29,6 +31,7 @@ def _mode():
 
 def setup(game):
     game.ux_talk, game.ux_talks, game.ux_offer, game.ux_lock_open = 0, 0, False, False
+    game.ux_dead, game.ux_strike = set(), None
 
 
 def lane(fakelane):
@@ -49,10 +52,21 @@ def after(game, m, r):
 
 
 def act(game, words):
-    if words[0] == "hit" and len(words) > 1 and words[1] == "Enemy_Scrub_Business" and game.scene == "LostWood_Child":
-        game.later(60, lambda: setattr(game, "ux_offer", True))
+    if words[0] == "hit" and game.scene == "LostWood_Child":
+        # the module's parser: 'hit [ID] ACTOR N' (coop_testinput.cpp:557-566); anything else is refused, no strike
+        if words[1:] == ["Enemy_Scrub_Business", "1"]:
+            game.ux_strike = {"seq": 1, "result": "done", "name": words[1]}
+            game.later(60, lambda: setattr(game, "ux_offer", True))
+        return True
+    if words[0] == "kill" and _mine_boss(game) and len(words) == 3 and words[1].isdigit():
+        game.ux_dead.add(words[2])      # 'kill ID ACTOR'
         return True
     return False
+
+
+def _mine_boss(game):
+    """Row 283's Twinrova only without boss_awake.py's switch (that fake has its own sisters)."""
+    return game.scene == "TwinrovaStage" and not game.env_on("LICHII_COOP_DEBUG_BOSS=1")
 
 
 def _near(game, at, m):
@@ -96,6 +110,10 @@ def actors(game):
                         "alive": True})
     if game.scene == "ForestTemple" and not game.ux_lock_open:
         out.append({"id": 950, "name": "Obj_DoorChainLock_A_01", "kind": "object", "pos": list(LOCK), "owner": None})
+    if _mine_boss(game):
+        for i, n in enumerate(("Enemy_DungeonBoss_Koume", "Enemy_DungeonBoss_Kotake")):
+            out.append({"id": 970 + i, "name": n, "kind": "enemy", "pos": [3.0 * i, 0.0, 10.0], "owner": 1,
+                        "alive": n not in game.ux_dead})
     return out
 
 
@@ -105,5 +123,7 @@ def state(game, st):
     if game.scene == "LostWood_Child":
         st["event"] = game.ux_talk > 0
         st["prompt"] = "Talk" if game.ux_offer and not game.ux_talk else None
-    if game.scene == "ForestTemple":
+        if game.ux_strike:
+            st["strike"] = game.ux_strike
+    if game.scene == "ForestTemple" or _mine_boss(game):
         st["age"] = "adult"

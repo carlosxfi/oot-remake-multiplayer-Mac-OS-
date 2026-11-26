@@ -57,6 +57,17 @@ class UxSweep(unittest.TestCase):
     def test_lock_fails_when_the_lent_key_reaches_the_group(self):
         self.check(self.run_one("small_key_door", "lock-double", BOOT_ADULT), "FAIL", "one key per door")
 
+    def test_final_blow_passes_at_the_cap(self):
+        s = self.run_one("final_blow", extra=BOOT_ADULT)
+        self.check(s, "PASS")
+        self.assertTrue(any("B: fps 60.0/60.0/60.0" in n for n in s["tests"][0]["notes"]), s["tests"][0])
+
+    def test_final_blow_fails_when_the_guest_drops_frames(self):
+        out = os.path.join(self.tmp, "o")
+        T.pytest_run([".", "--fake", "--out", out, "-q", "-k", "final_blow", "--no-rerun"] + BOOT_ADULT,
+                     env={"BT_FAKE_UX": "", "BT_FAKE_FPS_B": "40"})
+        self.check(T.summary(out), "FAIL", "frame drops after the final blow (row 283): B: fps 40.0")
+
 
 if __name__ == "__main__":
     unittest.main()
