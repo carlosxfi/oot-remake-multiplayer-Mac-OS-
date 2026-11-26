@@ -1,5 +1,6 @@
 """Pack files `look_cap_old` (--pack look_cap_old): coop_look/cap.bin as the pack made it BEFORE the fix, for
-test_kokiri_hood_band's probe (KOKIRI_BAND_PROBE_PACK=43228): tools/puppet_pack/look_cap.py of OLD = 3d91ec10a^ (the
+test_kokiri_hood_band's probe (KOKIRI_BAND_PROBE_PACK=43600: its 'cap.bin: 174844 bytes, 6 textures, 43600 offsets' over
+dump/romfs): tools/puppet_pack/look_cap.py of OLD = 3d91ec10a^ (the
 fix 3d91ec10a counts a smaller mip level's cap blocks by texel area), read by `git show` from the tested sha's repo and
 run inside the tested puppet_pack package (its bfres / look_metal / tunic helpers); otherwise as packs/look_cap.py.
 """

@@ -68,11 +68,11 @@ class KokiriBand(unittest.TestCase):
         self.assertIn("not the fix's cap.bin", p.stdout)
 
     def test_probe_on_the_old_pack_is_no_ref(self):
-        """KOKIRI_BAND_PROBE_PACK=43228: the old pack is taken, every bandcheck line printed, never PASS or FAIL."""
-        s, p = self.run_it("probe", self.ENV, env={"BT_FAKE_CAP_BLOCKS": "43228", "BT_FAKE_BAND": "blue",
-                                                   "KOKIRI_BAND_PROBE_PACK": "43228"}, pack="look_cap_old")
+        """KOKIRI_BAND_PROBE_PACK=43600 (packs/look_cap_old.py's count): the old pack is taken, every bandcheck line printed, never PASS or FAIL."""
+        s, p = self.run_it("probe", self.ENV, env={"BT_FAKE_CAP_BLOCKS": "43600", "BT_FAKE_BAND": "blue",
+                                                   "KOKIRI_BAND_PROBE_PACK": "43600"}, pack="look_cap_old")
         self.assertEqual(results(s)["test_kokiri_hood_band"], "NO-REF", p.stdout[-2000:])
-        self.assertIn("probe run on the 43228 pack", p.stdout)
+        self.assertIn("probe run on the 43600 pack", p.stdout)
         self.assertEqual(len(re.findall(r"(?m)^bandcheck \d", p.stdout)), 7, p.stdout[-2000:])
 
     def test_blue_band_on_the_puppet_fails(self):

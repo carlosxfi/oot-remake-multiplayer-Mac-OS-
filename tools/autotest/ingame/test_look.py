@@ -31,10 +31,12 @@ TUNIC = "tunic-3070FF-cap-FFC020"
 # The cap.bin of the fix, made from the branch's tools over the romfs dump: "cap.bin: 174220 bytes, 6 textures, 43444
 # offsets, smaller_level=1" (coord offline/kokiri-band-c124/setup-only.txt:26). The module logs the sum of the offsets
 # (hookshot/src/coop_look_live.cpp StartModule, "the Cap trim paints {} blocks of {} tunic textures ({} of the Goron
-# and Zora tunics)"); the pack before the fix gave 43228 (run cap-trim-c44). Any other number: the lane has another
+# and Zora tunics)"); an older lane pack gave 43228 (run cap-trim-c44); the look_cap.py just before the fix (3d91ec10a^, packs/
+# look_cap_old.py) makes 174844 bytes, 6 textures, 43600 offsets over dump/romfs (kokiri-band-c124-5's maker check,
+# 11:5x UTC 2026-11-26; the fix's packs/look_cap.py: 174220 bytes, 43444 offsets). Any other number: the lane has another
 # pack, and this test would judge nothing.
 CAP_BLOCKS = 43444
-# The probe (review-rows-c130 09:41 point a): KOKIRI_BAND_PROBE_PACK=43228 on the runner's side runs the test on a lane
+# The probe (review-rows-c130 09:41 point a): KOKIRI_BAND_PROBE_PACK=43600 (+ --pack look_cap_old) on the runner's side runs the test on a lane
 # with the pack BEFORE the fix, prints the same bandcheck lines and ends NO-REF, never PASS or FAIL: the two runs' values
 # are what BAND_SHARE / OWN_MIN get measured from.
 PROBE_PACK = os.environ.get("KOKIRI_BAND_PROBE_PACK")
@@ -84,12 +86,12 @@ def puppet_near(pair, x, at, within=2.0):
 # trim-yellow pixels in the box of B's own Link and in the box of A's puppet (bandcheck.py), each less the same-size
 # box beside it. B's own Link must show the trim (else the measure itself is wrong); the puppet's trim per pixel of
 # its box must be at least BAND_SHARE of the own Link's: with the bug its band is the tunic's blue (about 0). The
-# share is a starting value, NOT MEASURED: until MEASURED cites the probe runs (the fixed pack and the old 43228 pack,
+# share is a starting value, NOT MEASURED: until MEASURED cites the probe runs (the fixed pack and the old 43600 pack,
 # the bandcheck lines of each), a run whose band checks all hold ends NO-REF, never PASS (worker-rules: no guessed
 # values). The same goes for is_trim's hue/saturation/value range, bandcheck.HEAD and the box's half-width.
 OWN_MIN = 4
 BAND_SHARE = 0.35
-MEASURED = None   # e.g. "run <name> (43444) + run <name> (43228): own net .., puppet share .. vs .."
+MEASURED = None   # e.g. "run <name> (43444) + run <name> (43600): own net .., puppet share .. vs .."
 
 
 def boxes_apart(own, pup, d):
