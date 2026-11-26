@@ -89,7 +89,8 @@ def pytest_addoption(parser):
     g.addoption("--repeat", type=int, default=1, help="run every test N times on the same boot (the pilot: 10)")
     g.addoption("--no-smoke-gate", action="store_true", help="go on after a smoke test that did not pass")
     g.addoption("--no-rerun", action="store_true", help="no FLAKY rerun of a failed test")
-    g.addoption("--kit-ls", default=None, help="the lanes folder (default: lanes.py's kit root + ls)")
+    g.addoption("--kit-ls", default=None, help="the lanes folder (default: lanes.py's kit root + ls); given, the games "
+                "booted are ITS laneN-A/-B (e.g. the packaged kit's pair of the short gate) and needs_kit tests run")
     g.addoption("--expect-commit", default=None, help="SETUP-FAIL unless the lane's lane-server.txt commit starts so")
     g.addoption("--session-minutes", type=float, default=240, help="live.py --max-minutes of each lane's session")
     g.addoption("--env", action="append", default=[], metavar="NAME=VALUE", help="a game switch for this boot, set at "
@@ -117,6 +118,8 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "smoke: the rc smoke tier (runs first; a miss stops the run)")
+    config.addinivalue_line("markers", "needs_kit: a check of the PACKAGED kit (the short gate's kit pair): runs only "
+                            "with --kit-ls, deselected otherwise (the dev lanes are not the kit players install)")
     config.addinivalue_line("markers", "budget(seconds): the test's own hard deadline (default %d)" % DEFAULT_BUDGET)
     config.addinivalue_line("markers", "row(text): the rc row the test proves (in the summary)")
     config.addinivalue_line("markers", "look: a user-facing look check (bridge shots on each game, compared to refs)")
@@ -184,6 +187,8 @@ def _deselect_line(d):
         return "deselected: needs_pack %s %s" % (" ".join(d["needs_pack"]), d["test"])
     if d.get("needs_boot"):
         return "deselected: needs_boot %s %s" % (d["needs_boot"], d["test"])
+    if d.get("needs_kit"):
+        return "deselected: needs_kit (no --kit-ls) %s" % d["test"]
     return "deselected: needs_env %s %s" % (" ".join(d["needs_env"]), d["test"])
 
 
@@ -193,8 +198,9 @@ def _deselect_needs_env(config, items):
     summary --plan, makes it NOT-RUN if no session ran it):
     - needs_env: a switch this run's --env lacks;
     - needs_boot: a test boots with ONE boot (@pytest.mark.needs_boot(NAME), else DEFAULT_BOOT); a run with another
-      --boot leaves it out (a boss boot is not the Kakariko boot the smoke tier and the rows assume)."""
-    have, boot = boot_env(config), config.getoption("boot")
+      --boot leaves it out (a boss boot is not the Kakariko boot the smoke tier and the rows assume);
+    - needs_kit: a run without --kit-ls (the packaged kit's pair) leaves it out."""
+    have, boot, kit = boot_env(config), config.getoption("boot"), config.getoption("kit_ls")
     packs = set(testpack.names_of(config.getoption("pack")))
     keep, drop = [], []
     for it in items:
@@ -215,6 +221,8 @@ def _deselect_needs_env(config, items):
             config._bt_deselected.append({"test": it.nodeid, "needs_pack": no_pack, "needs_env": lack})
         elif lack:
             config._bt_deselected.append({"test": it.nodeid, "needs_env": lack})
+        elif it.get_closest_marker("needs_kit") and not kit:
+            config._bt_deselected.append({"test": it.nodeid, "needs_kit": True, "needs_env": []})
         else:
             keep.append(it)
             continue
@@ -254,24 +262,31 @@ def boot_paths(name):
     return a, b
 
 
-def boot_scene(name=DEFAULT_BOOT):
-    """The scene the boot puts both games in: its scripts' first `warp SCENE [start]` line (hookshot.py parse: 'warp'
-    takes a scene and an optional start). Both scripts must name the same one (a boot with none: None, any scene).
-    Pair.boot_ready proves each game is there, in play, with no event, before any test (NO REPEAT VOIDS,
-    test-bridge-pilot-fa63e90f r1: B stayed in Graveyard_Child in an event)."""
+def boot_place(name=DEFAULT_BOOT):
+    """(scene, start) the boot puts both games at: its scripts' first `warp SCENE [start]` line (hookshot.py parse:
+    'warp' takes a scene and an optional start; start None when the line has none). Both scripts must name the same
+    scene (a boot with none: (None, None), any scene). The one source of a test's way back to the lane's boot place."""
     got = []
     for path in boot_paths(name):
-        scene = None
+        place = (None, None)
         with open(path, encoding="utf-8", errors="replace") as f:
             for ln in f:
                 w = ln.split("#", 1)[0].split()
                 if len(w) >= 2 and w[0] == "warp":
-                    scene = w[1]
+                    place = (w[1], w[2] if len(w) >= 3 else None)
                     break
-        got.append(scene)
-    if got[0] != got[1]:
-        raise pytest.UsageError("--boot %s: the A and B scripts warp to different scenes (%s / %s)" % (name, got[0], got[1]))
-    return got[0]
+        got.append(place)
+    if got[0][0] != got[1][0]:
+        raise pytest.UsageError("--boot %s: the A and B scripts warp to different scenes (%s / %s)"
+                                % (name, got[0][0], got[1][0]))
+    return got[1] if got[1][1] else got[0]
+
+
+def boot_scene(name=DEFAULT_BOOT):
+    """The scene the boot puts both games in (boot_place's scene). Pair.boot_ready proves each game is there, in play,
+    with no event, before any test (NO REPEAT VOIDS, test-bridge-pilot-fa63e90f r1: B stayed in Graveyard_Child in an
+    event)."""
+    return boot_place(name)[0]
 
 
 BOOT_READY_S = 240    # the boot proof's own deadline (out of a load, a warp of a game left elsewhere, an event's end)
@@ -314,8 +329,11 @@ def boot_args(config, lane, server, session):
                                                                                   "--no-load"]
     for e in boot_env(config):
         args += ["--env", e]
-    if nocs_wanted(config):           # (live.py resolve: --game-b wins over the lane's B with --lane)
-        args += ["--game-b", _lanes(config, lane)["b_nocs"]]
+    kit_ls = _opt(config, "kit_ls")
+    if kit_ls:   # (live.py start --lane N boots lanes.py's laneN folders unless --game-a/-b name others: live.py resolve)
+        args += ["--game-a", game_a_folder(config, lane)]
+    if kit_ls or nocs_wanted(config):   # (live.py resolve: --game-b wins over the lane's B with --lane; ONE --game-b)
+        args += ["--game-b", game_b_folder(config, lane)]
     return args + ["--max-minutes", str(config.getoption("session_minutes")), "--idle-minutes", "15"]
 
 
@@ -327,9 +345,21 @@ def nocs_wanted(config):
     return env_has(boot_env(config), NOCS_ENV)
 
 
-def _lanes(config, lane):
+def _kit_ls(config):
+    """The ls folder this run's lane games live in: --kit-ls, else lanes.py's kit_root()/ls (what P.lane_check reads)."""
     import lanes as L
-    return L.lane(lane, os.path.dirname(config.getoption("kit_ls")) if config.getoption("kit_ls") else None)
+    return _opt(config, "kit_ls") or os.path.join(L.kit_root(), "ls")
+
+
+def game_a_folder(config, lane):
+    """Game A's folder for this lane: <kit ls>/lane<N>-A, the folder boot_args boots and P.lane_check proves."""
+    return os.path.join(_kit_ls(config), "lane%d-A" % lane)
+
+
+def game_b_folder(config, lane):
+    """Game B's folder for this lane: <kit ls>/lane<N>-B, lane<N>-B-nocs with NOCS_ENV = the folder
+    P.lane_check(kit_ls, lane, nocs) proves (pair.py NOCS)."""
+    return os.path.join(_kit_ls(config), "lane%d-B%s" % (lane, P.NOCS if nocs_wanted(config) else ""))
 
 
 def _real_lane_info(config, lane):
@@ -340,7 +370,7 @@ def _real_lane_info(config, lane):
     try:
         info = P.lane_check(kit_ls, lane, nocs=nocs_wanted(config))
     except P.SetupFail as e:
-        if nocs_wanted(config) and not os.path.isfile(os.path.join(_lanes(config, lane)["b_nocs"], L.SERVER_TXT)):
+        if nocs_wanted(config) and not os.path.isfile(os.path.join(game_b_folder(config, lane), L.SERVER_TXT)):
             raise P.SetupFail("%s (make it first: lanes.py nocs --lane %d)" % (e, lane))
         raise
     config._bt_game_b[str(lane)] = {"folder": os.path.basename(info["game_b"]), "exefs": info.get("game_b_exefs", "")}
@@ -527,6 +557,63 @@ def _crash_why(session):
     return ("; " + "; ".join(out)) if out else ""
 
 
+# -- the queue's memory stop (B #141 17:5x, STOP-file contract with the queue runner) ---------------------------------
+# songs-frogs-175889ac (17:50): memwatch wrote STOP-OFFLINE-QUEUE (free commit 1.9 GB), B #141 closed the lane-2 games,
+# and at 17:51 this run's pytest booted the pair AGAIN in the same session folder (its steps.txt: a second 'live.py
+# start' at 17:51:17): free commit 2.1 GB again. The contract both sides follow:
+#   - the file is coord-multiplayer/STOP-OFFLINE-QUEUE (tools/offline-queue.ps1:29); a MEMORY stop is one whose first
+#     line has 'memwatch' or 'free commit' (offline-queue.ps1:207-208, the queue's pause test); any other STOP is the
+#     runner's own exit and lets a running job end, as before.
+#   - on a memory stop a running pytest run boots nothing more: the next test (and every one after it) is not started,
+#     the first gets SETUP-FAIL 'memwatch-stop: <the STOP line>', the rest NOT-RUN, and the lane's session is stopped
+#     at once (live.py stop: the games closed, the lock let go). The runner ends the job's process tree (its side).
+#   - a lane's games that are gone without a crash (closed from outside) end the run the same way ('games-closed').
+#   - one lane boot per pytest run: a second live.py start is refused (SETUP-FAIL), whatever asked for it.
+STOP_NAME = "STOP-OFFLINE-QUEUE"
+MEM_STOP = re.compile(r"memwatch|free commit", re.I)   # (PowerShell -match ignores case too: review-c123-13 18:03)
+
+
+def stop_file():
+    """coord-multiplayer/STOP-OFFLINE-QUEUE beside the kit root (lanes.kit_root(): OOT REMAKE/coop-kit); BT_STOP_FILE
+    names another (selftests)."""
+    if os.environ.get("BT_STOP_FILE"):
+        return os.environ["BT_STOP_FILE"]
+    import lanes as L
+    return os.path.join(os.path.dirname(L.kit_root()), "coord-multiplayer", STOP_NAME)
+
+
+def memwatch_stop():
+    """'memwatch-stop: <first line>' while a MEMORY stop file is there, else None (no file, or another stop)."""
+    try:
+        with open(stop_file(), encoding="utf-8", errors="replace") as f:
+            first = f.readline().strip()
+    except OSError:
+        return None
+    return ("memwatch-stop: %s" % first[:200]) if MEM_STOP.search(first) else None
+
+
+def games_closed(session, alive=None):
+    """'games-closed: ...' when a game of the lane's live.py session is no longer running and did not crash (closed
+    from outside: B #141 17:50), else None. A crash is left to the crash handling (GameCrash: FAIL)."""
+    if not session:
+        return None
+    import live
+    alive = alive or live.lanes.hs.pid_alive
+    try:
+        pids = live.game_pids(session)[0]
+    except Exception:            # noqa: BLE001 (no pids.json: nothing known, nothing judged)
+        return None
+    gone = [x for x, pid in sorted(pids.items()) if pid and not alive(pid)]
+    if not gone or _crash_why(session):
+        return None
+    return "games-closed: game %s (pid %s) ended with no crash: closed from outside" % (
+        ", ".join(gone), ", ".join(str(pids[x]) for x in gone))
+
+
+def _stop_why(config):
+    return memwatch_stop() or games_closed(getattr(config, "_bt_session", None))
+
+
 def _solo_proof(pair, lane):
     """The SOLO boot's setup proof: game A only, and its module log says co-op idle (solo.IDLE, no session line)."""
     try:
@@ -541,6 +628,7 @@ def lane_pair(request):
     lane = _lane_for(config)
     out = _out_dir(config, lane)
     refs = os.path.join(HERE, "refs")
+    _one_boot(config, lane)                     # (a memory stop or a second boot: SETUP-FAIL, nothing started)
     if config.getoption("fake"):
         folders = [os.path.join(out, "fake", "lane%d-%s" % (lane, x)) for x in ("A", "B")]   # (FakeLane's folders)
         if os.environ.get("BT_FAKE_PACK_DIR"):    # (selftest: the fake games have a co-op pack to put files into)
@@ -566,7 +654,8 @@ def lane_pair(request):
         lanefake = fakegame.FakeLane(out, env=boot_env(config),     # (fakes/*.py hooks see the boot's switches)
                                      fakes_dir=os.environ.get("BT_FAKE_FAKES_DIR") or fakegame.FAKES,
                                      solo_log=(os.environ.get("BT_FAKE_SOLO_LOG") or solo.IDLE)
-                                     if config.getoption("solo") else None)
+                                     if config.getoption("solo") else None,
+                                     boot=config.getoption("boot"))   # (and its name: game.boot)
         games = lanefake.games()
         if config.getoption("solo"):     # (the fake A logs what the real module logs with no server: solo.IDLE)
             games = {solo.GAME: games[solo.GAME]}
@@ -590,8 +679,8 @@ def lane_pair(request):
     info = _real_lane_info(config, lane)                    # (SetupFail: every test of this lane is SETUP-FAIL)
     session = os.path.join(out, "session")
     began = time.time()
-    Ln = _lanes(config, lane)
-    folders = [Ln["a"], info.get("game_b") or Ln["b"]]       # (lane<N>-B-nocs with NOCS_ENV: the pack goes where B boots)
+    game_a = game_a_folder(config, lane)                    # (the folders this lane boots: --kit-ls's, not its parent's)
+    folders = [game_a, info.get("game_b") or game_b_folder(config, lane)]   # (lane<N>-B-nocs with NOCS_ENV: the pack goes where B boots)
     if config.getoption("solo"):
         folders = folders[:1]                                 # (--solo: game A only; B is not touched)
         if os.environ.get("LICHII_COOP_SERVER"):
@@ -601,7 +690,7 @@ def lane_pair(request):
     mem = memsample.Sampler(session, out).start()           # (each game's commit from the boot start: C #134)
     try:
         try:                                    # (after lane_check, before the boot: test-bridge-c127-3 11:18)
-            _pack_in(config, lane, folders, out, romfs=os.path.join(Ln["a"], "romfs"))
+            _pack_in(config, lane, folders, out, romfs=os.path.join(game_a, "romfs"))
         except (testpack.PackError, testsave.SaveProfileError, OSError) as e:   # (OSError: review-c123-9 nit a)
             raise P.SetupFail("lane%d pack/save: %s" % (lane, e))
         started = _live(["start"] + boot_args(config, lane, info["server"], session), timeout=1200)
@@ -609,6 +698,7 @@ def lane_pair(request):
             crash = _crash_why(session)
             why = "lane%d boot: %s%s" % (lane, started.get("error") or started.get("boot"), crash)
             raise GameCrash(why) if crash else P.SetupFail(why)
+        config._bt_session = session            # (games_closed watches its pids from here on)
         pair = P.Pair(P.read_session(session), out_dir=out, refs_dir=refs)
         pair.lane, pair.info, pair.session = lane, dict(info, boot_s=round(time.monotonic() - t0, 1)), session
         pair.live = _live                       # (Pair.rejoin: live.py quit + relaunch in this session)
@@ -643,6 +733,18 @@ def _module_proof(pair, lane):
         pair.module_started()
     except P.SetupFail as e:
         raise P.SetupFail("lane%d boot: %s" % (lane, e)) from e
+
+
+def _one_boot(config, lane):
+    """The lane's boot may start: no memory stop (memwatch_stop) and no boot before it in this run (songs-frogs-175889ac
+    booted the pair a second time after its games were closed from outside); else SetupFail, nothing started."""
+    why = memwatch_stop()
+    if why:
+        raise P.SetupFail("lane%d %s (no boot)" % (lane, why))
+    if getattr(config, "_bt_booted", False):
+        raise P.SetupFail("lane%d: no second boot in one run (this run's first boot's games are gone: closed from "
+                          "outside or by a stop)" % lane)
+    config._bt_booted = True
 
 
 def _boot_proof(config, pair, lane):
@@ -762,6 +864,26 @@ def _not_run(item, why):
     item.ihook.pytest_runtest_logreport(report=rep)
 
 
+def _stop_run(item, why):
+    """A memory stop or the lane's games closed from outside (_stop_why): the first test not started is SETUP-FAIL
+    `why`, every one after it NOT-RUN, and the session's fixtures are torn down at once (lane_pair -> live.py stop:
+    the games closed, the lock let go) so nothing is booted again."""
+    config = item.config
+    first = not getattr(config, "_bt_stopped", None)
+    item.ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
+    if first:
+        from _pytest.reports import TestReport
+        rep = TestReport(item.nodeid, item.location, {}, "failed", why, "teardown",
+                         user_properties=[("result", "SETUP-FAIL"), ("seconds", 0), ("why", why)])
+        item.ihook.pytest_runtest_logreport(report=rep)
+        config._bt_stopped = why
+        item.session._setupstate.teardown_exact(None)
+    else:
+        _not_run(item, "NOT-RUN: %s" % config._bt_stopped)
+    item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
+    return True
+
+
 def _stop_at_deadline(item):
     """Past --deadline-min: this item is NOT-RUN (and so is each one after it, as pytest offers it: under xdist a worker
     sees only its own share). The first time, the session's fixtures are torn down at once (the lane's games: lane_pair
@@ -782,6 +904,10 @@ def _stop_at_deadline(item):
 def pytest_runtest_protocol(item, nextitem):
     if _past_deadline(item.config):
         return _stop_at_deadline(item)
+    stop = getattr(item.config, "_bt_stopped", None)
+    stop = stop if stop and stop.startswith(("memwatch-stop", "games-closed")) else _stop_why(item.config)
+    if stop:
+        return _stop_run(item, stop)
     item.ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
     t0 = time.monotonic()
     reports = runtestprotocol(item, nextitem=nextitem, log=False)

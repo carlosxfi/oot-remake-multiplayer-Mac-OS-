@@ -171,20 +171,10 @@ def own_horse_pos(pair, x):
 
 
 def ocarina_out(pair, x):
-    """The ocarina out as test_rows.test_ocarina_notes (kit save: on d-left = the bridge's LEFT), its first-use note
-    closed with A, put away (B) and out again, so no note but the song's is played after it (test_epona_seen)."""
-    pair.log[x].mark()
-    pair.press(x, ["LEFT"], frames=12)
-    pair.step_both(240)
-    assert pair.log[x].find(OCARINA_OUT), "%s: no '%s' 240 frames after LEFT" % (x, OCARINA_OUT)
-    pair.press(x, ["A"], frames=12)
-    pair.step_both(120)
-    pair.press(x, ["B"], frames=8)
-    pair.step_both(60)
-    pair.log[x].mark()
-    pair.press(x, ["LEFT"], frames=12)
-    pair.step_both(240)
-    assert pair.log[x].find(OCARINA_OUT), "%s: the ocarina did not come out again" % x
+    """The ocarina out through the ONE shared way (Pair.ocarina_out, as test_epona.test_epona_seen): the re-equip after
+    the last load, D-pad Left, the first-use box closed with B; ends with Link playing and no note sent, so the song's
+    keys are the first notes."""
+    pair.ocarina_out(x)
 
 
 def song_shots(pair, player, name):

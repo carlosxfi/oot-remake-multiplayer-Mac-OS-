@@ -116,8 +116,9 @@ class Suite(unittest.TestCase):
         self.assertEqual(s["counts"]["SETUP-FAIL"], 0, p.stdout[-2000:])
         self.assertTrue(s["tests"])
         for d in s["deselected"]:
-            self.assertTrue(d["needs_env"] or d.get("needs_boot") or d.get("needs_pack") or d.get("needs_solo"), d)   # (a boss row's boot;
-            # a --pack test: port-sweep-c131-6 11:46)
+            self.assertTrue(d["needs_env"] or d.get("needs_boot") or d.get("needs_pack") or d.get("needs_solo")
+                            or d.get("needs_kit"), d)
+            # (a boss row's boot; a --pack test: port-sweep-c131-6 11:46; needs_kit: the gate's kit pair)
 
     def test_repeat_keeps_one_boot_and_orders_by_round(self):
         out = os.path.join(self.tmp, "o")
@@ -704,7 +705,7 @@ class BootCommand(unittest.TestCase):
         for name in names:
             class Cfg:
                 def getoption(self, opt, name=name):
-                    return {"env": [], "session_minutes": 60, "boot": name}[opt]
+                    return {"env": [], "session_minutes": 60, "boot": name, "kit_ls": None}[opt]
             args = B.boot_args(Cfg(), 1, os.path.join(self.tmp, "coop_server.exe"), os.path.join(self.tmp, "s"))
             i = args.index("--lane")
             args[i:i + 2] = self.games()
@@ -719,7 +720,8 @@ class BootCommand(unittest.TestCase):
 
         class Cfg:
             def getoption(self, name):
-                return {"env": ["LICHII_COOP_PARTY_HUD_PROBE=1"], "session_minutes": 175, "boot": B.DEFAULT_BOOT}[name]
+                return {"env": ["LICHII_COOP_PARTY_HUD_PROBE=1"], "session_minutes": 175, "boot": B.DEFAULT_BOOT,
+                        "kit_ls": None}[name]
         args = B.boot_args(Cfg(), 1, os.path.join(self.tmp, "coop_server.exe"), os.path.join(self.tmp, "s"))
         i = args.index("--lane")
         args[i:i + 2] = self.games()
@@ -751,22 +753,38 @@ class BootCommand(unittest.TestCase):
 
     def test_nocs_switch_boots_b_from_lane_b_nocs(self):
         """--env B:COOP_TEST_NO_CHARACTER_SELECT=1 (no_cs.py's switch): game B boots from lane<N>-B-nocs (--game-b,
-        which live.py resolve takes over the lane's B); without it, no --game-b."""
+        which live.py resolve takes over the lane's B); without it and without --kit-ls, no --game-b. With --kit-ls:
+        --game-a kit/lane<N>-A and exactly ONE --game-b = kit/lane<N>-B, or kit/lane<N>-B-nocs with the switch (the
+        folder P.lane_check(kit_ls, lane, nocs) proves)."""
         import bt_plugin as B
-        for env, nocs in (([], False), ([B.NOCS_ENV], True), (["COOP_TEST_NO_CHARACTER_SELECT=1"], True),
-                          (["A:COOP_TEST_NO_CHARACTER_SELECT=1"], False)):
-            class Cfg:
-                def getoption(self, name, env=env):
-                    return {"env": env, "session_minutes": 60, "boot": B.DEFAULT_BOOT, "kit_ls": self_kit}[name]
-            self_kit = os.path.join(self.tmp, "coop-kit", "ls")
-            args = B.boot_args(Cfg(), 2, "srv", "s")
-            with self.subTest(env=env):
-                self.assertEqual(B.nocs_wanted(Cfg()), nocs)
-                if nocs:
-                    self.assertEqual(args[args.index("--game-b") + 1], os.path.join(self_kit, "lane2-B-nocs"))
-                else:
-                    self.assertNotIn("--game-b", args)
-
+        import lanes as L
+        kit = os.path.join(self.tmp, "coop-kit", "ls")
+        odd = os.path.join(self.tmp, "kit-pair")      # (a --kit-ls whose leaf is not 'ls': review-c123-13 nit)
+        for kit_ls in (None, kit, odd):
+            for env, nocs in (([], False), ([B.NOCS_ENV], True), (["COOP_TEST_NO_CHARACTER_SELECT=1"], True),
+                              (["A:COOP_TEST_NO_CHARACTER_SELECT=1"], False)):
+                class Cfg:
+                    def getoption(self, name, env=env, kit_ls=kit_ls):
+                        return {"env": env, "session_minutes": 60, "boot": B.DEFAULT_BOOT, "kit_ls": kit_ls}[name]
+                args = B.boot_args(Cfg(), 2, "srv", "s")
+                with self.subTest(env=env, kit_ls=kit_ls):
+                    self.assertEqual(B.nocs_wanted(Cfg()), nocs)
+                    base = kit_ls or os.path.join(L.kit_root(), "ls")
+                    if kit_ls:
+                        self.assertEqual(args.count("--game-a"), 1)
+                        self.assertEqual(args[args.index("--game-a") + 1], os.path.join(kit_ls, "lane2-A"))
+                    else:
+                        self.assertNotIn("--game-a", args)
+                    if nocs or kit_ls:
+                        self.assertEqual(args.count("--game-b"), 1, args)
+                        self.assertEqual(args[args.index("--game-b") + 1],
+                                         os.path.join(base, "lane2-B" + ("-nocs" if nocs else "")))
+                        self.assertEqual(args[args.index("--game-b") + 1], B.game_b_folder(Cfg(), 2))
+                    else:
+                        self.assertNotIn("--game-b", args)
+                    # (lane_pair packs into game_a_folder/game_b_folder: the same folders the boot names)
+                    self.assertEqual(B.game_a_folder(Cfg(), 2), os.path.join(base, "lane2-A"))
+                    self.assertEqual(B.game_b_folder(Cfg(), 2), os.path.join(base, "lane2-B" + ("-nocs" if nocs else "")))
 
 HOOK_TESTS = 'import pytest\n\ndef test_hooks(pair):\n    pair.act("A", "frob 3")\n    pair.expect_log("A", r"fake hook: frob 3 on A", max_frames=30)\n    st = pair.state("B")\n    assert any(a.get("name") == "HookActor_B" for a in st["world"]["actors"]), st["world"]\n    assert st.get("hooked") == "shared-1"\n    r = pair.call("A", "ping_hook")\n    assert r.get("pong") is True\n    pair.press("A", ["ZR"], frames=2)\n    pair.expect_log("A", r"fake hook: pressed ZR", max_frames=30)\n\n    import playtest_client as pc\n    with pytest.raises(pc.BridgeError):           # (a plain warp: the boss intro event makes it a timeout)\n        pair.warp_both("BossStage_Test")\n    st = pair.warp_both("BossStage_Test", arrive_in_event=True)\n    assert st["A"]["scene"] == st["B"]["scene"] == "BossStage_Test"\n    assert any("answered timeout in the arrival event" in n for n in pair.notes), pair.notes\n    pair.act("A", "place 0 0 0")\n    pair.call("A", "move", yaw=90, strength=1.0, frames=30)\n    assert pair.state("A")["pos"][0] == 1.0, pair.state("A")["pos"]      # (move_step: the wall at x 1.0)\n    with pytest.raises(pc.BridgeError):           # (a timeout with NO event is not an arrival: review-c123-8)\n        pair.warp_both("NoEventStage_Test", arrive_in_event=True)\n    a_scene, a_frame = pair.state("A")["scene"], pair.state("A")["frame"]\n    st = pair.warp_one("B", "KakarikoVillage_Child")      # (one game; the other stepped the same frames)\n    assert st["scene"] == "KakarikoVillage_Child" and pair.state("A")["scene"] == a_scene\n    assert pair.state("A")["frame"] > a_frame              # (A ran the frames B\'s warp took)\n'
 HOOK_MODULE = 'def setup(game):\n    game.hook_seen = []\n\ndef lane(fl):\n    fl.g["A"].shared = fl.g["B"].shared = {"n": 1}\n\ndef command(game, m):\n    if m.get("cmd") == "ping_hook":\n        return {"ok": True, "pong": True}\n    if m.get("cmd") == "warp" and m.get("scene") in ("BossStage_Test", "NoEventStage_Test"):\n        game.run(40)\n        game.scene = m["scene"]                 # (there, but the bridge says timeout: an intro event, or not)\n        return {"ok": False, "error": "timeout", "message": "still in an event"}\n    return None\n\ndef move_step(game, pos):\n    if game.scene == "BossStage_Test" and pos[0] > 1.0:\n        return [1.0, pos[1], pos[2]]\n    return None\n\ndef after(game, m, r):\n    if m.get("cmd") == "state":\n        r["hooked"] = "shared-%d" % game.shared["n"]\n\ndef press(game, buttons):\n    if "ZR" in buttons:\n        game.say("fake hook: pressed ZR")\n        return True\n    return False\n\ndef act(game, words):\n    if words[0] == "frob":\n        game.say("fake hook: frob %s on %s" % (words[1], game.tag))\n        return True\n    return False\n\ndef actors(game):\n    return [{"id": 99, "name": "HookActor_%s" % game.tag, "kind": "enemy", "pos": [0.0, 0.0, 0.0]}]\n\ndef state(game, st):\n    if game.scene == "BossStage_Test":\n        st["event"] = True                      # (its intro event runs)\n'
@@ -1133,6 +1151,100 @@ class FakeHooks(unittest.TestCase):
             self.assertTrue(m.__name__.startswith("fakes_"))
 
 
+STOP_TESTS = (
+    "import os\n\n"
+    "def test_1_writes_the_stop(pair):\n"
+    "    pair.step_both(5)\n"
+    "    if os.environ.get('STOP_LINE'):\n"
+    "        with open(os.environ['BT_STOP_FILE'], 'w', encoding='utf-8') as f:\n"
+    "            f.write(os.environ['STOP_LINE'] + '\\n')\n\n"
+    "def test_2_after(pair):\n    pair.step_both(5)\n\n"
+    "def test_3_after(pair):\n    pair.step_both(5)\n")
+
+
+class MemwatchStop(unittest.TestCase):
+    """B #141 17:5x (songs-frogs-175889ac booted the lane pair again at 17:51 after the memwatch STOP and the games'
+    close at 17:50): a memory STOP-OFFLINE-QUEUE ends the run (SETUP-FAIL memwatch-stop, then NOT-RUN, the lane closed),
+    a lane's games closed from outside do the same, and a run never boots its lane twice."""
+
+    MEM = "preflight-b2-3 memwatch 17:50:03 UTC: free commit under 4 GB for 30 s"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        d = os.path.join(self.tmp, "t")
+        os.makedirs(d)
+        with open(os.path.join(d, "conftest.py"), "w", encoding="utf-8") as fh:
+            fh.write("import sys\nsys.path.insert(0, %r)\npytest_plugins = ['bt_plugin']\n" % INGAME)
+        with open(os.path.join(d, "test_stop.py"), "w", encoding="utf-8") as fh:
+            fh.write(STOP_TESTS)
+        self.dir, self.stop = d, os.path.join(self.tmp, "STOP-OFFLINE-QUEUE")
+
+    def run_tests(self, line=None, before=None):
+        if before is not None:
+            with open(self.stop, "w", encoding="utf-8") as f:
+                f.write(before + "\n")
+        out = os.path.join(self.tmp, "o")
+        env = {"BT_STOP_FILE": self.stop}
+        if line:
+            env["STOP_LINE"] = line
+        p = pytest_run([".", "--fake", "--no-rerun", "--out", out, "-q", "-p", "no:cacheprovider"], cwd=self.dir,
+                       env=env)
+        return summary(out), p
+
+    def test_a_memory_stop_during_the_run_ends_it(self):
+        s, p = self.run_tests(line=self.MEM)
+        r = results(s)
+        self.assertEqual(r, {"test_1_writes_the_stop": "PASS", "test_2_after": "SETUP-FAIL",
+                             "test_3_after": "NOT-RUN"}, p.stdout[-2000:])
+        row = next(t for t in s["tests"] if t["test"].endswith("test_2_after"))
+        self.assertIn("memwatch-stop: " + self.MEM, row["why"])
+        self.assertTrue(s["stopped"].startswith("memwatch-stop"), s["stopped"])
+        self.assertTrue(s["lane_closed"], s)          # (the lane's session torn down at once)
+
+    def test_a_memory_stop_before_the_run_boots_nothing(self):
+        s, p = self.run_tests(before=self.MEM)
+        r = results(s)
+        self.assertEqual(r["test_1_writes_the_stop"], "SETUP-FAIL", p.stdout[-2000:])
+        self.assertEqual({r["test_2_after"], r["test_3_after"]}, {"NOT-RUN"})
+        self.assertFalse(os.path.isdir(os.path.join(self.tmp, "o", "fake")), "the fake lane was booted")
+
+    def test_a_capitalised_memory_stop_counts_too(self):
+        """offline-queue.ps1:207's -match ignores case, so the pytest side must too (review-c123-13 18:03)."""
+        s, p = self.run_tests(line="Memwatch: Free Commit under 4 GB")
+        self.assertEqual(results(s)["test_2_after"], "SETUP-FAIL", p.stdout[-2000:])
+
+    def test_another_stop_lets_the_run_go_on(self):
+        s, p = self.run_tests(line="stop asked by hand (runner exit)")
+        self.assertEqual(set(results(s).values()), {"PASS"}, p.stdout[-2000:])
+
+    def test_no_second_boot_in_one_run(self):
+        import bt_plugin
+        from unittest import mock
+        cfg = type("C", (), {})()
+        with mock.patch.dict(os.environ, {"BT_STOP_FILE": self.stop}):
+            bt_plugin._one_boot(cfg, 2)
+            with self.assertRaisesRegex(P.SetupFail, r"lane2: no second boot in one run"):
+                bt_plugin._one_boot(cfg, 2)
+
+    def test_games_closed_from_outside_not_a_crash(self):
+        import bt_plugin
+        sess = os.path.join(self.tmp, "session")
+        os.makedirs(sess)
+        log = os.path.join(sess, "game-out-B.txt")
+        with open(log, "w", encoding="utf-8") as f:
+            f.write("coop: fine\n")
+        with open(os.path.join(sess, "pids.json"), "w", encoding="utf-8") as f:
+            json.dump({"games": {"A": 11, "B": 22}, "server": 33}, f)
+        with open(os.path.join(sess, "session.json"), "w", encoding="utf-8") as f:
+            json.dump({"started": 0, "games": {"B": {"log": log}}}, f)
+        self.assertIsNone(bt_plugin.games_closed(sess, alive=lambda pid: True))
+        self.assertRegex(bt_plugin.games_closed(sess, alive=lambda pid: pid != 22) or "",
+                         r"^games-closed: game B \(pid 22\)")
+        with open(log, "a", encoding="utf-8") as f:
+            f.write("CRASH: exception 0xc0000005\n")        # (a crash stays the crash handling's: FAIL)
+        self.assertIsNone(bt_plugin.games_closed(sess, alive=lambda pid: pid != 22))
+
 class ReplyWait(unittest.TestCase):
     """boss-respawn-bridge-e3e6e253 CAUSE 2: a call sent with the 0.2 s left of a spent deadline timed the socket out,
     the client closed it, the game ran free mid-arrival and every later recovery SETUP-FAILed ('teleport still in
@@ -1240,6 +1352,102 @@ class ReplyWait(unittest.TestCase):
         self.assertTrue(any("A: held again after state: TimeoutError" in n for n in pair.notes), pair.notes)
         self.assertTrue(client.held)
         self.assertTrue(lane.g["A"].paused)
+
+
+class OcarinaReady(unittest.TestCase):
+    """Pair.need_ocarina + Pair.ocarina_out (songs-frogs-733c4d8f / -58f13b22 SETUP-FAIL, probe-ocarina-2f14b333): the
+    re-equip after a load first; then D-pad Left's free-Ocarina line, the first-use box closed with B, the plays line."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def lane(self, late):
+        import fakegame
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"BT_FAKE_OCARINA_LATE": str(late)}):
+            lane = fakegame.FakeLane(self.tmp)
+        self.addCleanup(lane.close)
+        pair = P.Pair(lane.games(), out_dir=self.tmp)
+        self.addCleanup(pair.close)
+        pair.begin(60)
+        return pair
+
+    def test_a_press_before_the_re_equip_takes_nothing_out(self):
+        pair = self.lane(200)
+        self.assertFalse(pair.ocarina_ready("B"))
+        pair.press("B", ["LEFT"], frames=12)
+        pair.step_both(40)
+        self.assertIsNone(pair.log["B"].find(r"ocarina probe: our Link plays the ocarina", pos=0))  # (the 733c4d8f fail)
+
+    def test_need_ocarina_steps_to_the_re_equip(self):
+        pair = self.lane(200)
+        pair.need_ocarina("B")
+        self.assertTrue(pair.ocarina_ready("B"))
+        pair.press("B", ["LEFT"], frames=12)
+        pair.step_both(40)
+        self.assertTrue(pair.log["B"].find(P.OCARINA_FREE, pos=0))
+
+    def test_the_old_set_up_never_sees_the_plays_line_behind_the_first_use_box(self):
+        """songs-frogs-733c4d8f / -58f13b22: LEFT, 240 frames, 'plays the ocarina' wanted: the box is up, so never."""
+        pair = self.lane(0)
+        pair.need_ocarina("B")
+        pair.press("B", ["LEFT"], frames=12)
+        pair.step_both(240)
+        self.assertTrue(pair.log["B"].find(P.OCARINA_FREE, pos=0))
+        self.assertIsNone(pair.log["B"].find(P.OCARINA_PLAYS, pos=0))
+
+    def test_ocarina_out_closes_the_first_use_box_with_b_then_plays(self):
+        pair = self.lane(200)
+        self.assertTrue(pair.ocarina_out("B"))
+        self.assertTrue(any("first-use 'Ocarina Audio Input' box up: closed with B" in n for n in pair.notes), pair.notes)
+        pair.press("B", ["X"], frames=4)              # (Link plays: a note key now sends its note)
+        pair.step_both(10)
+        self.assertTrue(pair.log["B"].find(r"ocarina note 16", pos=0))
+
+    def test_ocarina_out_again_has_no_box_and_presses_no_b(self):
+        pair = self.lane(0)
+        pair.ocarina_out("B")
+        pair.press("B", ["B"], frames=8)              # (away)
+        pair.step_both(60)
+        pair.notes.clear()
+        self.assertTrue(pair.ocarina_out("B"))
+        self.assertEqual([n for n in pair.notes if "first-use" in n], [])
+
+    def test_a_box_b_does_not_close_is_named_never_passed(self):
+        """The plays line must come after the B press (review-c123-13 17:47): a box B leaves up raises."""
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"BT_FAKE_OCARINA_BOX_STUCK": "B"}):
+            pair = self.lane(0)
+            with self.assertRaisesRegex(AssertionError, r"B: 'ocarina probe: our Link plays the ocarina' after B closed"):
+                pair.ocarina_out("B")
+
+    def test_ocarina_out_with_nothing_on_the_d_pad_names_it(self):
+        pair = self.lane(5000)
+        with self.assertRaisesRegex(AssertionError, r"B: the ocarina back on the D-pad"):
+            pair.ocarina_out("B")
+
+    def test_a_warp_needs_a_new_re_equip(self):
+        pair = self.lane(200)
+        pair.need_ocarina("B")
+        pair.warp_one("B", "ZoraRiver_Child")
+        self.assertFalse(pair.ocarina_ready("B"))     # (the equip line before the load no longer counts)
+        pair.need_ocarina("B")
+        self.assertTrue(pair.ocarina_ready("B"))
+
+    def test_no_re_equip_names_it(self):
+        pair = self.lane(5000)
+        with self.assertRaisesRegex(AssertionError, r"B: the ocarina back on the D-pad after the load.*not after 600"):
+            pair.need_ocarina("B")
+
+    def test_the_ocarina_tests_pass_on_a_late_re_equip(self):
+        out = os.path.join(self.tmp, "o")
+        p = pytest_run([".", "--fake", "--no-rerun", "--out", out, "-q", "-p", "no:cacheprovider",
+                        "-k", "ocarina or frog or epona_seen"], env={"BT_FAKE_OCARINA_LATE": "200"})
+        r = results(summary(out))
+        self.assertTrue(r, p.stdout[-2000:])
+        for name, res in r.items():
+            self.assertIn(res, ("PASS", "NO-REF", "SKIP"), (name, res, p.stdout[-2000:]))
 
 
 class SetupLimit(unittest.TestCase):
