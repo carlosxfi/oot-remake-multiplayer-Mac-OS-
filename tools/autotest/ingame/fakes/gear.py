@@ -8,7 +8,8 @@
   draws (none of the adult pieces: ''), an ADULT's named flag stands, but only once `dress` made the game wear it.
 - age: KakarikoVillage_Adult = adult (the row's age-flag + warp); every other scene keeps the built-in child.
 Selftest switches (tests/test_ingame_gear.py): BT_FAKE_GEAR_BUG=child -> a child's gauntlet flag is sent (the 0.11.4
-bug); BT_FAKE_GEAR_BUG=rewarp -> an adult's rewarp sends hand '' (the links rule losing a real piece).
+bug); BT_FAKE_GEAR_BUG=rewarp -> an adult's rewarp sends hand '' (the links rule losing a real piece);
+BT_FAKE_GEAR_BUG=stuck -> a game that was adult stays adult after the way back (the boot left broken for later tests).
 """
 import os
 
@@ -61,4 +62,6 @@ def after(game, m, r):
 
 def state(game, st):
     if _adult(game):
+        game.was_adult = True
+    if _adult(game) or (_bug() == "stuck" and getattr(game, "was_adult", False)):
         st["age"] = "adult"

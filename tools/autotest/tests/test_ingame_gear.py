@@ -46,6 +46,14 @@ class Gear(unittest.TestCase):
         self.assertEqual(r["test_adult_gear_shown"], "FAIL", p.stdout[-1500:])
         self.assertEqual(r["test_child_gear_flags_not_drawn"], "NO-REF")
 
+    def test_boot_left_adult_fails(self):
+        """review-rows-c130 (1): the way back must leave both games child, else the test FAILs (never PASS / NO-REF)."""
+        p, s = self.run_fake("stuck", bug="stuck")
+        r = T.results(s)
+        self.assertEqual(r["test_adult_gear_shown"], "FAIL", p.stdout[-1500:])
+        why = [t["why"] for t in s["tests"] if t["test"].endswith("test_adult_gear_shown")][0]
+        self.assertIn("stays adult", why)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -64,8 +64,29 @@ def saved_gear(pair):
 
 def put_back(pair, gear):
     for slot, name in gear.items():
-        pair.act("A", "wear %s %s" % (slot, name))
-    pair.step_both(30)
+        wear(pair, slot, name)                    # (its 'set' line: a refused put-back is seen, not left on)
+
+
+def way_back(pair, gear, done, warp_child):
+    """The boot as it was for the lane's later tests (review-rows-c130, as kokiri-band's finally): A's gear flags back,
+    then (warp_child) both games child again. A failure here is raised only when the test body passed (`done`); after
+    a real FAIL it goes into the notes, so the test's own message stays. Then both games must be child in play."""
+    try:
+        put_back(pair, gear)
+        if warp_child:
+            for x in ("A", "B"):
+                pair.flag(x, AGE_FLAG, 1)
+            pair.step_both(60)                    # the flag before the warp, as on the way out
+            pair.warp_both(SCENE_CHILD, entrance=GATE)
+    except Exception as e:
+        if done:
+            raise
+        pair.notes.append("way back after the failure: %s: %s" % (type(e).__name__, e))
+        return
+    if done:
+        for x in ("A", "B"):
+            s = pair.state(x)
+            assert pair.in_play(s) and s.get("age") == "child",                 "%s stays %s after the test: the lane's later tests need child Link" % (x, s.get("age"))
 
 
 @pytest.mark.budget(240)
@@ -78,6 +99,7 @@ def test_child_gear_flags_not_drawn(pair):
         face_each_other(pair)
         # the channel is live: B got A's equipment at least once this session (else every never_log below is empty)
         assert pair.log["B"].find(EQUIP, pos=0), "B: no P1 PLAYER_EQUIP line this session (B never got A's gear)"
+    done = False
     try:
         wear(pair, "hand", GOLD)                  # hs-gear-age.A.txt 'wear hand ...' + 'wait 300' -> gold-flag
         pair.step_both(300)
@@ -99,8 +121,9 @@ def test_child_gear_flags_not_drawn(pair):
         # draws none of them, only the bracelet: so B must never get the gauntlets, before or after the rewarp
         pair.never_log("B", GOLD_SENT)
         shots(pair, "gear-child-rewarp")
+        done = True
     finally:
-        put_back(pair, gear)
+        way_back(pair, gear, done, warp_child=False)
 
 
 @pytest.mark.budget(300)
@@ -122,6 +145,7 @@ def test_adult_gear_shown(pair):
         for _, name in SLOTS:                     # the save owns none of them: give first (hs-gear-adult.A.txt)
             pair.give("A", "PouchData.%s.StockNum" % name)
         face_each_other(pair)
+    done = False
     try:
         pair.log["B"].mark()
         wear(pair, "hand", GOLD)
@@ -141,9 +165,6 @@ def test_adult_gear_shown(pair):
         pair.step_both(120)
         pair.never_log("B", HAND_EMPTY)           # FAIL: the links rule lost a real piece at the rewarp
         shots(pair, "gear-adult-rewarp")
+        done = True
     finally:
-        put_back(pair, gear)
-        for x in ("A", "B"):                      # back to the boot's child (later tests: need_child_in_play)
-            pair.flag(x, AGE_FLAG, 1)
-        pair.step_both(60)
-        pair.warp_both(SCENE_CHILD, entrance=GATE)
+        way_back(pair, gear, done, warp_child=True)
