@@ -23,7 +23,10 @@ class PartyHud(unittest.TestCase):
 
     def run_suite(self, extra=(), env=None):
         out = os.path.join(self.tmp, "o")
-        p = pytest_run([".", "--fake", "--out", out, "-q", "-p", "no:cacheprovider", "--no-rerun", "-k", "party_hud"]
+        # (its own file only, like the other test_ingame_*.py selftests: "." collected every test in the folder, so
+        # every other switch-gated test's deselection showed up here too (integrate-0120 8c9f48215: kokiri band,
+        # phantom ganon, twinrova); B #136)
+        p = pytest_run(["test_party_hud.py", "--fake", "--out", out, "-q", "-p", "no:cacheprovider", "--no-rerun"]
                        + list(extra), env=env)
         return p, summary(out)
 
@@ -41,7 +44,8 @@ class PartyHud(unittest.TestCase):
     def test_without_its_switches_deselected(self):
         p, s = self.run_suite()
         self.assertEqual(results(s), {}, p.stdout[-2000:])
-        self.assertEqual(sorted(d["test"].split("::")[-1] for d in s["deselected"]), sorted(TESTS), s["deselected"])
+        mine = sorted(d["test"].split("::")[-1] for d in s["deselected"] if d["test"].startswith("test_party_hud.py::"))
+        self.assertEqual(mine, sorted(TESTS), s["deselected"])     # (its own two; other files' tests not asserted)
 
     def test_a_crash_in_the_boot_is_fail(self):
         """B logs the game's crash report in the boot's load: both tests FAIL (not SETUP-FAIL), the crash named."""
