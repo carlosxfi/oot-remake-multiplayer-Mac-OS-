@@ -738,6 +738,32 @@ class ImageCompare(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertIn("<", r["why"])
 
+    def test_colour_fault_fails(self):
+        """review-rows-c130 10:38 / B #131: a recoloured thing at the same grey value (green tunic (0,91,0) -> blue
+        (0,60,160), both grey 53.4 by ITU-R 601) passes a grey SSIM but must FAIL the colour compare at the rows'
+        0.80; the same shot passes; a hue-shifted copy of the whole picture fails."""
+        from PIL import Image, ImageDraw
+        def pic(name, link, bg=(30, 80, 30)):
+            im = Image.new("RGB", (640, 360), bg)
+            d = ImageDraw.Draw(im)
+            d.rectangle((100, 60, 180, 220), fill=link)              # "Link's tunic"
+            d.rectangle((400, 40, 600, 80), fill=(220, 30, 30))      # "hearts"
+            path = os.path.join(self.tmp, name + ".png")
+            im.save(path)
+            return path
+        green, blue = pic("green", (0, 91, 0)), pic("blue", (0, 60, 160))
+        grey, _ = imagecheck.ssim(blue, green, colour=False)
+        self.assertGreaterEqual(grey, 0.80)          # (why grey alone was blind: the stored ref would pass)
+        r = imagecheck.compare(blue, green, 0.80)
+        self.assertFalse(r["ok"], r)
+        self.assertIn("colour SSIM", r["why"])
+        self.assertTrue(imagecheck.compare(green, green, 0.99)["ok"])
+        from PIL import Image as _I
+        with _I.open(green) as im:
+            r_, g_, b_ = im.split()
+            _I.merge("RGB", (b_, r_, g_)).save(os.path.join(self.tmp, "hue.png"))   # (channels rotated: a hue shift)
+        self.assertFalse(imagecheck.compare(os.path.join(self.tmp, "hue.png"), green, 0.80)["ok"])
+
     def test_no_reference_is_never_ok(self):
         keep = os.path.join(self.tmp, "keep")
         r = imagecheck.compare(self.paths["a"], os.path.join(self.tmp, "refs", "x-A.png"), 0.5, keep_dir=keep)
