@@ -37,6 +37,12 @@ so with `@pytest.mark.needs_env("NAME=VALUE", ...)`: a run whose `--env` lacks i
 makes it NOT-RUN if no env group ran it), so the default run has no SETUP-FAIL from it. A
 malformed `--env` stops the run before any boot (pytest usage error, exit 4).
 
+A look test sets its colours by switch, never by a lane's `coop-options.ini` (it keeps whatever earlier runs left):
+`LICHII_COOP_COLOR=<colour>` is the tunic, `LICHII_COOP_LOOK=<key>:<colour>[,...]` every other part (its settings key
+without `look_`, e.g. `cap_trim:yellow`). With `LICHII_COOP_LOOK` the module takes only those parts, not the file's, and
+logs `coop: look: the parts are LICHII_COOP_LOOK's (...)` (`hookshot/src/coop_look.h` `EnvParts`). Example:
+`test_look.py::test_kokiri_hood_band`.
+
 ## Results
 
 One summary per run: `<dir>/summary.json` and `summary.md` (add `--junitxml <file>` for JUnit); each test entry of `summary.json` carries its `notes` (`pair.notes`: the set-up time and what the test wrote down, such as where Link landed). The run also prints one
