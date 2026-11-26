@@ -27,21 +27,33 @@ sys.path.insert(0, os.path.dirname(HERE))
 import ocarina_notes as ON     # noqa: E402  (the ONE key -> note table, read from the game)
 import testsave                # noqa: E402
 
-from test_gear import GATE, SCENE_CHILD   # noqa: E402  (the lane's Kakariko boot place: the way back)
+from bt_plugin import DEFAULT_BOOT, boot_place   # noqa: E402
+import once_gifts              # noqa: E402  (the ONE gift list: coop_shop_sale.h kOnceGifts)
+from test_gifts_237 import LISTED as GIFTS_ON   # noqa: E402  (the module's session line, row 237's one pattern)
 from test_rows import need_child_in_play, place_in_front   # noqa: E402
+
+SCENE_CHILD, GATE = boot_place(DEFAULT_BOOT)   # the lane's Kakariko boot place (the way back): the boot's own warp
 
 # -- shared patterns (each the module's own line) ------------------------------------------------------------------
 NOTE_SENT = r"coop: ocarina note \d+ \(Ocarina_%s\) sent"            # coop_ocarina_sound.cpp:133 (test_epona.NOTE_SENT)
 OCARINA_OUT = r"ocarina probe: our Link plays the ocarina"          # coop_ocarina.cpp:320 (LICHII_COOP_OCARINA_PROBE=1)
 PUPPET_SOUND = r"plays sound 'Ocarina_%s'"                          # test_rows.test_ocarina_notes (the other game hears it)
-GIFTS_ON = r"coop: gifts: sharing 22 one-time gift flags"           # coop_hook.cpp:572; 22 = kOnceGifts' size (coop_shop_sale.h)
 
 # -- the frogs (hs-u5-gifts.B.txt; positions from its header: romfs Banc ZoraRiver_Child_Static) ---------------------
 RIVER, RIVER_IN = "ZoraRiver_Child", "ZoraRiver_LostWoodSide"     # hs-u5-gifts.B.txt 'warp ZoraRiver_Child ZoraRiver_LostWoodSide'
 FROG_SPOT = (8.90, 102.40, -50.90)     # 'place 8.90 102.40 -50.90   # TurnToTarget, the frog scene's player anchor'
 FROGS = (9.19, -54.83)                 # 'face 9.19 -54.83           # OcarinaPoint_MiniGame_FrogTenors / Animal_Frog_Blue'
-LULLABY_PAID = "0x6e3948e7"            # MiniGame_FrogTenors_ZeldaLullaby (coop_shop_sale.h:188, kOnceGifts)
-STORM_PAID = "0xd578df95"              # MiniGame_FrogTenors_StormSong (coop_shop_sale.h, kOnceGifts; coop_room_objects.cpp:205)
+
+def _gift(name):
+    """A frogs' payout Bool by its kOnceGifts name (once_gifts, the one list; read by name as test_gifts_237 does)."""
+    if name not in once_gifts.names():
+        raise ValueError("%s is not in kOnceGifts (coop_shop_sale.h)" % name)
+    return name
+
+
+LULLABY_PAID = _gift("MiniGame_FrogTenors_ZeldaLullaby")   # 0x6e3948e7 (coop_shop_sale.h kOnceGifts)
+STORM_PAID = _gift("MiniGame_FrogTenors_StormSong")        # 0xd578df95 (kOnceGifts; coop_room_objects.cpp:205)
+
 SONG_ITEMS = {"ZeldaLullaby": "IsGet.Item_Melody_ZeldaLullaby",   # 0x01c20002 (docs/items.md "Song hashes")
               "StormSong": "IsGet.Item_Melody_StormSong"}         # 0x2b39dd4f (docs/items.md "Song hashes")
 TALK_PRESSES = 16      # hs-u5-gifts.B.txt presses A 6 times (Lullaby) / 4 (Storms) 200-240 frames apart, then B: here
@@ -175,7 +187,7 @@ def test_frog_songs(pair):
 
 
 def way_back(pair, done):
-    """B back to the lane's Kakariko boot place (test_gear.way_back's warp), for the lane's later tests."""
+    """B back to the lane's Kakariko boot place (the boot scripts' warp, bt_plugin.boot_place), for the lane's later tests."""
     try:
         if (pair.state("B").get("scene") or "").lower() != SCENE_CHILD.lower():
             pair.warp_one("B", SCENE_CHILD, GATE)

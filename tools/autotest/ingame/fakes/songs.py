@@ -1,6 +1,5 @@
 """Fake-game reactions for regress step 11's port (ingame/test_songs.py; owner regress-port-c). Each line cites the module.
 
-- the session start logs 'coop: gifts: sharing 22 one-time gift flags (...)' (coop_hook.cpp:572).
 - the ocarina: a game whose boot loaded --save no-ocarina (its coop-test-save.json names it, testsave.MANIFEST) holds
   none: no Fairy count, the Bools a get sets 0, EquipOcarina "" (save_flags.NO_OCARINA), and D-pad Left takes nothing
   out (issue 190). Else the kit save's: all held. A `give Item_Ocarina_Fairy` writes the count (docs/playtest.md `give`);
@@ -9,10 +8,11 @@
 - the frogs (ZoraRiver_Child, B within 1 m of TurnToTarget): D-pad Left opens their talk (event), A opens the prompt;
   a known song (IsGet.Item_Melody_<song>, given) played from ocarina_notes.keys starts their payout talk: three A
   presses, then their Bool (MiniGame_FrogTenors_ZeldaLullaby 0x6e3948e7 / _StormSong 0xd578df95) is 1, the ocarina put
-  away, and the other game's copy is 1 30 frames on (kOnceGifts, coop_shop_sale.h).
+  away; the other game's copy comes by fakes/gifts_237.share (the one gifts fake: its session line, every gift Bool
+  0 at the start, its relay and its BT_FAKE_GIFTS modes; kOnceGifts, coop_shop_sale.h).
 Selftest switches (tests/test_ingame_songs.py): BT_FAKE_SONGS_BUG=noshare -> the other game never gets a frogs' Bool;
-=nopay -> the frogs take no song; =noequip -> a synced ocarina is not mended (the #190 bug: nothing comes out);
-=nogifts -> no gifts line at the session start. BT_FAKE_SONGS_STALE=1 -> no Link sample for the boot's first 60
+=nopay -> the frogs take no song; =noequip -> a synced ocarina is not mended (the #190 bug: nothing comes out).
+No gifts line at the session start: gifts_237's BT_FAKE_GIFTS=off. BT_FAKE_SONGS_STALE=1 -> no Link sample for the boot's first 60
 frames (gifts-237's SETUP-FAIL case: the first set-up must step, not read once).
 """
 import json
@@ -25,10 +25,12 @@ import ocarina_notes as ON   # noqa: E402
 import save_flags as SF      # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import test_songs as T       # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gifts_237 as GIFTS    # noqa: E402  (the one gifts fake: line, start values, relay)
 
 RIVER = "ZoraRiver_Child"
 FROG_SPOT = (8.90, 102.40, -50.90)
-PAID = {"ZeldaLullaby": "0x6e3948e7", "StormSong": "0xd578df95"}
+PAID = {"ZeldaLullaby": T.LULLABY_PAID, "StormSong": T.STORM_PAID}   # the test's own (kOnceGifts names, once_gifts)
 KNOWN = {"ZeldaLullaby": "IsGet.Item_Melody_ZeldaLullaby", "StormSong": "IsGet.Item_Melody_StormSong"}
 COUNT, EQUIP, BOOLS = T.FAIRY_COUNT, T.EQUIP, T.MENDED_BOOLS   # the test's own (pinned to game_items.hpp)
 # the profile's other flags (save_flags.NO_OCARINA, the one source): all but the Fairy Ocarina's, 0 in the kit save
@@ -53,10 +55,7 @@ def setup(game):
     game.flags.update({COUNT: 1 if held else 0, EQUIP: FAIRY if held else ""})
     game.flags.update({h: 1 if held else 0 for h in BOOLS})
     game.flags.update({h: 0 for h in TIME})              # the kit save has no Ocarina of Time (lane1-A slot_00..05)
-    game.flags.update({h: 0 for h in PAID.values()})
     game.frogs, game.frog_keys, game.frog_song = None, [], None
-    if _bug() != "nogifts":
-        game.say("coop: gifts: sharing 22 one-time gift flags (Great Fairies, cows, Medigoron, frogs)")
 
 
 def _holds(game):
@@ -119,9 +118,10 @@ def press(game, buttons):
         game.frogs = "talk%d" % left if left else None
         if not left:
             paid, o = PAID[game.frog_song], game.other
+            was = game.flags.get(paid, 0)
             game.flags[paid], game.ocarina = 1, False
             if _bug() != "noshare":
-                o.later(30, lambda: o.flags.__setitem__(paid, 1))
+                GIFTS.share(game, paid, 1, was)
         return True
     if game.frogs == "prompt" and game.ocarina:
         game.frog_keys = (game.frog_keys + [b for b in buttons if b in ON.KEY_NOTE])[-6:]

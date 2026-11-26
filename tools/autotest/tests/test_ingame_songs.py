@@ -84,7 +84,9 @@ class Songs(unittest.TestCase):
     def run_fake(self, name, k, env_args=ROW, bug=None, extra=()):
         out = os.path.join(self.tmp, name)
         env = {"BT_FAKE_REFS": os.path.join(self.tmp, "no-refs"), "BT_FAKE_SAVE_DIR": self.tpl}
-        if bug:
+        if bug == "nogifts":
+            env["BT_FAKE_GIFTS"] = "off"               # the one gifts fake's own bug mode (fakes/gifts_237.py)
+        elif bug:
             env["BT_FAKE_SONGS_BUG"] = bug
         p = T.pytest_run([".", "--fake", "--out", out] + list(env_args) + (["--no-rerun"] if bug else []) +
                          list(extra) + ["-q", "-p", "no:cacheprovider", "-k", k], env=env)
