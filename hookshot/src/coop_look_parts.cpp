@@ -51,6 +51,10 @@ const std::vector<GearTexture>& Gear() {
         {"Mt_Inner_Armor_Adult_Goron_Alb", Format::astc, {{Part::goron_tunic, T::kRed | T::kPink}}},
         {"Mt_Parts_Armor_Adult_Zora_Alb", Format::astc, {{Part::zora_tunic, T::kBlue | T::kCyan}}},
         {"Mt_Feather_Armor_Adult_Zora_Alb", Format::bc1, {{Part::zora_tunic, T::kBlue | T::kCyan}}},
+        // hair-link: Link's hair (BC7; child Link's Player_Child_Hairs_Alb has no file of its own: the game's
+        // System/Gfx/UnifyTex gives it this one), painted whole by Character Select's hair rule (HairRecolour), not
+        // by tones. Last, so every other texture keeps its place in gear.bin.
+        {"Mt_Hairs_Player_Adult_Alb", Format::bc7, {{Part::hair, 0}}},
     };
     return kGear;
 }
@@ -64,8 +68,8 @@ bool IsGear(Part p) {
            p != Part::hair && p != Part::link_gear && p != Part::link_vest && !CoopLook::IsCharacterPart(p);
     // (look-link-cs: Link's leather is a gear-painted part; its textures are in the owner table (Owners). vest-link:
     // the vest is the TUNIC wardrobe's, as the Cap trim (its textures are tunic textures, green.bin: TunicPainted),
-    // so no gear painting is made for it. The hair stays out as in 0.11.12 until hair-link paints it, so a 0.11.12
-    // look keeps its names.)
+    // so no gear painting is made for it. hair-link: the hair is painted with the gear (Painted, HairRecolour) but
+    // named last and only when set (Name), so a 0.11.12 look keeps its names.)
 }
 }  // namespace
 
@@ -82,7 +86,7 @@ bool AnyGear(const CoopLook::Look& look) {
             return true;
         }
     }
-    return HoodTrim(look).has_value();
+    return HoodTrim(look).has_value() || look[Part::hair].has_value();
 }
 
 std::string Name(const CoopLook::Look& look) {
@@ -105,6 +109,12 @@ std::string Name(const CoopLook::Look& look) {
     if (const auto trim = HoodTrim(look)) {
         char piece[16];
         std::snprintf(piece, sizeof piece, ".hood-%06X", static_cast<unsigned>(*trim));
+        name += piece;
+    }
+    // hair-link: the hair last too, only when set (IsGear keeps it out of the pieces above).
+    if (const auto& hair = look[Part::hair]) {
+        char piece[16];
+        std::snprintf(piece, sizeof piece, ".hair-%06X", static_cast<unsigned>(*hair & 0xFFFFFFu));
         name += piece;
     }
     return name;
@@ -279,6 +289,13 @@ CoopLookTunic::Texels Painted(const CoopLookTunic::Texels& gear, const CoopLook:
         if (entry == nullptr) {
             continue;
         }
+        if (OwnerOf(t.name) == Part::hair) {
+            // hair-link: the hair whole, by Character Select's rule, from the game's own texels; unset: the game's.
+            if (const auto& c = look[Part::hair]) {
+                CoopLookPaint::HairRecolour(entry->format, gear[i].texels, t.texels, *c & 0xFFFFFFu);
+            }
+            continue;
+        }
         std::vector<CoopLookPaint::Rule> rules;
         std::vector<CoopLook::Part> parts;   // each rule's part
         std::uint32_t tones = 0;             // every part's, painted or not (never taken by a region)
@@ -441,6 +458,8 @@ const std::vector<TextureOwner>& Owners() {
         // (TunicTextures: Takes::green), so the belt, the trim and the hood trims' own blocks (Cap) keep theirs.
         {"Mt_Vest_Player_Adult_Alb", Part::link_vest},
         {"Mt_Vest_Player_Child_Alb", Part::link_vest},
+        // hair-link: Link's hair, both ages (the child's name is given this file by the game's UnifyTex).
+        {"Mt_Hairs_Player_Adult_Alb", Part::hair},
     };
     return kOwners;
 }
@@ -592,12 +611,24 @@ std::string SlotName(const std::string& name, std::size_t slot) {
     return "C" + std::to_string(slot) + "_" + name.substr(3);
 }
 
+namespace {
+// An item copy's look: the hair is no item's (hair-link), so it neither names nor paints a copy.
+std::optional<CoopLook::Look> ItemLook(const std::optional<CoopLook::Look>& look) {
+    std::optional<CoopLook::Look> out = look;
+    if (out) {
+        (*out)[Part::hair].reset();
+    }
+    return out;
+}
+}  // namespace
+
 CoopLookTunic::Texels CopyTexels(const CoopLookTunic::Texels& gear, std::size_t copy,
-                                 const std::optional<CoopLook::Look>& look) {
+                                 const std::optional<CoopLook::Look>& given) {
+    const std::optional<CoopLook::Look> look = ItemLook(given);
     CoopLookTunic::Texels out = look && AnyGear(*look) ? Painted(gear, *look) : gear;
     std::erase_if(out, [&](CoopLookTunic::Texture& t) {
         std::string name = SlotName(t.name, copy);
-        if (name.empty()) {
+        if (name.empty() || OwnerOf(t.name) == Part::hair) {   // (hair-link: no item names Link's hair)
             return true;   // not a gear texture: no copy of it
         }
         t.name = std::move(name);
@@ -616,7 +647,8 @@ void Mark(std::vector<std::uint8_t>& texels, std::size_t copy) {
 std::string CopiesName(const CopyLooks& looks) {
     std::string name = kCopiesBase;
     bool any = false;
-    for (const auto& look : looks) {
+    for (const auto& given : looks) {
+        const std::optional<CoopLook::Look> look = ItemLook(given);
         name += '|';
         if (look && AnyGear(*look)) {
             name += Name(*look);
@@ -629,7 +661,8 @@ std::string CopiesName(const CopyLooks& looks) {
 }
 
 const std::vector<std::string>& BodyBoots() {
-    static const std::vector<std::string> kBoots = {"Mt_Boots_Player_Adult_Alb", "Mt_Leather_Player_Child_Alb"};
+    static const std::vector<std::string> kBoots = {"Mt_Boots_Player_Adult_Alb", "Mt_Leather_Player_Child_Alb",
+                                                    "Mt_Hairs_Player_Adult_Alb"};   // (hair-link: last, kHairTexture)
     return kBoots;
 }
 
@@ -658,16 +691,21 @@ std::string BootsName(const std::string& name, char letter) {
     return std::string("P") + letter + "_" + name.substr(3);
 }
 
-Wearers Assign(const Wearer& own, const std::vector<Wearer>& others) {
+std::string ChildHairName(char letter) {
+    return std::string("Coop_") + letter + "_Child_Hairs_Alb";
+}
+
+namespace {
+Wearers AssignOf(const Wearer& own, const std::vector<Wearer>& others, std::optional<std::uint32_t> Wearer::*colour) {
     Wearers out;
     std::vector<char> taken;
     const auto take = [&](const Wearer& w) {
         if (!w.letter || std::find(taken.begin(), taken.end(), *w.letter) != taken.end()) {
             return;
         }
-        taken.push_back(*w.letter);   // (with no boots colour: that colour keeps the game's)
-        if (w.boots) {
-            out[*w.letter] = *w.boots & 0xFFFFFFu;
+        taken.push_back(*w.letter);   // (with no colour: that colour keeps the game's)
+        if (w.*colour) {
+            out[*w.letter] = *(w.*colour) & 0xFFFFFFu;
         }
     };
     take(own);
@@ -676,21 +714,32 @@ Wearers Assign(const Wearer& own, const std::vector<Wearer>& others) {
     }
     return out;
 }
+}  // namespace
 
-std::string BootsPaintingName(const Wearers& wearers) {
-    if (wearers.empty()) {
-        return kBootsBase;
-    }
+Wearers Assign(const Wearer& own, const std::vector<Wearer>& others) {
+    return AssignOf(own, others, &Wearer::boots);
+}
+
+Wearers AssignHair(const Wearer& own, const std::vector<Wearer>& others) {
+    return AssignOf(own, others, &Wearer::hair);
+}
+
+std::string BootsPaintingName(const Wearers& wearers, const Wearers& hair) {
     std::string name = kBootsBase;
     for (const auto& [letter, colour] : wearers) {
         char piece[16];
         std::snprintf(piece, sizeof piece, ".%c%06X", letter, static_cast<unsigned>(colour & 0xFFFFFFu));
         name += piece;
     }
+    for (const auto& [letter, colour] : hair) {   // (hair-link: after the boots, so a boots name stays 0.11.12's)
+        char piece[24];
+        std::snprintf(piece, sizeof piece, ".%c-hair-%06X", letter, static_cast<unsigned>(colour & 0xFFFFFFu));
+        name += piece;
+    }
     return name;
 }
 
-CoopLookTunic::Texels BootsTexels(const CoopLookTunic::Texels& gear, const Wearers& wearers) {
+CoopLookTunic::Texels BootsTexels(const CoopLookTunic::Texels& gear, const Wearers& wearers, const Wearers& hair) {
     CoopLookTunic::Texels boots;
     for (const CoopLookTunic::Texture& t : gear) {
         if (!BootsName(t.name, 'G').empty()) {
@@ -700,15 +749,30 @@ CoopLookTunic::Texels BootsTexels(const CoopLookTunic::Texels& gear, const Weare
     CoopLookTunic::Texels out;
     for (const Letter& l : kLetters) {
         CoopLookTunic::Texels own = boots;
+        CoopLook::Look look;
         if (const auto it = wearers.find(l.letter); it != wearers.end()) {
-            CoopLook::Look look;
             look[Part::boots] = it->second;
+        }
+        if (const auto it = hair.find(l.letter); it != hair.end()) {
+            look[Part::hair] = it->second;
+        }
+        if (look[Part::boots] || look[Part::hair]) {
             own = Painted(boots, look);
         }
         for (CoopLookTunic::Texture& t : own) {
+            const bool is_hair = t.name == kHairTexture;
+            CoopLookTunic::Texture child;
+            if (is_hair) {
+                child = t;   // (the child's copy: the same painting, its own name and mark)
+            }
             t.name = BootsName(t.name, l.letter);
             Mark(t.texels, static_cast<unsigned char>(l.letter));
             out.push_back(std::move(t));
+            if (is_hair) {
+                child.name = ChildHairName(l.letter);
+                Mark(child.texels, static_cast<unsigned char>(l.letter - 'A' + 'a'));
+                out.push_back(std::move(child));
+            }
         }
     }
     return out;
