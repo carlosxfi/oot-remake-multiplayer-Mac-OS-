@@ -38,6 +38,9 @@ CAP_BLOCKS = 43444
 # with the pack BEFORE the fix, prints the same bandcheck lines and ends NO-REF, never PASS or FAIL: the two runs' values
 # are what BAND_SHARE / OWN_MIN get measured from.
 PROBE_PACK = os.environ.get("KOKIRI_BAND_PROBE_PACK")
+# The cap.bin comes in by --pack (packs/look_cap.py: made by the tested sha's tools/puppet_pack/look_cap.py over the
+# lane's romfs; packs/look_cap_old.py: the look_cap.py before the fix, for the probe), never from the lane's own pack.
+PACK = "look_cap_old" if PROBE_PACK else "look_cap"
 CAP_LINE = r"the Cap trim paints %s blocks of 6 tunic textures \(3 of the Goron and Zora tunics\)" % (
     PROBE_PACK or CAP_BLOCKS)
 # The old row's crash patterns (kokiri-band-c124-run.ps1, the pass's checks).
@@ -121,6 +124,7 @@ def band_check(pair, path, view, own_pos, puppet_pos, d):
 @pytest.mark.budget(300)
 @pytest.mark.look
 @pytest.mark.needs_env(*(LOOK_ENV + ROW_ENV))
+@pytest.mark.needs_pack(PACK)
 @pytest.mark.row("review-c124 5.2 the adult Kokiri hood's trims on a puppet near and far (kokiri-band-c124)")
 def test_kokiri_hood_band(pair):
     # One boot serves every test of the lane, and the others need child Link in Kakariko (need_child_in_play):

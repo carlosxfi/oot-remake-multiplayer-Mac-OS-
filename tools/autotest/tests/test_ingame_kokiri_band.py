@@ -19,17 +19,41 @@ class KokiriBand(unittest.TestCase):
     ENV = ["--env", "LICHII_COOP_COLOR=blue", "--env", "LICHII_COOP_LOOK=cap_trim:yellow",
            "--env", "LICHII_COOP_DEBUG_ANIM=1", "--env", "LICHII_COOP_CHEATS=1"]
     TESTS = ["test_look.py::test_kokiri_hood_band", "test_rows.py::test_puppets_spawn"]
+    # (the fake games' pack: a stand-in maker per pack name, BT_PACKS_DIR / BT_FAKE_PACK_DIR as PackFiles in
+    # test_ingame.py; the real makers need a romfs: packs/look_cap.py, packs/look_cap_old.py)
+    MAKER = ("import os
+"
+             "def make(out, ctx):
+"
+             "    os.makedirs(out, exist_ok=True)
+"
+             "    p = os.path.join(out, 'cap.bin')
+"
+             "    open(p, 'wb').write(b'COOPCAP1 %s')
+"
+             "    ctx.say('cap.bin: fake')
+"
+             "    return {'coop_look/cap.bin': p}
+")
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        self.packs, self.tpl = os.path.join(self.tmp, "packs"), os.path.join(self.tmp, "tpl")
+        os.makedirs(self.packs)
+        os.makedirs(os.path.join(self.tpl, "coop_look"))
+        for name in ("look_cap", "look_cap_old"):
+            with open(os.path.join(self.packs, name + ".py"), "w", encoding="utf-8") as f:
+                f.write(self.MAKER % name)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_it(self, name, env_args, env=None):
+    def run_it(self, name, env_args, env=None, pack="look_cap"):
         out = os.path.join(self.tmp, name)
+        e = {"BT_PACKS_DIR": self.packs, "BT_FAKE_PACK_DIR": self.tpl}
+        e.update(env or {})
         p = pytest_run(self.TESTS + ["--fake", "--no-rerun", "--out", out, "-q", "-s", "-p", "no:cacheprovider"]
-                       + env_args, env=env)
+                       + (["--pack", pack] if pack else []) + env_args, env=e)
         return summary(out), p
 
     def test_runs_with_its_switches_and_leaves_child(self):
@@ -40,6 +64,8 @@ class KokiriBand(unittest.TestCase):
         self.assertEqual(len(re.findall(r"(?m)^bandcheck \d", p.stdout)), 7, p.stdout[-2000:])   # (one line per distance)
         s, p = self.run_it("off", [])
         self.assertEqual([d["test"] for d in s["deselected"]], ["test_look.py::test_kokiri_hood_band"], p.stdout[-2000:])
+        s, p = self.run_it("nopack", self.ENV, pack=None)   # (the switches but not the fix's cap.bin: not run)
+        self.assertEqual([d["test"] for d in s["deselected"]], ["test_look.py::test_kokiri_hood_band"], p.stdout[-2000:])
 
     def test_old_cap_bin_is_setup_fail(self):
         s, p = self.run_it("old", self.ENV, env={"BT_FAKE_CAP_BLOCKS": "43228"})
@@ -49,7 +75,7 @@ class KokiriBand(unittest.TestCase):
     def test_probe_on_the_old_pack_is_no_ref(self):
         """KOKIRI_BAND_PROBE_PACK=43228: the old pack is taken, every bandcheck line printed, never PASS or FAIL."""
         s, p = self.run_it("probe", self.ENV, env={"BT_FAKE_CAP_BLOCKS": "43228", "BT_FAKE_BAND": "blue",
-                                                   "KOKIRI_BAND_PROBE_PACK": "43228"})
+                                                   "KOKIRI_BAND_PROBE_PACK": "43228"}, pack="look_cap_old")
         self.assertEqual(results(s)["test_kokiri_hood_band"], "NO-REF", p.stdout[-2000:])
         self.assertIn("probe run on the 43228 pack", p.stdout)
         self.assertEqual(len(re.findall(r"(?m)^bandcheck \d", p.stdout)), 7, p.stdout[-2000:])
