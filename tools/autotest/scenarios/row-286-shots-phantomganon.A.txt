@@ -1,0 +1,88 @@
+# row-286-shots-phantomganon (rows 222/286, twinrova-shots-222): does the copy's game fire the owner's Phantom Ganon
+# light balls (phase 2)? Fix under test as row-222-shots-twinrova.A.txt. Route and phase-1 hits copied unchanged from
+# hs-phantom-ganon-ball.A/.B.txt up to its t5/t4b (A 4x6, B 3x2 then 6x1: his phase change; last run boss-copy-move
+# 2026-11-26), then 24 paired shots p2-NN about 5 s apart (hold 90 + wait 210 ticks, offline/row-286-probe/drive.py
+# phase 2) with ZL held. A's marks take the shot on both games; B holds ZL without marks. Checks: the .steps.txt.
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_BOSS=1,LICHII_COOP_DEBUG_OBJECTS=1,LICHII_COOP_CHEATS=1
+#! timeout 900
+mark start
+warp PhantomGanonStage PhantomGanonStage
+wait 1200               # the title screen
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A                 # loads the save, then the warp
+wait 2400
+mark a-in
+wait 3900               # the intro, then the fight (run 040054: no boss at 2400, lane1 save)
+press ZL 10             # lock on
+wait 600
+mark t1
+hit Enemy_DungeonBoss_PhantomGanon 6
+wait 600
+mark t2
+hit Enemy_DungeonBoss_PhantomGanon 6
+wait 600
+mark t3
+hit Enemy_DungeonBoss_PhantomGanon 6
+wait 600
+mark t4
+hit Enemy_DungeonBoss_PhantomGanon 6
+wait 600
+mark t5
+hold ZL 90 p2-01
+wait 210
+hold ZL 90 p2-02
+wait 210
+hold ZL 90 p2-03
+wait 210
+hold ZL 90 p2-04
+wait 210
+hold ZL 90 p2-05
+wait 210
+hold ZL 90 p2-06
+wait 210
+hold ZL 90 p2-07
+wait 210
+hold ZL 90 p2-08
+wait 210
+hold ZL 90 p2-09
+wait 210
+hold ZL 90 p2-10
+wait 210
+hold ZL 90 p2-11
+wait 210
+hold ZL 90 p2-12
+wait 210
+hold ZL 90 p2-13
+wait 210
+hold ZL 90 p2-14
+wait 210
+hold ZL 90 p2-15
+wait 210
+hold ZL 90 p2-16
+wait 210
+hold ZL 90 p2-17
+wait 210
+hold ZL 90 p2-18
+wait 210
+hold ZL 90 p2-19
+wait 210
+hold ZL 90 p2-20
+wait 210
+hold ZL 90 p2-21
+wait 210
+hold ZL 90 p2-22
+wait 210
+hold ZL 90 p2-23
+wait 210
+hold ZL 90 p2-24
+wait 210
+wait 600
+mark end
