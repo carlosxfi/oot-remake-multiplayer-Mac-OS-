@@ -89,7 +89,7 @@ Friends on other PCs cannot join this session (it is this PC's only). To play wi
 
 ### By hand, with two kits
 
-The way before 0.11.13 still works: two kits, each started once, each game with its own controller (`LICHII_COOP_PAD=1` in kit 1's `coop-options.ini`, `LICHII_COOP_PAD=2` or `none` in kit 2's, or the **Multiplayer** tab's **Settings > Controller** row), **Host** then **Same network** in kit 1's game (it copies one line), **Join** in kit 2's (the line is filled in). `LICHII_COOP_KEYBOARD=off` keeps the keyboard out of a controller game; `always` makes a game read the keys even behind the other window (no mouse).
+The way before 0.12.0 still works: two kits, each started once, each game with its own controller (`LICHII_COOP_PAD=1` in kit 1's `coop-options.ini`, `LICHII_COOP_PAD=2` or `none` in kit 2's, or the **Multiplayer** tab's **Settings > Controller** row), **Host** then **Same network** in kit 1's game (it copies one line), **Join** in kit 2's (the line is filled in). `LICHII_COOP_KEYBOARD=off` keeps the keyboard out of a controller game; `always` makes a game read the keys even behind the other window (no mouse).
 
 Each game's log `longshot_log.txt` (in the `logs` folder of its game folder) says what it chose: `hid: this game's controller: one pad (1)` and `coop: controller 1, keyboard focus`. The default (no line, or `LICHII_COOP_PAD=auto`) is the game's own way: every controller, in the window in front only. A log line `this Hookshot cannot choose a controller` means that kit's game is older than the kit: start `Start Squadala.bat` again and let it update the game.
 
