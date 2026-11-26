@@ -49,7 +49,7 @@ class Suite(unittest.TestCase):
         os.makedirs(refs)
         p = pytest_run([".", "--fake", "--out", out1, "-q"], env={"BT_FAKE_REFS": refs})
         s = summary(out1)
-        self.assertEqual(s["counts"]["NO-REF"], 3, p.stdout[-2000:])
+        self.assertEqual(s["counts"]["NO-REF"], 6, p.stdout[-2000:])   # (+3 gear-link)
         self.assertEqual(s["counts"]["PASS"], 8, p.stdout[-2000:])
         self.assertEqual(s["verdict"], "NOT PASS")
         self.assertNotEqual(p.returncode, 0)
@@ -59,11 +59,11 @@ class Suite(unittest.TestCase):
         out2 = os.path.join(self.tmp, "o2")
         p = pytest_run([".", "--fake", "--out", out2, "-q"], env={"BT_FAKE_REFS": refs})
         s = summary(out2)
-        self.assertEqual(s["counts"]["PASS"], 11, p.stdout[-2000:])
+        self.assertEqual(s["counts"]["PASS"], 14, p.stdout[-2000:])
         self.assertEqual(s["verdict"], "PASS")
         self.assertEqual(p.returncode, 0)
         shots = [sh for r in s["tests"] for sh in r["shots"]]
-        self.assertEqual(len(shots), 10)            # pause 2 + masks 4 + HUD 4: a few per rc, not hundreds
+        self.assertEqual(len(shots), 19)            # pause 2 + masks 4 + HUD 4 + gear-link 9: a few per rc, not hundreds
         self.assertTrue(all(sh["ok"] and sh["score"] >= sh["tolerance"] for sh in shots))
 
     def test_default_suite_has_no_setup_fail(self):
@@ -81,10 +81,10 @@ class Suite(unittest.TestCase):
         pytest_run([".", "--fake", "--out", out, "-q", "--repeat", "2", "--no-smoke-gate"])
         s = summary(out)
         names = [r["test"] for r in s["tests"]]
-        self.assertEqual(len(names), 22)
-        self.assertTrue(all("[r1]" in n for n in names[:11]) and all("[r2]" in n for n in names[11:]), names)
+        self.assertEqual(len(names), 28)
+        self.assertTrue(all("[r1]" in n for n in names[:14]) and all("[r2]" in n for n in names[14:]), names)
         self.assertIn("test_boot", names[0])     # smoke first in each round
-        self.assertIn("test_boot", names[11])
+        self.assertIn("test_boot", names[14])
 
     def test_two_lanes_at_once(self):
         out = os.path.join(self.tmp, "o")
@@ -181,7 +181,7 @@ class LaneCheckOnly(unittest.TestCase):
         with open(os.path.join(out, "setup.json"), encoding="utf-8") as f:
             s = json.load(f)
         self.assertTrue(s["ok"])
-        self.assertEqual(s["collected"], 11)
+        self.assertEqual(s["collected"], 14)   # (+3 gear-link)
         self.assertFalse(os.path.exists(os.path.join(out, "summary.json")))
 
     def test_real_lane_needs_expect_commit(self):

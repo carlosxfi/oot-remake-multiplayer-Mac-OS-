@@ -25,6 +25,7 @@ class FakeGame:
         self.pos, self.facing = [0.0 if tag == "A" else 4.0, 0.0, 0.0], 0.0
         self.menu_pause, self.title_until, self.at_title = False, None, False
         self.head, self.ocarina, self.flags, self.pending = None, False, {GATE: 0}, []
+        self.gear_hidden = False   # (gear-link: part 29 worn by this game's player)
         self.other = None
         open(self.log_path, "w").close()
         me, them = (1, 2) if tag == "A" else (2, 1)
@@ -164,6 +165,14 @@ class FakeGame:
                 o.later(10, lambda: o.say("coop: puppet: P%d wears head '%s' (returned 0x1)" % (me, head)))
             else:
                 o.later(10, lambda: o.say("coop: puppet: P%d takes off head (returned 0x1)" % me))
+        elif w[0] == "menu" and len(w) == 3 and w[1] == "look" and w[2].startswith("link_gear="):
+            # (gear-link: the wardrobe's lines, lichii/hook/coop_char_colours.cpp Wardrobe::Frame)
+            hide = w[2] != "link_gear=none"
+            if hide != self.gear_hidden:
+                self.gear_hidden = hide
+                what = "hidden" if hide else "shown again"
+                self.later(2, lambda: self.say("coop: characters: equipment %s on your model (1 piece(s))" % what))
+                o.later(10, lambda: o.say("coop: characters: equipment %s on a puppet (1 piece(s))" % what))
         elif w[0] == "chat" and w[1:] == ["/teleport", "B"]:
             self.later(30, lambda: setattr(self, "pos", [o.pos[0] + 1.0, o.pos[1], o.pos[2]]))
 
@@ -174,6 +183,8 @@ class FakeGame:
         d.rectangle([20, 20, 120, 40], fill=(200, 30, 30))             # "hearts"
         d.ellipse([140, 60, 180, 140], fill=(230, 220, 200) if not self.menu_pause else (20, 20, 20))
         d.rectangle([150 + self.frame % 3, 50, 170, 70], fill=(240, 240, 240) if self.head else (40, 90, 40))
+        if not (self.gear_hidden or self.other.gear_hidden):   # (gear-link: a "sword" while A's gear is shown)
+            d.rectangle([190, 80, 196, 130], fill=(170, 170, 190))
         im.save(path)
 
     # -- socket -----------------------------------------------------------------------------------------------

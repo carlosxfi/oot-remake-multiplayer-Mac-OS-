@@ -511,11 +511,17 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             // Multiplayer page's Host (hookshot.py --host-in-game: LICHII_COOP_TEST_HOST), joins with the clipboard's
             // code as the page's "Paste code and join" (private-lobby-fix), or leaves the
             // session as the page's Leave row does (remount-leave). Test only.
-            std::string page = w.size() == 2 ? std::string(w[1]) : std::string{};
+            // gear-link: menu look KEY=VALUE (a settings key without look_, e.g. link_gear=hidden; VALUE none unsets it):
+            // that part chosen as the Customize page chooses it and worn as when the menu closes. Test only.
+            std::string page = w.size() == 2   ? std::string(w[1])
+                               : w.size() == 3 ? std::string(w[1]) + " " + std::string(w[2])
+                                               : std::string{};
             std::transform(page.begin(), page.end(), page.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (page != "customize" && page != "close" && page != "host" && page != "paste" && page != "leave") {
-                return fail("want: menu customize|close|host|paste|leave");
+            const bool look = page.rfind("look ", 0) == 0 && page.find('=') != std::string::npos;
+            if (page != "customize" && page != "close" && page != "host" && page != "paste" && page != "leave" &&
+                !look) {
+                return fail("want: menu customize|close|host|paste|leave, or menu look KEY=VALUE");
             }
             step.kind = Kind::menu;
             step.mark = page;
