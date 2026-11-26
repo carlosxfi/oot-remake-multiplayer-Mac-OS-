@@ -10,8 +10,8 @@ plain look and logs why.
 Writes:
   font-regular.otf, font-medium.otf  the game's HUD font (Normal.buif's Latin font)
   heart-0.png ... heart-4.png        a heart with 0 to 4 quarters filled, 96 x 96
-  map-arrow-00.png ... -31.png       the game's map arrow (Link's own), turned 0..31 x 360/32 degrees
-  map-arrow-fill-00.png ... -31.png  its inside, white: drawn tinted with each player's colour
+  map-arrow-00.png ... -23.png       the game's map arrow (Link's own), turned 0..23 x 15 degrees
+  map-arrow-fill-00.png ... -23.png  its inside, white: drawn tinted with each player's colour
   places.json                        {scene: the game's own place name}
   hud.json                           what was made, and the language
 
@@ -50,7 +50,7 @@ MAP_ARROW = "MapIconPlayer_00"
 MAP_ARROW_LINK = "MapIconPlayer_01"
 MAP_ARROW_SHADOW = "MapIconPlayerSh_00"
 MAP_ARROW_TEXTURES = (MAP_ARROW, MAP_ARROW_LINK, MAP_ARROW_SHADOW)
-MAP_ARROW_STEPS = 32    # turns, 360/32 degrees apart (hookshot/src/coop_draw.h kMapArrowSteps)
+MAP_ARROW_STEPS = 24    # turns, 15 degrees apart: hookshot/src/coop_draw.h kMapArrowSteps (Hookshot holds 64 pictures)
 MAP_ARROW_SIZE = 80     # the square kept around the picture's centre (the arrow and its shadow, at any turn)
 LOCATIONS = "LocationMsg/Location.msbt"
 # The scene name's age or variant suffix: KokiriForest_Child -> KokiriForest.

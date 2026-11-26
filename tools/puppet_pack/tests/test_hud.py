@@ -4,6 +4,7 @@
 """
 import json
 import os
+import re
 import shutil
 import struct
 import sys
@@ -283,6 +284,15 @@ class BuildTest(unittest.TestCase):
         for step in range(hud.MAP_ARROW_STEPS):
             for name in hud.map_arrow_names(step):
                 self.assertTrue(os.path.getsize(os.path.join(self.out, name)) > 60, name)
+
+    def test_map_arrow_steps_are_the_modules(self):
+        # One number for both: the module loads kMapArrowSteps turns (hookshot/src/coop_draw.h), the pack writes them.
+        h = os.path.join(os.path.dirname(__file__), "..", "..", "..", "hookshot", "src", "coop_draw.h")
+        with open(h, encoding="utf-8") as f:
+            m = re.search(r"kMapArrowSteps = (\d+);", f.read())
+        self.assertIsNotNone(m)
+        self.assertEqual(hud.MAP_ARROW_STEPS, int(m.group(1)))
+        self.assertLessEqual(5 + 2 * hud.MAP_ARROW_STEPS, 64)   # Hookshot's pictures (0001-coop-bridge.patch image())
 
     def test_map_arrow_rim_and_inside_from_the_mask(self):
         # 2 x 1: a white (rim) pixel and a black (inside) pixel, both opaque; Link's arrow: cream rim, red inside.

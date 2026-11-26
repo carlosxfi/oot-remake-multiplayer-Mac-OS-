@@ -910,12 +910,12 @@ TEST_CASE("hookshot draw: the game's map arrow turned the way each player faces 
     // The turn: the game's arrow points up; a facing right (0) is a quarter turn, down (pi/2) a half, up a none.
     constexpr float kPi = 3.14159265f;
     CHECK(CoopDraw::MapArrowStep(-kPi / 2) == 0);
-    CHECK(CoopDraw::MapArrowStep(0) == 8);
-    CHECK(CoopDraw::MapArrowStep(kPi / 2) == 16);
-    CHECK(CoopDraw::MapArrowStep(kPi) == 24);
-    CHECK(CoopDraw::MapArrowStep(-kPi) == 24);
+    CHECK(CoopDraw::MapArrowStep(0) == 6);
+    CHECK(CoopDraw::MapArrowStep(kPi / 2) == 12);
+    CHECK(CoopDraw::MapArrowStep(kPi) == 18);
+    CHECK(CoopDraw::MapArrowStep(-kPi) == 18);
     CHECK(CoopDraw::MapArrowStep(3 * kPi / 2 - 0.01f) == 0);   // (just short of a whole turn from up: up)
-    CHECK(CoopDraw::MapArrowStep(kPi / 4) == 12);
+    CHECK(CoopDraw::MapArrowStep(kPi / 4) == 9);
 
     const auto field = Field();
     CoopDraw::Look look = GameLook();
@@ -962,9 +962,9 @@ TEST_CASE("hookshot draw: the game's map arrow turned the way each player faces 
     const auto images2 = turned.Of("image");
     REQUIRE(images2.size() == 2);
     const int step2 = std::stoi(images2[0].text) - 100;
-    CHECK((step2 - down + 32) % 32 % 8 == 0);
+    CHECK((step2 - down + 24) % 24 % 6 == 0);
     CHECK(step2 != down);
-    CHECK((step2 - down + 32) % 16 != 0);   // (a quarter, not a half turn)
+    CHECK((step2 - down + 24) % 12 != 0);   // (a quarter, not a half turn)
 
     // A pack without the arrows (made before them): the names alone, as before.
     CoopDraw::Look old = GameLook();

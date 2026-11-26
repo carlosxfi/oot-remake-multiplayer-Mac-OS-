@@ -72,7 +72,12 @@ struct Look {
     // The game's own map arrow (MapIconPlayer_00, Link's arrow on the maps: tools/puppet_pack/hud.py), turned
     // step * 360 / kMapArrowSteps degrees clockwise: map-arrow-NN.png (its shadow and rim) and map-arrow-fill-NN.png
     // (its inside, white: drawn tinted with the player's colour). 0: not in the pack (an older one), names only.
-    static constexpr int kMapArrowSteps = 32;
+    // 24 turns (15 degrees): Hookshot keeps at most 64 pictures for the module (hookshot/patches/0001-coop-bridge.patch,
+    // image(): images_.size() >= 64 returns 0), and each turn is two (rim, inside): 5 hearts + 48 = 53. With 32 turns
+    // (69) the arrows' loads failed in game (run regress-fps-map-2b12cd6a). tools/puppet_pack/hud.py MAP_ARROW_STEPS
+    // is this number (test_hud reads it from here).
+    static constexpr int kMapArrowSteps = 24;
+    static constexpr int kHookshotPictures = 64;
     std::array<int, kMapArrowSteps> map_arrow{};
     std::array<int, kMapArrowSteps> map_arrow_fill{};
     bool MapArrows() const {
@@ -83,6 +88,7 @@ struct Look {
         }
         return true;
     }
+    static_assert(5 + 2 * kMapArrowSteps <= kHookshotPictures, "the game look's pictures must fit Hookshot's 64");
     bool On() const {
         for (const int h : hearts) {
             if (h == 0) {

@@ -976,6 +976,7 @@ void LoadLook(const HosCoopDraw& d) {
         return;
     }
     // The game's map arrow, turned (optional: a pack made before them has none, the maps then show names only).
+    std::string arrow_why;
     for (int s = 0; s < CoopDraw::Look::kMapArrowSteps; ++s) {
         const std::string n = (s < 10 ? "0" : "") + std::to_string(s) + ".png";
         const auto rim = CoopPng::Load(*dir / ("map-arrow-" + n));
@@ -983,14 +984,16 @@ void LoadLook(const HosCoopDraw& d) {
         l.map_arrow[s] = rim ? d.image(d.user, rim->width, rim->height, rim->rgba.data()) : 0;
         l.map_arrow_fill[s] = fill ? d.image(d.user, fill->width, fill->height, fill->rgba.data()) : 0;
         if (l.map_arrow[s] == 0 || l.map_arrow_fill[s] == 0) {
+            // (a file the pack lacks, or one Hookshot did not take: it holds at most 64 pictures)
+            arrow_why = "map-arrow-" + n + (rim && fill ? " not taken by Hookshot" : " missing in the pack");
             break;
         }
     }
     if (l.MapArrows()) {
         LOG_INFO(Core, "coop: hud: game look on Hookshot: the game font, heart pictures and map arrows loaded");
     } else {
-        LOG_INFO(Core, "coop: hud: game look on Hookshot: the game font and heart pictures loaded; no map arrows in "
-                       "the pack (make-puppet-pack again): names only on the maps");
+        LOG_INFO(Core, "coop: hud: game look on Hookshot: the game font and heart pictures loaded; no map arrows ({}): "
+                       "names only on the maps", arrow_why);
     }
     g_look = l;
     g_look_state = kLookOn;
