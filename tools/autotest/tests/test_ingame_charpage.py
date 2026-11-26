@@ -93,6 +93,24 @@ class SeedLayout(unittest.TestCase):
         self.assertEqual(hookshot.seed_layout(self.g, {}, lambda s: None), [])
         self.assertEqual(self.read(), self.rows)
 
+    def test_every_start_runs_it_kit_starts_too(self):
+        """review-c123-11: a died seed run's mod must be gone at the next boot of ANY kind, a kit start as well: in
+        run()'s launch, the call sits on the same level as `if kits[x]:`, before it (not in either branch)."""
+        import inspect
+        src = inspect.getsource(hookshot.run).splitlines()
+        call = [i for i, ln in enumerate(src) if "seed_layout(g, env" in ln]
+        kit = [i for i, ln in enumerate(src) if ln.strip() == "if kits[x]:" and "the kit's own start" in src[i + 1]]
+        self.assertEqual((len(call), len(kit)), (1, 1), (call, kit))
+        indent = lambda ln: len(ln) - len(ln.lstrip())   # noqa: E731
+        self.assertEqual(call[0] + 1, kit[0])
+        self.assertEqual(indent(src[call[0]]), indent(src[kit[0]]))
+
+    def test_wrong_list_head_says_not_made(self):
+        with open(self.lst, "w", encoding="utf-8", newline="\n") as f:
+            f.write("coop-mods 2\non OoT Character Select\n")
+        said = hookshot.seed_layout(self.g, {"OOT_TEST_SEED_LAYOUT": "1"}, lambda s: None)
+        self.assertIn("NOT made", said[0])
+
     def test_no_archive_says_not_made(self):
         shutil.rmtree(os.path.join(self.g, "romfs", "UI"))
         said = hookshot.seed_layout(self.g, {"OOT_TEST_SEED_LAYOUT": "1"}, lambda s: None)

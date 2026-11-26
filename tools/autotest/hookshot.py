@@ -1408,6 +1408,11 @@ def seed_layout(game, env, say):
     """Puts the test seed's layout archive in (switch on) or takes it away (switch off). Returns the lines said."""
     mods, _, romfs = pack_folders(game)
     folder, lst = os.path.join(mods, SEED_MOD), os.path.join(mods, "coop-mods.list")
+    if os.path.islink(mods) or getattr(os.path, "isjunction", lambda p: False)(mods):
+        # (a mods folder shared by a link: another game's list and mods would change too)
+        line = "test seed layout: %s is a link, not touched" % mods
+        say(line)
+        return [line]
     rows = []
     if os.path.isfile(lst):
         with open(lst, encoding="utf-8", errors="replace") as f:
@@ -1425,7 +1430,7 @@ def seed_layout(game, env, say):
         src_dir = os.path.join(romfs or os.path.join(game, "romfs"), "UI", "Layout2Archive")
         own = sorted(n for n in (os.listdir(src_dir) if os.path.isdir(src_dir) else [])
                      if n.lower().startswith("common.product.") and n.lower().endswith(".blarc.zs"))
-        if not own or not kept or not kept[0].startswith("coop-mods "):
+        if not own or not kept or kept[0].strip() != "coop-mods 1":   # (the list's head: hos_coop_mods.h:77)
             # (the test's set-up says SETUP-FAIL: it looks for the 'test seed layout in' line)
             lines.append("test seed layout NOT made (game archive %s, list head %r)" % (own or "none in " + src_dir,
                                                                                        kept[:1]))
@@ -1715,11 +1720,11 @@ def run(a):
                 env[k] = v
             exe = os.path.join(exe_dir(g), "longshot.exe" if WINDOWS else "longshot")
             started[x] = time.time()
+            seed_layout(g, env, lambda line, x=x: say("%s: %s" % (x, line)))   # (row 288's test seed, or none: kit too)
             if kits[x]:
                 say("%s: the kit's own start (%s)" % (x, kits[x]))
                 procs[x] = PidProcess(kit_start(kits[x], env, out, x))
             else:
-                seed_layout(g, env, lambda line, x=x: say("%s: %s" % (x, line)))   # (row 288's test seed, or none)
                 pack_start(g, env, lambda line, x=x: say("%s: %s" % (x, line)))   # (the kit's start does it: row 265)
                 mismatch = code_mods_mismatch(exe_dir(g))
                 if mismatch:   # (charsel-tab-0119: a code mod's menus without its code; the run says so first)
