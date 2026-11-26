@@ -1,5 +1,8 @@
 # gear-join-after-age (proof-0116, row 148 scenario 5): A turns adult BEFORE B joins (B's title press comes ~70 s late).
 # PASS (shots both): at b-joined B's puppet of A matches A's own adult Link (sword, shield, tunic).
+# (run.ps1 reads #! lines from A only: B alone had noload + start (B script loads the save itself with its own title presses), A needs the runner to load; so they are qualified for B in this header, regress-run-01113 2026-11-26)
+#! noload B
+#! start B: coop: test warp done
 #! switches LICHII_COOP_DEBUG_ANIM=1
 #! timeout 480
 mark start

@@ -1,6 +1,4 @@
 # lift-young B (proof-0116): stands still on the field 1.2 m west of A, facing A; is lifted, carried, put down, lifted, thrown.
-#! noload
-#! start coop: test warp done
 #! switches LICHII_COOP_LIFT_PLAYER=1,LICHII_COOP_DEBUG_OBJECTS=1
 #! timeout 420
 mark start

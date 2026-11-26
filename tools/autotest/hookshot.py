@@ -1681,7 +1681,7 @@ def run(a):
                         lb.close()
                 except Exception as e:
                     errs[x] = e
-            ts = [threading.Thread(target=loader, args=(x,)) for x in tags]
+            ts = [threading.Thread(target=loader, args=(x,)) for x in tags if x not in a.no_load_games.split(",")]
             for t in ts:
                 t.start()
             for t in ts:
@@ -1835,6 +1835,7 @@ def main(argv=None):
     r.add_argument("--script-b")
     r.add_argument("--load", help="load.txt: checked only; the load presses A until the game plays")
     r.add_argument("--no-load", action="store_true")
+    r.add_argument("--no-load-games", default="", help="A or B or A,B: those games skip the load (their script loads the save itself); the other plays --load")
     r.add_argument("--no-restore", action="store_true")
     r.add_argument("--keep-open", action="store_true")
     r.add_argument("--only", choices=["A", "B"],
