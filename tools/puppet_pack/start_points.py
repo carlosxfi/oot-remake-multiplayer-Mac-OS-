@@ -18,6 +18,15 @@ The game has 80 scenes (Banc/BancBasedResource/StartPos.byml lists them all). La
 Lon Lon Ranch and the Temple of Time are areas of HyruleField_Child/_Adult (their start
 names, LakeHylia_*, StartPos_Get_Epona_Race, StartPos_DoorOfTime, are there), and
 interiors are parts of their village's scene: there are no separate scenes for them.
+
+Each row also says whether the scene has an entrance actor of the start's name (a
+`FieldAndDungeonEntranceEventRequestActor` placement). The game's map change event
+Dm_SY_BancChangeGo reserves the start's name as the arrival event's starter
+(Sequence_ReservedEventStarterName), and Sequence/AfterChangeBanc.module looks that actor up
+after the load (SeqQueryEventSubstituteStarterMgrTryGetActor). The boss stages and EnemyMuseum
+have none: the game's own entries to them reserve the starter '' (DreamBossStage's
+EventReserveBancChange). The module does the same for a row that says false (issue 289: the
+arrival event never began there and the picture stayed black).
 """
 import argparse
 import glob
@@ -37,12 +46,14 @@ SPECIAL = re.compile(
     r"After_|MiniGame|HitTarget|Ending|BeforeBoss|InBattle|Restart|UnderWater|BossRush"
 )
 ENTRANCE_NEAR = 5.0
+ENTRANCE_ACTOR = "FieldAndDungeonEntranceEventRequestActor"
 
 
-def scene_starts(romfs):
-    """{scene: [(name, [x, y, z]), ...]} in file order, every StartPos placement."""
+def scene_placements(romfs):
+    """({scene: [(name, [x, y, z]), ...]} in file order, every StartPos placement;
+    {scene: {name, ...}}, every entrance actor's name)."""
     dicts = zs.Dicts.from_romfs(romfs)
-    out = {}
+    out, entrances = {}, {}
     for path in sorted(glob.glob(os.path.join(romfs, "Banc", "*", "*.bcett.byml.zs"))):
         scene = os.path.basename(path)[: -len(".bcett.byml.zs")]
         for suffix in ("_Static", "_Dynamic"):
@@ -51,11 +62,24 @@ def scene_starts(romfs):
         with open(path, "rb") as f:
             root = byml.loads(dicts.decompress(f.read()))
         for actor in root.get("Actors", []) or []:
+            if str(actor.get("Gyaml", "")) == ENTRANCE_ACTOR:
+                entrances.setdefault(scene, set()).add(str(actor.get("Name", "")))
             if str(actor.get("Gyaml", "")) != "StartPos":
                 continue
             t = actor.get("Translate") or [0, 0, 0]
             out.setdefault(scene, []).append((str(actor.get("Name", "")), [float(v) for v in t]))
-    return out
+    return out, entrances
+
+
+def scene_starts(romfs):
+    """{scene: [(name, [x, y, z]), ...]} in file order, every StartPos placement."""
+    return scene_placements(romfs)[0]
+
+
+def row(scene, name, t, entrance_names):
+    """One table row; the last field: the scene has an entrance actor named as the start."""
+    return '    {"%s", "%s", %.2ff, %.2ff, %.2ff, %s},\n' % (
+        scene, name, t[0], t[1], t[2], "true" if name in entrance_names else "false")
 
 
 def choose(starts):
@@ -77,12 +101,14 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     args = ap.parse_args(argv)
     rows = []
-    for scene, starts in sorted(scene_starts(args.romfs).items()):
+    placements, entrances = scene_placements(args.romfs)
+    for scene, starts in sorted(placements.items()):
         for name, t in choose(starts):
-            rows.append('    {"%s", "%s", %.2ff, %.2ff, %.2ff},\n' % (scene, name, t[0], t[1], t[2]))
+            rows.append(row(scene, name, t, entrances.get(scene, ())))
     with open(args.out, "w", newline="\n") as f:
         f.write("// Written by tools/puppet_pack/start_points.py from the game's scene files; do not edit.\n")
-        f.write("// {scene, start point name, x, y, z}: the entrance start points /teleport may use.\n")
+        f.write("// {scene, start point name, x, y, z, entrance actor}: the entrance start points /teleport may use;\n")
+        f.write("// entrance actor: the scene has a FieldAndDungeonEntranceEventRequestActor of the start's name.\n")
         f.writelines(rows)
     print(f"{len(rows)} start points written to {args.out}")
 

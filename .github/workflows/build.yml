@@ -112,6 +112,8 @@ jobs:
         run: python tools/puppet_pack/tests/test_autogen_flags.py -v
       - name: Boss beaten sets tests
         run: python tools/puppet_pack/tests/test_boss_beaten.py -v
+      - name: Start points table tests
+        run: python tools/puppet_pack/tests/test_start_points.py -v
       - name: Story event effects tests
         run: python tools/puppet_pack/tests/test_story_effects.py -v
       - name: Save flags tests
