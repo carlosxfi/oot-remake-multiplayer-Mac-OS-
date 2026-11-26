@@ -405,6 +405,7 @@ class HookOrder(unittest.TestCase):
 
 
 AUTOTEST = os.path.dirname(HERE)
+START_DRIVER = 'import sys\nsys.path.insert(0, sys.argv[1])\nimport hookshot, live\ndef fake_main(argv):\n    if "--check-args" in argv:\n        return 0\n    print("00:00:01 A: started pid 1, bridge coop-x-A")          # (hookshot.py run\'s step log: Log(echo=print))\n    print("00:02:13 A: renderer ready (133 s waited)")\n    print("00:03:00 scenario played", end=" ")                   # (no newline before the JSON: the 11:05 shape)\n    return 0\nhookshot.main = fake_main\nlive.spawn_watchdog = lambda d: None\nlive.wait_lock = lambda d, proc, timeout: "none"\nsys.exit(live.main(sys.argv[2:]))\n'
 
 
 class BootCommand(unittest.TestCase):
@@ -464,6 +465,30 @@ class BootCommand(unittest.TestCase):
         with open(os.path.join(ses, "session.json"), "w", encoding="utf-8") as f:
             json.dump({"games": {"A": {"log": la}}}, f)
         self.assertEqual(B._crash_why(ses), "")
+
+    def test_start_stdout_is_one_json_answer(self):
+        """C #132 11:05 (party-hud-bridge-fa63e90f VOID): live.py start ran hookshot.main in-process, whose step log
+        echoes to stdout, so stdout was boot lines + the JSON and _live read ok false. The REAL live.py start path
+        (only the runner, watchdog and lock stubbed): its stdout is now ONLY the JSON answer, and _live reads it."""
+        import bt_plugin as B
+        drv = os.path.join(self.tmp, "drv.py")
+        with open(drv, "w", encoding="utf-8") as f:
+            f.write(START_DRIVER)
+        ses = os.path.join(self.tmp, "s")
+        p = subprocess.run([sys.executable, "-I", drv, AUTOTEST, "start", "--session", ses] + self.games() +
+                           ["--boot-a", B.BOOT_A, "--boot-b", B.BOOT_B, "--no-load"],
+                           capture_output=True, text=True, timeout=120)
+        out = json.loads(p.stdout)                   # (the whole stdout: one JSON object)
+        self.assertTrue(out["ok"], (out, p.stderr[-800:]))
+        self.assertIn("renderer ready", p.stderr)    # (the boot lines went to stderr)
+
+    def test_last_json_reads_the_old_mixed_shape(self):
+        import bt_plugin as B
+        mixed = 'A: started\nA: renderer ready (133 s)\nscenario played { "ok": true,\n "session": "s", "lane": 1}\n'
+        self.assertEqual(B.last_json(mixed), {"ok": True, "session": "s", "lane": 1})
+        self.assertEqual(B.last_json('{"ok": true}\nlog line after it'), None)    # (must end the output)
+        self.assertEqual(B.last_json('{"a": {"b": 1}}'), {"a": {"b": 1}})          # (an inner '{' is not the answer)
+        self.assertIsNone(B.last_json("no json at all"))
 
     def test_refused_start_leaves_no_watchdog_or_lock(self):
         ses = os.path.join(self.tmp, "s")
@@ -548,7 +573,7 @@ class BootCommand(unittest.TestCase):
             self.assertIn(want, out["runner"])
 
 
-HOOK_TESTS = 'import pytest\n\ndef test_hooks(pair):\n    pair.act("A", "frob 3")\n    pair.expect_log("A", r"fake hook: frob 3 on A", max_frames=30)\n    st = pair.state("B")\n    assert any(a.get("name") == "HookActor_B" for a in st["world"]["actors"]), st["world"]\n    assert st.get("hooked") == "shared-1"\n    r = pair.call("A", "ping_hook")\n    assert r.get("pong") is True\n    pair.press("A", ["ZR"], frames=2)\n    pair.expect_log("A", r"fake hook: pressed ZR", max_frames=30)\n\n    import playtest_client as pc\n    with pytest.raises(pc.BridgeError):           # (a plain warp: the boss intro event makes it a timeout)\n        pair.warp_both("BossStage_Test")\n    st = pair.warp_both("BossStage_Test", arrive_in_event=True)\n    assert st["A"]["scene"] == st["B"]["scene"] == "BossStage_Test"\n    assert any("answered timeout in the arrival event" in n for n in pair.notes), pair.notes\n    pair.act("A", "place 0 0 0")\n    pair.call("A", "move", yaw=90, strength=1.0, frames=30)\n    assert pair.state("A")["pos"][0] == 1.0, pair.state("A")["pos"]      # (move_step: the wall at x 1.0)\n    with pytest.raises(pc.BridgeError):           # (a timeout with NO event is not an arrival: review-c123-8)\n        pair.warp_both("NoEventStage_Test", arrive_in_event=True)\n'
+HOOK_TESTS = 'import pytest\n\ndef test_hooks(pair):\n    pair.act("A", "frob 3")\n    pair.expect_log("A", r"fake hook: frob 3 on A", max_frames=30)\n    st = pair.state("B")\n    assert any(a.get("name") == "HookActor_B" for a in st["world"]["actors"]), st["world"]\n    assert st.get("hooked") == "shared-1"\n    r = pair.call("A", "ping_hook")\n    assert r.get("pong") is True\n    pair.press("A", ["ZR"], frames=2)\n    pair.expect_log("A", r"fake hook: pressed ZR", max_frames=30)\n\n    import playtest_client as pc\n    with pytest.raises(pc.BridgeError):           # (a plain warp: the boss intro event makes it a timeout)\n        pair.warp_both("BossStage_Test")\n    st = pair.warp_both("BossStage_Test", arrive_in_event=True)\n    assert st["A"]["scene"] == st["B"]["scene"] == "BossStage_Test"\n    assert any("answered timeout in the arrival event" in n for n in pair.notes), pair.notes\n    pair.act("A", "place 0 0 0")\n    pair.call("A", "move", yaw=90, strength=1.0, frames=30)\n    assert pair.state("A")["pos"][0] == 1.0, pair.state("A")["pos"]      # (move_step: the wall at x 1.0)\n    with pytest.raises(pc.BridgeError):           # (a timeout with NO event is not an arrival: review-c123-8)\n        pair.warp_both("NoEventStage_Test", arrive_in_event=True)\n    a_scene, a_frame = pair.state("A")["scene"], pair.state("A")["frame"]\n    st = pair.warp_one("B", "KakarikoVillage_Child")      # (one game; the other stepped the same frames)\n    assert st["scene"] == "KakarikoVillage_Child" and pair.state("A")["scene"] == a_scene\n    assert pair.state("A")["frame"] > a_frame              # (A ran the frames B\'s warp took)\n'
 HOOK_MODULE = 'def setup(game):\n    game.hook_seen = []\n\ndef lane(fl):\n    fl.g["A"].shared = fl.g["B"].shared = {"n": 1}\n\ndef command(game, m):\n    if m.get("cmd") == "ping_hook":\n        return {"ok": True, "pong": True}\n    if m.get("cmd") == "warp" and m.get("scene") in ("BossStage_Test", "NoEventStage_Test"):\n        game.run(40)\n        game.scene = m["scene"]                 # (there, but the bridge says timeout: an intro event, or not)\n        return {"ok": False, "error": "timeout", "message": "still in an event"}\n    return None\n\ndef move_step(game, pos):\n    if game.scene == "BossStage_Test" and pos[0] > 1.0:\n        return [1.0, pos[1], pos[2]]\n    return None\n\ndef after(game, m, r):\n    if m.get("cmd") == "state":\n        r["hooked"] = "shared-%d" % game.shared["n"]\n\ndef press(game, buttons):\n    if "ZR" in buttons:\n        game.say("fake hook: pressed ZR")\n        return True\n    return False\n\ndef act(game, words):\n    if words[0] == "frob":\n        game.say("fake hook: frob %s on %s" % (words[1], game.tag))\n        return True\n    return False\n\ndef actors(game):\n    return [{"id": 99, "name": "HookActor_%s" % game.tag, "kind": "enemy", "pos": [0.0, 0.0, 0.0]}]\n\ndef state(game, st):\n    if game.scene == "BossStage_Test":\n        st["event"] = True                      # (its intro event runs)\n'
 
 
@@ -737,6 +762,32 @@ class ImageCompare(unittest.TestCase):
         r = imagecheck.compare(p["b"], p["a"], 0.90)
         self.assertFalse(r["ok"])
         self.assertIn("<", r["why"])
+
+    def test_colour_fault_fails(self):
+        """review-rows-c130 10:38 / B #131: a recoloured thing at the same grey value (green tunic (0,91,0) -> blue
+        (0,60,160), both grey 53.4 by ITU-R 601) passes a grey SSIM but must FAIL the colour compare at the rows'
+        0.80; the same shot passes; a hue-shifted copy of the whole picture fails."""
+        from PIL import Image, ImageDraw
+        def pic(name, link, bg=(30, 80, 30)):
+            im = Image.new("RGB", (640, 360), bg)
+            d = ImageDraw.Draw(im)
+            d.rectangle((100, 60, 180, 220), fill=link)              # "Link's tunic"
+            d.rectangle((400, 40, 600, 80), fill=(220, 30, 30))      # "hearts"
+            path = os.path.join(self.tmp, name + ".png")
+            im.save(path)
+            return path
+        green, blue = pic("green", (0, 91, 0)), pic("blue", (0, 60, 160))
+        grey, _ = imagecheck.ssim(blue, green, colour=False)
+        self.assertGreaterEqual(grey, 0.80)          # (why grey alone was blind: the stored ref would pass)
+        r = imagecheck.compare(blue, green, 0.80)
+        self.assertFalse(r["ok"], r)
+        self.assertIn("colour SSIM", r["why"])
+        self.assertTrue(imagecheck.compare(green, green, 0.99)["ok"])
+        from PIL import Image as _I
+        with _I.open(green) as im:
+            r_, g_, b_ = im.split()
+            _I.merge("RGB", (b_, r_, g_)).save(os.path.join(self.tmp, "hue.png"))   # (channels rotated: a hue shift)
+        self.assertFalse(imagecheck.compare(os.path.join(self.tmp, "hue.png"), green, 0.80)["ok"])
 
     def test_no_reference_is_never_ok(self):
         keep = os.path.join(self.tmp, "keep")
