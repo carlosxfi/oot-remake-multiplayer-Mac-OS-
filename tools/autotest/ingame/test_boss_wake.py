@@ -38,7 +38,6 @@ import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-import playtest_client as pc   # noqa: E402
 import pair as P               # noqa: E402
 
 # test_boss_shots.py SWITCHES (the old rows' '#! switches' line): boss notes, the object walk's names, cheats (kill).
@@ -79,26 +78,10 @@ COUNTS = re.compile(r"coop: bosses: ours sent ([0-9]+) brain \+ ([0-9]+) action 
 
 # -- driving ----------------------------------------------------------------------------------------------------
 def warp_one(pair, x, scene, entrance=None, in_event=True):
-    """ONE game to `scene` at `entrance` (default: the scene's own start), as Pair.warp_both(scene, entrance,
-    arrive_in_event) does for each game (pair.py; the harness has no one-game form, and its file is not this row's).
-    in_event: a boss stage's intro starts on arrival, so a 'timeout' reply with Link in the scene, not loading, and an
-    event running is the arrival. The other game is stepped to the same frame count after it."""
-    other = "B" if x == "A" else "A"
-    before = pair.c[x].last_frame or 0
-    t = max(1, int(min(pair.ARRIVE_IN_EVENT_WAIT if in_event else 60, pair.deadline.left() - 2)))
-    pair.deadline.check("warp")
-    r = pair.c[x].request("warp", check=False, reply_timeout=max(0.2, min(t + 15, pair.deadline.left())),
-                          scene=scene, timeout=t, entrance=entrance or scene)
-    if not r.get("ok"):
-        st = pair.state(x) if in_event and r.get("error") == "timeout" else None
-        if not (st and (st.get("scene") or "").lower() == scene.lower() and not st.get("loading")
-                and st.get("event") is True):
-            raise pc.BridgeError(r)
-        pair.notes.append("%s: warp %s answered timeout in the arrival event: arrived" % (x, scene))
-    ran = max(0, (pair.c[x].last_frame or before) - before)
-    if ran:
-        pair.step_other(other, ran)
-    s = pair.state(x)
+    """ONE game to `scene` at `entrance` (default: the scene's own start) by the shared Pair.warp_one (pair.py,
+    test-bridge-c127-identity 3d268dd6a: warp_both's rules; the other game is stepped to the same frame count), then
+    asserted in the scene and not loading. in_event: a boss stage's intro starts on arrival (arrive_in_event)."""
+    s = pair.warp_one(x, scene, entrance=entrance or scene, arrive_in_event=in_event)
     assert (s.get("scene") or "").lower() == scene.lower() and not s.get("loading"), "%s after the warp: %s" % (
         x, s.get("scene"))
 
