@@ -3951,7 +3951,8 @@ class NupTest(unittest.TestCase):
                           "Tex/Mt_Vest_Player_Adult_Alb.bntx.zs", "Tex/Mt_Angin_Acs_Player_Adult_Alb.bntx.zs",
                           "Tex/Mt_Cloth_Parts_Player_Child_Alb.bntx.zs", "Tex/Mt_Vest_Player_Child_Alb.bntx.zs",
                           "Tex/Mt_PantsParts_Player_Child_Alb.bntx.zs", "Tex/Mt_Boots_Player_Adult_Alb.bntx.zs",
-                          "Tex/Mt_Leather_Player_Child_Alb.bntx.zs"} |
+                          "Tex/Mt_Leather_Player_Child_Alb.bntx.zs",
+                          "Tex/Mt_Hairs_Player_Adult_Alb.bntx.zs"} |  # hair-link: look_items.HAIR (BODY_BOOTS)
                          {f"Model/Player_{v}.Player_{v}.bfres.zs" for v in build.VARIANTS},
                          set(dumpcheck.OPTIONAL))
         seed = "Pack/Actor/Shootable_DekuSeed.pack.zs"
