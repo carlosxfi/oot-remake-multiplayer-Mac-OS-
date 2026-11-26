@@ -1277,6 +1277,8 @@ void PartyStep(NativeGame& game, void* ctx, std::uint64_t now) {
         for (auto& b : blocks) b.double_defence = defence;
     }
     PartyGame party(game, ctx);
+    static const bool no_pack = EnvOn("COOP_TEST_PARTY_HUD_NO_PACK");   // scenario hs-party-hud-probe: as without a pack
+    hud.IgnorePack(no_pack);
     std::vector<std::string> log;
     const bool on = hud.Step(party, blocks, bottom, &log, now, own);
     for (const auto& l : log) LOG_INFO(Core, "{}", l);

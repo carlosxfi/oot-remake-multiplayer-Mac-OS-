@@ -11,7 +11,7 @@
 // probe's second run). The pack (tools/puppet_pack/party_hud.py) adds our own copies of the same two part layouts to
 // PlayerStatus_00, hidden: kSlots players x (kHearts whole hearts + one part heart + one line of the game's text), and
 // two more lines ("+N" and our own). This file places, shows and sets them with the same calls. No game object owns the copies, so
-// nothing sets them back. A pack without the copies: Step answers false and the drawn blocks stay (coop_draw).
+// nothing sets them back. Players past the pack's slots, or every player without a pack, get a run-time gauge (Live).
 //
 // Split for tests (tests/hookshot/party_hud_test.cpp): everything goes through Game.
 #pragma once
@@ -27,7 +27,8 @@
 
 namespace CoopPartyHud {
 
-inline constexpr int kSlots = 3;       // party_hud.py SLOTS
+inline constexpr int kSlots = 15;      // at most: every other player of a full game (16 players); the pack has
+                                       // party_hud.py SLOTS of them (Hud::slots_), the rest go to "+N"
 inline constexpr int kHearts = 20;     // party_hud.py HEARTS
 inline constexpr int kPerRow = 10;
 
@@ -44,6 +45,49 @@ inline constexpr std::uint64_t kPaneMarkA = 0x815457d0 - 0x80020000;  // what th
 inline constexpr std::uint64_t kPaneMarkB = 0x8154d540 - 0x80020000;
 inline constexpr std::uint64_t kPaneXY = 0x6c;             // pane+: f32 x, y
 inline constexpr std::uint64_t kPaneFlags = 0xa8;          // pane+: u32; bit 8 placed elsewhere, bit 20 tell the layout
+// A text pane inside one of our part copies ("Pa_CoopName_0/T_Text_00"), set as the game's path text call sets each pane
+// it matches (coop_pause_tab.h, the same calls run in the game for the pause pages' copies): f_8045b970 (kSetPaneText)
+// takes no path, only a pane of the layout itself, so it set nothing on our labels (0.11.13 row 291).
+inline constexpr std::uint64_t kPathFind = 0x43c4a0;       // (path, layout, &layout out) -> the name in the last part
+inline constexpr std::uint64_t kPaneTable = 0x43c040;      // (layout + 0x40) -> its pane table
+inline constexpr std::uint64_t kTablePane = 0x43e300;      // (table, name) -> the pane, 0 none
+inline constexpr std::uint64_t kPaneSetMsg = 0x439520;     // (text pane, &{text, bytes, attributes}, 0)
+inline constexpr std::uint64_t kPaneMsgAttrs = 0x10;       // text pane+: the message attributes it keeps
+inline constexpr std::uint64_t kPaneTextWidth = 0x13c;     // text pane+: f32 the width its text was drawn
+inline constexpr std::uint32_t kTextPaneKind = 2;          // pane flags bits 22..25: a text box
+// Run-time gauges (R2/R3: a player without a pack copy), made as the status screen makes its own (f_834053e0 at
+// 0x83405b70): the HUD's Pa_HeartGauge_00 part layout cloned (f_80791f70), a gauge object built on the clone
+// (f_833db800) and set up (f_8078fd00: its 20 whole hearts Pa_NoGauge_00..19 and part hearts Pa_Gauge_00/01, each with
+// its 0x78 controller in the layout's animation list). The gauge object's own update (vtable 0x84c011b8 slots 4/5,
+// f_8019de20) reads Link's life from the game's data, so ours is taken out of that list at once (its base destructor
+// f_80caaf70 only unlinks it) and its children are set with the game's own setters.
+inline constexpr std::uint64_t kNew = 0x8005eca0 - 0x80020000;          // (align, bytes): the game's global new
+inline constexpr std::uint64_t kClonePart = 0x80791f70 - 0x80020000;    // (0x98 object, part layout, name, 0, 0)
+inline constexpr std::uint64_t kAttach = 0x80235dc0 - 0x80020000;       // ([parent+0x18], pane, parent)
+inline constexpr std::uint64_t kGaugeMake = 0x833db800 - 0x80020000;    // (0x788 object, part layout)
+inline constexpr std::uint64_t kGaugeSetUp = 0x8078fd00 - 0x80020000;   // (gauge, heap 0, 1)
+inline constexpr std::uint64_t kGaugeUnlink = 0x80caaf70 - 0x80020000;  // (gauge): out of the animation list
+inline constexpr std::uint64_t kHeartSet = 0x833dca10 - 0x80020000;     // (heart, 0 none / 1 empty / 2 full)
+inline constexpr std::uint64_t kGaugeFrame = 0x833dcb60 - 0x80020000;   // (part heart, s32 HeartGauge frame)
+inline constexpr std::uint64_t kCloneBytes = 0x98, kGaugeBytes = 0x788;
+inline constexpr std::uint64_t kPartLayout = 0xa0;         // part pane+: its part layout
+inline constexpr std::uint64_t kParentOwner = 0x18;        // pane+: what the attach call takes first
+inline constexpr std::uint64_t kGaugeWhole = 0x30;         // gauge+: 20 whole hearts' controllers
+inline constexpr std::uint64_t kGaugePart = 0x6c8;         // gauge+: the part heart's controller (then +0x6d0 a second)
+inline constexpr std::uint64_t kHeartBase = 0x30;          // controller+: its BaseState animation (the setter's first)
+inline constexpr std::uint64_t kHeartGauge = 0x58;         // controller+: HeartGauge (f_833dcb60)
+inline constexpr std::uint64_t kPaneScale = 0x84;          // pane+: f32 scale x, y (after translate and rotate; NOT proven)
+// No pack: the run-time name lines' text part, from the game's own Common archive (dump romfs UI/Layout2Archive/
+// Common.Product.100 *.blarc, read with tools/puppet_pack/ui_pack.read_layout / part_layouts): MenuOverlay_00 (screens
+// table UIScreen: LifetimeGroup Resident, ArchiveCategory Common) is the only layout with PaMenuCategory_00 parts
+// (Pa_Category_00..03); PaMenuCategory_00's panes: RootPane, N_All_00, N_BgIn_00, N_Bg_00, P_MinusMenuBg_00,
+// P_PlusMenuBg_00, N_MenuChangeTextIn_00, N_Text_00, T_Text_00, T_Text_01 (the same two text panes as
+// PaEnemyLocation_00, the pack's line). MenuOverlay_00's own top-level text T_BtnL_00 tells its layout from another.
+// PaEnemyLocation_00 itself is only in EnemyInfo_00 (Pa_Location_00/01), a screen that is NOT Resident.
+inline constexpr const char* kBareScreen = "MenuOverlay_00";
+inline constexpr const char* kBarePart = "Pa_Category_00";
+inline constexpr const char* kBareCheck = "T_BtnL_00";
+inline constexpr const char* kBareHide[] = {"N_BgIn_00", "N_Bg_00", "P_MinusMenuBg_00", "P_PlusMenuBg_00"};
 }  // namespace addr
 
 // Where the copies go, in the frame of their parent (N_ScaleL_00: the picture's top left corner, y up; the layout is
@@ -114,8 +158,11 @@ float BlockHeight(int hearts);
 // `own`: our own line ("You" and our voice state) goes first, so the blocks start one line lower.
 float TopFrom(std::optional<double> game_hud_bottom, bool own = false);
 
-// "+N" for the players past the slots, in the player's language by the caller; "" none.
-std::string MoreText(std::size_t players);
+// "+N" for the players not shown (no slot or no room left on the picture); "" none.
+std::string MoreText(std::size_t hidden);
+// How many of the blocks (their heart counts, in order) are shown from `top` down: at most `slots`, every one on the
+// picture, and when some are left out the "+N" line under them too (0.11.12's rule, CoopHudLayout::BlocksThatFit).
+std::size_t BlocksThatFit(float top, const std::vector<int>& hearts, std::size_t slots);
 
 class Hud {
 public:
@@ -127,6 +174,9 @@ public:
     bool Step(Game& game, const std::vector<Block>& blocks, std::optional<double> game_hud_bottom,
               std::vector<std::string>* log = nullptr, std::uint64_t now_ms = 0, const std::string& own = {});
     bool native() const { return native_; }
+    // A test's switch (COOP_TEST_PARTY_HUD_NO_PACK=1, scenario hs-party-hud-probe): the pack's panes are not looked
+    // for, so a game with the pack shows what a game without it shows (run-time gauges, no name lines).
+    void IgnorePack(bool ignore) { ignore_pack_ = ignore; }
 
 private:
     struct Pane {
@@ -155,6 +205,9 @@ private:
         std::array<float, 2> at{};
         std::string text;
         bool has_text = false;
+        std::array<std::uint64_t, 2> boxes{};   // its text panes T_Text_00, T_Text_01 (0: not found)
+        bool said_set = false, said_width = false;   // (logged once per layout)
+        int drawn_frames = 0;                        // frames since the text was set, until its width is logged
     };
     bool Find(Game& game, std::uint64_t layout, std::vector<std::string>* log);
     void Show(Game& game, Pane& p, bool shown);
@@ -164,10 +217,12 @@ private:
                  bool defence);
     static void StopAt(Game& game, std::uint64_t anim, float& had, float frame);
     void SetLabel(Game& game, std::size_t index, const std::string& text, const std::array<float, 2>& at,
-                  float alpha);
+                  float alpha, std::vector<std::string>* log);
+    std::uint64_t TextPane(Game& game, std::uint64_t layout, const std::string& path, std::string& why);
     static void Alpha(Game& game, std::uint64_t pane, float& had, float alpha);
     std::uint64_t Name(Game& game, const std::string& text);
 
+    int slots_ = 0;                // the pack's complete slots on this layout (an older pack: fewer than kSlots)
     std::uint64_t layout_ = 0;     // the layout the panes below were found on (the HUD made again: found again)
     bool native_ = false;
     std::uint64_t block_ = 0;      // guest memory of ours: a name's scratch, then the lines' texts
@@ -181,6 +236,39 @@ private:
     };
     std::array<Glow, kSlots> glows_{};
     std::array<Label, kSlots + 2> labels_{};   // then "+N", then our own line
+
+    // A run-time gauge (a slot past the pack's, or every slot without a pack): made the first time a player needs it,
+    // never in solo. It hangs in the HUD's layout: when that layout goes (scene, title, HUD made again) its panes go with
+    // it and ours are forgotten (Drop), never freed (the gauge object and clone, 0x820 bytes, stay: freeing them while
+    // a layout could still hold the clone's panes would be worse than that).
+    struct Live {
+        bool tried = false;
+        std::uint64_t obj = 0, gauge = 0, root = 0;
+        std::array<std::uint64_t, kHearts> whole{}, at{};   // controllers, and their part panes in the clone
+        std::uint64_t part = 0, part_pane = 0, part2_pane = 0;
+        std::int32_t gauge_last = -1;
+        std::array<int, kHearts> state{};
+        int part_frame = -1, shown = -1, part_shown = -1, part_on = -1;
+        float alpha = -1.0f;
+        std::array<float, 2> root_at{};
+        bool placed = false;
+        std::uint64_t name_root = 0;                  // its name line's clone root (MakeLiveName; 0: none)
+        std::array<std::uint64_t, 2> name_boxes{};    // and its text panes, given back to labels_ on a kept layout
+    };
+    bool MakeLive(Game& game, int slot, std::vector<std::string>* log);
+    void StepLive(Game& game, int slot, const Plan& plan, float top, float alpha);
+    void HideLive(Game& game, Live& v);
+    void MakeLiveName(Game& game, int slot, std::vector<std::string>* log);
+    void Drop(Game& game);
+    std::uint64_t gauge_part_ = 0;   // the HUD's Pa_HeartGauge_00 part layout (0: no run-time gauges)
+    std::uint64_t parent_ = 0;       // N_ScaleL_00
+    bool ignore_pack_ = false;
+    std::uint64_t name_part_ = 0;    // the pack's line of the game's text (PaEnemyLocation_00), else the game's (kBarePart)
+    bool name_bare_ = false;         // name_part_ is the game's kBarePart: its backing panes are hidden on each clone
+    std::uint64_t BarePart(Game& game, std::uint64_t hud_layout, std::string& why);
+    std::array<float, 2> source_at_{};   // Pa_HeartGauge_00's place there
+    std::array<Live, kSlots> live_{};
+    std::uint64_t live_layout_ = 0;  // the layout live_ hangs in
 };
 
 // Test builds, COOP_TEST_PARTY_HUD=1 (scenario hs-party-hud): the blocks of four made-up players, their life going
