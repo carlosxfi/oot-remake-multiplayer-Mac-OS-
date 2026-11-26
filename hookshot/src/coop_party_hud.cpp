@@ -109,13 +109,23 @@ float BlockHeight(int hearts) {
 float TopFrom(std::optional<double> game_hud_bottom, bool own) {
     const float own_line = own ? kLabelHeight + kBlockGap : 0.0f;
     if (!game_hud_bottom || !(*game_hud_bottom > 0.0) || !(*game_hud_bottom < 1.0)) return kDefaultTop;
-    // (never so low that the fullest stack, our own line, three blocks of two rows and the "+N" line, leaves the picture)
-    const float lowest = -kLayoutHeight + own_line + kSlots * BlockHeight(kHearts) + kLabelHeight + kBlockGap;
+    // (never so low that our own line, one block of two rows and the "+N" line leave the picture; more blocks are
+    // shown as they fit, BlocksThatFit)
+    const float lowest = -kLayoutHeight + kBlockGap + own_line + BlockHeight(kHearts) + kLabelHeight + kBlockGap;
     return std::max(-static_cast<float>(*game_hud_bottom) * kLayoutHeight - kBlockGap, lowest);
 }
 
-std::string MoreText(std::size_t players) {
-    return players > static_cast<std::size_t>(kSlots) ? "+" + std::to_string(players - kSlots) : std::string();
+std::string MoreText(std::size_t hidden) {
+    return hidden > 0 ? "+" + std::to_string(hidden) : std::string();
+}
+
+std::size_t BlocksThatFit(float top, const std::vector<int>& hearts, std::size_t slots) {
+    const float floor = -kLayoutHeight + kBlockGap;
+    for (std::size_t n = std::min(hearts.size(), slots);; --n) {
+        float need = n < hearts.size() ? kLabelHeight + kBlockGap : 0.0f;   // (the "+N" line)
+        for (std::size_t i = 0; i < n; ++i) need += BlockHeight(hearts[i]);
+        if (top - need >= floor || n == 0) return n;
+    }
 }
 
 std::uint64_t Hud::Name(Game& game, const std::string& text) {
@@ -182,8 +192,11 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
         }
         return false;
     }
+    // The slots the pack has, each complete (an older pack has fewer than kSlots: those are used, the rest go to "+N").
+    slots_ = 0;
     bool all = true;
-    for (int s = 0; s < kSlots; ++s) {
+    for (int s = 0; s < kSlots && all; ++s) {
+        if (s > 0 && pane(PaneName("Heart", s, 0)) == 0) break;   // (no more slots in this pack)
         for (int i = 0; i <= kHearts; ++i) {   // (the last: the slot's part heart)
             const bool part = i == kHearts;
             Pane& p = part ? gauges_[static_cast<std::size_t>(s)]
@@ -203,12 +216,15 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
         }
         labels_[static_cast<std::size_t>(s)].pane = pane(PaneName("Name", s));
         all = all && labels_[static_cast<std::size_t>(s)].pane != 0;
+        if (all) slots_ = s + 1;
     }
+    all = slots_ > 0;
     labels_[kMore].pane = pane(LabelPart(kMore));
     labels_[kSelf].pane = pane(LabelPart(kSelf));   // (an older pack without it: no own line, the hearts still show)
     // Each line's two text panes, found once per layout; the run's log says for each one whether it was found.
     for (std::size_t i = 0; i < labels_.size(); ++i) {
         Label& l = labels_[i];
+        if (i >= static_cast<std::size_t>(slots_) && i < static_cast<std::size_t>(kSlots)) continue;   // (not in this pack)
         for (std::size_t k = 0; k < l.boxes.size(); ++k) {
             const std::string path = LabelPart(i) + (k == 0 ? "/T_Text_00" : "/T_Text_01");
             std::string why = "no part";
@@ -227,15 +243,16 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
                                (found ? ": last frame " + std::to_string(last) : ": not found"));
             }
         }
-        log->push_back(std::string(kSay) + (all ? "the game's HUD shows the other players' hearts (its own heart parts)"
-                                                : "some of our hearts or their animations are missing: the drawn blocks stay"));
+        log->push_back(std::string(kSay) + (all ? "the game's HUD shows the other players' hearts (its own heart parts, " +
+                                                      std::to_string(slots_) + " slots)"
+                                                : "some of our hearts or their animations are missing: none shown"));
     }
     native_ = all;
     return all;
 }
 
 void Hud::Show(Game& game, Pane& p, bool shown) {
-    if (p.shown == (shown ? 1 : 0)) return;
+    if (p.pane == 0 || p.shown == (shown ? 1 : 0)) return;   // (0: a slot an older pack does not have)
     if (game.Call(game.At(addr::kPaneShow), {p.pane, shown ? 1u : 0u, 0, 0, 0})) p.shown = shown ? 1 : 0;
 }
 
@@ -355,12 +372,15 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
     } else {
         Show(game, labels_[kSelf], false);
     }
+    std::vector<int> counts;
+    for (const Block& b : blocks) counts.push_back(PlanHearts(b.hearts).hearts);
+    const std::size_t shown = BlocksThatFit(top, counts, static_cast<std::size_t>(slots_));
     for (int s = 0; s < kSlots; ++s) {
         auto& hearts = hearts_[static_cast<std::size_t>(s)];
         Pane& gauge = gauges_[static_cast<std::size_t>(s)];
         Label& label = labels_[static_cast<std::size_t>(s)];
         Glow& glow = glows_[static_cast<std::size_t>(s)];
-        if (static_cast<std::size_t>(s) >= blocks.size()) {   // nobody there (solo: every slot)
+        if (static_cast<std::size_t>(s) >= shown) {   // nobody there (solo: every slot), no room, or not in the pack
             glow = {};
             for (Pane& p : hearts) Show(game, p, false);
             Show(game, gauge, false);
@@ -401,7 +421,7 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
         }
         top -= BlockHeight(plan.hearts);
     }
-    const std::string more = MoreText(blocks.size());
+    const std::string more = MoreText(blocks.size() - shown);
     if (more.empty()) Show(game, labels_[kMore], false);
     else SetLabel(game, kMore, more, {kLabelX, top - kLabelHeight / 2.0f}, 1.0f, log);
     return true;

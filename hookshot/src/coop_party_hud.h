@@ -27,7 +27,8 @@
 
 namespace CoopPartyHud {
 
-inline constexpr int kSlots = 3;       // party_hud.py SLOTS
+inline constexpr int kSlots = 15;      // at most: every other player of a full game (16 players); the pack has
+                                       // party_hud.py SLOTS of them (Hud::slots_), the rest go to "+N"
 inline constexpr int kHearts = 20;     // party_hud.py HEARTS
 inline constexpr int kPerRow = 10;
 
@@ -124,8 +125,11 @@ float BlockHeight(int hearts);
 // `own`: our own line ("You" and our voice state) goes first, so the blocks start one line lower.
 float TopFrom(std::optional<double> game_hud_bottom, bool own = false);
 
-// "+N" for the players past the slots, in the player's language by the caller; "" none.
-std::string MoreText(std::size_t players);
+// "+N" for the players not shown (no slot or no room left on the picture); "" none.
+std::string MoreText(std::size_t hidden);
+// How many of the blocks (their heart counts, in order) are shown from `top` down: at most `slots`, every one on the
+// picture, and when some are left out the "+N" line under them too (0.11.12's rule, CoopHudLayout::BlocksThatFit).
+std::size_t BlocksThatFit(float top, const std::vector<int>& hearts, std::size_t slots);
 
 class Hud {
 public:
@@ -182,6 +186,7 @@ private:
     static void Alpha(Game& game, std::uint64_t pane, float& had, float alpha);
     std::uint64_t Name(Game& game, const std::string& text);
 
+    int slots_ = 0;                // the pack's complete slots on this layout (an older pack: fewer than kSlots)
     std::uint64_t layout_ = 0;     // the layout the panes below were found on (the HUD made again: found again)
     bool native_ = false;
     std::uint64_t block_ = 0;      // guest memory of ours: a name's scratch, then the lines' texts

@@ -35,6 +35,7 @@ struct FakeGame final : party::Game {
     int pane_text_calls = 0;                             // f_8045b970 (no path: sets nothing on our parts)
     bool text_panes = true;                              // the parts have T_Text_00 and T_Text_01
     bool pack = true;
+    int pack_slots = 3;                                  // party_hud.py SLOTS
     std::int32_t gauge_last = 100;
     int calls = 0;
 
@@ -62,6 +63,10 @@ struct FakeGame final : party::Game {
         if (f == At(ui::addr::kPaneByName)) {
             const std::string name = Str(x[1]);
             if (!pack || name.rfind("Pa_Coop", 0) != 0) return 0;
+            for (const char* slotted : {"Pa_CoopHeart_", "Pa_CoopGauge_", "Pa_CoopName_"}) {
+                const std::size_t n = std::string(slotted).size();
+                if (name.rfind(slotted, 0) == 0 && std::stoi(name.substr(n)) >= pack_slots) return 0;
+            }
             if (panes.count(name) == 0) panes[name] = kPanes + 0x1000 * panes.size();
             return panes[name];
         }
@@ -196,11 +201,15 @@ TEST_CASE("party hud: the part heart's frame on a long and on a short animation"
 }
 
 TEST_CASE("party hud: the blocks stay on the picture") {
-    // Three players with two rows each under a tall game HUD: every heart inside the 3840 x 2160 layout.
+    // Every block that fits under a tall game HUD (15 others, two rows each): every heart inside the 3840 x 2160
+    // layout, the rest in the "+N" line under them.
     float top = party::TopFrom(0.2);
     CHECK(top == doctest::Approx(-0.2f * 2160.0f - party::kBlockGap));
     CHECK(party::TopFrom(std::nullopt) == party::kDefaultTop);
-    for (int s = 0; s < party::kSlots; ++s) {
+    const std::size_t fit = party::BlocksThatFit(top, std::vector<int>(party::kSlots, party::kHearts), party::kSlots);
+    CHECK(fit >= 3);
+    CHECK(fit < static_cast<std::size_t>(party::kSlots));
+    for (std::size_t s = 0; s < fit; ++s) {
         for (int i = 0; i < party::kHearts; ++i) {
             const auto at = party::HeartAt(top, i);
             CHECK(at[0] > 72.0f * party::kScale);
@@ -214,12 +223,19 @@ TEST_CASE("party hud: the blocks stay on the picture") {
     }
     CHECK(top - party::kLabelHeight > -2160.0f);   // and the "+N" line under them
     CHECK(party::BlockHeight(3) < party::BlockHeight(11));
-    // A game HUD reaching far down (a bottom at 90 %): the fullest stack still ends on the picture.
+    // Small blocks (3 hearts, one row): more of them fit; all 15 when they do, no "+N" then.
+    top = party::TopFrom(0.2);
+    CHECK(party::BlocksThatFit(top, std::vector<int>(party::kSlots, 3), party::kSlots) > fit);
+    CHECK(party::BlocksThatFit(top, std::vector<int>(4, 3), party::kSlots) == 4);
+    CHECK(party::BlocksThatFit(top, std::vector<int>(4, 3), 3) == 3);   // (a pack of 3 slots)
+    CHECK(party::BlocksThatFit(top, {}, 3) == 0);
+    // A game HUD reaching far down (a bottom at 90 %): at least one full block and the "+N" line on the picture.
     float low = party::TopFrom(0.9);
-    for (int s = 0; s < party::kSlots; ++s) low -= party::BlockHeight(party::kHearts);
+    CHECK(party::BlocksThatFit(low, std::vector<int>(5, party::kHearts), party::kSlots) >= 1);
+    low -= party::BlockHeight(party::kHearts);
     CHECK(low - party::kLabelHeight >= -2160.0f);
-    CHECK(party::MoreText(3).empty());
-    CHECK(party::MoreText(5) == "+2");
+    CHECK(party::MoreText(0).empty());
+    CHECK(party::MoreText(2) == "+2");
 }
 
 TEST_CASE("party hud: an older pack hides the hearts (nothing drawn instead)") {
@@ -469,4 +485,21 @@ TEST_CASE("party hud: parts without text panes: the hearts still show, the log s
     CHECK(Said(log, "text Pa_CoopName_0/T_Text_00: not found (pane not found)"));
     CHECK(Said(log, "text Pa_CoopName_0: not set (no text pane found)"));
     CHECK(game.texts.empty());
+}
+
+TEST_CASE("party hud: the slots the pack has, the rest in +N (row R3)") {
+    for (const int slots : {1, 3, 5}) {
+        FakeGame game;
+        game.pack_slots = slots;
+        game.Hud();
+        party::Hud hud;
+        std::vector<std::string> log;
+        std::vector<party::Block> blocks;
+        for (int i = 0; i < 6; ++i) blocks.push_back({"P" + std::to_string(i), Quarters(12, 12)});
+        REQUIRE(hud.Step(game, blocks, 0.15, &log));
+        CHECK(Said(log, "(its own heart parts, " + std::to_string(slots) + " slots)"));
+        for (int s = 0; s < slots; ++s) CHECK(game.Shown(HeartName(s, 0)));
+        CHECK(game.panes.count(HeartName(slots, 0)) == 0);
+        CHECK(game.texts["Pa_CoopMore_0/T_Text_00"] == "+" + std::to_string(6 - slots));
+    }
 }
