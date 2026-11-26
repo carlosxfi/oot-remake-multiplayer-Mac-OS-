@@ -1664,6 +1664,50 @@ class RecoveryCascade(unittest.TestCase):
         self.assertTrue(any("relaunch failed" in n for n in pair.notes), pair.notes)
         self.assertTrue(any(n.startswith("recovery: stepped part failed: ") for n in pair.notes), pair.notes)
 
+    def test_the_in_game_host_is_never_relaunched(self):
+        """A host-in-game boot (bt_plugin HOST_IN_GAME_BOOTS): A hosts the session, so its relaunch would end B's
+        session and boot_ready would still read both in play (review-c123-15 22:37): LaneLost, rejoin never asked."""
+        pair, clock = self.make(P.Pair.RECOVER_RELAUNCH_S + 5, stuck="A")
+        pair.no_relaunch = {"A": "A hosts the session in game"}
+        asked = []
+        pair.rejoin = lambda x: asked.append(x)
+        with self.assertRaises(P.LaneLost) as cm:
+            pair.recover(self.BOOT)
+        self.assertEqual(asked, [])
+        self.assertIn("A stuck (A: scene=", str(cm.exception))
+        self.assertIn("not relaunched: A hosts the session in game", str(cm.exception))
+
+    def test_backstop_is_above_every_budget_and_skips_the_recovery(self):
+        """pytest-timeout (thread method: ends the worker) must never fire before a test's own budget: it times the
+        function only (the recovery is in the pair fixture) and each test's is its budget + BACKSTOP_MARGIN_S."""
+        import configparser
+        import pytest
+        import bt_plugin
+        ini = configparser.ConfigParser()
+        ini.read(os.path.join(INGAME, "pytest.ini"))
+        self.assertEqual(ini["pytest"]["timeout_func_only"].strip(), "true")
+        floor = float(ini["pytest"]["timeout"])
+
+        class Item:
+            def __init__(self, budget=None):
+                self.marks = {"budget": pytest.mark.budget(budget).mark} if budget else {}
+
+            def get_closest_marker(self, name):
+                return self.marks.get(name)
+
+            def add_marker(self, m):
+                self.marks[m.mark.name] = m.mark
+
+        class Config:
+            def getini(self, name):
+                return str(floor)
+
+        items = [Item(3000), Item(2400), Item(), Item(90)]
+        bt_plugin._backstop(Config(), items)
+        got = [it.marks["timeout"].args[0] for it in items]
+        self.assertEqual(got, [3000 + bt_plugin.BACKSTOP_MARGIN_S, 2400 + bt_plugin.BACKSTOP_MARGIN_S, floor, floor])
+        self.assertGreaterEqual(bt_plugin.BACKSTOP_MARGIN_S, 60)
+
     def test_suite_lane_lost_once_then_every_later_test_at_once(self):
         """The fake lane: B's pause page never closes after test_pause (BT_FAKE_PAUSE_STUCK=B). test_pause FAILs, the
         next test's recovery cannot relaunch B on the fake lane (no live.py): SETUP-FAIL naming B's state, with its

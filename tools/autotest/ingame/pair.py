@@ -654,7 +654,8 @@ class Pair:
         script x booted with), then the boot proof again (boot_ready, BOOT_READY_S / BOOT_FRAMES). A game left
         waiting for input (a pause page, the ocarina UI) never comes back by stepping (tb-gate-ui-f9f3b9c2 test_pause,
         tb-pilot-f9f3b9c2 test_ocarina_notes); no blind button escape (NO GUESSED VALUES). Both games at the place on
-        that read: the recovery holds after all (noted). A relaunch, or the boot proof after it, that fails: LaneLost,
+        that read: the recovery holds after all (noted). A game in Pair.no_relaunch ({x: why}, bt_plugin: game A on a
+        host-in-game boot, whose relaunch would end B's session) is never relaunched: LaneLost at once. A relaunch, or the boot proof after it, that fails: LaneLost,
         with `fail` first in its text. Every step is noted (bt_plugin puts the notes on the test either way)."""
         clock = outer.clock
         self.notes.append("recovery: stepped part failed: %s" % fail)
@@ -668,6 +669,12 @@ class Pair:
                 return {x: self.state(x) for x in self.c}
             finally:
                 self.deadline = outer
+        never = {x: why for x, why in (getattr(self, "no_relaunch", None) or {}).items() if x in bad}
+        if never:
+            self.notes.append("recovery: not relaunched: %s" % "; ".join("%s (stuck: %s)" % (w, whys[x])
+                                                                     for x, w in never.items()))
+            raise LaneLost("%s; %s" % (fail, "; ".join("%s stuck (%s), not relaunched: %s" % (x, whys[x], w)
+                                                       for x, w in never.items())))
         try:
             for x in bad:
                 self.deadline = Deadline(max(0.0, min(self.REJOIN_QUIT_S + self.REJOIN_BOOT_S, outer.left())),

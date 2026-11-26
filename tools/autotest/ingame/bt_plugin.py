@@ -164,7 +164,28 @@ def _rep_of(item):
     return cs.params.get("bt_rep", 0) if cs else 0
 
 
+# pytest-timeout is only the backstop for a call that never returns (pytest.ini: timeout 1800, thread method: it ends
+# the whole worker). It times the test FUNCTION only (timeout_func_only: the pair fixture's recovery, up to
+# Pair.RECOVER_RELAUNCH_S, is not in it), so each test's backstop is its own budget plus this margin, never under the
+# ini's: the budget's own deadline always FAILs the test first. (Was the ini's 1800 s for all: test_host_menu's
+# budget 2400 and test_lan251's 3000 could be ended by the backstop first; review-c123-15 22:37 on crawl-337-11.)
+BACKSTOP_MARGIN_S = 300
+
+
+def _backstop(config, items):
+    try:
+        floor = float(config.getini("timeout") or 0)
+    except (ValueError, TypeError):      # (no pytest-timeout in this environment: no ini key)
+        floor = 0.0
+    for it in items:
+        m = it.get_closest_marker("budget")
+        budget = m.args[0] if m else DEFAULT_BUDGET
+        if not it.get_closest_marker("timeout"):
+            it.add_marker(pytest.mark.timeout(max(floor, budget + BACKSTOP_MARGIN_S)))
+
+
 def pytest_collection_modifyitems(config, items):
+    _backstop(config, items)
     order = {id(it): i for i, it in enumerate(items)}
     items.sort(key=lambda it: (_rep_of(it), 1 if it.get_closest_marker("leaves_play") else 0,
                                0 if it.get_closest_marker("smoke") else 1, order[id(it)]))
@@ -621,6 +642,11 @@ def lane_pair(request):
         pair.lane, pair.info, pair.session = lane, dict(info, boot_s=round(time.monotonic() - t0, 1)), session
         pair.live = _live                       # (Pair.rejoin: live.py quit + relaunch in this session)
         pair.boot = dict(zip(("A", "B"), boot_paths(config.getoption("boot"))))   # (rejoin: the lane's own boot)
+        if config.getoption("boot") in HOST_IN_GAME_BOOTS:
+            # (A hosts the session itself: relaunching A ends B's session, and boot_ready alone would not see it;
+            # review-c123-15 22:37. The recovery never relaunches A here: a stuck A loses the lane)
+            pair.no_relaunch = {"A": "A hosts the session in game (boot %s): its relaunch would end B's session"
+                                     % config.getoption("boot")}
         pair.window_shooter = windowshot.Shooter(session)   # (screen-shot.ps1 on the session's game pids)
         _module_proof(pair, lane)               # (before any bridge call: a game with no module refuses the connection)
         for x in pair.c:
