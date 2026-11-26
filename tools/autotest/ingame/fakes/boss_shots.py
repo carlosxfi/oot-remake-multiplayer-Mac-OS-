@@ -3,8 +3,9 @@
 Reacts only on a boot with the rows' switch LICHII_COOP_DEBUG_OBJECTS=1 and only in TwinrovaStage / PhantomGanonStage.
 What it logs is the module's text: the shooter line (coop_hookshot.cpp SetBossShooter, at the world hello), the sync
 note (coop_boss_native.cpp:527), the bullets (coop_objects.cpp:6794 'objects: + <name>') and the counts
-(coop_hookshot.cpp LogBossShooter). A warp to a boss stage answers 'timeout' with Link already there (its intro event:
-the bridge's WarpArrived wants no event), so Pair.warp_both(arrive_in_event=True) is exercised. ZL in a boss stage = a
+(coop_hookshot.cpp LogBossShooter). A warp to a boss stage answers 'timeout' with Link already there and its intro
+event running (state event true for INTRO_FRAMES: the bridge's WarpArrived wants no event), so
+Pair.warp_both(arrive_in_event=True) is exercised as on a real game. ZL in a boss stage = a
 shot: A (the owner) sends it, B (a copy) makes it.
 BT_FAKE_BOSS_ONE_SIDED=1: B makes none of the owner's shots (the bug); =bullets: B counts them made but no bullet
 appears. Either way the tests must FAIL.
@@ -12,6 +13,7 @@ appears. Either way the tests must FAIL.
 import os
 
 SWITCH = "LICHII_COOP_DEBUG_OBJECTS=1"
+INTRO_FRAMES = 300   # the fake's boss intro; the tests step 900 / 1950 frames after the warp (the old a-in waits)
 BOSSES = {"TwinrovaStage": ["Enemy_DungeonBoss_Koume", "Enemy_DungeonBoss_Kotake"],
           "PhantomGanonStage": ["Enemy_DungeonBoss_PhantomGanon"]}
 BULLETS = {"TwinrovaStage": ["Twinrova_Bullet_FireBullet", "Twinrova_Bullet_IceBullet"],
@@ -28,7 +30,7 @@ def _role(game):
 
 
 def setup(game):
-    game.shots_fused, game.shots_sent, game.shots_made = False, 0, 0
+    game.shots_fused, game.shots_sent, game.shots_made, game.intro_until = False, 0, 0, 0
     if _on(game):
         game.say("coop: bosses: boss shots the owner's (wrapped)")
 
@@ -37,11 +39,16 @@ def command(game, m):
     if not _on(game) or m.get("cmd") != "warp" or m.get("scene") not in BOSSES:
         return None
     game.run(40)
-    game.scene, game.shots_fused = m["scene"], False
+    game.scene, game.shots_fused, game.intro_until = m["scene"], False, game.frame + INTRO_FRAMES
     for i, boss in enumerate(BOSSES[game.scene]):
         game.say("coop: %s: native boss sync on (BSA 0x%x, %s)" % (boss, 0x100 + i, _role(game)))
     return {"ok": False, "error": "timeout", "message": "not in %s after %s s; held (the intro event)" % (
         game.scene, m.get("timeout"))}
+
+
+def state(game, st):
+    if _on(game) and game.scene in BOSSES and game.frame < game.intro_until and st.get("event") is False:
+        st["event"] = True
 
 
 def press(game, buttons):
