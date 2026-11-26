@@ -59,7 +59,10 @@ def act(game, words):
             game.later(60, lambda: setattr(game, "ux_offer", True))
         return True
     if words[0] == "kill" and _mine_boss(game) and len(words) == 3 and words[1].isdigit():
-        game.ux_dead.add(words[2])      # 'kill ID ACTOR'
+        seq = (game.ux_strike or {}).get("seq", 0) + 1
+        game.ux_strike = {"seq": seq, "result": "done", "name": words[2], "id": int(words[1])}
+        if _mode() != "kill-miss":      # kill-miss: the strike is made but the part lives on (a blow that did not land)
+            game.ux_dead.add(words[2])  # 'kill ID ACTOR'
         return True
     return False
 
@@ -125,5 +128,7 @@ def state(game, st):
         st["prompt"] = "Talk" if game.ux_offer and not game.ux_talk else None
         if game.ux_strike:
             st["strike"] = game.ux_strike
+    if _mine_boss(game) and game.ux_strike:
+        st["strike"] = game.ux_strike
     if game.scene == "ForestTemple" or _mine_boss(game):
         st["age"] = "adult"

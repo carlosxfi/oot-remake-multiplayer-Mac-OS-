@@ -68,6 +68,9 @@ class UxSweep(unittest.TestCase):
                      env={"BT_FAKE_UX": "", "BT_FAKE_FPS_B": "40"})
         self.check(T.summary(out), "FAIL", "frame drops after the final blow (row 283): B: fps 40.0")
 
+    def test_final_blow_no_ref_when_the_kill_does_not_land(self):
+        self.check(self.run_one("final_blow", "kill-miss", BOOT_ADULT), "NO-REF", "no final blow measured")
+
 
 if __name__ == "__main__":
     unittest.main()

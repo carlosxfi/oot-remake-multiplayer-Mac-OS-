@@ -262,7 +262,10 @@ def test_boss_final_blow_frames(pair):
     """Row 283 (Sephiroth guest, PiscesGamer97 NVIDIA host): frame drops on boss final blows; an AMD host saw none.
     No logs came, so this measures it: Twinrova (the lane's boss boot), the host A strikes every part of the boss
     dead (the bridge's `kill`, cheats on in the boot), then both games run in real time and each game's 5 s present
-    windows from the blow on must hold row 83's line. Kept: every window's fps and late share (notes)."""
+    windows from the blow on must hold row 83's line. NO-REF unless every kill answered `done` and no part is alive
+    after the windows (the blow is proven before it is judged). Kept: every window's fps and late share (notes).
+    It leaves the boss dead for the rest of the live-twinrova-room boot: test_small_key_door (ForestTemple, own warp)
+    does not need it, and this test needs a fresh boot (or runs first) to find the parts alive."""
     import time
     with pair.setup():
         for x in ("A", "B"):
@@ -275,8 +278,17 @@ def test_boss_final_blow_frames(pair):
         pair.unproven("no Twinrova part alive in A's world list after the intro")
     marks = {x: pair.log[x].mark() for x in ("A", "B")}
     for a in parts:
-        pair.act("A", "kill %s %s" % (a.get("id"), a["name"]))   # 'kill [ID] ACTOR' (coop_testinput.cpp StrikeId)
-    pair.step_both(2)
+        # 'kill [ID] ACTOR' (coop_testinput.cpp:523-531); one at a time: state.strike keeps only the last strike
+        # (docs/playtest.md "strike"), so each answer is read before the next kill is sent.
+        seq = (pair.act("A", "kill %s %s" % (a.get("id"), a["name"])) or {}).get("strike_seq")
+        def answered():
+            pair.step_both(2)
+            st = pair.state("A").get("strike") or {}
+            return st if st.get("name") == a["name"] and (seq is None or st.get("seq") == seq) else None
+        st = pair.until("A: the kill of %s answered" % a["name"], answered, max_frames=120)
+        if st.get("result") != "done":
+            pair.unproven("A: the kill of %s %s answered %r: no final blow was struck" % (a.get("id"), a["name"],
+                                                                                         st.get("result")))
     for x in ("A", "B"):
         pair.call(x, "resume")
     got = {}
@@ -291,12 +303,17 @@ def test_boss_final_blow_frames(pair):
     finally:
         for x in ("A", "B"):
             pair.call(x, "pause")
+    # The death must be proven before the windows count as "after the final blow": a kill that did not land would
+    # measure plain play and PASS without a blow (review-rows-c136). 15 s of play is far past the walk's 36-frame wait.
+    left = [a["name"] for n in TR_PARTS for a in actors(pair, "A", n) if a.get("alive", True) and a.get("life", 1) != 0]
+    if left:
+        pair.unproven("boss parts still alive in A %d windows after the kills: %s (no final blow measured)"
+                      % (FINAL_WINDOWS, left))
+    pair.notes.append("boss parts alive in A after: none")
     bad = []
     for x in ("A", "B"):
         mean, late, note = judge_windows(x, got[x][:FINAL_WINDOWS])
         pair.notes.append(note)
         if mean < MIN_SHARE * CAP_FPS or late > MAX_LATE:
             bad.append(note)
-    left = [a["name"] for n in TR_PARTS for a in actors(pair, "A", n) if a.get("alive", True)]
-    pair.notes.append("boss parts alive in A after: %s" % (left or "none"))
     assert not bad, "frame drops after the final blow (row 283): %s" % "; ".join(bad)
