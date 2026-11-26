@@ -1052,11 +1052,41 @@ TEST_CASE("rando: the kit's own open presets are OOTRR1- strings given to genera
         const auto args = GenerateArgs(p, "abc", "seed.ootrr", "");
         REQUIRE(args.size() >= 2);
         CHECK(args[1] == s);
-        CHECK(FolderFor("abc", p) == std::string("randomizer-abc-") + p);
+        const std::string folder = FolderFor("abc", p);
+        CHECK(folder.rfind(std::string("randomizer-abc-") + p + "-", 0) == 0);
+        CHECK(folder.size() == std::string("randomizer-abc-").size() + std::string(p).size() + 9);
+        CHECK(folder != FolderFor("abc", "default"));
     }
+    // Row 53: the folder carries the string's hash, so a string changed under the same name is another folder (the
+    // seed built before is not taken for the new world), and the two presets never share one.
+    CHECK(FolderFor("abc", "open") != FolderFor("abc", "open_fast"));
+    CHECK(FolderFor("abc", "open") == FolderFor("abc", "open"));
+    CHECK(FolderFor("abc", "open") != "randomizer-abc-open");      // the 0.11.x folder is not reused
+    CHECK(FolderFor("abc", "open_fast") != "randomizer-abc-open_fast");
+    CHECK(FolderFor("abc", "keysanity") == "randomizer-abc-keysanity");  // OOTRR's own presets keep their name
     CHECK(std::string(OwnPresetString("easy")).empty());
     CHECK(GenerateArgs("easy", "abc", "seed.ootrr", "")[1] == "easy");
     CHECK(ManifestText().find("\"value\": \"open\"") != std::string::npos);
+}
+
+TEST_CASE("rando: a kit preset's seed built before 0.12.0 is made again under its string's folder (row 53)") {
+    // 0.11.x named it "randomizer-<seed>-open" (no hash): its world may be another string's (open_fast's changed in
+    // 0.12.0), so it is never taken; the seed is built under the new name and the old folder is only switched off.
+    const std::string now = FolderFor("AB12", "open_fast");
+    {
+        const std::vector<Built> built{{"randomizer-AB12-open_fast", "AB12", "open_fast", ""}};
+        const Plan p = Decide({true, "AB12", "open_fast"}, built, {RowNamed("randomizer-AB12-open_fast", true)});
+        CHECK(p.what == Plan::Do::build);
+        CHECK(p.folder == now);
+    }
+    {   // built again: the new one on, the old one off (it stays on disk)
+        const std::vector<Built> built{{"randomizer-AB12-open_fast", "AB12", "open_fast", ""}, {now, "AB12", "open_fast", ""}};
+        const Plan p = Decide({true, "AB12", "open_fast"}, built,
+                              {RowNamed("randomizer-AB12-open_fast", true), RowNamed(now, false)});
+        CHECK(p.what == Plan::Do::use);
+        CHECK(p.on == std::vector<std::string>{now});
+        CHECK(p.off == std::vector<std::string>{"randomizer-AB12-open_fast"});
+    }
 }
 
 TEST_CASE("rando: the preset cache's text") {

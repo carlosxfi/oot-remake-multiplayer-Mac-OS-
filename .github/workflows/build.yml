@@ -198,6 +198,10 @@ jobs:
         run: python tools/release/tests/test_apply_patch.py -v
       - name: Kit Discord status tests
         run: python tools/release/tests/test_discord_status.py -v
+      - name: Randomizer kit presets tests
+        run: python tools/rando/tests/test_check_presets.py -v
+      - name: Randomizer kit presets decoded with the pinned OOTRR (row 53; downloads it, fails when it cannot)
+        run: python tools/rando/check_presets.py
       # Test files no step named before (tools/check_content.py now fails any test_*.py under tools/ that no workflow names).
       - name: Steps file tests
         run: python tools/autotest/tests/test_hs_steps.py -v

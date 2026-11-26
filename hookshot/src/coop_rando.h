@@ -60,10 +60,14 @@ inline constexpr const char* kPresets[] = {"default", "easy", "open_world", "key
 // (small keys removed, adult start, open bridge: "This build cannot apply these settings yet"), so these two are
 // OOTRR1- settings strings made of only the openness settings it does apply (forest, Kakariko, Zora, Door of Time,
 // Gerudo Fortress open or fast, Ganon's trials skipped, boss keys removed). Each is given to `generate` in place of
-// its name; the folder and the Settings row use the name. Empty: not one of ours (OOTRR's own preset id).
+// its name; the Settings row uses the name, the folder the name and the string's hash (FolderFor). Empty: not one of
+// ours (OOTRR's own preset id). Both set door_of_time_escape "moat" (row 53: the Ocarina of Time lies in the castle
+// moat from the start, so the two ocarina checks need no Spiritual Stones) and differ only in gerudo_fortress (open
+// / fast): open_fast had door_of_time_condition "vanilla" until 0.12.0 (made again with OOTRR 0.8.2's own encoder,
+// every other setting the same). tools/rando/check_presets.py decodes both with the pinned OOTRR in CI.
 inline const char* OwnPresetString(std::string_view name) {
     if (name == "open") return "OOTRR1-AMAQABABAADACAQHAEBA6AIACAAQCEQBAEPACAJGAEASOAIBGMAQCTABAFHACATJAEAG2AIDQ4AQCADGXY";
-    if (name == "open_fast") return "OOTRR1-AMAQABABAADACAQHAEAQ6AIACAAQCEQBAEPACAJGAEASOAIBGMAQCTABAFHACATJAEAIOAIBACCKS";
+    if (name == "open_fast") return "OOTRR1-AMAQABABAADACAQHAEAQ6AIACAAQCEQBAEPACAJGAEASOAIBGMAQCTABAFHACATJAEAG2AIDQ4AQCAEDLQ";
     return "";
 }
 inline constexpr const char* kPresetsFile = "presets-ok.txt";   // in kFolder: which presets the installed OOTRR builds
@@ -75,7 +79,11 @@ std::string ManifestText();
 // at most 63, "seed" when nothing is left.
 std::string SeedWord(std::string_view seed);
 // The seed's folder: "randomizer-<word>", with "-<preset>" for a preset other than "default", or "-s<8 hex digits>"
-// (a hash) for a settings string (IsSettingsString: too long for a folder name).
+// (a hash) for a settings string (IsSettingsString: too long for a folder name). A kit preset (OwnPresetString) is
+// "-<preset>-<8 hex digits>", the hash of its string (row 53, 0.12.0): Decide finds a built seed by its folder, so a
+// string changed under the same name kept the old world in a folder built before and gave a fresh build another one
+// for the same seed (the row 274 mismatch). A seed built before 0.12.0 under "-open" is made once again under the new
+// name (the same string and seed: OOTRR is deterministic, the same world); the old folder is switched off and stays.
 std::string FolderFor(std::string_view seed, std::string_view preset);
 // OOTRR's settings string, as its own page shows it and as `ootrr generate` takes in place of a preset (the .ootrr
 // file's "settings", "OOTRR1-EYAQCTABAHIHE" for default with OOTRR 0.5.0; player report #48: a seed made on OOTRR's
