@@ -51,6 +51,19 @@ class VolvagiaRocks(unittest.TestCase):
         self.assertEqual(r, {NAME: "SETUP-FAIL"}, p.stdout[-3000:])
         self.assertIn("stand apart", p.stdout, p.stdout[-3000:])
 
+    def test_budget_is_built_from_its_parts(self):
+        """The budget holds the arrival ceiling + set-ups + ONE rocks wait + the sampling cap (a637fe404's cause: a fixed
+        budget that a lane-2 arrival outran)."""
+        sys.path.insert(0, os.path.join(os.path.dirname(HERE), "ingame"))
+        import pair as P                    # noqa: E402
+        import test_boss_respawn as BR      # noqa: E402
+        import test_volvagia_rocks as VR    # noqa: E402
+        parts = BR.BOSS_ARRIVAL_S + 2 * P.SETUP_LIMIT_S + VR.ROCKS_FRAMES / P.FPS + VR.SAMPLE_S
+        self.assertGreaterEqual(VR.BUDGET_S, parts)
+        self.assertLess(VR.BUDGET_S, parts + 2)
+        marks = {m.name: m.args for m in VR.test_volvagia_rocks_fall_at_each_link.pytestmark}
+        self.assertEqual(marks["budget"], (VR.BUDGET_S,))
+
     def test_default_run_deselects_it(self):
         p, r = self.run_file([])
         self.assertEqual(r, {}, p.stdout[-3000:])

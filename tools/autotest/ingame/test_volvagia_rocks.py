@@ -56,6 +56,15 @@ FALL_XZ = 2.0                                 # ... and it stays over the same g
                                               # jumps far: not a fall)
 SAMPLE_EVERY, SAMPLE_MAX = 5, 900
 MIN_FALLING = 3
+ROCKS_FRAMES = 10800                          # hs-volvagia-rocks.{A,B}.txt 'await 10800 objects: rocks:' (the old row's wait)
+# The test's budget, from its parts (boss-respawn-289-5 a637fe404: a fixed 150 s arrival ran out on lane 2):
+#   the arrival BR.BOSS_ARRIVAL_S (its own cited ceiling) + the set-up and stand_apart (each within P.SETUP_LIMIT_S)
+#   + ONE wait for both rocks lines (ROCKS_FRAMES of game, both games stepped together) + the sampling's own cap.
+# SAMPLE_S: the sampling's WALL cap. Its cost per dump is NOT measured yet (no lane run reached the rocks); a run that
+# hits it stops sampling and keeps what it saw (the notes give dumps and s/dump: the probe measures it, MEASURED cites
+# it). It never decides PASS/FAIL by itself: fewer rocks seen = fewer judged (none = NO-REF).
+SAMPLE_S = 2 * SAMPLE_MAX / P.FPS + 60.0      # 900 frames of game, twice (margin), + 60 s for the 2x180 dumps
+BUDGET_S = int(BR.BOSS_ARRIVAL_S + 2 * P.SETUP_LIMIT_S + ROCKS_FRAMES / P.FPS + SAMPLE_S) + 1
 OWN_SHARE = 0.75
 # review-rows-c130 10:32 (1), the kokiri-band rule chain: MIN_APART_M, FALL_DY, FALL_XZ, MIN_FALLING and OWN_SHARE are
 # NOT measured yet. Until MEASURED cites a probe run (run name + per-rock distances own/other, the spread), a run that
@@ -117,7 +126,12 @@ def sample(pair):
     falling_ids = {"A": set(), "B": set()}
     shot = {"A": False, "B": False}
     i = ran = 0
+    cap = P.Deadline(max(0.0, min(SAMPLE_S, pair.deadline.left())), clock=pair.deadline.clock)
     while ran <= SAMPLE_MAX:
+        if cap.left() <= 0:
+            pair.notes.append("sampling stopped at its %.0f s cap after %d dumps per game (%.2f s per dump pair)" % (
+                cap.seconds, i, cap.seconds / max(1, i)))
+            break
         now = {x: world_dump(pair, x, i) for x in ("A", "B")}
         for x, y in (("A", "B"), ("B", "A")):
             own, other = now[x]["link"], now[y]["link"]
@@ -163,11 +177,15 @@ def judge(pair, x, seen, ids):
     return near_own / float(n), n, rows
 
 
-@pytest.mark.budget(900)                      # as test_volvagia_rocks_each_game: 'await 10800' + the sampling
+ROCKS_LINE = r"coop: objects: rocks: \d+ new falling rocks"   # coop_objects.cpp NoteFallingRocks
+
+
+@pytest.mark.budget(BUDGET_S)                 # from its parts (BUDGET_S above): arrival + set-ups + rocks wait + sampling
 @pytest.mark.look
 @pytest.mark.needs_env(BR.OBJECTS)
 @pytest.mark.row("#234 Volvagia's falling rocks at each player's own Link (positions from the world list)")
 def test_volvagia_rocks_fall_at_each_link(pair, back_after):
+    clock = pair.deadline.clock
     with pair.setup():
         BR.start_check(pair)
         BR.give_hearts(pair)                  # the one heart set-up of the row 234 tests (review-rows-c130 10:32 (2))
@@ -175,10 +193,13 @@ def test_volvagia_rocks_fall_at_each_link(pair, back_after):
     stand_apart(pair)
     for x in ("A", "B"):
         pair.log[x].mark()
-    pair.expect_log("A", r"coop: objects: rocks: \d+ new falling rocks", max_frames=10800)
-    pair.expect_log("B", r"coop: objects: rocks: \d+ new falling rocks", max_frames=10800)
+    t = clock()                               # ONE wait for both games' lines (both are stepped together), not two
+    pair.until("both games' rocks lines /%s/" % ROCKS_LINE,
+               lambda: all(pair.log[x].find(ROCKS_LINE) for x in ("A", "B")), max_frames=ROCKS_FRAMES)
+    pair.notes.append("rocks lines in both games after %.1f s" % (clock() - t))
+    t = clock()
     seen, ids, n = sample(pair)
-    pair.notes.append("%d dumps; falling rocks A %d, B %d" % (n, len(ids["A"]), len(ids["B"])))
+    pair.notes.append("%d dumps in %.1f s; falling rocks A %d, B %d" % (n, clock() - t, len(ids["A"]), len(ids["B"])))
     got = {x: judge(pair, x, seen[x], ids[x]) for x in ("A", "B")}
     none = [x for x in ("A", "B") if got[x] is None]
     if none:
