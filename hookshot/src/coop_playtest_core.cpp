@@ -407,7 +407,9 @@ std::optional<Request> ParseRequest(std::string_view line, std::string& error) {
                    val->number <= 2147483647.0) {  // (int32, as the game's Int flags; review-01111-b)
             r.value = std::to_string(static_cast<long long>(val->number));
         } else if (val->kind == K::String && PlainText(val->string, 128)) {
-            r.value = val->string;  // an enum value's name: setenum
+            r.value = val->string;  // an enum value's name: setenum (NAME[i]: a String64Array element's text)
+        } else if (val->kind == K::String && val->string.empty() && r.name.ends_with(']')) {
+            r.value.clear();  // row 294: NAME[i] "" empties a String64Array element
         } else {
             error = "value: a whole number from -2147483648 to 2147483647, true or false, or an enum value's name";
             return std::nullopt;
