@@ -21,6 +21,8 @@ namespace {
 constexpr std::uint64_t kMain = 0x80020000;
 constexpr std::uint64_t kManager = 0x96000000, kScreens = 0x97000000, kStatus = 0x93000000, kLayout = 0x94000000;
 constexpr std::uint64_t kBlock = 0x9a000000, kPanes = 0x9b000000, kAnims = 0x9c000000;
+constexpr std::uint64_t kParts = 0x9d000000, kBoxes = 0x9e000000;   // our parts' layouts, their text panes
+constexpr std::uint64_t kAttrs = 0x1234;                             // a text pane's own message attributes
 
 struct FakeGame final : party::Game {
     std::map<std::uint64_t, std::uint8_t> mem;
@@ -28,7 +30,10 @@ struct FakeGame final : party::Game {
     std::map<std::uint64_t, int> shown;                  // pane -> 0/1
     std::map<std::uint64_t, float> frames;               // animation -> the frame it is stopped at
     std::map<std::uint64_t, float> alphas;               // pane -> its own alpha (kPaneAlpha)
-    std::map<std::string, std::string> texts;            // text pane path -> text
+    std::map<std::string, std::string> texts;            // text pane path -> text (as the game's set-message call)
+    std::map<std::uint64_t, std::string> parts, boxes;   // part layout -> its part's name; text pane -> its path
+    int pane_text_calls = 0;                             // f_8045b970 (no path: sets nothing on our parts)
+    bool text_panes = true;                              // the parts have T_Text_00 and T_Text_01
     bool pack = true;
     std::int32_t gauge_last = 100;
     int calls = 0;
@@ -77,11 +82,42 @@ struct FakeGame final : party::Game {
             shown[x[0]] = static_cast<int>(x[1]);
             return 0;
         }
-        if (f == At(ui::addr::kSetPaneText)) {
-            ui::Ref r;
-            Read(x[2], &r, sizeof r);
-            texts[Str(x[1])] = Str(r.text);
+        if (f == At(ui::addr::kSetPaneText)) {   // (a pane of the layout itself only: a path matches nothing)
+            ++pane_text_calls;
             return 0;
+        }
+        if (f == At(party::addr::kPathFind)) {   // "Part/Pane": the part's layout out, the name in it
+            const std::string path = Str(x[0]);
+            const auto slash = path.find('/');
+            if (!pack || slash == std::string::npos) return 0;
+            const std::string part = path.substr(0, slash);
+            if (panes.count(part) == 0) return 0;
+            std::uint64_t at = 0;
+            for (const auto& [l, name] : parts) at = name == part ? l : at;
+            if (at == 0) at = kParts + 0x1000 * (parts.size() + 1), parts[at] = part;
+            Put(x[2], at);
+            return x[0] + slash + 1;
+        }
+        if (f == At(party::addr::kPaneTable)) return parts.count(x[0] - 0x40) ? x[0] - 0x40 + 0x800 : 0;
+        if (f == At(party::addr::kTablePane)) {
+            const std::string name = Str(x[1]);
+            const auto part = parts.find(x[0] - 0x800);
+            if (!text_panes || part == parts.end() || (name != "T_Text_00" && name != "T_Text_01")) return 0;
+            const std::string path = part->second + "/" + name;
+            for (const auto& [box, p] : boxes) if (p == path) return box;
+            const std::uint64_t box = kBoxes + 0x1000 * boxes.size();
+            boxes[box] = path;
+            const std::uint32_t flags = party::addr::kTextPaneKind << 22;
+            Write(box + party::addr::kPaneFlags, &flags, sizeof flags);
+            Put(box + party::addr::kPaneMsgAttrs, kAttrs);
+            return box;
+        }
+        if (f == At(party::addr::kPaneSetMsg)) {   // the text box keeps the pointer and the length
+            ui::Ref r;
+            Read(x[1], &r, sizeof r);
+            if (boxes.count(x[0]) == 0 || static_cast<std::uint64_t>(r.end) != kAttrs) return 0;
+            texts[boxes[x[0]]] = Str(r.text).substr(0, r.bytes);
+            return 1;
         }
         return 0;
     }
@@ -213,7 +249,8 @@ TEST_CASE("party hud: shows, sets and hides the copies") {
     std::vector<party::Block> blocks = {{"Saria  Kokiri Forest", Quarters(11, 20)}, {"Ruto", Quarters(48, 48)}};
     REQUIRE(hud.Step(game, blocks, 0.15, &log));
     CHECK(hud.native());
-    CHECK(log.back().find("its own heart parts") != std::string::npos);
+    CHECK(std::any_of(log.begin(), log.end(), [](const std::string& l) { return l.find("its own heart parts") != std::string::npos; }));
+    CHECK(game.pane_text_calls == 0);   // (f_8045b970 takes no path: never asked for our parts' panes)
     CHECK(game.texts["Pa_CoopName_0/T_Text_00"] == "Saria  Kokiri Forest");
     CHECK(game.texts["Pa_CoopName_0/T_Text_01"] == "Saria  Kokiri Forest");
     CHECK(game.texts["Pa_CoopName_1/T_Text_00"] == "Ruto");
@@ -379,4 +416,57 @@ TEST_CASE("party hud: our own voice line goes first on the game's text part, the
 
     REQUIRE(hud.Step(game, {}, 0.15, &log, 0, "You"));              // nobody else: no row of our own either
     CHECK_FALSE(game.Shown("Pa_CoopSelf_0"));
+}
+
+namespace {
+bool Said(const std::vector<std::string>& log, const std::string& what) {
+    return std::any_of(log.begin(), log.end(), [&](const std::string& l) { return l.find(what) != std::string::npos; });
+}
+}  // namespace
+
+TEST_CASE("party hud: every line's text panes are found by path and the log says so (row 291)") {
+    FakeGame game;
+    game.Hud();
+    party::Hud hud;
+    std::vector<std::string> log;
+    REQUIRE(hud.Step(game, party::TestBlocks(0), std::nullopt, &log, 0, party::TestOwn()));
+    for (const char* part : {"Pa_CoopName_0", "Pa_CoopName_1", "Pa_CoopName_2", "Pa_CoopMore_0", "Pa_CoopSelf_0"}) {
+        CHECK(Said(log, std::string("text ") + part + "/T_Text_00: found"));
+        CHECK(Said(log, std::string("text ") + part + "/T_Text_01: found"));
+        CHECK(Said(log, std::string("text ") + part + ": set on 2 text pane(s)"));
+        CHECK(game.texts[std::string(part) + "/T_Text_00"] == game.texts[std::string(part) + "/T_Text_01"]);
+    }
+    CHECK(game.texts["Pa_CoopSelf_0/T_Text_00"] == "You (talking)");
+    CHECK(game.texts["Pa_CoopName_0/T_Text_00"] == "Twenty 80/80");
+    CHECK(game.texts["Pa_CoopName_2/T_Text_00"] == "Three 12/12");   // the dimmed one has its name too
+    CHECK(game.texts["Pa_CoopMore_0/T_Text_00"] == "+1");
+    CHECK(game.Alpha("Pa_CoopName_2") == doctest::Approx(party::kDimAlpha));
+    CHECK(game.pane_text_calls == 0);
+
+    // The width the game drew it, logged once: here the game draws Pa_CoopName_0's T_Text_00 200 wide.
+    std::uint64_t box = 0;
+    for (const auto& [b, path] : game.boxes) box = path == "Pa_CoopName_0/T_Text_00" ? b : box;
+    const float drawn = 200.0f;
+    game.Write(box + party::addr::kPaneTextWidth, &drawn, sizeof drawn);
+    hud.Step(game, party::TestBlocks(0), std::nullopt, &log, 0, party::TestOwn());
+    hud.Step(game, party::TestBlocks(0), std::nullopt, &log, 0, party::TestOwn());
+    CHECK(Said(log, "text Pa_CoopName_0 drawn 200 wide"));
+
+    // A new text on a line: set again on both panes, the pointer the text box keeps holds the new words.
+    REQUIRE(hud.Step(game, party::TestBlocks(party::kTestStepMs), std::nullopt, &log, 0, "You (muted)"));
+    CHECK(game.texts["Pa_CoopName_0/T_Text_01"] == "Twenty 79/80");
+    CHECK(game.texts["Pa_CoopSelf_0/T_Text_01"] == "You (muted)");
+}
+
+TEST_CASE("party hud: parts without text panes: the hearts still show, the log says why no names") {
+    FakeGame game;
+    game.Hud();
+    game.text_panes = false;
+    party::Hud hud;
+    std::vector<std::string> log;
+    REQUIRE(hud.Step(game, {{"Saria", Quarters(12, 12)}}, std::nullopt, &log));
+    CHECK(game.Shown(HeartName(0, 0)));
+    CHECK(Said(log, "text Pa_CoopName_0/T_Text_00: not found (pane not found)"));
+    CHECK(Said(log, "text Pa_CoopName_0: not set (no text pane found)"));
+    CHECK(game.texts.empty());
 }

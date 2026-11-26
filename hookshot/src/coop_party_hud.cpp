@@ -14,7 +14,8 @@ constexpr const char* kSay = "coop: party hud: ";
 constexpr std::size_t kNameBytes = 64;                    // block+0: a name for one call
 constexpr std::size_t kTextBytes = 200;                   // a line's text at most
 constexpr std::size_t kLineBytes = sizeof(CoopNativeUi::Ref) + kTextBytes + 8;
-constexpr std::size_t kBlockBytes = kNameBytes + kLineBytes * (kSlots + 2);
+constexpr std::size_t kOutAt = kNameBytes + kLineBytes * (kSlots + 2);   // block+: the path lookup's layout out
+constexpr std::size_t kBlockBytes = kOutAt + 16;
 constexpr std::size_t kMore = kSlots, kSelf = kSlots + 1;   // labels_ after the players' lines
 
 
@@ -122,6 +123,27 @@ std::uint64_t Hud::Name(Game& game, const std::string& text) {
     return block_;
 }
 
+// The text pane at `path` ("Pa_CoopName_0/T_Text_00") of `layout`, found as the game's path text call finds each pane
+// it sets: the path lookup (the last part's layout and the pane's name there), its pane table, the pane by that name.
+// 0 when there is none (`why` says why).
+std::uint64_t Hud::TextPane(Game& game, std::uint64_t layout, const std::string& path, std::string& why) {
+    const std::uint64_t n = Name(game, path);
+    const std::uint64_t out = block_ + kOutAt, none = 0;
+    if (n == 0 || !game.Write(out, &none, sizeof none)) return why = "path not written", 0;
+    const auto name = game.Call(game.At(addr::kPathFind), {n, layout, out, 0, 0});
+    std::uint64_t part = 0;
+    if (!name || *name == 0 || !ReadValue(game, out, part) || part == 0) return why = "path not in the layout", 0;
+    const auto table = game.Call(game.At(addr::kPaneTable), {part + 0x40, 0, 0, 0, 0});
+    if (!table || *table == 0) return why = "no pane table", 0;
+    const auto pane = game.Call(game.At(addr::kTablePane), {*table, *name, 0, 0, 0});
+    if (!pane || *pane == 0) return why = "pane not found", 0;
+    std::uint32_t flags = 0;
+    if (!ReadValue(game, *pane + addr::kPaneFlags, flags) || ((flags >> 22) & 0xfu) != addr::kTextPaneKind) {
+        return why = "not a text pane", 0;
+    }
+    return *pane;
+}
+
 bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) {
     layout_ = layout;
     native_ = false;
@@ -184,6 +206,16 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
     }
     labels_[kMore].pane = pane(LabelPart(kMore));
     labels_[kSelf].pane = pane(LabelPart(kSelf));   // (an older pack without it: no own line, the hearts still show)
+    // Each line's two text panes, found once per layout; the run's log says for each one whether it was found.
+    for (std::size_t i = 0; i < labels_.size(); ++i) {
+        Label& l = labels_[i];
+        for (std::size_t k = 0; k < l.boxes.size(); ++k) {
+            const std::string path = LabelPart(i) + (k == 0 ? "/T_Text_00" : "/T_Text_01");
+            std::string why = "no part";
+            l.boxes[k] = l.pane == 0 ? 0 : TextPane(game, layout, path, why);
+            if (log) log->push_back(std::string(kSay) + "text " + path + (l.boxes[k] != 0 ? ": found" : ": not found (" + why + ")"));
+        }
+    }
     if (log) {
         // What the screenshots are read against: every animation of the two heart layouts, and its last frame.
         for (const char* part : {"Pa_CoopHeart_0_00", "Pa_CoopGauge_0"}) {
@@ -256,27 +288,48 @@ void Hud::Set(Game& game, Pane& p, int state, float frame, const std::array<floa
 }
 
 void Hud::SetLabel(Game& game, std::size_t index, const std::string& text, const std::array<float, 2>& at,
-                   float alpha) {
+                   float alpha, std::vector<std::string>* log) {
     Label& l = labels_[index];
     if (l.pane == 0) return;
     if (!l.placed || l.at != at) {
         if (MovePane(game, l.pane, at)) l.placed = true, l.at = at;
     }
     if (!l.has_text || l.text != text) {
-        // The line's own Ref and text, kept in place while it shows; set on the part's two text panes by their path.
+        // The line's text in its own place, kept while it shows (a text box keeps the pointer, not a copy), set on the
+        // part's two text panes as the game's path text call sets each pane: {text, bytes, the pane's own attributes}.
         const std::string clean = CoopNativeUi::Clean(text, kTextBytes);
         const std::uint64_t ref = block_ + kNameBytes + kLineBytes * index;
         CoopNativeUi::Ref r;
         r.text = ref + sizeof r;
         r.bytes = static_cast<std::uint32_t>(clean.size());
-        if (game.Write(r.text, clean.c_str(), clean.size() + 1) && game.Write(ref, &r, sizeof r)) {
-            const std::string part = LabelPart(index);
-            bool set = true;
-            for (const char* pane : {"/T_Text_00", "/T_Text_01"}) {
-                const std::uint64_t n = Name(game, part + pane);
-                set = n != 0 && game.Call(game.At(CoopNativeUi::addr::kSetPaneText), {layout_, n, ref, 1, 0}) && set;
-            }
-            if (set) l.text = text, l.has_text = true;
+        std::string why = l.boxes[0] == 0 && l.boxes[1] == 0 ? "no text pane found" : "";
+        int set = 0;
+        if (why.empty() && !game.Write(r.text, clean.c_str(), clean.size() + 1)) why = "text not written";
+        for (const std::uint64_t box : l.boxes) {
+            if (!why.empty() || box == 0) continue;
+            std::uint64_t attrs = 0;
+            ReadValue(game, box + addr::kPaneMsgAttrs, attrs);
+            r.end = static_cast<std::int64_t>(attrs);
+            if (!game.Write(ref, &r, sizeof r)) why = "reference not written";
+            else if (!game.Call(game.At(addr::kPaneSetMsg), {box, ref, 0, 0, 0})) why = "the game's set failed";
+            else ++set;
+        }
+        if (why.empty() && set > 0) l.text = text, l.has_text = true, l.drawn_frames = 0, l.said_width = false;
+        if (log && !l.said_set) {
+            l.said_set = true;
+            log->push_back(std::string(kSay) + "text " + LabelPart(index) +
+                           (why.empty() ? ": set on " + std::to_string(set) + " text pane(s): \"" + clean + "\""
+                                        : ": not set (" + why + ")"));
+        }
+    }
+    // Once per layout: the width the game drew the text (0 after a second: set but not drawn).
+    if (log && l.has_text && !l.said_width && l.boxes[0] != 0 && ++l.drawn_frames >= 2) {
+        float drawn = 0.0f;
+        ReadValue(game, l.boxes[0] + addr::kPaneTextWidth, drawn);
+        if (drawn > 0.0f || l.drawn_frames >= 60) {
+            l.said_width = true;
+            log->push_back(std::string(kSay) + "text " + LabelPart(index) + " drawn " + std::to_string(static_cast<int>(drawn)) +
+                           " wide" + (drawn > 0.0f ? "" : " (not drawn)"));
         }
     }
     Alpha(game, l.pane, l.alpha, alpha);
@@ -297,7 +350,7 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
     const bool own_shown = !own.empty() && !blocks.empty();
     float top = TopFrom(game_hud_bottom, own_shown);
     if (own_shown) {
-        SetLabel(game, kSelf, own, {kLabelX, top - kLabelHeight / 2.0f}, 1.0f);
+        SetLabel(game, kSelf, own, {kLabelX, top - kLabelHeight / 2.0f}, 1.0f, log);
         top -= kLabelHeight + kBlockGap;
     } else {
         Show(game, labels_[kSelf], false);
@@ -328,7 +381,7 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
         const std::uint64_t glow_for = glow_last > 0 ? static_cast<std::uint64_t>(glow_last) * 1000 / 30 + 1 : kGlowMs;
         if (glow.heart >= 0 && glow_ms > glow_for) glow.heart = -1;
         const bool pinch = LowLife(life, plan.hearts * 4);
-        SetLabel(game, static_cast<std::size_t>(s), b.text, {kLabelX, top - kLabelHeight / 2.0f}, alpha);
+        SetLabel(game, static_cast<std::size_t>(s), b.text, {kLabelX, top - kLabelHeight / 2.0f}, alpha, log);
         for (int i = 0; i < kHearts; ++i) {
             Pane& p = hearts[static_cast<std::size_t>(i)];
             if (i < plan.hearts) {
@@ -350,7 +403,7 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
     }
     const std::string more = MoreText(blocks.size());
     if (more.empty()) Show(game, labels_[kMore], false);
-    else SetLabel(game, kMore, more, {kLabelX, top - kLabelHeight / 2.0f}, 1.0f);
+    else SetLabel(game, kMore, more, {kLabelX, top - kLabelHeight / 2.0f}, 1.0f, log);
     return true;
 }
 

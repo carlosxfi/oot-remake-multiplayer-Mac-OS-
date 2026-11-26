@@ -44,6 +44,16 @@ inline constexpr std::uint64_t kPaneMarkA = 0x815457d0 - 0x80020000;  // what th
 inline constexpr std::uint64_t kPaneMarkB = 0x8154d540 - 0x80020000;
 inline constexpr std::uint64_t kPaneXY = 0x6c;             // pane+: f32 x, y
 inline constexpr std::uint64_t kPaneFlags = 0xa8;          // pane+: u32; bit 8 placed elsewhere, bit 20 tell the layout
+// A text pane inside one of our part copies ("Pa_CoopName_0/T_Text_00"), set as the game's path text call sets each pane
+// it matches (coop_pause_tab.h, the same calls run in the game for the pause pages' copies): f_8045b970 (kSetPaneText)
+// takes no path, only a pane of the layout itself, so it set nothing on our labels (0.11.13 row 291).
+inline constexpr std::uint64_t kPathFind = 0x43c4a0;       // (path, layout, &layout out) -> the name in the last part
+inline constexpr std::uint64_t kPaneTable = 0x43c040;      // (layout + 0x40) -> its pane table
+inline constexpr std::uint64_t kTablePane = 0x43e300;      // (table, name) -> the pane, 0 none
+inline constexpr std::uint64_t kPaneSetMsg = 0x439520;     // (text pane, &{text, bytes, attributes}, 0)
+inline constexpr std::uint64_t kPaneMsgAttrs = 0x10;       // text pane+: the message attributes it keeps
+inline constexpr std::uint64_t kPaneTextWidth = 0x13c;     // text pane+: f32 the width its text was drawn
+inline constexpr std::uint32_t kTextPaneKind = 2;          // pane flags bits 22..25: a text box
 }  // namespace addr
 
 // Where the copies go, in the frame of their parent (N_ScaleL_00: the picture's top left corner, y up; the layout is
@@ -155,6 +165,9 @@ private:
         std::array<float, 2> at{};
         std::string text;
         bool has_text = false;
+        std::array<std::uint64_t, 2> boxes{};   // its text panes T_Text_00, T_Text_01 (0: not found)
+        bool said_set = false, said_width = false;   // (logged once per layout)
+        int drawn_frames = 0;                        // frames since the text was set, until its width is logged
     };
     bool Find(Game& game, std::uint64_t layout, std::vector<std::string>* log);
     void Show(Game& game, Pane& p, bool shown);
@@ -164,7 +177,8 @@ private:
                  bool defence);
     static void StopAt(Game& game, std::uint64_t anim, float& had, float frame);
     void SetLabel(Game& game, std::size_t index, const std::string& text, const std::array<float, 2>& at,
-                  float alpha);
+                  float alpha, std::vector<std::string>* log);
+    std::uint64_t TextPane(Game& game, std::uint64_t layout, const std::string& path, std::string& why);
     static void Alpha(Game& game, std::uint64_t pane, float& had, float alpha);
     std::uint64_t Name(Game& game, const std::string& text);
 
