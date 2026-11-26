@@ -128,6 +128,7 @@ class RealGit(unittest.TestCase):
         self.assertEqual(cs.changed_files("integrate-0120"), ["tools/autotest/x.py"])
 
     def test_move_out_of_cpp_path_is_full(self):
+        os.makedirs(os.path.join(self.repo, "tools", "autotest"))
         run(self.repo, "git", "mv", "hookshot/src/a.cpp", "tools/autotest/a.cpp")
         run(self.repo, "git", "commit", "-q", "-m", "move")
         self.assertEqual(sorted(cs.changed_files("integrate-0120")), ["hookshot/src/a.cpp", "tools/autotest/a.cpp"])
