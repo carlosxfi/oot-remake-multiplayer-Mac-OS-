@@ -511,16 +511,34 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             // Multiplayer page's Host (hookshot.py --host-in-game: LICHII_COOP_TEST_HOST), joins with the clipboard's
             // code as the page's "Paste code and join" (private-lobby-fix), or leaves the
             // session as the page's Leave row does (remount-leave), or the Multiplayer page opened and nothing pressed (its
-            // rows for a shot, row 170). Test only.
-            std::string page = w.size() == 2 ? std::string(w[1]) : std::string{};
-            std::transform(page.begin(), page.end(), page.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (page != "customize" && page != "close" && page != "host" && page != "paste" && page != "leave" &&
-                page != "main") {
-                return fail("want: menu customize|close|host|paste|leave|main");
+            // rows for a shot, row 170); `menu open PAGE` any page so (B #138). Test only.
+            // `menu open PAGE` (B #138): any page of the tab, nothing pressed (kMenuPages, coop_testinput.h).
+            const auto low = [](std::string_view v) {
+                std::string out(v);
+                std::transform(out.begin(), out.end(), out.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                return out;
+            };
+            const auto joined = [](const auto& list) {
+                std::string out;
+                for (std::size_t i = 0; i < list.size(); ++i) out += (i ? "|" : "") + std::string(list[i]);
+                return out;
+            };
+            const std::string page = w.size() >= 2 ? low(w[1]) : std::string{};
+            if (page == "open") {
+                const std::string which = w.size() == 3 ? low(w[2]) : std::string{};
+                if (std::find(kMenuPages.begin(), kMenuPages.end(), which) == kMenuPages.end()) {
+                    return fail("want: menu open " + joined(kMenuPages));
+                }
+                step.kind = Kind::menu;
+                step.mark = "open " + which;
+            } else {
+                if (w.size() != 2 || std::find(kMenuWords.begin(), kMenuWords.end(), page) == kMenuWords.end()) {
+                    return fail("want: menu " + joined(kMenuWords) + ", or menu open " + joined(kMenuPages));
+                }
+                step.kind = Kind::menu;
+                step.mark = page;
             }
-            step.kind = Kind::menu;
-            step.mark = page;
         } else if (cmd == "KILL") {
             // kill NAME, or kill ID NAME (the ID is the address get_world lists; the NAME is the one it lists with it)
             std::size_t at = 1;
