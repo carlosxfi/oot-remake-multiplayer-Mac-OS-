@@ -452,9 +452,11 @@ def parse(text):
                 fail("want: assign ITEM")
             s.kind, s.name = "assign", w[1]
         elif cmd == "MENU":
-            if len(w) != 2 or w[1].lower() not in ("customize", "close", "host", "paste", "leave"):
-                fail("want: menu customize|close|host|paste|leave")
-            s.kind, s.name = "menu", w[1].lower()
+            # (gear-link: "menu look KEY=VALUE", the module's coop_testinput.cpp MENU: a look part chosen and worn)
+            look = len(w) == 3 and w[1].lower() == "look" and "=" in w[2]
+            if not look and (len(w) != 2 or w[1].lower() not in ("customize", "close", "host", "paste", "leave")):
+                fail("want: menu customize|close|host|paste|leave, or menu look KEY=VALUE")
+            s.kind, s.name = "menu", (" ".join(w[1:]) if look else w[1]).lower()
         elif cmd == "AWAIT":
             # Row 325: "await TICKS REGEX": until a NEW line of this game's own log (written after the step began)
             # matches REGEX (the rest of the line, spaces kept), at most TICKS. The runner reads the log itself: no
