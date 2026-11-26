@@ -50,7 +50,7 @@ GATE = "Npc_Hylia_Soldier_003_GateOpen"
 
 
 class FakeGame:
-    def __init__(self, tag, folder, lane, env=(), fakes=()):
+    def __init__(self, tag, folder, lane, env=(), fakes=(), solo_log=None):
         self.tag, self.folder, self.lane = tag, folder, lane
         self.env, self.fakes = list(env), list(fakes)
         os.makedirs(os.path.join(folder, "playtest", "dumps"), exist_ok=True)
@@ -65,8 +65,11 @@ class FakeGame:
         open(self.log_path, "w").close()
         me, them = (1, 2) if tag == "A" else (2, 1)
         self.say("coop: multiplayer tab: test: to-title.now in %s starts the way back to the title" % folder)
-        self.say("coop: connected to 127.0.0.1")
-        self.say("coop: puppet: P%d CoopPuppet_Child_Green spawned after 120 ms" % them)
+        if solo_log:     # (bt_plugin --solo: game A alone, what the module logs with no server: solo.IDLE)
+            self.say(solo_log)
+        else:
+            self.say("coop: connected to 127.0.0.1")
+            self.say("coop: puppet: P%d CoopPuppet_Child_Green spawned after 120 ms" % them)
         if tag == "A":
             self.say("coop: drawing over Hookshot's picture")
         for h in hooks(self.fakes, "setup"):
@@ -281,10 +284,11 @@ class FakeGame:
 
 
 class FakeLane:
-    def __init__(self, out_dir, lane=1, env=(), fakes_dir=FAKES):
+    def __init__(self, out_dir, lane=1, env=(), fakes_dir=FAKES, solo_log=None):
         root = os.path.join(out_dir, "fake")
         mods = load_fakes(fakes_dir)
-        self.g = {x: FakeGame(x, os.path.join(root, "lane%d-%s" % (lane, x)), lane, env, mods) for x in ("A", "B")}
+        self.g = {x: FakeGame(x, os.path.join(root, "lane%d-%s" % (lane, x)), lane, env, mods, solo_log=solo_log)
+                  for x in ("A", "B")}
         self.g["A"].other, self.g["B"].other = self.g["B"], self.g["A"]
         for h in hooks(mods, "lane"):
             h(self)
