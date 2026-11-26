@@ -52,7 +52,7 @@ GATE = "Npc_Hylia_Soldier_003_GateOpen"
 
 
 class FakeGame:
-    def __init__(self, tag, folder, lane, env=(), fakes=(), boot="", solo_log=None):
+    def __init__(self, tag, folder, lane, env=(), fakes=(), solo_log=None, boot=""):
         self.tag, self.folder, self.lane, self.boot = tag, folder, lane, boot
         self.env, self.fakes = list(env), list(fakes)
         os.makedirs(os.path.join(folder, "playtest", "dumps"), exist_ok=True)
