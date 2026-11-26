@@ -28,6 +28,12 @@ run.ps1 -Runtime hookshot calls `run` when the scenario is a steps file. The ver
   see CHECK [CHECK...]  grade screenshot checks on the shots taken so far (after a `shot`)
   shot NAME             a screenshot of every running game
   lines NAME B max=N|min=N REGEX   game B's log has at most / at least N lines matching REGEX
+  key A F1              a key press posted to game A's window (WM_KEYDOWN, WM_KEYUP: Longshot's wndproc, patch 0001,
+                        hands it to hos_coop_key); proven landed by the module's line for it (KEYS_POSTED) within
+                        10 s, else SETUP-FAIL and the run stops (Windows only)
+  state A event|free|title|load [S]   game A's last "coop: free play: ..." line (the module's, at each change)
+                        says that state within S s (default 60), else SETUP-FAIL and the run stops: a run that
+                        relies on a state proves it before it acts on it
 Results go to counts.txt (PASS/FAIL/UNPROVEN lines as run.ps1 writes them); a step that cannot run is a FAIL there too.
 Owner rule (2026-11-18), no PASS from log lines alone: puppets and fairies are visible, so an expect step whose
 counts match is PASS only when its see= checks are all OK (FAIL when a shot shows the wrong result), else UNPROVEN.
@@ -62,6 +68,29 @@ LIVE = re.compile(r"coop: objects: ([+-]) (CoopPuppet_\w+|Dm_Npc_Navi) (0x[0-9a-
 # head was said at every object scan, 43% of a tester's 190 MB log). A game process starts with "coop: build".
 ONCE_PER_PROCESS = (("objects list head (row 267)", re.compile(r"(?m)^.*coop: objects: list head ")),)
 PROCESS_START = re.compile(r"(?m)^.*coop: build ")
+
+
+# The keys `key` can post, each with its Windows virtual-key and scan code and the module line that proves it landed:
+# F1, hookshot/src/coop_hookshot.cpp hos_coop_key (vk == 0x70), which logs "coop: F1: <its route>" for each press
+# (f1-event-c31). Scan code 0x3B: F1's set-1 make code. Only keys hos_coop_key logs belong here (F6 is read by
+# GetAsyncKeyState in the module, so a posted message never reaches it).
+KEYS_POSTED = {"F1": (0x70, 0x3B, r"coop: F1: ")}
+KEY_LAND_WAIT = 10.0
+# `state`: the game's play state as the module logs each change of it (hookshot/src/coop_hookshot.cpp, the free play
+# block of the frame: "coop: free play: yes|no (event)|no (title)|no (load, no Link)"), the last such line counted.
+STATE_LINE = re.compile(r"(?m)^.*coop: free play: (.+?)\s*$")
+STATES = {"free": "yes", "event": "no (event)", "title": "no (title)", "load": "no (load, no Link)"}
+STATE_WAIT = 60.0
+
+
+def last_state(text):
+    """The last play state the module logged ("yes", "no (event)", ...), or None."""
+    found = STATE_LINE.findall(text or "")
+    return found[-1] if found else None
+
+
+class SetupFail(Exception):
+    """A setup check failed: the run stops (SETUP-FAIL in counts.txt), nothing after it is graded."""
 
 
 class StepsError(Exception):
@@ -162,6 +191,18 @@ def parse_steps(text):
             if len(rest) != 1:
                 raise StepsError("line %d: shot NAME" % n)
             steps.append(Step(n, verb, rest, line))
+        elif verb == "state":
+            try:
+                secs = float(rest[2]) if len(rest) == 3 else STATE_WAIT
+            except ValueError:
+                secs = None
+            if len(rest) not in (2, 3) or rest[1] not in STATES or secs is None or secs <= 0:
+                raise StepsError("line %d: state A %s [SECONDS]" % (n, "|".join(sorted(STATES))))
+            steps.append(Step(n, verb, [_game(n, rest[0]), rest[1], secs], line))
+        elif verb == "key":
+            if len(rest) != 2 or rest[1] not in KEYS_POSTED:
+                raise StepsError("line %d: key A %s" % (n, "|".join(sorted(KEYS_POSTED))))
+            steps.append(Step(n, verb, [_game(n, rest[0]), rest[1]], line))
         elif verb == "lines":
             m = re.match(r"^lines\s+(\S+)\s+([AB])\s+(max|min)=(\d+)\s+(.+)$", line)
             if not m:
@@ -286,6 +327,9 @@ class Runner:
             self.say("step %d: %s" % (s.n, s.line))
             try:
                 getattr(self, "do_" + s.verb)(s)
+            except SetupFail as e:
+                self.result(False, "SETUP-FAIL step %d (%s): %s" % (s.n, s.line, e))
+                break
             except Exception as e:  # a step that cannot run: a FAIL line, the test goes on as run.ps1's does
                 self.result(False, "step %d (%s): %s" % (s.n, s.line, e))
             ended = self.g.ended_by_itself()
@@ -401,6 +445,36 @@ class Runner:
     def do_shot(self, s):
         self.g.shot("s%d-%s" % (s.n, s.args[0]))
 
+    def do_state(self, s):
+        x, name, secs = s.args
+        want = STATES[name]
+        deadline = self.clock() + secs
+        while True:
+            got = last_state(self.g.log(x))
+            if got == want:
+                self.say("  %s: play state %s ('coop: free play: %s')" % (x, name, got))
+                return
+            if self.clock() >= deadline:
+                raise SetupFail("%s is not in %s after %d s: its last 'coop: free play:' line says %s" % (
+                    x, name, secs, repr(got) if got else "nothing"))
+            self.sleep(0.5)
+
+    def do_key(self, s):
+        x, key = s.args
+        vk, scan, proof = KEYS_POSTED[key]
+        before = count_lines(self.g.log(x), proof) or 0
+        self.g.key(x, vk, scan)
+        deadline = self.clock() + KEY_LAND_WAIT
+        while True:
+            got = count_lines(self.g.log(x), proof) or 0
+            if got > before:
+                self.say("  %s landed in %s ('%s' lines %d -> %d)" % (key, x, proof, before, got))
+                return
+            if self.clock() >= deadline:
+                raise SetupFail("%s posted to %s's window but no new '%s' line within %d s" % (
+                    key, x, proof, KEY_LAND_WAIT))
+            self.sleep(0.5)
+
     def do_lines(self, s):
         name, x, kind, bound = s.args
         got = count_lines(self.g.log(x), s.pattern)
@@ -443,6 +517,9 @@ class DryGames:
 
     def freeze(self, x):
         self.say("  would suspend %s's process" % x)
+
+    def key(self, x, vk, scan):
+        self.say("  would post key 0x%02x to %s's window" % (vk, x))
 
     def thaw(self, x):
         self.say("  would let %s's process go on" % x)
@@ -707,6 +784,28 @@ class HookshotGames:
             self.shot("%s-%s-%s" % (name, x, mark) if mark else name)
         return shot
 
+    def key(self, x, vk, scan):
+        """A key's press and release posted to game x's visible windows (Windows; no focus needed: the window's
+        thread runs Longshot's wndproc, which hands WM_KEYDOWN to hos_coop_key first)."""
+        if not WINDOWS:
+            raise SetupFail("key: Windows only")
+        p = self.procs.get(x)
+        if p is None or p.poll() is not None:
+            raise SetupFail("key: game %s is not running" % x)
+        import ctypes
+        from ctypes import wintypes
+        import bridge_proof
+        hwnds = bridge_proof.windows_of(p.pid)
+        if not hwnds:
+            raise SetupFail("key: game %s (pid %d) has no visible window" % (x, p.pid))
+        user32 = ctypes.windll.user32
+        down = 1 | (scan << 16)
+        up = down | (1 << 30) | (1 << 31)
+        for h in hwnds:
+            user32.PostMessageW(wintypes.HWND(h), 0x0100, vk, down)  # WM_KEYDOWN
+            user32.PostMessageW(wintypes.HWND(h), 0x0101, vk, up)    # WM_KEYUP
+        self.say("  %s: key 0x%02x posted to %d window(s)" % (x, vk, len(hwnds)))
+
     def shot(self, name):
         for y, (_, b) in list(self.bridges.items()):
             if not self.alive(y):
@@ -897,6 +996,13 @@ def _dry(steps):
                 " ".join(s.args[2]) if s.args[2] else "no see= check (UNPROVEN)"))
         elif s.verb == "see":
             say("  would grade %s on the shots so far" % " ".join(s.args))
+        elif s.verb == "state":
+            say("  would wait %d s for %s's 'coop: free play: %s' (else SETUP-FAIL)" % (
+                s.args[2], s.args[0], STATES[s.args[1]]))
+        elif s.verb == "key":
+            games.key(s.args[0], *KEYS_POSTED[s.args[1]][:2])
+            say("  then would wait %d s for '%s' in %s's log (else SETUP-FAIL)" % (
+                KEY_LAND_WAIT, KEYS_POSTED[s.args[1]][2], s.args[0]))
         elif s.verb == "lines":
             say("  would count %s's log lines matching '%s' (%s=%d)" % (s.args[1], s.pattern, s.args[2], s.args[3]))
         elif s.verb == "password":

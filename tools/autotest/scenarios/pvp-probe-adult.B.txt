@@ -1,6 +1,4 @@
 # pvp-probe B (proof-0116): stands still facing A while A hits its copy (young B: the copy takes every kind).
-#! noload
-#! start coop: test warp done
 #! switches LICHII_COOP_PVP_NATIVE=1,LICHII_COOP_DEBUG_OBJECTS=1
 #! timeout 540
 mark start

@@ -13,8 +13,9 @@
 #  - Controllers (patch 0015, read behind other windows): game 1 pad 1 and the keyboard/mouse, game N pad N with no
 #    keyboard. A player's own choice in Multiplayer > Settings > Controller stays (coop-player.ini).
 #  - Every game in a window, side by side (2) or in quarters (3, 4) of the primary monitor; games 2..N open without
-#    taking the focus. Each runs at the same steady frame cap (coop-options.ini local_fps, 30 by default): two to four
-#    games want more than one PC gives, and Windows hands the window in front the bigger share, so the others got
+#    taking the focus. Each keeps the player's own frame cap, uncapped as a single game (as up to 0.11.12);
+#    coop-options.ini local_fps = 30 or 60 gives every game the same steady cap instead: two to four games can want
+#    more than one PC gives, and Windows hands the window in front the bigger share, so on a weak PC the others get
 #    uneven leftovers (row 83 / #245). Discord's status comes from game 1 only.
 #  - Nobody's title is pressed: each player loads a save (or presses Continue) as in any join.
 #  - Game 1 closing ends its server, so the others get the usual "the host left".
@@ -31,11 +32,12 @@ $script:KitLocalLinkedPattern = '^(?i)(.+\.(exe|dll|bin|idx|png)|exefs_patches\.
 $script:KitLocalDirsNeeded = @('romfs', 'mods')
 $script:KitLocalKeys = @('LICHII_COOP_PAD', 'LICHII_COOP_KEYBOARD', 'LICHII_COOP_COLOR')
 
-# How many players on this PC: 1 (just you, as before) or 2 to 4 (local co-op). Nothing waits for an answer, so a solo
-# start is not slower: Start Squadala says at its start which count it will use (Show-KitLocalPlayersHint: the last one,
-# hookshot\local-players.txt, 1 the first time) and a digit 1 to 4 pressed in its window while it checks, updates or
-# builds picks another (the last one pressed counts; it is kept for the next start). OOT_COOP_LOCAL_PLAYERS (1-4) sets it
-# outright. A start with no console (input from a file or a pipe: unattended) is always 1 player.
+# How many players on this PC: 1 (just you, as before) or 2 to 4 (local co-op). C2-2 (owner, 0.12.0): a key is never
+# the answer by itself. A solo start asks nothing and is 1 game, always. More games only after the question
+# (Read-KitLocalPlayersAnswer) is answered with 2, 3 or 4; it is asked when a digit 2 to 4 was pressed while Squadala
+# started (Show-KitLocalPlayersHint says so) or when the last answer (hookshot\local-players.txt, written only from an
+# answer) was 2 to 4. No key, Enter, N or 1 = 1 game. OOT_COOP_LOCAL_PLAYERS (1-4) sets it outright. A start with no
+# console (input from a file or a pipe: unattended) is always 1 player.
 function Get-KitLocalPlayersLast([string]$Kit) {
     $file = Join-Path $Kit 'hookshot\local-players.txt'
     try { if (Test-Path -LiteralPath $file) { $n = [int]"$(Get-Content -LiteralPath $file -TotalCount 1)".Trim(); if ($n -ge 1 -and $n -le 4) { return $n } } } catch { }
@@ -49,28 +51,61 @@ function Test-KitLocalConsole {
 function Show-KitLocalPlayersHint([string]$Kit) {
     if ("$env:OOT_COOP_LOCAL_PLAYERS".Trim() -match '^[1-4]$' -or -not (Test-KitLocalConsole)) { return }
     $last = Get-KitLocalPlayersLast $Kit
-    $now = if ($last -eq 1) { '1 (just you)' } else { "$last (local co-op: a game and a controller each)" }
-    Write-Host "Players on this PC: $now. Press 1, 2, 3 or 4 in this window while Squadala starts to change it." -ForegroundColor Cyan
+    if ($last -gt 1) { Write-Host "Local co-op: last time $last players on this PC. Squadala asks again before it starts more than one game." -ForegroundColor Cyan }
+    else { Write-Host 'Local co-op (2 to 4 players on this PC): press 2, 3 or 4 in this window while Squadala starts; it asks before it starts more than one game.' -ForegroundColor Cyan }
 }
 
-function Read-KitLocalPlayers([string]$Kit) {
+# The question (the kit's rule for a timed question, as Read-KitCharacterSelectAnswer: its line says what each key does
+# and what no key does, with the seconds left; one line after says what happened). 2, 3 or 4 = that many games; 1, N,
+# Enter = 1; no key in $Seconds = 1 and nothing written (no answer). Keys pressed before it are thrown away first, so the
+# digit that made it ask never answers it. $ReadKey: tests (a scriptblock giving a key object or $null). Returns the
+# count and whether it was answered: @{ Players; Answered }.
+function Read-KitLocalPlayersAnswer([int]$Last = 1, [int]$Seconds = 15, [scriptblock]$ReadKey = $null) {
+    $q = 'Players on this PC: press 2, 3 or 4 for local co-op (a game and a controller each), 1 or N for just you'
+    Write-Host ''
+    if ($Last -gt 1) { Write-Host "Last time: $Last players on this PC." }
+    if (-not $ReadKey) { try { while ([Console]::KeyAvailable) { [void][Console]::ReadKey($true) } } catch { } }
+    $end = (Get-Date).AddSeconds($Seconds)
+    $left = -1
+    while ((Get-Date) -lt $end) {
+        $now = [int][Math]::Ceiling(($end - (Get-Date)).TotalSeconds)
+        if ($now -ne $left) { $left = $now; Write-Host -NoNewline "`r$q (no key in $left s: just you)  " }
+        $key = if ($ReadKey) { & $ReadKey } elseif ([Console]::KeyAvailable) { [Console]::ReadKey($true) } else { $null }
+        if ($key) {
+            $c = "$($key.KeyChar)"
+            if ($c -match '^[2-4]$') { Write-Host $c; return @{ Players = [int]$c; Answered = $true } }
+            if ($c -eq '1' -or "$($key.Key)" -eq 'N' -or "$($key.Key)" -eq 'Enter') { Write-Host '1'; return @{ Players = 1; Answered = $true } }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    Write-Host 'no key'
+    return @{ Players = 1; Answered = $false }
+}
+
+# $ReadKey and $Pressed (the characters pressed while the start ran): tests only.
+function Read-KitLocalPlayers([string]$Kit, [int]$Seconds = 15, [scriptblock]$ReadKey = $null, [string[]]$Pressed = @()) {
     $given = "$env:OOT_COOP_LOCAL_PLAYERS".Trim()
     if ($given -match '^[1-4]$') { return [int]$given }
-    if (-not (Test-KitLocalConsole)) { return 1 }
+    if (-not $ReadKey -and -not (Test-KitLocalConsole)) { return 1 }
     $last = Get-KitLocalPlayersLast $Kit
-    $answer = $last
-    try {
-        while ([Console]::KeyAvailable) {   # (only what was pressed already: no wait)
-            $k = [Console]::ReadKey($true)
-            if ("$($k.KeyChar)" -match '^[1-4]$') { $answer = [int]"$($k.KeyChar)" }
-        }
-    } catch { }
-    if ($answer -ne $last) {
+    $asked = $last -gt 1
+    if (-not $ReadKey) {
+        try {
+            while ([Console]::KeyAvailable) {   # (only what was pressed already: no wait; a digit only makes it ask)
+                $k = [Console]::ReadKey($true)
+                if ("$($k.KeyChar)" -match '^[2-4]$') { $asked = $true }
+            }
+        } catch { }
+    } elseif (@($Pressed | Where-Object { "$_" -match '^[2-4]$' }).Count) { $asked = $true }   # (tests: keys pressed during the start)
+    if (-not $asked) { return 1 }
+    $a = Read-KitLocalPlayersAnswer $last $Seconds $ReadKey
+    if ($a.Answered) {
         $file = Join-Path $Kit 'hookshot\local-players.txt'
-        try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null; [System.IO.File]::WriteAllText($file, "$answer`r`n") } catch { }
+        try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null; [System.IO.File]::WriteAllText($file, "$($a.Players)`r`n") } catch { }
     }
-    if ($answer -gt 1) { Write-Host "Players on this PC: $answer. (Press 1 while Squadala starts next time for just you.)" }
-    return $answer
+    if ($a.Players -gt 1) { Write-Host "Starting $($a.Players) games (local co-op). Next start: press 1 or N at the question for just you." }
+    else { Write-Host 'Starting 1 game (just you).' }
+    return $a.Players
 }
 
 # A UDP port on 127.0.0.1 nobody holds, from $From up (the session's; a Host.bat server may hold the kit's 27510).
@@ -119,12 +154,15 @@ function Set-KitLocalIniValue([string]$Text, [string]$Key, [string]$Value, [swit
     return ($lines -join "`r`n")
 }
 
-# The frame cap every local game runs at: coop-options.ini local_fps = 30 or 60 (30 by default and for anything else).
+# The frame cap every local game runs at: coop-options.ini local_fps = 30 or 60 (Longshot's 30 FPS cap or the
+# console's 60), else 0: no cap of ours, each game keeps the player's own frame_rate_cap (uncapped, as up to 0.11.12).
 function Get-KitLocalFps([string]$Kit) {
     $text = ''
     try { $text = [System.IO.File]::ReadAllText((Join-Path $Kit 'coop-options.ini')) } catch { }
-    if ((Get-KitLocalIniValue $text 'local_fps') -eq '60') { return 60 }
-    return 30
+    $v = Get-KitLocalIniValue $text 'local_fps'
+    if ($v -eq '30') { return 30 }
+    if ($v -eq '60') { return 60 }
+    return 0
 }
 
 # Same file (a hard link to it, or a copy that is still the same): length and time agree.
@@ -215,7 +253,8 @@ function Test-KitLocalLinks([string]$Game, [string]$Inst) {
 
 # Player N's own files for this session (N 2 to 4): coop.ini (the session; the name kept, else "Player N"),
 # coop-player.ini (the controller: pad N and no keyboard unless the player chose another there), coop-kit.txt,
-# player-key.txt (made once), longshot_options.ini (a window, no Discord status, the pad's camera, the frame cap).
+# player-key.txt (made once), longshot_options.ini (a window, no Discord status, the pad's camera; the frame cap only
+# with local_fps, else the player's own stays).
 function Write-KitLocalPlayer([string]$Inst, [string]$Kit, [int]$Player, [int]$Port, [string]$Password, [int]$Fps) {
     $ini = Join-Path $Inst 'coop.ini'
     $before = ''
@@ -245,7 +284,9 @@ function Write-KitLocalPlayer([string]$Inst, [string]$Kit, [int]$Player, [int]$P
     $ls = Join-Path $Inst 'longshot_options.ini'
     $o = ''
     try { $o = [System.IO.File]::ReadAllText($ls) } catch { }
-    foreach ($kv in @(@('fullscreen', '0'), @('discord_status', '0'), @('mouse_camera', '0'), @('frame_rate_cap', $(if ($Fps -eq 30) { '-1' } else { '0' })))) {
+    $set = @(@('fullscreen', '0'), @('discord_status', '0'), @('mouse_camera', '0'))
+    if ($Fps -gt 0) { $set += , @('frame_rate_cap', $(if ($Fps -eq 30) { '-1' } else { '0' })) }
+    foreach ($kv in $set) {
         $o = Set-KitLocalIniValue $o $kv[0] $kv[1]
     }
     [System.IO.File]::WriteAllText($ls, $o)
@@ -337,7 +378,7 @@ function Set-KitLocalEnvironment([int]$Player, [int]$Port, [string]$Password, [i
         $env:LICHII_COOP_PAD = '1'
         $env:LICHII_COOP_KEYBOARD = 'focus'
         $env:HOS_FULLSCREEN = '0'                 # (this run only: the player's own options file stays as it is)
-        $env:HOS_FPS_MAX = "$Fps"
+        if ($Fps -gt 0) { $env:HOS_FPS_MAX = "$Fps" }   # (local_fps only: else the player's own cap)
         if ($script:KitLocalPlayer1Color) { $env:LICHII_COOP_COLOR = $script:KitLocalPlayer1Color }
     } else {
         $env:HOS_WINDOW_NOACTIVATE = '1'          # (opens behind: the focus stays where it is)
@@ -384,7 +425,7 @@ function Start-KitLocalCoop([string]$Kit, [string]$Exe, [int]$Players, [int]$Pau
         Write-Host "Local co-op: each game needs about 10 GB of RAM; this PC has $ram GB for $Players games. It may run slowly." -ForegroundColor Yellow
     }
     Write-Host "Local co-op: $Players games on this PC. Game 1 (keyboard and controller 1) hosts; games 2-$Players (controllers 2-$Players) join it."
-    Write-Host "  Every game runs at $fps FPS (coop-options.ini local_fps), so the windows not in front stay smooth."
+    if ($fps -gt 0) { Write-Host "  Every game runs at $fps FPS (coop-options.ini local_fps), so the windows not in front stay smooth." }
     Write-Host '  In each game, load your save or press Continue as usual. Closing game 1 ends the session.'
     $games = @()
     $saved = @{}

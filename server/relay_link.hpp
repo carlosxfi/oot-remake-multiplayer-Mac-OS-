@@ -122,7 +122,7 @@ struct RoomList {
   // does not answer (a short wait, then the list as it is).
   std::vector<RoomProof> proofs;
   bool proofs_answered = false;
-  // The listed rooms' tags (kListTags, asked once after the proofs; row 281): empty from a relay before 0.11.13.
+  // The listed rooms' tags (kListTags, asked once after the proofs; row 281): empty from a relay before 0.12.0.
   std::vector<RoomTag> tags;
   bool tags_answered = false;
 };
@@ -135,7 +135,7 @@ struct RoomList {
 // `ask_proofs`: also ask the listed rooms' proofs (kListProofs) after the pages, two tries 500 ms apart;
 // proofs_answered says whether the relay answered (a relay before 0.11.8 never does: the caller need not ask it again).
 // `bind`: as for lookup_on_relay. `ask_tags`: also ask the listed rooms' tags (kListTags) the same way; tags_answered
-// as proofs_answered (a relay before 0.11.13 never answers).
+// as proofs_answered (a relay before 0.12.0 never answers).
 std::optional<RoomList> list_rooms_on_relay(const ENetAddress& relay, const std::function<bool()>& stop = {},
                                             bool ask_proofs = false, std::optional<std::uint32_t> bind = std::nullopt,
                                             bool ask_tags = false);

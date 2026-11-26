@@ -45,6 +45,7 @@ add_executable(coop_tests
   host/notify_test.cpp
   host/one_way_keeper_test.cpp
   host/save_transfer_test.cpp
+  host/own_values_test.cpp
   host/session_test.cpp
   host/scene_test.cpp
   host/event_owner_test.cpp
@@ -245,6 +246,7 @@ target_sources(coop_tests PRIVATE hookshot/module_test.cpp hookshot/draw_test.cp
   hookshot/snail_custom_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_snail_custom.cpp
   hookshot/menu_state_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_menu_state.cpp
   hookshot/charsel_names_test.cpp
+  hookshot/menu_tabs_rule_test.cpp
   hookshot/look_view_test.cpp
   hookshot/look_steer_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_look_view.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_look_tunic.cpp
@@ -264,6 +266,7 @@ target_sources(coop_tests PRIVATE hookshot/module_test.cpp hookshot/draw_test.cp
   hookshot/menu_handoff_test.cpp
   hookshot/auto_rejoin_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_auto_rejoin.cpp
   hookshot/lan_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_lan.cpp
+  hookshot/off_frame_test.cpp
   hookshot/playtest_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_playtest_core.cpp
   hookshot/talk_text_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_talk_text.cpp
   hookshot/browse_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../hookshot/src/coop_browse.cpp

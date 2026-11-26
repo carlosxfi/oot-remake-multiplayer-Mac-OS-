@@ -1,0 +1,7 @@
+# boss-copy-move-dodongo-kill.A (owner-proofs-0120-3): A's test kill of Enemy_DungeonBoss_Dodongo after the pair's fight (form: hs-boss-cutscenes-dodongo.A.txt:41).
+mark pre-kill
+kill Enemy_DungeonBoss_Dodongo
+wait 120
+mark a-kill
+wait 900                # the death plays in both games
+mark a-death

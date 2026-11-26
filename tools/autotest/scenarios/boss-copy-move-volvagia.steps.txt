@@ -1,0 +1,27 @@
+# boss-copy-move-volvagia (C5-1/C6-1 of rc-01113, owner-proofs-0120-3): does a boss copy's own run of the owner's move (0dacc172b,
+# coop_boss_native.cpp Table::OnActionVerb copy_own_move / StepOne owner_move_left) break Enemy_DungeonBoss_Volvagia's fight?
+# Plays the boss-rush pair hs-volvagia-rocks.A/.B.txt unchanged (boss-rush warp, no save needed; last runs: lane2 20261125-114351), then A kills him by a test kill.
+# Run: tools\autotest\run.ps1 -Runtime hookshot -Lane 1 -Scenario boss-copy-move-volvagia (offline/boss-copy-move-run.ps1 runs all three).
+# Lines (each game's own log; `start` gives each a fresh one): test warp done (hookshot.py warp), "<boss>: native boss sync
+# on (BSA 0x.., ours|a copy)" (coop_boss_native.cpp:527), "coop: test kill <boss>" (coop_objects.cpp TestKills),
+# "<boss> 0x.. read at life 0 here" once per body per game (coop_objects.cpp, the death walk), the fall guard's
+# "fight start again: left" (coop_boss_native.cpp:1279) never. The copy side's "N own asks of the owner's move run" and
+# "N owner's repeats left out" (coop_hookshot.cpp counts line) are read by the run script from the game that is the copy.
+#! switches LICHII_COOP_DEBUG_BOSS=1,LICHII_COOP_DEBUG_OBJECTS=1,LICHII_COOP_CHEATS=1
+start A B
+play A hs-volvagia-rocks.A.txt B hs-volvagia-rocks.B.txt
+shot fight-end
+play A boss-copy-move-volvagia-kill.A.txt
+sleep 20
+shot after-kill
+lines warp-A A min=1 coop: test warp done
+lines warp-B B min=1 coop: test warp done
+lines sync-A A min=1 Enemy_DungeonBoss_Volvagia: native boss sync on \(BSA 0x[0-9a-f]+, (ours|a copy)\)
+lines sync-B B min=1 Enemy_DungeonBoss_Volvagia: native boss sync on \(BSA 0x[0-9a-f]+, (ours|a copy)\)
+lines kill-landed A min=1 coop: test kill Enemy_DungeonBoss_Volvagia 0x[0-9a-f]+ at .*: hit
+lines death-A A min=1 Enemy_DungeonBoss_Volvagia 0x[0-9a-f]+ read at life 0 here
+lines death-B B min=1 Enemy_DungeonBoss_Volvagia 0x[0-9a-f]+ read at life 0 here
+lines death-once-A A max=1 Enemy_DungeonBoss_Volvagia 0x[0-9a-f]+ read at life 0 here
+lines death-once-B B max=1 Enemy_DungeonBoss_Volvagia 0x[0-9a-f]+ read at life 0 here
+lines no-fall-A A max=0 fight start again: left
+lines no-fall-B B max=0 fight start again: left

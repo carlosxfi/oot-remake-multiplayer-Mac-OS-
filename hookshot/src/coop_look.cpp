@@ -17,6 +17,7 @@ const std::array<PartInfo, kParts>& Parts() {
         {Part::goron_tunic, "goron_tunic", "Tunic", "Goron Tunic"},
         {Part::zora_tunic, "zora_tunic", "Tunic", "Zora Tunic"},
         {Part::cap_trim, "cap_trim", "Tunic", "Cap trim"},
+        {Part::cap_trim_hoods, "cap_trim_hoods", "Tunic", "Cap trim on hoods"},
         {Part::eyes, "eyes", "Eyes", "Colour"},
         {Part::hair, "hair", "Hair", "Colour"},
         {Part::hylian_frame, "hylian_frame", "Hylian Shield", "Frame"},
@@ -166,8 +167,9 @@ bool WriteSettings(const Look& look, std::string& coop_ini, std::string* options
     std::string out = text;
     for (const PartInfo& info : Parts()) {
         // (the equipment's row is shown or hidden, not a colour)
-        const std::string colour = info.part == Part::char_gear ? (look[info.part] ? "hidden" : "")
-                                                                : ColourText(look[info.part]);
+        const std::string colour = info.part == Part::char_gear        ? (look[info.part] ? "hidden" : "")
+                                   : info.part == Part::cap_trim_hoods ? (look[info.part] ? "on" : "")
+                                                                       : ColourText(look[info.part]);
         const std::string key = SettingsKey(info);
         if (colour.empty()) {
             // An unset part other than the tunic is left out of a file that never had it.
@@ -201,6 +203,12 @@ Look ReadParts(std::string_view text, std::vector<std::string>* errors) {
                 look[info.part] = kGearHidden;
             } else if (*value != "shown" && errors != nullptr) {
                 errors->push_back(key + " = " + *value + " is not shown or hidden");
+            }
+        } else if (info.part == Part::cap_trim_hoods) {
+            if (*value == "on") {
+                look[info.part] = kOn;
+            } else if (*value != "off" && errors != nullptr) {
+                errors->push_back(key + " = " + *value + " is not on or off");
             }
         } else if (const auto colour = CoopColors::Parse(*value)) {
             look[info.part] = colour;

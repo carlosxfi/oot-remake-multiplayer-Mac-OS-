@@ -1136,6 +1136,9 @@ function Test-KitGameUnfinished([string]$Game) {
 function Start-KitGameWrite([string]$Game, [string]$What) {
     if (-not $Game) { return }
     New-Item -ItemType Directory -Force -Path $Game | Out-Null
+    # (C2-3: every write of the game, a build, a copy or a put back, puts Longshot's own files back; a player's own swapped
+    # SDL or renhdrum is kept first as <file>.yours, never overwritten silently)
+    foreach ($l in @(Save-KitGameExtras $Game)) { Write-Host $l -ForegroundColor Yellow }
     [System.IO.File]::WriteAllText((Join-Path $Game $KitGameUnfinishedFile),
         "The co-op game was being written here ($What) and that did not finish. Start Squadala finishes it.`r`n")
 }
@@ -1194,21 +1197,97 @@ function Get-KitGameVariantFiles([string]$Game) {
 # that is missing or is not the one the note names; @() when all match. A folder with no note, or a note that lists no
 # sha1 (a fresh install, a game before its first build, an older Longshot), cannot be checked and gives @(): the start
 # and the build go on as before.
-function Get-KitGameBuildMismatch([string]$Root) {
+# C2-3 (owner, 0.12.0): only the CORE build stops a start. The core is the files our patches are built into, listed
+# once in scripts\game-core-files.txt (each name with its source). Everything else the note lists (SDL2.dll, SDL3.dll,
+# renhdrum.dll, licenses\) is Longshot's as it comes: one a player swapped is a warning (Get-KitGameExtrasText), never
+# a stop, and a write of the game keeps it (Save-KitGameExtras) before it puts Longshot's back. Without the list (a
+# damaged kit) every noted file counts as core: the check is never weaker than before.
+function Get-KitGameCoreNames {
+    $file = Join-Path $PSScriptRoot 'game-core-files.txt'
+    try { return @([System.IO.File]::ReadAllLines($file) | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') } | ForEach-Object { $_.ToLowerInvariant() }) } catch { return $null }
+}
+$script:KitGameCoreNames = Get-KitGameCoreNames
+function Test-KitGameCoreFile([string]$Rel) {
+    if ($null -eq $script:KitGameCoreNames) { return $true }
+    return ($script:KitGameCoreNames -contains (Split-Path -Leaf $Rel).ToLowerInvariant())
+}
+
+# The check of every file the note lists: objects Rel, Core, Text, one per file that is missing or not the one the note
+# names. No full hash on every start: a file whose size and time are the note's own stat (make_game.py installed_stat:
+# st_size, st_mtime_ns; Longshot's finish trusts the same stat) is the file Longshot put there and is not read. Only a
+# file whose stat changed is hashed, once: its hash is kept in coop-build-checked.txt beside it (rel|size|mtime_ns|sha1),
+# so the next start reads it from there while the file stays as it is.
+function Get-KitGameBuildCheck([string]$Root) {
     $note = Join-Path $Root '.longshot_installed.json'
     if (-not (Test-Path -LiteralPath $note -PathType Leaf)) { return @() }
     try { $j = [System.IO.File]::ReadAllText($note) | ConvertFrom-Json -ErrorAction Stop } catch { return @() }
     if ($j -isnot [pscustomobject]) { return @() }
+    $cacheFile = Join-Path $Root 'coop-build-checked.txt'
+    $cache = @{}
+    try { if (Test-Path -LiteralPath $cacheFile) { foreach ($l in [System.IO.File]::ReadAllLines($cacheFile)) { $f = $l -split '\|'; if ($f.Count -eq 4) { $cache[$f[0]] = $l } } } } catch { }
+    $newCache = @{}
     $out = @()
     foreach ($p in @($j.PSObject.Properties)) {
         $want = if ($p.Value -and $p.Value.PSObject.Properties['sha1']) { "$($p.Value.sha1)".ToLowerInvariant() } else { '' }
         if ($want -notmatch '^[0-9a-f]{40}$') { continue }
         $rel = "$($p.Name)" -replace '/', '\'
         if ($rel -match '(^|\\)\.\.(\\|$)' -or [System.IO.Path]::IsPathRooted($rel)) { continue }
+        $core = Test-KitGameCoreFile $rel
         $path = Join-Path $Root $rel
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { $out += "$rel is missing (Longshot's note lists it)"; continue }
-        $have = (Get-FileHash -LiteralPath $path -Algorithm SHA1).Hash.ToLowerInvariant()
-        if ($have -ne $want) { $out += "$rel is not the file Longshot put into this game (its note says $($want.Substring(0, 8)), the file is $($have.Substring(0, 8)))" }
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            $out += [pscustomobject]@{ Rel = $rel; Core = $core; Text = "$rel is missing (Longshot's note lists it)" }; continue
+        }
+        $fi = Get-Item -LiteralPath $path
+        $mtimeNs = ([long]$fi.LastWriteTimeUtc.Ticks - 621355968000000000) * 100
+        $stat = @($p.Value.PSObject.Properties['stat'].Value)
+        if ($stat.Count -ge 2 -and "$($stat[0])" -eq "$($fi.Length)" -and "$($stat[1])" -eq "$mtimeNs") { continue }
+        $key = "$rel|$($fi.Length)|$mtimeNs"
+        $have = ''
+        if ($cache.ContainsKey($rel) -and $cache[$rel].StartsWith("$key|")) { $have = $cache[$rel].Substring($key.Length + 1) }
+        else { $have = (Get-FileHash -LiteralPath $path -Algorithm SHA1).Hash.ToLowerInvariant() }
+        $newCache[$rel] = "$key|$have"
+        if ($have -ne $want) { $out += [pscustomobject]@{ Rel = $rel; Core = $core; Text = "$rel is not the file Longshot put into this game (its note says $($want.Substring(0, 8)), the file is $($have.Substring(0, 8)))" } }
+    }
+    $lines = @($newCache.Keys | Sort-Object | ForEach-Object { $newCache[$_] })
+    $old = @($cache.Keys | Sort-Object | ForEach-Object { $cache[$_] })
+    if (($lines -join "`n") -ne ($old -join "`n")) {
+        try {
+            if ($lines.Count) { [System.IO.File]::WriteAllText($cacheFile, (($lines -join "`r`n") + "`r`n")) }
+            else { Remove-Item -LiteralPath $cacheFile -Force -ErrorAction SilentlyContinue }
+        } catch { }
+    }
+    return $out
+}
+
+# The core files that are missing or not the note's (one line each, the start's 'mixed'); @() when the core is whole.
+function Get-KitGameBuildMismatch([string]$Root) {
+    return @(Get-KitGameBuildCheck $Root | Where-Object { $_.Core } | ForEach-Object { $_.Text })
+}
+
+# The other files of the note a player swapped or took out (SDL, renhdrum, licenses): one line each; they never stop a start.
+function Get-KitGameBuildExtras([string]$Root) {
+    return @(Get-KitGameBuildCheck $Root | Where-Object { -not $_.Core } | ForEach-Object { $_.Text })
+}
+
+# The one warning line of a start whose game has swapped extra files ($Extras: Get-KitGameBuildExtras), '' without.
+function Get-KitGameExtrasText([string[]]$Extras) {
+    $names = @(@($Extras) | Where-Object { $_ } | ForEach-Object { ($_ -split ' ', 2)[0] })
+    if (-not $names) { return '' }
+    $one = $names.Count -eq 1
+    return "Note: $($names -join ', ') in the game folder $(if ($one) { 'is not the file' } else { 'are not the files' }) Longshot installed (your own, or from another build). The game starts anyway. When the game is built again, yours $(if ($one) { 'is' } else { 'are' }) kept as <name>.yours."
+}
+
+# Before a game build: each swapped extra file ($Root: the game) is copied to <file>.yours (the build puts Longshot's own
+# back), so a player's own file is never overwritten silently. The lines to say; @() when there was nothing to keep.
+function Save-KitGameExtras([string]$Root) {
+    $out = @()
+    foreach ($c in @(Get-KitGameBuildCheck $Root | Where-Object { -not $_.Core })) {
+        $p = Join-Path $Root $c.Rel
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }
+        try {
+            Copy-Item -LiteralPath $p -Destination "$p.yours" -Force
+            $out += "  $($c.Rel) was not Longshot's own: kept as $($c.Rel).yours (the build puts Longshot's back; copy yours over it to use it again)."
+        } catch { $out += "  $($c.Rel) was not Longshot's own and could not be kept as $($c.Rel).yours: $($_.Exception.Message)" }
     }
     return $out
 }
@@ -1705,7 +1784,7 @@ function Set-KitCharacterSelectChoice([string]$Kit, [string]$Value) {
 # The question at a start (owner, 0.11.9: the NPC characters are an opt-in download): Y is yes; Enter, N or no key in
 # $Seconds is no. No console (input redirected: a scripted or unattended start) is no. $ReadKey: tests (a scriptblock
 # giving a key object or $null). The Characters page itself comes with every kit either way.
-# The kit's one rule for a timed question (launcher-clarity, 0.11.13): its line says what Y does, what N does and what
+# The kit's one rule for a timed question (launcher-clarity, 0.12.0): its line says what Y does, what N does and what
 # no key does, with the seconds left; after the answer one line says what happened and how to change it later.
 function Read-KitCharacterSelectAnswer([int]$Seconds = 15, [scriptblock]$ReadKey = $null) {
     $q = 'NPC characters: press Y to download them, N to skip'
@@ -2490,7 +2569,7 @@ function Test-KitCharacterSelectHasNpc([string]$ModsDir, [string]$Folder) {
     return ($f.Count -lt 5 -or $f[4] -eq 'full')
 }
 
-# "Uninstall Character Select.bat" / "Reinstall Character Select.bat" (owner, 0.11.13): the answer they set, kept and
+# "Uninstall Character Select.bat" / "Reinstall Character Select.bat" (owner, 0.12.0): the answer they set, kept and
 # in coop-options.ini's line when it has one. The start that follows does the work with the step below (the same
 # install, the same keep-until-built and undo): Uninstall = 'off' (his mod taken out of the game, the game built
 # without it, nothing put back until Reinstall); Reinstall = his copy set aside (the download zip too, so it is fetched

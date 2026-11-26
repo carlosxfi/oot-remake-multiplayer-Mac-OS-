@@ -1,6 +1,7 @@
 // CoopHostMenu (coop_host_menu.h): the "coop host" thread behind the menu's
 // Host and Join.
 #include "coop_host_menu.h"
+#include "coop_off_frame.h"
 
 #include <algorithm>
 #include <array>
@@ -429,6 +430,7 @@ void Menu::RunHost(HostJob job) {
             }
         }
         auto memory_said = std::chrono::steady_clock::now();
+        CoopOffFrame::Slot memory_read;   // row 292: the process's memory read off the service loop (every heap summed)
         while (!stop_) {
             host.set_ngplus(hooks_.ngplus_level ? hooks_.ngplus_level() : 0);   // (Navi) New Game+ (Hooks)
             host.service(kRoundMs);
@@ -436,7 +438,9 @@ void Menu::RunHost(HostJob job) {
             if (const auto now = std::chrono::steady_clock::now();
                 now - memory_said >= std::chrono::milliseconds(kMemoryLineMs)) {
                 memory_said = now;
-                Say("coop: host: memory: " + ProcessMemoryText() + "; " + host.memory_line());
+                memory_read.Start([this, server = host.memory_line()] {
+                    Say("coop: host: memory: " + ProcessMemoryText() + "; " + server);
+                });
             }
             if (!job.bans_file.empty() && host.session() != nullptr) {   // (a new ban by key: kept for next time)
                 std::vector<std::string> now = host.session()->key_bans();

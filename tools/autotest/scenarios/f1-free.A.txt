@@ -1,0 +1,17 @@
+# f1-free, A (see f1-event.steps.txt): A warps into the Deku Tree (a noload warp asked on the title: the title stays
+# until the four A presses, epona.A.txt "wait 1200  # the title screen") and plays on to free play: cutscene-snap.A.txt's
+# lines up to its "mark after" (warp, wait 1200, four A presses, wait 2400). The steps then prove free play with
+# `state A free` (the module's "coop: free play: yes") before F1.
+mark start
+warp InsideTheDekuTree Entrance
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark after

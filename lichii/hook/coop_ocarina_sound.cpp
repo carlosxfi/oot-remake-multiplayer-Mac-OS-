@@ -25,11 +25,15 @@ std::string AssetName(std::uint8_t note) {
 
 std::uint8_t NoteOf(std::uint64_t button) {
     switch (button) {
+    // What the game itself plays for each key (run epona-seen-keys-fec750ad, 2026-11-26: its own emits per key,
+    // coord-multiplayer/offline/epona-seen/hs-ocarina-keys/keys.txt; tools/autotest/ocarina_notes.py holds the same table).
+    // The N64 layout: A = D, C-down = F, C-left = B, C-up = high D, C-right = A. Until 0.11.13 Y, X and A were
+    // inferred from the prompt's order and wrong (A, B, high D).
     case kButtonL: return 4;   // D
     case kButtonR: return 7;   // F
-    case kButtonY: return 11;  // A
-    case kButtonX: return 13;  // B
-    case kButtonA: return 16;  // HighD
+    case kButtonY: return 13;  // B
+    case kButtonX: return 16;  // HighD
+    case kButtonA: return 11;  // A
     default: return 0;
     }
 }

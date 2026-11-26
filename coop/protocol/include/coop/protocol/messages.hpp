@@ -32,11 +32,11 @@ namespace coop::protocol {
 // 16: OBJECT_SAMPLE component 23, a battle manager's orders (BossOrders, row 222 Twinrova, 0.11.11): a protocol 15
 // server keeps only the components it knows in an object's last state (HANDOVER_STATE), and a 0.11.9 game's copies
 // would follow their own manager again, so mixed versions are refused at HELLO.
-// 18 (0.11.13; 17 was never released): PLAYER_RIDE flag bit 1 (kRideFree) with a world place, a player's own Epona
+// 18 (0.12.0; 17 was never released): PLAYER_RIDE flag bit 1 (kRideFree) with a world place, a player's own Epona
 // while nobody rides her (epona-sync; a protocol 16 reader refuses the bit as bad_value), and
-// OBJECT_SAMPLE components 25-28, an object's kept keyed values (KeyedValues, sync plan S1, 0.11.13): one bump
+// OBJECT_SAMPLE components 25-28, an object's kept keyed values (KeyedValues, sync plan S1, 0.12.0): one bump
 // for the whole sync plan. A protocol 17 server drops them from an object's last state, so a new owner or a late
-// player would get none of them; mixed versions are refused at HELLO. Nobody else bumps the version in 0.11.13: new
+// player would get none of them; mixed versions are refused at HELLO. Nobody else bumps the version in 0.12.0: new
 // keyed data goes in 25-28 under new keys (docs/protocol.md "Keyed values").
 inline constexpr std::uint16_t kProtocolVersion = 18;
 // A public game (anyone joins without typing a password) lists itself on the relay's room list with this bit

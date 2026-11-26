@@ -1,6 +1,4 @@
 # gear-join-after-age B (proof-0116): presses through the title ~70 s after A, so it joins after A's age switch.
-#! noload
-#! start coop: test warp done
 #! switches LICHII_COOP_DEBUG_ANIM=1
 #! timeout 480
 mark start

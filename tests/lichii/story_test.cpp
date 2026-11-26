@@ -13,6 +13,8 @@
 #include "coop_chests.h"
 #include "coop_dungeon.h"
 #include "coop_quests.h"
+#include "coop_scrub_sale.h"
+#include "coop_shop_sale.h"
 #include "coop_story.h"
 #include "coop/host/flag_watcher.hpp"
 #include "coop/host/game_items.hpp"
@@ -901,4 +903,23 @@ TEST_CASE("story: a gift spot the seed gives another item is never held nor mend
     for (const auto h : CoopStory::Gifts()[0].played) CHECK(CoopStory::GiftHolds(h, held));  // the base game again
     CoopStory::SetGiftShuffled(CoopStory::kGiftsMax, true);  // out of range: nothing
     CHECK_FALSE(CoopStory::GiftShuffled(CoopStory::kGiftsMax));
+}
+
+TEST_CASE("story: the clock gate's two flags are on no shared list (docs/time.md Clock gate, C6-2)") {
+    // Longshot 3.2's oot_first_night_fix clears HrlField_HasEnteredFirstTime_Adult in a game outside
+    // Hyrule Field; that clear must stay in that game and never lift another game's first-night lock.
+    // Every list coop_hook.cpp joins at the session start, with every switch on.
+    std::optional<host::SharedFlags> all(host::item_shared_flags(true));
+    CoopDungeon::Merge(all, true);
+    CoopStory::Merge(all, true);
+    CoopQuests::Merge(all, true);
+    CoopChests::Merge(all, true);
+    CoopScrubSale::Merge(all);
+    CoopShopSale::MergeGifts(all);
+    CoopShopSale::Merge(all);
+    REQUIRE(all.has_value());
+    CHECK(host::flag_hash("HrlField_HasEnteredFirstTime_Adult") == 0x8592aa82u);
+    CHECK(host::flag_hash("HyruleField_ArriveEntrance") == 0x804aec99u);
+    CHECK_FALSE(all->contains(Key("HrlField_HasEnteredFirstTime_Adult")));
+    CHECK_FALSE(all->contains(Key("HyruleField_ArriveEntrance")));
 }

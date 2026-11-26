@@ -141,9 +141,10 @@ unzip_to() {
 }
 
 # kit_version_compare A B: prints -1, 0 or 1. v0.1.0 > v0.1.0-beta2; beta2 < beta10.
-# Something that is not a version counts as the oldest. (As tools/release/kit/linux/kit-lib.sh.)
+# Something that is not a version counts as the oldest. A test-build part may hold - ("v0.12.0-test-1234abcd"), as
+# update.ps1 ConvertTo-KitVersion and update.sh --version take it.
 kit_version_compare() {
-    local a=$1 b=$2 re='^v?([0-9]+)\.([0-9]+)\.([0-9]+)(-([A-Za-z0-9.]+))?$'
+    local a=$1 b=$2 re='^v?([0-9]+)\.([0-9]+)\.([0-9]+)(-([A-Za-z0-9.-]+))?$'
     local ok_a=0 ok_b=0 ca=() cb=() pa='' pb=''
     if [[ $a =~ $re ]]; then ok_a=1; ca=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"); pa=${BASH_REMATCH[5]}; fi
     if [[ $b =~ $re ]]; then ok_b=1; cb=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"); pb=${BASH_REMATCH[5]}; fi

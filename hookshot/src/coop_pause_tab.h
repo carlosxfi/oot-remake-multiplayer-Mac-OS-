@@ -723,6 +723,10 @@ struct ListLine {
     // A list's heading with more than one page ("Public games  Page 1/2"): the page shows the game's own ZL and ZR
     // button icons beside it (its controller picture's keys, coop_list_pages.h), as the words have no button letters.
     bool paged = false;
+    // The end of `name` the player must read whole (a setting's " (restart)", a heading's page line): the module's width
+    // fit (FitPut) cuts the words before it, never it; "" or not the name's end: the plain cut. `name_brief`, when not
+    // "", a shorter tag that says the same and takes its place when name and tag are wider than the pane (" *").
+    std::string name_tail = {}, name_brief = {};   // (initialized: the partial ListLine{...} lists stay clean under -Wmissing-field-initializers)
 };
 
 // --- Typing with a pad: the list's rows are the keys ---
@@ -832,6 +836,9 @@ inline constexpr std::size_t kListNameChars = 30, kListValueChars = 16;   // (th
 // value shows one), so its words, left-aligned in the left box, may run on over the right box's room as well (row 139,
 // ui-fit-139-2: the Mods tab's 'Co-op: Player 2 (B): 1 mod ...' was cut at 30 beside an empty right half).
 inline constexpr std::size_t kListLineChars = kListNameChars + kListValueChars;
+// The bytes a list line's live text holds (the module's placeholder, strings/en.txt: 64 with its 0, a text of 64 or more
+// is not shown at all): a name built longer than kListNameChars (a tag on top) stays under it.
+inline constexpr std::size_t kListTextBytes = 64;
 // The list's rows for this page: the header, then a page of games ("" rows not shown). With nothing listed, the
 // first game row says why.
 std::vector<ListLine> ListLines(const SessionView& v);
@@ -967,7 +974,8 @@ struct SettingRow {
 std::vector<SettingRow> SettingsOf(const std::vector<SettingRow>& all, int category);
 int SettingPages(int count, int per_page = kSettingsPerPage);
 // A page of a category's settings as the list's rows: the header (`title`, and "Page 2 of 4" when there are more),
-// then the settings: the name ("*" after a restart one), the value's words.
+// then the settings: the name (" (restart)" after a restart one, kept whole: name_tail, " *" its
+// brief form when the pane is too narrow for both, as 0.11.12 showed it), the value's words.
 // kSettingListRows lines, the ones past `per_page` + 1 empty.
 std::vector<ListLine> SettingLines(const std::vector<SettingRow>& rows, int page, const std::string& title,
                                    int per_page = kSettingsPerPage);
@@ -1205,7 +1213,8 @@ bool CharacterCustomizeOpen() noexcept;
 bool OwnMinusPageShown() noexcept;
 // F6 (coop_players_open.h, ui-audit-01112 B5): opens the game's - menu on co-op's Multiplayer tab, Players view, with
 // the game's own Minus and L / R (a run already going: nothing more). Any thread. False when the pack has no - tabs of
-// ours (seen once a - menu opened without them): F6's drawn list is used then.
+// ours (seen once a - menu opened without them), or when the - menu cannot open now (an event, a load: f1-event-c31):
+// F6's drawn list is used then.
 bool OpenPlayers() noexcept;
 // F1 in play (menu-polish-01113, A #100: our tabs leave Longshot's F1 menu, F1 opens co-op's home): the same run as
 // F6's to the - menu's Multiplayer tab, its main view. False (F1 left to Longshot's own menu) when the pack has no - tabs
@@ -1213,6 +1222,10 @@ bool OpenPlayers() noexcept;
 bool OpenMultiplayer() noexcept;
 // Whether a - menu opened without tabs of ours this session (an old pack): Longshot's F1 menu keeps co-op's tabs then.
 bool NoMinusTabs() noexcept;
+// Whether our - menu can open now (OpenMultiplayer's own test): tabs of ours, and free play or a game menu up. Not in an
+// event, a load, on the title or a file screen: Longshot's F1 menu carries co-op's tabs then (coop_menu_tabs_rule.h).
+// Any thread (reads only).
+bool MinusMenuNow() noexcept;
 // Free play for F6's Minus (coop_players_open.h Seen::free_play): our Link in a scene, no event, no load, as the
 // module read it this frame (coop_hookshot.cpp DrawScene, each frame). Any thread.
 void SetFreePlay(bool free_play) noexcept;

@@ -8,6 +8,7 @@
 #include <fstream>
 #include <mutex>
 
+#include "coop_off_frame.h"
 #include "coop_png.h"
 
 #ifdef _WIN32
@@ -148,16 +149,9 @@ HICON g_icon = nullptr;
 bool g_icon_tried = false;
 HWND g_icon_window = nullptr;
 
-}  // namespace
-
-void Tick(const std::filesystem::path& game_dir) {
-    using Clock = std::chrono::steady_clock;
-    static Clock::time_point next{};
-    const Clock::time_point now = Clock::now();
-    if (now < next) {
-        return;
-    }
-    next = now + std::chrono::seconds(1);
+// One pass: find the game's window, set its title and icon when they are not ours. Runs on Tick's Slot only (never in
+// the frame): EnumWindows and SendMessageTimeoutW (up to 200 ms each, to the window's own thread) can wait.
+void Brand(const std::filesystem::path& game_dir) {
     Found f;
     EnumWindows(Each, reinterpret_cast<LPARAM>(&f));
     if (f.hwnd == nullptr) {
@@ -186,6 +180,22 @@ void Tick(const std::filesystem::path& game_dir) {
         SendMessageTimeoutW(f.hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(g_icon), SMTO_ABORTIFHUNG, 200, &ignored);
         SendMessageTimeoutW(f.hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(g_icon), SMTO_ABORTIFHUNG, 200, &ignored);
     }
+}
+
+}  // namespace
+
+// Row 292 (related case): the frame only starts the pass, once a second, on a thread of its own (CoopOffFrame); a pass
+// still running then is not started again.
+void Tick(const std::filesystem::path& game_dir) {
+    using Clock = std::chrono::steady_clock;
+    static Clock::time_point next{};
+    static CoopOffFrame::Slot pass;
+    const Clock::time_point now = Clock::now();
+    if (now < next) {
+        return;
+    }
+    next = now + std::chrono::seconds(1);
+    pass.Start([game_dir] { Brand(game_dir); });
 }
 #else
 void Tick(const std::filesystem::path&) {}

@@ -44,6 +44,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import placement  # noqa: E402  (where the games' windows go: one monitor, no focus stolen)
 import lanes  # noqa: E402  (brings tools/hookshot/hs.py: run_quiet and popen_quiet start a console child with no window)
+import ocarina_notes  # noqa: E402  (the Ocarina's keys and songs, the ONE table: the runner's `song` step)
 
 WINDOWS = os.name == "nt"
 TICKS = 60.0              # script ticks a second
@@ -245,7 +246,11 @@ BOTTLE_ITEMS = ("0x7d48df76", "0x1edd164a", "0xb80c70a8", "0xe4c1b1fc", "0x365e1
 def parse(text):
     """Our test script (coop_testinput.h) as a list of Steps. Raises ScriptError("line N: ...")."""
     steps = []
-    for number, raw in enumerate(text.split("\n"), 1):
+    try:
+        lines = ocarina_notes.expand(text)   # `song NAME [HOLD [GAP]]`: the song's presses from the ONE key table
+    except ocarina_notes.SongError as e:
+        raise ScriptError(str(e))
+    for number, raw in lines:
         line = raw.split("#", 1)[0]
         w = line.split()
         if not w:
@@ -437,6 +442,20 @@ def parse(text):
             except re.error as e:
                 fail("await: bad REGEX: %s" % e)
             s.kind, s.ticks, s.name = "await", _await_ticks(w[1]), pattern
+        elif cmd == "SKIPTO":
+            # epona-seen: "skipto MARK REGEX": when this game's own log has a line matching REGEX (the rest of the
+            # line) written since the last mark played (the try's start), the script goes on at the later
+            # `mark MARK`, the steps between are not played; else it goes on with the next step. The runner's own step, as await: a try that must
+            # stop once it worked (get on a called horse: one more A press would get off again).
+            pattern = line.strip()[len(w[0]):].strip()
+            pattern = pattern[len(w[1]):].strip() if len(w) >= 2 else ""
+            if len(w) < 3 or not pattern:
+                fail("want: skipto MARK REGEX (the rest of the line, matched in this game's log)")
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                fail("skipto: bad REGEX: %s" % e)
+            s.kind, s.name, s.start = "skipto", w[1], pattern
         elif cmd == "BURST":
             # Issue 166: "burst NAME FRAMES [TICKS REGEX]": this game held and a shot of it every frame or two (one
             # frame run, then the shot), FRAMES shots; with REGEX they start when a NEW line of this game's log
@@ -467,6 +486,9 @@ def parse(text):
         steps.append(s)
     if not steps:
         raise ScriptError("no steps")
+    for i, s in enumerate(steps):
+        if s.kind == "skipto" and not any(t.kind == "mark" and t.name == s.name for t in steps[i + 1:]):
+            raise ScriptError("line %d: skipto %s: no later 'mark %s'" % (s.line, s.name, s.name))
     return steps
 
 
@@ -1051,8 +1073,32 @@ class Player:
         self.log("coop: test burst %s: %d shots, last frame %s" % (s.name, taken, frame))
         return self.clock()
 
+    def skip_to(self, s, steps, i, since):
+        """skipto MARK REGEX: the index of the later `mark MARK` when this game's log has more lines matching REGEX
+        than it had at the last mark played (since[REGEX]), else None. No log: never skips."""
+        if self.read_log is None:
+            self.log("coop: test skipto skipped (line %d: this run reads no game log)" % s.line)
+            return None
+        n, last = self._log_matches(re.compile(s.start))
+        if n <= since.get(s.start, 0):
+            self.log("coop: test skipto %s: not seen, going on (line %d)" % (s.name, s.line))
+            return None
+        to = next(j for j in range(i, len(steps)) if steps[j].kind == "mark" and steps[j].name == s.name)
+        self.log("coop: test skipto %s: seen (%s), %d steps not played" % (s.name, last.strip(), to - i))
+        return to
+
     def play(self, steps):
         self.log("coop: test script %d steps" % len(steps))
+        # skipto counts only lines written since the last mark played: a try starts at a mark (getting on again
+        # logs the same lines as getting on the first time). Before the first mark: since the script began.
+        since = {}
+        rxs = sorted({s.start for s in steps if s.kind == "skipto"}) if self.read_log is not None else []
+
+        def snapshot():
+            for rx in rxs:
+                since[rx] = self._log_matches(re.compile(rx))[0]
+
+        snapshot()
         t = self.clock()
         i = 0
         while i < len(steps):
@@ -1073,6 +1119,7 @@ class Player:
             elif s.kind == "mark":
                 self._until(t)
                 self.mark(s.name)
+                snapshot()
                 # The mark waits for the module to take it (usually a quarter second, at most 2 x take_for): the
                 # next step starts after it, or a short press scheduled before it is let go at once (a title press lost).
                 t = max(t, self.clock())
@@ -1080,6 +1127,12 @@ class Player:
                 t = max(t, self.steer(s, max(t, self.clock())))
             elif s.kind == "await":
                 t = max(t, self.await_line(s, max(t, self.clock())))
+            elif s.kind == "skipto":
+                self._until(t)
+                to = self.skip_to(s, steps, i, since)
+                if to is not None:
+                    i = to
+                t = max(t, self.clock())
             elif s.kind == "burst":
                 t = max(t, self.burst(s, max(t, self.clock())))
             elif s.kind == "warp":
@@ -1495,12 +1548,15 @@ def run(a):
     started = {}
     scripts = {"A": a.script_a, "B": a.script_b}
     parsed = {}
-    for x in tags:
-        if scripts[x]:
-            parsed[x] = parse(read_script(scripts[x]))
-    load = None
-    if a.load:
-        load = parse(read_script(a.load))   # (checked; the load itself is "A until play", see to_play)
+    try:   # (before any game starts: a bad line, a bad `song` among them, is a setup failure, not a 30-min run)
+        for x in tags:
+            if scripts[x]:
+                parsed[x] = parse(read_script(scripts[x]))
+        load = None
+        if a.load:
+            load = parse(read_script(a.load))   # (checked; the load itself is "A until play", see to_play)
+    except ScriptError as e:
+        raise SystemExit("SETUP-FAIL script: %s" % e)
     procs, bridges, server, commands = {}, {}, None, {}
     failed = None
 
@@ -1633,7 +1689,7 @@ def run(a):
                         lb.close()
                 except Exception as e:
                     errs[x] = e
-            ts = [threading.Thread(target=loader, args=(x,)) for x in tags]
+            ts = [threading.Thread(target=loader, args=(x,)) for x in tags if x not in a.no_load_games.split(",")]
             for t in ts:
                 t.start()
             for t in ts:
@@ -1787,6 +1843,7 @@ def main(argv=None):
     r.add_argument("--script-b")
     r.add_argument("--load", help="load.txt: checked only; the load presses A until the game plays")
     r.add_argument("--no-load", action="store_true")
+    r.add_argument("--no-load-games", default="", help="A or B or A,B: those games skip the load (their script loads the save itself); the other plays --load")
     r.add_argument("--no-restore", action="store_true")
     r.add_argument("--keep-open", action="store_true")
     r.add_argument("--only", choices=["A", "B"],

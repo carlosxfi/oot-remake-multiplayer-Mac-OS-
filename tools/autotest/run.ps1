@@ -146,23 +146,60 @@ if (-not (Test-Path $steps)) { $steps = $null }
 if (-not $TakeBaseline -and -not $steps -and -not (Test-Path $scA)) { throw "no scenario $scA" }
 
 # Header lines in the A script (or the steps file), which the emulator reads as comments:
-#   #! noload                  the script loads the save itself (as -NoLoad)
+#   #! noload                  the script loads the save itself (as -NoLoad), both games
+#   #! noload B                only game B's script loads the save itself (A or B); A still plays load.txt
 #   #! switches NAME=v,NAME=v  added to the switches (-Switches given on the command line win)
 #   #! timeout 300             seconds for each phase (as -Timeout, which wins)
 #   #! server ARGS             more coop_server arguments (stray-diag: --owner-hold-ms 0)
 #   #! start REGEX             the game log must match REGEX once the save is loaded (default: a
 #                              Graveyard object, the save point); checked after load.txt, or at
 #                              the end for a script that loads itself
+#   #! start B: REGEX          the same for game B only (A: or B:); a game with its own noload has no default start check
 if ($NoCoop -and -not $PSBoundParameters.ContainsKey('Switches')) { $Switches = @('LICHII_COOP_DEBUG_OBJECTS=1') }
-$headNoLoad = $false; $headSwitches = @(); $headStart = $null; $headServer = ''
+$headNoLoad = $false; $headSwitches = @(); $headStart = $null; $headServer = ''; $noLoadGames = @(); $headStartGame = @{}
 $headFile = if ($steps) { $steps } elseif (Test-Path $scA) { $scA } else { $null }
 if ($headFile) {
     foreach ($l in Get-Content $headFile) {
         if ($l -match '^#!\s*noload\s*$') { $headNoLoad = $true }
+        elseif ($l -match '^#!\s*noload\s+([AB])\s*$') { $noLoadGames += $Matches[1] }
         elseif ($l -match '^#!\s*switches\s+(.+)$') { $headSwitches += @($Matches[1] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+        elseif ($l -match '^#!\s*start\s+([AB]):\s+(.+)$') { $headStartGame[$Matches[1]] = $Matches[2].Trim() }
         elseif ($l -match '^#!\s*start\s+(.+)$') { $headStart = $Matches[1].Trim() }
         elseif ($l -match '^#!\s*server\s+(.+)$') { $headServer = $Matches[1].Trim() }
         elseif ($l -match '^#!\s*timeout\s+(\d+)\s*$' -and -not $PSBoundParameters.ContainsKey('Timeout')) { $Timeout = [int]$Matches[1] }
+    }
+}
+# The header is read from ONE file only, for both games: the steps file when there is one, else the A script. A '#!' line any
+# other script of the run carries was never applied: epona-seen-keys-3bacc7d0 (2026-11-26) had LICHII_COOP_DEBUG_SOUND=1 in
+# B only, so no sound was logged and the run was VOID; with a steps file the A and B scripts' headers are not read either
+# (review-b119: epona.A.txt/epona.B.txt vs epona.steps.txt). Such a run is refused here, before any game starts, naming each
+# file and line (SETUP-FAIL, exit 2). The other scripts: the B script (no steps file), or every script a steps file's `play`
+# lines name ("play A x.A.txt B x.B.txt", tools/autotest/hs_steps.py).
+if ($headFile) {
+    $others = @()
+    if ($headFile -eq $scA) { if (Test-Path $scB) { $others += $scB } }
+    else {
+        foreach ($l in Get-Content $headFile) {
+            if ($l -match '^\s*play\s+(.+)$') {
+                $w = @(($Matches[1] -split '#', 2)[0] -split '\s+' | Where-Object { $_ })
+                for ($i = 1; $i -lt $w.Count; $i += 2) { $f = Join-Path (Split-Path $headFile) $w[$i]; if ((Test-Path $f) -and $others -notcontains $f) { $others += $f } }
+            }
+        }
+    }
+    $hLines = @(Get-Content $headFile | Where-Object { $_ -match '^#!' } | ForEach-Object { $_.Trim() })
+    $notInHead = New-Object System.Collections.Generic.List[string]
+    foreach ($o in $others) {
+        foreach ($l in @(Get-Content $o | Where-Object { $_ -match '^#!' } | ForEach-Object { $_.Trim() })) {
+            if ($l -match '^#!\s*switches\s+(.+)$') {
+                foreach ($sw in @($Matches[1] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+                    if ($headSwitches -notcontains $sw) { $notInHead.Add("$(Split-Path $o -Leaf): switch $sw") }
+                }
+            } elseif ($hLines -notcontains $l) { $notInHead.Add("$(Split-Path $o -Leaf): '$l'") }
+        }
+    }
+    if ($notInHead.Count) {
+        Write-Host "SETUP-FAIL scenario $Scenario`: run.ps1 reads the header from $(Split-Path $headFile -Leaf) only, for both games; these lines elsewhere were never applied: qualify a line only one game needs as '#! noload B' / '#! start B: REGEX' / a 'B:NAME=v' switch in $(Split-Path $headFile -Leaf), or put it in both games' headers if both need it: $($notInHead -join ', ')"
+        exit 2
     }
 }
 if ($headNoLoad -and -not $NoLoad) { Write-Host "scenario header: noload"; $NoLoad = [switch]$true }
@@ -173,6 +210,7 @@ if ($headSwitches.Count) {
         if (-not $PSBoundParameters.ContainsKey('Switches') -or $given -notcontains $k) { $Switches += $e }
     }
 }
+$noLoadGames = @($noLoadGames | Select-Object -Unique); $headStartExplicit = [bool]$headStart
 if (-not $headStart -and -not $NoLoad) { $headStart = 'coop: objects: \+ \w*Graveyard'; if (-not (@($Switches | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() }) -match '^LICHII_COOP_DEBUG_OBJECTS=')) { $Switches += 'LICHII_COOP_DEBUG_OBJECTS=1' } }
 
 $Kit = @($Kit | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().Trim('"', "'") } | Where-Object { $_ })
@@ -181,6 +219,21 @@ if ($Kit.Count) {
     if ($PSBoundParameters.ContainsKey('Runtime') -and $Runtime -ne 'hookshot') { throw "-Kit is for -Runtime hookshot" }
     $Runtime = 'hookshot'
 }
+# Python, resolved ONCE here for both runtimes and every check below (hookshot.py, lanes.py, placement.py,
+# ocarina_notes.py, proof.py, netsim.py): -Python, else the .venv beside the repo, else py -3 / python.
+# (review-b120: a song check that ran before the emulator's own lookup had no Python: every emulator run died.)
+function Find-Python {
+    if ($Python) { return @($Python) }
+    for ($d = Get-Item $here; $d; $d = $d.Parent) {
+        $v = Join-Path $d.FullName 'oot-remake-recomp\.venv\Scripts\python.exe'
+        if (Test-Path $v) { return @($v) }
+    }
+    if (Get-Command py -ErrorAction SilentlyContinue) { return @('py', '-3') }
+    if (Get-Command python -ErrorAction SilentlyContinue) { return @('python') }
+    throw "no Python found; pass -Python"
+}
+$py = @(Find-Python)
+$pyArgs = @($py | Select-Object -Skip 1)
 if (-not $Server) { $Server = Join-Path $PSScriptRoot "..\..\build\server\coop_server.exe" }
 $Server = Resolve $Server
 if (-not $TakeBaseline -and -not $NoCoop -and -not ($DryRun -and $Runtime -eq 'hookshot') -and -not (Test-Path $Server)) { throw "no server at $Server; build it or pass -Server" }
@@ -199,15 +252,6 @@ if ($Runtime -eq 'hookshot') {
     # hs_steps.py gives it to every game without a 'password' line, and a hookshot.py that knows
     # --password (every session has one) gets it there.
     if ($ServerPassword) { $env:OOT_COOP_TEST_PASSWORD = $ServerPassword }
-    $py = @()
-    if ($Python) { $py = @($Python) } else {
-        for ($d = Get-Item $here; $d; $d = $d.Parent) {
-            $v = Join-Path $d.FullName 'oot-remake-recomp\.venv\Scripts\python.exe'
-            if (Test-Path $v) { $py = @($v); break }
-        }
-        if (-not $py.Count) { if (Get-Command py -ErrorAction SilentlyContinue) { $py = @('py', '-3') } else { $py = @('python') } }
-    }
-    $pyArgs = @($py | Select-Object -Skip 1)
     if ($Lane) {
         $info = (& $py[0] @pyArgs -I "$here\lanes.py" info --lane $Lane --json | Out-String) | ConvertFrom-Json
         if (-not $info) { throw "lanes.py info --lane $Lane failed" }
@@ -236,6 +280,7 @@ if ($Runtime -eq 'hookshot') {
             '--timeout', "$([Math]::Max($Timeout, 900))", '--scenario-timeout', "$([Math]::Max($Timeout, 600))")
         if (Test-Path $scB) { $a += @('--script-b', $scB) }
         if ($NoLoad) { $a += '--no-load' } else { $a += @('--load', "$here\scenarios\load.txt") }
+        if ($noLoadGames.Count -and -not $NoLoad) { $a += @('--no-load-games', ($noLoadGames -join ',')) }
         if ($NoRestore) { $a += '--no-restore' }
         if ($KeepOpen) { $a += '--keep-open' }
         if ($ServerPassword -and (Select-String -Quiet -SimpleMatch -Path "$here\hookshot.py" -Pattern '"--password"')) {
@@ -261,7 +306,13 @@ if ($Runtime -eq 'hookshot') {
     }
     Write-Host "hookshot: $($py[0]) $($a -join ' ')"
     if ($DryRun -and $steps) { & $py[0] @a; return }   # hs_steps.py --dry-run prints the plan
-    if ($DryRun) { Write-Host "hookshot: dry run, nothing started"; return }
+    if ($DryRun) {
+        # the scripts as hookshot.py reads them (`song` lines written out from ocarina_notes.py): a bad line is a SETUP-FAIL here
+        $chk = @($py | Select-Object -Skip 1) + @('-I', "$here\hookshot.py", 'check', $scA) + @(if (Test-Path $scB) { $scB })
+        & $py[0] @chk
+        if ($LASTEXITCODE) { Write-Host "SETUP-FAIL scenario $Scenario`: a script line hookshot.py refuses (above)"; exit 2 }
+        Write-Host "hookshot: dry run, nothing started"; return
+    }
     $laneOwner = "run.ps1 $Scenario (pid $PID)"
     if ($Lane) {
         # Waits up to 30 min for the lane (another run in it, or a game build); held by this PowerShell's pid, so a
@@ -517,7 +568,10 @@ function Play([hashtable]$files, [string]$phase, [double]$every) {
         $st[$x].Done = Count (Read-Log $x) 'coop: test script done'
         $st[$x].Marks = Count (Read-Log $x) 'coop: test mark '
         # A comment with the time makes the file differ from the last one, so it is played again.
-        Set-Content -Encoding ascii $st[$x].Script ("# $phase $(Get-Date -Format o)`r`n" + (Get-Content -Raw $files[$x]))
+        # `song NAME` lines written out as presses from the ONE key table (ocarina_notes.py; hookshot.py does the same)
+        $body = (& $py[0] @pyArgs -I "$here\ocarina_notes.py" expand $files[$x] | Out-String)
+        if ($LASTEXITCODE) { throw "SETUP-FAIL game ${x}: ocarina_notes.py expand $($files[$x]) failed (a bad song line, above)" }
+        Set-Content -Encoding ascii $st[$x].Script ("# $phase $(Get-Date -Format o)`r`n" + $body)
         $want[$x] = $true
     }
     $start = Get-Date; $next = $start; $n = 0
@@ -714,6 +768,7 @@ function Live-Actors([string]$x) {
 # Did game x get to the scenario's start place (the `#! start` regex, default a Graveyard object
 # after load.txt)? Waits up to $wait s; writes start.txt beside the screenshots.
 function Check-Start([string]$x, [int]$wait) {
+    $headStart = $(if ($headStartGame.ContainsKey($x)) { $headStartGame[$x] } elseif ($noLoadGames -contains $x -and -not $headStartExplicit) { $null } else { $script:headStart })
     if (-not $headStart) { return $true }
     $start = Get-Date
     while (-not ((Read-Log $x) -match $headStart)) {
@@ -899,16 +954,6 @@ $netPort = @{ A = $Port; B = $Port }
 $NetSimFor = @($NetSimFor | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ })
 $NetSimArgs = @($NetSimArgs | Where-Object { $_ })
 $netOn = (-not $NoCoop) -and ($Lag -or $Jitter -or $Loss -or $Spike -or $NetSimArgs.Count) -and $NetSimFor.Count
-function Find-Python {
-    if ($Python) { return @($Python) }
-    for ($d = Get-Item $here; $d; $d = $d.Parent) {
-        $v = Join-Path $d.FullName 'oot-remake-recomp\.venv\Scripts\python.exe'
-        if (Test-Path $v) { return @($v) }
-    }
-    if (Get-Command py -ErrorAction SilentlyContinue) { return @('py', '-3') }
-    if (Get-Command python -ErrorAction SilentlyContinue) { return @('python') }
-    throw "no Python for the relay (tools\netsim\netsim.py); pass -Python"
-}
 function Start-NetSim {
     if (-not $netOn) { return }
     $py = @(Find-Python)
@@ -946,8 +991,12 @@ $stepFails = 0
 $stepUnproven = 0
 # The emulator runtime's games and their window placement use Python (placement.py); a monitor name that does not
 # exist goes to the primary monitor (placement.py says so); no monitor at all stops the run here.
-$py = @(Find-Python)
-$pyArgs = @($py | Select-Object -Skip 1)
+# The scenario's `song` lines (ocarina_notes.py expand, as Play writes them out) checked before any game starts.
+foreach ($f in @($scA, $scB) | Where-Object { -not $steps -and (Test-Path $_) }) {
+    & $py[0] @pyArgs -I "$here\ocarina_notes.py" expand $f | Out-Null
+    if ($LASTEXITCODE) { Write-Host "SETUP-FAIL scenario $Scenario`: $f has a bad song line (above)"; exit 2 }
+}
+Write-Host "song lines checked: $Scenario"
 $mon = (& $py[0] @pyArgs -I "$here\placement.py" rects @(Display-Args) 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE) { throw $mon }
 Write-Host "windows go to: $mon"
@@ -975,17 +1024,18 @@ try {
 
         if (-not $NoLoad) {
             $load = "$here\scenarios\load.txt"
-            Play @{ A = $load; B = $load } 'load' $Every
+            $lf = @{}; foreach ($x in 'A', 'B') { if ($noLoadGames -notcontains $x) { $lf[$x] = $load } }
+            if ($lf.Count) { Play $lf 'load' $Every }
             Shot-Both 'loaded'
             Write-Host "save loaded"
             foreach ($x in $kits.Keys) {
-                if (-not (Check-Start $x 15)) { throw "game $x did not start at the save point ('$headStart'): see start.txt" }
+                if ($noLoadGames -notcontains $x -and -not (Check-Start $x 15)) { throw "game $x did not start at the save point ('$headStart'): see start.txt" }
             }
         }
         $files = @{ A = $scA; B = $(if (Test-Path $scB) { $scB } else { $null }) }
         Play $files $Scenario $Every
-        if ($NoLoad -and $headStart) {
-            foreach ($x in $kits.Keys) { if (-not (Check-Start $x 0)) { $stepFails++ } }
+        if (($NoLoad -and $headStart) -or $noLoadGames.Count -or $headStartGame.Count) {
+            foreach ($x in $kits.Keys) { if (($NoLoad -or $noLoadGames -contains $x -or $headStartGame.ContainsKey($x)) -and -not (Check-Start $x 0)) { $stepFails++ } }
         }
     }
     Start-Sleep 1

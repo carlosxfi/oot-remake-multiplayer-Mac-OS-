@@ -417,10 +417,17 @@ TEST_CASE("hookshot: co-op draws over the picture through Hookshot's ImGui (chat
     CHECK(module.find("COOP_HOOKSHOT_EXPORT void hos_coop_draw(const HosCoopDraw* d)") != std::string::npos);
     // The game look: the renderer prefers hos_coop_draw2 and hands it the font and picture calls; the module has it.
     CHECK(vk.find("\"hos_coop_draw2\"") != std::string::npos);
-    CHECK(vk.find("font_load, use_font, image, draw_image}") != std::string::npos);
+    CHECK(vk.find("font_load, use_font,") != std::string::npos);
     CHECK(vk.find("AddFontFromFileTTF") != std::string::npos);
     CHECK(vk.find("ImGui::RegisterUserTexture(t)") != std::string::npos);
     CHECK(module.find("COOP_HOOKSHOT_EXPORT void hos_coop_draw2(const HosCoopDraw* d)") != std::string::npos);
+    // Pictures turned natively (the maps' player arrows at any angle): hos_coop_draw3 first, its table with
+    // draw_image_turned (ImGui's AddImageQuad); the module has it and keeps hos_coop_draw2 for an older Hookshot.
+    CHECK(vk.find("\"hos_coop_draw3\"") != std::string::npos);
+    CHECK(vk.find("image, draw_image, draw_image_turned}") != std::string::npos);
+    CHECK(vk.find("if (const auto d3 = draw3_fn.load(std::memory_order_acquire)) d3(&c);") != std::string::npos);
+    CHECK(vk.find("AddImageQuad") != std::string::npos);
+    CHECK(module.find("COOP_HOOKSHOT_EXPORT void hos_coop_draw3(const HosCoopDraw* d)") != std::string::npos);
 }
 
 TEST_CASE("hookshot: the chat box gets Hookshot's keys first, and the game none while it types") {
@@ -1826,13 +1833,18 @@ TEST_CASE("hookshot: SDL's audio is started once for the microphones, not at eve
     }
 }
 
-TEST_CASE("hookshot: F1 in play opens co-op's - menu, co-op's tabs stay in Longshot's F1 menu only as the fallback") {
+TEST_CASE("hookshot: F1 in free play opens co-op's - menu, elsewhere Longshot's F1 menu with co-op's tabs") {
     // (menu-polish-01113, A #100: co-op's home is the game's - menu; the F1 tabs are Longshot's ImGui menu, not the game's)
     const std::string module = ReadFile(kRepo / "hookshot" / "src" / "coop_hookshot.cpp");
-    CHECK(module.find("vk == 0x70 /* F1 */ && repeat == 0 && g_on && !CoopTitle::Up() && CoopPauseTab::OpenMultiplayer()") !=
-          std::string::npos);
+    // (f1-event-c31: by NOW, not by pack: where the - menu cannot open, Longshot's menu has co-op's tabs, F1 opens it on
+    // Multiplayer; coop_menu_tabs_rule.h, menu_tabs_rule_test.cpp)
+    CHECK(module.find("if (vk == 0x70 /* F1 */ && repeat == 0 && g_on) {") != std::string::npos);
+    CHECK(module.find("CoopMenuTabsRule::F1 route = CoopMenuTabsRule::OnF1(now);") != std::string::npos);
     CHECK(module.find("CoopPause::WantClose();") != std::string::npos);
-    CHECK(module.find("return !has_pack || CoopPauseTab::NoMinusTabs() ? CoopPause::Tabs() : 0;") != std::string::npos);
+    CHECK(module.find("CoopPause::WantMultiplayerTab();") != std::string::npos);
+    CHECK(module.find("const int tabs = CoopMenuTabsRule::LongshotTabs(MenuNow(), CoopPause::Tabs());") != std::string::npos);
+    CHECK(module.find("now.minus_now = now.minus_tabs && CoopPauseTab::MinusMenuNow();") != std::string::npos);
+    CHECK(module.find("!CoopTitle::Up() && CoopPauseTab::OpenMultiplayer()") == std::string::npos);   // (the title too)
     CHECK(module.find("if (!g_on) return g_original_on ? 1 : 0;") != std::string::npos);   // (original game: its tab)
     const std::string tab = ReadFile(kRepo / "hookshot" / "src" / "coop_pause_tab_module.cpp");
     CHECK(tab.find("if (g_players_to_main.load()) OpenLongshotMenu();") != std::string::npos);   // (old pack: as before)

@@ -41,13 +41,11 @@ bool NonBlocking(Socket s) {
 #endif
 
 constexpr std::uint64_t kLookLingerMs = 10000;    // the listener stays this long after the last look
-constexpr std::uint64_t kNetworksEveryMs = 30000; // this PC's networks read again this often (a cable, a VPN)
 
 std::mutex g_mutex;
 Socket g_send = kNoSocket, g_listen = kNoSocket;
 bool g_started = false;
-std::uint64_t g_next_send_ms = 0, g_networks_ms = 0, g_last_look_ms = 0;
-std::set<std::uint32_t> g_targets;   // broadcast addresses (host order)
+std::uint64_t g_next_send_ms = 0, g_last_look_ms = 0;
 CoopLan::List g_list;
 bool g_said_send = false, g_said_listen = false;
 
@@ -88,15 +86,16 @@ Socket Open(bool listen) {
     return s;
 }
 
-void ReadNetworks(std::uint64_t now_ms) {
-    if (g_networks_ms != 0 && now_ms - g_networks_ms < kNetworksEveryMs) return;
-    g_networks_ms = now_ms;
-    g_targets.clear();
-    g_targets.insert(0xffffffffu);   // (255.255.255.255: this network, whatever it is)
-    g_targets.insert(0x7f000001u);   // (127.0.0.1: another game window on this PC)
-    for (const auto& net : coop::server::nat::local_networks()) {
-        if (const std::uint32_t b = coop::server::nat::broadcast_of(net); b != 0) g_targets.insert(b);
-    }
+// Row 292: this PC's networks, read off the frame (CoopLan::NetworkTargets); the frame only sends.
+CoopLan::NetworkTargets& Targets() {
+    static CoopLan::NetworkTargets targets([] {
+        std::vector<std::uint32_t> out;
+        for (const auto& net : coop::server::nat::local_networks()) {
+            if (const std::uint32_t b = coop::server::nat::broadcast_of(net); b != 0) out.push_back(b);
+        }
+        return out;
+    });
+    return targets;
 }
 
 }  // namespace
@@ -116,9 +115,8 @@ void Announce(const CoopLan::Game& game, std::uint64_t now_ms) {
         LOG_INFO(Core, "coop: lan: this game is announced on the local network (port {}, every {} s)", CoopLan::kPort,
                  CoopLan::kEveryMs / 1000);
     }
-    ReadNetworks(now_ms);
     const std::string datagram = CoopLan::Encode(game);
-    for (const std::uint32_t target : g_targets) {
+    for (const std::uint32_t target : Targets().Now(now_ms)) {
         sockaddr_in to{};
         to.sin_family = AF_INET;
         to.sin_port = htons(CoopLan::kPort);

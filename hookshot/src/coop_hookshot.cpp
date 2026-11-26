@@ -72,6 +72,7 @@
 #include "coop_dbno_game.h"
 #include "coop_enemy_shots.h"
 #include "coop_mod_api.h"
+#include "coop_menu_tabs_rule.h"
 #include "coop_mods_runtime.h"
 #include "coop_part_fallback.h"
 #include "coop_pad_order.h"
@@ -92,6 +93,7 @@
 #include "coop_ngplus.h"
 #include "coop_live_events.h"
 #include "coop_objects_sync.h"
+#include "coop_off_frame.h"
 #include "coop_hit_replay.h"
 #include "coop_input.h"
 #include "coop_look.h"
@@ -1009,7 +1011,31 @@ void LoadLook(const HosCoopDraw& d) {
         g_look_state = kLookOff;
         return;
     }
-    LOG_INFO(Core, "coop: hud: game look on Hookshot: the game font and heart pictures loaded");
+    // The game's map arrow, which Hookshot turns to each player's facing (optional: a pack made before it has none,
+    // a Hookshot without draw_image_turned cannot turn it; the maps then show names only, said once here).
+    std::string arrow_why;
+    if (d.draw_image_turned == nullptr) {
+        arrow_why = "this Hookshot cannot turn pictures (no hos_coop_draw3: build it again with our patch)";
+    } else {
+        const auto rim = CoopPng::Load(*dir / "map-arrow.png");
+        const auto fill = CoopPng::Load(*dir / "map-arrow-fill.png");
+        if (!rim || !fill) {
+            arrow_why = std::string(!rim ? "map-arrow.png" : "map-arrow-fill.png") + " missing in the pack";
+        } else {
+            l.map_arrow = d.image(d.user, rim->width, rim->height, rim->rgba.data());
+            l.map_arrow_fill = d.image(d.user, fill->width, fill->height, fill->rgba.data());
+            if (!l.MapArrows()) {   // (Hookshot keeps at most 64 pictures: coop_draw.h Look::kPictures)
+                arrow_why = "map-arrow pictures not taken by Hookshot";
+                l.map_arrow = l.map_arrow_fill = 0;
+            }
+        }
+    }
+    if (l.MapArrows()) {
+        LOG_INFO(Core, "coop: hud: game look on Hookshot: the game font, heart pictures and map arrows loaded");
+    } else {
+        LOG_INFO(Core, "coop: hud: game look on Hookshot: the game font and heart pictures loaded; no map arrows ({}): "
+                       "names only on the maps", arrow_why);
+    }
     g_look = l;
     g_look_state = kLookOn;
 }
@@ -1286,6 +1312,8 @@ void PartyStep(NativeGame& game, void* ctx, std::uint64_t now) {
         for (auto& b : blocks) b.double_defence = defence;
     }
     PartyGame party(game, ctx);
+    static const bool no_pack = EnvOn("COOP_TEST_PARTY_HUD_NO_PACK");   // scenario hs-party-hud-probe: as without a pack
+    hud.IgnorePack(no_pack);
     std::vector<std::string> log;
     const bool on = hud.Step(party, blocks, bottom, &log, now, own);
     for (const auto& l : log) LOG_INFO(Core, "{}", l);
@@ -1602,8 +1630,17 @@ CoopDraw::Scene DrawScene() {
     {   // Free play for F6's Minus, each frame: our Link's frame is fresh (none in a load or on the title) and no event
         // (cutscene, talk) has control (CoopHook::CurrentMapView); the pause tab also reads the event manager itself.
         thread_local CoopHook::MapView view;
-        const bool free_play = !CoopTitle::Up() && CoopHook::CurrentMapView(view) && !view.event;
+        const bool title = CoopTitle::Up();
+        const bool fresh = !title && CoopHook::CurrentMapView(view);
+        const bool free_play = fresh && !view.event;
         CoopPauseTab::SetFreePlay(free_play);
+        // Each change, for tests (tools/autotest/hs_steps.py `state`, f1-event-c31): what F1 and the - menu go by.
+        const char* why = free_play ? "yes" : title ? "no (title)" : fresh ? "no (event)" : "no (load, no Link)";
+        thread_local const char* told = nullptr;
+        if (told != why) {
+            told = why;
+            LOG_INFO(Core, "coop: free play: {}", why);
+        }
     }
     if (list_press) {
         const bool in_scene = !CoopTitle::Up() && std::any_of(rows.begin(), rows.end(), [](const CoopHook::PlayerRow& r) {
@@ -1980,9 +2017,11 @@ void Frame(void* ctx, int site) {
     }
     CoopWindowBrand::Tick(CoopRuntime::GameDir());  // the window's title and icon, co-op on or idle (solo too)
     if (site == HOS_COOP_SITE_FRAME) {  // row 271: this game's memory once a minute, solo too (coop_host_menu.h)
+        // Row 292: read on a thread of its own (it sums every heap of the process: slow), never in the frame.
         static std::uint64_t next_memory_ms = 0;
+        static CoopOffFrame::Slot memory_read;
         if (CoopHostMenu::MemoryLineDue(SteadyMs(), next_memory_ms)) {
-            LOG_INFO(Core, "coop: memory: {}", CoopHostMenu::ProcessMemoryText());
+            memory_read.Start([] { LOG_INFO(Core, "coop: memory: {}", CoopHostMenu::ProcessMemoryText()); });
         }
     }
     if (!g_on) {
@@ -3058,6 +3097,17 @@ COOP_HOOKSHOT_EXPORT void hos_coop_status(HosCoopStatus* out) {
 }
 // Typing (hos_coop_api.h): the chat box. (Linux: Longshot calls these on the window's thread, SDL's: a Ctrl+V there
 // reads SDL's clipboard, which needs no wl-paste or xclip: CoopClipboard::OnSdlThread)
+// Where co-op's menu is now (coop_menu_tabs_rule.h, f1-event-c31): our - tabs in the pack, the - menu can open now, one
+// of co-op's tabs shows in Longshot's menu. Any thread: atomics and reads only, no co-op lock (hos_coop_menu_tabs runs
+// under Longshot's menu lock, row 279).
+static CoopMenuTabsRule::Now MenuNow() {
+    static const bool has_pack = CoopPuppetConfig::HasPack();   // (a folder scan: once; the pack is set at the start)
+    CoopMenuTabsRule::Now now;
+    now.minus_tabs = has_pack && !CoopPauseTab::NoMinusTabs();
+    now.minus_now = now.minus_tabs && CoopPauseTab::MinusMenuNow();
+    now.tab_shown = CoopPause::TabShown();
+    return now;
+}
 COOP_HOOKSHOT_EXPORT int hos_coop_key(uint32_t vk, int repeat) {
     static CoopBoundary::Site site{"hos_coop_key"};
     return CoopExportGuard::Guard(site, static_cast<int>(0), [&]() -> int {
@@ -3065,13 +3115,27 @@ COOP_HOOKSHOT_EXPORT int hos_coop_key(uint32_t vk, int repeat) {
         const CoopClipboard::OnSdlThread sdl_thread;
     #endif
         if (CoopHookshot::TypeKey(vk, repeat != 0) || CoopModsRuntime::Key(vk, repeat != 0)) return 1;
-        // F1 in play: co-op's home, the - menu's Multiplayer tab (menu-polish-01113; our tabs left Longshot's F1 menu).
-        // Longshot's own menu stays on Insert, Esc, its pad keys and System > Longshot Settings; F1 closes it if open.
-        // Not on the title (its - opens Multiplayer), not in original game (g_on off), and with an old pack without our
-        // - tabs F1 stays Longshot's (its menu has co-op's tabs then).
-        if (vk == 0x70 /* F1 */ && repeat == 0 && g_on && !CoopTitle::Up() && CoopPauseTab::OpenMultiplayer()) {
-            CoopPause::WantClose();
-            return 1;
+        // F1 in free play: co-op's home, the - menu's Multiplayer tab (menu-polish-01113, owner O5). Where the - menu
+        // cannot open now (an event, a load, the title, a file screen: f1-event-c31) Longshot's menu, on co-op's
+        // Multiplayer tab (its tabs are there then, hos_coop_menu_tabs), as in 0.11.12: Leave from a stuck event. F1
+        // with one of co-op's tabs showing, or an old pack without our - tabs: Longshot's own F1. Not in original game.
+        if (vk == 0x70 /* F1 */ && repeat == 0 && g_on) {
+            const CoopMenuTabsRule::Now now = MenuNow();
+            CoopMenuTabsRule::F1 route = CoopMenuTabsRule::OnF1(now);
+            if (route == CoopMenuTabsRule::F1::kMinusMenu) {
+                if (CoopPauseTab::OpenMultiplayer()) {
+                    LOG_INFO(Core, "coop: F1: the - menu's Multiplayer tab (free play)");
+                    CoopPause::WantClose();
+                    return 1;
+                }
+                route = now.tab_shown ? CoopMenuTabsRule::F1::kLongshot : CoopMenuTabsRule::F1::kLongshotOnCoop;   // (refused now)
+            }
+            if (route == CoopMenuTabsRule::F1::kLongshotOnCoop) {
+                LOG_INFO(Core, "coop: F1: Longshot's menu on co-op's Multiplayer tab (our - menu cannot open now)");
+                CoopPause::WantMultiplayerTab();
+                return 1;
+            }
+            LOG_INFO(Core, "coop: F1: Longshot's own ({})", now.minus_tabs ? "co-op's tab shows: it closes" : "no - tabs of ours");
         }
         return 0;
     });
@@ -3184,11 +3248,17 @@ COOP_HOOKSHOT_EXPORT int hos_coop_game_pause_page(void) noexcept {
 COOP_HOOKSHOT_EXPORT int hos_coop_menu_tabs(void) {
     static CoopBoundary::Site site{"hos_coop_menu_tabs"};
     return CoopExportGuard::Guard(site, static_cast<int>(0), [&]() -> int {
-        // (co-op's tabs in Longshot's F1 menu only as the fallback: no pack, or a pack without our - tabs; co-op's home
-        // is the game's - menu. Original game: its one tab, the way back)
+        // (co-op's home is the game's - menu; co-op's tabs in Longshot's F1 menu whenever it cannot open now (an event,
+        // a load, the title, a file screen: f1-event-c31), while one of them shows, and with no pack or a pack without
+        // our - tabs: coop_menu_tabs_rule.h. Original game: its one tab, the way back)
         if (!g_on) return g_original_on ? 1 : 0;
-        static const bool has_pack = CoopPuppetConfig::HasPack();   // (a folder scan: once; the pack is set at the start)
-        return !has_pack || CoopPauseTab::NoMinusTabs() ? CoopPause::Tabs() : 0;
+        const int tabs = CoopMenuTabsRule::LongshotTabs(MenuNow(), CoopPause::Tabs());
+        static std::atomic<int> told{-1};
+        if (told.exchange(tabs) != tabs) {
+            LOG_INFO(Core, "coop: Longshot's menu: {} of co-op's tabs ({})", tabs,
+                     tabs > 0 ? "our - menu cannot open now, or one shows" : "co-op's home is the - menu");
+        }
+        return tabs;
     });
 }
 COOP_HOOKSHOT_EXPORT const char* hos_coop_menu_tab_name(int tab) {
@@ -3377,17 +3447,44 @@ COOP_HOOKSHOT_EXPORT void hos_coop_camera(uint64_t frame, const float* block, fl
         CoopCamera::Publish(frame, block + CoopHookshot::kCameraMatrix, width, height, false);
     });
 }
+// hos_coop_draw3 and hos_coop_draw2 (hos_coop_draw.h): the scene in the game look.
+static void DrawGameLook(const HosCoopDraw& d) {
+    static std::atomic<bool> said{false};
+    if (!said.exchange(true)) {
+        LOG_INFO(Core, "coop: drawing over Hookshot's picture: chat lines, name tags ({}x{}){}", static_cast<int>(d.width),
+                 static_cast<int>(d.height), d.draw_image_turned ? "" : "; no turned pictures (hos_coop_draw2)");
+    }
+    CoopHookshot::DrawWithLook(d);
+    CoopModsRuntime::Overlay(d);
+}
+COOP_HOOKSHOT_EXPORT void hos_coop_draw3(const HosCoopDraw* d) {
+    static CoopBoundary::Site site{"hos_coop_draw3"};
+    CoopExportGuard::Guard(site, [&] {
+        if (g_on && d != nullptr) {
+            DrawGameLook(*d);
+        }
+    });
+}
+// A Hookshot from before draw_image_turned calls this one: its table ends at draw_image (the rest left empty here;
+// the maps then show names only).
 COOP_HOOKSHOT_EXPORT void hos_coop_draw2(const HosCoopDraw* d) {
     static CoopBoundary::Site site{"hos_coop_draw2"};
     CoopExportGuard::Guard(site, [&] {
         if (g_on && d != nullptr) {
-            static std::atomic<bool> said{false};
-            if (!said.exchange(true)) {
-                LOG_INFO(Core, "coop: drawing over Hookshot's picture: chat lines, name tags ({}x{})",
-                         static_cast<int>(d->width), static_cast<int>(d->height));
-            }
-            CoopHookshot::DrawWithLook(*d);
-            CoopModsRuntime::Overlay(*d);
+            HosCoopDraw t{};
+            t.width = d->width;
+            t.height = d->height;
+            t.user = d->user;
+            t.rect = d->rect;
+            t.circle = d->circle;
+            t.triangle = d->triangle;
+            t.text = d->text;
+            t.text_width = d->text_width;
+            t.font = d->font;
+            t.use_font = d->use_font;
+            t.image = d->image;
+            t.draw_image = d->draw_image;
+            DrawGameLook(t);
         }
     });
 }

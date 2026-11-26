@@ -55,14 +55,39 @@ try {
     if (-not (Test-KitLocalConsole)) {
         Check ((Read-KitLocalPlayers $kit) -eq 1) 'players: an unattended start (no console) is 1 player, not the remembered 2'
     }
-    # Nothing waits: the choice is read from keys already pressed (a solo start is not slower).
+    # C2-2 (owner, 0.12.0): a key never starts more games by itself; only the question's answer does, and only the answer
+    # is written. A solo start asks nothing and waits for nothing.
+    $lpFile = Join-Path $kit 'hookshot\local-players.txt'
+    $key = { param($c, $k) [pscustomobject]@{ KeyChar = $c; Key = $k } }
+    $two = { & $key '2' 'D2' }.GetNewClosure()
+    $none = { $null }
+    Remove-Item -LiteralPath $lpFile -Force
     $t = [Diagnostics.Stopwatch]::StartNew()
-    [void](Read-KitLocalPlayers $kit)
-    Check ($t.ElapsedMilliseconds -lt 1000) "players: no wait ($($t.ElapsedMilliseconds) ms)"
+    Check ((Read-KitLocalPlayers $kit 15 $two @()) -eq 1) 'players: a solo start (nothing pressed, no last answer) is 1, the question is not asked'
+    Check ($t.ElapsedMilliseconds -lt 1000) "players: a solo start waits for nothing ($($t.ElapsedMilliseconds) ms)"
+    Check (-not (Test-Path -LiteralPath $lpFile)) 'players: a solo start writes nothing'
+    Check ((Read-KitLocalPlayers $kit 1 $none @('2')) -eq 1) 'players: a stray 2 pressed during the start and no answer -> 1 game'
+    Check (-not (Test-Path -LiteralPath $lpFile)) 'players: a stray digit with no answer is never saved'
+    Check ((Read-KitLocalPlayers $kit 1 $two @('x', '1')) -eq 1) 'players: other keys or 1 pressed during the start do not ask'
+    $three = { & $key '3' 'D3' }.GetNewClosure()
+    Check ((Read-KitLocalPlayers $kit 5 $three @('3')) -eq 3) 'players: 3 pressed, then 3 answered -> 3 games'
+    Check ((Read-File $lpFile).Trim() -eq '3') 'players: the answer is written'
+    Check ((Read-KitLocalPlayers $kit 1 $none @()) -eq 1) 'players: last answer 3, no answer this start -> 1 game (a start with no answer is 1, always)'
+    Check ((Read-File $lpFile).Trim() -eq '3') 'players: no answer -> the file is not written'
+    $enter = { & $key ([char]13) 'Enter' }.GetNewClosure()
+    Check ((Read-KitLocalPlayers $kit 5 $enter @()) -eq 1) 'players: last answer 3, Enter -> 1 game'
+    Check ((Read-File $lpFile).Trim() -eq '1') 'players: Enter is an answer of 1, written'
+    Check ((Read-KitLocalPlayers $kit 5 $two @()) -eq 1) 'players: last answer 1 -> not asked again (solo)'
+    $nKey = { & $key 'n' 'N' }.GetNewClosure()
+    Write-File $lpFile "2`r`n"
+    Check ((Read-KitLocalPlayers $kit 5 $nKey @()) -eq 1) 'players: N -> 1 game'
+    $env:OOT_COOP_LOCAL_PLAYERS = '2'
+    Check ((Read-KitLocalPlayers $kit 1 $none @()) -eq 2) 'players: OOT_COOP_LOCAL_PLAYERS still answers outright'
+    Remove-Item env:OOT_COOP_LOCAL_PLAYERS
     $lc = Read-File (Join-Path $scripts 'local-coop.ps1')
-    Check (-not ($lc -match 'function Read-KitLocalPlayers\([^)]*Seconds') -and $lc.Contains('[Console]::KeyAvailable')) 'players: keys already pressed only, no time to wait'
+    Check ($lc.Contains('[Console]::KeyAvailable') -and $lc -match 'function Read-KitLocalPlayersAnswer') 'players: keys pressed during the start only make it ask (Read-KitLocalPlayersAnswer)'
     $st = Read-File (Join-Path $scripts 'start.ps1')
-    Check ($st.Contains('Show-KitLocalPlayersHint')) 'Start Squadala says the count at its start, so a digit can be pressed while it goes on'
+    Check ($st.Contains('Show-KitLocalPlayersHint')) 'Start Squadala says at its start how to ask for local co-op'
 
     # --- The instance folder ---
     $inst = Join-Path $game 'local-players\player2'
@@ -186,7 +211,7 @@ try {
     Check ($LASTEXITCODE -lt 8 -and (Test-Path (Join-Path $mi 'user')) -and -not (Test-Path (Join-Path $mi 'romfs')) -and (Test-Path (Join-Path $moved 'hookshot\game\romfs\a.txt'))) "kit move: the players' own folders, no copy of the linked game (robocopy $LASTEXITCODE)"
 
     # --- The player's files for the session ---
-    Write-KitLocalPlayer $inst $kit 2 27561 'pw123' 30
+    Write-KitLocalPlayer $inst $kit 2 27561 'pw123' (Get-KitLocalFps $kit)
     $coop = Read-File (Join-Path $inst 'coop.ini')
     Check ($coop -match "server = 127\.0\.0\.1`r`nport = 27561`r`nname = Player 2`r`npassword = pw123") "coop.ini: the session and 'Player 2' ($coop)"
     $mine = Read-File (Join-Path $inst 'coop-player.ini')
@@ -196,8 +221,8 @@ try {
     $key = (Read-File (Join-Path $inst 'player-key.txt')).Trim()
     Check ($key -match '^[0-9a-f]{32}$' -and $key -ne 'p1key') 'player-key.txt: a key of its own'
     $ls = Read-File (Join-Path $inst 'longshot_options.ini')
-    foreach ($kv in 'fullscreen=0', 'discord_status=0', 'mouse_camera=0', 'frame_rate_cap=-1', 'vsync=1') {
-        Check ($ls -match "(?m)^$kv\r?$") "longshot_options.ini: $kv"
+    foreach ($kv in 'fullscreen=0', 'discord_status=0', 'mouse_camera=0', 'frame_rate_cap=2', 'vsync=1') {
+        Check ($ls -match "(?m)^$kv\r?$") "longshot_options.ini: $kv (no local_fps: the player's own frame cap, uncapped as 0.11.12)"
     }
     Check ((Read-File (Join-Path $game 'longshot_options.ini')) -match 'fullscreen=1') 'longshot_options.ini: player 1''s own untouched'
     # What the player chose in the game stays: a name, a look, another controller.
@@ -211,13 +236,19 @@ try {
     Check ((Get-KitLocalIniValue $mine 'LICHII_COOP_PAD') -eq '4' -and (Get-KitLocalIniValue $mine 'look_hat') -eq 'green') "coop-player.ini: the player's own controller and look kept ($mine)"
     Check ((Read-File (Join-Path $inst 'player-key.txt')).Trim() -eq $key1) 'player-key.txt: kept'
     Check ((Read-File (Join-Path $inst 'longshot_options.ini')) -match '(?m)^frame_rate_cap=0\r?$') 'longshot_options.ini: local_fps 60 is the console''s 60'
+    Write-KitLocalPlayer $inst $kit 2 27562 'pw456' 30
+    Check ((Read-File (Join-Path $inst 'longshot_options.ini')) -match '(?m)^frame_rate_cap=-1\r?$') 'longshot_options.ini: local_fps 30 is Longshot''s 30 FPS cap'
 
     # --- The frame cap ---
-    Check ((Get-KitLocalFps $kit) -eq 30) 'local_fps: 30 by default'
+    Check ((Get-KitLocalFps $kit) -eq 0) 'local_fps: no cap of ours by default (uncapped, as 0.11.12)'
+    Write-File (Join-Path $kit 'coop-options.ini') "# local_fps = 30`r`n"
+    Check ((Get-KitLocalFps $kit) -eq 0) 'local_fps: the shipped commented line is no cap'
+    Write-File (Join-Path $kit 'coop-options.ini') "local_fps = 30`r`n"
+    Check ((Get-KitLocalFps $kit) -eq 30) 'local_fps = 30'
     Write-File (Join-Path $kit 'coop-options.ini') "local_fps = 60`r`n"
     Check ((Get-KitLocalFps $kit) -eq 60) 'local_fps = 60'
     Write-File (Join-Path $kit 'coop-options.ini') "local_fps = 144`r`n"
-    Check ((Get-KitLocalFps $kit) -eq 30) 'local_fps: anything else is 30'
+    Check ((Get-KitLocalFps $kit) -eq 0) 'local_fps: anything else is no cap'
 
     # --- Each game's variables ---
     $env:LICHII_COOP_PAD = 'auto'; $env:LICHII_COOP_COLOR = 'red'
@@ -225,6 +256,8 @@ try {
     Set-KitLocalEnvironment 1 27561 'pw' 30
     Check ($env:OOT_COOP_LOCAL_HOST -eq '27561:pw' -and $env:LICHII_COOP_PAD -eq '1' -and $env:LICHII_COOP_KEYBOARD -eq 'focus') 'game 1: hosts, pad 1 and the keyboard'
     Check ($env:HOS_FULLSCREEN -eq '0' -and $env:HOS_FPS_MAX -eq '30' -and $env:LICHII_COOP_COLOR -eq 'red' -and -not $env:HOS_WINDOW_NOACTIVATE) 'game 1: a window, the cap, its colour, takes the focus'
+    Set-KitLocalEnvironment 1 27561 'pw' 0
+    Check (-not $env:HOS_FPS_MAX -and $env:HOS_FULLSCREEN -eq '0') 'game 1 with no local_fps: no cap of ours (the player''s own)'
     Set-KitLocalEnvironment 3 27561 'pw' 30
     Check (-not $env:OOT_COOP_LOCAL_HOST -and -not $env:LICHII_COOP_PAD -and -not $env:LICHII_COOP_KEYBOARD -and -not $env:LICHII_COOP_COLOR) 'game 3: no host, its controller and colour from its coop-player.ini (not player 1''s)'
     Check ($env:HOS_WINDOW_NOACTIVATE -eq '1' -and -not $env:HOS_FPS_MAX) 'game 3: opens behind (its cap is in its own options file)'

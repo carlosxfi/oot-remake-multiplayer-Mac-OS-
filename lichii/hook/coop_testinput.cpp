@@ -101,6 +101,15 @@ bool BurstFrames(std::string_view word) {
     return n >= 1 && n <= 600;
 }
 
+// A `song` line's HOLD or GAP: 1 to 36000 ticks (a wait's or a press's most), ASCII digits only, at most 9 of them (ocarina_notes.py _ticks).
+bool SongTicks(std::string_view word) {
+    if (!RunnerTicks(word) || word.size() > 9) {
+        return false;
+    }
+    const long n = std::stol(std::string(word));
+    return n >= 1 && n <= 36000;
+}
+
 bool RunnerTicks(std::string_view word) {
     if (word.empty()) {
         return false;
@@ -690,6 +699,25 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
                 return fail("want: await TICKS REGEX (the runner's own step)");
             }
             continue;
+        } else if (cmd == "SKIPTO") {
+            // tools/autotest/hookshot.py's own step too (epona-seen): "skipto MARK REGEX", the script goes on at the
+            // later mark once the game's log has a matching line. Its shape only: a script played here never skips.
+            if (w.size() < 3) {
+                return fail("want: skipto MARK REGEX (the runner's own step)");
+            }
+            continue;
+        } else if (cmd == "SONG") {
+            // epona-seen-2: "song NAME [HOLD [GAP]]", an Ocarina song written out as its key presses by the runners
+            // from the ONE key table (tools/autotest/ocarina_notes.py expand: hookshot.py, and run.ps1 before the
+            // emulator reads the script). Its shape only; the module never plays one: a script that still has one
+            // when it is loaded is refused (Load, PlayNow), so a song is never skipped without a word.
+            if (w.size() < 2 || w.size() > 4 || (w.size() >= 3 && !SongTicks(w[2])) || (w.size() >= 4 && !SongTicks(w[3]))) {
+                return fail("want: song NAME [HOLD [GAP]] (the runner's own step)");
+            }
+            if (!script.song_line) {
+                script.song_line = number;
+            }
+            continue;
         } else if (cmd == "BURST") {
             // tools/autotest/hookshot.py's own step too (issue 166): "burst NAME FRAMES [TICKS REGEX]", the game held
             // and shot frame by frame through the bridge; nothing for the module. Its shape only.
@@ -708,6 +736,15 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
         return std::nullopt;
     }
     return script;
+}
+
+std::string SongNotWrittenOut(const Script& script) {
+    if (!script.song_line) {
+        return {};
+    }
+    return "line " + std::to_string(script.song_line) +
+           ": SETUP-FAIL song not written out as presses (tools/autotest/run.ps1 and hookshot.py write it out from "
+           "ocarina_notes.py; the module never plays a song line)";
 }
 
 Runner::Runner(Script script) : script_(std::move(script)) {}
@@ -1584,7 +1621,10 @@ void CheckFile(Core::System& system) {
 #endif
     std::string error;
     auto script = Parse(text.str(), error);
-    if (!script) {
+    if (script) {
+        error = SongNotWrittenOut(*script);   // (a bare song: refused, never skipped)
+    }
+    if (!script || !error.empty()) {
         LOG_ERROR(Core, "coop: test script {}: {}", g_state.path.string(), error);
         return;
     }
@@ -1720,6 +1760,10 @@ void SetMenuOpener(MenuOpener opener) {
 bool PlayNow(Core::System& system, std::string_view lines, std::string& error, const std::vector<Kind>* allowed) {
     auto script = Parse(lines, error);
     if (!script) {
+        return false;
+    }
+    error = SongNotWrittenOut(*script);
+    if (!error.empty()) {
         return false;
     }
     if (allowed) {
