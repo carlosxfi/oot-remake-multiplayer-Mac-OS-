@@ -278,14 +278,33 @@ def _out_dir(config, lane):
     return d
 
 
+def last_json(text):
+    """The last JSON object in `text` (live.py's answer comes last; a live.py without 3383fb731+'s stdout fix also
+    printed the runner's boot lines before it on stdout, sometimes on the same line as the '{': C #132 11:05,
+    party-hud-bridge-fa63e90f 'scenario played { "ok": true ...'). The object must run to the end of the text
+    (trailing white space only). None if there is none."""
+    dec = json.JSONDecoder()
+    i = text.rfind("{")
+    while i >= 0:
+        try:
+            v, end = dec.raw_decode(text, i)
+        except ValueError:
+            v, end = None, -1
+        if isinstance(v, dict) and not text[end:].strip():
+            return v
+        i = text.rfind("{", 0, i)
+    return None
+
+
 def _live(args, timeout):
-    """tools/autotest/live.py as its own process (it prints one JSON answer)."""
+    """tools/autotest/live.py as its own process: its answer is the JSON object its stdout ends with."""
     cmd = [sys.executable, "-I", os.path.join(AUTOTEST, "live.py")] + args
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    try:
-        return json.loads(p.stdout)
-    except ValueError:
-        return {"ok": False, "error": "live.py %s: exit %s: %s" % (args[0], p.returncode, (p.stderr or p.stdout)[-600:])}
+    v = last_json(p.stdout or "")
+    if v is not None:
+        return v
+    return {"ok": False, "error": "live.py %s: exit %s, no JSON answer: %s" % (
+        args[0], p.returncode, " ".join((p.stderr or p.stdout or "").split())[-600:])}
 
 
 CRASH_LINE = "CRASH: exception"   # the crash line a game's module log gets (review-c123-7: not any 'CRASH' mention)

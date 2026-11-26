@@ -405,6 +405,7 @@ class HookOrder(unittest.TestCase):
 
 
 AUTOTEST = os.path.dirname(HERE)
+START_DRIVER = 'import sys\nsys.path.insert(0, sys.argv[1])\nimport hookshot, live\ndef fake_main(argv):\n    if "--check-args" in argv:\n        return 0\n    print("00:00:01 A: started pid 1, bridge coop-x-A")          # (hookshot.py run\'s step log: Log(echo=print))\n    print("00:02:13 A: renderer ready (133 s waited)")\n    print("00:03:00 scenario played", end=" ")                   # (no newline before the JSON: the 11:05 shape)\n    return 0\nhookshot.main = fake_main\nlive.spawn_watchdog = lambda d: None\nlive.wait_lock = lambda d, proc, timeout: "none"\nsys.exit(live.main(sys.argv[2:]))\n'
 
 
 class BootCommand(unittest.TestCase):
@@ -464,6 +465,30 @@ class BootCommand(unittest.TestCase):
         with open(os.path.join(ses, "session.json"), "w", encoding="utf-8") as f:
             json.dump({"games": {"A": {"log": la}}}, f)
         self.assertEqual(B._crash_why(ses), "")
+
+    def test_start_stdout_is_one_json_answer(self):
+        """C #132 11:05 (party-hud-bridge-fa63e90f VOID): live.py start ran hookshot.main in-process, whose step log
+        echoes to stdout, so stdout was boot lines + the JSON and _live read ok false. The REAL live.py start path
+        (only the runner, watchdog and lock stubbed): its stdout is now ONLY the JSON answer, and _live reads it."""
+        import bt_plugin as B
+        drv = os.path.join(self.tmp, "drv.py")
+        with open(drv, "w", encoding="utf-8") as f:
+            f.write(START_DRIVER)
+        ses = os.path.join(self.tmp, "s")
+        p = subprocess.run([sys.executable, "-I", drv, AUTOTEST, "start", "--session", ses] + self.games() +
+                           ["--boot-a", B.BOOT_A, "--boot-b", B.BOOT_B, "--no-load"],
+                           capture_output=True, text=True, timeout=120)
+        out = json.loads(p.stdout)                   # (the whole stdout: one JSON object)
+        self.assertTrue(out["ok"], (out, p.stderr[-800:]))
+        self.assertIn("renderer ready", p.stderr)    # (the boot lines went to stderr)
+
+    def test_last_json_reads_the_old_mixed_shape(self):
+        import bt_plugin as B
+        mixed = 'A: started\nA: renderer ready (133 s)\nscenario played { "ok": true,\n "session": "s", "lane": 1}\n'
+        self.assertEqual(B.last_json(mixed), {"ok": True, "session": "s", "lane": 1})
+        self.assertEqual(B.last_json('{"ok": true}\nlog line after it'), None)    # (must end the output)
+        self.assertEqual(B.last_json('{"a": {"b": 1}}'), {"a": {"b": 1}})          # (an inner '{' is not the answer)
+        self.assertIsNone(B.last_json("no json at all"))
 
     def test_refused_start_leaves_no_watchdog_or_lock(self):
         ses = os.path.join(self.tmp, "s")
@@ -737,6 +762,32 @@ class ImageCompare(unittest.TestCase):
         r = imagecheck.compare(p["b"], p["a"], 0.90)
         self.assertFalse(r["ok"])
         self.assertIn("<", r["why"])
+
+    def test_colour_fault_fails(self):
+        """review-rows-c130 10:38 / B #131: a recoloured thing at the same grey value (green tunic (0,91,0) -> blue
+        (0,60,160), both grey 53.4 by ITU-R 601) passes a grey SSIM but must FAIL the colour compare at the rows'
+        0.80; the same shot passes; a hue-shifted copy of the whole picture fails."""
+        from PIL import Image, ImageDraw
+        def pic(name, link, bg=(30, 80, 30)):
+            im = Image.new("RGB", (640, 360), bg)
+            d = ImageDraw.Draw(im)
+            d.rectangle((100, 60, 180, 220), fill=link)              # "Link's tunic"
+            d.rectangle((400, 40, 600, 80), fill=(220, 30, 30))      # "hearts"
+            path = os.path.join(self.tmp, name + ".png")
+            im.save(path)
+            return path
+        green, blue = pic("green", (0, 91, 0)), pic("blue", (0, 60, 160))
+        grey, _ = imagecheck.ssim(blue, green, colour=False)
+        self.assertGreaterEqual(grey, 0.80)          # (why grey alone was blind: the stored ref would pass)
+        r = imagecheck.compare(blue, green, 0.80)
+        self.assertFalse(r["ok"], r)
+        self.assertIn("colour SSIM", r["why"])
+        self.assertTrue(imagecheck.compare(green, green, 0.99)["ok"])
+        from PIL import Image as _I
+        with _I.open(green) as im:
+            r_, g_, b_ = im.split()
+            _I.merge("RGB", (b_, r_, g_)).save(os.path.join(self.tmp, "hue.png"))   # (channels rotated: a hue shift)
+        self.assertFalse(imagecheck.compare(os.path.join(self.tmp, "hue.png"), green, 0.80)["ok"])
 
     def test_no_reference_is_never_ok(self):
         keep = os.path.join(self.tmp, "keep")
