@@ -52,16 +52,20 @@ class BossRespawn(unittest.TestCase):
         self.assertEqual(r["test_volvagia_rocks_each_game"], "NO-REF", p.stdout[-2000:])   # (no refs yet: never PASS)
 
     def test_bottles_are_the_modules(self):
-        """test_boss_respawn.BOTTLES (its nofairy) == the module's kBottleItems (coop_testinput.cpp NOFAIRY): one source."""
+        """test_boss_respawn's nofairy list is hookshot.BOTTLE_ITEMS (one list), and that == the module's kBottleItems
+        (coop_testinput.cpp NOFAIRY)."""
         src = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))), "lichii", "hook", "coop_testinput.cpp")
         with open(src, encoding="utf-8") as f:
             m = re.search(r"kBottleItems\[\]\s*=\s*\{([^}]*)\}", f.read())
         self.assertIsNotNone(m, "no kBottleItems in %s" % src)
+        sys.path.insert(0, os.path.dirname(HERE))
+        import hookshot
+        self.assertEqual(re.findall(r'"(0x[0-9a-f]+)"', m.group(1)), list(hookshot.BOTTLE_ITEMS))
         with open(os.path.join(INGAME, "test_boss_respawn.py"), encoding="utf-8") as f:
-            tree = ast.parse(f.read())
-        bottles = [ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
-                   and any(getattr(t, "id", None) == "BOTTLES" for t in n.targets)]
-        self.assertEqual([re.findall(r'"(0x[0-9a-f]+)"', m.group(1))], bottles)
+            tree = ast.parse(f.read())       # (read, not imported: its pytest marks belong to the in-game run)
+        uses = [ast.unparse(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) == "BOTTLES" for t in n.targets)]
+        self.assertEqual(uses, ["hookshot.BOTTLE_ITEMS"], "test_boss_respawn.BOTTLES must be hookshot's list, not a copy")
 
     def test_no_arrival_is_setup_fail_naming_the_step(self):
         """B #130 09:43: the boss-stage arrival is its own bounded step after the 30 s set-up check; a miss there is

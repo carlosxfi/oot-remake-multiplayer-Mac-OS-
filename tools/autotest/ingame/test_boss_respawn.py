@@ -17,7 +17,7 @@ Sources (worker-rules "no guessed values"):
   scenarios' 'warp <S> <S>' (scenarios/hs-volvagia-rocks.A.txt; lane2 run 20261125-114351 "test warp to VolvagiaStage
   (start VolvagiaStage): scene set").
 - nofairy: lichii/hook/coop_testinput.cpp NOFAIRY = setenum of the five BottleItem hashes to Empty (copied below as the
-  module has them: `act` refuses 'nofairy', it is not an act kind, docs/playtest.md `act`).
+  module has them, taken from hookshot.BOTTLE_ITEMS: `act` refuses 'nofairy', it is not an act kind, docs/playtest.md `act`).
 - '/dbno time 10' (A, the host), 'hurt 80' (B): hs-gohma-bleedout (row 227) and br289-volvagia.{A,B}.txt; the chat's
   answer line: coop_testinput.cpp:1758 "coop: test chat '{}': {}".
 - Log lines (the old .ps1's own patterns, :344-:383): "coop: dbno: our Link: event N " (coop_dbno_game.cpp:523; enum
@@ -46,9 +46,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import bt_plugin   # noqa: E402  (boot_env / env_has: which switches this boot has)
 import pair as P   # noqa: E402
+sys.path.insert(0, os.path.dirname(HERE))
+import hookshot    # noqa: E402  (BOTTLE_ITEMS: the ONE nofairy list, the scripts' own)
 
 STAGES = ["VolvagiaStage", "DodongoStage", "LizalfosStage", "GanonStage"]   # coop_start_points.inc, the old pass list
-BOTTLES = ["0x7d48df76", "0x1edd164a", "0xb80c70a8", "0xe4c1b1fc", "0x365e1953"]   # coop_testinput.cpp NOFAIRY
+BOTTLES = hookshot.BOTTLE_ITEMS   # nofairy's bottles (the scripts' list; checked == coop_testinput.cpp kBottleItems)
 KEEP = "LICHII_COOP_ARRIVAL_STARTER=keep"     # coop_teleport_game.cpp:68-71
 OBJECTS = "LICHII_COOP_DEBUG_OBJECTS=1"
 BACK_TO = "KakarikoVillage_Child"            # test_smoke.WARP_TO: the lane's boot map, so later tests start in play
