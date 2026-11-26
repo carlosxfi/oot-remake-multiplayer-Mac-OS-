@@ -1,6 +1,6 @@
-"""Selftest of ingame/test_tunic.py + ingame/fakes/tunic.py (rows #202 + 198; owner port-sweep-c131), run by
-test_ingame.py's load_tests: deselected without A's colour switch, NO-REF with it (a look shot, no references), FAIL
-when the row 198 cross guard fires."""
+"""Selftest of ingame/test_tunic.py + ingame/fakes/tunic.py (rows #202 + 198; owner port-sweep-c131(-2)), run by
+test_ingame.py's load_tests: deselected without A's colour switch, NO-REF with it (no references; the colour values not
+measured), FAIL when the row 198 cross guard fires or B draws A's puppet green, SETUP-FAIL with both Links on one spot."""
 import os
 import shutil
 import sys
@@ -21,9 +21,10 @@ class Tunic(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_fake(self, name, env_on=True, bug=None):
+    def run_fake(self, name, env_on=True, bug=None, extra=None):
         out = os.path.join(self.tmp, name)
         env = {"BT_FAKE_REFS": os.path.join(self.tmp, "no-refs")}
+        env.update(extra or {})
         if bug:
             env["BT_FAKE_TUNIC_BUG"] = bug
         args = [".", "--fake", "--out", out] + (["--env", "A:LICHII_COOP_COLOR=blue"] if env_on else []) + ARGS
@@ -43,6 +44,16 @@ class Tunic(unittest.TestCase):
         p, s = self.run_fake("cross", bug="cross")
         self.assertEqual(T.results(s), {NAME: "FAIL"}, p.stdout[-1500:])
         self.assertIn("row 198 cross guard", s["tests"][0]["why"])
+
+    def test_puppet_drawn_green_fails(self):
+        """review-rows-c130 10:38: A's puppet green on B's shot (same brightness kind of fault) is a FAIL by colour."""
+        p, s = self.run_fake("green", bug="green")
+        self.assertEqual(T.results(s), {NAME: "FAIL"}, p.stdout[-1500:])
+        self.assertIn("B's shot: the puppet is not blue", s["tests"][0]["why"])
+
+    def test_links_on_one_line_setup_fail(self):
+        p, s = self.run_fake("line", extra={"BT_FAKE_TUNIC_ON_LINE": "1"})
+        self.assertEqual(T.results(s), {NAME: "SETUP-FAIL"}, p.stdout[-1500:])
 
 
 if __name__ == "__main__":
