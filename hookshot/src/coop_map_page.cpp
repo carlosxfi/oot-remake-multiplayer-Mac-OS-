@@ -22,6 +22,7 @@
 
 #include "common/logging.h"
 #include "coop_hud_layout.h"
+#include "coop_native_ui.h"   // SceneLoading: no screen's layout called into while a scene loads
 #include "coop_pause_files.h"
 #include "coop_runtime.h"
 #include "coop_screen_panes.h"
@@ -382,6 +383,25 @@ void Frame(void* ctx, const HosCoopApi* api) {
     if (ctx == nullptr || !CanCall(api)) {
         return;
     }
+    // party-hud-crash-c126 (review-c123-5): while the game loads a scene (CoopNativeUi::SceneLoading, the game's
+    // Sequence_IsLoadingBanc read at the frame site before this) the screens' layouts are torn down while the screens may
+    // still be listed: no FindPane into any of them (Search, SearchStatus, the anew walk), and every pane found before is
+    // forgotten, so nothing reads one; after the load each screen is a new one (trackers reset) and is looked in again.
+    static bool load_said = false;   // (Frame's thread: said once per load)
+    if (CoopNativeUi::SceneLoading()) {
+        for (Found* f : {&g_field, &g_dungeon, &g_mini_dungeon, &g_mini_field, &g_mini_window, &g_mini_field_window,
+                         &g_mini_root}) {
+            f->pane = 0, f->from = 0;
+        }
+        g_searched_hud = 0, g_searched_panel = 0;
+        g_hud_at = {}, g_panel_at = {};
+        ForgetStatus();
+        g_status_panes = CoopScreen::ScreenPanes{};
+        if (!load_said) LOG_INFO(Core, "coop: map: a scene loads: the panes found are forgotten, looked for again after it");
+        load_said = true;
+        return;
+    }
+    load_said = false;
     const auto menu = MenuState();
     if (!menu) {
         return;

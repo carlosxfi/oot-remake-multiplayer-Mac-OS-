@@ -236,13 +236,16 @@ private:
 // frame site). While a scene loads the game tears its screens' layouts down and the scene loader reuses their
 // memory while the screen objects may still be listed (party-hud-crash-c126: the status screen's layout walked into
 // a scene object at 'menu -> loading', both games crashed), so no screen is handed out and no layout is called into
-// then: ScreenByVtable (here and CoopNativeTags'), ScreenLayout, CoopPartyHud::Hud. Any thread may read it.
+// then. Every module path that calls into a screen's layout obeys it: ScreenByVtable (here and CoopNativeTags'),
+// ScreenLayout, CoopPartyHud::Hud, CoopMapPage::Frame (Search, SearchStatus: forgets its panes) and
+// CoopPauseTab::OnScreen (no game call). CoopTitle runs only in the title screen's own hook (patch 0004, its GONE
+// event). Any thread may read it.
 void SetSceneLoading(bool on);
 bool SceneLoading();
 // A screen the UI manager has, by its vtable (a main+ offset); 0 when none, and 0 while a scene loads.
 std::uint64_t ScreenByVtable(Game& game, std::uint64_t vtable_offset);
 // The layout of `screen` (screen+kScreenLayout) to call into; 0 when none, and 0 while a scene loads. Every call into
-// a screen's layout reads it through this (one place for the load rule).
+// a screen's layout in coop_native_ui / coop_party_hud reads it through this (the other paths: SceneLoading above).
 std::uint64_t ScreenLayout(Game& game, std::uint64_t screen);
 // What a screen holds now.
 enum class Holds { kNothing, kOurs, kGames };

@@ -38,6 +38,7 @@
 #include "coop/protocol/messages.hpp"
 #include "coop_lan.h"
 #include "coop_map_page.h"
+#include "coop_native_ui.h"   // SceneLoading: no game call of ours while a scene loads (OnScreen)
 #include "coop_lan_net.h"
 #include "coop_mod_screens.h"
 #include "coop_pause.h"
@@ -3952,7 +3953,14 @@ void OnScreen(void* ctx, std::uint64_t screen) noexcept {
         Facts f;
         f.kind = KindOf(vtable - base);
         CensusUpdate(screen, vtable - base);   // (the - menu research: only with COOP_TEST_SCREEN_PROBE=1)
-        SnailScreen(ctx, screen);              // (Character Select's Customize screen: co-op's customization in it)
+        // party-hud-crash-c126 (review-c123-5): this runs in `screen`'s own update (patch 0030), but the updates of
+        // ours also call into another screen's layout kept from before (the strip's update: the pages' g_pages_layout
+        // in ApplyPages and LiveRows). While the game loads a scene (CoopNativeUi::SceneLoading, the game's
+        // Sequence_IsLoadingBanc) those layouts are torn down while their screens may still be listed: no game call of
+        // ours then. A menu screen's next opening after the load is a new one (Page::Track: open after closed, or
+        // another screen/layout; ScreenPanes: the gap in its updates), so its panes are looked up again.
+        if (CoopNativeUi::SceneLoading()) return;
+        SnailScreen(ctx, screen);             // (Character Select's Customize screen: co-op's customization in it)
         if (vtable - base == kMapMenuVtable && ctx != nullptr && CanCall()) FollowMapUnder(ctx, screen);
         if (f.kind == Kind::kOther) {
             // (native - tabs: co-op's own screen CoopMenu_00, our page in it)

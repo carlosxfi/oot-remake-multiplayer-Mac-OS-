@@ -1819,3 +1819,27 @@ TEST_CASE("hookshot: F1 in free play opens co-op's - menu, elsewhere Longshot's 
     CHECK(tab.find("if (g_players_to_main.load()) OpenLongshotMenu();") != std::string::npos);   // (old pack: as before)
     CHECK(tab.find("SetView(g_players_to_main.load() ? View::kMain : View::kPlayers);") != std::string::npos);
 }
+
+TEST_CASE("hookshot: party-hud-crash-c126: the map page and the pause tab call into no screen's layout while a scene loads") {
+    // review-c123-5: CoopMapPage::Frame looked in other screens' layouts with the game's FindPane during a load
+    // (Search, SearchStatus, the anew walk), and the pause tab's strip update calls into the pages' kept layout;
+    // both now stop at CoopNativeUi::SceneLoading (the game's Sequence_IsLoadingBanc) before any of it.
+    const std::string page = ReadFile(kRepo / "hookshot" / "src" / "coop_map_page.cpp");
+    const std::size_t frame = page.find("void Frame(void* ctx, const HosCoopApi* api) {");
+    REQUIRE(frame != std::string::npos);
+    const std::size_t gate = page.find("if (CoopNativeUi::SceneLoading()) {", frame);
+    REQUIRE(gate != std::string::npos);
+    CHECK(gate < page.find("SearchStatus(ctx, api, *menu);", frame));
+    CHECK(gate < page.find("Search(ctx, api, menu->hud_screen, \"HUD\");", frame));
+    CHECK(gate < page.find("Search(ctx, api, menu->panel_screen, \"panel's\");", frame));
+    CHECK(page.find("ForgetStatus();", gate) < page.find("const auto menu = MenuState();", gate));
+    CHECK(page.find("g_hud_at = {}, g_panel_at = {};", gate) != std::string::npos);
+    const std::string tab = ReadFile(kRepo / "hookshot" / "src" / "coop_pause_tab_module.cpp");
+    const std::size_t on = tab.find("void OnScreen(void* ctx, std::uint64_t screen) noexcept {");
+    REQUIRE(on != std::string::npos);
+    const std::size_t tab_gate = tab.find("if (CoopNativeUi::SceneLoading()) return;", on);
+    REQUIRE(tab_gate != std::string::npos);
+    CHECK(tab_gate < tab.find("SnailScreen(ctx, screen);", on));
+    CHECK(tab_gate < tab.find("const bool calls = ctx != nullptr && CanCall();", on));
+    CHECK(tab_gate < tab.find("ApplyPages(ctx, pages, page_only);", on));
+}
