@@ -166,10 +166,53 @@ def test_name_problems(root, path):
     return found
 
 
-def unlisted_python_tests(paths, workflow_text):
-    """Python test files (tools/**/test_*.py) whose path no workflow names: CI runs them by name, so a new one would never run."""
-    return [p for p in paths
-            if re.match(r"^tools/.*/test_[^/]*\.py$", p.replace("\\", "/")) and p.replace("\\", "/") not in workflow_text]
+def unlisted_python_tests(paths, workflow_text, runner_text=""):
+    """Python test files (tools/**/test_*.py and *_test.py) that no workflow names by path and no runner script
+    (tools/hookshot/host_compile_check.*) names by file: CI runs them by name, so a new one would never run."""
+    out = []
+    for p in paths:
+        q = p.replace("\\", "/")
+        if not re.match(r"^tools/.*(/test_[^/]*|_test)\.py$", q) or "/" not in q:
+            continue
+        if q in workflow_text or q.rsplit("/", 1)[1] in runner_text:
+            continue
+        out.append(p)
+    return out
+
+
+def unlisted_cpp_tests(paths, cmake_text):
+    """C++ test sources (*_test.cpp) named in no CMakeLists.txt or .cmake file: tests/CMakeLists.txt lists them by name
+    (its GLOB_RECURSE only checks the test names), so a new one would never be built."""
+    out = []
+    for p in paths:
+        name = p.replace("\\", "/").rsplit("/", 1)[-1]
+        if name.endswith("_test.cpp") and name not in cmake_text:
+            out.append(p)
+    return out
+
+
+def cmake_text(root, paths):
+    text = ""
+    for p in paths:
+        if p.endswith("CMakeLists.txt") or p.endswith(".cmake"):
+            try:
+                with open(os.path.join(root, p), encoding="utf-8", errors="replace") as f:
+                    text += f.read() + "\n"
+            except OSError:
+                pass
+    return text
+
+
+def runner_text(root, paths):
+    text = ""
+    for p in paths:
+        if re.match(r"^tools/hookshot/host_compile_check\.", p.replace("\\", "/")):
+            try:
+                with open(os.path.join(root, p), encoding="utf-8", errors="replace") as f:
+                    text += f.read() + "\n"
+            except OSError:
+                pass
+    return text
 
 
 def workflow_text(root):
@@ -255,13 +298,19 @@ def main():
         print("with no local path, user folder or IP address:")
         for line in playtest:
             print("  " + line)
-    unlisted = unlisted_python_tests(files, workflow_text(root)) if os.path.isdir(os.path.join(root, ".github", "workflows")) else []
+    unlisted = unlisted_python_tests(files, workflow_text(root), runner_text(root, files)) if os.path.isdir(os.path.join(root, ".github", "workflows")) else []
+    cpp_unlisted = unlisted_cpp_tests(files, cmake_text(root, files))
     if unlisted:
         print("Content guard failed. CI runs each Python test file by name (.github/workflows/build.yml, python-tools job);")
         print("these are named by no workflow, so they would never run. Add a step for each:")
         for line in unlisted:
             print("  " + line)
-    if bad or named or private or semicolons or playtest or unlisted:
+    if cpp_unlisted:
+        print("Content guard failed. These C++ test sources are named in no CMakeLists.txt, so they are never built or run.")
+        print("Add each to the test target (tests/CMakeLists.txt coop_tests):")
+        for line in cpp_unlisted:
+            print("  " + line)
+    if bad or named or private or semicolons or playtest or unlisted or cpp_unlisted:
         return 1
     print("Content guard passed.")
     return 0

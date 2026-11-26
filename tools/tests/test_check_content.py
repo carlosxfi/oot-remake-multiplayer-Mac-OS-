@@ -145,6 +145,23 @@ class UnlistedPythonTests(unittest.TestCase):
         self.assertEqual(check_content.unlisted_python_tests(paths, wf),
                          ["tools/autotest/tests/test_b.py", "tools/puppet_pack/tests/test_c.py"])
 
+    def test_name_test_py_files_count_and_a_runner_script_counts(self):
+        paths = ["tools/a/x_test.py", "tools/a/y_test.py", "tools/hookshot/z_test.py", "tools/a/notatest.py"]
+        wf = "run: python tools/a/x_test.py\n"
+        runner = "python z_test.py\n"   # tools/hookshot/host_compile_check.* names its files without the folder
+        self.assertEqual(check_content.unlisted_python_tests(paths, wf, runner), ["tools/a/y_test.py"])
+
+    def test_cpp_tests_must_be_named_in_a_cmake_file(self):
+        cm = "add_executable(t\n  host/a_test.cpp\n  net/b_test.cpp)\n"
+        paths = ["tests/host/a_test.cpp", "tests/host/c_test.cpp", "tests/server/b_test.cpp", "tests/host/helper.hpp", "tools/x.cpp"]
+        self.assertEqual(check_content.unlisted_cpp_tests(paths, cm), ["tests/host/c_test.cpp"])
+        self.assertEqual(check_content.unlisted_cpp_tests(["tests\\host\\d_test.cpp"], cm), ["tests\\host\\d_test.cpp"])
+
+    def test_the_repository_builds_every_cpp_test(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        files = check_content.tracked_files(root)
+        self.assertEqual(check_content.unlisted_cpp_tests(files, check_content.cmake_text(root, files)), [])
+
     def test_windows_separators_count(self):
         self.assertEqual(check_content.unlisted_python_tests(["tools\\x\\tests\\test_q.py"], ""), ["tools\\x\\tests\\test_q.py"])
 
@@ -152,8 +169,9 @@ class UnlistedPythonTests(unittest.TestCase):
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         if not os.path.isdir(os.path.join(root, ".github", "workflows")):
             self.skipTest("no workflows folder (a kit copy)")
-        self.assertEqual(check_content.unlisted_python_tests(check_content.tracked_files(root),
-                                                             check_content.workflow_text(root)), [])
+        files = check_content.tracked_files(root)
+        self.assertEqual(check_content.unlisted_python_tests(files, check_content.workflow_text(root),
+                                                             check_content.runner_text(root, files)), [])
 
 
 if __name__ == "__main__":

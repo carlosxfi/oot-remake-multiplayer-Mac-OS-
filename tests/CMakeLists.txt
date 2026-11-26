@@ -43,6 +43,7 @@ add_executable(coop_tests
   host/notify_test.cpp
   host/one_way_keeper_test.cpp
   host/save_transfer_test.cpp
+  host/own_values_test.cpp
   host/session_test.cpp
   host/scene_test.cpp
   host/event_owner_test.cpp
