@@ -871,10 +871,29 @@ class Pair:
         return self.call(x, "act", lines=line)
 
     def give(self, x, item):
-        return self.call(x, "give", item=item)
+        return self._kept(x, "give", item=item)
 
     def flag(self, x, name, value=1):
-        return self.call(x, "flag", name=name, value=value)
+        return self._kept(x, "flag", name=name, value=value)
+
+    def _kept(self, x, cmd, **args):
+        """A set-up write (give, flag). The bridge reads it back after a few frames of game x (docs/playtest.md):
+        `did_not_stick` (the game put the old value back: a value it keeps elsewhere, as Link's life before
+        give-life-fix) is SETUP-FAIL at once, naming the flag; the other games are stepped by the frames x ran, so
+        the pair stays in step."""
+        before = self.c[x].last_frame or 0
+        try:
+            r = self.call(x, cmd, **args)
+        except pc.BridgeError as e:
+            if e.code == "did_not_stick":
+                raise SetupFail("%s: %s %s did not stick: %s" % (x, cmd, args.get("item") or args.get("name"),
+                                                                 e.reply.get("message"))) from e
+            raise
+        ran = max(0, (self.c[x].last_frame or before) - before)
+        for y in self.c:
+            if y != x and ran:
+                self.step_other(y, ran)
+        return r
 
     def flag_read(self, x, name):
         return self.call(x, "flag_read", name=name)

@@ -28,6 +28,7 @@
 #include "common/logging.h"
 #include "coop/host/game_items.hpp"
 #include "coop_camera.h"
+#include "coop_cheat_give.h"
 #include "coop_cheats.h"
 #include "coop_fairy.h"
 #include "coop_hook.h"
@@ -644,6 +645,12 @@ std::string Handle(const Request& r) {
         const std::string line = (number ? "setflag " : "setenum ") + r.name + " " + r.value;
         if (!played(line, error)) return fail("failed", error);
         const auto now = CoopTestInput::FlagInt(*g_system, r.name);
+        if (number) {   // the read-back (StickProblem): a value the game keeps elsewhere comes back at its next frame
+            if (!gate.Step(kStickFrames, kHoldWait)) return fail("timeout", "the frames did not run in time");
+            const std::string lost =
+                StickProblem({{r.name, was, now, CoopTestInput::FlagInt(*g_system, r.name)}});
+            if (!lost.empty()) return fail("did_not_stick", lost);
+        }
         return ok("\"name\":" + Quote(r.name) + ",\"was\":" + (was ? std::to_string(*was) : "null") +
                   ",\"value\":" + (number ? (now ? std::to_string(*now) : "null") : Quote(r.value)));
     }
@@ -677,15 +684,23 @@ std::string Handle(const Request& r) {
         // still says `loading` false): one frame is run to take it, as `state` does; a pause or load stays refused.
         const auto status = LinkStatus();
         if (const std::string why = GiveRefusal(status ? &*status : nullptr); !why.empty()) return fail("not_ready", why);
+        std::vector<StickRead> reads;   // the read-back (StickProblem): each item flag before, now, after the frames
+        for (const auto& name : CoopCheatGive::Names(r.item)) {
+            reads.push_back({name, CoopTestInput::FlagInt(*g_system, name), std::nullopt, std::nullopt});
+        }
         if (!played("give " + r.item, error)) return fail("failed", error);
         // Written at once inside the held call (CoopTestInput::Give): the reply says what each flag was and is.
         const std::string result = CoopTestInput::LastGive();
         if (result.find("NOT given") != std::string::npos) return fail("failed", result);
+        for (auto& read : reads) read.written = CoopTestInput::FlagInt(*g_system, read.name);
+        if (!gate.Step(kStickFrames, kHoldWait)) return fail("timeout", "the frames did not run in time");
+        for (auto& read : reads) read.after = CoopTestInput::FlagInt(*g_system, read.name);
+        if (const std::string lost = StickProblem(reads); !lost.empty()) return fail("did_not_stick", lost + " (" + result + ")");
         // PARTLY given: the item is in, a later flag (IsGet, a grant) was not written: ok, with `partial` and the text.
         const bool partial = result.find("PARTLY given") != std::string::npos;
         return ok("\"item\":" + Quote(r.item) + ",\"partial\":" + (partial ? "true" : "false") +
                   ",\"result\":" + Quote(result) +
-                  ",\"note\":\"written now: the inventory already shows it (no step needed)\"");
+                  ",\"note\":\"written now and read back after the frames (kept): the inventory shows it\"");
     }
     if (r.cmd == "dump") {
         std::string body, error;

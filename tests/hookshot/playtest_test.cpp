@@ -1165,3 +1165,17 @@ TEST_CASE("playtest: warp arrived needs the scene, no event, no load and a fresh
     CHECK_FALSE(WarpArrived(&old, "KokiriForest"));        // an old snapshot's event/loading say nothing now
     CHECK_FALSE(WarpArrived(nullptr, "KokiriForest"));
 }
+
+TEST_CASE("playtest: a give or flag write the game's frames put back is said at once (did not stick)") {
+    // volvagia-rocks-234-2 (2026-11-26): give MaxLife read 16 -> 20, and the next frame put 16 back.
+    const auto lost = StickProblem({{"PlayerStatus.MaxLife", 16, 20, 16}});
+    CHECK(lost.find("did not stick: PlayerStatus.MaxLife written 20, the game put back 16 within 2 frames") == 0);
+    CHECK(StickProblem({{"PlayerStatus.MaxLife", 16, 20, 20}}).empty());      // kept
+    CHECK(StickProblem({{"PlayerStatus.Life", 16, 16, 16}}).empty());         // no change: nothing to keep
+    CHECK(StickProblem({{"PouchData.Item_Bomb.StockNum", 0, 20, 19}}).empty());   // the game used one: its own use
+    CHECK(StickProblem({{"X", std::nullopt, 1, 0}, {"Y", 0, std::nullopt, 0}}).empty());   // unreadable: not judged
+    const auto two = StickProblem({{"A", 0, 1, 0}, {"B", 2, 3, 3}, {"C", 5, 6, 5}});
+    CHECK(two.find("A written 1") != std::string::npos);
+    CHECK(two.find("B written") == std::string::npos);
+    CHECK(two.find("; C written 6") != std::string::npos);
+}
