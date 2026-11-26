@@ -1,0 +1,51 @@
+# hs-ocarina-keys (Hookshot), B: which Ocarina note the GAME plays for each key (ground truth for
+# tools/autotest/ocarina_notes.py). No key here is a guess about notes: B presses each of the five keys the game's own
+# prompt lists ("Play a note" + five key glyphs, shot hs-epona-seen-B-ocarina-B.png of run 20261125-155509) once,
+# between two marks, and LICHII_COOP_DEBUG_SOUND=1 logs every sound the game emits the first time
+# (lichii/hook/coop_link_sound.cpp OnEmit: "coop: sound probe: user 0x.. emits 'NAME'"). The note a key plays is the
+# Ocarina_<note> emit between "mark press-K" and "mark heard-K"; the heard-K shot shows the note staff.
+# Run through offline/epona-seen-run.ps1 -Scenario hs-ocarina-keys (owner save copy; setup proof first).
+# Sources: DLEFT takes the ocarina out (runs epona-seen-0dacc172 and -r2: "mark ocarina" shot with the note prompt);
+# the warp and place as hs-epona-seen.B.txt (the same runs: "test mark field", Link placed at -99.00 150.59 264.50).
+#! switches LICHII_COOP_PUPPET=1,LICHII_COOP_CHEATS=1,LICHII_COOP_DEBUG_SOUND=1
+#! timeout 600
+mark start
+wait 60
+warp HyruleField_Adult HyruleField_FrontOfMarket
+wait 1200               # the warp lands
+mark field
+place -99.0 151.0 264.5
+wait 240
+mark on-foot
+press DLEFT 12          # the ocarina out
+wait 240
+mark ocarina
+wait 60
+mark press-L
+press L 12
+wait 90
+mark heard-L
+wait 60
+mark press-R
+press R 12
+wait 90
+mark heard-R
+wait 60
+mark press-Y
+press Y 12
+wait 90
+mark heard-Y
+wait 60
+mark press-X
+press X 12
+wait 90
+mark heard-X
+wait 60
+mark press-A
+press A 12
+wait 90
+mark heard-A
+wait 60
+press B 12              # the ocarina away
+wait 120
+mark end

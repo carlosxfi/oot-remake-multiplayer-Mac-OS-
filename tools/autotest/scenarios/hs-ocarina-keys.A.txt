@@ -1,0 +1,11 @@
+# hs-ocarina-keys (Hookshot), A: only in the session while B plays its five keys (hs-ocarina-keys.B.txt).
+#! switches LICHII_COOP_PUPPET=1,LICHII_COOP_CHEATS=1
+#! timeout 600
+mark start
+wait 60
+warp HyruleField_Adult HyruleField_FrontOfMarket
+wait 1200
+mark field
+place -100.5 151.0 254.5
+wait 2100
+mark end
