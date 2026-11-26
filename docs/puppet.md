@@ -947,14 +947,13 @@ Player report (KaminoX, 0.11.12): "double coloured tunics and hair colour" were 
 Customize screen shows co-op's rows, and on Link those had no Hair (9ab9048f1: the hair parameters alone were too weak),
 no vest, no leather and no Equipment, which the mod's own screen had on Link (README v0.2.1: on Link Clothing Color 1 is
 the tunic and cap, 2 the vest, 3 the leather and boots). Root cause: `CoopCharColours::ForModel` gave a Link model only
-the eye and hair parameters and never a palette entry, and the page never offered those rows on Link. Now: parts 27
-`link_vest`, 28 `link_leather` (the mod's seven palette colours, `look_link_vest` / `look_link_leather`), 29 `link_gear`
-(`look_link_gear = hidden`); ForModel puts Link's hair (19) also as the nearest hair palette entry and these three in the
-nibbles a character's take (Clothing Color 1 stays co-op's tunic part). With the mod your Link is always a wardrobe
-target, so his model's rows are known (`Rows`, `OwnRows(0)`), and Character Select's Customize screen offers a "Hair and
-clothes" page on Link with only the rows his model has (`RowOnModel`: none before the rows are known, so never without
-the mod). The pause page's full list keeps its Hair row as in 0.11.12. Per option, in-game proof and the bridge tests:
-branches hair-link, vest-link, leather-link, gear-link.
+the eye and hair parameters and never a palette entry, and the page never offered those rows on Link. Now (C #132: every row on every Link, with or without the mod, solo too): parts 27 `link_vest`,
+28 `link_leather` (any colour, `look_link_vest` / `look_link_leather`; painted on Link's own textures by co-op's texture
+overrides: IsGear, the texel owner table of branches vest-link and leather-link), 29 `link_gear` (`look_link_gear =
+hidden`: the game's shown bit, ForModel's nibble 2 on a Link model too, so your Link is a wardrobe target with only it
+set). Link's hair (19) is painted the same way (branch hair-link), never the mod's palette. Character Select's
+Customize screen gets a "Hair and clothes" page on Link (page 2); the pause page's list shows the vest, leather and
+equipment under Link, its Hair row as in 0.11.12.
 
 ### Gear colours on the puppets
 

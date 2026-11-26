@@ -227,10 +227,7 @@ TEST_CASE("char colours (npc-customize): Link's eyes and hair on a Link model, t
         const auto it = look.find(n);
         return it == look.end() ? std::nullopt : std::optional<std::uint32_t>(it->second);
     };
-    // (look-link-cs: Link's hair is also the mod's nearest hair palette entry, nibble 0)
-    const std::uint32_t link_hair = CoopCharColours::NearestHair(0xABCDEFu);
-    CHECK(link_hair != 0);
-    CHECK(ForModel(true, part) == ModelColours{link_hair, 0x123456u, 0xABCDEFu});
+    CHECK(ForModel(true, part) == ModelColours{0, 0x123456u, 0xABCDEFu});
     // A character with none of its own parts: Link's never (review 0.11.9), a 0.11.8 peer's options as they came.
     CHECK(ForModel(false, part) == ModelColours{});
     CHECK(ForModel(false, part, 0xFF000012u) == ModelColours{0x12u, std::nullopt, std::nullopt});
@@ -244,7 +241,7 @@ TEST_CASE("char colours (npc-customize): Link's eyes and hair on a Link model, t
     CHECK(c.hair == 0x0A0808u);
     CHECK(c.eyes == 0x20C040u);
     CHECK(c.custom == (3u | (1u << 8) | (2u << 12) | (7u << 20)));
-    CHECK(ForModel(true, part) == ModelColours{link_hair, 0x123456u, 0xABCDEFu});   // (Link keeps his own)
+    CHECK(ForModel(true, part) == ModelColours{0, 0x123456u, 0xABCDEFu});   // (Link keeps his own)
 }
 
 TEST_CASE("char colours (look-link-cs, report 293): Character Select's options on a Link model") {
@@ -257,22 +254,21 @@ TEST_CASE("char colours (look-link-cs, report 293): Character Select's options o
         const auto it = look.find(n);
         return it == look.end() ? std::nullopt : std::optional<std::uint32_t>(it->second);
     };
-    // Hair palette (nibble 0), Hidden (2), the vest as Clothing Color 2 (4), leather as 3 (5); never Clothing 1.
+    // Only Hidden (nibble 2): the hair, vest and leather are co-op's texture paint on Link, never a palette (C #132).
     const ModelColours link = ForModel(true, part);
-    CHECK(link.custom == (3u | (1u << 8) | (2u << 16) | (7u << 20)));
+    CHECK(link.custom == (1u << 8));
     CHECK(link.hair == 0x0A0808u);
     CHECK(link.eyes == std::nullopt);
-    CHECK(Options::Of(link.custom).clothes[0] == 0);
-    CHECK(Options::Of(link.custom).clothes[1] == 2);
-    CHECK(Options::Of(link.custom).clothes[2] == 7);
+    CHECK(Options::Of(link.custom).hair == 0);
+    CHECK(Options::Of(link.custom).clothes == std::array<std::uint8_t, 3>{});
     CHECK(Options::Of(link.custom).gear == 1);
     // A character's model never takes Link's (its own parts, or a 0.11.8 peer's options).
     CHECK(ForModel(false, part) == ModelColours{});
     // Each alone.
     look = {{kLinkGearPart, 1u}};
     CHECK(ForModel(true, part).custom == (1u << 8));
-    look = {{kLinkLeatherPart, 0x0000FFu}};
-    CHECK(ForModel(true, part).custom == (3u << 20));
+    look = {{kLinkLeatherPart, 0x0000FFu}, {kLinkVestPart, 0xFF0000u}};
+    CHECK(ForModel(true, part) == ModelColours{});
 }
 
 TEST_CASE("char colours (npc-customize): the mod's nearest hair and clothing palette entries") {

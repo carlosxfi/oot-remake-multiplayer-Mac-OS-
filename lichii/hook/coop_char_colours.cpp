@@ -459,12 +459,9 @@ ModelColours ForModel(bool link_model, const std::function<std::optional<std::ui
     ModelColours out;
     if (link_model) {
         out.eyes = get(kLinkEyesPart), out.hair = get(kLinkHairPart);
-        // (look-link-cs: the mod's options on Link, in the nibbles a character's take: its hair palette, the
-        // equipment, Clothing Color 2 and 3; Clothing Color 1, the tunic and cap, is co-op's tunic part)
-        if (out.hair) out.custom |= NearestHair(*out.hair);
+        // (look-link-cs: Link's equipment Hidden in the nibble a character's takes. His hair, vest and leather are
+        // never a palette here: co-op's texture overrides paint them, C #132)
         if (get(kLinkGearPart)) out.custom |= 1u << 8;
-        if (const auto v = get(kLinkVestPart)) out.custom |= static_cast<std::uint32_t>(NearestCloth(*v)) << (4 * 4);
-        if (const auto v = get(kLinkLeatherPart)) out.custom |= static_cast<std::uint32_t>(NearestCloth(*v)) << (4 * 5);
         return out;
     }
     bool any = false;
@@ -560,9 +557,8 @@ std::size_t Wardrobe::Frame(const Game& game, const std::vector<Target>& targets
         if (t.mods_routine || calls >= kCallsPerFrame || now_ms < k.retry_ms) continue;
         // Your own character's model, and its picture on the Customize screen, looked up even with nothing to put on,
         // for the page's rows. Every frame: a model already looked up costs reads only (no call), and one put in its
-        // place (another pick, the field model changed when the menu closes) is looked up again. look-link-cs: your
-        // Link too (a target only with Character Select or a colour worn), for the mod's Link rows his model has.
-        if (t.own || (t.picture && t.character != 0)) {
+        // place (another pick, the field model changed when the menu closes) is looked up again.
+        if ((t.own || t.picture) && t.character != 0) {
             const Result r = Learn(game, k.state, kCallsPerFrame - calls);
             calls += r.calls;
             if (r.failed) {
@@ -573,7 +569,8 @@ std::size_t Wardrobe::Frame(const Game& game, const std::vector<Target>& targets
         if (t.picture && t.character != 0) {
             picture_rows = (static_cast<std::uint32_t>(t.character) << 8) | Rows(k.state);
         } else if (t.own) {
-            own_rows = (static_cast<std::uint32_t>(t.character) << 8) | Rows(k.state);
+            own_rows = (static_cast<std::uint32_t>(t.character) << 8) |
+                       (t.character != 0 ? Rows(k.state) : std::uint8_t{0});
         }
         Options o = Options::Of(t.custom);
         if (t.eyes) o.eyes_exact = EyeParam(*t.eyes);

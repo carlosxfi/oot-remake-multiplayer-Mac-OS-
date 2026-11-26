@@ -32,7 +32,7 @@ TEST_CASE("snail customize: his six options show co-op's parts, ZL / ZR step the
     d.Open(start, 0);
     REQUIRE(d.Active());
     auto t = d.Shown();
-    CHECK(t.title == "Link (page 1 of 4)  Y: page  A: Fine-tune");
+    CHECK(t.title == "Link (page 1 of 5)  Y: page  A: Fine-tune");
     CHECK(t.labels[0] == "Eye Colour");
     CHECK(t.labels[1] == "Kokiri Tunic");
     CHECK(t.labels[2] == "Cap Trim");
@@ -52,10 +52,17 @@ TEST_CASE("snail customize: his six options show co-op's parts, ZL / ZR step the
     const auto change = d.TakeChange();
     REQUIRE(change);
     CHECK((*change)[Part::zora_tunic] != CoopColors::Parse("red"));
-    // Y: the Shields page, the same six places.
+    // Y: Link's page of Character Select's options (look-link-cs), then the Shields page, the same six places.
     CHECK(d.Pad(kY) == 0);
     t = d.Shown();
-    CHECK(t.title == "Shields (page 2 of 4)  Y: page  A: Fine-tune");
+    CHECK(t.title == "Hair and clothes (page 2 of 5)  Y: page  A: Fine-tune");
+    CHECK(t.labels[0] == "Hair Colour");
+    CHECK(t.labels[1] == "Vest Colour");
+    CHECK(t.labels[2] == "Leather and Boots Colour");
+    CHECK(t.labels[3] == "Equipment");
+    CHECK(d.Pad(kY) == 0);
+    t = d.Shown();
+    CHECK(t.title == "Shields (page 3 of 5)  Y: page  A: Fine-tune");
     CHECK(t.labels[0] == "Hylian Shield Frame");
     CHECK(t.labels[5] == "Deku Shield");
     // B and -: his (back to his picker).
@@ -168,7 +175,7 @@ TEST_CASE("snail customize: his screen's texts in the game's language, as co-op'
     CHECK(t.values[3] == CoopI18n::Tr(hans, "Off"));   // (C4-4's switch: its value in the table)
     CHECK(t.values[4] == d.Shown(nullptr).values[4]);   // (#123456 stays)
     // English (no table): the same texts as before.
-    CHECK(d.Shown(nullptr).title == "Link (page 1 of 4)  Y: page  A: Fine-tune");
+    CHECK(d.Shown(nullptr).title == "Link (page 1 of 5)  Y: page  A: Fine-tune");
     CHECK(d.Shown(nullptr).values[5] == "Red");
 }
 

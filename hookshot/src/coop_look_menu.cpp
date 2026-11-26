@@ -92,9 +92,8 @@ const char* Note(Part part) {
     case Part::char_gear: return "Your character's sword, shield and other gear shown or hidden.";
     case Part::cap_trim_hoods:
         return "On: the Cap trim's colour on the Goron and Zora tunics' hood trims too. Off: those trims keep their tunic's colour.";
-    case Part::link_vest: return "Your Link's vest, in one of seven colours. The other players see it too.";
-    case Part::link_leather:
-        return "Your Link's leather and boots, in one of seven colours. The other players see it too.";
+    case Part::link_vest: return "Your Link's vest. The other players see it too.";
+    case Part::link_leather: return "Your Link's leather and boots. The other players see it too.";
     case Part::link_gear: return "Your Link's sword, shield and other gear shown or hidden.";
     }
     return "";
@@ -111,11 +110,8 @@ std::string ValueText(Part part, const std::optional<std::uint32_t>& colour) {
 
 // npc-customize: a character's clothing rows take the mod's seven palette colours only (CoopLook::kClothPresets),
 // and its Equipment row is shown or hidden; neither opens the mixer.
-// (look-link-cs: Link's vest and leather are the mod's palettes too, and his Equipment the same switch)
-bool IsCloth(Part p) {
-    return p == Part::char_cloth1 || p == Part::char_cloth2 || p == Part::char_cloth3 || p == Part::link_vest ||
-           p == Part::link_leather;
-}
+// (look-link-cs: Link's Equipment is the same switch; his vest and leather take any colour, as his other parts)
+bool IsCloth(Part p) { return p == Part::char_cloth1 || p == Part::char_cloth2 || p == Part::char_cloth3; }
 bool IsSwitch(Part p) { return CoopLook::IsGearSwitch(p) || p == Part::cap_trim_hoods; }   // (on or off, no colour)
 bool PresetOnly(Part p) { return IsCloth(p) || IsSwitch(p); }
 std::optional<std::uint32_t> NextCloth(const std::optional<std::uint32_t>& colour, int step) {
@@ -128,18 +124,8 @@ std::optional<std::uint32_t> NextCloth(const std::optional<std::uint32_t>& colou
     return at == 0 ? std::nullopt : CoopColors::Parse(CoopLook::kClothPresets[static_cast<std::size_t>(at - 1)]);
 }
 // A character part's row on the model shown (CoopCharColours::Rows' bits; 0: not known yet, every row).
-// look-link-cs: a Link part of the mod's (IsLinkModPart) only once the Link model is known to have it (its rows known:
-// kRowsKnown 0x80), so never without the mod, nor on a page that is not told the model's rows.
+// (look-link-cs: Link's parts are on every Link model, with or without the mod: no model rows asked)
 bool RowOnModel(Part p, std::uint8_t rows) {
-    if (CoopLook::IsLinkModPart(p)) {
-        if ((rows & 0x80) == 0) return false;
-        switch (p) {
-        case Part::hair: return (rows & 1) != 0;
-        case Part::link_vest: return (rows & 8) != 0;      // (the mod's Clothing Color 2 on Link)
-        case Part::link_leather: return (rows & 16) != 0;  // (its Clothing Color 3)
-        default: return (rows & 32) != 0;                  // (the equipment)
-        }
-    }
     if (!CoopLook::IsCharacterPart(p) || rows == 0) return true;
     switch (p) {
     case Part::char_hair: return (rows & 1) != 0;
@@ -301,8 +287,8 @@ std::uint32_t ToRgb(const Hsv& c) {
 const std::vector<Group>& Groups() {
     // (0.11.9: Link's own colours first, his hair and eyes among them)
     static const std::vector<Group> kGroups = {
-        // (0.11.9 cut the Hair row: the hair parameters alone were too weak on Link. look-link-cs: with Character
-        // Select its hair palette carries the colour, so Hair is back on the Link mod page below, kLinkModGroup)
+        // (0.11.9 cut the Hair row: the hair parameters alone were too weak on Link. look-link-cs: Hair is back on
+        // the Link page of Character Select's options below, kLinkModGroup, painted on his texture: hair-link)
         {"Link", {Part::eyes, Part::tunic, Part::cap_trim, Part::cap_trim_hoods, Part::goron_tunic, Part::zora_tunic}},
         {"Shields", {Part::hylian_frame, Part::hylian_face, Part::hylian_emblem, Part::mirror_rim, Part::mirror_face,
                      Part::deku_shield}},
@@ -312,8 +298,8 @@ const std::vector<Group>& Groups() {
         // (npc-customize: a Character Select character's own parts; only the rows its model has are shown)
         {"Character", {Part::char_hair, Part::char_eyes, Part::char_cloth1, Part::char_cloth2, Part::char_cloth3,
                        Part::char_gear}},
-        // (look-link-cs, report 293: Character Select's own options on a Link model, as his screen had them; only the
-        // rows the Link model has, RowOnModel)
+        // (look-link-cs, report 293: Character Select's own options on a Link model, as his screen had them, on every
+        // Link)
         {"Hair and clothes", {Part::hair, Part::link_vest, Part::link_leather, Part::link_gear}},
     };
     return kGroups;
@@ -422,9 +408,6 @@ std::vector<Page::Line> Page::Lines() const {
     std::string item;
     for (const PartInfo& info : CoopLook::Parts()) {
         if (CoopLook::IsCharacterPart(info.part)) continue;   // (Link's list: a character's are on its own page)
-        // (look-link-cs: the mod's vest, leather and equipment only where told the Link model has them; the Hair row
-        // stays in this list as in 0.11.12)
-        if (CoopLook::IsLinkModPart(info.part) && info.part != Part::hair && !RowOnModel(info.part, rows_)) continue;
         if (item != info.item) {
             item = info.item;
             out.push_back({{item, "", 3}, What::kHeading, info.part, ""});
@@ -479,12 +462,7 @@ void Page::SetRows(std::uint8_t rows) {
 }
 
 std::vector<std::size_t> Page::Offered() const {
-    if (character_ == 0) {   // Link: every part but a character's; the mod's Link page once his model has a row of it
-        for (const Part p : Groups()[kLinkModGroup].parts) {
-            if (RowOnModel(p, rows_)) return {0, kLinkModGroup, 1, 2, 3};
-        }
-        return {0, 1, 2, 3};
-    }
+    if (character_ == 0) return {0, kLinkModGroup, 1, 2, 3};   // Link: every part but a character's (look-link-cs)
     // A character: its own parts (npc-customize; the Equipment row is on every model), then its held gear once shown
     // to work.
     if (gear_shows_) return {kCharacterGroup, 1, 2};

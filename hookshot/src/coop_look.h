@@ -71,10 +71,12 @@ enum class Part : std::uint8_t {
     // look-link-cs (player report 293, KaminoX: lost since 0.11.9 when co-op's rows took Character Select's Customize
     // screen): the mod's own options on a LINK model, which his screen had and ours had not. Link's hair keeps part 19
     // (now also the mod's nearest hair palette entry, ForModel). On Link the mod's Clothing Color 2 is the vest and 3
-    // the leather and the boots (README v0.2.1); his Clothing Color 1 (tunic and cap) is co-op's tunic part. Only with
-    // the mod (its palette textures) and only the rows the Link model has. A kit before it passes them over.
-    link_vest = 27,       // the vest: the nearest of the mod's seven palette textures (kClothPresets)
-    link_leather = 28,    // the leather and the boots: the same
+    // the leather and the boots (README v0.2.1); his Clothing Color 1 (tunic and cap) is co-op's tunic part. C #132
+    // (11:0x UTC): all of them on every Link, without the mod too (solo as well): the hair, vest and leather painted on
+    // Link's own textures by co-op's texture overrides in any colour (branches hair-link, vest-link, leather-link), the
+    // equipment the game's shown bit. A kit before it passes 27 to 29 over.
+    link_vest = 27,       // the vest's colour (unset: the tunic's, as 0.11.12)
+    link_leather = 28,    // the leather and the boots' colour (unset: as 0.11.12)
     link_gear = 29,       // the equipment shown (unset) or hidden (kGearHidden)
 };
 inline constexpr std::size_t kParts = 30;
@@ -87,8 +89,8 @@ inline constexpr bool IsCharacterPart(Part p) {
     return static_cast<std::uint8_t>(p) >= static_cast<std::uint8_t>(Part::char_hair) &&
            static_cast<std::uint8_t>(p) <= static_cast<std::uint8_t>(Part::char_gear);
 }
-// look-link-cs: a Link part that only Character Select's textures or code make work (its Hair, the vest, the leather,
-// the equipment): offered only where the Link model has it (the wardrobe's rows), never without the mod.
+// look-link-cs: Link's parts of Character Select's options (its Hair, the vest, the leather, the equipment): rows on
+// every Link (the Customize page and Character Select's screen's "Hair and clothes" page), with or without the mod.
 inline constexpr bool IsLinkModPart(Part p) {
     return p == Part::hair || p == Part::link_vest || p == Part::link_leather || p == Part::link_gear;
 }
