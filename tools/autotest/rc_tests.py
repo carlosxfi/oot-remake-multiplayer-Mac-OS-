@@ -29,8 +29,9 @@ else the median of every measured test, else DEFAULT_S; a session's boot costs B
 --skip-proven (B #128 rule, unchanged): a test is not played again when, on EVERY --identity key, a summary.json
 with that identity key holds a row of it (same base nodeid, same test_hash as now) and every such row is PASS. A
 FLAKY, FAIL, SETUP-FAIL, NO-REF or NOT-RUN row there, a summary without an identity key, a summary from a boot with
-other game switches (identity.env vs bt_plugin BASE_ENV + the test's group --env + plan --env, per game), or a test
-whose module is gone proves nothing. A smoke test is never skipped. Each skipped test is listed in plan.json
+other game switches (identity.env vs bt_plugin BASE_ENV + the test's group --env + plan --env, per game), a summary
+from another lane boot or with none (identity.boot vs bt_plugin boot_identity(): per game the boot script, its
+sha256 and its '#! switches'), or a test whose module is gone proves nothing. A smoke test is never skipped. Each skipped test is listed in plan.json
 "skipped" with its proof folders, and the rc summary lists it as SKIP.
 
 summary: every session's summary.json (<runs>/<id>, or --session ID DIR) and the plan's skipped tests ->
@@ -138,18 +139,20 @@ def estimate(test, hist):
     return DEFAULT_S, "default %d s" % DEFAULT_S
 
 
-def proofs(test, keys, docs, repo=None, env=None):
+def proofs(test, keys, docs, repo=None, env=None, boot=None):
     """(proven, [{folder, key, result}]): see the module text. env: proven.env_key of the boot this test gets; a
     summary from a boot with other switches (identity.env) proves nothing (review-c123-6 08:41: a PASS on the HUD-off
-    probe boot must not prove a normal boot)."""
+    probe boot must not prove a normal boot). boot: proven.boot_key of the lane boot this pass makes; a summary with
+    another identity.boot (other boot scripts, other script text, other '#! switches') or none proves nothing
+    (review-c123-7)."""
     th = P.test_hash(test, repo)
     seen = {k: [] for k in keys}
-    if not th or env is None:
+    if not th or env is None or boot is None:
         return False, []
     for folder, doc in docs:
         ident = doc.get("identity") or {}
         k = ident.get("key")
-        if k not in seen or P.env_key(ident.get("env")) != env:
+        if k not in seen or P.env_key(ident.get("env")) != env or P.boot_key(ident.get("boot")) != boot:
             continue
         for r in doc["tests"]:
             if r.get("test") and P.base_nodeid(r["test"]) == test and r.get("test_hash") == th:
@@ -176,8 +179,9 @@ def groups_of(items):
     return out
 
 
-def plan(items, lanes, roots=None, proven_roots=None, keys=None, repo=None, env=None, base_env=None):
-    """items: collect() rows. env: --env for every session (on top of each group's own). See the module text."""
+def plan(items, lanes, roots=None, proven_roots=None, keys=None, repo=None, env=None, base_env=None, boot=None):
+    """items: collect() rows. env: --env for every session (on top of each group's own). boot: the lane boot
+    (bt_plugin boot_identity; default asked of bt_plugin by proven.ingame_boot_identity). See the module text."""
     if not lanes:
         raise Fail("--lanes: at least one lane")
     if not items:
@@ -192,11 +196,14 @@ def plan(items, lanes, roots=None, proven_roots=None, keys=None, repo=None, env=
             raise Fail("--skip-proven needs --identity (each lane's build key: proven.py identity --lane N)")
         docs = summaries(proven_roots)
         base = P.ingame_base_env(repo) if base_env is None else list(base_env)
+        boot_now = P.boot_key(P.ingame_boot_identity(repo) if boot is None else boot)
+        if boot_now is None:
+            raise Fail("--skip-proven: the lane boot is not known (bt_plugin boot_identity)")
         for g in groups:
             want = P.env_key(base + g["env"] + extra)
             keep = []
             for t in g["tests"]:
-                ok, proof = proofs(t, keys, docs, repo, want)
+                ok, proof = proofs(t, keys, docs, repo, want, boot_now)
                 if ok:
                     skipped.append({"test": t, "group": g["name"], "keys": list(keys), "proof": proof})
                 else:

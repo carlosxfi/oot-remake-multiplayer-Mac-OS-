@@ -14,6 +14,8 @@ import rc_tests as rt  # noqa: E402
 MOD = "tools/autotest/ingame/test_rows.py"
 BASE = ["LICHII_COOP_PUPPET=1", "LICHII_COOP_TEST_TO_TITLE=1"]
 HUD = ["COOP_TEST_PARTY_HUD=1", "B:COOP_TEST_PARTY_HUD_NO_PACK=1"]   # test_party_hud.py's pytestmark (party-hud-test-c126)
+BOOT = {g: {"script": "tools/autotest/scenarios/live-kakariko-child.%s.txt" % g, "sha256": g * 64,
+            "switches": ["LICHII_COOP_CHEATS=1"]} for g in ("A", "B")}   # bt_plugin boot_identity (949467249)
 S1, S2 = "test_smoke.py::test_boot", "test_smoke.py::test_pause"
 A, B, C = "test_rows.py::test_a", "test_rows.py::test_b", "test_rows.py::test_c"
 H1, H2 = "test_party_hud.py::test_party_hud_after_boot", "test_party_hud.py::test_party_hud_title_and_load_again"
@@ -21,7 +23,7 @@ H1, H2 = "test_party_hud.py::test_party_hud_after_boot", "test_party_hud.py::tes
 INI = "[pytest]\nmarkers =\n    smoke: rc smoke tier\n    needs_env: game switches\n"
 FILES = {
     "pytest.ini": INI,
-    "bt_plugin.py": "import os\nBASE_ENV = %r   # every boot\n" % BASE,
+    "bt_plugin.py": "import os\nBASE_ENV = %r   # every boot\n\n\ndef boot_identity():\n    return %r\n" % (BASE, BOOT),
     "test_smoke.py": "import pytest\n\n@pytest.mark.smoke\ndef test_boot(): pass\n\n"
                      "@pytest.mark.smoke\ndef test_pause(): pass\n",
     "test_rows.py": "def test_a(): pass\n\ndef test_b(): pass\n\ndef test_c(): pass\n",
@@ -56,11 +58,13 @@ class Base(unittest.TestCase):
             write(os.path.join(self.ingame, name), text)
         self.n = 0
 
-    def summary(self, root, rows, key="k1", env=None, **extra):
-        """A session's summary.json as bt_plugin writes it (identity: key + boot env; per-row test_hash)."""
+    def summary(self, root, rows, key="k1", env=None, boot=BOOT, **extra):
+        """A session's summary.json as bt_plugin writes it (identity: key + env + boot; per-row test_hash)."""
         self.n += 1
         d = os.path.join(self.tmp, root, "run%d" % self.n)
         ident = {"env": list(BASE) if env is None else env}
+        if boot is not None:
+            ident["boot"] = boot
         if key:
             ident["key"] = key
         doc = dict({"identity": ident, "tests": rows, "verdict": "x", "minutes": 1}, **extra)
@@ -215,6 +219,32 @@ class Plan(Base):
         self.assertEqual(self.plan(proven_roots=[runs], keys=["k1", "k2"])["skipped"], [])   # every key
         write(os.path.join(self.repo, *MOD.split("/")), "def test_a(): assert 1\n")           # module changed
         self.assertEqual(self.plan(proven_roots=[runs], keys=["k1"])["skipped"], [])
+
+    def test_another_boot_or_none_proves_nothing(self):
+        runs = os.path.join(self.tmp, "runs")
+        other = json.loads(json.dumps(BOOT))
+        other["A"]["switches"] = []                                          # a boot without cheats
+        script = json.loads(json.dumps(BOOT))
+        script["B"]["sha256"] = "f" * 64                                     # the boot script's text changed
+        path = json.loads(json.dumps(BOOT))
+        path["A"]["script"] = "tools/autotest/scenarios/live-title.A.txt"   # another boot script
+        self.summary("runs", [self.row(A)], boot=other)
+        self.summary("runs", [self.row(B)], boot=script)
+        self.summary("runs", [self.row(C)], boot=path)
+        self.summary("runs", [self.row(H1)], env=BASE + HUD, boot=None)     # a summary from before identity.boot
+        self.summary("runs", [self.row(H2)], env=BASE + HUD, boot={"A": BOOT["A"]})
+        self.assertEqual(self.plan(proven_roots=[runs], keys=["k1"])["skipped"], [])
+        self.summary("runs", [self.row(A, "FAIL")], boot=other)              # a FAIL on another boot is not counted
+        self.summary("runs", [self.row(A)])                                  # either: only this boot's rows prove
+        self.assertEqual([x["test"] for x in self.plan(proven_roots=[runs], keys=["k1"])["skipped"]], [A])
+
+    def test_boot_is_asked_of_bt_plugin(self):
+        self.assertEqual(pv.ingame_boot_identity(self.repo), BOOT)
+        self.assertEqual(pv.boot_key(BOOT), pv.boot_key({g: dict(BOOT[g], script=BOOT[g]["script"].replace("/", "\\"))
+                                                          for g in BOOT}))
+        write(os.path.join(self.ingame, "bt_plugin.py"), "BASE_ENV = %r\n" % BASE)   # no boot_identity
+        with self.assertRaises(pv.Fail):
+            self.plan(proven_roots=[self.tmp], keys=["k1"])
 
     def test_base_env_is_read_from_bt_plugin(self):
         self.assertEqual(pv.ingame_base_env(self.repo), BASE)

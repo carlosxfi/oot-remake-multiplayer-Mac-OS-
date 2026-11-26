@@ -186,6 +186,36 @@ def ingame_base_env(repo=None):
     return list(ast.literal_eval(m.group(1)))
 
 
+def boot_key(boot):
+    """The lane boot (bt_plugin boot_identity: per game the boot script, its sha256 and its '#! switches'), as one
+    comparable text; None when it is not a dict holding both games (not known: proves nothing)."""
+    if not isinstance(boot, dict) or not all(isinstance(boot.get(g), dict) for g in ("A", "B")):
+        return None
+    norm = {g: {"script": str(boot[g].get("script") or "").replace("\\", "/"), "sha256": boot[g].get("sha256") or "",
+                "switches": sorted(str(x) for x in (boot[g].get("switches") or []))} for g in ("A", "B")}
+    if not all(norm[g]["script"] and norm[g]["sha256"] for g in ("A", "B")):
+        return None
+    return json.dumps(norm, sort_keys=True)
+
+
+def ingame_boot_identity(repo=None):
+    """bt_plugin.boot_identity() of the repo's in-game tests: the boot this rc pass will make, from bt_plugin's own
+    code (never copied), in a Python process of its own (bt_plugin imports pair, pytest). Raises Fail when it cannot."""
+    ingame = os.path.join(repo or REPO, *INGAME.split("/"))
+    code = ("import sys, json; sys.path.insert(0, sys.argv[1]); import bt_plugin; "
+            "print(json.dumps(bt_plugin.boot_identity()))")
+    import subprocess
+    try:
+        p = subprocess.run([sys.executable, "-I", "-c", code, ingame], capture_output=True, text=True, timeout=120)
+        boot = json.loads(p.stdout.strip().splitlines()[-1]) if p.returncode == 0 and p.stdout.strip() else None
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        raise Fail("bt_plugin.boot_identity: %s" % e)
+    if boot_key(boot) is None:
+        raise Fail("bt_plugin.boot_identity in %s gave no boot (exit %s): %s" % (
+            ingame, p.returncode, (p.stderr or p.stdout or "")[-400:]))
+    return boot
+
+
 _PLAY = re.compile(r"^\s*play\s+(.*)$", re.I)
 
 
