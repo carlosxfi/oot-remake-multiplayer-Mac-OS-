@@ -1,0 +1,109 @@
+"""Fake-game reactions for ux-sweep-0120's rows (ingame/test_ux_sweep.py; owner ux-sweep-0120). Hooks: fakegame.py
+docstring. Each reacts only to its own flag or scene.
+
+- Gift (rows 171/179): both logs get coop_hook.cpp:572's 'coop: gifts: sharing 22 one-time gift flags' at the
+  connect; a 0 -> 1 of HavePlayedEvent.Dm_Title_0096 reaches the other game 12 frames later (pickup rule,
+  coop_shop_sale.h); a 1 -> 0 goes nowhere.
+- Scrub (row 100), LostWood_Child: the rear and front Business Scrubs (Banc LostWood_Child_Static) in the world list,
+  owner null (CoopObjects::IsOwnPuzzle). After a `hit` the rear one offers 'Talk'; A starts a talk, the talk ends
+  after 3 more presses.
+- Lock (row 73), ForestTemple: adult Link; the first door's lock (Banc ForestTemple_Static) in each game until that
+  game opens it: leaning in with a key spends it (the count is shared: the other game's goes down too); with no key
+  and the lock already opened by the other game, the lent key opens it (docs/dungeon.md "Locked doors").
+BT_FAKE_UX (the bugs the tests must catch): gift-unshared (no 0 -> 1 share), gift-back (B's 0 reaches A),
+scrub-shared (the scrubs have owner 2 in A), scrub-softlock (the second talk never ends), lock-stuck (no lent key),
+lock-double (the lent key reaches the group as a found key: +1 in both).
+"""
+import math
+import os
+
+GIFT = "HavePlayedEvent.Dm_Title_0096"
+KEYS = "DungeonInfo.ForestTemple.SmallKeyNum"
+REAR, FRONT = (8.79, 82.89, -89.41), (7.30, 82.89, -85.59)
+LOCK = (-0.04, 103.03, 44.59)
+
+
+def _mode():
+    return os.environ.get("BT_FAKE_UX", "")
+
+
+def setup(game):
+    game.ux_talk, game.ux_talks, game.ux_offer, game.ux_lock_open = 0, 0, False, False
+
+
+def lane(fakelane):
+    for g in fakelane.g.values():
+        g.say("coop: gifts: sharing 22 one-time gift flags (Great Fairies, cows, Medigoron, frogs)")
+
+
+def after(game, m, r):
+    if m.get("cmd") == "flag" and m.get("name") == GIFT:
+        o, v, was = game.other, m.get("value"), r.get("was", 0)
+        if v == 1 and was in (0, None) and _mode() != "gift-unshared":
+            o.later(12, lambda: o.flags.__setitem__(GIFT, 1))
+        if v == 0 and _mode() == "gift-back":
+            o.later(12, lambda: o.flags.__setitem__(GIFT, 0))
+    if m.get("cmd") == "flag" and m.get("name") == KEYS:
+        o, v = game.other, m.get("value")
+        o.later(12, lambda: o.flags.__setitem__(KEYS, v))      # a set count reaches the group
+
+
+def act(game, words):
+    if words[0] == "hit" and len(words) > 1 and words[1] == "Enemy_Scrub_Business" and game.scene == "LostWood_Child":
+        game.later(60, lambda: setattr(game, "ux_offer", True))
+        return True
+    return False
+
+
+def _near(game, at, m):
+    return math.dist((game.pos[0], game.pos[2]), (at[0], at[2])) < m
+
+
+def press(game, buttons):
+    if "A" not in buttons:
+        return False
+    if game.scene == "LostWood_Child" and game.ux_offer:
+        if game.ux_talk == 0:
+            game.ux_talk = 1
+        else:
+            game.ux_talk += 1
+            stuck = _mode() == "scrub-softlock" and game.ux_talks >= 1
+            if game.ux_talk > 4 and not stuck:
+                game.ux_talk, game.ux_talks = 0, game.ux_talks + 1
+        return True
+    if game.scene == "ForestTemple" and not game.ux_lock_open and _near(game, LOCK, 2.5):
+        keys = game.flags.get(KEYS, 0) or 0
+        o = game.other
+        if keys > 0:
+            game.flags[KEYS] = keys - 1
+            o.later(12, lambda: o.flags.__setitem__(KEYS, max(0, (o.flags.get(KEYS, 0) or 0) - 1)))
+            game.ux_lock_open = True
+        elif o.ux_lock_open and _mode() != "lock-stuck":
+            game.ux_lock_open = True
+            if _mode() == "lock-double":
+                for g in (game, o):
+                    g.later(60, lambda g=g: g.flags.__setitem__(KEYS, (g.flags.get(KEYS, 0) or 0) + 1))
+        return True
+    return False
+
+
+def actors(game):
+    out = []
+    if game.scene == "LostWood_Child":
+        own = 2 if (_mode() == "scrub-shared" and game.tag == "A") else None
+        for i, p in enumerate((REAR, FRONT)):
+            out.append({"id": 900 + i, "name": "Enemy_Scrub_Business", "kind": "enemy", "pos": list(p), "owner": own,
+                        "alive": True})
+    if game.scene == "ForestTemple" and not game.ux_lock_open:
+        out.append({"id": 950, "name": "Obj_DoorChainLock_A_01", "kind": "object", "pos": list(LOCK), "owner": None})
+    return out
+
+
+def state(game, st):
+    if not st.get("scene"):
+        return
+    if game.scene == "LostWood_Child":
+        st["event"] = game.ux_talk > 0
+        st["prompt"] = "Talk" if game.ux_offer and not game.ux_talk else None
+    if game.scene == "ForestTemple":
+        st["age"] = "adult"
