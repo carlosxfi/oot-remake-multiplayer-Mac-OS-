@@ -36,8 +36,8 @@ if (-not $lock) { Stop-Start @('Squadala is already starting in another window (
 # (this window's lines from here on into hookshot\logs\start-log.txt, the start before kept as start-log.1.txt: kit-paths.ps1
 # Start-KitStartLog; play.ps1 and update.ps1 add theirs; collect-logs.ps1 zips both)
 [void](Start-KitStartLog $kit -Fresh)
-# Players on this PC (local co-op, local-coop.ps1): said now, so a digit can be pressed while the start goes on; play.ps1
-# reads it when the game starts. Nothing waits for it.
+# Players on this PC (local co-op, local-coop.ps1): said now, so a digit 2 to 4 pressed while the start goes on makes play.ps1
+# ask the question before the game starts (C2-2: only its answer starts more games). A solo start waits for nothing.
 $localCoop = Join-Path $PSScriptRoot 'local-coop.ps1'
 if (Test-Path -LiteralPath $localCoop) { try { . $localCoop; Show-KitLocalPlayersHint $kit } catch { } }
 

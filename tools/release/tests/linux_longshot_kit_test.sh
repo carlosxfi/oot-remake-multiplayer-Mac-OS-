@@ -126,6 +126,7 @@ cp "$src/start-squadala.sh" "$src/README.txt" "$src/revert.sh" "$src/uninstall-c
 check "the kit has one start file (no start-oot-coop.sh from v0.11.4 on)" [ ! -e "$src/start-oot-coop.sh" ]
 cp "$src"/scripts/*.sh "$src/scripts/problem_report.py" "$release/kit/scripts/apply_patch.py" "$kit/scripts/"
 cp "$release/kit/coop.ini.template" "$kit/scripts/"
+cp "$release/kit/scripts/game-core-files.txt" "$kit/scripts/"   # (the one core list, as make_kit_linux.sh)
 cp "$release/kit/coop-options.ini" "$kit/data/coop-options.ini"
 printf 'server\n' >"$kit/data/server/coop_server"
 printf 'module\n' >"$kit/data/longshot/hookshot_coop.so"
@@ -299,7 +300,39 @@ printf 'changed' >"$D/game/image.bin"
 bash "$kit/scripts/build.sh" </dev/null >"$tmp/mix5.txt" 2>&1; export CODE=$?
 check 'mixed: a note without sha1 (an older Longshot) is no refusal' bash -c '[ $CODE -eq 0 ] && ! grep -q "Longshot put into this game" "$1"' _ "$tmp/mix5.txt"
 printf 'image.bin' >"$D/game/image.bin"
-rm -f "$D/game/.longshot_installed.json"
+# C2-3 (owner, 0.12.0): only the core (longshot, longshot_vk.so, image.bin) stops a start; a swapped SDL is one warning,
+# kept as <file>.yours before a build puts Longshot's back. A file whose size and mtime are the note's stat is not read.
+printf 'sdl' >"$D/game/libSDL2-2.0.so.0"
+"$py" - "$D/game" <<'PY'
+import hashlib, json, os, sys
+g = sys.argv[1]
+note = {n: {"sha1": hashlib.sha1(open(os.path.join(g, n), "rb").read()).hexdigest(), "stat": [1, 2]} for n in ("longshot", "image.bin", "longshot_vk.so", "libSDL2-2.0.so.0")}
+json.dump(note, open(os.path.join(g, ".longshot_installed.json"), "w"))
+PY
+printf "the player's own sdl" >"$D/game/libSDL2-2.0.so.0"
+: >"$log"
+bash "$kit/scripts/build.sh" </dev/null >"$tmp/mix6.txt" 2>&1; export CODE=$?
+check 'extras: a swapped SDL: the start goes on, one warning names it, nothing built' \
+    bash -c '[ $CODE -eq 0 ] && grep -q "libSDL2-2.0.so.0 in the game folder: not the file Longshot installed" "$1" && ! grep -q "Longshot put into this game" "$1" && ! grep -q "^make_game" "$2"' _ "$tmp/mix6.txt" "$log"
+check 'extras: the hash of a changed file is kept (coop-build-checked.txt)' bash -c 'grep -q "^libSDL2-2.0.so.0|" "$1/game/coop-build-checked.txt"' _ "$D"
+printf 'image.bin of another build' >"$D/game/image.bin"
+: >"$log"
+bash "$kit/scripts/build.sh" --rebuild </dev/null >"$tmp/mix7.txt" 2>&1; export CODE=$?
+check 'extras: a build keeps the player'"'"'s SDL as .yours and says so' \
+    bash -c '[ $CODE -eq 0 ] && grep -q "kept as libSDL2-2.0.so.0.yours" "$1" && [ "$(cat "$2/game/libSDL2-2.0.so.0.yours")" = "the player'"'"'s own sdl" ]' _ "$tmp/mix7.txt" "$D"
+rm -f "$D/game/libSDL2-2.0.so.0" "$D/game/libSDL2-2.0.so.0.yours" "$D/game/coop-build-checked.txt"
+printf 'NOT THE BYTES OF THE SHA1' >"$D/game/image.bin"
+"$py" - "$D/game" <<'PY'
+import json, os, sys
+g = sys.argv[1]
+st = os.stat(os.path.join(g, "image.bin"))
+json.dump({"image.bin": {"sha1": "a" * 40, "stat": [st.st_size, st.st_mtime_ns, 1, 420]}}, open(os.path.join(g, ".longshot_installed.json"), "w"))
+PY
+bash "$kit/scripts/build.sh" </dev/null >"$tmp/mix8.txt" 2>&1; export CODE=$?
+check 'stat: size and mtime as the note says: not hashed, no refusal, nothing cached' \
+    bash -c '[ $CODE -eq 0 ] && ! grep -q "Longshot put into this game" "$1" && [ ! -e "$2/game/coop-build-checked.txt" ]' _ "$tmp/mix8.txt" "$D"
+printf 'image.bin' >"$D/game/image.bin"
+rm -f "$D/game/.longshot_installed.json" "$D/game/coop-build-checked.txt"
 # (another patch name is another stamp, and the patch itself still applies)
 first=$(ls "$D/longshot/patches" | head -n 1)
 mv "$D/longshot/patches/$first" "$D/longshot/patches/0000-renamed-for-test.patch"

@@ -32,11 +32,12 @@ $script:KitLocalLinkedPattern = '^(?i)(.+\.(exe|dll|bin|idx|png)|exefs_patches\.
 $script:KitLocalDirsNeeded = @('romfs', 'mods')
 $script:KitLocalKeys = @('LICHII_COOP_PAD', 'LICHII_COOP_KEYBOARD', 'LICHII_COOP_COLOR')
 
-# How many players on this PC: 1 (just you, as before) or 2 to 4 (local co-op). Nothing waits for an answer, so a solo
-# start is not slower: Start Squadala says at its start which count it will use (Show-KitLocalPlayersHint: the last one,
-# hookshot\local-players.txt, 1 the first time) and a digit 1 to 4 pressed in its window while it checks, updates or
-# builds picks another (the last one pressed counts; it is kept for the next start). OOT_COOP_LOCAL_PLAYERS (1-4) sets it
-# outright. A start with no console (input from a file or a pipe: unattended) is always 1 player.
+# How many players on this PC: 1 (just you, as before) or 2 to 4 (local co-op). C2-2 (owner, 0.12.0): a key is never
+# the answer by itself. A solo start asks nothing and is 1 game, always. More games only after the question
+# (Read-KitLocalPlayersAnswer) is answered with 2, 3 or 4; it is asked when a digit 2 to 4 was pressed while Squadala
+# started (Show-KitLocalPlayersHint says so) or when the last answer (hookshot\local-players.txt, written only from an
+# answer) was 2 to 4. No key, Enter, N or 1 = 1 game. OOT_COOP_LOCAL_PLAYERS (1-4) sets it outright. A start with no
+# console (input from a file or a pipe: unattended) is always 1 player.
 function Get-KitLocalPlayersLast([string]$Kit) {
     $file = Join-Path $Kit 'hookshot\local-players.txt'
     try { if (Test-Path -LiteralPath $file) { $n = [int]"$(Get-Content -LiteralPath $file -TotalCount 1)".Trim(); if ($n -ge 1 -and $n -le 4) { return $n } } } catch { }
@@ -50,28 +51,61 @@ function Test-KitLocalConsole {
 function Show-KitLocalPlayersHint([string]$Kit) {
     if ("$env:OOT_COOP_LOCAL_PLAYERS".Trim() -match '^[1-4]$' -or -not (Test-KitLocalConsole)) { return }
     $last = Get-KitLocalPlayersLast $Kit
-    $now = if ($last -eq 1) { '1 (just you)' } else { "$last (local co-op: a game and a controller each)" }
-    Write-Host "Players on this PC: $now. Press 1, 2, 3 or 4 in this window while Squadala starts to change it." -ForegroundColor Cyan
+    if ($last -gt 1) { Write-Host "Local co-op: last time $last players on this PC. Squadala asks again before it starts more than one game." -ForegroundColor Cyan }
+    else { Write-Host 'Local co-op (2 to 4 players on this PC): press 2, 3 or 4 in this window while Squadala starts; it asks before it starts more than one game.' -ForegroundColor Cyan }
 }
 
-function Read-KitLocalPlayers([string]$Kit) {
+# The question (the kit's rule for a timed question, as Read-KitCharacterSelectAnswer: its line says what each key does
+# and what no key does, with the seconds left; one line after says what happened). 2, 3 or 4 = that many games; 1, N,
+# Enter = 1; no key in $Seconds = 1 and nothing written (no answer). Keys pressed before it are thrown away first, so the
+# digit that made it ask never answers it. $ReadKey: tests (a scriptblock giving a key object or $null). Returns the
+# count and whether it was answered: @{ Players; Answered }.
+function Read-KitLocalPlayersAnswer([int]$Last = 1, [int]$Seconds = 15, [scriptblock]$ReadKey = $null) {
+    $q = 'Players on this PC: press 2, 3 or 4 for local co-op (a game and a controller each), 1 or N for just you'
+    Write-Host ''
+    if ($Last -gt 1) { Write-Host "Last time: $Last players on this PC." }
+    if (-not $ReadKey) { try { while ([Console]::KeyAvailable) { [void][Console]::ReadKey($true) } } catch { } }
+    $end = (Get-Date).AddSeconds($Seconds)
+    $left = -1
+    while ((Get-Date) -lt $end) {
+        $now = [int][Math]::Ceiling(($end - (Get-Date)).TotalSeconds)
+        if ($now -ne $left) { $left = $now; Write-Host -NoNewline "`r$q (no key in $left s: just you)  " }
+        $key = if ($ReadKey) { & $ReadKey } elseif ([Console]::KeyAvailable) { [Console]::ReadKey($true) } else { $null }
+        if ($key) {
+            $c = "$($key.KeyChar)"
+            if ($c -match '^[2-4]$') { Write-Host $c; return @{ Players = [int]$c; Answered = $true } }
+            if ($c -eq '1' -or "$($key.Key)" -eq 'N' -or "$($key.Key)" -eq 'Enter') { Write-Host '1'; return @{ Players = 1; Answered = $true } }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    Write-Host 'no key'
+    return @{ Players = 1; Answered = $false }
+}
+
+# $ReadKey and $Pressed (the characters pressed while the start ran): tests only.
+function Read-KitLocalPlayers([string]$Kit, [int]$Seconds = 15, [scriptblock]$ReadKey = $null, [string[]]$Pressed = @()) {
     $given = "$env:OOT_COOP_LOCAL_PLAYERS".Trim()
     if ($given -match '^[1-4]$') { return [int]$given }
-    if (-not (Test-KitLocalConsole)) { return 1 }
+    if (-not $ReadKey -and -not (Test-KitLocalConsole)) { return 1 }
     $last = Get-KitLocalPlayersLast $Kit
-    $answer = $last
-    try {
-        while ([Console]::KeyAvailable) {   # (only what was pressed already: no wait)
-            $k = [Console]::ReadKey($true)
-            if ("$($k.KeyChar)" -match '^[1-4]$') { $answer = [int]"$($k.KeyChar)" }
-        }
-    } catch { }
-    if ($answer -ne $last) {
+    $asked = $last -gt 1
+    if (-not $ReadKey) {
+        try {
+            while ([Console]::KeyAvailable) {   # (only what was pressed already: no wait; a digit only makes it ask)
+                $k = [Console]::ReadKey($true)
+                if ("$($k.KeyChar)" -match '^[2-4]$') { $asked = $true }
+            }
+        } catch { }
+    } elseif (@($Pressed | Where-Object { "$_" -match '^[2-4]$' }).Count) { $asked = $true }   # (tests: keys pressed during the start)
+    if (-not $asked) { return 1 }
+    $a = Read-KitLocalPlayersAnswer $last $Seconds $ReadKey
+    if ($a.Answered) {
         $file = Join-Path $Kit 'hookshot\local-players.txt'
-        try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null; [System.IO.File]::WriteAllText($file, "$answer`r`n") } catch { }
+        try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null; [System.IO.File]::WriteAllText($file, "$($a.Players)`r`n") } catch { }
     }
-    if ($answer -gt 1) { Write-Host "Players on this PC: $answer. (Press 1 while Squadala starts next time for just you.)" }
-    return $answer
+    if ($a.Players -gt 1) { Write-Host "Starting $($a.Players) games (local co-op). Next start: press 1 or N at the question for just you." }
+    else { Write-Host 'Starting 1 game (just you).' }
+    return $a.Players
 }
 
 # A UDP port on 127.0.0.1 nobody holds, from $From up (the session's; a Host.bat server may hold the kit's 27510).
