@@ -499,6 +499,9 @@ void FollowBoots(const std::map<std::uint8_t, CoopColors::TunicCopy>& copies) {
                 if (p.part == static_cast<std::uint8_t>(Part::boots)) {
                     w.boots = p.colour;
                 }
+                if (p.part == static_cast<std::uint8_t>(Part::link_leather)) {
+                    w.leather = p.colour;   // (leather-link)
+                }
             }
         }
         others.push_back(w);

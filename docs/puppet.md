@@ -969,6 +969,22 @@ equipment under Link, its Hair row as in 0.11.12.
   vests (`Mt_Vest_Armor_Adult_*`, those tunics' own models): they keep their tunic's colour (the mod's palette never
   reached the armour either). As the Cap trim, a player past the exact tunic copies (`TunicCopy::exact` false) keeps
   the pack's nearest copy, vest included.
+- **The leather and the boots (part 28, branch `leather-link`).** On Link the mod's Clothing Color 3 is his leather
+  palette's materials (read from Character Select's `Player_Adult` / `Player_Child` models: the materials whose textures
+  end in the leather palette): the child's `Mt_Fur_Boots`, `Mt_Leather`, `Mt_Metal` and `Mt_ShoulderBelt`, all on ONE
+  texture `Mt_Leather_Player_Child_Alb` (boots, belts, buckles, shoulder belt); the adult's `Mt_Boots*` on
+  `Mt_Boots_Player_Adult_Alb`, `Mt_Glove*` on `Mt_Glove_Player_Adult_Alb` and `Mt_Leater_Upper*` on
+  `Mt_Leater_Upper_Player_Adult_Alb`. The leather owns those four (`Owners`): set, `Painted` gives every rule of them the
+  leather's colour; unset, the boots part (15) paints the two boots textures and the gloves and upper leather keep the
+  game's, byte for byte 0.11.12. The Hover and Iron Boots are items: the boots part's only. The two adult textures are
+  gear textures now (`look_live.GEAR`, tones brown and red: gloves 84% / 11%, upper leather 73% / 24% of the dump's end
+  colours). The gear painting's name gets `.leather-RRGGBB` last when set (unset: 0.11.12's name). The puppets: the
+  gloves and upper leather get a copy per tunic colour as the boots (`look_items.BODY_BOOTS`, `PM_Glove_...`), so your
+  Leather never paints a puppet; the fourth wardrobe paints each colour's four copies in its wearer's boots and Leather
+  colours (`BootsPaint`, name `boots.MFFD700LC00000...`: `L` and the leather after the boots). A pack made before it
+  names the game's gloves and upper leather in the puppets' models, so with it your Leather shows on every adult
+  puppet's gloves too: make the puppet pack again. Never the mod's palette: the puppets' models have none, and
+  binding a palette texture would hide the painted one.
 
 ### Gear colours on the puppets
 

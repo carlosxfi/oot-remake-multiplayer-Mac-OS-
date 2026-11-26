@@ -273,15 +273,23 @@ const std::vector<std::string>& BodyBoots();
 std::optional<char> LetterOf(std::string_view tunic);
 // A body boots texture's name in colour `letter`'s models; "" if `name` is not one.
 std::string BootsName(const std::string& name, char letter);
-// Each colour's boots colour (0xRRGGBB) by its letter; a letter not in it
-// keeps the game's colour.
-using Wearers = std::map<char, std::uint32_t>;
+// What a colour's body leather copies are painted in: its wearer's boots
+// colour and, leather-link, Leather colour (part 28, the owner of those
+// textures when set: Owners); nothing: the game's.
+struct BootsPaint {
+    std::optional<std::uint32_t> boots;
+    std::optional<std::uint32_t> leather = std::nullopt;   // (leather-link: a default: {boots} stays whole, -Wmissing-field-initializers)
+    bool operator==(const BootsPaint&) const = default;
+};
+// Each colour's paint by its letter; a letter not in it keeps the game's colour.
+using Wearers = std::map<char, BootsPaint>;
 // Who paints which colour's boots: your own Link first (`own`: the letter
 // of the model he wears, and his boots colour), then the others in the
 // order given (the first of a letter has it; nothing: the game's colour).
 struct Wearer {
     std::optional<char> letter;
     std::optional<std::uint32_t> boots;
+    std::optional<std::uint32_t> leather = std::nullopt;   // (leather-link: part 28; a default, as BootsPaint::leather)
 };
 Wearers Assign(const Wearer& own, const std::vector<Wearer>& others);
 // The boots wardrobe's base (every colour's copies in the game's colour) and

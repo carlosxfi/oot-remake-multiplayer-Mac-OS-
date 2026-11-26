@@ -64,6 +64,7 @@ class FakeGame:
         self.menu_pause, self.title_until, self.at_title = False, None, False
         self.head, self.ocarina, self.flags, self.pending = None, False, {GATE: 0}, []
         self.gear_hidden = False   # (gear-link: part 29 worn by this game's player)
+        self.leather, self.boots = None, None   # (leather-link: parts 28 and 15 worn by this game's player, RRGGBB)
         self.other = None
         # (selftests of the lane's boot proof, Pair.boot_ready: BT_FAKE_BOOT_EVENT=B leaves B where the save puts it,
         # Graveyard_Child, in an event a warp ends (test-bridge-pilot-fa63e90f r1); BT_FAKE_BOOT_STUCK=B the same but
@@ -309,6 +310,19 @@ class FakeGame:
                 what = "hidden" if hide else "shown again"
                 self.later(2, lambda: self.say("coop: characters: equipment %s on your model (1 piece(s))" % what))
                 o.later(10, lambda: o.say("coop: characters: equipment %s on a puppet (1 piece(s))" % what))
+        elif w[0] == "menu" and len(w) == 3 and w[1] == "look" and w[2].split("=")[0] in ("link_leather", "boots"):
+            # (leather-link: the gear wardrobe's and the puppets' boots wardrobe's lines, hookshot coop_look_tunic.cpp /
+            # coop_look_live.cpp FollowBoots; names as CoopLookParts::Name / BootsPaintingName)
+            key, value = w[2].split("=", 1)
+            colour = None if value == "none" else value.lstrip("#").upper()
+            setattr(self, "leather" if key == "link_leather" else "boots", colour)
+            gear = "gear" if not (self.leather or self.boots) else "gear.%s%s" % (
+                self.boots or "-", ".leather-" + self.leather if self.leather else "")
+            boots = "boots" if not (self.leather or self.boots) else "boots.G%s%s" % (
+                self.boots or "", "L" + self.leather if self.leather else "")
+            if gear != "gear":
+                self.later(2, lambda: self.say("coop: look: your Link's gear is %s now (1 texture(s) drawn)" % gear))
+            o.later(10, lambda: o.say("coop: look: the puppets' boots are %s now" % boots))
         elif w[0] == "chat" and w[1:] == ["/teleport", "B"]:
             self.later(30, lambda: setattr(self, "pos", [o.pos[0] + 1.0, o.pos[1], o.pos[2]]))
 
@@ -321,6 +335,12 @@ class FakeGame:
         d.rectangle([150 + self.frame % 3, 50, 170, 70], fill=(240, 240, 240) if self.head else (40, 90, 40))
         if not (self.gear_hidden or self.other.gear_hidden):   # (gear-link: a "sword" while A's gear is shown)
             d.rectangle([190, 80, 196, 130], fill=(170, 170, 190))
+        # (leather-link: a player's leather/boots, on its own Link and its puppet in the other game: A's first, else
+        # B's, as test_leather_without_character_select has the game without the mod (B) choose)
+        a = self if self.tag == "A" else self.other
+        shown = a.leather or a.boots or a.other.leather or a.other.boots
+        if shown:
+            d.rectangle([150, 140, 172, 156], fill=tuple(int(shown[i:i + 2], 16) for i in (0, 2, 4)))
         im.save(path)
 
     # -- socket -----------------------------------------------------------------------------------------------
