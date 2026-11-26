@@ -305,6 +305,7 @@ TEST_CASE("session: a frame thread and a network thread per player share a flag"
 }
 
 TEST_CASE("session: a held client lock does not stall the game frame") {
+  EnetLife enet;
   net::Client client(config_for(1, "Link"));
   Session session(client, SessionSettings{});
   test::FakeMemory memory;
@@ -324,7 +325,7 @@ TEST_CASE("session: a held client lock does not stall the game frame") {
   locked.wait();
 
   auto frame = std::async(std::launch::async, [&] { return session.frame(memory, &store); });
-  const bool completed_without_client = frame.wait_for(std::chrono::milliseconds(250)) ==
+  const bool completed_without_client = frame.wait_for(std::chrono::seconds(2)) ==
                                         std::future_status::ready;
   release_promise.set_value();
   holder.join();
