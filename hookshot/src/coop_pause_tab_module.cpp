@@ -38,6 +38,7 @@
 #include "coop/protocol/messages.hpp"
 #include "coop_lan.h"
 #include "coop_map_page.h"
+#include "coop_native_ui.h"   // ScreenLive: the strip calls into the pages' screen only while it is live
 #include "coop_lan_net.h"
 #include "coop_mod_screens.h"
 #include "coop_pause.h"
@@ -3952,7 +3953,11 @@ void OnScreen(void* ctx, std::uint64_t screen) noexcept {
         Facts f;
         f.kind = KindOf(vtable - base);
         CensusUpdate(screen, vtable - base);   // (the - menu research: only with COOP_TEST_SCREEN_PROBE=1)
-        SnailScreen(ctx, screen);              // (Character Select's Customize screen: co-op's customization in it)
+        // party-hud-crash-c126: this runs in `screen`'s own update (patch 0030): `screen` is live by definition. The
+        // one call into ANOTHER screen (the strip's update into the pages' g_pages_layout, below) asks
+        // CoopNativeUi::ScreenLive for the pages' screen first. (No whole-update gate on the scene load: the game's
+        // Sequence_IsLoadingBanc is on through the whole title, where Character Select's Customize screen runs.)
+        SnailScreen(ctx, screen);             // (Character Select's Customize screen: co-op's customization in it)
         if (vtable - base == kMapMenuVtable && ctx != nullptr && CanCall()) FollowMapUnder(ctx, screen);
         if (f.kind == Kind::kOther) {
             // (native - tabs: co-op's own screen CoopMenu_00, our page in it)
@@ -4046,6 +4051,7 @@ void OnScreen(void* ctx, std::uint64_t screen) noexcept {
             if (d.any() && calls) {
                 if (f.kind == Kind::kPages) ApplyPages(ctx, f, d);
                 if (f.kind == Kind::kStrip && d.set_page && g_pages_screen != 0 && g_pages_ok &&
+                    CoopNativeUi::ScreenLive(g_pages_screen) &&
                     Read<std::uint64_t>(g_pages_screen + kScreenLayout) == g_pages_layout) {
                     early_live = d.page_shown;
                     Facts pages;
@@ -4105,7 +4111,9 @@ void OnScreen(void* ctx, std::uint64_t screen) noexcept {
                 CoopRoomList::Look(CoopRoomList::Viewer::kFindAGame, false, NowMs(), {});
             }
         }
-        if (early_live && calls && LiveDue(g_pages_gen)) LiveRows(ctx, g_pages_layout, g_pages_gen, ViewNow(ViewShown()));
+        if (early_live && calls && LiveDue(g_pages_gen) && CoopNativeUi::ScreenLive(g_pages_screen)) {
+            LiveRows(ctx, g_pages_layout, g_pages_gen, ViewNow(ViewShown()));   // (another screen's layout: live only)
+        }
         if (!now_shown) g_confirm_until = 0;
         // (trace) A tester saw the screen stop for a moment as the Multiplayer page opened: an update of ours that
         // took long is logged, with the part under our lock (the page's calls) and the rest (the rows' words).

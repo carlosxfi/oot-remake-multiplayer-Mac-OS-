@@ -96,6 +96,41 @@ class FindMonitor(unittest.TestCase):
     def test_no_monitors_at_all(self):
         with self.assertRaises(pl.PlacementError):
             pl.find_monitor([], "DISPLAY2")
+        with self.assertRaises(pl.PlacementError):
+            pl.choose_monitor([], None, {})
+
+
+class ChooseMonitor(unittest.TestCase):
+    """The owner's order (2026-11-26, as coord's offline/lib/test-display.ps1): the asked name if connected, else
+    OOT_TEST_DISPLAY if connected, else DISPLAY2 if connected, else the primary; skipped names are in the note."""
+
+    def test_stale_env_goes_to_display2_when_it_is_connected(self):
+        mon = pl.choose_monitor(MONS, None, {pl.ENV: "DISPLAY9"})
+        self.assertEqual(mon["name"], "\\\\.\\DISPLAY2")
+        self.assertIn("DISPLAY9", mon["note"])
+        self.assertNotIn("primary monitor", mon["note"])
+
+    def test_stale_arg_goes_to_a_connected_env(self):
+        mon = pl.choose_monitor(MONS, "DISPLAY9", {pl.ENV: "DISPLAY3"})
+        self.assertEqual(mon["name"], "\\\\.\\DISPLAY3")
+        self.assertIn("DISPLAY9", mon["note"])
+
+    def test_nothing_connected_of_the_three_is_the_primary(self):
+        one = [MONS[0]]
+        mon = pl.choose_monitor(one, "DISPLAY8", {pl.ENV: "DISPLAY9"})
+        self.assertEqual(mon["name"], "\\\\.\\DISPLAY1")
+        for n in ("DISPLAY8", "DISPLAY9", "DISPLAY2", "primary monitor"):
+            self.assertIn(n, mon["note"])
+
+    def test_connected_choices_have_no_note(self):
+        self.assertNotIn("note", pl.choose_monitor(MONS, None, {}))                       # the default DISPLAY2
+        self.assertNotIn("note", pl.choose_monitor(MONS, None, {pl.ENV: "DISPLAY3"}))
+        self.assertNotIn("note", pl.choose_monitor([MONS[0]], "primary", {}))
+        self.assertEqual(pl.choose_monitor(MONS, "display3", {pl.ENV: "DISPLAY1"})["name"], "\\\\.\\DISPLAY3")
+
+    def test_the_same_missing_name_twice_is_named_once(self):
+        mon = pl.choose_monitor([MONS[0]], "DISPLAY2", {pl.ENV: "\\\\.\\DISPLAY2"})
+        self.assertEqual(mon["note"].count("DISPLAY2"), 1)
 
 
 class Layout(unittest.TestCase):
