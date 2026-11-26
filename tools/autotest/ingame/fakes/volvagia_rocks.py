@@ -8,6 +8,8 @@ move) plus, from 300 frames after the arrival, one rock every 40 frames falling 
   vr-one-target   both games drop their rocks at A's Link (one target for both: the bug the row looks for)
   vr-asleep       the pool never wakes: no rock falls (the rocks lines still come)
   vr-lava         B's place lands it 10 m down (not the floor): SETUP-FAIL 'stand apart'
+  vr-busy         B has no fresh Link sample for 90 frames after its place (an attack/landing): past the 60-frame
+                  settle, so one read would SETUP-FAIL; the set-up must step until both are in play
 """
 import os
 
@@ -42,6 +44,8 @@ def act(game, words):
         game.pos = [float(v) for v in words[1:4]]
         if broken() == "vr-lava" and game.tag == "B":
             game.pos[1] -= 10.0
+        if broken() == "vr-busy" and game.tag == "B":
+            game.stale_until = game.frame + 90
         game.say("coop: test place %s %s %s: done" % tuple(words[1:4]))
         return True
     return False

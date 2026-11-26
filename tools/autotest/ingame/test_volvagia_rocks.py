@@ -93,10 +93,14 @@ def stand_apart(pair):
         pair.step_both(2)
         pair.expect_log("B", r"coop: test place .*: done", max_frames=30)
         pair.step_both(60)
-        a, b = pair.state("A"), pair.state("B")
+
+        def both_in_stage():                  # stepped, never one read (B #139 one-read class; review-rows-c130-2 16:31):
+            sts = {x: pair.state(x) for x in ("A", "B")}   # a sample in an attack/landing/event is not ready YET
+            ok = all(pair.in_play(s) and (s.get("scene") or "").lower() == STAGE.lower() for s in sts.values())
+            return sts if ok else None
+        sts = pair.until("both games in play in %s after the place" % STAGE, both_in_stage, max_frames=P.READY_FRAMES)
+        a, b = sts["A"], sts["B"]
         for x, s in (("A", a), ("B", b)):
-            assert pair.in_play(s) and (s.get("scene") or "").lower() == STAGE.lower(), \
-                "%s not in play in %s (%s, %s)" % (x, STAGE, s.get("scene"), s.get("not_ready"))
             assert abs(s["pos"][1] - START[1]) <= FLOOR_DY, "%s not on the floor: y %.2f (start %.2f)" % (
                 x, s["pos"][1], START[1])
         d = xz(a["pos"], b["pos"])

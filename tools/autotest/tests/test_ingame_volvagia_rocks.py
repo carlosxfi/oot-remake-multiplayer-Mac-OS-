@@ -51,6 +51,13 @@ class VolvagiaRocks(unittest.TestCase):
         self.assertEqual(r, {NAME: "SETUP-FAIL"}, p.stdout[-3000:])
         self.assertIn("stand apart", p.stdout, p.stdout[-3000:])
 
+    def test_not_ready_sample_after_place_is_stepped_not_failed(self):
+        """B not ready for 90 frames after its place (past the 60-frame settle): stepped until in play, never judged
+        from one read (B #139 one-read class; review-rows-c130-2 16:31): the run goes on to the same NO-REF."""
+        p, r = self.run_file(self.OBJ, env={"BT_FAKE_BROKEN": "vr-busy"})
+        self.assertEqual(r, {NAME: "NO-REF"}, p.stdout[-3000:])
+        self.assertNotIn("stand apart", p.stdout, p.stdout[-3000:])
+
     def test_budget_is_built_from_its_parts(self):
         """The budget holds the arrival ceiling + set-ups + ONE rocks wait + the sampling cap (a637fe404's cause: a fixed
         budget that a lane-2 arrival outran)."""
