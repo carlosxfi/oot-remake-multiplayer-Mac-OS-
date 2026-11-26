@@ -24,6 +24,7 @@ constexpr std::uint64_t kBlock = 0x9a000000, kPanes = 0x9b000000, kAnims = 0x9c0
 constexpr std::uint64_t kParts = 0x9d000000, kBoxes = 0x9e000000;   // our parts' layouts, their text panes
 constexpr std::uint64_t kAttrs = 0x1234;                             // a text pane's own message attributes
 constexpr std::uint64_t kSource = 0x9f000000, kLive = 0xa0000000;   // the game's heart part layout; our run-time memory
+constexpr std::uint64_t kLabelSource = 0x9f800000;                   // the pack's text part layout (its name lines)
 
 struct FakeGame final : party::Game {
     std::map<std::uint64_t, std::uint8_t> mem;
@@ -44,19 +45,32 @@ struct FakeGame final : party::Game {
     std::uint64_t next_new = kLive;
     std::map<std::uint64_t, std::uint64_t> clone_roots;   // clone root -> clone
     std::map<std::uint64_t, std::string> clone_panes;      // a pane in a clone -> its name
+    std::map<std::uint64_t, std::string> clone_names;      // clone root -> the name it was made with
+    std::map<std::uint64_t, std::uint64_t> clone_sources;  // clone root -> the part layout it was made from
     std::map<std::uint64_t, int> heart_set;                // controller -> its last state (f_833dca10)
     std::map<std::uint64_t, int> gauge_frame;              // part heart -> its last frame (f_833dcb60)
     int made = 0, attached = 0, unlinked = 0;
     bool Live(std::uint64_t f, const std::array<std::uint64_t, 5>& x, std::uint64_t& out) {
         out = 0;
         if (f == At(party::addr::kNew)) return out = next_new, next_new += 0x10000, true;
-        if (f == At(party::addr::kClonePart)) return ++made, clone_roots[x[0] + 0x1000] = x[0], true;
+        if (f == At(party::addr::kClonePart)) {
+            clone_names[x[0] + 0x1000] = Str(x[2]);
+            clone_sources[x[0] + 0x1000] = x[1];
+            return ++made, clone_roots[x[0] + 0x1000] = x[0], true;
+        }
         if (f == At(party::addr::kPaneTable) && clone_roots.count(x[0] - 0x40 + 0x1000)) return out = x[0] - 0x40 + 0x1000, true;
         if (f == At(party::addr::kTablePane) && clone_roots.count(x[0])) {
             const std::string name = Str(x[1]);
             for (const auto& [p, n] : clone_panes) if (n == name && p / 0x10000 == x[0] / 0x10000) return out = p, true;
             out = x[0] + 0x100 * (clone_panes.size() % 200 + 1);
             clone_panes[out] = name;
+            if (clone_sources[x[0]] == kLabelSource && (name == "T_Text_00" || name == "T_Text_01")) {
+                // (a text pane of a cloned name line: set as the pack's own, under the clone's name)
+                boxes[out] = clone_names[x[0]] + "/" + name;
+                const std::uint32_t flags = party::addr::kTextPaneKind << 22;
+                Write(out + party::addr::kPaneFlags, &flags, sizeof flags);
+                Put(out + party::addr::kPaneMsgAttrs, kAttrs);
+            }
             return true;
         }
         if (f == At(party::addr::kAttach)) return ++attached, true;
@@ -113,6 +127,9 @@ struct FakeGame final : party::Game {
                 if (name.rfind(slotted, 0) == 0 && std::stoi(name.substr(n)) >= pack_slots) return 0;
             }
             if (panes.count(name) == 0) panes[name] = kPanes + 0x1000 * panes.size();
+            for (const char* line : {"Pa_CoopName_", "Pa_CoopMore_", "Pa_CoopSelf_"}) {   // (PaEnemyLocation_00)
+                if (name.rfind(line, 0) == 0) Put(panes[name] + party::addr::kPartLayout, kLabelSource);
+            }
             return panes[name];
         }
         if (f == At(party::addr::kAnimFind)) {
@@ -561,9 +578,10 @@ TEST_CASE("party hud: no pack: a run-time gauge per player, none in solo, forgot
     CHECK(game.made == 0);
     const std::vector<party::Block> two = {{"A", Quarters(10, 12)}, {"B", Quarters(16, 16), true}};
     CHECK(hud.Step(game, two, std::nullopt, &log));
-    CHECK(game.made == 2);
+    CHECK(game.made == 2);   // (no pack: no text part to clone, hearts only)
     CHECK(game.attached == 2);
     CHECK(game.unlinked == 2);   // (out of the animation list: it would show Link's life)
+    CHECK(game.texts.empty());
     // A: 3 hearts, 10 quarters: two full, the third empty under the part heart at 2 quarters; the rest none.
     const std::uint64_t ga = kLive + 0x10000;   // (the first gauge: after its clone)
     CHECK(game.heart_set[ga + 0x2000] == 2);
@@ -573,8 +591,13 @@ TEST_CASE("party hud: no pack: a run-time gauge per player, none in solo, forgot
     CHECK(game.heart_set[ga + 0x2000 + 0x100 * party::kHearts] == 2);
     CHECK(game.gauge_frame[ga + 0x2000 + 0x100 * party::kHearts] == 50);
     bool said = false;
-    for (const auto& l : log) said = said || l.find("run-time gauge 1: made") != std::string::npos;
+    bool no_names = false;
+    for (const auto& l : log) {
+        said = said || l.find("run-time gauge 1: made") != std::string::npos;
+        no_names = no_names || l.find("no run-time name lines (no text part of ours in the HUD)") != std::string::npos;
+    }
     CHECK(said);
+    CHECK(no_names);
     // Back to solo: hidden, nothing new made.
     CHECK(hud.Step(game, {}, std::nullopt, &log));
     CHECK(game.shown[kLive + 0x1000] == 0);
@@ -592,8 +615,25 @@ TEST_CASE("party hud: the pack's slots first, run-time gauges past them, no +N w
     party::Hud hud;
     std::vector<party::Block> five;
     for (const char* n : {"A", "B", "C", "D", "E"}) five.push_back({n, Quarters(12, 12)});
-    CHECK(hud.Step(game, five, std::nullopt));
-    CHECK(game.made == 2);   // (3 in the pack)
+    std::vector<std::string> log;
+    CHECK(hud.Step(game, five, std::nullopt, &log));
+    CHECK(game.made == 4);   // (3 in the pack; past them a gauge and a name line each)
     CHECK(game.Shown(HeartName(2, 0)));
     CHECK_FALSE(game.Shown("Pa_CoopMore_0"));
+    // Their names on the clones of the pack's text part, as the pack's own lines (0.11.12 had every shown name).
+    CHECK(game.texts["Pa_CoopLiveName_3/T_Text_00"] == "D");
+    CHECK(game.texts["Pa_CoopLiveName_3/T_Text_01"] == "D");
+    CHECK(game.texts["Pa_CoopLiveName_4/T_Text_00"] == "E");
+    std::uint64_t root = 0;
+    for (const auto& [r, n] : game.clone_names) root = n == "Pa_CoopLiveName_3" ? r : root;
+    REQUIRE(root != 0);
+    CHECK(game.clone_sources[root] == kLabelSource);
+    CHECK(game.shown[root] == 1);
+    bool said = false;
+    for (const auto& l : log) said = said || l.find("run-time name line 3: made") != std::string::npos;
+    CHECK(said);
+    // Fewer players: the run-time lines hide with their hearts.
+    CHECK(hud.Step(game, {five[0], five[1], five[2]}, std::nullopt));
+    CHECK(game.shown[root] == 0);
+    CHECK(game.made == 4);
 }

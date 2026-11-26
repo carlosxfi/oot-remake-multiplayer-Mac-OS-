@@ -16,7 +16,8 @@ constexpr std::size_t kTextBytes = 200;                   // a line's text at mo
 constexpr std::size_t kLineBytes = sizeof(CoopNativeUi::Ref) + kTextBytes + 8;
 constexpr std::size_t kOutAt = kNameBytes + kLineBytes * (kSlots + 2);   // block+: the path lookup's layout out
 constexpr std::size_t kNamesAt = kOutAt + 16;             // block+: the run-time gauges' names (32 bytes each)
-constexpr std::size_t kBlockBytes = kNamesAt + 32 * kSlots;
+constexpr std::size_t kLiveNamesAt = kNamesAt + 32 * kSlots;   // block+: their name lines' names (32 bytes each)
+constexpr std::size_t kBlockBytes = kLiveNamesAt + 32 * kSlots;
 constexpr std::size_t kMore = kSlots, kSelf = kSlots + 1;   // labels_ after the players' lines
 
 
@@ -238,6 +239,18 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
     all = slots_ > 0;
     labels_[kMore].pane = pane(LabelPart(kMore));
     labels_[kSelf].pane = pane(LabelPart(kSelf));   // (an older pack without it: no own line, the hearts still show)
+    // The run-time slots' name lines: the pack's line of the game's text (PaEnemyLocation_00), made as their hearts
+    // are. The game's own HUD has no text part (PlayerStatus_00's parts: hearts, magic, buttons, the stone): without
+    // the pack a run-time slot shows its hearts only.
+    name_part_ = 0;
+    for (const Label& l : labels_) {
+        if (name_part_ == 0 && l.pane != 0) ReadValue(game, l.pane + addr::kPartLayout, name_part_);
+    }
+    if (parent_ == 0) name_part_ = 0;
+    if (log && gauge_part_ != 0) {
+        log->push_back(std::string(kSay) + (name_part_ != 0 ? "run-time name lines can be made (the pack's text part)"
+                                                            : "no run-time name lines (no text part of ours in the HUD)"));
+    }
     // Each line's two text panes, found once per layout; the run's log says for each one whether it was found.
     for (std::size_t i = 0; i < labels_.size(); ++i) {
         Label& l = labels_[i];
@@ -349,6 +362,7 @@ bool Hud::MakeLive(Game& game, int slot, std::vector<std::string>* log) {
     }
     if (v.part2_pane != 0) game.Call(game.At(addr::kPaneShow), {v.part2_pane, 0, 0, 0, 0});
     HideLive(game, v);
+    MakeLiveName(game, slot, log);
     if (log) {
         char b[160];
         std::snprintf(b, sizeof b, "made (clone %#llx, root %#llx, gauge %#llx, first heart at %.0f, %.0f, part heart last frame %d)",
@@ -357,6 +371,52 @@ bool Hud::MakeLive(Game& game, int slot, std::vector<std::string>* log) {
         say(b);
     }
     return true;
+}
+
+// A run-time slot's name line: the pack's text part cloned as the gauge is, under N_ScaleL_00, its two text panes
+// found in the clone; then it is the slot's line (labels_), set, placed and hidden as the pack's own lines. No pack (or
+// the clone fails): no line, the hearts still show; the log says which.
+void Hud::MakeLiveName(Game& game, int slot, std::vector<std::string>* log) {
+    if (name_part_ == 0 || block_ == 0) return;
+    Label& l = labels_[static_cast<std::size_t>(slot)];
+    const auto say = [&](const std::string& what) {
+        if (log) log->push_back(std::string(kSay) + "run-time name line " + std::to_string(slot) + ": " + what);
+    };
+    const auto call = [&](std::uint64_t f, std::array<std::uint64_t, 5> x) -> std::uint64_t {
+        const auto r = game.Call(game.At(f), x);
+        return r ? *r : 0;
+    };
+    char name[32];
+    std::snprintf(name, sizeof name, "Pa_CoopLiveName_%d", slot);
+    const std::uint64_t name_at = block_ + kLiveNamesAt + 32 * static_cast<std::uint64_t>(slot);
+    if (!game.Write(name_at, name, std::strlen(name) + 1)) return say("name not written");
+    const std::uint64_t obj = call(addr::kNew, {8, addr::kCloneBytes, 0, 0, 0});
+    if (obj == 0) return say("no memory");
+    if (!game.Call(game.At(addr::kClonePart), {obj, name_part_, name_at, 0, 0})) return say("clone failed");
+    const std::uint64_t root = call(addr::kPaneTable, {obj + 0x40, 0, 0, 0, 0});
+    std::uint64_t owner = 0;
+    if (root == 0 || !ReadValue(game, parent_ + addr::kParentOwner, owner)) return say("clone has no root pane");
+    game.Call(game.At(addr::kAttach), {owner, root, parent_, 0, 0});
+    game.Call(game.At(addr::kPaneShow), {root, 0, 0, 0, 0});
+    int found = 0;
+    for (std::size_t k = 0; k < l.boxes.size(); ++k) {
+        const std::uint64_t n = Name(game, k == 0 ? "T_Text_00" : "T_Text_01");
+        const std::uint64_t box = n == 0 ? 0 : call(addr::kTablePane, {root, n, 0, 0, 0});
+        std::uint32_t flags = 0;
+        const bool text = box != 0 && ReadValue(game, box + addr::kPaneFlags, flags) &&
+                          ((flags >> 22) & 0xfu) == addr::kTextPaneKind;
+        l.boxes[k] = text ? box : 0;
+        found += text;
+    }
+    if (found == 0) return say("made but no text pane in it: not shown");
+    const float scale[2] = {kScale, kScale};   // (party_hud.py LABEL_SCALE, as the pack's lines)
+    game.Write(root + addr::kPaneScale, scale, sizeof scale);
+    l.pane = root;
+    l.shown = 0;
+    char b[96];
+    std::snprintf(b, sizeof b, "made (clone %#llx, root %#llx, %d text pane(s))", static_cast<unsigned long long>(obj),
+                  static_cast<unsigned long long>(root), found);
+    say(b);
 }
 
 void Hud::HideLive(Game& game, Live& v) {
@@ -539,7 +599,10 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
         const bool live = s >= slots_;
         if (static_cast<std::size_t>(s) < shown && live && !MakeLive(game, s, log)) {
             // (no run-time gauge: this player and the rest are left out, "+N" counts them below)
-            for (int r = s; r < kSlots; ++r) HideLive(game, live_[static_cast<std::size_t>(r)]);
+            for (int r = s; r < kSlots; ++r) {
+                HideLive(game, live_[static_cast<std::size_t>(r)]);
+                if (r >= slots_) Show(game, labels_[static_cast<std::size_t>(r)], false);
+            }
             shown_now = static_cast<std::size_t>(s);
             break;
         }
@@ -565,7 +628,8 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
         const std::uint64_t glow_for = glow_last > 0 ? static_cast<std::uint64_t>(glow_last) * 1000 / 30 + 1 : kGlowMs;
         if (glow.heart >= 0 && glow_ms > glow_for) glow.heart = -1;
         const bool pinch = LowLife(life, plan.hearts * 4);
-        if (live) {   // (no line of the game's text in a run-time slot yet: only the hearts)
+        if (live) {   // (its name line: the pack's text part cloned, none without the pack)
+            SetLabel(game, static_cast<std::size_t>(s), b.text, {kLabelX, top - kLabelHeight / 2.0f}, alpha, log);
             StepLive(game, s, plan, top, alpha);
             top -= BlockHeight(plan.hearts);
             continue;

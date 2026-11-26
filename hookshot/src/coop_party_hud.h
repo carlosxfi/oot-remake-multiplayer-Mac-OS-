@@ -242,9 +242,11 @@ private:
     bool MakeLive(Game& game, int slot, std::vector<std::string>* log);
     void StepLive(Game& game, int slot, const Plan& plan, float top, float alpha);
     void HideLive(Game& game, Live& v);
+    void MakeLiveName(Game& game, int slot, std::vector<std::string>* log);
     void Drop(Game& game);
     std::uint64_t gauge_part_ = 0;   // the HUD's Pa_HeartGauge_00 part layout (0: no run-time gauges)
     std::uint64_t parent_ = 0;       // N_ScaleL_00
+    std::uint64_t name_part_ = 0;    // the pack's line of the game's text (PaEnemyLocation_00; 0: none, no pack)
     std::array<float, 2> source_at_{};   // Pa_HeartGauge_00's place there
     std::array<Live, kSlots> live_{};
     std::uint64_t live_layout_ = 0;  // the layout live_ hangs in
