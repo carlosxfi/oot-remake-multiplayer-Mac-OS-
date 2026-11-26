@@ -84,6 +84,9 @@ def _arrive(game):
 def state(game, st):
     if not _on(game):
         return
+    if st.get("age"):
+        st["age"] = "adult"                # (the boot live-twinrova-room is an adult save, scenarios/live-twinrova-room.A.txt
+                                           # line 1; fakegame.base_state says child for every boot; need_boot_place('adult'))
     me = 1 if game.tag == "A" else 2       # (fakegame.py: A is player 1, B player 2)
     for p in (st.get("coop") or {}).get("players") or []:
         p.setdefault("self", p.get("number") == me)
