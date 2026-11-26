@@ -49,6 +49,9 @@ One summary per run: `<dir>/summary.json` and `summary.md` (add `--junitxml <fil
 | NO-REF | a look check has no stored reference yet; its shot is kept under `<dir>/lane<L>/new/` |
 | NOT-RUN | `--deadline-min N` passed before it started (never a pass) |
 
+A game that crashes while the lane boots or loads (its module log has a `CRASH` line) makes every test of the
+lane FAIL with that line, not SETUP-FAIL: that window is what crash rows guard.
+
 A smoke test (`@pytest.mark.smoke`) that FAILs or SETUP-FAILs stops the run: the rc is broken.
 
 `--deadline-min N` is the run's wall-clock limit: set it below the queue job's Minutes (the queue's TIMEOUT kills

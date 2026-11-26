@@ -34,6 +34,11 @@ RESULTS = ("PASS", "FAIL", "FLAKY", "SETUP-FAIL", "NO-REF", "SKIP", "NOT-RUN")
 DEFAULT_BUDGET = 120
 
 
+class GameCrash(AssertionError):
+    """A game crashed while the lane booted or loaded (its module log has a CRASH line): every test of the lane is
+    FAIL with that line, never SETUP-FAIL, because that window is what crash rows guard (review-c123-7 08:53)."""
+
+
 def pytest_addoption(parser):
     g = parser.getgroup("ingame")
     g.addoption("--lanes", default="1", help="test lanes, comma separated; xdist worker N takes the Nth")
@@ -61,8 +66,8 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "budget(seconds): the test's own hard deadline (default %d)" % DEFAULT_BUDGET)
     config.addinivalue_line("markers", "row(text): the rc row the test proves (in the summary)")
     config.addinivalue_line("markers", "look: a user-facing look check (bridge shots on each game, compared to refs)")
-    config.addinivalue_line("markers", "needs_env(*'NAME=VALUE'): game switches the test needs; a boot without them "
-                            "(--env) is SETUP-FAIL for it")
+    config.addinivalue_line("markers", "needs_env(*'NAME=VALUE'): game switches the test needs; a run whose "
+                            "--env lacks them deselects it (named in the output and summary.json 'deselected')")
     config._bt_rows, config._bt_deselected = [], []
     if config.getoption("lane_check_only") and getattr(config.option, "numprocesses", None):
         raise pytest.UsageError("--lane-check-only runs in one process: leave out -n (it checks every --lanes lane)")
@@ -215,6 +220,8 @@ def lane_pair(request):
     out = _out_dir(config, lane)
     refs = os.path.join(HERE, "refs")
     if config.getoption("fake"):
+        if os.environ.get("BT_FAKE_BOOT_CRASH"):        # (selftest: a game crashed in the boot's save load)
+            raise GameCrash("lane%d boot: game A ended; A: %s" % (lane, os.environ["BT_FAKE_BOOT_CRASH"]))
         import fakegame
         lanefake = fakegame.FakeLane(out)
         pair = P.Pair(lanefake.games(), out_dir=out, refs_dir=os.environ.get("BT_FAKE_REFS", refs))
@@ -234,7 +241,9 @@ def lane_pair(request):
                      "--env", "LICHII_COOP_PUPPET=1", "--env", "LICHII_COOP_TEST_TO_TITLE=1"] + extra + [
                      "--max-minutes", str(config.getoption("session_minutes")), "--idle-minutes", "15"], timeout=1200)
     if not started.get("ok"):
-        raise P.SetupFail("lane%d boot: %s%s" % (lane, started.get("error") or started.get("boot"), _crash_why(session)))
+        crash = _crash_why(session)
+        why = "lane%d boot: %s%s" % (lane, started.get("error") or started.get("boot"), crash)
+        raise GameCrash(why) if crash else P.SetupFail(why)
     try:
         pair = P.Pair(P.read_session(session), out_dir=out, refs_dir=refs)
         pair.lane, pair.info, pair.session = lane, dict(info, boot_s=round(time.monotonic() - t0, 1)), session
@@ -306,7 +315,7 @@ def _kind(reports):
     """One run's result from its setup / call / teardown reports."""
     for r in reports:
         if r.when == "setup" and r.failed:
-            return "SETUP-FAIL"
+            return "FAIL" if "GameCrash" in str(r.longrepr) else "SETUP-FAIL"
         if r.when == "setup" and r.skipped:
             return "SKIP"
     for r in reports:
@@ -405,6 +414,22 @@ def pytest_runtest_logreport(report):
 _CONFIG = {}
 
 
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node, error):
+    """xdist controller: a worker's needs_env deselections (each worker collects the whole suite, so the same test can
+    come from several: kept once), its lines printed here, so summary.json 'deselected' is right under -n too."""
+    config = node.config
+    seen = {d["test"] for d in config._bt_deselected}
+    tr = config.pluginmanager.get_plugin("terminalreporter")
+    for d in (getattr(node, "workeroutput", None) or {}).get("bt_deselected") or []:
+        if d["test"] in seen:
+            continue
+        seen.add(d["test"])
+        config._bt_deselected.append(d)
+        line = "deselected: needs_env %s %s" % (" ".join(d["needs_env"]), d["test"])
+        tr.write_line(line) if tr else print(line)
+
+
 def pytest_sessionstart(session):
     _CONFIG["c"] = session.config
 
@@ -415,6 +440,7 @@ def pytest_sessionfinish(session, exitstatus):
         session.exitstatus = 0 if config._bt_setup["ok"] else 1      # (--lane-check-only: no summary.json)
         return
     if hasattr(config, "workerinput"):
+        config.workeroutput["bt_deselected"] = list(config._bt_deselected)   # (merged by the controller, below)
         return     # (xdist: the controller writes the one summary)
     rows = config._bt_rows
     counts = {k: sum(1 for r in rows if r["result"] == k) for k in RESULTS}

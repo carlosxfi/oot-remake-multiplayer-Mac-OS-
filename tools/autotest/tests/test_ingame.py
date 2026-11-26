@@ -236,6 +236,25 @@ class BootEnv(unittest.TestCase):
         self.assertEqual(B._crash_why(ses), "; A: CRASH: exception 0xc0000005 at hookshot_coop.dll+0x50594")
         self.assertEqual(B._crash_why(os.path.join(self.tmp, "none")), "")
 
+    def test_deselected_under_xdist(self):
+        out = os.path.join(self.tmp, "ox")
+        p = pytest_run([".", "--fake", "--out", out, "-q", "-n", "2", "--lanes", "1,2", "--env", "LICHII_COOP_X=1"],
+                       cwd=self.dir)
+        s = summary(out)
+        self.assertEqual(results(s), {"test_needs_x_both": "PASS"}, p.stdout[-2000:])
+        self.assertEqual(s["deselected"], [{"test": "test_env.py::test_needs_y_on_a", "needs_env": ["A:LICHII_COOP_Y=2"]}])
+        self.assertEqual(p.stdout.count("deselected: needs_env A:LICHII_COOP_Y=2 test_env.py::test_needs_y_on_a"), 1,
+                         p.stdout[-2000:])
+
+    def test_boot_crash_is_fail_not_setup_fail(self):
+        out = os.path.join(self.tmp, "oc")
+        p = pytest_run([".", "--fake", "--out", out, "-q", "--env", "LICHII_COOP_X=1", "--env", "A:LICHII_COOP_Y=2"],
+                       cwd=self.dir, env={"BT_FAKE_BOOT_CRASH": "CRASH: exception 0xc0000005"})
+        s = summary(out)
+        self.assertEqual(results(s), {"test_needs_x_both": "FAIL", "test_needs_y_on_a": "FAIL"}, p.stdout[-2000:])
+        self.assertTrue(all("CRASH: exception 0xc0000005" in r["why"] for r in s["tests"]), s["tests"])
+        self.assertNotEqual(p.returncode, 0)
+
     def test_env_has(self):
         import bt_plugin as B
         self.assertTrue(B.env_has(["X=1"], "X=1"))
