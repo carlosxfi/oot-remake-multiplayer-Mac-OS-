@@ -18,6 +18,7 @@
 #include <cctype>
 #include <array>
 #include <cstddef>
+#include <cstdio>
 #include <atomic>
 #include <mutex>
 #include <chrono>
@@ -1332,7 +1333,90 @@ bool PartyTest() {
     return on;
 }
 
+// party-hud-crash-c126 probe (LICHII_COOP_PARTY_HUD_PROBE=1, off by default): which game field says a listed screen
+// really runs. Reads only, no game call: each frame, for every screen of the UI manager's list with one of the vtables
+// co-op calls into (the status screen with the hearts, the banner, the balloons, the HUD's map screen) its state byte
+// (+0x1a6), its request (+0x1a5), its layout (+0x28) and the layout's vtable, and whether patch 0018 saw its update in
+// the last 100 ms (Menu::Runs); with the scene-load flag and what the gated helpers hand out (ScreenByVtable +
+// ScreenLayout: what Hud::Step would Find on). One line each time any of it changes (at most 800). While it is on, the
+// party HUD makes no game call at all (PartyStep returns after it), so a run goes boot -> title -> load -> play ->
+// title -> load without the crash and the log shows the fields at each step.
+bool PartyProbe(NativeGame& game) {
+    static const bool on = Env("LICHII_COOP_PARTY_HUD_PROBE") == "1";
+    if (!on) return false;
+    static int lines = 0;
+    static std::string was;
+    static std::uint64_t frame = 0, gated_was = 0;
+    ++frame;
+    if (lines >= 800) return true;
+    const std::uint64_t main = CoopRuntime::MainBase();
+    const auto read64 = [&](std::uint64_t a) {
+        std::uint64_t v = 0;
+        return game.Read(a, &v, sizeof v) ? v : 0ull;
+    };
+    const auto off = [&](std::uint64_t v) {
+        char b[24];
+        if (v >= main && v - main < 0x8000000) {
+            std::snprintf(b, sizeof b, "m+%llx", static_cast<unsigned long long>(v - main));
+        } else {
+            std::snprintf(b, sizeof b, "%llx", static_cast<unsigned long long>(v));
+        }
+        return std::string(b);
+    };
+    const auto menu = CoopMapPage::MenuState();
+    struct Kind { const char* name; std::uint64_t vt; };
+    static constexpr Kind kKinds[] = {{"status", CoopPartyHud::addr::kStatusVtable},
+                                      {"banner", CoopNativeUi::addr::kInfoVtable},
+                                      {"balloons", CoopNativeTags::addr::kBalloonVtable},
+                                      {"mapmenu", CoopNativeTags::kMapMenuVtable}};
+    std::string now = std::string("loading=") + (CoopNativeUi::SceneLoading() ? "1" : "0");
+    if (menu) {
+        now += std::string(" 0018: known=") + (menu->screens_known ? "1" : "0") + " running=" +
+               std::to_string(menu->screen_count) + " hud=" + off(menu->hud_screen) + " hud_runs=" +
+               (menu->HudRuns() ? "1" : "0") + " menu_open=" + (menu->menu_open ? "1" : "0");
+    } else {
+        now += " 0018: none";
+    }
+    const std::uint64_t got = read64(main + CoopNativeUi::addr::kUiManagerGot);
+    const std::uint64_t manager = got != 0 ? read64(got) : 0;
+    std::uint32_t count = 0;
+    const std::uint64_t screens = manager != 0 ? read64(manager + CoopNativeUi::addr::kUiScreens) : 0;
+    if (manager == 0 || !game.Read(manager + CoopNativeUi::addr::kUiCount, &count, sizeof count) || screens == 0) {
+        now += " ui: no list";
+        count = 0;
+    } else {
+        now += " ui: " + std::to_string(count);
+    }
+    for (std::uint32_t i = 0; i < count && i < 512; ++i) {
+        const std::uint64_t s = read64(screens + i * 8ull);
+        const std::uint64_t vt = s != 0 ? read64(s) : 0;
+        for (const Kind& k : kKinds) {
+            if (vt == 0 || vt != main + k.vt) continue;
+            std::uint8_t state = 0xff;
+            std::int8_t request = -128;
+            game.Read(s + CoopNativeUi::addr::kScreenState, &state, 1);
+            game.Read(s + CoopNativeUi::addr::kScreenRequest, &request, 1);
+            const std::uint64_t layout = read64(s + CoopNativeUi::addr::kScreenLayout);
+            const std::uint64_t layout_vt = layout != 0 ? read64(layout) : 0;
+            now += std::string(" | ") + k.name + "#" + std::to_string(i) + " " + off(s) + " state=" +
+                   std::to_string(state) + " req=" + std::to_string(request) + " layout=" + off(layout) + " lvt=" +
+                   off(layout_vt) + " runs=" + (menu && menu->screens_known ? (menu->Runs(s) ? "1" : "0") : "?");
+        }
+    }
+    const std::uint64_t gated_screen = CoopNativeUi::ScreenByVtable(game, CoopPartyHud::addr::kStatusVtable);
+    const std::uint64_t gated = CoopNativeUi::ScreenLayout(game, gated_screen);
+    now += " | gated status=" + off(gated_screen) + " layout=" + off(gated);
+    const bool would_find = gated != 0 && gated != gated_was;
+    gated_was = gated;
+    if (now == was && !would_find) return true;
+    was = now;
+    ++lines;
+    LOG_INFO(Core, "coop: party hud probe: f{} {}{}", frame, now, would_find ? " | WOULD FIND (Hud::Step: a new layout)" : "");
+    return true;
+}
+
 void PartyStep(NativeGame& game, void* ctx, std::uint64_t now) {
+    if (PartyProbe(game)) return;   // (the probe: logs only, the HUD makes no game call)
     static CoopPartyHud::Hud hud;
     std::vector<CoopPartyHud::Block> blocks;
     std::optional<double> bottom;
@@ -2096,6 +2180,38 @@ void Frame(void* ctx, int site) {
         CoopHook::OnFrame(g_system);
     }
     if (w.calls && ctx != nullptr) {
+        {  // party-hud-crash-c126: which listed screens are live (CoopNativeUi::ScreenLive), before any screen work this
+           // frame: the game's own scene load (Sequence_IsLoadingBanc, read as CoopStuckLoad does: coop_hook.cpp
+           // StuckLoadFrame; on through the boot, the title and every load) and patch 0018's running screens and HUD.
+            static const std::uint32_t loading_hash = coop::host::flag_hash("Sequence_IsLoadingBanc");
+            CoopHook::EmulatorMemory memory(g_system.ApplicationMemory(), CoopRuntime::MainBase());
+            const bool loading = coop::host::GameFlags(memory).get_bool(loading_hash).value_or(false);
+            if (CoopNativeUi::SceneLoading() != loading) {
+                LOG_INFO(Core, "coop: native ui: scene load {} (Sequence_IsLoadingBanc): {}", loading ? "began" : "ended",
+                         loading ? "no screen's layout is called into until it ends"
+                                 : "screens handed out once the game's HUD screen has run");
+            }
+            CoopNativeUi::SetSceneLoading(loading);
+            const auto menu = CoopMapPage::MenuState();
+            std::optional<std::vector<std::uint64_t>> running;
+            std::optional<bool> hud_runs;
+            if (menu && menu->screens_known) {   // (row 141's struct: the running screens and the HUD's ran time)
+                running.emplace(menu->screens.begin(), menu->screens.begin() + menu->screen_count);
+                hud_runs = menu->HudRuns();
+            }
+            const bool was_up = CoopNativeUi::GameUiUp();
+            CoopNativeUi::SetRunningScreens(std::move(running), hud_runs);
+            if (CoopNativeUi::GameUiUp() != was_up) {
+                LOG_INFO(Core, "coop: native ui: the game's play UI {}", !was_up
+                             ? "is up (patch 0018's HUD screen ran since the load): its screens are live"
+                             : "is down (a scene load): only a screen that runs now is live");
+            }
+            static bool said_unknown = false;
+            if (!hud_runs && !std::exchange(said_unknown, true)) {
+                LOG_WARNING(Core, "coop: native ui: this Longshot's patch 0018 does not say which screens run: no screen is "
+                                  "called into (the native chat, the party HUD and the balloons wait)");
+            }
+        }
         RunFlagSetters(ctx);
         LogFlagNative();
         {  // rows 63/76: the game's own HUD refresh after co-op wrote a dungeon item (coop_map_refresh.h). Patch 0018
