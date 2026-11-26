@@ -8,8 +8,10 @@ BT_FAKE_MENU=nopage: a page step is asked but no page comes (the gap B #138 clos
 main page. test_every_page_opens_on_its_own must FAIL in both.
 """
 import os
+import sys
 
-PAGES = ("main", "host", "join", "local", "settings", "commands", "customize", "find")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from hookshot import MENU_PAGES as PAGES   # noqa: E402  (coop_testinput.h kMenuPages, the runner's checked copy)
 
 
 def setup(game):

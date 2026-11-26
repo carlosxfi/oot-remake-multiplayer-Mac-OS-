@@ -69,8 +69,8 @@ class MenuWords(unittest.TestCase):
     def test_runner_copies_are_the_header_lists(self):
         self.assertEqual(list(hookshot.MENU_WORDS), header_list("kMenuWords"))
         self.assertEqual(list(hookshot.MENU_PAGES), header_list("kMenuPages"))
-        import test_menu_pages
-        self.assertEqual(list(test_menu_pages.PAGES), header_list("kMenuPages"))
+        import test_menu_pages   # (the bridge test takes the runner's list itself, no copy: review-rows-c136)
+        self.assertIs(test_menu_pages.PAGES, hookshot.MENU_PAGES)
 
     def test_every_page_of_the_tab_has_an_open_step(self):
         pages = re.findall(r'case Page::k\w+: return "(\w+)";', read("hookshot/src/coop_pause_menu.cpp"))

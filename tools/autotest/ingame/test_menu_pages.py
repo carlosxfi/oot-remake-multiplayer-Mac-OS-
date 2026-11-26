@@ -10,9 +10,13 @@ menu, `open`, `tab`, `page` = PageWord) and the step's own line "coop: test menu
 the menu request). Each page is shut again with `menu close` (HOS_COOP_MENU_WANT_CLOSE). No look of its own: the pages'
 looks are each row test's shots.
 """
+import os
+import sys
+
 import pytest
 
-PAGES = ("main", "host", "join", "local", "settings", "commands", "customize", "find")   # coop_testinput.h kMenuPages
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from hookshot import MENU_PAGES as PAGES   # noqa: E402  (coop_testinput.h kMenuPages, the runner's checked copy)
 OPEN_FRAMES = 90      # Longshot's menu takes the module's want at its next menu tick (vk_menu.cpp coop::menu_wanted)
 
 
