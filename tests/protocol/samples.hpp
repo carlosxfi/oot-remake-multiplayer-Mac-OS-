@@ -103,6 +103,8 @@ inline std::vector<Message> object_messages() {
   all.push_back(VoiceFrame{0, 7, voice::end, {}});
   all.push_back(LinkSound{2, "Pl_Voice_Attack_00"});
   all.push_back(LinkSound{0, "Ocarina_D"});
+  all.push_back(Emote{2, 5});
+  all.push_back(Emote{0, 1});
   all.push_back(PlayerLook{0, {}});
   all.push_back(PlayerLook{3, {{0, 0xC83020}, {4, 0x2050FF}, {63, 0}}});
   all.push_back(DropSpawn{0, kMadeId, "Graveyard", "Obj_Rupee_Green", {1.0f, 2.0f, 3.0f}, 123456789, drop_spawn::owned});
@@ -156,6 +158,8 @@ inline std::vector<Message> every_message() {
     all.push_back(mods);
     all.push_back(ModList{});
     all.push_back(ModSettings{2, {{"oot-remake-rando", "seed", "ABCD-1234"}, {"oot-remake-rando", "logic", ""}}});
+    all.push_back(ModData{3, "coop", "skin", {'m', 'a', 'l', 'o', 'n', 0, 0xff}});
+    all.push_back(ModData{0, "my-mod", "score", {}});
   }
   all.push_back(PlayerJoined{4, "Darunia"});
   all.push_back(PlayerLeft{1, LeaveReason::timed_out});
@@ -180,6 +184,8 @@ inline std::vector<Message> every_message() {
   all.push_back(PlayerLife{4, 0, 0});
   all.push_back(PlayerRide{0, kRideRiding, "Animal_Epona_Adult", {0.1f, -1.2f, 0.3f}, {0, 0.7f, 0, 0.7f}, Animation{"Run", 4.5f, 1.0f}});
   all.push_back(PlayerRide{2, 0, "", {}, {0, 0, 0, 1}, std::nullopt});
+  all.push_back(PlayerRide{5, kRideFree, "Animal_Epona_Adult", {}, {0, 0.7f, 0, 0.7f}, Animation{"Wait", 1.5f, 1.0f},
+                           {12.5f, -3.0f, 840.25f}});
   for (Message& m : object_messages()) all.push_back(std::move(m));
   all.push_back(Refused{RefuseReason::kicked});
   all.push_back(Refused{RefuseReason::banned});

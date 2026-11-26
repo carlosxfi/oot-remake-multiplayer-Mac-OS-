@@ -933,7 +933,7 @@ function Read-KitYesNo([string]$Question, [int]$Seconds, [bool]$Default) {
         if (-not $line -or -not $line.Trim()) { return $Default }
         return $line.Trim() -match '^(?i)(y|yes)$'
     }
-    Write-Host -NoNewline "$Question $hint ($(if ($Default) { 'yes' } else { 'no' }) in $Seconds s) "
+    Write-Host -NoNewline "$Question $hint (press Y or N; no key in $Seconds s: $(if ($Default) { 'yes' } else { 'no' })) "
     $end = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $end) {
         if ([Console]::KeyAvailable) {

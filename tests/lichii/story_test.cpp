@@ -581,6 +581,34 @@ TEST_CASE("story effects: the owl's HyruleField_ArriveEntrance, which starts the
     REQUIRE(CoopStory::Find(owl->played) != nullptr);
 }
 
+TEST_CASE("story effects: an area's first scene played elsewhere gives its visit: its Map page opens (row 228)") {
+    // Dm_HrlField_0000 shows the Hyrule Field banner (EventTriggerOpenLocationUI), whose UI graph sets
+    // IsVisitLocation.HyruleField; the Map page shows "Unavailable right now." without it. A guest whose
+    // Dm_HrlField_0000 came from the host never ran it.
+    const auto* field = FindEffect("Dm_HrlField_0000", "IsVisitLocation.HyruleField");
+    REQUIRE(field != nullptr);
+    CHECK(field->played == 0xd35d3f12u);  // HavePlayedEvent.Dm_HrlField_0000, a shared story flag
+    CHECK(field->flag == 0xdda673cbu);
+    CHECK(field->value);
+    REQUIRE(CoopStory::Find(field->played) != nullptr);
+    auto due = Due({{field->played, true}, {field->flag, false}});
+    CHECK(std::find(due.begin(), due.end(), field) != due.end());
+    CHECK(Due({{field->played, true}, {field->flag, true}}).empty());
+    // The owl's scene shows the same banner: either one played gives the visit, once.
+    const auto* owl = FindEffect("HyruleField_Goto_HyruleCastle_Kaepora", "IsVisitLocation.HyruleField");
+    REQUIRE(owl != nullptr);
+    CHECK(Due({{owl->played, true}, {field->played, true}, {field->flag, false}}).size() == 1);
+    // Every visit row names a location's IsVisitLocation and sets it to 1.
+    std::size_t visits = 0;
+    for (const auto& e : CoopStory::Effects()) {
+        if (std::string_view(e.name).starts_with("IsVisitLocation.")) {
+            ++visits;
+            CHECK(e.value);
+        }
+    }
+    CHECK(visits >= 15);
+}
+
 TEST_CASE("story effects: due only once the event played, while the flag is read and not its value") {
     const auto* owl = FindEffect("HyruleField_Goto_HyruleCastle_Kaepora", "HyruleField_ArriveEntrance");
     REQUIRE(owl != nullptr);
@@ -846,4 +874,31 @@ TEST_CASE("story: the Ocarina of Time's scene waits for its item, never mended (
     held[1] = true;
     CHECK_FALSE(CoopStory::GiftHolds(time.played[0], held));
     for (const auto h : CoopStory::Gifts()[0].played) CHECK_FALSE(CoopStory::GiftHolds(h, held));
+}
+
+TEST_CASE("story: a gift spot the seed gives another item is never held nor mended (row 237)") {
+    REQUIRE(CoopStory::Gifts().size() == 2);
+    CHECK(std::string_view(CoopStory::Gifts()[0].location) == "LW Gift from Saria");
+    CHECK(std::string_view(CoopStory::Gifts()[1].location) == "HF Ocarina of Time Item");
+    // OOTRR's progressive ocarina keeps the vanilla rule; a spot not listed keeps its vanilla item.
+    CHECK(CoopStory::GiftKeepsVanilla(std::nullopt));
+    CHECK(CoopStory::GiftKeepsVanilla(std::string_view("Ocarina")));
+    CHECK_FALSE(CoopStory::GiftKeepsVanilla(std::string_view("Progressive Hookshot")));
+    CHECK_FALSE(CoopStory::GiftKeepsVanilla(std::string_view("Bombs (5)")));
+
+    std::array<bool, CoopStory::kGiftsMax> held{};  // no ocarina in this game
+    CHECK_FALSE(CoopStory::GiftShuffled(0));
+    CoopStory::SetGiftShuffled(0, true);  // Saria gives the seed's item
+    CHECK(CoopStory::GiftShuffled(0));
+    CHECK_FALSE(CoopStory::GiftShuffled(1));
+    // Her played flags come in at once: the item came with the scene that ran, so no second Saria here.
+    for (const auto h : CoopStory::Gifts()[0].played) CHECK_FALSE(CoopStory::GiftHolds(h, held));
+    for (const auto h : CoopStory::Gifts()[1].played) CHECK(CoopStory::GiftHolds(h, held));  // the moat still waits
+    CoopStory::SetGiftShuffled(1, true);
+    for (const auto h : CoopStory::Gifts()[1].played) CHECK_FALSE(CoopStory::GiftHolds(h, held));
+    CoopStory::SetGiftShuffled(0, false);
+    CoopStory::SetGiftShuffled(1, false);
+    for (const auto h : CoopStory::Gifts()[0].played) CHECK(CoopStory::GiftHolds(h, held));  // the base game again
+    CoopStory::SetGiftShuffled(CoopStory::kGiftsMax, true);  // out of range: nothing
+    CHECK_FALSE(CoopStory::GiftShuffled(CoopStory::kGiftsMax));
 }

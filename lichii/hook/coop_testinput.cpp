@@ -76,6 +76,31 @@ bool Ticks(std::string_view word, std::uint32_t& out) {
 // A runner-only step's TICKS (await): hookshot.py's _await_ticks, any whole number from 0 up (the most it waits; 0: no
 // wait). Not Ticks: that is the rule of the module's own timed steps (1 up to kMaxStepTicks), and a line the runner
 // plays must not be refused here.
+// A burst's NAME and FRAMES (hookshot.py _BURST_NAME, BURST_MAX): the shots' file names, 1..600 shots.
+bool BurstName(std::string_view word) {
+    if (word.empty()) {
+        return false;
+    }
+    for (const char c : word) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ||
+                        c == '.' || c == '-';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool RunnerTicks(std::string_view word);
+
+bool BurstFrames(std::string_view word) {
+    if (!RunnerTicks(word) || word.size() > 9) {
+        return false;
+    }
+    const long n = std::stol(std::string(word));
+    return n >= 1 && n <= 600;
+}
+
 bool RunnerTicks(std::string_view word) {
     if (word.empty()) {
         return false;
@@ -473,13 +498,15 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             const auto to = static_cast<std::size_t>(w.back().data() + w.back().size() - line.data());
             step.mark = std::string(line.substr(from, to - from));
         } else if (cmd == "MENU") {
-            // menu customize|close|host: the Customize page opened, the menu closed, or the game hosts through the
-            // Multiplayer page's Host (hookshot.py --host-in-game: LICHII_COOP_TEST_HOST). Test only.
+            // menu customize|close|host|paste|leave: the Customize page opened, the menu closed, the game hosts through the
+            // Multiplayer page's Host (hookshot.py --host-in-game: LICHII_COOP_TEST_HOST), joins with the clipboard's
+            // code as the page's "Paste code and join" (private-lobby-fix), or leaves the
+            // session as the page's Leave row does (remount-leave). Test only.
             std::string page = w.size() == 2 ? std::string(w[1]) : std::string{};
             std::transform(page.begin(), page.end(), page.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (page != "customize" && page != "close" && page != "host") {
-                return fail("want: menu customize|close|host");
+            if (page != "customize" && page != "close" && page != "host" && page != "paste" && page != "leave") {
+                return fail("want: menu customize|close|host|paste|leave");
             }
             step.kind = Kind::menu;
             step.mark = page;
@@ -554,6 +581,14 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             }
             step.kind = Kind::event;
             step.mark = std::string(w[1]);
+        } else if (cmd == "AUTOSAVE") {
+            // autosave: our game asked for its own autosave, the call its EventTriggerRequestAutoSave node makes
+            // (Hookshot; CoopSave::AskOwnAutoSave). Test only. rejoin-host-273-2: a `warp` is a scene change the game
+            // never saves on (no save in any run after one), so a scenario that checks a save on disk asks for it.
+            if (w.size() != 1) {
+                return fail("want: autosave");
+            }
+            step.kind = Kind::autosave;
         } else if (cmd == "SETFLAG") {
             // setflag NAME VALUE: this game's Int or Bool flag NAME (a GameDataList
             // name) to VALUE, through the game's queue. Test only.
@@ -653,6 +688,14 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             // verb the runner reads is one of this parser's).
             if (w.size() < 3 || !RunnerTicks(w[1])) {
                 return fail("want: await TICKS REGEX (the runner's own step)");
+            }
+            continue;
+        } else if (cmd == "BURST") {
+            // tools/autotest/hookshot.py's own step too (issue 166): "burst NAME FRAMES [TICKS REGEX]", the game held
+            // and shot frame by frame through the bridge; nothing for the module. Its shape only.
+            if (!(w.size() == 3 || w.size() >= 5) || !BurstName(w[1]) || !BurstFrames(w[2]) ||
+                (w.size() >= 5 && !RunnerTicks(w[3]))) {
+                return fail("want: burst NAME FRAMES [TICKS REGEX] (the runner's own step)");
             }
             continue;
         } else {
@@ -758,7 +801,7 @@ void Runner::Advance(double now_s, std::optional<std::array<float, 2>> player,
             s.kind == Kind::assign || s.kind == Kind::dress || s.kind == Kind::chat || s.kind == Kind::kill || s.kind == Kind::drop || s.kind == Kind::hurt ||
             s.kind == Kind::hit || s.kind == Kind::stun ||
             s.kind == Kind::setflag || s.kind == Kind::setenum || s.kind == Kind::menu || s.kind == Kind::dump ||
-            s.kind == Kind::event) {
+            s.kind == Kind::event || s.kind == Kind::autosave) {
             requests_.push_back(Request{s.kind, s.mark, s.start, {}, s.id});
             ++index_;
             continue;
@@ -935,10 +978,11 @@ const char* KindWord(Kind kind) {
     case Kind::drop: return "drop";
     case Kind::setflag: return "setflag";
     case Kind::setenum: return "setenum";
+    case Kind::event: return "event";
     case Kind::sync: return "sync";
     case Kind::menu: return "menu";
     case Kind::dump: return "dump";
-    case Kind::event: return "event";
+    case Kind::autosave: return "autosave";
     }
     return "?";
 }
@@ -982,6 +1026,7 @@ std::string NotAllowed(const Script& script, const std::vector<Kind>& allowed) {
 #include "coop_dungeon.h"
 #include "coop_hook.h"
 #include "coop_objects.h"
+#include "coop_save.h"
 #include "coop_story.h"
 #include "core/arm/debug.h"
 #include "core/core.h"
@@ -1560,7 +1605,7 @@ bool NowKind(Kind k) {
     case Kind::mark: case Kind::give: case Kind::wear: case Kind::assign: case Kind::dress: case Kind::chat:
     case Kind::place: case Kind::face: case Kind::aim: case Kind::kill: case Kind::hurt: case Kind::hit:
     case Kind::stun: case Kind::drop: case Kind::setflag: case Kind::setenum: case Kind::menu: case Kind::dump:
-    case Kind::event:
+    case Kind::event: case Kind::autosave:
         return true;
     default:
         return false;
@@ -1602,6 +1647,12 @@ void Do(Core::System& system, const Runner::Request& request, double now,
         // requester's own lines say when it was asked and whether the game took it.
         CoopBoss::WantEvent(request.name);
         LOG_INFO(Core, "coop: test event {}: handed to the live-event requester", request.name);
+    } else if (request.kind == Kind::autosave) {
+        // (the game's own gate may still refuse it: its autosave off, its cooldown, a state it does not save in; the
+        // save itself shows as "fs: save: published" (a second one after the load's))
+        LOG_INFO(Core, "coop: test autosave: {}", CoopSave::AskOwnAutoSave()
+                                                      ? "our game is asked for its own autosave at its next step"
+                                                      : "not asked (no file played, or no way to ask in this runtime)");
     } else if (request.kind == Kind::place && !request.name.empty()) {
         const auto on = CoopObjects::TestPlatformPlace(request.name);
         const bool ok = on && CoopBoss::MoveLink(system, g_state.main,

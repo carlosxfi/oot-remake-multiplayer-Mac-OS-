@@ -417,6 +417,38 @@ bool SeedShops(std::string_view text) {
     return false;
 }
 
+std::optional<std::string> SeedPlacement(std::string_view text, std::string_view location) {
+    // {"format": "ootrr-seed", ..., "placements": {"KF Midos Top Left Chest": "Bow", ...}, ...}: the first
+    // "placements" key followed by ':' and an object, then the location's key in it (names hold no quotes).
+    for (auto key = text.find("\"placements\""); key != std::string_view::npos;
+         key = text.find("\"placements\"", key + 12)) {
+        auto at = text.find_first_not_of(" \t\r\n", key + 12);
+        if (at == std::string_view::npos || text[at] != ':') continue;
+        at = text.find_first_not_of(" \t\r\n", at + 1);
+        if (at == std::string_view::npos || text[at] != '{') return std::nullopt;
+        const auto end = text.find('}', at);  // the values are plain strings: no nested object
+        const std::string_view body = text.substr(at, end == std::string_view::npos ? std::string_view::npos : end - at);
+        const std::string quoted = "\"" + std::string(location) + "\"";
+        for (auto k = body.find(quoted); k != std::string_view::npos; k = body.find(quoted, k + 1)) {
+            const auto prev = body.find_last_not_of(" \t\r\n", k - 1);  // k > 0: body starts with '{'
+            if (prev == std::string_view::npos || (body[prev] != '{' && body[prev] != ',')) continue;  // a value
+            auto v = body.find_first_not_of(" \t\r\n", k + quoted.size());
+            if (v == std::string_view::npos || body[v] != ':') continue;
+            v = body.find_first_not_of(" \t\r\n", v + 1);
+            if (v == std::string_view::npos || body[v] != '"') return std::nullopt;
+            std::string item;
+            for (std::size_t i = v + 1; i < body.size(); ++i) {
+                if (body[i] == '"') return item;
+                if (body[i] == '\\' && i + 1 < body.size()) ++i;
+                item += body[i];
+            }
+            return std::nullopt;
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 std::vector<std::string> BuildArgs(const fs::path& seed_file, const fs::path& game_folder, const fs::path& mods_root,
                                    const std::string& folder) {
     return {"build", CoopMods::ToUtf8(seed_file), CoopMods::ToUtf8(game_folder), CoopMods::ToUtf8(mods_root), folder,
@@ -839,6 +871,60 @@ std::optional<std::pair<std::string, std::string>> OutsideActorRows(const fs::pa
         return std::make_pair(winner, table);
     }
     return std::nullopt;
+}
+
+namespace {
+// A mod folder's copy of the menus' layout archive, as found (romfs/UI/Layout2Archive/Common.Product.*.blarc.zs: the
+// number in the name is the game version's); empty when it has none.
+fs::path LayoutArchive(const fs::path& folder) {
+    std::error_code ec;
+    for (fs::directory_iterator f(folder / "romfs" / "UI" / "Layout2Archive", ec), last; !ec && f != last;
+         f.increment(ec)) {
+        std::string name = CoopMods::ToUtf8(f->path().filename());
+        for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        constexpr std::string_view head = "common.product.", tail = ".blarc.zs";
+        std::error_code fec;
+        if (name.size() > head.size() + tail.size() && name.compare(0, head.size(), head) == 0 &&
+            name.compare(name.size() - tail.size(), tail.size(), tail) == 0 && f->is_regular_file(fec)) {
+            return f->path();
+        }
+    }
+    return {};
+}
+}  // namespace
+
+std::optional<std::string> OutsideLayouts(const fs::path& mods_root, const std::vector<CoopMods::Row>& rows,
+                                          const std::vector<std::string>* indexed, CharactersCode code) {
+    if (code == CharactersCode::none) return std::nullopt;
+    const auto folder_of = [&](const std::string& name) { return mods_root / CoopMods::FromUtf8(Slashed(name)); };
+    const auto own = [&](const std::string& name) {   // (the mod whose code makes the page)
+        return code == CharactersCode::pack ? CoopMods::NameSame(Slashed(name), kPackFolder)
+                                            : IsCharacterSelectMod(folder_of(name));
+    };
+    const std::string winner =
+        WinnerOf(rows, indexed, [&](const std::string& name) { return !LayoutArchive(folder_of(name)).empty(); });
+    if (winner.empty() || own(winner)) return std::nullopt;   // (none over the pack's or the game's own; or the page's)
+    // The page's mod has no copy among the mods the game reads: its screens are not in the game either, no page.
+    const bool there =
+        code == CharactersCode::pack
+            ? !LayoutArchive(mods_root / CoopMods::FromUtf8(kPackFolder)).empty()
+            : !WinnerOf(rows, indexed, [&](const std::string& name) {
+                   return own(name) && !LayoutArchive(folder_of(name)).empty();
+               }).empty();
+    if (!there) return std::nullopt;
+    const fs::path folder = folder_of(winner), file = LayoutArchive(folder);
+    const fs::path rel_path = fs::path("UI") / "Layout2Archive" / file.filename();
+    std::string rel = CoopMods::ToUtf8(rel_path);
+    std::replace(rel.begin(), rel.end(), '\\', '/');
+    for (char& c : rel) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (!KitKeptCopy(folder, file, rel_path, rel).empty()) return std::nullopt;   // (the kit merged every mod's in)
+    return winner;
+}
+
+std::string LayoutsLine(std::string_view mod) {
+    return "Co-op: the Characters page is held. The mod \"" + ShortName(mod) +
+           "\" has its own menu layouts, without the page's, so opening it would crash the game. Close the game and "
+           "start it with Start Squadala (it merges them in).";
 }
 
 namespace {
@@ -1341,6 +1427,12 @@ void Rando::Start() {
         }
         // The seed this run plays, built beside other size tables than now: no pack actor until it is checked.
         hand_playing_ = HandPlaying(Scan(loader_.Root()), loader_.Rows());
+        {
+            // Row 237 (coop_story.h GiftShuffled): what the seed places at the story gifts' spots.
+            std::lock_guard lock(mutex_);
+            plays_seed_ = on_now || !hand_playing_.empty();
+            seed_text_ = on_now ? ReadFileText(folder / CoopMods::FromUtf8(playing + ".ootrr")) : std::string();
+        }
         if (on_now) {
             const std::string now = CurrentTables();
             for (const Built& b : Scan(loader_.Root())) {
@@ -1393,6 +1485,22 @@ void Rando::Start() {
             rows_mod_ = missing->first;
             rows_table_ = missing->second;
             lines_.push_back(ChatSafe(RowsLine(rows_mod_, rows_table_), 300));
+        }
+        // Row 288: another mod's layout archive wins without the Characters page's layouts (a seed made in the game,
+        // then the game started again without the kit's start): the page is held this run and the chat says why.
+        if (const auto layouts = OutsideLayouts(loader_.Root(), loader_.Rows(),
+                                                loader_.ExeReadsList() ? &indexed : nullptr,
+                                                hooks_.characters_code ? hooks_.characters_code()
+                                                                       : CharactersCode::none)) {
+            layouts_out_ = true;
+            if (hooks_.log) {
+                hooks_.log("randomizer: the game reads the menus' layout archive (UI/Layout2Archive/Common) of the mod " +
+                           *layouts + ", without the Characters page's layouts (no _coop-archives stamp from the "
+                           "kit's start for it): opening the page would crash the game; it is held this run");
+            }
+            const std::lock_guard lock(mutex_);
+            layouts_mod_ = *layouts;
+            lines_.push_back(ChatSafe(LayoutsLine(layouts_mod_), 300));
         }
         const std::lock_guard lock(mutex_);
         on_now_ = on_said_ = on_now;
@@ -1491,6 +1599,11 @@ void Rando::TellOthers() {
     if (tell_ == line) tell_.clear();
 }
 
+void Rando::SayLayouts() {
+    const std::lock_guard lock(mutex_);
+    if (!layouts_mod_.empty()) lines_.push_back(ChatSafe(LayoutsLine(layouts_mod_), 300));
+}
+
 void Rando::SayOutside() {
     const std::lock_guard lock(mutex_);
     if (!rows_mod_.empty()) lines_.push_back(ChatSafe(RowsLine(rows_mod_, rows_table_), 300));
@@ -1503,7 +1616,12 @@ std::chrono::steady_clock::time_point Rando::Now() const {
     return hooks_.now ? hooks_.now() : std::chrono::steady_clock::now();
 }
 
+void Rando::RestartForHost(bool due) {
+    if (hooks_.restart_for_host) hooks_.restart_for_host(due && loader_.HostValuesSet());
+}
+
 void Rando::SayRestart(std::string line) {
+    RestartForHost(true);  // (said already too: it may be another join to the same host)
     const auto now = Now();
     {
         const std::lock_guard lock(mutex_);
@@ -1792,6 +1910,7 @@ void Rando::Check() {
         const std::lock_guard lock(mutex_);
         if (!tell_.empty() && (!seed_locked || !loader_.HostValuesSet() || want.seed != tell_seed_)) tell_.clear();
     }
+    bool due = false;
     {
         // Said once per change of the switch, in the tab until the restart and in the chat.
         const std::lock_guard lock(mutex_);
@@ -1804,7 +1923,9 @@ void Rando::Check() {
                 if (hooks_.log) hooks_.log("randomizer: " + lines_.back());
             }
         }
+        due = want.on != on_now_ || !restart_.empty();
     }
+    RestartForHost(due);   // (row 281)
     loader_.NoteChanged(std::string(kFolder) + "/switch", want.on == on_now_ ? std::string() : SwitchLine(want.on));
     {
         // A settings string that is not one (#48): said once per value; the preset is used meanwhile.
@@ -2125,6 +2246,21 @@ void Rando::Build(const Plan& plan, const Want& want) {
             hooks_.log("randomizer: " + plan.folder + "'s size table was right: the co-op puppets are made now");
         }
     }
+}
+
+bool Rando::PlaysSeed() const {
+    std::lock_guard lock(mutex_);
+    return plays_seed_;
+}
+
+bool Rando::SeedRead() const {
+    std::lock_guard lock(mutex_);
+    return !seed_text_.empty();
+}
+
+std::optional<std::string> Rando::PlacementAt(std::string_view location) const {
+    std::lock_guard lock(mutex_);
+    return SeedPlacement(seed_text_, location);
 }
 
 }  // namespace CoopRando

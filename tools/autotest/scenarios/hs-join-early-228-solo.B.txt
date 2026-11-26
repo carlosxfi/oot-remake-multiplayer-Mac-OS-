@@ -1,0 +1,25 @@
+# hs-join-early-228-solo, B: the same castle-gate save with co-op off (-NoCoop): the game's own Minus menu for it.
+mark s-start
+wait 600
+press MINUS
+wait 240
+mark s-open
+press R
+wait 90
+mark s-r1
+press R
+wait 90
+mark s-r2
+press L
+wait 90
+press L
+wait 90
+mark s-l1
+press L
+wait 90
+mark s-l2
+press MINUS
+wait 120
+press B
+wait 120
+mark s-closed

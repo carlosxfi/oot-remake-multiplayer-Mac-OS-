@@ -8,7 +8,7 @@ Once:
 1. Download NucleusApp.zip (2.4.2 or later) from
    https://github.com/SplitScreen-Me/splitscreenme-nucleus/releases and unzip it to a short folder,
    for example C:\Nucleus.
-2. Copy OoTCoop.js from this folder into C:\Nucleus\handlers.
+2. Copy OoTCoop.js from this folder into C:\Nucleus\handlers. Later builds and Update.bat replace it with the kit's handler by themselves.
 3. Start C:\Nucleus\NucleusCoop.exe and click the + button (Add game). Not the handler hub: this
    handler is not on it. Pick the longshot.exe of this kit's co-op game: hookshot\game\longshot.exe
    in this kit, or the folder that hookshot\game-folder.txt names. Nucleus lists it as

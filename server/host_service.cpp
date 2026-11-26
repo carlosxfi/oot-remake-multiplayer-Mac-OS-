@@ -11,6 +11,7 @@
 
 #include "coop/protocol/join_password.hpp"
 #include "coop/protocol/messages.hpp"
+#include "coop/protocol/mod_world.hpp"
 #include "join_helper.hpp"
 #include "options.hpp"
 #include "nat_net.hpp"
@@ -289,9 +290,15 @@ bool HostService::start(std::string& error) {
           const Session& session = server_->session();
           e.players = static_cast<std::uint8_t>(std::min<std::size_t>(session.player_count(), 255));
           e.max_players = config_.session.max_players;
-          e.version = config_.public_game ? protocol::public_listing_version() : protocol::kProtocolVersion;
+          // (the lobby's difficulty in the version's bits 8 to 10, protocol/difficulty.hpp: the list shows it, and it
+          // follows the host's changes, each listing round as the players)
+          e.version = protocol::with_listed_difficulty(
+              config_.public_game ? protocol::public_listing_version() : protocol::kProtocolVersion,
+              session.difficulty_choice());
           return e;
         };
+        static_assert(coop::protocol::kMaxWorldTagBytes == relay::kMaxRoomTagBytes);
+        c.tag = [this]() { return server_->session().world_tag(); };
         if (config_.public_game && config_.official_key) {
           const protocol::OfficialSeed key = *config_.official_key;
           const std::string signed_relay = config_.official_relay;
@@ -307,6 +314,16 @@ bool HostService::start(std::string& error) {
         }
       }
       c.log = [this](const std::string& text) { say("relay: " + text); };
+      // The direct way (issue 261): a guest's answer code through the relay, as if the host pasted it. Only with an
+      // invite code (a public game has none: nobody learns this PC's address), and only a code made with the join
+      // password gets the address back (add_answer checks its signature; then the punches start).
+      if (config_.invite) {
+        c.direct = [this](const std::string& answer) -> std::optional<relay::DirectAddress> {
+          if (!rendezvous_ || !invite_where_ || stopped_) return std::nullopt;
+          if (add_answer(answer) != nat::CodeError::kOk) return std::nullopt;
+          return relay::DirectAddress{invite_where_->ip, invite_where_->port};
+        };
+      }
       const std::string relay_text = config_.relay_via;
       c.on_room = [this, relay_text](const std::string& room) {
         say("relay: room \"" + room + "\" is yours. Friends join with " + room + "@" + relay_text);
@@ -428,7 +445,7 @@ void HostService::say_counts() {
   // Enemy counts (issues 105, 133), at most every 5 s while they change.
   const std::uint64_t enemies =
       now.group_links + now.group_refused + now.damage_relayed + now.damage_dropped + now.damage_returned +
-      now.damage_held + now.dead_told + now.boss_turns + now.enemy_turns;
+      now.damage_held + now.dead_told + now.boss_turns + now.enemy_turns + now.keyed_dropped;
   if (config_.counts && enemies != shown_enemies_ && now_ms() - enemies_at_ >= 5000) {
     shown_enemies_ = enemies;
     enemies_at_ = now_ms();
@@ -436,7 +453,8 @@ void HostService::say_counts() {
         "; damage relayed " + count(now.damage_relayed) + ", dropped " + count(now.damage_dropped) +
         ", given back across a hand-over " + count(now.damage_returned) + ", kept through the owner hold " +
         count(now.damage_held) + "; kills told late " + count(now.dead_told) +
-        "; boss turns " + count(now.boss_turns) + ", enemy turns " + count(now.enemy_turns));
+        "; boss turns " + count(now.boss_turns) + ", enemy turns " + count(now.enemy_turns) +
+        "; keyed values not kept (list full) " + count(now.keyed_dropped));
   }
 }
 

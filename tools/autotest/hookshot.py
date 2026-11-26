@@ -68,7 +68,7 @@ STICK_KEYS = {  # full stick directions: (stick, x, y)
 }
 WEAR_SLOTS = ("weapon", "shield", "head", "armor", "boots", "hand")
 MODULE_ONLY = ("chat", "give", "wear", "dress", "assign", "place", "face", "aim", "kill", "hit", "stun", "drop", "hurt", "setflag", "setenum", "menu",
-               "dump", "event")
+               "dump", "event", "autosave")
 
 
 class ScriptError(Exception):
@@ -151,7 +151,7 @@ class BridgeError(Exception):
 
 class Step:
     def __init__(self, kind, line, ticks=0):
-        self.kind = kind          # timed, mark, goto, toward, warp, await, or one of MODULE_ONLY
+        self.kind = kind          # timed, mark, goto, toward, warp, await, burst, or one of MODULE_ONLY
         self.line = line
         self.ticks = ticks
         self.buttons = []         # the bridge's names
@@ -172,6 +172,9 @@ class Step:
 # numbers, so a line one of them plays is never refused by the other. Whole numbers are plain digits (no sign, no
 # underscore), numbers plain decimals (no hex, no underscore, no inf/nan).
 _WHOLE = re.compile(r"[0-9]+")
+_BURST_NAME = re.compile(r"[A-Za-z0-9_.-]+")   # a burst's shots are files: NAME-NNN
+BURST_MAX = 600           # shots in one burst (each a PNG)
+BURST_BEFORE = 30         # a burst on a line: the shots kept from before it
 _DECIMAL = re.compile(r"[-+]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][-+]?[0-9]+)?")
 
 
@@ -395,6 +398,12 @@ def parse(text):
             if len(w) != 2 or not re.fullmatch(r"[A-Za-z0-9_]+", w[1]):
                 fail("want: event NAME (an event setting's name: letters, digits and _)")
             s.kind, s.name = "event", w[1]
+        elif cmd == "AUTOSAVE":
+            # autosave: our game asked for its own autosave (the module's CoopSave::AskOwnAutoSave, rejoin-host-273-2):
+            # a warp never saves, so a script that checks progress on disk asks for one.
+            if len(w) != 1:
+                fail("want: autosave")
+            s.kind = "autosave"
         elif cmd == "SETENUM":
             if len(w) != 3:
                 fail("want: setenum NAME VALUE (an Enum flag, or 0xHASH, and a value's name)")
@@ -412,8 +421,8 @@ def parse(text):
                 fail("want: assign ITEM")
             s.kind, s.name = "assign", w[1]
         elif cmd == "MENU":
-            if len(w) != 2 or w[1].lower() not in ("customize", "close", "host"):
-                fail("want: menu customize|close|host")
+            if len(w) != 2 or w[1].lower() not in ("customize", "close", "host", "paste", "leave"):
+                fail("want: menu customize|close|host|paste|leave")
             s.kind, s.name = "menu", w[1].lower()
         elif cmd == "AWAIT":
             # Row 325: "await TICKS REGEX": until a NEW line of this game's own log (written after the step began)
@@ -428,6 +437,27 @@ def parse(text):
             except re.error as e:
                 fail("await: bad REGEX: %s" % e)
             s.kind, s.ticks, s.name = "await", _await_ticks(w[1]), pattern
+        elif cmd == "BURST":
+            # Issue 166: "burst NAME FRAMES [TICKS REGEX]": this game held and a shot of it every frame or two (one
+            # frame run, then the shot), FRAMES shots; with REGEX they start when a NEW line of this game's log
+            # matches, at most TICKS frames on, and the last BURST_BEFORE shots before that line are kept. The
+            # runner's own step (no module step): an effect a mark's quarter-second shot misses is seen frame by frame.
+            pattern = ""
+            if len(w) >= 5:
+                rest = line.strip()
+                for word in w[:4]:
+                    rest = rest[rest.index(word) + len(word):]
+                pattern = rest.strip()
+            if not (len(w) == 3 or len(w) >= 5) or not _BURST_NAME.fullmatch(w[1]) or _await_ticks(w[2]) is None                     or not 1 <= int(w[2]) <= BURST_MAX or (len(w) >= 5 and _await_ticks(w[3]) is None):
+                fail("want: burst NAME FRAMES [TICKS REGEX] (FRAMES 1..%d)" % BURST_MAX)
+            if pattern:
+                try:
+                    re.compile(pattern)
+                except re.error as e:
+                    fail("burst: bad REGEX: %s" % e)
+            s.kind, s.name, s.start = "burst", w[1], pattern
+            s.ticks = int(w[3]) if pattern else 0
+            s.radius = int(w[2])          # (the shots after the line, or all of them)
         elif cmd == "MARK":
             if len(w) != 2:
                 fail("want: mark NAME (one word)")
@@ -603,8 +633,9 @@ class Player:
 
     def __init__(self, bridge, log, shot=None, connect=None, clock=time.monotonic, sleep=time.sleep,
                  main_base=MAIN_BASE, steer_every=0.1, warp_for=90.0, commands=None, take_for=5.0, read_log=None,
-                 await_every=0.25):
+                 await_every=0.25, burst_path=None):
         self.b = bridge
+        self.burst_path = burst_path  # burst_path(name) -> a PNG path for one of this game's burst shots, or None
         self.read_log = read_log      # () -> this game's log text so far ('' if none yet), or None: await skipped
         self.await_every = await_every
         self.commands = commands      # the game's LICHII_COOP_TEST_COMMANDS file, or None: module steps skipped
@@ -621,6 +652,7 @@ class Player:
         self.warp_for = warp_for
         self.mem_ok = None            # guest memory reads answered (None: not tried)
         self.warps = []
+        self.warp_failed = []         # "ASKED -> GOT": warps the bridge sent to another map (the run FAILs on them)
         self.angle = 0.0              # camera model: world direction = stick direction turned by this
         self.learned = False
 
@@ -813,6 +845,16 @@ class Player:
                         continue
                     if r.get("sent"):
                         to = r.get("map") or s.name
+                        if to.lower() != s.name.lower():
+                            # The bridge's teleport keeps the game's age: `warp HyruleField_Adult` in a child game
+                            # goes to HyruleField_Child ('sent (map HyruleField_Child, not accepted)'), and waiting for
+                            # that map used to say 'warp done' (epona-sync-1db5e721-r2: B child, no Epona, graded as
+                            # if the scenario had played). Another map than the one asked is a failed warp.
+                            self.warp_failed.append("%s -> %s" % (s.name, to))
+                            self.log("coop: test warp %s FAILED: the bridge sends the game to map %s, not the one "
+                                     "asked (it keeps the game's age: set Sequence_IsChildhood after the save is "
+                                     "loaded, then warp)" % (s.name, to))
+                            return
                         if s.start and not said_start[0]:
                             said_start[0] = True
                             self.log("coop: test warp %s: start %s not used on hookshot (the map's own)"
@@ -825,6 +867,15 @@ class Player:
                         # Not accepted: usually dropped, so ask again soon (the game refuses a teleport within 8 s
                         # of the last one); the map may still come (seen once), so wait for it that long first.
                         if self._arrived(b, to, deadline, 9.0 if r.get("accepted") is False else 30.0):
+                            # In the map is not Link at its age: epona-sync-2195cbd1 landed in HyruleField_Adult
+                            # (Epona there) with the flag set and Link still a child. The age is read back from the
+                            # bridge's status (game.age) for up to 20 s; a Link of the other age FAILs the warp.
+                            got = self._age_after(b, to)
+                            if got:
+                                self.warp_failed.append("%s -> Link is %s" % (s.name, got))
+                                self.log("coop: test warp %s FAILED: in the map, but Link is still a %s (the map's "
+                                         "age is the other one): the age flag did not take" % (s.name, got))
+                                return
                             self.log("coop: test warp done (map %s)" % to)
                             return
                         why = "map %s not reached" % to
@@ -839,6 +890,27 @@ class Player:
         t = threading.Thread(target=ask, daemon=True)
         t.start()
         self.warps.append(t)
+
+    def _age_after(self, b, to, within=20.0):
+        """The age Link has when it is not the one `to`'s name ends with (_Child / _Adult) after `within` s; "" when it
+        is, when the name has no age, or when the bridge's status has no readable game.age (not judged)."""
+        want = "child" if to.endswith("_Child") else "adult" if to.endswith("_Adult") else ""
+        if not want:
+            return ""
+        end, got = self.clock() + within, ""
+        while True:
+            try:
+                age = ((b.request("status") or {}).get("game") or {}).get("age")
+            except (BridgeError, TimeoutError):
+                age = None
+            if not isinstance(age, str) or not age:
+                return ""
+            if age.lower() == want:
+                return ""
+            got = age.lower()
+            if self.clock() >= end:
+                return got
+            self.sleep(0.5)
 
     def _arrived(self, b, to, deadline, arrive_for=30.0):
         """True once the game is in map `to` (the bridge's `wait map`); False if it is not within arrive_for s."""
@@ -927,6 +999,58 @@ class Player:
                 return now
             self._until(min(end, now + self.await_every))
 
+    def burst(self, s, t0):
+        """burst NAME FRAMES [TICKS REGEX] (issue 166): this game held, then one frame run and one shot at a time.
+        No REGEX: FRAMES shots. REGEX: shots from t0 on, the last BURST_BEFORE kept (older ones deleted), until a new
+        line of this game's log matches (at most TICKS frames), then FRAMES more. Let go after, whatever happened."""
+        self._until(t0)
+        if self.burst_path is None:
+            self.log("coop: test burst %s skipped (line %d: this run takes no shots)" % (s.name, s.line))
+            return t0
+        rx = re.compile(s.start) if s.start else None
+        if rx is not None and self.read_log is None:
+            self.log("coop: test burst %s skipped (line %d: this run reads no game log)" % (s.name, s.line))
+            return t0
+        before = self._log_matches(rx)[0] if rx is not None else 0
+        kept, taken, seen_at, after, frame = [], 0, None if rx is not None else 0, 0, None
+        try:
+            self.b.request("pause")
+            while True:
+                if seen_at is None and taken > s.ticks:
+                    self.log("coop: test burst %s: no line after %d frames (line %d: %s)" % (s.name, taken, s.line, s.start))
+                    break
+                if seen_at is not None and after >= s.radius:
+                    break
+                r = self.b.request("step", frames=1)
+                frame = r.get("frame", frame)
+                path = self.burst_path("%s-%03d" % (s.name, taken))
+                self.b.request("shot", reply_timeout=30.0, path=path, timeout=20)
+                taken += 1
+                if seen_at is None:
+                    kept.append(path)
+                    if len(kept) > BURST_BEFORE:
+                        old = kept.pop(0)
+                        try:
+                            os.remove(old)
+                        except OSError:
+                            pass
+                    n, last = self._log_matches(rx)
+                    if n > before:
+                        seen_at = taken
+                        self.log("coop: test burst %s: line seen at shot %d (frame %s): %s" % (s.name, taken - 1, frame,
+                                                                                         last.strip()))
+                else:
+                    after += 1
+        except Exception as e:   # a shot or step that fails ends the burst, not the script
+            self.log("coop: test burst %s failed at shot %d: %s" % (s.name, taken, e))
+        finally:
+            try:
+                self.b.request("resume")
+            except Exception as e:
+                self.log("coop: test burst %s: resume failed: %s" % (s.name, e))
+        self.log("coop: test burst %s: %d shots, last frame %s" % (s.name, taken, frame))
+        return self.clock()
+
     def play(self, steps):
         self.log("coop: test script %d steps" % len(steps))
         t = self.clock()
@@ -956,6 +1080,8 @@ class Player:
                 t = max(t, self.steer(s, max(t, self.clock())))
             elif s.kind == "await":
                 t = max(t, self.await_line(s, max(t, self.clock())))
+            elif s.kind == "burst":
+                t = max(t, self.burst(s, max(t, self.clock())))
             elif s.kind == "warp":
                 self.warp(s)
         self.log("coop: test script done")
@@ -1013,7 +1139,8 @@ def read_text(path):
 # game compiles cold at every start (~440 s on Longshot rc.7, ~230 s on rc.4, longer with several compiling at once).
 # A fixed deadline is wrong for some of them, so the wait follows the progress: it fails only when the count stops
 # rising for RENDERER_STALL s, or at RENDERER_LIMIT s in all.
-RENDERER_PROGRESS = re.compile(r"vk: (start-up: pipelines|noted pipelines:) (\d+) of (\d+)")
+# Longshot rc.4 to rc.7 write "start-up: pipelines N of M"; later builds write "start-up: shaders N of M".
+RENDERER_PROGRESS = re.compile(r"vk: (start-up: (?:pipelines|shaders)|noted pipelines:) (\d+) of (\d+)")
 RENDERER_STALL = 180    # s without a new progress count (it comes every ~10 s while the compile moves)
 RENDERER_LIMIT = 3600   # s in all, progress or not (a new game folder's first start: ~18 min)
 
@@ -1111,9 +1238,10 @@ def place_games(pids, display, say, wait=0.0, topmost=False):
         say("window placement: %s" % e)
         return
     by_pid = {pids[x]: x for x in tags}
+    used = placement.check_display(display)["name"]   # (the monitor really used: the primary one after a fallback)
     for pid, rect in placed:
         say("%s: window placed at %d,%d %dx%d on %s" % (by_pid[pid], rect[0], rect[1], rect[2], rect[3],
-                                                         placement.display_name(display)))
+                                                         used))
 
 
 SAVE_USER = "5a3c9e1f0b7d24680000000000000001"   # the user folder a Hookshot game reads its saves from
@@ -1199,7 +1327,10 @@ def pack_start(game, env, say):
                                        env.get("LICHII_COOP_TUNICS", ""))
         got = self_tunic.put(pack, color)
         lines.append("own tunic files: %s" % (got or "none (the game's green)"))
-        if os.path.isdir(mods):
+        if env.get("OOT_TEST_NO_MERGE", "") == "1":
+            # (row 288's proof: a game started again without the kit's merge, as the Insert menu's Restart now)
+            lines.append("merge NOT run (OOT_TEST_NO_MERGE=1)")
+        elif os.path.isdir(mods):
             merge_tables.main(["--mods", mods] + (["--romfs", romfs] if romfs else []))
     except Exception as e:  # (the kit's start never stops on it either)
         lines.append("pack start failed (%s: %s)" % (type(e).__name__, e))
@@ -1239,7 +1370,13 @@ def kit_start_command(kit):
             "-Mode", "choose", "-Hookshot", "-NoUpdate"]
 
 
-def kit_start(kit, env, out, x, timeout=1200, run_cmd=None):
+# A start may build the game without asking (a mod's code patches changed: 5 to 25 minutes, more on a slow PC), so the
+# wait is a real player's. Past it the start's whole process tree is stopped (hs.run_tree): a build left running wrote
+# its old game into the folder after the next build had (u2-fix: U2 from v0.11.10 ended on Longshot v3.0.0).
+KIT_START_TIMEOUT = 3600
+
+
+def kit_start(kit, env, out, x, timeout=KIT_START_TIMEOUT, run_cmd=None):
     """Runs the kit's start for game x with env; the started game's process id. Its window's text: kit-start-<x>.txt."""
     pidfile = os.path.join(out, "kit-pid-%s.txt" % x)
     if os.path.exists(pidfile):
@@ -1247,8 +1384,15 @@ def kit_start(kit, env, out, x, timeout=1200, run_cmd=None):
     env = dict(env, OOT_COOP_KIT=kit, OOT_COOP_TEST_KIT=pidfile, OOT_COOP_NO_SHORTCUT="1")
     text_path = os.path.join(out, "kit-start-%s.txt" % x)
     with open(text_path, "wb") as so:
-        r = (run_cmd or lanes.hs.run_quiet)(kit_start_command(kit), cwd=kit, env=env, input=b"n\r\n" * 16, stdout=so,
-                    stderr=subprocess.STDOUT, timeout=timeout)
+        try:
+            r = (run_cmd or lanes.hs.run_tree)(kit_start_command(kit), cwd=kit, env=env, input=b"n\r\n" * 16,
+                                               stdout=so, stderr=subprocess.STDOUT, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            r = None
+    if r is None:
+        last = " | ".join(l.strip() for l in read_text(text_path).splitlines() if l.strip())[-600:]
+        raise RuntimeError("kit start of %s timed out after %d s (it and everything it started stopped): %s"
+                           % (x, timeout, last))
     text = read_text(text_path)
     pid = ""
     if os.path.isfile(pidfile):
@@ -1328,8 +1472,10 @@ def run(a):
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
     say = Log(os.path.join(out, "steps.txt"), echo=print)
-    tags = [a.only] if getattr(a, "only", None) else ["A", "B"]   # --only: one game into a live session (live.py relaunch)
-    games = {"A": os.path.abspath(a.game_a), "B": os.path.abspath(a.game_b)}
+    # One game (only --game-a or only --game-b) runs alone: its own bridge, play-test port and log, as in a pair.
+    # --only: one game into a live session (live.py relaunch).
+    games = {x: os.path.abspath(g) for x, g in (("A", a.game_a), ("B", a.game_b)) if g}
+    tags = [a.only] if getattr(a, "only", None) else list(games)
     kits = {"A": getattr(a, "kit_a", None), "B": getattr(a, "kit_b", None)}
     for x in tags:
         if kits[x]:
@@ -1343,6 +1489,8 @@ def run(a):
             mon = placement.check_display(a.display)
         except placement.PlacementError as e:
             raise SystemExit("window placement: %s" % e)
+        if mon.get("note"):
+            say("window placement: %s" % mon["note"])
         say("windows go to %s (work area %s)" % (mon["name"], mon["work"]))
     started = {}
     scripts = {"A": a.script_a, "B": a.script_b}
@@ -1385,8 +1533,8 @@ def run(a):
                 delay = test_delay_args(a.test_delay_ms, a.test_jitter_ms)
                 if delay:
                     senv["OOT_COOP_TEST"] = "1"   # coop_server refuses the delay without it
-                server = lanes.hs.popen_quiet([a.server, "--port", str(a.port), "--password-env", "OOT_COOP_TEST_PASSWORD"]
-                                              + delay + a.server_arg, stdout=so, stderr=subprocess.STDOUT, env=senv)
+                server = lanes.hs.popen_quiet(lanes.hs.server_bind([a.server, "--port", str(a.port), "--password-env",
+                                              "OOT_COOP_TEST_PASSWORD"] + delay + a.server_arg), stdout=so, stderr=subprocess.STDOUT, env=senv)
             keep_pids()
             time.sleep(1)
         for i, x in enumerate(tags):
@@ -1400,7 +1548,12 @@ def run(a):
             open(commands[x], "w").close()
             env = dict(os.environ, OOT_COOP_KIT_START="1", HOS_CONTROL=sock, HOS_CONTROL_MEM="ro", LICHII_COOP_TEST_COMMANDS=commands[x])
             test_game_defaults(env)   # its own save, no crash ask on the title (TEST_GAME_DEFAULTS): a switch can undo it
-            if a.server or getattr(a, "only", None) or (a.host_in_game and x != "A"):   # (--only: the session's server)
+            b_pastes = a.host_in_game and x == "B" and getattr(a, "b_joins_in_game", False)
+            if b_pastes:
+                # private-lobby-fix: B also starts with co-op off and joins through its own Multiplayer page (its
+                # script's `menu paste`: the code A's host put on this PC's clipboard), as a friend's paste does.
+                env["LICHII_COOP_NAME"] = x
+            elif a.server or getattr(a, "only", None) or (a.host_in_game and x != "A"):   # (--only: the session's server)
                 env["LICHII_COOP_SERVER"] = "127.0.0.1:%d" % a.port
                 env["LICHII_COOP_NAME"] = x   # "A", "B": the scripts type /teleport A, /teleport B
                 env["LICHII_COOP_PASSWORD"] = a.password
@@ -1410,7 +1563,7 @@ def run(a):
                 env.update(host_in_game_env(a.port, a.password))
             if a.playtest_ports:
                 # the play-test bridge (docs/playtest.md "Bridge protocol"): off unless its port is given
-                env["LICHII_COOP_PLAYTEST_PORT"] = str(a.playtest_ports + "AB".index(x) + 1)   # (A p1, B p2, also --only)
+                env["LICHII_COOP_PLAYTEST_PORT"] = str(a.playtest_ports + "AB".index(x) + 1)   # (A p1, B p2, also alone or --only)
                 env["LICHII_COOP_PLAYTEST_VERBS"] = "1"   # act, warp, flag, give: a player's game never gets this
                 env.setdefault("LICHII_COOP_CHEATS", "1")   # the bridge's give goes through the cheats queue
             for kv in a.env:
@@ -1497,7 +1650,8 @@ def run(a):
                 try:
                     p = Player(pb, Log(os.path.join(out, "player-%s.txt" % x)), shot=shooter(x, a.name),
                                connect=lambda: Bridge.connect(bridges[x][0]), commands=commands[x],
-                               read_log=game_log(x))
+                               read_log=game_log(x),
+                               burst_path=lambda m, x=x: os.path.join(out, "%s-%s-%s-%s.png" % (a.name, x, m, x)))
                     players[x] = p
                     p.play(parsed[x])
                 finally:
@@ -1522,6 +1676,9 @@ def run(a):
             raise RuntimeError("play: " + ", ".join("%s %s" % kv for kv in errs.items()))
         time.sleep(1)
         both("end")
+        wrong = ["%s %s" % (x, ", ".join(p.warp_failed)) for x, p in sorted(players.items()) if p.warp_failed]
+        if wrong:   # (the shots are taken: they show where the game went instead)
+            raise RuntimeError("warp landed on another map than asked: " + "; ".join(wrong))
         say("scenario played")
     except Exception as e:
         failed = str(e) or e.__class__.__name__
@@ -1612,12 +1769,15 @@ def main(argv=None):
     r = sub.add_parser("run", help="the two-game test (tools/autotest/run.ps1 -Runtime hookshot)")
     r.add_argument("--lane", type=int, choices=[1, 2],
                    help="test lane (tools/autotest/lanes.py): its pair, port, pipe and run folder unless given; holds its lock")
-    r.add_argument("--game-a", help="(required without --lane)")
-    r.add_argument("--game-b", help="(required without --lane)")
+    r.add_argument("--game-a", help="(without --lane: this one, --game-b, or both)")
+    r.add_argument("--game-b", help="(without --lane: this one, --game-a, or both)")
     r.add_argument("--server", help="coop_server to start (none: the games use their coop.ini)")
     r.add_argument("--host-in-game", action="store_true",
                    help="no coop_server: game A hosts through its own Multiplayer > Host (script step `menu host`) on "
                         "--port with --password, on 127.0.0.1 only; B joins it (row 260)")
+    r.add_argument("--b-joins-in-game", action="store_true",
+                   help="with --host-in-game: B too starts with co-op off and joins through its own Multiplayer page "
+                        "(script step `menu paste`: the code A's host copied; private-lobby-fix)")
     r.add_argument("--port", type=int, help="default 27560 (a lane: its own)")
     r.add_argument("--password", default="autotest-pass",
                    help="the join password of the server it starts, given to both games (every session has one)")
@@ -1688,9 +1848,11 @@ def main(argv=None):
             p.error("--host-in-game needs --script-b (B joins A)")
         if not re.fullmatch(r"[!-~]{1,64}", a.password):
             p.error("--host-in-game: --password of 1 to 64 printable letters")
+    elif getattr(a, "b_joins_in_game", False):
+        p.error("--b-joins-in-game needs --host-in-game")
     if not a.lane:
-        if not (a.game_a and a.game_b and a.out):
-            p.error("--game-a, --game-b and --out (or --lane N)")
+        if not ((a.game_a or a.game_b) and a.out):
+            p.error("--game-a and/or --game-b, and --out (or --lane N)")
         a.port, a.pipe = a.port or 27560, a.pipe or "coop-auto"
         return run(a)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script's folder out)

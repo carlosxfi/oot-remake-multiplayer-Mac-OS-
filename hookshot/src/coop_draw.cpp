@@ -10,7 +10,6 @@
 #include "coop_dbno_draw.h"
 #include "coop_debug_panels.h"
 #include "coop_hud_hearts.h"
-#include "coop_hud_layout.h"
 #include "coop_i18n.h"
 
 namespace CoopDraw {
@@ -23,16 +22,8 @@ constexpr float kChatWidth = 520.0f;
 // The co-op window's sizes for the game look, in the game's 720-line picture.
 constexpr float kGameHeight = 720.0f;
 constexpr float kHudLeft = 40.0f;
-constexpr float kHudNamePx = 21.0f;   // (25, 19, 16 and hearts 38 before: a little big, a tester 2026-11-20)
-constexpr float kHudPlacePx = 16.0f;
-constexpr float kHudGap = 12.0f;
-// The heart pictures are 96 x 96 with the heart about half as wide in the
-// middle: drawn kHeartPx big, kHeartStep apart (the co-op window's HudLayer).
-constexpr float kHeartPx = 32.0f;
-constexpr float kHeartStep = 0.55f;
 constexpr float kChatGamePx = 23.0f;
 constexpr float kListGamePx = 24.0f;
-constexpr float kHudRoom = 0.3f;   // the HUD blocks' column: a name or place at most this share of the picture wide
 
 int Alpha(float a) {
     return std::clamp(static_cast<int>(a * 255.0f), 0, 255);
@@ -473,6 +464,8 @@ void DrawPlayers(const HosCoopDraw& d, const std::vector<CoopHook::PlayerRow>& r
     }
 }
 
+}  // namespace
+
 // The voice state after a name (docs/voice.md, "Who is talking"), as words in the game's font: " (talking)",
 // " (muted)", nothing while quiet. (Before 2026-11-21 a drawn microphone: no own-drawn shapes on the HUD, owner.)
 std::string VoiceWords(CoopVoice::Icon icon) {
@@ -483,92 +476,7 @@ std::string VoiceWords(CoopVoice::Icon icon) {
     }
 }
 
-// The game look's chat: the top of its lines and box (the picture's bottom
-// when there are none), so the HUD blocks stop above it.
-float ChatTopGame(const HosCoopDraw& d, const Scene& s, const Look& look) {
-    const ChatPlace at = ChatAt(d, &look);
-    const float box = s.box ? at.px * 1.4f + 6.0f : 0.0f;   // (DrawBox's game look)
-    float top = d.height - kMargin - (box > 0 ? box + 4.0f : 0.0f);   // (DrawChatGame's bottom)
-    if (!s.chat.empty()) {
-        top -= kPad + at.px * 1.3f * static_cast<float>(s.chat.size());
-    }
-    return top;
-}
-
-// One HUD block's height, its gap under it included (as DrawHud steps).
-float BlockHeight(const HudBlock& b, float u) {
-    float h = kHudNamePx * u + 2 * u;
-    if (!b.hearts.empty()) {
-        const int rows = (static_cast<int>(b.hearts.size()) + CoopHudHearts::kPerRow - 1) / CoopHudHearts::kPerRow;
-        h += rows * kHeartPx * u * kHeartStep + 3 * u;
-    }
-    if (!b.place.empty()) {
-        h += kHudPlacePx * u;
-    }
-    return h + kHudGap * u;
-}
-
-// The other players under the game's own hearts, top left, as the game would
-// draw them (the co-op window's HudLayer): per player their name in the
-// game's font, a row of their hearts with the game's heart pictures, and the
-// game's name of the place they are in. No box. Game look only. Row 141: the
-// first block's top is below the game's own HUD as it is laid out this frame
-// (`hud_bottom`; none: the fixed top), and blocks that would run into the
-// chat at `floor` are left out, a "+N" line saying how many.
-void DrawHud(const HosCoopDraw& d, const std::vector<HudBlock>& blocks, CoopVoice::Icon own_voice, const Look& look,
-             std::optional<double> hud_bottom, float floor) {
-    const Pic p = Picture(d);
-    const float u = p.u;
-    const float x = p.left + kHudLeft * u;
-    float y = static_cast<float>(CoopHudLayout::BlocksTop(d.width, d.height, hud_bottom));
-    const float heart = kHeartPx * u;
-    const float name_px = kHudNamePx * u;
-    const float place_px = kHudPlacePx * u;
-    // A name or place never runs past the blocks' column (a long name, a narrow window): cut with "..." to
-    // kHudRoom of the picture's width (ui-audit-01112 B4: everything fits on the screen).
-    const float room = p.width * kHudRoom;
-    if (own_voice != CoopVoice::Icon::none && !blocks.empty()) {   // our own row: "You" and our voice state
-        Font(d, look.medium);
-        const std::string you = Elided(d, name_px, CoopI18n::Tr("You") + VoiceWords(own_voice), room);
-        GameText(d, x, y, name_px, Rgba(255, 255, 255, 255), you.c_str());
-        y += name_px + kHudGap * u;
-    }
-    std::vector<double> heights;
-    heights.reserve(blocks.size());
-    for (const auto& b : blocks) {
-        heights.push_back(BlockHeight(b, u));
-    }
-    const std::size_t shown = CoopHudLayout::BlocksThatFit(y, heights, floor, name_px);
-    for (std::size_t i = 0; i < shown; ++i) {
-        const auto& b = blocks[i];
-        const int a = b.dim ? 150 : 255;
-        Font(d, look.medium);
-        GameText(d, x, y, name_px, Rgba(255, 255, 255, a), Elided(d, name_px, b.name + VoiceWords(b.voice), room).c_str());
-        y += name_px + 2 * u;
-        if (!b.hearts.empty()) {
-            for (std::size_t i = 0; i < b.hearts.size(); ++i) {
-                const int col = static_cast<int>(i) % CoopHudHearts::kPerRow;
-                const int row = static_cast<int>(i) / CoopHudHearts::kPerRow;
-                const float hx = x - heart * 0.22f + col * heart * kHeartStep;
-                const float hy = y - heart * 0.2f + row * heart * kHeartStep;
-                d.draw_image(d.user, look.hearts[std::clamp(b.hearts[i], 0, 4)], hx, hy, hx + heart, hy + heart,
-                             Rgba(255, 255, 255, a));
-            }
-            const int rows = (static_cast<int>(b.hearts.size()) + CoopHudHearts::kPerRow - 1) / CoopHudHearts::kPerRow;
-            y += rows * heart * kHeartStep + 3 * u;
-        }
-        if (!b.place.empty()) {
-            Font(d, look.regular);
-            GameText(d, x, y, place_px, Rgba(225, 225, 225, a), Elided(d, place_px, b.place, room).c_str());
-            y += place_px;
-        }
-        y += kHudGap * u;
-    }
-    if (shown < blocks.size()) {   // (row 141: more players than fit above the chat)
-        Font(d, look.medium);
-        GameText(d, x, y, name_px, Rgba(225, 225, 225, 255), ("+" + std::to_string(blocks.size() - shown)).c_str());
-    }
-}
+namespace {
 
 void DrawCheats(const HosCoopDraw& d, const CheatsView& c) {
     const CheatsBox b = CheatsAt(d.width, d.height, c);
@@ -900,7 +808,7 @@ bool Wanted(const Scene& s) {
     if (s.title && !s.title->prompt.empty()) {
         return true;
     }
-    return !s.chat.empty() || !s.hud.empty() || s.box.has_value() || s.cheats.has_value() || (s.markers && !s.markers->items.empty()) || s.players.has_value() ||
+    return !s.chat.empty() || s.box.has_value() || s.cheats.has_value() || (s.markers && !s.markers->items.empty()) || s.players.has_value() ||
            (s.panel && !s.panel->empty()) || s.dbno.has_value() || (s.map != nullptr && !s.map->players.empty() && ((s.map->minimap && s.map->capture != nullptr) || s.map->page));
 }
 
@@ -918,9 +826,6 @@ void Draw(const HosCoopDraw& d, const Scene& s, const Look& look) {
     }
     if (s.map) {
         DrawMap(d, *s.map, game);
-    }
-    if (game) {
-        DrawHud(d, s.hud, s.own_voice, *game, s.game_hud_bottom, ChatTopGame(d, s, *game));
     }
     if (CoopDebugPanels::kOn && s.panel) {   // (release kits: none, coop_debug_panels.h)
         Font(d, 0);

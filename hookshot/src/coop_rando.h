@@ -191,6 +191,10 @@ std::string SeedSettings(std::string_view seed_file_text);
 // Whether a seed file (.ootrr, JSON) places shop items (shopsanity: a top-level "shops" object with an entry). Such a seed
 // sells its one-time shelves once (lichii/hook/coop_shop_sale.h: co-op shares their sold counters).
 bool SeedShops(std::string_view seed_file_text);
+// The item a seed file (.ootrr, JSON) places at `location` (its top-level "placements" object, OOTRR settings/seed.rs:
+// location name -> item name), or none when the location is not listed (it keeps its vanilla item) or the file has
+// no placements. lichii/hook/coop_story.h GiftShuffled (row 237): Saria's gift and the moat's ocarina.
+std::optional<std::string> SeedPlacement(std::string_view seed_file_text, std::string_view location);
 std::vector<std::string> BuildArgs(const std::filesystem::path& seed_file, const std::filesystem::path& game_folder,
                                    const std::filesystem::path& mods_root, const std::string& folder);
 // The game uses one resource size table, the one of the mod that wins (the seed), so the seed's must hold every
@@ -259,6 +263,21 @@ std::optional<std::pair<std::string, std::string>> OutsideActorRows(const std::f
 int PutBackKeptRows(const std::filesystem::path& folder);
 // Its chat line (repeats when joining).
 std::string RowsLine(std::string_view mod, std::string_view table);
+// Row 288: Longshot serves the menus' layout archive (romfs/UI/Layout2Archive/Common.Product.*.blarc.zs) whole from
+// the winning mod (OutsideSizeTable's order). The Characters page's layouts are in the copy of the mod whose code
+// makes the page: Character Select's, or the puppet pack's (co-op's own Characters tab). When another mod's copy wins
+// (a seed made in the game, then the game started again without the kit's start, whose merge puts every mod's
+// members into the winner: merge_tables.py merge_members) the page's layouts are not in the game, and opening the
+// page makes a layout from nothing: the game crashes. Merged by the kit = the winner's
+// `_coop-archives/UI/Layout2Archive/<file>.txt` stamp still names the file (KeptCopy's rule).
+enum class CharactersCode { none, character_select, pack };  // whose Characters tab code the game holds
+// The mod whose layout archive wins without the Characters page's layouts; none when the page's own mod wins, the
+// winner was merged by the kit, no mod has the archive, or no Characters code is in the game.
+std::optional<std::string> OutsideLayouts(const std::filesystem::path& mods_root,
+                                          const std::vector<CoopMods::Row>& rows,
+                                          const std::vector<std::string>* indexed, CharactersCode code);
+// Its chat line (at the start, and again when the page is asked for).
+std::string LayoutsLine(std::string_view mod);
 // This game's chat line for it (it repeats when joining), and the line the other players get (at most kTellChars).
 std::string OutsideLine(std::string_view mod);
 std::string OutsideTellLine(std::string_view mod);
@@ -357,6 +376,10 @@ public:
         // and why: one chat line (any thread). False when it could not be sent (not connected): tried again at the
         // next Recheck. Empty: said only in this game.
         std::function<bool(const std::string& line)> tell_others;
+        // Row 281: whether a restart is due now to play the host's values (its seed, or its switch): the next start
+        // joins the host's game again once (CoopPause::RejoinAfterRestart). Told at each check, also when it is due no
+        // more. Any thread. Empty: nothing.
+        std::function<void(bool due)> restart_for_host;
         // The clock for repeating the restart line (tests); empty: steady_clock.
         std::function<std::chrono::steady_clock::time_point()> now;
         // Try every preset once per OOTRR before its first build (#16): the Settings row then offers only the ones it
@@ -366,6 +389,9 @@ public:
         std::function<int(const std::filesystem::path& program, const std::vector<std::string>& args,
                           const std::filesystem::path& log_file)>
             probe_run;
+        // Row 288: whose Characters tab code this game holds (its exefs_patches.txt; coop_pause_tab.h
+        // SnailCodeBuiltIn / CharselCodeBuiltIn). Asked once, at Start. Empty: none.
+        std::function<CharactersCode()> characters_code;
     };
     Rando(CoopMods::Loader& loader, Hooks hooks);
     ~Rando();  // waits for a build that runs
@@ -394,9 +420,20 @@ public:
     // Also when a pack actor table wins without the pack's rows (OutsideActorRows, RowsMissing).
     // This run plays one of our seeds whose seed file places shop items (SeedShops; set at Start).
     bool SeedHasShops() const { return seed_shops_.load(); }
+    // Whether this run plays a seed (one of ours on, or a hand-put seed folder), and whether its seed file was read
+    // (a hand-put folder has none). Set at Start.
+    bool PlaysSeed() const;
+    bool SeedRead() const;
+    // The item this run's seed places at `location` (SeedPlacement of its seed file), none when not listed or unread.
+    std::optional<std::string> PlacementAt(std::string_view location) const;
     bool HoldPack() const { return hold_pack_.load() || outside_.load() || rows_out_.load(); }
     // A mod's RSDB table wins without the pack's rows this run (OutsideActorRows): the game would refuse the puppets.
     bool RowsMissing() const { return rows_out_.load(); }
+    // Row 288: another mod's layout archive wins without the Characters page's layouts this run (OutsideLayouts): the
+    // page must not be opened (the pause tab keeps the game from it: coop_pause_tab.h CharactersHold). Set at Start.
+    bool LayoutsMissing() const { return layouts_out_.load(); }
+    // LayoutsLine into the chat again (the page was asked for). Any thread.
+    void SayLayouts();
     // The host's MOD_SETTINGS value for the hand-put seed this run plays (kHandSeedKey), once its files are hashed (the
     // first call starts that, off the caller's thread); nullopt meanwhile and when none. Cheap: called every frame.
     std::optional<std::string> HandValue();
@@ -415,6 +452,7 @@ private:
     void TellOthers();                    // sends tell_ and outside_tell_ (Hooks::tell_others)
     void SayOutside();                    // outside_line_ into the chat again, outside_tell_ armed (mutex_ not held)
     void SayRestart(std::string line);    // a restart line for the chat, kept to repeat (mutex_ not held)
+    void RestartForHost(bool due);        // Hooks::restart_for_host, false without a host's values (mutex_ free)
     void RepeatRestart();                 // restart_ into the chat now (mutex_ not held)
     std::chrono::steady_clock::time_point Now() const;
     std::string CurrentTables() const;    // TablesStamp of the other mods' size tables now
@@ -447,6 +485,8 @@ private:
     std::string outside_mod_;         // that mod (mutex_): empty when none
     std::atomic<bool> rows_out_{false};  // a pack actor table wins without the pack's rows (RowsMissing)
     std::string rows_mod_, rows_table_;  // that mod and table (mutex_): empty when none
+    std::atomic<bool> layouts_out_{false};  // a layout archive wins without the Characters page's (LayoutsMissing)
+    std::string layouts_mod_;         // that mod (mutex_): empty when none
     bool outside_tell_ = false;       // OutsideTellLine not sent yet (mutex_)
     std::string bad_settings_;        // the "settings" value said to be no settings string (mutex_)
     std::string restart_;             // the restart line until this game restarts (mutex_): empty when none
@@ -465,6 +505,8 @@ private:
     std::thread hasher_;                            // hand_mutex_
     std::atomic<bool> stop_hash_{false};
     std::string hand_playing_;  // set at Start: HandPlaying
+    bool plays_seed_ = false;   // set at Start (mutex_): PlaysSeed
+    std::string seed_text_;     // set at Start (mutex_): the seed file of the seed this run plays, empty when unread
     std::string hand_said_;     // the host's folder the guest's chat line was said for, with its match (mutex_)
     std::string hand_tell_;     // a HandTellLine not sent yet (mutex_)
 };

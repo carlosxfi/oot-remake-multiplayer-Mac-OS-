@@ -793,7 +793,7 @@ def ask(url, seconds=SEND_ASK_SECONDS, read=None, out=print):
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             out("  n (no terminal: no)")
             return False
-        sys.stdout.write(f"  (y/n, no in {seconds} s) ")
+        sys.stdout.write(f"  (press y to send, n not to; no key in {seconds} s: no) ")
         sys.stdout.flush()
         ready, _, _ = select.select([sys.stdin], [], [], seconds)
         line = sys.stdin.readline() if ready else None

@@ -156,7 +156,12 @@ class ReportBot(discord.Client):
         except intake.Refused as e:
             if taken and e.status != 429:
                 intake.Limits.release(taken)
-            if e.status not in (404, 405):
+            if e.status in (404, 405):
+                pass
+            elif intake.is_health_check(request.headers.get("Content-Length"), request.headers.get("X-Squadala-Install"),
+                                        request.headers.get("X-Squadala-Report")):
+                log.info("problem-report intake check (an empty POST, no ids): answered %d", e.status)
+            else:
                 log.info("problem-report upload refused (%d: %s)", e.status, e.reason)
             return answer(e.status, ok=False, error=e.reason, retry_after=e.retry_after)
         except OSError:

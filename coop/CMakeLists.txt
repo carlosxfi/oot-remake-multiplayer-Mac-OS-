@@ -3,7 +3,9 @@
 add_library(coop_protocol STATIC
   protocol/src/codec.cpp
   protocol/src/join_password.cpp
+  protocol/src/mod_world.cpp
   protocol/src/official_mark.cpp
+  protocol/src/race.cpp
   protocol/src/traffic_crypto.cpp
 )
 target_include_directories(coop_protocol PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/protocol/include")
@@ -43,6 +45,7 @@ add_library(coop_host STATIC
   host/src/game_flags.cpp
   host/src/game_flag_events.cpp
   host/src/game_items.cpp
+  host/src/key_item_tally.cpp
   host/src/lent_keys.cpp
   host/src/map_drop_log.cpp
   host/src/notify.cpp

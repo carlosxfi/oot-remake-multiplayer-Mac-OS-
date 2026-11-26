@@ -1,0 +1,110 @@
+#! switches COOP_TEST_PARTY_HUD=1
+# hs-party-hud (party-hud-native, 0.11.13): the other players' hearts on the game's own HUD, from the pack's hidden
+# copies of the game's heart parts in PlayerStatus_00 (tools/puppet_pack/party_hud.py) set by the module
+# (hookshot/src/coop_party_hud.h) with the game's own calls. COOP_TEST_PARTY_HUD=1 gives four made-up players
+# (20, 10, 3 and 4 hearts; "Three" not connected = dimmed) losing a quarter heart every 1.5 s, so one game alone
+# shows every fill. Needs a pack rebuilt with the pause menu step (party_hud.add_party). One game (A).
+# Read: A's "coop: party hud:" lines (found or "older pack", each animation's last frame, "on the game's HUD") and
+# the shots: three blocks under the game's own hearts and magic, each a line (name + n/max) over its hearts, two
+# rows for 20 hearts, whole / empty / 1/4 / 1/2 / 3/4 hearts, "+1" under the third, "Three" dimmed, the second line
+# (16 W + " (talking)" + the longest place name, the longest a player can have) whole on screen, nothing off the
+# picture; "You (talking)" (our own line, game text part Pa_CoopSelf_0) first over the blocks; menu-open: none of ours over the game's menu; menu-closed: back. No drawn blocks at the same time.
+# PASS needs the shots. No PASS from the log alone.
+wait 300
+mark fill-01
+wait 180
+mark fill-02
+wait 180
+mark fill-03
+wait 180
+mark fill-04
+wait 180
+mark fill-05
+wait 180
+mark fill-06
+wait 180
+mark fill-07
+wait 180
+mark fill-08
+wait 180
+mark fill-09
+wait 180
+mark fill-10
+wait 180
+mark fill-11
+wait 180
+mark fill-12
+wait 180
+mark fill-13
+wait 180
+mark fill-14
+wait 180
+mark fill-15
+wait 180
+mark fill-16
+wait 180
+mark fill-17
+wait 180
+mark fill-18
+wait 180
+mark fill-19
+wait 180
+mark fill-20
+wait 180
+mark fill-21
+wait 180
+mark fill-22
+wait 180
+mark fill-23
+wait 180
+mark fill-24
+wait 180
+mark fill-25
+wait 180
+mark fill-26
+wait 180
+mark fill-27
+wait 180
+mark fill-28
+wait 180
+mark fill-29
+wait 180
+mark fill-30
+wait 180
+mark fill-31
+wait 180
+mark fill-32
+wait 180
+mark fill-33
+wait 180
+mark fill-34
+wait 180
+mark fill-35
+wait 180
+mark fill-36
+wait 180
+mark fill-37
+wait 180
+mark fill-38
+wait 180
+mark fill-39
+wait 180
+mark fill-40
+wait 180
+mark fill-41
+wait 180
+mark fill-42
+wait 180
+mark fill-43
+wait 180
+mark fill-44
+wait 180
+mark fill-45
+wait 180
+menu customize
+wait 120
+mark menu-open
+menu close
+wait 120
+mark menu-closed
+wait 60

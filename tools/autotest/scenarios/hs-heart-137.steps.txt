@@ -13,7 +13,7 @@
 #  3. refight: a-r-late/b-r-late: both 4 hearts (MaxLife 16), never 20 in either log.
 #  4. host System Load (hs-heart-137-sysload: pause > System > Load, first slot, yes): a second FLAG_RESET ('the
 #     fights this session knew are forgotten' twice in B's log); a-sys-loaded/b-sys-late: both at A's loaded MaxLife,
-#     never 20. VOID if a-sys-confirm shows no load prompt (the menu path is new: shots a-sys-tab/-load/-list/-confirm).
+#     never 20. VOID if a-sys-confirm shows no load prompt (the menu path is new: shots a-sys-tab/-load/-list/-confirm/-on-load; the confirm opens on Cancel, so the script goes up to Load first).
 #  5. b-loaded: B's hearts right after A's title load (3 = the host's save, or 4 held: the log says which).
 #  6. guest title load (B closes, boots, Continue): B comes back at 16 = A's, not 20.
 #! switches LICHII_COOP_DEBUG_BOSS=1,LICHII_COOP_DEBUG_OBJECTS=1,LICHII_COOP_DEBUG_FLAGS=1,LICHII_COOP_CHEATS=1

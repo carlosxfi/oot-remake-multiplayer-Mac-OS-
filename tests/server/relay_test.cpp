@@ -4,6 +4,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -281,6 +282,51 @@ TEST_CASE("relay: wrong room names count with wrong codes against one limit (iss
   CHECK(f.lookup_room("forest-gang", kGuest, 200) == LookupResult::kSlowDown);
   CHECK(f.lookup(code, kGuest, 200) == LookupResult::kSlowDown);
   CHECK(f.lookup_room("forest-gang", Endpoint{0x0300000Au, 1}, 200) == LookupResult::kOk);
+}
+
+TEST_CASE("relay: a failed lookup is said with its reason, never with a wrong code, and counted (private-lobby-fix)") {
+  std::vector<std::string> said;
+  std::uint64_t next_random = 777;
+  Relay relay{[&] {
+    RelayConfig c;
+    c.random = [&] { return next_random++ * 0x9E3779B97F4A7C15ull; };
+    c.log = [&](const std::string& line) { said.push_back(line); };
+    c.max_guest_addresses = 1;
+    return c;
+  }()};
+  const auto ask = [&](Message m, Endpoint from, std::uint64_t now) {
+    auto out = relay.received(from, encode(m), now);
+    REQUIRE(out.size() == 1);
+    return static_cast<LookupResult>(decoded(out[0]).status);
+  };
+  const auto said_with = [&](const std::string& part) {
+    return std::count_if(said.begin(), said.end(), [&](const std::string& l) { return l.find(part) != std::string::npos; });
+  };
+  auto reg = relay.received(kHost, encode(register_room_message(5, "Drumstick")), 0);
+  REQUIRE(reg.size() == 1);
+  const std::string code = decoded(reg[0]).code;
+  std::string wrong = code;
+  wrong[0] = wrong[0] == 'A' ? 'B' : 'A';
+  said.clear();
+  CHECK(ask(lookup_room_message("drumstik"), kGuest, 10) == LookupResult::kUnknown);
+  CHECK(said_with("asked for room \"drumstik\": no host has it") == 1);
+  CHECK(ask(lookup_message(wrong), kGuest, 10) == LookupResult::kUnknown);
+  CHECK(said_with("asked for a join code: no host has it") == 1);
+  CHECK(said_with(show_code(wrong)) == 0);   // (a wrong code may be one letter off a real one: never said)
+  CHECK(ask(lookup_room_message("x"), kGuest, 10) == LookupResult::kUnknown);
+  CHECK(said_with("a room name the relay does not take") == 1);
+  CHECK(relay.stats().lookups_wrong == 3);
+  // The right room in any case lets the first guest in; a second address is one too many for this host.
+  CHECK(ask(lookup_room_message("DRUMSTICK"), Endpoint{0x0300000Au, 1}, 20) == LookupResult::kOk);
+  CHECK(ask(lookup_room_message("drumstick"), Endpoint{0x0400000Au, 1}, 20) == LookupResult::kFull);
+  CHECK(relay.stats().lookups_full == 1);
+  CHECK(said_with("the most it takes") == 1);
+  // Over the limit: said once a window, however many asks follow.
+  for (int i = 0; i < 7; ++i) ask(lookup_room_message("nope-" + std::to_string(i)), kGuest, 30);
+  said.clear();
+  for (int i = 0; i < 5; ++i) CHECK(ask(lookup_room_message("drumstick"), kGuest, 40) == LookupResult::kSlowDown);
+  CHECK(said_with("over the limit") == 1);
+  CHECK(relay.stats().lookups_limited == 5);
 }
 
 TEST_CASE("relay join text: a code or a room name with its relay, as Join.bat reads it (issue 261)") {
@@ -1091,6 +1137,7 @@ TEST_CASE("relay loopback: a host's link lists its room, the game's list_rooms_o
     e.version = 15;
     return e;
   };
+  listed_config.tag = [] { return std::string("Randomizer KOKIRI (keysanity)"); };   // (row 281)
   RelayLink listed(listed_config);
   RelayLink unlisted(link_config("lake_gang"));
   std::string why;
@@ -1117,13 +1164,17 @@ TEST_CASE("relay loopback: a host's link lists its room, the game's list_rooms_o
       unlisted.service();
     }
   });
-  const auto list = list_rooms_on_relay(relay_at, {}, false, 0x7F000001u);
+  const auto list = list_rooms_on_relay(relay_at, {}, false, 0x7F000001u, true);
   done = true;
   serve.join();
   REQUIRE(list.has_value());
   CHECK(list->total == 1);
   REQUIRE(list->rooms.size() == 1);
   CHECK(list->rooms[0] == RoomEntry{"Forest-Gang", "Saria", 1, 4, 15, true});
+  // Its tag came with the listing (row 281: what world it plays), the unlisted room has none.
+  CHECK(list->tags_answered);
+  REQUIRE(list->tags.size() == 1);
+  CHECK(list->tags[0] == coop::server::relay::RoomTag{"Forest-Gang", "Randomizer KOKIRI (keysanity)"});
 
   // Its host stops: off the list at once.
   listed.stop();
@@ -1242,6 +1293,8 @@ TEST_CASE("public game: listed with the public bit, relay only, a guest joins wi
   c.upnp = true;                        // all forced off: relay only
   c.invite = true;
   c.session.same_network_open = true;
+  c.session.difficulty.auto_scale = false;  // the lobby's difficulty, picked as it was made: on the list
+  c.session.difficulty.preset = coop::protocol::DifficultyPreset::hard;
   HostService host(c);
   std::string error;
   REQUIRE(host.start(error));
@@ -1272,7 +1325,11 @@ TEST_CASE("public game: listed with the public bit, relay only, a guest joins wi
   REQUIRE(list->rooms.size() == 1);
   CHECK(list->rooms[0].room == "Forest-4821");
   CHECK(list->rooms[0].host == "Forest-4821");  // the room's name: nothing of the host's PC
-  CHECK(list->rooms[0].version == coop::protocol::public_listing_version());
+  // (the public bit and the lobby's difficulty ride the version the relay repeats; the protocol is its low byte)
+  CHECK(list->rooms[0].version == coop::protocol::with_listed_difficulty(coop::protocol::public_listing_version(),
+                                                                         c.session.difficulty));
+  CHECK(coop::protocol::listing_protocol(list->rooms[0].version) == coop::protocol::kProtocolVersion);
+  CHECK(coop::protocol::listing_difficulty(list->rooms[0].version) == coop::protocol::ListedDifficulty::hard);
 
   // The game port is on 127.0.0.1 only (the relay's link reaches it there); a guest on this PC stands in for the
   // relay's flow. The wrong password (a private one) is refused, the room's opens it.
@@ -1410,3 +1467,371 @@ TEST_CASE("relay: a listed room's proof is kept and passed on as given, none for
 }
 
 }  // namespace room_proof_tests
+
+// The direct way (issue 261's last step): a guest's answer code goes to the host's link, the host's address comes
+// back only from the host's reply.
+namespace direct_tests {
+
+using coop::server::relay::decode;
+using coop::server::relay::encode;
+using coop::server::relay::Message;
+using room_list_tests::host_at;
+
+namespace {
+
+// An answer code's shape (code letters and dashes); the relay never reads it.
+const std::string kAnswer = "ABCDE-FGHJK-LMNPQ-RSTUV-WXYZ2-34567-89ABC-DEFGH-JK";
+
+Message direct_message(std::string room, std::string code = {}, std::string answer = kAnswer) {
+  Message m;
+  m.kind = Kind::kDirect;
+  m.name = std::move(room);
+  m.code = std::move(code);
+  m.answer = std::move(answer);
+  return m;
+}
+
+Message reply_message(std::uint64_t token, std::uint32_t ticket, std::uint32_t ip, std::uint16_t port) {
+  Message m;
+  m.kind = Kind::kDirectReply;
+  m.token = token;
+  m.ticket = ticket;
+  m.ip = ip;
+  m.port = port;
+  return m;
+}
+
+}  // namespace
+
+TEST_CASE("relay wire: the direct way's four messages go through encode and decode, bad ones are dropped") {
+  Message by_room = direct_message("Forest-Gang");
+  auto back = decode(encode(by_room));
+  REQUIRE(back.has_value());
+  CHECK(back->kind == Kind::kDirect);
+  CHECK(back->name == "Forest-Gang");
+  CHECK(back->code.empty());
+  CHECK(back->answer == kAnswer);
+  Message by_code = direct_message("", "ABCDEFGH");
+  back = decode(encode(by_code));
+  REQUIRE(back.has_value());
+  CHECK(back->code == "ABCDEFGH");
+  CHECK(back->name.empty());
+
+  Message pass;
+  pass.kind = Kind::kDirectAnswer;
+  pass.token = 0x1122334455667788ull;
+  pass.ticket = 0xA1B2C3D4u;
+  pass.answer = kAnswer;
+  back = decode(encode(pass));
+  REQUIRE(back.has_value());
+  CHECK(back->token == pass.token);
+  CHECK(back->ticket == pass.ticket);
+  CHECK(back->answer == kAnswer);
+
+  back = decode(encode(reply_message(5, 6, 0xCB007105u, 27510)));
+  REQUIRE(back.has_value());
+  CHECK(back->kind == Kind::kDirectReply);
+  CHECK(back->token == 5);
+  CHECK(back->ticket == 6);
+  CHECK(back->ip == 0xCB007105u);
+  CHECK(back->port == 27510);
+
+  Message found;
+  found.kind = Kind::kDirectFound;
+  found.status = static_cast<std::uint8_t>(LookupResult::kOk);
+  found.ip = 0xCB007105u;
+  found.port = 27510;
+  const auto found_bytes = encode(found);
+  back = decode(found_bytes);
+  REQUIRE(back.has_value());
+  CHECK(back->ip == found.ip);
+  CHECK(back->port == 27510);
+
+  // Not an answer code (too short, other characters, too long), a bad code, no target: not decoded, not passed on.
+  CHECK_FALSE(decode(encode(direct_message("forest", {}, "ABCDE"))).has_value());
+  CHECK_FALSE(decode(encode(direct_message("forest", {}, std::string(20, 'a')))).has_value());
+  CHECK_FALSE(decode(encode(direct_message("forest", {}, std::string(kMaxAnswerBytes + 1, 'A')))).has_value());
+  CHECK_FALSE(decode(encode(direct_message("", "ABCD0FGH"))).has_value());
+  CHECK_FALSE(decode(encode(direct_message(""))).has_value());
+  // The smallest ask is bigger than the answer it can get back (a forged sender gets less than it sent).
+  CHECK(encode(direct_message("abc", {}, std::string(kMinAnswerBytes, 'A'))).size() > found_bytes.size());
+}
+
+TEST_CASE("relay: the direct way passes the answer code to the room's host and only the host's reply back") {
+  Fixture f;
+  const Endpoint host = host_at(1);
+  REQUIRE(f.register_room(1, "Forest-Gang", host).kind == Kind::kRegisteredName);
+  auto out = f.relay.received(kGuest, encode(direct_message("forest-gang")), 10);
+  REQUIRE(out.size() == 1);
+  CHECK(out[0].to == host);
+  Message pass = decoded(out[0]);
+  REQUIRE(pass.kind == Kind::kDirectAnswer);
+  CHECK(pass.token == 1);
+  CHECK(pass.answer == kAnswer);
+  CHECK(pass.ticket != 0);
+  CHECK(f.relay.directs_waiting() == 1);
+  // Nothing goes to the guest before the host answers: no address of the host from a room name alone.
+  // A reply from another token, or for another ticket, is dropped.
+  REQUIRE(f.register_room(2, "lake", host_at(2)).kind == Kind::kRegisteredName);
+  CHECK(f.relay.received(host_at(2), encode(reply_message(2, pass.ticket, 0x01020304u, 1)), 11).empty());
+  CHECK(f.relay.received(host, encode(reply_message(1, pass.ticket + 1, 0x01020304u, 1)), 11).empty());
+  CHECK(f.relay.directs_waiting() == 1);
+  out = f.relay.received(host, encode(reply_message(1, pass.ticket, 0xCB007105u, 27510)), 12);
+  REQUIRE(out.size() == 1);
+  CHECK(out[0].to == kGuest);
+  Message found = decoded(out[0]);
+  REQUIRE(found.kind == Kind::kDirectFound);
+  CHECK(found.status == static_cast<std::uint8_t>(LookupResult::kOk));
+  CHECK(found.ip == 0xCB007105u);
+  CHECK(found.port == 27510);
+  CHECK(f.relay.directs_waiting() == 0);
+  // The same reply again (late, or forged) goes nowhere.
+  CHECK(f.relay.received(host, encode(reply_message(1, pass.ticket, 0xCB007105u, 27510)), 13).empty());
+
+  // A host that did not take the code says ip 0: the guest gets ok with no address (and goes through the relay).
+  out = f.relay.received(kGuest, encode(direct_message("Forest-Gang")), 20);
+  REQUIRE(out.size() == 1);
+  pass = decoded(out[0]);
+  out = f.relay.received(host, encode(reply_message(1, pass.ticket, 0, 27510)), 21);
+  REQUIRE(out.size() == 1);
+  found = decoded(out[0]);
+  CHECK(found.status == static_cast<std::uint8_t>(LookupResult::kOk));
+  CHECK(found.ip == 0);
+  CHECK(found.port == 0);
+
+  // A join code works the same way.
+  const std::string code = f.register_host(3, host_at(3));
+  out = f.relay.received(kGuest, encode(direct_message("", code)), 30);
+  REQUIRE(out.size() == 1);
+  CHECK(out[0].to == host_at(3));
+  CHECK(decoded(out[0]).token == 3);
+  CHECK(f.relay.stats().directs_passed == 3);
+  CHECK(f.relay.stats().directs_answered == 2);
+  // Asking the direct way lets nobody in: the guest's address still needs a lookup for the relay's way.
+  CHECK(f.relay.received(kGuest, std::vector<std::uint8_t>{0x80, 0x00, 0x12, 0x34}, 31).empty());
+}
+
+TEST_CASE("relay: the direct way's wrong rooms count with the lookups', and its asks have limits of their own") {
+  Fixture f;
+  REQUIRE(f.register_room(1, "forest", host_at(1)).kind == Kind::kRegisteredName);
+  // Wrong rooms: answered unknown, counted against the one limit for guessing.
+  for (int i = 0; i < 9; ++i) {
+    auto out = f.relay.received(kGuest, encode(direct_message("nope-" + std::to_string(i))),
+                                static_cast<std::uint64_t>(10 + i));
+    REQUIRE(out.size() == 1);
+    CHECK(decoded(out[0]).status == static_cast<std::uint8_t>(LookupResult::kUnknown));
+  }
+  CHECK(f.lookup_room("wrong", kGuest, 20) == LookupResult::kUnknown);  // (the 10th wrong one, same window)
+  auto out = f.relay.received(kGuest, encode(direct_message("forest")), 30);
+  REQUIRE(out.size() == 1);
+  CHECK(out[0].to == kGuest);  // (even the right room waits: not passed to the host)
+  CHECK(decoded(out[0]).status == static_cast<std::uint8_t>(LookupResult::kSlowDown));
+  CHECK(f.relay.stats().directs_passed == 0);
+
+  // At most 8 answer codes wait for one host; then "full" until they are answered or time out.
+  const Endpoint other{0x0900000Au, 1};
+  for (int i = 0; i < 8; ++i) {
+    out = f.relay.received(Endpoint{0x0900000Au, static_cast<std::uint16_t>(100 + i)}, encode(direct_message("forest")),
+                           40);
+    REQUIRE(out.size() == 1);
+    CHECK(decoded(out[0]).kind == Kind::kDirectAnswer);
+  }
+  out = f.relay.received(other, encode(direct_message("forest")), 41);
+  REQUIRE(out.size() == 1);
+  CHECK(out[0].to == other);
+  CHECK(decoded(out[0]).status == static_cast<std::uint8_t>(LookupResult::kFull));
+  // Unanswered for 10 seconds: dropped (an older host link never answers), room for new ones.
+  f.relay.tick(40 + 10'000);
+  CHECK(f.relay.directs_waiting() == 0);
+  Message keep;
+  keep.kind = Kind::kKeepalive;
+  keep.token = 1;
+  f.relay.received(host_at(1), encode(keep), 10'040);
+  out = f.relay.received(other, encode(direct_message("forest")), 10'050);
+  REQUIRE(out.size() == 1);
+  CHECK(decoded(out[0]).kind == Kind::kDirectAnswer);
+
+  // One address sends 20 in ten minutes (this one has sent 10 by now); then no answer at all.
+  int passed = 0;
+  for (int i = 0; i < 20; ++i) {
+    const auto now = static_cast<std::uint64_t>(10'100 + i * 20'000);
+    f.relay.received(host_at(1), encode(keep), now);  // (the host stays)
+    f.relay.tick(now);  // (each one timed out: the host's 8 never fill)
+    out = f.relay.received(other, encode(direct_message("forest")), now + 1);
+    passed += out.empty() ? 0 : 1;
+  }
+  CHECK(passed == 10);
+  CHECK(f.relay.stats().directs_limited >= 10);
+}
+
+TEST_CASE("relay: a host that stops takes its waiting answer codes with it") {
+  Fixture f;
+  REQUIRE(f.register_room(1, "forest", host_at(1)).kind == Kind::kRegisteredName);
+  auto out = f.relay.received(kGuest, encode(direct_message("forest")), 10);
+  REQUIRE(out.size() == 1);
+  const Message pass = decoded(out[0]);
+  CHECK(f.relay.directs_waiting() == 1);
+  Message bye;
+  bye.kind = Kind::kBye;
+  bye.token = 1;
+  f.relay.received(host_at(1), encode(bye), 11);
+  CHECK(f.relay.directs_waiting() == 0);
+  CHECK(f.relay.received(host_at(1), encode(reply_message(1, pass.ticket, 0x01020304u, 1)), 12).empty());
+}
+
+}  // namespace direct_tests
+
+// Row 281: a listed room's tag (kRoomTag / kListTags / kRoomTags), what world it plays.
+namespace room_tag_tests {
+
+using coop::server::relay::decode;
+using coop::server::relay::encode;
+using coop::server::relay::Message;
+using coop::server::relay::RoomTag;
+using room_list_tests::ask_list;
+using room_list_tests::host_at;
+using room_list_tests::list_room_message;
+
+namespace {
+
+Message tag_message(std::uint64_t token, std::string tag) {
+  Message m;
+  m.kind = Kind::kRoomTag;
+  m.token = token;
+  m.tag.tag = std::move(tag);
+  return m;
+}
+
+std::optional<Message> ask_tags(Fixture& f, Endpoint from = kGuest, std::uint64_t now = 0) {
+  Message ask;
+  ask.kind = Kind::kListTags;
+  auto out = f.relay.received(from, encode(ask), now);
+  if (out.empty()) return std::nullopt;
+  REQUIRE(out.size() == 1);
+  CHECK(out[0].to == from);
+  CHECK(out[0].bytes.size() <= kMaxPayloadBytes);
+  return decoded(out[0]);
+}
+
+}  // namespace
+
+TEST_CASE("relay wire: a room's tag and the tags' ask and answer go through encode and decode") {
+  auto back = decode(encode(tag_message(77, "Randomizer KOKIRI (keysanity)")));
+  REQUIRE(back.has_value());
+  CHECK(back->kind == Kind::kRoomTag);
+  CHECK(back->token == 77);
+  CHECK(back->tag.tag == "Randomizer KOKIRI (keysanity)");
+  REQUIRE(decode(encode(tag_message(77, ""))).has_value());   // (empty: "no tag any more")
+  CHECK_FALSE(decode(encode(tag_message(77, "seed\x07"))).has_value());   // (printable ASCII only)
+  CHECK_FALSE(decode(encode(tag_message(77, "caf\xc3\xa9"))).has_value());
+  std::vector<std::uint8_t> cut = encode(tag_message(77, "abc"));
+  cut.pop_back();
+  CHECK_FALSE(decode(cut).has_value());   // (a byte short)
+  // Longer than kMaxRoomTagBytes: cut when sent; a datagram saying more is not one.
+  back = decode(encode(tag_message(1, std::string(60, 'a'))));
+  REQUIRE(back.has_value());
+  CHECK(back->tag.tag.size() == coop::server::relay::kMaxRoomTagBytes);
+  std::vector<std::uint8_t> big = encode(tag_message(1, std::string(48, 'a')));
+  big[big.size() - 49] = 49;
+  big.push_back('a');
+  CHECK_FALSE(decode(big).has_value());
+
+  Message ask;
+  ask.kind = Kind::kListTags;
+  std::vector<std::uint8_t> bytes = encode(ask);
+  CHECK(bytes.size() == kListRequestBytes);   // (padded as the list's ask)
+  REQUIRE(decode(bytes).has_value());
+  CHECK(decode(bytes)->kind == Kind::kListTags);
+  bytes[200] = 1;
+  CHECK_FALSE(decode(bytes).has_value());
+  bytes.resize(100);
+  CHECK_FALSE(decode(bytes).has_value());
+
+  Message answer;
+  answer.kind = Kind::kRoomTags;
+  answer.tags = {RoomTag{"squadala", "Randomizer A1B2"}, RoomTag{"Forest-Gang", "Randomizer X (default)"}};
+  back = decode(encode(answer));
+  REQUIRE(back.has_value());
+  CHECK(back->tags == answer.tags);
+  answer.tags[0].room = "no spaces";
+  CHECK_FALSE(decode(encode(answer)).has_value());
+  answer.tags[0] = RoomTag{"squadala", ""};
+  CHECK_FALSE(decode(encode(answer)).has_value());   // (an answer never has an empty tag)
+}
+
+TEST_CASE("relay: a listed room's tag is kept and passed on, dropped with the listing, none for join codes") {
+  Fixture f;
+  REQUIRE(f.register_room(1, "squadala", host_at(1)).kind == Kind::kRegisteredName);
+  REQUIRE(f.register_room(2, "forest-4821", host_at(2)).kind == Kind::kRegisteredName);
+  CHECK_FALSE(f.register_host(3, host_at(3)).empty());
+  auto page = ask_tags(f);
+  REQUIRE(page.has_value());
+  CHECK(page->tags.empty());
+  CHECK(f.relay.received(host_at(1), encode(list_room_message(1, true, "squadala")), 10).empty());
+  CHECK(f.relay.received(host_at(1), encode(tag_message(1, "Randomizer KOKIRI (keysanity)")), 11).empty());
+  CHECK(f.relay.received(host_at(2), encode(list_room_message(2, true, "forest")), 12).empty());   // (base game: no tag)
+  CHECK(f.relay.received(host_at(3), encode(tag_message(3, "Randomizer JOIN")), 13).empty());   // (a join code)
+  f.relay.received(host_at(9), encode(tag_message(99, "Randomizer NOBODY")), 14);   // (an unknown token)
+  page = ask_tags(f, kGuest, 20);
+  REQUIRE(page.has_value());
+  REQUIRE(page->tags.size() == 1);
+  CHECK(page->tags[0] == RoomTag{"squadala", "Randomizer KOKIRI (keysanity)"});
+  auto list = ask_list(f, 0, kGuest, 21);
+  REQUIRE(list.has_value());
+  CHECK(list->total == 2);   // (the list itself as before: old kits read it unchanged)
+  // A new tag replaces it; an empty one clears it; unlisted, a room's tag is not passed on.
+  CHECK(f.relay.received(host_at(1), encode(tag_message(1, "Randomizer DEKU")), 30).empty());
+  page = ask_tags(f, kGuest, 31);
+  REQUIRE(page.has_value());
+  REQUIRE(page->tags.size() == 1);
+  CHECK(page->tags[0].tag == "Randomizer DEKU");
+  CHECK(f.relay.received(host_at(1), encode(tag_message(1, "")), 32).empty());
+  page = ask_tags(f, kGuest, 33);
+  REQUIRE(page.has_value());
+  CHECK(page->tags.empty());
+  CHECK(f.relay.received(host_at(1), encode(tag_message(1, "Randomizer DEKU")), 34).empty());
+  CHECK(f.relay.received(host_at(1), encode(list_room_message(1, false, "")), 40).empty());
+  page = ask_tags(f, kGuest, 41);
+  REQUIRE(page.has_value());
+  CHECK(page->tags.empty());
+  CHECK(f.relay.stats().tags_kept == 4);
+  CHECK(f.relay.stats().tags_answered == 5);
+}
+
+TEST_CASE("relay: two hosts on one address, each listing with proof and tag every 5 s, are all taken (row 281)") {
+  Fixture f;
+  const Endpoint a{0x0800000Au, 1}, b{0x0800000Au, 2};   // (one address, two ports)
+  REQUIRE(f.register_room(1, "squadala", a).kind == Kind::kRegisteredName);
+  REQUIRE(f.register_room(2, "forest-4821", b).kind == Kind::kRegisteredName);
+  for (std::uint64_t t = 1000; t < 1000 + 2 * RelayConfig{}.list_window_ms; t += 5000) {
+    for (const auto& [token, from] : {std::pair{std::uint64_t{1}, a}, std::pair{std::uint64_t{2}, b}}) {
+      const auto players = static_cast<std::uint8_t>(1 + (t / 5000) % 2);
+      CHECK(f.relay.received(from, encode(list_room_message(token, true, "Saria", players, 4)), t).empty());
+      Message proof;
+      proof.kind = Kind::kRoomProof;
+      proof.token = token;
+      proof.proof.time_s = t;
+      CHECK(f.relay.received(from, encode(proof), t).empty());
+      CHECK(f.relay.received(from, encode(tag_message(token, "Randomizer KOKIRI")), t).empty());
+    }
+  }
+  CHECK(f.relay.stats().listings_limited == 0);
+  CHECK(f.relay.stats().tags_kept == 48);
+  CHECK(f.relay.stats().proofs_kept == 48);
+  // Each kind still has its limit.
+  Fixture g;
+  REQUIRE(g.register_room(1, "squadala", a).kind == Kind::kRegisteredName);
+  for (std::uint32_t i = 0; i <= RelayConfig{}.listings_per_window; ++i)
+    g.relay.received(a, encode(tag_message(1, "Randomizer KOKIRI")), 1000);
+  CHECK(g.relay.stats().tags_kept == RelayConfig{}.listings_per_window);
+  CHECK(g.relay.stats().listings_limited == 1);
+  // The list's asks and the tags' asks too: 30 of each a minute from one address.
+  for (std::uint32_t i = 0; i < RelayConfig{}.lists_per_window; ++i) {
+    CHECK(ask_list(g, 0, kGuest, 1000).has_value());
+    CHECK(ask_tags(g, kGuest, 1000).has_value());
+  }
+  CHECK_FALSE(ask_tags(g, kGuest, 1000).has_value());
+  CHECK(g.relay.stats().lists_limited == 1);
+}
+
+}  // namespace room_tag_tests

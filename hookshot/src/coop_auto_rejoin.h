@@ -3,10 +3,13 @@
 // again by itself (coop.ini's last_invite, the page's "Join <host> again"): once a few seconds after the game starts,
 // and when the connection to that game drops without the player leaving it (a few tries, further apart). Never when
 // co-op came with the game's start (Host.bat, Join.bat, coop.ini), and every Host, Join or Leave of the player's own
-// stops what is planned. The logic only: CoopPause feeds it co-op's state every update and joins when it says so.
+// stops what is planned. Row 281: a restart the randomizer asked for to play the host's seed (a guest held out of the
+// host's world) joins that game again once at the next start, with the setting on or off (Facts::once, kept in
+// coop.ini by RestartMark). The logic only: CoopPause feeds it co-op's state every update and joins when it says so.
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace CoopAutoRejoin {
@@ -27,6 +30,8 @@ struct Facts {
     bool player_acted = false;  // the player hosted or joined since the last update
     bool turned_away = false;   // the session turned this game away since the last update (the host's Kick or ban,
                                 // a full server, a wrong password): the host's choice, not a drop to undo
+    bool once = false;          // this start follows a restart the randomizer asked for to play the host's seed (row
+                                // 281, coop.ini rejoin_once): the start's join is made even with the setting off
 };
 
 class Planner {
@@ -45,6 +50,18 @@ private:
     std::uint64_t next_ms_ = 0; // the next try after a drop (0: none planned)
     bool turned_away_ = false;  // the session turned this game away; until the player's own Host or Join
     std::string why_;
+};
+
+// Row 281: coop.ini rejoin_once, as it is to be kept: on while a restart for the host's seed is due in a friend's game
+// this game joined; off again when it is due no more (the host changed its settings, the connection ended: the seed is
+// off again too) and at the player's own Leave, Host or Join, or the host's turning it away.
+class RestartMark {
+public:
+    // What to write now; nullopt: as it is. `due`: the randomizer's word (Rando::Hooks::restart_for_host).
+    std::optional<bool> Tick(bool due, const Facts& f);
+
+private:
+    bool kept_ = false;   // (a start finds it off: it is read and cleared first)
 };
 
 }  // namespace CoopAutoRejoin

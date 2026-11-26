@@ -110,15 +110,6 @@ struct ChatBoxView {
 inline constexpr const char* kChatPlaceholder = "Say something (Enter sends, Esc closes)";
 inline std::string ChatPlaceholder() { return CoopI18n::Tr(kChatPlaceholder); }
 
-// One other player under your hearts (the co-op window's HudLayer).
-struct HudBlock {
-    std::string name;
-    std::string place;        // the place's name, or ""
-    std::vector<int> hearts;  // quarters filled in each (CoopHudHearts::Quarters)
-    bool dim = false;         // not connected
-    CoopVoice::Icon voice = CoopVoice::Icon::none;   // the voice state after the name, as words (CoopVoice::IconFor)
-};
-
 // The item cheats panel, when it is open.
 struct CheatsView {
     std::string filter;
@@ -182,18 +173,14 @@ coop::overlay::map::Box LayoutToScreen(const coop::overlay::map::Box& layout, fl
 // The words after a name for a player `delta` floors from the one shown
 // ("" on the same floor): floors count down as floor_of's do.
 std::string FloorWords(int delta);
+// The voice state after a name as words (" (talking)", " (muted)", "" quiet): the game's own heart lines'
+// (coop_party_hud.h).
+std::string VoiceWords(CoopVoice::Icon icon);
 
 // What to draw this present.
 struct Scene {
     std::optional<TitleView> title;
     std::optional<CheatsView> cheats;
-    std::vector<HudBlock> hud;
-    // Our own voice state (CoopVoice::IconFor): not none, a "You" row with it as words
-    // over the HUD blocks (only when there are any).
-    CoopVoice::Icon own_voice = CoopVoice::Icon::none;
-    // Row 141: the bottom of the game's own top-left HUD this frame, as a fraction of the picture height
-    // (CoopMapPage::GameHudBottom); the HUD blocks start below it. None: at CoopHudLayout::kBlocksTop.
-    std::optional<double> game_hud_bottom;
     std::optional<ChatBoxView> box;
     std::vector<ChatShown> chat;
     std::optional<CoopHook::Markers> markers;

@@ -124,6 +124,10 @@ struct ChatLine {
     std::uint64_t age_ms = 0;
 };
 std::vector<ChatLine> ChatLines();
+// The session's chat and notices so far (at most CoopChat::kHistory, oldest
+// first; none when no session: a new session starts with none). Row 282: the
+// - menu's Players view lists them.
+std::vector<ChatLine> ChatHistory();
 // Everyone in the room, this player first, then by number.
 struct PlayerRow {
     std::uint8_t number = 0;

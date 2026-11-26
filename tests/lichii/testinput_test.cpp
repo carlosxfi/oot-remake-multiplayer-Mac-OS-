@@ -483,11 +483,11 @@ TEST_CASE("testinput: the runner's grammar: every TICKS and number line is taken
     static constexpr std::array kTaken = {
         "wait 1", "wait 36000", "wait 0007", "hold A 36000", "press A 1", "stick -1 +1 5", "stick .5 -0.5 5",
         "toward 1 2 36000", "goto 1.5 -2 0.2 600", "goto .5 5. 1", "goto 1e3 -1E-2", "goto 1000000 -1000000",
-        "await 0 x", "await 99999999999 x", "hit X 80", "drop X 500", "hurt 1", "setflag F -2147483648",
+        "burst b 1", "burst hit-1.a_B 600", "burst b 60 600 played its (hit) effect", "burst b 0060 0 x", "await 0 x", "await 99999999999 x", "hit X 80", "drop X 500", "hurt 1", "setflag F -2147483648",
         "setflag F 2147483647", "setflag F 007"};
     static constexpr std::array kRefused = {
         "wait 0", "wait 36001", "wait +5", "wait -0", "wait 1_0", "wait 0000000001", "hold A 0", "press A 0",
-        "stick 0 0 0", "toward 1 2 0", "toward 1 2 36001", "goto 1 2 1 0", "await -1 x", "await +1 x",
+        "stick 0 0 0", "toward 1 2 0", "toward 1 2 36001", "goto 1 2 1 0", "burst b 0", "burst b 601", "burst b 0000000601", "burst b 60 600", "burst b", "burst b/x 60", "burst b +5", "burst b 60 -1 x", "await -1 x", "await +1 x",
         "await 1_0 x", "goto 0x10 2", "goto 1_0 2", "goto inf 2", "goto nan 2", "goto 1000001 2", "goto 1e7 2",
         "goto . 2", "goto 1e 2", "stick 0x1 0 5", "hit X 0", "hit X 81", "hit X \xc2\xb2", "drop X 501",
         "hurt 81", "hurt \xc2\xb3", "setflag F 2147483648", "setflag F -2147483649", "setflag F --5",
@@ -929,6 +929,18 @@ TEST_CASE("testinput: event hands the hook an event setting's name (boss-route-0
     CHECK(requests[0].name == "DreamBossStage_Rematch_Barinade_Start");
 }
 
+TEST_CASE("testinput: autosave asks our game for its own autosave, at once (rejoin-host-273-2)") {
+    std::string error;
+    CHECK_FALSE(Parse("autosave now\n", error));
+    CHECK(error.find("want: autosave") != std::string::npos);
+    Runner r(Must("autosave\nmark after\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::autosave);
+}
+
 TEST_CASE("testinput: menu host hands the hook the in-game host (row 260)") {
     std::string error;
     CHECK_FALSE(Parse("menu host now\n", error));
@@ -939,6 +951,30 @@ TEST_CASE("testinput: menu host hands the hook the in-game host (row 260)") {
     REQUIRE(requests.size() == 1);
     CHECK(requests[0].kind == Kind::menu);
     CHECK(requests[0].name == "host");
+}
+
+TEST_CASE("testinput: menu paste hands the hook the clipboard's join (private-lobby-fix)") {
+    std::string error;
+    CHECK_FALSE(Parse("menu paste now\n", error));
+    Runner r(Must("menu Paste\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::menu);
+    CHECK(requests[0].name == "paste");
+}
+
+TEST_CASE("testinput: menu leave leaves the session as the Multiplayer page's Leave row (remount-leave)") {
+    std::string error;
+    CHECK_FALSE(Parse("menu leave now\n", error));
+    Runner r(Must("menu Leave\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::menu);
+    CHECK(requests[0].name == "leave");
 }
 
 TEST_CASE("testinput: the bridge's act allows only the listed kinds and refuses the whole script otherwise") {

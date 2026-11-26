@@ -1,7 +1,5 @@
 # hs-stick-fire, B: a Deku Stick lit at room E's torch (see hs-stick-fire.A.txt), facing A after.
 mark start
-setflag PouchData.Item_DekuStick.StockNum 10   # 'give' has no stick; hash 0xb9494411
-setflag IsGet.Item_DekuStick 1
 warp InsideTheDekuTree Entrance
 wait 1200
 mark title
@@ -13,6 +11,9 @@ press A
 wait 300
 press A
 wait 2400
+# (set after the save is loaded: at the title, the save's load put them back)
+setflag PouchData.Item_DekuStick.StockNum 10   # 'give' has no stick; hash 0xb9494411
+setflag IsGet.Item_DekuStick 1
 mark after
 wait 480
 place -12.9 79.6 -8.9    # 1.6 m south of the torch

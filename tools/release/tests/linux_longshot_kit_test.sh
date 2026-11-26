@@ -91,6 +91,12 @@ if os.environ.get("LONGSHOT_NGX_SDK") and "--fetch-ngx-sdk" in a and "--accept-n
     open(ngx, "w").close()
 elif os.path.exists(ngx):
     os.remove(ngx)
+# (as make_game.py's FSR_MARK: --fsr leaves .longshot_fsr in the game folder, a build without it removes it)
+mark = os.path.join(out, ".longshot_fsr")
+if "--fsr" in a:
+    open(mark, "w").close()
+elif os.path.exists(mark):
+    os.remove(mark)
 print("@@stage build Building")
 print("built")
 EOF
@@ -116,7 +122,7 @@ sha=$(sha256sum "$appimage" | cut -d' ' -f1)
 
 kit="$tmp/OoT Coop kit"   # (a space in the path, as players' folders have)
 mkdir -p "$kit/scripts" "$kit/data/longshot/patches" "$kit/data/server" "$kit/data/tools/puppet_pack"
-cp "$src/start-squadala.sh" "$src/README.txt" "$src/revert.sh" "$kit/"
+cp "$src/start-squadala.sh" "$src/README.txt" "$src/revert.sh" "$src/uninstall-character-select.sh" "$src/reinstall-character-select.sh" "$kit/"
 check "the kit has one start file (no start-oot-coop.sh from v0.11.4 on)" [ ! -e "$src/start-oot-coop.sh" ]
 cp "$src"/scripts/*.sh "$src/scripts/problem_report.py" "$release/kit/scripts/apply_patch.py" "$kit/scripts/"
 cp "$release/kit/coop.ini.template" "$kit/scripts/"
@@ -178,6 +184,8 @@ if __name__ == "__main__":
             print("Menus: fake merge %d put back" % n)
 EOF
 : >"$kit/data/tools/puppet_pack/__init__.py"
+# (row 280: the real part check and what it reads with; the build.py and merge_tables.py above are stand-ins)
+cp "$repo/tools/puppet_pack/part_check.py" "$repo/tools/puppet_pack/zs.py" "$repo/tools/puppet_pack/sarc.py" "$kit/data/tools/puppet_pack/"
 mkdir -p "$kit/data/tools/puppet_pack/charsel/data"
 printf 'PATCHcharsel' >"$kit/data/tools/puppet_pack/charsel/data/charsel-native.ips"
 # (dumpcheck.py's stand-in: a file that starts with "nup" is the game; the pack's .nup search takes no other)
@@ -332,6 +340,24 @@ check 'dlss: --no-dlss forgets the license, builds again without the SDK, NVIDIA
 bash "$kit/scripts/build.sh" </dev/null >"$tmp/dlss5.txt" 2>&1; export CODE=$?
 check 'dlss: off, the next start builds nothing' bash -c '[ $CODE -eq 0 ] && grep -q "built already" "$1" && ! grep -q "^make_game" "$2"' _ "$tmp/dlss5.txt" "$log"
 
+# AMD FSR 4 (#326): --fsr4 builds the game again with make_game.py --fsr (nothing of AMD's fetched on Linux, no license
+# question), data/fsr4.txt keeps it; --no-fsr4 builds it again without. The game's stamp stays the release, pin and patches.
+: >"$log"
+bash "$kit/scripts/build.sh" --fsr4 </dev/null >"$tmp/fsr1.txt" 2>&1; export CODE=$?
+check 'fsr4: --fsr4 builds the game again with --fsr, no runtime fetch, the mark there, data/fsr4.txt kept' \
+    bash -c '[ $CODE -eq 0 ] && [ -f "$2/fsr4.txt" ] && grep "^make_game" "$1" | grep -v -- --check | grep -q -- " --fsr" && ! grep -q -- --fetch-fsr-runtime "$1" && [ -f "$2/game/.longshot_fsr" ] && grep -q "amd_fidelityfx_upscaler_vk.so" "$3"' _ "$log" "$D" "$tmp/fsr1.txt"
+check 'fsr4: the game stamp is still the release, pin and patches' [ "$(cat "$D/game/coop-built-from.txt")" = "$stamp_before" ]
+: >"$log"
+bash "$kit/scripts/build.sh" </dev/null >"$tmp/fsr2.txt" 2>&1; export CODE=$?
+check 'fsr4: the next start builds nothing' bash -c '[ $CODE -eq 0 ] && grep -q "built already" "$1" && ! grep -q "^make_game" "$2"' _ "$tmp/fsr2.txt" "$log"
+: >"$log"
+bash "$kit/scripts/build.sh" --no-fsr4 </dev/null >"$tmp/fsr3.txt" 2>&1; export CODE=$?
+check 'fsr4: --no-fsr4 forgets it, builds again without --fsr, the mark gone' \
+    bash -c '[ $CODE -eq 0 ] && [ ! -f "$2/fsr4.txt" ] && grep "^make_game" "$1" | grep -v -- --check | grep -q -- "--out" && ! grep -q -- " --fsr" "$1" && [ ! -f "$2/game/.longshot_fsr" ]' _ "$log" "$D"
+: >"$log"
+bash "$kit/scripts/build.sh" </dev/null >"$tmp/fsr4.txt" 2>&1; export CODE=$?
+check 'fsr4: off, the next start builds nothing' bash -c '[ $CODE -eq 0 ] && grep -q "built already" "$1" && ! grep -q "^make_game" "$2"' _ "$tmp/fsr4.txt" "$log"
+
 # pack-retry: the pack is made again on a start whenever it is missing, incomplete or from another tool, and the
 # game file is looked for when it moved; a pack tool error is said and the start goes on.
 P=$D/game/mods/contents/0400486024DEC000/coop-puppet
@@ -436,14 +462,14 @@ print(n)' "$1"; }
 # with, one line says so, and the start goes on with the game as it was (not stopped).
 stamp_was=$(cat "$D/game/coop-built-from.txt")
 FAKE_BUILD_FAIL=1 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs0.txt" 2>&1; export CODE=$?
-check 'Character Select: a failed game build after the install takes it back out and the start goes on with the game as it was'     bash -c '[ $CODE -eq 0 ] && grep -q "no terminal: no" "$1" && grep -q "taken back out for now" "$1" && [ ! -e "$2" ] && [ ! -e "$3/game/mods/_OoT Character Select.none" ] && [ ! -e "$3/game/mods/_OoT Character Select.prev" ] &&
+check 'Character Select: a failed game build after the install takes it back out and the start goes on with the game as it was'     bash -c '[ $CODE -eq 0 ] && grep -q "NPC characters: press y to download them, n to skip: skipped (no terminal)" "$1" && grep -q "To get them later: run reinstall-character-select.sh" "$1" && grep -q "taken back out for now" "$1" && [ ! -e "$2" ] && [ ! -e "$3/game/mods/_OoT Character Select.none" ] && [ ! -e "$3/game/mods/_OoT Character Select.prev" ] &&
         [ "$(cat "$3/game/coop-built-from.txt")" = "$4" ]' _ "$tmp/build-cs0.txt" "$CS" "$D" "$stamp_was"
 cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs1.txt" 2>&1; export CODE=$?
 check 'Character Select: no -> the default part alone (the Characters page, Link), characters.json, stamped ui, credited, the answer kept' \
     bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/UI/LayoutArchiveCategory.Product.100.byml.zs" ] && [ -f "$2/romfs/Model/Player_Child.Player_Child.bfres.zs" ] &&
         [ ! -e "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && [ ! -e "$2/romfs/Tex/Npc_A.bntx.zs" ] && [ -f "$2/romfs/Tex/Mt_Vest_Player_Child_Ac1.bntx.zs" ] && [ -f "$2/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips" ] &&
-        [ -f "$2/characters.json" ] && [ ! -e "$2/INSTALL.txt" ] && grep -q "^v1 .* ui cz2v$" "$2/coop-charsel.txt" && grep -q "belong to Nintendo" "$2/CREDITS-coop.txt" &&
+        [ -f "$2/characters.json" ] && [ ! -e "$2/INSTALL.txt" ] && grep -q "^v1 .* ui cz3g$" "$2/coop-charsel.txt" && grep -q "belong to Nintendo" "$2/CREDITS-coop.txt" &&
         grep -qx no "$3/character-select-answer.txt" && [ ! -e "$3/builder/charsel/CS-v1.zip" ] && [ ! -e "$3/game/mods/coop-mods.list" ]' _ "$tmp/build-cs1.txt" "$CS" "$D"
 export CS_RECS=$(cs_recs "$CS/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips")
 check 'Character Select strip: the exefs patch keeps only the 2 records outside his customizer, his own whole beside it (outside exefs)' \
@@ -451,14 +477,14 @@ check 'Character Select strip: the exefs patch keeps only the 2 records outside 
 check 'Character Select: its code patch is in the game stamp (the build takes it in: patches 0034/0035)' grep -q 'exefs=OoT Character Select/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips:' "$D/game/coop-built-from.txt"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs2.txt" 2>&1
 check 'Character Select: a built game confirms the change (no kept state left)' bash -c '[ ! -e "$1/_OoT Character Select.none" ] && [ ! -e "$1/_OoT Character Select.prev" ]' _ "$D/game/mods"
-check 'Character Select: there already -> not asked again, nothing done' bash -c 'grep -q "Character Select v1 -> .*(there already)" "$1" && ! grep -q "Download the NPC characters" "$1"' _ "$tmp/build-cs2.txt"
+check 'Character Select: there already -> not asked again, nothing done' bash -c 'grep -q "Character Select v1 -> .*(there already)" "$1" && ! grep -q "NPC characters: press y" "$1"' _ "$tmp/build-cs2.txt"
 # Turned on later: the default part cannot give the NPC part, so his release is used again.
 printf 'character_select = yes\n' >>"$D/coop-options.ini"
 cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
 : >"$log"; OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs3.txt" 2>&1; export CODE=$?
 export CS_RECS=$(cs_recs "$CS/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips")
 check 'Character Select: character_select = yes gets the NPC part too, his patch still stripped' \
-    bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && [ -f "$2/romfs/Tex/Npc_A.bntx.zs" ] && grep -q "^v1 .* full cz2v$" "$2/coop-charsel.txt" &&
+    bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && [ -f "$2/romfs/Tex/Npc_A.bntx.zs" ] && grep -q "^v1 .* full cz3g$" "$2/coop-charsel.txt" &&
         [ "$CS_RECS" = 2 ]' _ "$tmp/build-cs3.txt" "$CS"
 check 'Character Select pack: UI-only -> full (NPC models put in) makes the puppet pack again' bash -c 'grep -q "^puppet_pack" "$1" && grep -q "models:" "$2/.coop-stamp"' _ "$log" "$P"
 # Off again: from the copy there (no zip here, nothing downloaded): the NPC part out, the Characters page kept.
@@ -466,7 +492,7 @@ sed -i 's/^character_select = yes$/character_select = no/' "$D/coop-options.ini"
 : >"$log"; OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs4.txt" 2>&1; export CODE=$?
 check 'Character Select: character_select = no keeps the Characters page, takes the NPC part out, no download' \
     bash -c '[ $CODE -eq 0 ] && [ ! -e "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && [ ! -e "$2/romfs/Tex/Npc_A.bntx.zs" ] && [ -f "$2/romfs/Tex/Mt_Vest_Player_Child_Ac1.bntx.zs" ] && [ -f "$2/romfs/UI/LayoutArchiveCategory.Product.100.byml.zs" ] &&
-        grep -q "^v1 .* ui cz2v$" "$2/coop-charsel.txt" && grep -q "exefs=OoT Character Select/exefs/" "$3/game/coop-built-from.txt" && ! grep -q downloading "$1"' _ "$tmp/build-cs4.txt" "$CS" "$D"
+        grep -q "^v1 .* ui cz3g$" "$2/coop-charsel.txt" && grep -q "exefs=OoT Character Select/exefs/" "$3/game/coop-built-from.txt" && ! grep -q downloading "$1"' _ "$tmp/build-cs4.txt" "$CS" "$D"
 # black-cs-01112: a hand copy beside the kit's (another name, or under contents/<title>, the emulators' place) puts a
 # second code patch into the game: the start sets every such copy aside with '_' (the game and its build skip it).
 for d in "$D/game/mods/contents/0400486024DEC000/OoT Character Select" "$D/game/mods/My CS"; do
@@ -512,15 +538,61 @@ cp "$tmp/cs-his.ips" "$CS/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs5.txt" 2>&1; export CODE=$?
 export CS_RECS=$(cs_recs "$CS/exefs/E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348.ips")
 check 'Character Select: a 0.11.8 full copy keeps its NPC part, his patch stripped, his own kept aside, no download' \
-    bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && grep -q "^v1 .* full cz2v$" "$2/coop-charsel.txt" &&
+    bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Player_Child_C000.Player_Child.bfres.zs" ] && grep -q "^v1 .* full cz3g$" "$2/coop-charsel.txt" &&
         [ "$CS_RECS" = 2 ] && cmp -s "$2/coop-charsel-code.ips" "$3" && ! grep -q downloading "$1"' _ "$tmp/build-cs5.txt" "$CS" "$tmp/cs-his.ips"
+# launcher-clarity checks, in a copy of the kit (its Character Select, pack and game stamps are changed here; the checks
+# below read the kit as it was).
+kit_lc=$kit; rm -rf "$tmp/kit-lc"; cp -a "$kit" "$tmp/kit-lc"; kit=$tmp/kit-lc D=$tmp/kit-lc/data CS="$tmp/kit-lc/data/game/mods/OoT Character Select"
+# launcher-clarity: no answer kept (a reinstalled kit) and the kit's copy there has the NPC part: kept, not asked.
+sed -i '/^character_select = /d' "$D/coop-options.ini"; rm -f "$D/character-select-answer.txt"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs5k.txt" 2>&1; export CODE=$?
+check 'Character Select: no answer kept, the NPC part there -> kept, not asked (a reinstall)' \
+    bash -c '[ $CODE -eq 0 ] && grep -q "found in your game from before, kept" "$1" && ! grep -q "press y to download" "$1" && grep -qx yes "$3/character-select-answer.txt" &&
+        grep -q "^v1 .* full cz3g$" "$2/coop-charsel.txt"' _ "$tmp/build-cs5k.txt" "$CS" "$D"
+# reinstall-character-select.sh: the copy set aside, his zip fetched again (offline here: said), asked again.
+printf 'character_select = yes\n' >>"$D/coop-options.ini"
+bash "$kit/scripts/character-select.sh" reinstall >"$tmp/cs-re.txt" 2>&1; export CODE=$?
+check 'reinstall-character-select.sh: says what the start does, the answer asked again (coop-options.ini line too)' \
+    bash -c '[ $CODE -eq 0 ] && grep -q "downloaded and made again" "$1" && [ -f "$2/character-select-reinstall.txt" ] && [ ! -e "$2/character-select-answer.txt" ] &&
+        grep -qx "character_select = ask" "$2/coop-options.ini"' _ "$tmp/cs-re.txt" "$D"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs5r.txt" 2>&1; export CODE=$?
+check 'reinstall-character-select.sh: the start sets the copy aside, removes the zip (fetched again), asks again' \
+    bash -c '[ $CODE -eq 0 ] && [ ! -e "$2/character-select-reinstall.txt" ] && [ ! -e "$2/builder/charsel/CS-v1.zip" ] && grep -q "press y to download them" "$1" &&
+        ! grep -q "found in your game from before" "$1" && grep -q offline "$1"' _ "$tmp/build-cs5r.txt" "$D"
+# (review-pool-b2: the answer replaces the ask line, so the next start does not ask again; an ask line is never "found, kept")
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs5r2.txt" 2>&1
+check 'reinstall-character-select.sh: the answer replaces ask in coop-options.ini; the next start does not ask again'     bash -c 'grep -qx "character_select = no" "$2/coop-options.ini" && ! grep -q "press y to download them" "$1"' _ "$tmp/build-cs5r2.txt" "$D"
+sed -i 's/^character_select = .*/character_select = yes/' "$D/coop-options.ini"
+cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >/dev/null 2>&1
+check 'reinstall-character-select.sh: with his zip, the next start makes it again' grep -q "^v1 .* full cz3g$" "$CS/coop-charsel.txt"
+sed -i 's/^character_select = .*/character_select = ask/' "$D/coop-options.ini"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs5a.txt" 2>&1
+check 'Character Select: an ask line by hand asks even with the NPC part there (not "found, kept"), then takes the answer'     bash -c 'grep -q "press y to download them" "$1" && ! grep -q "found in your game from before" "$1" && grep -qx "character_select = no" "$2/coop-options.ini"' _ "$tmp/build-cs5a.txt" "$D"
+sed -i 's/^character_select = .*/character_select = yes/' "$D/coop-options.ini"
+cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >/dev/null 2>&1
+# uninstall-character-select.sh: off; the start takes the kit's copy out, later starts leave it out.
+bash "$kit/scripts/character-select.sh" uninstall >"$tmp/cs-un.txt" 2>&1; export CODE=$?
+check 'uninstall-character-select.sh: the answer is off (coop-options.ini line too), says how to put it back' \
+    bash -c '[ $CODE -eq 0 ] && grep -q "reinstall-character-select.sh does that" "$1" && grep -qx off "$2/character-select-answer.txt" && grep -qx "character_select = off" "$2/coop-options.ini"' _ "$tmp/cs-un.txt" "$D"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs5u.txt" 2>&1; export CODE=$?
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs5u2.txt" 2>&1
+check 'uninstall-character-select.sh: the start takes it out and builds without it; the next start does not put it back' \
+    bash -c '[ $CODE -eq 0 ] && grep -q "uninstalled now" "$1" && grep -q "Character Select: uninstalled. To put it back" "$2" && [ ! -e "$3" ] &&
+        ! grep -q "exefs=OoT Character Select/" "$4/game/coop-built-from.txt" && [ ! -e "$4/game/mods/_OoT Character Select.prev" ]' _ "$tmp/build-cs5u.txt" "$tmp/build-cs5u2.txt" "$CS" "$D"
+sed -i 's/^character_select = off$/character_select = yes/' "$D/coop-options.ini"
+cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
+OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >/dev/null 2>&1
+check 'Character Select: back on after the uninstall checks' grep -q "^v1 .* full cz3g$" "$CS/coop-charsel.txt"
+kit=$kit_lc D=$kit_lc/data CS="$kit_lc/data/game/mods/OoT Character Select"; rm -rf "$tmp/kit-lc"
 # A newer patch of his laid out otherwise (no record at cz_head): refused, the copy there kept as it was.
 cs_ips "$D/builder/charsel/code.ips" 0
 cs_pin https://example.invalid/code.ips "$(sha256sum "$D/builder/charsel/code.ips" | cut -d' ' -f1)"
 cp "$tmp/cs-rel/CS-v1.zip" "$D/builder/charsel/CS-v1.zip"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-cs6.txt" 2>&1; export CODE=$?
 check 'Character Select strip: a patch without a customizer region is refused, the copy there kept' \
-    bash -c '[ $CODE -eq 0 ] && grep -q "nothing at cz_head" "$1" && grep -q "^v1 .* - full cz2v$" "$2/coop-charsel.txt"' _ "$tmp/build-cs6.txt" "$CS"
+    bash -c '[ $CODE -eq 0 ] && grep -q "nothing at cz_head" "$1" && grep -q "^v1 .* - full cz3g$" "$2/coop-charsel.txt"' _ "$tmp/build-cs6.txt" "$CS"
 cs_pin
 # A copy the player put in by hand (no stamp) is never touched.
 rm -f "$CS/coop-charsel.txt"
@@ -560,6 +632,12 @@ if os.environ.get("FAKE_TOOL_HANG"):
     open(os.environ["FAKE_TOOL_HANG"], "w").write(str(c.pid))
     print("Making 2287 files", flush=True)
     time.sleep(600)
+if os.environ.get("FAKE_TOOL_GONE"):   # (row 280: a pack naming a file its recipes list but it did not make)
+    os.makedirs(os.path.join(mod, "romfs", "Pack", "Actor"), exist_ok=True)
+    open(os.path.join(mod, "romfs", "Pack", "Actor", "Player_Adult.pack.zs"), "w").write("pack: Model/Gone_Skel.Skeleton.bfres")
+    open(os.path.join(mod, "romfs", "Pack", "Actor", "Player_Child.pack.zs"), "w").write("pack: Model/Made_By_Tool")
+    open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "recipes.json"), "w").write(
+        '{"files": [{"path": "Model/Gone_Skel.Skeleton.bfres.zs"}, {"path": "Model/Made_By_Tool.bin"}]}')
 os.makedirs(os.path.join(mod, "romfs", "Model"), exist_ok=True)
 open(os.path.join(mod, "romfs", "Model", "Made_By_Tool.bin"), "w").write(" ".join(a[1:]))
 print("Done: 1 file. The mod folder is ready.")
@@ -578,7 +656,7 @@ cs2_pin; cs2_zip
 # alone would build into the game without its menus, tables and models), one line says it comes at the next start.
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-t1.txt" 2>&1; export CODE=$?
 check 'Character Select tool: no game RomFS yet -> nothing of the mod is put in (no half mod), one line says it comes at the next start' \
-    bash -c '[ $CODE -eq 0 ] && [ ! -e "$2" ] && [ ! -e "$3/builder/charsel/tool" ] && grep -q "put in at the next start" "$1" && ! grep -q "was not installed" "$1" && ! grep -q "Download the NPC" "$1"' _ "$tmp/build-t1.txt" "$CS" "$D"
+    bash -c '[ $CODE -eq 0 ] && [ ! -e "$2" ] && [ ! -e "$3/builder/charsel/tool" ] && grep -q "put in at the next start" "$1" && ! grep -q "was not installed" "$1" && ! grep -q "press y to download" "$1"' _ "$tmp/build-t1.txt" "$CS" "$D"
 # The game RomFS is there (the build made it): the next start puts the mod in with its files made in the same step, ui part: --exclude given.
 mkdir -p "$D/game/romfs/Pack" && : >"$D/game/romfs/Pack/ZsDic.pack.zs"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-t2.txt" 2>&1; export CODE=$?
@@ -607,7 +685,15 @@ check 'Character Select tool: a hanging tool -> stopped at the idle limit with i
 rm -rf "$CS"; cs2_zip; printf 'character_select = yes\n' >>"$D/coop-options.ini"
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-t4.txt" 2>&1; export CODE=$?
 check 'Character Select tool: the RomFS there at the install -> made at once, full part gets no --exclude' \
-    bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Made_By_Tool.bin" ] && ! grep -q -- "--exclude" "$2/romfs/Model/Made_By_Tool.bin" && grep -q "^v2 .* full cz2v$" "$2/coop-charsel.txt" && [ ! -e "$3/builder/charsel/tool" ]' _ "$tmp/build-t4.txt" "$CS" "$D"
+    bash -c '[ $CODE -eq 0 ] && [ -f "$2/romfs/Model/Made_By_Tool.bin" ] && ! grep -q -- "--exclude" "$2/romfs/Model/Made_By_Tool.bin" && grep -q "^v2 .* full cz3g$" "$2/coop-charsel.txt" && [ ! -e "$3/builder/charsel/tool" ]' _ "$tmp/build-t4.txt" "$CS" "$D"
+# Row 280: a kept file naming a file of the release neither the part nor the game has (the tool's recipes list
+# Model/Gone_Skel.Skeleton, which it did not make) is left out, so the game's own is used; coop-fallback.txt holds the
+# module's line, the start says it, the release's files are listed.
+rm -rf "$CS"; cs2_zip
+FAKE_TOOL_GONE=1 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-t4g.txt" 2>&1; export CODE=$?
+check 'Character Select part check (row 280): a pack naming a released file neither the part nor the game has is left out, coop-fallback.txt + the start line say so, the release listed'     bash -c '[ $CODE -eq 0 ] && [ ! -e "$2/romfs/Pack/Actor/Player_Adult.pack.zs" ] && [ -f "$2/romfs/Pack/Actor/Player_Child.pack.zs" ] &&
+        grep -q "^Character Select: the game.s own Player_Adult used" "$2/coop-fallback.txt" && grep -q "Note: Character Select: the game.s own Player_Adult used" "$1" &&
+        grep -qx "Model/Gone_Skel.Skeleton.bfres.zs" "$2/coop-release-files.txt" && grep -qx "Pack/Actor/Player_Adult.pack.zs" "$2/coop-left-out.txt"' _ "$tmp/build-t4g.txt" "$CS"
 # A tool_folder that leaves the zip is refused.
 rm -rf "$CS"; cs2_zip; cs2_pin 'CS-v2/../x'
 OOT_COOP_OFFLINE=1 bash "$kit/scripts/build.sh" </dev/null >"$tmp/build-t5.txt" 2>&1
@@ -781,18 +867,20 @@ rm -rf "$kit2"
 # --- start.sh (Linux only: its checks read this PC) --------------------------------------------
 if [[ $(uname -s) == Linux ]]; then
     : >"$log"
-    OOT_COOP_SECRET=1 bash "$kit/start-squadala.sh" --no-update </dev/null >"$tmp/start1.txt" 2>&1; export CODE=$?
+    # (the problem-report address lookup (problem_report.py ADDRESS_LOOKUP) kept offline in every start below: this kit
+    # has no address, and a looked-up one makes the start ask and write logs/problem-send.json)
+    https_proxy=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 OOT_COOP_SECRET=1 bash "$kit/start-squadala.sh" --no-update </dev/null >"$tmp/start1.txt" 2>&1; export CODE=$?
     check 'start: builds if needed, then starts the game in data/game' bash -c '[ $CODE -eq 0 ] && grep -q "^started $2 1 $3$" "$1"' _ "$log" "$D" "$D/game"
     check 'start: without a terminal, what it says goes to data/logs/start.log' has "$D/logs/start.log" 'start without a terminal'
     # MsgNotFound (P-parked): start.sh's own merge after build.sh (its pack step) parks the tab's files that build.sh's
     # merge left in play (from the 2nd merge on): the game is built again without the tab's code, then it starts.
     : >"$log"; rm -f "$tmp/merges"
-    FAKE_MERGE_COUNT=$tmp/merges FAKE_PARK_FROM=2 OOT_COOP_SECRET=1 bash "$kit/start-squadala.sh" --no-update </dev/null >"$tmp/startpark.txt" 2>&1; export CODE=$?
+    https_proxy=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 FAKE_MERGE_COUNT=$tmp/merges FAKE_PARK_FROM=2 OOT_COOP_SECRET=1 bash "$kit/start-squadala.sh" --no-update </dev/null >"$tmp/startpark.txt" 2>&1; export CODE=$?
     check "start: the merge after the pack step parks the tab's files: the game built again without its code, then started" \
         bash -c '[ $CODE -eq 0 ] && grep -q "kept aside just now" "$1" && [ ! -e "$2" ] && grep -q "^started " "$3" && [ "$(cat "$4")" = 4 ] && [ "$(cat "$5")" = 1 ] && ! grep -q "coop-puppet/exefs/" "$6"' _ \
         "$tmp/startpark.txt" "$csn" "$log" "$tmp/merges" "$D/charsel-parked.txt" "$D/game/coop-built-from.txt"
     : >"$log"; rm -f "$tmp/merges"
-    FAKE_MERGE_COUNT=$tmp/merges FAKE_PARK_FROM=99 OOT_COOP_SECRET=1 bash "$kit/start-squadala.sh" --no-update </dev/null >"$tmp/startpark2.txt" 2>&1; export CODE=$?
+    https_proxy=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 FAKE_MERGE_COUNT=$tmp/merges FAKE_PARK_FROM=99 OOT_COOP_SECRET=1 bash "$kit/start-squadala.sh" --no-update </dev/null >"$tmp/startpark2.txt" 2>&1; export CODE=$?
     check "start: put back again: the tab's code back in before the game starts (no second build round)" \
         bash -c '[ $CODE -eq 0 ] && [ -f "$1" ] && grep -q "^started " "$2" && [ "$(cat "$3")" = 2 ] && ! grep -q "just now" "$4"' _ \
         "$csn" "$log" "$tmp/merges" "$tmp/startpark2.txt"

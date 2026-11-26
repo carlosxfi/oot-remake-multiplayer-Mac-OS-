@@ -4,6 +4,8 @@
 // lines, and the host's seed in co-op.
 #include <doctest/doctest.h>
 
+#include <atomic>
+
 #include <algorithm>
 #include <cstring>
 #include <cstdlib>
@@ -565,12 +567,16 @@ TEST_CASE("rando: switching it on or off says to restart, in the chat and in the
     World w;
     CoopMods::Loader loader(w.mods, {nullptr, 1, nullptr, nullptr});
     loader.Start();
-    Rando rando(loader, w.Hooks());
+    std::atomic<bool> for_host{false};
+    auto hooks = w.Hooks();
+    hooks.restart_for_host = [&](bool due) { for_host = due; };
+    Rando rando(loader, std::move(hooks));
     rando.Start();
     w.Settings(loader);
     REQUIRE(loader.Set(kFolder, "on", "1"));
     rando.Wait();
     CHECK(rando.TakeLines() == std::vector<std::string>{SwitchLine(true), ReadyLine(loader.Value(kId, "seed"))});
+    CHECK_FALSE(for_host.load());   // (row 281: our own switch, alone: no rejoin after the restart)
     CHECK(SwitchLine(true).find("until this chat says the seed is ready") != std::string::npos);
     const auto why = loader.RestartNeeded().why;
     CHECK(std::find(why.begin(), why.end(), SwitchLine(true)) != why.end());
@@ -590,13 +596,33 @@ TEST_CASE("rando: a host's switch reaching a guest says to restart") {
     World w;
     CoopMods::Loader loader(w.mods, {nullptr, 1, nullptr, nullptr});
     loader.Start();
-    Rando rando(loader, w.Hooks());
+    std::atomic<bool> for_host{false};
+    auto hooks = w.Hooks();
+    hooks.restart_for_host = [&](bool due) { for_host = due; };
+    Rando rando(loader, std::move(hooks));
     rando.Start();
     w.Settings(loader);
     loader.SetHostValues(std::vector<CoopMods::SharedValue>{{kId, "on", "1"}, {kId, "seed", "HOST8"}});
     rando.Wait();
     CHECK(rando.TakeLines() == std::vector<std::string>{SwitchLine(true), ReadyLine("HOST8")});
     CHECK(On(loader, "randomizer-HOST8"));
+    CHECK(for_host.load());   // (row 281: the host's seed after a restart: the next start joins the host again once)
+    loader.SetHostValues(std::vector<CoopMods::SharedValue>{{kId, "on", "0"}});   // the host switches it off again
+    rando.Recheck();
+    rando.Wait();
+    CHECK_FALSE(for_host.load());   // (as this run started: no restart is due any more)
+    loader.SetHostValues(std::vector<CoopMods::SharedValue>{{kId, "on", "1"}, {kId, "seed", "HOST8"}});
+    rando.Recheck();
+    rando.Wait();
+    CHECK(for_host.load());
+    loader.SetHostValues(std::nullopt);   // left (or dropped): the seed is off again, so is the rejoin
+    rando.Recheck();
+    rando.Wait();
+    CHECK_FALSE(for_host.load());
+    loader.SetHostValues(std::vector<CoopMods::SharedValue>{{kId, "on", "1"}, {kId, "seed", "HOST8"}});
+    rando.Recheck();
+    rando.Wait();
+    CHECK(for_host.load());   // (the same host joined again: due again)
 }
 
 TEST_CASE("rando: a guest of a host without the randomizer plays without it") {
@@ -1657,6 +1683,24 @@ TEST_CASE("rando: a seed file that places shop items (coop_shop_sale.h)") {
     CHECK_FALSE(SeedShops(""));
 }
 
+TEST_CASE("rando: the item a seed file places at a location (row 237, coop_story.h GiftShuffled)") {
+    // OOTRR settings/seed.rs: "placements" is an object, location name -> item name.
+    const std::string seed = "{\n  \"format\": \"ootrr-seed\",\n  \"settings\": \"OOTRR1-AB\",\n  \"placements\": {\n"
+                             "    \"HF Ocarina of Time Item\": \"Ocarina\",\n"
+                             "    \"KF Midos Top Left Chest\": \"LW Gift from Saria\",\n"
+                             "    \"LW Gift from Saria\" : \"Progressive Hookshot\"\n  },\n  \"shops\": {}\n}\n";
+    CHECK(SeedPlacement(seed, "LW Gift from Saria") == std::optional<std::string>("Progressive Hookshot"));
+    CHECK(SeedPlacement(seed, "HF Ocarina of Time Item") == std::optional<std::string>("Ocarina"));
+    CHECK(SeedPlacement(seed, "KF Midos Top Left Chest") == std::optional<std::string>("LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement(seed, "GC Darunias Joy").has_value());  // not listed: vanilla
+    CHECK(SeedPlacement("{\"placements\":{\"A\":\"Say \\\"hi\\\"\"}}", "A") == std::optional<std::string>("Say \"hi\""));
+    CHECK_FALSE(SeedPlacement("{\"hint\": \"placements\", \"LW Gift from Saria\": \"Bow\"}", "LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement("{\"placements\": []}", "LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement("{\"placements\": {\"LW Gift from Saria\": 3}}", "LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement("{\"placements\": {\"LW Gift from Saria\": \"Bo", "LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement("", "LW Gift from Saria"));
+}
+
 TEST_CASE("rando: the settings string of a seed file") {
     // As OOTRR 0.6.1 writes it (generate default abc); 0.6.2 and 0.7.0 to 0.8.1 write the same layout (settings/seed.rs is unchanged).
     CHECK(SeedSettings("{\n  \"format\": \"ootrr-seed\",\n  \"version\": 1,\n  \"generator\": \"ootrr-core 0.6.1\",\n"
@@ -2396,4 +2440,107 @@ TEST_CASE("rando: Character Select's look files are left out of the co-op hash, 
     // Another mod's textures are its content: they still count.
     const std::string other = "Hylian Tunics";
     CHECK(hash(pc("e", other, "red", "menu", false), other) != hash(pc("f", other, "blue", "menu", false), other));
+}
+
+namespace {
+const fs::path kLayouts = fs::path("UI") / "Layout2Archive" / "Common.Product.100.Nin_Ounce_NVN2.blarc.zs";
+
+// The kit's merge of the winner's layout archive: its own copy kept, and the stamp naming the file as it is now.
+void MarkLayouts(const fs::path& mods, const std::string& mod) {
+    Put(mods / mod / "_coop-archives" / kLayouts, "the mod's own copy");
+    fs::path stamp = fs::path("_coop-archives") / kLayouts;
+    PutKeptStamp(mods / mod, stamp += ".txt", "coop-archive 1", kLayouts);
+}
+}  // namespace
+
+TEST_CASE("rando (row 288): a layout archive that wins without the Characters page's layouts is found") {
+    World w;
+    const std::string pack = "contents\\0400486024DEC000\\coop-puppet";
+    Put(w.mods / kPackFolder / "romfs" / kLayouts, "game layouts + co-op's");
+    Put(w.mods / "OoT Character Select" / "romfs" / kLayouts, "game layouts + the Characters page's");
+    Put(w.mods / "randomizer-S1" / "romfs" / kLayouts, "game layouts, the seed's");
+    Put(w.mods / "aaa-textures" / "romfs" / "UI" / "Layout2Archive" / "Other.Product.100.blarc.zs", "not the menus'");
+    using Order = std::vector<std::string>;
+    using Code = CharactersCode;
+    // The seed made in the game sorts last: its whole archive is the one read, the page's layouts are not in the game.
+    const Order seed_last{pack, "aaa-textures", "OoT Character Select", "randomizer-S1"};
+    CHECK(OutsideLayouts(w.mods, {}, &seed_last, Code::character_select) == std::optional<std::string>("randomizer-S1"));
+    CHECK(OutsideLayouts(w.mods, {}, &seed_last, Code::pack) == std::optional<std::string>("randomizer-S1"));
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &seed_last, Code::none));   // (no Characters code in the game: no page)
+    // The page's own mod wins: its layouts are the ones read.
+    const Order charsel_last{pack, "randomizer-S1", "OoT Character Select"};
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &charsel_last, Code::character_select));
+    // ... but co-op's own page (the pack's code) would lack its layouts there.
+    CHECK(OutsideLayouts(w.mods, {}, &charsel_last, Code::pack) == std::optional<std::string>("OoT Character Select"));
+    const Order pack_last{"randomizer-S1", pack};
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &pack_last, Code::pack));
+    // A mod without the menus' archive never wins it; with no mod over the pack nothing is outside.
+    const Order no_seed{pack, "aaa-textures"};
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &no_seed, Code::pack));
+    // Character Select's code built in but his mod not among the mods read: his screens are gone too, no page.
+    const Order no_charsel{pack, "randomizer-S1"};
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &no_charsel, Code::character_select));
+    CHECK(OutsideLayouts(w.mods, {}, &no_charsel, Code::pack));
+    // Hookshot's own order (no list): by name, the last wins.
+    CHECK(OutsideLayouts(w.mods, {Indexed("OoT Character Select"), Indexed("randomizer-S1")}, nullptr,
+                         Code::character_select) == std::optional<std::string>("randomizer-S1"));
+    CHECK_FALSE(OutsideLayouts(w.mods, {Indexed("OoT Character Select"), Indexed("aaa-textures")}, nullptr,
+                               Code::character_select));
+    CHECK_FALSE(OutsideLayouts(w.mods, {Indexed("aaa-textures")}, nullptr, Code::pack));
+    // The kit's start merged every mod's layouts into the winner: trusted while its stamp names the file as it is.
+    MarkLayouts(w.mods, "randomizer-S1");
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &seed_last, Code::character_select));
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &seed_last, Code::pack));
+    Put(w.mods / "randomizer-S1" / "romfs" / kLayouts, "a new seed made in the same folder");
+    CHECK(OutsideLayouts(w.mods, {}, &seed_last, Code::character_select));
+    // A renamed Character Select is still the page's mod (its characters.json).
+    Put(w.mods / "CS" / "characters.json", "{}");
+    Put(w.mods / "CS" / "romfs" / kLayouts, "game layouts + the Characters page's");
+    const Order renamed_last{pack, "randomizer-S1", "CS"};
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &renamed_last, Code::character_select));
+    CHECK(LayoutsLine(std::string(80, 'x')).size() <= 300);
+}
+
+TEST_CASE("rando (row 288): a run without the Characters page's layouts says so and holds the page") {
+    World w;
+    Put(w.mods / kPackFolder / "romfs" / kLayouts, "game layouts + co-op's");
+    Put(w.mods / "randomizer-S1" / "romfs" / kLayouts, "game layouts, the seed's");
+    PlaysSeed(w, "randomizer-S1", 7);
+    const auto hooks = [&](CharactersCode code) {
+        Rando::Hooks h = w.Hooks();
+        h.characters_code = [code] { return code; };
+        return h;
+    };
+    {
+        CoopMods::Loader loader(w.mods, {nullptr, 7, nullptr, nullptr});
+        loader.Start();
+        Rando rando(loader, hooks(CharactersCode::pack));
+        rando.Start();
+        rando.Wait();
+        CHECK(rando.LayoutsMissing());
+        const std::string line = ChatSafe(LayoutsLine("randomizer-S1"), 300);
+        CHECK(line.find("the Characters page is held") != std::string::npos);
+        CHECK(Count(rando.TakeLines(), line) == 1);
+        rando.SayLayouts();   // (the page asked for: said again)
+        CHECK(Count(rando.TakeLines(), line) == 1);
+    }
+    {   // (no Characters code in the game, or no hook: nothing held, nothing said)
+        CoopMods::Loader loader(w.mods, {nullptr, 7, nullptr, nullptr});
+        loader.Start();
+        Rando rando(loader, w.Hooks());
+        rando.Start();
+        rando.Wait();
+        CHECK_FALSE(rando.LayoutsMissing());
+        rando.SayLayouts();
+        CHECK(Count(rando.TakeLines(), ChatSafe(LayoutsLine("randomizer-S1"), 300)) == 0);
+    }
+    MarkLayouts(w.mods, "randomizer-S1");
+    {
+        CoopMods::Loader loader(w.mods, {nullptr, 7, nullptr, nullptr});
+        loader.Start();
+        Rando rando(loader, hooks(CharactersCode::pack));
+        rando.Start();
+        rando.Wait();
+        CHECK_FALSE(rando.LayoutsMissing());
+    }
 }

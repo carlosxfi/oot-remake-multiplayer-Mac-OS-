@@ -186,6 +186,35 @@ TEST_CASE("enemy shots: a copy enemy's own shot is stopped at the game's create 
     CHECK_FALSE(es::StopAtCreate("Octorok_Bullet", {11.0f, 0.0f, 0.5f}));
 }
 
+TEST_CASE("enemy shots: every enemy *_Bullet_* actor of the game is a known shot, Gohma makes none") {
+    // The game's Pack/Actor (romfs dump, 2026-11-24): every actor with _Bullet in its name that an enemy makes.
+    // Left out: Bubble_Green_Bullet_Aura (an aura that follows its maker), MirrorShield_Bullet_* and the
+    // *_MirrorShieldReflect beams (Link's, sent back), Item_/Pouch_BulletBag (seed bags).
+    for (const char* name :
+         {"Dodongo_Bullet_Fire", "DungeonBossDodongo_Bullet_Fire", "DungeonBossDodongo_Bullet_StrongFire",
+          "DungeonBossGanon_Bullet_ShockWave", "DungeonBossGanondrof_Bullet_ChargeLightBall",
+          "DungeonBossGanondrof_Bullet_LightBall", "DungeonBossGanondrof_Bullet_ShockWave",
+          "DungeonBossGanondrof_Bullet_StrongShockWave", "DungeonBossPhantomGanon_Bullet_LightBall",
+          "FlareDancer_Bullet_FireBall", "FlareDancer_Bullet_FireDanceBall", "Ganon_Bullet_ShockSquirt",
+          "Ganon_Bullet_ShockSquirt_Weak", "Ganon_Bullet_StrongShockSquirt", "Ganon_Bullet_Thunder",
+          "Ganondorf_Bullet_Thunder_Shockwave", "KotakeKoumeTwinrova_Bullet_GuardBreakFire",
+          "KotakeKoumeTwinrova_Bullet_GuardBreakIce", "Octorok_Bullet", "PhantomGanon_Bullet_Thunder",
+          "PhantomGanon_Bullet_Thunder_Shockwave", "PoeHyrule_Bullet_FireBall", "SkullKid_Bullet",
+          "Twinrova_Bullet_FireBeam", "Twinrova_Bullet_FireBullet", "Twinrova_Bullet_FireField",
+          "Twinrova_Bullet_GuardBreakFire", "Twinrova_Bullet_GuardBreakIce", "Twinrova_Bullet_IceBeam",
+          "Twinrova_Bullet_IceBullet", "Twinrova_Bullet_IceField"}) {
+        CAPTURE(name);
+        CHECK(es::IsEnemyShot(name));
+    }
+    // Queen Gohma has no spit: her ActorHolderParam holds only Enemy_DungeonBoss_Gohma_Egg (made minions, from
+    // the boss owner only), and no _Bullet actor is hers.
+    for (const char* name : {"Enemy_DungeonBoss_Gohma_Egg", "Enemy_Gohma_Egg", "Enemy_Gohma_Larva"}) {
+        CAPTURE(name);
+        CHECK_FALSE(es::IsEnemyShot(name));
+        CHECK_FALSE(es::IsSplitShot(name));
+    }
+}
+
 TEST_CASE("enemy shots: Phantom Ganon's thunder and rally ball are split shots: every game keeps its own") {
     CHECK(es::IsSplitShot("PhantomGanon_Bullet_Thunder"));
     CHECK(es::IsSplitShot("PhantomGanon_Bullet_Thunder_Shockwave"));
@@ -194,6 +223,11 @@ TEST_CASE("enemy shots: Phantom Ganon's thunder and rally ball are split shots: 
     CHECK(es::IsSplitShot("Ganondorf_Bullet_Spread"));                   // every boss shot, each game's own
     CHECK(es::IsSplitShot("FlareDancer_Bullet_FireBall"));               // the Flare Dancer's (enemy survey)
     CHECK(es::IsSplitShot("FlareDancer_Bullet_FireDanceBall"));
+    CHECK(es::IsSplitShot("PoeHyrule_Bullet_FireBall"));  // the Poe's fireball, each game's own
+    CHECK_FALSE(es::IsSplitShot("SkullKid_Bullet"));
+    CHECK(es::IsSplitShot("Dodongo_Bullet_Fire"));                 // audit: Dodongo's breath is in
+    CHECK_FALSE(es::IsSplitShot("Enemy_DungeonBoss_Barinade_Beam"));  // a beam that lasts, not a shot
+    CHECK_FALSE(es::IsSplitShot("Item_Bomb"));                         // the bomb thrown in is Link's
     CHECK_FALSE(es::IsSplitShot("Octorok_Bullet"));     // sent back by the player shot at: shared
     CHECK_FALSE(es::IsSplitShot("ScrubDeku_DekuNut"));
     CHECK(es::IsSplitShot("Twinrova_Bullet_IceBeam"));

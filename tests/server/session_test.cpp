@@ -603,6 +603,30 @@ TEST_CASE("relayed messages carry the sender's real number, on the channel they 
   CHECK(h.session.stats().relayed == 3);
 }
 
+TEST_CASE("an emote goes to the other players with the sender's number, and a late joiner gets none") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.join(3, "Saria");
+  h.clear();
+
+  h.receive(2, Emote{0, 5}, kChannelSession);
+  CHECK(h.to(2).empty());  // never echoed to the sender
+  for (ConnectionId id : {1u, 3u}) {
+    auto msgs = h.to(id);
+    REQUIRE(msgs.size() == 1);
+    CHECK(msgs[0].channel == kChannelSession);
+    CHECK(std::get<Emote>(msgs[0].message) == Emote{2, 5});
+  }
+
+  // It is not kept: the fourth player's join brings no EMOTE.
+  h.clear();
+  h.join(4, "Sam");
+  for (const auto& sent : h.sent) {
+    CHECK(std::get_if<Emote>(&sent.message) == nullptr);
+  }
+}
+
 TEST_CASE("TEST_PAYLOAD is relayed unchanged on channel 0 or 3") {
   Harness h;
   h.join(1, "a");
@@ -3393,33 +3417,90 @@ TEST_CASE("review-geno-0119-3: a stun right after a boss turn still hands the bo
   CHECK(h.session.stats().boss_to_hitter == 1);
 }
 
-TEST_CASE("enemy turns: a plain enemy in a fight takes turns among the players near it") {
+// ai-turns: a plain enemy takes turns only of a kind its owner's game lists (object_presence::takes_turns), at most
+// once per 15 s. Its fight lasts 12 s after a hit, so the cases hit it at 0 s and at 10 s (the turn is due at 16 s).
+void enemy_fight(OwnerHarness& h, std::int32_t life_after) {
+  h.receive(1, ObjectSample{0, placed(7), 0, attack_state(life_after + 1, false)}, kChannelObjectSamples);  // a hit
+  h.clear();
+  h.run(10 * kSecond);
+  h.receive(1, ObjectSample{0, placed(7), 0, attack_state(life_after, false)}, kChannelObjectSamples);  // a hit again
+}
+
+SessionConfig enemy_turn_config() {
   SessionConfig config = turn_config();
-  config.enemy_turns = true;  // (off by default: review-geno-0119-4, its own case)
-  config.boss_turn_us = SessionConfig{}.boss_turn_us;  // 4 s: a plain enemy's fight lasts 12 s after a hit
-  {  // both players at it: player 2's turn at its attack's end
+  config.boss_turn_us = SessionConfig{}.boss_turn_us;  // 4 s
+  return config;
+}
+
+TEST_CASE("ai-turns: a plain enemy in a fight takes a turn among the players near it, not before 15 s") {
+  const SessionConfig config = enemy_turn_config();
+  REQUIRE(config.enemy_turns);  // on by default: the kinds are the hook's list (takes_turns)
+  {  // both players at it: player 2's turn at its attack's end after 15 s
     TurnHarness h(config);
     h.stand(1, 3);
     h.stand(2, 5);
-    h.receive(1, ObjectSample{0, placed(7), 0, attack_state(11, false)}, kChannelObjectSamples);  // a fight
-    h.clear();
-    h.run(7 * kSecond);
-    attack_ends(h, 1, 0, 11);
+    enemy_fight(h, 10);
+    h.run(6 * kSecond);
+    attack_ends(h, 1, 0, 10);
     h.run(250'000);
     CHECK(messages_to<HandoverAsk>(h, 1) == std::vector<HandoverAsk>{{placed(7), 0, 2}});
     CHECK(h.session.stats().enemy_turns == 1);
     CHECK(h.session.stats().boss_turns == 0);
   }
-  {  // player 2 is 20 m off: not fighting it, no turn (a boss would take 40 m)
+  {  // an attack's end at 7 s (the report 138 shuttle): one move per 15 s, so none
     TurnHarness h(config);
     h.stand(1, 3);
-    h.stand(2, 20);
+    h.stand(2, 5);
     h.receive(1, ObjectSample{0, placed(7), 0, attack_state(11, false)}, kChannelObjectSamples);
     h.clear();
     h.run(7 * kSecond);
     attack_ends(h, 1, 0, 11);
     h.run(250'000);
+    CHECK(h.asks() == 0);
     CHECK(h.session.stats().enemy_turns == 0);
+  }
+  {  // player 2 is 20 m off: not fighting it, no turn (a boss would take 40 m)
+    TurnHarness h(config);
+    h.stand(1, 3);
+    h.stand(2, 20);
+    enemy_fight(h, 10);
+    h.run(6 * kSecond);
+    attack_ends(h, 1, 0, 10);
+    h.run(250'000);
+    CHECK(h.session.stats().enemy_turns == 0);
+  }
+  {  // its owner is 20 m off (not one of two near): no turn
+    TurnHarness h(config);
+    h.stand(1, 20);
+    h.stand(2, 5);
+    enemy_fight(h, 10);
+    h.run(6 * kSecond);
+    attack_ends(h, 1, 0, 10);
+    h.run(250'000);
+    CHECK(h.session.stats().enemy_turns == 0);
+  }
+  {  // player 2 is dead: no turn (one fit player near)
+    TurnHarness h(config);
+    h.stand(1, 3);
+    h.stand(2, 5);
+    h.receive(2, PlayerStatus{0, status::dead}, kChannelSession);
+    enemy_fight(h, 10);
+    h.run(6 * kSecond);
+    attack_ends(h, 1, 0, 10);
+    h.run(250'000);
+    CHECK(h.session.stats().enemy_turns == 0);
+  }
+  {  // a kind its owner's game does not list (no takes_turns): it keeps the player it fights
+    TurnHarness h(config);
+    h.receive(1, present_in("Field", {placed(7)}), kChannelOwnership);
+    h.stand(1, 3);
+    h.stand(2, 5);
+    enemy_fight(h, 10);
+    h.run(6 * kSecond);
+    attack_ends(h, 1, 0, 10);
+    h.run(250'000);
+    CHECK(h.asks() == 0);
+    CHECK(h.session.object_owner(placed(7)) == owned(1, 0));
   }
   {  // the switch
     SessionConfig off = config;
@@ -3427,47 +3508,98 @@ TEST_CASE("enemy turns: a plain enemy in a fight takes turns among the players n
     TurnHarness h(off);
     h.stand(1, 3);
     h.stand(2, 5);
-    h.receive(1, ObjectSample{0, placed(7), 0, attack_state(11, false)}, kChannelObjectSamples);
-    h.clear();
-    h.run(7 * kSecond);
-    attack_ends(h, 1, 0, 11);
+    enemy_fight(h, 10);
+    h.run(6 * kSecond);
+    attack_ends(h, 1, 0, 10);
     h.run(250'000);
     CHECK(h.asks() == 0);
   }
 }
 
-TEST_CASE("review-geno-0119-4: by default a plain enemy keeps the player it fights, a boss still takes turns") {
-  // A plain enemy's AI chases only its owner's Link: a turn at each attack's end walked it to the other player and
-  // back (report 138's shuttle). enemy_turns is off by default; the same fight on a boss passes the turn.
-  SessionConfig config = turn_config();
-  config.boss_turn_us = SessionConfig{}.boss_turn_us;
-  REQUIRE_FALSE(config.enemy_turns);
-  {  // a plain enemy, both players at it, both on a build that takes turns: no turn
+TEST_CASE("ai-turns: a turn goes to the near player with fewer fighting enemies, never to an equal one") {
+  const SessionConfig config = enemy_turn_config();
+  {  // player 1 owns two fighting enemies, player 2 none: the turn of the first goes to player 2
     TurnHarness h(config);
+    h.receive(1, turns_present("Field", {placed(7), placed(8)}), kChannelOwnership);
+    h.receive(2, turns_present("Field", {placed(7), placed(8)}), kChannelOwnership);
     h.stand(1, 3);
     h.stand(2, 5);
-    h.receive(1, ObjectSample{0, placed(7), 0, attack_state(11, false)}, kChannelObjectSamples);
-    h.clear();
-    h.run(7 * kSecond);
-    attack_ends(h, 1, 0, 11);
-    h.run(250'000);
-    CHECK(h.asks() == 0);
-    CHECK(h.session.stats().enemy_turns == 0);
-    CHECK(h.session.object_owner(placed(7)) == owned(1, 0));
-  }
-  {  // the same as a boss: player 2's turn
-    TurnHarness h(config);
-    h.stand(1, 3);
-    h.stand(2, 5);
-    h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}}}, kChannelOwnership);
-    h.receive(1, ObjectSample{0, placed(7), 0, attack_state(11, false)}, kChannelObjectSamples);
-    h.clear();
-    h.run(7 * kSecond);
-    attack_ends(h, 1, 0, 11);
+    h.receive(1, ObjectSample{0, placed(8), 0, attack_state(11, false)}, kChannelObjectSamples);
+    enemy_fight(h, 10);
+    h.receive(1, ObjectSample{0, placed(8), 0, attack_state(10, false)}, kChannelObjectSamples);
+    h.run(6 * kSecond);
+    attack_ends(h, 1, 0, 10);
     h.run(250'000);
     CHECK(messages_to<HandoverAsk>(h, 1) == std::vector<HandoverAsk>{{placed(7), 0, 2}});
-    CHECK(h.session.stats().boss_turns == 1);
   }
+  {  // one fighting enemy each: nobody has fewer, so no turn (a spread pack stays spread)
+    TurnHarness h(config);
+    h.receive(2, turns_present("Field", {placed(8)}), kChannelOwnership);  // player 2 reports it first: its owner
+    h.receive(1, turns_present("Field", {placed(7), placed(8)}), kChannelOwnership);
+    h.stand(1, 3);
+    h.stand(2, 5);
+    h.receive(2, ObjectSample{0, placed(8), 0, attack_state(11, false)}, kChannelObjectSamples);
+    enemy_fight(h, 10);
+    h.receive(2, ObjectSample{0, placed(8), 0, attack_state(10, false)}, kChannelObjectSamples);
+    h.run(6 * kSecond);
+    REQUIRE(h.session.object_owner(placed(8)) == owned(2, 0));
+    attack_ends(h, 1, 0, 10);
+    h.run(250'000);
+    CHECK(h.session.stats().enemy_turns == 0);
+  }
+}
+
+TEST_CASE("ai-turns: three players near one enemy: one move per 15 s at most, round, never back and forth") {
+  TurnHarness h(enemy_turn_config());
+  h.join(3, "Saria");
+  h.receive(3, turns_present("Field", {placed(7)}), kChannelOwnership);
+  h.stand(1, 3);
+  h.stand(2, 5);
+  h.stand(3, 7);
+  h.receive(1, ObjectSample{0, placed(7), 0, attack_state(11, false)}, kChannelObjectSamples);
+  h.clear();
+  ConnectionId owner = 1;
+  std::uint16_t epoch = 0;
+  std::int32_t life = 11;
+  std::vector<ConnectionId> owners{1};
+  // 90 s of a fight: a hit every 10 s, an attack's end every 5 s, a move answered at once.
+  for (int step = 1; step <= 18; ++step) {
+    h.run(5 * kSecond);
+    if (step % 2 == 0) {
+      h.receive(owner, ObjectSample{0, placed(7), epoch, attack_state(--life, false)}, kChannelObjectSamples);
+    }
+    attack_ends(h, owner, epoch, life);
+    h.run(250'000);
+    const auto asks = messages_to<HandoverAsk>(h, owner);
+    if (!asks.empty()) {
+      h.receive(owner, HandoverState{0, placed(7), epoch, attack_state(life, false)}, kChannelOwnership);
+      owner = asks.front().to_player;
+      ++epoch;
+      owners.push_back(owner);
+      h.receive(owner, ObjectSample{0, placed(7), epoch, attack_state(life, false)}, kChannelObjectSamples);
+    }
+    h.clear();
+  }
+  CHECK(h.session.stats().enemy_turns == owners.size() - 1);
+  CHECK(h.session.stats().enemy_turns <= 6);  // 90 s / 15 s
+  CHECK(h.session.stats().enemy_turns >= 3);  // and it does turn
+  for (std::size_t i = 2; i < owners.size(); ++i) CHECK(owners[i] != owners[i - 2]);  // 1 2 3 1 ..., no A-B-A
+}
+
+TEST_CASE("review-geno-0119-4: a boss takes a turn after 4 s, a plain enemy needs 15 s") {
+  // A plain enemy's AI chases only its owner's Link: a turn at each attack's end walked it to the other player and
+  // back (report 138's shuttle). A boss passes the turn after boss_turn_us.
+  TurnHarness h(enemy_turn_config());
+  h.stand(1, 3);
+  h.stand(2, 5);
+  h.receive(1, ObjectGroup{0, {{placed(7), placed(7), object_group::boss}}}, kChannelOwnership);
+  h.receive(1, ObjectSample{0, placed(7), 0, attack_state(11, false)}, kChannelObjectSamples);
+  h.clear();
+  h.run(7 * kSecond);
+  attack_ends(h, 1, 0, 11);
+  h.run(250'000);
+  CHECK(messages_to<HandoverAsk>(h, 1) == std::vector<HandoverAsk>{{placed(7), 0, 2}});
+  CHECK(h.session.stats().boss_turns == 1);
 }
 
 TEST_CASE("every enemy in a fight leaves an owner who died at once, out of a fight after 10 s") {
@@ -3694,6 +3826,47 @@ TEST_CASE("issue 150: a DAMAGE of 0 (a stun in the hitter's game) asks for the b
   CHECK(h.session.object_owner(placed(7)) == owned(2, 1));
   CHECK(messages_to<HandoverState>(h, 2) ==
         std::vector<HandoverState>{{1, placed(7), 1, state_at(0, 12)}});
+}
+
+// ai-stuns: a nut, boomerang or hookshot stun on a plain enemy's copy (a DAMAGE of 0) hands the enemy to the
+// stunner, whose game has the stunned enemy; every other game follows the new owner, a third one too.
+TEST_CASE("ai-stuns: a stun on a plain enemy's copy hands it to the stunner, and a third game follows") {
+  OwnerHarness h;
+  h.join(3, "Saria");
+  h.receive(3, present_in("Field", {placed(7)}), kChannelOwnership);
+  h.stand(1, 4);  // all three near it: a hit with life would not move it
+  h.stand(2, 6);
+  h.stand(3, 8);
+  h.clear();
+  h.receive(2, Damage{0, placed(7), 0, 0, 0, {}, {}}, kChannelOwnership);
+  CHECK(messages_to<HandoverAsk>(h, 1) == std::vector<HandoverAsk>{{placed(7), 0, 2}});
+  CHECK(h.session.stats().stun_to_stunner == 1);
+  h.receive(1, HandoverState{0, placed(7), 0, state_at(0, 12)}, kChannelOwnership);
+  CHECK(h.session.object_owner(placed(7)) == owned(2, 1));
+  CHECK(messages_to<ObjectOwner>(h, 3) == std::vector<ObjectOwner>{{placed(7), 2, 1, 0}});
+  // The stunner's samples (its stunned enemy) reach the third game.
+  h.clear();
+  h.receive(2, ObjectSample{0, placed(7), 1, state_at(1, 12)}, kChannelObjectSamples);
+  CHECK(messages_to<ObjectSample>(h, 3).size() == 1);
+  // Player 3's stun within 1 s of the change waits (stun_handover_cooldown_us).
+  h.run(kSecond / 2);
+  h.clear();
+  h.receive(3, Damage{0, placed(7), 1, 0, 0, {}, {}}, kChannelOwnership);
+  CHECK(messages_to<HandoverAsk>(h, 2).empty());
+  // After it, player 1's stun takes it back, though player 1 gave it up lately, player 2 stands by it and the 5 s
+  // cooldown of the other rules still runs (geno-polish-ai: a stun right after a change was lost).
+  h.run(kSecond);
+  h.clear();
+  h.receive(1, Damage{0, placed(7), 1, 0, 0, {}, {}}, kChannelOwnership);
+  CHECK(messages_to<HandoverAsk>(h, 2) == std::vector<HandoverAsk>{{placed(7), 1, 1}});
+  CHECK(h.session.stats().stun_to_stunner == 2);
+
+  OwnerHarness far;  // a stunner over 30 m from it: no move
+  far.stand(1, 4);
+  far.stand(2, 60);
+  far.clear();
+  far.receive(2, Damage{0, placed(7), 0, 0, 0, {}, {}}, kChannelOwnership);
+  CHECK(far.asks() == 0);
 }
 
 // Hand-over life (fable-g2-bosses, rows 104/118, issue 150): the life the new
@@ -5185,6 +5358,37 @@ TEST_CASE("difficulty: automatic by the number of players until the host chooses
   CHECK(h.session.difficulty() == two);
 }
 
+// The owner (2026-11-25): the host picks the difficulty when making the lobby (HosCoopHostOptions::difficulty,
+// coop_server --difficulty): in force from the first player on, and the lobby's again when the session empties.
+TEST_CASE("difficulty: the lobby's choice from the start, and again when the session empties") {
+  SessionConfig config;
+  config.difficulty.auto_scale = false;
+  config.difficulty.preset = DifficultyPreset::hard;
+  Harness h(config);
+  CHECK(h.session.difficulty_choice() == config.difficulty);
+  h.join(1, "Link");
+  const Difficulty hard{0, false, DifficultyPreset::hard, {200, 150, 150, 200, 150}};
+  CHECK(h.difficulty_to(1) == std::vector<Difficulty>{hard});   // (the first player, the host, is told it at join)
+  h.clear();
+  h.join(2, "Zelda");
+  CHECK(h.difficulty_to(2) == std::vector<Difficulty>{hard});   // (fixed: the second player changes nothing)
+  CHECK(h.difficulty_to(1).empty());
+  // The host changes it in the session; the session empties: the lobby's again.
+  h.receive(1, Difficulty{0, false, DifficultyPreset::easy, {}}, kChannelSession);
+  CHECK(h.session.difficulty().preset == DifficultyPreset::easy);
+  h.session.disconnected(2, h.now);
+  h.session.disconnected(1, h.now);
+  h.collect();
+  CHECK(h.session.difficulty_choice() == config.difficulty);
+  // Custom values past a slider's end are kept within it (the module clamps them too).
+  SessionConfig wild;
+  wild.difficulty.auto_scale = false;
+  wild.difficulty.preset = DifficultyPreset::custom;
+  wild.difficulty.custom = {900, 10, 100, 900, 10};
+  Harness w(wild);
+  CHECK(w.session.difficulty().values == DifficultyValues{500, 25, 100, 500, 25});
+}
+
 TEST_CASE("difficulty: the host's choice is fixed, whoever joins or leaves") {
   Harness h;
   h.join(1, "Link");
@@ -5446,6 +5650,322 @@ TEST_CASE("mods: each player's list is passed on and given to joiners, and share
   h.clear();
   h.join(5, "Nabooru");
   CHECK(messages_to<ModSettings>(h, 5).empty());
+}
+
+// MOD_DATA (protocol 18, issue 250): each player's own values, kept by the server per player, mod and key.
+TEST_CASE("mod data: relayed with the sender's number, kept for joiners, cleared, forgotten when the player leaves") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.clear();
+  const std::vector<std::uint8_t> malon{'m', 'a', 'l', 'o', 'n'};
+  h.receive(2, ModData{0, "coop", "skin", malon}, kChannelSession);
+  CHECK(only_message_to<ModData>(h, 1) == ModData{2, "coop", "skin", malon});
+  CHECK(messages_to<ModData>(h, 2).empty());  // never back to the sender
+  CHECK(h.session.stats().mod_data_relayed == 1);
+  // The same value again changes nothing: not relayed.
+  h.clear();
+  h.now += kSecond;
+  h.receive(2, ModData{0, "coop", "skin", malon}, kChannelSession);
+  CHECK(messages_to<ModData>(h, 1).empty());
+  // A player cannot speak for another: a claimed number is refused before it is read (check_received).
+  h.now += kSecond;
+  h.receive(1, ModData{2, "hello-mod", "wave", {1}}, kChannelSession);
+  CHECK(h.sent.empty());
+  CHECK(h.session.stats().errors(Error::wrong_sender) == 1);
+  // The server writes the sender's number.
+  h.receive(1, ModData{0, "hello-mod", "wave", {1}}, kChannelSession);
+  CHECK(only_message_to<ModData>(h, 2) == ModData{1, "hello-mod", "wave", {1}});
+
+  // A joiner gets every value the others have.
+  h.clear();
+  h.join(3, "Saria");
+  const auto told = messages_to<ModData>(h, 3);
+  CHECK(told.size() == 2);
+  CHECK(std::find(told.begin(), told.end(), ModData{2, "coop", "skin", malon}) != told.end());
+  CHECK(std::find(told.begin(), told.end(), ModData{1, "hello-mod", "wave", {1}}) != told.end());
+
+  // An empty value clears the key: relayed once, and a joiner no longer gets it.
+  h.clear();
+  h.now += kSecond;
+  h.receive(1, ModData{0, "hello-mod", "wave", {}}, kChannelSession);
+  CHECK(only_message_to<ModData>(h, 2) == ModData{1, "hello-mod", "wave", {}});
+  h.clear();
+  h.now += kSecond;
+  h.receive(1, ModData{0, "hello-mod", "wave", {}}, kChannelSession);  // nothing to clear
+  CHECK(h.sent.empty());
+  // A player who leaves takes its values along.
+  h.session.disconnected(2, h.now);
+  h.collect();
+  h.clear();
+  h.join(4, "Ruto");
+  CHECK(messages_to<ModData>(h, 4).empty());
+}
+
+TEST_CASE("mod data: at most 8 keys per mod, 16 mods per player, a burst of 4 sends then 4 a second") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.clear();
+  const auto send = [&](const std::string& mod, const std::string& key, std::vector<std::uint8_t> value) {
+    h.now += kSecond;  // past the send budget
+    h.clear();
+    h.receive(1, ModData{0, mod, key, std::move(value)}, kChannelSession);
+    return messages_to<ModData>(h, 2).size() == 1;
+  };
+  for (std::size_t k = 0; k < kMaxModDataKeysPerMod; ++k) CHECK(send("m", "k" + std::to_string(k), {1}));
+  CHECK_FALSE(send("m", "k9", {1}));  // a 9th key
+  CHECK(h.session.stats().mod_data_refused == 1);
+  CHECK(send("m", "k0", {2}));        // a kept key still changes
+  CHECK(send("m", "k0", {}));         // and a clear makes room
+  CHECK(send("m", "k9", {1}));
+  for (std::size_t m = 1; m < kMaxModDataMods; ++m) CHECK(send("mod" + std::to_string(m), "k", {1}));
+  CHECK_FALSE(send("mod99", "k", {1}));  // a 17th mod
+  CHECK(h.session.stats().mod_data_refused == 2);
+
+  // The budget: 4 at once, then one each quarter second. A change over it is never lost (the game marks a sent
+  // value as the server's and does not send it again): 20 sends bunched in one tick by a stall all arrive, in turn.
+  h.now += kSecond;
+  h.clear();
+  const auto key_of = [](int i) { return std::pair<std::string, std::string>{"b" + std::to_string(i / 8), "k" + std::to_string(i % 8)}; };
+  for (int i = 0; i < 20; ++i) {
+    const auto [mod, key] = key_of(i);
+    h.receive(2, ModData{0, mod, key, {static_cast<std::uint8_t>(i + 1)}}, kChannelSession);
+  }
+  CHECK(messages_to<ModData>(h, 1).size() == kModDataSendsPerSecond);
+  CHECK(h.session.stats().mod_data_refused == 2);  // the budget refuses nothing
+  CHECK(h.session.stats().mod_data_held == 16);
+  // A held key that changes again goes once, with its newest value.
+  h.receive(2, ModData{0, "b2", "k3", {77}}, kChannelSession);
+  CHECK(h.session.stats().mod_data_held == 16);
+  for (int step = 0; step < 16; ++step) {
+    h.now += 1'000'000 / kModDataSendsPerSecond;
+    h.session.tick(h.now);
+    h.collect();
+  }
+  const auto told = messages_to<ModData>(h, 1);
+  CHECK(told.size() == 20);
+  for (int i = 0; i < 20; ++i) {
+    const auto [mod, key] = key_of(i);
+    const std::uint8_t value = i == 19 ? 77 : static_cast<std::uint8_t>(i + 1);
+    CHECK(std::count(told.begin(), told.end(), ModData{2, mod, key, {value}}) == 1);
+  }
+  // A joiner gets the newest values too.
+  h.clear();
+  h.join(3, "Saria");
+  const auto joiner = messages_to<ModData>(h, 3);
+  CHECK(std::count(joiner.begin(), joiner.end(), ModData{2, "b2", "k3", {77}}) == 1);
+  // A held clear goes as a clear.
+  h.clear();
+  h.now += kSecond;
+  for (int i = 0; i < 5; ++i) {
+    const auto [mod, key] = key_of(i);
+    h.receive(2, ModData{0, mod, key, {}}, kChannelSession);
+  }
+  h.now += kSecond;
+  h.session.tick(h.now);
+  h.collect();
+  const auto cleared = messages_to<ModData>(h, 1);
+  CHECK(cleared.size() == 5);
+  CHECK(std::count(cleared.begin(), cleared.end(), ModData{2, "b0", "k4", {}}) == 1);
+}
+
+TEST_CASE("mod data: what waits for the budget is bounded whatever a game sends, and the others end with what it keeps") {
+  SessionConfig config;
+  config.reliable_per_second = 100'000;  // the general rate must not be what holds the flood back
+  config.bytes_per_second = 100u << 20;
+  config.silence_timeout_us = 3600 * kSecond;
+  Harness h(config);
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.clear();
+  using Seen = std::map<std::pair<std::string, std::string>, std::vector<std::uint8_t>>;
+  Seen seen, joiner;         // player 2's values in player 1's and player 3's game
+  bool over_limits = false;  // a game held more of player 2 than a player may have
+  const auto take = [&] {
+    for (auto [id, values] : {std::pair<ConnectionId, Seen*>{1, &seen}, std::pair<ConnectionId, Seen*>{3, &joiner}}) {
+      for (const ModData& d : messages_to<ModData>(h, id)) {
+        if (d.value.empty()) values->erase({d.mod_id, d.key});
+        else (*values)[{d.mod_id, d.key}] = d.value;
+        std::map<std::string, std::size_t> keys;
+        for (const auto& entry : *values) ++keys[entry.first.first];
+        over_limits |= keys.size() > kMaxModDataMods || keys[d.mod_id] > kMaxModDataKeysPerMod;
+      }
+    }
+    h.clear();
+  };
+  const auto send = [&](const std::string& mod, const std::string& key, std::vector<std::uint8_t> value) {
+    h.receive(2, ModData{0, mod, key, std::move(value)}, kChannelSession);
+  };
+  const auto steps = [&](int count) {  // a budget slot each
+    for (int i = 0; i < count; ++i) {
+      h.now += 1'000'000 / kModDataSendsPerSecond;
+      h.session.tick(h.now);
+      h.collect();
+      take();
+    }
+  };
+
+  // New keys set and cleared without end: each frees its place in the store at once, so none may wait for ever.
+  for (int i = 0; i < 10'000; ++i) {
+    send("m", "k" + std::to_string(i), {1});
+    send("m", "k" + std::to_string(i), {});
+    h.now += 5'000;
+    h.session.tick(h.now);
+    h.collect();
+    take();
+  }
+  CHECK(h.session.stats().mod_data_refused == 0);
+  CHECK(h.session.stats().mod_data_held_most <= 2);
+  send("m", "last", {9});
+  steps(8);
+  CHECK(seen == Seen{{{"m", "last"}, {9}}});  // and the next value does not wait behind them
+
+  // A key that changes all the time does not keep a later one back; one that is back at what the others have goes not.
+  const auto relayed = h.session.stats().mod_data_relayed;
+  for (int i = 0; i < 4; ++i) send("m", "p" + std::to_string(i), {1});  // the burst
+  send("m", "last", {10});
+  send("m", "last", {9});
+  send("m", "a", {1});
+  send("m", "z", {1});
+  for (std::uint8_t i = 2; i < 6; ++i) {
+    send("m", "a", {i});
+    steps(1);
+  }
+  CHECK(seen.contains({"m", "z"}));
+  steps(4);
+  CHECK(h.session.stats().mod_data_relayed - relayed <= 4 + 1 + 4);
+  CHECK(seen[{"m", "a"}] == std::vector<std::uint8_t>{5});
+  for (const char* key : {"last", "p0", "p1", "p2", "p3", "a", "z"}) send("m", key, {});
+  steps(8);
+  CHECK(seen.empty());
+
+  // The most that can wait: every key the others have is cleared and as many new ones come, all at once.
+  const auto each = [](const std::string& prefix, const auto& f) {
+    for (std::size_t m = 0; m < kMaxModDataMods; ++m) {
+      for (std::size_t k = 0; k < kMaxModDataKeysPerMod; ++k) f("w" + std::to_string(m), prefix + std::to_string(k));
+    }
+  };
+  each("k", [&](const std::string& mod, const std::string& key) { send(mod, key, {1}); });
+  steps(128);
+  CHECK(seen.size() == 128);
+  each("k", [&](const std::string& mod, const std::string& key) { send(mod, key, {}); });
+  Seen kept;
+  each("n", [&](const std::string& mod, const std::string& key) {
+    send(mod, key, {2});
+    kept[{mod, key}] = {2};
+  });
+  CHECK(h.session.stats().mod_data_refused == 0);
+  CHECK(h.session.stats().mod_data_held_most > kMaxModDataHeld / 2);
+  CHECK(h.session.stats().mod_data_held_most <= kMaxModDataHeld);
+  steps(60);
+  h.join(3, "Saria");  // gets what the others have; what still waits goes to it with them
+  take();
+  CHECK(joiner == seen);
+  send("w0", "n0", {});  // still waited: never told, to the joiner neither
+  kept.erase({"w0", "n0"});
+  steps(256);
+  CHECK(seen == kept);
+  CHECK(joiner == kept);
+  CHECK_FALSE(over_limits);
+}
+
+// Race mode (coop/protocol/race.hpp): the world stays in each game. 3 players, one joining mid-game.
+TEST_CASE("race mode: no flag is relayed, kept or given to a joiner, chat still goes, on until the session empties") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.join(3, "Saria");
+  h.receive(1, FlagState{0, {flag(1, 1)}}, kChannelProgress);  // before race mode: kept by the server
+  h.receive(1, ModSettings{0, {{"coop", "race", "on"}}}, kChannelSession);
+  h.clear();
+
+  h.receive(2, FlagSet{0, {flag(2, 1)}}, kChannelProgress);
+  h.receive(1, FlagState{0, {flag(3, 1)}}, kChannelProgress);
+  h.receive(1, FlagSnapshot{0, 1, {flag(4, 1)}}, kChannelProgress);
+  h.receive(3, Chat{0, "go"}, kChannelSession);
+  for (ConnectionId id : {1u, 2u, 3u}) {
+    CHECK(messages_of<FlagSet>(h, id).empty());
+    CHECK(messages_of<FlagState>(h, id).empty());
+    CHECK(messages_of<FlagSnapshot>(h, id).empty());
+    CHECK(messages_of<FlagOrigin>(h, id).empty());
+  }
+  CHECK(messages_of<Chat>(h, 1).size() == 1);
+  CHECK(messages_of<Chat>(h, 2).size() == 1);
+  CHECK(h.session.stats().race_dropped == 3);
+
+  // A joiner mid-game: the host's settings (race on), and no table, kept before or not.
+  h.clear();
+  h.join(4, "Ruto");
+  CHECK(messages_of<FlagSnapshot>(h, 4).empty());
+  CHECK(messages_of<FlagState>(h, 4).empty());
+  CHECK(messages_of<ModSettings>(h, 4) == std::vector<ModSettings>{ModSettings{1, {{"coop", "race", "on"}}}});
+
+  // The host says off mid-session: nothing comes back until the session ends (no push, no pull).
+  h.receive(1, ModSettings{0, {{"coop", "race", "off"}}}, kChannelSession);
+  h.clear();
+  h.receive(2, FlagSet{0, {flag(5, 1)}}, kChannelProgress);
+  CHECK(messages_of<FlagSet>(h, 1).empty());
+
+  // Everyone leaves: the next session shares again.
+  for (ConnectionId id : {1u, 2u, 3u, 4u}) h.session.disconnected(id, h.now);
+  h.collect();
+  h.join(5, "Nabooru");
+  h.join(6, "Impa");
+  h.clear();
+  h.receive(6, FlagSet{0, {flag(6, 1)}}, kChannelProgress);
+  CHECK(messages_of<FlagSet>(h, 5).size() == 1);
+}
+
+// Row 281: a player whose randomizer seed is not the host's is held out of the host's world (mod_world.hpp).
+TEST_CASE("row 281: a player on another randomizer seed is held: its world is not taken, chat goes, a host change decides again") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.join(3, "Saria");
+  ModEntry seed{"randomizer-abc", "", {}};
+  seed.hash[0] = 5;
+  h.receive(1, ModList{0, {seed}}, kChannelSession);
+  h.receive(2, ModList{0, {}}, kChannelSession);  // the base game
+  h.receive(3, ModList{0, {seed}}, kChannelSession);
+  h.clear();
+
+  h.receive(2, FlagSet{0, {flag(1, 1)}}, kChannelProgress);
+  h.receive(3, FlagSet{0, {flag(2, 1)}}, kChannelProgress);
+  h.receive(2, Chat{0, "why"}, kChannelSession);
+  CHECK(messages_of<FlagSet>(h, 1).size() == 1);  // Saria's only (a FLAG_SET goes to the host)
+  CHECK(messages_of<FlagOrigin>(h, 2).size() == 1);  // a held player still gets the world (Saria's, who did it)
+  CHECK(messages_of<Chat>(h, 1).size() == 1);
+  CHECK(h.session.stats().world_held_dropped == 1);
+
+  // The host leaves: Zelda hosts (the base game), so Saria's seed is the one held now.
+  h.session.disconnected(1, h.now);
+  h.collect();
+  h.clear();
+  h.receive(2, FlagSet{0, {flag(3, 1)}}, kChannelProgress);
+  h.receive(3, FlagSet{0, {flag(4, 1)}}, kChannelProgress);
+  CHECK(messages_of<FlagSet>(h, 2).size() == 1);  // Zelda's own, back to the host; Saria's dropped
+  CHECK(messages_of<FlagOrigin>(h, 3).size() == 1);  // (Zelda's, to held Saria)
+  CHECK(h.session.stats().world_held_dropped == 2);
+}
+
+TEST_CASE("row 281: nobody is held until both lists are known, and a matching list is never held") {
+  Harness h;
+  h.join(1, "Link");
+  h.join(2, "Zelda");
+  h.receive(2, ModList{0, {}}, kChannelSession);  // the host's list not known yet
+  h.clear();
+  h.receive(2, FlagSet{0, {flag(1, 1)}}, kChannelProgress);
+  CHECK(messages_of<FlagSet>(h, 1).size() == 1);
+  ModEntry seed{"randomizer-abc", "", {}};
+  h.receive(1, ModList{0, {seed}}, kChannelSession);  // now known: Zelda lacks it
+  h.clear();
+  h.receive(2, FlagSet{0, {flag(2, 1)}}, kChannelProgress);
+  CHECK(messages_of<FlagSet>(h, 1).empty());
+  h.receive(1, ModList{0, {}}, kChannelSession);  // the host's list again, without the seed: the same world
+  h.clear();
+  h.receive(2, FlagSet{0, {flag(3, 1)}}, kChannelProgress);
+  CHECK(messages_of<FlagSet>(h, 1).size() == 1);
 }
 
 // Issue 151 (fishing-3): a fish goes to the game whose lure is nearest it.
@@ -8610,4 +9130,65 @@ TEST_CASE("world: entries counts every scene's breaks, places, hits and cuts (ro
   CHECK(world.scenes() == 1);
   world.forget("spot04");
   CHECK(world.entries() == 0);
+}
+
+namespace {
+ObjectState keyed_state(float x, std::optional<KeyedValues> plugs) {
+  ObjectState s = state_at(x, 12);
+  s.plugs = std::move(plugs);
+  return s;
+}
+}  // namespace
+
+TEST_CASE("keyed values (components 25-28, protocol 18) are kept merged, relayed as sent, handed over") {
+  ObjectHarness h;
+  h.receive(1, present_in("Graveyard", {placed(7)}), kChannelOwnership);
+  h.receive(2, present_in("Graveyard", {placed(7)}), kChannelOwnership);
+  h.clear();
+
+  h.receive(1, ObjectSample{0, placed(7), 0,
+                            keyed_state(1, KeyedValues{true, {{7, 1, std::int32_t{1}}, {7, 2, std::int32_t{2}}}})},
+            kChannelObjectSamples);
+  // A delta: relayed as it came (copies apply the change), kept merged.
+  const ObjectSample delta{0, placed(7), 0,
+                           keyed_state(2, KeyedValues{false, {{7, 2, KeyedRemove{}}, {7, 3, 4.5f}}})};
+  h.clear();
+  h.receive(1, delta, kChannelObjectSamples);
+  REQUIRE(h.sent.size() == 1);
+  ObjectSample relayed = delta;
+  relayed.player_number = 1;
+  CHECK(std::get<ObjectSample>(h.sent[0].message) == relayed);
+  // A sample with no keyed values keeps them.
+  h.receive(1, ObjectSample{0, placed(7), 0, keyed_state(3, std::nullopt)}, kChannelObjectSamples);
+  h.clear();
+
+  h.session.disconnected(1, h.now);
+  h.collect();
+  CHECK(h.session.object_owner(placed(7)) == owned(2, 1));
+  const auto handed = messages_to<HandoverState>(h, 2);
+  REQUIRE(handed.size() == 1);
+  CHECK(handed[0].state == keyed_state(3, KeyedValues{true, {{7, 1, std::int32_t{1}}, {7, 3, 4.5f}}}));
+  CHECK(h.session.stats().keyed_dropped == 0);
+}
+
+TEST_CASE("a late player gets a placed object's merged keyed values with its spawn (protocol 18)") {
+  ObjectHarness h;
+  h.receive(1, present_in("Graveyard", {placed(7)}), kChannelOwnership);
+  h.receive(1, ObjectSpawn{0, placed(7), "Room", 0,
+                           keyed_state(0, KeyedValues{true, {{7, 1, std::int32_t{1}}}})},
+            kChannelOwnership);
+  // The owner's spawn again (its own state kept): only its keyed values merge in.
+  h.receive(1, ObjectSpawn{0, placed(7), "Room", 0,
+                           keyed_state(5, KeyedValues{false, {{7, 2, std::uint64_t{99}}}})},
+            kChannelOwnership);
+  h.receive(1, ObjectSample{0, placed(7), 0, keyed_state(1, KeyedValues{false, {{7, 1, std::int32_t{0}}}})},
+            kChannelObjectSamples);
+  h.clear();
+
+  h.receive(2, present_in("Graveyard", {placed(7)}), kChannelOwnership);
+  const auto spawns = messages_to<ObjectSpawn>(h, 2);
+  REQUIRE(spawns.size() == 1);
+  CHECK(spawns[0].state.plugs ==
+        KeyedValues{true, {{7, 1, std::int32_t{0}}, {7, 2, std::uint64_t{99}}}});
+  CHECK(spawns[0].state.position == Vec3{1, 0, 0});
 }

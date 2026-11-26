@@ -33,6 +33,7 @@
 #include <utility>
 #include <vector>
 
+#include "coop/host/key_item_tally.hpp"
 #include "coop_menu_state.h"
 #include "coop_menu_nav.h"
 #include "coop_pause_menu.h"
@@ -543,6 +544,8 @@ enum class RowAction {
     kViewLocal,      // Local co-op (0.11.9, the Multiplayer tab's row): Settings and look on its Local co-op page
     kViewHostSettings,   // the Host view's Host settings: Settings and look on Co-op settings, at its host rows (Game,
                          // Approve joins, PvP, Down but not out), the list holding the pad
+    kChatPage,       // the Players view's chat list (row 282): its heading's A or click, the page of older lines (round;
+                     // ZL and ZR turn it either way, coop_chat_history.h)
 };
 // Settings and look's pages by their row (kMenuTabNames): the Co-op settings row and Host settings open kTabSettings
 // (Customize Link is System's own button, kTabCustomize); Local co-op's row shows only when its page is open (its home
@@ -582,6 +585,7 @@ struct Session {
     int listed = 0;         // the Players view: how many players it lists
     int self = -1;          // the Players view: our own place in its list (-1 not listed): no view of our own
     int page = 0;           // the Players view: its page (PlayerIndex)
+    int chat_page = -1;     // the Players view's chat list: its page from the oldest, -1 the newest (coop_chat_history.h)
     int player = 0;         // a player's view: 0 that player left, 1 it is us, 2 another player
 };
 // The Players view: which player (an index of the list) a row shows on a page, or -1. Up to four fit; more: three a
@@ -737,12 +741,20 @@ std::vector<ListLine> TypingLines(int which, const TextField& f, char letter);
 
 struct SessionView {
     Session s;
+    // Row 223 (key items), page 2 of the Main and Session views' details list (ZL / ZR, like the games list's pages):
+    // the page shown (0 the session's lines, 1 the key items) and what the game holds now (`tally_ok` false: no game
+    // loaded yet, so the list has the one page).
+    int detail_page = 0;
+    bool tally_ok = false;
+    coop::host::KeyItemTally tally;
     bool connecting = false;     // starting a server, or joining (not in yet)
     std::string room;            // hosting: the room name (else a join code) friends type, "" none yet
     int players = 0;             // in the session, us included (0: not in one)
     std::vector<std::string> asking;   // hosting: who asks to join, oldest first
     bool confirm_leave = false;  // the Leave row waits for its second A
     std::vector<std::string> names;   // the Players view: who is in the session, by number ("(you)", "(host)" added)
+    std::vector<std::string> chat;    // the Players view: the session's chat and notices, oldest first, as the banner
+                                      // words them (a notice in the player's language, chat as typed; row 282)
     std::string rejoin_host;          // the Join view: the last game's host ("" its name is not known)
     std::string note;                 // what the last copy on the page did, a few seconds (CoopPause::PageNote)
     std::string host_name;            // a guest: the host's name ("" not known)
@@ -827,8 +839,13 @@ std::vector<ListLine> ListLines(const SessionView& v);
 bool RoomMatches(const std::string& room, const std::string& host, const std::string& search);
 // The same list on the main view and the Session view: the session's details (a header, what it is, then name and
 // value lines), co-op's problem or hint as lines of text (no value: their value box not shown), and the release last.
-// None on the other views. The rows keep what can be done.
+// The Players view: the session's chat to look back at (ChatHistoryLines). None on the other views. The rows keep what
+// can be done.
 std::vector<ListLine> DetailLines(View view, const SessionView& v);
+// The Players view's list (row 282, coop_chat_history.h): the heading "Chat  Page 3/3" (paged: the game's ZL and ZR
+// beside it; its A the page of older lines), then a page of v.chat's rows, as they were said (never looked up); "No
+// chat yet" with none; nothing out of a session.
+std::vector<ListLine> ChatHistoryLines(const SessionView& v);
 // What a game's right column says: "2/4", "Full", "Other version" (it cannot be joined from here).
 std::string ListValue(int players, int max, bool same_version);
 // What a room's left column says: the name its host listed it under (the room name unless they picked one), with the
@@ -888,11 +905,36 @@ struct HelpAt {
 };
 // The English help the - page shows there, "" none (the help hidden).
 std::string MinusHelp(const HelpAt& at, const Session& s);
-// The help as the game's own captions are (their message files hold them as a few short lines, a new line after some
-// 40 letters): broken at spaces into lines of at most `columns` letters (a Chinese letter counts two, as it is about
-// twice as wide; it may break anywhere), at most `lines` of them, the last cut with "..." when the help is longer.
-inline constexpr std::size_t kHelpColumns = 40, kHelpLines = 4;
-std::string HelpText(const std::string& utf8, std::size_t columns = kHelpColumns, std::size_t lines = kHelpLines);
+// The help as the game's own captions are (a few short lines): broken at spaces (Chinese anywhere) into lines of at most
+// `width_max` (CoopNativeUi::Width, hundredths of an em in the game's font), at most `lines` of them, the last cut with
+// "..." when the help is longer. The caption's pane (PaActorCaption_00's T_Caption_00) is 1120 wide and its words are 60
+// an em (proof shots of native-ui-help-bb852f626: 5 lines at 19.8 to 20.4 px an em of a 1280 wide shot of the 3840 layout), so
+// a line holds 18.6 em. It was 40 letters whatever their width: "When you host with a room name, the room" is 19.7 em
+// and ran off the screen's left edge.
+inline constexpr std::size_t kHelpWidth = 1860, kHelpLines = 4;
+std::string HelpText(const std::string& utf8, std::size_t width_max = kHelpWidth, std::size_t lines = kHelpLines);
+// A help longer than the caption, shown whole a page at a time instead of cut with "...": the pages the Mods tab's
+// About text uses (CoopModsTab::HelpPages: each fits kHelpWidth x kHelpLines, ending at a stop or a space), the next
+// one every kHelpPageMs, round again after the last; a new help starts at its first page. Any language: the words
+// stay as they are (a shorter English line would lose its Chinese one).
+inline constexpr std::uint64_t kHelpPageMs = 6000;
+// A help as one-line pages (the title's hint line): each at most `letters` letters of width and `bytes` bytes
+// (CoopTextFit's measure), ending at a space where one is in its second half; line ends read as spaces.
+std::vector<std::string> LinePages(const std::string& utf8, std::size_t letters, std::size_t bytes);
+class HelpPager {
+public:
+    // The text shown now, "" for an empty help: with `line_letters` 0 the caption's (HelpText's lines), else one line
+    // of LinePages(utf8, line_letters, line_bytes).
+    std::string Shown(const std::string& utf8, std::uint64_t now_ms, std::size_t line_letters = 0,
+                      std::size_t line_bytes = 0);
+    std::size_t Pages() const { return pages_.size(); }
+
+private:
+    std::string text_;
+    std::size_t letters_ = 0, bytes_ = 0;
+    std::vector<std::string> pages_;
+    std::uint64_t since_ms_ = 0;
+};
 
 // The heading a row is under (a part's group on Customize Link: "Tunic", "Hylian Shield"; in a colour's mixer its
 // own heading, "Hylian Shield: Face"), "" none.
@@ -1034,6 +1076,30 @@ inline constexpr std::uint64_t kHopMaxMs = 8000, kHopGapMs = 500;
 // screen, a load, typing) ends the hop at once with no more taps (kGiveUp); `lit`: the - menu's current category
 // (-1 not readable: waits).
 HopStep CharactersHopNext(CharactersHop& h, bool ours, bool minus_open, int lit, std::uint64_t now_ms);
+// Row 288: the Characters page held while its layouts are not in the game (coop_rando.h OutsideLayouts: opening it
+// would crash). The page is the - menu's tab left of Key Items and the game's graph steps to it on its own L (ZL as
+// well: its tab keys come in pairs, MinusPad's R / ZR); the mouse's clicks on the strip are L and R taps through this
+// same pad filter (patch 0030), so the pad is the one way in. Whether the strip goes round (R on Map, the last of the
+// game's tabs, to the page) is not known, so that way is kept too. While the - menu shows a game tab, a tab key
+// reaches the game only as a TAP (the read it was pressed at, as the hop's own taps; never while held: whether the
+// game's step repeats on a held key is not known), and only where the step is known not to land on the page: L or ZL
+// when the category read is Threads of Time (1) or Map (2), R or ZR when it is Key Items (6) or Threads of Time (1),
+// and the last tap let through is kHoldSettleMs old (the game writes the category when the pages' slide ends,
+// docs/game-ui.md "The page step", so right after a step the reading is still the tab left). Anything else (the edge
+// tab, not readable, not known) is kept. A key held from before (our own tab's L back to Map, a key down when the
+// menu came) is kept as well until let go. Nothing is touched outside the - menu or on our own tabs.
+inline constexpr std::uint64_t kHoldSettleMs = 1000;
+struct CharactersHold {
+    std::uint64_t last = 0;        // the tab keys (L, ZL, R, ZR) at the last read
+    std::uint64_t kept = 0;        // of those, the ones kept from the game until let go
+    std::uint64_t passed_ms = 0;   // when a tap last went through to the game (0 none)
+};
+// The buttons the game gets. `minus_open`: the - menu is the open screen (Page::MinusStripOpen); `ours`: one of our
+// tabs shows or took this read's press (Page::MinusTab() >= 0 before or after its pad); `category`: the - menu's
+// current category (-1 not readable). `*held`: an L or ZL was kept on Key Items at this read, the step onto the
+// page (the module says why in the chat, once).
+std::uint64_t CharactersHoldPad(CharactersHold& h, bool minus_open, bool ours, int category, std::uint64_t buttons,
+                                std::uint64_t now_ms, bool* held = nullptr);
 // One update ahead of `now`, from its step since `prev`, and not past `limit` when it heads for it. The module reads
 // the fourth tab's place and fades before the strip's own update, so they are one update old: the Character tab takes
 // them one update ahead to move with the fourth, not a frame after it.

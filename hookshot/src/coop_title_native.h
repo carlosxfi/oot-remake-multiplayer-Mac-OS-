@@ -11,9 +11,14 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <string>
 
 #include "coop_pause_menu.h"
+
+namespace CoopPauseTab {
+class HelpPager;
+}
 
 namespace CoopTitleNative {
 
@@ -23,6 +28,9 @@ inline constexpr int kButtons = 4, kRowButtons = 3;   // the game's own four (th
 inline constexpr int kMaxButtons = 14;
 inline constexpr std::size_t kTextBytes = CoopPauseMenu::kTitleRowBytes;   // (a button's width; its placeholder holds 63)
 inline constexpr std::size_t kHintBytes = 159;         // (the hint line's placeholder, Coop_Live_Hint, holds 159)
+// The hint line's width: one centred line under the buttons, with nothing to wrap it. 159 letters ran past both edges
+// of the screen (some 87 letters take 730 of 1280 pixels); 100 keep it well inside, the rest on the next page.
+inline constexpr std::size_t kHintLetters = 100;
 
 // A row's words on a title button: "Your name: Link", "Players when you host: < 4 >", "Voice: On", a note's line.
 std::string RowText(const CoopPauseMenu::Row& r);
@@ -57,7 +65,10 @@ struct Look {
 // the rows a page at a time (`buttons` - 1 of them) with Back right under the page's last, on the page that holds the
 // selected row (`top`: the last look's, kept while nothing is selected). Headings are left out; notes show (the menu
 // never selects them). The hint: "ZL Page 2/3 ZR" (the game's button letters) with more than one page, else the selected row's help.
-Look LookFor(const CoopPauseMenu::View& v, int top, int buttons = kButtons);
+// A help longer than the line (kHintLetters, kHintBytes with the page in front) shows a part at a time, turned by
+// `pager` at `now_ms` (CoopPauseTab::HelpPager); no pager: its first part.
+Look LookFor(const CoopPauseMenu::View& v, int top, int buttons = kButtons, CoopPauseTab::HelpPager* pager = nullptr,
+             std::uint64_t now_ms = 0);
 // The most buttons a page uses by default (the rows and Back): a rejoin row, eight games, Enter a code or address and
 // Back. With the hint line under them the column still fits the title's screen once raised (ColumnRaise).
 inline constexpr int kListButtons = 11;

@@ -1,0 +1,4 @@
+# hs-menu-close-236-solo, B: idles.
+mark s-start
+wait 1800
+mark s-end

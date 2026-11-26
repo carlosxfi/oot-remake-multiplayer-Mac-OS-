@@ -1,0 +1,60 @@
+# hs-chat-history (chat-history-282, player report 282): the session's chat to look back at, on the - menu's
+# Multiplayer tab, Players view: its list on the right (the game's own Options rows) is the chat and the notices so
+# far, "Chat  Page 3/3" with the game's own ZL and ZR icons beside it, six rows a page. A hosts; A and B each say five
+# lines in turn (A's third a long one, on over several rows), then both open the history and page through it; B says
+# one more line while A looks at the newest page.
+# Checks (log, both games): "coop: pause tab: the - menu's Multiplayer row 0 chosen: the Players view", no "Players view" errors.
+# Shots (the proof; a log line alone is no PASS), each game:
+#   a-tab: the - menu on Multiplayer. a-players-row: the cursor on Players.
+#   a-hist-newest: Players view, list "Chat  Page 3/3" (or N/N), ZL and ZR icons beside it, the newest rows: B's
+#     "B: five from B" last, every row inside its box.
+#   a-hist-live: B's "B: six from B, said while A looks" now on the newest page (it follows new lines).
+#   a-hist-older, a-hist-oldest: ZL: "Page 2/3", "Page 1/3"; the oldest has the join notice(s) and "A: one from A".
+#   a-hist-round: ZL on the oldest: the newest again. a-hist-zr: ZR from the newest: round to "Page 1/3".
+#   a-closed: the - menu shut, play goes on.
+#! timeout 480
+mark start
+wait 200
+chat one from A
+wait 120
+chat two from A
+wait 120
+chat three from A is a long line that does not fit one row of the list so it goes on over the next rows at whole words
+wait 120
+chat four from A
+wait 120
+chat five from A
+wait 240
+press MINUS
+wait 150
+press R
+wait 120
+mark a-tab
+wait 100                        # (Players is the top row: no key)
+mark a-players-row
+press A
+wait 90
+mark a-hist-newest
+wait 300
+mark a-hist-live
+press ZL
+wait 60
+mark a-hist-older
+press ZL
+wait 60
+mark a-hist-oldest
+press ZL
+wait 60
+mark a-hist-round
+press ZR
+wait 60
+mark a-hist-zr
+press B
+wait 60
+press B
+wait 60
+press MINUS
+wait 150
+mark a-closed
+wait 300
+mark a-end

@@ -1226,6 +1226,88 @@ TEST_CASE("object samples carry a battle manager's orders, component 23 (protoco
   CHECK(decode_bytes(raw) == Error::bad_value);
 }
 
+TEST_CASE("object samples carry the owner's boss action variations, component 24 (row 222 part 2, protocol 17)") {
+  CHECK(kProtocolVersion >= 17);  // 17: component 24 (0.11.12 is 16 and keeps only the components it knows)
+  CHECK(static_cast<int>(ObjectComponent::variants) == 24);
+  ObjectSample s{0, test::kPlacedId, 3, {}};
+  s.state.time = {100, 1};
+  s.state.variants = BossVariants{{BossVariant{7, ""}, BossVariant{9, "Ice"}, BossVariant{12, "1FeintFire"}}};
+  const Bytes bytes = must_encode(s);
+  Message back;
+  REQUIRE(decode(bytes, back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == s);
+  // An older build (no component 24) skips it by its length and reads the rest: the same sample with the
+  // component's id turned into one it does not know.
+  ObjectSample older = s;
+  older.state.variants.reset();
+  older.state.life = ObjectLife{3, 10};
+  s.state.life = older.state.life;
+  Bytes raw = must_encode(s);
+  const Bytes without = must_encode(older);
+  bool patched = false;
+  for (std::size_t i = 0; i + 1 < raw.size(); ++i) {
+    // The component header: u16 id 24 (little-endian) then u16 length; the one that is not in `without`.
+    if (raw[i] == 24 && raw[i + 1] == 0 && raw.size() > without.size()) {
+      Bytes probe = raw;
+      probe[i] = 30;  // an id no build knows yet
+      Message m;
+      if (decode(probe, m) == Error::none && std::get<ObjectSample>(m) == older) {
+        patched = true;
+        break;
+      }
+    }
+  }
+  CHECK(patched);
+  // No component: none after decoding (an older sender).
+  REQUIRE(decode(without, back) == Error::none);
+  CHECK_FALSE(std::get<ObjectSample>(back).state.variants);
+  // Refused: seqs from 1 and rising, at most kMaxBossVariants, names printable ASCII up to kMaxBossVariantChars.
+  Bytes out;
+  s.state.variants = BossVariants{{BossVariant{0, "Ice"}}};
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.variants = BossVariants{{BossVariant{3, "Ice"}, BossVariant{3, "Fire"}}};
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.variants = BossVariants{{BossVariant{1, "with space"}}};
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.variants = BossVariants{{BossVariant{1, std::string(kMaxBossVariantChars + 1, 'a')}}};
+  CHECK(encode(s, out) == Error::bad_value);
+  s.state.variants = BossVariants{std::vector<BossVariant>(kMaxBossVariants + 1)};
+  for (std::size_t i = 0; i < s.state.variants->recent.size(); ++i) {
+    s.state.variants->recent[i].seq = static_cast<std::uint32_t>(i + 1);
+  }
+  CHECK(encode(s, out) == Error::bad_value);
+  CHECK(ValidVariantName(""));
+  CHECK(ValidVariantName("StartBattle"));
+  CHECK_FALSE(ValidVariantName("a	b"));
+}
+
+TEST_CASE("component 24 carries a named ask's places (row 222: Twinrova's 'Ice' aims at the Link they name)") {
+  ObjectSample s{0, test::kPlacedId, 3, {}};
+  s.state.time = {100, 1};
+  BossVariant ice{9, "Ice"};
+  ice.places[0] = Vec3{-0.79f, 142.16f, -158.71f};
+  ice.places[1] = Vec3{-0.60f, 142.47f, -158.53f};
+  ice.kind = 0;  // (run 20261124-011531: Twinrova's 121 node asks with place kind 0)
+  BossVariant other_kind{7, ""};
+  other_kind.kind = 0x10;
+  s.state.variants = BossVariants{{other_kind, ice}};
+  const Bytes bytes = must_encode(s);
+  Message back;
+  REQUIRE(decode(bytes, back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == s);
+  CHECK(std::get<ObjectSample>(back).state.variants->recent[1].kind == 0);
+  CHECK(std::get<ObjectSample>(back).state.variants->recent[0].kind == 0x10);
+  // Refused: places on a plain ask (bsa's action has them), a place not finite.
+  Bytes out;
+  BossVariant plain{7, ""};
+  plain.places[0] = Vec3{1.0f, 2.0f, 3.0f};
+  s.state.variants = BossVariants{{plain}};
+  CHECK(encode(s, out) == Error::bad_value);
+  ice.places[2] = Vec3{std::numeric_limits<float>::infinity(), 0.0f, 0.0f};
+  s.state.variants = BossVariants{{ice}};
+  CHECK(encode(s, out) == Error::bad_value);
+}
+
 TEST_CASE("object id layout on the wire") {
   const Bytes b = must_encode(ObjectOwner{test::kMadeId, 2, 0x0102, 0x0a0b0c0d});
   REQUIRE(b.size() == kHeaderSize + 10 + 1 + 2 + 4);
@@ -1530,6 +1612,27 @@ TEST_CASE("a Link sound has its number, channel and layout, and only the game's 
   bad[kHeaderSize + 1 + 2] = '%';  // a name the game never has
   Message m;
   CHECK(decode(bad, m) == Error::bad_value);
+}
+
+TEST_CASE("an emote has its number, channel and layout, and only a known range of ids passes") {
+  CHECK(static_cast<int>(MessageType::emote) == 615);
+  CHECK(channel_of(MessageType::emote) == kChannelSession);
+  CHECK_FALSE(allowed_on_channel(MessageType::emote, kChannelPlayerSamples));
+  CHECK(may_send(Sender::client, MessageType::emote));
+  CHECK(may_send(Sender::server, MessageType::emote));
+  Message n = Emote{0, 3};
+  CHECK(check_received(n, Sender::client, kChannelSession) == Error::none);
+  CHECK(set_sender(n, 7));
+  CHECK(sender_of(n) == 7);
+  const Bytes b = must_encode(Emote{7, kMaxEmoteId});
+  REQUIRE(b.size() == kHeaderSize + 2);
+  Message back;
+  REQUIRE(decode(b, back) == Error::none);
+  CHECK(std::get<Emote>(back) == Emote{7, kMaxEmoteId});
+  Bytes out;
+  CHECK(encode(Emote{0, 0}, out) == Error::bad_value);
+  CHECK(encode(Emote{0, kMaxEmoteId + 1}, out) == Error::bad_value);
+  CHECK(encode(Emote{17, 1}, out) == Error::bad_value);
 }
 
 TEST_CASE("a player's look has its number, channel and layout, each part once") {
@@ -2501,8 +2604,36 @@ TEST_CASE("player ride: type 385, samples channel, horse and offset, both ways")
   Bytes out;
   PlayerRide bad = ride;
   bad.player_number = 0;
-  bad.flags = 0x02;
+  bad.flags = 0x04;
   CHECK(encode(Message{bad}, out) == Error::bad_value);  // unknown flag bit
+  bad.flags = kRideRiding | kRideFree;
+  CHECK(encode(Message{bad}, out) == Error::bad_value);  // ridden or free, never both
+
+  // Protocol 18 (epona-sync): the player's own Epona while nobody rides her, at a place in the world.
+  CHECK(kProtocolVersion >= 17);
+  const PlayerRide free_horse{4, kRideFree, "Animal_Epona_Adult", {}, {0.0f, 0.7f, 0.0f, 0.7f},
+                              Animation{"Wait", 3.0f, 1.0f}, {-100.5f, 150.6f, 264.5f}};
+  const Bytes fb = must_encode(Message{free_horse});
+  // type, length; u8 player, u8 flags, name (2 + 18), 7 floats, u8 1, anim (2 + 4 + 8), place 3 floats
+  CHECK(fb.size() == 4 + 2 + 20 + 28 + 1 + 14 + 12);
+  REQUIRE(decode(fb, back) == Error::none);
+  CHECK(back == Message{free_horse});
+  CHECK(sender_of(back) == std::optional<std::uint8_t>{4});
+  bad = free_horse;
+  bad.offset[0] = 1.0f;
+  CHECK(encode(Message{bad}, out) == Error::bad_value);  // a free horse has no rider to be offset from
+  bad = free_horse;
+  bad.place[2] = kMaxRidePlace + 1.0f;
+  CHECK(encode(Message{bad}, out) == Error::bad_value);  // outside any world
+  bad = free_horse;
+  bad.horse.clear();
+  CHECK(encode(Message{bad}, out) == Error::bad_value);
+  bad = ride;
+  bad.place[0] = 5.0f;
+  CHECK(encode(Message{bad}, out) == Error::bad_value);  // a place only with kRideFree
+  Bytes short_free = fb;
+  short_free.pop_back();
+  CHECK(decode(short_free, back) != Error::none);
   bad = ride;
   bad.player_number = 0;
   bad.horse.clear();
@@ -2519,8 +2650,12 @@ TEST_CASE("player ride: type 385, samples channel, horse and offset, both ways")
   short_one.pop_back();
   CHECK(decode(short_one, back) != Error::none);
   Bytes flag_two = b;
-  flag_two[4 + 1] = 0x03;  // flags byte
+  flag_two[4 + 1] = 0x03;  // flags byte: both bits, refused as a bad value before any place is looked for
   CHECK(decode(flag_two, back) == Error::bad_value);
+  flag_two[4 + 1] = 0x04;  // a bit nobody knows
+  CHECK(decode(flag_two, back) == Error::bad_value);
+  flag_two[4 + 1] = kRideFree;  // free, but the place was never sent
+  CHECK(decode(flag_two, back) != Error::none);
 }
 
 TEST_CASE("platform clock: type 400, object samples channel, checked keys and floats (platforms-b)") {
@@ -2681,6 +2816,53 @@ TEST_CASE("mod settings: type 491, session channel, unique keys (modloader)") {
   ModSettings longer = m;
   longer.settings[0].value = std::string(kMaxModSettingValueChars + 1, 'v');
   CHECK(encode(longer, out) == Error::string_too_long);
+}
+
+TEST_CASE("mod data: type 492, session channel, 0 to 64 bytes, a mod id and key (issue 250)") {
+  CHECK(static_cast<int>(MessageType::mod_data) == 492);
+  CHECK(channel_of(MessageType::mod_data) == kChannelSession);
+  CHECK(allowed_on_channel(MessageType::mod_data, kChannelSession));
+  CHECK_FALSE(allowed_on_channel(MessageType::mod_data, kChannelPlayerSamples));
+  CHECK(may_send(Sender::client, MessageType::mod_data));
+  CHECK(may_send(Sender::server, MessageType::mod_data));
+  ModData m{2, "hello-mod", "wave_2", Bytes(kMaxModDataBytes, 0x5a)};
+  const Bytes b = must_encode(Message{m});
+  Message back;
+  REQUIRE(decode(b, back) == Error::none);
+  CHECK(back == Message{m});
+  const ModData clear{0, "hello-mod", "wave_2", {}};
+  REQUIRE(decode(must_encode(Message{clear}), back) == Error::none);
+  CHECK(back == Message{clear});
+  // The server writes the sender's number.
+  Message relayed{clear};
+  CHECK(set_sender(relayed, 5));
+  CHECK(std::get<ModData>(relayed).player_number == 5);
+  Bytes out;
+  const auto bad = [&](auto change) {
+    ModData c = m;
+    change(c);
+    return encode(c, out) == Error::bad_value;
+  };
+  CHECK(bad([](ModData& c) { c.value.push_back(0); }));  // 65 bytes
+  CHECK(bad([](ModData& c) { c.key = "Wave"; }));
+  CHECK(bad([](ModData& c) { c.key.clear(); }));
+  CHECK(bad([](ModData& c) { c.key = std::string(kMaxModSettingKeyChars + 1, 'k'); }));
+  CHECK(bad([](ModData& c) { c.mod_id = "x y"; }));
+  CHECK(bad([](ModData& c) { c.mod_id.clear(); }));
+  CHECK(bad([](ModData& c) { c.player_number = kMaxPlayers + 1; }));
+  // A length past 64 or past the end does not decode.
+  Bytes cut = must_encode(Message{ModData{1, "a", "k", {1, 2, 3}}});
+  const std::size_t len_at = kHeaderSize + 1 + 2 + 1 + 2 + 1;  // player, "a", "k" (u16 length each)
+  REQUIRE(cut.size() == len_at + 1 + 3);
+  CHECK(cut[len_at] == 3);
+  cut[len_at] = 4;
+  CHECK(decode(cut, back) != Error::none);
+  cut[len_at] = 65;
+  CHECK(decode(cut, back) != Error::none);
+  CHECK(is_mod_id("oot-remake-randomizer"));
+  CHECK_FALSE(is_mod_id("-x"));
+  CHECK(is_mod_key("skin"));
+  CHECK_FALSE(is_mod_key("a.b"));
 }
 
 TEST_CASE("local players: types 460 to 464, their channels and senders (split screen)") {
@@ -3015,4 +3197,112 @@ TEST_CASE("pvp on real bodies: types 540 to 542, round-trip and refuse bad value
   Message answered = result;
   CHECK_FALSE(set_sender(answered, 1));
   CHECK(set_sender(answered, 2));
+}
+
+TEST_CASE("object components 25-28 carry keyed values (protocol 18, sync plan S1)") {
+  CHECK(kProtocolVersion == 18);  // one bump for the whole sync plan: 25-28 kept by the server
+  CHECK(static_cast<int>(ObjectComponent::brain) == 25);
+  CHECK(static_cast<int>(ObjectComponent::plugs) == 26);
+  CHECK(static_cast<int>(ObjectComponent::clocks) == 27);
+  CHECK(static_cast<int>(ObjectComponent::events) == 28);
+  ObjectSample s{0, test::kPlacedId, 3, {}};
+  s.state.time = {100, 1};
+  s.state.plugs = KeyedValues{true, {{7, 1, std::int32_t{1}}, {7, 2, std::int32_t{-5}}, {9, 1, 2.5f}}};
+  s.state.clocks = KeyedValues{false, {{3, 0xc0, Vec3{1, 2, 3}}, {3, 0xc4, KeyedRemove{}}}};
+  s.state.events = KeyedValues{true, {{0x1234567890abcdefull, 0xffffffffu, std::uint64_t{123456789012}}}};
+  s.state.brain = KeyedValues{false, {{0, 0x9e3779b9u, std::int32_t{3}}, {0, 0xa1b2c3d4u, std::int32_t{1}}}};
+  const Bytes bytes = must_encode(s);
+  Message back;
+  REQUIRE(decode(bytes, back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == s);
+  // An older build skips each by its length: the same sample with the ids turned into ones it does not know.
+  ObjectSample older = s;
+  older.state.plugs.reset();
+  older.state.clocks.reset();
+  older.state.events.reset();
+  older.state.brain.reset();
+  Bytes probe = bytes;
+  int patched = 0;
+  // The time component comes first (4 + 12 bytes after the message header); walk the component headers.
+  ObjectState time_only{};
+  time_only.time = {100, 1};
+  const Bytes header = must_encode(ObjectSample{0, test::kPlacedId, 3, time_only});
+  for (std::size_t at = header.size(); at + 4 <= probe.size();) {
+    const std::uint16_t id = static_cast<std::uint16_t>(probe[at] | (probe[at + 1] << 8));
+    const std::uint16_t length = static_cast<std::uint16_t>(probe[at + 2] | (probe[at + 3] << 8));
+    if (id >= 25 && id <= 28) {
+      probe[at] = static_cast<std::uint8_t>(id + 5);  // 30-33: ids no build knows
+      ++patched;
+    }
+    at += 4 + length;
+  }
+  CHECK(patched == 4);
+  REQUIRE(decode(probe, back) == Error::none);
+  CHECK(std::get<ObjectSample>(back) == older);
+  // Refused: keys not rising or twice, a remove in a full list, a float not finite, more than kMaxKeyedValues.
+  Bytes out;
+  ObjectSample bad = s;
+  bad.state.clocks.reset();
+  bad.state.events.reset();
+  bad.state.brain.reset();
+  bad.state.plugs = KeyedValues{false, {{7, 2, std::int32_t{1}}, {7, 1, std::int32_t{1}}}};
+  CHECK(encode(bad, out) == Error::bad_value);
+  bad.state.plugs = KeyedValues{false, {{7, 1, std::int32_t{1}}, {7, 1, std::int32_t{2}}}};
+  CHECK(encode(bad, out) == Error::bad_value);
+  bad.state.plugs = KeyedValues{true, {{7, 1, KeyedRemove{}}}};
+  CHECK(encode(bad, out) == Error::bad_value);
+  bad.state.plugs = KeyedValues{false, {{7, 1, std::numeric_limits<float>::infinity()}}};
+  CHECK(encode(bad, out) == Error::bad_value);
+  bad.state.plugs = KeyedValues{false, {{7, 1, Vec3{0, std::numeric_limits<float>::quiet_NaN(), 0}}}};
+  CHECK(encode(bad, out) == Error::bad_value);
+  bad.state.plugs = KeyedValues{false, {}};
+  for (std::uint32_t i = 0; i <= kMaxKeyedValues; ++i) bad.state.plugs->values.push_back({1, i, std::int32_t{0}});
+  CHECK(encode(bad, out) == Error::bad_value);
+  bad.state.plugs->values.pop_back();
+  CHECK(encode(bad, out) == Error::none);  // kMaxKeyedValues fit
+  // The decoder refuses an unknown value type and a mode other than 0 or 1.
+  bad.state.plugs = KeyedValues{false, {{7, 1, std::int32_t{1}}}};
+  Bytes raw = must_encode(bad);
+  raw[raw.size() - 5] = 5;  // the type byte before the s32
+  CHECK(decode_bytes(raw) == Error::bad_value);
+  raw = must_encode(bad);
+  raw[raw.size() - 1 - 4 - 1 - 4 - 8 - 2] = 2;  // the mode byte
+  CHECK(decode_bytes(raw) == Error::bad_value);
+}
+
+TEST_CASE("keyed values merge: a full list replaces, a delta changes the keys it names (protocol 18)") {
+  std::size_t dropped = 0;
+  const KeyedValues kept{true, {{1, 1, std::int32_t{1}}, {1, 2, std::int32_t{2}}, {2, 1, 1.5f}}};
+  // A delta: one changed, one removed, one added (in key order), the rest kept.
+  KeyedValues merged = MergeKeyed(&kept, KeyedValues{false, {{1, 1, std::int32_t{9}}, {1, 2, KeyedRemove{}},
+                                                              {1, 5, std::uint64_t{77}}}},
+                                  dropped);
+  CHECK(merged == KeyedValues{true, {{1, 1, std::int32_t{9}}, {1, 5, std::uint64_t{77}}, {2, 1, 1.5f}}});
+  // A full list replaces all; a remove of a key not kept changes nothing.
+  merged = MergeKeyed(&kept, KeyedValues{true, {{3, 3, std::int32_t{3}}}}, dropped);
+  CHECK(merged == KeyedValues{true, {{3, 3, std::int32_t{3}}}});
+  merged = MergeKeyed(nullptr, KeyedValues{false, {{4, 4, KeyedRemove{}}, {5, 5, std::int32_t{5}}}}, dropped);
+  CHECK(merged == KeyedValues{true, {{5, 5, std::int32_t{5}}}});
+  CHECK(dropped == 0);
+  // Past kMaxKeyedValues new keys are left out and counted; changes to kept keys still go in.
+  KeyedValues full{true, {}};
+  for (std::uint32_t i = 0; i < kMaxKeyedValues; ++i) full.values.push_back({1, i, std::int32_t{0}});
+  merged = MergeKeyed(&full, KeyedValues{false, {{1, 0, std::int32_t{8}}, {2, 0, std::int32_t{1}}}}, dropped);
+  CHECK(merged.values.size() == kMaxKeyedValues);
+  CHECK(merged.values.front().value == KeyedData{std::int32_t{8}});
+  CHECK(dropped == 1);
+  // KeepKeyed: a list the new state lacks stays as kept; one it has is merged; others are left alone.
+  ObjectState old;
+  old.plugs = kept;
+  old.events = KeyedValues{true, {{9, 9, std::uint64_t{1}}}};
+  old.brain = KeyedValues{true, {{0, 5, std::int32_t{2}}}};
+  ObjectState next;
+  next.plugs = KeyedValues{false, {{2, 1, KeyedRemove{}}}};
+  next.position = Vec3{1, 2, 3};
+  CHECK(KeepKeyed(&old, next) == 0);
+  CHECK(next.plugs == KeyedValues{true, {{1, 1, std::int32_t{1}}, {1, 2, std::int32_t{2}}}});
+  CHECK(next.events == old.events);
+  CHECK(next.brain == old.brain);
+  CHECK_FALSE(next.clocks);
+  CHECK(next.position == Vec3{1, 2, 3});
 }

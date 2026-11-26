@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -1071,4 +1072,189 @@ TEST_CASE("dbno body (row 177): a teammate's puppet is unseen while they are in 
     CHECK_FALSE(c.PuppetUnseen(3));
     c.Want(Crawl::Wanted{});
     CHECK_FALSE(c.PuppetUnseen(2));
+}
+
+TEST_CASE("dbno body: issue 337, the game's own CrawlAnchor in front of a downed child, facing him") {
+    const CoopPuppet::Mat3 identity{1, 0, 0, 0, 1, 0, 0, 0, 1};  // his front: +Z
+    const std::array<float, 3> at{10.0f, 2.0f, -5.0f};
+    const auto spot = AnchorFor(true, false, false, at, identity);
+    REQUIRE(spot);
+    CHECK(spot->position[0] == doctest::Approx(10.0f));
+    CHECK(spot->position[1] == doctest::Approx(2.0f));
+    CHECK(spot->position[2] == doctest::Approx(-5.0f + kAnchorAhead));
+    // The anchor's +Z (its rotation's third column) points back at him.
+    CHECK(spot->rotation[2] == doctest::Approx(0.0f));
+    CHECK(spot->rotation[8] == doctest::Approx(-1.0f));
+    CHECK(spot->rotation[4] == doctest::Approx(1.0f));
+
+    // Turned 90 degrees (front +X), tilted rows still give a flat front.
+    const CoopPuppet::Mat3 east{0, 0, 1, 0, 1, 0, -1, 0, 0};
+    const auto e = AnchorFor(true, false, false, at, east);
+    REQUIRE(e);
+    CHECK(e->position[0] == doctest::Approx(10.0f + kAnchorAhead));
+    CHECK(e->position[2] == doctest::Approx(-5.0f));
+    CHECK(e->rotation[2] == doctest::Approx(-1.0f));  // +Z column = (-1, 0, 0)
+    CHECK(e->rotation[8] == doctest::Approx(0.0f));
+    // Still a rotation: rows unit and orthogonal.
+    CHECK(e->rotation[0] * e->rotation[0] + e->rotation[2] * e->rotation[2] == doctest::Approx(1.0f));
+
+    // None: up, in an event, an adult (no crawl for him), no flat front, a bad place.
+    CHECK_FALSE(AnchorFor(false, false, false, at, identity));
+    CHECK_FALSE(AnchorFor(true, true, false, at, identity));
+    CHECK_FALSE(AnchorFor(true, false, true, at, identity));
+    CHECK_FALSE(AnchorFor(true, false, false, at, CoopPuppet::Mat3{1, 0, 0, 0, 0, 1, 0, -1, 0}));
+    CHECK_FALSE(AnchorFor(true, false, false, {NAN, 0, 0}, identity));
+}
+
+TEST_CASE("dbno body: issue 337, each down gets its own anchor key, kept while he stays down") {
+    SetAnchor(std::nullopt);
+    const CoopPuppet::Mat3 identity{1, 0, 0, 0, 1, 0, 0, 0, 1};
+    SetAnchor(AnchorFor(true, false, false, {0, 0, 0}, identity));
+    const auto first = Anchor();
+    REQUIRE(first);
+    SetAnchor(AnchorFor(true, false, false, {1, 0, 0}, identity));  // he crawls on: same anchor, moved
+    REQUIRE(Anchor());
+    CHECK(Anchor()->down == first->down);
+    CHECK(Anchor()->position[0] == doctest::Approx(1.0f));
+    SetAnchor(std::nullopt);  // up
+    CHECK_FALSE(Anchor());
+    SetAnchor(AnchorFor(true, false, false, {0, 0, 0}, identity));  // down again: a new one
+    REQUIRE(Anchor());
+    CHECK(Anchor()->down == first->down + 1);
+    SetAnchor(std::nullopt);
+}
+
+TEST_CASE("dbno body: issue 337, the game's own crawl commands") {
+    CHECK(CrawlCommand("Tunnel_Move_F"));
+    CHECK(CrawlCommand("TunnelWait"));
+    CHECK(CrawlCommand("Crawl"));
+    CHECK_FALSE(CrawlCommand("Wait"));
+    CHECK_FALSE(CrawlCommand("Walk"));
+    CHECK_FALSE(CrawlCommand("DamageLStand"));
+    CHECK_FALSE(CrawlCommand(""));
+}
+
+TEST_CASE("dbno body: issue 337, a child's Crawl waits until this down's anchor is a live actor") {
+    // Run crawl-337-2-r2: Crawl (234) was asked and taken before the async CrawlAnchor existed; slot 0 stayed
+    // DamageS. The copy director's on_made (coop_spawn) marks this down's anchor live; the ask waits for it.
+    const CoopPuppet::Mat3 identity{1, 0, 0, 0, 1, 0, 0, 0, 1};
+    SetAnchor(std::nullopt);
+    CHECK_FALSE(AnchorReady());  // no anchor wanted
+    SetAnchor(AnchorFor(true, false, false, {0, 0, 0}, identity));
+    REQUIRE(Anchor());
+    const std::uint32_t down = Anchor()->down;
+    CHECK_FALSE(AnchorReady());  // wanted, not made yet: the Crawl waits
+    AnchorLive(down - 1);        // an older down's copy: not this one
+    CHECK_FALSE(AnchorReady());
+    AnchorLive(down);
+    CHECK(AnchorReady());
+    SetAnchor(AnchorFor(true, false, false, {1, 0, 0}, identity));  // moved with him: still live
+    CHECK(AnchorReady());
+    SetAnchor(std::nullopt);  // up
+    CHECK_FALSE(AnchorReady());
+    SetAnchor(AnchorFor(true, false, false, {0, 0, 0}, identity));  // a new down: waits for its own anchor
+    CHECK_FALSE(AnchorReady());
+    AnchorLive(Anchor()->down);
+    CHECK(AnchorReady());
+    SetAnchor(std::nullopt);
+}
+
+namespace {
+// Our Link's work object as the game keeps it ([actor+0x270]+0x358), with its do action.
+// [actor+0x270] is also the first link of MakeAs's animation chain, so both write the same table (actor+0x100):
+// either order keeps the other's part.
+void SetDoAction(Guest& g, std::uint32_t action, std::uint64_t actor = kActor) {
+    const std::uint64_t parts = actor + 0x100, work = actor + 0xa000;
+    g.Write(actor + addr::kActorComponents, &parts, sizeof parts);
+    g.Write(parts + addr::kComponentWork, &work, sizeof work);
+    g.Write(work + addr::kWorkDoAction, &action, sizeof action);
+}
+}  // namespace
+
+TEST_CASE("dbno body: issue 337, the do action is read from our Link's work object") {
+    Guest g;
+    CHECK_FALSE(ReadDoAction(g, 0));
+    CHECK_FALSE(ReadDoAction(g, kActor));  // no components, no work object
+    SetDoAction(g, 0);
+    CHECK(ReadDoAction(g, kActor) == std::optional<std::uint32_t>(0));
+    SetDoAction(g, addr::kDoActionCrawl);
+    CHECK(ReadDoAction(g, kActor) == std::optional<std::uint32_t>(14));
+}
+
+TEST_CASE("dbno body: issue 337, a child's Crawl is asked only when the game itself offers it, and its own verbs run until then") {
+    const std::array<float, 9> identity{1, 0, 0, 0, 1, 0, 0, 0, 1};
+    Guest g;
+    MakeAs(g, "DamageS", 1.0f);
+    SetDoAction(g, 0);
+    Crawl c;
+    c.Want(Want(false, false, false, kActor));
+    c.Skip(kBsa, Req(verb::kWait), false);  // the scheduler's slot
+    SetAnchor(std::nullopt);
+    SetAnchor(AnchorFor(true, false, false, {0, 0, 0}, identity));
+    const std::uint32_t down = Anchor()->down;
+    c.Want(Want(true, false, false, kActor));
+
+    // The anchor is not a live actor yet: nothing asked, the game's damage verb and Wait run.
+    CHECK_FALSE(c.Skip(kBsa, Req(134), false));
+    CHECK(Verbs(RunFrame(c, g, 1000)).empty());
+    CHECK_FALSE(c.Skip(kBsa, Req(verb::kWait), false));
+    CHECK(Verbs(RunFrame(c, g, 1016)).empty());
+
+    // Live, but the game does not offer Crawl (the attention has not taken it): still nothing, still not skipped.
+    AnchorLive(down);
+    CHECK_FALSE(c.Skip(kBsa, Req(verb::kWait), false));
+    CHECK(Verbs(RunFrame(c, g, 1032)).empty());
+    SetDoAction(g, 1);
+    CHECK_FALSE(c.Skip(kBsa, Req(verb::kWait), false));
+    CHECK(Verbs(RunFrame(c, g, 1048)).empty());
+    CHECK(c.Totals().asked == 0);
+
+    // The game offers Crawl. Its Wait ran on the slot this frame: ours next frame, with the game's skipped.
+    SetDoAction(g, addr::kDoActionCrawl);
+    CHECK_FALSE(c.Skip(kBsa, Req(verb::kWait), false));
+    CHECK(Verbs(RunFrame(c, g, 1064)).empty());
+    CHECK(c.Skip(kBsa, Req(verb::kWait), false));
+    CHECK(Verbs(RunFrame(c, g, 1080)) == std::vector<std::int32_t>{verb::kCrawl});
+    CHECK(c.Skip(kBsa, Req(verb::kWait), false));  // taken: our crawl holds the slot
+
+    // The game's crawl runs: nothing more is asked, however long.
+    SetAs(g, "Tunnel_St", 1.0f);
+    for (int i = 0; i < 3 * Crawl::kCrawlStartReads; ++i) {
+        CHECK(Verbs(RunFrame(c, g, 1100 + 16 * i)).empty());
+    }
+    CHECK(c.GameCrawl());
+    CHECK(c.Skip(kBsa, Req(verb::kWait), false));
+
+    // It ends (slot 0 is no crawl command): after kCrawlStartReads frames the slot is the game's again.
+    SetAs(g, "Wait", 1.0f);
+    SetDoAction(g, 0);
+    for (int i = 0; i < Crawl::kCrawlStartReads; ++i) {
+        CHECK(Verbs(RunFrame(c, g, 4000 + 16 * i)).empty());
+    }
+    CHECK_FALSE(c.Skip(kBsa, Req(verb::kWait), false));
+    CHECK(Verbs(RunFrame(c, g, 5000)).empty());  // no offer: no ask
+
+    // A taken Crawl that never crawls: given back, at most kMaxFalseStarts times a down.
+    SetDoAction(g, addr::kDoActionCrawl);
+    std::uint64_t t = 6000;
+    int asked = 0;
+    for (int i = 0; i < 40 * Crawl::kCrawlStartReads; ++i, t += 16) {
+        c.Skip(kBsa, Req(verb::kWait), false);
+        asked += static_cast<int>(Verbs(RunFrame(c, g, t)).size());
+    }
+    CHECK(asked == Crawl::kMaxFalseStarts - 1);  // (the ended crawl above was this down's first)
+    CHECK_FALSE(c.Skip(kBsa, Req(verb::kWait), false));
+
+    // Up: Wait is the game's own; the next down starts afresh.
+    c.Want(Want(false, false, false, kActor));
+    SetAnchor(std::nullopt);
+    RunFrame(c, g, t += 16);
+    SetAnchor(AnchorFor(true, false, false, {0, 0, 0}, identity));
+    AnchorLive(Anchor()->down);
+    c.Want(Want(true, false, false, kActor));
+    c.Skip(kBsa, Req(verb::kWait), false);
+    RunFrame(c, g, t += 1000);
+    c.Skip(kBsa, Req(verb::kWait), false);
+    CHECK(Verbs(RunFrame(c, g, t += 16)) == std::vector<std::int32_t>{verb::kCrawl});
+    SetAnchor(std::nullopt);
 }

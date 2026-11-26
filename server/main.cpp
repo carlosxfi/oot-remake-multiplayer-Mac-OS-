@@ -214,11 +214,16 @@ int run_relay(const coop::server::CommandLine& line, const std::string& key) {
     if (now - last_note >= std::chrono::minutes(1)) {
       last_note = now;
       const RelayStats& s = relay.relay().stats();
-      if (s.to_host != shown.to_host || s.to_guest != shown.to_guest) {
+      const bool asked = s.lookups_ok != shown.lookups_ok || s.lookups_wrong != shown.lookups_wrong ||
+                         s.lookups_limited != shown.lookups_limited || s.lookups_full != shown.lookups_full;
+      if (s.to_host != shown.to_host || s.to_guest != shown.to_guest || asked) {
+        // (the lookups too: a guest whose code or room was wrong shows here, not only when the relay stops)
         say("relay: " + std::to_string(relay.relay().sessions()) + " host(s), " +
             std::to_string(relay.relay().flows()) + " guest(s); forwarded " + std::to_string(s.to_host) +
             " to hosts, " + std::to_string(s.to_guest) + " to guests; turned away " +
-            std::to_string(s.not_let_in) + " without a code");
+            std::to_string(s.not_let_in) + " without a code; codes right " + std::to_string(s.lookups_ok) +
+            ", wrong " + std::to_string(s.lookups_wrong) + ", over the limit " + std::to_string(s.lookups_limited) +
+            ", host full " + std::to_string(s.lookups_full));
         shown = s;
       }
     }
@@ -227,7 +232,7 @@ int run_relay(const coop::server::CommandLine& line, const std::string& key) {
   const RelayStats& s = relay.relay().stats();
   say("relay stopping; forwarded " + std::to_string(s.to_host) + " to hosts, " + std::to_string(s.to_guest) +
       " to guests; codes right " + std::to_string(s.lookups_ok) + ", wrong " + std::to_string(s.lookups_wrong) +
-      ", over the limit " + std::to_string(s.lookups_limited));
+      ", over the limit " + std::to_string(s.lookups_limited) + ", host full " + std::to_string(s.lookups_full));
   return 0;
 }
 
@@ -350,6 +355,7 @@ int main(int argc, char** argv) {
     }
     config.session.join_password = line->password;
     config.session.pvp = line->pvp;
+    config.session.difficulty = line->difficulty;
     config.session.dbno.on = line->dbno;
     config.session.approve_joins = line->approve_joins;
     config.session.dedicated = line->dedicated;

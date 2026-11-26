@@ -54,7 +54,18 @@ void PollSlotOpens();
 // that save (save::Planner's round), and Hookshot's game-thread step takes the request once (TakeSaveRequest) and
 // makes the game's call (the EventTriggerRequestAutoSave node's own). Unset (the emulator): the save on disk at once.
 void SetSaveRequests(bool on);
-bool TakeSaveRequest();
+// Which ask the game-thread step takes (once): a guest's (the send waits for that save) or the test commands'
+// `autosave` (AskOwnAutoSave); none when no file is played.
+enum class SaveRequest { none, guests, test };
+SaveRequest TakeSaveRequest();
+// The test commands' `autosave` (rejoin-host-273-2): our game asked for its own autosave with the same call, at the
+// game-thread step. False when it cannot be: no file played, or a runtime with no such call (the emulator).
+bool AskOwnAutoSave();
+// rejoin-host-273-2: the title's slot fixes (rows 239/240/241) written into the folder the game already mounted
+// (Longshot 3.1 plays a work copy made at the mount): RestageDue says the folder is to be mounted again, and the
+// title's step calls RestageSaveFolder when the game is not reading its save list (the list is then re-read).
+bool RestageDue();
+void RestageSaveFolder();
 // The Lobby tab's "Resync from host" (a guest; save::resync_check): taken at the next OnFrame, which asks the host
 // again; the chat says how it goes. CanResync: the row is shown (a connected guest on a switchable folder).
 void RequestResync();
@@ -74,6 +85,11 @@ bool HostHasNoSave();
 // Hookshot: a session has chosen its save folder and is still connected (false before that, and once it ended:
 // the host dropped, the link went, Leave). A title waiting for the host's save stops when it goes off.
 bool SessionLive();
+// Emulator thread, each frame with no session (solo, after the menu's Leave; also with a code mod): the session that
+// chose the save folder is over. A guest on the co-op folder (the host's save) goes back to its own saves on the
+// title's menu, never under a file being played (remount-leave; OnFrame does the same for a session that ended with
+// its client still kept: a kick, a refused join, a host migration).
+void SoloFrame();
 // Row 63, Gold Skulltulas Not shared, a guest: the game plays from the co-op folder whose host's save was written with
 // our race (coop_gold_mode.h), so the Skulltulas it shows are ours and the hook keeps the race from them.
 bool PlaysRaceSave();

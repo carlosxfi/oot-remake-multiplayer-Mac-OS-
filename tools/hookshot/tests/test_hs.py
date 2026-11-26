@@ -1,4 +1,5 @@
 """Tests for tools/hookshot/hs.py: the cache key, the cache, the split locks, compile-all's plan. No build, no game."""
+import contextlib
 import io
 import json
 import os
@@ -408,6 +409,68 @@ class BuildSpeedTest(Fixture):
         self.assertIn("-Jobs 12", line)
         self.assertIn("a full build in the kit's own folders", out)
         self.assertIn(".build", line)   # an old kit: a new folder, removed after the store
+
+
+class KitGameFolderTest(Fixture):
+    """u2-fix-3: a cache build runs the kit's hookshot-build.ps1 with -Out in the cache, and that script notes its -Out
+    as the game the kit starts (hookshot\\game-folder.txt); the kit keeps the game it named before."""
+
+    def note(self, kit):
+        return os.path.join(kit, "hookshot", "game-folder.txt")
+
+    def test_the_kits_game_is_put_back(self):
+        kit = os.path.join(self.tmp, "kit")
+        write(self.note(kit), "C:\\lanes\\lane1-A\n")
+        with hs.kit_game_folder_kept(kit):
+            write(self.note(kit), "C:\\cache\\pins\\v3.1.1-a2dc53859018\\game\n")
+        self.assertEqual(open(self.note(kit), encoding="utf-8").read(), "C:\\lanes\\lane1-A\n")
+
+    def test_a_kit_without_a_note_gets_none(self):
+        kit = os.path.join(self.tmp, "kit")
+        with hs.kit_game_folder_kept(kit):
+            write(self.note(kit), "C:\\cache\\pins\\v3.1.1-a2dc53859018\\game\n")
+        self.assertFalse(os.path.exists(self.note(kit)))   # (its own hookshot\game, as before)
+
+    def test_a_failed_or_stopped_build_puts_it_back_too(self):
+        kit = os.path.join(self.tmp, "kit")
+        write(self.note(kit), "game\n")
+        with self.assertRaises(RuntimeError):
+            with hs.kit_game_folder_kept(kit):
+                write(self.note(kit), "C:\\cache\\pins\\x\\game\n")
+                raise RuntimeError("stopped")
+        self.assertEqual(open(self.note(kit), encoding="utf-8").read(), "game\n")
+
+    def test_a_dry_run_changes_nothing(self):
+        kit = os.path.join(self.tmp, "kit")
+        with hs.kit_game_folder_kept(kit, dry=True):
+            write(self.note(kit), "made by someone else meanwhile\n")
+        self.assertTrue(os.path.exists(self.note(kit)))
+
+    def test_the_build_runs_the_kits_script_inside_it(self):
+        kit = os.path.join(self.tmp, "kit")
+        write(os.path.join(kit, "scripts", "hookshot-build.ps1"),
+              "param([string]$Game = '', [string]$Out = '', [int]$Jobs = 0, [string]$Tools = '', [string]$Work = '')\n")
+        seen = []
+        old_kept, old_run = hs.kit_game_folder_kept, hs.run_steps
+
+        @contextlib.contextmanager
+        def kept(k, dry=False):
+            seen.append(("in", k))
+            yield
+            seen.append(("out", k))
+
+        def run_steps(steps, prefix, dry, say=print, cwd=None, env=None):
+            seen.extend(("run", "hookshot-build.ps1" in " ".join(s)) for s in steps)
+            return True
+        hs.kit_game_folder_kept, hs.run_steps = kept, run_steps
+        try:
+            hs.build([os.path.join(self.tmp, "A1")], os.path.join(self.tmp, "b"), kit=kit, game="g.nup",
+                     repo=self.repo, dry=True, say=self.say)
+        finally:
+            hs.kit_game_folder_kept, hs.run_steps = old_kept, old_run
+        i = seen.index(("in", kit))
+        self.assertEqual(seen[i + 1:i + 3], [("run", True), ("out", kit)])
+
 
 class LockTest(unittest.TestCase):
     def setUp(self):

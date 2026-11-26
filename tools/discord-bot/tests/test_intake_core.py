@@ -31,6 +31,17 @@ def make_zip(files, method=zipfile.ZIP_DEFLATED):
     return buf.getvalue()
 
 
+class HealthCheck(unittest.TestCase):
+    def test_watchdog_empty_post_is_a_check(self):
+        self.assertTrue(intake.is_health_check("0", None, None))
+        self.assertTrue(intake.is_health_check(None, "", " "))
+
+    def test_a_kit_upload_is_never_a_check(self):
+        self.assertFalse(intake.is_health_check("100", INSTALL, RID))
+        self.assertFalse(intake.is_health_check("0", INSTALL, RID))   # (an empty body with ids: a broken kit, logged)
+        self.assertFalse(intake.is_health_check("100", None, None))   # (a body: someone sent something)
+
+
 class Headers(unittest.TestCase):
     def ok(self, **kw):
         args = dict(method="POST", path=intake.PATH, content_type="application/zip", content_length="100",

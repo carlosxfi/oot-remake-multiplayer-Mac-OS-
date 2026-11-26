@@ -147,3 +147,62 @@ TEST_CASE("mod share: hashes carry how they were made, and two ways are not comp
     CHECK(mine_older.find("update to the host's kit") != std::string::npos);
     CHECK(mine_older.size() <= 200);
 }
+
+TEST_CASE("mod share: row 281, the held lines say what differs and what to do, the settings by name") {
+    CHECK(CoopModShare::RandoSettingsName(std::nullopt).empty());
+    CHECK(CoopModShare::RandoSettingsName(std::vector<ModSetting>{{"coop", "race", "off"}}).empty());
+    CHECK(CoopModShare::RandoSettingsName(std::vector<ModSetting>{{"oot-remake-randomizer", "seed", "ABC"}}) ==
+          "default");
+    CHECK(CoopModShare::RandoSettingsName(std::vector<ModSetting>{{"oot-remake-randomizer", "preset", "keysanity"},
+                                                                  {"oot-remake-randomizer", "settings", ""}}) ==
+          "keysanity");
+    CHECK(CoopModShare::RandoSettingsName(std::vector<ModSetting>{
+              {"oot-remake-randomizer", "preset", "default"},
+              {"oot-remake-randomizer", "settings", " OOTRR1-AMAQABABAADACAQHAEBA6AIACAAQ"}}) ==
+          "settings string OOTRR1-AMAQABABAADAC...");
+    const std::string missing = CoopModShare::HeldLine({WorldDiff::missing, "ABC"}, "ABC", "keysanity");
+    CHECK(missing.find("HELD out of the host's world") != std::string::npos);
+    CHECK(missing.find("seed ABC (keysanity)") != std::string::npos);
+    CHECK(missing.find("RESTART the game and join again") != std::string::npos);
+    CHECK(CoopModShare::HeldLine({WorldDiff::other_files, "ABC"}, "ABC", "").find("Update to the host's kit") !=
+          std::string::npos);
+    CHECK(CoopModShare::HeldLine({WorldDiff::extra, "XYZ"}, "", "").find("you play seed XYZ, the host plays the base game") !=
+          std::string::npos);
+    CHECK(CoopModShare::HeldLine({WorldDiff::extra, "XYZ"}, "ABC", "default").find("the host plays seed ABC (default)") !=
+          std::string::npos);
+    CHECK(CoopModShare::HeldLine({}, "", "").empty());
+    const std::string extra = CoopModShare::SeedExtraLine(2, "Rev-the-long-name", "XYZ-KEYSANITY");
+    CHECK(extra.find("player 2 (Rev-the-long-name) plays the randomizer seed XYZ-KEYSANITY") != std::string::npos);
+    CHECK(extra.size() <= 200);
+    CHECK(CoopModShare::SeedlessLine(2, "Rev-the-long-name", "N2BTEYKM-KEYSANITY").size() <= 200);
+}
+
+TEST_CASE("mod share: row 281, held while not the host's seed, and while it is not known yet") {
+    const ModEntry abc = Mod("randomizer-abc", "", 5), abc0 = Mod("randomizer-abc", "");
+    const ModEntry xyz = Mod("randomizer-xyz", "", 6);
+    const ModList base{1, {Mod("hud", "2", 7)}}, seeded{1, {abc}}, mine_base{0, {Mod("hud", "2")}}, mine{0, {abc}};
+    const ModList early{0, {abc0}}, other{0, {xyz}}, other_early{0, {Mod("randomizer-xyz", "")}};
+    ModEntry built = abc;
+    built.hash[0] = 9;
+    const ModList unlike{0, {built}};
+    // Both known: as the server has it.
+    CHECK_FALSE(CoopModShare::HeldNow(&seeded, &mine, true));
+    CHECK(CoopModShare::HeldNow(&seeded, &mine_base, true));
+    CHECK(CoopModShare::HeldNow(&seeded, &unlike, true));
+    CHECK(CoopModShare::HeldNow(&base, &mine, true));
+    CHECK(CoopModShare::HeldNow(&seeded, &other, true));
+    CHECK_FALSE(CoopModShare::HeldNow(&base, &mine_base, true));
+    // Ours not hashed yet: our seed is known already, so another seed is held at once (the host on the base game too).
+    CHECK(CoopModShare::HeldNow(&base, &early, false));
+    CHECK(CoopModShare::HeldNow(&seeded, &other_early, false));
+    CHECK(CoopModShare::HeldNow(&seeded, &mine_base, false));
+    CHECK(CoopModShare::HeldNow(&seeded, &early, false));   // (its files may be another OOTRR's: until hashed)
+    CHECK_FALSE(CoopModShare::HeldNow(&seeded, &early, true));   // (hashed, not readable: not compared)
+    CHECK_FALSE(CoopModShare::HeldNow(&base, &mine_base, false));
+    // The host's list not in yet: a game that plays a seed waits, the base game does not.
+    CHECK(CoopModShare::HeldNow(nullptr, &mine, true));
+    CHECK(CoopModShare::HeldNow(nullptr, &early, false));
+    CHECK_FALSE(CoopModShare::HeldNow(nullptr, &mine_base, false));
+    // Without a mod loader nothing is known of ours: held by nothing, as on the server.
+    CHECK_FALSE(CoopModShare::HeldNow(&seeded, nullptr, true));
+}

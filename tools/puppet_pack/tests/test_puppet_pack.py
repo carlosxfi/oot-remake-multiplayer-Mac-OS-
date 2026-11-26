@@ -801,6 +801,30 @@ class BuildPackTest(unittest.TestCase):
         # Carry without liftable does nothing.
         self.assertEqual(build.build_pack(members, "Child", carry=True), build.build_pack(members, "Child"))
 
+    def test_carry_and_pvp_copies_keep_the_retargeted_clips(self):
+        # Row 285: in their cutscene a puppet plays its own clips (no pose is written), and a character's puppet whose
+        # clips were not retargeted stood on Link's legs under the character's hips: in the air. Every copy of the
+        # young puppet keeps the retargeted sets the Character Select mod gives: the carry copy's own AnimationParam
+        # (asb_carry) adds Ruto's to them, and the _Pvp copy has both.
+        members = fake_player_pack("Child")
+        src = "Component/AnimationParam/P.engine__component__AnimationParam.bgyml"
+        sets = [{"IsRetarget": True, "ModelProjectName": f"Player_Child_{s}_Animation"} for s in ("Demo", "01", "04")]
+        members = {**with_pvp(members, "Child"), src: byml.dumps({"AnimationResources": sets})}
+        lift = build.liftable_param(fake_ruto_pack())
+        clients = build.attention_clients(fake_attention_pack())
+        name = "CoopPuppet_Child_C008"
+        for actor, pvp in ((name, None), (build.quiet_name(name), None), (build.pvp_name(name), clients)):
+            pack, ap, _, _ = build.build_pack(members, "Child", actor=actor, project="Player_Child_C008",
+                                              liftable=lift, carry=True, pvp=pvp)
+            own = asb_carry.carry_animation_path(actor)
+            self.assertEqual(byml.loads(ap)["Components"]["AnimationRef"], "?" + own)
+            got = byml.loads(sarc.read(pack)[own])["AnimationResources"]
+            self.assertEqual(got[:len(sets)], sets, actor)
+            self.assertTrue(all(r.get("IsRetarget") is True for r in got), actor)
+        # No carry: the pack's AnimationParam is the mod's, unchanged.
+        pack, _, _, _ = build.build_pack(members, "Child", actor="CoopPuppet_Child_C008", project="Player_Child_C008")
+        self.assertEqual(byml.loads(sarc.read(pack)[src])["AnimationResources"], sets)
+
     def test_pack_carry_and_pvp_together(self):
         # Lift-young (carry) and PvP on real bodies on one copy: the young _Pvp copy gets Ruto's LiftableRef and
         # carried pose AND the PvP pieces; the adult _Pvp copy gets the PvP pieces and is never liftable.
@@ -1058,8 +1082,10 @@ class BuildPackTest(unittest.TestCase):
         self.assertEqual(build.STAND_IN_XLINK, ("CoopShotFx_Seed", "CoopShotFx_Arrow"))
         pack, ap, names = build.build_stand_in(members, "Shootable_DekuSeed", "CoopShotFx_Seed")
         comps = byml.loads(ap)["Components"]
-        for k in ("ModelInfoRef", "ELinkRef", "SLinkRef", "XLinkRef"):
+        for k in ("ModelInfoRef", "ELinkRef", "XLinkRef"):
             self.assertEqual(comps[k], seed["Components"][k])
+        # Its sound user is the shared ReactionHit (the wall-hit sounds), in its own SLink param.
+        self.assertEqual(comps["SLinkRef"], "?" + build.slink_path("CoopShotFx_Seed"))
         for k in ("PhysicsRef", "AIInfoRef", "AttackRef", "ShootableRef", "SensorRef", "LifeRef"):
             self.assertNotIn(k, comps)
         # Nothing that can hit, be hit, sense or move by itself: only the model, the xlink users and
@@ -1069,7 +1095,10 @@ class BuildPackTest(unittest.TestCase):
         files = sarc.read(pack)
         self.assertIn("Component/ELink/Seed.engine__component__ELinkParam.bgyml", files)
         self.assertIn("Component/XLink/Seed.engine__component__XLinkParam.bgyml", files)
+        self.assertEqual(byml.loads(files[build.slink_path("CoopShotFx_Seed")]), {"UserName": "ReactionHit"})
         self.assertFalse([n for n in names if n.startswith("AI/")])
+        self.assertEqual(build.STAND_IN_SLINK_USER, {"CoopShotFx_Seed": "ReactionHit",
+                                                     "CoopShotFx_Arrow": "ReactionHit"})
         # The plain stand-in of the same shootable is unchanged: the shared XLink param, no users.
         _, plain, _ = build.build_stand_in(members, "Shootable_DekuSeed", "CoopShot_Seed")
         plain = byml.loads(plain)["Components"]
@@ -1079,7 +1108,7 @@ class BuildPackTest(unittest.TestCase):
                       "ELinkUserName": "Shootable_DekuSeed", "SLinkUserName": "Shootable_DekuSeed"}
         row = build.stand_in_row(source_row, "CoopShotFx_Seed")
         self.assertEqual(row["ELinkUserName"], "Shootable_DekuSeed")
-        self.assertEqual(row["SLinkUserName"], "Shootable_DekuSeed")
+        self.assertEqual(row["SLinkUserName"], "ReactionHit")
         self.assertNotIn("ActorName", row)
         self.assertEqual(row["__RowId"], "CoopShotFx_Seed")
         self.assertNotIn("ELinkUserName", build.stand_in_row(source_row, "CoopShot_Seed"))

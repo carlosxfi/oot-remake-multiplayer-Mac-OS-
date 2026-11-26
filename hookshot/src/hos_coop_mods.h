@@ -224,4 +224,95 @@ static inline int hos_coop_mods_as_built(int on, int built, int patch_files, con
     return on;
 }
 
+/* ---- The kit's merge at a start the kit did not make (player report 288) ----
+   The kit's start (Start Squadala: play.ps1, start.sh) runs tools/puppet_pack/merge_tables.py before the game, so the
+   files two mods share (size tables, actor tables, the menu archives) are one file with every mod's part. A game
+   started any other way read the mods as they lay: the Insert menu's Restart now after a randomizer seed was made
+   (host/hos_relaunch.c starts the game itself), longshot.exe or a shortcut to it, Nucleus Co-op. The seed's menu
+   archive then won without the Character Select mod's layouts, and that mod's Characters page crashed the game on a
+   layout that was not there. So host/mods.c runs the same merge itself, before it indexes the mods, when the game
+   was started again by Restart now (the restarted game is given HOS_COOP_MODS_RESTART_ENV) or without the kit's
+   marker. The merge is stamped: with nothing changed it writes nothing.
+   The switch HOS_COOP_MODS_START_MERGE_ENV: 1 on, 0 off, not set: HOS_COOP_MODS_START_MERGE_DEFAULT. */
+#define HOS_COOP_MODS_KIT_START_ENV "OOT_COOP_KIT_START"
+#define HOS_COOP_MODS_RESTART_ENV "OOT_COOP_RESTART"
+#define HOS_COOP_MODS_START_MERGE_ENV "OOT_COOP_START_MERGE"
+#define HOS_COOP_MODS_START_MERGE_DEFAULT 0      /* (off until a run of two games with pictures proved it) */
+#define HOS_COOP_MODS_START_MERGE_MS 180000UL    /* the merge's time limit: then it is ended and the game starts */
+#define HOS_COOP_MODS_START_MERGE_OUT "coop-start-merge.txt"   /* beside the game: what the merge said (then logged) */
+#define HOS_COOP_MODS_KIT_UP 5                   /* how many folders above the game's the kit is looked for */
+#ifdef _WIN32
+#define HOS_COOP_MODS_SEP '\\'
+#else
+#define HOS_COOP_MODS_SEP '/'
+#endif
+
+static inline int hos_coop_mods_env_on(const char *v) { return v && v[0] && !(v[0] == '0' && !v[1]); }
+
+/* Whether host/mods.c runs the merge at this start, and why. sw, kit_start, restart: the three variables' values (NULL:
+   not set); original_game: the list says "default off" (co-op's Original game: the kit merges nothing for it either). */
+#define HOS_COOP_MODS_MERGE_NO 0
+#define HOS_COOP_MODS_MERGE_RESTART 1   /* started again by the Insert menu's Restart now */
+#define HOS_COOP_MODS_MERGE_DIRECT 2    /* started without the kit's start file */
+static inline int hos_coop_mods_start_merge(const char *sw, const char *kit_start, const char *restart, int original_game) {
+    const int on = (sw && sw[0]) ? hos_coop_mods_env_on(sw) : HOS_COOP_MODS_START_MERGE_DEFAULT;
+    if (!on || original_game) return HOS_COOP_MODS_MERGE_NO;
+    if (hos_coop_mods_env_on(restart)) return HOS_COOP_MODS_MERGE_RESTART;
+    return hos_coop_mods_env_on(kit_start) ? HOS_COOP_MODS_MERGE_NO : HOS_COOP_MODS_MERGE_DIRECT;
+}
+
+/* dir (with or without a last separator) `up` folders up, without a last separator: 1, or 0 when there is no folder
+   that far up or it does not fit. */
+static inline int hos_coop_mods_up(const char *dir, int up, char *out, size_t cap) {
+    size_t n = strlen(dir);
+    if (!n || n >= cap) return 0;
+    memcpy(out, dir, n + 1);
+    while (n > 1 && (out[n - 1] == '/' || out[n - 1] == '\\')) out[--n] = 0;
+    for (; up > 0; up--) {
+        size_t k = n;
+        while (k > 0 && out[k - 1] != '/' && out[k - 1] != '\\') k--;
+        if (k <= 1) return 0;   /* (no folder above, or only the root) */
+        n = k - 1;
+        out[n] = 0;
+    }
+    return 1;
+}
+
+/* The merge's files in a kit, by the kit's own layout only: the game runs nothing a file in the mods folder (which a
+   downloaded mod could bring) or a variable names. Windows: <kit>\tools\puppet_pack\merge_tables.py and the kit's own
+   Python, <kit>\hookshot\tools\python\python.exe. Linux (the kit is its data folder): <kit>/tools/puppet_pack/
+   merge_tables.py, the builder's Python <kit>/builder/image/usr/python/bin/python3, else the system's
+   /usr/bin/python3 (as start.sh, by its fixed path). 1, or 0 when there is no such file here or it does not fit. */
+#define HOS_COOP_MODS_KIT_TOOL 0
+#define HOS_COOP_MODS_KIT_PYTHON 1
+#define HOS_COOP_MODS_KIT_PYTHON_SYSTEM 2
+static inline int hos_coop_mods_kit_file(const char *kit, int which, char *out, size_t cap) {
+    static const char *const tool[] = {"tools", "puppet_pack", "merge_tables.py", NULL};
+#ifdef _WIN32
+    static const char *const python[] = {"hookshot", "tools", "python", "python.exe", NULL};
+#else
+    static const char *const python[] = {"builder", "image", "usr", "python", "bin", "python3", NULL};
+#endif
+    const char *const *parts = which == HOS_COOP_MODS_KIT_TOOL ? tool : python;
+    size_t n = strlen(kit), i;
+    if (which == HOS_COOP_MODS_KIT_PYTHON_SYSTEM) {
+#ifdef _WIN32
+        return 0;
+#else
+        return snprintf(out, cap, "/usr/bin/python3") < (int)cap;
+#endif
+    }
+    if (which != HOS_COOP_MODS_KIT_TOOL && which != HOS_COOP_MODS_KIT_PYTHON) return 0;
+    if (!n || n >= cap) return 0;
+    memcpy(out, kit, n + 1);
+    for (i = 0; parts[i]; i++) {
+        const size_t len = strlen(parts[i]);
+        if (n + 1 + len >= cap) return 0;
+        out[n++] = HOS_COOP_MODS_SEP;
+        memcpy(out + n, parts[i], len + 1);
+        n += len;
+    }
+    return 1;
+}
+
 #endif

@@ -172,7 +172,7 @@ function Read-ProblemSendAnswer([int]$Seconds = $script:SendAskSeconds, [scriptb
     $left = -1
     while ((Get-Date) -lt $end) {
         $now = [int][Math]::Ceiling(($end - (Get-Date)).TotalSeconds)
-        if ($now -ne $left) { $left = $now; Write-Host -NoNewline "`r  (y/n, no in $left s)  " }
+        if ($now -ne $left) { $left = $now; Write-Host -NoNewline "`r  (press Y to send, N not to; no key in $left s: no)  " }
         $key = if ($ReadKey) { & $ReadKey } elseif ([Console]::KeyAvailable) { [Console]::ReadKey($true) } else { $null }
         if ($key) {
             if ("$($key.Key)" -eq 'Y') { Write-Host 'y'; return $true }

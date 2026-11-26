@@ -40,6 +40,12 @@ namespace addr {
 inline constexpr std::uint64_t kActorComponents = 0x270;
 inline constexpr std::uint64_t kComponentSensor = 0x3b8;   // main+0x8d6320 reads it
 inline constexpr std::uint64_t kComponentShooter = 0x3d8;  // main+0x2c24ba0 reads it
+// A shot's own Shootable component (QueryShootableGetState reads it): valid byte +0x20 (bit 0), state s32 +0x24:
+// 0 Sleep, 1 Prepare, 2 Shoot, 3 Stationary, 4 Reflected, 5 UsedExternally.
+inline constexpr std::uint64_t kComponentShootable = 0x3d0;
+inline constexpr std::uint64_t kShootableValid = 0x20;
+inline constexpr std::uint64_t kShootableState = 0x24;
+inline constexpr std::int32_t kStateReflected = 4;
 // The Sensor's hit lists (QuerySensorHitIsHitTg / GetAtHitInfo / GanondorfChargeLightBallIsReflect):
 // list +0x8 capacity, +0x10 entries, +0x18 count (the game reads min(count, capacity)).
 inline constexpr std::uint64_t kSensorTgList = 0x68;  // hits it took, 0x1d0 bytes each
