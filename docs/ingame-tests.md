@@ -85,6 +85,14 @@ baseline is put back. Every flag is read back on every save. A test that needs a
 is `{name, sha256: {game: {rel: sha256}}}`. `saves/gohma-alive.py` puts Queen Gohma back alive, with the quest at
 her room (rows 137/138).
 
+The in-game proof of a save: a profile may also have `EXPECT = {"age": ..., "scene": ..., "items": [...],
+"max_life": N}`, for both games or per game (`{"A": {...}, "B": {...}}`). Every key is optional. The test calls
+`testsave.prove(pair, NAME)` inside `pair.setup()`. It checks that each game is in play, its age, scene and
+max_life from the state, each item's `IsGet.<item>` flag, and every `FLAGS` entry read back from the game by its hash.
+A miss is SETUP-FAIL, naming each game. To prove that the game runs the profile's save, the boot must set none of
+those flags itself (`scenarios/live-deku-gohma-reset.*.txt` is `live-deku-gohma` without them). Rows 138(4)/137
+(`test_boss_reset.py`): `--boot live-deku-gohma-reset --save gohma-alive`.
+
 Game B without Character Select: `--env B:COOP_TEST_NO_CHARACTER_SELECT=1` (the switch in
 `tools/autotest/ingame/no_cs.py`) boots game B from `lane<N>-B-nocs` instead of `lane<N>-B`. That folder is made
 only when someone asks for it, with `python -I tools/autotest/lanes.py nocs --lane N` (`--dry-run` first). It is
