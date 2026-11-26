@@ -423,6 +423,17 @@ class BootCommand(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(ses, "watchdog.json")))
         self.assertFalse(os.path.exists(os.path.join(ses, "session.json")))
 
+    def test_boot_identity(self):
+        """The boot scripts and their switches are part of summary.json identity (the proof key sees the boot)."""
+        import bt_plugin as B
+        idn = B.boot_identity()
+        self.assertEqual(idn["A"]["script"], "tools/autotest/scenarios/live-kakariko-child.A.txt")
+        self.assertIn("LICHII_COOP_CHEATS=1", idn["A"]["switches"])
+        self.assertEqual(len(idn["B"]["sha256"]), 64)
+        out = os.path.join(self.tmp, "o")
+        pytest_run([".", "--fake", "--out", out, "-q", "-m", "not look", "-k", "test_boot"])
+        self.assertEqual(summary(out)["identity"]["boot"], idn)
+
     def test_real_boot_args_parse(self):
         """bt_plugin.boot_args (what lane_pair boots with) through live.py start --dry-run: hookshot.py run's own
         parser + a parse of both boot scripts. The lane pair is swapped for two folders (CI has no lanes)."""

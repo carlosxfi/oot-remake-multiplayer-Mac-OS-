@@ -47,6 +47,9 @@ The boot (`bt_plugin.boot_args`, the one list the boot and the check use): `live
 --server <lane-server.txt's> --boot-a/--boot-b scenarios/live-kakariko-child.A/B.txt --no-load --env ...`: the
 documented `live.py start` boot (child save, Kakariko by the well, through the title). `live.py start` checks those
 runner arguments before it spawns its watchdog or takes the lane lock, so a refused start leaves no lock.
+Cheats are ON in every lane boot: `live-kakariko-child.A.txt` has `#! switches LICHII_COOP_CHEATS=1` (the A script's
+switches go to both games), which the bridge's `act`/`warp`/`flag`/`give` need. `summary.json` `identity.boot` keeps
+each boot script's path, sha256 and switches, so a run with another boot never counts as the same proof.
 
 | Result | When |
 |---|---|

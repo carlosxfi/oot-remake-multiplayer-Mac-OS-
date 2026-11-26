@@ -14,6 +14,7 @@ Results (one summary per run, DIR/summary.json + summary.md, and pytest's --juni
 Smoke gate: a smoke test (marker `smoke`) that FAILs or SETUP-FAILs stops the run there (the rc is broken), unless
 --no-smoke-gate.
 """
+import hashlib
 import json
 import re
 import os
@@ -127,6 +128,21 @@ def _deselect_needs_env(config, items):
 # as offline/desync-275-run.ps1:41-42). hookshot.py run needs --script-a (its own check: '--script-a (or --only B)').
 BOOT_A = os.path.join(AUTOTEST, "scenarios", "live-kakariko-child.A.txt")
 BOOT_B = os.path.join(AUTOTEST, "scenarios", "live-kakariko-child.B.txt")
+
+
+def boot_identity():
+    """What the boot itself brings, for the proof key (review-c123-7): each boot script's path (repo-relative), sha256
+    and its '#! switches' header (hookshot.header_switches: the A script's go to both games, an --env of the same name
+    wins; live-kakariko-child.A.txt turns LICHII_COOP_CHEATS=1 on). A different boot, or one without those switches,
+    is a different identity."""
+    import hookshot
+    out = {}
+    for x, path in (("A", BOOT_A), ("B", BOOT_B)):
+        with open(path, "rb") as f:
+            sha = hashlib.sha256(f.read()).hexdigest()
+        out[x] = {"script": os.path.relpath(path, os.path.dirname(os.path.dirname(AUTOTEST))).replace(os.sep, "/"),
+                  "sha256": sha, "switches": ["%s=%s" % kv for kv in hookshot.header_switches(path)]}
+    return out
 
 
 def boot_args(config, lane, server, session):
@@ -470,7 +486,8 @@ def pytest_sessionfinish(session, exitstatus):
     summary = {"started": config._bt_started, "minutes": round((time.time() - config._bt_started) / 60, 2),
                "lanes": config.getoption("lanes"), "fake": bool(config.getoption("fake")),
                "repeat": config.getoption("repeat"), "counts": counts, "tests": rows,
-               "identity": {"env": boot_env(config), "expect_commit": config.getoption("expect_commit")},
+               "identity": {"env": boot_env(config), "expect_commit": config.getoption("expect_commit"),
+                            "boot": boot_identity()},
                "deselected": config._bt_deselected,
                "stopped": getattr(config, "_bt_stopped", None),
                "lane_closed": getattr(config, "_bt_lane_closed", None),
