@@ -70,7 +70,8 @@ def pytest_addoption(parser):
     g.addoption("--repeat", type=int, default=1, help="run every test N times on the same boot (the pilot: 10)")
     g.addoption("--no-smoke-gate", action="store_true", help="go on after a smoke test that did not pass")
     g.addoption("--no-rerun", action="store_true", help="no FLAKY rerun of a failed test")
-    g.addoption("--kit-ls", default=None, help="the lanes folder (default: lanes.py's kit root + ls)")
+    g.addoption("--kit-ls", default=None, help="the lanes folder (default: lanes.py's kit root + ls); given, the games "
+                "booted are ITS laneN-A/-B (e.g. the packaged kit's pair of the short gate) and needs_kit tests run")
     g.addoption("--expect-commit", default=None, help="SETUP-FAIL unless the lane's lane-server.txt commit starts so")
     g.addoption("--session-minutes", type=float, default=240, help="live.py --max-minutes of each lane's session")
     g.addoption("--env", action="append", default=[], metavar="NAME=VALUE", help="a game switch for this boot, set at "
@@ -88,6 +89,8 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "smoke: the rc smoke tier (runs first; a miss stops the run)")
+    config.addinivalue_line("markers", "needs_kit: a check of the PACKAGED kit (the short gate's kit pair): runs only "
+                            "with --kit-ls, deselected otherwise (the dev lanes are not the kit players install)")
     config.addinivalue_line("markers", "budget(seconds): the test's own hard deadline (default %d)" % DEFAULT_BUDGET)
     config.addinivalue_line("markers", "row(text): the rc row the test proves (in the summary)")
     config.addinivalue_line("markers", "look: a user-facing look check (bridge shots on each game, compared to refs)")
@@ -131,6 +134,8 @@ def pytest_collection_modifyitems(config, items):
 def _deselect_line(d):
     if d.get("needs_boot"):
         return "deselected: needs_boot %s %s" % (d["needs_boot"], d["test"])
+    if d.get("needs_kit"):
+        return "deselected: needs_kit (no --kit-ls) %s" % d["test"]
     return "deselected: needs_env %s %s" % (" ".join(d["needs_env"]), d["test"])
 
 
@@ -140,8 +145,9 @@ def _deselect_needs_env(config, items):
     summary --plan, makes it NOT-RUN if no session ran it):
     - needs_env: a switch this run's --env lacks;
     - needs_boot: a test boots with ONE boot (@pytest.mark.needs_boot(NAME), else DEFAULT_BOOT); a run with another
-      --boot leaves it out (a boss boot is not the Kakariko boot the smoke tier and the rows assume)."""
-    have, boot = boot_env(config), config.getoption("boot")
+      --boot leaves it out (a boss boot is not the Kakariko boot the smoke tier and the rows assume);
+    - needs_kit: a run without --kit-ls (the packaged kit's pair) leaves it out."""
+    have, boot, kit = boot_env(config), config.getoption("boot"), config.getoption("kit_ls")
     keep, drop = [], []
     for it in items:
         m = it.get_closest_marker("needs_boot")
@@ -151,6 +157,8 @@ def _deselect_needs_env(config, items):
             config._bt_deselected.append({"test": it.nodeid, "needs_boot": want, "needs_env": lack})
         elif lack:
             config._bt_deselected.append({"test": it.nodeid, "needs_env": lack})
+        elif it.get_closest_marker("needs_kit") and not kit:
+            config._bt_deselected.append({"test": it.nodeid, "needs_kit": True, "needs_env": []})
         else:
             keep.append(it)
             continue
@@ -209,6 +217,9 @@ def boot_args(config, lane, server, session):
             "--no-load"]
     for e in boot_env(config):
         args += ["--env", e]
+    kit_ls = config.getoption("kit_ls")
+    if kit_ls:   # (live.py start --lane N boots lanes.py's laneN folders unless --game-a/-b name others: live.py resolve)
+        args += ["--game-a", os.path.join(kit_ls, "lane%d-A" % lane), "--game-b", os.path.join(kit_ls, "lane%d-B" % lane)]
     return args + ["--max-minutes", str(config.getoption("session_minutes")), "--idle-minutes", "15"]
 
 

@@ -135,6 +135,26 @@ def lane_check(kit_ls, lane):
     return a
 
 
+def write_lane_server(folder, commit, server, protocol="", by=""):
+    """lane-server.txt for a game folder that lane-game-for.ps1 did not install (the short gate's packaged kit pair):
+    the same fields in the same order as offline/lane-game-for.ps1 writes them, from the folder's own module and
+    coop-built-from.txt, so lane_check above reads it as a lane's. Returns the text written."""
+    import datetime
+    line = _patches_line(os.path.join(folder, "coop-built-from.txt"))
+    if line is None:
+        raise SetupFail("%s has no coop-built-from.txt patches= line (not built by hs.py build?)" % folder)
+    dll = _sha256_file(os.path.join(folder, "hookshot_coop.dll"))
+    if not dll:
+        raise SetupFail("%s has no hookshot_coop.dll" % folder)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
+    txt = ("# written by tools/autotest/ingame/lane_record.py %s UTC\nby=%s\ncommit=%s\nprotocol=%s\nserver=%s\n"
+           "dll_sha256=%s\npatches_line_sha256=%s\n" % (stamp, by, commit, protocol, os.path.abspath(server), dll,
+                                                       hashlib.sha256(line.encode("utf-8")).hexdigest().upper()))
+    with open(os.path.join(folder, "lane-server.txt"), "w", encoding="utf-8", newline="\n") as f:
+        f.write(txt)
+    return txt
+
+
 def _sha256_file(path):
     try:
         h = hashlib.sha256()

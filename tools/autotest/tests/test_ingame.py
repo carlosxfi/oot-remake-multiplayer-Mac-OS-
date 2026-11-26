@@ -91,7 +91,7 @@ class Suite(unittest.TestCase):
         self.assertEqual(s["counts"]["SETUP-FAIL"], 0, p.stdout[-2000:])
         self.assertTrue(s["tests"])
         for d in s["deselected"]:
-            self.assertTrue(d["needs_env"] or d.get("needs_boot"), d)     # (pganon-cct-287-3: a boss row's boot)
+            self.assertTrue(d["needs_env"] or d.get("needs_boot") or d.get("needs_kit"), d)   # (pganon-cct-287-3: a boss row's boot; needs_kit: the gate's kit pair)
 
     def test_repeat_keeps_one_boot_and_orders_by_round(self):
         out = os.path.join(self.tmp, "o")
@@ -548,7 +548,7 @@ class BootCommand(unittest.TestCase):
         for name in names:
             class Cfg:
                 def getoption(self, opt, name=name):
-                    return {"env": [], "session_minutes": 60, "boot": name}[opt]
+                    return {"env": [], "session_minutes": 60, "boot": name, "kit_ls": None}[opt]
             args = B.boot_args(Cfg(), 1, os.path.join(self.tmp, "coop_server.exe"), os.path.join(self.tmp, "s"))
             i = args.index("--lane")
             args[i:i + 2] = self.games()
@@ -563,7 +563,8 @@ class BootCommand(unittest.TestCase):
 
         class Cfg:
             def getoption(self, name):
-                return {"env": ["LICHII_COOP_PARTY_HUD_PROBE=1"], "session_minutes": 175, "boot": B.DEFAULT_BOOT}[name]
+                return {"env": ["LICHII_COOP_PARTY_HUD_PROBE=1"], "session_minutes": 175, "boot": B.DEFAULT_BOOT,
+                        "kit_ls": None}[name]
         args = B.boot_args(Cfg(), 1, os.path.join(self.tmp, "coop_server.exe"), os.path.join(self.tmp, "s"))
         i = args.index("--lane")
         args[i:i + 2] = self.games()
