@@ -1422,6 +1422,38 @@ class OcarinaReady(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, r"B: 'ocarina probe: our Link plays the ocarina' after B closed"):
                 pair.ocarina_out("B")
 
+    def test_ocarina_out_without_the_probe_switch_is_setup_fail_before_any_press(self):
+        """tb-pilot-f9f3b9c2: no LICHII_COOP_OCARINA_PROBE=1 on the boot, so no game logs OCARINA_PLAYS: SetupFail at
+        once, naming the switch; no D-pad press is sent."""
+        pair = self.lane(0)
+        pair.has_switch = lambda want: False
+        at = pair.log["B"].mark()
+        with self.assertRaisesRegex(P.SetupFail, r"B: ocarina_out needs LICHII_COOP_OCARINA_PROBE=1"):
+            pair.ocarina_out("B")
+        self.assertIsNone(pair.log["B"].find(P.OCARINA_FREE, pos=at))
+
+    def test_ocarina_out_asks_for_the_probe_on_its_own_game(self):
+        pair = self.lane(0)
+        asked = []
+        pair.has_switch = lambda want: asked.append(want) or True
+        self.assertTrue(pair.ocarina_out("B"))
+        self.assertEqual(asked, ["B:LICHII_COOP_OCARINA_PROBE=1"])
+
+    def test_boot_switch_check_reads_the_boot_header_and_env(self):
+        import bt_plugin
+
+        class Cfg:
+            def __init__(self, env, boot=bt_plugin.DEFAULT_BOOT):
+                self.o = {"env": env, "boot": boot}
+
+            def getoption(self, k):
+                return self.o[k]
+        self.assertFalse(bt_plugin.boot_switch_check(Cfg([]))("B:LICHII_COOP_OCARINA_PROBE=1"))
+        self.assertTrue(bt_plugin.boot_switch_check(Cfg(["LICHII_COOP_OCARINA_PROBE=1"]))("B:LICHII_COOP_OCARINA_PROBE=1"))
+        self.assertFalse(bt_plugin.boot_switch_check(Cfg(["A:LICHII_COOP_OCARINA_PROBE=1"]))("B:LICHII_COOP_OCARINA_PROBE=1"))
+        # the default boot's own header (live-kakariko-child.A.txt '#! switches LICHII_COOP_CHEATS=1') counts too
+        self.assertTrue(bt_plugin.boot_switch_check(Cfg([]))("B:LICHII_COOP_CHEATS=1"))
+
     def test_ocarina_out_with_nothing_on_the_d_pad_names_it(self):
         pair = self.lane(5000)
         with self.assertRaisesRegex(AssertionError, r"B: the ocarina back on the D-pad"):
@@ -1443,7 +1475,9 @@ class OcarinaReady(unittest.TestCase):
     def test_the_ocarina_tests_pass_on_a_late_re_equip(self):
         out = os.path.join(self.tmp, "o")
         p = pytest_run([".", "--fake", "--no-rerun", "--out", out, "-q", "-p", "no:cacheprovider",
-                        "-k", "ocarina or frog or epona_seen"], env={"BT_FAKE_OCARINA_LATE": "200"})
+                        "-k", "ocarina or frog or epona_seen",
+                        "--env", "LICHII_COOP_OCARINA_PROBE=1"],   # (test_ocarina_notes needs it: pair.OCARINA_PROBE)
+                       env={"BT_FAKE_OCARINA_LATE": "200"})
         r = results(summary(out))
         self.assertTrue(r, p.stdout[-2000:])
         for name, res in r.items():

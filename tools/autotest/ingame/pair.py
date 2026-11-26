@@ -62,6 +62,10 @@ OCARINA_FRAMES = 600  # 20 s of game: the mend's 30 frames + an arrival event's 
 # 500 frames and a second 30-frame LEFT before it brought nothing). The frogs runs waited for OCARINA_PLAYS alone.
 OCARINA_FREE = r"coop: event: the running event is our free Ocarina"      # coop/host/include/coop/host/event_owner.hpp:58, docs/scenes.md:41
 OCARINA_PLAYS = r"ocarina probe: our Link plays the ocarina"              # lichii/hook/coop_ocarina.cpp:320 (PROBE=1)
+# OCARINA_PLAYS is the probe's line: written only with this switch (coop_objects.cpp:2992 'if (ocarina_probe_on_)', :7012
+# EnvFlag). Without it no game ever logs it (tb-pilot-f9f3b9c2: env PUPPET + TEST_TO_TITLE only, hookshot_log-A.txt has 0
+# 'ocarina probe' lines, test_ocarina_notes SETUP-FAIL), so ocarina_out refuses to start without it (SetupFail).
+OCARINA_PROBE = "LICHII_COOP_OCARINA_PROBE=1"
 # The no-box wait for OCARINA_PLAYS after LEFT: 240 frames, the scenario's own 'press DLEFT 12' + 'wait 240'
 # (scenarios/hs-ocarina.A.txt:23-24) that run 20261115-185256 proved (docs/items.md:340: the plays line after DLEFT
 # within it). Not shortened: no run measured the no-box gap itself (review-c123-13 17:47). In the box case nothing
@@ -323,6 +327,9 @@ class Pair:
         self.boot_scene = None # the boot's scene (bt_plugin._boot_proof): where every default-boot test starts
         self.notes = []
         self.window_shooter = None   # (x, path) -> path: window shots (windowshot.Shooter; the fake lane's own)
+        # 'NAME=V' / 'A:NAME=V' -> bool: does the boot give that switch (its '#! switches' + --env; bt_plugin lane_pair
+        # sets it). None: not known (a Pair made outside the plugin), nothing is checked.
+        self.has_switch = None
 
     # -- per test ---------------------------------------------------------------------------------------------
     def begin(self, seconds):
@@ -458,7 +465,12 @@ class Pair:
         need_ocarina, D-pad Left (12 frames), then OCARINA_PLAYS within max_frames: done. Else OCARINA_FREE must be
         there (else AssertionError: nothing came out, the #190 bug's sign): the first-use box is up, B closes it (the
         probe's proven press; not A, a note key), and OCARINA_PLAYS must come AFTER the B press (the log is marked right
-        before it), within max_frames. Ends with Link playing (no note sent by the set-up)."""
+        before it), within max_frames. Ends with Link playing (no note sent by the set-up).
+        A boot without OCARINA_PROBE on game x: SetupFail at once (the line can never come; the test's needs_env and the
+        run's --env must carry it)."""
+        if self.has_switch is not None and not self.has_switch("%s:%s" % (x, OCARINA_PROBE)):
+            raise SetupFail("%s: ocarina_out needs %s (OCARINA_PLAYS is the probe's line, coop_objects.cpp:7012): this "
+                            "boot does not set it; add it to the test's needs_env and the run's --env" % (x, OCARINA_PROBE))
         self.need_ocarina(x)
         pos = self.log[x].mark()
         self.press(x, ["LEFT"], frames=12)
