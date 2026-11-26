@@ -1,0 +1,81 @@
+# hs-ocarina-keys (Hookshot), B: which Ocarina note the GAME plays for each key (ground truth for
+# tools/autotest/ocarina_notes.py). No key here is a guess about notes: B presses each of the five keys the game's own
+# prompt lists ("Play a note" + five key glyphs, shot hs-epona-seen-B-ocarina-B.png of run 20261125-155509) once,
+# between two marks, and LICHII_COOP_DEBUG_SOUND=1 logs every sound the game emits the first time
+# (lichii/hook/coop_link_sound.cpp OnEmit: "coop: sound probe: user 0x.. emits 'NAME'"). The note a key plays is the
+# Ocarina_<note> emit between "mark press-K" and "mark heard-K"; the heard-K shot shows the note staff.
+# Two hold lengths (B #118): pass 1 holds each key 24 ticks (0.4 s; marks press-K / heard-K, the log mapping), pass 2 the
+# runner's default press, PRESS_TICKS = 6 (tools/autotest/hookshot.py: "press KEYS: held this long, then let go as long";
+# marks press6-K / heard6-K: the probe logs a name only the first time, so pass 2 is judged by its staff shots).
+# Runs epona-seen-0dacc172 to -r3 held every note 12 ticks with 40 between: no song, no staff in any shot.
+# Run through offline/epona-seen-run.ps1 -Scenario hs-ocarina-keys (owner save copy; setup proof first).
+# Sources: DLEFT takes the ocarina out and B puts it away (runs epona-seen-0dacc172-r2: "mark ocarina" shot with the note
+# prompt, then no prompt at epona-came after "press B"); the warp and place as hs-epona-seen.B.txt (the same runs:
+# "test mark field", Link placed at -99.00 150.59 264.50).
+#! switches LICHII_COOP_PUPPET=1,LICHII_COOP_CHEATS=1,LICHII_COOP_DEBUG_SOUND=1
+#! timeout 600
+mark start
+wait 60
+warp HyruleField_Adult HyruleField_FrontOfMarket
+wait 1200               # the warp lands
+mark field
+place -99.0 151.0 264.5
+wait 240
+mark on-foot
+press DLEFT 12          # the ocarina out
+wait 240
+mark ocarina
+wait 60
+mark press-L
+press L 24
+wait 90
+mark heard-L
+wait 60
+mark press-R
+press R 24
+wait 90
+mark heard-R
+wait 60
+mark press-Y
+press Y 24
+wait 90
+mark heard-Y
+wait 60
+mark press-X
+press X 24
+wait 90
+mark heard-X
+wait 60
+mark press-A
+press A 24
+wait 90
+mark heard-A
+wait 120
+mark press6-L
+press L
+wait 90
+mark heard6-L
+wait 60
+mark press6-R
+press R
+wait 90
+mark heard6-R
+wait 60
+mark press6-Y
+press Y
+wait 90
+mark heard6-Y
+wait 60
+mark press6-X
+press X
+wait 90
+mark heard6-X
+wait 60
+mark press6-A
+press A
+wait 90
+mark heard6-A
+wait 60
+press B 12              # the ocarina away
+wait 120
+mark end

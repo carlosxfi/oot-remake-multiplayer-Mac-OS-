@@ -146,23 +146,60 @@ if (-not (Test-Path $steps)) { $steps = $null }
 if (-not $TakeBaseline -and -not $steps -and -not (Test-Path $scA)) { throw "no scenario $scA" }
 
 # Header lines in the A script (or the steps file), which the emulator reads as comments:
-#   #! noload                  the script loads the save itself (as -NoLoad)
+#   #! noload                  the script loads the save itself (as -NoLoad), both games
+#   #! noload B                only game B's script loads the save itself (A or B); A still plays load.txt
 #   #! switches NAME=v,NAME=v  added to the switches (-Switches given on the command line win)
 #   #! timeout 300             seconds for each phase (as -Timeout, which wins)
 #   #! server ARGS             more coop_server arguments (stray-diag: --owner-hold-ms 0)
 #   #! start REGEX             the game log must match REGEX once the save is loaded (default: a
 #                              Graveyard object, the save point); checked after load.txt, or at
 #                              the end for a script that loads itself
+#   #! start B: REGEX          the same for game B only (A: or B:); a game with its own noload has no default start check
 if ($NoCoop -and -not $PSBoundParameters.ContainsKey('Switches')) { $Switches = @('LICHII_COOP_DEBUG_OBJECTS=1') }
-$headNoLoad = $false; $headSwitches = @(); $headStart = $null; $headServer = ''
+$headNoLoad = $false; $headSwitches = @(); $headStart = $null; $headServer = ''; $noLoadGames = @(); $headStartGame = @{}
 $headFile = if ($steps) { $steps } elseif (Test-Path $scA) { $scA } else { $null }
 if ($headFile) {
     foreach ($l in Get-Content $headFile) {
         if ($l -match '^#!\s*noload\s*$') { $headNoLoad = $true }
+        elseif ($l -match '^#!\s*noload\s+([AB])\s*$') { $noLoadGames += $Matches[1] }
         elseif ($l -match '^#!\s*switches\s+(.+)$') { $headSwitches += @($Matches[1] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+        elseif ($l -match '^#!\s*start\s+([AB]):\s+(.+)$') { $headStartGame[$Matches[1]] = $Matches[2].Trim() }
         elseif ($l -match '^#!\s*start\s+(.+)$') { $headStart = $Matches[1].Trim() }
         elseif ($l -match '^#!\s*server\s+(.+)$') { $headServer = $Matches[1].Trim() }
         elseif ($l -match '^#!\s*timeout\s+(\d+)\s*$' -and -not $PSBoundParameters.ContainsKey('Timeout')) { $Timeout = [int]$Matches[1] }
+    }
+}
+# The header is read from ONE file only, for both games: the steps file when there is one, else the A script. A '#!' line any
+# other script of the run carries was never applied: epona-seen-keys-3bacc7d0 (2026-11-26) had LICHII_COOP_DEBUG_SOUND=1 in
+# B only, so no sound was logged and the run was VOID; with a steps file the A and B scripts' headers are not read either
+# (review-b119: epona.A.txt/epona.B.txt vs epona.steps.txt). Such a run is refused here, before any game starts, naming each
+# file and line (SETUP-FAIL, exit 2). The other scripts: the B script (no steps file), or every script a steps file's `play`
+# lines name ("play A x.A.txt B x.B.txt", tools/autotest/hs_steps.py).
+if ($headFile) {
+    $others = @()
+    if ($headFile -eq $scA) { if (Test-Path $scB) { $others += $scB } }
+    else {
+        foreach ($l in Get-Content $headFile) {
+            if ($l -match '^\s*play\s+(.+)$') {
+                $w = @(($Matches[1] -split '#', 2)[0] -split '\s+' | Where-Object { $_ })
+                for ($i = 1; $i -lt $w.Count; $i += 2) { $f = Join-Path (Split-Path $headFile) $w[$i]; if ((Test-Path $f) -and $others -notcontains $f) { $others += $f } }
+            }
+        }
+    }
+    $hLines = @(Get-Content $headFile | Where-Object { $_ -match '^#!' } | ForEach-Object { $_.Trim() })
+    $notInHead = New-Object System.Collections.Generic.List[string]
+    foreach ($o in $others) {
+        foreach ($l in @(Get-Content $o | Where-Object { $_ -match '^#!' } | ForEach-Object { $_.Trim() })) {
+            if ($l -match '^#!\s*switches\s+(.+)$') {
+                foreach ($sw in @($Matches[1] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+                    if ($headSwitches -notcontains $sw) { $notInHead.Add("$(Split-Path $o -Leaf): switch $sw") }
+                }
+            } elseif ($hLines -notcontains $l) { $notInHead.Add("$(Split-Path $o -Leaf): '$l'") }
+        }
+    }
+    if ($notInHead.Count) {
+        Write-Host "SETUP-FAIL scenario $Scenario`: run.ps1 reads the header from $(Split-Path $headFile -Leaf) only, for both games; these lines elsewhere were never applied: qualify a line only one game needs as '#! noload B' / '#! start B: REGEX' / a 'B:NAME=v' switch in $(Split-Path $headFile -Leaf), or put it in both games' headers if both need it: $($notInHead -join ', ')"
+        exit 2
     }
 }
 if ($headNoLoad -and -not $NoLoad) { Write-Host "scenario header: noload"; $NoLoad = [switch]$true }
@@ -173,6 +210,7 @@ if ($headSwitches.Count) {
         if (-not $PSBoundParameters.ContainsKey('Switches') -or $given -notcontains $k) { $Switches += $e }
     }
 }
+$noLoadGames = @($noLoadGames | Select-Object -Unique); $headStartExplicit = [bool]$headStart
 if (-not $headStart -and -not $NoLoad) { $headStart = 'coop: objects: \+ \w*Graveyard'; if (-not (@($Switches | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() }) -match '^LICHII_COOP_DEBUG_OBJECTS=')) { $Switches += 'LICHII_COOP_DEBUG_OBJECTS=1' } }
 
 $Kit = @($Kit | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().Trim('"', "'") } | Where-Object { $_ })
@@ -236,6 +274,7 @@ if ($Runtime -eq 'hookshot') {
             '--timeout', "$([Math]::Max($Timeout, 900))", '--scenario-timeout', "$([Math]::Max($Timeout, 600))")
         if (Test-Path $scB) { $a += @('--script-b', $scB) }
         if ($NoLoad) { $a += '--no-load' } else { $a += @('--load', "$here\scenarios\load.txt") }
+        if ($noLoadGames.Count -and -not $NoLoad) { $a += @('--no-load-games', ($noLoadGames -join ',')) }
         if ($NoRestore) { $a += '--no-restore' }
         if ($KeepOpen) { $a += '--keep-open' }
         if ($ServerPassword -and (Select-String -Quiet -SimpleMatch -Path "$here\hookshot.py" -Pattern '"--password"')) {
@@ -714,6 +753,7 @@ function Live-Actors([string]$x) {
 # Did game x get to the scenario's start place (the `#! start` regex, default a Graveyard object
 # after load.txt)? Waits up to $wait s; writes start.txt beside the screenshots.
 function Check-Start([string]$x, [int]$wait) {
+    $headStart = $(if ($headStartGame.ContainsKey($x)) { $headStartGame[$x] } elseif ($noLoadGames -contains $x -and -not $headStartExplicit) { $null } else { $script:headStart })
     if (-not $headStart) { return $true }
     $start = Get-Date
     while (-not ((Read-Log $x) -match $headStart)) {
@@ -975,17 +1015,18 @@ try {
 
         if (-not $NoLoad) {
             $load = "$here\scenarios\load.txt"
-            Play @{ A = $load; B = $load } 'load' $Every
+            $lf = @{}; foreach ($x in 'A', 'B') { if ($noLoadGames -notcontains $x) { $lf[$x] = $load } }
+            if ($lf.Count) { Play $lf 'load' $Every }
             Shot-Both 'loaded'
             Write-Host "save loaded"
             foreach ($x in $kits.Keys) {
-                if (-not (Check-Start $x 15)) { throw "game $x did not start at the save point ('$headStart'): see start.txt" }
+                if ($noLoadGames -notcontains $x -and -not (Check-Start $x 15)) { throw "game $x did not start at the save point ('$headStart'): see start.txt" }
             }
         }
         $files = @{ A = $scA; B = $(if (Test-Path $scB) { $scB } else { $null }) }
         Play $files $Scenario $Every
-        if ($NoLoad -and $headStart) {
-            foreach ($x in $kits.Keys) { if (-not (Check-Start $x 0)) { $stepFails++ } }
+        if (($NoLoad -and $headStart) -or $noLoadGames.Count -or $headStartGame.Count) {
+            foreach ($x in $kits.Keys) { if (($NoLoad -or $noLoadGames -contains $x -or $headStartGame.ContainsKey($x)) -and -not (Check-Start $x 0)) { $stepFails++ } }
         }
     }
     Start-Sleep 1
