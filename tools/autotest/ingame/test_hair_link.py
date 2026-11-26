@@ -37,7 +37,7 @@ Set-up and judging, each cited where used:
 - Colour: huecheck.changed_hue (vest-link's, ingame/huecheck.py, imported, not copied).
 - Mask: the Skull Mask lines of test_rows.test_masks_on_puppet (give / wear head / dress head, equips.head).
 - Adult: the bridge's `warp KokiriForest_Adult` on a child Link sets Sequence_IsChildhood first (docs/playtest.md
-  `warp`); Longshot allows one teleport per 8 s per game (same place), so the way back first runs WARP_GAP frames.
+  `warp`) and goes by the map change event (not Longshot's teleport, so no 8 s gap); WARP_GAP frames run between.
 - No Character Select: the ONE no-CS lane game, ingame/no_cs.py (MARK + prove()).
 """
 import os
@@ -71,7 +71,7 @@ PUP_NO_HAIR = r"coop: look: the puppets' boots are (?!\S*-hair-)\S+ now"
 # the vest: these may well need to go down once measured.
 MIN_CHANGED, MIN_SHARE, SAME_SSIM = 20, 0.5, 0.90
 MEASURED = None   # e.g. "run <name>: red changed .. share .., blue .., unchanged pair changed .."
-WARP_GAP = 300    # ESTIMATED frames (10 s at 30 fps) between two warps of one game (Longshot's 8 s teleport gap)
+WARP_GAP = 30     # frames between the two age warps (an age warp goes by the map change event, not Longshot's 8 s teleport gap: docs/playtest.md warp; review-rows-c130-2 nit)
 
 
 def set_hair(pair, x, value):
