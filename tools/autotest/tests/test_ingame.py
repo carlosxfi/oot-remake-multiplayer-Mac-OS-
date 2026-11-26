@@ -465,10 +465,34 @@ def fake_live(args, timeout):
         return {'ok': False, 'error': 'live.py start: exit 0, no JSON answer: ... renderer ready'}
     if MODE == 'played':
         return {'ok': False, 'boot': 'FAILED (see steps.txt): the session is closed'}
+    if MODE in ('notready', 'nomodule'):          # (started; the boot proof finds B elsewhere, or B has no module)
+        return {'ok': True}
     return {'ok': False, 'lock': 'not taken', 'error': 'refused before the session'}
 
 B._live = fake_live
 B._real_lane_info = lambda config, lane: {'server': 'srv', 'commit': 'abc'}
+
+class _Hello:
+    def hello(self):
+        return {'control': True}
+
+class _NotReadyPair:                              # (test-bridge-pilot-fa63e90f r1: B in Graveyard_Child in an event)
+    def __init__(self, *a, **k):
+        self.c, self.notes = {'A': _Hello(), 'B': _Hello()}, []
+    def begin(self, seconds):
+        pass
+    def module_started(self):
+        if MODE == 'nomodule':                   # (B #137: party-hud-bridge-85e3b255, B's module never started)
+            raise B.P.SetupFail('B: the module never started (no listening line)')
+        return True
+    def boot_ready(self, scene):
+        raise B.P.SetupFail('boot: not in the boot scene ' + str(scene) + ': B: scene=Graveyard_Child event=True')
+    def close(self):
+        pass
+
+if MODE in ('notready', 'nomodule'):
+    B.P.read_session = lambda session: {}
+    B.P.Pair = _NotReadyPair
 """
 
 
@@ -505,6 +529,23 @@ class BootStopsSession(unittest.TestCase):
             self.assertEqual(calls, ["start", "stop"], (mode, p.stdout[-2000:]))   # one boot, one stop
             self.assertNotEqual(s["verdict"], "PASS", mode)
             self.assertEqual(s["lane_closed"], {"ok": True, "ended": "stop asked"}, mode)
+
+    def test_a_boot_not_in_play_is_stopped_and_setup_fail_boot(self):
+        """review-c123-9 12:10: the boot proof (Pair.boot_ready) runs inside lane_pair's try, so its SetupFail ends
+        with the session stopped like a failed start."""
+        p, calls, s = self.run_mode("notready")
+        self.assertEqual(calls, ["start", "stop"], p.stdout[-2000:])
+        self.assertEqual(set(results(s).values()), {"SETUP-FAIL"}, p.stdout[-2000:])
+        self.assertTrue(all("lane1 boot: not in the boot scene" in r["why"] for r in s["tests"]), s["tests"])
+        self.assertEqual(s["lane_closed"], {"ok": True, "ended": "stop asked"})
+
+    def test_a_game_with_no_module_is_stopped_and_setup_fail_boot(self):
+        """B #137 14:57: the module proof runs before any bridge call, inside lane_pair's try: its SetupFail ends with
+        the session stopped, every test SETUP-FAIL 'lane1 boot: B: the module never started'."""
+        p, calls, s = self.run_mode("nomodule")
+        self.assertEqual(calls, ["start", "stop"], p.stdout[-2000:])
+        self.assertEqual(set(results(s).values()), {"SETUP-FAIL"}, p.stdout[-2000:])
+        self.assertTrue(all("lane1 boot: B: the module never started" in r["why"] for r in s["tests"]), s["tests"])
 
     def test_no_session_written_no_stop(self):
         p, calls, s = self.run_mode("refused")
@@ -1174,6 +1215,122 @@ class SetupLimit(unittest.TestCase):
         self.assertLessEqual(pair.c["A"].waits[0], 10)
 
 
+class RecoverOnState(unittest.TestCase):
+    """The lane's recovery (Pair.recover) waits on game state, bounded per warp it needs: a warp takes the game's wall
+    time (party-hud-bridge-6947aa3d: warp_both 26.9-31.0 s, 3 recoveries SETUP-FAIL at the old fixed 30 s). Fake
+    clock and a fake bridge whose warp costs WARP_S of wall time: no real waiting."""
+
+    class Clock:
+        t = 0.0
+
+        def __call__(self):
+            return self.t
+
+    class SlowWarp:
+        """One game: in `scene`, in play. warp costs `warp_s` s of the clock and `warp_frames` frames; `hang` = the
+        warp never answers (waits its whole reply time). load_frames > 0: the warp answers 'timeout' (an
+        arrive_in_event warp) with the game still loading for that many frames, then in the scene in an event."""
+
+        def __init__(self, clock, scene, warp_s, warp_frames=150, hang=False, load_frames=0):
+            self.clock, self.scene, self.warp_s, self.hang = clock, scene, warp_s, hang
+            self.warp_frames, self.load_frames = warp_frames, load_frames
+            self.frame, self.last_frame, self.loading_until, self.event = 0, 0, 0, False
+            self.waits = []
+
+        def st(self):
+            return {"scene": self.scene, "loading": self.frame < self.loading_until, "event": self.event,
+                    "not_ready": None}
+
+        def request(self, cmd, reply_timeout=None, check=True, **a):
+            self.waits.append(reply_timeout)
+            if cmd == "warp":
+                if self.hang:
+                    self.clock.t += reply_timeout
+                    raise TimeoutError("timed out")
+                self.clock.t += min(self.warp_s, a["timeout"])
+                self.frame += self.warp_frames
+                self.last_frame = self.frame
+                self.scene = a["scene"]
+                if self.load_frames:
+                    self.loading_until, self.event = self.frame + self.load_frames, True
+                    return {"ok": False, "error": "timeout", "message": "held", "frame": self.frame}
+                return {"ok": True, "arrived": True, "frame": self.frame, "state": self.st()}
+            if cmd == "step":
+                self.frame += a["frames"]
+                self.clock.t += 0.01 * a["frames"]
+            self.last_frame = self.frame
+            return dict(self.st(), ok=True, frame=self.frame)
+
+        def close(self):
+            pass
+
+    BOOT = "KakarikoVillage_Child"
+    WARP_S = 15.5        # one game's warp: the worst measured warp_both (31.0 s, test_warp r3) over two games
+
+    def make(self, budget, **games):
+        clock = self.Clock()
+        pair = P.Pair.__new__(P.Pair)
+        pair.c = {x: self.SlowWarp(clock, **kw) for x, kw in games.items()}
+        pair.log, pair.shots, pair.notes = {}, [], []
+        pair.deadline = P.Deadline(budget, clock=clock)
+        return pair, clock
+
+    def test_two_measured_warps_recover(self):
+        """Both games in the save's scene (after a title test): two 15.5 s warps = 31 s, over the old 30 s limit."""
+        import bt_plugin
+        pair, clock = self.make(bt_plugin.RECOVER_S + 5, A=dict(scene="Graveyard_Child", warp_s=self.WARP_S),
+                                B=dict(scene="Graveyard_Child", warp_s=self.WARP_S))
+        st = pair.recover(self.BOOT)
+        self.assertTrue(all(s["scene"] == self.BOOT for s in st.values()), st)
+        self.assertGreater(clock.t, P.SETUP_LIMIT_S)         # (the run that failed 3/3: more than 30 s, and it passes)
+        self.assertTrue(any("2 warps" in n for n in pair.notes), pair.notes)
+        self.assertEqual(pair.c["A"].frame, pair.c["B"].frame)   # (the other game is stepped to the same frames)
+
+    def test_twice_the_measured_warp_still_recovers(self):
+        """The margin: one game's warp as long as the worst two-game warp measured (31 s each)."""
+        import bt_plugin
+        pair, clock = self.make(bt_plugin.RECOVER_S + 5, A=dict(scene="Graveyard_Child", warp_s=31.0),
+                                B=dict(scene="Graveyard_Child", warp_s=31.0))
+        pair.recover(self.BOOT)
+        self.assertLessEqual(clock.t, bt_plugin.RECOVER_S)
+
+    def test_a_hung_warp_is_setup_fail_inside_the_bound(self):
+        import bt_plugin
+        pair, clock = self.make(bt_plugin.RECOVER_S + 5, A=dict(scene="Graveyard_Child", warp_s=0, hang=True),
+                                B=dict(scene=self.BOOT, warp_s=0))
+        with self.assertRaisesRegex(P.SetupFail, r"^boot: TimeoutError"):
+            pair.recover(self.BOOT)
+        self.assertLessEqual(clock.t, P.RECOVER_BASE_S + P.RECOVER_WARP_S)   # (one game away: one warp's bound)
+        self.assertTrue(all(w <= P.RECOVER_BASE_S + P.RECOVER_WARP_S for w in pair.c["A"].waits), pair.c["A"].waits)
+        self.assertEqual(pair.deadline.seconds, bt_plugin.RECOVER_S + 5)    # (the outer deadline is back)
+
+    def test_nothing_away_is_bounded_like_a_set_up(self):
+        pair, clock = self.make(240, A=dict(scene=self.BOOT, warp_s=0, hang=True), B=dict(scene=self.BOOT, warp_s=0))
+        pair.recover(self.BOOT)                               # (no warp asked: the hung warp is never called)
+        self.assertTrue(any("bound 30 s, 0 warps" in n for n in pair.notes), pair.notes)
+
+    def test_recover_s_covers_both_warps(self):
+        import bt_plugin
+        self.assertGreaterEqual(bt_plugin.RECOVER_S, P.RECOVER_BASE_S + 2 * P.WARP_PAIR_MEASURED_S)
+        self.assertLessEqual(bt_plugin.RECOVER_S, bt_plugin.BOOT_READY_S)  # (never more than the boot proof's own)
+
+    def test_arrive_in_event_still_loading_is_stepped_to_the_arrival(self):
+        """The bridge's ARRIVE_IN_EVENT_WAIT is over while the game still loads (a warp is longer than 12 s under
+        load): stepped until in the scene, not loading, in the event; was one read, raised at once."""
+        pair, clock = self.make(120, A=dict(scene=self.BOOT, warp_s=12, load_frames=200),
+                                B=dict(scene=self.BOOT, warp_s=12, load_frames=200))
+        st = pair.warp_both("PhantomGanonStage", arrive_in_event=True)
+        self.assertTrue(all(s["scene"] == "PhantomGanonStage" and s["event"] and not s["loading"]
+                            for s in st.values()), st)
+        self.assertEqual(pair.c["A"].frame, pair.c["B"].frame)
+
+    def test_arrive_in_event_never_arriving_raises(self):
+        pair, clock = self.make(600, A=dict(scene=self.BOOT, warp_s=12, load_frames=10 ** 6),
+                                B=dict(scene=self.BOOT, warp_s=12))
+        with self.assertRaisesRegex(P.pc.BridgeError, r"^timeout: held; then \d+ frames: A: scene=PhantomGanonStage"):
+            pair.warp_one("A", "PhantomGanonStage", arrive_in_event=True)
+
+
 class LaneCheck(unittest.TestCase):
     def make(self, root, x, dll=b"module", patches="patches=abc", server=None, **over):
         d = os.path.join(root, "lane1-%s" % x)
@@ -1334,6 +1491,158 @@ def load_tests(loader, tests, pattern):
         spec.loader.exec_module(mod)
         tests.addTests(loader.loadTestsFromModule(mod))
     return tests
+
+
+class BootProof(unittest.TestCase):
+    """NO REPEAT VOIDS after test-bridge-pilot-fa63e90f r1 (B left in Graveyard_Child in an event: every test after it
+    failed) and party-hud-bridge r1 (test_boot read 'no Link sample has been taken yet' once): the lane's boot ends
+    only with both games in play, no event, in the boot's scene (else SETUP-FAIL boot), and set-up checks step frames
+    until ready instead of judging one read."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def lane(self, **env):
+        import fakegame
+        from unittest import mock
+        with mock.patch.dict(os.environ, {k: str(v) for k, v in env.items()}):
+            lane = fakegame.FakeLane(self.tmp)
+        self.addCleanup(lane.close)
+        pair = P.Pair(lane.games(), out_dir=self.tmp)
+        self.addCleanup(pair.close)
+        pair.begin(60)
+        return pair
+
+    def test_boot_scene_is_the_scripts_warp(self):
+        import bt_plugin
+        self.assertEqual(bt_plugin.boot_scene(), "KakarikoVillage_Child")
+        self.assertEqual(bt_plugin.boot_scene("live-twinrova-room"), "TwinrovaStage")
+        self.assertIsNone(bt_plugin.boot_scene("live-leave-solo"))
+
+    def test_a_game_left_in_an_event_elsewhere_is_warped_to_the_boot_scene(self):
+        pair = self.lane(BT_FAKE_BOOT_EVENT="B")
+        self.assertTrue(pair.state("B")["event"])
+        st = pair.boot_ready("KakarikoVillage_Child")
+        for x in ("A", "B"):
+            self.assertTrue(pair.in_play(st[x]), st[x])
+            self.assertEqual(st[x]["scene"], "KakarikoVillage_Child")
+        self.assertTrue(any("B in Graveyard_Child" in n for n in pair.notes), pair.notes)
+
+    def test_a_game_that_stays_in_its_event_is_setup_fail_boot(self):
+        pair = self.lane(BT_FAKE_BOOT_STUCK="B")
+        with self.assertRaisesRegex(P.SetupFail, r"^boot: .*B"):
+            pair.boot_ready("KakarikoVillage_Child", max_frames=100)
+
+    def test_a_stale_sample_is_stepped_not_judged(self):
+        pair = self.lane(BT_FAKE_STALE_FRAMES=50)
+        self.assertFalse(pair.in_play(pair.state("A")))          # (the one read party-hud-bridge r1 failed on)
+        pair.until_in_play("both in play", max_frames=P.READY_FRAMES)
+        self.assertTrue(all(pair.in_play(pair.state(x)) for x in ("A", "B")))
+
+    def test_not_ready_in_time_names_each_game(self):
+        pair = self.lane(BT_FAKE_STALE_FRAMES=5000)
+        with self.assertRaisesRegex(AssertionError, r"not after 300 frames.*A: scene=.*not_ready=.*B: scene="):
+            pair.until_in_play("both in play", max_frames=P.READY_FRAMES)
+
+    def test_suite_on_a_boot_left_in_an_event_passes(self):
+        out = os.path.join(self.tmp, "o")
+        p = pytest_run([".", "--fake", "--out", out, "-q", "-m", "smoke and not look", "--no-smoke-gate"],
+                       env={"BT_FAKE_BOOT_EVENT": "B", "BT_FAKE_STALE_FRAMES": "50"})
+        s = summary(out)
+        self.assertEqual(s["counts"]["PASS"], len(s["tests"]), p.stdout[-2000:])
+
+    def test_suite_on_a_stuck_boot_is_setup_fail_boot_everywhere(self):
+        out = os.path.join(self.tmp, "o")
+        p = pytest_run([".", "--fake", "--out", out, "-q", "-m", "smoke and not look", "--no-smoke-gate"],
+                       env={"BT_FAKE_BOOT_STUCK": "B"})
+        s = summary(out)
+        self.assertTrue(s["tests"], p.stdout[-2000:])
+        for r in s["tests"]:
+            self.assertEqual(r["result"], "SETUP-FAIL", r)
+            self.assertIn("lane1 boot:", r["why"], r)
+
+
+class TitleAndRecovery(unittest.TestCase):
+    """The title test (pilot test-bridge-pilot-fa63e90f: both games' way back 'given up' every round, then load_both
+    pressed A on games in play for 3600 frames and every later test cascaded): it runs last in its round, FAILs at
+    once on the given-up line, never presses A on a game in play, and the next test starts after the recovery."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_smoke(self, **env):
+        out = os.path.join(self.tmp, "o")
+        p = pytest_run([".", "--fake", "--out", out, "-q", "-m", "smoke and not look", "--repeat", "2",
+                        "--no-smoke-gate", "--no-rerun"], env=env)
+        return summary(out), p, out
+
+    def logs(self, out):
+        text = ""
+        for x in ("A", "B"):
+            with open(os.path.join(out, "lane1", "fake", "lane1-%s" % x, "game-out-%s.txt" % x), encoding="utf-8") as f:
+                text += f.read()
+        return text
+
+    def test_title_runs_last_in_each_round(self):
+        s, p, _ = self.run_smoke()
+        names = [r["test"] for r in s["tests"]]
+        n = len(names) // 2
+        self.assertIn("test_title_and_load_again", names[n - 1], names)
+        self.assertIn("test_title_and_load_again", names[-1], names)
+        self.assertEqual(s["counts"]["PASS"], len(names), p.stdout[-2000:])
+
+    def test_given_up_fails_at_once_and_does_not_cascade(self):
+        s, p, out = self.run_smoke(BT_FAKE_TO_TITLE_GIVES_UP="AB")
+        rows = {r["test"]: r for r in s["tests"]}
+        title = [r for t, r in rows.items() if "test_title_and_load_again" in t]
+        self.assertEqual([r["result"] for r in title], ["FAIL", "FAIL"], p.stdout[-2000:])
+        self.assertTrue(all("the way back to the title gave up" in r["why"] for r in title), title)
+        self.assertTrue(all(r["seconds"] < 60 for r in title), title)
+        others = [r for t, r in rows.items() if "test_title_and_load_again" not in t]
+        self.assertTrue(others and all(r["result"] == "PASS" for r in others), others)   # (round 2 after the recovery)
+        self.assertNotIn("fake: A pressed in play", self.logs(out))
+
+
+class CommitSampler(unittest.TestCase):
+    """Each game's commit from the lane's boot start (C #134: target ~20 GB/game; pilot B ~30 GB from the boot)."""
+
+    def test_samples_from_pids_json_and_summarises(self):
+        import memsample
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        sess = os.path.join(tmp, "session")
+        t = [0.0]
+        m = memsample.Sampler(sess, tmp, every=30, read=lambda pid: {11: 19 * memsample.GB, 22: 30 * memsample.GB}[pid],
+                              clock=lambda: t[0])
+        self.assertIsNone(m.sample())                    # (no pids.json yet: the boot has not started the games)
+        os.makedirs(sess)
+        with open(os.path.join(sess, "pids.json"), "w") as f:
+            json.dump({"games": {"A": 11, "B": 22}, "server": 5}, f)
+        t[0] = 40.0
+        self.assertEqual(m.sample()["B"], 30.0)
+        t[0] = 70.0
+        s = m.stop()                                     # (thread never started: one last sample)
+        self.assertEqual(s["games"]["A"], {"first_gb": 19.0, "first_s": 40.0, "peak_gb": 19.0, "peak_s": 40.0,
+                                           "last_gb": 19.0, "last_s": 70.0})
+        self.assertEqual(s["games"]["B"]["peak_gb"], 30.0)
+        with open(os.path.join(tmp, "commit.csv"), encoding="utf-8") as f:
+            self.assertEqual(f.readline().strip(), "utc,s_after_boot_start,A_commit_gb,B_commit_gb")
+        with open(os.path.join(tmp, "commit.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["samples"], 2)
+
+    def test_own_process_reads_on_windows(self):
+        import memsample
+        b = memsample.private_bytes(os.getpid())
+        if sys.platform == "win32":
+            self.assertGreater(b, 1 << 20)
+        else:
+            self.assertIsNone(b)
 
 
 if __name__ == "__main__":
