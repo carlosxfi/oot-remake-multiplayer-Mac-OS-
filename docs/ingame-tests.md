@@ -140,6 +140,13 @@ pytest-timeout (pytest.ini, 1800 s) is only the backstop for a call that never r
   blue (0,60,160) at the same grey scores grey 1.0000, colour 0.1128). Shots are kept with the result
   (`<dir>/lane<L>/shots/`). A test never writes a reference: a person checks a NO-REF candidate and copies it into
   `refs/`.
+- Longshot's ImGui overlays (co-op's map arrows, tabs, name tags, its menu) are drawn after the bridge's `shot` is
+  taken, so they are never in it. For those, `pair.window_shot(game, name, tolerance)`: the screen's copy of the
+  game's window through the shared `coord-multiplayer/offline/lib/screen-shot.ps1` (game raised, cover check;
+  helper from `OOT_WINDOW_SHOT`, else that default path), cut to the window's client area (no title bar, no
+  desktop), compared the same way to `refs/<name>-window-<game>.png`. A covered window, a failed copy, no helper or
+  no pid is SETUP-FAIL, never PASS. It shows the last frame the game presented: step first when a newer one is
+  needed. Code: `ingame/windowshot.py`; selftests `tests/test_ingame_windowshot.py`.
 
 ## Writing a test
 
