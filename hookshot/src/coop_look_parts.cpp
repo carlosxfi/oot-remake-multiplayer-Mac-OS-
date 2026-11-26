@@ -37,6 +37,12 @@ const std::vector<GearTexture>& Gear() {
          {{Part::biggoron_blade, T::kGrey}, {Part::biggoron_hilt, T::kBlue | T::kPurple}}},
         {"Mt_Boots_Player_Adult_Alb", Format::astc, {{Part::boots, T::kBrown}}},
         {"Mt_Leather_Player_Child_Alb", Format::astc, {{Part::boots, T::kBrown}}},   // and the child's belts
+        // leather-link (C #132, Clothing Color 3 on Link): the adult's gloves and upper leather (bracers, belts), the
+        // rest of Character Select's leather set. The dump's end colours: gloves 84% brown, 11% red; upper leather 73%
+        // brown, 24% red (its dark leather), so both tones. Painted only by link_leather (Owners), so a 0.11.12 look
+        // leaves them the game's.
+        {"Mt_Glove_Player_Adult_Alb", Format::astc, {{Part::link_leather, T::kBrown | T::kRed}}},
+        {"Mt_Leater_Upper_Player_Adult_Alb", Format::astc, {{Part::link_leather, T::kBrown | T::kRed}}},
         {"Mt_Boots_Armor_Adult_HoverBoot_Alb", Format::astc, {{Part::boots, T::kBrown}}},
         {"Mt_Boots_Armor_Adult_HeavyBoot_Alb", Format::astc, {{Part::boots, T::kBrown}}},
         {"Mt_Silver_Armor_Adult_Gauntlet_Silver_Alb", Format::astc, {{Part::gauntlets, T::kGrey}}},
@@ -91,8 +97,8 @@ std::string Name(const CoopLook::Look& look) {
     }
     std::string name = kBase;
     for (const CoopLook::PartInfo& info : CoopLook::Parts()) {
-        if (!IsGear(info.part)) {
-            continue;
+        if (!IsGear(info.part) || info.part == Part::link_leather) {
+            continue;   // (leather-link: the leather last, only when set, so every other look keeps its 0.11.12 name)
         }
         char piece[8] = "-";
         if (const auto& c = look[info.part]) {
@@ -105,6 +111,11 @@ std::string Name(const CoopLook::Look& look) {
     if (const auto trim = HoodTrim(look)) {
         char piece[16];
         std::snprintf(piece, sizeof piece, ".hood-%06X", static_cast<unsigned>(*trim));
+        name += piece;
+    }
+    if (const auto& leather = look[Part::link_leather]) {
+        char piece[20];
+        std::snprintf(piece, sizeof piece, ".leather-%06X", static_cast<unsigned>(*leather & 0xFFFFFFu));
         name += piece;
     }
     return name;
@@ -282,9 +293,13 @@ CoopLookTunic::Texels Painted(const CoopLookTunic::Texels& gear, const CoopLook:
         std::vector<CoopLookPaint::Rule> rules;
         std::vector<CoopLook::Part> parts;   // each rule's part
         std::uint32_t tones = 0;             // every part's, painted or not (never taken by a region)
+        // leather-link: a texture with an owner (Owners) takes the owner's colour when it is set, every rule of it;
+        // unset, each rule its own part's (0.11.12). One painter per texture.
+        const std::optional<Part> owner = OwnerOf(t.name);
+        const bool owned = owner && look[*owner].has_value();
         for (const GearRule& r : entry->rules) {
             tones |= r.tones;
-            if (const auto& c = look[r.part]) {
+            if (const auto& c = owned ? look[*owner] : look[r.part]) {
                 rules.push_back({r.tones, *c});
                 parts.push_back(r.part);
             }
@@ -441,6 +456,14 @@ const std::vector<TextureOwner>& Owners() {
         // (TunicTextures: Takes::green), so the belt, the trim and the hood trims' own blocks (Cap) keep theirs.
         {"Mt_Vest_Player_Adult_Alb", Part::link_vest},
         {"Mt_Vest_Player_Child_Alb", Part::link_vest},
+        // leather-link: Clothing Color 3 on Link, the leather and the boots (the materials of Character Select's
+        // leather palette, read from its Player_Adult / Player_Child models). The child's boots, belts, buckles and
+        // shoulder belt are ONE texture; the adult's boots, gloves and upper leather three. Unset: the boots part
+        // paints the two boots textures and the other two keep the game's (0.11.12). Hover / Iron boots: boots only.
+        {"Mt_Leather_Player_Child_Alb", Part::link_leather},
+        {"Mt_Boots_Player_Adult_Alb", Part::link_leather},
+        {"Mt_Glove_Player_Adult_Alb", Part::link_leather},
+        {"Mt_Leater_Upper_Player_Adult_Alb", Part::link_leather},
     };
     return kOwners;
 }
@@ -629,7 +652,9 @@ std::string CopiesName(const CopyLooks& looks) {
 }
 
 const std::vector<std::string>& BodyBoots() {
-    static const std::vector<std::string> kBoots = {"Mt_Boots_Player_Adult_Alb", "Mt_Leather_Player_Child_Alb"};
+    // (leather-link: and the adult's gloves and upper leather, link_leather's, which the puppets' models name a copy of)
+    static const std::vector<std::string> kBoots = {"Mt_Boots_Player_Adult_Alb", "Mt_Leather_Player_Child_Alb",
+                                                    "Mt_Glove_Player_Adult_Alb", "Mt_Leater_Upper_Player_Adult_Alb"};
     return kBoots;
 }
 
@@ -665,9 +690,11 @@ Wearers Assign(const Wearer& own, const std::vector<Wearer>& others) {
         if (!w.letter || std::find(taken.begin(), taken.end(), *w.letter) != taken.end()) {
             return;
         }
-        taken.push_back(*w.letter);   // (with no boots colour: that colour keeps the game's)
-        if (w.boots) {
-            out[*w.letter] = *w.boots & 0xFFFFFFu;
+        taken.push_back(*w.letter);   // (with no boots or leather colour: that colour keeps the game's)
+        if (w.boots || w.leather) {
+            BootsPaint& p = out[*w.letter];
+            if (w.boots) p.boots = *w.boots & 0xFFFFFFu;
+            if (w.leather) p.leather = *w.leather & 0xFFFFFFu;
         }
     };
     take(own);
@@ -682,10 +709,19 @@ std::string BootsPaintingName(const Wearers& wearers) {
         return kBootsBase;
     }
     std::string name = kBootsBase;
-    for (const auto& [letter, colour] : wearers) {
-        char piece[16];
-        std::snprintf(piece, sizeof piece, ".%c%06X", letter, static_cast<unsigned>(colour & 0xFFFFFFu));
+    for (const auto& [letter, paint] : wearers) {
+        // (".R3070FF" as 0.11.12 for the boots; leather-link: "L" and the leather's colour after it when set)
+        char piece[24];
+        std::snprintf(piece, sizeof piece, ".%c", letter);
         name += piece;
+        if (paint.boots) {
+            std::snprintf(piece, sizeof piece, "%06X", static_cast<unsigned>(*paint.boots & 0xFFFFFFu));
+            name += piece;
+        }
+        if (paint.leather) {
+            std::snprintf(piece, sizeof piece, "L%06X", static_cast<unsigned>(*paint.leather & 0xFFFFFFu));
+            name += piece;
+        }
     }
     return name;
 }
@@ -702,7 +738,8 @@ CoopLookTunic::Texels BootsTexels(const CoopLookTunic::Texels& gear, const Weare
         CoopLookTunic::Texels own = boots;
         if (const auto it = wearers.find(l.letter); it != wearers.end()) {
             CoopLook::Look look;
-            look[Part::boots] = it->second;
+            look[Part::boots] = it->second.boots;
+            look[Part::link_leather] = it->second.leather;   // (leather-link: the owner, Painted)
             own = Painted(boots, look);
         }
         for (CoopLookTunic::Texture& t : own) {

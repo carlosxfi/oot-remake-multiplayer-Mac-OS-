@@ -205,12 +205,15 @@ std::vector<Drawn> Doll(const CoopLook::Look& look, Part tunic, Part shield, Par
     // Link, from the front: his sword in his right hand (the picture's left), his shield on his left arm.
     add(std::nullopt, kCloth, {{0.42f, 0.58f}, {0.49f, 0.58f}, {0.48f, 0.80f}, {0.42f, 0.80f}});   // legs
     add(std::nullopt, kCloth, {{0.51f, 0.58f}, {0.58f, 0.58f}, {0.58f, 0.80f}, {0.52f, 0.80f}});
-    add(Part::boots, Shown(look, Part::boots), {{0.41f, 0.76f}, {0.49f, 0.76f}, {0.50f, 0.90f}, {0.38f, 0.90f}});
-    add(Part::boots, Shown(look, Part::boots), {{0.51f, 0.76f}, {0.59f, 0.76f}, {0.62f, 0.90f}, {0.50f, 0.90f}});
+    // (leather-link: the Leather colour, when set, owns Link's own boots and belt, CoopLookParts::Owners)
+    const bool leather = look[Part::link_leather].has_value();
+    const std::uint32_t boots = leather ? Shown(look, Part::link_leather) : Shown(look, Part::boots);
+    add(Part::boots, boots, {{0.41f, 0.76f}, {0.49f, 0.76f}, {0.50f, 0.90f}, {0.38f, 0.90f}});
+    add(Part::boots, boots, {{0.51f, 0.76f}, {0.59f, 0.76f}, {0.62f, 0.90f}, {0.50f, 0.90f}});
     add(std::nullopt, kCloth, {{0.33f, 0.31f}, {0.40f, 0.31f}, {0.37f, 0.47f}, {0.30f, 0.46f}});   // arms
     add(std::nullopt, kCloth, {{0.60f, 0.31f}, {0.67f, 0.31f}, {0.70f, 0.46f}, {0.63f, 0.47f}});
     add(tunic, t, {{0.40f, 0.29f}, {0.60f, 0.29f}, {0.65f, 0.60f}, {0.35f, 0.60f}});                 // tunic
-    add(std::nullopt, kBelt, {{0.38f, 0.47f}, {0.62f, 0.47f}, {0.625f, 0.505f}, {0.375f, 0.505f}});
+    add(std::nullopt, leather ? Shown(look, Part::link_leather) : kBelt, {{0.38f, 0.47f}, {0.62f, 0.47f}, {0.625f, 0.505f}, {0.375f, 0.505f}});
     add(std::nullopt, kGold, {{0.48f, 0.465f}, {0.52f, 0.465f}, {0.52f, 0.51f}, {0.48f, 0.51f}});   // buckle
     add(std::nullopt, kSkin, {{0.43f, 0.14f}, {0.57f, 0.14f}, {0.59f, 0.24f}, {0.50f, 0.29f}, {0.41f, 0.24f}});  // face
     add(std::nullopt, kHair, {{0.41f, 0.145f}, {0.59f, 0.145f}, {0.595f, 0.185f}, {0.405f, 0.185f}});

@@ -25,6 +25,7 @@ class FakeGame:
         self.pos, self.facing = [0.0 if tag == "A" else 4.0, 0.0, 0.0], 0.0
         self.menu_pause, self.title_until, self.at_title = False, None, False
         self.head, self.ocarina, self.flags, self.pending = None, False, {GATE: 0}, []
+        self.leather, self.boots = None, None   # (leather-link: parts 28 and 15 worn by this game's player, RRGGBB)
         self.other = None
         open(self.log_path, "w").close()
         me, them = (1, 2) if tag == "A" else (2, 1)
@@ -164,6 +165,19 @@ class FakeGame:
                 o.later(10, lambda: o.say("coop: puppet: P%d wears head '%s' (returned 0x1)" % (me, head)))
             else:
                 o.later(10, lambda: o.say("coop: puppet: P%d takes off head (returned 0x1)" % me))
+        elif w[0] == "menu" and len(w) == 3 and w[1] == "look" and w[2].split("=")[0] in ("link_leather", "boots"):
+            # (leather-link: the gear wardrobe's and the puppets' boots wardrobe's lines, hookshot coop_look_tunic.cpp /
+            # coop_look_live.cpp FollowBoots; names as CoopLookParts::Name / BootsPaintingName)
+            key, value = w[2].split("=", 1)
+            colour = None if value == "none" else value.lstrip("#").upper()
+            setattr(self, "leather" if key == "link_leather" else "boots", colour)
+            gear = "gear" if not (self.leather or self.boots) else "gear.%s%s" % (
+                self.boots or "-", ".leather-" + self.leather if self.leather else "")
+            boots = "boots" if not (self.leather or self.boots) else "boots.G%s%s" % (
+                self.boots or "", "L" + self.leather if self.leather else "")
+            if gear != "gear":
+                self.later(2, lambda: self.say("coop: look: your Link's gear is %s now (1 texture(s) drawn)" % gear))
+            o.later(10, lambda: o.say("coop: look: the puppets' boots are %s now" % boots))
         elif w[0] == "chat" and w[1:] == ["/teleport", "B"]:
             self.later(30, lambda: setattr(self, "pos", [o.pos[0] + 1.0, o.pos[1], o.pos[2]]))
 
@@ -174,6 +188,10 @@ class FakeGame:
         d.rectangle([20, 20, 120, 40], fill=(200, 30, 30))             # "hearts"
         d.ellipse([140, 60, 180, 140], fill=(230, 220, 200) if not self.menu_pause else (20, 20, 20))
         d.rectangle([150 + self.frame % 3, 50, 170, 70], fill=(240, 240, 240) if self.head else (40, 90, 40))
+        a = self if self.tag == "A" else self.other   # (leather-link: A's boots, on A's own Link and A's puppet in B)
+        shown = a.leather or a.boots
+        if shown:
+            d.rectangle([150, 140, 172, 156], fill=tuple(int(shown[i:i + 2], 16) for i in (0, 2, 4)))
         im.save(path)
 
     # -- socket -----------------------------------------------------------------------------------------------
