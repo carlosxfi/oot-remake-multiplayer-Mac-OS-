@@ -2620,6 +2620,10 @@ bool TestMenu(const std::string& page) {
         Open(CoopPauseMenu::Page::kCustomize);
         return true;
     }
+    if (page == "main") {   // (the Multiplayer page opened, nothing pressed: its rows for a shot, row 170)
+        Open(CoopPauseMenu::Page::kMain);
+        return true;
+    }
     if (page == "close") {
         g_wanted = HOS_COOP_MENU_WANT_CLOSE;
         return true;
