@@ -306,6 +306,19 @@ TEST_CASE("look (npc-customize): a character's parts are saved, read back and se
     CHECK_FALSE(CoopLook::ReadParts(coop)[Part::char_gear]);
 }
 
+TEST_CASE("look: LICHII_COOP_LOOK (an in-game test's parts) reads as the settings would, and names a bad pair") {
+    std::vector<std::string> errors;
+    const Look look = CoopLook::ReadParts(CoopLook::EnvParts(" cap_trim:yellow , boots:#FF0000,", &errors), &errors);
+    CHECK(errors.empty());
+    CHECK(look[Part::cap_trim] == CoopColors::Parse("yellow"));
+    CHECK(look[Part::boots] == 0xFF0000u);
+    CHECK(CoopLook::Wire(look).size() == 2);   // nothing else: a lane file's leftovers never count
+    CHECK(CoopLook::EnvParts("cap_trim_hoods:on") == "look_cap_trim_hoods = on\n");
+    // the tunic is LICHII_COOP_COLOR's; a key that is no part, or no ':'
+    CHECK(CoopLook::EnvParts("tunic:blue,nose:red,cap_trim", &errors).empty());
+    CHECK(errors.size() == 3);
+}
+
 TEST_CASE("look: every part is saved under its own key, and read back") {
     Look look;
     look[Part::tunic] = CoopColors::Parse("red");

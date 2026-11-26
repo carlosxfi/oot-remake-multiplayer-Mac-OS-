@@ -110,7 +110,7 @@ std::vector<PartTag> PlanParts(const std::vector<Spot>& far_to_near, float width
 }
 
 std::uint64_t ScreenByVtable(Game& game, std::uint64_t vtable_offset) {
-    if (CoopNativeUi::SceneLoading()) return 0;   // (nothing is live: CoopNativeUi::ScreenLive)
+    if (CoopNativeUi::PlayUiDown()) return 0;   // (nothing is live: CoopNativeUi::ScreenLive)
     const std::uint64_t base = game.MainBase();
     std::uint64_t got = 0, manager = 0, screens = 0;
     std::uint32_t count = 0;
