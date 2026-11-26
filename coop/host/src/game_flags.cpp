@@ -744,7 +744,7 @@ bool GameFlagStore::busy(FlagKey key) {
   // here: the writes wait in our own list, and the calc thread hands them
   // over as the queues have room.
   if (const GameFlagCalls* calls = g_calls.load(std::memory_order_acquire)) return calls->full();
-  const auto mgr = cached_manager();
+  const auto mgr = manager(memory_);
   if (!mgr) return false;
   if (key.kind == FlagKeyKind::key64) return no_room(memory_, *mgr, kKeyQueueCap, kKeyQueueWord);
   if (key.kind != FlagKeyKind::named || key.index != 0) return false;
