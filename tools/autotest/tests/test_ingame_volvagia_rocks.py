@@ -1,0 +1,58 @@
+"""Selftests of row 234 by position (ingame/test_volvagia_rocks.py, fakes/volvagia_rocks.py) on the fake games, no game.
+Run by test_ingame.py's load_tests (CI: python tools/autotest/tests/test_ingame.py)."""
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import test_ingame as T   # noqa: E402
+
+pytest_run, summary, results = T.pytest_run, T.summary, T.results
+NAME = "test_volvagia_rocks_fall_at_each_link"
+
+
+class VolvagiaRocks(unittest.TestCase):
+    """Each passes on a good fake game and FAILS (or SETUP-FAILs) when the thing it guards is broken."""
+    OBJ = ["--env", "LICHII_COOP_DEBUG_OBJECTS=1"]
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_file(self, extra, env=None):
+        out = os.path.join(self.tmp, "o%d" % len(os.listdir(self.tmp)))
+        p = pytest_run(["test_volvagia_rocks.py", "--fake", "--no-rerun", "--out", out, "-q"] + extra, env=env)
+        return p, results(summary(out))
+
+    def test_rocks_at_each_link_is_no_ref_never_pass(self):
+        """Good game: the positions agree; the shots have no owner-approved reference yet, so NO-REF (never PASS)."""
+        p, r = self.run_file(self.OBJ)
+        self.assertEqual(r, {NAME: "NO-REF"}, p.stdout[-3000:])
+
+    def test_one_target_for_both_games_fails(self):
+        p, r = self.run_file(self.OBJ, env={"BT_FAKE_BROKEN": "vr-one-target"})
+        self.assertEqual(r, {NAME: "FAIL"}, p.stdout[-3000:])
+        self.assertIn("B: only 0 of", p.stdout, p.stdout[-3000:])
+
+    def test_no_falling_rock_fails(self):
+        p, r = self.run_file(self.OBJ, env={"BT_FAKE_BROKEN": "vr-asleep"})
+        self.assertEqual(r, {NAME: "FAIL"}, p.stdout[-3000:])
+        self.assertIn("A: no falling rock", p.stdout, p.stdout[-3000:])
+
+    def test_place_off_the_floor_is_setup_fail(self):
+        p, r = self.run_file(self.OBJ, env={"BT_FAKE_BROKEN": "vr-lava"})
+        self.assertEqual(r, {NAME: "SETUP-FAIL"}, p.stdout[-3000:])
+        self.assertIn("stand apart", p.stdout, p.stdout[-3000:])
+
+    def test_default_run_deselects_it(self):
+        p, r = self.run_file([])
+        self.assertEqual(r, {}, p.stdout[-3000:])
+
+
+if __name__ == "__main__":
+    unittest.main()

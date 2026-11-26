@@ -1,0 +1,179 @@
+"""Row 234 by position (volvagia-rocks-234, B #131): in the Volvagia fight each game's arena drops its falling rocks
+at ITS OWN Link, not at one Link for both games.
+
+test_boss_respawn.test_volvagia_rocks_each_game (boss-respawn-289-4) proves each game logs rocks and keeps shots; this
+test adds what the row asks: where the rocks fall. Both Links stand apart in the arena (B placed 8 m in from the start),
+both games' world lists are dumped every few frames during the rock rain, and each falling rock's place is compared
+with the two Links' places at that frame. A game whose rocks fall nearer the other player's Link FAILS (one target for
+both games), as does a game with no falling rock at all (its arena never switched on).
+
+| Test | Proves |
+|---|---|
+| test_volvagia_rocks_fall_at_each_link | each game's falling rocks land at its own Link (>= 3/4 of them nearer it than the other Link) |
+
+Sources (worker-rules "no guessed values"):
+- Set-up, arrival, hearts: test_boss_respawn.start_check / boss_arrival / hearts_in (boss-respawn-289-4's, imported, not
+  copied): the ten MaxLife gives + Life 56 so both Links live through the rocks (lane-c3-234-rocks died at 4 hearts).
+- The rocks: docs/agent-handoff.md "Volvagia's rocks" and docs/boss-multiplayer.md row 234: Obj_FallingRockManager_A_03
+  wakes a pool of up to 30 Obj_FallingRock_A_06 (made at load, ASLEEP) every 30-90 frames, aimed at the local Link
+  (QueryDungeonGetPlayerPos + lead TargetAdvFrame). So a rock counts only while it FALLS (its height drops between two
+  dumps): the sleeping pool is never judged. Name prefix as coop_objects.cpp NoteFallingRocks ("Obj_FallingRock_").
+- The world list: docs/playtest.md "world": a `dump` has every actor the objects walk sees (up to 200, `other` kinds
+  such as the rocks included), each with its `pos` [x, y, z] in metres (y = height); the dump's `state.pos` is our Link.
+- Start point: lichii/hook/coop_start_points.inc {"VolvagiaStage", "VolvagiaStage", -64.51, 102.58, -0.01}; lane2 run
+  20261125-114351 'A asked to come here: VolvagiaStage at -64.5 102.4 -0.0' (both games arrive there).
+- B's spot: 8 m from the start toward Volvagia's placement {-80.629, 93.330, 16.306} (coop_difficulty_spots.inc,
+  VolvagiaStage), i.e. into the arena. UNPROVEN as floor (no ground marker of VolvagiaStage in coop_difficulty_spots.inc),
+  so the set-up proves it: 'coop: test place ...: done' (docs/testing.md `place`), then after 60 frames B in play, still
+  within FLOOR_DY of the start height and at least MIN_APART_M from A; any miss = SETUP-FAIL naming it.
+- 'await 10800' for the first rocks line: hs-volvagia-rocks.{A,B}.txt (the old row's wait), the line
+  "coop: objects: rocks: N new falling rocks" (coop_objects.cpp NoteFallingRocks), needs LICHII_COOP_DEBUG_OBJECTS=1.
+- Sampling: every SAMPLE_EVERY frames for at most SAMPLE_MAX frames, until each game saw MIN_FALLING falling rocks
+  (30-90 frames between rocks: about 10 in 900 frames).
+"""
+import json
+import math
+import os
+import sys
+
+import pytest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import pair as P                   # noqa: E402
+import test_boss_respawn as BR     # noqa: E402  (shared steps of boss-respawn-289-4; never edited here)
+from test_boss_respawn import back_after   # noqa: E402,F401  (fixture: the way back gets its own deadline)
+
+STAGE = "VolvagiaStage"
+ROCK = "Obj_FallingRock_"                    # coop_objects.cpp NoteFallingRocks
+START = (-64.51, 102.58, -0.01)               # coop_start_points.inc
+VOLVAGIA = (-80.629, 93.330, 16.306)          # coop_difficulty_spots.inc
+INTO_M = 8.0                                  # B's spot: this far from the start toward VOLVAGIA
+MIN_APART_M = 6.0                             # Links further apart than a rock's spread around its Link needs
+FLOOR_DY = 1.5                                # B still on the floor (lava is below: Volvagia's placement y 93.3)
+FALL_DY = 0.3                                 # a rock FALLS when its height drops more than this between two dumps
+FALL_XZ = 2.0                                 # ... and it stays over the same ground (a rock put back into the pool
+                                              # jumps far: not a fall)
+SAMPLE_EVERY, SAMPLE_MAX = 5, 900
+MIN_FALLING = 3
+OWN_SHARE = 0.75
+
+
+def b_spot():
+    dx, dz = VOLVAGIA[0] - START[0], VOLVAGIA[2] - START[2]
+    n = math.hypot(dx, dz)
+    return (round(START[0] + INTO_M * dx / n, 2), START[1], round(START[2] + INTO_M * dz / n, 2))
+
+
+def xz(a, b):
+    return math.hypot(a[0] - b[0], a[2] - b[2])
+
+
+def stand_apart(pair):
+    """B to b_spot() by the test `place`, proven: the place line, in play after 60 frames, on the floor, apart from A.
+    Any miss = SETUP-FAIL (the row's own check never ran)."""
+    try:
+        pair.log["B"].mark()
+        spot = b_spot()
+        pair.act("B", "place %.2f %.2f %.2f" % spot)
+        pair.step_both(2)
+        pair.expect_log("B", r"coop: test place .*: done", max_frames=30)
+        pair.step_both(60)
+        a, b = pair.state("A"), pair.state("B")
+        for x, s in (("A", a), ("B", b)):
+            assert pair.in_play(s) and (s.get("scene") or "").lower() == STAGE.lower(), \
+                "%s not in play in %s (%s, %s)" % (x, STAGE, s.get("scene"), s.get("not_ready"))
+            assert abs(s["pos"][1] - START[1]) <= FLOOR_DY, "%s not on the floor: y %.2f (start %.2f)" % (
+                x, s["pos"][1], START[1])
+        d = xz(a["pos"], b["pos"])
+        assert d >= MIN_APART_M, "Links only %.1f m apart (want >= %.0f m): A %s B %s" % (d, MIN_APART_M, a["pos"], b["pos"])
+    except P.SetupFail as e:
+        raise P.SetupFail("stand apart: %s" % e) from e
+    except Exception as e:                    # noqa: BLE001
+        raise P.SetupFail("stand apart (B to %s): %s: %s" % (b_spot(), type(e).__name__, e)) from e
+    pair.notes.append("Links %.1f m apart: A %s B %s" % (d, a["pos"], b["pos"]))
+
+
+def world_dump(pair, x, i):
+    r = pair.call(x, "dump", tag="vr234-%s-%03d" % (x, i))
+    with open(r["path"], encoding="utf-8") as f:
+        d = json.load(f)
+    st = d.get("state") or {}
+    actors = (st.get("world") or {}).get("actors") or []
+    rocks = {a["id"]: a["pos"] for a in actors if str(a.get("name", "")).startswith(ROCK) and a.get("pos")}
+    return {"frame": d.get("frame"), "link": st.get("pos"), "rocks": rocks}
+
+
+def sample(pair):
+    """Both games' dumps every SAMPLE_EVERY frames until each saw MIN_FALLING falling rocks (or SAMPLE_MAX frames).
+    Returns {x: [falling rock sightings: (rock id, rock pos, own Link pos, other Link pos)]} and the sample count."""
+    seen = {"A": [], "B": []}
+    last = {"A": {}, "B": {}}
+    falling_ids = {"A": set(), "B": set()}
+    shot = {"A": False, "B": False}
+    i = ran = 0
+    while ran <= SAMPLE_MAX:
+        now = {x: world_dump(pair, x, i) for x in ("A", "B")}
+        for x, y in (("A", "B"), ("B", "A")):
+            own, other = now[x]["link"], now[y]["link"]
+            new_fall = False
+            for rid, pos in now[x]["rocks"].items():
+                before = last[x].get(rid)
+                if before is not None and before[1] - pos[1] > FALL_DY and xz(before, pos) <= FALL_XZ and own and other:
+                    seen[x].append((rid, pos, own, other))
+                    new_fall = new_fall or rid not in falling_ids[x]
+                    falling_ids[x].add(rid)
+            last[x] = now[x]["rocks"]
+            if new_fall and not shot[x]:      # the rock in the air over this game's own Link, on this game's screen
+                pair.check_shot(x, "volvagia-rocks-234-fall", tolerance=0.80)   # 0.80: fire and moving rocks
+                shot[x] = True
+        i += 1
+        if all(len(falling_ids[x]) >= MIN_FALLING for x in ("A", "B")):
+            break
+        pair.step_both(SAMPLE_EVERY)
+        ran += SAMPLE_EVERY
+    return seen, falling_ids, i
+
+
+def judge(pair, x, seen, ids):
+    """Game x: each falling rock's LAST sighting (nearest its landing) nearer x's own Link than the other Link."""
+    assert ids, ("%s: no falling rock in its world list (its arena never dropped one while its rocks line came)" % x)
+    lastpos = {}
+    for rid, pos, own, other in seen:
+        lastpos[rid] = (pos, own, other)
+    near_own = 0
+    rows = []
+    for rid, (pos, own, other) in sorted(lastpos.items()):
+        do, dt = xz(pos, own), xz(pos, other)
+        near_own += 1 if do < dt else 0
+        rows.append("%s: rock %s at %.1f m from its Link, %.1f m from the other" % (x, rid, do, dt))
+    pair.notes.extend(rows)
+    share = near_own / float(len(lastpos))
+    assert share >= OWN_SHARE, "%s: only %d of %d falling rocks nearer its own Link (want >= %d%%): %s" % (
+        x, near_own, len(lastpos), int(OWN_SHARE * 100), "; ".join(rows))
+
+
+@pytest.mark.budget(900)                      # as test_volvagia_rocks_each_game: 'await 10800' + the sampling
+@pytest.mark.look
+@pytest.mark.needs_env(BR.OBJECTS)
+@pytest.mark.row("#234 Volvagia's falling rocks at each player's own Link (positions from the world list)")
+def test_volvagia_rocks_fall_at_each_link(pair, back_after):
+    with pair.setup():
+        BR.start_check(pair)
+        for x in ("A", "B"):                  # test_volvagia_rocks_each_game's hearts (its source lines)
+            for _ in range(10):
+                pair.give(x, "PlayerStatus.MaxLife")
+                pair.step_both(4)
+            pair.flag(x, "PlayerStatus.Life", 56)
+        pair.step_both(30)
+        BR.hearts_in(pair, "after ten gives")
+    BR.boss_arrival(pair, STAGE, then=lambda: BR.hearts_in(pair, "after the arrival"))
+    stand_apart(pair)
+    for x in ("A", "B"):
+        pair.log[x].mark()
+    pair.expect_log("A", r"coop: objects: rocks: \d+ new falling rocks", max_frames=10800)
+    pair.expect_log("B", r"coop: objects: rocks: \d+ new falling rocks", max_frames=10800)
+    seen, ids, n = sample(pair)
+    pair.notes.append("%d dumps; falling rocks A %d, B %d" % (n, len(ids["A"]), len(ids["B"])))
+    for x in ("A", "B"):
+        judge(pair, x, seen[x], ids[x])
