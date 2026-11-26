@@ -502,10 +502,19 @@ def pytest_runtest_protocol(item, nextitem):
     in_setup = any(r.when == "setup" and r.failed for r in reports)
     if kind == "FAIL" and not in_setup and not item.config.getoption("no_rerun") and not _past_deadline(item.config):
         first = reports
-        reports = runtestprotocol(item, nextitem=nextitem, log=False)
-        kind = "FLAKY" if _kind(reports) == "PASS" else "FAIL"
-        if kind == "FLAKY":
-            reports = first          # (the failure is what the summary keeps: a FLAKY is never shown as a pass)
+        again = runtestprotocol(item, nextitem=nextitem, log=False)
+        rerun = _kind(again)
+        kind = "FLAKY" if rerun == "PASS" else "FAIL"
+        reports = first      # (ALWAYS the first run's failure: review-rows-c130 11:10, a FAIL-then-SKIP kept the
+        #                      SKIP's empty why; the rerun's own result goes into the row as 'rerun')
+        def _why(r):          # (a skip's longrepr is a (file, line, message) tuple: review-c123-9 nit)
+            lr = r.longrepr
+            if isinstance(lr, tuple) and len(lr) == 3:
+                return str(lr[2])
+            return str(getattr(getattr(lr, "reprcrash", None), "message", None) or lr)
+        rerun_why = next((" ".join(_why(r).split())[:200] for r in again if r.failed or r.skipped), "")
+        for r in reports:
+            r.user_properties.append(("rerun", "%s%s" % (rerun, (": " + rerun_why) if rerun_why else "")))
     secs = round(time.monotonic() - t0, 1)
     why = ""
     for r in reports:
@@ -534,7 +543,7 @@ def pytest_runtest_logreport(report):
     if cfg is not None:
         cfg._bt_rows.append({"test": report.nodeid, "result": props["result"], "seconds": props.get("seconds"),
                              "why": props.get("why", ""), "shots": props.get("shots", []),
-                             "notes": props.get("notes", []),
+                             "notes": props.get("notes", []), "rerun": props.get("rerun"),
                              "worker": getattr(report, "node", None) and getattr(report.node, "gateway", None)
                              and report.node.gateway.id})
 
