@@ -153,6 +153,39 @@ def test_hash(nodeid, repo=None):
     return h.hexdigest()[:24]
 
 
+def env_key(env):
+    """The game switches a boot gives each game, as one comparable text: {"A": {NAME: VALUE}, "B": {...}} from a
+    list of NAME=VALUE / A:NAME=VALUE / B:NAME=VALUE (bt_plugin boot_env, live.py start --env's form; the last setting
+    of a name on a game wins, as bt_plugin env_has reads it). None when env is not a list (not known)."""
+    if not isinstance(env, list):
+        return None
+    per = {"A": {}, "B": {}}
+    for e in env:
+        e = str(e).strip()
+        m = re.match(r"^([AB]):(.*)$", e)
+        tag, kv = (m.group(1), m.group(2)) if m else ("", e)
+        k, _, v = kv.partition("=")
+        for g in ([tag] if tag else ["A", "B"]):
+            per[g][k] = v
+    return json.dumps(per, sort_keys=True)
+
+
+def ingame_base_env(repo=None):
+    """bt_plugin.BASE_ENV (the switches every in-game boot gets), read from its source: the one table, never copied.
+    Raises Fail when bt_plugin.py or the line is not there."""
+    p = os.path.join(repo or REPO, *INGAME.split("/"), "bt_plugin.py")
+    try:
+        with open(p, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError as e:
+        raise Fail("no %s: %s" % (p, e))
+    m = re.search(r"^BASE_ENV\s*=\s*(\[[^\]\n]*\])", text, re.M)
+    if not m:
+        raise Fail("%s: no BASE_ENV = [...] line" % p)
+    import ast
+    return list(ast.literal_eval(m.group(1)))
+
+
 _PLAY = re.compile(r"^\s*play\s+(.*)$", re.I)
 
 

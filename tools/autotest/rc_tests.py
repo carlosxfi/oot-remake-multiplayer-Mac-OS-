@@ -2,7 +2,8 @@
 
     python -I tools/autotest/rc_tests.py plan --collect FILE [--smoke FILE] --out-dir DIR [--lanes 1,2]
                                               [--history ROOT...] [--skip-proven ROOT... --identity KEY...]
-    python -I tools/autotest/rc_tests.py summary <lane out dir...> [--plan DIR/plan.json] --out DIR
+                                              [--env NAME=VALUE ...]   (the same --env as the lanes' pytest)
+    python -I tools/autotest/rc_tests.py summary --plan DIR/plan.json --lane 1 O/lane1 --lane 2 O/lane2 --out DIR
 
 B #129 (2026-11-26, owner: everything uses the bridge test system): the rc rows are the pytest bridge tests, not .ps1
 group lines. One pytest process per lane (`pytest tools/autotest/ingame --lanes L --plan DIR/plan.json --out O/laneL
@@ -20,13 +21,15 @@ measured test, else DEFAULT_S. Writes DIR/plan.json {lanes: {"1": [nodeids], ...
 
 --skip-proven (B #128 rule, unchanged): a test is not played again when, on EVERY --identity key, a summary.json
 with that identity key holds a row of it (same base nodeid, same test_hash as now) and every such row is PASS. A
-FLAKY, FAIL, SETUP-FAIL or NO-REF row there, a summary without an identity key, or a test whose module is gone
-proves nothing. A smoke test is never skipped (it is each boot's own proof). Each skipped test is listed in
+FLAKY, FAIL, SETUP-FAIL or NO-REF row there, a summary without an identity key, a summary from a boot with other
+game switches (identity.env vs bt_plugin BASE_ENV + plan --env, per game), or a test whose module is gone proves
+nothing. A smoke test is never skipped (it is each boot's own proof). Each skipped test is listed in
 plan.json "skipped" with its proof folders, and the rc summary lists it as SKIP.
 
 summary: the lanes' summary.json files (a lane without one is a SETUP-FAIL row for that lane) and the plan's skipped
-tests -> DIR/summary.json + summary.md. Verdict PASS only when at least one test passed and none is FAIL, FLAKY,
-SETUP-FAIL or NO-REF.
+tests -> DIR/summary.json + summary.md. With --plan (lanes as --lane N DIR), every planned test without a row in its
+lane's summary is a NOT-RUN row. Verdict PASS only when at least one test passed and none is FAIL, FLAKY,
+SETUP-FAIL, NO-REF or NOT-RUN.
 """
 import argparse
 import json
@@ -40,7 +43,7 @@ import proven as P  # noqa: E402
 
 DEFAULT_S = 120.0          # bt_plugin DEFAULT_BUDGET: a test's deadline when it names none
 TIMED = ("PASS", "FAIL", "FLAKY")
-NOT_PASS = ("FAIL", "FLAKY", "SETUP-FAIL", "NO-REF")
+NOT_PASS = ("FAIL", "FLAKY", "SETUP-FAIL", "NO-REF", "NOT-RUN")
 
 
 class Fail(Exception):
@@ -97,15 +100,18 @@ def estimate(test, hist):
     return DEFAULT_S, "default %d s" % DEFAULT_S
 
 
-def proofs(test, keys, docs, repo=None):
-    """(proven, [{folder, key, result}]): see the module text."""
+def proofs(test, keys, docs, repo=None, env=None):
+    """(proven, [{folder, key, result}]): see the module text. env: proven.env_key of the boot this rc pass makes; a
+    summary from a boot with other switches (identity.env) proves nothing (review-c123-6 08:41: a PASS on the HUD-off
+    probe boot must not prove a normal boot)."""
     th = P.test_hash(test, repo)
     seen = {k: [] for k in keys}
-    if not th:
+    if not th or env is None:
         return False, []
     for folder, doc in docs:
-        k = (doc.get("identity") or {}).get("key")
-        if k not in seen:
+        ident = doc.get("identity") or {}
+        k = ident.get("key")
+        if k not in seen or P.env_key(ident.get("env")) != env:
             continue
         for r in doc["tests"]:
             if r.get("test") and P.base_nodeid(r["test"]) == test and r.get("test_hash") == th:
@@ -114,7 +120,9 @@ def proofs(test, keys, docs, repo=None):
     return ok, [x for k in keys for x in seen[k]]
 
 
-def plan(tests, smoke, lanes, roots=None, proven_roots=None, keys=None, repo=None):
+def plan(tests, smoke, lanes, roots=None, proven_roots=None, keys=None, repo=None, env=None, base_env=None):
+    """env: the --env switches the lanes' pytest gets (bt_plugin adds BASE_ENV: base_env, default read from
+    bt_plugin.py by proven.ingame_base_env)."""
     if not lanes:
         raise Fail("--lanes: at least one lane")
     smoke = [t for t in smoke if t in tests] if smoke else []
@@ -124,9 +132,11 @@ def plan(tests, smoke, lanes, roots=None, proven_roots=None, keys=None, repo=Non
         if not keys:
             raise Fail("--skip-proven needs --identity (each lane's build key: proven.py identity --lane N)")
         docs = summaries(proven_roots)
+        base = P.ingame_base_env(repo) if base_env is None else list(base_env)
+        want = P.env_key(base + [e.strip() for e in (env or [])])
         keep = []
         for t in rest:
-            ok, proof = proofs(t, keys, docs, repo)
+            ok, proof = proofs(t, keys, docs, repo, want)
             if ok:
                 skipped.append({"test": t, "keys": list(keys), "proof": proof})
             else:
@@ -147,14 +157,20 @@ def plan(tests, smoke, lanes, roots=None, proven_roots=None, keys=None, repo=Non
             "lane_seconds": {k: v["seconds"] for k, v in ln.items()},
             "smoke": smoke, "skipped": skipped,
             "estimates": {t: {"seconds": round(est[t][0], 1), "from": est[t][1]} for t in tests},
-            "history": list(roots or []), "skip_proven": {"roots": list(proven_roots or []), "keys": list(keys or [])},
+            "history": list(roots or []), "env": list(env or []),
+            "skip_proven": {"roots": list(proven_roots or []), "keys": list(keys or [])},
             "longest_lane_minutes": round(max(v["seconds"] for v in ln.values()) / 60, 1)}
 
 
 def merge(lane_dirs, plan_doc=None):
-    """One rc summary from the lanes' summary.json (see the module text)."""
-    rows, lanes = [], []
-    for d in lane_dirs:
+    """One rc summary from the lanes' summary.json (see the module text). lane_dirs: [dir] or, with a plan, [(lane,
+    dir)]: every test the plan gave a lane that has no row in that lane's summary.json (a --plan mismatch, a deselect
+    bug, the smoke gate stopping the lane, a lane not given) becomes a NOT-RUN row, never a pass (review-c123-6)."""
+    pairs = [(None, d) if isinstance(d, str) else (str(d[0]), d[1]) for d in lane_dirs]
+    if plan_doc is not None and any(n is None for n, _ in pairs):
+        raise Fail("summary --plan needs each lane as --lane N DIR (to check the plan against what ran)")
+    rows, lanes, ran = [], [], {}
+    for n, d in pairs:
         p = os.path.join(d, "summary.json")
         try:
             with open(p, encoding="utf-8") as f:
@@ -166,16 +182,23 @@ def merge(lane_dirs, plan_doc=None):
                          "why": "no readable summary.json: %s" % e})
             lanes.append({"dir": d, "identity": None, "verdict": "SETUP-FAIL"})
             continue
-        lanes.append({"dir": d, "identity": doc.get("identity"), "verdict": doc.get("verdict"),
+        lanes.append({"lane": n, "dir": d, "identity": doc.get("identity"), "verdict": doc.get("verdict"),
                       "minutes": doc.get("minutes")})
         rows += [dict(r, lane=d) for r in doc["tests"]]
+        ran[n] = {P.base_nodeid(r["test"]) for r in doc["tests"] if r.get("test")}
+    given = {n: d for n, d in pairs}
+    for n, tests in sorted(((plan_doc or {}).get("lanes") or {}).items()):
+        for t in tests:
+            if t not in ran.get(n, ()):
+                rows.append({"test": t, "result": "NOT-RUN", "lane": given.get(n, "lane %s (not given)" % n),
+                             "why": "planned on lane %s, no row in its summary.json" % n})
     played = {P.base_nodeid(r["test"]) for r in rows if r.get("test")}
     for s in (plan_doc or {}).get("skipped", []):
         if s["test"] not in played:   # (a lane's bt_plugin --plan already wrote it as SKIP)
             rows.append({"test": s["test"], "result": "SKIP", "lane": "",
                          "why": "proven: " + "; ".join("%s %s" % (x["result"], x["folder"]) for x in s["proof"])})
     counts = {k: sum(1 for r in rows if r.get("result") == k) for k in
-              ("PASS", "FAIL", "FLAKY", "SETUP-FAIL", "NO-REF", "SKIP")}
+              ("PASS", "FAIL", "FLAKY", "SETUP-FAIL", "NO-REF", "NOT-RUN", "SKIP")}
     bad = sum(counts[k] for k in NOT_PASS) + sum(1 for r in rows if r.get("result") not in counts)
     return {"lanes": lanes, "counts": counts, "tests": rows,
             "minutes": max([x.get("minutes") or 0 for x in lanes] or [0]),
@@ -187,7 +210,7 @@ def summary_md(doc):
     out = ["# rc in-game tests: %s" % doc["verdict"], "",
            " ".join("%s %d" % (k, v) for k, v in c.items()) + ", ~%s min (longest lane)" % doc["minutes"], "",
            "| result | test | lane | why |", "|---|---|---|---|"]
-    order = {"FAIL": 0, "SETUP-FAIL": 1, "FLAKY": 2, "NO-REF": 3, "PASS": 4, "SKIP": 5}
+    order = {"FAIL": 0, "SETUP-FAIL": 1, "NOT-RUN": 2, "FLAKY": 3, "NO-REF": 4, "PASS": 5, "SKIP": 6}
     for r in sorted(doc["tests"], key=lambda r: order.get(r.get("result"), -1)):
         out.append("| %s | %s | %s | %s |" % (r.get("result"), r.get("test"), os.path.basename(r.get("lane") or ""),
                                              (r.get("why") or "").replace("|", "/").replace("\n", " ")[:300]))
@@ -205,8 +228,11 @@ def main(argv=None):
     p.add_argument("--history", nargs="*", default=[])
     p.add_argument("--skip-proven", nargs="*", default=[])
     p.add_argument("--identity", nargs="*", default=[])
+    p.add_argument("--env", action="append", default=[], help="the lanes' pytest --env switches (each one)")
     s = sub.add_parser("summary")
-    s.add_argument("lane_dirs", nargs="+")
+    s.add_argument("lane_dirs", nargs="*", help="lane out dirs (no --plan)")
+    s.add_argument("--lane", nargs=2, action="append", default=[], metavar=("N", "DIR"),
+                   help="a plan lane and its out dir (needed with --plan)")
     s.add_argument("--plan")
     s.add_argument("--out", required=True)
     a = ap.parse_args(argv)
@@ -216,7 +242,7 @@ def main(argv=None):
             if not tests:
                 raise Fail("%s: no test nodeids (pytest --collect-only -q output?)" % a.collect)
             lanes = [int(x) for x in a.lanes.split(",") if x.strip()]
-            doc = plan(tests, read_ids(a.smoke), lanes, a.history, a.skip_proven, a.identity)
+            doc = plan(tests, read_ids(a.smoke), lanes, a.history, a.skip_proven, a.identity, env=a.env)
             os.makedirs(a.out_dir, exist_ok=True)
             with open(os.path.join(a.out_dir, "plan.json"), "w", encoding="utf-8") as f:
                 json.dump(doc, f, indent=1)
@@ -233,7 +259,10 @@ def main(argv=None):
         if a.plan:
             with open(a.plan, encoding="utf-8") as f:
                 pd = json.load(f)
-        doc = merge(a.lane_dirs, pd)
+        dirs = list(a.lane_dirs) + [tuple(x) for x in a.lane]
+        if not dirs:
+            raise Fail("summary: no lane (DIR..., or --lane N DIR with --plan)")
+        doc = merge(dirs, pd)
         os.makedirs(a.out, exist_ok=True)
         with open(os.path.join(a.out, "summary.json"), "w", encoding="utf-8") as f:
             json.dump(doc, f, indent=1)
