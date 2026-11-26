@@ -117,8 +117,9 @@ param(
     # lane's pair): tools\autotest\kit_pair.py setup makes them. Plain scenarios only (no steps files yet).
     [string[]]$Kit = @(),
     # The monitor the game windows go to, by device name (Settings > System > Display: "DISPLAY2" is \\.\DISPLAY2).
-    # Default: $env:OOT_TEST_DISPLAY, else \\.\DISPLAY2. Resolved to that monitor's work area when the games start;
-    # a name no monitor has stops the run before any game starts. The windows are placed side by side there
+    # Order (placement.py choose_monitor): -Display, else $env:OOT_TEST_DISPLAY, else \\.\DISPLAY2, the first one that
+    # is connected, else the primary monitor; a skipped name is logged. Resolved to that monitor's work area when the
+    # games start; only a PC with no monitor stops the run. The windows are placed side by side there
     # without taking the focus (tools\autotest\placement.py, docs/testing.md "Where the test games' windows go").
     [string]$Display = ''
 )

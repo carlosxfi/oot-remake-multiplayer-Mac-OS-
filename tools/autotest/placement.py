@@ -6,13 +6,15 @@ opens over what someone is working on.
 
 The monitor is a device name, for example \\\\.\\DISPLAY2 (Settings > System > Display shows the number; "DISPLAY2" alone
 works too). Pick it, strongest first:
-  1. --display (hookshot.py run, live.py start, placement.py) or -Display (run.ps1, live_start.ps1);
-  2. the environment variable OOT_TEST_DISPLAY;
-  3. the default, \\\\.\\DISPLAY2.
+  1. --display (hookshot.py run, live.py start, placement.py) or -Display (run.ps1, live_start.ps1), if connected;
+  2. the environment variable OOT_TEST_DISPLAY, if connected;
+  3. the default, \\\\.\\DISPLAY2, if connected;
+  4. the primary monitor.
 "primary" names the primary monitor, whatever its number.
-When the chosen monitor does not exist (DISPLAY2 unplugged or renumbered, a stale OOT_TEST_DISPLAY, a mistyped --display),
-the games go to the primary monitor (owner 2026-11-24: tests may use it) and the run says so: the returned monitor has a
-"note" that says which name was missing and which monitors exist. One rule for every caller (run.ps1, hookshot.py,
+A name no connected monitor has (DISPLAY2 unplugged or renumbered, a stale OOT_TEST_DISPLAY, a mistyped --display) is
+skipped and the next one in that order is tried; when none is connected the games go to the primary monitor (owner
+2026-11-26: test games may open on ANY connected monitor; the same order as coord's offline/lib/test-display.ps1). The
+run says so: the returned monitor has a "note" naming each skipped name, the monitor used and the monitors that exist. One rule for every caller (run.ps1, hookshot.py,
 hs_steps.py, live.py, the kit's play-test start and the offline scripts). With no monitor at all it is an error.
 The name is resolved to the monitor's work area (the screen minus the taskbar) when the games start, never as a
 fixed 0,0, so a display added later, or the same display after the layout moved, only needs the setting changed.
@@ -204,16 +206,35 @@ def place_window(hwnd, rect, topmost=False):
         raise PlacementError("SetWindowPos failed for window 0x%x" % hwnd)
 
 
-def check_display(arg=None):
-    """The chosen monitor (dict), or a PlacementError when the PC has no monitor; call it before starting games. A name
-    no monitor has gives the primary monitor, with mon["note"] saying so (callers print it)."""
-    name = display_name(arg)
-    mons = monitors()
-    mon = find_monitor(mons, name, primary_if_gone=True)
-    if normalize(mon["name"]) != normalize(name) and normalize(name) != PRIMARY.upper():
-        mon = dict(mon, note="no monitor called %s: the windows go to the primary monitor %s (monitors found: %s)"
-                   % (name, mon["name"], ", ".join(m["name"] for m in mons)))
+def choose_monitor(mons, arg=None, env=None):
+    """The monitor (dict) for arg, else $OOT_TEST_DISPLAY, else the default DISPLAY2, the first of them that is connected,
+    else the primary monitor; a name not connected is skipped and named in mon["note"]. PlacementError with no monitor."""
+    env = os.environ if env is None else env
+    if not mons:
+        raise PlacementError("no monitor is connected (none found)")
+    skipped, fallback = [], False
+    for v in (arg, env.get(ENV), DEFAULT_DISPLAY):
+        if not (v and v.strip()):
+            continue
+        try:
+            mon = find_monitor(mons, v.strip())
+            break
+        except PlacementError:
+            if normalize(v) not in [normalize(s) for s in skipped]:
+                skipped.append(v.strip())
+    else:
+        mon, fallback = find_monitor(mons, PRIMARY, primary_if_gone=True), True
+    if skipped:
+        mon = dict(mon, note="no monitor called %s: the windows go to %s%s (monitors found: %s)"
+                   % (", ".join(skipped), "the primary monitor " if fallback else "", mon["name"],
+                      ", ".join(m["name"] for m in mons)))
     return mon
+
+
+def check_display(arg=None):
+    """The chosen monitor (dict), or a PlacementError when the PC has no monitor; call it before starting games. The
+    order and the fallback are choose_monitor's; mon["note"] says when a name was skipped (callers print it)."""
+    return choose_monitor(monitors(), arg)
 
 
 def place_pids(pids, display=None, topmost=False, wait=0.0, step=0.25, slots=None, count=None):
