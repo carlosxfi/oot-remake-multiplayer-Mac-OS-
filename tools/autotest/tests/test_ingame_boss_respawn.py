@@ -63,6 +63,14 @@ class BossRespawn(unittest.TestCase):
                    and any(getattr(t, "id", None) == "BOTTLES" for t in n.targets)]
         self.assertEqual([re.findall(r'"(0x[0-9a-f]+)"', m.group(1))], bottles)
 
+    def test_no_arrival_is_setup_fail_naming_the_step(self):
+        """B #130 09:43: the boss-stage arrival is its own bounded step after the 30 s set-up check; a miss there is
+        SETUP-FAIL 'boss arrival in <S>' (never FAIL: the row's own check did not run)."""
+        p, r = self.run_file(self.OBJ, env={"BT_FAKE_BROKEN": "no-arrival"})
+        self.assertEqual(set(r.values()), {"SETUP-FAIL"}, p.stdout[-2000:])
+        for stage in ("VolvagiaStage", "DodongoStage", "LizalfosStage", "GanonStage"):
+            self.assertIn("boss arrival in %s" % stage, p.stdout, p.stdout[-2000:])
+
     def test_default_run_deselects_them(self):
         p, r = self.run_file([])
         self.assertEqual(r, {}, p.stdout[-2000:])

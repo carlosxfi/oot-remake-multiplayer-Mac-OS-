@@ -9,6 +9,7 @@ BT_FAKE_BROKEN values:
   LICHII_COOP_DEBUG_OBJECTS=1        rocks lines in VolvagiaStage
   BT_FAKE_BROKEN=starter             (selftest) the fixed lines, but the screen stays black
   BT_FAKE_BROKEN=rocks-<A|B>         (selftest) no rocks on that game
+  BT_FAKE_BROKEN=no-arrival          (selftest) a warp to a boss stage never arrives (the bridge's 'timeout' answer)
 """
 import os
 
@@ -24,6 +25,13 @@ def setup(game):
     game.br_black = False
     game.flags.setdefault(LIFE, 16)            # the lane save: 16 quarters (run 20261125-114351 HUD max 16)
     game.flags.setdefault(MAX_LIFE, 16)
+
+
+def command(game, m):
+    if m.get("cmd") == "warp" and m.get("scene") in STAGES and broken() == "no-arrival":
+        game.run(40)
+        return {"ok": False, "error": "timeout", "message": "fake: Link never arrived in %s" % m["scene"]}
+    return None
 
 
 def after(game, m, r):

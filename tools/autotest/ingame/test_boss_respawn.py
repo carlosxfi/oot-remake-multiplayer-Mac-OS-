@@ -53,10 +53,12 @@ KEEP = "LICHII_COOP_ARRIVAL_STARTER=keep"     # coop_teleport_game.cpp:68-71
 OBJECTS = "LICHII_COOP_DEBUG_OBJECTS=1"
 BACK_TO = "KakarikoVillage_Child"            # test_smoke.WARP_TO: the lane's boot map, so later tests start in play
 BLACK, PICTURE = 5.0, 15.0                    # mean.py thresholds (module docstring)
-SETUP_BOSS_S = 150.0
-# Set-up limit of these tests (over the owner's 30 s): the warp into a boss stage is a scene load plus the stage's own
-# arrival event, which the warp waits out (coop_playtest.cpp: arrived = in the scene with no event or load), A then B,
-# each with the warp's own 60 s timeout (Pair.warp_both). 48 s of B's arrival event in run 20261125-114351.
+BOSS_ARRIVAL_S = 150.0
+# B #130 (09:43, via review-rows-c130): the owner's 30 s is the SET-UP CHECK (pair.setup(): in play, no fairy, gives),
+# kept first and at the default limit. The boss-stage arrival is a step after it with its own hard limit: a scene load
+# plus the stage's own arrival event, which the warp waits out (coop_playtest.cpp: arrived = in the scene with no event
+# or load), A then B, each with the warp's own 60 s timeout (Pair.warp_both); 48 s of B's arrival event in run
+# 20261125-114351. A miss there is SETUP-FAIL 'boss arrival in <S>: ...' (boss_arrival).
 
 
 def mean_grey(path):
@@ -77,15 +79,37 @@ def screen(pair, x, name):
     return v
 
 
-def boss_start(pair, stage):
-    """Both games in `stage` at its own start, no bottled fairy (a fairy revives instead of downing), in play."""
+def start_check(pair):
+    """The set-up check (inside pair.setup(), <= 30 s): both games in play, no bottled fairy (a fairy revives instead
+    of downing)."""
     for x in ("A", "B"):
+        s = pair.state(x)
+        assert pair.in_play(s), "%s not in play (%s)" % (x, s.get("not_ready"))
         for h in BOTTLES:
             pair.act(x, "setenum %s Empty" % h)
-    st = pair.warp_both(stage, entrance=stage)
-    for x in ("A", "B"):
-        assert st[x].get("scene") == stage, "%s is in %s, not %s" % (x, st[x].get("scene"), stage)
-        assert pair.in_play(st[x]), "%s not in play after the warp (%s)" % (x, st[x].get("not_ready"))
+
+
+def boss_arrival(pair, stage, then=None):
+    """Both games to `stage` at its own start, in play: a bounded step after the set-up check (BOSS_ARRIVAL_S); any
+    miss is SETUP-FAIL 'boss arrival in <stage>: ...' (the row's own check never ran). Kept out of the test bodies:
+    bt_plugin._kind reads a call failure whose traceback text has the class name as SETUP-FAIL."""
+    outer = pair.deadline
+    pair.deadline = P.Deadline(max(0.0, min(BOSS_ARRIVAL_S, outer.left())), clock=outer.clock)
+    t0 = outer.clock()
+    try:
+        st = pair.warp_both(stage, entrance=stage)
+        for x in ("A", "B"):
+            assert st[x].get("scene") == stage, "%s is in %s, not %s" % (x, st[x].get("scene"), stage)
+            assert pair.in_play(st[x]), "%s not in play after the warp (%s)" % (x, st[x].get("not_ready"))
+        if then:
+            then()                            # (a check of the arrival itself, e.g. the hearts still in)
+    except P.SetupFail as e:
+        raise P.SetupFail("boss arrival in %s: %s" % (stage, e)) from e
+    except Exception as e:                    # noqa: BLE001  (a timeout, a refused warp, a wrong scene)
+        raise P.SetupFail("boss arrival in %s: %s: %s" % (stage, type(e).__name__, e)) from e
+    finally:
+        pair.deadline = outer
+    pair.notes.append("boss arrival in %s %.1f s" % (stage, outer.clock() - t0))
 
 
 def rest_from(pair, x, pattern):
@@ -146,8 +170,9 @@ def test_respawn_shows_the_stage(pair, back_after, stage, request):
     if bt_plugin.env_has(bt_plugin.boot_env(request.config), KEEP):
         pytest.skip("this boot keeps the starter (%s): the fixed path is not on it" % KEEP)
     S = re.escape(stage)
-    with pair.setup(limit=SETUP_BOSS_S):
-        boss_start(pair, stage)
+    with pair.setup():
+        start_check(pair)
+    boss_arrival(pair, stage)
     rest = bleed_out_and_respawn(pair, stage)
     pair.step_both(1200)                      # br289 b-arrived -> b-later: the arrival event begun and over
     rest = rest_from(pair, "B", r"respawn at the entrance %s of %s" % (S, S))
@@ -176,8 +201,9 @@ def test_respawn_shows_the_stage(pair, back_after, stage, request):
 def test_respawn_black_with_starter_kept(pair, back_after):
     stage = "VolvagiaStage"
     S = re.escape(stage)
-    with pair.setup(limit=SETUP_BOSS_S):
-        boss_start(pair, stage)
+    with pair.setup():
+        start_check(pair)
+    boss_arrival(pair, stage)
     rest = bleed_out_and_respawn(pair, stage)
     pair.step_both(1200)
     rest = rest_from(pair, "B", r"respawn at the entrance %s of %s" % (S, S))
@@ -194,14 +220,22 @@ def test_respawn_black_with_starter_kept(pair, back_after):
         "b-end %.1f, < %.0f; arrival event began %s): the cause is not shown on these steps" % (later, end, BLACK, began)
 
 
+def hearts_in(pair, when):
+    for x in ("A", "B"):
+        mx = pair.flag_read(x, "PlayerStatus.MaxLife").get("value")
+        lf = pair.flag_read(x, "PlayerStatus.Life").get("value")
+        assert isinstance(mx, int) and mx >= 56, "%s: MaxLife %r %s (want >= 56)" % (x, mx, when)
+        assert lf == 56, "%s: Life %r %s (want 56: 'setflag PlayerStatus.Life 56')" % (x, lf, when)
+
+
 @pytest.mark.budget(900)                      # hs-volvagia-rocks '#! timeout 600' + its 'await 10800' (6 min of game)
 @pytest.mark.look
 @pytest.mark.needs_env(OBJECTS)
 @pytest.mark.row("#234 Volvagia's falling rocks in each game (hs-volvagia-rocks, boss-respawn-289 rocks234)")
 def test_volvagia_rocks_each_game(pair, back_after):
     stage = "VolvagiaStage"
-    with pair.setup(limit=SETUP_BOSS_S):
-        boss_start(pair, stage)
+    with pair.setup():
+        start_check(pair)
         # hs-volvagia-rocks: ten heart containers (the cheats window's give raises the max only: coop_cheat_give.cpp
         # Wanted +4), then life filled to 56 quarters (16 + 40), so each Link lives to see the rocks.
         for x in ("A", "B"):
@@ -210,11 +244,8 @@ def test_volvagia_rocks_each_game(pair, back_after):
                 pair.step_both(4)
             pair.flag(x, "PlayerStatus.Life", 56)
         pair.step_both(30)
-        for x in ("A", "B"):
-            mx = pair.flag_read(x, "PlayerStatus.MaxLife").get("value")
-            lf = pair.flag_read(x, "PlayerStatus.Life").get("value")
-            assert isinstance(mx, int) and mx >= 56, "%s: MaxLife %r after ten gives (want >= 56)" % (x, mx)
-            assert lf == 56, "%s: Life %r after 'setflag PlayerStatus.Life 56'" % (x, lf)
+        hearts_in(pair, "after ten gives")
+    boss_arrival(pair, stage, then=lambda: hearts_in(pair, "after the arrival"))   # (the load must not undo them)
     for x in ("A", "B"):
         pair.log[x].mark()
     # hs-volvagia-rocks.{A,B}: lock on ('press ZL 10'), then twice 'hold ZL+LSTICK_UP 60', 'hold ZL+Y 8', 'wait 12',
