@@ -138,6 +138,33 @@ def header_switches(path):
     return out
 
 
+# `#! server ARG ...` (the old scenarios' header, run.ps1's; e.g. hs-difficulty-lobby.steps.txt '#! server --difficulty
+# hard'): more coop_server arguments, read from the A script as the switches are, so a live.py boot (--boot NAME of the
+# in-game tests) can make the lobby it needs. The runner's own (--port, --password-env, the delays) cannot be given here.
+SERVER_HEADER_FORBIDDEN = ("--port", "--password", "--password-env", "--bind", "--test-delay-ms", "--test-jitter-ms")
+SERVER_HEADER_WORD = re.compile(r"^[A-Za-z0-9:,._=%+-]{1,80}$")
+
+
+def header_server_args(path):
+    """The `#! server ...` header lines of a scenario file as one argument list (ValueError on a word the runner owns
+    or one with other characters: the arguments go to coop_server's argv, no shell)."""
+    out = []
+    if not path:
+        return out
+    with open(path, encoding="utf-8-sig") as f:
+        for line in f.read().split("\n"):
+            m = re.match(r"^#!\s*server\s+(.+?)\s*$", line)
+            if not m:
+                continue
+            for word in m.group(1).split():
+                if not SERVER_HEADER_WORD.match(word):
+                    raise ValueError("#! server: %r is not a plain argument" % word)
+                if word.split("=", 1)[0] in SERVER_HEADER_FORBIDDEN:
+                    raise ValueError("#! server: %s is the runner's own" % word)
+                out.append(word)
+    return out
+
+
 def read_script(path, _depth=0):
     """A scenario file's text with each `include FILE` line replaced by that file's text (FILE beside it; an
     include may include, at most INCLUDE_DEPTH deep). One copy of a step several scenarios share (the Gohma kill
@@ -1616,7 +1643,7 @@ def run(a):
                 if delay:
                     senv["OOT_COOP_TEST"] = "1"   # coop_server refuses the delay without it
                 server = lanes.hs.popen_quiet(lanes.hs.server_bind([a.server, "--port", str(a.port), "--password-env",
-                                              "OOT_COOP_TEST_PASSWORD"] + delay + a.server_arg), stdout=so, stderr=subprocess.STDOUT, env=senv)
+                                              "OOT_COOP_TEST_PASSWORD"] + delay + header_server_args(a.script_a) + a.server_arg), stdout=so, stderr=subprocess.STDOUT, env=senv)
             keep_pids()
             time.sleep(1)
         for i, x in enumerate(tags):
@@ -1945,6 +1972,12 @@ def main(argv=None):
                     parse(read_script(path))
                 except (ScriptError, OSError) as e:
                     p.error("script %s: %s" % (path, e))
+        try:
+            extra = header_server_args(a.script_a)
+        except (ValueError, OSError) as e:
+            p.error("script %s: %s" % (a.script_a, e))
+        if extra and not a.server:
+            p.error("script %s: '#! server %s' but no --server to give it to" % (a.script_a, " ".join(extra)))
         print("run arguments OK (--check-args: nothing started)")
         return 0
     if not a.lane:
