@@ -22,7 +22,8 @@ The same checks as first-night-c62.steps.txt, each with its old name:
   clock unchanged by B), B in Kakariko. The old run judged them by eye; here each moment is a bridge shot of BOTH
   games against a reference (first-night-field-flag1, -b-cleared, -60s-after). One shot per game per moment.
 
-Differences: the warps' 'wait 900' (the load) is the bridge warp's own wait for the arrival (pair.warp_one); B's
+Differences: every warp takes an entrance (the map change event, not Longshot's teleport, which allows one per 8 s
+per game: see FIELD_START). The warps' 'wait 900' (the load) is the bridge warp's own wait for the arrival; B's
 Kakariko 'wait 900' becomes the frames until B's clear line (max 900). The old run warped A, then B; here both are put
 in the Field in the set-up, then only B moves (the same order of what is tested). The way back puts both flags back
 and both games child in the boot's Kakariko (the boot is shared).
@@ -35,12 +36,22 @@ FLAG = "HrlField_HasEnteredFirstTime_Adult"
 HASH = "8592aa82"
 AGE_FLAG = "Sequence_IsChildhood"                   # first-night-c62.A/B.txt 'setflag Sequence_IsChildhood 0'
 FIELD, KAKARIKO = "HyruleField_Adult", "KakarikoVillage_Adult"    # first-night-c62.A/B.txt warps
+# With an entrance each warp is the game's map change event, never Longshot's teleport (coop_playtest_core.cpp
+# PlanWarp: "An entrance names a start point, which Longshot's teleport cannot take"), so Longshot's one teleport per
+# 8 s per game (docs/playtest.md `warp`) cannot fail B's second warp a few seconds after its first (review-rows-c136 1).
+# The entrances: scenarios/color-field.A.txt:15 'warp HyruleField_Adult HyruleField_FrontOfKakarikoVillage',
+# live-kakariko-child.A.txt / test_gear.py 'Kakariko_WellSide' (KakarikoVillage_Adult in 23 scenario lines).
+FIELD_START, KAKARIKO_START = "HyruleField_FrontOfKakarikoVillage", "Kakariko_WellSide"
 BOOT_SCENE, BOOT_START = "KakarikoVillage_Child", "Kakariko_WellSide"   # scenarios/live-kakariko-child.A.txt
 FIX_TEXT = b"cleared the first adult night's time lock"           # hos_main.c oot_first_night_fix (in longshot.exe)
 
 SETFLAG_1 = r"coop: test setflag %s \(bool\) 1: set" % FLAG       # the old setup-*-setflag
 WATCH_1 = r"get_bool\(0x%s\) = 1" % HASH                          # the old setup-*-watch
 CLEARED = r"cleared the first adult night's time lock"            # the old b-cleared / a-not-cleared-by-longshot
+# (Longshot's own hos_log line, in pair.log: the game's stdout+stderr IS game-out-<x>.txt, tools/autotest/hookshot.py:1670
+# Popen(stdout=go, stderr=STDOUT) and :1790 "stderr is game-out-<x>.txt, so that is the log"; seen there as
+# "[hos host] boot: 128530 MB of memory, 18432 MB of swap", hos_main.c:2109's hos_log, shots-lane1/hs-party-hud-probe/
+# 20261125-233954/game-out-A.txt:11; review-rows-c136 3)
 WATCH_CLEARED = r"get_bool\(0x%s\) = 0 \(was 1\)" % HASH           # the old b-watch-cleared / a-never-cleared
 OTHER_LINE = r"^(?!.*(get_bool|watching bool)).*%s" % HASH        # the old a-no-sync-line
 TIME_SENT = r"time: sent"                                         # the old a-time-sent
@@ -97,7 +108,7 @@ def test_first_night_clear_stays_in_its_game(pair):
             pair.flag(x, AGE_FLAG, 0)
         pair.step_both(60)                        # test_gear.py: the age flag takes 30+ frames before the warp
         for x in ("A", "B"):
-            st = pair.warp_one(x, FIELD)
+            st = pair.warp_one(x, FIELD, FIELD_START)
             assert pair.in_play(st) and st.get("age") == "adult", "%s not an adult in %s (%s, %s)" % (
                 x, FIELD, st.get("scene"), st.get("age"))
         for x in ("A", "B"):
@@ -109,7 +120,7 @@ def test_first_night_clear_stays_in_its_game(pair):
     done = False
     try:
         shots(pair, "first-night-field-flag1")
-        st = pair.warp_one("B", KAKARIKO)
+        st = pair.warp_one("B", KAKARIKO, KAKARIKO_START)
         assert st.get("scene") == KAKARIKO, "B not in %s: %s" % (KAKARIKO, st.get("scene"))
         pair.expect_log("B", CLEARED, max_frames=900)            # b-cleared
         pair.expect_log("B", WATCH_CLEARED, max_frames=300)      # b-watch-cleared

@@ -11,7 +11,8 @@ What a real game logs and shows, each from the module source test_f1.py cites:
 - The Deku Tree chest (key64 0x0b66198d17d6584e): A pressed in front of it while it is closed -> the item get (event),
   A again -> the text ends, the chest is open. Minus with the - menu open -> "CoopMenu_00 closed: its page forgotten".
 BT_FAKE_F1=title|event: F1 there is Longshot's own (not taken, no co-op tab: the rc-01113 bug); =free: F1 in free play
-takes Longshot's route. The matching test must FAIL.
+takes Longshot's route; =freetabs: co-op's tabs in Longshot's menu in free play. The matching test must FAIL.
+=stale: the 0 tab line is never logged after a title or an event (Longshot's menu does not tick): every test PASSes.
 """
 import math
 import os
@@ -45,6 +46,8 @@ def _told(game):
         game.f1_free_told = w
         game.say("coop: free play: %s" % w)
     tabs = 2 if (game.at_title or game.f1_event or game.f1_tab) else 0
+    if tabs == 0 and _bug("stale") and game.f1_tabs_told is not None:
+        return       # (Longshot's menu does not tick in free play: the last line still says 2, review-rows-c136 2)
     if tabs != game.f1_tabs_told:
         game.f1_tabs_told = tabs
         game.say("coop: Longshot's menu: %d of co-op's tabs (%s)" % (
@@ -78,6 +81,9 @@ def command(game, m):
     if where == "free":
         game.say("coop: pause tab: F1: to the Multiplayer tab (Minus opens the - menu)")
         game.say("coop: F1: the - menu's Multiplayer tab (free play)")
+        if _bug("freetabs"):
+            game.f1_tabs_told = 2
+            game.say("coop: Longshot's menu: 2 of co-op's tabs (our - menu cannot open now, or one shows)")
         game.f1_minus = True
         game.later(40, lambda: game.say("coop: pause tab: F1: the Multiplayer view, after 1 Minus press(es) and 2 tap(s)"))
         return dict(head, taken=True)

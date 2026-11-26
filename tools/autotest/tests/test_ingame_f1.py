@@ -63,11 +63,19 @@ class F1(Base):
 
     def test_fail_when_f1_is_longshots_own(self):
         refs = self.refs()
-        for where, test in (("title", "test_f1_title"), ("event", "test_f1_event"), ("free", "test_f1_free_play")):
+        for where, test in (("title", "test_f1_title"), ("event", "test_f1_event"), ("free", "test_f1_free_play"),
+                            ("freetabs", "test_f1_free_play")):
             p, s = self.run_it(["test_f1.py"], "bug-" + where, env={"BT_FAKE_REFS": refs, "BT_FAKE_F1": where})
             r = results(s)
             self.assertEqual(r[test], "FAIL", p.stdout[-2000:])
             self.assertEqual({t for t, v in r.items() if v == "FAIL"}, {test}, p.stdout[-2000:])
+
+    def test_free_play_not_misled_by_an_earlier_tests_tab_line(self):
+        """review-rows-c136 2: after the title and event tests the last tab line still says 2 (Longshot's menu did not
+        tick in free play): the free-play test judges only its own lines, so it still PASSes."""
+        refs = self.refs()
+        p, s = self.run_it(["test_f1.py"], "stale", env={"BT_FAKE_REFS": refs, "BT_FAKE_F1": "stale"})
+        self.assertEqual(results(s), {t: "PASS" for t in PAIR_F1}, p.stdout[-2000:])
 
     def test_solo(self):
         p, s = self.run_it(["test_f1.py"], "solo1", more=["--solo"])

@@ -81,10 +81,11 @@ def last_free_play(pair, x):
     return word
 
 
-def last_tabs(pair, x):
-    """The last 'Longshot's menu: N of co-op's tabs' count of game x (whole log: logged at a change), or None."""
+def last_tabs(pair, x, pos=0):
+    """The last 'Longshot's menu: N of co-op's tabs' count of game x in its log from `pos` (0: the whole log; the line
+    is logged at a change only), or None when there is none."""
     n = None
-    for ln in pair.log[x].since(0):
+    for ln in pair.log[x].since(pos):
         m = TABS.search(ln)
         if m:
             n = int(m.group(1))
@@ -262,8 +263,12 @@ def test_f1_free_play(pair):
         pair.expect_log("A", ROUTE_MINUS, max_frames=MENU_FRAMES)
         pair.expect_log("A", MINUS_RUN, max_frames=MENU_FRAMES)
         pair.expect_log("A", MINUS_VIEW, max_frames=300)         # (the run's Minus and taps: give it ~10 s of game)
-        assert last_tabs(pair, "A") == 0, "Longshot's menu has %s of co-op's tabs in free play, not 0 (f1-free-tabs)" % (
-            last_tabs(pair, "A"))
+        # f1-free-tabs, judged from THIS test's lines (review-rows-c136 2): the tab line is logged at a change only, from
+        # Longshot's menu tick (coop_hookshot.cpp hos_coop_menu_tabs), so an earlier test's last line may still say N > 0
+        # here. Since this test began: no count above 0 (none, or 0), and the state's co-op tab is shut.
+        counts = [int(m.group(1)) for m in (TABS.search(ln) for ln in pair.log["A"].since()) if m]
+        assert not [n for n in counts if n > 0], "Longshot's menu had %s of co-op's tabs in free play (f1-free-tabs)" % (
+            counts)
         assert not coop_tab(pair, "A").get("open"), "Longshot's menu opened on co-op's tab in free play"
         pair.never_log("A", ROUTE_LONGSHOT)
         pair.step_both(MENU_FRAMES)                              # (the old 'sleep 5' before its shot: the page drawn)
