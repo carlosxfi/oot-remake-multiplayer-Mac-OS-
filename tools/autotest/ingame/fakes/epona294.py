@@ -62,6 +62,35 @@ def command(game, m):
     return None   # (the built-in answer sets this game's own flag and replies `was`)
 
 
+SONG = ["X", "Y", "A", "X", "Y", "A"]   # ocarina_notes.keys("EponaSong")
+FIELD = "HyruleField_Adult"
+
+
+def press(game, buttons):
+    """Epona's Song (test 3): the keys played while the ocarina is out; LEFT takes it out (a fresh song). A won game
+    (horse + Complete) in the field gets its own Epona 60 frames after the song's last key: its ride line, and the
+    other game's 'is here' line 30 frames later (coop_ride.cpp). BT_FAKE_EPONA=nosong: she never comes."""
+    played = game.__dict__.setdefault("epona294_keys", [])
+    if "LEFT" in buttons:
+        del played[:]
+        return False
+    if not game.ocarina:
+        return False
+    played.extend(b for b in buttons if b in ("L", "R", "Y", "X", "A"))
+    if played[-6:] == SONG and game.scene == FIELD and game.flags.get(HORSE) == EPONA \
+            and game.flags.get(QUEST) == "Complete" and os.environ.get("BT_FAKE_EPONA") != "nosong":
+        del played[:]
+        o, me = game.other, 1 if game.tag == "A" else 2
+
+        def come():
+            game.say("coop: ride: our Epona is out with nobody on her at 0.0 0.0 0.0, sending PLAYER_RIDE free")
+            if o is not None:
+                o.later(30, lambda: o.say("coop: ride: P%d's %s is here, nobody on her (horse copy CoopRide_Epona)"
+                                          % (me, EPONA)))
+        game.later(60, come)
+    return False
+
+
 def after(game, m, r):
     if m.get("cmd") != "flag_read":
         return

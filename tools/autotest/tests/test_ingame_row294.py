@@ -9,7 +9,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_ingame as T   # noqa: E402
 
-ARGS = ["test_epona_294.py", "--fake", "-q", "--no-rerun"]
+ARGS = ["test_epona_294.py", "--fake", "-q", "--no-rerun",
+        "--env", "LICHII_COOP_PUPPET=1", "--env", "LICHII_COOP_DEBUG_ANIM=1", "--env", "LICHII_COOP_OBJECTS=1"]   # test 3's needs_env
 
 
 class Row294EponaWithHorse(unittest.TestCase):
@@ -23,7 +24,7 @@ class Row294EponaWithHorse(unittest.TestCase):
         out = os.path.join(self.tmp, "o")
         T.pytest_run(ARGS + ["--out", out], env=env or {})
         s = T.summary(out)
-        self.assertEqual(s["collected"] if "collected" in s else len(s["tests"]), 2, s)
+        self.assertEqual(s["collected"] if "collected" in s else len(s["tests"]), 3, s)
         return s
 
     def by_name(self, s, part):
@@ -32,6 +33,9 @@ class Row294EponaWithHorse(unittest.TestCase):
     def test_passes_when_the_end_comes_with_the_horse_and_a_bare_save_is_mended(self):
         s = self.run_it()
         self.assertEqual(s["counts"]["PASS"], 2, s)
+        # test 3: the song brought her on each game; no stored reference in the fake run's refs: NO-REF, never PASS
+        self.assertEqual(s["counts"].get("NO-REF"), 1, s)
+        self.assertEqual(len(self.by_name(s, "song_calls_her").get("shots") or []), 8, s)
 
     def test_fails_when_complete_comes_without_the_horse(self):
         s = self.run_it({"BT_FAKE_EPONA": "nohorse"})
@@ -42,6 +46,11 @@ class Row294EponaWithHorse(unittest.TestCase):
         s = self.run_it({"BT_FAKE_EPONA": "nomend"})
         self.assertEqual(s["counts"]["FAIL"], 1, s)
         self.assertIn("mended", self.by_name(s, "is_mended")["why"])
+
+    def test_fails_when_the_song_brings_no_epona(self):
+        s = self.run_it({"BT_FAKE_EPONA": "nosong"})
+        self.assertEqual(s["counts"]["FAIL"], 1, s)
+        self.assertIn("did not come", self.by_name(s, "song_calls_her")["why"])
 
 
 if __name__ == "__main__":
