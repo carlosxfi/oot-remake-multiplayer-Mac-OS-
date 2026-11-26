@@ -116,6 +116,7 @@ add_executable(coop_tests
   lichii/boss_native_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_boss_native.cpp
   lichii/boss_orders_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_boss_orders.cpp
   lichii/brain_state_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_brain_state.cpp
+  lichii/shooter_probe_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_shooter_probe.cpp
   lichii/boss_scenes_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_boss_scenes.cpp
   lichii/teleport_test.cpp
   lichii/emote_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_emote.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../lichii/hook/coop_emote_body.cpp
