@@ -317,20 +317,25 @@ class Pair:
             raise SetupFail("boot: not in the boot's scene %s: %s" % (scene, "; ".join(wrong)))
         return {x: self.state(x) for x in self.c}
 
-    def load_both(self, max_frames=3600):
-        """Title / file select to play: A pressed 8 frames, then 52 frames of wait, on each game not yet in play
-        (the runner's to_play, tools/autotest/hookshot.py, in frames: A every 2 s there)."""
+    def load_both(self, at_title, max_frames=3600):
+        """Title / file select to play: A pressed 8 frames, then 52 frames of wait (the runner's to_play,
+        tools/autotest/hookshot.py, in frames: A every 2 s there), ONLY on a game that at_title(x) says is at the title
+        and is not in play. A game in play is never pressed: an A there opens and shuts the menu (pilot
+        test-bridge-pilot-fa63e90f game-out-A.txt :7015, a game in play cycled play -> menu -> play). A game neither
+        in play nor at the title (a load, a stale sample) is only stepped."""
         ran = 0
         while True:
             todo = [x for x in self.c if not self.in_play(self.state(x))]
             if not todo:
                 return
             if ran >= max_frames:
-                raise AssertionError("not in play after %d frames: %s" % (ran, ", ".join(todo)))
-            for x in todo:
+                raise AssertionError("not in play after %d frames: %s" % (ran, "; ".join(
+                    "%s%s" % (self.why_not(x), "" if at_title(x) else " (never at the title)") for x in todo)))
+            press = [x for x in todo if at_title(x)]
+            for x in press:
                 self.call(x, "input", buttons=["A"], frames=8)
             for x in self.c:
-                if x not in todo:
+                if x not in press:
                     self.call(x, "step", frames=8)
             self.step_both(52)
             ran += 60

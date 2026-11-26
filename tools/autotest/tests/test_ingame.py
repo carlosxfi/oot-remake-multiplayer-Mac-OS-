@@ -1171,5 +1171,85 @@ class BootProof(unittest.TestCase):
             self.assertIn("lane1 boot:", r["why"], r)
 
 
+class TitleAndRecovery(unittest.TestCase):
+    """The title test (pilot test-bridge-pilot-fa63e90f: both games' way back 'given up' every round, then load_both
+    pressed A on games in play for 3600 frames and every later test cascaded): it runs last in its round, FAILs at
+    once on the given-up line, never presses A on a game in play, and the next test starts after the recovery."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_smoke(self, **env):
+        out = os.path.join(self.tmp, "o")
+        p = pytest_run([".", "--fake", "--out", out, "-q", "-m", "smoke and not look", "--repeat", "2",
+                        "--no-smoke-gate", "--no-rerun"], env=env)
+        return summary(out), p, out
+
+    def logs(self, out):
+        text = ""
+        for x in ("A", "B"):
+            with open(os.path.join(out, "lane1", "fake", "lane1-%s" % x, "game-out-%s.txt" % x), encoding="utf-8") as f:
+                text += f.read()
+        return text
+
+    def test_title_runs_last_in_each_round(self):
+        s, p, _ = self.run_smoke()
+        names = [r["test"] for r in s["tests"]]
+        n = len(names) // 2
+        self.assertIn("test_title_and_load_again", names[n - 1], names)
+        self.assertIn("test_title_and_load_again", names[-1], names)
+        self.assertEqual(s["counts"]["PASS"], len(names), p.stdout[-2000:])
+
+    def test_given_up_fails_at_once_and_does_not_cascade(self):
+        s, p, out = self.run_smoke(BT_FAKE_TO_TITLE_GIVES_UP="AB")
+        rows = {r["test"]: r for r in s["tests"]}
+        title = [r for t, r in rows.items() if "test_title_and_load_again" in t]
+        self.assertEqual([r["result"] for r in title], ["FAIL", "FAIL"], p.stdout[-2000:])
+        self.assertTrue(all("the way back to the title gave up" in r["why"] for r in title), title)
+        self.assertTrue(all(r["seconds"] < 60 for r in title), title)
+        others = [r for t, r in rows.items() if "test_title_and_load_again" not in t]
+        self.assertTrue(others and all(r["result"] == "PASS" for r in others), others)   # (round 2 after the recovery)
+        self.assertNotIn("fake: A pressed in play", self.logs(out))
+
+
+class CommitSampler(unittest.TestCase):
+    """Each game's commit from the lane's boot start (C #134: target ~20 GB/game; pilot B ~30 GB from the boot)."""
+
+    def test_samples_from_pids_json_and_summarises(self):
+        import memsample
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        sess = os.path.join(tmp, "session")
+        t = [0.0]
+        m = memsample.Sampler(sess, tmp, every=30, read=lambda pid: {11: 19 * memsample.GB, 22: 30 * memsample.GB}[pid],
+                              clock=lambda: t[0])
+        self.assertIsNone(m.sample())                    # (no pids.json yet: the boot has not started the games)
+        os.makedirs(sess)
+        with open(os.path.join(sess, "pids.json"), "w") as f:
+            json.dump({"games": {"A": 11, "B": 22}, "server": 5}, f)
+        t[0] = 40.0
+        self.assertEqual(m.sample()["B"], 30.0)
+        t[0] = 70.0
+        s = m.stop()                                     # (thread never started: one last sample)
+        self.assertEqual(s["games"]["A"], {"first_gb": 19.0, "first_s": 40.0, "peak_gb": 19.0, "peak_s": 40.0,
+                                           "last_gb": 19.0, "last_s": 70.0})
+        self.assertEqual(s["games"]["B"]["peak_gb"], 30.0)
+        with open(os.path.join(tmp, "commit.csv"), encoding="utf-8") as f:
+            self.assertEqual(f.readline().strip(), "utc,s_after_boot_start,A_commit_gb,B_commit_gb")
+        with open(os.path.join(tmp, "commit.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["samples"], 2)
+
+    def test_own_process_reads_on_windows(self):
+        import memsample
+        b = memsample.private_bytes(os.getpid())
+        if sys.platform == "win32":
+            self.assertGreater(b, 1 << 20)
+        else:
+            self.assertIsNone(b)
+
+
 if __name__ == "__main__":
     unittest.main()

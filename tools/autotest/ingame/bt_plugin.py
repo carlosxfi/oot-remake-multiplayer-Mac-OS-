@@ -62,6 +62,10 @@ def pytest_runtest_makereport(item, call):
     outcome = yield
     rep = outcome.get_result()
     rep.bt_kind = _exc_kind(call.excinfo.value) if call.excinfo is not None else None
+    # (the lane's pair is 'dirty' after a test that did not pass or one that leaves play on purpose: the next test
+    # starts with the recovery, the pair fixture's boot_ready; a miss cannot cascade into the tests after it)
+    if rep.failed or (rep.when == "call" and item.get_closest_marker("leaves_play")):
+        item.config._bt_dirty = True
 
 
 def pytest_addoption(parser):
@@ -98,6 +102,8 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "budget(seconds): the test's own hard deadline (default %d)" % DEFAULT_BUDGET)
     config.addinivalue_line("markers", "row(text): the rc row the test proves (in the summary)")
     config.addinivalue_line("markers", "look: a user-facing look check (bridge shots on each game, compared to refs)")
+    config.addinivalue_line("markers", "leaves_play: the test leaves play on purpose (the title): it runs last in its "
+                            "round and the next test starts after the lane's recovery (Pair.boot_ready)")
     config.addinivalue_line("markers", "needs_boot(NAME): the test boots with scenarios/NAME.A/B.txt (run with --boot NAME); "
                             "without it a test needs the default boot")
     config.addinivalue_line("markers", "needs_env(*'NAME=VALUE'): game switches the test needs; a run whose "
@@ -131,7 +137,8 @@ def _rep_of(item):
 
 def pytest_collection_modifyitems(config, items):
     order = {id(it): i for i, it in enumerate(items)}
-    items.sort(key=lambda it: (_rep_of(it), 0 if it.get_closest_marker("smoke") else 1, order[id(it)]))
+    items.sort(key=lambda it: (_rep_of(it), 1 if it.get_closest_marker("leaves_play") else 0,
+                               0 if it.get_closest_marker("smoke") else 1, order[id(it)]))
     _deselect_needs_env(config, items)
     if config.getoption("lane_check_only"):
         _lane_check_only(config, items)
@@ -222,6 +229,7 @@ def boot_scene(name=DEFAULT_BOOT):
 
 
 BOOT_READY_S = 240    # the boot proof's own deadline (out of a load, a warp of a game left elsewhere, an event's end)
+RECOVER_S = P.SETUP_LIMIT_S
 
 
 def boot_identity(name=DEFAULT_BOOT):
@@ -472,6 +480,8 @@ def lane_pair(request):
     import lanes as L
     Ln = L.lane(lane, os.path.dirname(config.getoption("kit_ls")) if config.getoption("kit_ls") else None)
     folders = [Ln["a"], Ln["b"]]
+    import memsample
+    mem = memsample.Sampler(session, out).start()           # (each game's commit from the boot start: C #134)
     try:
         try:                                    # (after lane_check, before the boot: test-bridge-c127-3 11:18)
             _pack_in(config, lane, folders, out, romfs=os.path.join(Ln["a"], "romfs"))
@@ -499,6 +509,7 @@ def lane_pair(request):
         # session's pids.json could name pids that are another program's by now.
         config._bt_lane_closed = _stop_own_session(session, began)
         _pack_out(config, folders)              # (after the games are closed: they hold the pack's files open)
+        config._bt_commit = dict(getattr(config, "_bt_commit", None) or {}, **{"lane%d" % lane: mem.stop()})
 
 
 def _boot_proof(config, pair, lane):
@@ -551,6 +562,16 @@ def pair(request, lane_pair):
         lack = [e for e in m.args if not env_has(have, e)]
         if lack:
             raise P.SetupFail("this boot lacks the switch(es) %s (run it with --env %s)" % (", ".join(lack), lack[0]))
+    if getattr(request.config, "_bt_dirty", False):
+        # (the test before did not pass, or left play on purpose: the lane's recovery first, as its own set-up)
+        lane_pair.begin(RECOVER_S + 5)
+        with lane_pair.setup(limit=RECOVER_S):
+            try:
+                lane_pair.boot_ready(boot_scene(request.config.getoption("boot")), max_frames=P.READY_FRAMES * 2)
+            except P.SetupFail as e:
+                raise P.SetupFail("recovery after the test before: %s" % e) from e
+        request.config._bt_dirty = False
+        request.node.user_properties.append(("recovery", list(lane_pair.notes)))
     m = request.node.get_closest_marker("budget")
     lane_pair.begin(m.args[0] if m else DEFAULT_BUDGET)
     if getattr(lane_pair, "session", None):
@@ -681,6 +702,8 @@ def pytest_testnodedown(node, error):
     """xdist controller: a worker's needs_env deselections (each worker collects the whole suite, so the same test can
     come from several: kept once), its lines printed here, so summary.json 'deselected' is right under -n too."""
     config = node.config
+    config._bt_commit = dict(getattr(config, "_bt_commit", None) or {},
+                             **((getattr(node, "workeroutput", None) or {}).get("bt_commit") or {}))
     seen = {d["test"] for d in config._bt_deselected}
     tr = config.pluginmanager.get_plugin("terminalreporter")
     wo = getattr(node, "workeroutput", None) or {}
@@ -711,6 +734,7 @@ def pytest_sessionfinish(session, exitstatus):
         config.workeroutput["bt_deselected"] = list(config._bt_deselected)
         config.workeroutput["bt_pack"] = dict(config._bt_pack)
         config.workeroutput["bt_pack_out"] = list(getattr(config, "_bt_pack_out", None) or [])   # (merged by the controller, below)
+        config.workeroutput["bt_commit"] = getattr(config, "_bt_commit", None) or {}
         return     # (xdist: the controller writes the one summary)
     rows = config._bt_rows
     counts = {k: sum(1 for r in rows if r["result"] == k) for k in RESULTS}
@@ -726,6 +750,7 @@ def pytest_sessionfinish(session, exitstatus):
                "deselected": config._bt_deselected,
                "stopped": getattr(config, "_bt_stopped", None),
                "lane_closed": getattr(config, "_bt_lane_closed", None),
+               "commit": getattr(config, "_bt_commit", None),
                "verdict": "PASS" if rows and counts["PASS"] == len(rows) else "NOT PASS"}
     with open(os.path.join(out, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=1)

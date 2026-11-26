@@ -102,7 +102,13 @@ class FakeGame:
             if os.path.exists(os.path.join(self.folder, "to-title.now")):
                 os.remove(os.path.join(self.folder, "to-title.now"))
                 self.say("coop: multiplayer tab: test: back to the title asked (to-title.now)")
+                self.title_asked = True
+                if self.tag in os.environ.get("BT_FAKE_TO_TITLE_GIVES_UP", ""):   # (the pilot's way back, both games)
+                    self.later(60, lambda: self.say("coop: pause tab: back to the title: given up (the menu did not "
+                                                    "get there)"))
+                    continue
                 self.at_title = True
+                self.say("coop: live events: the title: the game's earlier event requests are forgotten")
 
     def in_play(self):
         return not self.at_title and not self.menu_pause and self.frame >= self.stale_until
@@ -211,8 +217,10 @@ class FakeGame:
         o, me = self.other, 1 if self.tag == "A" else 2
         if "PLUS" in buttons:
             self.menu_pause = not self.menu_pause
+        if "A" in buttons and getattr(self, "title_asked", False) and not self.at_title:
+            self.say("fake: A pressed in play after the way back was asked")   # (load_both must never: pilot A :7015)
         if self.at_title and "A" in buttons:
-            self.later(30, lambda: setattr(self, "at_title", False))
+            self.later(30, lambda: (setattr(self, "at_title", False), setattr(self, "title_asked", False)))
             return
         if "LEFT" in buttons:
             self.ocarina = True
