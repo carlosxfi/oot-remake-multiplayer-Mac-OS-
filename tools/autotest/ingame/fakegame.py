@@ -137,11 +137,18 @@ class FakeGame:
             h(self, st)
         return st
 
+    def age(self):
+        """Link's age, from the game's own flag as the real game keeps it (Sequence_IsChildhood: 1 child, 0 adult;
+        unset = a child save). The ONE place a fake game's age comes from: a fake hook changes the flag (setflag, or
+        its boot's save in setup), never st['age'] for every boot (dbno_crawl.py did, so row 286's adult boot read
+        child: integrate-0120-4 18:59)."""
+        return "adult" if self.flags.get("Sequence_IsChildhood", 1) in (0, False) else "child"
+
     def base_state(self):
         live = self.in_play()
         return {"frame": self.frame, "paused": self.paused, "scene": self.scene if not self.at_title else None,
                 "pos": list(self.pos) if live else None, "facing": self.facing if live else None,
-                "age": "child" if live else None, "loading": False if live else None, "event": self.event if live else None,
+                "age": self.age() if live else None, "loading": False if live else None, "event": self.event if live else None,
                 "not_ready": None if live else "no fresh Link sample", "control": True,
                 "equips": {"weapon": "KokiriSword", "shield": None, "head": self.head, "armor": "Kokiri", "boots": "Normal"},
                 "coop": {"players": [{"number": 1, "name": "A", "state": "connected"},
@@ -186,6 +193,11 @@ class FakeGame:
             if self.stuck:     # (the event never ends: the bridge's warp answers timeout, still in it)
                 return {"id": m.get("id"), "ok": False, "error": "timeout", "message": "fake: still in the event",
                         "frame": self.frame, "paused": self.paused}
+            # (the real verb: a name ending in the other age first sets Sequence_IsChildhood, docs/playtest.md 'warp';
+            # so the age follows the flag, FakeGame.age, and no fake hook writes st['age'] for its scenes)
+            want = {"_adult": "adult", "_child": "child"}.get(m["scene"][-6:].lower())
+            if want and want != self.age():
+                self.flags["Sequence_IsChildhood"] = 0 if want == "adult" else 1
             self.scene, self.event = m["scene"], False
             r.update(arrived=True, via="teleport", map=m["scene"], state=self.state())
         elif cmd == "move":
