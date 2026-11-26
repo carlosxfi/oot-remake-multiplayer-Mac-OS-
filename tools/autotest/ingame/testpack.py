@@ -120,6 +120,7 @@ def put_in(folders, made, say=print):
         rels = sorted(want)
         plan = {"packs": sorted(made), "added": [r for r in rels if not os.path.lexists(_dst(folder, r))],
                 "replaced": [r for r in rels if os.path.lexists(_dst(folder, r))]}
+        plan["made_dirs"] = _missing_dirs(folder, plan["added"])     # (undo removes only these, once empty)
         with open(os.path.join(folder, MANIFEST), "w", encoding="utf-8") as f:
             json.dump(plan, f, indent=1)          # (first: whatever happens next, undo() knows what to put back)
         for rel in rels:
@@ -141,6 +142,29 @@ def put_in(folders, made, say=print):
     for rel, (name, src, h) in want.items():
         out.setdefault(name, {})[rel] = h
     return out
+
+
+def _missing_dirs(folder, rels):
+    """The folders under the co-op pack that put_in will make for these files ('/' separated, deepest first)."""
+    out = set()
+    for rel in rels:
+        parts = rel.split("/")[:-1]
+        for i in range(len(parts), 0, -1):
+            sub = "/".join(parts[:i])
+            if os.path.isdir(os.path.join(folder, PACK_REL, *parts[:i])):
+                break
+            out.add(sub)
+    return sorted(out, key=lambda d: (-d.count("/"), d))
+
+
+def _prune(folder, plan):
+    """The folders put_in made (plan 'made_dirs'), once empty (review-c123-9 11:36 nit b); a folder that was there
+    before, or holds anything now, stays."""
+    for sub in plan.get("made_dirs", []):
+        try:
+            os.rmdir(os.path.join(folder, PACK_REL, *sub.split("/")))
+        except OSError:
+            pass
 
 
 def undo(folder, say=print):
@@ -169,6 +193,7 @@ def undo(folder, say=print):
             done.append("put back " + rel)
         elif not os.path.lexists(dst):
             raise PackError("%s: %s was replaced but its kept copy is gone" % (folder, rel))
+    _prune(folder, plan)
     shutil.rmtree(os.path.join(folder, KEPT), ignore_errors=True)
     os.remove(mf)
     say("pack: %s out of %s (%s)" % (", ".join(plan.get("packs", [])), folder, "; ".join(done) or "nothing left"))
