@@ -96,6 +96,7 @@ def test_party_hud_after_boot(pair):
 
 @pytest.mark.budget(300)
 @pytest.mark.look
+@pytest.mark.leaves_play
 @pytest.mark.row("party-hud-crash-c126: back to the title, menu -> load again, the party HUD back, no crash")
 def test_party_hud_title_and_load_again(pair):
     no_crash_logged(pair)
