@@ -56,6 +56,18 @@ where the bridge's `warp` answers `not_in_event` in free play). Each test runs w
 unmarked = `live-kakariko-child`; a run with another `--boot` deselects it (`deselected: needs_boot NAME <test>`, in
 `summary.json` `deselected`). An unknown `--boot` is a usage error before any boot.
 
+Pack files: `--pack NAME[,NAME]` (repeatable) makes co-op pack files with the TESTED sha's tools and puts them into
+BOTH lane games' co-op pack (`mods/contents/0400486024DEC000/coop-puppet/<rel>`) after the lane check and before
+the boot. They come out again after `live.py stop` (a file a pack replaced is put back). The maker is
+`tools/autotest/ingame/packs/NAME.py`: `make(out, ctx) -> {rel: src}`, where rel is '/' separated under coop-puppet
+(`coop_hud/map-arrow.png`). Its `ctx` has `tools`, `romfs` (lane A's extracted romfs, read only), `game_nup`
+(`--pack-game`, else the .nup beside the kit root), `lane` and `say`. `packs/hud.py` makes `coop_hud/` with
+`puppet_pack/hud.py` (fonts, hearts, map arrow, place names; about 60 s from the romfs). Every file is checked by
+sha256 on each game, and `summary.json` `identity.pack` is `{name: {rel: sha256}}`. Each game folder gets a
+`coop-test-pack.json` written before any file moves, so a run that dies leaves something the next boot undoes, with
+or without `--pack`. A test that needs a pack: `@pytest.mark.needs_pack(NAME)`; a run without that `--pack`
+deselects it (`deselected: needs_pack NAME <test>`). A maker that fails is a SETUP-FAIL, and the lane is left as it was.
+
 | Result | When |
 |---|---|
 | PASS | every assert held |

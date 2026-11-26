@@ -664,6 +664,151 @@ HOOK_TESTS = 'import pytest\n\ndef test_hooks(pair):\n    pair.act("A", "frob 3"
 HOOK_MODULE = 'def setup(game):\n    game.hook_seen = []\n\ndef lane(fl):\n    fl.g["A"].shared = fl.g["B"].shared = {"n": 1}\n\ndef command(game, m):\n    if m.get("cmd") == "ping_hook":\n        return {"ok": True, "pong": True}\n    if m.get("cmd") == "warp" and m.get("scene") in ("BossStage_Test", "NoEventStage_Test"):\n        game.run(40)\n        game.scene = m["scene"]                 # (there, but the bridge says timeout: an intro event, or not)\n        return {"ok": False, "error": "timeout", "message": "still in an event"}\n    return None\n\ndef move_step(game, pos):\n    if game.scene == "BossStage_Test" and pos[0] > 1.0:\n        return [1.0, pos[1], pos[2]]\n    return None\n\ndef after(game, m, r):\n    if m.get("cmd") == "state":\n        r["hooked"] = "shared-%d" % game.shared["n"]\n\ndef press(game, buttons):\n    if "ZR" in buttons:\n        game.say("fake hook: pressed ZR")\n        return True\n    return False\n\ndef act(game, words):\n    if words[0] == "frob":\n        game.say("fake hook: frob %s on %s" % (words[1], game.tag))\n        return True\n    return False\n\ndef actors(game):\n    return [{"id": 99, "name": "HookActor_%s" % game.tag, "kind": "enemy", "pos": [0.0, 0.0, 0.0]}]\n\ndef state(game, st):\n    if game.scene == "BossStage_Test":\n        st["event"] = True                      # (its intro event runs)\n'
 
 
+PACK_MAKER = """import os
+
+def make(out, ctx):
+    mode = os.environ.get("BT_PACK_MODE", "ok")
+    if mode == "boom":
+        raise RuntimeError("no such texture")
+    for n, t in (("map-arrow.png", "new arrow"), ("heart-0.png", "new heart")):
+        with open(os.path.join(out, n), "w") as f:
+            f.write(t)
+    ctx.say("selftest pack made in %s (lane %d)" % (out, ctx.lane))
+    rel = "../escape.png" if mode == "badrel" else "coop_hud/map-arrow.png"
+    return {rel: os.path.join(out, "map-arrow.png"), "coop_hud/heart-0.png": os.path.join(out, "heart-0.png")}
+"""
+
+PACK_TESTS = """import os, pytest
+
+def _hud(pair, x):
+    return os.path.join(pair.games[x]["folder"], "mods", "contents", "0400486024DEC000", "coop-puppet", "coop_hud")
+
+@pytest.mark.needs_pack("sel")
+def test_pack_is_in(pair):
+    for x in ("A", "B"):
+        assert open(os.path.join(_hud(pair, x), "map-arrow.png")).read() == "new arrow"
+        assert open(os.path.join(_hud(pair, x), "heart-0.png")).read() == "new heart"
+        assert open(os.path.join(_hud(pair, x), "font-regular.otf")).read() == "font"   # (untouched)
+
+def test_plain(pair):
+    pass
+"""
+
+
+class PackFiles(unittest.TestCase):
+    """--pack NAME (testpack.py): a maker's files go into BOTH games' co-op pack before the boot and come out after;
+    a replaced file is put back; a pack left by a run that died is undone at the next boot; needs_pack deselects."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.dir, self.out = os.path.join(self.tmp, "t"), os.path.join(self.tmp, "o")
+        self.packs, self.tpl = os.path.join(self.tmp, "packs"), os.path.join(self.tmp, "tpl")
+        for d in (self.dir, self.packs, os.path.join(self.tpl, "coop_hud")):
+            os.makedirs(d)
+        with open(os.path.join(self.dir, "conftest.py"), "w", encoding="utf-8") as f:
+            f.write("import sys\nsys.path.insert(0, %r)\npytest_plugins = ['bt_plugin']\n" % INGAME)
+        with open(os.path.join(self.dir, "test_pack.py"), "w", encoding="utf-8") as f:
+            f.write(PACK_TESTS)
+        with open(os.path.join(self.packs, "sel.py"), "w", encoding="utf-8") as f:
+            f.write(PACK_MAKER)
+        for n, t in (("heart-0.png", "old heart"), ("font-regular.otf", "font")):
+            with open(os.path.join(self.tpl, "coop_hud", n), "w") as f:
+                f.write(t)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def hud(self, x):
+        return os.path.join(self.out, "lane1", "fake", "lane1-%s" % x, P.__dict__.get("PACK_REL", "") or
+                            os.path.join("mods", "contents", "0400486024DEC000", "coop-puppet"), "coop_hud")
+
+    def run_(self, extra=(), mode="ok"):
+        return pytest_run([".", "--fake", "--out", self.out, "-q", "-p", "no:cacheprovider"] + list(extra),
+                          cwd=self.dir, env={"BT_PACKS_DIR": self.packs, "BT_FAKE_PACK_DIR": self.tpl,
+                                             "BT_PACK_MODE": mode})
+
+    def assert_as_before(self):
+        for x in ("A", "B"):
+            g = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(self.hud(x))))))
+            self.assertEqual(open(os.path.join(self.hud(x), "heart-0.png")).read(), "old heart", x)
+            self.assertFalse(os.path.exists(os.path.join(self.hud(x), "map-arrow.png")), x)
+            self.assertFalse(os.path.exists(os.path.join(g, "coop-test-pack.json")), x)
+            self.assertFalse(os.path.exists(os.path.join(g, "coop-test-pack-kept")), x)
+
+    def test_pack_rel_is_hs_pack_dir(self):
+        import testpack
+        sys.path.insert(0, os.path.join(os.path.dirname(HERE), "..", "hookshot"))
+        import hs
+        self.assertEqual(testpack.PACK_REL, hs.PACK_DIR)
+
+    def test_pack_in_for_the_run_and_out_after(self):
+        p = self.run_(["--pack", "sel"])
+        s = summary(self.out)
+        self.assertEqual(results(s), {"test_pack_is_in": "PASS", "test_plain": "PASS"}, p.stdout[-3000:] + p.stderr[-2000:])
+        import hashlib
+        self.assertEqual(s["identity"]["pack"], {"sel": {
+            "coop_hud/heart-0.png": hashlib.sha256(b"new heart").hexdigest(),
+            "coop_hud/map-arrow.png": hashlib.sha256(b"new arrow").hexdigest()}})
+        self.assertIsNone(s["pack_out_errors"])
+        self.assert_as_before()
+
+    def test_without_pack_the_test_is_deselected(self):
+        p = self.run_()
+        s = summary(self.out)
+        self.assertEqual(results(s), {"test_plain": "PASS"})
+        self.assertEqual([d["needs_pack"] for d in s["deselected"]], [["sel"]])
+        self.assertIn("deselected: needs_pack sel", p.stdout)
+        self.assertEqual(s["identity"]["pack"], {})
+
+    def test_a_pack_left_by_a_dead_run_is_undone_at_the_next_boot(self):
+        import testpack
+        g = {x: os.path.join(self.out, "lane1", "fake", "lane1-%s" % x) for x in ("A", "B")}
+        made = {"sel": {"coop_hud/map-arrow.png": os.path.join(self.tmp, "arrow"),
+                        "coop_hud/heart-0.png": os.path.join(self.tmp, "heart")}}
+        for f, t in (("arrow", "new arrow"), ("heart", "new heart")):
+            with open(os.path.join(self.tmp, f), "w") as fh:
+                fh.write(t)
+        for x in g:
+            shutil.copytree(self.tpl, os.path.join(g[x], testpack.PACK_REL))
+        testpack.put_in(list(g.values()), made, say=lambda m: None)      # (a run that died here: never taken out)
+        self.assertEqual(open(os.path.join(self.hud("A"), "heart-0.png")).read(), "new heart")
+        p = self.run_()                                                  # (the next run, no --pack)
+        self.assertEqual(results(summary(self.out)), {"test_plain": "PASS"}, p.stdout[-2000:])
+        self.assert_as_before()
+
+    def test_a_failing_maker_is_setup_fail_and_leaves_the_lane_as_it_was(self):
+        for mode, word in (("boom", "make failed: RuntimeError: no such texture"), ("badrel", "not a path under")):
+            shutil.rmtree(self.out, ignore_errors=True)
+            p = self.run_(["--pack", "sel"], mode=mode)
+            s = summary(self.out)
+            self.assertEqual(set(results(s).values()), {"SETUP-FAIL"}, (mode, p.stdout[-2000:]))
+            self.assertIn(word, s["tests"][0]["why"], mode)
+            self.assert_as_before()
+
+    def test_unknown_pack_is_setup_fail(self):
+        p = self.run_(["--pack", "nope"])
+        s = summary(self.out)
+        self.assertEqual(set(results(s).values()), {"SETUP-FAIL"}, p.stdout[-2000:])
+        self.assertIn("--pack nope: no ", s["tests"][0]["why"])
+
+    def test_pack_check_catches_a_changed_file(self):
+        import testpack
+        g = os.path.join(self.tmp, "g")
+        shutil.copytree(self.tpl, os.path.join(g, testpack.PACK_REL))
+        src = os.path.join(self.tmp, "src.png")
+        with open(src, "w") as f:
+            f.write("x")
+        real_copy = shutil.copyfile
+        try:
+            shutil.copyfile = lambda a, b: open(b, "w").write("not x")   # (a copy that went wrong)
+            with self.assertRaises(testpack.PackError):
+                testpack.put_in([g], {"sel": {"coop_hud/x.png": src}}, say=lambda m: None)
+        finally:
+            shutil.copyfile = real_copy
+        self.assertTrue(testpack.undo(g, say=lambda m: None))
+        self.assertFalse(os.path.exists(os.path.join(g, testpack.PACK_REL, "coop_hud", "x.png")))
+
+
 class FakeHooks(unittest.TestCase):
     """A row port's fake reactions live in ingame/fakes/<name>.py (fakegame.py hooks), never in fakegame.py itself."""
 
