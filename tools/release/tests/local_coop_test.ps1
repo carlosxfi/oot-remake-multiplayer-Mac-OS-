@@ -55,14 +55,39 @@ try {
     if (-not (Test-KitLocalConsole)) {
         Check ((Read-KitLocalPlayers $kit) -eq 1) 'players: an unattended start (no console) is 1 player, not the remembered 2'
     }
-    # Nothing waits: the choice is read from keys already pressed (a solo start is not slower).
+    # C2-2 (owner, 0.12.0): a key never starts more games by itself; only the question's answer does, and only the answer
+    # is written. A solo start asks nothing and waits for nothing.
+    $lpFile = Join-Path $kit 'hookshot\local-players.txt'
+    $key = { param($c, $k) [pscustomobject]@{ KeyChar = $c; Key = $k } }
+    $two = { & $key '2' 'D2' }.GetNewClosure()
+    $none = { $null }
+    Remove-Item -LiteralPath $lpFile -Force
     $t = [Diagnostics.Stopwatch]::StartNew()
-    [void](Read-KitLocalPlayers $kit)
-    Check ($t.ElapsedMilliseconds -lt 1000) "players: no wait ($($t.ElapsedMilliseconds) ms)"
+    Check ((Read-KitLocalPlayers $kit 15 $two @()) -eq 1) 'players: a solo start (nothing pressed, no last answer) is 1, the question is not asked'
+    Check ($t.ElapsedMilliseconds -lt 1000) "players: a solo start waits for nothing ($($t.ElapsedMilliseconds) ms)"
+    Check (-not (Test-Path -LiteralPath $lpFile)) 'players: a solo start writes nothing'
+    Check ((Read-KitLocalPlayers $kit 1 $none @('2')) -eq 1) 'players: a stray 2 pressed during the start and no answer -> 1 game'
+    Check (-not (Test-Path -LiteralPath $lpFile)) 'players: a stray digit with no answer is never saved'
+    Check ((Read-KitLocalPlayers $kit 1 $two @('x', '1')) -eq 1) 'players: other keys or 1 pressed during the start do not ask'
+    $three = { & $key '3' 'D3' }.GetNewClosure()
+    Check ((Read-KitLocalPlayers $kit 5 $three @('3')) -eq 3) 'players: 3 pressed, then 3 answered -> 3 games'
+    Check ((Read-File $lpFile).Trim() -eq '3') 'players: the answer is written'
+    Check ((Read-KitLocalPlayers $kit 1 $none @()) -eq 1) 'players: last answer 3, no answer this start -> 1 game (a start with no answer is 1, always)'
+    Check ((Read-File $lpFile).Trim() -eq '3') 'players: no answer -> the file is not written'
+    $enter = { & $key ([char]13) 'Enter' }.GetNewClosure()
+    Check ((Read-KitLocalPlayers $kit 5 $enter @()) -eq 1) 'players: last answer 3, Enter -> 1 game'
+    Check ((Read-File $lpFile).Trim() -eq '1') 'players: Enter is an answer of 1, written'
+    Check ((Read-KitLocalPlayers $kit 5 $two @()) -eq 1) 'players: last answer 1 -> not asked again (solo)'
+    $nKey = { & $key 'n' 'N' }.GetNewClosure()
+    Write-File $lpFile "2`r`n"
+    Check ((Read-KitLocalPlayers $kit 5 $nKey @()) -eq 1) 'players: N -> 1 game'
+    $env:OOT_COOP_LOCAL_PLAYERS = '2'
+    Check ((Read-KitLocalPlayers $kit 1 $none @()) -eq 2) 'players: OOT_COOP_LOCAL_PLAYERS still answers outright'
+    Remove-Item env:OOT_COOP_LOCAL_PLAYERS
     $lc = Read-File (Join-Path $scripts 'local-coop.ps1')
-    Check (-not ($lc -match 'function Read-KitLocalPlayers\([^)]*Seconds') -and $lc.Contains('[Console]::KeyAvailable')) 'players: keys already pressed only, no time to wait'
+    Check ($lc.Contains('[Console]::KeyAvailable') -and $lc -match 'function Read-KitLocalPlayersAnswer') 'players: keys pressed during the start only make it ask (Read-KitLocalPlayersAnswer)'
     $st = Read-File (Join-Path $scripts 'start.ps1')
-    Check ($st.Contains('Show-KitLocalPlayersHint')) 'Start Squadala says the count at its start, so a digit can be pressed while it goes on'
+    Check ($st.Contains('Show-KitLocalPlayersHint')) 'Start Squadala says at its start how to ask for local co-op'
 
     # --- The instance folder ---
     $inst = Join-Path $game 'local-players\player2'

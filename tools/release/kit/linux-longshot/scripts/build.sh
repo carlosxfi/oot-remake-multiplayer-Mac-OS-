@@ -828,12 +828,28 @@ ready=0
 # two builds (a file copied over from another build): it never starts, is never kept as a build, never built on. And a
 # test kit that has data/hold-game.txt never builds its game for patches or a pin other than the ones the game was built
 # from (the lane kit once built with old patches and left a game half old, half new). Players never need the marker.
-# game_mismatch $1: prints one line for each file of that folder (the game, or a kept build's files/) that is not the one
-# the note names; nothing when all are, or when there is no note or it has no sha1 (a fresh install, an older Longshot).
+# game_mismatch $1 [$2]: prints one line for each file of that folder (the game, or a kept build's files/) that is not the
+# one the note names; nothing when all are, or when there is no note or it has no sha1 (a fresh install, an older Longshot).
+# C2-3 (owner, 0.12.0), as the Windows kit's Get-KitGameBuildCheck: only the CORE build (longshot, longshot_vk.so,
+# image.bin: the files co-op's patches are built into) is printed by default and stops a start; $2 = extras prints the
+# others the note lists (libSDL2, renhdrum, licenses) a player swapped: one warning, never a stop. A file whose size and
+# mtime_ns are the note's own stat (make_game.py installed_stat) is not read; one whose stat changed is hashed once and
+# kept in coop-build-checked.txt (rel|size|mtime_ns|sha1) for the next start.
 game_mismatch() {
-    "$PY" -I -B - "$1" <<'PYEOF2' 2>/dev/null || true
+    "$PY" -I -B - "$1" "${2:-core}" <<'PYEOF2' 2>/dev/null || true
 import hashlib, json, os, sys
-root = sys.argv[1]
+root, mode = sys.argv[1], sys.argv[2]
+CORE = {"longshot", "longshot_vk.so", "image.bin", "longshot.exe", "longshot_vk.dll"}
+cache_path = os.path.join(root, "coop-build-checked.txt")
+cache, new_cache = {}, {}
+try:
+    with open(cache_path, encoding="utf-8") as f:
+        for line in f:
+            parts = line.rstrip().split("|")
+            if len(parts) == 4:
+                cache[parts[0]] = parts
+except OSError:
+    pass
 try:
     with open(os.path.join(root, ".longshot_installed.json"), encoding="utf-8") as f:
         note = json.load(f)
@@ -848,17 +864,61 @@ for name, row in note.items():
     rel = str(name).replace("\\", "/")
     if rel.startswith("/") or ".." in rel.split("/"):
         continue
+    core = os.path.basename(rel).lower() in CORE
+    show = core if mode == "core" else not core
     path = os.path.join(root, rel)
     if not os.path.isfile(path):
-        print(rel + " is missing (Longshot's note lists it)")
+        if show:
+            print(rel + " is missing (Longshot's note lists it)")
         continue
-    h = hashlib.sha1()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    if h.hexdigest() != want:
-        print(rel + " is not the file Longshot put into this game (its note says " + want[:8] + ", the file is " + h.hexdigest()[:8] + ")")
+    st = os.stat(path)
+    stat = row.get("stat") if isinstance(row, dict) else None
+    if isinstance(stat, list) and len(stat) >= 2 and stat[0] == st.st_size and stat[1] == st.st_mtime_ns:
+        continue
+    had = cache.get(rel)
+    if had and had[1] == str(st.st_size) and had[2] == str(st.st_mtime_ns):
+        have = had[3]
+    else:
+        h = hashlib.sha1()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        have = h.hexdigest()
+    new_cache[rel] = [rel, str(st.st_size), str(st.st_mtime_ns), have]
+    if have != want and show:
+        print(rel + " is not the file Longshot put into this game (its note says " + want[:8] + ", the file is " + have[:8] + ")")
+for rel, parts in cache.items():   # (the other mode's rows stay: one cache for both calls)
+    if rel not in new_cache and os.path.isfile(os.path.join(root, rel)):
+        new_cache[rel] = parts
+if new_cache != cache:
+    try:
+        if new_cache:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                f.write("".join("|".join(new_cache[k]) + chr(10) for k in sorted(new_cache)))
+        else:
+            os.remove(cache_path)
+    except OSError:
+        pass
 PYEOF2
+}
+# C2-3: the one warning line of a start whose game has swapped extra files ($1: game_mismatch ... extras), nothing without.
+game_extras_text() {
+    local names
+    names=$(while IFS= read -r l; do [[ -n $l ]] && printf '%s, ' "${l%% *}"; done <<<"$1")
+    [[ -n $names ]] || return 0
+    printf "%s in the game folder: not Longshot's own (yours, or from another build). The game starts with them; a later game build keeps a copy of each as <name>.yours before it puts Longshot's back." "${names%, }"
+}
+# C2-3: before any write of the game (a build, a kept build put back): each swapped extra file is kept as <file>.yours,
+# so a player's own file is never overwritten silently.
+game_keep_extras() {
+    local l rel
+    while IFS= read -r l; do
+        [[ -n $l ]] || continue
+        rel=${l%% *}
+        [[ -f $GAME/$rel ]] || continue
+        if cp -f -- "$GAME/$rel" "$GAME/$rel.yours"; then say "  $rel was not Longshot's own: kept as $rel.yours (the build puts Longshot's back; copy yours over it to use it again)."
+        else warn "$rel was not Longshot's own and could not be kept as $rel.yours"; fi
+    done <<<"$(game_mismatch "$GAME" extras)"
 }
 game_mixed_text() {   # $1: the lines of game_mismatch
     printf "The co-op game's files are not from one build (a file of another build was copied over):\n"
@@ -889,9 +949,14 @@ if ((!check_only)); then
         # stamp left, an interrupted build is a first build at the next start, never a game of two builds)
         step 'The game: its files are not from one build; taking them out so the build puts every file in again'
         while IFS= read -r l; do [[ -n $l ]] && say "  - $l"; done <<<"$mixed"
+        game_keep_extras
         while IFS= read -r l; do rm -f -- "$GAME/${l%% *}"; done <<<"$mixed"
         rm -f "$GAME/.longshot_installed.json" "$game_stamp"
         ready=0
+    fi
+    if [[ -n $(kit_game_exe) ]]; then
+        extras_text=$(game_extras_text "$(game_mismatch "$GAME" extras)")
+        [[ -z $extras_text ]] || warn "$extras_text"
     fi
 fi
 
@@ -999,6 +1064,7 @@ variant_save() {
 variant_restore() {   # $1: a kept build: staged as <name>.new, then swapped in; its stamp last
     local d=$1/files f staged=()
     [[ -z $(game_mismatch "$d") ]] || return 1   # (kit-harden: a kept build of two builds is never put back)
+    game_keep_extras
     while IFS= read -r f; do
         { mkdir -p "$GAME/$(dirname -- "$f")" && cp -f -- "$d/$f" "$GAME/$f.new"; } ||
             { for f in "${staged[@]}"; do rm -f "$GAME/$f.new"; done; return 1; }
@@ -1126,6 +1192,7 @@ game_build() {
         # (make_game.py's own words for a failed SDK download are the Builder's, "untick NVIDIA DLSS": the kit's way is --no-dlss)
         no_dlss_hint=''
         ((want_dlss)) && no_dlss_hint=" This build was with NVIDIA DLSS: if NVIDIA's SDK could not be downloaded (offline?), bash start-squadala.sh --no-dlss builds the game without it."
+        game_keep_extras   # (C2-3: a player's own swapped SDL or renhdrum kept as <file>.yours first)
         make_game "${build_args[@]}" || { game_fail "The build stopped. Its log: $LOGS/build.log$no_dlss_hint"; return 1; }
         [[ -n $(kit_game_exe) ]] || { game_fail "The build finished but there is no game in $GAME. Its log: $LOGS/build.log"; return 1; }
         # (kit-harden: the finished build is checked against Longshot's note before the game counts as built)

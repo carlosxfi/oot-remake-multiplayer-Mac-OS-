@@ -637,6 +637,9 @@ if ($Hookshot) {
     # Original game (Co-op settings, coop-options.ini original_game = on; hookshot/src/coop_original.h): the game as it
     # came. The module stays off and Longshot loads no mod (the game's mods list says so), so nothing of the pack, the
     # size tables or Discord is touched here either.
+    # (C2-3: an SDL or renhdrum the player swapped is one warning line, never a stop: kit-paths.ps1 Get-KitGameBuildCheck)
+    $extrasText = Get-KitGameExtrasText @(Get-KitGameBuildExtras (Get-KitHookshotGame $kit))
+    if ($extrasText) { Write-Host $extrasText -ForegroundColor Yellow }
     $optionsFile = Join-Path $kit 'coop-options.ini'
     if ((Test-Path $optionsFile) -and @(Get-Content $optionsFile -ErrorAction SilentlyContinue |
             Where-Object { $_ -match '^\s*original_game\s*=\s*(on|1|yes|true)\s*$' }).Count -gt 0) {

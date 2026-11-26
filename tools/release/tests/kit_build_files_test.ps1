@@ -78,6 +78,54 @@ try {
     Write-File (Join-Path $g 'image.bin') 'image.bin one'
     Check ((Get-KitHookshotNeed $kit) -eq '') 'need: the file back -> nothing'
 
+    # --- C2-3: only the core build stops a start; a swapped SDL is one warning and is kept before a write ---------
+    foreach ($f in 'SDL2.dll', 'SDL3.dll') {
+        $keep = Read-File (Join-Path $g $f)
+        Write-File (Join-Path $g $f) "$f THE PLAYER'S OWN"
+        Check (@(Get-KitGameBuildMismatch $g).Count -eq 0) "core: $f swapped is not a core mismatch"
+        Check ((Get-KitHookshotNeed $kit) -eq '') "need: $f swapped -> nothing (the game starts)"
+        $ex = @(Get-KitGameBuildExtras $g)
+        Check ($ex.Count -eq 1 -and $ex[0] -like "$f *not the file Longshot put*") "extras: $f swapped -> one line naming it"
+        $w = Get-KitGameExtrasText $ex
+        Check ($w -like "*$f*" -and $w -like '*starts with it*' -and $w -like '*.yours*' -and $w -notmatch "`n") "extras text: one line, names $f, the game starts, .yours"
+        Start-KitGameWrite $g 'test write'
+        Check ((Read-File (Join-Path $g "$f.yours")) -eq "$f THE PLAYER'S OWN") "write: $f kept as $f.yours before the game is written"
+        Complete-KitGameWrite $g
+        Remove-Item -LiteralPath (Join-Path $g "$f.yours") -Force
+        Write-File (Join-Path $g $f) $keep
+    }
+    Check ((Get-KitGameExtrasText @()) -eq '') 'extras text: none -> no line'
+    Check (@(Get-KitGameBuildExtras $g).Count -eq 0) 'extras: Longshot''s own files -> none'
+    Start-KitGameWrite $g 'test write'
+    Check (-not (Test-Path -LiteralPath (Join-Path $g 'SDL2.dll.yours'))) 'write: nothing kept when every file is Longshot''s'
+    Complete-KitGameWrite $g
+    Check ((Test-KitGameCoreFile 'bin\longshot.exe') -and (Test-KitGameCoreFile 'longshot_vk.dll') -and (Test-KitGameCoreFile 'image.bin') -and
+        -not (Test-KitGameCoreFile 'SDL2.dll') -and -not (Test-KitGameCoreFile 'renhdrum.dll') -and -not (Test-KitGameCoreFile 'licenses\x\LICENSE')) 'core: exe, renderer (our gpu\vk patches), image.bin; not SDL, renhdrum, licenses'
+
+    # --- C2-3: no full hash on every start -----------------------------------------------------------------
+    # A file whose size and mtime are the note's own stat (make_game.py installed_stat) is not read: its bytes may even
+    # differ from the sha1 (proof that it was not hashed).
+    $statRoot = Join-Path $tmp 'stat'
+    Write-File (Join-Path $statRoot 'image.bin') 'NOT THE BYTES OF THE SHA1'
+    $fi = Get-Item -LiteralPath (Join-Path $statRoot 'image.bin')
+    $ns = ([long]$fi.LastWriteTimeUtc.Ticks - 621355968000000000) * 100
+    Write-File (Join-Path $statRoot '.longshot_installed.json') ('{"image.bin": {"sha1": "' + ('a' * 40) + '", "stat": [' + $fi.Length + ', ' + $ns + ', 1, 438]}}')
+    Check (@(Get-KitGameBuildMismatch $statRoot).Count -eq 0) 'stat: size and mtime as the note says -> not hashed, no mismatch'
+    Check (-not (Test-Path -LiteralPath (Join-Path $statRoot 'coop-build-checked.txt'))) 'stat: nothing hashed, nothing cached'
+    # A stat that changed: hashed once and cached; the next check reads the cache (a cached sha1 is believed while the
+    # size and time stay: proof that the file was not hashed again).
+    $want = Get-Sha1 (Join-Path $statRoot 'image.bin')
+    Write-File (Join-Path $statRoot '.longshot_installed.json') ('{"image.bin": {"sha1": "' + $want + '", "stat": [1, 2]}}')
+    Check (@(Get-KitGameBuildMismatch $statRoot).Count -eq 0) 'cache: a changed stat with the right bytes -> no mismatch'
+    $cacheFile = Join-Path $statRoot 'coop-build-checked.txt'
+    $row = Read-File $cacheFile
+    Check ($row -like "image.bin|$($fi.Length)|$ns|$want*") "cache: the hash is kept with size and mtime ($row)"
+    Write-File (Join-Path $statRoot '.longshot_installed.json') ('{"image.bin": {"sha1": "' + ('b' * 40) + '", "stat": [1, 2]}}')
+    [System.IO.File]::WriteAllText($cacheFile, "image.bin|$($fi.Length)|$ns|$('b' * 40)`r`n")
+    Check (@(Get-KitGameBuildMismatch $statRoot).Count -eq 0) 'cache: an unchanged file is read from the cache, not hashed again'
+    Write-File (Join-Path $statRoot 'image.bin') 'NEW BYTES, ANOTHER SIZE'
+    Check (@(Get-KitGameBuildMismatch $statRoot).Count -eq 1) 'cache: a file changed since -> hashed again -> mismatch'
+
     # --- A variant that is mixed (an old build kept from mixed files) ---------------------------------------
     $mixedRoot = Join-Path $tmp 'mixedvariant'
     Set-Build $mixedRoot 'two' $null
@@ -170,10 +218,11 @@ try {
     $g1 = Join-Path $k1 'hookshot\game'
     Set-Build $g1 'one' (Get-KitHookshotStamp $k1)
     Write-File (Join-Path $g1 'image.bin') 'image.bin FROM ANOTHER BUILD'
-    $before = (Get-ChildItem -LiteralPath $g1 -Recurse -File | ForEach-Object { "$($_.FullName)|$($_.Length)" }) -join ';'
+    # (C2-3: the check's own hash cache, coop-build-checked.txt, is not a change of the game's files)
+    $before = (Get-ChildItem -LiteralPath $g1 -Recurse -File | Where-Object { $_.Name -ne 'coop-build-checked.txt' } | ForEach-Object { "$($_.FullName)|$($_.Length)" }) -join ';'
     $r = Invoke-Build $k1
     Check ($r.Code -ne 0 -and $r.Text -like '*image.bin*' -and $r.Text -like '*Nothing was changed*' -and $r.Text -like '*-Rebuild*') "build: a mixed game is refused with the file named [$($r.Code)]"
-    $after = (Get-ChildItem -LiteralPath $g1 -Recurse -File | ForEach-Object { "$($_.FullName)|$($_.Length)" }) -join ';'
+    $after = (Get-ChildItem -LiteralPath $g1 -Recurse -File | Where-Object { $_.Name -ne 'coop-build-checked.txt' } | ForEach-Object { "$($_.FullName)|$($_.Length)" }) -join ';'
     Check ($before -eq $after -and -not (Test-KitGameUnfinished $g1) -and -not (Test-Path -LiteralPath (Get-KitGameVariantRoot $k1))) 'build: the refusal changed nothing and kept nothing'
 
     # The same in a Longshot-only (release) kit: it has no Build-Hookshot-Coop.bat, so the text says the start asks.
