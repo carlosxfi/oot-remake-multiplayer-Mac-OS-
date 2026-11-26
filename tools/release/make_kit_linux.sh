@@ -75,6 +75,7 @@ text "$repo/tools/release/kit/scripts/apply_patch.py" "$kit/scripts/apply_patch.
 text "$repo/tools/release/kit/scripts/discord_status.py" "$kit/scripts/discord_status.py"
 text "$src/scripts/problem_report.py" "$kit/scripts/problem_report.py"
 text "$repo/tools/release/kit/scripts/problem-send-url.txt" "$kit/scripts/problem-send-url.txt"
+text "$repo/tools/release/kit/scripts/game-core-files.txt" "$kit/scripts/game-core-files.txt"   # (C2-3: the core build, build.sh game_mismatch)
 text "$repo/tools/release/kit/coop.ini.template" "$kit/scripts/coop.ini.template"
 text "$repo/tools/release/kit/coop-options.ini" "$kit/data/coop-options.ini"
 cp -- "$repo/tools/release/kit/assets/squadala-icon.png" "$kit/data/squadala-icon.png"   # (the window and menu icon, start.sh)

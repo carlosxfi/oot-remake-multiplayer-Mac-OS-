@@ -56,8 +56,15 @@ try {
     Check ((Restore-KitGameVariant $dir $g)) 'restore: the clean set goes back'
     Check ((Get-KitHookshotNeed $kit) -eq '') 'need: after the put back -> nothing'
 
-    # --- One file of another build, for each build file ----------------------------------------------------
-    foreach ($f in 'image.bin', 'longshot_vk.dll', 'longshot.exe') {
+    # The one list of the core build (C2-3): scripts\game-core-files.txt, read here as kit-paths.ps1 reads it.
+    $coreList = @([System.IO.File]::ReadAllLines((Join-Path $scripts 'game-core-files.txt')) | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') } | ForEach-Object { $_.ToLowerInvariant() })
+    $coreFiles = @($files | Where-Object { $coreList -contains $_.ToLowerInvariant() })
+    $extraFiles = @($files | Where-Object { $coreList -notcontains $_.ToLowerInvariant() })
+    Check ($coreFiles.Count -eq 3 -and $extraFiles.Count -eq 2) "core list: exe, renderer, image.bin core; SDL2, SDL3 not ($($coreFiles -join ',') / $($extraFiles -join ','))"
+    Check ((@(Get-KitGameCoreNames) -join ',') -eq ($coreList -join ',')) 'core list: kit-paths.ps1 reads the same list'
+
+    # --- One file of another build, for each core build file -----------------------------------------------
+    foreach ($f in $coreFiles) {
         $keep = Read-File (Join-Path $g $f)
         Write-File (Join-Path $g $f) "$f FROM ANOTHER BUILD"
         $bad = @(Get-KitGameBuildMismatch $g)
@@ -79,7 +86,7 @@ try {
     Check ((Get-KitHookshotNeed $kit) -eq '') 'need: the file back -> nothing'
 
     # --- C2-3: only the core build stops a start; a swapped SDL is one warning and is kept before a write ---------
-    foreach ($f in 'SDL2.dll', 'SDL3.dll') {
+    foreach ($f in $extraFiles) {
         $keep = Read-File (Join-Path $g $f)
         Write-File (Join-Path $g $f) "$f THE PLAYER'S OWN"
         Check (@(Get-KitGameBuildMismatch $g).Count -eq 0) "core: $f swapped is not a core mismatch"
@@ -87,7 +94,7 @@ try {
         $ex = @(Get-KitGameBuildExtras $g)
         Check ($ex.Count -eq 1 -and $ex[0] -like "$f *not the file Longshot put*") "extras: $f swapped -> one line naming it"
         $w = Get-KitGameExtrasText $ex
-        Check ($w -like "*$f*" -and $w -like '*starts with it*' -and $w -like '*.yours*' -and $w -notmatch "`n") "extras text: one line, names $f, the game starts, .yours"
+        Check ($w -like "*$f*" -and $w -like '*starts anyway*' -and $w -like '*.yours*' -and $w -notmatch "`n") "extras text: one line, names $f, the game starts, .yours"
         Start-KitGameWrite $g 'test write'
         Check ((Read-File (Join-Path $g "$f.yours")) -eq "$f THE PLAYER'S OWN") "write: $f kept as $f.yours before the game is written"
         Complete-KitGameWrite $g
@@ -99,8 +106,16 @@ try {
     Start-KitGameWrite $g 'test write'
     Check (-not (Test-Path -LiteralPath (Join-Path $g 'SDL2.dll.yours'))) 'write: nothing kept when every file is Longshot''s'
     Complete-KitGameWrite $g
-    Check ((Test-KitGameCoreFile 'bin\longshot.exe') -and (Test-KitGameCoreFile 'longshot_vk.dll') -and (Test-KitGameCoreFile 'image.bin') -and
-        -not (Test-KitGameCoreFile 'SDL2.dll') -and -not (Test-KitGameCoreFile 'renhdrum.dll') -and -not (Test-KitGameCoreFile 'licenses\x\LICENSE')) 'core: exe, renderer (our gpu\vk patches), image.bin; not SDL, renhdrum, licenses'
+    Check ((@($coreList | Where-Object { -not (Test-KitGameCoreFile "bin\$_") }).Count -eq 0) -and
+        -not (Test-KitGameCoreFile 'SDL2.dll') -and -not (Test-KitGameCoreFile 'renhdrum.dll') -and -not (Test-KitGameCoreFile 'licenses\x\LICENSE')) 'core: every name of the list (any folder) is core; SDL, renhdrum, licenses are not'
+    # Without the list (a damaged kit) every noted file counts as core: never weaker than before.
+    $keepList = $script:KitGameCoreNames
+    $script:KitGameCoreNames = $null
+    Write-File (Join-Path $g 'SDL2.dll') 'SDL2.dll THE PLAYER''S OWN'
+    Check ((Get-KitHookshotNeed $kit) -eq 'mixed') 'core list missing: a swapped SDL stops the start as before (fail safe)'
+    $script:KitGameCoreNames = $keepList
+    Set-Build $g 'one' $stamp
+    Check ((Get-KitHookshotNeed $kit) -eq '') 'need: the set back -> nothing'
 
     # --- C2-3: no full hash on every start -----------------------------------------------------------------
     # A file whose size and mtime are the note's own stat (make_game.py installed_stat) is not read: its bytes may even

@@ -126,6 +126,7 @@ cp "$src/start-squadala.sh" "$src/README.txt" "$src/revert.sh" "$src/uninstall-c
 check "the kit has one start file (no start-oot-coop.sh from v0.11.4 on)" [ ! -e "$src/start-oot-coop.sh" ]
 cp "$src"/scripts/*.sh "$src/scripts/problem_report.py" "$release/kit/scripts/apply_patch.py" "$kit/scripts/"
 cp "$release/kit/coop.ini.template" "$kit/scripts/"
+cp "$release/kit/scripts/game-core-files.txt" "$kit/scripts/"   # (the one core list, as make_kit_linux.sh)
 cp "$release/kit/coop-options.ini" "$kit/data/coop-options.ini"
 printf 'server\n' >"$kit/data/server/coop_server"
 printf 'module\n' >"$kit/data/longshot/hookshot_coop.so"
@@ -312,7 +313,7 @@ printf "the player's own sdl" >"$D/game/libSDL2-2.0.so.0"
 : >"$log"
 bash "$kit/scripts/build.sh" </dev/null >"$tmp/mix6.txt" 2>&1; export CODE=$?
 check 'extras: a swapped SDL: the start goes on, one warning names it, nothing built' \
-    bash -c '[ $CODE -eq 0 ] && grep -q "libSDL2-2.0.so.0 in the game folder: not Longshot" "$1" && ! grep -q "Longshot put into this game" "$1" && ! grep -q "^make_game" "$2"' _ "$tmp/mix6.txt" "$log"
+    bash -c '[ $CODE -eq 0 ] && grep -q "libSDL2-2.0.so.0 in the game folder: not the file Longshot installed" "$1" && ! grep -q "Longshot put into this game" "$1" && ! grep -q "^make_game" "$2"' _ "$tmp/mix6.txt" "$log"
 check 'extras: the hash of a changed file is kept (coop-build-checked.txt)' bash -c 'grep -q "^libSDL2-2.0.so.0|" "$1/game/coop-build-checked.txt"' _ "$D"
 printf 'image.bin of another build' >"$D/game/image.bin"
 : >"$log"

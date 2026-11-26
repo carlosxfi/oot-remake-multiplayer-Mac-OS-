@@ -68,7 +68,7 @@ function Get-Sha([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SH
 $KitTop = @('Start Squadala.bat', 'README.txt', 'Revert.bat', 'start-server.cmd', 'make-puppet-pack.cmd', 'coop-options.ini', 'NVIDIA DLSS.bat', 'AMD FSR 4.bat', 'Intel XeSS.bat',
     'Uninstall Character Select.bat', 'Reinstall Character Select.bat')
 $KitScripts = @('start.ps1', 'start-checks.ps1', 'play.ps1', 'coop-ini.ps1', 'kit-paths.ps1', 'hosting.ps1', 'relay-join.ps1',
-    'invite.ps1', 'hookshot-build.ps1', 'apply_patch.py', 'discord_status.py', 'update.ps1', 'start-server.ps1', 'collect-logs.ps1', 'collect-logs.cmd', 'problem-report.ps1', 'problem-report.cmd', 'problem-send.ps1', 'problem-send-url.txt',
+    'invite.ps1', 'hookshot-build.ps1', 'apply_patch.py', 'discord_status.py', 'update.ps1', 'start-server.ps1', 'collect-logs.ps1', 'collect-logs.cmd', 'problem-report.ps1', 'problem-report.cmd', 'problem-send.ps1', 'problem-send-url.txt', 'game-core-files.txt',
     'log-mask.ps1', 'windows-checks.ps1', 'console-mode.ps1', 'local-coop.ps1', 'local-coop-start.ps1', 'character-select.ps1')
 $KitDocs = @(@('setup.md', 'SETUP.md'), @('known-issues.md', 'KNOWN-ISSUES.md'))
 # Never in this kit (emulator kits only); make_kit_hookshot refuses a kit that has one.

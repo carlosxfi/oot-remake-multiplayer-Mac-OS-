@@ -1197,13 +1197,20 @@ function Get-KitGameVariantFiles([string]$Game) {
 # that is missing or is not the one the note names; @() when all match. A folder with no note, or a note that lists no
 # sha1 (a fresh install, a game before its first build, an older Longshot), cannot be checked and gives @(): the start
 # and the build go on as before.
-# C2-3 (owner, 0.12.0): only the CORE build stops a start. The core is the files our patches are built into: longshot.exe
-# (host\ and nx2\ patches), longshot_vk.dll (the gpu\vk\ patches: nx2/build.py VK_LIB, the renderer with co-op's menu
-# and drawing) and image.bin (the game's patched code); the Linux kit's longshot and longshot_vk.so. Everything else the
-# note lists (SDL2.dll, SDL3.dll, renhdrum.dll, licenses\) is Longshot's as it comes: one a player swapped is a warning
-# (Get-KitGameExtrasText), never a stop, and a build keeps it (Save-KitGameExtras) before it puts Longshot's back.
-$script:KitGameCoreNames = @('longshot.exe', 'longshot_vk.dll', 'image.bin', 'longshot', 'longshot_vk.so')
-function Test-KitGameCoreFile([string]$Rel) { return ($script:KitGameCoreNames -contains (Split-Path -Leaf $Rel).ToLowerInvariant()) }
+# C2-3 (owner, 0.12.0): only the CORE build stops a start. The core is the files our patches are built into, listed
+# once in scripts\game-core-files.txt (each name with its source). Everything else the note lists (SDL2.dll, SDL3.dll,
+# renhdrum.dll, licenses\) is Longshot's as it comes: one a player swapped is a warning (Get-KitGameExtrasText), never
+# a stop, and a write of the game keeps it (Save-KitGameExtras) before it puts Longshot's back. Without the list (a
+# damaged kit) every noted file counts as core: the check is never weaker than before.
+function Get-KitGameCoreNames {
+    $file = Join-Path $PSScriptRoot 'game-core-files.txt'
+    try { return @([System.IO.File]::ReadAllLines($file) | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') } | ForEach-Object { $_.ToLowerInvariant() }) } catch { return $null }
+}
+$script:KitGameCoreNames = Get-KitGameCoreNames
+function Test-KitGameCoreFile([string]$Rel) {
+    if ($null -eq $script:KitGameCoreNames) { return $true }
+    return ($script:KitGameCoreNames -contains (Split-Path -Leaf $Rel).ToLowerInvariant())
+}
 
 # The check of every file the note lists: objects Rel, Core, Text, one per file that is missing or not the one the note
 # names. No full hash on every start: a file whose size and time are the note's own stat (make_game.py installed_stat:
@@ -1266,7 +1273,8 @@ function Get-KitGameBuildExtras([string]$Root) {
 function Get-KitGameExtrasText([string[]]$Extras) {
     $names = @(@($Extras) | Where-Object { $_ } | ForEach-Object { ($_ -split ' ', 2)[0] })
     if (-not $names) { return '' }
-    return "Note: $($names -join ', ') in the game folder $(if ($names.Count -eq 1) { 'is' } else { 'are' }) not Longshot's own (yours, or from another build). The game starts with $(if ($names.Count -eq 1) { 'it' } else { 'them' }); a later game build keeps a copy of each as <name>.yours before it puts Longshot's back."
+    $one = $names.Count -eq 1
+    return "Note: $($names -join ', ') in the game folder $(if ($one) { 'is not the file' } else { 'are not the files' }) Longshot installed (your own, or from another build). The game starts anyway. When the game is built again, yours $(if ($one) { 'is' } else { 'are' }) kept as <name>.yours."
 }
 
 # Before a game build: each swapped extra file ($Root: the game) is copied to <file>.yours (the build puts Longshot's own

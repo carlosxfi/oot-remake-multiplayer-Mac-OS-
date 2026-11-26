@@ -836,10 +836,14 @@ ready=0
 # mtime_ns are the note's own stat (make_game.py installed_stat) is not read; one whose stat changed is hashed once and
 # kept in coop-build-checked.txt (rel|size|mtime_ns|sha1) for the next start.
 game_mismatch() {
-    "$PY" -I -B - "$1" "${2:-core}" <<'PYEOF2' 2>/dev/null || true
+    "$PY" -I -B - "$1" "${2:-core}" "$KIT/scripts/game-core-files.txt" <<'PYEOF2' 2>/dev/null || true
 import hashlib, json, os, sys
-root, mode = sys.argv[1], sys.argv[2]
-CORE = {"longshot", "longshot_vk.so", "image.bin", "longshot.exe", "longshot_vk.dll"}
+root, mode, core_list = sys.argv[1], sys.argv[2], sys.argv[3]
+try:   # (the one list of the core build, scripts/game-core-files.txt; without it every noted file is core, as before)
+    with open(core_list, encoding="utf-8") as f:
+        CORE = {l.strip().lower() for l in f if l.strip() and not l.strip().startswith("#")}
+except OSError:
+    CORE = None
 cache_path = os.path.join(root, "coop-build-checked.txt")
 cache, new_cache = {}, {}
 try:
@@ -864,7 +868,7 @@ for name, row in note.items():
     rel = str(name).replace("\\", "/")
     if rel.startswith("/") or ".." in rel.split("/"):
         continue
-    core = os.path.basename(rel).lower() in CORE
+    core = CORE is None or os.path.basename(rel).lower() in CORE
     show = core if mode == "core" else not core
     path = os.path.join(root, rel)
     if not os.path.isfile(path):
@@ -906,7 +910,7 @@ game_extras_text() {
     local names
     names=$(while IFS= read -r l; do [[ -n $l ]] && printf '%s, ' "${l%% *}"; done <<<"$1")
     [[ -n $names ]] || return 0
-    printf "%s in the game folder: not Longshot's own (yours, or from another build). The game starts with them; a later game build keeps a copy of each as <name>.yours before it puts Longshot's back." "${names%, }"
+    printf "%s in the game folder: not the file Longshot installed (your own, or from another build). The game starts anyway. When the game is built again, yours is kept as <name>.yours." "${names%, }"
 }
 # C2-3: before any write of the game (a build, a kept build put back): each swapped extra file is kept as <file>.yours,
 # so a player's own file is never overwritten silently.
