@@ -204,6 +204,7 @@ def plan(groups, kit_root, run_root, server, lane=0, kits=None, lag=0, jitter=0,
         check_distinct(setups)
     planned = []
     for s, (_, runs) in zip(setups, groups):
+        s["kits"], s["server"] = list(kits or []), server   # (proven.identity_of: the build each run plays)
         cmds = [run_command(s, r, server, kits=kits) for r in runs]
         if lane:
             cmds = [c + ["-Lane", str(lane)] for c in cmds]
@@ -266,6 +267,22 @@ def hs_restore(folder, dry):
 
 # --- run -------------------------------------------------------------------------------------------------------------
 
+def _proven():
+    sys.path.insert(0, HERE)
+    import proven
+    return proven
+
+
+def identity(setup):
+    """The build a run plays (proven.identity_of: modules, game, mods pack, kits, server), or {"error": why}: a run.json
+    without an identity key never proves a row for rc_plan.py split --skip-proven."""
+    pv = _proven()
+    try:
+        return pv.identity_of(setup["a"], setup["b"], setup.get("kits"), setup.get("server"))
+    except (pv.Fail, OSError) as e:
+        return {"error": str(e)}
+
+
 def run_groups(planned, dry=False, say=print, runner=None):
     """Each group in its own thread, its scenarios one after another. Writes run.json into each run folder (run.ps1
     prints the folder as its last line). Returns [(group, run, folder or None, exit code)]."""
@@ -277,6 +294,7 @@ def run_groups(planned, dry=False, say=print, runner=None):
         which merge counts as a FAIL row."""
         code = -1
         try:
+            ident = identity(s)
             p = runner(cmd)
             code = p.returncode
             lines = [line.strip() for line in (p.stdout or "").splitlines() if line.strip()]
@@ -293,7 +311,9 @@ def run_groups(planned, dry=False, say=print, runner=None):
                     json.dump({"group": s["name"], "scenario": r["scenario"], "label": r["label"],
                                "expects": r["expects"], "never": r.get("never", []),
                                "see": r.get("see", []), "logonly": r.get("logonly", ""),
-                               "exit": code, "port": s["port"]}, f, indent=1)
+                               "switches": r.get("switches", ""), "timeout": r.get("timeout"),
+                               "password_hash": _proven().secret_hash(r.get("password") or ""),
+                               "identity": ident, "exit": code, "port": s["port"]}, f, indent=1)
                 return folder, code
             note = "exit %d\n%s\n%s" % (code, p.stdout or "", p.stderr or "")
         except Exception as e:   # one broken run must not end its group or vanish from the table
