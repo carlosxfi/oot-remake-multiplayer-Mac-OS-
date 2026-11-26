@@ -31,7 +31,8 @@ def num(game):
 
 
 def setup(game):
-    game.dbno = {"state": "up", "life": 12, "fairy": game.tag == "B", "held": 0, "charsel": 0}
+    game.dbno = {"state": "up", "life": 12, "fairy": game.tag == "B", "held": 0}
+    game.flags.setdefault(CHARSEL, 0)
     game.dbno_rules = {"on": True, "bleed": 45, "hold": 50}
 
 
@@ -126,18 +127,17 @@ def act(game, words):
     return False
 
 
-def command(game, m):
+def after(game, m, r):
+    # The character flag goes through the built-in flag store (game.flags) and this hook only adds to its answer, so
+    # another row's fake of the same flag (fakes/levitate.py nochar, later in file-name order) still takes effect;
+    # a `command` hook here answered it for every test and hid theirs.
     if m.get("cmd") == "flag_read" and m.get("name") == CHARSEL:
-        return {"ok": True, "kind": "int", "value": game.dbno["charsel"]}
+        r["kind"] = "int"
+        return
     if m.get("cmd") == "flag" and m.get("name") == CHARSEL:
-        was, game.dbno["charsel"] = game.dbno["charsel"], int(m["value"])
         o, n = game.other, int(m["value"])
         o.later(30, lambda: o.say("coop: look: P%d wears 11 part colour(s), character %d (PLAYER_LOOK)" % (num(game), n)))
-        return {"ok": True, "was": was, "value": n}
-    return None
-
-
-def after(game, m, r):
+        return
     if m.get("cmd") != "input":
         return
     frames = int(m.get("frames", 1))
