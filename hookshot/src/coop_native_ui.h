@@ -231,8 +231,40 @@ private:
 };
 
 // ---------------------------------------------------------------- game steps
-// A screen the UI manager has, by its vtable (a main+ offset); 0 when none.
+// Which listed screen is live: one the module may hand out and call into (party-hud-crash-c126).
+//
+// A screen in the UI manager's list is not yet (or no longer) a running screen: the status screen with the hearts is
+// listed from the title on, with the same screen and layout addresses (and the layout's vtable) as in play, but it
+// first runs at the first play frame; called into before that (Hud::Find, MakeLive) its layout's parts walked into
+// the scene loader's memory and both games crashed (runs row-53-tot-probe-c126 06:58, party-hud-crash-c126-05b2d8c7
+// 08:25). The probe of 967cac67d (reports/party-hud-crash-c126-4.md) read the fields on both games: the window is the
+// save's load, from the title to the first play frame; in it the status screen's update has not run (patch 0018) and
+// patch 0018's HUD screen has not run yet; from the first play frame on the HUD screen runs.
+//
+// So a screen is live when no scene loads (Sequence_IsLoadingBanc: on through the boot, the whole title and every
+// load; SetSceneLoading) and either
+//  - its own update ran in the last 100 ms (patch 0018's running screens, Menu::Runs), or
+//  - patch 0018's HUD screen has run since the last scene load ended (the game's play UI is up: its listed screens are
+//    built; the banner runs only while open, so chat opens a shut banner by this one).
+// Nothing is live with an exe whose patch 0018 does not say the running screens and the HUD's (fail closed: the native
+// UI waits). The frame site sets both each frame before any screen work (coop_hookshot.cpp). Every path that calls
+// into a screen outside that screen's own update goes through ScreenLive: ScreenByVtable (here and CoopNativeTags'),
+// ScreenLayout (so PaneTextBox, the banner, CoopPartyHud::Hud and BarePart) and CoopPauseTab's strip-to-pages calls
+// (g_pages_layout). CoopMapPage::SearchStatus asks Menu::Runs itself; a screen's own update (CoopPauseTab::OnScreen,
+// CoopTitle in the title screen's hook, CoopModsRuntime) is live by definition. Any thread.
+void SetSceneLoading(bool on);
+bool SceneLoading();
+// Patch 0018's word this frame: the screens that ran in the last 100 ms, and whether its HUD screen ran (nullopt: this
+// exe's patch 0018 does not say them). A load (SetSceneLoading(true)) forgets that the HUD ran.
+void SetRunningScreens(std::optional<std::vector<std::uint64_t>> screens, std::optional<bool> hud_runs);
+bool ScreenLive(std::uint64_t screen);
+// Patch 0018's HUD screen has run since the last scene load ended, and no load runs now.
+bool GameUiUp();
+// A screen the UI manager has, by its vtable (a main+ offset), that is live (ScreenLive); 0 when none.
 std::uint64_t ScreenByVtable(Game& game, std::uint64_t vtable_offset);
+// The layout of a live `screen` (screen+kScreenLayout) to call into; 0 when none or not live. Every call into a
+// screen's layout in coop_native_ui / coop_party_hud reads it through this.
+std::uint64_t ScreenLayout(Game& game, std::uint64_t screen);
 // What a screen holds now.
 enum class Holds { kNothing, kOurs, kGames };
 // The text box of a text pane of the screen's layout, by the game's name string at main+`pane_name`: *(*(pane+8)+8)

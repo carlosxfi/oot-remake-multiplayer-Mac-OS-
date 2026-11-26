@@ -1860,3 +1860,34 @@ TEST_CASE("hookshot: F1 in free play opens co-op's - menu, elsewhere Longshot's 
     CHECK(tab.find("if (g_players_to_main.load()) OpenLongshotMenu();") != std::string::npos);   // (old pack: as before)
     CHECK(tab.find("SetView(g_players_to_main.load() ? View::kMain : View::kPlayers);") != std::string::npos);
 }
+
+TEST_CASE("hookshot: party-hud-crash-c126: the map page and the pause tab call into no screen that is not live") {
+    // review-c123-5: CoopMapPage::Frame looked in other screens' layouts with the game's FindPane during a load
+    // (Search, SearchStatus, the anew walk): it stops at CoopNativeUi::SceneLoading before any of it. The pause tab's
+    // strip update calls into the pages' kept layout: only while that screen is live (CoopNativeUi::ScreenLive). Its
+    // own screen's update is NOT gated on the load flag (party-hud-crash-c126-4: Sequence_IsLoadingBanc is on through
+    // the whole title, where Character Select's Customize screen runs in SnailScreen).
+    const std::string page = ReadFile(kRepo / "hookshot" / "src" / "coop_map_page.cpp");
+    const std::size_t frame = page.find("void Frame(void* ctx, const HosCoopApi* api) {");
+    REQUIRE(frame != std::string::npos);
+    const std::size_t gate = page.find("if (CoopNativeUi::SceneLoading()) {", frame);
+    REQUIRE(gate != std::string::npos);
+    CHECK(gate < page.find("SearchStatus(ctx, api, *menu);", frame));
+    CHECK(gate < page.find("Search(ctx, api, menu->hud_screen, \"HUD\");", frame));
+    CHECK(gate < page.find("Search(ctx, api, menu->panel_screen, \"panel's\");", frame));
+    CHECK(page.find("ForgetStatus();", gate) < page.find("const auto menu = MenuState();", gate));
+    CHECK(page.find("g_hud_at = {}, g_panel_at = {};", gate) != std::string::npos);
+    const std::string tab = ReadFile(kRepo / "hookshot" / "src" / "coop_pause_tab_module.cpp");
+    const std::size_t on = tab.find("void OnScreen(void* ctx, std::uint64_t screen) noexcept {");
+    REQUIRE(on != std::string::npos);
+    const std::size_t next = tab.find("\n}\n", on);   // (OnScreen's end)
+    REQUIRE(next != std::string::npos);
+    const std::string body = tab.substr(on, next - on);
+    CHECK(body.find("if (CoopNativeUi::SceneLoading()) return;") == std::string::npos);
+    const std::size_t early = body.find("CoopNativeUi::ScreenLive(g_pages_screen) &&");
+    REQUIRE(early != std::string::npos);
+    CHECK(early < body.find("ApplyPages(ctx, pages, page_only);"));
+    const std::size_t live = body.find("LiveDue(g_pages_gen) && CoopNativeUi::ScreenLive(g_pages_screen)) {");
+    REQUIRE(live != std::string::npos);
+    CHECK(live < body.find("LiveRows(ctx, g_pages_layout, g_pages_gen, ViewNow(ViewShown()));"));
+}

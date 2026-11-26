@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The other players' name tags on the game's own balloons (coop_native_tags.h).
 #include "coop_native_tags.h"
+#include "coop_native_ui.h"   // ScreenLive: only a live screen handed out (party-hud-crash-c126)
 
 #include <algorithm>
 #include <cmath>
@@ -109,6 +110,7 @@ std::vector<PartTag> PlanParts(const std::vector<Spot>& far_to_near, float width
 }
 
 std::uint64_t ScreenByVtable(Game& game, std::uint64_t vtable_offset) {
+    if (CoopNativeUi::SceneLoading()) return 0;   // (nothing is live: CoopNativeUi::ScreenLive)
     const std::uint64_t base = game.MainBase();
     std::uint64_t got = 0, manager = 0, screens = 0;
     std::uint32_t count = 0;
@@ -120,7 +122,7 @@ std::uint64_t ScreenByVtable(Game& game, std::uint64_t vtable_offset) {
     for (std::uint32_t i = 0; i < count; ++i) {
         std::uint64_t screen = 0, vt = 0;
         if (ReadValue(game, screens + i * 8ull, screen) && screen != 0 && ReadValue(game, screen, vt) &&
-            vt == base + vtable_offset) {
+            vt == base + vtable_offset && CoopNativeUi::ScreenLive(screen)) {
             return screen;
         }
     }
