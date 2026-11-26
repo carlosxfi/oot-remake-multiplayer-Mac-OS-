@@ -5,7 +5,7 @@ other game; with or without Character Select (C #132: the game's own shown bit, 
 |---|---|---|
 | test_gear_hidden_own_and_puppet | part 29 hides A's gear on A's own Link and on A's puppet in B | log + LOOK (shots on each game) |
 | test_gear_shown_again | Hidden off: the pieces come back on both | log + LOOK |
-| test_gear_hidden_without_character_select | the same on a game without the mod | log + LOOK; runs only where a game lacks it |
+| test_gear_hidden_without_character_select | game B without the mod: B's own Link, and A's puppet seen on B | log + LOOK; needs no_cs.ENV |
 
 Set-up and judging, each cited where used:
 - `menu look link_gear=hidden|none`: test only, the module's MENU verb (lichii/hook/coop_testinput.cpp, hookshot
@@ -13,9 +13,8 @@ Set-up and judging, each cited where used:
   the menu closes (WearChosenLook), so it goes on the wire as a player's look does.
 - Log lines: lichii/hook/coop_char_colours.cpp Wardrobe::Frame says `characters: equipment hidden on <your model|a
   puppet> (N piece(s))` and `characters: equipment shown again on ...` (LOG_INFO "coop: {}", hookshot DressCharacters).
-- Character Select present: the module's ModPresent is "its saved Int CharacterMenu_SelectedCharacter is there"
-  (coop_char_colours.cpp NoteOwnPick -> SetModPresent(pick.has_value())); the bridge's flag_read of that name is the
-  same read (docs/playtest.md "flag_read": kind `unknown`, value null when the game has no such flag).
+- Without Character Select: game B booted by harness-c132's switch (no_cs.py: ENV, MARK, the setup proof). Without
+  that switch in --env the test is deselected: NOT-RUN in the rc summary = NOT PROVEN, never PASS (C #132).
 """
 import os
 import sys
@@ -24,16 +23,12 @@ import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import no_cs                                               # noqa: E402  (the ONE no-Character-Select game)
 from test_rows import need_child_in_play, place_in_front   # noqa: E402  (the shared set-up helpers)
 
 HIDDEN_ON = r"characters: equipment hidden on %s \((\d+) piece\(s\)\)"
 SHOWN_ON = r"characters: equipment shown again on %s \((\d+) piece\(s\)\)"
 OWN, PUPPET = "your model", "a puppet"
-
-
-def has_character_select(pair, x):
-    r = pair.flag_read(x, "CharacterMenu_SelectedCharacter")
-    return r.get("kind") not in (None, "unknown") and r.get("value") is not None
 
 
 def wears_a_sword(pair, x):
@@ -49,21 +44,23 @@ def face_each_other(pair):
     pair.step_both(10)
 
 
-def set_gear(pair, value):
-    r = pair.act("A", "menu look link_gear=%s" % value)
-    assert r.get("ok", True), "A refused 'menu look link_gear=%s': %s" % (value, r)
+def set_gear(pair, value, x="A"):
+    r = pair.act(x, "menu look link_gear=%s" % value)
+    assert r.get("ok", True), "%s refused 'menu look link_gear=%s': %s" % (x, value, r)
 
 
-def hide_and_check(pair, shot):
-    mark_a, mark_b = pair.log["A"].mark(), pair.log["B"].mark()
-    set_gear(pair, "hidden")
-    pair.expect_log("A", HIDDEN_ON % OWN, max_frames=240)
-    pair.expect_log("B", HIDDEN_ON % PUPPET, max_frames=600)   # (the look over the wire, then the puppet's frame)
+def hide_and_check(pair, shot, x="A"):
+    """Game x hides its Link's gear: x's own Link and x's puppet on the other game, a shot on each."""
+    y = "B" if x == "A" else "A"
+    mark_x, mark_y = pair.log[x].mark(), pair.log[y].mark()
+    set_gear(pair, "hidden", x)
+    pair.expect_log(x, HIDDEN_ON % OWN, max_frames=240)
+    pair.expect_log(y, HIDDEN_ON % PUPPET, max_frames=600)   # (the look over the wire, then the puppet's frame)
     pair.step_both(30)
-    assert pair.log["A"].find(HIDDEN_ON % OWN, pos=mark_a), "A: own Link's gear not hidden"
-    assert pair.log["B"].find(HIDDEN_ON % PUPPET, pos=mark_b), "B: A's puppet's gear not hidden"
-    pair.check_shot("A", shot)   # A's own Link, from A's camera
-    pair.check_shot("B", shot)   # A's puppet, facing B
+    assert pair.log[x].find(HIDDEN_ON % OWN, pos=mark_x), "%s: own Link's gear not hidden" % x
+    assert pair.log[y].find(HIDDEN_ON % PUPPET, pos=mark_y), "%s: %s's puppet's gear not hidden" % (y, x)
+    pair.check_shot(x, shot)   # x's own Link, from x's camera
+    pair.check_shot(y, shot)   # x's puppet, facing y
 
 
 def show_and_check(pair, shot):
@@ -105,19 +102,25 @@ def test_gear_shown_again(pair):
     show_and_check(pair, "gear-link-shown")
 
 
-@pytest.mark.budget(180)
+@no_cs.MARK
+@pytest.mark.budget(240)
 @pytest.mark.look
 @pytest.mark.row("#293 P4 Link's Equipment hidden without Character Select (C #132)")
 def test_gear_hidden_without_character_select(pair):
     with pair.setup():
         need_child_in_play(pair)
-        cs = {x: has_character_select(pair, x) for x in ("A", "B")}
-        if all(cs.values()):
-            pytest.skip("NOT RUN: both lane games have Character Select (a lane without the mod is needed)")
+        no_cs.prove(pair)
         wears_a_sword(pair, "A")
+        wears_a_sword(pair, "B")
         face_each_other(pair)
     try:
-        hide_and_check(pair, "gear-link-no-cs-hidden")
+        # B without the mod hides its own Link's gear (and A, with it, sees B's puppet hidden) ...
+        hide_and_check(pair, "gear-link-no-cs-own", x="B")
+        set_gear(pair, "none", "B")
+        pair.step_both(60)
+        # ... and B shows A's puppet hidden when A hides its own.
+        hide_and_check(pair, "gear-link-no-cs-puppet", x="A")
     finally:
-        set_gear(pair, "none")
+        set_gear(pair, "none", "A")
+        set_gear(pair, "none", "B")
         pair.step_both(30)
