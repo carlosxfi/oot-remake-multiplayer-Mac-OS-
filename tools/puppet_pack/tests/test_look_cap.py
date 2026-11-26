@@ -288,9 +288,11 @@ class LookCapTest(unittest.TestCase):
         self.assertEqual([t[x] for x in range(5)], [C, C, C, C, 0])
         self.assertEqual(t[3 * 16], C)
         self.assertEqual(t[3 * 16 + 1], 0)
-        # wrapped, and shared with another triangle: both bits
+        # wrapped, and shared with another triangle: both bits. In row 0 the other triangle's edge passes through
+        # texel 12's centre (x = 12.5) and edges are included, so texel 12 is both; row 1's texel 12 is the cap's.
         t = lc.texels([((-0.25, 0), (0, 0), (-0.25, 0.25))], [((0.75, 0), (1.0, 0), (1.0, 0.25))], 16, 16)
-        self.assertEqual((t[12], t[15], t[16 + 14], t[16 + 15], t[3 * 16 + 12]), (C, C | O, C | O, O, C))
+        self.assertEqual((t[12], t[15], t[16 + 12], t[16 + 14], t[16 + 15], t[3 * 16 + 12]),
+                         (C | O, C | O, C, C | O, O, C))
         self.assertEqual(t[0], 0)
 
     def test_smaller_levels_keep_a_thin_trim(self):
@@ -307,7 +309,7 @@ class LookCapTest(unittest.TestCase):
         edge = rows(16, 16, lambda x, y: lc.CAP_TEXEL if x < 7 else lc.OTHER_TEXEL if x == 7 else 0)
         self.assertEqual(lc.smaller_level(edge, 16, 16, 8, 8, 4, 4), {(0, 0), (0, 1)})
         # texels both the cap's and another's are not the cap's alone
-        both = rows(16, 16, lambda x, y: lc.CAP_TEXEL | lc.OTHER_TEXEL if x < 7 else lc.CAP_TEXEL)
+        both = rows(16, 16, lambda x, y: lc.CAP_TEXEL | lc.OTHER_TEXEL)
         self.assertEqual(lc.smaller_level(both, 16, 16, 8, 8, 4, 4), set())
         # a texture whose levels do not halve evenly (ASTC 8x5 over 40 rows: each 8x20 level block is 10 rows)
         tall = rows(16, 40, lambda x, y: lc.CAP_TEXEL if y < 13 else lc.OTHER_TEXEL if y < 30 else 0)
