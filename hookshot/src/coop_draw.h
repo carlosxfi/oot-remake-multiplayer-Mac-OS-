@@ -69,6 +69,20 @@ struct Look {
     FontMetrics regular_metrics;  // its metrics (MetricsOf on the file)
     int medium = 0;              // font-medium.otf (the regular one when it is missing)
     std::array<int, 5> hearts{};  // heart-0..4.png: 0 to 4 quarters filled
+    // The game's own map arrow (MapIconPlayer_00, Link's arrow on the maps: tools/puppet_pack/hud.py), turned
+    // step * 360 / kMapArrowSteps degrees clockwise: map-arrow-NN.png (its shadow and rim) and map-arrow-fill-NN.png
+    // (its inside, white: drawn tinted with the player's colour). 0: not in the pack (an older one), names only.
+    static constexpr int kMapArrowSteps = 32;
+    std::array<int, kMapArrowSteps> map_arrow{};
+    std::array<int, kMapArrowSteps> map_arrow_fill{};
+    bool MapArrows() const {
+        for (int s = 0; s < kMapArrowSteps; ++s) {
+            if (map_arrow[s] == 0 || map_arrow_fill[s] == 0) {
+                return false;
+            }
+        }
+        return true;
+    }
     bool On() const {
         for (const int h : hearts) {
             if (h == 0) {
@@ -173,6 +187,9 @@ coop::overlay::map::Box LayoutToScreen(const coop::overlay::map::Box& layout, fl
 // The words after a name for a player `delta` floors from the one shown
 // ("" on the same floor): floors count down as floor_of's do.
 std::string FloorWords(int delta);
+// The map arrow's turn (Look::map_arrow's index) for a facing `angle` on the map (map::Icon::angle: radians,
+// 0 right, pi/2 down): the game's arrow points up unturned, so a facing to the right is a quarter turn.
+int MapArrowStep(float angle);
 // The voice state after a name as words (" (talking)", " (muted)", "" quiet): the game's own heart lines'
 // (coop_party_hud.h).
 std::string VoiceWords(CoopVoice::Icon icon);

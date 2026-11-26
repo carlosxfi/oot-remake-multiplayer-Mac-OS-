@@ -906,6 +906,75 @@ TEST_CASE("hookshot draw: the others on the minimap where the game's picture has
     CHECK_FALSE(CoopDraw::Wanted(s));
 }
 
+TEST_CASE("hookshot draw: the game's map arrow turned the way each player faces (regression 0c034da5b)") {
+    // The turn: the game's arrow points up; a facing right (0) is a quarter turn, down (pi/2) a half, up a none.
+    constexpr float kPi = 3.14159265f;
+    CHECK(CoopDraw::MapArrowStep(-kPi / 2) == 0);
+    CHECK(CoopDraw::MapArrowStep(0) == 8);
+    CHECK(CoopDraw::MapArrowStep(kPi / 2) == 16);
+    CHECK(CoopDraw::MapArrowStep(kPi) == 24);
+    CHECK(CoopDraw::MapArrowStep(-kPi) == 24);
+    CHECK(CoopDraw::MapArrowStep(3 * kPi / 2 - 0.01f) == 0);   // (just short of a whole turn from up: up)
+    CHECK(CoopDraw::MapArrowStep(kPi / 4) == 12);
+
+    const auto field = Field();
+    CoopDraw::Look look = GameLook();
+    for (int s = 0; s < CoopDraw::Look::kMapArrowSteps; ++s) {
+        look.map_arrow[static_cast<std::size_t>(s)] = 100 + s;       // ids 100.. the rim, 200.. the inside
+        look.map_arrow_fill[static_cast<std::size_t>(s)] = 200 + s;
+    }
+    CoopDraw::Scene s;
+    CoopDraw::MapShown m;
+    m.scene = "HyruleField";
+    m.capture = &field;
+    m.minimap = GameMinimap();
+    m.players = {OnMap(2, 0, 0, 0x00FF00), OnMap(3, 10, -20, 0xFF0000)};
+    m.players[0].rotation = coop::overlay::map::Quat{0, 0, 0, 1};  // looks +Z: down on the map
+    m.names = {"Darunia", "Saria"};   // (player 3 has no rotation yet: the name alone)
+    s.map = &m;
+    Canvas c(1920, 1080);
+    CoopDraw::Draw(c.d, s, look);
+    CHECK(c.Of("triangle").empty());
+    CHECK(c.Of("circle").empty());
+    CHECK(c.Of("rect").empty());
+    const auto images = c.Of("image");
+    REQUIRE(images.size() == 2);
+    const auto down = CoopDraw::MapArrowStep(kPi / 2);
+    CHECK(images[0].text == std::to_string(100 + down));   // the rim, as it is
+    CHECK(images[0].rgba == CoopDraw::Rgba(255, 255, 255, 255));
+    CHECK(images[1].text == std::to_string(200 + down));   // the inside, in the player's colour
+    CHECK(images[1].rgba == CoopDraw::Rgba(0, 255, 0, 255));
+    // Centred where the player is (the frame's centre, 1728 x 885), the name under it.
+    CHECK(images[0].x + images[0].px / 2 == doctest::Approx(1728).epsilon(0.001));
+    const auto darunia = MapLabel(c, "Darunia");
+    REQUIRE(darunia);
+    CHECK(CentreX(*darunia) == doctest::Approx(1728).epsilon(0.001));
+    CHECK(darunia->y > 885);
+    const auto saria = MapLabel(c, "Saria");   // no facing yet: centred where they are
+    REQUIRE(saria);
+    CHECK(CentreY(*saria) == doctest::Approx(865).epsilon(0.001));
+
+    // Another facing, another turn: a quarter turn of the player turns the arrow a quarter.
+    const float q = 0.70710678f;
+    m.players[0].rotation = coop::overlay::map::Quat{0, q, 0, q};
+    Canvas turned(1920, 1080);
+    CoopDraw::Draw(turned.d, s, look);
+    const auto images2 = turned.Of("image");
+    REQUIRE(images2.size() == 2);
+    const int step2 = std::stoi(images2[0].text) - 100;
+    CHECK((step2 - down + 32) % 32 % 8 == 0);
+    CHECK(step2 != down);
+    CHECK((step2 - down + 32) % 16 != 0);   // (a quarter, not a half turn)
+
+    // A pack without the arrows (made before them): the names alone, as before.
+    CoopDraw::Look old = GameLook();
+    Canvas plain(1920, 1080);
+    CoopDraw::Draw(plain.d, s, old);
+    CHECK(plain.Of("image").empty());
+    REQUIRE(MapLabel(plain, "Darunia"));
+    CHECK(CentreY(*MapLabel(plain, "Darunia")) == doctest::Approx(885).epsilon(0.001));
+}
+
 TEST_CASE("hookshot draw: no minimap from the game, no icons (and none without our place's map)") {
     const auto field = Field();
     CoopDraw::MapShown m;

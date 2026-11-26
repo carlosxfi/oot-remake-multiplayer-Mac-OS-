@@ -267,6 +267,42 @@ class BuildTest(unittest.TestCase):
         with self.assertRaises(hud.HudError):
             hud.build(hud.DirReader(self.romfs), self.out, log=lambda *_: None)
 
+    def test_no_map_arrow_pictures_names_only(self):
+        self.make_game()
+        made = hud.build(hud.DirReader(self.romfs), self.out, log=lambda *_: None)
+        self.assertEqual(made["map_arrows"], 0)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "map-arrow-00.png")))
+
+    def test_map_arrows_from_the_game_picture(self):
+        self.make_game()
+        full = swizzle(b"".join(bc4(255, 255, [0] * 16) for _ in range(4)), 16, 2, 0)
+        tex = [(n, 0x1D01, 8, 8, 0, full, (2, 2, 2, 2)) for n in hud.TEXTURES + hud.MAP_ARROW_TEXTURES]
+        self.write("UI/Layout2Archive/Common.Product.100.Nin_Ounce_NVN2.bntx.zs", make_bntx(tex))
+        made = hud.build(hud.DirReader(self.romfs), self.out, log=lambda *_: None)
+        self.assertEqual(made["map_arrows"], hud.MAP_ARROW_STEPS)
+        for step in range(hud.MAP_ARROW_STEPS):
+            for name in hud.map_arrow_names(step):
+                self.assertTrue(os.path.getsize(os.path.join(self.out, name)) > 60, name)
+
+    def test_map_arrow_rim_and_inside_from_the_mask(self):
+        # 2 x 1: a white (rim) pixel and a black (inside) pixel, both opaque; Link's arrow: cream rim, red inside.
+        px = {hud.MAP_ARROW: bytes((255, 255, 255, 255, 0, 0, 0, 255)),
+              hud.MAP_ARROW_LINK: bytes((250, 220, 180, 255, 170, 0, 0, 255)),
+              hud.MAP_ARROW_SHADOW: bytes(8)}
+        rim, inside = hud.compose_map_arrow(px, 2, 1)
+        self.assertEqual(rim[0:4], bytes((250, 220, 180, 255)))   # the rim as Link's
+        self.assertEqual(rim[7], 0)                                # no rim inside
+        self.assertEqual(inside[3], 0)                             # no inside on the rim
+        self.assertEqual(inside[4:8], bytes((255, 255, 255, 255)))  # the inside white: the player's colour tints it
+
+    def test_turned_quarter_moves_up_to_right(self):
+        size = 4
+        img = bytearray(size * size * 4)
+        img[(0 * size + 1) * 4:(0 * size + 1) * 4 + 4] = bytes((255, 0, 0, 255))   # a pixel at the top
+        out = hud.turned(bytes(img), size, 90)
+        self.assertEqual(out[(1 * size + 3) * 4 + 3], 255)   # a quarter turn clockwise: at the right
+        self.assertEqual(hud.turned(bytes(img), size, 0), bytes(img))
+
     def test_compose_hearts_fills_by_quarters(self):
         w = h = 2
         solid = bytes((200, 10, 10, 255)) * 4
