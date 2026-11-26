@@ -39,6 +39,42 @@ def ssim(a_path, b_path, grid=GRID):
     return float(min(tiles)), None
 
 
+def hue_of(rgb):
+    """The hue (0-360) of a 0xRRGGBB colour."""
+    import colorsys
+    r, g, b = ((rgb >> 16) & 255) / 255.0, ((rgb >> 8) & 255) / 255.0, (rgb & 255) / 255.0
+    return colorsys.rgb_to_hsv(r, g, b)[0] * 360.0
+
+
+def changed_hue(before, after, rgb, width=WIDTH, moved=0.15, saturated=0.25, near=30.0):
+    """vest-link (colour-aware look check): the pixels that CHANGED between two shots of the same place (`before`,
+    `after`), and how many of them take the hue of `rgb` in `after`. No guessed mask region: what a recolour changes is
+    found by the change itself. A pixel changed when one channel moved by more than `moved` (0..1); it counts as the
+    colour when it is saturated (HSV S > `saturated`; grey/dark pixels have no hue) and its hue is within `near`
+    degrees of rgb's. Returns {changed, coloured, share, hue}. The thresholds are this check's tolerances, stated by
+    each caller's assert, not values of the game."""
+    import numpy as np
+    from PIL import Image
+
+    def load(path, size=None):
+        with Image.open(path) as im:
+            im = im.convert("RGB")
+            if size is None:
+                size = (width, max(1, round(im.height * width / im.width)))
+            return np.asarray(im.resize(size, Image.BILINEAR), dtype=np.float64) / 255.0, size
+
+    a, size = load(before)
+    b, _ = load(after, size)
+    moved_px = np.abs(b - a).max(axis=2) > moved
+    hsv = np.asarray(Image.fromarray((b * 255).astype("uint8"), "RGB").convert("HSV"), dtype=np.float64) / 255.0
+    hue, sat = hsv[..., 0] * 360.0, hsv[..., 1]
+    want = hue_of(rgb)
+    off = np.abs((hue - want + 180.0) % 360.0 - 180.0)
+    coloured = moved_px & (sat > saturated) & (off <= near)
+    n, c = int(moved_px.sum()), int(coloured.sum())
+    return {"changed": n, "coloured": c, "share": round(c / n, 3) if n else 0.0, "hue": round(want, 1)}
+
+
 def compare(shot, ref, tolerance, keep_dir=None):
     out = {"path": shot, "ref": ref, "score": None, "ok": False, "tolerance": tolerance}
     if not shot or not os.path.exists(shot):

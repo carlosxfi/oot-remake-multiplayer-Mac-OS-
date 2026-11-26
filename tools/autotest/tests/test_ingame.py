@@ -49,7 +49,7 @@ class Suite(unittest.TestCase):
         os.makedirs(refs)
         p = pytest_run([".", "--fake", "--out", out1, "-q"], env={"BT_FAKE_REFS": refs})
         s = summary(out1)
-        self.assertEqual(s["counts"]["NO-REF"], 6, p.stdout[-2000:])   # (+3 gear-link)
+        self.assertEqual(s["counts"]["NO-REF"], 8, p.stdout[-2000:])   # (+3 gear-link, +2 vest-link; its no-CS test: needs_env)
         self.assertEqual(s["counts"]["PASS"], 8, p.stdout[-2000:])
         self.assertEqual(s["verdict"], "NOT PASS")
         self.assertNotEqual(p.returncode, 0)
@@ -59,11 +59,11 @@ class Suite(unittest.TestCase):
         out2 = os.path.join(self.tmp, "o2")
         p = pytest_run([".", "--fake", "--out", out2, "-q"], env={"BT_FAKE_REFS": refs})
         s = summary(out2)
-        self.assertEqual(s["counts"]["PASS"], 14, p.stdout[-2000:])
+        self.assertEqual(s["counts"]["PASS"], 16, p.stdout[-2000:])
         self.assertEqual(s["verdict"], "PASS")
         self.assertEqual(p.returncode, 0)
         shots = [sh for r in s["tests"] for sh in r["shots"]]
-        self.assertEqual(len(shots), 19)            # pause 2 + masks 4 + HUD 4 + gear-link 9: a few per rc, not hundreds
+        self.assertEqual(len(shots), 29)            # pause 2 + masks 4 + HUD 4 + gear-link 9 + vest-link 10: a few per rc, not hundreds
         self.assertTrue(all(sh["ok"] and sh["score"] >= sh["tolerance"] for sh in shots))
 
     def test_default_suite_has_no_setup_fail(self):
@@ -81,10 +81,10 @@ class Suite(unittest.TestCase):
         pytest_run([".", "--fake", "--out", out, "-q", "--repeat", "2", "--no-smoke-gate"])
         s = summary(out)
         names = [r["test"] for r in s["tests"]]
-        self.assertEqual(len(names), 28)
-        self.assertTrue(all("[r1]" in n for n in names[:14]) and all("[r2]" in n for n in names[14:]), names)
+        self.assertEqual(len(names), 32)
+        self.assertTrue(all("[r1]" in n for n in names[:16]) and all("[r2]" in n for n in names[16:]), names)
         self.assertIn("test_boot", names[0])     # smoke first in each round
-        self.assertIn("test_boot", names[14])
+        self.assertIn("test_boot", names[16])
 
     def test_two_lanes_at_once(self):
         out = os.path.join(self.tmp, "o")
@@ -181,7 +181,7 @@ class LaneCheckOnly(unittest.TestCase):
         with open(os.path.join(out, "setup.json"), encoding="utf-8") as f:
             s = json.load(f)
         self.assertTrue(s["ok"])
-        self.assertEqual(s["collected"], 14)   # (+3 gear-link)
+        self.assertEqual(s["collected"], 16)   # (+3 gear-link, +2 vest-link; its no-CS test deselected)
         self.assertFalse(os.path.exists(os.path.join(out, "summary.json")))
 
     def test_real_lane_needs_expect_commit(self):
@@ -495,6 +495,30 @@ class ImageCompare(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertTrue(r["why"].startswith("NO-REF"))
         self.assertTrue(os.path.exists(os.path.join(keep, "new", "x-A.png")))
+
+    def test_changed_hue(self):
+        """vest-link: the changed pixels and their share in a colour's hue; a recolour that did not happen, or went to
+        another hue, or a grey change, is caught."""
+        from PIL import Image, ImageDraw
+
+        def shot(name, vest, sway=0):
+            im = Image.new("RGB", (640, 360), (30, 80, 30))
+            d = ImageDraw.Draw(im)
+            d.rectangle((300 + sway, 60, 340 + sway, 200), fill=(230, 220, 200))   # "Link", swaying a pixel
+            d.rectangle((300, 200, 360, 280), fill=vest)                            # "the vest"
+            path = os.path.join(self.tmp, name + ".png")
+            im.save(path)
+            return path
+        blue, yellow, red, grey = (0x30, 0x70, 0xFF), (0xFF, 0xD0, 0x00), (0xFF, 0x30, 0x30), (0x80, 0x80, 0x80)
+        before = shot("before", blue)
+        h = imagecheck.changed_hue(before, shot("yellow", yellow, sway=1), 0xFFD000)
+        self.assertGreater(h["changed"], 20, h)
+        self.assertGreaterEqual(h["share"], 0.5, h)
+        self.assertEqual(imagecheck.changed_hue(before, shot("same", blue, sway=1), 0xFFD000)["coloured"], 0)
+        self.assertLess(imagecheck.changed_hue(before, shot("red", red), 0xFFD000)["share"], 0.5)
+        self.assertLess(imagecheck.changed_hue(before, shot("grey", grey), 0xFFD000)["share"], 0.5)
+        self.assertAlmostEqual(imagecheck.hue_of(0xFF0000), 0.0)
+        self.assertAlmostEqual(imagecheck.hue_of(0x0000FF), 240.0)
 
 
 if __name__ == "__main__":

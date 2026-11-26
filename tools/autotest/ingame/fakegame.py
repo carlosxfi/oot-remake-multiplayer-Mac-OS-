@@ -26,6 +26,7 @@ class FakeGame:
         self.menu_pause, self.title_until, self.at_title = False, None, False
         self.head, self.ocarina, self.flags, self.pending = None, False, {GATE: 0}, []
         self.gear_hidden = False   # (gear-link: part 29 worn by this game's player)
+        self.vest = None           # (vest-link: part 27 worn by this game's player, 0xRRGGBB or None)
         self.other = None
         open(self.log_path, "w").close()
         me, them = (1, 2) if tag == "A" else (2, 1)
@@ -173,6 +174,19 @@ class FakeGame:
                 what = "hidden" if hide else "shown again"
                 self.later(2, lambda: self.say("coop: characters: equipment %s on your model (1 piece(s))" % what))
                 o.later(10, lambda: o.say("coop: characters: equipment %s on a puppet (1 piece(s))" % what))
+        elif w[0] == "menu" and len(w) == 3 and w[1] == "look" and w[2].lower().startswith("link_vest="):
+            # (vest-link: the tunic wardrobe's and the puppets' tunics' lines, hookshot coop_look_tunic.cpp Step and
+            # coop_look_live.cpp FollowTunics; the names as CoopLookParts::TunicPainting / PuppetTunicsName)
+            v = w[2].split("=", 1)[1]
+            vest = None if v.lower() == "none" else int(v.lstrip("#"), 16)
+            if vest != self.vest:
+                self.vest = vest
+                tunic, colour = (0x3070FF, "blue") if self.tag == "A" else (0xFF3030, "red")
+                plus = "" if vest is None else "+vest%06X" % vest
+                own = "tunic-%06X" % tunic + ("" if vest is None else "-vest-%06X" % vest)
+                self.later(2, lambda: self.say("coop: look: your Link's tunic is %s now (1 texture(s) drawn so by "
+                                               "Longshot's texture overrides; the game's memory is left as it is)" % own))
+                o.later(10, lambda: o.say("coop: look: the puppets' tunics are ptunics|%s=%06X%s now" % (colour, tunic, plus)))
         elif w[0] == "chat" and w[1:] == ["/teleport", "B"]:
             self.later(30, lambda: setattr(self, "pos", [o.pos[0] + 1.0, o.pos[1], o.pos[2]]))
 
@@ -185,6 +199,10 @@ class FakeGame:
         d.rectangle([150 + self.frame % 3, 50, 170, 70], fill=(240, 240, 240) if self.head else (40, 90, 40))
         if not (self.gear_hidden or self.other.gear_hidden):   # (gear-link: a "sword" while A's gear is shown)
             d.rectangle([190, 80, 196, 130], fill=(170, 170, 190))
+        for g, x0, tunic in ((self if self.tag == "A" else self.other, 100, 0x3070FF),
+                             (self if self.tag == "B" else self.other, 220, 0xFF3030)):   # (vest-link: each Link's vest)
+            c = g.vest if g.vest is not None else tunic
+            d.rectangle([x0, 120, x0 + 30, 160], fill=((c >> 16) & 255, (c >> 8) & 255, c & 255))
         im.save(path)
 
     # -- socket -----------------------------------------------------------------------------------------------
