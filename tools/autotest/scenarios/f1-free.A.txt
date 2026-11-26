@@ -1,0 +1,16 @@
+# f1-free, A (see f1-event.steps.txt): A warps into the Deku Tree and goes through its opening event to free play,
+# the same lines as scrub-talk.A.txt and cutscene-snap.A.txt up to their "mark after" (warp, wait 1200, four A presses,
+# wait 2400). The steps' F1 then comes in free play.
+mark start
+warp InsideTheDekuTree Entrance
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark after

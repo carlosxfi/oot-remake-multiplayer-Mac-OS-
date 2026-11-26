@@ -1,0 +1,8 @@
+# f1-event, A (see f1-event.steps.txt): A warps into the Deku Tree and stops in its opening event, the text that waits
+# for A presses. The warp and the wait are scrub-talk.A.txt's and cutscene-snap.A.txt's first lines ("warp
+# InsideTheDekuTree Entrance", "wait 1200", then four "press A" to get through it): no press here, so the event stays
+# up when this ends and the steps' F1 comes inside it.
+mark start
+warp InsideTheDekuTree Entrance
+wait 1200
+mark event

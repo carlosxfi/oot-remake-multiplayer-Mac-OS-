@@ -51,6 +51,11 @@ class FakeGames:
     def wait_ready(self, x):
         self.calls.append(("ready", x))
 
+    def key(self, x, vk, scan):
+        self.calls.append(("key", x, vk, scan))
+        if getattr(self, "landed", False):
+            self.logs[x] += "coop: F1: Longshot's menu on co-op's Multiplayer tab (our - menu cannot open now)\n"
+
     def wait_joined(self, x):
         self.calls.append(("wait", x))
         if hs.JOINED not in self.logs[x]:
@@ -286,6 +291,25 @@ class RunnerTest(unittest.TestCase):
         self.r.run(hs.parse_steps("expect b-left B=1\n"))
         c = self.counts()
         self.assertTrue(c[0].startswith("FAIL b-left (want B=1, after 30 s): B: 0 puppet"), c[0])
+
+    def test_key_lands_or_setup_fail_stops_the_run(self):
+        # (f1-event-c31) A posted F1 counts only once the module's "coop: F1: " line for it is in the log.
+        self.g.landed = True
+        self.r.run(hs.parse_steps("key A F1\nlines after A min=1 coop: F1: \n"))
+        self.assertEqual(self.g.calls[-1], ("key", "A", 0x70, 0x3B))
+        self.assertEqual(self.counts(), ["PASS after (A: 1 lines match 'coop: F1: ', at least 1)"])
+        self.g.landed = False
+        fails = self.r.run(hs.parse_steps("key A F1\nshot never\n"))
+        c = self.counts()
+        self.assertTrue(c[-1].startswith("FAIL SETUP-FAIL step 1 (key A F1): F1 posted to A's window but no new"), c[-1])
+        self.assertEqual(self.g.shots, [])   # (the run stopped at the failed setup)
+        self.assertEqual(fails, 1)
+
+    def test_key_parse(self):
+        self.assertEqual(hs.parse_steps("key B F1\n")[0].args, ["B", "F1"])
+        for bad in ("key A\n", "key A F6\n", "key A F1 F1\n"):
+            with self.assertRaises(hs.StepsError):
+                hs.parse_steps(bad)
 
     def test_lines(self):
         self.g.logs["A"] = "coop: welcomed as player 1 on x\ncoop: welcomed as player 1 on x\n"
