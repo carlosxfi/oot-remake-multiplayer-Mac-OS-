@@ -592,6 +592,8 @@ def lane_pair(request):
             raise GameCrash(why) if crash else P.SetupFail(why)
         pair = P.Pair(P.read_session(session), out_dir=out, refs_dir=refs)
         pair.lane, pair.info, pair.session = lane, dict(info, boot_s=round(time.monotonic() - t0, 1)), session
+        pair.live = _live                       # (Pair.rejoin: live.py quit + relaunch in this session)
+        pair.boot = dict(zip(("A", "B"), boot_paths(config.getoption("boot"))))   # (rejoin: the lane's own boot)
         for x in pair.c:
             h = pair.c[x].hello()
             if not h.get("control"):
