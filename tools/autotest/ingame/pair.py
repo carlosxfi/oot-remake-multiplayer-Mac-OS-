@@ -135,21 +135,56 @@ def lane_check(kit_ls, lane):
     return a
 
 
-def write_lane_server(folder, commit, server, protocol="", by=""):
+def kit_build(kit):
+    """The packaged kit's own record of what it was built from: tools/release/make_kit_hookshot.ps1 writes
+    KIT/VERSION.txt 'co-op repo: <git rev-parse HEAD> (<branch>)[ with uncommitted changes]' and
+    'hookshot_coop.dll: <sha256 first 16>', and copies the module to KIT/hookshot/hookshot_coop.dll. Returns
+    {commit, dll, dll_sha256}; SetupFail if the record is missing, dirty, or does not match the kit's module."""
+    vf = os.path.join(kit, "VERSION.txt")
+    try:
+        with open(vf, encoding="utf-8-sig", errors="replace") as fh:
+            ver = fh.read()
+    except OSError:
+        raise SetupFail("no %s (not a kit made by make_kit_hookshot.ps1)" % vf)
+    m = re.search(r"(?m)^co-op repo: ([0-9a-f]{40}) \(.*?\)(.*)$", ver)
+    if not m:
+        raise SetupFail("%s has no 'co-op repo: <40-hex sha>' line" % vf)
+    if "uncommitted" in m.group(2):
+        raise SetupFail("%s: the kit was built with uncommitted changes (no commit names its module)" % vf)
+    dll = os.path.join(kit, "hookshot", "hookshot_coop.dll")
+    have = _sha256_file(dll)
+    if not have:
+        raise SetupFail("no %s" % dll)
+    d16 = re.search(r"(?m)^hookshot_coop\.dll: ([0-9A-Fa-f]{16}) ", ver)
+    if not d16 or d16.group(1).upper() != have.upper()[:16]:
+        raise SetupFail("%s hookshot_coop.dll line %s is not the kit's module %s"
+                        % (vf, d16.group(1) if d16 else "(none)", have.upper()[:16]))
+    return {"commit": m.group(1), "dll": os.path.abspath(dll), "dll_sha256": have.upper()}
+
+
+def write_lane_server(folder, kit, server, protocol="", by=""):
     """lane-server.txt for a game folder that lane-game-for.ps1 did not install (the short gate's packaged kit pair):
     the same fields in the same order as offline/lane-game-for.ps1 writes them, from the folder's own module and
-    coop-built-from.txt, so lane_check above reads it as a lane's. Returns the text written."""
+    coop-built-from.txt, so lane_check above reads it as a lane's, plus kit= (the source of commit=).
+    commit= is never the caller's word: it is the kit's own VERSION.txt commit (kit_build), and the folder's module must
+    be the kit's module (sha256), else SetupFail (coop-built-from.txt's commit= is Longshot's, not ours; without this
+    --expect-commit would compare a typed value with itself). Returns the text."""
     import datetime
+    kb = kit_build(kit)
     line = _patches_line(os.path.join(folder, "coop-built-from.txt"))
     if line is None:
         raise SetupFail("%s has no coop-built-from.txt patches= line (not built by hs.py build?)" % folder)
     dll = _sha256_file(os.path.join(folder, "hookshot_coop.dll"))
     if not dll:
         raise SetupFail("%s has no hookshot_coop.dll" % folder)
+    if dll.upper() != kb["dll_sha256"]:
+        raise SetupFail("%s hookshot_coop.dll %s is not the kit's module %s (kit %s, commit %s)"
+                        % (folder, dll.upper()[:16], kb["dll_sha256"][:16], kit, kb["commit"][:8]))
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
     txt = ("# written by tools/autotest/ingame/lane_record.py %s UTC\nby=%s\ncommit=%s\nprotocol=%s\nserver=%s\n"
-           "dll_sha256=%s\npatches_line_sha256=%s\n" % (stamp, by, commit, protocol, os.path.abspath(server), dll,
-                                                       hashlib.sha256(line.encode("utf-8")).hexdigest().upper()))
+           "dll_sha256=%s\npatches_line_sha256=%s\nkit=%s\n"
+           % (stamp, by, kb["commit"], protocol, os.path.abspath(server), dll,
+              hashlib.sha256(line.encode("utf-8")).hexdigest().upper(), os.path.abspath(kit)))
     with open(os.path.join(folder, "lane-server.txt"), "w", encoding="utf-8", newline="\n") as f:
         f.write(txt)
     return txt
