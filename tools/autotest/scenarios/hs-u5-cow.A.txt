@@ -4,7 +4,7 @@
 # A's baseline here is ADULT: hs-u5-prep's autosave after `warp HyruleField_Adult` (hookshot turns KokiriForest_Adult
 # into KokiriForest_Child for a child save: 'sent (map KokiriForest_Child, not accepted)'), then `place` on LinkBed;
 # StartPos LinkBed at -46.50 118.60 15.30 (2.4 m from the cow, inside Link's house).
-# A faces the cow, camera behind (ZL), plays Epona's Song (Up Left Right x2 = X Y R X Y R). Seed U5GIFTA:
+# A faces the cow, camera behind (ZL), plays Epona's Song (high D, B, A x2 = A X Y A X Y). Seed U5GIFTA:
 # KF Links House Cow = Piece of Heart. Shots decide; flag debug: HavePlayedEvent.Dm_StaffCredit_0027 0x4f4c1315
 # 0 -> 1 in A, then in B (kOnceGifts, given once for the group).
 #! noload
@@ -34,17 +34,17 @@ mark a-cow
 press DLEFT 12
 wait 240
 mark a-ocarina-out
-press X 12
-wait 60
-press Y 12
-wait 60
-press R 12
+press A 12
 wait 60
 press X 12
 wait 60
 press Y 12
 wait 60
-press R 12
+press A 12
+wait 60
+press X 12
+wait 60
+press Y 12
 wait 120
 mark a-epona
 wait 240

@@ -10,7 +10,7 @@
 # Run: tools\autotest\run.ps1 -Runtime hookshot -Lane 1 -Scenario hs-ocarina-play
 # Fix (rows 93/103): B logs "coop: items: ocarina 'Item_Ocarina_Fairy' equipped by the game from its flags
 # (slots 13, 16)" before mark start. Pass (from the game's own state, B's log): after mark out-1, "ocarina probe: our Link plays the ocarina"
-# and "coop: ocarina note 11 (Ocarina_A) sent"; after mark lullaby, three notes sent twice (run 20261115-185256: 11, 13, 7; the keys are a guess, so the song itself is not recognised yet).
+# and "coop: ocarina note 11 (Ocarina_A) sent"; after mark lullaby, three notes sent twice (13, 16, 11: Zelda's Lullaby as X A Y; up to epona-seen it played Y X R = 11, 13, 7, run 20261115-185256, a key guess that is no song).
 # Shots out-1 / note-a / lullaby: the ocarina in B's hands. Also after the Kakariko load (out-2).
 # 0.11.2 FAILed (no probe line, nothing in B's hands); with the game's own equip (0a4bba92) PASS, run 20261115-185256.
 # A part only that it plays at out-2 but not at out-1: a scene load is enough, not a save load.

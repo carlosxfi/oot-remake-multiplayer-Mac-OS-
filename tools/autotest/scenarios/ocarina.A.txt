@@ -8,7 +8,7 @@
 # Not covered: a song that starts a cutscene (Song of Time block, warp songs): those are
 # "DemoOcarina..." and cutscenes, so the puppets hide as for any cutscene.
 # Bigrun 2026-11-12: R + ZR never brought the Ocarina out (only sword moves). It is on D-pad Left
-# (ocarina-given.B.txt, ocarina-use #190); notes as there: A, L = Down, R = Right, Y = Left, X = Up.
+# (ocarina-given.B.txt, ocarina-use #190); notes: L = D, R = F, Y = A, X = B, A = high D.
 mark start
 give PouchData.Item_Ocarina_Fairy.StockNum
 wait 120
