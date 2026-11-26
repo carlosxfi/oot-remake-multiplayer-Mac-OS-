@@ -45,8 +45,9 @@ KIT_UP = 5   # (hos_coop_mods.h HOS_COOP_MODS_KIT_UP)
 def seed_in(pair):
     """Set-up proof that game A runs with the test seed's archive over Character Select's, and B without it."""
     for x in ("A", "B"):
-        s = pair.state(x)
-        assert pair.in_play(s), "%s not in play (%s)" % (x, s.get("not_ready"))
+        # (steps to a fresh in-play sample: a held game's first state right after the boot has no Link sample yet, the
+        # gifts-237 SETUP-FAIL 2026-11-26; this file may run alone with -k, without the smoke tier before it)
+        pair.until("%s in play" % x, lambda x=x: pair.in_play(pair.state(x)), max_frames=600)
     a_mods = os.path.join(pair.games["A"]["folder"], "mods")
     assert os.path.isdir(os.path.join(a_mods, SEED_MOD)), "A: no %s (hookshot.py seed_layout did not run)" % SEED_MOD
     with open(os.path.join(a_mods, "coop-mods.list"), encoding="utf-8", errors="replace") as f:
@@ -68,6 +69,7 @@ def to_key_items_then_left(pair):
 def leave_menu(pair):
     pair.press("A", ["R"])          # (Key Items -> Threads of Time: the game's own keys still work)
     pair.step_both(WAIT)
+    pair.check_shot("A", "charpage-threads-again", tolerance=0.85)   # (old shot threads-again: R went through)
     pair.press("A", ["MINUS"])
     pair.step_both(180)             # (charpage-288-hold.A.txt: 'wait 180' after the closing MINUS)
     pair.until("A back in play after the - menu", lambda: pair.in_play(pair.state("A")), max_frames=300)
@@ -120,7 +122,7 @@ def test_characters_page_merged_at_restart(pair):
     assert pair.log["A"].find(MERGED, pos=0), "A: the start's merge did not end with 0 (no '%s')" % MERGED
     assert not pair.log["A"].find(SEED_WINS, pos=0), "A: the seed's archive still wins unmerged after the merge"
     to_key_items_then_left(pair)
-    pair.step_both(90)              # (charpage-288-open.A.txt: 'wait 240' on the page)
+    pair.step_both(240 - WAIT)      # (charpage-288-open.A.txt: 'wait 240' on the page; WAIT of it already ran)
     pair.never_log("A", HELD)
     pair.never_log("A", FATAL)
     pair.check_shot("A", "charpage-page", tolerance=0.85)   # (the whole Characters page: portrait, names)
