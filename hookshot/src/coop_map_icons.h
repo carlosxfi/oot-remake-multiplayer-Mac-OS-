@@ -42,7 +42,8 @@ inline constexpr std::uint64_t kPaneMatrix = 0x28;   // pane+: the global matrix
 // translate at +0x6c/+0x70 (CoopNativeTags addr::kPaneXY). The probe is the bridge test
 // (tools/autotest/ingame/test_map_icons.py, run with --env LICHII_COOP_MAP_TURN_AT=68): the game's own arrow's word
 // there must follow our facing a quarter a turn; only then is it set here, citing that run.
-// LICHII_COOP_MAP_TURN_AT=<hex> tries one without a rebuild; =0 switches the write off.
+// LICHII_COOP_MAP_TURN_AT=<hex> tries one without a rebuild. With no place (0, or TURN_AT=0) the module leaves the
+// copies down and the overlay's turned arrows stay (coop_hookshot.cpp MapIcons): never an unturned arrow.
 inline constexpr std::uint64_t kPaneTurn = 0;
 
 // One other player on the map shown, in the layout's units (3840 x 2160, x right, y down from the top left).

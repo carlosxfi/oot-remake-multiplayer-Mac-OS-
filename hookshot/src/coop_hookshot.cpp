@@ -698,10 +698,14 @@ void MapIcons(void* ctx) {
         g_map_icons.Forget();
         return;
     }
+    // No turn place known (kPaneTurn 0 and no trial, or TURN_AT=0): the game's copies would show the others' arrows
+    // unturned, so they stay down and the overlay keeps drawing the turned arrows (G2a; no loss against 0.11.12).
+    static const std::uint64_t place = turn_env.empty() ? CoopMapIcons::kPaneTurn : turn_at;
+    if (place == 0) return;
     const auto frame = CoopMapIcons::Taken();
     if (frame.marks.empty() && g_map_icons.shown() == 0) return;   // solo, or nobody on the map: nothing touched
     TagsGame game(ctx);
-    if (!turn_env.empty()) g_map_icons.TurnAt(turn_at);
+    g_map_icons.TurnAt(place);
     g_map_icons.Step(game, frame);
     if (CoopPlaytest::On()) CoopMapIcons::PublishState(CoopMapIcons::Json(g_map_icons.Snapshot(game)));   // (test-only)
     if (g_map_icons.Up()) g_map_native.store(true);
