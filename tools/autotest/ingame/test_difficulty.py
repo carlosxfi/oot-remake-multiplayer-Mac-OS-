@@ -3,8 +3,10 @@ hs-host-difficulty), on the bridge. Both tests boot `--boot live-lobby-hard` (sc
 live-kakariko-child with '#! server --difficulty hard', hookshot.py header_server_args): the lobby is made with Hard
 before the first player joins, as hs-difficulty-lobby.steps.txt's '#! server --difficulty hard' did.
 
-Run (one job, this file alone: the second test leaves A's session, so nothing may run after it on this boot):
-    pytest test_difficulty.py --boot live-lobby-hard --lane 1 --expect-commit <sha>
+Run (one job, this file alone, --repeat 1: the second test leaves A's session, so nothing may run after it on this
+boot; each set-up asserts both games list two connected players, so a wrong order or a repeat is SETUP-FAIL, not a
+FAIL half-way: review-rows-c136 15:09):
+    pytest test_difficulty.py --boot live-lobby-hard --lane 1 --repeat 1 --expect-commit <sha>
 
 Sources of every value (worker-rules "no guessed values"):
 - 'coop: difficulty: Hard' / '... Automatic': hs-difficulty-lobby.steps.txt lines hard-A/hard-B/no-auto-A; the module's
@@ -30,6 +32,8 @@ import os
 import re
 
 import pytest
+
+from pair import SetupFail
 
 BOOT = "live-lobby-hard"
 HARD = r"coop: difficulty: Hard"
@@ -61,6 +65,22 @@ def count(pair, x, pattern, pos):
     return sum(1 for ln in pair.log[x].since(pos) if rx.search(ln))
 
 
+def connected(pair, x):
+    return [p for p in ((pair.state(x).get("coop") or {}).get("players") or []) if p.get("state") == "connected"]
+
+
+def need_start(pair):
+    """Each test's start (inside `with pair.setup():`): both games in play at the boot's place, stepped to a fresh
+    sample (pair.need_boot_place, harness-c133-scene; never one read right after the boot), and both in the lane's
+    session with two connected players (the state's coop.players, as test_smoke.test_connect reads). Run after
+    test_host_page_difficulty_kept (A left the session) or on a --repeat r2, this is SETUP-FAIL naming the counts."""
+    pair.need_boot_place()
+    n = {x: len(connected(pair, x)) for x in ("A", "B")}
+    if any(v < 2 for v in n.values()):
+        raise SetupFail("not both in the session: connected players A=%d B=%d (need 2 each; test_difficulty.py runs "
+                        "alone with --repeat 1, the Host page test last)" % (n["A"], n["B"]))
+
+
 def never_since_start(pair, x, pattern):
     """The old rows' `lines ... max=0`: none in the whole session (pos 0; pair.never_log reads only this test's)."""
     line = pair.log[x].find(pattern, pos=0)
@@ -73,8 +93,7 @@ def never_since_start(pair, x, pattern):
 @pytest.mark.row("#114 a lobby made with a difficulty has it from the first player (hs-difficulty-lobby)")
 def test_lobby_difficulty_from_first_player(pair):
     with pair.setup():
-        for x in ("A", "B"):
-            assert pair.in_play(pair.state(x)), "%s not in play after the boot" % x
+        need_start(pair)
     # (hard-A / hard-B: min=1 since the start; no-auto-A: max=0. Both games here: B joined the same lobby.)
     for x in ("A", "B"):
         assert pair.log[x].find(HARD, pos=0), "%s: no '%s' line since the start (the lobby's Hard)" % (x, HARD)
@@ -132,12 +151,11 @@ def test_host_page_difficulty_kept(pair):
     before = open(path, "rb").read() if os.path.isfile(path) else None
     try:
         with pair.setup():
-            assert pair.in_play(pair.state("A")), "A not in play after the boot"
+            need_start(pair)
             assert pair.log["A"].find(TITLE_ROWS, pos=0), "A: no title rows line since the start (%s)" % TITLE_ROWS
             pair.act("A", "menu leave")
             pair.until("A left the session (no connected players listed)",
-                       lambda: not [p for p in ((pair.state("A").get("coop") or {}).get("players") or [])
-                                    if p.get("state") == "connected"], max_frames=300)
+                       lambda: not connected(pair, "A"), max_frames=300)
         with open(os.path.join(pair.games["A"]["folder"], "to-title.now"), "w") as f:
             f.write("bt\n")
         pair.until("A on the title", lambda: not pair.in_play(pair.state("A")), max_frames=900)

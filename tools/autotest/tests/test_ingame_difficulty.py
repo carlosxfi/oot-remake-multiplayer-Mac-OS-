@@ -29,11 +29,13 @@ class DifficultyBridgeTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_it(self, tag, mode, before=None):
+    def run_it(self, tag, mode, before=None, left=None):
         out = os.path.join(self.tmp, tag)
         env = {"BT_FAKE_DIFFICULTY": mode, "BT_FAKE_REFS": os.path.join(self.tmp, "refs")}
         if before is not None:
             env["BT_FAKE_DIFFICULTY_BEFORE"] = before
+        if left is not None:
+            env["BT_FAKE_DIFFICULTY_LEFT"] = left
         p = T.pytest_run(["test_difficulty.py", "--fake", "--no-rerun", "--out", out, "-q"] + BOOT, env=env)
         return p, T.summary(out), out
 
@@ -66,6 +68,16 @@ class DifficultyBridgeTests(unittest.TestCase):
         self.assertEqual(results(s)[HOST], "FAIL", p.stdout[-2000:])
         with open(self.kept_files(out)[0], encoding="utf-8") as f:
             self.assertEqual(f.read(), "x\n")
+
+    def test_out_of_the_session_is_setup_fail(self):
+        """review-rows-c136 15:09: a test run after the Host page test (A left the session for good), or a --repeat
+        r2, finds A in play but with no connected players: each set-up says SETUP-FAIL with the counts, never a FAIL
+        half-way, and nothing of the test runs (A's kept file untouched)."""
+        p, s, out = self.run_it("left", "hard", before="y\n", left="A")
+        self.assertEqual(results(s), {LOBBY: "SETUP-FAIL", HOST: "SETUP-FAIL"}, p.stdout[-2000:])
+        self.assertIn("connected players A=0 B=2", p.stdout)
+        with open(self.kept_files(out)[0], encoding="utf-8") as f:
+            self.assertEqual(f.read(), "y\n")
 
     def test_deselected_on_the_default_boot(self):
         out = os.path.join(self.tmp, "default")

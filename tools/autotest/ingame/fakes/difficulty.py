@@ -5,6 +5,8 @@ BT_FAKE_DIFFICULTY set (the selftests, tests/test_ingame_difficulty.py), so no o
   auto      the bug: the lobby's choice lost, the game says 'Automatic (2 players): ...'
   refused   Hard, but the idle Host page refuses each change (coop_pause.cpp:1230 'difficulty refused')
 BT_FAKE_DIFFICULTY_BEFORE=TEXT: A's coop-difficulty.ini holds TEXT before the run (the restore check).
+BT_FAKE_DIFFICULTY_LEFT=A: game A starts in play but out of the session (no connected players), as a test run after
+test_host_page_difficulty_kept would find it: the set-up's connected check must make it SETUP-FAIL (review-rows-c136).
 
 Pages (the state's coop.page, CoopPauseMenu::PageWord): A in the pause -> main (System's Multiplayer button), A on main
 -> settings (Co-op settings), B back one page; on the title after `menu leave`, A -> host (hs-title-menu.press.txt);
@@ -23,7 +25,8 @@ def _mode():
 def setup(game):
     if not _mode():
         return
-    game.dl_page, game.dl_left, game.dl_index = None, False, 0
+    game.dl_page, game.dl_index = None, 0
+    game.dl_left = game.tag in (os.environ.get("BT_FAKE_DIFFICULTY_LEFT") or "").split(",")
     before = os.environ.get("BT_FAKE_DIFFICULTY_BEFORE")
     if game.tag == "A" and before is not None:
         with open(os.path.join(game.folder, KEPT_FILE), "w", encoding="utf-8") as f:
