@@ -93,7 +93,7 @@ TEST_CASE("menu state: Link's pages count as the title does, and Y turns them") 
     d.Pad(CoopSnailCustom::kY);   // (past the last: back to the first)
     s = FromDriver(d, true, true);
     CHECK(s.page_no == 1);
-    CHECK(Has(Json(Tab{}, s), "\"page_no\":1,\"pages\":4"));
+    CHECK(Has(Json(Tab{}, s), "\"page_no\":1,\"pages\":5"));
 }
 
 TEST_CASE("menu state: the mixer is said, and a screen co-op does not drive gives no rows") {

@@ -61,9 +61,12 @@ namespace {
 // through HoodTrim (C4-4: row 278's Goron and Zora hood trims when cap_trim_hoods is on).
 bool IsGear(Part p) {
     return p != Part::tunic && p != Part::cap_trim && p != Part::cap_trim_hoods && p != Part::eyes &&
-           p != Part::hair && p != Part::link_gear && !CoopLook::IsCharacterPart(p);
-    // (look-link-cs: Link's vest and leather are gear-painted parts; their textures are vest-link's and leather-link's
-    // owner table. The hair stays out as in 0.11.12 until hair-link paints it, so a 0.11.12 look keeps its names.)
+           p != Part::hair && p != Part::link_gear && p != Part::link_vest && p != Part::link_leather &&
+           !CoopLook::IsCharacterPart(p);
+    // (look-link-cs: Link's new parts have no gear texture here, so none is a gear piece: a 0.11.12 look keeps its
+    // painting's name (16 pieces) and a set vest or leather makes no painting that paints nothing. vest-link: the
+    // vest is the tunic wardrobe's (TunicPainted). leather-link brings the leather in with its textures, named last
+    // and only when set; hair-link the hair the same way.)
 }
 }  // namespace
 
