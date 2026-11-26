@@ -71,6 +71,12 @@ class BossRespawn(unittest.TestCase):
         for stage in ("VolvagiaStage", "DodongoStage", "LizalfosStage", "GanonStage"):
             self.assertIn("boss arrival in %s" % stage, p.stdout, p.stdout[-2000:])
 
+    def test_beside_respawn_is_no_ref_never_pass(self):
+        """The old row's 'UNPROVEN ... not taken': A took the beside move, so the row 289 path never ran (pair.unproven)."""
+        p, r = self.run_file(self.OBJ + ["-k", "shows"], env={"BT_FAKE_BROKEN": "beside"})
+        self.assertEqual(set(r.values()), {"NO-REF"}, p.stdout[-2000:])
+        self.assertIn("the row 289 path was not taken", p.stdout)
+
     def test_default_run_deselects_them(self):
         p, r = self.run_file([])
         self.assertEqual(r, {}, p.stdout[-2000:])

@@ -9,6 +9,7 @@ BT_FAKE_BROKEN values:
   LICHII_COOP_DEBUG_OBJECTS=1        rocks lines in VolvagiaStage
   BT_FAKE_BROKEN=starter             (selftest) the fixed lines, but the screen stays black
   BT_FAKE_BROKEN=rocks-<A|B>         (selftest) no rocks on that game
+  BT_FAKE_BROKEN=beside             (selftest) A takes the beside move: B respawns next to it, not at the entrance
   BT_FAKE_BROKEN=no-arrival          (selftest) a warp to a boss stage never arrives (the bridge's 'timeout' answer)
 """
 import os
@@ -66,10 +67,15 @@ def act(game, words):
 def downed(game):
     s, keep = game.scene, game.env_on("LICHII_COOP_ARRIVAL_STARTER=keep")
     steps = [(30, "coop: dbno: our Link: event 0 (by P0)"), (330, "coop: dbno: our Link: event 2 (by P0)"),
-             (360, "coop: dbno: our Link: event 7 (by P0)"),
-             (362, "coop: teleport: respawn at the entrance %s of %s" % (s, s)),
-             (364, "coop: teleport: asking the game's map change event Dm_SY_BancChangeGo for %s at %s "
-                   "(arrival Dm_SY_BancChangeArrive)" % (s, s))]
+             (360, "coop: dbno: our Link: event 7 (by P0)")]
+    if broken() == "beside":
+        steps.append((362, "coop: teleport: next to P1"))
+        for at, line in steps:
+            game.later(at, lambda line=line: game.say(line))
+        return
+    steps += [(362, "coop: teleport: respawn at the entrance %s of %s" % (s, s)),
+              (364, "coop: teleport: asking the game's map change event Dm_SY_BancChangeGo for %s at %s "
+                    "(arrival Dm_SY_BancChangeArrive)" % (s, s))]
     if keep:
         steps.append((365, "coop: teleport: %s has no entrance actor named %s: the starter is kept "
                            "(LICHII_COOP_ARRIVAL_STARTER=keep)" % (s, s)))

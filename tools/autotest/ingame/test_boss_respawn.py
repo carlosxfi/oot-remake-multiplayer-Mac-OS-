@@ -91,16 +91,23 @@ def start_check(pair):
 
 def boss_arrival(pair, stage, then=None):
     """Both games to `stage` at its own start, in play: a bounded step after the set-up check (BOSS_ARRIVAL_S); any
-    miss is SETUP-FAIL 'boss arrival in <stage>: ...' (the row's own check never ran). Kept out of the test bodies:
-    bt_plugin._kind reads a call failure whose traceback text has the class name as SETUP-FAIL."""
+    miss is SETUP-FAIL 'boss arrival in <stage>: ...' (the row's own check never ran).
+    The warp counts Link in the stage during its arrival event (arrive_in_event: a boss stage's intro can outlast the
+    bridge's 60 s 'no event' wait), then both games run until both are in play there: 2400 frames at most, the old
+    scenarios' wait after the load ('wait 2400' before a-in / b-in, br289-volvagia and hs-volvagia-rocks)."""
     outer = pair.deadline
     pair.deadline = P.Deadline(max(0.0, min(BOSS_ARRIVAL_S, outer.left())), clock=outer.clock)
     t0 = outer.clock()
     try:
-        st = pair.warp_both(stage, entrance=stage)
+        st = pair.warp_both(stage, entrance=stage, arrive_in_event=True)
         for x in ("A", "B"):
-            assert st[x].get("scene") == stage, "%s is in %s, not %s" % (x, st[x].get("scene"), stage)
-            assert pair.in_play(st[x]), "%s not in play after the warp (%s)" % (x, st[x].get("not_ready"))
+            assert (st[x].get("scene") or "").lower() == stage.lower(), "%s is in %s, not %s" % (
+                x, st[x].get("scene"), stage)
+
+        def both_in_play():
+            sts = {x: pair.state(x) for x in ("A", "B")}
+            return all(pair.in_play(v) and (v.get("scene") or "").lower() == stage.lower() for v in sts.values())
+        pair.until("both games in play in %s after its arrival event" % stage, both_in_play, max_frames=2400)
         if then:
             then()                            # (a check of the arrival itself, e.g. the hearts still in)
     except P.SetupFail as e:
@@ -151,8 +158,8 @@ def bleed_out_and_respawn(pair, stage):
     way = pair.until("B's respawn route line", lambda: pair.log["B"].find(
         r"coop: teleport: (respawn at the entrance %s of %s|next to \w+|move to )" % (S, S)), max_frames=300)
     if "respawn at the entrance" not in way:
-        pytest.fail("UNPROVEN: B's respawn did not go to the entrance (A took the beside move: %r); the row 289 path "
-                    "was not taken" % way[-160:])
+        pair.unproven("B's respawn did not go to the entrance (A took the beside move: %r); the row 289 path "
+                      "was not taken" % way[-160:])     # (NO-REF, never PASS: old row 'UNPROVEN ... not taken')
     pair.expect_log("B", r"asking the game's map change event Dm_SY_BancChangeGo for %s at %s" % (S, S), max_frames=300)
     pair.expect_log("B", r"live event Dm_SY_BancChangeGo asked of the game \(result 1\)", max_frames=300)
     pair.until("B's load after the respawn ended ('control: state loading -> play' after the ask)",
