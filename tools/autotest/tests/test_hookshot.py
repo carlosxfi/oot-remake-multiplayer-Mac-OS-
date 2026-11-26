@@ -1461,7 +1461,9 @@ class WindowPlacementTest(unittest.TestCase):
             with self.assertRaises(SystemExit) as c:
                 hs.main(["run", "--game-a", tmp, "--game-b", tmp, "--out", os.path.join(tmp, "o"), "--script-a",
                          os.path.join(tmp, "s.txt"), "--display", "DISPLAY9"])
-        self.assertIn("no monitor called DISPLAY9", str(c.exception))
+        # (display-pick-c124, OWNER 2026-11-26: a named monitor that is not connected falls back to a connected one;
+        # only no connected monitor at all stops the run, whatever --display names)
+        self.assertIn("no monitor is connected", str(c.exception))
         self.assertEqual(started, [])
 
     def test_games_start_without_activating_their_window(self):
