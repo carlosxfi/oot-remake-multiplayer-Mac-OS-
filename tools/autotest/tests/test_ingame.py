@@ -1512,8 +1512,9 @@ class SetupLimit(unittest.TestCase):
         with self.assertRaises(P.SetupFail):
             with pair.setup():
                 pair.warp_both("PhantomGanonStage", arrive_in_event=True)
-        self.assertLessEqual(clock.t, P.SETUP_LIMIT_S + P.REPLY_MIN_S)      # (+ the re-hold, as above)
-        self.assertTrue(all(w <= P.SETUP_LIMIT_S for w in pair.c["A"].waits), pair.c["A"].waits)
+        # (the warp's own allowance on top of the 30 s, SETUP_WARP_S; + the re-hold, as above)
+        self.assertLessEqual(clock.t, P.SETUP_LIMIT_S + P.SETUP_WARP_S + P.REPLY_MIN_S)
+        self.assertTrue(all(w <= P.SETUP_LIMIT_S + P.SETUP_WARP_S for w in pair.c["A"].waits), pair.c["A"].waits)
 
     def test_short_test_budget_wins(self):
         pair, clock = self.make(10)
@@ -1521,6 +1522,68 @@ class SetupLimit(unittest.TestCase):
             with pair.setup():
                 pair.state("A")
         self.assertLessEqual(pair.c["A"].waits[0], 10)
+
+
+class SetupWarp(unittest.TestCase):
+    """A warp inside a set-up adds SETUP_WARP_S to its 30 s (tb-gate-look-f9f3b9c2-2 SETUP-FAIL: warp_both in a set-up,
+    warp_one(A) ~16 s, then step_other(B) needed 14.5 s with 13.5 s left; 12+ tests warp in their set-up). The 30 s
+    still bounds everything that is not a warp, and the test's own deadline caps it all. Fake clock, RecoverOnState's
+    fake bridge (a warp costs warp_s of the clock): no real waiting."""
+
+    def make(self, budget, warp_s, step_s=0.0):
+        clock = RecoverOnState.Clock()
+        pair = P.Pair.__new__(P.Pair)
+        pair.c = {x: RecoverOnState.SlowWarp(clock, scene="KakarikoVillage_Child", warp_s=warp_s) for x in "AB"}
+        pair.log, pair.shots, pair.notes = {}, [], []
+        pair.deadline = P.Deadline(budget, clock=clock)
+        return pair, clock
+
+    def test_a_measured_two_game_warp_in_a_set_up_passes(self):
+        pair, clock = self.make(420, warp_s=15.5)
+        with pair.setup():
+            pair.warp_both("KokiriForest_Child", "FrontDekuTree")
+            pair.step_both(30)
+        self.assertGreater(clock.t, P.SETUP_LIMIT_S)               # (the VOIDed set-up: more than 30 s, and it passes)
+        self.assertTrue(any("incl 2 warp(s)" in n for n in pair.notes), pair.notes)
+        self.assertEqual(pair.deadline.left(), 420 - clock.t)      # the test's own deadline is back after it
+
+    def test_twice_the_measured_warp_in_a_set_up_still_passes(self):
+        pair, clock = self.make(420, warp_s=P.WARP_PAIR_MEASURED_S)    # (the margin: each game as slow as two)
+        with pair.setup():
+            pair.warp_both("KokiriForest_Child", "FrontDekuTree")
+        self.assertLessEqual(clock.t, P.SETUP_LIMIT_S + 2 * P.SETUP_WARP_S)
+
+    def test_the_30_s_still_bounds_what_is_not_a_warp(self):
+        pair, clock = self.make(420, warp_s=1.0)
+        with self.assertRaises(P.SetupFail) as cm:
+            with pair.setup():
+                pair.warp_one("A", "KokiriForest_Child")
+                while True:                                        # a set-up that hangs after its warp
+                    pair.call("A", "step", frames=100)            # (1 s of the fake clock each)
+        self.assertIn("timeout", str(cm.exception))
+        self.assertLessEqual(clock.t, P.SETUP_LIMIT_S + P.SETUP_WARP_S + 1.0)
+
+    def test_no_warp_no_extra_time(self):
+        pair, clock = self.make(420, warp_s=0)
+        with self.assertRaises(P.SetupFail):
+            with pair.setup():
+                while True:
+                    pair.call("A", "step", frames=100)
+        self.assertLessEqual(clock.t, P.SETUP_LIMIT_S + 1.0)
+
+    def test_the_tests_deadline_caps_the_warp_allowance(self):
+        pair, clock = self.make(40, warp_s=15.5)
+        with self.assertRaises(P.SetupFail):
+            with pair.setup():
+                pair.warp_both("KokiriForest_Child")
+                pair.warp_both("KakarikoVillage_Child")
+        self.assertLessEqual(clock.t, 40 + P.REPLY_MIN_S)
+
+    def test_a_warp_outside_a_set_up_changes_no_deadline(self):
+        pair, clock = self.make(420, warp_s=15.5)
+        end = pair.deadline.end
+        pair.warp_both("KokiriForest_Child")
+        self.assertEqual(pair.deadline.end, end)
 
 
 class RecoverOnState(unittest.TestCase):
