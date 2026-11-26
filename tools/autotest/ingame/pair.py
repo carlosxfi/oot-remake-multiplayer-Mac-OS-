@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -234,14 +235,19 @@ class Pair:
 
     def __init__(self, games, client=pc.Client, out_dir=None, refs_dir=None):
         self.games = games
+        self._client = client
         self.c = {x: client(g["port"], timeout=30.0) for x, g in games.items()}
         self.log = {x: Log(g["log"]) for x, g in games.items()}
+        self.session = None    # the live.py session folder (bt_plugin lane_pair sets it; rejoin needs it)
+        self.live = None       # live.py runner (args, timeout) -> its JSON answer (bt_plugin lane_pair sets _live)
+        self.boot = {}         # {x: the boot script the lane booted x with} (bt_plugin lane_pair, boot_paths(--boot))
         self.out_dir = out_dir
         self.refs_dir = refs_dir
         self.deadline = Deadline(3600)
         self.shots = []        # [{"game", "name", "path", "ref", "score", "ok"}] of the running test
         self.boot_scene = None # the boot's scene (bt_plugin._boot_proof): where every default-boot test starts
         self.notes = []
+        self.window_shooter = None   # (x, path) -> path: window shots (windowshot.Shooter; the fake lane's own)
 
     # -- per test ---------------------------------------------------------------------------------------------
     def begin(self, seconds):
@@ -546,7 +552,7 @@ class Pair:
         Link already there; then a fresh state with that scene, no load AND an event running counts as the arrival,
         anything else raises. The bridge waits ARRIVE_IN_EVENT_WAIT s per game; a game still loading then is stepped
         until that state (frame-bounded), and every wait stays inside the deadline."""
-        for x in tuple(self.c):            # (the pair's own games: a --solo pair has A only)
+        for x in [y for y in ("A", "B") if y in self.c]:     # (a solo pair: A only)
             self.warp_one(x, scene, entrance, arrive_in_event)
         return {x: self.state(x) for x in self.c}
 
@@ -637,6 +643,92 @@ class Pair:
     def flag_read(self, x, name):
         return self.call(x, "flag_read", name=name)
 
+    # -- a game leaves and comes back (regress step 4, row 249) ---------------------------------------------------
+    REJOIN_QUIT_S = 60       # live.py quit: QUIT_WAIT 15 s to quit, then a kill (live.py:58)
+    REJOIN_BOOT_S = 420      # live.py relaunch: the runner's start + the boot script (live-kakariko-child: ~2900
+                             # frames of script) inside the session's boot_timeout; the call's own wall-clock limit
+
+    def rejoin(self, x, boot=None, env=()):
+        """Game x quits (live.py quit: asked to close, killed after QUIT_WAIT) and starts again into the SAME session
+        (live.py relaunch: its save kept, `boot` = a scenario file played as its boot; default the one the lane booted
+        x with, Pair.boot), so it joins the session's server again. A boot script takes the title itself, so it goes
+        with --no-load, as the lane's own boot (bt_plugin boot_args): never the loader's A presses before the script.
+        The other game runs in real time meanwhile (bridge `resume`, `pause` after): a host held between frames could
+        not answer the rejoiner's save round (docs/flags.md, "The save sent is the host's game now").
+        Afterwards game x has a NEW bridge client (same port: relaunch_argv keeps the session's playtest ports) and its
+        log is read from the new game-out file's first line (relaunch keeps the old one beside it as game-out-X.txt.N).
+        A hung quit/relaunch (_live's subprocess timeout) is an AssertionError naming the step. `env` (K=V each) is for
+        this start of game x only (live.py relaunch --env, after the session's own: it wins; row 251:
+        LICHII_COOP_SERVER=<LAN IP>:<port>, LICHII_COOP_PASSWORD=); the next rejoin without it starts game x with the
+        session's own env again. Returns live.py relaunch's answer; AssertionError if a step did not hold."""
+        if not (self.session and self.live):
+            raise SetupFail("rejoin %s: no live.py session (Pair.session / Pair.live) for live.py quit/relaunch" % x)
+        live = self.live
+        boot = boot or self.boot.get(x)
+        others = [y for y in self.c if y != x]
+        self.c[x].close()
+        for y in others:
+            self.c[y].resume()
+        try:
+            step = "quit"
+            self.deadline.check("rejoin quit")
+            q = live(["quit", "--session", self.session, x],
+                     timeout=max(1.0, min(self.REJOIN_QUIT_S, self.deadline.left())))
+            assert q.get("player") == x and not q.get("error"), "%s: live.py quit: %s" % (x, q)
+            args = ["relaunch", "--session", self.session, x] + (["--boot", boot, "--no-load"] if boot else [])
+            for kv in env:
+                args.append("--env=%s" % kv)     # (one token: an empty value 'K=' stays one argument)
+            step = "relaunch"
+            self.deadline.check("rejoin relaunch")
+            r = live(args, timeout=max(1.0, min(self.REJOIN_BOOT_S, self.deadline.left())))
+            assert r.get("ok"), "%s: live.py relaunch: %s" % (x, r)
+        except subprocess.TimeoutExpired as e:   # (a hung quit/relaunch: a FAIL with its step, never a raw error)
+            raise AssertionError("%s: live.py %s did not answer in %s s (game %s may be down)"
+                                 % (x, step, e.timeout, x))
+        finally:
+            for y in others:
+                self.c[y].pause()
+        self.c[x] = self._client(self.games[x]["port"], timeout=30.0)
+        self.log[x] = Log(self.games[x]["log"])
+        self.log[x].pos = 0
+        h = self.c[x].hello()
+        assert h.get("control"), "%s: after the relaunch the bridge has no Longshot control: %s" % (x, h)
+        self.notes.append("%s rejoined: quit %s; relaunch %s" % (x, q.get("how"), r.get("boot")))
+        return r
+
+    SERVER_RESTART_S = 30    # live.py server stop (a kill) + start (its own 1 s settle): the call's wall-clock limit
+
+    def server_restart(self, args=()):
+        """The session's coop_server stops (killed) and starts again on the same exe, port and password (live.py server
+        stop + start), with `args` as extra server arguments for this start only (e.g. "--same-network-open",
+        "--bind", "<LAN IP>"; each passed as --server-arg=X); a restart without them puts the session's own server
+        back. The games run in real time meanwhile (bridge `resume`, `pause` after), as in rejoin: a game held between
+        frames does not see its connection drop. Its output goes to the session's server-out-N.txt (N = 1, 2, ...:
+        the boot's own is server-out.txt); returns live.py server start's answer ({server, pid, port, args, out})."""
+        if not (self.session and self.live):
+            raise SetupFail("server_restart: no live.py session (Pair.session / Pair.live) for live.py server")
+        live = self.live
+        for y in self.c:
+            self.c[y].resume()
+        try:
+            self.deadline.check("server restart")
+            t = max(1.0, min(self.SERVER_RESTART_S, self.deadline.left()))
+            q = live(["server", "--session", self.session, "stop"], timeout=t)
+            assert q.get("server") == "stopped", "live.py server stop: %s" % q
+            r = live(["server", "--session", self.session, "start"] + ["--server-arg=%s" % v for v in args], timeout=t)
+            assert r.get("server") == "started", "live.py server start: %s" % r
+        finally:
+            for y in self.c:
+                self.c[y].pause()
+        self.notes.append("server restarted%s -> %s" % (" with " + " ".join(args) if args else "", r.get("out")))
+        return r
+
+    def server_log(self, name):
+        """A Log of the session's server output file `name` (server-out.txt, server-out-N.txt), read from its start."""
+        lg = Log(os.path.join(self.session, name))
+        lg.pos = 0
+        return lg
+
     # -- looks ------------------------------------------------------------------------------------------------
     def check_shot(self, x, name, tolerance=0.90):
         """A bridge shot of game x (the game's framebuffer, no overlay), compared to refs/<name>-<x>.png by SSIM.
@@ -651,6 +743,27 @@ class Pair:
         if res["why"].startswith("NO-REF"):
             return res        # (the test goes on; bt_plugin labels it NO-REF at its end, never PASS)
         assert res["ok"], "shot %s-%s: %s" % (name, x, res["why"])
+        return res
+
+    def window_shot(self, x, name, tolerance=0.90):
+        """A WINDOW shot of game x: the screen's copy of its window, Longshot's ImGui overlays (co-op's map arrows, tabs,
+        name tags, its menu) included, which check_shot's bridge shot never has. Taken by self.window_shooter
+        (windowshot.Shooter: the shared offline/lib/screen-shot.ps1, raise + own-pid cover check), compared like
+        check_shot to refs/<name>-window-<x>.png. No reference: NO-REF, the candidate kept under <out>/new/. A covered,
+        failed or missing shot, or a pair without a shooter: SETUP-FAIL (never PASS). The window shows the last
+        frame the game presented: step the games first if the test needs a newer one."""
+        import imagecheck
+        if self.window_shooter is None:
+            raise SetupFail("window shot %s-%s: this pair has no window shooter" % (name, x))
+        wname = "%s-window" % name
+        path = os.path.join(self.out_dir or os.path.join(HERE, "out"), "window", "%s-%s.png" % (wname, x))
+        path = self.window_shooter(x, path)
+        ref = os.path.join(self.refs_dir or os.path.join(HERE, "refs"), "%s-%s.png" % (wname, x))
+        res = imagecheck.compare(path, ref, tolerance, keep_dir=self.out_dir)
+        self.shots.append(dict(res, game=x, name=wname, window=True))
+        if res["why"].startswith("NO-REF"):
+            return res
+        assert res["ok"], "window shot %s-%s: %s" % (wname, x, res["why"])
         return res
 
     def unproven(self, reason):
