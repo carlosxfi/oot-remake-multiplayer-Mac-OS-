@@ -269,6 +269,77 @@ class CopyTreeLinks(Base):
         self.assertEqual(read(os.path.join(other, "SDL3.dll")), "old")
 
 
+class Orphans(Base):
+    """C #133 (11:12 STOP-OFFLINE-QUEUE): a lane game up while no lock of its lane is live is an orphan; a job start
+    closes it (main window first, kill only if still up) and never touches a game its lane's or game's lock covers."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = os.path.join(self.tmp, "root")
+        os.makedirs(self.root)
+
+    def procs(self, live):
+        L = {x: lanes.lane(1, self.kit)[x] for x in ("a", "b")}
+        table = {L["a"]: [(101, os.path.join(L["a"], "longshot.exe"))], L["b"]: [(202, os.path.join(L["b"], "longshot.exe"))]}
+        return lambda folder: [p for p in table.get(folder, []) if p[0] in live]
+
+    def test_no_lock_both_games_are_orphans(self):
+        found, hold = lanes.orphans(1, self.kit, self.root, procs=self.procs({101, 202}))
+        self.assertEqual(sorted((o["game"], o["pid"]) for o in found), [("A", 101), ("B", 202)])
+        self.assertEqual(hold, "")
+
+    def test_a_live_lock_covers_its_games(self):
+        q = lambda *a: None
+        self.assertTrue(lanes.lock_acquire(1, "a running job", root=self.root, say=q))
+        found, _ = lanes.orphans(1, self.kit, self.root, procs=self.procs({101, 202}))
+        self.assertEqual(found, [])
+        hs.lock_release(self.root, "lane1", "a running job", say=q)
+        self.assertTrue(lanes.lock_acquire(1, "B alone", root=self.root, say=q, game="B"))
+        found, _ = lanes.orphans(1, self.kit, self.root, procs=self.procs({101, 202}))
+        self.assertEqual([(o["game"], o["pid"]) for o in found], [("A", 101)])     # B's own lock covers B only
+
+    def test_a_stale_lock_does_not_cover(self):
+        q = lambda *a: None
+        self.assertTrue(lanes.lock_acquire(1, "died", root=self.root, say=q))
+        found, _ = lanes.orphans(1, self.kit, self.root, procs=self.procs({101}), now=time.time() + 5 * 3600)
+        self.assertEqual([o["pid"] for o in found], [101])
+
+    def test_a_lock_whose_owner_pid_is_alive_covers_at_any_age(self):
+        old = time.time() - 6 * 3600          # (past hs.lock_stale's 4 h: a 240+ min bt_plugin session)
+        self.assertTrue(hs.lock_acquire(self.root, "lane1", "long run", pid=os.getpid(), clock=lambda: old,
+                                        say=lambda *a: None))
+        found, _ = lanes.orphans(1, self.kit, self.root, procs=self.procs({101, 202}))
+        self.assertEqual(found, [])
+        found, _ = lanes.orphans(1, self.kit, self.root, procs=self.procs({101, 202}), alive=lambda pid: False)
+        self.assertEqual(len(found), 2)          # (its owner gone: stale, both orphans)
+
+    def test_a_game_build_holds_the_close(self):
+        self.assertTrue(hs.lock_acquire(self.root, "game", "a game build", say=lambda *a: None))
+        found, hold = lanes.orphans(1, self.kit, self.root, procs=self.procs({101}))
+        self.assertEqual(len(found), 1)
+        self.assertIn("build-game.lock", hold)
+
+    def test_close_window_first_kill_if_still_up(self):
+        up, asked, killed = {101, 202}, [], []
+        def closer(pid):
+            asked.append(pid)
+            if pid == 101:
+                up.discard(101)          # (A closes on its window)
+        def killer(pid):
+            killed.append(pid)
+            up.discard(pid)
+        t = [0.0]
+        def clock():
+            return t[0]
+        def sleep(s):
+            t[0] += s
+        res = lanes.close_orphans([{"pid": 101}, {"pid": 202}], wait=5, closer=closer, killer=killer,
+                                  alive=lambda pid: pid in up, clock=clock, sleep=sleep)
+        self.assertEqual(res, {101: "closed", 202: "killed"})
+        self.assertEqual(sorted(asked), [101, 202])
+        self.assertEqual(killed, [202])
+
+
 class GroupsInALane(Base):
     def test_every_group_on_the_lane_one_after_another(self):
         gs = groups.parse_groups("[g1]\nwalk\n[g2]\nchest\n")
