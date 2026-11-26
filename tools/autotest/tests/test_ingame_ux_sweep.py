@@ -71,6 +71,18 @@ class UxSweep(unittest.TestCase):
     def test_final_blow_no_ref_when_the_kill_does_not_land(self):
         self.check(self.run_one("final_blow", "kill-miss", BOOT_ADULT), "NO-REF", "no final blow measured")
 
+    def test_first_set_ups_step_past_a_stale_boot(self):
+        """gifts-237 SETUP-FAIL class: no Link sample for the boot's first 200 frames; the rows' set-ups step
+        (pair.need_boot_place / until_in_play) and the boot proof does too, so all three still PASS."""
+        out = os.path.join(self.tmp, "o")
+        T.pytest_run([".", "--fake", "--out", out, "-q", "-k", "great_fairy_gift or business_scrub", "--no-rerun"],
+                     env={"BT_FAKE_UX": "", "BT_FAKE_STALE_FRAMES": "200"})
+        self.assertEqual(T.summary(out)["counts"]["PASS"], 2, T.summary(out))
+        out = os.path.join(self.tmp, "o2")
+        T.pytest_run([".", "--fake", "--out", out, "-q", "-k", "small_key_door", "--no-rerun"] + BOOT_ADULT,
+                     env={"BT_FAKE_UX": "", "BT_FAKE_STALE_FRAMES": "200"})
+        self.assertEqual(T.summary(out)["counts"]["PASS"], 1, T.summary(out))
+
 
 if __name__ == "__main__":
     unittest.main()

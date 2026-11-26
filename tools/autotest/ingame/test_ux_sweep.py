@@ -46,11 +46,13 @@ FT_FLOOR = 101.54
 KEYS = "DungeonInfo.ForestTemple.SmallKeyNum"
 
 
-def in_play(pair, age):
+def in_play(pair, age, what="both games in play after the warp"):
+    """Both games in play after a warp: stepped to a fresh in-play sample (pair.until_in_play, never one state read:
+    gifts-237 SETUP-FAIL), then of `age`. The tests' FIRST set-up is pair.need_boot_place(age) instead."""
+    pair.until_in_play(what)
     for x in ("A", "B"):
-        s = pair.state(x)
-        assert pair.in_play(s), "%s not in play (%s)" % (x, s.get("not_ready"))
-        assert s.get("age") == age, "%s is %s: this row needs %s Link" % (x, s.get("age"), age)
+        a = pair.state(x).get("age")
+        assert a == age, "%s is %s: this row needs %s Link" % (x, a, age)
 
 
 def value(pair, x, name):
@@ -89,7 +91,7 @@ def test_great_fairy_gift_once_for_group(pair):
     next visit as a returning one with the gift not given and gave it again. Now it is shared by the pickup rule
     (coop_shop_sale.h: 0 -> 1 goes out, a 1 never back to 0)."""
     with pair.setup():
-        in_play(pair, "child")
+        pair.need_boot_place("child")
         for x in ("A", "B"):
             assert pair.log[x].find(GIFTS_SHARED, pos=0), "%s: no '%s' line: the gifts are not shared" % (x, GIFTS_SHARED)
             pair.flag(x, GIFT, 0)       # each game's own 0 (shared only 0 -> 1)
@@ -133,7 +135,7 @@ def test_business_scrub_talks_twice(pair):
     spot = toward(REAR_SCRUB, HOLE, 3.0)        # 3 m in front of the rear scrub, on the line to the hole
     spot_b = toward(REAR_SCRUB, HOLE, 6.0)
     with pair.setup():
-        in_play(pair, "child")
+        pair.need_boot_place("child")
         pair.warp_both(LW_SCENE, LW_ENTRANCE)
         for x, (px, pz) in (("B", spot_b), ("A", spot)):
             pair.act(x, "place %.2f %.2f %.2f" % (px, GROTTO_Y + 0.3, pz))
