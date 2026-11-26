@@ -7,11 +7,13 @@ compare, the lane fixture. What a reaction logs is copied from the tests' own pa
 
 A row port adds its own reactions WITHOUT editing this file: a module ingame/fakes/<name>.py (one per port, its owner's
 file) with any of these hooks, each called for every fake game (A and B), in file-name order:
-    setup(game)                      after the game's own fields are set (game.env = the boot's --env list)
+    setup(game)                      after the game's own fields are set (game.env = the boot's --env list,
+                                     game.boot = the boot's name, --boot: a hook of a needs_boot row reacts only there)
     lane(fakelane)                   once both games exist and know each other (shared state: fakelane.g["A"/"B"])
     command(game, m) -> dict|None    before the built-in answer of bridge message m; a dict = the whole reply
     after(game, m, r)                after the built-in answer r (change r in place)
-    press(game, buttons) -> bool     before the built-in pad reactions; True = handled, the built-in ones are skipped
+    press(game, buttons) -> bool     before the built-in pad reactions; EVERY module's hook gets the press (none can
+                                     hide it from another row's: B #138); any True = the built-in ones are skipped
     act(game, words) -> bool         before the built-in `act` reactions (words = the line split); True = handled
     actors(game) -> list             more world actors for the state's world list
     move_step(game, pos) -> pos|None each frame of a `move`, Link's next [x, y, z]: return a changed one (a wall)
@@ -50,8 +52,8 @@ GATE = "Npc_Hylia_Soldier_003_GateOpen"
 
 
 class FakeGame:
-    def __init__(self, tag, folder, lane, env=(), fakes=(), solo_log=None):
-        self.tag, self.folder, self.lane = tag, folder, lane
+    def __init__(self, tag, folder, lane, env=(), fakes=(), boot="", solo_log=None):
+        self.tag, self.folder, self.lane, self.boot = tag, folder, lane, boot
         self.env, self.fakes = list(env), list(fakes)
         os.makedirs(os.path.join(folder, "playtest", "dumps"), exist_ok=True)
         os.makedirs(os.path.join(folder, "playtest", "shots"), exist_ok=True)
@@ -221,7 +223,8 @@ class FakeGame:
         return r
 
     def press(self, buttons):
-        if any(h(self, buttons) for h in hooks(self.fakes, "press")):
+        taken = [bool(h(self, buttons)) for h in hooks(self.fakes, "press")]   # (all of them: no short-circuit)
+        if any(taken):
             return
         o, me = self.other, 1 if self.tag == "A" else 2
         if "PLUS" in buttons:
@@ -308,10 +311,11 @@ class FakeGame:
 
 
 class FakeLane:
-    def __init__(self, out_dir, lane=1, env=(), fakes_dir=FAKES, solo_log=None):
+    def __init__(self, out_dir, lane=1, env=(), fakes_dir=FAKES, solo_log=None, boot=""):
         root = os.path.join(out_dir, "fake")
         mods = load_fakes(fakes_dir)
-        self.g = {x: FakeGame(x, os.path.join(root, "lane%d-%s" % (lane, x)), lane, env, mods, solo_log=solo_log)
+        self.g = {x: FakeGame(x, os.path.join(root, "lane%d-%s" % (lane, x)), lane, env, mods, solo_log=solo_log,
+                              boot=boot)
                   for x in ("A", "B")}
         self.g["A"].other, self.g["B"].other = self.g["B"], self.g["A"]
         for h in hooks(mods, "lane"):
