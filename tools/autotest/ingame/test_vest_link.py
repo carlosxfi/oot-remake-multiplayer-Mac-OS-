@@ -21,8 +21,9 @@ Set-up and judging, each cited where used:
   (red) (coop/protocol messages.hpp slot_color), so yellow and green vests are far from both on the colour wheel.
 - Colour: imagecheck.changed_hue, the pixels that changed between two shots of the same place and the share of them in
   the vest's hue (no guessed mask region). Shots also go to refs (NO-REF candidates for the owner).
-- Character Select present: the module's ModPresent read, the bridge's flag_read of CharacterMenu_SelectedCharacter
-  (test_gear_link.has_character_select; docs/playtest.md "flag_read").
+- No Character Select: the ONE no-CS lane game, tools/autotest/ingame/no_cs.py (gear-link 812219312, C #132): MARK
+  (needs_env B:COOP_TEST_NO_CHARACTER_SELECT=1, harness-c132's switch) and prove() (B has no mod, the module's
+  ModPresent read through flag_read).
 """
 import os
 import sys
@@ -32,12 +33,11 @@ import pytest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import imagecheck   # noqa: E402
-from pair import SetupFail   # noqa: E402
-from test_gear_link import face_each_other, has_character_select   # noqa: E402  (the shared set-up helpers)
+import no_cs        # noqa: E402  (the ONE no-Character-Select game)
+from test_gear_link import face_each_other   # noqa: E402  (the shared set-up helpers)
 from test_rows import need_child_in_play   # noqa: E402
 
 YELLOW, GREEN = 0xFFD000, 0x20C020
-NO_CS = "B:COOP_TEST_NO_CHARACTER_SELECT=1"   # (harness-c132 item 3, C #132 11:11: game B boots without the mod)
 
 OWN_VEST = r"coop: look: your Link's tunic is tunic-(?:green|[0-9A-F]{6})-vest-%06X\b\S* now"
 OWN_NO_VEST = r"coop: look: your Link's tunic is (?!\S*-vest-)\S+ now"
@@ -132,13 +132,12 @@ def test_vest_unset_is_tunic(pair):
 
 @pytest.mark.budget(300)
 @pytest.mark.look
-@pytest.mark.needs_env(NO_CS)
+@no_cs.MARK
 @pytest.mark.row("#293 P2 Link's Vest without Character Select (C #132)")
 def test_vest_without_character_select(pair):
     with pair.setup():
         need_child_in_play(pair)
-        if has_character_select(pair, "B"):
-            raise SetupFail("%s given but B still has Character Select (flag_read CharacterMenu_SelectedCharacter)" % NO_CS)
+        no_cs.prove(pair)
         face_each_other(pair)
         unset_both(pair)
     try:
