@@ -163,7 +163,7 @@ std::uint64_t Hud::BarePart(Game& game, std::uint64_t hud_layout, std::string& w
     namespace ui = CoopNativeUi::addr;
     std::uint64_t type = 0, got = 0, manager = 0, screens = 0;
     std::uint32_t count = 0;
-    if (CoopNativeUi::SceneLoading()) return why = "a scene load runs", 0;   // (nothing is live: ScreenLive)
+    if (CoopNativeUi::PlayUiDown()) return why = "a scene load runs or the title is up", 0;   // (nothing is live: ScreenLive)
     if (!ReadValue(game, hud_layout, type) || type == 0) return why = "the HUD's layout type not read", 0;
     if (!ReadValue(game, game.At(ui::kUiManagerGot), got) || got == 0 || !ReadValue(game, got, manager) || manager == 0 ||
         !ReadValue(game, manager + ui::kUiCount, count) || !ReadValue(game, manager + ui::kUiScreens, screens) ||
