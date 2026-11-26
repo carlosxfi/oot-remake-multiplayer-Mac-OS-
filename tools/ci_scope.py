@@ -1,0 +1,108 @@
+"""Build's scope job: does this run need the C++ jobs (windows, linux, linux-longshot) or only python-tools?
+
+B #131 2026-11-26: ~10 full Builds queued, most for branches that touch only tools/autotest python, each running the
+whole C++ matrix. A manual run on a work branch whose diff (vs its merge-base with --base) touches only the paths in
+SCOPED runs python-tools only; everything else runs the full matrix. main, integrate-*, release-*, tags and pull
+requests always run full (they are the proofs a release rests on).
+
+SCOPED is the one table: folders whose files no C++ job, kit script or kit test reads (checked 2026-11-26 against
+build.yml's windows/linux/linux-longshot steps, tools/release/*.ps1|*.sh and CMakeLists.txt). tools/hookshot,
+tools/puppet_pack, tools/release, tools/nucleus, tools/ci-runner, tools/coop_test and tools/playtest are NOT in it:
+the kit or a C++/windows job uses them. Adding a folder here needs that same check.
+
+Prints `full=true|false` (for $GITHUB_OUTPUT) on stdout and one `scope: ...` line on stderr and in $GITHUB_STEP_SUMMARY.
+Any doubt (unknown event, no merge-base, git error, empty diff) = full.
+"""
+import argparse
+import fnmatch
+import os
+import re
+import subprocess
+import sys
+
+SCOPED = (
+    "docs/**",
+    "**.md",
+    "tools/autotest/**",
+    "tools/game_scan/**",
+    "tools/netsim/**",
+    "tools/discord-bot/**",
+    "tools/rando/**",
+    "tools/tests/**",
+    "tools/ci_scope.py",
+    "tools/check_content.py",
+    "tools/address_index.py",
+    "tools/check_actions.py",
+    "tools/check_actions_test.py",
+)
+
+ALWAYS_FULL_REF = re.compile(r"^refs/(heads/(main|integrate-.*|release-.*)|tags/.*)$")
+BASE_NAME = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def scoped_path(path):
+    """True when path matches a SCOPED pattern ('**' = any depth, '**.md' = any .md file)."""
+    for pat in SCOPED:
+        if pat == "**.md":
+            if path.lower().endswith(".md"):
+                return True
+        elif pat.endswith("/**"):
+            if path.startswith(pat[:-2]):
+                return True
+        elif fnmatch.fnmatchcase(path, pat):
+            return True
+    return False
+
+
+def decide(event, ref, files):
+    """(full, reason). Only a workflow_dispatch on a work branch can be python-only."""
+    if event != "workflow_dispatch":
+        return True, "full (event %s)" % (event or "?")
+    if ALWAYS_FULL_REF.match(ref or ""):
+        return True, "full (%s always runs full)" % ref
+    if files is None:
+        return True, "full (no diff: merge-base not found)"
+    if not files:
+        return True, "full (empty diff)"
+    outside = [f for f in files if not scoped_path(f)]
+    if outside:
+        return True, "full (files outside the python-only paths: %s)" % ", ".join(outside[:10])
+    return False, "python-only (files: %s)" % ", ".join(files[:20]) + (" +%d more" % (len(files) - 20) if len(files) > 20 else "")
+
+
+def git(*args):
+    return subprocess.run(["git"] + list(args), capture_output=True, text=True, check=True).stdout
+
+
+def changed_files(base):
+    """Files changed between HEAD and its merge-base with origin/<base>, or None when that is not known."""
+    if not BASE_NAME.match(base or ""):
+        return None
+    try:
+        git("fetch", "--no-tags", "--filter=blob:none", "origin", "+refs/heads/%s:refs/remotes/origin/%s" % (base, base))
+        mb = git("merge-base", "HEAD", "origin/" + base).strip()
+        return [l for l in git("diff", "--name-only", mb, "HEAD").splitlines() if l]
+    except (subprocess.CalledProcessError, OSError):
+        return None
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--event", default=os.environ.get("GITHUB_EVENT_NAME", ""))
+    p.add_argument("--ref", default=os.environ.get("GITHUB_REF", ""))
+    p.add_argument("--base", default="integrate-0120")
+    a = p.parse_args(argv)
+    files = changed_files(a.base) if a.event == "workflow_dispatch" and not ALWAYS_FULL_REF.match(a.ref) else []
+    full, reason = decide(a.event, a.ref, files)
+    line = "scope: %s (base %s)" % (reason, a.base)
+    print("full=%s" % ("true" if full else "false"))
+    print(line, file=sys.stderr)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as fh:
+            fh.write(line + ("\n\nC++ jobs (windows, linux, linux-longshot) SKIPPED: python-only diff.\n" if not full else "\n"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
