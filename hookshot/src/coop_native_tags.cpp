@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The other players' name tags on the game's own balloons (coop_native_tags.h).
 #include "coop_native_tags.h"
+#include "coop_native_ui.h"   // SceneLoading: no screen handed out while a scene loads
 
 #include <algorithm>
 #include <cmath>
@@ -109,6 +110,7 @@ std::vector<PartTag> PlanParts(const std::vector<Spot>& far_to_near, float width
 }
 
 std::uint64_t ScreenByVtable(Game& game, std::uint64_t vtable_offset) {
+    if (CoopNativeUi::SceneLoading()) return 0;   // (the screens' layouts are torn down now: CoopNativeUi::SetSceneLoading)
     const std::uint64_t base = game.MainBase();
     std::uint64_t got = 0, manager = 0, screens = 0;
     std::uint32_t count = 0;

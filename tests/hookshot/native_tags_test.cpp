@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "coop_native_tags.h"
+#include "coop_native_ui.h"
 
 namespace {
 
@@ -131,6 +132,10 @@ TEST_CASE("native tags: the balloon screen found by its vtable among the UI mana
     SetUp(g);
     CHECK(T::ScreenByVtable(g, T::addr::kBalloonVtable) == kScreen);
     CHECK(T::ScreenByVtable(g, 0x42) == 0);
+    CoopNativeUi::SetSceneLoading(true);   // party-hud-crash-c126: no screen handed out while a scene loads
+    CHECK(T::ScreenByVtable(g, T::addr::kBalloonVtable) == 0);
+    CoopNativeUi::SetSceneLoading(false);
+    CHECK(T::ScreenByVtable(g, T::addr::kBalloonVtable) == kScreen);
 }
 
 TEST_CASE("native tags: a pane moved as f_8022a3e0 does") {

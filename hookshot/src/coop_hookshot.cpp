@@ -2021,6 +2021,17 @@ void Frame(void* ctx, int site) {
         CoopHook::OnFrame(g_system);
     }
     if (w.calls && ctx != nullptr) {
+        {  // party-hud-crash-c126: the game's own scene load, before any screen work this frame (the screens' layouts
+           // are torn down then; CoopNativeUi::SetSceneLoading). Read as CoopStuckLoad does (coop_hook.cpp StuckLoadFrame).
+            static const std::uint32_t loading_hash = coop::host::flag_hash("Sequence_IsLoadingBanc");
+            CoopHook::EmulatorMemory memory(g_system.ApplicationMemory(), CoopRuntime::MainBase());
+            const bool loading = coop::host::GameFlags(memory).get_bool(loading_hash).value_or(false);
+            if (CoopNativeUi::SceneLoading() != loading) {
+                LOG_INFO(Core, "coop: native ui: scene load {} (Sequence_IsLoadingBanc): {}", loading ? "began" : "ended",
+                         loading ? "no screen's layout is called into until it ends" : "screens looked for again");
+            }
+            CoopNativeUi::SetSceneLoading(loading);
+        }
         RunFlagSetters(ctx);
         LogFlagNative();
         {  // rows 63/76: the game's own HUD refresh after co-op wrote a dungeon item (coop_map_refresh.h). Patch 0018

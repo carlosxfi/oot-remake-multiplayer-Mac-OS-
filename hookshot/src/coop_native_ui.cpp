@@ -3,6 +3,7 @@
 #include "coop_native_ui.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -142,8 +143,8 @@ bool Open(Game& game, std::uint64_t screen, std::uint64_t mode) {
 
 // Sets the pane named by the game's string at main+`pane_name` in the screen's layout.
 bool SetPane(Game& game, std::uint64_t screen, std::uint64_t pane_name, std::uint64_t ref) {
-    std::uint64_t layout = 0;
-    if (!ReadValue(game, screen + addr::kScreenLayout, layout) || layout == 0) return false;
+    const std::uint64_t layout = ScreenLayout(game, screen);
+    if (layout == 0) return false;
     return game.Call(game.At(addr::kSetPaneText), {layout, game.At(pane_name), ref, 1, 0}).has_value();
 }
 
@@ -488,9 +489,10 @@ std::uint64_t TextRing::PutFixed(Game& game, std::size_t index, std::string_view
 }
 
 std::uint64_t PaneTextBox(Game& game, std::uint64_t screen, std::uint64_t pane_name) {
-    std::uint64_t layout = 0, inner = 0, box = 0;
+    std::uint64_t inner = 0, box = 0;
     std::uint32_t flags = 0;
-    if (!ReadValue(game, screen + addr::kScreenLayout, layout) || layout == 0) return 0;
+    const std::uint64_t layout = ScreenLayout(game, screen);
+    if (layout == 0) return 0;
     const auto found = game.Call(game.At(addr::kPaneByName), {layout, game.At(pane_name), 0, 0, 0});
     const std::uint64_t pane = found ? *found : 0;
     // Only a text pane's text box, as the docs have it: *(*(pane+8)+8), checked by the pane's kind.
@@ -501,7 +503,21 @@ std::uint64_t PaneTextBox(Game& game, std::uint64_t screen, std::uint64_t pane_n
     return box;
 }
 
+namespace {
+std::atomic<bool> g_scene_loading{false};
+}  // namespace
+
+void SetSceneLoading(bool on) { g_scene_loading.store(on); }
+bool SceneLoading() { return g_scene_loading.load(); }
+
+std::uint64_t ScreenLayout(Game& game, std::uint64_t screen) {
+    std::uint64_t layout = 0;
+    if (screen == 0 || SceneLoading() || !ReadValue(game, screen + addr::kScreenLayout, layout)) return 0;
+    return layout;
+}
+
 std::uint64_t ScreenByVtable(Game& game, std::uint64_t vtable_offset) {
+    if (SceneLoading()) return 0;   // (the screens' layouts are torn down now: SetSceneLoading)
     const std::uint64_t vtable = game.At(vtable_offset);
     std::uint64_t got = 0, manager = 0, screens = 0;
     std::uint32_t count = 0;

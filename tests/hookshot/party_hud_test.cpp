@@ -740,3 +740,32 @@ TEST_CASE("party hud: the status screen gone a frame, back with the same layout:
     CHECK(hud.Step(game, two, std::nullopt, &log));
     CHECK(game.made == 8);
 }
+
+// party-hud-crash-c126: at 'menu -> loading' the status screen was still listed while the scene loader reused its
+// layout's memory, and the next layout lookup walked into a scene object (both games crashed). While the game's scene
+// load (Sequence_IsLoadingBanc) is on, nothing of a screen's layout is called into; the HUD is found again after it.
+TEST_CASE("party hud: a scene load calls nothing into the HUD's layout") {
+    FakeGame game;
+    game.Hud();
+    party::Hud hud;
+    std::vector<std::string> log;
+    const std::vector<party::Block> blocks = {{"Saria", Quarters(12, 12)}};
+    REQUIRE(hud.Step(game, blocks, 0.15, &log));
+    ui::SetSceneLoading(true);
+    // The layout's memory reused by the scene loader (as the crash's 'Land_kokiri_Branch_A_03.foliage' object).
+    game.Hud(kLayout + 0x200000);
+    const int calls = game.calls;
+    CHECK_FALSE(hud.Step(game, blocks, 0.15, &log));
+    CHECK_FALSE(hud.native());
+    CHECK(game.calls == calls);   // no game function was handed the layout
+    CHECK(ui::ScreenByVtable(game, party::addr::kStatusVtable) == 0);
+    CHECK(ui::ScreenLayout(game, kStatus) == 0);
+    CHECK(ui::PaneTextBox(game, kStatus, 0x1234) == 0);
+    CHECK(game.calls == calls);
+    CHECK(std::any_of(log.begin(), log.end(), [](const std::string& l) { return l.find("a scene load began") != std::string::npos; }));
+    ui::SetSceneLoading(false);
+    CHECK(ui::ScreenLayout(game, kStatus) == kLayout + 0x200000);
+    CHECK(hud.Step(game, blocks, 0.15, &log));   // found again on the new layout
+    CHECK(hud.native());
+    CHECK(std::any_of(log.begin(), log.end(), [](const std::string& l) { return l.find("the scene load ended") != std::string::npos; }));
+}

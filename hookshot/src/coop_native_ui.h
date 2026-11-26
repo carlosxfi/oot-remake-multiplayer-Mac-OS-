@@ -231,8 +231,19 @@ private:
 };
 
 // ---------------------------------------------------------------- game steps
-// A screen the UI manager has, by its vtable (a main+ offset); 0 when none.
+// The game's own scene load (Sequence_IsLoadingBanc, which BeforeChangeBanc sets while a scene loads; as
+// CoopStuckLoad reads it). The module's frame sets it each frame before any screen work (coop_hookshot.cpp, the
+// frame site). While a scene loads the game tears its screens' layouts down and the scene loader reuses their
+// memory while the screen objects may still be listed (party-hud-crash-c126: the status screen's layout walked into
+// a scene object at 'menu -> loading', both games crashed), so no screen is handed out and no layout is called into
+// then: ScreenByVtable (here and CoopNativeTags'), ScreenLayout, CoopPartyHud::Hud. Any thread may read it.
+void SetSceneLoading(bool on);
+bool SceneLoading();
+// A screen the UI manager has, by its vtable (a main+ offset); 0 when none, and 0 while a scene loads.
 std::uint64_t ScreenByVtable(Game& game, std::uint64_t vtable_offset);
+// The layout of `screen` (screen+kScreenLayout) to call into; 0 when none, and 0 while a scene loads. Every call into
+// a screen's layout reads it through this (one place for the load rule).
+std::uint64_t ScreenLayout(Game& game, std::uint64_t screen);
 // What a screen holds now.
 enum class Holds { kNothing, kOurs, kGames };
 // The text box of a text pane of the screen's layout, by the game's name string at main+`pane_name`: *(*(pane+8)+8)

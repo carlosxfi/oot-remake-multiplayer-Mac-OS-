@@ -163,6 +163,7 @@ std::uint64_t Hud::BarePart(Game& game, std::uint64_t hud_layout, std::string& w
     namespace ui = CoopNativeUi::addr;
     std::uint64_t type = 0, got = 0, manager = 0, screens = 0;
     std::uint32_t count = 0;
+    if (CoopNativeUi::SceneLoading()) return why = "a scene load runs", 0;   // (no layout called into: SceneLoading)
     if (!ReadValue(game, hud_layout, type) || type == 0) return why = "the HUD's layout type not read", 0;
     if (!ReadValue(game, game.At(ui::kUiManagerGot), got) || got == 0 || !ReadValue(game, got, manager) || manager == 0 ||
         !ReadValue(game, manager + ui::kUiCount, count) || !ReadValue(game, manager + ui::kUiScreens, screens) ||
@@ -177,7 +178,7 @@ std::uint64_t Hud::BarePart(Game& game, std::uint64_t hud_layout, std::string& w
     for (std::uint32_t i = 0; i < count; ++i) {
         std::uint64_t screen = 0, layout = 0, t = 0, part = 0;
         if (!ReadValue(game, screens + i * 8ull, screen) || screen == 0 ||
-            !ReadValue(game, screen + ui::kScreenLayout, layout) || layout == 0 || layout == hud_layout ||
+            (layout = CoopNativeUi::ScreenLayout(game, screen)) == 0 || layout == hud_layout ||
             !ReadValue(game, layout, t) || t != type) {
             continue;   // (never hands the lookup a non-layout)
         }
@@ -663,9 +664,19 @@ void Hud::SetLabel(Game& game, std::size_t index, const std::string& text, const
 
 bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<double> game_hud_bottom,
                std::vector<std::string>* log, std::uint64_t now_ms, const std::string& own) {
+    // A scene load (CoopNativeUi::SceneLoading): the status screen's layout is torn down and its memory reused, so
+    // nothing of it is called into until the load is over (party-hud-crash-c126); its panes are found again after.
+    const bool loading = CoopNativeUi::SceneLoading();
+    if (loading != said_loading_) {
+        said_loading_ = loading;
+        if (log) {
+            log->push_back(std::string(kSay) + (loading ? std::string("a scene load began: the HUD's layout left alone until it ends")
+                                                        : std::string("the scene load ended: the HUD is looked for again")));
+        }
+    }
     const std::uint64_t screen = CoopNativeUi::ScreenByVtable(game, addr::kStatusVtable);
-    std::uint64_t layout = 0;
-    if (screen == 0 || !ReadValue(game, screen + CoopNativeUi::addr::kScreenLayout, layout) || layout == 0) {
+    const std::uint64_t layout = CoopNativeUi::ScreenLayout(game, screen);
+    if (layout == 0) {
         layout_ = 0;   // (the HUD is gone: its panes with it; found again when it is back)
         native_ = false;
         return false;

@@ -223,6 +223,7 @@ private:
     std::uint64_t Name(Game& game, const std::string& text);
 
     int slots_ = 0;                // the pack's complete slots on this layout (an older pack: fewer than kSlots)
+    bool said_loading_ = false;    // the last scene-load state logged (CoopNativeUi::SceneLoading)
     std::uint64_t layout_ = 0;     // the layout the panes below were found on (the HUD made again: found again)
     bool native_ = false;
     std::uint64_t block_ = 0;      // guest memory of ours: a name's scratch, then the lines' texts
