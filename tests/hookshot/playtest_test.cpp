@@ -426,6 +426,13 @@ TEST_CASE("playtest: every command parses, ids come back as given") {
     CHECK(Parse(R"({"cmd":"dump","tag":"after_chest-2"})")->tag == "after_chest-2");
     CHECK(Parse(R"({"cmd":"shot"})")->tag.empty());
     CHECK(Parse(R"({"cmd":"shot","name":"door_open"})")->tag == "door_open");
+    // key (port-g7, B #137): a host key's name as the window's virtual key (WM_KEYDOWN's wParam)
+    CHECK(Parse(R"({"cmd":"key","key":"F1"})")->key == "F1");
+    CHECK(Parse(R"({"cmd":"key","key":"F1"})")->vk == 0x70u);
+    CHECK(Parse(R"({"cmd":"key","key":"F6"})")->vk == 0x75u);
+    CHECK(Parse(R"({"cmd":"key","key":"F12"})")->vk == 0x7Bu);
+    CHECK(Parse(R"({"cmd":"key","key":"T"})")->vk == static_cast<std::uint32_t>('T'));
+    CHECK(Parse(R"({"cmd":"key","key":"7"})")->vk == static_cast<std::uint32_t>('7'));
 }
 
 TEST_CASE("playtest: bad requests are refused with a reason, never acted on") {
@@ -466,6 +473,11 @@ TEST_CASE("playtest: bad requests are refused with a reason, never acted on") {
     CHECK(ParseError(R"({"cmd":"dump","tag":"C:\\x"})").find("tag") != std::string::npos);
     CHECK(ParseError(R"({"cmd":"shot","path":"/tmp/x.png"})").find("path") != std::string::npos);
     CHECK(ParseError(R"({"cmd":"shot","name":"../../x"})").find("name") != std::string::npos);
+    // key: F1 to F12, A to Z, 0 to 9 only (the pad is `input`, text is `act chat`)
+    CHECK(ParseError(R"({"cmd":"key"})").find("key") != std::string::npos);
+    for (const char* bad : {"f1", "F0", "F01", "F13", "TAB", "t", "", "F1 "}) {
+        CHECK(ParseError(std::string(R"({"cmd":"key","key":")") + bad + "\"}").find("F1 to F12") != std::string::npos);
+    }
     CHECK_FALSE(ValidTag(std::string(65, 'a')));
     CHECK(ParseError(std::string(kMaxLine + 1, ' ')).find("64 KB") != std::string::npos);
 }
@@ -719,7 +731,7 @@ TEST_CASE("playtest: act, flag, warp and give run only when the test runner aske
 
 TEST_CASE("playtest: exactly act, warp, flag and give are gated") {
     for (const char* cmd : {"act", "warp", "flag", "give"}) CHECK(GatedCommand(cmd));
-    for (const char* cmd : {"state", "dump", "shot", "input", "step", "pause", "resume", "hello", "nope", ""}) {
+    for (const char* cmd : {"state", "dump", "shot", "input", "step", "pause", "resume", "hello", "key", "nope", ""}) {
         CHECK_FALSE(GatedCommand(cmd));
     }
 }
