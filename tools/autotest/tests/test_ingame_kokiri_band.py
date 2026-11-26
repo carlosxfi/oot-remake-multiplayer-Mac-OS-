@@ -21,20 +21,15 @@ class KokiriBand(unittest.TestCase):
     TESTS = ["test_look.py::test_kokiri_hood_band", "test_rows.py::test_puppets_spawn"]
     # (the fake games' pack: a stand-in maker per pack name, BT_PACKS_DIR / BT_FAKE_PACK_DIR as PackFiles in
     # test_ingame.py; the real makers need a romfs: packs/look_cap.py, packs/look_cap_old.py)
-    MAKER = ("import os
-"
-             "def make(out, ctx):
-"
-             "    os.makedirs(out, exist_ok=True)
-"
-             "    p = os.path.join(out, 'cap.bin')
-"
-             "    open(p, 'wb').write(b'COOPCAP1 %s')
-"
-             "    ctx.say('cap.bin: fake')
-"
-             "    return {'coop_look/cap.bin': p}
-")
+    MAKER = "\n".join([
+        "import os",
+        "def make(out, ctx):",
+        "    os.makedirs(out, exist_ok=True)",
+        "    p = os.path.join(out, 'cap.bin')",
+        "    open(p, 'wb').write(b'COOPCAP1 %s')",
+        "    ctx.say('cap.bin: fake')",
+        "    return {'coop_look/cap.bin': p}",
+        ""])
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
