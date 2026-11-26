@@ -156,6 +156,39 @@ std::uint64_t Hud::TextPane(Game& game, std::uint64_t layout, const std::string&
     return *pane;
 }
 
+// The game's own line of text for the run-time name lines without the pack (addr::kBarePart): among the UI manager's
+// running screens (as CoopNativeUi::ScreenByVtable walks them) the layout of the HUD's own layout type that has both
+// kBarePart and kBareCheck (= MenuOverlay_00), and that part pane's part layout. 0 when there is none (`why` says).
+std::uint64_t Hud::BarePart(Game& game, std::uint64_t hud_layout, std::string& why) {
+    namespace ui = CoopNativeUi::addr;
+    std::uint64_t type = 0, got = 0, manager = 0, screens = 0;
+    std::uint32_t count = 0;
+    if (!ReadValue(game, hud_layout, type) || type == 0) return why = "the HUD's layout type not read", 0;
+    if (!ReadValue(game, game.At(ui::kUiManagerGot), got) || got == 0 || !ReadValue(game, got, manager) || manager == 0 ||
+        !ReadValue(game, manager + ui::kUiCount, count) || !ReadValue(game, manager + ui::kUiScreens, screens) ||
+        screens == 0 || count > 512) {
+        return why = "no screen list", 0;
+    }
+    const auto find = [&](std::uint64_t layout, const char* pane) -> std::uint64_t {
+        const std::uint64_t n = Name(game, pane);
+        const auto p = n == 0 ? std::nullopt : game.Call(game.At(ui::kPaneByName), {layout, n, 0, 0, 0});
+        return p ? *p : 0;
+    };
+    for (std::uint32_t i = 0; i < count; ++i) {
+        std::uint64_t screen = 0, layout = 0, t = 0, part = 0;
+        if (!ReadValue(game, screens + i * 8ull, screen) || screen == 0 ||
+            !ReadValue(game, screen + ui::kScreenLayout, layout) || layout == 0 || layout == hud_layout ||
+            !ReadValue(game, layout, t) || t != type) {
+            continue;   // (never hands the lookup a non-layout)
+        }
+        const std::uint64_t p = find(layout, addr::kBarePart);
+        if (p == 0 || find(layout, addr::kBareCheck) == 0) continue;
+        if (ReadValue(game, p + addr::kPartLayout, part) && part != 0) return part;
+    }
+    return why = "no " + std::string(addr::kBareScreen) + " " + addr::kBarePart + " among " + std::to_string(count) +
+                 " running screens", 0;
+}
+
 bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) {
     layout_ = layout;
     native_ = false;
@@ -188,7 +221,30 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
         return *a;
     };
     // The run-time gauges' source: the game's own heart part and its parent (R2: no pack, or players past its slots).
-    Drop(game);
+    // The status screen gone a frame and back with the SAME layout: our clones still hang in it (each found by its own
+    // name there), so they are kept; only a new layout drops them, else they would be made and attached again while the
+    // old ones still show, and 0x820 bytes leak each time (review-b118 01:17 (1)).
+    bool keep = layout == live_layout_;
+    int kept = 0;
+    for (int s = 0; s < kSlots && keep; ++s) {
+        const Live& v = live_[static_cast<std::size_t>(s)];
+        for (int k = 0; k < 2 && keep; ++k) {
+            const std::uint64_t root = k == 0 ? v.root : v.name_root;
+            if (root == 0) continue;
+            char own[32];
+            if (k == 0) std::snprintf(own, sizeof own, "Pa_CoopLive_%d", s);
+            else std::snprintf(own, sizeof own, "Pa_CoopLiveName_%d", s);
+            const std::uint64_t n = Name(game, own);
+            const auto p = n == 0 ? std::nullopt : game.Call(game.At(CoopNativeUi::addr::kPaneByName), {layout, n, 0, 0, 0});
+            keep = p && *p == root;
+            kept += keep ? 1 : 0;
+        }
+    }
+    if (log && layout == live_layout_ && kept > 0) {
+        log->push_back(std::string(kSay) + (keep ? "the same layout again: " + std::to_string(kept) + " run-time part(s) kept"
+                                                 : "the same layout address but our run-time parts are not in it: made again"));
+    }
+    if (!keep) Drop(game);
     gauge_part_ = parent_ = 0;
     source_at_ = {};
     if (const std::uint64_t src = pane("Pa_HeartGauge_00"); src != 0) {
@@ -241,17 +297,33 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
     all = slots_ > 0;
     labels_[kMore].pane = pane(LabelPart(kMore));
     labels_[kSelf].pane = pane(LabelPart(kSelf));   // (an older pack without it: no own line, the hearts still show)
-    // The run-time slots' name lines: the pack's line of the game's text (PaEnemyLocation_00), made as their hearts
-    // are. The game's own HUD has no text part (PlayerStatus_00's parts: hearts, magic, buttons, the stone): without
-    // the pack a run-time slot shows its hearts only.
+    // The run-time slots' name lines, made as their hearts are: the pack's line of the game's text (PaEnemyLocation_00);
+    // without the pack the game's own line of the same two text panes, the pause menu's category title (MenuOverlay_00's
+    // Pa_Category_00 = PaMenuCategory_00, a Resident screen; its backing panes hidden on each clone). PlayerStatus_00
+    // itself has no such part (its parts: hearts, magic, buttons, the stone). Neither: hearts only, the log says so.
     name_part_ = 0;
+    name_bare_ = false;
     for (const Label& l : labels_) {
         if (name_part_ == 0 && l.pane != 0) ReadValue(game, l.pane + addr::kPartLayout, name_part_);
     }
+    std::string name_from = "the pack's text part";
+    if (name_part_ == 0 && parent_ != 0) {
+        std::string why;
+        name_part_ = BarePart(game, layout, why);
+        name_bare_ = name_part_ != 0;
+        name_from = name_bare_ ? "the game's " + std::string(addr::kBareScreen) + " " + addr::kBarePart : why;
+    }
     if (parent_ == 0) name_part_ = 0;
     if (log && gauge_part_ != 0) {
-        log->push_back(std::string(kSay) + (name_part_ != 0 ? "run-time name lines can be made (the pack's text part)"
-                                                            : "no run-time name lines (no text part of ours in the HUD)"));
+        log->push_back(std::string(kSay) + (name_part_ != 0 ? "run-time name lines can be made (" + name_from + ")"
+                                                            : "no run-time name lines (" + name_from + ")"));
+    }
+    // A kept layout: its run-time lines back in their slots (labels_ was just cleared).
+    for (int s = slots_; s < kSlots && keep; ++s) {
+        const Live& v = live_[static_cast<std::size_t>(s)];
+        if (v.name_root == 0) continue;
+        labels_[static_cast<std::size_t>(s)].pane = v.name_root;
+        labels_[static_cast<std::size_t>(s)].boxes = v.name_boxes;
     }
     // Each line's two text panes, found once per layout; the run's log says for each one whether it was found.
     for (std::size_t i = 0; i < labels_.size(); ++i) {
@@ -313,13 +385,21 @@ bool Hud::MakeLive(Game& game, int slot, std::vector<std::string>* log) {
     if (!game.Call(game.At(addr::kClonePart), {v.obj, gauge_part_, name_at, 0, 0})) return v.obj = 0, say("clone failed");
     v.root = call(addr::kPaneTable, {v.obj + 0x40, 0, 0, 0, 0});
     std::uint64_t owner = 0;
-    if (v.root == 0 || !ReadValue(game, parent_ + addr::kParentOwner, owner)) return v.obj = 0, say("clone has no root pane");
-    game.Call(game.At(addr::kAttach), {owner, v.root, parent_, 0, 0});
+    if (v.root == 0 || !ReadValue(game, parent_ + addr::kParentOwner, owner)) {
+        return v.obj = v.root = 0, say("clone has no root pane");
+    }
+    // Each of the game's calls checked (review-b118 01:17 (2)): not attached -> not ours to find again or show; a gauge
+    // not made or set up -> its children are garbage to the setters; not unlinked -> it would show Link's own life.
+    if (!game.Call(game.At(addr::kAttach), {owner, v.root, parent_, 0, 0})) return v.obj = v.root = 0, say("attach failed");
+    const auto hide = [&](const std::string& why) {
+        game.Call(game.At(addr::kPaneShow), {v.root, 0, 0, 0, 0});
+        return say(why + ": not shown");
+    };
     const std::uint64_t gauge = call(addr::kNew, {8, addr::kGaugeBytes, 0, 0, 0});
-    if (gauge == 0) return say("no memory for the gauge");
-    game.Call(game.At(addr::kGaugeMake), {gauge, v.obj, 0, 0, 0});
-    game.Call(game.At(addr::kGaugeSetUp), {gauge, 0, 1, 0, 0});
-    game.Call(game.At(addr::kGaugeUnlink), {gauge, 0, 0, 0, 0});
+    if (gauge == 0) return hide("no memory for the gauge");
+    if (!game.Call(game.At(addr::kGaugeMake), {gauge, v.obj, 0, 0, 0})) return hide("gauge make failed");
+    if (!game.Call(game.At(addr::kGaugeSetUp), {gauge, 0, 1, 0, 0})) return hide("gauge set-up failed");
+    if (!game.Call(game.At(addr::kGaugeUnlink), {gauge, 0, 0, 0, 0})) return hide("gauge unlink failed");
     // Its children and their part panes in the clone (Pa_NoGauge_NN, Pa_Gauge_00/01), each checked before use: the
     // setters read their animations with no check of their own.
     int hearts = 0;
@@ -398,8 +478,19 @@ void Hud::MakeLiveName(Game& game, int slot, std::vector<std::string>* log) {
     const std::uint64_t root = call(addr::kPaneTable, {obj + 0x40, 0, 0, 0, 0});
     std::uint64_t owner = 0;
     if (root == 0 || !ReadValue(game, parent_ + addr::kParentOwner, owner)) return say("clone has no root pane");
-    game.Call(game.At(addr::kAttach), {owner, root, parent_, 0, 0});
+    if (!game.Call(game.At(addr::kAttach), {owner, root, parent_, 0, 0})) return say("attach failed");
     game.Call(game.At(addr::kPaneShow), {root, 0, 0, 0, 0});
+    live_[static_cast<std::size_t>(slot)].name_root = root;   // (attached: found again on a kept layout)
+    if (name_bare_) {
+        // The game's category title without its backing (addr::kBareHide), as the pack's line: text only.
+        int hidden = 0;
+        for (const char* h : addr::kBareHide) {
+            const std::uint64_t n = Name(game, h);
+            const std::uint64_t p = n == 0 ? 0 : call(addr::kTablePane, {root, n, 0, 0, 0});
+            hidden += p != 0 && game.Call(game.At(addr::kPaneShow), {p, 0, 0, 0, 0}).has_value();
+        }
+        if (log) say(std::string("game's ") + addr::kBarePart + ": " + std::to_string(hidden) + " of 4 backing panes hidden");
+    }
     int found = 0;
     for (std::size_t k = 0; k < l.boxes.size(); ++k) {
         const std::uint64_t n = Name(game, k == 0 ? "T_Text_00" : "T_Text_01");
@@ -411,6 +502,7 @@ void Hud::MakeLiveName(Game& game, int slot, std::vector<std::string>* log) {
         found += text;
     }
     if (found == 0) return say("made but no text pane in it: not shown");
+    live_[static_cast<std::size_t>(slot)].name_boxes = l.boxes;
     const float scale[2] = {kScale, kScale};   // (party_hud.py LABEL_SCALE, as the pack's lines)
     game.Write(root + addr::kPaneScale, scale, sizeof scale);
     l.pane = root;

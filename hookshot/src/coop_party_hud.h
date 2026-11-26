@@ -77,6 +77,17 @@ inline constexpr std::uint64_t kGaugePart = 0x6c8;         // gauge+: the part h
 inline constexpr std::uint64_t kHeartBase = 0x30;          // controller+: its BaseState animation (the setter's first)
 inline constexpr std::uint64_t kHeartGauge = 0x58;         // controller+: HeartGauge (f_833dcb60)
 inline constexpr std::uint64_t kPaneScale = 0x84;          // pane+: f32 scale x, y (after translate and rotate; NOT proven)
+// No pack: the run-time name lines' text part, from the game's own Common archive (dump romfs UI/Layout2Archive/
+// Common.Product.100 *.blarc, read with tools/puppet_pack/ui_pack.read_layout / part_layouts): MenuOverlay_00 (screens
+// table UIScreen: LifetimeGroup Resident, ArchiveCategory Common) is the only layout with PaMenuCategory_00 parts
+// (Pa_Category_00..03); PaMenuCategory_00's panes: RootPane, N_All_00, N_BgIn_00, N_Bg_00, P_MinusMenuBg_00,
+// P_PlusMenuBg_00, N_MenuChangeTextIn_00, N_Text_00, T_Text_00, T_Text_01 (the same two text panes as
+// PaEnemyLocation_00, the pack's line). MenuOverlay_00's own top-level text T_BtnL_00 tells its layout from another.
+// PaEnemyLocation_00 itself is only in EnemyInfo_00 (Pa_Location_00/01), a screen that is NOT Resident.
+inline constexpr const char* kBareScreen = "MenuOverlay_00";
+inline constexpr const char* kBarePart = "Pa_Category_00";
+inline constexpr const char* kBareCheck = "T_BtnL_00";
+inline constexpr const char* kBareHide[] = {"N_BgIn_00", "N_Bg_00", "P_MinusMenuBg_00", "P_PlusMenuBg_00"};
 }  // namespace addr
 
 // Where the copies go, in the frame of their parent (N_ScaleL_00: the picture's top left corner, y up; the layout is
@@ -241,6 +252,8 @@ private:
         float alpha = -1.0f;
         std::array<float, 2> root_at{};
         bool placed = false;
+        std::uint64_t name_root = 0;                  // its name line's clone root (MakeLiveName; 0: none)
+        std::array<std::uint64_t, 2> name_boxes{};    // and its text panes, given back to labels_ on a kept layout
     };
     bool MakeLive(Game& game, int slot, std::vector<std::string>* log);
     void StepLive(Game& game, int slot, const Plan& plan, float top, float alpha);
@@ -250,7 +263,9 @@ private:
     std::uint64_t gauge_part_ = 0;   // the HUD's Pa_HeartGauge_00 part layout (0: no run-time gauges)
     std::uint64_t parent_ = 0;       // N_ScaleL_00
     bool ignore_pack_ = false;
-    std::uint64_t name_part_ = 0;    // the pack's line of the game's text (PaEnemyLocation_00; 0: none, no pack)
+    std::uint64_t name_part_ = 0;    // the pack's line of the game's text (PaEnemyLocation_00), else the game's (kBarePart)
+    bool name_bare_ = false;         // name_part_ is the game's kBarePart: its backing panes are hidden on each clone
+    std::uint64_t BarePart(Game& game, std::uint64_t hud_layout, std::string& why);
     std::array<float, 2> source_at_{};   // Pa_HeartGauge_00's place there
     std::array<Live, kSlots> live_{};
     std::uint64_t live_layout_ = 0;  // the layout live_ hangs in
