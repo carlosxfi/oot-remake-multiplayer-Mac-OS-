@@ -32,6 +32,8 @@ import os
 
 import pytest
 
+from test_smoke import AT_TITLE, TITLE_FRAMES, TO_TITLE_ASKED, TO_TITLE_GAVE_UP   # (one copy of the title lines)
+
 pytestmark = pytest.mark.needs_env("COOP_TEST_PARTY_HUD=1", "B:COOP_TEST_PARTY_HUD_NO_PACK=1")
 
 GAMES = ("A", "B")
@@ -42,7 +44,6 @@ NO_PACK = r"coop: party hud: test: the pack's panes are not looked for \(no pack
 B_HIDDEN = r"coop: party hud: the HUD has no hearts of ours \(an older pack\): the other players' hearts are hidden"
 CRASH = r"CRASH: exception"
 PROBE = r"coop: party hud probe:"
-TO_TITLE_ASKED = r"coop: multiplayer tab: test: back to the title asked \(to-title\.now\)"
 
 
 def crash_why(pair, x):
@@ -102,16 +103,27 @@ def test_party_hud_title_and_load_again(pair):
         for x in GAMES:
             assert pair.in_play(pair.state(x)), "%s not in play before the way back to the title%s" % (x, crash_why(pair, x))
     no_crash(pair)
+    asked = {x: pair.log[x].mark() for x in GAMES}
     for x in GAMES:
         with open(os.path.join(pair.games[x]["folder"], "to-title.now"), "w") as f:
             f.write("bt\n")
     for x in GAMES:
         pair.expect_log(x, TO_TITLE_ASKED, max_frames=300)
-    pair.until("both games left play (title)",
-               lambda: all(not pair.in_play(pair.state(x)) for x in GAMES), max_frames=900)
+
+    def at_title(x):
+        return pair.log[x].find(AT_TITLE, pos=asked[x]) is not None
+
+    def both_at_title():
+        for x in GAMES:
+            gave_up = pair.log[x].find(TO_TITLE_GAVE_UP, pos=asked[x])
+            assert gave_up is None, "%s: the way back to the title gave up: %s" % (x, gave_up.strip())
+        return all(at_title(x) and not pair.in_play(pair.state(x)) for x in GAMES)
+    # (at the title = the title's own line since the ask, as test_smoke's title test: 'not in play' alone also holds
+    # on an open pause menu, and load_both presses A only on a game at the title)
+    pair.until("both games at the title", both_at_title, max_frames=TITLE_FRAMES)
     pair.expect_log("A", HUD_HIDDEN, max_frames=600)
     no_crash(pair)
-    pair.load_both(max_frames=3600)
+    pair.load_both(at_title, max_frames=3600)
     for x in GAMES:
         assert pair.in_play(pair.state(x)), "%s not in play after the load" % x
     pair.expect_log("A", HUD_ON, max_frames=600)
