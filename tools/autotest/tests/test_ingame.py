@@ -1496,6 +1496,57 @@ class OcarinaReady(unittest.TestCase):
             self.assertIn(res, ("PASS", "NO-REF", "SKIP"), (name, res, p.stdout[-2000:]))
 
 
+class WarpPlayUi(unittest.TestCase):
+    """A warp returns only once the game that warped shows its play UI up again (crawl-337-12: pause-warp-34950797, B's
+    + right after warp_both was refused in its arrival tail; pause-warp-826f66cb, 300 frames later it paused)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def lane(self, **env):
+        import fakegame
+        from unittest import mock
+        with mock.patch.dict(os.environ, env):
+            lane = fakegame.FakeLane(self.tmp)
+        self.addCleanup(lane.close)
+        pair = P.Pair(lane.games(), out_dir=self.tmp)
+        self.addCleanup(pair.close)
+        pair.begin(120)
+        return pair
+
+    def up_lines(self, pair, x):
+        return [ln for ln in pair.log[x].since(0) if "the game's play UI is up" in ln]
+
+    def test_warp_both_returns_with_each_play_ui_up(self):
+        pair = self.lane(BT_FAKE_UI_LATE="150")
+        pair.warp_both("KakarikoVillage_Child")
+        for x in ("A", "B"):
+            self.assertEqual(len(self.up_lines(pair, x)), 1, x)
+            self.assertTrue(any(n.startswith("%s: warp KakarikoVillage_Child: play UI up again after" % x)
+                                for n in pair.notes), pair.notes)
+
+    def test_the_test_s_own_log_start_stays(self):
+        pair = self.lane()
+        pos = pair.log["A"].pos
+        pair.warp_both("KakarikoVillage_Child")
+        self.assertEqual(pair.log["A"].pos, pos)      # (expect_log still reads from the test's start)
+        self.assertIsNotNone(pair.log["A"].find(r"scene load ended"))
+
+    def test_a_play_ui_never_up_is_setup_fail_naming_the_game(self):
+        pair = self.lane(BT_FAKE_UI_NEVER="B")
+        with self.assertRaisesRegex(P.SetupFail, r"^B: warp KakarikoVillage_Child: the game's play UI not up %d"
+                                    % P.PLAY_UI_FRAMES):
+            pair.warp_both("KakarikoVillage_Child")
+        self.assertEqual(len(self.up_lines(pair, "A")), 1)
+
+    def test_no_play_ui_line_is_no_wait(self):
+        pair = self.lane()
+        before = pair.c["A"].last_frame
+        pair._until_play_ui("A", "Nowhere", pair.log["A"].size())
+        self.assertEqual(pair.c["A"].last_frame, before)
+
+
 class SetupLimit(unittest.TestCase):
     """Pair.setup's 30 s limit holds for the calls inside it (review-c123-6 point 2): a hung bridge in a set-up is a
     SETUP-FAIL at the limit, not a FAIL at the test's budget. A fake clock: no real waiting."""

@@ -63,6 +63,15 @@ CLIENT_FPS = 20.0     # the client's worst stepping rate (playtest_client.py inp
 # Kakariko gate and after the test's LEFT; no bridge run had taken an ocarina out before).
 OCARINA_EQUIPPED = r"coop: items: ocarina '\w+' equipped by the game from its flags"
 SCENE_LOADED = r"coop: native ui: scene load ended"     # (seen: songs-frogs-733c4d8f hookshot_log-B.txt:4289, then :4581)
+# The game's play UI (hookshot/src/coop_hookshot.cpp Frame: 'coop: native ui: the game's play UI ' + 'is up (patch 0018's
+# HUD screen ran since the load)...' / 'is down (a scene load or the title)...', CoopNativeUi::GameUiUp). A warp's scene
+# load takes it down; it is up again only once the game's HUD screen has run after the load AND the arrival. Before
+# that the game refuses + (crawl-337-12: pause-warp-34950797, B's PLUS reached the game 1.1 s after warp_both, B's
+# arrival event 5.3 s at ~5 fps, its play UI up only after it (game-out-B.txt :5952 free play, :5980 play UI up), B
+# never paused; pause-warp-826f66cb, the same + 300 frames later, B paused in both repeats). So a warp returns only
+# once the game that warped shows its play UI up again (Pair._until_play_ui).
+PLAY_UI = r"coop: native ui: the game's play UI is (up|down)"
+PLAY_UI_FRAMES = 600  # frames: 2 x the 300-frame wait that let B's + through after its arrival (pause-warp-826f66cb)
 OCARINA_FRAMES = 600  # 20 s of game: the mend's 30 frames + an arrival event's end (the frogs' boot event: 0.7 s)
 # D-pad Left's two module lines (probe-ocarina-2f14b333, 11-26, both games, cited by its game-out-X.txt line): the press
 # ALWAYS starts the game's free-Ocarina event (OCARINA_FREE: B :4810, A :5814; also both frogs SETUP-FAIL runs, 733c4d8f
@@ -815,6 +824,7 @@ class Pair:
         extra = {} if entrance in (None, "") else {"entrance": entrance}
         self._setup_warp()       # (in a set-up: this warp's measured time on top of its 30 s)
         before = self.c[x].last_frame or 0
+        log_at = self.log[x].size() if isinstance(getattr(self, "log", None), dict) and x in self.log else None
         wait = self.ARRIVE_IN_EVENT_WAIT if arrive_in_event is True else 60
         for attempt in (1, 2):
             # (the bridge answers by t; t + REPLY_MIN_S, the reply wait _wait checks against a SECOND deadline read, stays
@@ -858,7 +868,39 @@ class Pair:
         for y in self.c:
             if y != x and ran:
                 self.step_other(y, ran)
+        if r.get("ok"):
+            # (arrived in free play: the warp ends only when x's play UI is up again; an arrival answered 'timeout' in
+            # its event (arrive_in_event) is left in the event, as the test asked)
+            self._until_play_ui(x, scene, log_at)
         return self.state(x)
+
+    def _until_play_ui(self, x, scene, pos):
+        """After game x's warp to `scene`: x's log since `pos` (before the warp was sent) is read for PLAY_UI lines.
+        None: the play UI did not change (no load took it down), done. The last one 'down': both games are stepped
+        (in step) until an 'up' line comes, at most PLAY_UI_FRAMES, else SetupFail naming the game. The deadline
+        bounds every step (Pair.call)."""
+        log = self.log.get(x) if isinstance(getattr(self, "log", None), dict) else None
+        if log is None or pos is None:
+            return
+        rx = re.compile(PLAY_UI)
+        ran = 0
+        while True:
+            last = None
+            for ln in log.since(pos):
+                m = rx.search(ln)
+                if m:
+                    last = m.group(1)
+            if last != "down":
+                if last == "up":
+                    self.notes.append("%s: warp %s: play UI up again%s" % (x, scene, " after %d frames" % ran if ran
+                                                                            else ""))
+                return
+            if ran >= PLAY_UI_FRAMES:
+                raise SetupFail("%s: warp %s: the game's play UI not up %d frames after the arrival (no '%s' line "
+                                "after its 'down'): + and the HUD are refused until it is"
+                                % (x, scene, ran, "the game's play UI is up"))
+            self.step_both(CHUNK)
+            ran += CHUNK
 
     def step_other(self, y, frames):
         left = int(frames)
