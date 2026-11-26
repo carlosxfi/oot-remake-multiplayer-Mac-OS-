@@ -1931,19 +1931,31 @@ std::vector<ListLine> SettingLines(const std::vector<SettingRow>& rows, int page
                                                      : title),
                               kListLineChars),
                         ""};
+    // (its "  < 1 of 3 >" kept whole by the module's width fit: what follows the category's own word, when it does)
+    if (const std::string word = CoopI18n::Tr(title);
+        pages > 1 && lines[0].name.size() > word.size() && lines[0].name.compare(0, word.size(), word) == 0) {
+        lines[0].name_tail = lines[0].name.substr(word.size());
+    }
     for (int i = 0; i < per_page; ++i) {
         const std::size_t at = static_cast<std::size_t>(at_page * per_page + i);
         if (at >= rows.size()) break;
         const SettingRow& r = rows[at];
-        // (a setting that applies at the next start says so on its row, in words: a bare "*" read as nothing. The tag
-        // is kept whole and the name gives way to it)
-        std::string name = CoopI18n::Tr(r.name);
+        // (a setting that applies at the next start says so on its row, in words: a bare "*" read as nothing.
+        // menu-restart-c41: the tag is not taken from the name's letters (that cut "Intel shader compiles", 21, at 20
+        // where 0.11.12 showed it whole): the name keeps 0.11.12's room beside its " *" (kListNameChars - 2), the tag
+        // comes on top, and the pane's own width decides (the module's FitPut: the name cut before the tag, or " *" in
+        // the tag's place when the two are wider than the pane). The bytes stay within the live text's 63.)
+        ListLine& line = lines[static_cast<std::size_t>(i) + 1];
+        line = ListLine{FitTo(CoopI18n::Tr(r.name), kListNameChars), FitTo(CoopI18n::Tr(r.text), kListValueChars)};
         if (r.restart) {
-            const std::string tag = " (" + CoopI18n::Tr("restart") + ")";
-            name = tag.size() < kListNameChars ? FitTo(name, kListNameChars - tag.size()) + tag : tag;
+            const std::string tag = " (" + CoopI18n::Tr("restart") + ")", brief = " *";
+            const std::string head = FitTo(CoopI18n::Tr(r.name), kListNameChars - brief.size());
+            if (head.size() + tag.size() < kListTextBytes) {
+                line.name = head + tag, line.name_tail = tag, line.name_brief = brief;
+            } else {
+                line.name = head + brief, line.name_tail = brief;   // (a tag too long for the text: 0.11.12's)
+            }
         }
-        lines[static_cast<std::size_t>(i) + 1] =
-            ListLine{FitTo(name, kListNameChars), FitTo(CoopI18n::Tr(r.text), kListValueChars)};
     }
     return lines;
 }
@@ -1991,6 +2003,7 @@ std::vector<ListLine> ListLines(const SessionView& v) {
     lines[0] = ListLine{CoopListPages::Heading(head, CoopListPages::Line(v.s.cell_page, pages), kListNameChars),
                         FitTo(CoopI18n::Tr("Refresh"), kListValueChars), RowAction::kBrowseRefresh};
     lines[0].paged = pages > 1;
+    lines[0].name_tail = CoopListPages::Tail(CoopListPages::Line(v.s.cell_page, pages));   // (kept whole by the width fit)
     const std::vector<ListLine>& list = v.s.online ? v.online_list : v.lan_list;
     if (list.empty()) {
         lines[1].name = FitTo(v.browse_all_out ? CoopI18n::Tr("None match the search or Show")
@@ -2036,6 +2049,7 @@ std::vector<ListLine> ChatHistoryLines(const SessionView& v) {
     const int shown = CoopChatHistory::Shown(v.s.chat_page, pages);
     lines[0] = ListLine{CoopListPages::Heading(CoopI18n::Tr("Chat"), CoopListPages::Line(shown, pages), kListLineChars), ""};
     lines[0].paged = pages > 1;
+    lines[0].name_tail = CoopListPages::Tail(CoopListPages::Line(shown, pages));   // (the width fit keeps it whole)
     if (pages > 1) lines[0].act = RowAction::kChatPage;
     if (rows.empty()) {
         lines[1].name = FitTo(CoopI18n::Tr("No chat yet"), kListLineChars);
@@ -2066,6 +2080,7 @@ std::vector<ListLine> DetailLines(View view, const SessionView& v) {
         lines[0] = ListLine{CoopListPages::Heading(CoopI18n::Tr("Key items"), CoopListPages::Line(1, 2), kListNameChars),
                             "", RowAction::kNone};
         lines[0].paged = true;
+        lines[0].name_tail = CoopListPages::Tail(CoopListPages::Line(1, 2));   // (kept whole by the width fit)
         for (const TallyGroup g : {TallyGroup::songs, TallyGroup::medallions, TallyGroup::stones, TallyGroup::dungeon_items}) {
             const auto& n = v.tally.at(g);
             if (at < lines.size())
@@ -2211,6 +2226,7 @@ std::vector<ListLine> DetailLines(View view, const SessionView& v) {
     if (detail_pages > 1) {
         lines[0].name = CoopListPages::Heading(CoopI18n::Tr(header), CoopListPages::Line(0, 2), kListNameChars);
         lines[0].paged = true;
+        lines[0].name_tail = CoopListPages::Tail(CoopListPages::Line(0, 2));   // (kept whole by the width fit)
     }
     MarkShown(&lines);
     return lines;

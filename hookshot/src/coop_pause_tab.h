@@ -723,6 +723,10 @@ struct ListLine {
     // A list's heading with more than one page ("Public games  Page 1/2"): the page shows the game's own ZL and ZR
     // button icons beside it (its controller picture's keys, coop_list_pages.h), as the words have no button letters.
     bool paged = false;
+    // The end of `name` the player must read whole (a setting's " (restart)", a heading's page line): the module's width
+    // fit (FitPut) cuts the words before it, never it; "" or not the name's end: the plain cut. `name_brief`, when not
+    // "", a shorter tag that says the same and takes its place when name and tag are wider than the pane (" *").
+    std::string name_tail = {}, name_brief = {};   // (initialized: the partial ListLine{...} lists stay clean under -Wmissing-field-initializers)
 };
 
 // --- Typing with a pad: the list's rows are the keys ---
@@ -832,6 +836,9 @@ inline constexpr std::size_t kListNameChars = 30, kListValueChars = 16;   // (th
 // value shows one), so its words, left-aligned in the left box, may run on over the right box's room as well (row 139,
 // ui-fit-139-2: the Mods tab's 'Co-op: Player 2 (B): 1 mod ...' was cut at 30 beside an empty right half).
 inline constexpr std::size_t kListLineChars = kListNameChars + kListValueChars;
+// The bytes a list line's live text holds (the module's placeholder, strings/en.txt: 64 with its 0, a text of 64 or more
+// is not shown at all): a name built longer than kListNameChars (a tag on top) stays under it.
+inline constexpr std::size_t kListTextBytes = 64;
 // The list's rows for this page: the header, then a page of games ("" rows not shown). With nothing listed, the
 // first game row says why.
 std::vector<ListLine> ListLines(const SessionView& v);
@@ -967,7 +974,8 @@ struct SettingRow {
 std::vector<SettingRow> SettingsOf(const std::vector<SettingRow>& all, int category);
 int SettingPages(int count, int per_page = kSettingsPerPage);
 // A page of a category's settings as the list's rows: the header (`title`, and "Page 2 of 4" when there are more),
-// then the settings: the name ("*" after a restart one), the value's words.
+// then the settings: the name (" (restart)" after a restart one, kept whole: name_tail, " *" its
+// brief form when the pane is too narrow for both, as 0.11.12 showed it), the value's words.
 // kSettingListRows lines, the ones past `per_page` + 1 empty.
 std::vector<ListLine> SettingLines(const std::vector<SettingRow>& rows, int page, const std::string& title,
                                    int per_page = kSettingsPerPage);

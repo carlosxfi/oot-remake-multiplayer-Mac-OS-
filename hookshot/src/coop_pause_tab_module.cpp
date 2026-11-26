@@ -294,6 +294,7 @@ bool SetText(void* ctx, std::uint64_t layout, const std::string& path, const std
 // it up for each opening of the pages and writes its words there.
 constexpr int kLiveSlots = 48;   // 0..4 the rows, 8..21 the browser's list, 22..40 the Settings page (the pack's 00..47)
 constexpr std::uint32_t kLivePlaceholder = 64;   // the placeholder's bytes (strings/en.txt)
+static_assert(kLivePlaceholder == kListTextBytes, "a list line's text is built within the placeholder's bytes");
 struct LiveSlot {
     std::uint32_t room = kLivePlaceholder;   // the placeholder's bytes (the - page's help: kHelpPlaceholder)
     std::uint64_t gen = 0;      // the pages' opening it was looked up for (Page::Track): looked up again for each
@@ -307,6 +308,7 @@ struct LiveSlot {
     std::string fit_for;
     std::size_t fit_n = 0;
     bool fit_done = false;
+    bool fit_brief = false;     // the words' brief tag shown in place of their tag (FitPut: the two were too wide)
 };
 std::mutex g_live_mutex;        // the slots (the pages' updates come on several threads)
 LiveSlot g_live[kLiveSlots];
@@ -373,16 +375,20 @@ bool LiveTextIn(void* ctx, std::uint64_t layout, const std::string& path, LiveSl
 thread_local const char* g_live_why = "";   // (why LiveTextIn last returned false: named in the Customize line)
 
 bool FitPut(void* ctx, std::uint64_t layout, const std::string& path, LiveSlot& l, const std::string& words,
-            const std::function<bool(const std::string&)>& put);   // (below: after TextPaneAt)
+            const std::function<bool(const std::string&)>& put, const std::string& tail = "",
+            const std::string& brief = "");   // (below: after TextPaneAt)
 bool LiveText(void* ctx, std::uint64_t layout, std::uint64_t gen, const std::string& path, int slot,
-              const std::string& utf8) {
+              const std::string& utf8, const std::string& tail = "", const std::string& brief = "") {
     if (slot < 0 || slot >= kLiveSlots) return false;
     LiveSlot& l = g_live[slot];
-    return FitPut(ctx, layout, path, l, utf8, [&](const std::string& shown) {
-        if (l.shown == shown) return true;
-        if (path.size() >= 0x40 || shown.size() >= kLivePlaceholder || !LiveLookup(ctx, slot, gen)) return false;
-        return LiveTextIn(ctx, layout, path, l, shown);
-    });
+    return FitPut(
+        ctx, layout, path, l, utf8,
+        [&](const std::string& shown) {
+            if (l.shown == shown) return true;
+            if (path.size() >= 0x40 || shown.size() >= kLivePlaceholder || !LiveLookup(ctx, slot, gen)) return false;
+            return LiveTextIn(ctx, layout, path, l, shown);
+        },
+        tail, brief);
 }
 
 // The text pane at `path` ("Part/Part/Pane") of `layout`, found as the game's pane-text call finds each pane it sets:
@@ -411,10 +417,13 @@ std::uint64_t TextPaneAt(void* ctx, std::uint64_t layout, const std::string& pat
 // pane's own width (+0x58); too wide, they are cut to what fits (CoopTextFit::LettersForWidth, Fit's "...") and read
 // again after the next set. One rule for every text box of our pages (the - page's rows and lines, the + page's rows,
 // cells and settings). True when `put` set them.
+// Words that end in a `tail` the player must read whole (ListLine::name_tail: a setting's " (restart)", a heading's
+// page line) are cut before it, never in it (CoopTextFit::FitShown, menu-restart-c41); with a `brief` tag, too wide
+// whole, the brief one takes the tail's place first (read again), and only then are the words before it cut.
 bool FitPut(void* ctx, std::uint64_t layout, const std::string& path, LiveSlot& l, const std::string& words,
-            const std::function<bool(const std::string&)>& put) {
-    if (l.fit_for != words) l.fit_for = words, l.fit_n = 0, l.fit_done = false;
-    const std::string shown = l.fit_n != 0 ? CoopTextFit::Fit(words, l.fit_n) : words;
+            const std::function<bool(const std::string&)>& put, const std::string& tail, const std::string& brief) {
+    if (l.fit_for != words) l.fit_for = words, l.fit_n = 0, l.fit_done = false, l.fit_brief = false;
+    const std::string shown = CoopTextFit::FitShown(words, tail, brief, l.fit_brief, l.fit_n);
     const bool drawn_before = l.shown == shown;   // (the game drew these words already: its width is theirs)
     if (!put(shown)) return false;
     if (l.fit_done || !drawn_before || words.size() <= 4) return true;
@@ -429,6 +438,9 @@ bool FitPut(void* ctx, std::uint64_t layout, const std::string& path, LiveSlot& 
     }
     if (const std::size_t n = CoopTextFit::LettersForWidth(shown, drawn, box); n == 0) {
         l.fit_done = true;
+    } else if (!l.fit_brief && !brief.empty() && CoopTextFit::FitShown(words, tail, brief, true, 0) != shown) {
+        l.fit_brief = true;   // (the brief tag first: the words before it may fit whole beside it)
+        LOG_INFO(Core, "coop: pause tab: {} drew {:.0f} wide in a box of {:.0f}: its tag made brief", path, drawn, box);
     } else {
         l.fit_n = n;
         LOG_INFO(Core, "coop: pause tab: {} drew {:.0f} wide in a box of {:.0f}: cut to {} letters", path, drawn, box, n);
@@ -1234,7 +1246,8 @@ void LiveCells(void* ctx, std::uint64_t layout, std::uint64_t gen, const Session
             // player's language; a game's name is the player's own and comes back unchanged.
             // (a line the page built is already in the player's language: own_name and own_value, never looked up
             // again, which would turn a player called "Link" into 林克)
-            LiveText(ctx, layout, gen, path, name_slot, lines[k].own_name ? lines[k].name : CoopI18n::Tr(lines[k].name));
+            LiveText(ctx, layout, gen, path, name_slot, lines[k].own_name ? lines[k].name : CoopI18n::Tr(lines[k].name),
+                     lines[k].name_tail, lines[k].name_brief);
             std::snprintf(path, sizeof path, "Pa_Coop_00/Pa_List_%02d/T_Text_00", i);
             LiveText(ctx, layout, gen, path, value_slot,
                      lines[k].value.empty()  ? std::string(" ")
@@ -1527,7 +1540,8 @@ void LiveSettings(void* ctx, std::uint64_t layout, std::uint64_t gen) {
             std::snprintf(path, sizeof path, "Pa_Settings_00/Pa_List_%02d/T_Option_00", i);
             // The setting's name and its value in the player's language (coop_i18n.h): the rows are
             // built in English in coop_pause_tab.cpp, and each is looked up as it is handed over.
-            LiveText(ctx, layout, gen, path, SetNameSlot(i), CoopI18n::Tr(lines[k].name));
+            LiveText(ctx, layout, gen, path, SetNameSlot(i), CoopI18n::Tr(lines[k].name), lines[k].name_tail,
+                     lines[k].name_brief);
             std::snprintf(path, sizeof path, "Pa_Settings_00/Pa_List_%02d/T_Text_00", i);
             LiveText(ctx, layout, gen, path, SetValueSlot(i),
                      lines[k].value.empty() ? std::string(" ") : CoopI18n::Tr(lines[k].value));
@@ -2914,9 +2928,11 @@ void MinusWords(void* ctx, std::uint64_t layout, std::uint64_t gen, int tab) {
         // cut to what fits ("..."), read again at the next pass. One rule for every text box of the page)
         // (a row's or a line's words fitted to their pane by the width the game drew them: FitPut, one rule for every
         // text box of our pages)
-        const auto fit_put = [&](int slot, const std::string& path, const std::string& words) {
-            return FitPut(ctx, layout, path, g_minus_live[static_cast<std::size_t>(slot)], words,
-                          [&](const std::string& shown) { return put(slot, path, shown); });
+        const auto fit_put = [&](int slot, const std::string& path, const std::string& words,
+                                 const std::string& tail = "", const std::string& brief = "") {
+            return FitPut(
+                ctx, layout, path, g_minus_live[static_cast<std::size_t>(slot)], words,
+                [&](const std::string& shown) { return put(slot, path, shown); }, tail, brief);
         };
         for (std::size_t k = 0; k < texts.size(); ++k) {
             if (texts[k].empty()) continue;
@@ -2933,7 +2949,7 @@ void MinusWords(void* ctx, std::uint64_t layout, std::uint64_t gen, int tab) {
             }
             char path[64];
             std::snprintf(path, sizeof path, "Pa_CoopMinus_00/Pa_List_%02d/T_Option_00", i);
-            const bool named = fit_put(kRows + 2 * i, path, line.name);
+            const bool named = fit_put(kRows + 2 * i, path, line.name, line.name_tail, line.name_brief);
             std::snprintf(path, sizeof path, "Pa_CoopMinus_00/Pa_List_%02d/T_Text_00", i);
             const bool valued = fit_put(kRows + 2 * i + 1, path, line.value.empty() ? std::string(" ") : line.value);
             if (!named || !valued) line.name.clear(), pickable &= ~(1u << i);   // (a line without its words: not shown)
