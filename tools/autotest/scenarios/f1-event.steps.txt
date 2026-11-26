@@ -19,23 +19,33 @@
 #  - solo (co-op idle, no server): the title and the event as above; shots f1-solo-title, f1-solo-event.
 # Log only: the routes and tab counts (lines); a PASS of the visible part needs the shots read (no see= check exists for
 # Longshot's menu yet): judge them by eye.
+# f1-event-c124 (run f1-event-aebd16089 VOID):
+#  - Longshot's menu is drawn by Longshot's ImGui over the picture, and a bridge `shot` is taken before Longshot's
+#    overlays (vk_replay.cpp shot_ask_record), so s30-f1-title showed the bare title with the menu open (the route and
+#    tab lines PASS). The menu checks use `wshot` (a window shot through offline/lib/window-shot.ps1, OOT_WINDOW_SHOT;
+#    covered = SETUP-FAIL). f1-free stays a bridge `shot` (the game's own - menu is in the picture).
+#  - The event part relied on the lane save's chest being closed. f1-event.A.txt now sets it closed and reloads; the
+#    gate `flag A key64:0x0b66198d17d6584e 0` (the module's watch read, switch above) proves it before the press
+#    (f1-event-open.A.txt), and `state A event` proves the item get after it.
 #! noload
 #! start coop: test warp done
-#! switches LICHII_COOP_DEBUG_FLAGS=1,A:LICHII_COOP_CHEATS=1
+#! switches LICHII_COOP_DEBUG_FLAGS=1,A:LICHII_COOP_CHEATS=1,A:LICHII_COOP_DEBUG_KEY64=0x0b66198d17d6584e
 #! timeout 1800
 start A B
 state A title 120
 key A F1
 sleep 3
-shot f1-title
+wshot f1-title
 lines f1-title-route A min=1 coop: F1: Longshot's menu on co-op's Multiplayer tab \(our - menu cannot open now\)
 lines f1-title-tabs A min=1 coop: Longshot's menu: [1-9] of co-op's tabs
 start A B
 play A f1-event.A.txt
+flag A key64:0x0b66198d17d6584e 0 30
+play A f1-event-open.A.txt
 state A event 30
 key A F1
 sleep 3
-shot f1-event
+wshot f1-event
 lines f1-event-route A min=1 coop: F1: Longshot's menu on co-op's Multiplayer tab \(our - menu cannot open now\)
 lines f1-event-minus A max=0 coop: F1: the - menu's Multiplayer tab
 start A B
@@ -50,13 +60,15 @@ start A idle
 state A title 120
 key A F1
 sleep 3
-shot f1-solo-title
+wshot f1-solo-title
 lines f1-solo-title-route A min=1 coop: F1: Longshot's menu on co-op's Multiplayer tab \(our - menu cannot open now\)
 start A idle
 state A title 120
 play A f1-event.A.txt
+flag A key64:0x0b66198d17d6584e 0 30
+play A f1-event-open.A.txt
 state A event 30
 key A F1
 sleep 3
-shot f1-solo-event
+wshot f1-solo-event
 lines f1-solo-event-route A min=1 coop: F1: Longshot's menu on co-op's Multiplayer tab \(our - menu cannot open now\)
