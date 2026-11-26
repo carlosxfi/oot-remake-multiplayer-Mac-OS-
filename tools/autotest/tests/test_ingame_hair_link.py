@@ -9,6 +9,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "ingame"))
 from test_ingame import pytest_run, results, summary   # noqa: E402
 
 NO_CS = ["--env", "B:COOP_TEST_NO_CHARACTER_SELECT=1"]
@@ -44,8 +45,17 @@ class HairLink(unittest.TestCase):
         self.assertEqual(len(re.findall(r"huecheck [AB] [^\n]*changed=\d+", p.stdout)), 14, p.stdout[-3000:])
         self.assertNotIn("put back:", p.stdout)   # (the adult test's way back to child worked)
         s, p = self.run_it("off", [])
-        self.assertEqual([d["test"] for d in s["deselected"]], ["test_hair_link.py::test_hair_without_character_select"],
-                         p.stdout[-2000:])
+        self.assertEqual([d["test"] for d in s["deselected"]], ["test_hair_link.py::test_hair_without_character_select",
+                                                                "test_hair_link.py::test_hair_solo"], p.stdout[-2000:])
+
+    def test_solo_deselected_until_the_harness_has_it(self):
+        """No solo.py (harness-c133 item 7) yet: test_hair_solo is deselected on every run, never run, never SETUP-FAIL."""
+        import importlib.util
+        if importlib.util.find_spec("solo") is not None:
+            self.skipTest("solo.py is in the harness: its own selftests cover the solo boot")
+        s, _ = self.run_it("solo", NO_CS)
+        self.assertIn("test_hair_link.py::test_hair_solo", [d["test"] for d in s["deselected"]])
+        self.assertNotIn("test_hair_solo", results(s))
 
     def test_hair_not_repainted_fails(self):
         """The row's bug (the hair keeps the game's colour though the module says it painted it) is a FAIL."""

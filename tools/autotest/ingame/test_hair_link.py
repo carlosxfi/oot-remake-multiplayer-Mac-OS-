@@ -10,9 +10,12 @@ is the game's own hair (0.11.12 exactly).
 | test_hair_without_character_select | the same with B booted without the Character Select mod (both ways) | log + LOOK; needs_env |
 | test_hair_adult | adult Link: own Link + the adult puppet copy (P<L>_Hairs_Player_Adult_Alb) | log + LOOK (warps; last) |
 
-Not here: solo (co-op idle). The bridge has `menu leave` (coop_pause.cpp TestMenu "leave") but no way back into the
-session for the lane's next test, so solo is NOT PROVEN in game (the own-Link path, coop_look_live.cpp Wear ->
-g_gear->Wear, does not look at the session).
+| test_hair_solo | one game, no co-op session (no Host/Join): your own Link's hair coloured | log + LOOK; needs the SOLO boot |
+
+Solo (co-op idle): the SOLO lane boot is harness-c133's (item 7, C #133: one lane game, no co-op session, the needs_solo
+marker) and ingame/solo.py is its ONE place, as no_cs.py is the no-CS game's. Until solo.py is in the harness the test
+carries an impossible needs_env placeholder: always DESELECTED (named in summary.json 'deselected'): NOT PROVEN, never
+PASS and never a SETUP-FAIL. (`menu leave` is no way there: the lane's next test needs the session back.)
 
 Set-up and judging, each cited where used:
 - `menu look hair=#RRGGBB|none`: test only, the module's MENU verb (lichii/hook/coop_testinput.cpp MENU "look ",
@@ -46,6 +49,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import huecheck     # noqa: E402  (vest-link's colour check)
 import no_cs        # noqa: E402  (the ONE no-Character-Select game)
+try:
+    import solo     # noqa: E402  (the ONE solo game: harness-c133 item 7, once it lands)
+except ImportError:
+    solo = None
 from test_gear_link import face_each_other   # noqa: E402  (the shared set-up helpers)
 from test_rows import need_child_in_play     # noqa: E402
 
@@ -293,4 +300,49 @@ def test_hair_adult(pair):
         done = True
     finally:
         put_back(pair, done, also=(child_again,))
+    judged(pair, low)
+
+
+# Until harness-c133's solo.py lands: a switch no run gives (no game knows it), so the test is always deselected.
+SOLO_PENDING = "A:COOP_TEST_SOLO_BOOT_NOT_IN_THE_HARNESS_YET=1"
+SOLO_MARK = solo.MARK if solo else pytest.mark.needs_env(SOLO_PENDING)
+
+
+@pytest.mark.budget(180)   # ESTIMATED (one wear on one game, two shot steps)
+@pytest.mark.look
+@SOLO_MARK
+@pytest.mark.row("#293 P1 Link's Hair colour solo (no co-op session)")
+def test_hair_solo(pair):
+    """Owner rule: a non-multiplayer feature works solo. Game A alone, co-op idle: its own Link's hair is painted
+    (coop_look_live.cpp Wear -> g_gear->Wear, which does not look at the session). Only A's own line and A's shots."""
+    with pair.setup():
+        solo.prove(pair)
+        s = pair.state("A")
+        assert pair.in_play(s), "A not in play (%s)" % s.get("not_ready")
+        set_hair(pair, "A", "none")
+        pair.step_both(60)
+    done, low = False, []
+    try:
+        before = pair.check_shot("A", "hair-link-solo-unset")["path"]
+        mark = pair.log["A"].mark()
+        set_hair(pair, "A", "#%06X" % RED)
+        wait_since(pair, "A", OWN_HAIR % RED, mark, 240)
+        pair.step_both(30)
+        red = pair.check_shot("A", "hair-link-solo-red")["path"]
+        h = huecheck.changed_hue(before, red, RED)
+        note(pair, "huecheck A solo unset->red #%06X changed=%d coloured=%d share=%.3f" % (
+            RED, h["changed"], h["coloured"], h["share"]))
+        assert h["changed"] >= MIN_CHANGED, "A solo: only %d pixels changed: the hair was not repainted %s" % (
+            h["changed"], h)
+        if h["share"] < MIN_SHARE:
+            low.append("A solo: %.0f%% of the changed pixels are #%06X's hue" % (h["share"] * 100, RED))
+        done = True
+    finally:
+        try:
+            set_hair(pair, "A", "none")
+            pair.step_both(60)
+        except Exception as e:   # noqa: BLE001
+            if done:
+                raise
+            pair.notes.append("put back: %s" % e)
     judged(pair, low)
