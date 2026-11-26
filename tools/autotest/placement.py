@@ -10,7 +10,9 @@ works too). Pick it, strongest first:
   2. the environment variable OOT_TEST_DISPLAY, if connected;
   3. the default, \\\\.\\DISPLAY2, if connected;
   4. the primary monitor.
-"primary" names the primary monitor, whatever its number.
+"primary" names the primary monitor, whatever its number (this module only: coord's offline/lib/test-display.ps1 has no
+such word and skips it as a screen that is not connected, so an offline script gives a device name, never "primary";
+its offline/lib/test-display.pin.ps1 feeds both the same tables and checks they agree on everything else).
 A name no connected monitor has (DISPLAY2 unplugged or renumbered, a stale OOT_TEST_DISPLAY, a mistyped --display) is
 skipped and the next one in that order is tried; when none is connected the games go to the primary monitor (owner
 2026-11-26: test games may open on ANY connected monitor; the same order as coord's offline/lib/test-display.ps1). The
