@@ -138,8 +138,10 @@ def test_gear_hidden_without_character_select(pair):
 def test_gear_hidden_solo(pair):
     with pair.setup():
         solo.prove(pair)
+        # stepped to a fresh in-play sample, never one read (harness-c133-scene until_in_play; A only: not
+        # need_boot_place, whose until_in_play steps both games: review-rows-c130-3 16:38)
+        pair.until_in_play("A in play before the solo test", games=("A",))
         s = pair.state("A")
-        assert pair.in_play(s), "A not in play (%s)" % s.get("not_ready")
         assert s.get("age") == "child", "A is %s: this row needs child Link (the kit save)" % s.get("age")
         wears_a_sword(pair, "A")
     try:
