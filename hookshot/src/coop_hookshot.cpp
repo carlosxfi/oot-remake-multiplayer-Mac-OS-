@@ -3691,3 +3691,12 @@ COOP_HOOKSHOT_EXPORT void hos_coop_draw2(const HosCoopDraw* d) {
     });
 }
 }
+
+namespace CoopHookshot {
+// (port-g7: f1-event C3-1 as a bridge test; B #137: any host key) The play-test bridge's `key`: the window's own
+// entry, as Longshot's WM_KEYDOWN calls it (ls32-src/host/display.c: hos_coop_key first, a key co-op takes never
+// reaches Longshot), so what it does and logs is a real key press's (F1's route, F6's Players, the chat key).
+bool BridgeKey(std::uint32_t vk) {
+    return hos_coop_key(vk, 0) != 0;
+}
+}  // namespace CoopHookshot

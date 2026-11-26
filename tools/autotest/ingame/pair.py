@@ -761,6 +761,13 @@ class Pair:
     def flag_read(self, x, name):
         return self.call(x, "flag_read", name=name)
 
+    def key(self, x, name):
+        """Game x's host key `name` (F1 to F12, A to Z, 0 to 9) through the bridge's `key` (docs/playtest.md; port-g7,
+        B #137): the module's hos_coop_key as the window gives it, no OS key, no focus, no frame run. Reply: key, vk,
+        taken (co-op took it), longshot (not taken: "close", F1 shutting Longshot's menu while co-op's tab shows, or
+        "none"). Step the games after it: what it opens moves at the next frames."""
+        return self.call(x, "key", key=name)
+
     # -- a game leaves and comes back (regress step 4, row 249) ---------------------------------------------------
     REJOIN_QUIT_S = 60       # live.py quit: QUIT_WAIT 15 s to quit, then a kill (live.py:58)
     REJOIN_BOOT_S = 420      # live.py relaunch: the runner's start + the boot script (live-kakariko-child: ~2900

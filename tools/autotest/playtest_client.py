@@ -180,6 +180,11 @@ class Client:
         is its hash ("0x..."), which `flag` takes back for that flag in this game run."""
         return self.request("flag_read", name=name)
 
+    def key(self, name):
+        """A host key (F1 to F12, A to Z, 0 to 9) as the window gives it to the module (hos_coop_key): {"key", "vk",
+        "taken", "longshot" (when not taken: "close" or "none")}. docs/playtest.md `key` (port-g7, B #137)."""
+        return self.request("key", key=name)
+
     def give(self, item):
         return self.request("give", item=item)
 

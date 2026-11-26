@@ -35,6 +35,10 @@ std::optional<std::uint16_t> PortFrom(std::string_view value);
 double IdleFrom(std::string_view value);
 // A dump's tag: 1 to 64 of letters, digits, '-' and '_' (it names a file in the dump folder: no path).
 bool ValidTag(std::string_view tag);
+// The bridge `key`'s name as the Windows virtual key the window gives hos_coop_key (WM_KEYDOWN's wParam, which Longshot
+// passes as it is: ls32-src/host/display.c; Linux maps SDL's keys to the same codes: host/posix/display_sdl.c): F1 to F12
+// = 0x70 to 0x7B, A to Z and 0 to 9 = their upper-case ASCII codes. Any other name: none.
+std::optional<std::uint32_t> KeyVk(std::string_view name);
 
 // The game's frame hold. The game's calc thread calls AtFrame at the top of every frame hook; the bridge's thread
 // calls the rest. While held, AtFrame waits (the frame's update has not run yet) and runs the jobs the bridge
@@ -137,6 +141,8 @@ struct Request {
     std::string lines;  // act: one test-script line (kill, hit, hurt, place, ...); PlayNow checks its kind
     std::uint64_t since = 0;  // text: only the texts after this seq (0: all kept)
     std::string layout;       // text: only the layouts whose name has this in it ("": every layout)
+    std::string key;          // key: the host key's name (F1, T, ...) and its virtual key (KeyVk)
+    std::uint32_t vk = 0;
     double timeout_s = 60;
 };
 // The request on one line, or `error` (bad_request's message).

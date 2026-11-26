@@ -729,6 +729,23 @@ std::string Handle(const Request& r) {
         return ok("\"path\":" + Quote(path.generic_string()) + ",\"width\":" + Field(&*reply, "width") +
                   ",\"height\":" + Field(&*reply, "height") + ",\"advanced\":" + std::to_string(advanced));
     }
+    if (r.cmd == "key") {
+        // A host key (port-g7, f1-event C3-1; B #137): the window's own entry, hos_coop_key, as Longshot's WM_KEYDOWN
+        // calls it (ls32-src/host/display.c), so what it does and logs is a real press's (F1's "coop: F1: ..." route).
+        // No frame runs (F1's parts are atomics and their own locks: coop_hookshot.cpp MenuNow, CoopPause::Want*;
+        // Longshot calls it on its window thread, not the game's): menus move at the next frames. Not gated: a key
+        // reaches no wire. A key co-op leaves is Longshot's, and the bridge never plays Longshot's own keys, with one
+        // exception: F1 left while co-op's tab shows is Longshot's F1 closing its menu (gpu/vk/vk_menu.cpp, F1 toggles
+        // it), done here as HOS_COOP_MENU_WANT_CLOSE does it, so a test can shut what its F1 opened.
+        const bool shown = CoopPause::TabShown();
+        const std::string head = "\"key\":" + Quote(r.key) + ",\"vk\":" + std::to_string(r.vk);
+        if (CoopHookshot::BridgeKey(r.vk)) return ok(head + ",\"taken\":true");
+        if (r.vk == 0x70 && shown) {
+            CoopPause::WantClose();
+            return ok(head + ",\"taken\":false,\"longshot\":\"close\"");
+        }
+        return ok(head + ",\"taken\":false,\"longshot\":\"none\"");
+    }
     return fail("bad_request", "unknown cmd");
 }
 
