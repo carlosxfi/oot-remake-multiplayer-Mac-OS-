@@ -7,9 +7,11 @@
 // the note's SLink asset Ocarina_<note> on our puppet (coop_puppet_sound.h).
 //
 // The note comes from the button, not from game memory: where the game keeps
-// the note was not found (reports/ocarina-probe.md), but its prompt while the
-// Ocarina is out reads "Play a note: L R Y X A", the five notes from low to
-// high as in Ocarina of Time 3D: L the low D, R F, Y A, X B, A the high D.
+// the note was not found (reports/ocarina-probe.md). Which note each key plays
+// was read from the game's own sound emits (run epona-seen-keys-fec750ad,
+// 2026-11-26; tools/autotest/ocarina_notes.py): L the low D, R F, Y B, X the
+// high D, A A (the N64 layout: A, C-down, C-left, C-up, C-right). The prompt's
+// "Play a note: L R Y X A" is not low to high.
 // No pitch bend is sent.
 #pragma once
 
