@@ -158,7 +158,8 @@ def judge(pair, x, seen, ids):
         rows.append("%s: rock %s at %.1f m from its Link, %.1f m from the other" % (x, rid, do, dt))
     pair.notes.extend(rows)
     n = len(lastpos)
-    assert 2 * near_own > n, "%s: one target: only %d of %d falling rocks nearer its own Link, the rest nearer the other "         "Link: %s" % (x, near_own, n, "; ".join(rows))
+    assert 2 * near_own > n, ("%s: one target: only %d of %d falling rocks nearer its own Link, the rest nearer the "
+                              "other Link: %s" % (x, near_own, n, "; ".join(rows)))
     return near_own / float(n), n, rows
 
 
