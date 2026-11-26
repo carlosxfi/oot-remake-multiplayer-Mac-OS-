@@ -48,6 +48,13 @@ HARNESS = ["tools/autotest/run.ps1", "tools/autotest/kit-paths.ps1", "tools/auto
            "tools/autotest/hs_steps.py", "tools/autotest/lanes.py", "tools/autotest/placement.py",
            "tools/autotest/ocarina_notes.py", "tools/autotest/proof.py", "tools/hookshot/hs.py",
            "tools/puppet_pack/merge_tables.py", "tools/puppet_pack/self_tunic.py"]
+# The in-game test system (docs/ingame-tests.md): what every bridge test runs besides its own module. refs/ is in
+# whole (a test names its references in its body, pair.check_shot(game, name): not known from outside), so a changed
+# or added reference un-proves every test (strict side).
+INGAME = "tools/autotest/ingame"
+INGAME_HARNESS = [INGAME + "/conftest.py", INGAME + "/bt_plugin.py", INGAME + "/pair.py", INGAME + "/imagecheck.py",
+                  INGAME + "/pytest.ini", "tools/autotest/live.py", "tools/autotest/lanes.py",
+                  "tools/autotest/ocarina_notes.py", "tools/autotest/desync_check.py", "tools/hookshot/hs.py"]
 _hash_cache = {}
 
 
@@ -115,6 +122,35 @@ def harness_hash(repo=None):
         p = os.path.join(repo, *rel.split("/"))
         h.update(("%s\0%s\n" % (rel, file_sha(p) if os.path.isfile(p) else "missing")).encode("utf-8"))
     return h.hexdigest()
+
+
+def base_nodeid(nodeid):
+    """A pytest nodeid without bt_plugin's --repeat parameter ([r3], or r3 inside [a-r3]): the same test."""
+    m = re.match(r"^(.*?)\[(.*)\]$", nodeid)
+    if not m:
+        return nodeid
+    rest = [p for p in m.group(2).split("-") if not re.match(r"^r\d+$", p)]
+    return m.group(1) + ("[%s]" % "-".join(rest) if rest else "")
+
+
+def test_hash(nodeid, repo=None):
+    """24 hex digits over what a bridge test runs: its own module file, INGAME_HARNESS and every file under
+    ingame/refs. The nodeid's path is as pytest prints it: relative to its rootdir, which is tools/autotest/ingame
+    (its pytest.ini; `test_rows.py::test_x`), or relative to the repo (`tools/autotest/ingame/test_rows.py::...`):
+    both name the same file and give the same hash. '' when the module is not there (such a test proves nothing)."""
+    repo = repo or REPO
+    path = nodeid.split("::", 1)[0].replace("\\", "/")
+    for rel in (INGAME + "/" + path, path):
+        if os.path.isfile(os.path.join(repo, *rel.split("/"))):
+            break
+    else:
+        return ""
+    h = hashlib.sha256()
+    for rel in [rel] + INGAME_HARNESS:
+        q = os.path.join(repo, *rel.split("/"))
+        h.update(("%s\0%s\n" % (rel, file_sha(q) if os.path.isfile(q) else "missing")).encode("utf-8"))
+    h.update(("refs\0%s\n" % tree_hash(os.path.join(repo, *INGAME.split("/"), "refs"))).encode("utf-8"))
+    return h.hexdigest()[:24]
 
 
 _PLAY = re.compile(r"^\s*play\s+(.*)$", re.I)
