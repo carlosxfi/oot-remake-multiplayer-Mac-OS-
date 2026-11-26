@@ -91,6 +91,7 @@
 #include "coop_ngplus.h"
 #include "coop_live_events.h"
 #include "coop_objects_sync.h"
+#include "coop_off_frame.h"
 #include "coop_hit_replay.h"
 #include "coop_input.h"
 #include "coop_look.h"
@@ -1970,9 +1971,11 @@ void Frame(void* ctx, int site) {
     }
     CoopWindowBrand::Tick(CoopRuntime::GameDir());  // the window's title and icon, co-op on or idle (solo too)
     if (site == HOS_COOP_SITE_FRAME) {  // row 271: this game's memory once a minute, solo too (coop_host_menu.h)
+        // Row 292: read on a thread of its own (it sums every heap of the process: slow), never in the frame.
         static std::uint64_t next_memory_ms = 0;
+        static CoopOffFrame::Slot memory_read;
         if (CoopHostMenu::MemoryLineDue(SteadyMs(), next_memory_ms)) {
-            LOG_INFO(Core, "coop: memory: {}", CoopHostMenu::ProcessMemoryText());
+            memory_read.Start([] { LOG_INFO(Core, "coop: memory: {}", CoopHostMenu::ProcessMemoryText()); });
         }
     }
     if (!g_on) {
