@@ -21,7 +21,8 @@ function Check([bool]$Ok, [string]$What) {
 $python = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $python) { Write-Host 'FAIL no python on PATH (CI: windows-latest has one)'; exit 1 }
 $base = (& $python -I -c 'import sys; print(sys.base_prefix)').Trim()
-$ver = (& $python -I -c 'import sys; print("%d%d" % sys.version_info[:2])').Trim()
+# (no double quotes in a -c argument: Windows PowerShell 5.1 drops them on the way to a native program)
+$ver = (& $python -I -c 'import sys; print(str(sys.version_info[0]) + str(sys.version_info[1]))').Trim()
 
 function New-Kit([bool]$WithNumpy) {
     $kit = Join-Path ([System.IO.Path]::GetTempPath()) ('oot-coop-np-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -94,7 +95,7 @@ try {
     $r2 = Invoke-Pack $kit2
     Check ($r2.Code -eq 0) "puppet-pack.ps1 exits 0 (got $($r2.Code))"
     Check (@($r2.Out | Where-Object { $_ -like '*numpy*' }).Count -eq 0) 'no numpy line'
-    Check ($r2.Built -eq $r.Built.Replace($kit, $kit2)) 'the pack tool is called the same way'
+    Check ($null -ne $r.Built -and $r2.Built -eq $r.Built.Replace($kit, $kit2)) 'the pack tool is called the same way'
 } finally {
     foreach ($k in $kits) { Remove-Item -LiteralPath $k -Recurse -Force -ErrorAction SilentlyContinue }
 }
