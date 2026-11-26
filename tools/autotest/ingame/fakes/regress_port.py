@@ -3,6 +3,7 @@ regress-port-b). Hooks: fakegame.py docstring. Reacts ONLY when the selftest nam
 BT_FAKE_REGRESS_BOOT (the fake lane does not know --boot): the games then start in that boot's stage, past it, as the
 real boot leaves them (each line copied from the tests' own patterns, cited there at their writers).
 
+Every boot: the first state reads say not_ready (no Link sample) until 5 frames ran (review-rows-c136 16:25).
 live-barinade-room: both games' boot lines (sync on, Barinade 'ours' on A, 'a copy' on B, B's "owner's verbs came"),
   Barinade in both world lists (owner 1), a boss counts line every 300 frames (A sends, B puts in).
   BT_FAKE_REGRESS_MODE=off: 'native sync off' and no boss lines (a hookshot.exe without the wraps: SETUP-FAIL).
@@ -55,6 +56,7 @@ def setup(game):
     if not game.rp_on:
         return
     game.scene = STAGES[boot]
+    game.rp_ready = game.frame + 5
     game.flags["PlayerStatus.MaxLife"] = 48
     game.rp_counts, game.rp_swings, game.rp_fight, game.rp_down = [0, 0, 0, 0], 0, None, False
     if boot == "live-barinade-room":
@@ -75,6 +77,8 @@ def setup(game):
 def state(game, st):
     if not getattr(game, "rp_on", False):
         return
+    if game.frame < game.rp_ready:     # held after the boot: no Link sample until a frame runs (as the real lane)
+        st.update(pos=None, loading=None, event=None, not_ready="no fresh Link sample")
     me = 1 if game.tag == "A" else 2
     for p in st["coop"]["players"]:
         p["self"] = p["number"] == me

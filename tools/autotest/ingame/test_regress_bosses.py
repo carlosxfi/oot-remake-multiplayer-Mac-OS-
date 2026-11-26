@@ -46,7 +46,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import pair as P                                                         # noqa: E402
 from test_boss_wake import COUNTS, own_number, sync_on, verbs_came      # noqa: E402  (the same patterns, one place)
-from test_enemy_turn import keep_up                                     # noqa: E402
+from test_enemy_turn import in_stage, keep_up                                     # noqa: E402
 
 SWITCHES = ("LICHII_COOP_DEBUG_BOSS=1", "LICHII_COOP_DEBUG_OBJECTS=1", "LICHII_COOP_CHEATS=1")
 SYNC_ON = r"coop: bosses: native sync on \(brain verbs wrapped, action verbs wrapped\)"   # coop_hookshot.cpp:456
@@ -67,14 +67,6 @@ COPY_STUN = r"coop: objects: share stunned here, said to the owner: %s" % GANOND
 def whole(pair, x, pattern):
     """A line of game x's module log matching `pattern` since the game started (the boot's lines are before the test)."""
     return pair.log[x].find(pattern, pos=0)
-
-
-def in_stage(pair, stage):
-    for x in ("A", "B"):
-        s = pair.state(x)
-        assert pair.in_play(s), "%s not in play (%s)" % (x, s.get("not_ready"))
-        assert (s.get("scene") or "").lower() == stage.lower(), "%s is in %s, not %s (the boot's stage)" % (
-            x, s.get("scene"), stage)
 
 
 def sync_both(pair):

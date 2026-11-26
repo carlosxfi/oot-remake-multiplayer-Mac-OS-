@@ -61,6 +61,7 @@ HOLD = 150                         # frames the new owner is checked after the t
 CHUNK = 30                         # frames between owner reads (1 s of game)
 LIFE_WRITTEN = r"its Life step did not take the change: life written"   # coop_objects.cpp:4186
 SHOT_TOLERANCE = 0.80
+READY_FRAMES = 300                 # harness-c133-scene 82f9a7a5a test_rows READY_FRAMES (need_boot_place)
 
 
 def other(x):
@@ -73,6 +74,19 @@ def own_number(st):
         if p.get("self") is True:
             return p.get("number")
     return None
+
+
+def in_stage(pair, stage):
+    """Both games in play in the boot's `stage`. The games are held right after the lane boot with no Link sample yet
+    (state not_ready 'no fresh Link sample': gifts-237-3d17b642 SETUP-FAIL 16:20 UTC, review-rows-c136 16:25), so both
+    are stepped until each has a fresh in-play sample (READY_FRAMES, the bound harness-c133-scene 82f9a7a5a gives
+    pair.until_in_play), then the scene is checked. Shared by test_regress_bosses.py."""
+    pair.until("both games in play (a fresh Link sample) after the boot",
+               lambda: all(pair.in_play(pair.state(x)) for x in ("A", "B")), max_frames=READY_FRAMES)
+    for x in ("A", "B"):
+        s = pair.state(x)
+        assert (s.get("scene") or "").lower() == stage.lower(), "%s is in %s, not %s (the boot's stage)" % (
+            x, s.get("scene"), stage)
 
 
 def stalfos(pair, x):
@@ -121,11 +135,7 @@ def look_both(pair, name, missed):
 def test_stalfos_turns_to_the_other_player(pair):
     missed = []
     with pair.setup():
-        for x in ("A", "B"):
-            s = pair.state(x)
-            assert pair.in_play(s), "%s not in play (%s)" % (x, s.get("not_ready"))
-            assert (s.get("scene") or "").lower() == STAGE.lower(), "%s is in %s, not %s (the boot's stage)" % (
-                x, s.get("scene"), STAGE)
+        in_stage(pair, STAGE)
         num = {x: own_number(pair.state(x)) for x in ("A", "B")}
         assert all(isinstance(v, int) for v in num.values()) and num["A"] != num["B"], "own player numbers: %s" % num
         listed = pair.until("an alive %s with an owner in both games' world lists" % STALFOS,
