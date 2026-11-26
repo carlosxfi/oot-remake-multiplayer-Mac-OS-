@@ -90,12 +90,18 @@ class Log:
         return None
 
 
-def lane_check(kit_ls, lane):
+NOCS = "-nocs"                       # lane<N>-B-nocs: lane B's game without Character Select (lanes.py nocs)
+CS_MOD = "OoT Character Select"
+
+
+def lane_check(kit_ls, lane, nocs=False):
     """The lane's setup proof, the Python twin of offline/lib/lane-server.ps1 + lane-pair.ps1 (one source of the rule:
-    both read lane-server.txt as offline/lane-game-for.ps1 writes it). Returns {server, commit, dll_sha256}; raises
-    SetupFail with the first thing wrong."""
+    both read lane-server.txt as offline/lane-game-for.ps1 writes it). Returns {server, commit, dll_sha256, game_b};
+    raises SetupFail with the first thing wrong. nocs: game B is lane<N>-B-nocs (lanes.py nocs), whose own
+    lane-server.txt must name the same module, commit and server as lane<N>-B's and whose game has no Character
+    Select code (only its exefs= line differs: nocs_check)."""
     got = {}
-    for x in ("A", "B"):
+    for x in ("A", "B") + (("B" + NOCS,) if nocs else ()):
         d = os.path.join(kit_ls, "lane%d-%s" % (lane, x))
         f = os.path.join(d, "lane-server.txt")
         try:
@@ -122,7 +128,11 @@ def lane_check(kit_ls, lane):
         if have_p != want_p:
             raise SetupFail("lane%d-%s game patches line %s is not lane-server.txt's %s (the game was rebuilt after the "
                             "lane's install)" % (lane, x, have_p[:8] or "(none)", want_p[:8]))
-        got[x] = {"server": srv, "commit": commit, "dll_sha256": want, "patches": want_p}
+        got[x] = {"server": srv, "commit": commit, "dll_sha256": want, "patches": want_p, "folder": d,
+                  "nocs_of": field("nocs_of")}
+    if nocs:
+        nocs_check(got["B"], got["B" + NOCS], lane)
+        got["B"] = got["B" + NOCS]
     a, b = got["A"], got["B"]
     if a["dll_sha256"] != b["dll_sha256"]:
         raise SetupFail("lane%d A/B module differ: %s vs %s" % (lane, a["dll_sha256"][:16], b["dll_sha256"][:16]))
@@ -132,7 +142,42 @@ def lane_check(kit_ls, lane):
         raise SetupFail("lane%d A and B name different servers (%s / %s)" % (lane, a["server"], b["server"]))
     if not os.path.exists(a["server"]):
         raise SetupFail("no server %s (lane%d lane-server.txt)" % (a["server"], lane))
-    return a
+    return dict({k: v for k, v in a.items() if k not in ("folder", "nocs_of")}, game_b=b["folder"],
+                game_b_exefs=_exefs_line(os.path.join(b["folder"], "coop-built-from.txt")))
+
+
+def _exefs_line(path):
+    """coop-built-from.txt's exefs= line (the mods' code patches the game was built with), '' when it has none."""
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
+            return next((ln.rstrip("\r\n") for ln in f if ln.startswith("exefs=")), "")
+    except OSError:
+        return ""
+
+
+def nocs_check(b, n, lane):
+    """lane<N>-B-nocs is lane<N>-B's game without Character Select: made by lanes.py nocs from THIS lane B (nocs_of),
+    the same module, commit and server, and a game whose code patches and code-patch list name no Character Select."""
+    tag = "lane%d-B%s" % (lane, NOCS)
+    if os.path.normcase(n["nocs_of"]) != os.path.normcase(os.path.basename(b["folder"])):
+        raise SetupFail("%s lane-server.txt has nocs_of=%s, not %s (made by lanes.py nocs --lane %d?)"
+                        % (tag, n["nocs_of"] or "(none)", os.path.basename(b["folder"]), lane))
+    for k in ("dll_sha256", "commit", "server"):
+        if n[k] != b[k]:
+            raise SetupFail("%s %s %s is not lane%d-B's %s (lane B was installed again: lanes.py nocs --lane %d)"
+                            % (tag, k, n[k][:16], lane, b[k][:16], lane))
+    line = _exefs_line(os.path.join(n["folder"], "coop-built-from.txt"))
+    if CS_MOD.lower() in line.lower():
+        raise SetupFail("%s game was built with Character Select's code (%s)" % (tag, line[:80]))
+    try:
+        with open(os.path.join(n["folder"], "exefs_patches.txt"), encoding="utf-8", errors="replace") as f:
+            rows = [ln for ln in f if not ln.startswith("#") and ln.lower().startswith(CS_MOD.lower() + "\t")]
+    except OSError:
+        rows = []
+    if rows:
+        raise SetupFail("%s exefs_patches.txt still lists Character Select's code patch" % tag)
+    if os.path.isdir(os.path.join(n["folder"], "mods", CS_MOD)):
+        raise SetupFail("%s still has mods/%s" % (tag, CS_MOD))
 
 
 def _sha256_file(path):
@@ -171,6 +216,7 @@ class Pair:
         self.deadline = Deadline(3600)
         self.shots = []        # [{"game", "name", "path", "ref", "score", "ok"}] of the running test
         self.notes = []
+        self.window_shooter = None   # (x, path) -> path: window shots (windowshot.Shooter; the fake lane's own)
 
     # -- per test ---------------------------------------------------------------------------------------------
     def begin(self, seconds):
@@ -295,7 +341,7 @@ class Pair:
         waits for Link in the scene with NO event (coop_playtest_core.cpp WarpArrived), so it answers 'timeout' with
         Link already there; then a fresh state with that scene, no load AND an event running counts as the arrival,
         anything else raises. Each game's wait is ARRIVE_IN_EVENT_WAIT s, and every wait stays inside the deadline."""
-        for x in ("A", "B"):
+        for x in [y for y in ("A", "B") if y in self.c]:     # (a solo pair: A only)
             self.warp_one(x, scene, entrance, arrive_in_event)
         return {x: self.state(x) for x in self.c}
 
@@ -355,6 +401,27 @@ class Pair:
         if res["why"].startswith("NO-REF"):
             return res        # (the test goes on; bt_plugin labels it NO-REF at its end, never PASS)
         assert res["ok"], "shot %s-%s: %s" % (name, x, res["why"])
+        return res
+
+    def window_shot(self, x, name, tolerance=0.90):
+        """A WINDOW shot of game x: the screen's copy of its window, Longshot's ImGui overlays (co-op's map arrows, tabs,
+        name tags, its menu) included, which check_shot's bridge shot never has. Taken by self.window_shooter
+        (windowshot.Shooter: the shared offline/lib/screen-shot.ps1, raise + own-pid cover check), compared like
+        check_shot to refs/<name>-window-<x>.png. No reference: NO-REF, the candidate kept under <out>/new/. A covered,
+        failed or missing shot, or a pair without a shooter: SETUP-FAIL (never PASS). The window shows the last
+        frame the game presented: step the games first if the test needs a newer one."""
+        import imagecheck
+        if self.window_shooter is None:
+            raise SetupFail("window shot %s-%s: this pair has no window shooter" % (name, x))
+        wname = "%s-window" % name
+        path = os.path.join(self.out_dir or os.path.join(HERE, "out"), "window", "%s-%s.png" % (wname, x))
+        path = self.window_shooter(x, path)
+        ref = os.path.join(self.refs_dir or os.path.join(HERE, "refs"), "%s-%s.png" % (wname, x))
+        res = imagecheck.compare(path, ref, tolerance, keep_dir=self.out_dir)
+        self.shots.append(dict(res, game=x, name=wname, window=True))
+        if res["why"].startswith("NO-REF"):
+            return res
+        assert res["ok"], "window shot %s-%s: %s" % (wname, x, res["why"])
         return res
 
     def unproven(self, reason):

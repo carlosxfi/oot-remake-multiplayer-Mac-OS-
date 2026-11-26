@@ -56,6 +56,52 @@ where the bridge's `warp` answers `not_in_event` in free play). Each test runs w
 unmarked = `live-kakariko-child`; a run with another `--boot` deselects it (`deselected: needs_boot NAME <test>`, in
 `summary.json` `deselected`). An unknown `--boot` is a usage error before any boot.
 
+Pack files: `--pack NAME[,NAME]` (repeatable) makes co-op pack files with the TESTED sha's tools and puts them into
+BOTH lane games' co-op pack (`mods/contents/0400486024DEC000/coop-puppet/<rel>`) after the lane check and before
+the boot. They come out again after `live.py stop` (a file a pack replaced is put back). The maker is
+`tools/autotest/ingame/packs/NAME.py`: `make(out, ctx) -> {rel: src}`, where rel is '/' separated under coop-puppet
+(`coop_hud/map-arrow.png`). Its `ctx` has `tools`, `romfs` (lane A's extracted romfs, read only), `game_nup`
+(`--pack-game`, else the .nup beside the kit root), `lane` and `say`. `packs/hud.py` makes `coop_hud/` with
+`puppet_pack/hud.py` (fonts, hearts, map arrow, place names; about 60 s from the romfs). Every file is checked by
+sha256 on each game, and `summary.json` `identity.pack` is `{name: {rel: sha256}}`. Each game folder gets a
+`coop-test-pack.json` written before any file moves, so a run that dies leaves something the next boot undoes, with
+or without `--pack`. A test that needs a pack: `@pytest.mark.needs_pack(NAME)`; a run without that `--pack`
+deselects it (`deselected: needs_pack NAME <test>`). A maker that fails is a SETUP-FAIL, and the lane is left as it was.
+
+Save profiles: `--save NAME` sets the flags of `tools/autotest/ingame/saves/NAME.py` in every
+`autotest-save/slot_NN/progress.sav` of BOTH lane games. It does this after the lane check and before the boot. At
+its start the game copies that baseline over its own saves (hookshot.py `restore_save`). `FLAGS` holds strings in
+`save_flags.py set` form (`bool:0x6b093b51=0`), and each one cites where its hash comes from. Only flags already in
+the save are changed; a missing flag is a SETUP-FAIL. Each save is kept in `coop-test-save-kept/`. A
+`coop-test-save.json` is written before any change, so every boot undoes a run that died. After `live.py stop` the
+baseline is put back. Every flag is read back on every save. A test that needs a profile:
+`@pytest.mark.needs_save(NAME)`. A run with another `--save`, or none, deselects it. `summary.json` `identity.save`
+is `{name, sha256: {game: {rel: sha256}}}`. `saves/gohma-alive.py` puts Queen Gohma back alive, with the quest at
+her room (rows 137/138).
+
+SOLO boot (owner rule: features that are not multiplayer must also work solo, with co-op idle): `--solo` boots only
+lane game A, with no co-op session. That means `live.py start --only A` without `--server`, so hookshot.py run gives
+it no `LICHII_COOP_SERVER`, and the lane's `coop.ini` has no server line. Only tests marked `@solo.MARK`
+(`tools/autotest/ingame/solo.py`, marker `needs_solo`) run. Every other test is deselected (`needs_pair`), and a
+run without `--solo` deselects the solo tests (`needs_solo`). The pair has game A only (`pair.c == {'A'}`), and
+`step_both`, `press` and `warp_both` run on A. Setup proof, before any test: game A's module log has
+`solo.IDLE` (`coop: no server in coop.ini: co-op idle until Host or Join ...`, hookshot/src/coop_hookshot.cpp).
+It must also have no session line (`coop: on, server`, `connecting`, `welcomed`, `connected`). Otherwise every
+test is a SETUP-FAIL. `--solo` with the no-CS switch is refused. `identity.solo` is true.
+
+Game B without Character Select: `--env B:COOP_TEST_NO_CHARACTER_SELECT=1` (the switch in
+`tools/autotest/ingame/no_cs.py`) boots game B from `lane<N>-B-nocs` instead of `lane<N>-B`. That folder is made
+only when someone asks for it, with `python -I tools/autotest/lanes.py nocs --lane N` (`--dry-run` first). It is
+made from lane B: hard links for every file no game writes, copies of the rest, but without the
+`mods/OoT Character Select` folder and its `coop-mods.list` rows. It gets its own co-op pack, made with the lane
+module commit's pack tool (`wt-module-<sha8>`), which then has co-op's own Characters tab and its code patch. It
+also gets the game from the hs cache that was built with that patch instead of his. A cache miss is an error,
+because `nocs` never builds a game. Its `lane-server.txt` is written last and names lane B's module, commit and
+server, plus `nocs_of=lane<N>-B`. The lane check (`pair.lane_check(..., nocs=True)`) then also requires that this
+module, commit and server are lane B's, that the game's `exefs=` line and `exefs_patches.txt` do not name Character
+Select, and that its folder is gone. `summary.json` `identity` keeps `nocs` and `game_b`
+`{lane: {folder, exefs}}`. Make the folder again after every lane prep: the check fails until you do.
+
 | Result | When |
 |---|---|
 | PASS | every assert held |
@@ -94,6 +140,13 @@ pytest-timeout (pytest.ini, 1800 s) is only the backstop for a call that never r
   blue (0,60,160) at the same grey scores grey 1.0000, colour 0.1128). Shots are kept with the result
   (`<dir>/lane<L>/shots/`). A test never writes a reference: a person checks a NO-REF candidate and copies it into
   `refs/`.
+- Longshot's ImGui overlays (co-op's map arrows, tabs, name tags, its menu) are drawn after the bridge's `shot` is
+  taken, so they are never in it. For those, `pair.window_shot(game, name, tolerance)`: the screen's copy of the
+  game's window through the shared `coord-multiplayer/offline/lib/screen-shot.ps1` (game raised, cover check;
+  helper from `OOT_WINDOW_SHOT`, else that default path), cut to the window's client area (no title bar, no
+  desktop), compared the same way to `refs/<name>-window-<game>.png`. A covered window, a failed copy, no helper or
+  no pid is SETUP-FAIL, never PASS. It shows the last frame the game presented: step first when a newer one is
+  needed. Code: `ingame/windowshot.py`; selftests `tests/test_ingame_windowshot.py`.
 
 - Frame rate, the one wall-clock check (`test_unfocus.py`, row 83): fps is real time, so that test alone lets both
   games run (`resume`), reads Longshot's own 5 s present windows from the logs (`vi: N frames presented (X fps ...)`,
