@@ -39,6 +39,10 @@ FPS = 30              # Ocarina of Time's calc rate on Hookshot: frames -> secon
 WARP_PAIR_MEASURED_S = 31.0
 RECOVER_WARP_S = WARP_PAIR_MEASURED_S   # one game's warp in a recovery: the worst TWO-game warp = 2x one game's (margin)
 RECOVER_BASE_S = SETUP_LIMIT_S          # a recovery's other part: out of a load, an event's end, in play (stepped)
+# A warp inside a test's set-up (Pair.setup) gets the same allowance on top of SETUP_LIMIT_S: one warp_one = game x's
+# warp (13.5-15.5 s) + the other game stepped to the same frames (about as long: tb-gate-look-f9f3b9c2-2 SETUP-FAIL,
+# warp_one(A) ~16 s then step_other(B) needed 14.5 s with 13.5 s of the 30 left). The 30 s still bounds the rest.
+SETUP_WARP_S = WARP_PAIR_MEASURED_S
 # The shortest reply wait a call is ever sent with (boss-respawn-bridge-e3e6e253, CAUSE 2: a call sent with the 0.2 s
 # left of a spent deadline timed the socket out; playtest_client.request closes it on any OSError and the bridge lets the
 # game RUN FREE mid-arrival, so every later test's recovery met 'teleport still in progress'). Cited parts: a held
@@ -285,10 +289,15 @@ class Pair:
     def setup(self, limit=SETUP_LIMIT_S):
         """A test's set-up: anything that goes wrong in it, or more than `limit` seconds, is SETUP-FAIL (not FAIL).
         While it runs the deadline is min(the test's, `limit`), so every call inside it (reply waits included, see
-        _wait) stops at the limit: a hung set-up is a SETUP-FAIL after `limit` s, not a FAIL at the test's budget."""
+        _wait) stops at the limit: a hung set-up is a SETUP-FAIL after `limit` s, not a FAIL at the test's budget.
+        Each warp in it (warp_one, so warp_both counts two) adds SETUP_WARP_S to that limit (never past the test's
+        deadline): a warp's wall time is the game's load, measured, not a set-up that hangs (kokiri-band-c124-6
+        20:58: a two-game warp in a set-up cannot fit 30 s; 12+ tests warp in their set-up)."""
         outer = self.deadline
         clock = outer.clock
         self.deadline = Deadline(max(0.0, min(limit, outer.left())), clock=clock)
+        was, ctx = getattr(self, "_setup_ctx", None), {"outer": outer, "warps": 0}
+        self._setup_ctx = ctx
         t0 = clock()
         try:
             yield
@@ -298,10 +307,23 @@ class Pair:
             raise SetupFail("set-up: %s: %s" % (type(e).__name__, e)) from e
         finally:
             self.deadline = outer
+            self._setup_ctx = was
         took = clock() - t0
-        if took > limit:
-            raise SetupFail("set-up took %.1f s (limit %.0f s)" % (took, limit))
-        self.notes.append("set-up %.1f s" % took)
+        bound = limit + ctx["warps"] * SETUP_WARP_S
+        warps = " incl %d warp(s)" % ctx["warps"] if ctx["warps"] else ""
+        if took > bound:
+            raise SetupFail("set-up took %.1f s%s (limit %.0f s)" % (took, warps, bound))
+        self.notes.append("set-up %.1f s%s" % (took, warps))
+
+    def _setup_warp(self):
+        """A warp inside a set-up: its deadline grows by SETUP_WARP_S, capped by the test's own (Pair.setup)."""
+        ctx = getattr(self, "_setup_ctx", None)
+        if not ctx:
+            return
+        ctx["warps"] += 1
+        d = self.deadline
+        d.end = min(d.end + SETUP_WARP_S, ctx["outer"].end)
+        d.seconds += SETUP_WARP_S
 
     # -- frames -----------------------------------------------------------------------------------------------
     def _need(self, cmd, frames=0):
@@ -622,6 +644,7 @@ class Pair:
         60 s wait, and a 'timeout' is judged on state like arrive_in_event=True (in the scene, not loading, the event
         running), anything else raises."""
         extra = {} if entrance in (None, "") else {"entrance": entrance}
+        self._setup_warp()       # (in a set-up: this warp's measured time on top of its 30 s)
         before = self.c[x].last_frame or 0
         wait = self.ARRIVE_IN_EVENT_WAIT if arrive_in_event is True else 60
         for attempt in (1, 2):
