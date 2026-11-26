@@ -121,6 +121,24 @@ def _deselect_needs_env(config, items):
     items[:] = keep
 
 
+# The lane's boot (live.py start): the documented live.py start boot, scenarios/live-kakariko-child.A/B.txt (its own
+# header: "boot for live.py start": child save, warp to Kakariko by the well, through the title; '#! noload' + its
+# switches line). --no-load: the boot scripts take the title themselves (live.py start --no-load help; the same form
+# as offline/desync-275-run.ps1:41-42). hookshot.py run needs --script-a (its own check: '--script-a (or --only B)').
+BOOT_A = os.path.join(AUTOTEST, "scenarios", "live-kakariko-child.A.txt")
+BOOT_B = os.path.join(AUTOTEST, "scenarios", "live-kakariko-child.B.txt")
+
+
+def boot_args(config, lane, server, session):
+    """live.py start's arguments for this lane's boot (after 'start'): the ONE list lane_pair boots with and
+    --lane-check-only proves (live.py start --dry-run = hookshot.py run's own parser + script parse)."""
+    args = ["--session", session, "--lane", str(lane), "--playtest", "--server", server,
+            "--boot-a", BOOT_A, "--boot-b", BOOT_B, "--no-load"]
+    for e in boot_env(config):
+        args += ["--env", e]
+    return args + ["--max-minutes", str(config.getoption("session_minutes")), "--idle-minutes", "15"]
+
+
 def _real_lane_info(config, lane):
     """A real lane's setup proof before any boot: lane-server.txt twin (P.lane_check) + the module commit."""
     import lanes as L
@@ -144,6 +162,11 @@ def _lane_check_only(config, items):
                 info = {"fake": True}
             else:
                 info = _real_lane_info(config, lane)
+                session = os.path.join(_out_dir(config, lane), "session")
+                dry = _live(["start"] + boot_args(config, lane, info["server"], session) + ["--dry-run"], timeout=120)
+                if not dry.get("ok"):
+                    raise P.SetupFail("lane%d boot command: %s" % (lane, dry.get("error")))
+                info = dict(info, boot="live.py start --dry-run OK")
             res["lanes"][str(lane)] = dict(info, ok=True)
         except P.SetupFail as e:
             res["lanes"][str(lane)] = {"ok": False, "why": str(e)}
@@ -192,6 +215,9 @@ def _live(args, timeout):
         return {"ok": False, "error": "live.py %s: exit %s: %s" % (args[0], p.returncode, (p.stderr or p.stdout)[-600:])}
 
 
+CRASH_LINE = "CRASH: exception"   # the crash line a game's module log gets (review-c123-7: not any 'CRASH' mention)
+
+
 def _crash_why(session):
     """'; A: CRASH: ...' from each game's module log of the session (session.json's games.X.log), first CRASH line
     each: a boot that failed because a game crashed says so in its SETUP-FAIL."""
@@ -205,7 +231,7 @@ def _crash_why(session):
         log = (games[x] or {}).get("log")
         try:
             with open(log, encoding="utf-8", errors="replace") as f:
-                line = next((ln.strip() for ln in f if "CRASH" in ln), None)
+                line = next((ln.strip() for ln in f if CRASH_LINE in ln), None)
         except (OSError, TypeError):
             line = None
         if line:
@@ -234,12 +260,7 @@ def lane_pair(request):
     t0 = time.monotonic()
     info = _real_lane_info(config, lane)                    # (SetupFail: every test of this lane is SETUP-FAIL)
     session = os.path.join(out, "session")
-    extra = []
-    for e in boot_env(config)[2:]:
-        extra += ["--env", e]
-    started = _live(["start", "--session", session, "--lane", str(lane), "--playtest", "--server", info["server"],
-                     "--env", "LICHII_COOP_PUPPET=1", "--env", "LICHII_COOP_TEST_TO_TITLE=1"] + extra + [
-                     "--max-minutes", str(config.getoption("session_minutes")), "--idle-minutes", "15"], timeout=1200)
+    started = _live(["start"] + boot_args(config, lane, info["server"], session), timeout=1200)
     if not started.get("ok"):
         crash = _crash_why(session)
         why = "lane%d boot: %s%s" % (lane, started.get("error") or started.get("boot"), crash)
@@ -466,3 +487,19 @@ def pytest_sessionfinish(session, exitstatus):
         f.write("\n".join(lines) + "\n")
     if summary["verdict"] != "PASS" and session.exitstatus == 0:
         session.exitstatus = 1        # (NOT-RUN / SKIP rows are pytest skips: a NOT PASS run never exits 0)
+    print(result_line(summary), flush=True)   # (stdout: the queue's log shows the reason, never NO-REASON)
+
+
+def result_line(summary):
+    """The run's one line: 'RESULT: PASS', 'RESULT: SETUP-FAIL <why>' when nothing got past set-up, else
+    'RESULT: NOT PASS <counts>; first: <test> <why>'."""
+    rows, c = summary["tests"], summary["counts"]
+    if rows and c["PASS"] == len(rows):
+        return "RESULT: PASS (%d tests, %.1f min)" % (len(rows), summary["minutes"])
+    if not rows:
+        return "RESULT: NOT PASS (no test ran%s)" % ("; deselected %d" % len(summary.get("deselected") or []))
+    counts = ", ".join("%s %d" % (k, v) for k, v in c.items() if v)
+    bad = next(r for r in rows if r["result"] != "PASS")
+    if c["SETUP-FAIL"] == len(rows):
+        return "RESULT: SETUP-FAIL %s" % bad["why"]
+    return "RESULT: NOT PASS (%s); first: %s %s %s" % (counts, bad["test"], bad["result"], bad["why"][:300])

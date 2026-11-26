@@ -24,8 +24,9 @@ and every test of that lane runs on it. With `-n 2` xdist worker N takes the Nth
 player N on `5000 + 10*L + N` (playtest.md). The boot's setup proof is `pair.lane_check` (the same rule as
 `offline/lib/lane-server.ps1` + `lane-pair.ps1`: both games' module is the one installed, from the same patches
 build, the server exists), then `hello` on both bridges with Longshot's control answering. `--expect-commit` (the lane's module sha, from
-`lane-server.txt`'s `commit=`) is required on a real lane. `--lane-check-only` runs that proof and the collection
-only (no boot, no test): one `SETUP-OK`/`SETUP-FAIL` line per lane, `<dir>/setup.json`, exit 0 only if all are OK
+`lane-server.txt`'s `commit=`) is required on a real lane. `--lane-check-only` runs that proof, the boot command
+(`live.py start ... --dry-run`: the exact `hookshot.py run` argv through the runner's own parser and checks plus a parse
+of the boot scripts, `run --check-args`; nothing starts) and the collection only (no boot, no test): one `SETUP-OK`/`SETUP-FAIL` line per lane, `<dir>/setup.json`, exit 0 only if all are OK
 (one process: it refuses `-n` and checks every `--lanes` lane itself).
 
 Game switches are per boot: `--env NAME=VALUE` (both games) or `--env A:NAME=VALUE` / `--env B:NAME=VALUE` (one
@@ -38,7 +39,14 @@ malformed `--env` stops the run before any boot (pytest usage error, exit 4).
 
 ## Results
 
-One summary per run: `<dir>/summary.json` and `summary.md` (add `--junitxml <file>` for JUnit).
+One summary per run: `<dir>/summary.json` and `summary.md` (add `--junitxml <file>` for JUnit). The run also prints one
+line to stdout for the queue log: `RESULT: PASS (...)`, `RESULT: SETUP-FAIL <why>` (nothing got past set-up) or
+`RESULT: NOT PASS (<counts>); first: <test> <result> <why>`.
+
+The boot (`bt_plugin.boot_args`, the one list the boot and the check use): `live.py start --lane L --playtest
+--server <lane-server.txt's> --boot-a/--boot-b scenarios/live-kakariko-child.A/B.txt --no-load --env ...`: the
+documented `live.py start` boot (child save, Kakariko by the well, through the title). `live.py start` checks those
+runner arguments before it spawns its watchdog or takes the lane lock, so a refused start leaves no lock.
 
 | Result | When |
 |---|---|

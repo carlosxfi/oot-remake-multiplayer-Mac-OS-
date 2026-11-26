@@ -353,6 +353,93 @@ class HookOrder(unittest.TestCase):
         self.assertFalse(hasattr(B._past_deadline, "pytest_impl"), "the hookimpl decorator sits on a helper")
 
 
+AUTOTEST = os.path.dirname(HERE)
+
+
+class BootCommand(unittest.TestCase):
+    """The lane's boot command is proven before any run (pilot test-bridge-pilot-967cac67 VOID 11-26: live.py start had
+    no --boot-a, hookshot.py run refused it, and the refused start kept lane1.lock with no games)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        for x in ("a", "b"):
+            os.makedirs(os.path.join(self.tmp, x))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def live(self, *args):
+        p = subprocess.run([sys.executable, "-I", os.path.join(AUTOTEST, "live.py"), "start"] + list(args),
+                           capture_output=True, text=True, timeout=120)
+        return json.loads(p.stdout)
+
+    def games(self):
+        return ["--game-a", os.path.join(self.tmp, "a"), "--game-b", os.path.join(self.tmp, "b")]
+
+    def test_check_args(self):
+        hs = [sys.executable, "-I", os.path.join(AUTOTEST, "hookshot.py"), "run", "--out", self.tmp] + self.games()
+        p = subprocess.run(hs + ["--check-args"], capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("--script-a", p.stderr)
+        bad = os.path.join(self.tmp, "bad.txt")
+        with open(bad, "w", encoding="utf-8") as f:
+            f.write("frobnicate 3\n")
+        p = subprocess.run(hs + ["--script-a", bad, "--check-args"], capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        import bt_plugin as B
+        p = subprocess.run(hs + ["--script-a", B.BOOT_A, "--script-b", B.BOOT_B, "--check-args"], capture_output=True,
+                           text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+    def test_result_line(self):
+        import bt_plugin as B
+        c = {k: 0 for k in B.RESULTS}
+        row = lambda t, r, why="": {"test": t, "result": r, "why": why}
+        self.assertEqual(B.result_line({"tests": [row("t1", "PASS")], "counts": dict(c, PASS=1), "minutes": 1.5}),
+                         "RESULT: PASS (1 tests, 1.5 min)")
+        s = {"tests": [row("t1", "SETUP-FAIL", "lane1 boot: no"), row("t2", "SETUP-FAIL", "lane1 boot: no")],
+             "counts": dict(c, **{"SETUP-FAIL": 2}), "minutes": 0}
+        self.assertEqual(B.result_line(s), "RESULT: SETUP-FAIL lane1 boot: no")
+        s = {"tests": [row("t1", "PASS"), row("t2", "FLAKY", "x")], "counts": dict(c, PASS=1, FLAKY=1), "minutes": 0}
+        self.assertEqual(B.result_line(s), "RESULT: NOT PASS (PASS 1, FLAKY 1); first: t2 FLAKY x")
+
+    def test_crash_line_needs_crash_exception(self):
+        import bt_plugin as B
+        ses = os.path.join(self.tmp, "ses")
+        os.makedirs(ses)
+        la = os.path.join(ses, "game-out-A.txt")
+        with open(la, "w", encoding="utf-8") as f:
+            f.write("coop: CRASH handler installed\n")      # (a mention, not a crash: a plain boot failure stays SETUP-FAIL)
+        with open(os.path.join(ses, "session.json"), "w", encoding="utf-8") as f:
+            json.dump({"games": {"A": {"log": la}}}, f)
+        self.assertEqual(B._crash_why(ses), "")
+
+    def test_refused_start_leaves_no_watchdog_or_lock(self):
+        ses = os.path.join(self.tmp, "s")
+        out = self.live("--session", ses, "--playtest", *self.games())
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["lock"], "not taken")
+        self.assertIn("--script-a", out["error"])
+        self.assertFalse(os.path.exists(os.path.join(ses, "watchdog.json")))
+        self.assertFalse(os.path.exists(os.path.join(ses, "session.json")))
+
+    def test_real_boot_args_parse(self):
+        """bt_plugin.boot_args (what lane_pair boots with) through live.py start --dry-run: hookshot.py run's own
+        parser + a parse of both boot scripts. The lane pair is swapped for two folders (CI has no lanes)."""
+        import bt_plugin as B
+
+        class Cfg:
+            def getoption(self, name):
+                return {"env": ["LICHII_COOP_PARTY_HUD_PROBE=1"], "session_minutes": 175}[name]
+        args = B.boot_args(Cfg(), 1, os.path.join(self.tmp, "coop_server.exe"), os.path.join(self.tmp, "s"))
+        i = args.index("--lane")
+        args[i:i + 2] = self.games()
+        out = self.live(*(args + ["--dry-run"]))
+        self.assertTrue(out["ok"], out)
+        for want in ("--script-a", B.BOOT_A, "--script-b", B.BOOT_B, "--no-load", "LICHII_COOP_PARTY_HUD_PROBE=1"):
+            self.assertIn(want, out["runner"])
+
+
 class SetupLimit(unittest.TestCase):
     """Pair.setup's 30 s limit holds for the calls inside it (review-c123-6 point 2): a hung bridge in a set-up is a
     SETUP-FAIL at the limit, not a FAIL at the test's budget. A fake clock: no real waiting."""
