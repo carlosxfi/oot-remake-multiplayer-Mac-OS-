@@ -34,7 +34,7 @@ import testsave
 from test_boss_away import (CORRIDOR, DEATH, DEFEAT, DOOR, GOHMA, KILLS, LOOK_UP, ROOM_E, SCENE, TRIGGER, UNDER,
                             goto)                                     # noqa: E402  (hs-boss-away-reset-kill.B.txt = the same walk)
 from test_enemies import actors, alive, place                        # noqa: E402
-from test_smoke import TO_TITLE_ASKED, TO_TITLE_ON                   # noqa: E402
+from test_smoke import AT_TITLE, TO_TITLE_ASKED, TO_TITLE_GAVE_UP, TO_TITLE_ON   # noqa: E402
 
 BOOT, SAVE = "live-deku-gohma-reset", "gohma-alive"
 ENV = ("LICHII_COOP_DEBUG_BOSS=1", "LICHII_COOP_DEBUG_OBJECTS=1")    # hs-boss-away-reset.steps.txt '#! switches'
@@ -62,12 +62,24 @@ LOWERED = (r"coop: objects: our Link's max life \d+ -> \d+ \(MaxLife is held low
 
 
 def to_title(pair, x):
-    """Game x back to the title (LICHII_COOP_TEST_TO_TITLE, a BASE_ENV switch of every boot), the other stepped."""
+    """Game x back to the title (LICHII_COOP_TEST_TO_TITLE, a BASE_ENV switch of every boot), the other stepped.
+    Returns at_title for Pair.load_both: true only for x once its log has the title's own line since the ask
+    (test_smoke.test_title_and_load_again's rule: 'not in play' is also an open pause menu, never pressed)."""
     assert pair.log[x].find(TO_TITLE_ON, pos=0), "%s: LICHII_COOP_TEST_TO_TITLE is not on" % x
+    asked = pair.log[x].mark()
     with open(os.path.join(pair.games[x]["folder"], "to-title.now"), "w") as f:
         f.write("bt\n")
     pair.expect_log(x, TO_TITLE_ASKED, max_frames=300)
-    pair.until("%s left play (title)" % x, lambda: not pair.in_play(pair.state(x)), max_frames=TITLE_FRAMES)
+
+    def at_title(y):
+        return y == x and pair.log[x].find(AT_TITLE, pos=asked) is not None
+
+    def left_play():
+        gave_up = pair.log[x].find(TO_TITLE_GAVE_UP, pos=asked)
+        assert gave_up is None, "%s: the way back to the title gave up: %s" % (x, gave_up.strip())
+        return at_title(x) and not pair.in_play(pair.state(x))
+    pair.until("%s left play (title)" % x, left_play, max_frames=TITLE_FRAMES)
+    return at_title
 
 
 @pytest.mark.budget(1200)   # ESTIMATED: ~16'000 game frames (the old scenario's waits) + a title + a load + shots
@@ -86,7 +98,7 @@ def test_boss_reset_host_loads_before_her(pair):
             s = pair.state(x)
             assert (s.get("scene") or "").lower() == SCENE.lower(), "%s is in %s, not %s" % (x, s.get("scene"), SCENE)
     at = pair.log["B"].mark()
-    to_title(pair, "A")                                # the old A: on the title while B fights
+    a_at_title = to_title(pair, "A")                            # the old A: on the title while B fights
     place(pair, "B", CORRIDOR)
     pair.step_both(B_WAIT)
     for g in DOOR:
@@ -113,7 +125,7 @@ def test_boss_reset_host_loads_before_her(pair):
     life1 = pair.state("B").get("max_life")
     assert pair.flag_read("B", DEFEAT).get("value"), "B: %s not 1 after her death" % DEFEAT
     pair.check_shot("B", "reset-b-pickup")             # PASS 1: the warp up (and her container gone if taken)
-    pair.load_both(max_frames=LOAD_FRAMES)             # 'load A': only A is off play
+    pair.load_both(a_at_title, max_frames=LOAD_FRAMES)  # 'load A': only A, at the title, is pressed
     s = pair.state("A")
     assert pair.in_play(s), "A not in play after its load"
     assert not pair.flag_read("A", DEFEAT).get("value"), "A: %s set after loading its save (the file holds her alive)" % (

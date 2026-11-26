@@ -31,7 +31,7 @@ def num(game):
 
 
 def setup(game):
-    game.dbno = {"state": "up", "life": 12, "fairy": game.tag == "B", "held": 0, "charsel": 0}
+    game.dbno = {"state": "up", "life": 12, "fairy": game.tag == "B", "held": 0}
     game.dbno_rules = {"on": True, "bleed": 45, "hold": 50}
 
 
@@ -126,18 +126,23 @@ def act(game, words):
     return False
 
 
-def command(game, m):
-    if m.get("cmd") == "flag_read" and m.get("name") == CHARSEL:
-        return {"ok": True, "kind": "int", "value": game.dbno["charsel"]}
-    if m.get("cmd") == "flag" and m.get("name") == CHARSEL:
-        was, game.dbno["charsel"] = game.dbno["charsel"], int(m["value"])
+def charsel_after(game, m, r):
+    """Character Select's Int, kept in the fake game's ONE flag store (game.flags, the built-in flag/flag_read answer) so
+    every fake that touches it sees the same value (levitate's 'nochar' resets it after the set; a command hook here
+    hid that: port-g3-save-2). Read as an Int (the lane has Character Select); a set tells the other game the look."""
+    if m.get("name") != CHARSEL:
+        return
+    if m.get("cmd") == "flag_read":
+        r["kind"] = "int"
+        if r.get("value") is None:
+            r["value"] = 0
+    elif m.get("cmd") == "flag":
         o, n = game.other, int(m["value"])
         o.later(30, lambda: o.say("coop: look: P%d wears 11 part colour(s), character %d (PLAYER_LOOK)" % (num(game), n)))
-        return {"ok": True, "was": was, "value": n}
-    return None
 
 
 def after(game, m, r):
+    charsel_after(game, m, r)
     if m.get("cmd") != "input":
         return
     frames = int(m.get("frames", 1))
