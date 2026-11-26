@@ -14,13 +14,7 @@ Ok 'push to integrate-p13' (Job @{ GITHUB_REF = 'refs/heads/integrate-p13' })
 Ok 'tag'                   (Job @{ GITHUB_REF = 'refs/tags/v0.10.1' })
 Ok 'pull_request refused'  (-not (Job @{ GITHUB_EVENT_NAME = 'pull_request'; GITHUB_REF = 'refs/pull/9/merge' }))
 Ok 'pull_request_target refused' (-not (Job @{ GITHUB_EVENT_NAME = 'pull_request_target' }))
-Ok 'push to release-01112' (Job @{ GITHUB_REF = 'refs/heads/release-01112' })
-Ok 'manual run of main'    (Job @{ GITHUB_EVENT_NAME = 'workflow_dispatch' })
-Ok 'manual run of a work branch' (Job @{ GITHUB_EVENT_NAME = 'workflow_dispatch'; GITHUB_REF = 'refs/heads/ci-speed-c143' })
-Ok 'manual run by someone else refused' (-not (Job @{ GITHUB_EVENT_NAME = 'workflow_dispatch'; GITHUB_TRIGGERING_ACTOR = 'someone' }))
-Ok 'manual run of a pull ref refused' (-not (Job @{ GITHUB_EVENT_NAME = 'workflow_dispatch'; GITHUB_REF = 'refs/pull/9/merge' }))
-Ok 'schedule refused'      (-not (Job @{ GITHUB_EVENT_NAME = 'schedule' }))
-Ok 'bare release- refused' (-not (Job @{ GITHUB_REF = 'refs/heads/release-' }))
+Ok 'workflow_dispatch refused'   (-not (Job @{ GITHUB_EVENT_NAME = 'workflow_dispatch' }))
 Ok 'fork repo refused'     (-not (Job @{ GITHUB_REPOSITORY = 'someone/oot-remake-multiplayer' }))
 Ok 'other actor refused'   (-not (Job @{ GITHUB_ACTOR = 'someone' }))
 Ok 'actor case refused'    (-not (Job @{ GITHUB_ACTOR = 'Daurosk' }))
@@ -28,12 +22,6 @@ Ok 'other re-runner refused' (-not (Job @{ GITHUB_TRIGGERING_ACTOR = 'someone' }
 Ok 'work branch refused'   (-not (Job @{ GITHUB_REF = 'refs/heads/ci-runner' }))
 Ok 'bare integrate- refused' (-not (Job @{ GITHUB_REF = 'refs/heads/integrate-' }))
 Ok 'missing values refused'  (-not (Job @{ GITHUB_ACTOR = $null; GITHUB_REF = $null }))
-
-# --- Get-OotCiGuardReason (memory and disk guard)
-Ok 'guard: room for a job'        ($null -eq (Get-OotCiGuardReason -FreeCommitGB 100 -FreeDiskGB 200))
-Ok 'guard: game running -> wait'  ((Get-OotCiGuardReason -FreeCommitGB 74.9 -FreeDiskGB 200) -like 'memory:*')
-Ok 'guard: low disk -> refuse'    ((Get-OotCiGuardReason -FreeCommitGB 100 -FreeDiskGB 59) -like 'disk:*')
-Ok 'guard: low disk wins'         ((Get-OotCiGuardReason -FreeCommitGB 10 -FreeDiskGB 10) -like 'disk:*')
 
 # --- Get-OotCiOpenFolders, on made-up folders
 $tmp = Join-Path $env:TEMP ("ootci-test-" + [guid]::NewGuid().ToString('N'))
@@ -90,8 +78,6 @@ Ok 'SYSTEM is not in Remote Desktop Users'   (-not (Test-OotCiInLocalGroup -Grou
 #     laid out like C:\ProgramData\oot-ci. No variable changes what it checks.
 $dep = Join-Path $tmp 'deployed'; New-Item -ItemType Directory $dep | Out-Null
 Copy-Item (Join-Path $PSScriptRoot 'job-started.ps1'), (Join-Path $PSScriptRoot 'job-check.ps1') $dep
-# The test's own copy only: guard limits 0, so the allow path does not wait for a game test to end.
-Add-Content -Encoding utf8 (Join-Path $dep 'job-check.ps1') '$OotCiMinCommitGB = 0; $OotCiMinDiskGB = 0'
 Set-Content (Join-Path $dep 'runner-dirs.txt') 'C:\actions-runner'
 $names = 'GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY', 'GITHUB_ACTOR', 'GITHUB_TRIGGERING_ACTOR', 'GITHUB_REF', 'OOT_CI_HOOK_TEST'
 $saved = @{}; foreach ($n in $names) { $saved[$n] = [Environment]::GetEnvironmentVariable($n) }

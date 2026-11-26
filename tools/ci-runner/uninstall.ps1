@@ -81,9 +81,6 @@ if ($userSid) { Run-Step 'remove the logon rights' { Set-OotCiLogonRights -Sid $
 Run-Step 'clear ACTIONS_RUNNER_HOOK_JOB_STARTED' {
     [Environment]::SetEnvironmentVariable('ACTIONS_RUNNER_HOOK_JOB_STARTED', $null, 'Machine')
 }
-Run-Step 'clear ACTIONS_RUNNER_HOOK_JOB_COMPLETED' {
-    [Environment]::SetEnvironmentVariable('ACTIONS_RUNNER_HOOK_JOB_COMPLETED', $null, 'Machine')
-}
 
 # 4. Folders, profile, user.
 Run-Step "remove $Root" { if (Test-Path $Root) { Remove-Item -Recurse -Force $Root } }

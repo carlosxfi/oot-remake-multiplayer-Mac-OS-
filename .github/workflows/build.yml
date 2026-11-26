@@ -293,16 +293,19 @@ jobs:
 
   # Full tier only. MSVC with Ninja so sccache can cache each object file
   # (sccache keeps them in the GitHub Actions cache).
-  # Self-hosted runners (docs/ci-runner.md): this job uses the owner's PC (squadala-win) only for
-  # daurosk's own push to main, integrate-*, release-* or a tag, or daurosk's manual run, in daurosk's
-  # repo, and only while the repo variable COOP_SELF_HOSTED is 'on'. The Linux jobs (scope, python-tools'
-  # ubuntu row, linux) use the WSL runners (squadala-wsl) under the same gate with COOP_SELF_HOSTED_LINUX.
-  # Pull requests (forks included) and anyone else always get GitHub's runners. Set a variable to 'off'
-  # and its jobs fall back to GitHub. linux-longshot stays on ubuntu-22.04 (its glibc 2.35 baseline).
+  # Self-hosted runner (docs/ci-runner.md): this job uses the owner's PC only for a
+  # push by daurosk to daurosk's repo, and only while the repo variable
+  # COOP_SELF_HOSTED is 'on'. Pull requests (forks included), manual runs and
+  # pushes by anyone else always get windows-latest. Turn the runner off by
+  # setting COOP_SELF_HOSTED to anything else; jobs fall back to GitHub.
+  # (Not installed: the owner dropped the Windows runner on 2026-11-26; COOP_SELF_HOSTED stays unset.)
+  # The Linux jobs (scope, python-tools' ubuntu row, linux) use the WSL runners (squadala-wsl): daurosk's own
+  # push to main, integrate-*, release-* or a tag, or daurosk's manual run, while COOP_SELF_HOSTED_LINUX is
+  # 'on'; pull requests never. linux-longshot stays on ubuntu-22.04 (its glibc 2.35 baseline).
   windows:
     needs: scope
     if: needs.scope.outputs.full == 'true' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/integrate-'))))
-    runs-on: ${{ (github.repository == 'daurosk/oot-remake-multiplayer' && github.actor == 'daurosk' && github.triggering_actor == 'daurosk' && vars.COOP_SELF_HOSTED == 'on' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/integrate-') || startsWith(github.ref, 'refs/heads/release-') || startsWith(github.ref, 'refs/tags/'))))) && fromJSON('["self-hosted", "windows", "x64", "squadala-win"]') || 'windows-latest' }}
+    runs-on: ${{ (github.event_name == 'push' && github.repository == 'daurosk/oot-remake-multiplayer' && github.actor == 'daurosk' && github.triggering_actor == 'daurosk' && vars.COOP_SELF_HOSTED == 'on') && fromJSON('["self-hosted", "windows", "x64", "daurosk-pc"]') || 'windows-latest' }}
     timeout-minutes: 90
     env:
       SCCACHE_GHA_ENABLED: "true"
