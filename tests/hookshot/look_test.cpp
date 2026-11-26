@@ -951,13 +951,14 @@ TEST_CASE("look parts: every gear part has a texture, every texture once") {
         for (const auto& r : g.rules) {
             CHECK(r.part != Part::tunic);   // the tunic has the pack's colours (coop_look_tunic.h)
             CHECK(r.part != Part::cap_trim);   // the Cap trim is painted with the tunic (TunicPainted)
+            CHECK(r.part != Part::cap_trim_hoods);   // (C4-4: a switch; the hoods take cap_trim's colour, HoodTrim)
             CHECK(r.part != Part::eyes);       // the eyes are the model's parameter (CoopCharColours), no texture
             CHECK(r.part != Part::hair);       // the hair too
             CHECK(r.tones != 0);
             parts.insert(r.part);
         }
     }
-    CHECK(parts.size() == CoopLook::kParts - 10);   // (and a character's six: CoopCharColours, no texture of ours)
+    CHECK(parts.size() == CoopLook::kParts - 11);   // (and a character's six: CoopCharColours, no texture of ours; Cap trim on hoods: a switch)
 }
 
 TEST_CASE("look parts: the gear painted in a look, a painting's name says its colours") {
@@ -1737,17 +1738,57 @@ TEST_CASE("look: the Cap trim is a part of its own: its number, key, row, settin
     coop::protocol::Message back;
     REQUIRE(coop::protocol::decode(bytes, back) == coop::protocol::Error::none);
     CHECK(std::get<coop::protocol::PlayerLook>(back) == m);
-    // Gear too (row 278): the Goron and Zora tunics' hood trims are gear textures, so a trim colour is its own
-    // painting of the gear and of the puppets' copies.
+    // C4-4 (owner: a 0.11.12 look shows as in 0.11.12): a Cap trim alone is no gear look, and the trim leaves the
+    // gear painting's name as 0.11.12 had it (its pieces are the gear parts only).
     Look cap;
     cap[Part::cap_trim] = 0x3070FFu;
+    CHECK_FALSE(CoopLookParts::AnyGear(cap));
+    CHECK(CoopLookParts::Name(cap) == "gear");
+    CHECK_FALSE(CoopLookParts::HoodTrim(cap));
+    const auto without = [&](const Look& from) {
+        Look l = from;
+        l[Part::cap_trim].reset();
+        return l;
+    };
+    CHECK(CoopLookParts::Name(look) == CoopLookParts::Name(without(look)));
+    CHECK(CoopLookParts::Name(look) == "gear.-.-.-.-.-.-.-.-.-.-.-.-.-.-.112233.-");   // (0.11.12's name: 16 gear pieces)
+    // Row 278 when asked (cap_trim_hoods on): the Goron and Zora tunics' hood trims are gear textures, so the trim
+    // is its own painting of the gear and of the puppets' copies. On with no trim colour: nothing to paint.
+    cap[Part::cap_trim_hoods] = CoopLook::kOn;
     CHECK(CoopLookParts::AnyGear(cap));
-    CHECK(CoopLookParts::Name(cap) != "gear");
-    CHECK(CoopLookParts::Name(look) != CoopLookParts::Name([&] {
-              Look l = look;
-              l[Part::cap_trim].reset();
-              return l;
-          }()));
+    CHECK(CoopLookParts::HoodTrim(cap) == 0x3070FFu);
+    CHECK(CoopLookParts::Name(cap) == "gear.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.hood-3070FF");
+    Look on_only;
+    on_only[Part::cap_trim_hoods] = CoopLook::kOn;
+    CHECK_FALSE(CoopLookParts::AnyGear(on_only));
+    CHECK(CoopLookParts::Name(on_only) == "gear");
+    Look both = look;
+    both[Part::cap_trim_hoods] = CoopLook::kOn;
+    CHECK(CoopLookParts::Name(both) != CoopLookParts::Name(without(both)));
+    // The switch on the wire as part 26 (a colour of 1); a build before it (26 parts) passes it over, so an old
+    // peer shows the hoods as 0.11.12 does.
+    const auto wire_on = CoopLook::Wire(cap);
+    REQUIRE(wire_on.size() == 2);
+    CHECK(wire_on[1] == std::pair<std::uint8_t, std::uint32_t>{26, CoopLook::kOn});
+    CHECK(CoopLook::FromWire(wire_on) == cap);
+    coop::protocol::PlayerLook on_msg{coop::protocol::kPlayerSelf, {{17, 0x3070FFu}, {26, CoopLook::kOn}}};
+    bytes.clear();
+    REQUIRE(coop::protocol::encode(coop::protocol::Message{on_msg}, bytes) == coop::protocol::Error::none);
+    REQUIRE(coop::protocol::decode(bytes, back) == coop::protocol::Error::none);
+    CHECK(std::get<coop::protocol::PlayerLook>(back) == on_msg);
+    // Saved as look_cap_trim_hoods = on; off comments it out; anything else is said.
+    std::string ini;
+    CHECK(CoopLook::WriteSettings(cap, ini, nullptr));
+    CHECK(ini.find("look_cap_trim_hoods = on") != std::string::npos);
+    CHECK(CoopLook::ReadParts(ini)[Part::cap_trim_hoods] == CoopLook::kOn);
+    std::vector<std::string> errors;
+    CHECK_FALSE(CoopLook::ReadParts("look_cap_trim_hoods = off\n", &errors)[Part::cap_trim_hoods]);
+    CHECK(errors.empty());
+    CHECK_FALSE(CoopLook::ReadParts("look_cap_trim_hoods = red\n", &errors)[Part::cap_trim_hoods]);
+    CHECK(errors.size() == 1);
+    cap[Part::cap_trim_hoods].reset();
+    CHECK(CoopLook::WriteSettings(cap, ini, nullptr));
+    CHECK_FALSE(CoopTitleMenu::IniGet(ini, "look_cap_trim_hoods").has_value());
 }
 
 TEST_CASE("look parts: a tunic painting's name says the tunic's colour and the Cap trim's") {
@@ -1921,7 +1962,7 @@ TEST_CASE("look parts: the Cap trim paints only the cap's blocks, over the tunic
                                   0xC02020u, 0.2) == 0);
 }
 
-TEST_CASE("look parts (row 278): the Goron and Zora tunics' hood trims take the Cap trim, own Link and puppets") {
+TEST_CASE("look parts (row 278, C4-4): with Cap trim on hoods, the Goron and Zora hood trims take the Cap trim") {
     using CoopLookPaint::Format;
     // (the Zora feather: a zora_tunic gear texture in BC1, Shield()'s blue ends in every even block)
     const char* const kZora = "Mt_Feather_Armor_Adult_Zora_Alb";
@@ -1933,6 +1974,23 @@ TEST_CASE("look parts (row 278): the Goron and Zora tunics' hood trims take the 
     CHECK(CoopLookParts::GearCapTextures(*CoopLookParts::ParseCap(CapFile({{kChildParts, 16, {16}}}))) == 0);
     Look trim;
     trim[Part::cap_trim] = 0xC02020u;
+    // C4-4: a 0.11.12 look (a trim, the switch off): no gear byte changes, own Link and the puppets' copies alike.
+    CoopLookParts::UseCap(cap);
+    for (const auto& t : CoopLookParts::Painted(*gear, trim)) {
+        CHECK(t.texels == Shield());
+    }
+    {
+        const auto painted_copy = CoopLookParts::CopyTexels(*gear, 2, trim);
+        const auto plain_copy = CoopLookParts::CopyTexels(*gear, 2, std::nullopt);
+        REQUIRE(painted_copy.size() == plain_copy.size());
+        for (std::size_t i = 0; i < plain_copy.size(); ++i) {
+            CHECK(painted_copy[i].texels == plain_copy[i].texels);
+        }
+    }
+    CoopLookParts::CopyLooks old_looks(2);
+    old_looks[1] = trim;
+    CHECK(CoopLookParts::CopiesName(old_looks) == CoopLookParts::kCopiesBase);
+    trim[Part::cap_trim_hoods] = CoopLook::kOn;   // (asked for: row 278 from here on)
     // No cap.bin: the trim changes no gear byte.
     CoopLookParts::UseCap(nullptr);
     for (const auto& t : CoopLookParts::Painted(*gear, trim)) {
@@ -1952,6 +2010,7 @@ TEST_CASE("look parts (row 278): the Goron and Zora tunics' hood trims take the 
     // Over a painted Zora tunic: the trim's blocks differ from the tunic's painting, every other byte the same.
     Look tunic;
     tunic[Part::zora_tunic] = 0x20A040u;
+    tunic[Part::cap_trim_hoods] = CoopLook::kOn;   // (no trim colour: nothing to paint, the tunic's painting alone)
     Look both = tunic;
     both[Part::cap_trim] = 0xC02020u;
     const auto alone = CoopLookParts::Painted(*gear, tunic);

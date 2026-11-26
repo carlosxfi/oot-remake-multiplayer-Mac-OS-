@@ -56,13 +56,21 @@ const std::vector<GearTexture>& Gear() {
 }
 
 namespace {
-// The parts the gear wardrobe paints (the Kokiri tunic is the tunic wardrobe's; the Cap trim both wardrobes': the
-// Goron and Zora tunics' hood trims are gear textures, row 278; the eyes are no texture: the model's own parameter,
-// CoopCharColours).
+// The parts the gear wardrobe paints by their own colour (the tunic and the Cap trim are the tunic wardrobe's, as in
+// 0.11.12; the eyes are no texture: the model's own parameter, CoopCharColours). The Cap trim reaches the gear only
+// through HoodTrim (C4-4: row 278's Goron and Zora hood trims when cap_trim_hoods is on).
 bool IsGear(Part p) {
-    return p != Part::tunic && p != Part::eyes && p != Part::hair && !CoopLook::IsCharacterPart(p);
+    return p != Part::tunic && p != Part::cap_trim && p != Part::cap_trim_hoods && p != Part::eyes &&
+           p != Part::hair && !CoopLook::IsCharacterPart(p);
 }
 }  // namespace
+
+std::optional<std::uint32_t> HoodTrim(const CoopLook::Look& look) {
+    if (!look[Part::cap_trim_hoods] || !look[Part::cap_trim]) {
+        return std::nullopt;
+    }
+    return *look[Part::cap_trim] & 0xFFFFFFu;
+}
 
 bool AnyGear(const CoopLook::Look& look) {
     for (const CoopLook::PartInfo& info : CoopLook::Parts()) {
@@ -70,7 +78,7 @@ bool AnyGear(const CoopLook::Look& look) {
             return true;
         }
     }
-    return false;
+    return HoodTrim(look).has_value();
 }
 
 std::string Name(const CoopLook::Look& look) {
@@ -87,6 +95,12 @@ std::string Name(const CoopLook::Look& look) {
             std::snprintf(piece, sizeof piece, "%06X", static_cast<unsigned>(*c & 0xFFFFFFu));
         }
         name += '.';
+        name += piece;
+    }
+    // (C4-4: the hood trims last, only when on, so every other look keeps its 0.11.12 name)
+    if (const auto trim = HoodTrim(look)) {
+        char piece[16];
+        std::snprintf(piece, sizeof piece, ".hood-%06X", static_cast<unsigned>(*trim));
         name += piece;
     }
     return name;
@@ -279,8 +293,9 @@ CoopLookTunic::Texels Painted(const CoopLookTunic::Texels& gear, const CoopLook:
         }
         // Row 278: then the hood's trims (the Goron and Zora tunics' cap blocks) in the Cap trim colour, from the
         // game's own texels, by the texture's own tones, shaded against that part's average as the tunic is: a trim
-        // in the tunic's colour is the tunic's painting byte for byte. Unset, they follow the tunic.
-        if (const auto& trim = look[Part::cap_trim]; trim && cap) {
+        // in the tunic's colour is the tunic's painting byte for byte. C4-4: only when cap_trim_hoods is on (HoodTrim);
+        // off or no trim colour, they follow the tunic, as in 0.11.12.
+        if (const auto trim = HoodTrim(look); trim && cap) {
             const std::span<const std::uint8_t> original(gear[i].texels);
             double sum = 0;
             std::size_t n = 0;
@@ -292,7 +307,7 @@ CoopLookTunic::Texels Painted(const CoopLookTunic::Texels& gear, const CoopLook:
             }
             if (n != 0 && sum > 0) {
                 PaintCap(*cap, t.name, entry->format, original, t.texels,
-                         CoopLookPaint::Rule{tones, *trim & 0xFFFFFFu, T::Takes::tones, sum / static_cast<double>(n)},
+                         CoopLookPaint::Rule{tones, *trim, T::Takes::tones, sum / static_cast<double>(n)},
                          tones);
             }
         }

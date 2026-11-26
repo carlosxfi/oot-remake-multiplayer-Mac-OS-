@@ -45,18 +45,22 @@ const std::vector<GearTexture>& Gear();
 
 // The pack's file of the game's own gear texels, and the name a look's
 // painting goes by in the wardrobe: "gear" when the look sets no gear part
-// (the Kokiri tunic is not gear: TunicPainting). The Cap trim is both: the
-// Kokiri tunic's trims are tunic textures, the Goron and Zora tunics' hood
-// trims gear textures (row 278), so a trim colour paints both wardrobes.
+// (the tunic and the Cap trim are not gear: TunicPainting). C4-4: the Goron
+// and Zora tunics' hood trims are gear textures (row 278); the Cap trim paints
+// them only when cap_trim_hoods is on (HoodTrim), so a look without it is
+// gear or not, and named, exactly as in 0.11.12.
 inline constexpr const char* kBase = "gear";
 std::string Name(const CoopLook::Look& look);
 bool AnyGear(const CoopLook::Look& look);
+// The hood trims' colour: the Cap trim's when cap_trim_hoods is on and a trim
+// colour is set; else nothing (those trims follow their tunic, as in 0.11.12).
+std::optional<std::uint32_t> HoodTrim(const CoopLook::Look& look);
 
 // The gear texels painted in `look` (same textures, same sizes); a texture
 // with no part set, or not in the table, as it is. A metalness texture
-// (UseMetal) has the blocks under each painted metal part set to 0. With a
-// Cap trim colour, a texture's cap blocks (UseCap: the Goron and Zora tunics'
-// hood trims) are painted in it after its parts, from the game's own texels.
+// (UseMetal) has the blocks under each painted metal part set to 0. With
+// HoodTrim, a texture's cap blocks (UseCap: the Goron and Zora tunics' hood
+// trims) are painted in it after its parts, from the game's own texels.
 CoopLookTunic::Texels Painted(const CoopLookTunic::Texels& gear, const CoopLook::Look& look);
 
 // The metal parts (#202). The swords, the Hylian and Mirror Shields and the
