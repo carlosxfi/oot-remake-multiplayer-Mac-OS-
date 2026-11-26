@@ -1,4 +1,4 @@
-"""rc_tests.py: one rc pass of the in-game bridge tests over both lanes (plan + one summary)."""
+"""rc_tests.py: one rc pass of the in-game bridge tests over both lanes (collect, plan in sessions, one summary)."""
 import json
 import os
 import shutil
@@ -6,12 +6,29 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+AUTOTEST = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, AUTOTEST)
 import proven as pv  # noqa: E402
 import rc_tests as rt  # noqa: E402
 
 MOD = "tools/autotest/ingame/test_rows.py"
 BASE = ["LICHII_COOP_PUPPET=1", "LICHII_COOP_TEST_TO_TITLE=1"]
+HUD = ["COOP_TEST_PARTY_HUD=1", "B:COOP_TEST_PARTY_HUD_NO_PACK=1"]   # test_party_hud.py's pytestmark (party-hud-test-c126)
+S1, S2 = "test_smoke.py::test_boot", "test_smoke.py::test_pause"
+A, B, C = "test_rows.py::test_a", "test_rows.py::test_b", "test_rows.py::test_c"
+H1, H2 = "test_party_hud.py::test_party_hud_after_boot", "test_party_hud.py::test_party_hud_title_and_load_again"
+
+INI = "[pytest]\nmarkers =\n    smoke: rc smoke tier\n    needs_env: game switches\n"
+FILES = {
+    "pytest.ini": INI,
+    "bt_plugin.py": "import os\nBASE_ENV = %r   # every boot\n" % BASE,
+    "test_smoke.py": "import pytest\n\n@pytest.mark.smoke\ndef test_boot(): pass\n\n"
+                     "@pytest.mark.smoke\ndef test_pause(): pass\n",
+    "test_rows.py": "def test_a(): pass\n\ndef test_b(): pass\n\ndef test_c(): pass\n",
+    "test_party_hud.py": "import pytest\n\npytestmark = pytest.mark.needs_env(%s)\n\n"
+                         "def test_party_hud_after_boot(): pass\n\ndef test_party_hud_title_and_load_again(): pass\n"
+                         % ", ".join(repr(e) for e in HUD),
+}
 
 
 def write(path, text):
@@ -20,19 +37,27 @@ def write(path, text):
         f.write(text)
 
 
+def items(*specs):
+    """collect() rows: (test, smoke, env)."""
+    return [{"test": t, "smoke": s, "env": list(e)} for t, s, e in specs]
+
+
+SUITE = items((S1, True, []), (S2, True, []), (A, False, []), (B, False, []), (C, False, []),
+              (H1, False, HUD), (H2, False, HUD))
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.repo = os.path.join(self.tmp, "repo")
-        write(os.path.join(self.repo, *MOD.split("/")), "def test_a(): pass\n")
-        write(os.path.join(self.repo, "tools", "autotest", "ingame", "test_smoke.py"), "def test_boot(): pass\n")
-        write(os.path.join(self.repo, "tools", "autotest", "ingame", "bt_plugin.py"),
-              "import os\nBASE_ENV = %r   # every boot\n" % BASE)
+        self.ingame = os.path.join(self.repo, "tools", "autotest", "ingame")
+        for name, text in FILES.items():
+            write(os.path.join(self.ingame, name), text)
         self.n = 0
 
     def summary(self, root, rows, key="k1", env=None, **extra):
-        """A lane's summary.json as bt_plugin writes it (identity: key + boot env; per-row test_hash)."""
+        """A session's summary.json as bt_plugin writes it (identity: key + boot env; per-row test_hash)."""
         self.n += 1
         d = os.path.join(self.tmp, root, "run%d" % self.n)
         ident = {"env": list(BASE) if env is None else env}
@@ -48,151 +73,216 @@ class Base(unittest.TestCase):
             r["test_hash"] = pv.test_hash(pv.base_nodeid(test), self.repo)
         return r
 
+    def plan(self, its=SUITE, lanes=(1, 2), **kw):
+        return rt.plan(its, list(lanes), repo=self.repo, **kw)
 
-class Ids(Base):
-    def test_collect_listing_gives_base_ids_once(self):
-        p = os.path.join(self.tmp, "c.txt")
-        write(p, MOD + "::test_a[r1]\n" + MOD + "::test_a[r2]\n" + MOD + "::test_b\n\n3 tests collected in 0.1s\n")
-        self.assertEqual(rt.read_ids(p), [MOD + "::test_a", MOD + "::test_b"])
+    def session(self, doc, sid):
+        return [s for s in doc["sessions"] if s["id"] == sid][0]
+
+    def env_session(self, doc):
+        return [s for s in doc["sessions"] if s["group"] == "env1"][0]
+
+
+class Hash(Base):
+    def test_base_nodeid(self):
+        for n, want in (("a.py::t[r3]", "a.py::t"), ("a.py::t[x-r2]", "a.py::t[x]"), ("a.py::t", "a.py::t")):
+            self.assertEqual(pv.base_nodeid(n), want)
 
     def test_test_hash_follows_module_harness_and_refs(self):
-        t = MOD + "::test_a"
-        base = pv.test_hash(t, self.repo)
+        base = pv.test_hash(A, self.repo)
         self.assertTrue(base)
-        self.assertEqual(pv.test_hash(MOD + "::test_other", self.repo), base)   # same file: same hash
-        self.assertEqual(pv.test_hash("test_rows.py::test_a", self.repo), base)   # as pytest prints it (rootdir ingame/)
-        self.assertEqual(pv.test_hash("tools/autotest/ingame/gone.py::t", self.repo), "")
+        self.assertEqual(pv.test_hash(B, self.repo), base)                       # same file: same hash
+        self.assertEqual(pv.test_hash(MOD + "::test_a", self.repo), base)        # the repo-relative form
+        self.assertEqual(pv.test_hash("gone.py::t", self.repo), "")
         for rel in (MOD, "tools/autotest/ingame/pair.py", "tools/autotest/ingame/refs/x-A.png"):
             write(os.path.join(self.repo, *rel.split("/")), "changed %s\n" % rel)
-            now = pv.test_hash(t, self.repo)
+            now = pv.test_hash(A, self.repo)
             self.assertNotEqual(base, now, rel)
             base = now
 
 
+class Collect(Base):
+    def test_collect_gives_base_ids_smoke_and_needs_env(self):
+        got = rt.collect(self.ingame, self.tmp)
+        self.assertEqual({x["test"]: (x["smoke"], x["env"]) for x in got},
+                         {S1: (True, []), S2: (True, []), A: (False, []), B: (False, []), C: (False, []),
+                          H1: (False, HUD), H2: (False, HUD)})
+
+    def test_env_group_holds_only_the_party_hud_tests_and_default_none(self):
+        groups = rt.groups_of(rt.collect(self.ingame, self.tmp))
+        self.assertEqual([(g["name"], g["env"], g["tests"]) for g in groups],
+                         [("default", [], [A, B, C]), ("env1", HUD, [H1, H2])])
+
+    def test_real_suite_env_group_is_test_party_hud_only(self):
+        """B #129 selftest on the repo's own tools/autotest/ingame: the needs_env group holds only test_party_hud.py
+        and the default group no needs_env test (runs once the in-game tests are on the branch under test)."""
+        real = os.path.join(AUTOTEST, "ingame")
+        if not os.path.isfile(os.path.join(real, "test_party_hud.py")):
+            self.skipTest("no tools/autotest/ingame/test_party_hud.py on this branch yet")
+        got = rt.collect(real, self.tmp)
+        env = {x["test"] for x in got if x["env"]}
+        groups = rt.groups_of(got)
+        self.assertTrue(env)
+        self.assertEqual({t.split("::")[0] for t in env}, {"test_party_hud.py"})
+        self.assertFalse(set(groups[0]["tests"]) & env)
+        self.assertEqual([g["name"] for g in groups], ["default", "env1"])
+        self.assertEqual(set(groups[1]["tests"]), env)
+
+
 class Plan(Base):
-    A, B, C, S = MOD + "::test_a", MOD + "::test_b", MOD + "::test_c", "tools/autotest/ingame/test_smoke.py::test_boot"
+    def test_sessions_smoke_per_lane_env_group_its_own_boot(self):
+        doc = self.plan()
+        self.assertEqual(len(doc["sessions"]), 3)
+        for n in (1, 2):
+            d = self.session(doc, "lane%d-default" % n)
+            self.assertEqual(d["tests"][:2], [S1, S2])                       # smoke on every lane
+            self.assertEqual(d["env"], [])                                  # default boot: no extra switch
+            self.assertFalse(set(d["tests"]) & {H1, H2})
+        env = self.env_session(doc)
+        self.assertEqual((env["tests"], env["env"]), ([H1, H2], HUD))        # together, own boot, its switches
+        self.assertEqual(sorted(sum((s["tests"] for s in doc["sessions"]), [])),
+                         sorted([S1, S2] * 2 + [A, B, C, H1, H2]))
 
-    def test_smoke_on_every_lane_rest_balanced_by_measured_seconds(self):
-        h = self.summary("hist", [self.row(self.A, seconds=600), self.row(self.B, seconds=300),
-                                  self.row(self.C, seconds=290), self.row(self.S, seconds=30),
-                                  self.row(self.C, "SETUP-FAIL", seconds=2)])
-        doc = rt.plan([self.S, self.A, self.B, self.C], [self.S], [1, 2], [os.path.dirname(h)], repo=self.repo)
-        self.assertEqual(doc["lanes"], {"1": [self.S, self.A], "2": [self.S, self.B, self.C]})
-        self.assertEqual(doc["lane_seconds"], {"1": 630.0, "2": 620.0})
-        self.assertEqual(doc["estimates"][self.C]["seconds"], 290.0)   # the SETUP-FAIL row is not a timing
+    def test_balance_by_measured_seconds_env_group_as_one_unit(self):
+        h = self.summary("hist", [self.row(A, seconds=900), self.row(B, seconds=100), self.row(C, seconds=100),
+                                  self.row(H1, seconds=200), self.row(H2, seconds=200), self.row(S1, seconds=10),
+                                  self.row(S2, seconds=10), self.row(C, "SETUP-FAIL", seconds=1)])
+        doc = self.plan(roots=[os.path.dirname(h)])
+        lane1 = [s for s in doc["sessions"] if s["lane"] == 1]
+        lane2 = [s for s in doc["sessions"] if s["lane"] == 2]
+        self.assertEqual([s["tests"] for s in lane1], [[S1, S2, A]])          # A (900) alone
+        self.assertEqual([s["group"] for s in lane2], ["default", "env1"])    # env1 (boot 120 + 400) + B + C
+        self.assertEqual(doc["lane_seconds"], {"1": 1040.0, "2": 860.0})
+        self.assertEqual(doc["estimates"][C]["seconds"], 100.0)              # the SETUP-FAIL row is not a timing
 
-    def test_no_history_median_then_default(self):
-        doc = rt.plan([self.A, self.B], [], [1, 2], [], repo=self.repo)
-        self.assertEqual(doc["estimates"][self.A]["seconds"], rt.DEFAULT_S)
-        h = self.summary("hist", [self.row(self.A, seconds=50)])
-        doc = rt.plan([self.A, self.B], [], [1, 2], [os.path.dirname(h)], repo=self.repo)
-        self.assertIn("median", doc["estimates"][self.B]["from"])
+    def test_commands_and_plan_files(self):
+        out = os.path.join(self.tmp, "plan")
+        doc = self.plan(env=["LICHII_COOP_X=1"])
+        rt.write_plan(doc, out, os.path.join(self.tmp, "runs"))
+        env = self.env_session(doc)
+        self.assertEqual(env["env"], HUD + ["LICHII_COOP_X=1"])
+        cmd = env["command"]
+        self.assertEqual([cmd[i + 1] for i, x in enumerate(cmd) if x == "--env"], HUD + ["LICHII_COOP_X=1"])
+        self.assertEqual(cmd[cmd.index("--out") + 1], os.path.join(self.tmp, "runs", env["id"]))
+        with open(env["plan_file"], encoding="utf-8") as f:
+            sp = json.load(f)
+        self.assertEqual(sp["lanes"], {str(env["lane"]): [H1, H2]})
+        d = self.session(doc, "lane1-default")["command"]
+        self.assertEqual([d[i + 1] for i, x in enumerate(d) if x == "--env"], ["LICHII_COOP_X=1"])
+        plain = rt.command(self.session(self.plan(), "lane1-default"), "p.json", "runs")
+        self.assertNotIn("--env", plain)                                    # the default group: no extra switch
 
-    def test_pass_on_every_key_is_skipped_with_its_proof(self):
-        d1 = self.summary("runs", [self.row(self.A), self.row(self.S)], key="k1")
-        d2 = self.summary("runs", [self.row(self.A + "[r2]")], key="k2")
-        doc = rt.plan([self.S, self.A, self.B], [self.S], [1, 2], [], [os.path.join(self.tmp, "runs")],
-                      ["k1", "k2"], repo=self.repo)
-        self.assertEqual([s["test"] for s in doc["skipped"]], [self.A])
-        self.assertEqual({x["folder"] for x in doc["skipped"][0]["proof"]}, {d1, d2})
-        self.assertNotIn(self.A, sum(doc["lanes"].values(), []))
-        self.assertIn(self.S, doc["lanes"]["1"])   # smoke is never skipped
-
-    def test_flaky_fail_setup_fail_noref_other_key_old_hash_never_prove(self):
+    def test_pass_on_every_key_same_boot_env_is_skipped(self):
         runs = os.path.join(self.tmp, "runs")
-        for bad in ("FLAKY", "FAIL", "SETUP-FAIL", "NO-REF"):
-            shutil.rmtree(runs, True)
-            self.summary("runs", [self.row(self.A), self.row(self.A, bad)])
-            doc = rt.plan([self.A], [], [1], [], [runs], ["k1"], repo=self.repo)
-            self.assertEqual(doc["skipped"], [], bad)
-        shutil.rmtree(runs, True)
-        self.summary("runs", [self.row(self.A)], key="other")
-        self.summary("runs", [self.row(self.A)], key=None)
-        self.summary("runs", [self.row(self.A, hashed=False)])
-        self.assertEqual(rt.plan([self.A], [], [1], [], [runs], ["k1"], repo=self.repo)["skipped"], [])
-        self.assertEqual(rt.plan([self.A], [], [1], [], [runs], ["k1", "k2"], repo=self.repo)["skipped"], [])
-
-    def test_changed_test_module_unproves(self):
-        runs = os.path.join(self.tmp, "runs")
-        self.summary("runs", [self.row(self.A)])
-        write(os.path.join(self.repo, *MOD.split("/")), "def test_a(): assert 1\n")
-        self.assertEqual(rt.plan([self.A], [], [1], [], [runs], ["k1"], repo=self.repo)["skipped"], [])
+        d1 = self.summary("runs", [self.row(A), self.row(S1)], key="k1")
+        self.summary("runs", [self.row(A + "[r2]")], key="k2")
+        self.summary("runs", [self.row(H1)], key="k1", env=BASE + HUD)
+        self.summary("runs", [self.row(H1)], key="k2", env=BASE + ["A:COOP_TEST_PARTY_HUD=1",
+                                                                   "B:COOP_TEST_PARTY_HUD=1",
+                                                                   "B:COOP_TEST_PARTY_HUD_NO_PACK=1"])
+        self.summary("runs", [self.row(H2)], key="k1")                     # a boot WITHOUT the HUD switches
+        self.summary("runs", [self.row(H2)], key="k2")
+        doc = self.plan(proven_roots=[runs], keys=["k1", "k2"])
+        self.assertEqual(sorted(s["test"] for s in doc["skipped"]), sorted([A, H1]))
+        self.assertIn(d1, {x["folder"] for s in doc["skipped"] for x in s["proof"]})
+        played = sum((s["tests"] for s in doc["sessions"]), [])
+        self.assertNotIn(A, played)
+        self.assertIn(H2, played)                                            # its PASS was on another boot
+        self.assertIn(S1, played)                                            # smoke is never skipped
 
     def test_other_boot_switches_prove_nothing(self):
         runs = os.path.join(self.tmp, "runs")
-        self.summary("runs", [self.row(self.A)], env=BASE + ["LICHII_COOP_PARTY_HUD_PROBE=1"])   # the HUD-off pilot
-        self.summary("runs", [self.row(self.B)], env=BASE + ["B:LICHII_COOP_CHEATS=1"])
-        self.summary("runs", [self.row(self.C)], env="not a list")
-        self.assertEqual(rt.plan([self.A, self.B, self.C], [], [1], [], [runs], ["k1"], repo=self.repo)["skipped"], [])
-        doc = rt.plan([self.A, self.B], [], [1], [], [runs], ["k1"], repo=self.repo,
-                      env=["LICHII_COOP_PARTY_HUD_PROBE=1"])
-        self.assertEqual([x["test"] for x in doc["skipped"]], [self.A])   # the same switches again: proven
-        doc = rt.plan([self.A, self.B], [], [1], [], [runs], ["k1"], repo=self.repo,
-                      env=["A:LICHII_COOP_PARTY_HUD_PROBE=1", "B:LICHII_COOP_PARTY_HUD_PROBE=1"])
-        self.assertEqual([x["test"] for x in doc["skipped"]], [self.A])   # both games given one by one: the same
+        self.summary("runs", [self.row(A)], env=BASE + ["LICHII_COOP_PARTY_HUD_PROBE=1"])   # the HUD-off pilot
+        self.summary("runs", [self.row(B)], env=BASE + ["B:LICHII_COOP_CHEATS=1"])
+        self.summary("runs", [self.row(C)], env="not a list")
+        self.assertEqual(self.plan(proven_roots=[runs], keys=["k1"])["skipped"], [])
+        doc = self.plan(proven_roots=[runs], keys=["k1"], env=["LICHII_COOP_PARTY_HUD_PROBE=1"])
+        self.assertEqual([x["test"] for x in doc["skipped"]], [A])
+
+    def test_flaky_fail_setup_fail_noref_notrun_other_key_old_hash_never_prove(self):
+        runs = os.path.join(self.tmp, "runs")
+        for bad in ("FLAKY", "FAIL", "SETUP-FAIL", "NO-REF", "NOT-RUN"):
+            shutil.rmtree(runs, True)
+            self.summary("runs", [self.row(A), self.row(A, bad)])
+            self.assertEqual(self.plan(proven_roots=[runs], keys=["k1"])["skipped"], [], bad)
+        shutil.rmtree(runs, True)
+        self.summary("runs", [self.row(A)], key="other")
+        self.summary("runs", [self.row(A)], key=None)
+        self.summary("runs", [self.row(A, hashed=False)])
+        self.assertEqual(self.plan(proven_roots=[runs], keys=["k1"])["skipped"], [])
+        shutil.rmtree(runs, True)
+        self.summary("runs", [self.row(A)])
+        self.assertEqual(self.plan(proven_roots=[runs], keys=["k1", "k2"])["skipped"], [])   # every key
+        write(os.path.join(self.repo, *MOD.split("/")), "def test_a(): assert 1\n")           # module changed
+        self.assertEqual(self.plan(proven_roots=[runs], keys=["k1"])["skipped"], [])
 
     def test_base_env_is_read_from_bt_plugin(self):
         self.assertEqual(pv.ingame_base_env(self.repo), BASE)
-        os.remove(os.path.join(self.repo, "tools", "autotest", "ingame", "bt_plugin.py"))
+        os.remove(os.path.join(self.ingame, "bt_plugin.py"))
         with self.assertRaises(pv.Fail):
-            rt.plan([self.A], [], [1], [], [self.tmp], ["k1"], repo=self.repo)
+            self.plan(proven_roots=[self.tmp], keys=["k1"])
 
-    def test_skip_proven_needs_keys(self):
+    def test_refusals(self):
         with self.assertRaises(rt.Fail):
-            rt.plan([self.A], [], [1], [], [self.tmp], [], repo=self.repo)
+            self.plan(proven_roots=[self.tmp], keys=[])
+        with self.assertRaises(rt.Fail):
+            self.plan(lanes=())
+        with self.assertRaises(rt.Fail):
+            self.plan(its=[])
 
 
 class Summary(Base):
-    def test_one_summary_from_both_lanes_and_the_plan(self):
-        l1 = self.summary("o", [{"test": "t::a", "result": "PASS"}], key="k1")
-        l2 = self.summary("o", [{"test": "t::b", "result": "PASS"}, {"test": "t::s", "result": "SKIP"}], key="k1")
-        plan = {"skipped": [{"test": "t::s", "proof": [{"result": "PASS", "folder": "F"}]},
-                            {"test": "t::x", "proof": [{"result": "PASS", "folder": "G"}]}]}
-        plan["lanes"] = {"1": ["t::a"], "2": ["t::b"]}
-        doc = rt.merge([("1", l1), ("2", l2)], plan)
-        self.assertEqual(doc["verdict"], "PASS")
-        self.assertEqual(doc["counts"]["SKIP"], 2)   # t::s once (the lane wrote it), t::x from the plan
-        self.assertIn("G", [r for r in doc["tests"] if r["test"] == "t::x"][0]["why"])
-        self.assertIn("| SKIP | t::x |", rt.summary_md(doc))
+    def planned(self):
+        return {"sessions": [{"id": "lane1-default", "tests": [S1, A]}, {"id": "lane2-default", "tests": [S1, B]},
+                             {"id": "lane2-env1", "tests": [H1, H2]}],
+                "skipped": [{"test": C, "proof": [{"result": "PASS", "folder": "G"}]}]}
 
-    def test_planned_test_without_a_row_is_not_run_never_pass(self):
-        l1 = self.summary("o", [{"test": "t::s", "result": "PASS"}, {"test": "t::a[r1]", "result": "PASS"}])
-        l2 = self.summary("o", [{"test": "t::s", "result": "PASS"}])   # smoke gate stopped lane 2 / deselect bug
-        plan = {"lanes": {"1": ["t::s", "t::a"], "2": ["t::s", "t::b"], "3": ["t::s"]}, "skipped": []}
-        doc = rt.merge([("1", l1), ("2", l2)], plan)
-        nr = sorted((r["test"], r["why"][:16]) for r in doc["tests"] if r["result"] == "NOT-RUN")
-        self.assertEqual(nr, [("t::b", "planned on lane "), ("t::s", "planned on lane ")])   # t::s: lane 3 not given
-        self.assertEqual((doc["verdict"], doc["counts"]["NOT-RUN"]), ("NOT PASS", 2))
-        self.assertIn("| NOT-RUN | t::b |", rt.summary_md(doc))
+    def test_one_summary_from_every_session_and_the_plan(self):
+        l1 = self.summary("o", [{"test": S1, "result": "PASS"}, {"test": A + "[r1]", "result": "PASS"}])
+        l2 = self.summary("o", [{"test": S1, "result": "PASS"}, {"test": B, "result": "PASS"}])
+        e2 = self.summary("o", [{"test": H1, "result": "PASS"}, {"test": H2, "result": "PASS"}], env=BASE + HUD)
+        doc = rt.merge([("lane1-default", l1), ("lane2-default", l2), ("lane2-env1", e2)], self.planned())
+        self.assertEqual((doc["verdict"], doc["counts"]["PASS"], doc["counts"]["SKIP"]), ("PASS", 6, 1))
+        self.assertIn("| SKIP | %s |" % C, rt.summary_md(doc))
+
+    def test_a_session_that_did_not_run_makes_its_tests_not_run(self):
+        l1 = self.summary("o", [{"test": S1, "result": "PASS"}, {"test": A, "result": "PASS"}])
+        l2 = self.summary("o", [{"test": S1, "result": "PASS"}])             # smoke gate / deselect bug: B missing
+        doc = rt.merge([("lane1-default", l1), ("lane2-default", l2)], self.planned())   # env session never ran
+        nr = sorted((r["test"], r["session"]) for r in doc["tests"] if r["result"] == "NOT-RUN")
+        self.assertEqual(nr, sorted([(B, "lane2-default"), (H1, "lane2-env1"), (H2, "lane2-env1")]))
+        self.assertEqual((doc["verdict"], doc["counts"]["NOT-RUN"]), ("NOT PASS", 3))
+        self.assertIn("| NOT-RUN | %s | lane2-env1 |" % H1, rt.summary_md(doc))
         with self.assertRaises(rt.Fail):
-            rt.merge([l1], plan)   # a plan needs (lane, dir)
-        self.assertEqual(rt.merge([("1", l1)], {"lanes": {"1": ["t::s", "t::a"]}})["verdict"], "PASS")
+            rt.merge([l1], self.planned())                                   # a plan needs (session, dir)
+        with self.assertRaises(rt.Fail):
+            rt.merge([("x", l1)], {"lanes": {}})                               # an old lanes-only plan
 
-    def test_any_not_pass_or_a_missing_lane_is_not_pass(self):
+    def test_any_not_pass_or_a_missing_session_is_not_pass(self):
         l1 = self.summary("o", [{"test": "t::a", "result": "PASS"}])
-        for bad in ("FAIL", "FLAKY", "SETUP-FAIL", "NO-REF", "WEIRD"):
+        for bad in ("FAIL", "FLAKY", "SETUP-FAIL", "NO-REF", "NOT-RUN", "WEIRD"):
             l2 = self.summary("o", [{"test": "t::b", "result": bad}])
             self.assertEqual(rt.merge([l1, l2])["verdict"], "NOT PASS", bad)
         doc = rt.merge([l1, os.path.join(self.tmp, "nolane")])
         self.assertEqual((doc["verdict"], doc["counts"]["SETUP-FAIL"]), ("NOT PASS", 1))
         self.assertEqual(rt.merge([])["verdict"], "NOT PASS")
 
-    def test_cli_plan_and_summary(self):
-        c = os.path.join(self.tmp, "c.txt")
-        write(c, Plan.A + "\n" + Plan.B + "\n")
-        out = os.path.join(self.tmp, "plan")
-        self.assertEqual(rt.main(["plan", "--collect", c, "--out-dir", out, "--lanes", "1,2"]), 0)
+    def test_cli_plan_runs_and_summary(self):
+        out, runs = os.path.join(self.tmp, "plan"), os.path.join(self.tmp, "runs")
+        self.assertEqual(rt.main(["plan", "--ingame", self.ingame, "--out-dir", out, "--runs", runs]), 0)
         with open(os.path.join(out, "plan.json"), encoding="utf-8") as f:
-            self.assertEqual(sorted(sum(json.load(f)["lanes"].values(), [])), [Plan.A, Plan.B])
-        with open(os.path.join(out, "plan.json"), encoding="utf-8") as f:
-            lanes = json.load(f)["lanes"]
-        l2 = self.summary("o", [{"test": t, "result": "PASS"} for t in lanes["2"]])
-        l1 = self.summary("o", [{"test": t, "result": "PASS"} for t in lanes["1"]])
-        self.assertEqual(rt.main(["summary", "--plan", os.path.join(out, "plan.json"), "--lane", "1", l1,
-                                  "--lane", "2", l2, "--out", os.path.join(self.tmp, "rc")]), 0)
-        self.assertEqual(rt.main(["summary", "--plan", os.path.join(out, "plan.json"), "--lane", "1", l1,
-                                  "--out", os.path.join(self.tmp, "rc2")]), 1)   # lane 2's tests NOT-RUN
-        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "rc", "summary.md")))
+            doc = json.load(f)
+        self.assertEqual(len(doc["sessions"]), 3)
+        for s in doc["sessions"]:
+            write(os.path.join(runs, s["id"], "summary.json"),
+                  json.dumps({"tests": [{"test": t, "result": "PASS"} for t in s["tests"]]}))
+        rc = os.path.join(self.tmp, "rc")
+        self.assertEqual(rt.main(["summary", "--plan", os.path.join(out, "plan.json"), "--runs", runs, "--out", rc]), 0)
+        self.assertTrue(os.path.isfile(os.path.join(rc, "summary.md")))
+        env = self.env_session(doc)
+        shutil.rmtree(os.path.join(runs, env["id"]))
+        self.assertEqual(rt.main(["summary", "--plan", os.path.join(out, "plan.json"), "--runs", runs,
+                                  "--out", rc]), 1)                           # its tests SETUP-FAIL + NOT-RUN
 
 
 if __name__ == "__main__":
