@@ -18,16 +18,27 @@ What the old run judged and how it is judged here:
     scene was not seen as theirs: the shots would not test the held clip.
  3. B's own game is in the chest's event after its A press (state `event`); none = the chest gave no get scene
     (opened earlier on this boot, the chest is the save's for good): NO-REF, never PASS.
- Set-up: B's CharacterMenu_SelectedCharacter is read back as 10 (the scenario's setflag); B's old value is put back in
- the finally (the boot as it was for later tests).
+ Set-up: B's CharacterMenu_SelectedCharacter is read back as 10 (the scenario's setflag); A's lane pack
+ (coop_puppet.json beside the pack, hookshot.pack_folders) lists Character Select AnimationParams its puppets took for
+ B's age (characters.animation_params, written with the log's "the Player_<v> puppets take OoT Character Select's ...
+ (retargeted clips)" lines, tools/puppet_pack/build.py): without them A's puppet of B plays the game's clips and the
+ fix is not in this lane (SETUP-FAIL). The finally puts B's old character value back and both games back in Kakariko
+ by the well (test_gear's warp); a failure there is raised only when the test body passed, else noted.
  Not ported: the old run's levitate-285-link comparison (B = Link, the same chest): the chest opens once per save,
- so the comparison cannot share this boot; the pack log check ("puppets take OoT Character Select's ... (retargeted
- clips)", tools/puppet_pack/build.py:2313) is lane prep's (the lane pack), not this test's.
+ so the comparison cannot share this boot.
 Every place, face and wait is the old scenario's (cited).
 """
+import json
+import os
+import sys
+
 import pytest
 
 from test_enemies import face, place   # noqa: E402  (bridge place / face, as the scenarios' 'place' / 'toward')
+from test_gear import GATE, SCENE_CHILD   # noqa: E402  (the boot's place: Kakariko by the well, the rows' warp)
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import hookshot   # noqa: E402  (pack_folders: where a game's co-op pack is, as the kit finds it)
 
 SCENE, ENTRANCE = "InsideTheDekuTree", "Entrance"   # levitate-285.A/B.txt 'warp InsideTheDekuTree Entrance'
 CHAR_FLAG, IMPA = "CharacterMenu_SelectedCharacter", 10   # levitate-285.B.txt 'setflag CharacterMenu_SelectedCharacter 10'
@@ -45,6 +56,42 @@ SHOT_MARKS = ("stand", "open1", "open3", "open4")   # (tests/test_ingame.py: <= 
 TOL = 0.80                                          # as test_intro_seen / test_gear.shots (animated puppet)
 
 
+def pack_anims(pair, x, age):
+    """The Character Select AnimationParams game `x`'s co-op pack gave its puppets of that age (characters.
+    animation_params in coop_puppet.json); raises AssertionError (in set-up: SETUP-FAIL) when there are none."""
+    _, pack, _ = hookshot.pack_folders(pair.games[x]["folder"])
+    f = os.path.join(pack, "coop_puppet.json")
+    try:
+        with open(f, encoding="utf-8") as fh:
+            chars = json.load(fh).get("characters") or {}
+    except (OSError, ValueError) as e:
+        raise AssertionError("%s: no readable co-op pack manifest %s (%s)" % (x, f, e))
+    v = "Child" if age == "child" else "Adult"
+    got = (chars.get("animation_params") or {}).get(v)
+    assert got, ("%s's pack (%s) lists no Character Select AnimationParam for its %s puppets (characters: %s): its "
+                 "puppet of B plays the game's clips, the fix is not in this lane's pack" % (
+                     x, f, v, "none" if not chars else "animation_params %s" % chars.get("animation_params")))
+    return got
+
+
+def way_back(pair, was, done):
+    """B's old character value, then both games in Kakariko by the well (the boot's place for later default-boot
+    tests). A failure is raised only when the test body passed (`done`); else noted, so the test's own message stays."""
+    try:
+        if was is not None and was != IMPA:
+            pair.flag("B", CHAR_FLAG, was)
+        pair.warp_both(SCENE_CHILD, entrance=GATE)
+        for x in ("A", "B"):
+            s = pair.state(x)
+            assert pair.in_play(s) and (s.get("scene") or "") == SCENE_CHILD, (
+                "%s in %s after the test, not %s: the lane's later tests need the boot's place" % (
+                    x, s.get("scene"), SCENE_CHILD))
+    except Exception as e:
+        if done:
+            raise
+        pair.notes.append("way back after the failure: %s: %s" % (type(e).__name__, e))
+
+
 def shots(pair, mark):
     for x in ("A", "B"):
         pair.check_shot(x, "levitate-285-%s" % mark, tolerance=TOL)
@@ -54,9 +101,10 @@ def shots(pair, mark):
 @pytest.mark.look
 @pytest.mark.row("#285 a customized character's puppet stands on the floor in the other player's cutscene (Impa, chest)")
 def test_levitate_impa_chest(pair):
-    was = None
+    was, done = None, False
     try:
         with pair.setup():
+            pair.notes.append("A's pack: %s" % ", ".join(pack_anims(pair, "A", pair.state("B").get("age"))))
             pair.warp_both(SCENE, ENTRANCE)
             for x in ("A", "B"):
                 s = pair.state(x)
@@ -90,6 +138,6 @@ def test_levitate_impa_chest(pair):
             if button:
                 pair.press("B", buttons=[button], frames=8)
             pair.step_both(wait)
+        done = True
     finally:
-        if was is not None and was != IMPA:
-            pair.flag("B", CHAR_FLAG, was)
+        way_back(pair, was, done)

@@ -53,6 +53,13 @@ class Levitate(unittest.TestCase):
         self.assertEqual(r[0][0], "SETUP-FAIL", r)
         self.assertIn("CharacterMenu_SelectedCharacter", r[0][1])
 
+    def test_no_pack_anims_is_setup_fail(self):
+        p, s = self.run_fake("noanims", bug="noanims")
+        r = self.result(s)
+        self.assertEqual(len(r), 1, (p.stdout, s))
+        self.assertEqual(r[0][0], "SETUP-FAIL", r)
+        self.assertIn("lists no Character Select AnimationParam for its Child puppets", r[0][1])
+
     def test_opened_chest_is_no_ref(self):
         p, s = self.run_fake("opened", bug="opened")
         r = self.result(s)
