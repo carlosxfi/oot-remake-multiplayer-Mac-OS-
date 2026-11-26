@@ -13,8 +13,9 @@
 #   a-waits      A min=1 coop: ride: P\d+'s Animal_Epona_Adult waits, nobody on her \(the same copy\)
 # VOID, not FAIL: b-free 0 (the song did not bring her: ocarina not on D-pad Left, or the notes missed), or
 # b-rides 0 (no mount round got on: the shots after "epona-came" show where she stopped).
-# Note keys (lichii/hook/coop_ocarina_sound.cpp NoteOf, seen in run epona-seen-0dacc172): L = D, R = F, Y = A, X = B,
-# A = high D (N64: A, C-down, C-right, C-left, C-up). Epona's Song = high D, B, A twice = A X Y A X Y.
+# Note keys, as Ocarina of Time 3D: A = D, R = F, Y = A, X = B, L = high D (N64: A, C-down, C-right, C-left, C-up).
+# Epona's Song = high D, B, A twice = L X Y L X Y. Not the module's NoteOf (coop_ocarina_sound.cpp: L = D, A = high D,
+# "inferred from the prompt; not heard"): runs epona-seen-0dacc172 (X Y R) and -r2 (A X Y, NoteOf's keys) were no song.
 #! switches LICHII_COOP_PUPPET=1,LICHII_COOP_DEBUG_ANIM=1,LICHII_COOP_OBJECTS=1,LICHII_COOP_CHEATS=1
 #! timeout 900
 mark start
@@ -22,7 +23,7 @@ wait 60
 warp HyruleField_Adult HyruleField_FrontOfMarket
 wait 1200               # the warp lands
 mark field
-place -99.0 151.0 264.5 # open field (where the field's Epona stands in a save that has not won her)
+place -99.0 151.0 264.5 # Lon Lon Ranch's corral, in the field's map (where Epona stands in a save that has not won her)
 wait 240
 face -99.0 290.0        # face north, away from A
 press ZL                # camera behind B
@@ -31,13 +32,13 @@ mark on-foot
 press DLEFT 12          # the ocarina out
 wait 240
 mark ocarina
-press A 12              # Epona's Song: high D, B, A, twice (A X Y A X Y)
+press L 12              # Epona's Song: high D, B, A, twice (L X Y L X Y)
 wait 40
 press X 12
 wait 40
 press Y 12
 wait 40
-press A 12
+press L 12
 wait 40
 press X 12
 wait 40
