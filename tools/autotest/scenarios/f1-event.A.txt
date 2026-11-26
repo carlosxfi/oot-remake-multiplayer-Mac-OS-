@@ -1,0 +1,26 @@
+# f1-event, A (see f1-event.steps.txt): A warps into the Deku Tree (the title, then four A presses: as f1-free.A.txt),
+# walks to the slingshot room's chest and opens it: the item get, an event whose text waits for A. The lines are
+# cutscene-snap.A.txt's (place -51.8 112.6 12.2 on the chest ledge, goto -53.3 12.2 0.4 300 "in front of the chest",
+# toward -54.4 12.2 8, press A "open it: the item get"; deku-ladder.A.txt: chest Obj_TBox at -54.4 112.0 12.2), with no
+# press after it, so the text is still up when this ends. The steps prove the event with `state A event` before F1.
+mark start
+warp InsideTheDekuTree Entrance
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark after
+place -51.8 112.6 12.2
+wait 240
+mark placed
+goto -53.3 12.2 0.4 300
+toward -54.4 12.2 8
+press A
+wait 300
+mark event

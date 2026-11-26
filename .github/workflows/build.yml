@@ -168,6 +168,8 @@ jobs:
         run: python tools/puppet_pack/tests/test_charsel_names.py -v
       - name: Test lanes tests
         run: python tools/autotest/tests/test_lanes.py -v
+      - name: Steps files on Hookshot (hs_steps.py, its key verb) tests
+        run: python tools/autotest/tests/test_hs_steps.py -v
       - name: Autotest groups tests
         run: python tools/autotest/tests/test_groups.py -v
       - name: Screenshot proof tests

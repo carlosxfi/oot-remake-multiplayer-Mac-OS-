@@ -56,6 +56,11 @@ inline constexpr int kWantLongshotMenu = -3;
 void WantLongshotMenu();
 // Longshot's own menu closed at its next tick, if it is open (F1 taken for co-op's - menu: nothing of Longshot's left over it).
 void WantClose();
+// Longshot's own menu opened (or brought) on the Multiplayer tab at its next tick (F1 where our - menu cannot open now:
+// coop_menu_tabs_rule.h). Any thread.
+void WantMultiplayerTab();
+// One of co-op's tabs shows in Longshot's menu now (HOS_COOP_MENU_SHOW .. _HIDE). Any thread, no co-op lock.
+bool TabShown();
 
 // The window's keys and characters (Unicode) while the tab types into a
 // field: true when taken. Hookshot's own keys (F1, Insert) are never taken.

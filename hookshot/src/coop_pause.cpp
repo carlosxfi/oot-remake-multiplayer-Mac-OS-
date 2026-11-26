@@ -108,6 +108,7 @@ std::mutex g_mutex;   // everything below
 CoopPauseMenu::Menu g_menu;
 bool g_coop_on = false;      // co-op came with the game's start (coop.ini named a server): not started or stopped here
 bool g_shown = false;        // the tab shows in Hookshot's menu
+std::atomic<bool> g_shown_any{false};   // g_shown, for the present's and window's threads (TabShown: no co-op lock)
 bool g_native = false;       // the title's own rows show its pages instead (OpenNative): no overlay
 std::string g_doing;         // what the tab started: "hosting", "joined", "" none
 bool g_hosted_public = false;  // the game hosting now was started as a public game (the Host page's Game row)
@@ -1233,6 +1234,7 @@ void Settle() {
 
 void ShowTab() {
     g_shown = true;
+    g_shown_any = true;
     // (the files, the saves, a controller or microphone plugged in while the menu was closed: read by MenuStep before
     // g_mutex, row 236; live only when none was)
     const Opening o = g_opening != nullptr ? *g_opening : GatherOpening();
@@ -1786,6 +1788,7 @@ bool MultiplayerPress(const CoopMenuHandoff::Event& e) {
     case HOS_COOP_MENU_SHOW: ShowTab(); break;
     case HOS_COOP_MENU_HIDE:
         g_shown = false;
+        g_shown_any = false;
         g_menu.Hide();
         WearChosenLook();
         break;
@@ -1977,6 +1980,14 @@ void WantLongshotMenu() {
 
 void WantClose() {
     g_wanted = HOS_COOP_MENU_WANT_CLOSE;
+}
+
+void WantMultiplayerTab() {
+    g_wanted = kMultiplayerTab;
+}
+
+bool TabShown() {
+    return g_shown_any.load();
 }
 
 // Ctrl and Shift held now. Windows: GetKeyState. Linux: the game's own SDL (SDL2 or SDL3, the library the game
