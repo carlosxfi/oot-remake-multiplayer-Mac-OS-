@@ -395,6 +395,23 @@ class RunnerTest(unittest.TestCase):
         self.assertIn("Get-Process -Id 42 ", cmd[5])
         self.assertNotIn('"', cmd[5])
 
+    def test_window_shot_hang_or_no_start_is_a_setup_fail(self):
+        # (review-c124 on 8614cb1cc) a helper that hangs is ended and the step is a SETUP-FAIL, not an exception
+        def hang(cmd, **kw):
+            raise hs.subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+        def missing(cmd, **kw):
+            raise FileNotFoundError("powershell")
+
+        with self.assertRaisesRegex(hs.SetupFail, "did not end within 90 s"):
+            hs.run_window_shot(["x"], run=hang)
+        with self.assertRaisesRegex(hs.SetupFail, "did not start"):
+            hs.run_window_shot(["x"], run=missing)
+
+        class R:
+            returncode, stdout, stderr = 3, "COVERED a.png: other\n", None
+        self.assertEqual(hs.run_window_shot(["x"], run=lambda cmd, **kw: R()), (3, "COVERED a.png: other"))
+
     def test_key_parse(self):
         self.assertEqual(hs.parse_steps("key B F1\n")[0].args, ["B", "F1"])
         for bad in ("key A\n", "key A F6\n", "key A F1 F1\n"):
