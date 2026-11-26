@@ -6,8 +6,10 @@
 Rule (B #128, 2026-11-26, zero-regressions rule): a row counts as proven only by a PASS run of the same row on the
 identical build: the same module (sha256 of both games' hookshot_coop.dll), the same game (coop-built-from.txt of both
 pair folders: release, pin commit, hashes of hookshot/patches, the code mods' line), the same mods pack (every file
-under both pair folders' mods\\, by content), the same kits (--kit folders, every file by path, size and time) and the
-same server exe. A FLAKY row (any other result of that row on that build, before or after the PASS), a FAIL,
+under both pair folders' mods\\, by content), the same kits (--kit folders, every file by path, size and time), the
+same server exe, the same save baseline (both pairs' autotest-save) and the same harness (HARNESS: run.ps1 and what it
+runs), with the same scenario files (scenario_hash: A/B/steps scripts and load.txt, includes resolved), each taken
+before AND after the run (a build changed during the run proves nothing). A FLAKY row (any other result of that row on that build, before or after the PASS), a FAIL,
 SETUP-FAIL, UNPROVEN (NO-REF: a see= without a reference) or PLAYED row is never proven. Runs written before this file
 (no "identity" in run.json) prove nothing.
 
@@ -22,6 +24,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +37,17 @@ BUILT_FROM = "coop-built-from.txt"
 #   oot-remake-randomizer/last-build.txt   docs/mods.md "Randomizer" 2.: OOTRR's output of the last seed build
 # What a run plays (the mods, coop-mods.list, coop-mods.settings.json, a seed's folder) stays in.
 RUN_OUTPUTS = {"coop-mods.applied", "coop-mods.starting", "oot-remake-randomizer/last-build.txt"}
+REPO = os.path.dirname(os.path.dirname(HERE))
+SCENARIOS = os.path.join(HERE, "scenarios")
+SAVE = "autotest-save"   # hookshot.py restore_save: the baseline each run copies over the game's saves
+# What every run executes from the repo (review-c123-6 08:18): run.ps1 and what it dot-sources (kit-paths.ps1, :391),
+# the Python it runs (run.ps1 :222: hookshot.py, lanes.py, placement.py, ocarina_notes.py, proof.py), the steps runner
+# (hs_steps.py), and what those import from the repo (lanes.py -> tools/hookshot/hs.py; hookshot.py :1402 puppet_pack).
+# A changed harness un-proves every row. A file missing here is hashed as missing.
+HARNESS = ["tools/autotest/run.ps1", "tools/autotest/kit-paths.ps1", "tools/autotest/hookshot.py",
+           "tools/autotest/hs_steps.py", "tools/autotest/lanes.py", "tools/autotest/placement.py",
+           "tools/autotest/ocarina_notes.py", "tools/autotest/proof.py", "tools/hookshot/hs.py",
+           "tools/puppet_pack/merge_tables.py", "tools/puppet_pack/self_tunic.py"]
 _hash_cache = {}
 
 
@@ -93,9 +107,52 @@ def built_from(pair):
         return "\n".join(line.rstrip() for line in f.read().strip().splitlines())
 
 
-def identity_of(a, b, kits=None, server=None):
-    """The build a run plays, as a dict with "key" (24 hex digits over everything else). Raises Fail when a pair has
-    no module or no coop-built-from.txt: such a run can never prove a row."""
+def harness_hash(repo=None):
+    """One sha256 over the HARNESS files (path + content sha, or 'missing')."""
+    repo = repo or REPO
+    h = hashlib.sha256()
+    for rel in HARNESS:
+        p = os.path.join(repo, *rel.split("/"))
+        h.update(("%s\0%s\n" % (rel, file_sha(p) if os.path.isfile(p) else "missing")).encode("utf-8"))
+    return h.hexdigest()
+
+
+_PLAY = re.compile(r"^\s*play\s+(.*)$", re.I)
+
+
+def scenario_hash(name, folder=None):
+    """24 hex digits over what a row's scenario plays (review-c123-6 08:18): load.txt, <name>.A.txt, <name>.B.txt,
+    <name>.steps.txt and every script a steps file's `play A f [B f]` lines name, each with its includes resolved by
+    hookshot.read_script (the runner's own reader; run.ps1 :142-144 and :282 name the files). '' when the scenario
+    has no file of its own (a run of it proves nothing)."""
+    folder = folder or SCENARIOS
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import hookshot
+    files = ["load.txt", name + ".A.txt", name + ".B.txt", name + ".steps.txt"]
+    steps = os.path.join(folder, name + ".steps.txt")
+    if os.path.isfile(steps):
+        for line in hookshot.read_script(steps).split("\n"):
+            m = _PLAY.match(line.split("#", 1)[0])
+            if m:
+                w = m.group(1).split()
+                files += [w[i] for i in range(1, len(w), 2)]
+    h, own = hashlib.sha256(), False
+    for rel in files:
+        p = os.path.join(folder, rel)
+        if os.path.isfile(p):
+            own = own or rel != "load.txt"
+            text = hookshot.read_script(p)
+        else:
+            text = "\0missing"
+        h.update(("%s\0%s\n" % (rel, hashlib.sha256(text.encode("utf-8")).hexdigest())).encode("utf-8"))
+    return h.hexdigest()[:24] if own else ""
+
+
+def identity_of(a, b, kits=None, server=None, repo=None):
+    """The build a run plays, as a dict with "key" (24 hex digits over everything else): both games' module, game,
+    mods pack and save baseline (<pair>/autotest-save), the kits, the server and the harness (HARNESS). Raises Fail
+    when a pair has no module or no coop-built-from.txt: such a run can never prove a row."""
     parts = {}
     for side, pair in (("a", a), ("b", b)):
         dll = game_dll(pair)
@@ -107,10 +164,12 @@ def identity_of(a, b, kits=None, server=None):
         parts["module_" + side] = file_sha(dll)
         parts["game_" + side] = hashlib.sha256(game.encode("utf-8")).hexdigest()
         parts["mods_" + side] = tree_hash(os.path.join(pair, "mods"), leave_out=RUN_OUTPUTS)
+        parts["save_" + side] = tree_hash(os.path.join(pair, SAVE))
     parts["kits"] = [tree_hash(k, content=False) for k in (kits or [])]
     if kits and any(not h for h in parts["kits"]):
         raise Fail("a --kit folder is missing: %s" % ", ".join(kits))
     parts["server"] = file_sha(server) if server and os.path.isfile(server) else ""
+    parts["harness"] = harness_hash(repo)
     parts["key"] = hashlib.sha256(json.dumps(parts, sort_keys=True).encode("utf-8")).hexdigest()[:24]
     return parts
 
@@ -130,12 +189,16 @@ def row_key(run):
     if pw is None:
         pw = secret_hash(run.get("password") or "")
     cmd = (run.get("scenario") or "", run.get("switches") or "", str(run.get("timeout") or ""), pw,
-           run.get("logonly") or "")
+           run.get("logonly") or "", run.get("scenario_hash") or "")
     checks = (_checks(run.get("expects")), _checks(run.get("never")), set(run.get("see") or []))
     return cmd, checks
 
 
 def same_row(row, meta):
+    """meta (a run.json) played row: the same command and scenario files, and checked at least the row's checks.
+    A row whose scenario files are not known (no scenario_hash) is never the same as any run."""
+    if not row.get("scenario_hash"):
+        return False
     rc, (re_, rn, rs) = row_key(row)
     mc, (me, mn, ms) = row_key(meta)
     return rc == mc and re_ <= me and rn <= mn and rs <= ms

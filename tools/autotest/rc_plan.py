@@ -233,7 +233,9 @@ def skip_proven(us, roots, keys, judge):
     for name, lines, src in us:
         keep = []
         for line in lines:
-            ok, seen = P.proofs(one_run(line), keys, runs, judge)
+            row = one_run(line)
+            row["scenario_hash"] = P.scenario_hash(row["scenario"])   # a scenario changed since its PASS: played
+            ok, seen = P.proofs(row, keys, runs, judge)
             if ok:
                 skipped.append({"group": name, "line": line, "scenario": scenario_of(line), "keys": list(keys),
                                 "proof": [{"folder": f, "result": r} for k in keys for f, r in seen[k]]})

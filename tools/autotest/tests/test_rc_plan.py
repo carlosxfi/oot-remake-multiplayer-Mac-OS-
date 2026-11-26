@@ -256,15 +256,16 @@ class SkipProven(unittest.TestCase):
         self.results = {}
         self.n = 0
 
-    def proof(self, group, line, result, ident=None):
+    def proof(self, group, line, result, ident=None, scen=None):
         """A run folder of `line` judged `result`, as groups.py writes its run.json."""
         r = p.one_run(line)
+        scen = pv.scenario_hash(r["scenario"]) if scen is None else scen
         self.n += 1
         d = os.path.join(self.runs, group, r["scenario"], "20261126-%06d" % self.n)
         meta = {"group": group, "scenario": r["scenario"], "label": r["label"], "expects": r["expects"],
                 "never": r["never"], "see": r["see"], "logonly": r["logonly"], "switches": r["switches"],
                 "timeout": r["timeout"], "password_hash": pv.secret_hash(r["password"]),
-                "identity": ident if ident is not None else {"key": self.key}, "exit": 0}
+                "scenario_hash": scen, "identity": ident if ident is not None else {"key": self.key}, "exit": 0}
         write(os.path.join(d, "run.json"), json.dumps(meta))
         self.results[d] = result
         return d
@@ -309,6 +310,11 @@ class SkipProven(unittest.TestCase):
         self.proof("g9", 'walk expect="A:x" expect="B:y"', "PASS")   # another group, more checks: still this row
         self.assertEqual(self.played(self.split('[g1]\nwalk expect="A:x"\nchest\n')), ["chest"])
 
+    def test_a_changed_scenario_unproves_the_row(self):
+        self.proof("g1", "walk", "PASS", scen="0" * 24)   # walk's scenario files were other text at that PASS
+        self.proof("g1", "chest", "PASS", scen="")       # a run.json without scenario_hash
+        self.assertEqual(self.played(self.split("[g1]\nwalk\nchest\n")), ["walk", "chest"])
+
     def test_every_lane_key_must_hold_a_pass(self):
         self.proof("g1", "walk", "PASS")
         doc = self.split("[g1]\nwalk\nchest\n", keys=[self.key, "111111111111111111111111"])
@@ -344,6 +350,35 @@ class Identity(unittest.TestCase):
         self.assertNotEqual(base, self.key("x2", built="release=3.1.1\ncommit=abc\npatches=11,23"))
         self.assertNotEqual(base, self.key("x3", mods={"Squadala/romfs/a.bin": "pack2"}))
 
+    def test_save_baseline_and_harness_change_the_key(self):
+        root = os.path.join(self.tmp, "s")
+        a, b = pair(root, "A"), pair(root, "B")
+        repo = os.path.join(self.tmp, "repo")
+        write(os.path.join(repo, "tools", "autotest", "run.ps1"), "v1")
+        base = pv.identity_of(a, b, repo=repo)["key"]
+        save = os.path.join(b, "autotest-save")
+        write(os.path.join(save, "slot_00", "progress.sav"), "x")
+        self.assertNotEqual(base, pv.identity_of(a, b, repo=repo)["key"])
+        shutil.rmtree(save)
+        self.assertEqual(base, pv.identity_of(a, b, repo=repo)["key"])
+        write(os.path.join(repo, "tools", "autotest", "run.ps1"), "v2")
+        self.assertNotEqual(base, pv.identity_of(a, b, repo=repo)["key"])
+
+    def test_scenario_hash_follows_every_file_the_scenario_plays(self):
+        d = os.path.join(self.tmp, "scen")
+        for name, text in (("load.txt", "a\n"), ("x.A.txt", "include x.inc.txt\nb\n"), ("x.inc.txt", "w 1\n"),
+                           ("x.B.txt", "c\n"), ("y.steps.txt", "play A y1.txt B y2.txt\n"), ("y1.txt", "1\n"),
+                           ("y2.txt", "2\n")):
+            write(os.path.join(d, name), text)
+        self.assertEqual(pv.scenario_hash("none", d), "")
+        for scen, changed in (("x", "x.A.txt"), ("x", "x.inc.txt"), ("x", "x.B.txt"), ("x", "load.txt"),
+                              ("y", "y2.txt"), ("y", "y.steps.txt")):
+            before = pv.scenario_hash(scen, d)
+            self.assertTrue(before)
+            with open(os.path.join(d, changed), "a", encoding="utf-8") as fh:
+                fh.write("more\n")
+            self.assertNotEqual(before, pv.scenario_hash(scen, d), changed)
+
     def test_files_a_game_start_writes_do_not_change_the_key(self):
         base = self.key("y0", mods={"Squadala/romfs/a.bin": "pack1"})
         out = {"Squadala/romfs/a.bin": "pack1", "coop-mods.applied": "coop-mods-applied 1 5792\n",
@@ -371,9 +406,28 @@ class Identity(unittest.TestCase):
         with open(os.path.join(folder, "run.json"), encoding="utf-8") as f:
             meta = json.load(f)
         self.assertEqual(meta["identity"]["key"], pv.identity_of(a, b)["key"])
+        self.assertEqual(meta["scenario_hash"], pv.scenario_hash("walk"))
         self.assertEqual((meta["timeout"], meta["password_hash"]), (60, pv.secret_hash("hunter2")))
         self.assertNotIn("hunter2", json.dumps(meta))
-        self.assertTrue(pv.same_row(run, meta))
+        self.assertTrue(pv.same_row(dict(run, scenario_hash=pv.scenario_hash("walk")), meta))   # (as rc_plan asks)
+
+    def test_a_build_changed_during_the_run_proves_nothing(self):
+        a, b = pair(self.tmp, "A"), pair(self.tmp, "B")
+        setup = {"name": "g1", "index": 1, "a": a, "b": b, "port": 27560, "pipe": "p", "shots": self.tmp,
+                 "kits": [], "server": None}
+        folder = os.path.join(self.tmp, "run1")
+        os.makedirs(folder)
+
+        def runner(cmd):   # a lanes install / -Pack rebuild while the run plays
+            with open(os.path.join(a, "hookshot_coop.dll"), "wb") as fh:
+                fh.write(b"module-2")
+            return types.SimpleNamespace(returncode=0, stdout=folder + "\n", stderr="")
+        g.run_groups([(setup, [p.one_run("walk")], [["x"]])], say=lambda *_: None, runner=runner)
+        with open(os.path.join(folder, "run.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+        self.assertNotIn("key", meta["identity"])
+        self.assertIn("changed during the run", meta["identity"]["error"])
+        self.assertEqual(pv.runs_with_identity([folder]), [])
 
 
 if __name__ == "__main__":
