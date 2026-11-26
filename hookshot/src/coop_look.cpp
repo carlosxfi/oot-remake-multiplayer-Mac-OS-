@@ -222,6 +222,39 @@ Look ReadParts(std::string_view text, std::vector<std::string>* errors) {
     return look;
 }
 
+std::string EnvParts(std::string_view value, std::vector<std::string>* errors) {
+    const auto trim = [](std::string_view s) {
+        while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.remove_prefix(1);
+        while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.remove_suffix(1);
+        return s;
+    };
+    std::string text;
+    while (!value.empty()) {
+        const std::size_t comma = value.find(',');
+        const std::string_view pair = trim(value.substr(0, comma));
+        value = comma == std::string_view::npos ? std::string_view{} : value.substr(comma + 1);
+        if (pair.empty()) {
+            continue;
+        }
+        const std::size_t colon = pair.find(':');
+        const std::string_view key = trim(pair.substr(0, colon));
+        const PartInfo* found = nullptr;
+        for (const PartInfo& info : Parts()) {
+            if (info.part != Part::tunic && key == info.key) found = &info;
+        }
+        if (colon == std::string_view::npos || found == nullptr) {
+            if (errors != nullptr) {
+                errors->push_back("LICHII_COOP_LOOK: '" + std::string(pair) +
+                                  (colon == std::string_view::npos ? "' is not key:value"
+                                                                   : "' names no part (the tunic is LICHII_COOP_COLOR)"));
+            }
+            continue;
+        }
+        text += SettingsKey(*found) + " = " + std::string(trim(pair.substr(colon + 1))) + "\n";
+    }
+    return text;
+}
+
 std::vector<std::pair<std::uint8_t, std::uint32_t>> Wire(const Look& look) {
     std::vector<std::pair<std::uint8_t, std::uint32_t>> out;
     for (std::size_t i = 0; i < kParts; ++i) {

@@ -507,10 +507,11 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             const auto to = static_cast<std::size_t>(w.back().data() + w.back().size() - line.data());
             step.mark = std::string(line.substr(from, to - from));
         } else if (cmd == "MENU") {
-            // menu customize|close|host|paste|leave: the Customize page opened, the menu closed, the game hosts through the
+            // menu customize|close|host|paste|leave|main: the Customize page opened, the menu closed, the game hosts through the
             // Multiplayer page's Host (hookshot.py --host-in-game: LICHII_COOP_TEST_HOST), joins with the clipboard's
             // code as the page's "Paste code and join" (private-lobby-fix), or leaves the
-            // session as the page's Leave row does (remount-leave). Test only.
+            // session as the page's Leave row does (remount-leave), or the Multiplayer page opened and nothing pressed (its
+            // rows for a shot, row 170). Test only.
             // gear-link: menu look KEY=VALUE (a settings key without look_, e.g. link_gear=hidden; VALUE none unsets it):
             // that part chosen as the Customize page chooses it and worn as when the menu closes. Test only.
             std::string page = w.size() == 2   ? std::string(w[1])
@@ -520,8 +521,8 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             const bool look = page.rfind("look ", 0) == 0 && page.find('=') != std::string::npos;
             if (page != "customize" && page != "close" && page != "host" && page != "paste" && page != "leave" &&
-                !look) {
-                return fail("want: menu customize|close|host|paste|leave, or menu look KEY=VALUE");
+                page != "main" && !look) {
+                return fail("want: menu customize|close|host|paste|leave|main, or menu look KEY=VALUE");
             }
             step.kind = Kind::menu;
             step.mark = page;
@@ -1007,7 +1008,7 @@ namespace CoopTestInput {
 const std::vector<Kind>& ActKinds() {
     static const std::vector<Kind> kinds = {Kind::kill, Kind::hit,  Kind::hurt,    Kind::place, Kind::face,
                                             Kind::aim,  Kind::wear, Kind::dress,   Kind::assign, Kind::chat,
-                                            Kind::menu, Kind::setflag, Kind::setenum};
+                                            Kind::menu, Kind::setflag, Kind::setenum, Kind::verb};
     return kinds;
 }
 

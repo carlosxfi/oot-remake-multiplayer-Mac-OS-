@@ -117,6 +117,8 @@ class FakeGame:
                     continue
                 self.at_title = True
                 self.say("coop: live events: the title: the game's earlier event requests are forgotten")
+                self.say("coop: native ui: the title's menu is up: no play scene, no screen is called into until play is back")
+                self.say("coop: map: the title is up: the panes found are forgotten, looked for again after it")
 
     def in_play(self):
         return not self.at_title and not self.menu_pause and self.frame >= self.stale_until
@@ -328,6 +330,20 @@ class FakeLane:
 
     def games(self):
         return {x: {"port": g.port, "folder": g.folder, "log": g.log_path} for x, g in self.g.items()}
+
+    def window_picture(self, x, path):
+        """The fake of a WINDOW shot (bt_plugin's fake Pair.window_shooter): game x's picture plus a bar the bridge
+        shot never has (Longshot's ImGui overlay is only in the window). Does not step the game."""
+        from PIL import Image, ImageDraw
+        g = self.g[x]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with g.lock:
+            g.picture(path)
+        with Image.open(path) as im:
+            im = im.convert("RGB")
+        ImageDraw.Draw(im).rectangle([200, 150, 300, 170], fill=(250, 200, 0))   # ("the overlay")
+        im.save(path)
+        return path
 
     def close(self):
         for g in self.g.values():

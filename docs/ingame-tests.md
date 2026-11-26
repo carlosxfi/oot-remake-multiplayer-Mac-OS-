@@ -37,6 +37,12 @@ so with `@pytest.mark.needs_env("NAME=VALUE", ...)`: a run whose `--env` lacks i
 makes it NOT-RUN if no env group ran it), so the default run has no SETUP-FAIL from it. A
 malformed `--env` stops the run before any boot (pytest usage error, exit 4).
 
+A look test sets its colours by switch, never by a lane's `coop-options.ini` (it keeps whatever earlier runs left):
+`LICHII_COOP_COLOR=<colour>` is the tunic, `LICHII_COOP_LOOK=<key>:<colour>[,...]` every other part (its settings key
+without `look_`, e.g. `cap_trim:yellow`). With `LICHII_COOP_LOOK` the module takes only those parts, not the file's, and
+logs `coop: look: the parts are LICHII_COOP_LOOK's (...)` (`hookshot/src/coop_look.h` `EnvParts`). Example:
+`test_look.py::test_kokiri_hood_band`.
+
 ## Results
 
 One summary per run: `<dir>/summary.json` and `summary.md` (add `--junitxml <file>` for JUnit); each test entry of `summary.json` carries its `notes` (`pair.notes`: the set-up time and what the test wrote down, such as where Link landed). The run also prints one
@@ -140,6 +146,18 @@ pytest-timeout (pytest.ini, 1800 s) is only the backstop for a call that never r
   blue (0,60,160) at the same grey scores grey 1.0000, colour 0.1128). Shots are kept with the result
   (`<dir>/lane<L>/shots/`). A test never writes a reference: a person checks a NO-REF candidate and copies it into
   `refs/`.
+- Longshot's ImGui overlays (co-op's map arrows, tabs, name tags, its menu) are drawn after the bridge's `shot` is
+  taken, so they are never in it. For those, `pair.window_shot(game, name, tolerance)`: the screen's copy of the
+  game's window through the shared `coord-multiplayer/offline/lib/screen-shot.ps1` (game raised, cover check;
+  helper from `OOT_WINDOW_SHOT`, else that default path), cut to the window's client area (no title bar, no
+  desktop), compared the same way to `refs/<name>-window-<game>.png`. A covered window, a failed copy, no helper or
+  no pid is SETUP-FAIL, never PASS. It shows the last frame the game presented: step first when a newer one is
+  needed. Code: `ingame/windowshot.py`; selftests `tests/test_ingame_windowshot.py`.
+
+- Frame rate, the one wall-clock check (`test_unfocus.py`, row 83): fps is real time, so that test alone lets both
+  games run (`resume`), reads Longshot's own 5 s present windows from the logs (`vi: N frames presented (X fps ...)`,
+  `vi: present intervals: ...`) with no bridge call in between, and holds them again (`pause`). It needs each game's
+  window behind (Longshot's `hid: game window not in front` line; `live.py` opens the games without the focus).
 
 ## The lane's boot proof, recovery and memory
 
@@ -169,7 +187,13 @@ pytest-timeout (pytest.ini, 1800 s) is only the backstop for a call that never r
   checks that each game is in play (stepped), in the boot's scene, and of that age. Never check the age alone: a
   child Link in another map passes that.
 - A warp with `arrive_in_event` (a boss intro) is stepped until the game is in the scene, not loading, in the event
-  once the bridge's own 12 s wait is over; a warp takes longer than that under load.
+  once the bridge's own 12 s wait is over; a warp takes longer than that under load. A boot whose scene starts an
+  event on arrival (a boss stage boot) is taken the same way by the boot proof, then stepped until the event ends.
+- No game runs free (boss-respawn-bridge-e3e6e253): a call is never sent with less reply wait than it needs
+  (`REPLY_MIN_S` 2 s, plus its frames at 20 a second); when the deadline cannot give that, the test FAILs
+  `timeout ... not sent` with the connection and the hold kept. A reply that is lost anyway (a dropped connection,
+  a hung bridge) holds the game again at once (noted), and the next test starts after the recovery. A warp that
+  meets Longshot's one teleport per 8 s per game ('still in progress') waits the gap out, stepping, and asks once more.
 - Title test: `load_both` presses A only on a game whose log shows the title line since the way back was asked,
   never on a game in play (an A there opens and shuts the menu); `back to the title: given up` FAILs it at once.
 - Memory: each game's commit charge is sampled every 30 s from the boot start into `<dir>/lane<L>/commit.csv` and

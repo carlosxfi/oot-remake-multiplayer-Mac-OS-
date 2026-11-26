@@ -2556,8 +2556,10 @@ bool TestHost() {
     }
     MenuLock lock(__func__);
     FreshMain();
-    if (g_coop_on) {
-        LOG_WARNING(Core, "coop: multiplayer tab: test host: co-op came with the game's start: not hosting");
+    // (as the page's Host row, HostNow: refused only while that co-op is in a game; a server line naming no server
+    // running, row 170, is ended by Host() and the test hosts, as a player's press there does)
+    if (LauncherLive()) {
+        LOG_WARNING(Core, "coop: multiplayer tab: test host: co-op came with the game's start and is in a game: not hosting");
         return false;
     }
     CoopTitleMenu::Options o = g_menu.options();
@@ -2616,6 +2618,10 @@ bool TestMenu(const std::string& page) {
     }
     if (page == "customize") {
         Open(CoopPauseMenu::Page::kCustomize);
+        return true;
+    }
+    if (page == "main") {   // (the Multiplayer page opened, nothing pressed: its rows for a shot, row 170)
+        Open(CoopPauseMenu::Page::kMain);
         return true;
     }
     if (page == "close") {

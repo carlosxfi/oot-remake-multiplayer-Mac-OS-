@@ -1033,11 +1033,25 @@ TEST_CASE("testinput: menu leave leaves the session as the Multiplayer page's Le
     CHECK(requests[0].name == "leave");
 }
 
+TEST_CASE("testinput: menu main opens the Multiplayer page and presses nothing (row 170's page shot)") {
+    std::string error;
+    CHECK_FALSE(Parse("menu main now\n", error));
+    CHECK_FALSE(Parse("menu map\n", error));
+    Runner r(Must("menu Main\n"));
+    std::vector<std::string> log;
+    r.Advance(0.0, std::nullopt, log);
+    const auto requests = r.TakeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].kind == Kind::menu);
+    CHECK(requests[0].name == "main");
+}
+
 TEST_CASE("testinput: the bridge's act allows only the listed kinds and refuses the whole script otherwise") {
     const auto& allowed = ActKinds();
     CHECK(NotAllowed(Must("kill Enemy_Test\nhit Enemy_Test 2\nhurt 2\nplace 1 2 3\nface 1 2\nchat hello"), allowed).empty());
     CHECK(NotAllowed(Must("menu customize"), allowed).empty());
     CHECK(NotAllowed(Must("setflag some_flag 1"), allowed).empty());
+    CHECK(NotAllowed(Must("verb Enemy_DungeonBoss_PhantomGanon 139"), allowed).empty());   // row 287's knock-down
     // an unlisted kind: a wait, a warp, a give, a sync, a dump
     const std::string wait = NotAllowed(Must("wait 1"), allowed);
     CHECK(wait.find("not allowed here") != std::string::npos);

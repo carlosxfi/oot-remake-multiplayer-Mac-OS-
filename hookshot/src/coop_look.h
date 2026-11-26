@@ -158,6 +158,11 @@ bool WriteSettings(const Look& look, std::string& coop_ini, std::string* options
 // with the co-op settings: CoopHook::LoadSettings). A value that is not a
 // colour is left unset, and said in `errors`.
 Look ReadParts(std::string_view text, std::vector<std::string>* errors = nullptr);
+// The test switch LICHII_COOP_LOOK (in-game tests only; a kit never sets it) as a settings text for ReadParts:
+// `key:value` pairs split by ',' (a part's settings key without `look_`, e.g. "cap_trim:yellow,boots:#FF0000").
+// The module reads it INSTEAD of the settings' parts, so a test's look never takes a lane file's leftovers. A key
+// that is no part (or the tunic: that is LICHII_COOP_COLOR) or a pair with no ':' goes to `errors`.
+std::string EnvParts(std::string_view value, std::vector<std::string>* errors = nullptr);
 
 // The look as the others get it (PLAYER_LOOK, docs/protocol.md): the set
 // parts, by number.

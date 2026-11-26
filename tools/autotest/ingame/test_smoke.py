@@ -18,12 +18,17 @@ Sources of every value (worker-rules "no guessed values"):
 - BOOT_SCENE: the boot scripts' warp line (bt_plugin.boot_scene, scenarios/live-kakariko-child.A/B.txt).
 - the title test is marked leaves_play: it runs last in its round (bt_plugin order) and the next test starts after
   the lane's recovery (Pair.boot_ready), so a miss here cannot cascade into the next round.
+- TITLE_UP: hookshot/src/coop_hookshot.cpp (the frame site, CoopNativeUi::SetTitleUp); MAP_TITLE: coop_map_page.cpp
+  Frame (party-hud-crash-c126-6: the title reached from play has no scene load; both games crashed there in
+  party-hud-bridge-ece368dd-2, ~2 s after the title came up: game-out-A.txt :6784 'loading -> menu' to :6829 CRASH).
+- CRASH_LINE: bt_plugin.CRASH_LINE (the module's crash handler line).
+- TITLE_HOLD 600 frames (~20 s at pair.FPS = 30) at the title: 10x that crash's ~2 s.
 """
 import os
 
 import pytest
 
-from bt_plugin import DEFAULT_BOOT, boot_scene
+from bt_plugin import CRASH_LINE, DEFAULT_BOOT, boot_scene
 from pair import READY_FRAMES
 
 pytestmark = pytest.mark.smoke
@@ -35,6 +40,9 @@ TO_TITLE_GAVE_UP = r"coop: pause tab: back to the title: given up"
 AT_TITLE = r"coop: live events: the title: "
 TITLE_FRAMES = 1500   # 50 s of game for the menu's way back (its own give-up is 25 s of wall clock: kToTitleMs)
 WARP_TO = "KakarikoVillage_Child"
+TITLE_UP = r"coop: native ui: the title's menu is up: no play scene"
+MAP_TITLE = r"coop: map: the title is up: the panes found are forgotten"
+TITLE_HOLD = 600
 BOOT_SCENE = boot_scene(DEFAULT_BOOT)
 
 
@@ -98,7 +106,7 @@ def test_pause(pair):
                lambda: all(pair.in_play(pair.state(x)) for x in ("A", "B")), max_frames=300)
 
 
-@pytest.mark.budget(300)
+@pytest.mark.budget(330)   # (+30 s: TITLE_HOLD, ~20 s at the title)
 @pytest.mark.leaves_play
 @pytest.mark.row("smoke: back to the title, menu -> load again")
 def test_title_and_load_again(pair):
@@ -125,8 +133,16 @@ def test_title_and_load_again(pair):
     # (left play = the title's own line since the ask, never 'not in play': an open pause menu is not in play too,
     # pilot test-bridge-pilot-fa63e90f: 'left play' passed on A's menu, then A was pressed in play for 3600 frames)
     pair.until("both games at the title", both_at_title, max_frames=TITLE_FRAMES)
+    for x in ("A", "B"):   # (party-hud-crash-c126-6: the title from play is no play scene: nothing is called into)
+        pair.expect_log(x, TITLE_UP, max_frames=300)
+        pair.expect_log(x, MAP_TITLE, max_frames=300)
+    pair.step_both(TITLE_HOLD)   # (frames run at the title: a game that crashed there stops answering)
+    for x in ("A", "B"):
+        pair.never_log(x, CRASH_LINE)
     pair.load_both(at_title, max_frames=3600)
     pair.until_in_play("both games in play after the load", max_frames=READY_FRAMES)
+    for x in ("A", "B"):
+        pair.never_log(x, CRASH_LINE)
     pair.until("both games list two connected players again",
                lambda: all(len([p for p in ((pair.state(x).get("coop") or {}).get("players") or [])
                                 if p.get("state") == "connected"]) >= 2 for x in ("A", "B")), max_frames=900)
