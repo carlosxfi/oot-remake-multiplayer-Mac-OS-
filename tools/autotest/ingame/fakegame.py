@@ -287,6 +287,9 @@ class FakeGame:
                 o = self.other
                 o.later(12, lambda: (o.flags.__setitem__(GATE, 1), o.say("coop: story: bool 0x19898d14 (entry 3) 0 -> 1")))
             r["value"] = m["value"]
+        elif cmd == "flag_read" and m.get("name") in LINK_LIFE:
+            # (the flag is the component's mirror, refreshed every frame: a read gives our Link's Life component)
+            r.update(kind="int", value=self.link_life[m["name"]])
         elif cmd == "flag_read":
             r.update(kind="bool", value=self.flags.get(m["name"]))
         elif cmd == "dump":
