@@ -483,7 +483,8 @@ def lane_pair(request):
             raise GameCrash("lane%d boot: game A ended; A: %s" % (lane, os.environ["BT_FAKE_BOOT_CRASH"]))
         import fakegame
         lanefake = fakegame.FakeLane(out, env=boot_env(config),     # (fakes/*.py hooks see the boot's switches)
-                                     fakes_dir=os.environ.get("BT_FAKE_FAKES_DIR") or fakegame.FAKES)
+                                     fakes_dir=os.environ.get("BT_FAKE_FAKES_DIR") or fakegame.FAKES,
+                                     boot=config.getoption("boot"))   # (and its name: game.boot)
         pair = P.Pair(lanefake.games(), out_dir=out, refs_dir=os.environ.get("BT_FAKE_REFS", refs))
         pair.lane, pair.info = lane, {"fake": True}
         yield pair

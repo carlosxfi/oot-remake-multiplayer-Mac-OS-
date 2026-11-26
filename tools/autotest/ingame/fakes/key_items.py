@@ -2,6 +2,7 @@
 the module's (hookshot/src/coop_menu_state.h Minus, docs/playtest.md "menu"); counts and labels come from the same
 tables the test reads (test_key_items.tally_flags / labels).
 
+- Only on row 223's own boot (game.boot == live-key-items-223): elsewhere no hook reacts.
 - MINUS opens / shuts the - menu (none of co-op's tabs yet); R on the open menu shows co-op's Multiplayer page (main
   view, details page 0); ZR / ZL turn the details list's two pages (round).
 - `menu.minus` in the state: on page 1 the four key-item lines, "n of N" from the game's own flags.
@@ -29,6 +30,8 @@ def setup(game):
 
 
 def press(game, buttons):
+    if game.boot != K.BOOT:   # (only on row 223's own boot: the pad is every row's, B #138)
+        return False
     k = game.ki
     if "MINUS" in buttons:
         k.update(menu=not k["menu"], tab=False, page=0)
@@ -46,7 +49,7 @@ def press(game, buttons):
 
 
 def after(game, m, r):
-    if m.get("cmd") != "flag" or m.get("name") not in game.ki_all or _bug() == "nosync":
+    if game.boot != K.BOOT or m.get("cmd") != "flag" or m.get("name") not in game.ki_all or _bug() == "nosync":
         return
     o, name, value = game.other, m["name"], m.get("value")
     if value:
@@ -54,7 +57,7 @@ def after(game, m, r):
 
 
 def state(game, st):
-    if _bug() == "nominus":
+    if game.boot != K.BOOT or _bug() == "nominus":
         return
     k = game.ki
     menu = st.setdefault("menu", {"coop": {"open": False}, "customize_screen": {"open": False}})
