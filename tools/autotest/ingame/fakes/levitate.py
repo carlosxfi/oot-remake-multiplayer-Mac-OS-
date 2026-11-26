@@ -18,7 +18,8 @@ SCENE, CHEST = "InsideTheDekuTree", (6.51, 7.25)
 CHAR_FLAG = "CharacterMenu_SelectedCharacter"
 EVENT_FRAMES = 600
 PACK = os.path.join("mods", "contents", "0400486024DEC000", "coop-puppet")   # testpack.PACK_REL
-ANIM = "Component/AnimationParam/Player.engine__component__AnimationParam.bgyml"   # (a member path of that form)
+ANIM = {"Child": "Component/AnimationParam/Player_Child.engine__component__AnimationParam.bgyml",   # (the lane mod's,
+        "Adult": "Component/AnimationParam/Player.engine__component__AnimationParam.bgyml"}     # test_levitate.py probe)
 HOLD = "coop: puppet: P2 show -> hold (their cutscene)"
 SHOW = "coop: puppet: P2 hold -> show"
 
@@ -32,7 +33,7 @@ def setup(game):
     if game.tag == "A":
         d = os.path.join(game.folder, PACK)
         os.makedirs(d, exist_ok=True)
-        anims = {} if _bug() == "noanims" else {"Child": [ANIM], "Adult": [ANIM]}
+        anims = {} if _bug() == "noanims" else {v: [p] for v, p in ANIM.items()}
         with open(os.path.join(d, "coop_puppet.json"), "w", encoding="utf-8") as f:
             json.dump({"tool": "tools/puppet_pack", "characters": {"mod": "OoT Character Select",
                                                                     "animation_params": anims}}, f)

@@ -2897,11 +2897,10 @@ void MinusWords(void* ctx, std::uint64_t layout, std::uint64_t gen, int tab) {
         drawn.open = true;
         drawn.tab = tab == static_cast<int>(MinusPage::kMultiplayer) ? "multiplayer" : mods ? "mods" : "lobby";
         drawn.view = ViewWord(view);
-        const bool details = !mods && v.typing_lines.empty() && (view == View::kMain || view == View::kSession);
-        if (details) {
-            drawn.details_pages = v.tally_ok ? 2 : 1;
-            drawn.details_page = CoopListPages::Wrap(v.detail_page, drawn.details_pages);
-            if (drawn.details_page == 1) {
+        if (!mods && v.typing_lines.empty()) {   // (the details list drawn: DetailLines' own page rule)
+            const DetailPaging paging = DetailPages(view, v);
+            drawn.details_pages = paging.pages, drawn.details_page = paging.page;
+            if (paging.pages > 1 && paging.page == 1) {
                 for (std::size_t k = 1; k < lines.size(); ++k) {   // (line 0: the "Key items  Page 2/2" heading)
                     if (!lines[k].name.empty()) drawn.key_items.push_back({lines[k].name, lines[k].value});
                 }

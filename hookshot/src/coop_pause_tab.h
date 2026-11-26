@@ -851,6 +851,13 @@ bool RoomMatches(const std::string& room, const std::string& host, const std::st
 // The Players view: the session's chat to look back at (ChatHistoryLines). None on the other views. The rows keep what
 // can be done.
 std::vector<ListLine> DetailLines(View view, const SessionView& v);
+// Row 223: the details list's pages on that view (DetailLines' own rule, also the play-test state's): the Main and
+// Session views have 2 while the game's key items can be read (v.tally_ok), else 1; the page shown (0 the session's
+// lines, 1 the key items). Other views: {0, 0} (no paged list).
+struct DetailPaging {
+    int page = 0, pages = 0;
+};
+DetailPaging DetailPages(View view, const SessionView& v);
 // The Players view's list (row 282, coop_chat_history.h): the heading "Chat  Page 3/3" (paged: the game's ZL and ZR
 // beside it; its A the page of older lines), then a page of v.chat's rows, as they were said (never looked up); "No
 // chat yet" with none; nothing out of a session.

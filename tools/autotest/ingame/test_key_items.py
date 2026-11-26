@@ -46,6 +46,7 @@ SET_WAIT, BACK_WAIT, FULL_WAIT, AGAIN_WAIT = 90, 60, 120, 90
 PRESS = 8                      # (as test_map_arrow: a press held 8 frames)
 SHARE_FRAMES = 1500            # key-items-223.B.txt 'wait 1500' before B's MINUS (it waits out A's script)
 GROUPS = ("songs", "medallions", "stones", "dungeon_items")   # DetailLines' order (coop_pause_tab.cpp)
+COUNTED = 64   # key-items-223.A.txt's setflag lines (every counted flag: 13 + 6 + 3 + 42, B's "13 of 13 ... 42 of 42")
 TOL = 0.90
 
 
@@ -62,10 +63,16 @@ def GROUP_OF(name):
     return None
 
 
+def c_source(path):
+    """A C/C++ file's text with adjacent string literals joined ("a" "b" -> "ab"), as the compiler sees them (C #124:
+    a source check never reads the raw text where a literal can be split)."""
+    with open(path, encoding="utf-8") as f:
+        return re.sub(r'"\s+"', "", f.read())
+
+
 def tally_flags():
     """{group: [flag names]} from game_items.cpp's boolean entries (the table the module counts from)."""
-    with open(ITEMS_CPP, encoding="utf-8") as f:
-        names = re.findall(r'\{"([^"]+)",\s*0x[0-9a-fA-F]+,\s*K::boolean\b', f.read())
+    names = re.findall(r'\{"([^"]+)",\s*0x[0-9a-fA-F]+,\s*K::boolean\b', c_source(ITEMS_CPP))
     out = {g: [] for g in GROUPS}
     for n in names:
         g = GROUP_OF(n)
@@ -76,8 +83,7 @@ def tally_flags():
 
 def labels():
     """{group: label} from key_item_tally.cpp tally_group_label."""
-    with open(TALLY_CPP, encoding="utf-8") as f:
-        found = dict(re.findall(r'case TallyGroup::(\w+): return "([^"]+)";', f.read()))
+    found = dict(re.findall(r'case TallyGroup::(\w+): return "([^"]+)";', c_source(TALLY_CPP)))
     assert set(found) >= set(GROUPS), "key_item_tally.cpp tally_group_label: groups %s, want %s" % (sorted(found), GROUPS)
     return {g: found[g] for g in GROUPS}
 
@@ -101,6 +107,11 @@ def owned(pair, x, flags):
             n += 1 if r.get("value") else 0
         out[g] = n
     return out
+
+
+def holds_all(pair, x, flags):
+    """True once game x holds every counted flag (stops at the first one it lacks: one read a poll while none came)."""
+    return all(pair.flag_read(x, name).get("value") for g in GROUPS for name in flags[g])
 
 
 def want_lines(flags, have, names):
@@ -152,6 +163,9 @@ def test_key_items_pages(pair):
     with pair.setup():
         for g in GROUPS:
             assert flags[g], "game_items.cpp: no boolean flag counts as %s (tally_group_of's rules)" % g
+        total = sum(len(flags[g]) for g in GROUPS)
+        assert total == COUNTED, ("game_items.cpp: %d counted flags %s, the scenario sets %d: the table or this "
+                                  "test's reader changed" % (total, {g: len(flags[g]) for g in GROUPS}, COUNTED))
         for x in ("A", "B"):
             s = pair.state(x)
             assert pair.in_play(s), "%s not in play (%s)" % (x, s.get("not_ready"))
@@ -182,7 +196,9 @@ def test_key_items_pages(pair):
     pair.check_shot("A", "key-items-223-page1-again", tolerance=TOL)
 
     # B (the guest): the shared flags reach its own flag table, then its page 2 reads them (never A's counts).
-    pair.until("B holds every counted flag A set (shared flags)", lambda: owned(pair, "B", flags) == full,
+    # (pair.until polls every CHUNK = 10 frames, at most SHARE_FRAMES / 10 = 150 polls; each poll stops at B's first
+    # missing flag: ~1 read a poll until they come, 64 on the last)
+    pair.until("B holds every counted flag A set (shared flags)", lambda: holds_all(pair, "B", flags),
                max_frames=SHARE_FRAMES)
     open_page(pair, "B")
     check_page(pair, "B", 0, "page1")

@@ -22,7 +22,11 @@ What the old run judged and how it is judged here:
  (coop_puppet.json beside the pack, hookshot.pack_folders) lists Character Select AnimationParams its puppets took for
  B's age (characters.animation_params, written with the log's "the Player_<v> puppets take OoT Character Select's ...
  (retargeted clips)" lines, tools/puppet_pack/build.py): without them A's puppet of B plays the game's clips and the
- fix is not in this lane (SETUP-FAIL). The finally puts B's old character value back and both games back in Kakariko
+ fix is not in this lane (SETUP-FAIL). B is a child (Impa on child Link), so the 'Child' list is read: the lane's
+ Character Select mod DOES change one Player_Child AnimationParam, Component/AnimationParam/Player_Child.engine__
+ component__AnimationParam.bgyml (probe 2026-11-26 15:1x UTC, coord-multiplayer/reports/probes/cs-anims-285.py:
+ build.character_animation_params over coop-kit/ls/lane1-A/mods/OoT Character Select vs the game's romfs, both
+ lane1-A's and dump/: "Player_Child: 1 changed AnimationParam(s)"; Player_Adult: Player.engine__...bgyml). The finally puts B's old character value back and both games back in Kakariko
  by the well (test_gear's warp); a failure there is raised only when the test body passed, else noted.
  Not ported: the old run's levitate-285-link comparison (B = Link, the same chest): the chest opens once per save,
  so the comparison cannot share this boot.
