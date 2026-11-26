@@ -134,6 +134,21 @@ class Remaining(Base):
         self.assertEqual(p.main(["remaining", lane, root, "--out", out]), 0)
         self.assertFalse(os.path.exists(out))
 
+    def test_older_runs_in_reused_root_not_done(self):
+        # review-c124-2: a run root reused across rcs must not count the older rc's runs as done
+        root = os.path.join(self.tmp, "runs")
+        fake_run(root, "g3", "wear", 2)
+        old = os.path.join(root, "g3", "wear", "20261126-010000", "run.json")
+        t = os.path.getmtime(old) - 3600
+        os.utime(old, (t, t))
+        lane = os.path.join(self.tmp, "lane2.txt")
+        write(lane, "[g3]
+wear
+")
+        self.assertIn("wear", p.remaining(lane, root))
+        fake_run(root, "g3", "wear", 2, stamp="20261126-020000")
+        self.assertIsNone(p.remaining(lane, root))
+
     def test_no_run_root_all_left(self):
         lane = os.path.join(self.tmp, "lane2.txt")
         write(lane, "[g3]\nwear\n")

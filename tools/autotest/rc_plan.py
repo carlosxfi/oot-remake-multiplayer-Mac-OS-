@@ -16,6 +16,7 @@ minutes, the source of every estimate). Every written file is parsed again by gr
 
 remaining: the lines of a lane file whose run did not leave a run folder under <run root> (a lane-2 run ended early,
 VOID-COMMIT): a groups.py file of only those, so the other lane plays what is left, not the whole file again.
+Only run.json files written after the lane file count: a reused run root's older runs (another rc) are not "done".
 """
 import argparse
 import json
@@ -174,13 +175,17 @@ def split(files, out_dir, lanes=2, roots=None):
     return doc
 
 
-def done_runs(run_root):
-    """{(group, scenario): count} of the runs that left a run folder (run.json) under run_root."""
+def done_runs(run_root, since=None):
+    """{(group, scenario): count} of the runs that left a run folder (run.json) under run_root, written at or after
+    since (epoch seconds; None = all)."""
     done = {}
     for d, _, files in os.walk(run_root):
         if "run.json" in files:
+            pj = os.path.join(d, "run.json")
             try:
-                with open(os.path.join(d, "run.json"), encoding="utf-8") as f:
+                if since is not None and os.path.getmtime(pj) < since:
+                    continue
+                with open(pj, encoding="utf-8") as f:
                     j = json.load(f)
             except (OSError, ValueError):
                 continue
@@ -193,7 +198,8 @@ def remaining(lane_file, run_root):
     """groups.py text of the runs of lane_file with no run folder under run_root (or None: nothing is left)."""
     with open(lane_file, encoding="utf-8-sig") as f:
         bl = blocks(f.read())
-    done = done_runs(run_root) if os.path.isdir(run_root) else {}
+    # the lane file is written by split before its runs start: older run.json files are another pass's runs
+    done = done_runs(run_root, os.path.getmtime(lane_file)) if os.path.isdir(run_root) else {}
     left = []
     for name, lines in bl:
         keep = []
