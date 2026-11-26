@@ -387,6 +387,14 @@ class RunnerTest(unittest.TestCase):
             with self.assertRaises(hs.StepsError):
                 hs.parse_steps(bad)
 
+    def test_window_shot_command_calls_the_shared_helper(self):
+        cmd = hs.window_shot_command(r"C:\A B\screen-shot.ps1", 42, r"C:\o\it's.png", r"C:\o\w.txt")
+        self.assertEqual(cmd[:5], ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
+        self.assertIn(". 'C:\A B\screen-shot.ps1';", cmd[5])
+        self.assertIn("Save-WindowShot -Process $p -Path 'C:\o\it''s.png' -Log 'C:\o\w.txt'", cmd[5])
+        self.assertIn("Get-Process -Id 42 ", cmd[5])
+        self.assertNotIn('"', cmd[5])
+
     def test_key_parse(self):
         self.assertEqual(hs.parse_steps("key B F1\n")[0].args, ["B", "F1"])
         for bad in ("key A\n", "key A F6\n", "key A F1 F1\n"):

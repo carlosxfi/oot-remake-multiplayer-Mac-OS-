@@ -97,7 +97,23 @@ STATE_WAIT = 60.0
 # every 5 s. One key and one bool per game: the header's switch for that game must name it (flag_watch_problems).
 FLAG_WATCH = {"key64": ("LICHII_COOP_DEBUG_KEY64", "get_key64"), "bool": ("LICHII_COOP_DEBUG_BOOL", "get_bool")}
 FLAG_WAIT = 30.0
-WINDOW_SHOT_ENV = "OOT_WINDOW_SHOT"   # `wshot`: the window-shot helper (coord-multiplayer offline/lib/window-shot.ps1)
+WINDOW_SHOT_ENV = "OOT_WINDOW_SHOT"   # `wshot`: the ONE window-shot helper (coord-multiplayer offline/lib/screen-shot.ps1)
+
+
+def _ps_quote(text):
+    return "'" + str(text).replace("'", "''") + "'"
+
+
+def window_shot_command(helper, pid, path, log):
+    """powershell dot-sources the shared helper and calls its Save-WindowShot (raise + 9-point own-pid cover check).
+    Exit 0 saved; 3 covered (saved as <name>-COVERED.png); 4 no window / failed; 2 no such process."""
+    script = ("$ErrorActionPreference = 'Stop'; . %s; $p = Get-Process -Id %d -ErrorAction SilentlyContinue; "
+              "if (-not $p) { 'no process %d'; exit 2 }; $s = Save-WindowShot -Process $p -Path %s -Log %s; "
+              "if ($null -eq $s) { 'no window handle, or under 100 px'; exit 4 }; "
+              "if ($s.Failed) { 'FAILED ' + $s.Path + ': ' + $s.Why; exit 4 }; "
+              "if ($s.Covered) { 'COVERED ' + $s.Path + ': ' + $s.Why; exit 3 }; 'saved ' + $s.Path; exit 0"
+              % (_ps_quote(helper), pid, pid, _ps_quote(path), _ps_quote(log)))
+    return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
 
 
 def flag_watch(name):
@@ -923,7 +939,7 @@ class HookshotGames:
         """A WINDOW shot of every running game: the screen's copy of its window, Longshot's ImGui overlays (its menu,
         co-op's tabs) included, which a bridge `shot` never has (Longshot takes those before its overlays:
         vk_replay.cpp shot_ask_record; run f1-event-aebd16089's s30-f1-title). Through the helper named by
-        OOT_WINDOW_SHOT (a .ps1 taking -ProcessId -Path -Log; exit 0 saved, else covered/failed: worker rule, the
+        OOT_WINDOW_SHOT (offline/lib/screen-shot.ps1, its Save-WindowShot: window_shot_command; worker rule, the
         game raised and its window checked for cover). No helper, a covered or a failed shot: SETUP-FAIL."""
         helper = os.environ.get(WINDOW_SHOT_ENV)
         if not helper or not os.path.isfile(helper):
@@ -932,10 +948,9 @@ class HookshotGames:
             if not self.alive(y):
                 continue
             path = os.path.join(self.out, "%s-%s.png" % (name, y))
-            cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", helper,
-                   "-ProcessId", str(self.procs[y].pid), "-Path", path,
-                   "-Log", os.path.join(self.out, "window-shots.txt")]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+            r = subprocess.run(window_shot_command(helper, self.procs[y].pid, path,
+                                                   os.path.join(self.out, "window-shots.txt")),
+                               capture_output=True, text=True, timeout=90)
             text = (r.stdout + r.stderr).strip().replace("\n", " | ")
             self.say("  %s window shot %s: exit %d %s" % (y, os.path.basename(path), r.returncode, text))
             if r.returncode != 0:
