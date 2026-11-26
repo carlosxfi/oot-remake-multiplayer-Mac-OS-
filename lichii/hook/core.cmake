@@ -10,6 +10,7 @@ target_sources(core PRIVATE
     "${_coop_hook}/coop_brain_state.cpp"
     "${_coop_hook}/coop_boss_orders.cpp"
     "${_coop_hook}/coop_boss_shooter.cpp"
+    "${_coop_hook}/coop_boss_shooter_table.cpp"
     "${_coop_hook}/coop_shooter_probe.cpp"
     "${_coop_hook}/coop_boss_scenes.cpp"
     "${_coop_hook}/coop_teleport.cpp"
