@@ -94,6 +94,7 @@ struct FlagStats {
   std::uint64_t reset_applied = 0;     // player: values written from a FLAG_RESET
   std::uint64_t counts_guarded = 0;    // a guarded count's gain taken back (guard_count)
   std::uint64_t rewards_guarded = 0;   // row 272: a once-per-save reward got twice, put back (guard_reward)
+  std::uint64_t rewards_given_again = 0;  // C2-5: a put-back gain a Bool of our own then paid for, given again
   std::uint64_t doubled_gains = 0;     // a chest opened again here: its gain taken back (expect_doubled_gain)
   std::uint64_t raced_gains = 0;       // host: a player's guarded gain for a source the group had: not added
   std::uint64_t entries_unsent = 0;    // entries a message kind cannot carry: left out, the rest sent
@@ -329,6 +330,14 @@ class FlagWatcher {
   std::vector<RewardGuarded> take_rewards_guarded() { return std::exchange(rewards_guarded_, {}); }
   // Our own player number, so the host's answer to our own reward Bool is not taken for another player's.
   void set_reward_self(std::uint8_t number) { reward_self_ = number; }
+  // C2-5 (0.12.0): whether our Link is in an event now (our_link_in_event), before frame(); nullopt: not read
+  // this frame (a load), the last word stays. Our own reward flow can give its copy only inside an event of our
+  // Link (its check and its give are one talk or cutscene), so another player's copy counts against our gain
+  // only when it landed in our Link's current event (or kRewardAfterEventFrames after it ended): one that came
+  // before it (a theatre prize, then our Business Scrub's bag tier bought later) was there at our flow's check.
+  // Never told (the emulator, a reader without the event word): every copy in kRewardFrames counts, as before.
+  void set_our_event(std::optional<bool> in);
+  static constexpr std::uint64_t kRewardAfterEventFrames = 2 * 60;  // the gain read a little after the event
 
   // Issue 195: our Link opened a chest that another player had opened
   // already (the hook shows it open, but its AI still lets it open again).
@@ -715,6 +724,12 @@ class FlagWatcher {
     std::uint8_t sender = 0;   // who: a player number, or kRewardSelf
     bool gain = false;         // a unit got; else `source` went on (or came, from another player's flow)
     FlagKey source{};
+    std::uint64_t event = 0;   // another player's: the serial of our Link's event it landed in, 0 none
+  };
+  struct RewardPutBack {
+    std::uint64_t at = 0;      // the frame
+    std::size_t unit = 0;
+    std::vector<protocol::FlagEntry> got;  // the unit's keys as our game gave them
   };
   struct RewardGuard {
     std::vector<std::vector<FlagKey>> units;
@@ -723,6 +738,8 @@ class FlagWatcher {
     std::vector<bool> source_on;       // each source as last judged
     std::deque<RewardEvent> events;    // the last kRewardFrames
     bool ready = false;                // every key read once: the save's own is no reward given now
+    std::deque<RewardPutBack> put_backs;     // our gains put back in the last kRewardFrames (given again when a
+                                       // Bool of our own then pays for them: a sale's Bool set after its give)
   };
   struct RewardUnit {
     std::size_t guard = 0;
@@ -737,6 +754,14 @@ class FlagWatcher {
   bool reward_quiet_ = false;                     // a join or reset state came: judged without counting
   std::uint8_t reward_self_ = 0;                  // set_reward_self: our player number (0: not known)
   std::vector<RewardGuarded> rewards_guarded_;    // take_rewards_guarded
+  bool event_known_ = false;                      // set_our_event was ever told
+  bool our_event_ = false;                        // our Link in an event now
+  std::uint64_t event_serial_ = 0;                // counts our Link's events
+  std::uint64_t event_end_ = 0;                   // the frame our Link's last event ended
+  // Whether another player's event `e` may be the same reward our flow gives now (set_our_event).
+  bool reward_races(const RewardEvent& e) const;
+  // A Bool of our own just went on: our put-back gains it now pays for are given again (and sent).
+  void reward_give_again(FlagStore& store, RewardGuard& guard);
   // Drops what is older than kRewardFrames.
   void prune_reward(RewardGuard& guard) const;
   // Whether our own gain of a unit now is a reward got twice (guard_reward).

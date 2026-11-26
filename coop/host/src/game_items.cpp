@@ -1064,4 +1064,12 @@ std::vector<FlagKey> sources(Family family) {
   return out;
 }
 
+std::vector<FlagKey> sales(Family family) {
+  std::vector<FlagKey> out;
+  for (const Source& s : kSales) {
+    if (s.family == family) out.emplace_back(s.hash, std::uint16_t{0});
+  }
+  return out;
+}
+
 }  // namespace coop::host::rewards

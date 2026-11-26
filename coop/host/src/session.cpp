@@ -3,6 +3,7 @@
 #include <chrono>
 #include <utility>
 
+#include "coop/host/event_owner.hpp"
 #include "coop/protocol/codec.hpp"
 
 namespace coop::host {
@@ -91,6 +92,10 @@ FrameReport Session::frame(const std::optional<PlayerReading>& reading, FlagStor
       // either, Link or not (forest-temple-a: a host's save load through it was not seen as one, and the old
       // save's floors were put back into the new save, once a frame).
       watcher_->set_loading(!reading.has_value() || title_up_);
+      // C2-5: our Link's event, for the reward guard (FlagWatcher::set_our_event); not read: the last word stays.
+      watcher_->set_our_event(reading && reading->event_running
+                                  ? std::optional<bool>(our_link_in_event(*reading->event_running, reading->event_whose))
+                                  : std::nullopt);
       watcher_->set_scene(scene_readable_);
       queue_flags(watcher_->frame(*flags), out);
     }

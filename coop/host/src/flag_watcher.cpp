@@ -248,6 +248,42 @@ void FlagWatcher::prune_reward(RewardGuard& guard) const {
   while (!guard.events.empty() && frames_ > kRewardFrames && guard.events.front().at < frames_ - kRewardFrames) {
     guard.events.pop_front();
   }
+  while (!guard.put_backs.empty() && frames_ > kRewardFrames && guard.put_backs.front().at < frames_ - kRewardFrames) {
+    guard.put_backs.pop_front();
+  }
+}
+
+void FlagWatcher::set_our_event(std::optional<bool> in) {
+  if (!in) return;  // not read this frame: the last word stays
+  if (*in && !our_event_) ++event_serial_;
+  if (!*in && our_event_) event_end_ = frames_;
+  our_event_ = *in;
+  event_known_ = true;
+}
+
+bool FlagWatcher::reward_races(const RewardEvent& e) const {
+  if (e.sender == kRewardSelf || !event_known_) return true;
+  // Landed before our Link's current event (or in none): our flow's check saw it, so its give is no copy of it.
+  if (e.event == 0 || e.event != event_serial_) return false;
+  return our_event_ || frames_ <= event_end_ + kRewardAfterEventFrames;
+}
+
+void FlagWatcher::reward_give_again(FlagStore& store, RewardGuard& guard) {
+  prune_reward(guard);
+  while (!guard.put_backs.empty() && !reward_twice(guard)) {
+    const RewardPutBack p = guard.put_backs.front();
+    guard.put_backs.pop_front();
+    bool ok = true;
+    for (const FlagEntry& e : p.got) ok = store.write_exact(e) && ok;
+    if (!ok) {
+      for (const FlagEntry& e : p.got) note_write_failure(store, key_of(e), "reward given again");
+      continue;
+    }
+    // Ours again: the next diff reads it as our own gain of a unit already counted (got), so it is sent.
+    guard.events.push_back({frames_, kRewardSelf, true, FlagKey{}});
+    guard.got[p.unit] = true;
+    ++stats_.rewards_given_again;
+  }
 }
 
 void FlagWatcher::note_reward_received(FlagStore&, const FlagEntry& entry) {
@@ -265,6 +301,7 @@ bool FlagWatcher::reward_twice(RewardGuard& guard) const {
   std::map<std::uint8_t, std::set<FlagKey>> bools;
   std::map<std::uint8_t, std::size_t> gains;
   for (const RewardEvent& e : guard.events) {
+    if (!reward_races(e)) continue;  // C2-5: there before our flow's check, no copy of ours
     if (e.gain) {
       ++gains[e.sender];
     } else {
@@ -311,7 +348,9 @@ void FlagWatcher::judge_rewards() {
       const bool on = seen(guard.sources[i]).value_or(0) != 0;
       const auto r = received.find(guard.sources[i]);
       // Another player's flow gave it: counted even when ours had set it already (both past their checks).
-      if (on && r != received.end() && !quiet) guard.events.push_back({frames_, r->second, false, guard.sources[i]});
+      if (on && r != received.end() && !quiet) {
+        guard.events.push_back({frames_, r->second, false, guard.sources[i], our_event_ ? event_serial_ : 0});
+      }
       guard.source_on[i] = on;
     }
     for (std::size_t u = 0; u < guard.units.size(); ++u) {
@@ -322,7 +361,7 @@ void FlagWatcher::judge_rewards() {
         if (const auto r = received.find(k); r != received.end()) sender = r->second;
       }
       if (got && !guard.got[u] && sender && !quiet) {
-        guard.events.push_back({frames_, *sender, true, FlagKey{}});  // another player's copy came
+        guard.events.push_back({frames_, *sender, true, FlagKey{}, our_event_ ? event_serial_ : 0});  // another player's copy came
       }
       guard.got[u] = got;
     }
@@ -332,10 +371,10 @@ void FlagWatcher::judge_rewards() {
 bool FlagWatcher::reward_put_back(FlagStore& store, FlagKey key, const FlagEntry& before, const FlagEntry& now) {
   if (const auto source = reward_source_.find(key); source != reward_source_.end()) {
     RewardGuard& guard = reward_guards_[source->second.first];
-    if (guard.ready && before.value == 0 && now.value != 0 && !guard.source_on[source->second.second]) {
-      guard.events.push_back({frames_, kRewardSelf, false, key});  // our own flow gave it
-    }
+    const bool ours = guard.ready && before.value == 0 && now.value != 0 && !guard.source_on[source->second.second];
+    if (ours) guard.events.push_back({frames_, kRewardSelf, false, key});  // our own flow gave it
     guard.source_on[source->second.second] = now.value != 0;
+    if (ours) reward_give_again(store, guard);  // C2-5: a sale's Bool set after its give pays for it
     return false;
   }
   const auto found = reward_key_.find(key);
@@ -370,6 +409,17 @@ bool FlagWatcher::reward_put_back(FlagStore& store, FlagKey key, const FlagEntry
     if (put_back) {
       ++stats_.rewards_guarded;
       rewards_guarded_.push_back(RewardGuarded{guard.units[u.unit].front()});
+      RewardPutBack p{frames_, u.unit, {}};  // C2-5: as our game gave it, for reward_give_again
+      for (const FlagKey k : guard.units[u.unit]) {
+        if (k == key) {
+          FlagEntry e = now;
+          e.key = key;
+          p.got.push_back(e);
+        } else if (const std::optional<FlagEntry> v = store.read(k)) {
+          p.got.push_back(*v);
+        }
+      }
+      guard.put_backs.push_back(std::move(p));
     }
   }
   if (!put_back || now.value == 0) return false;

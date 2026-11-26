@@ -1,0 +1,8 @@
+# first-night-c62, A (host): adult in Hyrule Field with the first adult night's flag at 1 (see first-night-c62.steps.txt).
+mark start
+setflag Sequence_IsChildhood 0
+warp HyruleField_Adult
+wait 900                # the warp's load (hs-adult.A.txt)
+setflag HrlField_HasEnteredFirstTime_Adult 1
+wait 300
+mark flag-set

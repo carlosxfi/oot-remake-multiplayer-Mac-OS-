@@ -477,6 +477,15 @@ inline constexpr std::array<Source, 10> kOther{{
 std::vector<std::vector<FlagKey>> units(Family family);
 // A family's reward Bools, from kGuarded.
 std::vector<FlagKey> sources(Family family);
+// C2-5 (0.12.0): a Business Scrub's one-time sale of a family's next tier (docs/items.md "One-time sales"; the
+// hook shares them, coop_scrub_sale.h kSaleFlags). No reward, but a Bool of the buyer's own: given to the guard
+// as one more source, so a bought tier is paid by its own Bool and never taken for another player's reward.
+inline constexpr std::array<Source, 2> kSales{{
+    {0x8c98cf5a, "LostWood_Enemy_Scrub_Business_DekuStickPouch_01", Family::stick_bag},
+    {0x5ef24799, "Lostwood_Enemy_Scrub_Business_DekuNutsPouch_01", Family::nut_bag},
+}};
+// A family's sale Bools, from kSales.
+std::vector<FlagKey> sales(Family family);
 }  // namespace rewards
 
 // When to mend (ItemFlagStore::mend), kept by the hook across frames: for

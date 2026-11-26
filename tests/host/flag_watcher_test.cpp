@@ -4336,6 +4336,166 @@ TEST_CASE("reward guard: a scrub's stick upgrade and a Skulltula wallet at once 
   CHECK(w.stats().rewards_guarded == 0);
 }
 
+namespace {
+// C2-5 (0.12.0): one game with a reward family's real units and Bools (rewards::units/sources/sales), every
+// unit empty but the first (held: the small bag, bottle slot A), our Link's event told as the hook does.
+struct FamilyGame {
+  std::vector<std::vector<FlagKey>> units;
+  std::vector<FlagKey> sources;
+  std::vector<FlagKey> sales;
+  FakeStore store;
+  std::unique_ptr<FlagWatcher> w;
+  explicit FamilyGame(rewards::Family family)
+      : units(rewards::units(family)), sources(rewards::sources(family)), sales(rewards::sales(family)) {
+    std::vector<FlagKey> keys;
+    for (const auto& u : units) keys.insert(keys.end(), u.begin(), u.end());
+    w = std::make_unique<FlagWatcher>(SharedFlags(keys), FlagRole::player);
+    for (const FlagKey k : keys) store.set(k, 0);
+    for (const FlagKey k : units[0]) store.set(k, 1);
+    for (const FlagKey k : sources) store.set(k, 0);
+    for (const FlagKey k : sales) store.set(k, 0);
+    std::vector<FlagKey> paid = sources;
+    paid.insert(paid.end(), sales.begin(), sales.end());
+    w->guard_reward(units, paid);
+    event(false);
+    frame();
+    frame();
+  }
+  void event(bool in) { w->set_our_event(in); }
+  std::vector<proto::FlagEntry> frame() { return entries(w->frame(store)); }
+  void give(std::size_t u) {
+    for (const FlagKey k : units[u]) store.set(k, 1);
+  }
+  bool got(std::size_t u) const { return store.get(units[u].front()) != 0; }
+  // Another player's reward `s` with its unit `u`.
+  void theirs(FlagKey s, std::size_t u) {
+    std::vector<proto::FlagEntry> in{entry(s, 1)};
+    for (const FlagKey k : units[u]) in.push_back(entry(k, 1));
+    w->receive(state(in));
+  }
+};
+}  // namespace
+
+TEST_CASE("reward guard: another player's reward before our event, our own Bool-less gain in it: kept, every family (C2-5)") {
+  for (const rewards::Family family : rewards::kFamilies) {
+    FamilyGame g(family);
+    INFO(static_cast<int>(family));
+    REQUIRE(g.units.size() >= 3);
+    REQUIRE_FALSE(g.sources.empty());
+    g.theirs(g.sources[0], 1);  // another player's reward: its Bool and the next unit, while we walk
+    g.frame();
+    REQUIRE(g.got(1));
+    for (int f = 0; f < 120; ++f) g.frame();
+    g.event(true);  // our talk: a scrub's sale, a shop, a randomizer chest's get (no reward Bool of ours seen)
+    g.frame();
+    g.give(2);
+    const auto sent = g.frame();
+    CHECK(g.got(2));  // 0.11.12 kept it
+    CHECK(has(sent, entry(g.units[2].front(), 1)));
+    g.event(false);
+    for (int f = 0; f < 5; ++f) g.frame();
+    CHECK(g.got(2));
+    CHECK(g.w->stats().rewards_guarded == 0);
+  }
+}
+
+TEST_CASE("reward guard: our gain first, another player's reward after: both kept, every family (C2-5)") {
+  for (const rewards::Family family : rewards::kFamilies) {
+    FamilyGame g(family);
+    INFO(static_cast<int>(family));
+    g.event(true);
+    g.frame();
+    g.give(1);  // ours: the next unit
+    CHECK(has(g.frame(), entry(g.units[1].front(), 1)));
+    g.event(false);
+    g.frame();
+    g.theirs(g.sources[0], 2);  // theirs came later: the unit after ours
+    for (int f = 0; f < 5; ++f) g.frame();
+    CHECK(g.got(1));
+    CHECK(g.got(2));
+    CHECK(g.w->stats().rewards_guarded == 0);
+  }
+}
+
+TEST_CASE("reward guard: another player's copy landing in our own reward event is still the same reward twice (row 272 kept, C2-5)") {
+  for (const rewards::Family family : rewards::kFamilies) {
+    FamilyGame g(family);
+    INFO(static_cast<int>(family));
+    g.event(true);  // our flow past its check (its Bool was 0)
+    g.frame();
+    g.theirs(g.sources[0], 1);  // the other player's copy of the same reward lands now
+    g.frame();
+    g.give(2);  // our flow gives the unit after the one it holds now
+    const auto sent = g.frame();
+    CHECK_FALSE(g.got(2));
+    CHECK_FALSE(has(sent, entry(g.units[2].front(), 1)));
+    CHECK(g.w->stats().rewards_guarded == 1);
+    g.event(false);
+    for (int f = 0; f < 200; ++f) CHECK_FALSE(has(g.frame(), entry(g.units[2].front(), 1)));
+    CHECK(g.got(1));  // the group's one copy
+  }
+}
+
+TEST_CASE("reward guard: another player's theatre stick tier landing in our scrub talk, then our sale's Bool: our tier comes back (C2-5)") {
+  for (const rewards::Family family : {rewards::Family::stick_bag, rewards::Family::nut_bag}) {
+    FamilyGame g(family);
+    INFO(static_cast<int>(family));
+    REQUIRE(g.sales.size() == 1);
+    g.event(true);  // our Business Scrub's sale talk
+    g.frame();
+    g.theirs(g.sources[0], 1);  // the theatre prize of another player lands in it
+    g.frame();
+    g.give(2);  // our scrub gives the next tier
+    g.frame();
+    CHECK(g.w->stats().rewards_guarded == 1);  // looks like the same reward twice for now
+    for (int f = 0; f < 30; ++f) g.frame();
+    g.store.set(g.sales[0], 1);  // the sale's Bool, set after the buy
+    auto sent = g.frame();
+    CHECK(g.got(2));
+    CHECK(g.w->stats().rewards_given_again == 1);
+    const auto next = g.frame();  // the unit's keys go out in this scan or the next (key order)
+    sent.insert(sent.end(), next.begin(), next.end());
+    CHECK(has(sent, entry(g.units[2].front(), 1)));  // and the group gets it
+    CHECK(g.frame().empty());
+    g.event(false);
+    for (int f = 0; f < 5; ++f) g.frame();
+    CHECK(g.got(2));
+  }
+}
+
+TEST_CASE("reward guard: another player's scrub sale and our own theatre prize in our event: both kept (C2-5)") {
+  FamilyGame g(rewards::Family::stick_bag);
+  g.event(true);  // our theatre talk
+  g.frame();
+  g.theirs(g.sales[0], 1);  // another player's scrub bag lands in it
+  g.frame();
+  g.store.set(g.sources[0], 1);  // our flow's own Bool (0 here before)
+  g.give(2);
+  g.frame();
+  for (int f = 0; f < 5; ++f) g.frame();
+  CHECK(g.got(2));
+  CHECK(g.w->stats().rewards_guarded == 0);
+}
+
+TEST_CASE("reward guard: never told of our Link's events (the emulator), the 60 s rule holds as before (C2-5)") {
+  FakeStore store;
+  constexpr FlagKey kT{0x5db0e8edu, 0}, kM{0x41db7ab5u, 0}, kMG{0xcbf00480u, 0}, kL{0x48e53698u, 0}, kLG{0xa10f2dcfu, 0};
+  for (FlagKey k : {kT, kM, kMG, kL, kLG}) store.set(k, 0);
+  FlagWatcher w(SharedFlags({kM, kMG, kL, kLG}), FlagRole::player);
+  const std::vector<std::vector<FlagKey>> units{{kM, kMG}, {kL, kLG}};
+  const FlagKey sources[] = {kT};
+  w.guard_reward(units, sources);
+  w.frame(store);
+  w.frame(store);
+  w.receive(state({entry(kT, 1), entry(kM, 1), entry(kMG, 1)}));
+  w.frame(store);
+  store.set(kL, 1);
+  store.set(kLG, 1);
+  w.frame(store);
+  CHECK(store.get(kLG) == 0);
+  CHECK(w.stats().rewards_guarded == 1);
+}
+
 TEST_CASE("keep local: two Not shared racers each reach 10 tokens: each claims its own reward and wallet (review-01112-h)") {
   // The Skulltula House's 10-token reward and the wallet tier it gives, guarded for the group (row 272) while
   // Shared; Not shared keeps both in each game (coop::host::gold_race_flags), so the guard never judges them.

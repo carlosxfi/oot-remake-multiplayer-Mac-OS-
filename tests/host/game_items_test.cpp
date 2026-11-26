@@ -1852,6 +1852,8 @@ TEST_CASE("rewards: each once-per-save reward's Bool is its name's hash (row 272
   };
   check(rewards::kGuarded);
   check(rewards::kOther);
+  check(rewards::kSales);  // C2-5
+  for (const rewards::Source& s : rewards::kSales) CHECK(s.family != rewards::Family::none);
   for (const rewards::Source& s : rewards::kGuarded) CHECK(s.family != rewards::Family::none);
   for (const rewards::Source& s : rewards::kOther) CHECK(s.family == rewards::Family::none);
 }
