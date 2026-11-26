@@ -68,7 +68,8 @@ def count(pair, x, pattern):
 def same_scene(pair, x, scene, when):
     """hs-dbno-adult.A.txt check: B still in the scene at every mark (no reload)."""
     st = pair.state(x)
-    assert (st.get("scene") or "").lower() == scene.lower() and not st.get("loading"),         "%s left %s %s (scene %s, loading %s): a reload" % (x, scene, when, st.get("scene"), st.get("loading"))
+    same = (st.get("scene") or "").lower() == scene.lower() and not st.get("loading")
+    assert same, "%s left %s %s (scene %s, loading %s): a reload" % (x, scene, when, st.get("scene"), st.get("loading"))
 
 
 def dist(a, b):
