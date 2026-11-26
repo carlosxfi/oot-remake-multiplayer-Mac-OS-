@@ -138,6 +138,9 @@ def test_times_out(pair):
 def test_smoke_ok(pair):
     pass
 
+def test_unproven(pair):
+    pair.unproven("no measured value yet (selftest)")
+
 def test_fail_naming_noref(pair):
     assert False, "NO-REF SetupFail GameCrash AssertionError: words in a FAIL's own message"
 '''
@@ -163,7 +166,8 @@ class Labels(unittest.TestCase):
         r = results(summary(self.out))
         self.assertEqual(r, {"test_smoke_ok": "PASS", "test_ok": "PASS", "test_flaky": "FLAKY",
                              "test_always_fails": "FAIL", "test_setup_fails": "SETUP-FAIL",
-                             "test_times_out": "FAIL", "test_fail_naming_noref": "FAIL"}, p.stdout[-3000:])
+                             "test_times_out": "FAIL", "test_fail_naming_noref": "FAIL", "test_unproven": "NO-REF"},
+                         p.stdout[-3000:])
         rows = {x["test"].split("::")[-1]: x for x in summary(self.out)["tests"]}
         self.assertIn("timeout", rows["test_times_out"]["why"])
         self.assertIn("set-up: RuntimeError: no such scene", rows["test_setup_fails"]["why"])

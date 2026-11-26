@@ -40,8 +40,7 @@ class GameCrash(AssertionError):
     FAIL with that line, never SETUP-FAIL, because that window is what crash rows guard (review-c123-7 08:53)."""
 
 
-class NoRef(Exception):
-    """A look check had no stored reference (raised by the pair fixture's end): NO-REF, never PASS."""
+NoRef = P.NoRef     # (the typed NO-REF path lives in pair.py, so row tests need only `pair`)
 
 
 def _exc_kind(e):

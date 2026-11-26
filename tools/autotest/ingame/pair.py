@@ -32,6 +32,11 @@ class SetupFail(Exception):
     """The test could not be set up (the lane, a warp, a give, the set-up took more than 30 s): SETUP-FAIL, not FAIL."""
 
 
+class NoRef(Exception):
+    """NO-REF, never PASS: a look check without a stored reference (the pair fixture's end), or a test that cannot
+    prove its row yet (Pair.unproven). bt_plugin judges it by this TYPE, never by message text."""
+
+
 class TestTimeout(AssertionError):
     """The test ran past its own deadline: FAIL 'timeout' (never retried as a pass)."""
 
@@ -345,6 +350,11 @@ class Pair:
             return res        # (the test goes on; bt_plugin labels it NO-REF at its end, never PASS)
         assert res["ok"], "shot %s-%s: %s" % (name, x, res["why"])
         return res
+
+    def unproven(self, reason):
+        """Ends the test as NO-REF (never PASS, never FAIL): the row cannot be proven by this run (no measured value
+        yet, a probe build, ...). `reason` goes into the summary's why."""
+        raise NoRef("NO-REF: %s" % reason)
 
     def no_ref(self):
         return ["%s-%s" % (s["name"], s["game"]) for s in self.shots if s["why"].startswith("NO-REF")]
