@@ -787,6 +787,7 @@ class Pair:
             self.step_both(52)
             ran += 60
 
+    WARP_MARGIN_S = 1.0     # s: warp_one's own wait stays this far under the deadline it read (row-215-confirm)
     TELEPORT_GAP_S = 8      # s: Longshot's one teleport per 8 s per game (docs/playtest.md `warp`, 'still in progress')
     ARRIVE_IN_EVENT_WAIT = 12   # s: the bridge's own wait per game for arrive_in_event; it answers 'timeout' in the
     #                             arrival event, then the arrival is waited for on state (warp_one), not judged here
@@ -816,7 +817,11 @@ class Pair:
         before = self.c[x].last_frame or 0
         wait = self.ARRIVE_IN_EVENT_WAIT if arrive_in_event is True else 60
         for attempt in (1, 2):
-            t = max(1, int(min(wait, self.deadline.left() - 2)))   # (the bridge answers by t, a little under the deadline)
+            # (the bridge answers by t; t + REPLY_MIN_S, the reply wait _wait checks against a SECOND deadline read, stays
+            # WARP_MARGIN_S under this read: Windows' monotonic clock ticks ~15.6 ms, so a fresh 30 s set-up deadline can
+            # read exactly 30.0 here and 29.98 there, and 'left - 2' truncated left no margin: CI 45885309573
+            # windows 3.10, test_twinrova_wake_late SETUP-FAIL 'warp not sent (30.0 s left, its reply needs 30.0 s)')
+            t = max(1, int(min(wait, self.deadline.left() - REPLY_MIN_S - self.WARP_MARGIN_S)))
             self.deadline.check("warp")
             r = self._request(x, "warp", self._wait("warp", t + REPLY_MIN_S), check=False,
                               scene=scene, timeout=t, **extra)        # (the bridge answers by t; never sent short of it)
