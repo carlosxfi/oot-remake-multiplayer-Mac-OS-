@@ -144,6 +144,11 @@ def test_times_out(pair):
 def test_smoke_ok(pair):
     pass
 
+def test_fails_then_skips(pair):
+    if _count("fskip") > 0:
+        pytest.skip("the rerun skips (a test that changed the boot)")
+    assert False, "the first run's own reason"
+
 def test_unproven(pair):
     pair.unproven("no measured value yet (selftest)")
 
@@ -172,11 +177,16 @@ class Labels(unittest.TestCase):
         r = results(summary(self.out))
         self.assertEqual(r, {"test_smoke_ok": "PASS", "test_ok": "PASS", "test_flaky": "FLAKY",
                              "test_always_fails": "FAIL", "test_setup_fails": "SETUP-FAIL",
-                             "test_times_out": "FAIL", "test_fail_naming_noref": "FAIL", "test_unproven": "NO-REF"},
+                             "test_times_out": "FAIL", "test_fail_naming_noref": "FAIL", "test_unproven": "NO-REF",
+                             "test_fails_then_skips": "FAIL"},
                          p.stdout[-3000:])
         rows = {x["test"].split("::")[-1]: x for x in summary(self.out)["tests"]}
         self.assertIn("timeout", rows["test_times_out"]["why"])
         self.assertIn("set-up: RuntimeError: no such scene", rows["test_setup_fails"]["why"])
+        self.assertIn("the first run's own reason", rows["test_fails_then_skips"]["why"])   # (review-rows-c130 11:10)
+        self.assertTrue(rows["test_fails_then_skips"]["rerun"].startswith("SKIP"), rows["test_fails_then_skips"])
+        self.assertIn("fails the first time only", rows["test_flaky"]["why"])                # (FLAKY: the first failure)
+        self.assertTrue(rows["test_flaky"]["rerun"].startswith("PASS"), rows["test_flaky"])
         self.assertEqual(open(os.path.join(self.tmp, "always")).read(), "2")   # rerun once, no more
         self.assertNotEqual(p.returncode, 0)
         self.assertEqual(summary(self.out)["tests"][0]["test"].split("::")[-1], "test_smoke_ok")   # smoke first
