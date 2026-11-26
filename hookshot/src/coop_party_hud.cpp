@@ -169,6 +169,7 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
         block_ = *block;
     }
     const auto pane = [&](const std::string& name) -> std::uint64_t {
+        if (ignore_pack_ && name.rfind("Pa_Coop", 0) == 0) return 0;   // (IgnorePack: a test's "no pack")
         const std::uint64_t n = Name(game, name);
         const auto p = n == 0 ? std::nullopt : game.Call(game.At(CoopNativeUi::addr::kPaneByName), {layout, n, 0, 0, 0});
         return p ? *p : 0;
@@ -197,6 +198,7 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
     }
     if (parent_ == 0) gauge_part_ = 0;
     live_layout_ = layout;
+    if (log && ignore_pack_) log->push_back(std::string(kSay) + "test: the pack's panes are not looked for (no pack)");
     if (log) {
         log->push_back(std::string(kSay) + (gauge_part_ != 0 ? "run-time gauges can be made (Pa_HeartGauge_00 under N_ScaleL_00)"
                                                              : "no run-time gauges (Pa_HeartGauge_00 or N_ScaleL_00 not found)"));

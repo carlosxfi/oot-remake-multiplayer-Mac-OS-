@@ -1,0 +1,32 @@
+# hs-party-hud-probe, game B (as without the pack: B:COOP_TEST_PARTY_HUD_NO_PACK=1 in the A script's header). The same steps as
+# hs-party-hud-probe.A.txt; every value's source is listed there.
+wait 300
+mark loaded
+wait 180
+mark loaded-2
+warp KokiriForest_Child
+wait 1500
+mark warped
+wait 180
+mark warped-2
+mark to-title-now
+wait 900
+mark at-title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark back-in
+wait 180
+mark back-in-2
+menu customize
+wait 120
+mark menu-open
+menu close
+wait 120
+mark menu-closed
+wait 60

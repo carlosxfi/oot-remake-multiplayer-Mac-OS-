@@ -163,6 +163,9 @@ public:
     bool Step(Game& game, const std::vector<Block>& blocks, std::optional<double> game_hud_bottom,
               std::vector<std::string>* log = nullptr, std::uint64_t now_ms = 0, const std::string& own = {});
     bool native() const { return native_; }
+    // A test's switch (COOP_TEST_PARTY_HUD_NO_PACK=1, scenario hs-party-hud-probe): the pack's panes are not looked
+    // for, so a game with the pack shows what a game without it shows (run-time gauges, no name lines).
+    void IgnorePack(bool ignore) { ignore_pack_ = ignore; }
 
 private:
     struct Pane {
@@ -246,6 +249,7 @@ private:
     void Drop(Game& game);
     std::uint64_t gauge_part_ = 0;   // the HUD's Pa_HeartGauge_00 part layout (0: no run-time gauges)
     std::uint64_t parent_ = 0;       // N_ScaleL_00
+    bool ignore_pack_ = false;
     std::uint64_t name_part_ = 0;    // the pack's line of the game's text (PaEnemyLocation_00; 0: none, no pack)
     std::array<float, 2> source_at_{};   // Pa_HeartGauge_00's place there
     std::array<Live, kSlots> live_{};

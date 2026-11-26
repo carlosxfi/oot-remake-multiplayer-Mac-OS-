@@ -637,3 +637,20 @@ TEST_CASE("party hud: the pack's slots first, run-time gauges past them, no +N w
     CHECK(game.shown[root] == 0);
     CHECK(game.made == 4);
 }
+
+TEST_CASE("party hud: a test's no pack (COOP_TEST_PARTY_HUD_NO_PACK): with the pack, as without it") {
+    FakeGame game;
+    game.Hud();
+    game.game_gauge = true;
+    party::Hud hud;
+    hud.IgnorePack(true);
+    std::vector<std::string> log;
+    const std::vector<party::Block> two = {{"A", Quarters(10, 12)}, {"B", Quarters(16, 16)}};
+    CHECK(hud.Step(game, two, std::nullopt, &log));
+    CHECK(game.made == 2);   // (two gauges, no name lines: no text part of ours found)
+    CHECK(game.texts.empty());
+    CHECK_FALSE(game.Shown(HeartName(0, 0)));
+    bool said = false;
+    for (const auto& l : log) said = said || l.find("test: the pack's panes are not looked for") != std::string::npos;
+    CHECK(said);
+}
