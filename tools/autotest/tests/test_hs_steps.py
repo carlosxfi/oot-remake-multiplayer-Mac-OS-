@@ -100,6 +100,9 @@ class FakeGames:
     def shot(self, name):
         self.shots.append(name)
 
+    def wshot(self, name):
+        self.shots.append("window " + name)
+
     def ended_by_itself(self):
         out, self.ended = self.ended, []
         return out
@@ -325,6 +328,89 @@ class RunnerTest(unittest.TestCase):
         for bad in ("state A\n", "state A cutscene\n", "state A free 0\n", "state A free x\n"):
             with self.assertRaises(hs.StepsError):
                 hs.parse_steps(bad)
+
+    def test_flag_gate(self):
+        # (f1-event-c124) the expect-state gate: only a read logged AFTER the step began counts, and its value decides.
+        watch = "coop: flags debug: get_key64(0xb66198d17d6584e) = %s\n"
+        self.g.on_sleep = lambda: None
+
+        def sleep(s):   # the game logs while the runner waits
+            self.clock.sleep(s)
+            self.g.on_sleep()
+        self.r.sleep = sleep
+        self.g.logs["A"] = watch % "0"      # an old read (before the scenario set it): never taken
+        fails = self.r.run(hs.parse_steps("flag A key64:0x0b66198d17d6584e 0 5\nshot never\n"))
+        c = self.counts()
+        self.assertTrue(c[-1].startswith("FAIL SETUP-FAIL step 1 (flag A key64:0x0b66198d17d6584e 0 5): A's "
+                                         "key64:0x0b66198d17d6584e is not 0 after 5 s: the module's last read says "
+                                         "'0' (no read since this step began"), c[-1])
+        self.assertEqual(self.g.shots, [])
+        self.assertEqual(fails, 1)
+        # a new read of 1 (the chest open) is a SETUP-FAIL too; another key's read is not this one's
+        self.g.on_sleep = lambda: self.g.logs.__setitem__("A", self.g.logs["A"] + watch % "1" +
+                                                          "coop: flags debug: get_key64(0x1234) = 0\n")
+        self.r.run(hs.parse_steps("flag A key64:0x0b66198d17d6584e 0 2\n"))
+        self.assertIn("the module's last read says '1'", self.counts()[-1])
+        # a new read of 0: passes, the run goes on
+        self.g.logs["A"] = ""
+        self.g.on_sleep = lambda: self.g.logs.__setitem__("A", watch % "0")
+        fails = self.r.run(hs.parse_steps("flag A key64:0x0b66198d17d6584e 0\nshot after\n"))
+        self.assertEqual(fails, 2)   # (the count runs on: the two SETUP-FAILs above, none new)
+        self.assertEqual(self.g.shots, ["s2-after"])
+        self.assertEqual(hs.flag_reads("coop: flags debug: get_bool(0x0000abcd) = none\n", "bool", 0xabcd), ["none"])
+
+    def test_flag_parse_and_watch_switch(self):
+        s = hs.parse_steps("flag B bool:0xABCD 1 9\n")
+        self.assertEqual(s[0].args, ["B", "bool:0xABCD", "1", 9.0])
+        self.assertEqual(hs.parse_steps("flag A key64:0x1 0\n")[0].args[3], hs.FLAG_WAIT)
+        for bad in ("flag A key64:0x0b66 2\n", "flag A key64:0 0\n", "flag A bool:0x100000000 0\n",
+                    "flag A 0x0b66 0\n", "flag A key64:0x1 0 0\n", "flag A\n"):
+            with self.assertRaises(hs.StepsError):
+                hs.parse_steps(bad)
+        steps = hs.parse_steps("flag A key64:0x0b66198d17d6584e 0\n")
+        head = hs.parse_header("#! switches LICHII_COOP_DEBUG_FLAGS=1,A:LICHII_COOP_DEBUG_KEY64=0xb66198d17d6584e\n")
+        self.assertEqual(hs.flag_watch_problems(steps, head), [])
+        for sw in ("B:LICHII_COOP_DEBUG_KEY64=0x0b66198d17d6584e", "A:LICHII_COOP_DEBUG_KEY64=0x1234",
+                   "A:LICHII_COOP_DEBUG_BOOL=0x0b66198d17d6584e", "LICHII_COOP_DEBUG_FLAGS=1"):
+            problems = hs.flag_watch_problems(steps, hs.parse_header("#! switches %s\n" % sw))
+            self.assertEqual(len(problems), 1, sw)
+            self.assertIn("A:LICHII_COOP_DEBUG_KEY64=0x0b66198d17d6584e", problems[0])
+        # a switch for every game counts too
+        self.assertEqual(hs.flag_watch_problems(steps, hs.parse_header(
+            "#! switches LICHII_COOP_DEBUG_KEY64=0x0b66198d17d6584e\n")), [])
+
+    def test_wshot(self):
+        self.r.run(hs.parse_steps("wshot f1-title\n"))
+        self.assertEqual(self.g.shots, ["window s1-f1-title"])
+        self.assertEqual(hs.parse_steps("wshot a.b-c_1\n")[0].args, ["a.b-c_1"])
+        for bad in ("wshot\n", "wshot a b\n", "wshot a/b\n"):
+            with self.assertRaises(hs.StepsError):
+                hs.parse_steps(bad)
+
+    def test_window_shot_command_calls_the_shared_helper(self):
+        cmd = hs.window_shot_command(r"C:\A B\screen-shot.ps1", 42, r"C:\o\it's.png", r"C:\o\w.txt")
+        self.assertEqual(cmd[:5], ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
+        self.assertIn(". 'C:\A B\screen-shot.ps1';", cmd[5])
+        self.assertIn("Save-WindowShot -Process $p -Path 'C:\o\it''s.png' -Log 'C:\o\w.txt'", cmd[5])
+        self.assertIn("Get-Process -Id 42 ", cmd[5])
+        self.assertNotIn('"', cmd[5])
+
+    def test_window_shot_hang_or_no_start_is_a_setup_fail(self):
+        # (review-c124 on 8614cb1cc) a helper that hangs is ended and the step is a SETUP-FAIL, not an exception
+        def hang(cmd, **kw):
+            raise hs.subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+        def missing(cmd, **kw):
+            raise FileNotFoundError("powershell")
+
+        with self.assertRaisesRegex(hs.SetupFail, "did not end within 90 s"):
+            hs.run_window_shot(["x"], run=hang)
+        with self.assertRaisesRegex(hs.SetupFail, "did not start"):
+            hs.run_window_shot(["x"], run=missing)
+
+        class R:
+            returncode, stdout, stderr = 3, "COVERED a.png: other\n", None
+        self.assertEqual(hs.run_window_shot(["x"], run=lambda cmd, **kw: R()), (3, "COVERED a.png: other"))
 
     def test_key_parse(self):
         self.assertEqual(hs.parse_steps("key B F1\n")[0].args, ["B", "F1"])
