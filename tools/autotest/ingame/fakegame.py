@@ -286,6 +286,9 @@ class FakeGame:
 
     def act(self, line):
         w = line.split()
+        if w[:1] == ["chat"]:      # (every test chat is answered so, whatever it does: lichii/hook/coop_testinput.cpp:1789)
+            text = line.split(None, 1)[1] if len(w) > 1 else ""
+            self.later(2, lambda: self.say("coop: test chat '%s': sent" % text))
         if any(h(self, w) for h in hooks(self.fakes, "act")):
             return
         o, me = self.other, 1 if self.tag == "A" else 2
