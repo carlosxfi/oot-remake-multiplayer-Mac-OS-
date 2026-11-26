@@ -1643,7 +1643,7 @@ def write_tunics(romfs, out_romfs, dicts, table, colors, log=print, self_dir=Non
                 m_data = dicts.decompress(m_raw)
                 data = tunic.model_for(m_data, c, dark=dark is not None)
                 data = tunic_extra.model_names(data, c, names)
-                data = look_items.body_model_for(data, c) if boots else data   # (the puppets' only)
+                data = look_items.body_model_for(data, c, tuple(boots)) if boots else data   # (the puppets' only)
                 own_model = None
                 if own_set and v in SELF_MODEL_VARIANTS:
                     own_model = tunic.model_for(m_data, c, dark=dark is not None, letter=tunic.SELF_LETTER)
@@ -1671,6 +1671,16 @@ def write_tunics(romfs, out_romfs, dicts, table, colors, log=print, self_dir=Non
             write(os.path.join(out_romfs, b_dst), recompress(dicts, b_raw, b_data))
             table.add_new(strip_zs(b_dst), table.get(strip_zs(b_rel)) or len(b_data) + PACK_SIZE_MARGIN)
             paths.append(b_dst)
+            if name == look_items.HAIR:
+                # hair-link: the child's model names a hair copy of its own (look_items.child_hair_name).
+                try:
+                    h_data = look_items.child_hair_texture_for(dicts.decompress(b_raw), c)
+                except tunic.TunicError as e:
+                    raise BuildError(f"{b_rel}: {e}")
+                h_dst = f"Tex/{look_items.child_hair_name(c)}.bntx.zs"
+                write(os.path.join(out_romfs, h_dst), recompress(dicts, b_raw, h_data))
+                table.add_new(strip_zs(h_dst), table.get(strip_zs(b_rel)) or len(h_data) + PACK_SIZE_MARGIN)
+                paths.append(h_dst)
         if look_dir:
             write(os.path.join(look_dir, f"{c}.bin"), look_live.pack(look))
             look_files[c] = f"{look_live.DIR}/{c}.bin"
