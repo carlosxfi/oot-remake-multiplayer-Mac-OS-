@@ -32,7 +32,8 @@ def num(game):
 
 def setup(game):
     game.dbno = {"state": "up", "life": 12, "fairy": game.tag == "B", "held": 0}
-    game.flags.setdefault(CHARSEL, 0)
+    if not game.env_on("COOP_TEST_NO_CHARACTER_SELECT=1"):   # (no_cs.SWITCH: that game boots without the mod, the
+        game.flags.setdefault(CHARSEL, 0)                     # flag unset = kind unknown/None, no_cs.has_character_select)
     game.dbno_rules = {"on": True, "bleed": 45, "hold": 50}
 
 
@@ -132,7 +133,8 @@ def after(game, m, r):
     # another row's fake of the same flag (fakes/levitate.py nochar, later in file-name order) still takes effect;
     # a `command` hook here answered it for every test and hid theirs.
     if m.get("cmd") == "flag_read" and m.get("name") == CHARSEL:
-        r["kind"] = "int"
+        if r.get("value") is not None:     # (unset = no Character Select in the fake: no_cs.has_character_select)
+            r["kind"] = "int"
         return
     if m.get("cmd") == "flag" and m.get("name") == CHARSEL:
         o, n = game.other, int(m["value"])
