@@ -26,6 +26,15 @@ def pytest_run(args, cwd=INGAME, env=None):
     return p
 
 
+def suite_ids(marks=None):
+    """The real suite's nodeids (its own --collect-only), e.g. the look tests: suite_ids("look")."""
+    out = tempfile.mkdtemp()
+    args = [".", "--fake", "--collect-only", "-q", "-p", "no:cacheprovider", "--out", out] + (["-m", marks] if marks else [])
+    p = pytest_run(args)
+    shutil.rmtree(out, ignore_errors=True)
+    return [ln.strip() for ln in p.stdout.splitlines() if "::" in ln and not ln.startswith("deselected")]
+
+
 def suite_size(marks=None):
     """How many tests the real suite runs (its own collection, as a run with no --env deselects): the counts below
     follow every row added to ingame/, so a new row port does not break these selftests (row-53-ocarina-5)."""
@@ -68,6 +77,11 @@ class Suite(unittest.TestCase):
         missing = [r["test"] for r in s["tests"] if r["result"] == "NO-REF" and MISSING_REF in r["why"]]
         unproven = [r["test"] for r in s["tests"] if r["result"] == "NO-REF" and MISSING_REF not in r["why"]]
         self.assertLessEqual(len(missing), looks, p.stdout[-2000:])
+        # (review-c123-9 on 423c5e3d9) exact: EVERY look test is missing its ref or unproven on run 1, so a look test
+        # that PASSes with no stored reference is still caught (the screenshot rule's guard)
+        look_ids = suite_ids("look")
+        self.assertEqual(len(look_ids), looks)
+        self.assertLessEqual(set(look_ids), set(missing) | set(unproven), (look_ids, missing, unproven))
         self.assertEqual(s["counts"]["NO-REF"], len(missing) + len(unproven), p.stdout[-2000:])
         self.assertEqual(s["counts"]["PASS"], total - len(missing) - len(unproven), p.stdout[-2000:])
         self.assertEqual(s["verdict"], "NOT PASS")
