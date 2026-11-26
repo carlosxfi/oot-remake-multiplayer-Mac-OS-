@@ -1848,7 +1848,7 @@ TEST_CASE("hookshot: F1 in free play opens co-op's - menu, elsewhere Longshot's 
     const std::string module = ReadFile(kRepo / "hookshot" / "src" / "coop_hookshot.cpp");
     // (f1-event-c31: by NOW, not by pack: where the - menu cannot open, Longshot's menu has co-op's tabs, F1 opens it on
     // Multiplayer; coop_menu_tabs_rule.h, menu_tabs_rule_test.cpp)
-    CHECK(module.find("if (vk == 0x70 /* F1 */ && repeat == 0 && g_on) {") != std::string::npos);
+    CHECK(module.find("if (vk == 0x70 /* F1 */ && !repeat && g_on) {") != std::string::npos);
     CHECK(module.find("CoopMenuTabsRule::F1 route = CoopMenuTabsRule::OnF1(now);") != std::string::npos);
     CHECK(module.find("CoopPause::WantClose();") != std::string::npos);
     CHECK(module.find("CoopPause::WantMultiplayerTab();") != std::string::npos);
