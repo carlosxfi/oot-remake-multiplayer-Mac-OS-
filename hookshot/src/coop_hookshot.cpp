@@ -701,9 +701,17 @@ void MapIcons(void* ctx) {
     // No turn place known (kPaneTurn 0 and no trial, or TURN_AT=0): the game's copies would show the others' arrows
     // unturned, so they stay down and the overlay keeps drawing the turned arrows (G2a; no loss against 0.11.12).
     static const std::uint64_t place = turn_env.empty() ? CoopMapIcons::kPaneTurn : turn_at;
-    if (place == 0) return;
     const auto frame = CoopMapIcons::Taken();
-    if (frame.marks.empty() && g_map_icons.shown() == 0) return;   // solo, or nobody on the map: nothing touched
+    const bool stepping = place != 0 && !(frame.marks.empty() && g_map_icons.shown() == 0);
+    // The turn place's probe (play-test bridge only, test_map_turn_probe.py): while the copies are not stepped (no
+    // place known, solo, nobody on the map) the game's own arrow's words still go into map_native, every 30 frames,
+    // read only, every pane looked up fresh (a load drops nothing it keeps).
+    static std::uint32_t probe_tick = 0;
+    if (!stepping && CoopPlaytest::On() && ++probe_tick % 30 == 0) {
+        TagsGame game(ctx);
+        CoopMapIcons::PublishState(CoopMapIcons::Json(g_map_icons.ProbeArrow(game)));
+    }
+    if (!stepping) return;   // no turn place (the overlay's turned arrows stay), or solo / nobody on the map
     TagsGame game(ctx);
     g_map_icons.TurnAt(place);
     g_map_icons.Step(game, frame);

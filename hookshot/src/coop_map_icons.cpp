@@ -380,6 +380,40 @@ State Icons::Snapshot(CoopNativeTags::Game& game) {
     return st;
 }
 
+State Icons::ProbeArrow(CoopNativeTags::Game& game) {
+    State st;
+    st.probe = true;
+    st.turn_at = turn_at_;
+    const std::uint64_t screen = CoopNativeTags::ScreenByVtable(game, CoopNativeTags::kMapMenuVtable);
+    std::uint64_t layout = 0;
+    if (screen == 0 || !ReadValue(game, screen + addr::kScreenLayout, layout) || layout == 0 || !Block(game)) {
+        st.why = screen == 0 ? "probe: no map screen" : "probe: no map layout";
+        return st;
+    }
+    const auto t = game.Call(game.MainBase() + kPaneTable, {layout + 0x40, 0, 0, 0, 0});
+    const std::uint64_t table = t ? *t : 0;
+    st.table = table != 0;
+    if (table != 0) {
+        const std::uint64_t turn = ArrowTurnPane(game, table);
+        st.game_arrow = turn != 0;
+        if (turn != 0) game.Read(turn + 0x60, st.game_arrow_words.data(), sizeof(float) * st.game_arrow_words.size());
+    }
+    // The run-time copies, found as Probe finds them: part objects held in the screen's first 0x3000 bytes whose layout
+    // is a PaMapIcon_00, their PaMapIconPlayer_00 layout, its N_PlayerRotate_00.
+    std::vector<std::uint64_t> words(0x3000 / 8), seen;
+    if (!game.Read(screen, words.data(), words.size() * 8)) return st;
+    for (const std::uint64_t p : words) {
+        if (st.run_arrow_words.size() >= 4) break;
+        if (p < 0x80000000ull || (p & 7) != 0 || std::find(seen.begin(), seen.end(), p) != seen.end()) continue;
+        seen.push_back(p);
+        if (LayoutName(game, p + kPartLayoutAt).rfind(kIconLayout, 0) != 0) continue;
+        const std::uint64_t turn = Find(game, PartObjectLayout(game, p, kPlayerLayout), "N_PlayerRotate_00");
+        std::array<float, 8> w{};
+        if (turn != 0 && game.Read(turn + 0x60, w.data(), sizeof(float) * w.size())) st.run_arrow_words.push_back(w);
+    }
+    return st;
+}
+
 std::string Json(const State& st) {
     auto num = [](double v) {
         char t[32];
@@ -398,7 +432,13 @@ std::string Json(const State& st) {
                     ",\"table\":" + (st.table ? "true" : "false") + ",\"turn_at\":" + std::to_string(st.turn_at) +
                     ",\"game_arrow\":" + (st.game_arrow ? "true" : "false") + ",\"game_arrow_words\":[";
     for (std::size_t i = 0; i < st.game_arrow_words.size(); ++i) o += (i ? "," : "") + num(st.game_arrow_words[i]);
-    o += "],\"shown\":[";
+    o += "],\"run_arrow_words\":[";
+    for (std::size_t k = 0; k < st.run_arrow_words.size(); ++k) {
+        o += k ? ",[" : "[";
+        for (std::size_t i = 0; i < st.run_arrow_words[k].size(); ++i) o += (i ? "," : "") + num(st.run_arrow_words[k][i]);
+        o += "]";
+    }
+    o += std::string("],\"probe\":") + (st.probe ? "true" : "false") + ",\"shown\":[";
     for (std::size_t i = 0; i < st.shown.size(); ++i) {
         const auto& s = st.shown[i];
         o += std::string(i ? "," : "") + "{\"copy\":" + std::to_string(s.copy) + ",\"x\":" + num(s.at[0]) +

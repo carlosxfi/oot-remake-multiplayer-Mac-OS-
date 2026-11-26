@@ -346,3 +346,54 @@ TEST_CASE("map icons: a new layout at the same screen address (a load) forgets t
     CHECK(icons.shown() == 0);
     CHECK(g.touched.empty());
 }
+
+// A layout object at `at` named `name` as LayoutName reads it (layout+0xf8 -> resource, +0x18 -> the name).
+static void NamedLayout(FakeGame& g, std::uint64_t at, const std::string& name) {
+    const std::uint64_t res = g.next += 0x1000, text = g.next += 0x1000;
+    g.Write(text, name.c_str(), name.size() + 1);
+    g.Put<std::uint64_t>(res + 0x18, text);
+    g.Put<std::uint64_t>(at + 0xf8, res);
+}
+
+TEST_CASE("map icons: the turn probe reads the game's own arrows fresh, solo, with nothing shown, written or kept") {
+    FakeGame g;
+    SetUp(g, 0);   // (no pack copies needed: the probe reads the game's own Pa_MapIcon_00)
+    // the template part's arrow: words +0x60.. = 0, 1, 2, ...
+    const std::uint64_t table = g.tables[kLayout];
+    std::uint64_t icon = 0, player = 0, name_at = 0;
+    g.Read(table + 0x130, &icon, 8);   // (no copies: the parts list holds Pa_MapIcon_00 only, its own Pa_Player_00)
+    g.Read(icon + 0x148, &name_at, 8);
+    REQUIRE(g.Str(name_at) == "Pa_MapIcon_00");
+    g.Read(icon + 0x130, &player, 8);
+    const std::uint64_t turn = g.panes[{player, "N_PlayerRotate_00"}];
+    REQUIRE(turn != 0);
+    for (int i = 0; i < 8; ++i) g.Put<float>(turn + 0x60 + 4 * i, static_cast<float>(i));
+    // one run-time copy held by the screen: a part object whose layout (+0x40) is a PaMapIcon_00, holding a part
+    // object whose layout is a PaMapIconPlayer_00 with its own N_PlayerRotate_00 (+0x68 = 1.5)
+    const std::uint64_t run = 0xb0000000, run_player = 0xb0010000;
+    NamedLayout(g, run + 0x40, "PaMapIcon_00");
+    NamedLayout(g, run_player + 0x40, "PaMapIconPlayer_00");
+    g.Put<std::uint64_t>(run + 0x200, run_player);
+    g.Put<std::uint64_t>(kScreen + 0x100, run);
+    const std::uint64_t run_turn = g.Pane(run_player + 0x40, "N_PlayerRotate_00");
+    g.Put<float>(run_turn + 0x68, 1.5f);
+    M::Icons icons;
+    const M::State st = icons.ProbeArrow(g);
+    CHECK(st.probe);
+    CHECK(st.table);
+    CHECK(st.game_arrow);
+    CHECK(st.game_arrow_words[2] == doctest::Approx(2.0f));
+    REQUIRE(st.run_arrow_words.size() == 1);
+    CHECK(st.run_arrow_words[0][2] == doctest::Approx(1.5f));
+    CHECK(st.shown.empty());
+    CHECK(g.touched.empty());
+    CHECK(g.texts.empty());
+    CHECK_FALSE(icons.Up());
+    CHECK(icons.shown() == 0);
+    const std::string js = M::Json(st);
+    CHECK(js.find("\"probe\":true") != std::string::npos);
+    CHECK(js.find("\"run_arrow_words\":[[0.0000,0.0000,1.5000,") != std::string::npos);
+    // no map screen: says so, reads nothing more
+    g.Put<std::uint64_t>(kScreen, 0);
+    CHECK(icons.ProbeArrow(g).why == "probe: no map screen");
+}

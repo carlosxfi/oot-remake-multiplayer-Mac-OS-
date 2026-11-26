@@ -116,8 +116,8 @@ class Suite(unittest.TestCase):
         self.assertEqual(s["counts"]["SETUP-FAIL"], 0, p.stdout[-2000:])
         self.assertTrue(s["tests"])
         for d in s["deselected"]:
-            self.assertTrue(d["needs_env"] or d.get("needs_boot") or d.get("needs_pack"), d)   # (a boss row's boot;
-            # a --pack test: port-sweep-c131-6 11:46)
+            self.assertTrue(d.get("needs_env") or d.get("needs_boot") or d.get("needs_pack") or d.get("needs_solo"), d)
+            # (a boss row's boot; a --pack test: port-sweep-c131-6 11:46; a --solo test: test_map_turn_probe)
 
     def test_repeat_keeps_one_boot_and_orders_by_round(self):
         out = os.path.join(self.tmp, "o")

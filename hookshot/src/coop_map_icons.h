@@ -89,6 +89,10 @@ struct State {
     std::string why;
     std::uint64_t turn_at = 0;
     std::array<float, 8> game_arrow_words{};   // the game's own arrow's N_PlayerRotate_00 +0x60..+0x7c
+    // ProbeArrow only: the same words of the arrows in the game's run-time icon copies under the map screen (Link's
+    // arrow among them when the game shows him through a copy, not through its Pa_MapIcon_00 itself), at most 4
+    std::vector<std::array<float, 8>> run_arrow_words;
+    bool probe = false;                        // true: ProbeArrow's (no copies looked at)
     struct Shown {
         std::size_t copy = 0;
         std::array<float, 2> at{};             // the copy pane's translate (+0x6c) in the clip's frame
@@ -118,6 +122,9 @@ public:
     // `table`: the map layout's pane table.
     std::uint64_t ArrowTurnPane(CoopNativeTags::Game& game, std::uint64_t table);
     State Snapshot(CoopNativeTags::Game& game);
+    // The turn place's probe on ONE game (solo too: no other player needed), the play-test bridge only: the game's own
+    // arrow's words, every pane looked up fresh from the map screen (nothing cached, nothing written or shown).
+    State ProbeArrow(CoopNativeTags::Game& game);
     // The probe's lines (coop_map_icons.cpp Icons::Probe): the game's own icon part and its run-time copies.
     std::vector<std::string> Probe(CoopNativeTags::Game& game);                      // what Step last missed (the log)
     bool Up() const { return up_; }
