@@ -6,12 +6,12 @@ puppet in the other game; one owner per texture (it wins over the boots colour);
 | test_leather_own_and_puppet | part 28 paints A's own Link and A's puppet in B | log + LOOK (colour + shots on each game) |
 | test_leather_wins_over_boots | Leather set with a boots colour: the leather's colour, both parts on the wire | log + LOOK |
 | test_leather_unset_is_01112 | Leather back to unset: the gear and puppet boots paintings are 0.11.12's again | log + LOOK |
-| test_leather_without_character_select | the game without the mod paints its own Link, the other sees its puppet | log + LOOK; runs only where a game lacks it |
+| test_leather_without_character_select | the game without the mod paints its own Link, the other sees its puppet | log + LOOK; needs_env (no_cs.ENV) |
 
 Set-up and judging, each cited where used:
 - `menu look KEY=VALUE`: test only, gear-link's MENU verb (hookshot coop_pause.cpp TestMenu "look "): the part chosen
   as the Customize page chooses it and worn as when the menu closes, so it goes on the wire as a player's look. KEY is
-  the part's key (hookshot/src/coop_look.cpp Parts(): `link_leather`, `boots`), VALUE a settings value (`#RRGGBB`,
+  the part's key (hookshot/src/coop_look.cpp Parts(): `link_leather`, `boots`), VALUE a settings value (`RRGGBB`, no '#': the bridge refuses it in an act line, coop_playtest_core.cpp ParseRequest;
   CoopLook::ReadParts) or `none`.
 - Own Link: the gear wardrobe's line `coop: look: your Link's gear is <name> now (...)` (hookshot/src/coop_look_tunic.cpp
   Wardrobe step, host.what "gear": coop_look_live.cpp); <name> is CoopLookParts::Name: `.leather-RRGGBB` last when
@@ -20,10 +20,9 @@ Set-up and judging, each cited where used:
   CoopLookParts::BootsPaintingName: `.<letter>[boots]L<leather>` per tunic colour.
 - Colour: the share of magenta pixels in a bridge shot (MAGENTA: nothing in Kokiri Forest is magenta, so the count
   before is near 0) must rise on each game when A's leather is magenta; shots are also compared to their references.
-- Character Select present: flag_read of its saved Int CharacterMenu_SelectedCharacter (the module's ModPresent read,
-  lichii/hook/coop_char_colours.cpp NoteOwnPick: present = the saved Int is there). Without the mod the bridge
-  answers kind "unknown", value null (lichii/hook/coop_testinput.cpp ReadFlag, FlagReading's default). A lane without it: harness-c132 7529b8745 (lanes.py nocs
-  --lane N, --env B:COOP_TEST_NO_CHARACTER_SELECT=1 boots B from lane<N>-B-nocs).
+- No Character Select: the ONE no-CS lane game, tools/autotest/ingame/no_cs.py: MARK (needs_env
+  B:COOP_TEST_NO_CHARACTER_SELECT=1, harness-c132's switch; deselected and NOT-RUN without it) and prove() (B has no
+  mod: flag_read of its saved Int, lichii/hook/coop_char_colours.cpp NoteOwnPick).
 Not here: adult Link's gloves and upper leather (unit tests, tests/hookshot/look_test.cpp "leather-link") and solo
 without Host/Join (the lanes are a co-op pair).
 """
@@ -35,6 +34,7 @@ import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import no_cs        # noqa: E402  (the ONE no-Character-Select game)
 from test_rows import need_child_in_play, place_in_front   # noqa: E402  (the shared set-up helpers)
 
 MAGENTA, GOLD = "FF00FF", "FFD700"
@@ -62,10 +62,6 @@ def choose(pair, key, value, x="A"):
     r = pair.act(x, "menu look %s=%s" % (key, value))
     assert r.get("ok", True), "%s refused 'menu look %s=%s': %s" % (x, key, value, r)
 
-
-def has_character_select(pair, x):
-    r = pair.flag_read(x, "CharacterMenu_SelectedCharacter")
-    return r.get("kind") not in (None, "unknown") and r.get("value") is not None
 
 
 def last(pair, x, pattern, pos):
@@ -95,7 +91,7 @@ def test_leather_own_and_puppet(pair):
     try:
         before = shots(pair, "leather-link-before")
         mark_a, mark_b = pair.log["A"].mark(), pair.log["B"].mark()
-        choose(pair, "link_leather", "#" + MAGENTA)
+        choose(pair, "link_leather", MAGENTA)
         pair.expect_log("A", OWN_GEAR.replace(r"(gear\S*)", r"gear\S*\.leather-" + MAGENTA), max_frames=240)
         pair.expect_log("B", PUPPET_BOOTS.replace(r"(boots\S*)", r"boots\S*L" + MAGENTA), max_frames=600)
         pair.step_both(30)
@@ -117,12 +113,12 @@ def test_leather_wins_over_boots(pair):
         need_child_in_play(pair)
         face_each_other(pair)
     try:
-        choose(pair, "boots", "#" + GOLD)
+        choose(pair, "boots", GOLD)
         pair.expect_log("B", PUPPET_BOOTS.replace(r"(boots\S*)", r"boots\S*" + GOLD), max_frames=600)
         pair.step_both(30)
         gold = {x: magenta_share(pair.check_shot(x, "leather-link-gold-boots", tolerance=0.80)["path"])
                 for x in ("A", "B")}
-        choose(pair, "link_leather", "#" + MAGENTA)
+        choose(pair, "link_leather", MAGENTA)
         # both on the wire (B's painting name has the boots and the leather), the leather's name on A's own gear
         pair.expect_log("B", PUPPET_BOOTS.replace(r"(boots\S*)", r"boots\S*%sL%s" % (GOLD, MAGENTA)), max_frames=600)
         pair.expect_log("A", OWN_GEAR.replace(r"(gear\S*)", r"gear\S*%s\S*\.leather-%s" % (GOLD, MAGENTA)),
@@ -145,14 +141,14 @@ def test_leather_unset_is_01112(pair):
         face_each_other(pair)
     try:
         mark_a, mark_b = pair.log["A"].mark(), pair.log["B"].mark()
-        choose(pair, "boots", "#" + GOLD)   # (a gear colour, so the gear painting is drawn and logged)
+        choose(pair, "boots", GOLD)   # (a gear colour, so the gear painting is drawn and logged)
         pair.expect_log("A", OWN_GEAR, max_frames=240)
         pair.expect_log("B", PUPPET_BOOTS.replace(r"(boots\S*)", r"boots\S*" + GOLD), max_frames=600)
         pair.step_both(30)
         gear_01112, boots_01112 = last(pair, "A", OWN_GEAR, mark_a), last(pair, "B", PUPPET_BOOTS, mark_b)
         assert gear_01112 and "leather" not in gear_01112, "A: a boots-only gear name with leather: %s" % gear_01112
         assert boots_01112 and "L" not in boots_01112[len("boots"):], "B: a boots-only puppet name with L: %s" % boots_01112
-        choose(pair, "link_leather", "#" + MAGENTA)
+        choose(pair, "link_leather", MAGENTA)
         pair.expect_log("B", PUPPET_BOOTS.replace(r"(boots\S*)", r"boots\S*L" + MAGENTA), max_frames=600)
         pair.step_both(30)
         mark_a, mark_b = pair.log["A"].mark(), pair.log["B"].mark()
@@ -171,19 +167,17 @@ def test_leather_unset_is_01112(pair):
 
 @pytest.mark.budget(180)
 @pytest.mark.look
+@no_cs.MARK
 @pytest.mark.row("#293 P3 Leather without Character Select (C #132)")
 def test_leather_without_character_select(pair):
     with pair.setup():
         need_child_in_play(pair)
-        cs = {x: has_character_select(pair, x) for x in ("A", "B")}
-        if all(cs.values()):
-            pytest.skip("NOT RUN: both lane games have Character Select (lanes.py nocs: a lane B without the mod)")
+        no_cs.prove(pair)
         face_each_other(pair)
-    x = "A" if not cs["A"] else "B"   # the game without the mod chooses; the other sees its puppet
-    y = "B" if x == "A" else "A"
+    x, y = no_cs.GAME, "A"   # the game without the mod chooses; the other (with it) sees its puppet
     try:
         before = shots(pair, "leather-link-no-cs-before")
-        choose(pair, "link_leather", "#" + MAGENTA, x)
+        choose(pair, "link_leather", MAGENTA, x)
         pair.expect_log(x, OWN_GEAR.replace(r"(gear\S*)", r"gear\S*\.leather-" + MAGENTA), max_frames=240)
         pair.expect_log(y, PUPPET_BOOTS.replace(r"(boots\S*)", r"boots\S*L" + MAGENTA), max_frames=600)
         pair.step_both(30)

@@ -452,9 +452,11 @@ def parse(text):
                 fail("want: assign ITEM")
             s.kind, s.name = "assign", w[1]
         elif cmd == "MENU":
-            if len(w) != 2 or w[1].lower() not in ("customize", "close", "host", "paste", "leave"):
-                fail("want: menu customize|close|host|paste|leave")
-            s.kind, s.name = "menu", w[1].lower()
+            # (gear-link: "menu look KEY=VALUE", the module's coop_testinput.cpp MENU: a look part chosen and worn)
+            look = len(w) == 3 and w[1].lower() == "look" and "=" in w[2]
+            if not look and (len(w) != 2 or w[1].lower() not in ("customize", "close", "host", "paste", "leave")):
+                fail("want: menu customize|close|host|paste|leave, or menu look KEY=VALUE")
+            s.kind, s.name = "menu", (" ".join(w[1:]) if look else w[1]).lower()
         elif cmd == "AWAIT":
             # Row 325: "await TICKS REGEX": until a NEW line of this game's own log (written after the step began)
             # matches REGEX (the rest of the line, spaces kept), at most TICKS. The runner reads the log itself: no
@@ -1868,6 +1870,9 @@ def main(argv=None):
     r.add_argument("--out", help="run folder (required without --lane; a lane: <its shots>/<name>/<time>)")
     r.add_argument("--name", default="scenario")
     r.add_argument("--script-a", help="(required without --only)")
+    r.add_argument("--check-args", action="store_true",
+                   help="parse and check the run's arguments and its scripts, then exit 0 without starting anything "
+                        "(live.py start --dry-run; the in-game tests' --lane-check-only)")
     r.add_argument("--script-b")
     r.add_argument("--load", help="load.txt: checked only; the load presses A until the game plays")
     r.add_argument("--no-load", action="store_true")
@@ -1935,6 +1940,15 @@ def main(argv=None):
             p.error("--host-in-game: --password of 1 to 64 printable letters")
     elif getattr(a, "b_joins_in_game", False):
         p.error("--b-joins-in-game needs --host-in-game")
+    if a.what == "run" and a.check_args:
+        for path in (a.script_a, a.script_b, getattr(a, "load", None)):
+            if path:
+                try:
+                    parse(read_script(path))
+                except (ScriptError, OSError) as e:
+                    p.error("script %s: %s" % (path, e))
+        print("run arguments OK (--check-args: nothing started)")
+        return 0
     if not a.lane:
         if not ((a.game_a or a.game_b) and a.out):
             p.error("--game-a and/or --game-b, and --out (or --lane N)")

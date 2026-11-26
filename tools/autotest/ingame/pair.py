@@ -32,6 +32,11 @@ class SetupFail(Exception):
     """The test could not be set up (the lane, a warp, a give, the set-up took more than 30 s): SETUP-FAIL, not FAIL."""
 
 
+class NoRef(Exception):
+    """NO-REF, never PASS: a look check without a stored reference (the pair fixture's end), or a test that cannot
+    prove its row yet (Pair.unproven). bt_plugin judges it by this TYPE, never by message text."""
+
+
 class TestTimeout(AssertionError):
     """The test ran past its own deadline: FAIL 'timeout' (never retried as a pass)."""
 
@@ -85,12 +90,18 @@ class Log:
         return None
 
 
-def lane_check(kit_ls, lane):
+NOCS = "-nocs"                       # lane<N>-B-nocs: lane B's game without Character Select (lanes.py nocs)
+CS_MOD = "OoT Character Select"
+
+
+def lane_check(kit_ls, lane, nocs=False):
     """The lane's setup proof, the Python twin of offline/lib/lane-server.ps1 + lane-pair.ps1 (one source of the rule:
-    both read lane-server.txt as offline/lane-game-for.ps1 writes it). Returns {server, commit, dll_sha256}; raises
-    SetupFail with the first thing wrong."""
+    both read lane-server.txt as offline/lane-game-for.ps1 writes it). Returns {server, commit, dll_sha256, game_b};
+    raises SetupFail with the first thing wrong. nocs: game B is lane<N>-B-nocs (lanes.py nocs), whose own
+    lane-server.txt must name the same module, commit and server as lane<N>-B's and whose game has no Character
+    Select code (only its exefs= line differs: nocs_check)."""
     got = {}
-    for x in ("A", "B"):
+    for x in ("A", "B") + (("B" + NOCS,) if nocs else ()):
         d = os.path.join(kit_ls, "lane%d-%s" % (lane, x))
         f = os.path.join(d, "lane-server.txt")
         try:
@@ -117,7 +128,11 @@ def lane_check(kit_ls, lane):
         if have_p != want_p:
             raise SetupFail("lane%d-%s game patches line %s is not lane-server.txt's %s (the game was rebuilt after the "
                             "lane's install)" % (lane, x, have_p[:8] or "(none)", want_p[:8]))
-        got[x] = {"server": srv, "commit": commit, "dll_sha256": want, "patches": want_p}
+        got[x] = {"server": srv, "commit": commit, "dll_sha256": want, "patches": want_p, "folder": d,
+                  "nocs_of": field("nocs_of")}
+    if nocs:
+        nocs_check(got["B"], got["B" + NOCS], lane)
+        got["B"] = got["B" + NOCS]
     a, b = got["A"], got["B"]
     if a["dll_sha256"] != b["dll_sha256"]:
         raise SetupFail("lane%d A/B module differ: %s vs %s" % (lane, a["dll_sha256"][:16], b["dll_sha256"][:16]))
@@ -127,7 +142,42 @@ def lane_check(kit_ls, lane):
         raise SetupFail("lane%d A and B name different servers (%s / %s)" % (lane, a["server"], b["server"]))
     if not os.path.exists(a["server"]):
         raise SetupFail("no server %s (lane%d lane-server.txt)" % (a["server"], lane))
-    return a
+    return dict({k: v for k, v in a.items() if k not in ("folder", "nocs_of")}, game_b=b["folder"],
+                game_b_exefs=_exefs_line(os.path.join(b["folder"], "coop-built-from.txt")))
+
+
+def _exefs_line(path):
+    """coop-built-from.txt's exefs= line (the mods' code patches the game was built with), '' when it has none."""
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
+            return next((ln.rstrip("\r\n") for ln in f if ln.startswith("exefs=")), "")
+    except OSError:
+        return ""
+
+
+def nocs_check(b, n, lane):
+    """lane<N>-B-nocs is lane<N>-B's game without Character Select: made by lanes.py nocs from THIS lane B (nocs_of),
+    the same module, commit and server, and a game whose code patches and code-patch list name no Character Select."""
+    tag = "lane%d-B%s" % (lane, NOCS)
+    if os.path.normcase(n["nocs_of"]) != os.path.normcase(os.path.basename(b["folder"])):
+        raise SetupFail("%s lane-server.txt has nocs_of=%s, not %s (made by lanes.py nocs --lane %d?)"
+                        % (tag, n["nocs_of"] or "(none)", os.path.basename(b["folder"]), lane))
+    for k in ("dll_sha256", "commit", "server"):
+        if n[k] != b[k]:
+            raise SetupFail("%s %s %s is not lane%d-B's %s (lane B was installed again: lanes.py nocs --lane %d)"
+                            % (tag, k, n[k][:16], lane, b[k][:16], lane))
+    line = _exefs_line(os.path.join(n["folder"], "coop-built-from.txt"))
+    if CS_MOD.lower() in line.lower():
+        raise SetupFail("%s game was built with Character Select's code (%s)" % (tag, line[:80]))
+    try:
+        with open(os.path.join(n["folder"], "exefs_patches.txt"), encoding="utf-8", errors="replace") as f:
+            rows = [ln for ln in f if not ln.startswith("#") and ln.lower().startswith(CS_MOD.lower() + "\t")]
+    except OSError:
+        rows = []
+    if rows:
+        raise SetupFail("%s exefs_patches.txt still lists Character Select's code patch" % tag)
+    if os.path.isdir(os.path.join(n["folder"], "mods", CS_MOD)):
+        raise SetupFail("%s still has mods/%s" % (tag, CS_MOD))
 
 
 def _sha256_file(path):
@@ -279,17 +329,43 @@ class Pair:
             self.step_both(52)
             ran += 60
 
-    def warp_both(self, scene):
-        """Both games to `scene` (the bridge's `warp`: Longshot's teleport in free play). A first, then B; each warp
-        runs its own game only, so the other is stepped to the same frame count after it."""
-        for x in ("A", "B"):
-            before = self.c[x].last_frame or 0
-            r = self.call(x, "warp", scene=scene, timeout=max(5, int(min(60, self.deadline.left()))))
-            ran = max(0, (r.get("frame") or before) - before)
-            for y in self.c:
-                if y != x and ran:
-                    self.step_other(y, ran)
+    ARRIVE_IN_EVENT_WAIT = 12   # s per game for arrive_in_event (two warps + checks fit the 30 s set-up)
+
+    def warp_both(self, scene, entrance=None, arrive_in_event=False):
+        """Both games to `scene` (the bridge's `warp`: Longshot's teleport in free play; with an `entrance` (a start of
+        that scene) the game's map change event, which also takes a boss stage: coop_playtest_core.cpp PlanWarp). A
+        first, then B; each warp runs its own game only, so the other is stepped to the same frame count after it.
+        (entrance=: from boss-respawn 6438836b4, taken by the file's owner.)
+        arrive_in_event (twinrova-shots-222-5): a stage whose arrival starts an event (a boss intro). The bridge's warp
+        waits for Link in the scene with NO event (coop_playtest_core.cpp WarpArrived), so it answers 'timeout' with
+        Link already there; then a fresh state with that scene, no load AND an event running counts as the arrival,
+        anything else raises. Each game's wait is ARRIVE_IN_EVENT_WAIT s, and every wait stays inside the deadline."""
+        for x in [y for y in ("A", "B") if y in self.c]:     # (a solo pair: A only)
+            self.warp_one(x, scene, entrance, arrive_in_event)
         return {x: self.state(x) for x in self.c}
+
+    def warp_one(self, x, scene, entrance=None, arrive_in_event=False):
+        """Game x alone to `scene`, by warp_both's rules (entrance, arrive_in_event, waits inside the deadline); the
+        other game is stepped to the same frame count after it (row-286-wake-3). Returns x's state."""
+        extra = {} if entrance in (None, "") else {"entrance": entrance}
+        before = self.c[x].last_frame or 0
+        wait = self.ARRIVE_IN_EVENT_WAIT if arrive_in_event else 60
+        t = max(1, int(min(wait, self.deadline.left() - 2)))   # (the bridge answers by t, a little under the deadline)
+        self.deadline.check("warp")
+        r = self.c[x].request("warp", check=False, reply_timeout=max(0.2, min(t + 15, self.deadline.left())),
+                              scene=scene, timeout=t, **extra)        # (the reply wait stays inside the deadline)
+        if not r.get("ok"):
+            st = self.state(x) if arrive_in_event and r.get("error") == "timeout" else None
+            if not (st and (st.get("scene") or "").lower() == scene.lower() and not st.get("loading")
+                    and st.get("event") is True):      # (review-c123-8: a timeout with no event is not an arrival)
+                raise pc.BridgeError(r)
+            self.notes.append("%s: warp %s answered timeout in the arrival event; in the scene, not loading: "
+                              "arrived (event %s)" % (x, scene, st.get("event")))
+        ran = max(0, (self.c[x].last_frame or before) - before)
+        for y in self.c:
+            if y != x and ran:
+                self.step_other(y, ran)
+        return self.state(x)
 
     def step_other(self, y, frames):
         left = int(frames)
@@ -325,6 +401,11 @@ class Pair:
             return res        # (the test goes on; bt_plugin labels it NO-REF at its end, never PASS)
         assert res["ok"], "shot %s-%s: %s" % (name, x, res["why"])
         return res
+
+    def unproven(self, reason):
+        """Ends the test as NO-REF (never PASS, never FAIL): the row cannot be proven by this run (no measured value
+        yet, a probe build, ...). `reason` goes into the summary's why."""
+        raise NoRef("NO-REF: %s" % reason)
 
     def no_ref(self):
         return ["%s-%s" % (s["name"], s["game"]) for s in self.shots if s["why"].startswith("NO-REF")]

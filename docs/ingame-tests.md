@@ -24,8 +24,9 @@ and every test of that lane runs on it. With `-n 2` xdist worker N takes the Nth
 player N on `5000 + 10*L + N` (playtest.md). The boot's setup proof is `pair.lane_check` (the same rule as
 `offline/lib/lane-server.ps1` + `lane-pair.ps1`: both games' module is the one installed, from the same patches
 build, the server exists), then `hello` on both bridges with Longshot's control answering. `--expect-commit` (the lane's module sha, from
-`lane-server.txt`'s `commit=`) is required on a real lane. `--lane-check-only` runs that proof and the collection
-only (no boot, no test): one `SETUP-OK`/`SETUP-FAIL` line per lane, `<dir>/setup.json`, exit 0 only if all are OK
+`lane-server.txt`'s `commit=`) is required on a real lane. `--lane-check-only` runs that proof, the boot command
+(`live.py start ... --dry-run`: the exact `hookshot.py run` argv through the runner's own parser and checks plus a parse
+of the boot scripts, `run --check-args`; nothing starts) and the collection only (no boot, no test): one `SETUP-OK`/`SETUP-FAIL` line per lane, `<dir>/setup.json`, exit 0 only if all are OK
 (one process: it refuses `-n` and checks every `--lanes` lane itself).
 
 Game switches are per boot: `--env NAME=VALUE` (both games) or `--env A:NAME=VALUE` / `--env B:NAME=VALUE` (one
@@ -38,7 +39,68 @@ malformed `--env` stops the run before any boot (pytest usage error, exit 4).
 
 ## Results
 
-One summary per run: `<dir>/summary.json` and `summary.md` (add `--junitxml <file>` for JUnit).
+One summary per run: `<dir>/summary.json` and `summary.md` (add `--junitxml <file>` for JUnit); each test entry of `summary.json` carries its `notes` (`pair.notes`: the set-up time and what the test wrote down, such as where Link landed). The run also prints one
+line to stdout for the queue log: `RESULT: PASS (...)`, `RESULT: SETUP-FAIL <why>` (nothing got past set-up) or
+`RESULT: NOT PASS (<counts>); first: <test> <result> <why>`.
+
+The boot (`bt_plugin.boot_args`, the one list the boot and the check use): `live.py start --lane L --playtest
+--server <lane-server.txt's> --boot-a/--boot-b scenarios/live-kakariko-child.A/B.txt --no-load --env ...`: the
+documented `live.py start` boot (child save, Kakariko by the well, through the title). `live.py start` checks those
+runner arguments before it spawns its watchdog or takes the lane lock, so a refused start leaves no lock.
+Cheats are ON in every lane boot: `live-kakariko-child.A.txt` has `#! switches LICHII_COOP_CHEATS=1` (the A script's
+switches go to both games), which the bridge's `act`/`warp`/`flag`/`give` need. `summary.json` `identity.boot` keeps
+each boot script's path, sha256 and switches, so a run with another boot never counts as the same proof.
+
+Another boot: `--boot NAME` boots `scenarios/NAME.A.txt` + `NAME.B.txt` (e.g. `live-twinrova-room` for a boss stage,
+where the bridge's `warp` answers `not_in_event` in free play). Each test runs with ONE boot: `@pytest.mark.needs_boot(NAME)`,
+unmarked = `live-kakariko-child`; a run with another `--boot` deselects it (`deselected: needs_boot NAME <test>`, in
+`summary.json` `deselected`). An unknown `--boot` is a usage error before any boot.
+
+Pack files: `--pack NAME[,NAME]` (repeatable) makes co-op pack files with the TESTED sha's tools and puts them into
+BOTH lane games' co-op pack (`mods/contents/0400486024DEC000/coop-puppet/<rel>`) after the lane check and before
+the boot. They come out again after `live.py stop` (a file a pack replaced is put back). The maker is
+`tools/autotest/ingame/packs/NAME.py`: `make(out, ctx) -> {rel: src}`, where rel is '/' separated under coop-puppet
+(`coop_hud/map-arrow.png`). Its `ctx` has `tools`, `romfs` (lane A's extracted romfs, read only), `game_nup`
+(`--pack-game`, else the .nup beside the kit root), `lane` and `say`. `packs/hud.py` makes `coop_hud/` with
+`puppet_pack/hud.py` (fonts, hearts, map arrow, place names; about 60 s from the romfs). Every file is checked by
+sha256 on each game, and `summary.json` `identity.pack` is `{name: {rel: sha256}}`. Each game folder gets a
+`coop-test-pack.json` written before any file moves, so a run that dies leaves something the next boot undoes, with
+or without `--pack`. A test that needs a pack: `@pytest.mark.needs_pack(NAME)`; a run without that `--pack`
+deselects it (`deselected: needs_pack NAME <test>`). A maker that fails is a SETUP-FAIL, and the lane is left as it was.
+
+Save profiles: `--save NAME` sets the flags of `tools/autotest/ingame/saves/NAME.py` in every
+`autotest-save/slot_NN/progress.sav` of BOTH lane games. It does this after the lane check and before the boot. At
+its start the game copies that baseline over its own saves (hookshot.py `restore_save`). `FLAGS` holds strings in
+`save_flags.py set` form (`bool:0x6b093b51=0`), and each one cites where its hash comes from. Only flags already in
+the save are changed; a missing flag is a SETUP-FAIL. Each save is kept in `coop-test-save-kept/`. A
+`coop-test-save.json` is written before any change, so every boot undoes a run that died. After `live.py stop` the
+baseline is put back. Every flag is read back on every save. A test that needs a profile:
+`@pytest.mark.needs_save(NAME)`. A run with another `--save`, or none, deselects it. `summary.json` `identity.save`
+is `{name, sha256: {game: {rel: sha256}}}`. `saves/gohma-alive.py` puts Queen Gohma back alive, with the quest at
+her room (rows 137/138).
+
+SOLO boot (owner rule: features that are not multiplayer must also work solo, with co-op idle): `--solo` boots only
+lane game A, with no co-op session. That means `live.py start --only A` without `--server`, so hookshot.py run gives
+it no `LICHII_COOP_SERVER`, and the lane's `coop.ini` has no server line. Only tests marked `@solo.MARK`
+(`tools/autotest/ingame/solo.py`, marker `needs_solo`) run. Every other test is deselected (`needs_pair`), and a
+run without `--solo` deselects the solo tests (`needs_solo`). The pair has game A only (`pair.c == {'A'}`), and
+`step_both`, `press` and `warp_both` run on A. Setup proof, before any test: game A's module log has
+`solo.IDLE` (`coop: no server in coop.ini: co-op idle until Host or Join ...`, hookshot/src/coop_hookshot.cpp).
+It must also have no session line (`coop: on, server`, `connecting`, `welcomed`, `connected`). Otherwise every
+test is a SETUP-FAIL. `--solo` with the no-CS switch is refused. `identity.solo` is true.
+
+Game B without Character Select: `--env B:COOP_TEST_NO_CHARACTER_SELECT=1` (the switch in
+`tools/autotest/ingame/no_cs.py`) boots game B from `lane<N>-B-nocs` instead of `lane<N>-B`. That folder is made
+only when someone asks for it, with `python -I tools/autotest/lanes.py nocs --lane N` (`--dry-run` first). It is
+made from lane B: hard links for every file no game writes, copies of the rest, but without the
+`mods/OoT Character Select` folder and its `coop-mods.list` rows. It gets its own co-op pack, made with the lane
+module commit's pack tool (`wt-module-<sha8>`), which then has co-op's own Characters tab and its code patch. It
+also gets the game from the hs cache that was built with that patch instead of his. A cache miss is an error,
+because `nocs` never builds a game. Its `lane-server.txt` is written last and names lane B's module, commit and
+server, plus `nocs_of=lane<N>-B`. The lane check (`pair.lane_check(..., nocs=True)`) then also requires that this
+module, commit and server are lane B's, that the game's `exefs=` line and `exefs_patches.txt` do not name Character
+Select, and that its folder is gone. `summary.json` `identity` keeps `nocs` and `game_b`
+`{lane: {folder, exefs}}`. Make the folder again after every lane prep: the check fails until you do.
 
 | Result | When |
 |---|---|
@@ -46,7 +108,7 @@ One summary per run: `<dir>/summary.json` and `summary.md` (add `--junitxml <fil
 | FAIL | an assert failed, or the test ran past its `budget` (FAIL `timeout`); a failed test reruns ONCE |
 | FLAKY | failed, then passed on the rerun: never a pass |
 | SETUP-FAIL | the lane, the boot, or the test's own set-up (`with pair.setup():`, under 30 s) did not hold; not rerun |
-| NO-REF | a look check has no stored reference yet; its shot is kept under `<dir>/lane<L>/new/` |
+| NO-REF | a look check has no stored reference yet (its shot is kept under `<dir>/lane<L>/new/`), or the test called `pair.unproven(reason)` (it cannot prove its row in this run); judged by the exception type `pair.NoRef`, never by message text |
 | NOT-RUN | `--deadline-min N` passed before it started (never a pass) |
 
 A game that crashes while the lane boots or loads (its module log has a `CRASH` line) makes every test of the
@@ -72,8 +134,10 @@ pytest-timeout (pytest.ini, 1800 s) is only the backstop for a call that never r
 - By picture ONLY for what a player sees (worker-rules TEST SYSTEM: other players' Epona animated, menu UI, HUD UI,
   name tags, balloons, pause pages, a new or changed look): `pair.check_shot(game, name, tolerance)` on EACH game,
   twice a few frames apart where animation must show. The shot is the game's framebuffer (the bridge's `shot`), and is
-  compared to `tools/autotest/ingame/refs/<name>-<game>.png` by SSIM (scikit-image): the score is the worst of 8 x 8
-  tiles of the SSIM map, so one small missing thing fails its tile. Shots are kept with the result
+  compared to `tools/autotest/ingame/refs/<name>-<game>.png` by SSIM (scikit-image) on EACH colour channel: the
+  score is the worst of 8 x 8 tiles of the SSIM map, each tile's worst channel, so one small missing thing fails its
+  tile and so does a recoloured one (a grey compare is blind to a tunic, trim or HUD tint fault: green (0,91,0) vs
+  blue (0,60,160) at the same grey scores grey 1.0000, colour 0.1128). Shots are kept with the result
   (`<dir>/lane<L>/shots/`). A test never writes a reference: a person checks a NO-REF candidate and copies it into
   `refs/`.
 
@@ -106,6 +170,8 @@ function (or a few, one per thing it proves) in a `test_<area>.py` file in `tool
 2. **Fixture and budget.** Take the `pair` fixture (both games of the lane, already booted, in play after the smoke
    tier). Give `@pytest.mark.budget(seconds)`: the whole test's hard limit, a little over what it needs. Switches from
    `#! switches` -> `@pytest.mark.needs_env("LICHII_COOP_X=1")` (and the run gets `--env`); `A:`/`B:` for one game.
+   A row whose place cannot be reached by `warp` in free play (a boss stage) -> `@pytest.mark.needs_boot(NAME)` with a
+   `scenarios/NAME.A/B.txt` boot (the run gets `--boot NAME`).
 3. **Set-up only by the bridge, inside `with pair.setup():`** (SETUP-FAIL if anything fails or it passes 30 s):
    - place: `pair.warp_both(scene)`, `pair.act(x, "place X Y Z")`, `pair.act(x, "face X Z")`; never walk to a spot
      (scenario `goto` / `toward` / `hold LSTICK_*` used only to get somewhere -> `place`/`face`).
@@ -128,8 +194,12 @@ function (or a few, one per thing it proves) in a `test_<area>.py` file in `tool
    (`pair.step_both(6)`, `<name>-2`) where animation must show. The first run gives NO-REF and keeps candidates under
    `<out>/lane<L>/new/`; a person looks and copies the good ones into `tools/autotest/ingame/refs/` (never the test).
    Tolerance: start at 0.80 for scenes with moving things, 0.85-0.90 for still UI; say why in the test.
-7. **Fake game + selftest.** Make the test pass on `fakegame.py` (add the few log lines / state the fake must give,
-   cited to the module source) so `pytest tools/autotest/ingame --fake` and CI's `tests/test_ingame.py` cover it.
+7. **Fake game + selftest, in your own files only** (one owner per file; never edit `fakegame.py`, `pair.py`,
+   `bt_plugin.py` or `tests/test_ingame.py`: ask test-bridge for a harness change). The fake's reactions for your row go
+   in `tools/autotest/ingame/fakes/<row>.py` (hooks `setup lane command after press act actors state`, listed in
+   `fakegame.py`'s docstring; react only in your row's scene / switch / `BT_FAKE_*` variable), each line cited to the
+   module source. Your row's selftests (e.g. that the test FAILs under the bug) go in
+   `tools/autotest/tests/test_ingame_<row>.py`: CI's `tests/test_ingame.py` runs every such file (`load_tests`).
 8. **Prove it, then retire the old row.** `--lane-check-only` (setup proof) on the lane, then one lane run
    (`--repeat 3` for a new row) through preflight + the queue. When it PASSes, say so in COORD-LOG; retiring the old
    `.ps1` and its group line is the coordinator's call.

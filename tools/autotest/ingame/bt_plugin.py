@@ -14,9 +14,11 @@ Results (one summary per run, DIR/summary.json + summary.md, and pytest's --juni
 Smoke gate: a smoke test (marker `smoke`) that FAILs or SETUP-FAILs stops the run there (the rc is broken), unless
 --no-smoke-gate.
 """
+import hashlib
 import json
 import re
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -29,6 +31,9 @@ AUTOTEST = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, AUTOTEST)
 import pair as P   # noqa: E402
+import testpack    # noqa: E402
+import testsave    # noqa: E402
+import solo        # noqa: E402
 
 RESULTS = ("PASS", "FAIL", "FLAKY", "SETUP-FAIL", "NO-REF", "SKIP", "NOT-RUN")
 DEFAULT_BUDGET = 120
@@ -37,6 +42,28 @@ DEFAULT_BUDGET = 120
 class GameCrash(AssertionError):
     """A game crashed while the lane booted or loaded (its module log has a CRASH line): every test of the lane is
     FAIL with that line, never SETUP-FAIL, because that window is what crash rows guard (review-c123-7 08:53)."""
+
+
+NoRef = P.NoRef     # (the typed NO-REF path lives in pair.py, so row tests need only `pair`)
+
+
+def _exc_kind(e):
+    """A failure's kind from its exception TYPE (B #130 / kokiri-band-c124-4 09:41: never from traceback text, which a
+    FAIL's source lines or message can contain): 'crash', 'noref', 'setup' or 'other'."""
+    if isinstance(e, GameCrash):
+        return "crash"
+    if isinstance(e, NoRef):
+        return "noref"
+    if isinstance(e, P.SetupFail):
+        return "setup"
+    return "other"
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    rep = outcome.get_result()
+    rep.bt_kind = _exc_kind(call.excinfo.value) if call.excinfo is not None else None
 
 
 def pytest_addoption(parser):
@@ -56,6 +83,18 @@ def pytest_addoption(parser):
     g.addoption("--deadline-min", type=float, default=None, metavar="N", help="the run's wall-clock limit in minutes "
                 "(set it below the queue's Minutes): past N no new test starts and no rerun, the rest are NOT-RUN "
                 "(never a pass), the games are closed and the lane let go (live.py stop), then summary.json is written")
+    g.addoption("--boot", default=DEFAULT_BOOT, metavar="NAME", help="the lane's boot: scenarios/NAME.A.txt + NAME.B.txt "
+                "(default %(default)s); tests run only with their own boot (@pytest.mark.needs_boot(NAME), else the default)")
+    g.addoption("--pack", action="append", default=[], metavar="NAME[,NAME]", help="pack files for this boot "
+                "(testpack.py: ingame/packs/NAME.py made from the tested sha's tools, put into both lane games' co-op "
+                "pack before the boot, taken out after live.py stop); tests marked needs_pack(NAME) run only with it")
+    g.addoption("--save", default=None, metavar="NAME", help="a save profile for this boot (testsave.py: "
+                "ingame/saves/NAME.py FLAGS set in both lane games' autotest-save before the boot, the baseline put "
+                "back after live.py stop); tests marked needs_save(NAME) run only with it")
+    g.addoption("--solo", action="store_true", help="the SOLO boot (solo.py): lane game A alone, no co-op session "
+                "(no server, no Host/Join); only tests marked needs_solo run, every other test is deselected")
+    g.addoption("--pack-game", default=None, metavar="NUP", help="the game's .nup for a pack maker (default: the .nup "
+                "beside the kit root, kit_pair.find_game_file; the one lane-game-for.ps1:31 names)")
     g.addoption("--lane-check-only", action="store_true", help="the setup proof of every --lanes lane (lane_check + "
                 "--expect-commit + the tests collect; no game boot, no test run): one SETUP-OK/SETUP-FAIL line per "
                 "lane, OUT/setup.json; exit 0 only if every lane is OK (pytest's own --setup-only is another thing)")
@@ -66,12 +105,28 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "budget(seconds): the test's own hard deadline (default %d)" % DEFAULT_BUDGET)
     config.addinivalue_line("markers", "row(text): the rc row the test proves (in the summary)")
     config.addinivalue_line("markers", "look: a user-facing look check (bridge shots on each game, compared to refs)")
+    config.addinivalue_line("markers", "needs_boot(NAME): the test boots with scenarios/NAME.A/B.txt (run with --boot NAME); "
+                            "without it a test needs the default boot")
     config.addinivalue_line("markers", "needs_env(*'NAME=VALUE'): game switches the test needs; a run whose "
                             "--env lacks them deselects it (named in the output and summary.json 'deselected')")
-    config._bt_rows, config._bt_deselected = [], []
+    config.addinivalue_line("markers", "needs_pack(*NAMES): pack files the test needs (testpack.py); a run whose "
+                            "--pack lacks one deselects it")
+    config.addinivalue_line("markers", "needs_solo: the test runs on the SOLO boot only (solo.py, --solo)")
+    config.addinivalue_line("markers", "needs_save(NAME): the save profile the test needs (testsave.py); a run "
+                            "with another --save, or none, deselects it")
+    config._bt_rows, config._bt_deselected, config._bt_pack, config._bt_game_b = [], [], {}, {}
+    config._bt_save = {}
     if config.getoption("lane_check_only") and getattr(config.option, "numprocesses", None):
         raise pytest.UsageError("--lane-check-only runs in one process: leave out -n (it checks every --lanes lane)")
     boot_env(config)        # (a malformed --env stops the run before any boot)
+    if config.getoption("solo") and nocs_wanted(config):
+        raise pytest.UsageError("--solo boots game A only: %s (game B) does not go with it" % NOCS_ENV)
+    if config.getoption("save") and not config.getoption("fake"):
+        try:                # (a bad --save profile too: --lane-check-only shows it; fake runs SETUP-FAIL it per test)
+            testsave.load(config.getoption("save"))
+        except testsave.SaveProfileError as e:
+            raise pytest.UsageError(str(e))
+    boot_paths(config.getoption("boot"))   # (an unknown --boot too)
     config._bt_started = time.time()
 
 
@@ -100,32 +155,147 @@ def pytest_collection_modifyitems(config, items):
         _lane_check_only(config, items)
 
 
+def _deselect_line(d):
+    if d.get("needs_solo"):
+        return "deselected: needs_solo %s" % d["test"]
+    if d.get("needs_pair"):
+        return "deselected: needs_pair (a --solo run) %s" % d["test"]
+    if d.get("needs_save"):
+        return "deselected: needs_save %s %s" % (d["needs_save"], d["test"])
+    if d.get("needs_pack"):
+        return "deselected: needs_pack %s %s" % (" ".join(d["needs_pack"]), d["test"])
+    if d.get("needs_boot"):
+        return "deselected: needs_boot %s %s" % (d["needs_boot"], d["test"])
+    return "deselected: needs_env %s %s" % (" ".join(d["needs_env"]), d["test"])
+
+
 def _deselect_needs_env(config, items):
-    """A needs_env test whose switches this run's --env lacks is DESELECTED (B #129, 2026-11-26), with one
-    'deselected: needs_env ...' line each and a summary.json 'deselected' list: never hidden, and never a SETUP-FAIL of
-    the default run. The rc summary (rc_tests.py summary --plan) makes it NOT-RUN if no env group ran it."""
-    have = boot_env(config)
+    """A test this run cannot run is DESELECTED (B #129, 2026-11-26), with one 'deselected: ...' line each and a
+    summary.json 'deselected' list: never hidden, and never a SETUP-FAIL of the default run (the rc summary, rc_tests.py
+    summary --plan, makes it NOT-RUN if no session ran it):
+    - needs_env: a switch this run's --env lacks;
+    - needs_boot: a test boots with ONE boot (@pytest.mark.needs_boot(NAME), else DEFAULT_BOOT); a run with another
+      --boot leaves it out (a boss boot is not the Kakariko boot the smoke tier and the rows assume)."""
+    have, boot = boot_env(config), config.getoption("boot")
+    packs = set(testpack.names_of(config.getoption("pack")))
     keep, drop = [], []
     for it in items:
-        lack = [e for m in it.iter_markers("needs_env") for e in m.args if not env_has(have, e)]
-        (drop if lack else keep).append(it)
-        if lack:
+        m = it.get_closest_marker("needs_boot")
+        want = m.args[0] if m else DEFAULT_BOOT
+        lack = [e for mk in it.iter_markers("needs_env") for e in mk.args if not env_has(have, e)]
+        no_pack = sorted({n for mk in it.iter_markers("needs_pack") for n in mk.args} - packs)
+        ms = it.get_closest_marker("needs_save")
+        is_solo = it.get_closest_marker("needs_solo") is not None
+        if is_solo != bool(config.getoption("solo")):
+            config._bt_deselected.append({"test": it.nodeid, ("needs_solo" if is_solo else "needs_pair"): True,
+                                          "needs_env": lack})
+        elif want != boot:
+            config._bt_deselected.append({"test": it.nodeid, "needs_boot": want, "needs_env": lack})
+        elif ms and ms.args[0] != config.getoption("save"):
+            config._bt_deselected.append({"test": it.nodeid, "needs_save": ms.args[0], "needs_env": lack})
+        elif no_pack:
+            config._bt_deselected.append({"test": it.nodeid, "needs_pack": no_pack, "needs_env": lack})
+        elif lack:
             config._bt_deselected.append({"test": it.nodeid, "needs_env": lack})
+        else:
+            keep.append(it)
+            continue
+        drop.append(it)
     if not drop:
         return
     tr = config.pluginmanager.get_plugin("terminalreporter")
     for d in config._bt_deselected[-len(drop):]:
-        line = "deselected: needs_env %s %s" % (" ".join(d["needs_env"]), d["test"])
+        line = _deselect_line(d)
         tr.write_line(line) if tr else print(line)
     config.hook.pytest_deselected(items=drop)
     items[:] = keep
 
 
+# The lane's boot (live.py start): the documented live.py start boot, scenarios/live-kakariko-child.A/B.txt (its own
+# header: "boot for live.py start": child save, warp to Kakariko by the well, through the title; '#! noload' + its
+# switches line). --no-load: the boot scripts take the title themselves (live.py start --no-load help; the same form
+# as offline/desync-275-run.ps1:41-42). hookshot.py run needs --script-a (its own check: '--script-a (or --only B)').
+DEFAULT_BOOT = "live-kakariko-child"
+BOOT_A = os.path.join(AUTOTEST, "scenarios", DEFAULT_BOOT + ".A.txt")
+BOOT_B = os.path.join(AUTOTEST, "scenarios", DEFAULT_BOOT + ".B.txt")
+
+
+def boot_paths(name):
+    """--boot NAME: scenarios/NAME.A.txt and NAME.B.txt (both must exist; e.g. live-twinrova-room for a boss stage,
+    where the bridge's warp answers not_in_event in free play: docs/playtest.md warp)."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name or ""):
+        raise pytest.UsageError("--boot %r: a scenario name (scenarios/NAME.A.txt + NAME.B.txt)" % name)
+    a, b = (os.path.join(AUTOTEST, "scenarios", "%s.%s.txt" % (name, x)) for x in ("A", "B"))
+    for f in (a, b):
+        if not os.path.isfile(f):
+            raise pytest.UsageError("--boot %s: no %s" % (name, f))
+    return a, b
+
+
+def boot_identity(name=DEFAULT_BOOT):
+    """What the boot itself brings, for the proof key (review-c123-7): each boot script's path (repo-relative), sha256
+    and its '#! switches' header (hookshot.header_switches: the A script's go to both games, an --env of the same name
+    wins; live-kakariko-child.A.txt turns LICHII_COOP_CHEATS=1 on). A different boot, or one without those switches,
+    is a different identity."""
+    import hookshot
+    out = {}
+    for x, path in zip(("A", "B"), boot_paths(name)):
+        with open(path, "rb") as f:
+            sha = hashlib.sha256(f.read()).hexdigest()
+        out[x] = {"script": os.path.relpath(path, os.path.dirname(os.path.dirname(AUTOTEST))).replace(os.sep, "/"),
+                  "sha256": sha, "switches": ["%s=%s" % kv for kv in hookshot.header_switches(path)]}
+    return out
+
+
+def _opt(config, name):
+    """An option of this plugin, None where a caller's config has no such option (a test's small config)."""
+    try:
+        return config.getoption(name)
+    except (KeyError, ValueError):
+        return None
+
+
+def boot_args(config, lane, server, session):
+    """live.py start's arguments for this lane's boot (after 'start'): the ONE list lane_pair boots with and
+    --lane-check-only proves (live.py start --dry-run = hookshot.py run's own parser + script parse)."""
+    a, b = boot_paths(config.getoption("boot"))
+    if _opt(config, "solo"):         # (solo.py: game A alone, no --server, so no LICHII_COOP_SERVER: hookshot.py run)
+        args = ["--session", session, "--lane", str(lane), "--only", solo.GAME, "--playtest", "--boot-a", a, "--no-load"]
+    else:
+        args = ["--session", session, "--lane", str(lane), "--playtest", "--server", server, "--boot-a", a,
+                "--boot-b", b, "--no-load"]
+    for e in boot_env(config):
+        args += ["--env", e]
+    if nocs_wanted(config):           # (live.py resolve: --game-b wins over the lane's B with --lane)
+        args += ["--game-b", _lanes(config, lane)["b_nocs"]]
+    return args + ["--max-minutes", str(config.getoption("session_minutes")), "--idle-minutes", "15"]
+
+
+NOCS_ENV = "B:COOP_TEST_NO_CHARACTER_SELECT=1"   # (tools/autotest/ingame/no_cs.py ENV, the tests' one switch)
+
+
+def nocs_wanted(config):
+    """Game B boots from lane<N>-B-nocs (lanes.py nocs: no Character Select) when the run's --env gives NOCS_ENV."""
+    return env_has(boot_env(config), NOCS_ENV)
+
+
+def _lanes(config, lane):
+    import lanes as L
+    return L.lane(lane, os.path.dirname(config.getoption("kit_ls")) if config.getoption("kit_ls") else None)
+
+
 def _real_lane_info(config, lane):
-    """A real lane's setup proof before any boot: lane-server.txt twin (P.lane_check) + the module commit."""
+    """A real lane's setup proof before any boot: lane-server.txt twin (P.lane_check) + the module commit. With
+    NOCS_ENV game B is lane<N>-B-nocs (P.nocs_check: lane B's module, commit and server, no Character Select code)."""
     import lanes as L
     kit_ls = config.getoption("kit_ls") or os.path.join(L.kit_root(), "ls")
-    info = P.lane_check(kit_ls, lane)
+    try:
+        info = P.lane_check(kit_ls, lane, nocs=nocs_wanted(config))
+    except P.SetupFail as e:
+        if nocs_wanted(config) and not os.path.isfile(os.path.join(_lanes(config, lane)["b_nocs"], L.SERVER_TXT)):
+            raise P.SetupFail("%s (make it first: lanes.py nocs --lane %d)" % (e, lane))
+        raise
+    config._bt_game_b[str(lane)] = {"folder": os.path.basename(info["game_b"]), "exefs": info.get("game_b_exefs", "")}
     want = config.getoption("expect_commit")
     if not want:
         raise P.SetupFail("--expect-commit is required on a real lane (worker-rules SETUP PROOF: the right module sha)")
@@ -144,6 +314,11 @@ def _lane_check_only(config, items):
                 info = {"fake": True}
             else:
                 info = _real_lane_info(config, lane)
+                session = os.path.join(_out_dir(config, lane), "session")
+                dry = _live(["start"] + boot_args(config, lane, info["server"], session) + ["--dry-run"], timeout=120)
+                if not dry.get("ok"):
+                    raise P.SetupFail("lane%d boot command: %s" % (lane, dry.get("error")))
+                info = dict(info, boot="live.py start --dry-run OK")
             res["lanes"][str(lane)] = dict(info, ok=True)
         except P.SetupFail as e:
             res["lanes"][str(lane)] = {"ok": False, "why": str(e)}
@@ -182,35 +357,134 @@ def _out_dir(config, lane):
     return d
 
 
+def last_json(text):
+    """The last JSON object in `text` (live.py's answer comes last; a live.py without 3383fb731+'s stdout fix also
+    printed the runner's boot lines before it on stdout, sometimes on the same line as the '{': C #132 11:05,
+    party-hud-bridge-fa63e90f 'scenario played { "ok": true ...'). The object must run to the end of the text
+    (trailing white space only). None if there is none."""
+    dec = json.JSONDecoder()
+    i = text.rfind("{")
+    while i >= 0:
+        try:
+            v, end = dec.raw_decode(text, i)
+        except ValueError:
+            v, end = None, -1
+        if isinstance(v, dict) and not text[end:].strip():
+            return v
+        i = text.rfind("{", 0, i)
+    return None
+
+
 def _live(args, timeout):
-    """tools/autotest/live.py as its own process (it prints one JSON answer)."""
+    """tools/autotest/live.py as its own process: its answer is the JSON object its stdout ends with."""
     cmd = [sys.executable, "-I", os.path.join(AUTOTEST, "live.py")] + args
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    v = last_json(p.stdout or "")
+    if v is not None:
+        return v
+    return {"ok": False, "error": "live.py %s: exit %s, no JSON answer: %s" % (
+        args[0], p.returncode, " ".join((p.stderr or p.stdout or "").split())[-600:])}
+
+
+def _pack_in(config, lane, folders, out, romfs):
+    """A test pack left by a run that died is undone first (always, --pack or not: the lane must be as it was);
+    then this run's --pack files go into both games. config._bt_pack = {name: {rel: sha256}} (summary identity)."""
+    err = lambda m: print(m, file=sys.stderr, flush=True)
+    for f in folders:
+        testpack.undo(f, say=err)
+        testsave.undo(f, say=err)
+    if config.getoption("save"):
+        config._bt_save = {"name": config.getoption("save"),
+                           "sha256": testsave.put_in(folders, config.getoption("save"),
+                                                     testsave.load(config.getoption("save")), say=err)}
+    names = testpack.names_of(config.getoption("pack"))
+    if not names:
+        return
+    import kit_pair
+    import lanes as L
+    nup = config.getoption("pack_game") or kit_pair.find_game_file(L.kit_root())
+    ctx = testpack.Ctx(tools=os.path.dirname(AUTOTEST), romfs=romfs, game_nup=nup, lane=lane,
+                       say=lambda m: print("lane%d %s" % (lane, m), file=sys.stderr, flush=True))
+    made = testpack.make(names, out, ctx)
+    config._bt_pack = testpack.put_in(folders, made, say=ctx.say)
+
+
+def _pack_out(config, folders):
+    """This run's pack out of each game; a failure is noted in the summary (pack_out_errors), never raised (a
+    finally must not hide the test's own error)."""
+    errs = []
+    for f in folders:
+        try:
+            testpack.undo(f, say=lambda m: print(m, file=sys.stderr, flush=True))
+        except (testpack.PackError, OSError) as e:
+            errs.append(str(e))
+        try:
+            testsave.undo(f, say=lambda m: print(m, file=sys.stderr, flush=True))
+        except (testsave.SaveProfileError, OSError) as e:
+            errs.append(str(e))
+    if errs:
+        config._bt_pack_out = errs
+
+
+def _stop_own_session(session, began):
+    """live.py stop of the session lane_pair's start wrote; None when there is none of this run (the start was refused
+    before it wrote session.json: no game, no watchdog, no lock). A failed stop is the answer, never an exception
+    (the finally that calls it must not hide the test's own error)."""
     try:
-        return json.loads(p.stdout)
-    except ValueError:
-        return {"ok": False, "error": "live.py %s: exit %s: %s" % (args[0], p.returncode, (p.stderr or p.stdout)[-600:])}
+        with open(os.path.join(session, "session.json"), encoding="utf-8") as f:
+            started = float((json.load(f) or {}).get("started") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    if started < began - 1:       # (an earlier run's session in the same --out: not ours)
+        return None
+    try:
+        return _live(["stop", "--session", session], timeout=180)
+    except Exception as e:        # (e.g. subprocess.TimeoutExpired)
+        return {"ok": False, "error": "live.py stop: %s" % e}
+
+
+CRASH_LINE = "CRASH: exception"   # the crash line a game's module log gets (review-c123-7: not any 'CRASH' mention)
 
 
 def _crash_why(session):
-    """'; A: CRASH: ...' from each game's module log of the session (session.json's games.X.log), first CRASH line
-    each: a boot that failed because a game crashed says so in its SETUP-FAIL."""
+    """'; A: CRASH: ...' for each game of the session that crashed: the first 'CRASH: exception' line of its module
+    log (session.json's games.X.log), or else a crash report the game wrote since the session started
+    (<its folder>/bug-reports/pending/crash-*.txt newer than session.json's 'started'; pganon-cct-287-3 10:23: a game
+    can crash with no module line). A failed boot with either is a GameCrash (FAIL), not a SETUP-FAIL."""
     try:
         with open(os.path.join(session, "session.json"), encoding="utf-8") as f:
-            games = json.load(f).get("games") or {}
+            s = json.load(f)
     except (OSError, ValueError):
         return ""
+    games, since = s.get("games") or {}, float(s.get("started") or 0)
     out = []
     for x in sorted(games):
-        log = (games[x] or {}).get("log")
+        g = games[x] or {}
         try:
-            with open(log, encoding="utf-8", errors="replace") as f:
-                line = next((ln.strip() for ln in f if "CRASH" in ln), None)
+            with open(g.get("log"), encoding="utf-8", errors="replace") as f:
+                line = next((ln.strip() for ln in f if CRASH_LINE in ln), None)
         except (OSError, TypeError):
             line = None
+        if not line and g.get("folder"):
+            pend = os.path.join(g["folder"], "bug-reports", "pending")
+            try:
+                new = sorted(n for n in os.listdir(pend) if re.fullmatch(r"crash-[^/]*\.txt", n)
+                             and os.path.getmtime(os.path.join(pend, n)) >= since)
+            except OSError:
+                new = []
+            if new:
+                line = "crash report %s" % os.path.join(pend, new[0])
         if line:
             out.append("%s: %s" % (x, line[:300]))
     return ("; " + "; ".join(out)) if out else ""
+
+
+def _solo_proof(pair, lane):
+    """The SOLO boot's setup proof: game A only, and its module log says co-op idle (solo.IDLE, no session line)."""
+    try:
+        solo.prove(pair)
+    except AssertionError as e:
+        raise P.SetupFail("lane%d solo: %s" % (lane, e))
 
 
 @pytest.fixture(scope="session")
@@ -220,42 +494,83 @@ def lane_pair(request):
     out = _out_dir(config, lane)
     refs = os.path.join(HERE, "refs")
     if config.getoption("fake"):
+        folders = [os.path.join(out, "fake", "lane%d-%s" % (lane, x)) for x in ("A", "B")]   # (FakeLane's folders)
+        if os.environ.get("BT_FAKE_PACK_DIR"):    # (selftest: the fake games have a co-op pack to put files into)
+            for f in folders:
+                if not os.path.exists(os.path.join(f, testpack.MANIFEST)):
+                    shutil.copytree(os.environ["BT_FAKE_PACK_DIR"], os.path.join(f, testpack.PACK_REL),
+                                    dirs_exist_ok=True)
+        if os.environ.get("BT_FAKE_SAVE_DIR"):    # (selftest: the fake games have a save baseline)
+            for f in folders:
+                if not os.path.exists(os.path.join(f, testsave.MANIFEST)):
+                    shutil.copytree(os.environ["BT_FAKE_SAVE_DIR"], os.path.join(f, testsave.BASE), dirs_exist_ok=True)
+        try:
+            _pack_in(config, lane, folders, out, romfs="")
+        except (testpack.PackError, testsave.SaveProfileError, OSError) as e:   # (OSError: review-c123-9 nit a)
+            _pack_out(config, folders)
+            raise P.SetupFail("lane%d pack/save: %s" % (lane, e))
         if os.environ.get("BT_FAKE_BOOT_CRASH"):        # (selftest: a game crashed in the boot's save load)
+            if os.environ.get("BT_FAKE_BOOT_LOG"):      # (selftest: one line per boot tried)
+                with open(os.environ["BT_FAKE_BOOT_LOG"], "a", encoding="utf-8") as f:
+                    f.write("boot\n")
             raise GameCrash("lane%d boot: game A ended; A: %s" % (lane, os.environ["BT_FAKE_BOOT_CRASH"]))
         import fakegame
-        lanefake = fakegame.FakeLane(out)
-        pair = P.Pair(lanefake.games(), out_dir=out, refs_dir=os.environ.get("BT_FAKE_REFS", refs))
+        lanefake = fakegame.FakeLane(out, env=boot_env(config),     # (fakes/*.py hooks see the boot's switches)
+                                     fakes_dir=os.environ.get("BT_FAKE_FAKES_DIR") or fakegame.FAKES,
+                                     solo_log=(os.environ.get("BT_FAKE_SOLO_LOG") or solo.IDLE)
+                                     if config.getoption("solo") else None)
+        games = lanefake.games()
+        if config.getoption("solo"):     # (the fake A logs what the real module logs with no server: solo.IDLE)
+            games = {solo.GAME: games[solo.GAME]}
+        pair = P.Pair(games, out_dir=out, refs_dir=os.environ.get("BT_FAKE_REFS", refs))
         pair.lane, pair.info = lane, {"fake": True}
+        if config.getoption("solo"):
+            _solo_proof(pair, lane)
         yield pair
         pair.close()
         lanefake.close()
         config._bt_lane_closed = True
+        _pack_out(config, folders)
         return
     t0 = time.monotonic()
     info = _real_lane_info(config, lane)                    # (SetupFail: every test of this lane is SETUP-FAIL)
     session = os.path.join(out, "session")
-    extra = []
-    for e in boot_env(config)[2:]:
-        extra += ["--env", e]
-    started = _live(["start", "--session", session, "--lane", str(lane), "--playtest", "--server", info["server"],
-                     "--env", "LICHII_COOP_PUPPET=1", "--env", "LICHII_COOP_TEST_TO_TITLE=1"] + extra + [
-                     "--max-minutes", str(config.getoption("session_minutes")), "--idle-minutes", "15"], timeout=1200)
-    if not started.get("ok"):
-        crash = _crash_why(session)
-        why = "lane%d boot: %s%s" % (lane, started.get("error") or started.get("boot"), crash)
-        raise GameCrash(why) if crash else P.SetupFail(why)
+    began = time.time()
+    Ln = _lanes(config, lane)
+    folders = [Ln["a"], info.get("game_b") or Ln["b"]]       # (lane<N>-B-nocs with NOCS_ENV: the pack goes where B boots)
+    if config.getoption("solo"):
+        folders = folders[:1]                                 # (--solo: game A only; B is not touched)
+        if os.environ.get("LICHII_COOP_SERVER"):
+            raise P.SetupFail("--solo: this run's environment has LICHII_COOP_SERVER=%s (game A would join it)"
+                              % os.environ["LICHII_COOP_SERVER"])
     try:
+        try:                                    # (after lane_check, before the boot: test-bridge-c127-3 11:18)
+            _pack_in(config, lane, folders, out, romfs=os.path.join(Ln["a"], "romfs"))
+        except (testpack.PackError, testsave.SaveProfileError, OSError) as e:   # (OSError: review-c123-9 nit a)
+            raise P.SetupFail("lane%d pack/save: %s" % (lane, e))
+        started = _live(["start"] + boot_args(config, lane, info["server"], session), timeout=1200)
+        if not started.get("ok"):
+            crash = _crash_why(session)
+            why = "lane%d boot: %s%s" % (lane, started.get("error") or started.get("boot"), crash)
+            raise GameCrash(why) if crash else P.SetupFail(why)
         pair = P.Pair(P.read_session(session), out_dir=out, refs_dir=refs)
         pair.lane, pair.info, pair.session = lane, dict(info, boot_s=round(time.monotonic() - t0, 1)), session
-        for x in ("A", "B"):
+        for x in pair.c:
             h = pair.c[x].hello()
             if not h.get("control"):
                 raise P.SetupFail("lane%d %s: the bridge has no Longshot control (HOS_CONTROL)" % (lane, x))
+        if config.getoption("solo"):
+            _solo_proof(pair, lane)
         yield pair
         pair.close()
     finally:
-        stopped = _live(["stop", "--session", session], timeout=180)
-        config._bt_lane_closed = stopped
+        # EVERY way out stops the session this run started: a refused or misread start, a boot that did not play, a
+        # crash, a hello without control, a live.py start timeout, the tests' end (C #133 11:2x: party-hud-bridge-
+        # fa63e90f's 11:05 SETUP-FAIL raised before this try, both lane-2 games stayed up, 47 GB commit, lane lock
+        # gone: the queue stopped). Only a session this start wrote (session.json 'started' >= began): an older
+        # session's pids.json could name pids that are another program's by now.
+        config._bt_lane_closed = _stop_own_session(session, began)
+        _pack_out(config, folders)              # (after the games are closed: they hold the pack's files open)
 
 
 BASE_ENV = ["LICHII_COOP_PUPPET=1", "LICHII_COOP_TEST_TO_TITLE=1"]   # every boot (lane_pair's live.py start)
@@ -307,29 +622,25 @@ def pair(request, lane_pair):
     request.node.user_properties.append(("notes", list(lane_pair.notes)))
     missing = lane_pair.no_ref()
     if missing:
-        pytest.fail("NO-REF: no stored reference for %s (candidates under new/)" % ", ".join(missing), pytrace=False)
+        raise NoRef("NO-REF: no stored reference for %s (candidates under new/)" % ", ".join(missing))
 
 
 # -- results ---------------------------------------------------------------------------------------------------
 def _kind(reports):
     """One run's result from its setup / call / teardown reports."""
+    kind = lambda r: getattr(r, "bt_kind", None)      # (pytest_runtest_makereport: the exception's type)
     for r in reports:
         if r.when == "setup" and r.failed:
-            return "FAIL" if "GameCrash" in str(r.longrepr) else "SETUP-FAIL"
+            return "FAIL" if kind(r) == "crash" else "SETUP-FAIL"
         if r.when == "setup" and r.skipped:
             return "SKIP"
     for r in reports:
         if r.when == "call" and r.failed:
-            text = str(r.longrepr)
-            if "SetupFail" in text:
-                return "SETUP-FAIL"
-            if "NO-REF" in text and "AssertionError" in text:
-                return "NO-REF"
-            return "FAIL"
+            return {"setup": "SETUP-FAIL", "noref": "NO-REF"}.get(kind(r), "FAIL")
         if r.when == "call" and r.skipped:
             return "SKIP"
     for r in reports:
-        if r.when == "teardown" and r.failed and "NO-REF" in str(r.longrepr):
+        if r.when == "teardown" and r.failed and kind(r) == "noref":
             return "NO-REF"
     if any(r.failed for r in reports):
         return "FAIL"
@@ -373,12 +684,23 @@ def pytest_runtest_protocol(item, nextitem):
     t0 = time.monotonic()
     reports = runtestprotocol(item, nextitem=nextitem, log=False)
     kind, first = _kind(reports), None
-    if kind == "FAIL" and not item.config.getoption("no_rerun") and not _past_deadline(item.config):
+    # a FAIL reruns once, but never one from set-up (the lane's boot: a GameCrash): that would boot the lane again
+    in_setup = any(r.when == "setup" and r.failed for r in reports)
+    if kind == "FAIL" and not in_setup and not item.config.getoption("no_rerun") and not _past_deadline(item.config):
         first = reports
-        reports = runtestprotocol(item, nextitem=nextitem, log=False)
-        kind = "FLAKY" if _kind(reports) == "PASS" else "FAIL"
-        if kind == "FLAKY":
-            reports = first          # (the failure is what the summary keeps: a FLAKY is never shown as a pass)
+        again = runtestprotocol(item, nextitem=nextitem, log=False)
+        rerun = _kind(again)
+        kind = "FLAKY" if rerun == "PASS" else "FAIL"
+        reports = first      # (ALWAYS the first run's failure: review-rows-c130 11:10, a FAIL-then-SKIP kept the
+        #                      SKIP's empty why; the rerun's own result goes into the row as 'rerun')
+        def _why(r):          # (a skip's longrepr is a (file, line, message) tuple: review-c123-9 nit)
+            lr = r.longrepr
+            if isinstance(lr, tuple) and len(lr) == 3:
+                return str(lr[2])
+            return str(getattr(getattr(lr, "reprcrash", None), "message", None) or lr)
+        rerun_why = next((" ".join(_why(r).split())[:200] for r in again if r.failed or r.skipped), "")
+        for r in reports:
+            r.user_properties.append(("rerun", "%s%s" % (rerun, (": " + rerun_why) if rerun_why else "")))
     secs = round(time.monotonic() - t0, 1)
     why = ""
     for r in reports:
@@ -407,6 +729,7 @@ def pytest_runtest_logreport(report):
     if cfg is not None:
         cfg._bt_rows.append({"test": report.nodeid, "result": props["result"], "seconds": props.get("seconds"),
                              "why": props.get("why", ""), "shots": props.get("shots", []),
+                             "notes": props.get("notes", []), "rerun": props.get("rerun"),
                              "worker": getattr(report, "node", None) and getattr(report.node, "gateway", None)
                              and report.node.gateway.id})
 
@@ -421,12 +744,19 @@ def pytest_testnodedown(node, error):
     config = node.config
     seen = {d["test"] for d in config._bt_deselected}
     tr = config.pluginmanager.get_plugin("terminalreporter")
-    for d in (getattr(node, "workeroutput", None) or {}).get("bt_deselected") or []:
+    wo = getattr(node, "workeroutput", None) or {}
+    config._bt_pack.update(wo.get("bt_pack") or {})
+    if wo.get("bt_save"):
+        config._bt_save = dict(wo["bt_save"], sha256=dict(config._bt_save.get("sha256") or {}, **wo["bt_save"]["sha256"]))
+    config._bt_game_b.update(wo.get("bt_game_b") or {})
+    if wo.get("bt_pack_out"):
+        config._bt_pack_out = list(getattr(config, "_bt_pack_out", None) or []) + list(wo["bt_pack_out"])
+    for d in wo.get("bt_deselected") or []:
         if d["test"] in seen:
             continue
         seen.add(d["test"])
         config._bt_deselected.append(d)
-        line = "deselected: needs_env %s %s" % (" ".join(d["needs_env"]), d["test"])
+        line = _deselect_line(d)
         tr.write_line(line) if tr else print(line)
 
 
@@ -436,11 +766,17 @@ def pytest_sessionstart(session):
 
 def pytest_sessionfinish(session, exitstatus):
     config = session.config
+    if config.option.collectonly:
+        return     # (--collect-only: no summary, no ingame-out/, pytest's own exit status: test-speed-c127-4)
     if getattr(config, "_bt_setup", None) is not None:
         session.exitstatus = 0 if config._bt_setup["ok"] else 1      # (--lane-check-only: no summary.json)
         return
     if hasattr(config, "workerinput"):
-        config.workeroutput["bt_deselected"] = list(config._bt_deselected)   # (merged by the controller, below)
+        config.workeroutput["bt_deselected"] = list(config._bt_deselected)
+        config.workeroutput["bt_pack"] = dict(config._bt_pack)
+        config.workeroutput["bt_save"] = dict(config._bt_save)
+        config.workeroutput["bt_game_b"] = dict(config._bt_game_b)
+        config.workeroutput["bt_pack_out"] = list(getattr(config, "_bt_pack_out", None) or [])   # (merged by the controller, below)
         return     # (xdist: the controller writes the one summary)
     rows = config._bt_rows
     counts = {k: sum(1 for r in rows if r["result"] == k) for k in RESULTS}
@@ -449,7 +785,11 @@ def pytest_sessionfinish(session, exitstatus):
     summary = {"started": config._bt_started, "minutes": round((time.time() - config._bt_started) / 60, 2),
                "lanes": config.getoption("lanes"), "fake": bool(config.getoption("fake")),
                "repeat": config.getoption("repeat"), "counts": counts, "tests": rows,
-               "identity": {"env": boot_env(config), "expect_commit": config.getoption("expect_commit")},
+               "identity": {"env": boot_env(config), "expect_commit": config.getoption("expect_commit"),
+                            "boot": dict(boot_identity(config.getoption("boot")), name=config.getoption("boot")),
+                            "pack": config._bt_pack, "nocs": nocs_wanted(config), "game_b": config._bt_game_b,
+                            "save": config._bt_save, "solo": bool(config.getoption("solo"))},
+               "pack_out_errors": getattr(config, "_bt_pack_out", None),
                "deselected": config._bt_deselected,
                "stopped": getattr(config, "_bt_stopped", None),
                "lane_closed": getattr(config, "_bt_lane_closed", None),
@@ -466,3 +806,19 @@ def pytest_sessionfinish(session, exitstatus):
         f.write("\n".join(lines) + "\n")
     if summary["verdict"] != "PASS" and session.exitstatus == 0:
         session.exitstatus = 1        # (NOT-RUN / SKIP rows are pytest skips: a NOT PASS run never exits 0)
+    print(result_line(summary), flush=True)   # (stdout: the queue's log shows the reason, never NO-REASON)
+
+
+def result_line(summary):
+    """The run's one line: 'RESULT: PASS', 'RESULT: SETUP-FAIL <why>' when nothing got past set-up, else
+    'RESULT: NOT PASS <counts>; first: <test> <why>'."""
+    rows, c = summary["tests"], summary["counts"]
+    if rows and c["PASS"] == len(rows):
+        return "RESULT: PASS (%d tests, %.1f min)" % (len(rows), summary["minutes"])
+    if not rows:
+        return "RESULT: NOT PASS (no test ran%s)" % ("; deselected %d" % len(summary.get("deselected") or []))
+    counts = ", ".join("%s %d" % (k, v) for k, v in c.items() if v)
+    bad = next(r for r in rows if r["result"] != "PASS")
+    if c["SETUP-FAIL"] == len(rows):
+        return "RESULT: SETUP-FAIL %s" % bad["why"]
+    return "RESULT: NOT PASS (%s); first: %s %s %s" % (counts, bad["test"], bad["result"], bad["why"][:300])

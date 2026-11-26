@@ -129,7 +129,7 @@ jobs:
       - name: Play-test bridge client and MCP tools tests (fake bridge)
         run: python tools/autotest/tests/test_playtest_bridge.py -v
       # (it plays tools/autotest/ingame/test_smoke.py, tools/autotest/ingame/test_rows.py and
-      # tools/autotest/ingame/test_leather_link.py on two fake bridges)
+      # tools/autotest/ingame/test_gear_link.py and tools/autotest/ingame/test_leather_link.py on two fake bridges)
       - name: In-game test system selftests (fake games, no game)
         run: python tools/autotest/tests/test_ingame.py -v
       - name: Test game window placement tests
