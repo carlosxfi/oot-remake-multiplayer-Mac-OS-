@@ -403,6 +403,83 @@ class DeadlineMin(unittest.TestCase):
         self.assertIsNone(s["stopped"])
 
 
+STOP_CONFTEST = """import json, os, subprocess, sys, time
+sys.path.insert(0, %r)
+import bt_plugin as B
+pytest_plugins = ['bt_plugin']
+LOG, MODE = os.environ['BT_STOP_LOG'], os.environ['BT_START_MODE']
+
+def fake_live(args, timeout):
+    with open(LOG, 'a') as f:
+        f.write(args[0] + ' ')
+    if args[0] != 'start':
+        return {'ok': True, 'ended': 'stop asked'}
+    sess = args[args.index('--session') + 1]
+    if MODE not in ('refused', 'stale'):          # (live.py start wrote its session: games may be up)
+        os.makedirs(sess, exist_ok=True)
+        with open(os.path.join(sess, 'session.json'), 'w') as f:
+            json.dump({'started': time.time(), 'games': {}}, f)
+    if MODE == 'timeout':
+        raise subprocess.TimeoutExpired('live.py start', timeout)
+    if MODE == 'misread':                         # (C #132 11:05: games booted, the answer not read)
+        return {'ok': False, 'error': 'live.py start: exit 0, no JSON answer: ... renderer ready'}
+    if MODE == 'played':
+        return {'ok': False, 'boot': 'FAILED (see steps.txt): the session is closed'}
+    return {'ok': False, 'lock': 'not taken', 'error': 'refused before the session'}
+
+B._live = fake_live
+B._real_lane_info = lambda config, lane: {'server': 'srv', 'commit': 'abc'}
+"""
+
+
+class BootStopsSession(unittest.TestCase):
+    """C #133 (party-hud-bridge-fa63e90f 11:05: a SETUP-FAIL boot left both lane-2 games running): every way out of
+    lane_pair's boot runs live.py stop on the session its start wrote; none when the start wrote no session, or the
+    session.json there is an earlier run's (its pids may be another program's now)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.dir, self.out = os.path.join(self.tmp, "t"), os.path.join(self.tmp, "o")
+        os.makedirs(self.dir)
+        with open(os.path.join(self.dir, "conftest.py"), "w", encoding="utf-8") as f:
+            f.write(STOP_CONFTEST % INGAME)
+        with open(os.path.join(self.dir, "test_boot.py"), "w", encoding="utf-8") as f:
+            f.write("def test_one(pair):\n    pass\n\ndef test_two(pair):\n    pass\n")
+        self.log = os.path.join(self.tmp, "calls.txt")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_mode(self, mode):
+        p = pytest_run([".", "--out", self.out, "-q", "-p", "no:cacheprovider", "--expect-commit", "abc"],
+                       cwd=self.dir, env={"BT_STOP_LOG": self.log, "BT_START_MODE": mode})
+        calls = open(self.log).read().split() if os.path.exists(self.log) else []
+        return p, calls, summary(self.out)
+
+    def test_every_failed_start_that_wrote_a_session_is_stopped(self):
+        for mode in ("misread", "played", "timeout"):
+            shutil.rmtree(self.out, ignore_errors=True)
+            if os.path.exists(self.log):
+                os.remove(self.log)
+            p, calls, s = self.run_mode(mode)
+            self.assertEqual(calls, ["start", "stop"], (mode, p.stdout[-2000:]))   # one boot, one stop
+            self.assertNotEqual(s["verdict"], "PASS", mode)
+            self.assertEqual(s["lane_closed"], {"ok": True, "ended": "stop asked"}, mode)
+
+    def test_no_session_written_no_stop(self):
+        p, calls, s = self.run_mode("refused")
+        self.assertEqual(calls, ["start"], p.stdout[-2000:])
+        self.assertEqual(set(results(s).values()), {"SETUP-FAIL"})
+
+    def test_an_earlier_runs_session_is_not_stopped(self):
+        sess = os.path.join(self.out, "lane1", "session")
+        os.makedirs(sess)
+        with open(os.path.join(sess, "session.json"), "w") as f:
+            json.dump({"started": 1000.0, "games": {}}, f)
+        p, calls, s = self.run_mode("stale")
+        self.assertEqual(calls, ["start"], p.stdout[-2000:])
+
+
 class HookOrder(unittest.TestCase):
     """bt_plugin's runtest protocol must answer before pytest's own (both are firstresult): without tryfirst the FLAKY
     rerun, NOT-RUN and --deadline-min logic could be skipped silently (review-c123-6, 646484a63)."""

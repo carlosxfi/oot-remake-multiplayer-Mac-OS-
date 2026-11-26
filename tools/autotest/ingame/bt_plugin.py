@@ -307,6 +307,23 @@ def _live(args, timeout):
         args[0], p.returncode, " ".join((p.stderr or p.stdout or "").split())[-600:])}
 
 
+def _stop_own_session(session, began):
+    """live.py stop of the session lane_pair's start wrote; None when there is none of this run (the start was refused
+    before it wrote session.json: no game, no watchdog, no lock). A failed stop is the answer, never an exception
+    (the finally that calls it must not hide the test's own error)."""
+    try:
+        with open(os.path.join(session, "session.json"), encoding="utf-8") as f:
+            started = float((json.load(f) or {}).get("started") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    if started < began - 1:       # (an earlier run's session in the same --out: not ours)
+        return None
+    try:
+        return _live(["stop", "--session", session], timeout=180)
+    except Exception as e:        # (e.g. subprocess.TimeoutExpired)
+        return {"ok": False, "error": "live.py stop: %s" % e}
+
+
 CRASH_LINE = "CRASH: exception"   # the crash line a game's module log gets (review-c123-7: not any 'CRASH' mention)
 
 
@@ -368,12 +385,13 @@ def lane_pair(request):
     t0 = time.monotonic()
     info = _real_lane_info(config, lane)                    # (SetupFail: every test of this lane is SETUP-FAIL)
     session = os.path.join(out, "session")
-    started = _live(["start"] + boot_args(config, lane, info["server"], session), timeout=1200)
-    if not started.get("ok"):
-        crash = _crash_why(session)
-        why = "lane%d boot: %s%s" % (lane, started.get("error") or started.get("boot"), crash)
-        raise GameCrash(why) if crash else P.SetupFail(why)
+    began = time.time()
     try:
+        started = _live(["start"] + boot_args(config, lane, info["server"], session), timeout=1200)
+        if not started.get("ok"):
+            crash = _crash_why(session)
+            why = "lane%d boot: %s%s" % (lane, started.get("error") or started.get("boot"), crash)
+            raise GameCrash(why) if crash else P.SetupFail(why)
         pair = P.Pair(P.read_session(session), out_dir=out, refs_dir=refs)
         pair.lane, pair.info, pair.session = lane, dict(info, boot_s=round(time.monotonic() - t0, 1)), session
         for x in ("A", "B"):
@@ -383,8 +401,12 @@ def lane_pair(request):
         yield pair
         pair.close()
     finally:
-        stopped = _live(["stop", "--session", session], timeout=180)
-        config._bt_lane_closed = stopped
+        # EVERY way out stops the session this run started: a refused or misread start, a boot that did not play, a
+        # crash, a hello without control, a live.py start timeout, the tests' end (C #133 11:2x: party-hud-bridge-
+        # fa63e90f's 11:05 SETUP-FAIL raised before this try, both lane-2 games stayed up, 47 GB commit, lane lock
+        # gone: the queue stopped). Only a session this start wrote (session.json 'started' >= began): an older
+        # session's pids.json could name pids that are another program's by now.
+        config._bt_lane_closed = _stop_own_session(session, began)
 
 
 BASE_ENV = ["LICHII_COOP_PUPPET=1", "LICHII_COOP_TEST_TO_TITLE=1"]   # every boot (lane_pair's live.py start)
