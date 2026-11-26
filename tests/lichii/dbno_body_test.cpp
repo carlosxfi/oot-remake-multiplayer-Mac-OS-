@@ -606,7 +606,7 @@ TEST_CASE("dbno body (row 190 + PR #308): slot-busy waits are noted three times 
     CHECK(c.Totals().refused == 0);  // (3 is not a refusal)
 }
 
-TEST_CASE("dbno body: a child is never played a pose (the crawl has its own clips)") {
+TEST_CASE("dbno body: a child whose game crawl runs is played no pose (the crawl has its own clips)") {
     Guest g;
     MakeAs(g, "Wait", 1.0f);
     Crawl c;
@@ -1232,30 +1232,55 @@ TEST_CASE("dbno body: issue 337, a child's Crawl is asked only when the game its
     CHECK(c.GameCrawl());
     CHECK(c.Skip(kBsa, Req(verb::kWait), false));
 
-    // It ends (slot 0 is no crawl command): after kCrawlStartReads frames the slot is the game's again.
+    // It ends by itself (room to stand up: slot 0 leaves the crawl's commands). Part 2: the slot stays ours,
+    // the game's lying wait is played on slot 0, and no Crawl is asked again in this down.
+    CHECK_FALSE(c.LaidDown());
     SetAs(g, "Wait", 1.0f);
     SetDoAction(g, 0);
-    for (int i = 0; i < Crawl::kCrawlStartReads; ++i) {
-        CHECK(Verbs(RunFrame(c, g, 4000 + 16 * i)).empty());
+    auto f = RunFrame(c, g, 4000);
+    REQUIRE(Plays(f).size() == 1);
+    CHECK(Plays(f)[0].as == "Crouch");
+    CHECK(Plays(f)[0].rate == 1.0f);
+    CHECK(Verbs(f).empty());
+    CHECK(c.LaidDown());
+    CHECK(c.Totals().crawl_ended == 1);
+    CHECK(c.Totals().lie_downs == 1);
+    CHECK(ReadSlot0(g, kActor)->name == "Crouch");
+    std::uint64_t t = 4000;
+    SetDoAction(g, addr::kDoActionCrawl);  // (an offer changes nothing now)
+    for (int i = 0; i < 3 * Crawl::kCrawlStartReads; ++i) {
+        CHECK(c.Skip(kBsa, Req(verb::kWait), false));  // the game's own verbs stay skipped
+        CHECK(RunFrame(c, g, t += 16).empty());        // held: nothing played, nothing asked
     }
-    CHECK_FALSE(c.Skip(kBsa, Req(verb::kWait), false));
-    CHECK(Verbs(RunFrame(c, g, 5000)).empty());  // no offer: no ask
-
-    // A taken Crawl that never crawls: given back, at most kMaxFalseStarts times a down.
-    SetDoAction(g, addr::kDoActionCrawl);
-    std::uint64_t t = 6000;
+    CHECK_FALSE(c.GameCrawl());  // the lying wait is ours: the pad's slow stick
+    // The game plays another command on slot 0: the lying wait is played again.
+    SetAs(g, "DamageS", 1.0f);
+    f = RunFrame(c, g, t += 16);
+    REQUIRE(Plays(f).size() == 1);
+    CHECK(Plays(f)[0].as == "Crouch");
+    CHECK(c.Totals().child_poses == 2);
+    // A fall is the world's: let through, nothing played in the air; back on the ground Crawl is asked
+    // again (no offer waited for) and he lies again.
+    CHECK_FALSE(c.Skip(kBsa, Req(verb::kFall), false));
+    SetAs(g, "Fall", 1.0f);
+    CHECK(Plays(RunFrame(c, g, t += 16)).empty());
+    SetDoAction(g, 0);
     int asked = 0;
-    for (int i = 0; i < 40 * Crawl::kCrawlStartReads; ++i, t += 16) {
+    for (int i = 0; i < 60; ++i) {
         c.Skip(kBsa, Req(verb::kWait), false);
-        asked += static_cast<int>(Verbs(RunFrame(c, g, t)).size());
+        f = RunFrame(c, g, t += 100);
+        asked += static_cast<int>(Verbs(f).size());
     }
-    CHECK(asked == Crawl::kMaxFalseStarts - 1);  // (the ended crawl above was this down's first)
-    CHECK_FALSE(c.Skip(kBsa, Req(verb::kWait), false));
+    CHECK(asked == 1);
+    CHECK(ReadSlot0(g, kActor)->name == "Crouch");
+    CHECK(c.Totals().lie_downs == 1);  // (one down)
 
     // Up: Wait is the game's own; the next down starts afresh.
+    SetDoAction(g, addr::kDoActionCrawl);
     c.Want(Want(false, false, false, kActor));
     SetAnchor(std::nullopt);
     RunFrame(c, g, t += 16);
+    CHECK_FALSE(c.LaidDown());
     SetAnchor(AnchorFor(true, false, false, {0, 0, 0}, identity));
     AnchorLive(Anchor()->down);
     c.Want(Want(true, false, false, kActor));
@@ -1263,5 +1288,135 @@ TEST_CASE("dbno body: issue 337, a child's Crawl is asked only when the game its
     RunFrame(c, g, t += 1000);
     c.Skip(kBsa, Req(verb::kWait), false);
     CHECK(Verbs(RunFrame(c, g, t += 16)) == std::vector<std::int32_t>{verb::kCrawl});
+    CHECK_FALSE(c.LaidDown());
     SetAnchor(std::nullopt);
+}
+
+namespace {
+// A downed child with this down's CrawlAnchor (live or not), the game's do action as given.
+void ChildDown(Crawl& c, Guest& g, bool live, std::uint32_t action) {
+    const std::array<float, 9> identity{1, 0, 0, 0, 1, 0, 0, 0, 1};
+    MakeAs(g, "DamageS", 1.0f);
+    SetDoAction(g, action);
+    c.Want(Want(false, false, false, kActor));
+    c.Skip(kBsa, Req(verb::kWait), false);  // the scheduler's slot
+    SetAnchor(std::nullopt);
+    SetAnchor(AnchorFor(true, false, false, {0, 0, 0}, identity));
+    if (live) {
+        AnchorLive(Anchor()->down);
+    }
+    c.Want(Want(true, false, false, kActor));
+}
+void SetFrame(Guest& g, float frame) {
+    g.Write(kActor + 0x5000 + CoopPuppet::addr::kSlotFrame, &frame, sizeof frame);
+}
+}  // namespace
+
+TEST_CASE("dbno body: issue 337 part 2, the crawl's own get-up plays to its end, then the child is laid down") {
+    Guest g;
+    Crawl c;
+    ChildDown(c, g, true, addr::kDoActionCrawl);
+    std::uint64_t t = 1000;
+    c.Skip(kBsa, Req(verb::kWait), false);
+    RunFrame(c, g, t += 16);
+    c.Skip(kBsa, Req(verb::kWait), false);
+    CHECK(Verbs(RunFrame(c, g, t += 16)) == std::vector<std::int32_t>{verb::kCrawl});
+    SetAs(g, "CrouchLockOnMove", 1.0f);  // lies down
+    CHECK(RunFrame(c, g, t += 16).empty());
+    CHECK(c.GameCrawl());
+    // Room to stand up: the game gets him up. While that clip runs nothing is played.
+    SetAs(g, "CrouchLockOnMoveEnd", 1.0f);
+    for (int i = 0; i < 20; ++i) {
+        SetFrame(g, static_cast<float>(i));
+        CHECK(RunFrame(c, g, t += 16).empty());
+    }
+    CHECK(c.GameCrawl());
+    CHECK_FALSE(c.LaidDown());
+    // The clip is over (its frame stands still): the game's lying wait is played, the slot stays ours.
+    std::vector<Made> plays;
+    for (int i = 0; i < Crawl::kEndStallReads + 1 && plays.empty(); ++i) {
+        plays = Plays(RunFrame(c, g, t += 16));
+    }
+    REQUIRE(plays.size() == 1);
+    CHECK(plays[0].as == "Crouch");
+    CHECK(plays[0].rate == 1.0f);
+    CHECK(c.LaidDown());
+    CHECK(c.Totals().crawl_ended == 1);
+    CHECK(c.Skip(kBsa, Req(verb::kWait), false));
+    CHECK(RunFrame(c, g, t += 16).empty());
+    CHECK_FALSE(c.GameCrawl());
+    // In an event nothing is played (the event drives him).
+    c.Want(Want(true, true, false, kActor));
+    SetAs(g, "Demo", 1.0f);
+    CHECK(Plays(RunFrame(c, g, t += 16)).empty());
+    SetAnchor(std::nullopt);
+}
+
+TEST_CASE("dbno body: issue 337 part 2, a taken Crawl that never crawls kMaxFalseStarts times: the child is laid down") {
+    Guest g;
+    Crawl c;
+    ChildDown(c, g, true, addr::kDoActionCrawl);
+    std::uint64_t t = 1000;
+    int asked = 0;
+    for (int i = 0; i < 40 * Crawl::kCrawlStartReads; ++i) {
+        c.Skip(kBsa, Req(verb::kWait), false);
+        asked += static_cast<int>(Verbs(RunFrame(c, g, t += 16)).size());
+    }
+    CHECK(asked == Crawl::kMaxFalseStarts + 1);  // (the last one holds the slot for the lying wait)
+    CHECK(c.LaidDown());
+    CHECK(c.Totals().crawl_ended == 0);
+    CHECK(c.Totals().lie_downs == 1);
+    CHECK(ReadSlot0(g, kActor)->name == "Crouch");
+    CHECK(c.Skip(kBsa, Req(verb::kWait), false));
+    SetAnchor(std::nullopt);
+}
+
+TEST_CASE("dbno body: issue 337 part 2, no offer (or no live anchor) in kOfferWaitReads frames: the child is laid down") {
+    for (const bool live : {false, true}) {
+        Guest g;
+        Crawl c;
+        ChildDown(c, g, live, 0);
+        std::uint64_t t = 1000;
+        for (int i = 0; i < Crawl::kOfferWaitReads - 1; ++i) {
+            CHECK_FALSE(c.Skip(kBsa, Req(verb::kWait), false));  // the game's own verbs run while waiting
+            const auto f = RunFrame(c, g, t += 16);
+            CHECK(Verbs(f).empty());
+            CHECK(Plays(f).empty());
+        }
+        CHECK_FALSE(c.LaidDown());
+        int asked = 0;
+        for (int i = 0; i < 30; ++i) {
+            c.Skip(kBsa, Req(verb::kWait), false);
+            asked += static_cast<int>(Verbs(RunFrame(c, g, t += 16)).size());
+        }
+        CHECK(asked == 1);
+        CHECK(c.LaidDown());
+        CHECK(ReadSlot0(g, kActor)->name == "Crouch");
+        CHECK(c.Totals().child_poses == 1);
+        SetAnchor(std::nullopt);
+    }
+}
+
+TEST_CASE("dbno body: issue 337 part 2, an adult is never played the child's lying wait") {
+    Guest g;
+    MakeAs(g, "Wait", 1.0f);
+    Crawl c;
+    c.Want(Want(false, false, true, kActor));
+    c.Skip(kBsa, Req(verb::kWait, 2), false);
+    c.Want(Want(true, false, true, kActor));
+    RunFrame(c, g, 984);
+    c.Skip(kBsa, Req(verb::kWait, 2), false);
+    CHECK(Verbs(RunFrame(c, g, 1000)) == std::vector<std::int32_t>{verb::kCrawl});
+    std::uint64_t t = 1000;
+    for (const char* name : {"CrouchLockOnMove", "CrouchLockOnMoveEnd", "Wait", "Crouch"}) {
+        SetAs(g, name, 1.0f);
+        for (int i = 0; i < 5; ++i) {
+            for (const Made& m : Plays(RunFrame(c, g, t += 16))) {
+                CHECK(m.as == "DamageLStand");
+            }
+        }
+        CHECK(ReadSlot0(g, kActor)->name == "DamageLStand");
+    }
+    CHECK_FALSE(c.LaidDown());
+    CHECK(c.Totals().child_poses == 0);
 }
