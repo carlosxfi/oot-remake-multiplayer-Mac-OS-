@@ -1705,7 +1705,7 @@ function Set-KitCharacterSelectChoice([string]$Kit, [string]$Value) {
 # The question at a start (owner, 0.11.9: the NPC characters are an opt-in download): Y is yes; Enter, N or no key in
 # $Seconds is no. No console (input redirected: a scripted or unattended start) is no. $ReadKey: tests (a scriptblock
 # giving a key object or $null). The Characters page itself comes with every kit either way.
-# The kit's one rule for a timed question (launcher-clarity, 0.11.13): its line says what Y does, what N does and what
+# The kit's one rule for a timed question (launcher-clarity, 0.12.0): its line says what Y does, what N does and what
 # no key does, with the seconds left; after the answer one line says what happened and how to change it later.
 function Read-KitCharacterSelectAnswer([int]$Seconds = 15, [scriptblock]$ReadKey = $null) {
     $q = 'NPC characters: press Y to download them, N to skip'
@@ -2490,7 +2490,7 @@ function Test-KitCharacterSelectHasNpc([string]$ModsDir, [string]$Folder) {
     return ($f.Count -lt 5 -or $f[4] -eq 'full')
 }
 
-# "Uninstall Character Select.bat" / "Reinstall Character Select.bat" (owner, 0.11.13): the answer they set, kept and
+# "Uninstall Character Select.bat" / "Reinstall Character Select.bat" (owner, 0.12.0): the answer they set, kept and
 # in coop-options.ini's line when it has one. The start that follows does the work with the step below (the same
 # install, the same keep-until-built and undo): Uninstall = 'off' (his mod taken out of the game, the game built
 # without it, nothing put back until Reinstall); Reinstall = his copy set aside (the download zip too, so it is fetched

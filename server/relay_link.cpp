@@ -261,7 +261,7 @@ std::optional<RoomList> list_rooms_on_relay(const ENetAddress& relay, const std:
         result->proofs_answered = true;
       }
     }
-    // The tags (row 281: what world each room plays), the same way; a relay before 0.11.13 never answers.
+    // The tags (row 281: what world each room plays), the same way; a relay before 0.12.0 never answers.
     if (ask_tags && result && !result->rooms.empty()) {
       if (const auto t = ask_page(s, relay, 0, stop, Kind::kListTags, 2, 500)) {
         result->tags = t->tags;

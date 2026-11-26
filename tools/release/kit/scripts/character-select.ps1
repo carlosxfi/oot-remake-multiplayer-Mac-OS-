@@ -1,4 +1,4 @@
-# "Uninstall Character Select.bat" and "Reinstall Character Select.bat" (owner, 0.11.13): Snail's mod (Character Select,
+# "Uninstall Character Select.bat" and "Reinstall Character Select.bat" (owner, 0.12.0): Snail's mod (Character Select,
 # the - menu's Characters page and its NPC characters) out of the game, or downloaded and made again. This only sets the
 # kit's answer (kit-paths.ps1 Set-KitCharacterSelectFiles); "Start Squadala.bat", which the .bat runs next, does the
 # work with its own step (the same install, rebuild and undo as any start). Saves, settings and your character pick stay.

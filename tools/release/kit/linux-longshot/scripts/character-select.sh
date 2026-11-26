@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# uninstall-character-select.sh and reinstall-character-select.sh (owner, 0.11.13; kit-paths.ps1 Set-KitCharacterSelectFiles):
+# uninstall-character-select.sh and reinstall-character-select.sh (owner, 0.12.0; kit-paths.ps1 Set-KitCharacterSelectFiles):
 # Snail's mod (Character Select, the - menu's Characters page and its NPC characters) out of the game, or downloaded and
 # made again. This only sets the kit's answer; start-squadala.sh, run next, does the work in build.sh charsel_step (the
 # same install, rebuild and undo as any start). Saves, settings and your character pick stay. $1: uninstall | reinstall.
