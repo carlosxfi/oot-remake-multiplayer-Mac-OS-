@@ -104,7 +104,7 @@ def pytest_configure(config):
                             "--env lacks them deselects it (named in the output and summary.json 'deselected')")
     config.addinivalue_line("markers", "needs_pack(*NAMES): pack files the test needs (testpack.py); a run whose "
                             "--pack lacks one deselects it")
-    config._bt_rows, config._bt_deselected, config._bt_pack = [], [], {}
+    config._bt_rows, config._bt_deselected, config._bt_pack, config._bt_game_b = [], [], {}, {}
     if config.getoption("lane_check_only") and getattr(config.option, "numprocesses", None):
         raise pytest.UsageError("--lane-check-only runs in one process: leave out -n (it checks every --lanes lane)")
     boot_env(config)        # (a malformed --env stops the run before any boot)
@@ -224,14 +224,36 @@ def boot_args(config, lane, server, session):
             "--no-load"]
     for e in boot_env(config):
         args += ["--env", e]
+    if nocs_wanted(config):           # (live.py resolve: --game-b wins over the lane's B with --lane)
+        args += ["--game-b", _lanes(config, lane)["b_nocs"]]
     return args + ["--max-minutes", str(config.getoption("session_minutes")), "--idle-minutes", "15"]
 
 
+NOCS_ENV = "B:COOP_TEST_NO_CHARACTER_SELECT=1"   # (tools/autotest/ingame/no_cs.py ENV, the tests' one switch)
+
+
+def nocs_wanted(config):
+    """Game B boots from lane<N>-B-nocs (lanes.py nocs: no Character Select) when the run's --env gives NOCS_ENV."""
+    return env_has(boot_env(config), NOCS_ENV)
+
+
+def _lanes(config, lane):
+    import lanes as L
+    return L.lane(lane, os.path.dirname(config.getoption("kit_ls")) if config.getoption("kit_ls") else None)
+
+
 def _real_lane_info(config, lane):
-    """A real lane's setup proof before any boot: lane-server.txt twin (P.lane_check) + the module commit."""
+    """A real lane's setup proof before any boot: lane-server.txt twin (P.lane_check) + the module commit. With
+    NOCS_ENV game B is lane<N>-B-nocs (P.nocs_check: lane B's module, commit and server, no Character Select code)."""
     import lanes as L
     kit_ls = config.getoption("kit_ls") or os.path.join(L.kit_root(), "ls")
-    info = P.lane_check(kit_ls, lane)
+    try:
+        info = P.lane_check(kit_ls, lane, nocs=nocs_wanted(config))
+    except P.SetupFail as e:
+        if nocs_wanted(config) and not os.path.isfile(os.path.join(_lanes(config, lane)["b_nocs"], L.SERVER_TXT)):
+            raise P.SetupFail("%s (make it first: lanes.py nocs --lane %d)" % (e, lane))
+        raise
+    config._bt_game_b[str(lane)] = {"folder": os.path.basename(info["game_b"]), "exefs": info.get("game_b_exefs", "")}
     want = config.getoption("expect_commit")
     if not want:
         raise P.SetupFail("--expect-commit is required on a real lane (worker-rules SETUP PROOF: the right module sha)")
@@ -443,9 +465,8 @@ def lane_pair(request):
     info = _real_lane_info(config, lane)                    # (SetupFail: every test of this lane is SETUP-FAIL)
     session = os.path.join(out, "session")
     began = time.time()
-    import lanes as L
-    Ln = L.lane(lane, os.path.dirname(config.getoption("kit_ls")) if config.getoption("kit_ls") else None)
-    folders = [Ln["a"], Ln["b"]]
+    Ln = _lanes(config, lane)
+    folders = [Ln["a"], info.get("game_b") or Ln["b"]]       # (lane<N>-B-nocs with NOCS_ENV: the pack goes where B boots)
     try:
         try:                                    # (after lane_check, before the boot: test-bridge-c127-3 11:18)
             _pack_in(config, lane, folders, out, romfs=os.path.join(Ln["a"], "romfs"))
@@ -647,6 +668,7 @@ def pytest_testnodedown(node, error):
     tr = config.pluginmanager.get_plugin("terminalreporter")
     wo = getattr(node, "workeroutput", None) or {}
     config._bt_pack.update(wo.get("bt_pack") or {})
+    config._bt_game_b.update(wo.get("bt_game_b") or {})
     if wo.get("bt_pack_out"):
         config._bt_pack_out = list(getattr(config, "_bt_pack_out", None) or []) + list(wo["bt_pack_out"])
     for d in wo.get("bt_deselected") or []:
@@ -672,6 +694,7 @@ def pytest_sessionfinish(session, exitstatus):
     if hasattr(config, "workerinput"):
         config.workeroutput["bt_deselected"] = list(config._bt_deselected)
         config.workeroutput["bt_pack"] = dict(config._bt_pack)
+        config.workeroutput["bt_game_b"] = dict(config._bt_game_b)
         config.workeroutput["bt_pack_out"] = list(getattr(config, "_bt_pack_out", None) or [])   # (merged by the controller, below)
         return     # (xdist: the controller writes the one summary)
     rows = config._bt_rows
@@ -683,7 +706,7 @@ def pytest_sessionfinish(session, exitstatus):
                "repeat": config.getoption("repeat"), "counts": counts, "tests": rows,
                "identity": {"env": boot_env(config), "expect_commit": config.getoption("expect_commit"),
                             "boot": dict(boot_identity(config.getoption("boot")), name=config.getoption("boot")),
-                            "pack": config._bt_pack},
+                            "pack": config._bt_pack, "nocs": nocs_wanted(config), "game_b": config._bt_game_b},
                "pack_out_errors": getattr(config, "_bt_pack_out", None),
                "deselected": config._bt_deselected,
                "stopped": getattr(config, "_bt_stopped", None),

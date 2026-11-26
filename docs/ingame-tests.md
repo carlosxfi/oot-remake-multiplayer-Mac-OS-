@@ -68,6 +68,19 @@ sha256 on each game, and `summary.json` `identity.pack` is `{name: {rel: sha256}
 or without `--pack`. A test that needs a pack: `@pytest.mark.needs_pack(NAME)`; a run without that `--pack`
 deselects it (`deselected: needs_pack NAME <test>`). A maker that fails is a SETUP-FAIL, and the lane is left as it was.
 
+Game B without Character Select: `--env B:COOP_TEST_NO_CHARACTER_SELECT=1` (the switch in
+`tools/autotest/ingame/no_cs.py`) boots game B from `lane<N>-B-nocs` instead of `lane<N>-B`. That folder is made
+only when someone asks for it, with `python -I tools/autotest/lanes.py nocs --lane N` (`--dry-run` first). It is
+made from lane B: hard links for every file no game writes, copies of the rest, but without the
+`mods/OoT Character Select` folder and its `coop-mods.list` rows. It gets its own co-op pack, made with the lane
+module commit's pack tool (`wt-module-<sha8>`), which then has co-op's own Characters tab and its code patch. It
+also gets the game from the hs cache that was built with that patch instead of his. A cache miss is an error,
+because `nocs` never builds a game. Its `lane-server.txt` is written last and names lane B's module, commit and
+server, plus `nocs_of=lane<N>-B`. The lane check (`pair.lane_check(..., nocs=True)`) then also requires that this
+module, commit and server are lane B's, that the game's `exefs=` line and `exefs_patches.txt` do not name Character
+Select, and that its folder is gone. `summary.json` `identity` keeps `nocs` and `game_b`
+`{lane: {folder, exefs}}`. Make the folder again after every lane prep: the check fails until you do.
+
 | Result | When |
 |---|---|
 | PASS | every assert held |

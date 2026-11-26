@@ -116,7 +116,8 @@ class Suite(unittest.TestCase):
         self.assertEqual(s["counts"]["SETUP-FAIL"], 0, p.stdout[-2000:])
         self.assertTrue(s["tests"])
         for d in s["deselected"]:
-            self.assertTrue(d["needs_env"] or d.get("needs_boot"), d)     # (pganon-cct-287-3: a boss row's boot)
+            self.assertTrue(d["needs_env"] or d.get("needs_boot") or d.get("needs_pack"), d)   # (a boss row's boot;
+            # a --pack test: port-sweep-c131-6 11:46)
 
     def test_repeat_keeps_one_boot_and_orders_by_round(self):
         out = os.path.join(self.tmp, "o")
@@ -686,6 +687,24 @@ class BootCommand(unittest.TestCase):
         for want in ("--script-a", B.BOOT_A, "--script-b", B.BOOT_B, "--no-load", "LICHII_COOP_PARTY_HUD_PROBE=1"):
             self.assertIn(want, out["runner"])
 
+    def test_nocs_switch_boots_b_from_lane_b_nocs(self):
+        """--env B:COOP_TEST_NO_CHARACTER_SELECT=1 (no_cs.py's switch): game B boots from lane<N>-B-nocs (--game-b,
+        which live.py resolve takes over the lane's B); without it, no --game-b."""
+        import bt_plugin as B
+        for env, nocs in (([], False), ([B.NOCS_ENV], True), (["COOP_TEST_NO_CHARACTER_SELECT=1"], True),
+                          (["A:COOP_TEST_NO_CHARACTER_SELECT=1"], False)):
+            class Cfg:
+                def getoption(self, name, env=env):
+                    return {"env": env, "session_minutes": 60, "boot": B.DEFAULT_BOOT, "kit_ls": self_kit}[name]
+            self_kit = os.path.join(self.tmp, "coop-kit", "ls")
+            args = B.boot_args(Cfg(), 2, "srv", "s")
+            with self.subTest(env=env):
+                self.assertEqual(B.nocs_wanted(Cfg()), nocs)
+                if nocs:
+                    self.assertEqual(args[args.index("--game-b") + 1], os.path.join(self_kit, "lane2-B-nocs"))
+                else:
+                    self.assertNotIn("--game-b", args)
+
 
 HOOK_TESTS = 'import pytest\n\ndef test_hooks(pair):\n    pair.act("A", "frob 3")\n    pair.expect_log("A", r"fake hook: frob 3 on A", max_frames=30)\n    st = pair.state("B")\n    assert any(a.get("name") == "HookActor_B" for a in st["world"]["actors"]), st["world"]\n    assert st.get("hooked") == "shared-1"\n    r = pair.call("A", "ping_hook")\n    assert r.get("pong") is True\n    pair.press("A", ["ZR"], frames=2)\n    pair.expect_log("A", r"fake hook: pressed ZR", max_frames=30)\n\n    import playtest_client as pc\n    with pytest.raises(pc.BridgeError):           # (a plain warp: the boss intro event makes it a timeout)\n        pair.warp_both("BossStage_Test")\n    st = pair.warp_both("BossStage_Test", arrive_in_event=True)\n    assert st["A"]["scene"] == st["B"]["scene"] == "BossStage_Test"\n    assert any("answered timeout in the arrival event" in n for n in pair.notes), pair.notes\n    pair.act("A", "place 0 0 0")\n    pair.call("A", "move", yaw=90, strength=1.0, frames=30)\n    assert pair.state("A")["pos"][0] == 1.0, pair.state("A")["pos"]      # (move_step: the wall at x 1.0)\n    with pytest.raises(pc.BridgeError):           # (a timeout with NO event is not an arrival: review-c123-8)\n        pair.warp_both("NoEventStage_Test", arrive_in_event=True)\n    a_scene, a_frame = pair.state("A")["scene"], pair.state("A")["frame"]\n    st = pair.warp_one("B", "KakarikoVillage_Child")      # (one game; the other stepped the same frames)\n    assert st["scene"] == "KakarikoVillage_Child" and pair.state("A")["scene"] == a_scene\n    assert pair.state("A")["frame"] > a_frame              # (A ran the frames B\'s warp took)\n'
 HOOK_MODULE = 'def setup(game):\n    game.hook_seen = []\n\ndef lane(fl):\n    fl.g["A"].shared = fl.g["B"].shared = {"n": 1}\n\ndef command(game, m):\n    if m.get("cmd") == "ping_hook":\n        return {"ok": True, "pong": True}\n    if m.get("cmd") == "warp" and m.get("scene") in ("BossStage_Test", "NoEventStage_Test"):\n        game.run(40)\n        game.scene = m["scene"]                 # (there, but the bridge says timeout: an intro event, or not)\n        return {"ok": False, "error": "timeout", "message": "still in an event"}\n    return None\n\ndef move_step(game, pos):\n    if game.scene == "BossStage_Test" and pos[0] > 1.0:\n        return [1.0, pos[1], pos[2]]\n    return None\n\ndef after(game, m, r):\n    if m.get("cmd") == "state":\n        r["hooked"] = "shared-%d" % game.shared["n"]\n\ndef press(game, buttons):\n    if "ZR" in buttons:\n        game.say("fake hook: pressed ZR")\n        return True\n    return False\n\ndef act(game, words):\n    if words[0] == "frob":\n        game.say("fake hook: frob %s on %s" % (words[1], game.tag))\n        return True\n    return False\n\ndef actors(game):\n    return [{"id": 99, "name": "HookActor_%s" % game.tag, "kind": "enemy", "pos": [0.0, 0.0, 0.0]}]\n\ndef state(game, st):\n    if game.scene == "BossStage_Test":\n        st["event"] = True                      # (its intro event runs)\n'
@@ -998,6 +1017,45 @@ class LaneCheck(unittest.TestCase):
     def test_not_installed(self):
         with self.assertRaisesRegex(P.SetupFail, "not installed by lane-game-for"):
             P.lane_check(self.tmp, 1)
+
+    # lane<N>-B-nocs (lanes.py nocs): game B without Character Select
+    def nocs_lane(self, exefs="exefs=contents/0400486024DEC000/coop-puppet/exefs/E0.ips:aa;list=none", **over):
+        for x in "AB":
+            self.make(self.tmp, x, server=self.server)
+        self.make(self.tmp, "B-nocs", server=self.server, nocs_of="lane1-B", **over)
+        with open(os.path.join(self.tmp, "lane1-B-nocs", "coop-built-from.txt"), "a", encoding="utf-8") as f:
+            f.write(exefs + "\n")
+
+    def test_nocs_good(self):
+        self.nocs_lane()
+        info = P.lane_check(self.tmp, 1, nocs=True)
+        self.assertEqual(os.path.basename(info["game_b"]), "lane1-B-nocs")
+        self.assertIn("coop-puppet/exefs", info["game_b_exefs"])
+        self.assertEqual(os.path.basename(P.lane_check(self.tmp, 1)["game_b"]), "lane1-B")   # (off by default)
+
+    def test_nocs_missing_or_not_made_from_this_lane(self):
+        for x in "AB":
+            self.make(self.tmp, x, server=self.server)
+        with self.assertRaisesRegex(P.SetupFail, "lane1-B-nocs.*not installed"):
+            P.lane_check(self.tmp, 1, nocs=True)
+        self.make(self.tmp, "B-nocs", server=self.server, nocs_of="lane2-B")
+        with self.assertRaisesRegex(P.SetupFail, "nocs_of=lane2-B"):
+            P.lane_check(self.tmp, 1, nocs=True)
+
+    def test_nocs_other_module_commit_or_cs_code(self):
+        self.nocs_lane(commit="0000000")
+        with self.assertRaisesRegex(P.SetupFail, "commit .* is not lane1-B's"):
+            P.lane_check(self.tmp, 1, nocs=True)
+        shutil.rmtree(os.path.join(self.tmp, "lane1-B-nocs"))
+        self.nocs_lane(exefs="exefs=OoT Character Select/exefs/E0.ips:bb;list=none")
+        with self.assertRaisesRegex(P.SetupFail, "built with Character Select's code"):
+            P.lane_check(self.tmp, 1, nocs=True)
+        shutil.rmtree(os.path.join(self.tmp, "lane1-B-nocs"))
+        self.nocs_lane()
+        with open(os.path.join(self.tmp, "lane1-B-nocs", "exefs_patches.txt"), "w", encoding="utf-8") as f:
+            f.write("# list\nOoT Character Select\tE0.ips\t27e24366\tcode\t\n")
+        with self.assertRaisesRegex(P.SetupFail, "exefs_patches.txt still lists"):
+            P.lane_check(self.tmp, 1, nocs=True)
 
 
 class ImageCompare(unittest.TestCase):
