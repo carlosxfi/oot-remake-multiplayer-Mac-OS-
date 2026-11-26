@@ -1179,6 +1179,11 @@ class MemwatchStop(unittest.TestCase):
         self.assertEqual({r["test_2_after"], r["test_3_after"]}, {"NOT-RUN"})
         self.assertFalse(os.path.isdir(os.path.join(self.tmp, "o", "fake")), "the fake lane was booted")
 
+    def test_a_capitalised_memory_stop_counts_too(self):
+        """offline-queue.ps1:207's -match ignores case, so the pytest side must too (review-c123-13 18:03)."""
+        s, p = self.run_tests(line="Memwatch: Free Commit under 4 GB")
+        self.assertEqual(results(s)["test_2_after"], "SETUP-FAIL", p.stdout[-2000:])
+
     def test_another_stop_lets_the_run_go_on(self):
         s, p = self.run_tests(line="stop asked by hand (runner exit)")
         self.assertEqual(set(results(s).values()), {"PASS"}, p.stdout[-2000:])

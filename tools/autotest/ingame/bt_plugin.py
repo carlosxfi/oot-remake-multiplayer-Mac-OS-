@@ -523,7 +523,7 @@ def _crash_why(session):
 #   - a lane's games that are gone without a crash (closed from outside) end the run the same way ('games-closed').
 #   - one lane boot per pytest run: a second live.py start is refused (SETUP-FAIL), whatever asked for it.
 STOP_NAME = "STOP-OFFLINE-QUEUE"
-MEM_STOP = re.compile(r"memwatch|free commit")
+MEM_STOP = re.compile(r"memwatch|free commit", re.I)   # (PowerShell -match ignores case too: review-c123-13 18:03)
 
 
 def stop_file():
