@@ -507,15 +507,17 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             const auto to = static_cast<std::size_t>(w.back().data() + w.back().size() - line.data());
             step.mark = std::string(line.substr(from, to - from));
         } else if (cmd == "MENU") {
-            // menu customize|close|host|paste|leave: the Customize page opened, the menu closed, the game hosts through the
+            // menu customize|close|host|paste|leave|main: the Customize page opened, the menu closed, the game hosts through the
             // Multiplayer page's Host (hookshot.py --host-in-game: LICHII_COOP_TEST_HOST), joins with the clipboard's
             // code as the page's "Paste code and join" (private-lobby-fix), or leaves the
-            // session as the page's Leave row does (remount-leave). Test only.
+            // session as the page's Leave row does (remount-leave), or the Multiplayer page opened and nothing pressed (its
+            // rows for a shot, row 170). Test only.
             std::string page = w.size() == 2 ? std::string(w[1]) : std::string{};
             std::transform(page.begin(), page.end(), page.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (page != "customize" && page != "close" && page != "host" && page != "paste" && page != "leave") {
-                return fail("want: menu customize|close|host|paste|leave");
+            if (page != "customize" && page != "close" && page != "host" && page != "paste" && page != "leave" &&
+                page != "main") {
+                return fail("want: menu customize|close|host|paste|leave|main");
             }
             step.kind = Kind::menu;
             step.mark = page;
@@ -1001,7 +1003,7 @@ namespace CoopTestInput {
 const std::vector<Kind>& ActKinds() {
     static const std::vector<Kind> kinds = {Kind::kill, Kind::hit,  Kind::hurt,    Kind::place, Kind::face,
                                             Kind::aim,  Kind::wear, Kind::dress,   Kind::assign, Kind::chat,
-                                            Kind::menu, Kind::setflag, Kind::setenum};
+                                            Kind::menu, Kind::setflag, Kind::setenum, Kind::verb};
     return kinds;
 }
 
