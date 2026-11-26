@@ -179,6 +179,8 @@ jobs:
         run: python tools/autotest/tests/test_groups.py -v
       - name: rc plan (both lanes) tests
         run: python tools/autotest/tests/test_rc_plan.py -v
+      - name: rc in-game tests plan + summary tests
+        run: python tools/autotest/tests/test_rc_tests.py -v
       - name: Screenshot proof tests
         run: python tools/autotest/tests/test_proof.py -v
       - name: Kit-mode autotest tests
