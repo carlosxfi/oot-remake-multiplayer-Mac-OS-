@@ -666,8 +666,7 @@ def lane_pair(request):
             _module_proof(pair, lane)
             if config.getoption("solo"):
                 _solo_proof(pair, lane)
-            else:
-                _boot_proof(config, pair, lane)
+            _boot_proof(config, pair, lane)   # (solo too: game A in play in the boot's scene; Pair helpers read pair.c)
             yield pair
         finally:
             pair.close()
@@ -705,14 +704,13 @@ def lane_pair(request):
         pair.boot = dict(zip(("A", "B"), boot_paths(config.getoption("boot"))))   # (rejoin: the lane's own boot)
         pair.window_shooter = windowshot.Shooter(session)   # (screen-shot.ps1 on the session's game pids)
         _module_proof(pair, lane)               # (before any bridge call: a game with no module refuses the connection)
-        for x in pair.c:
+        for x in pair.c:                        # (a solo pair: A only)
             h = pair.c[x].hello()
             if not h.get("control"):
                 raise P.SetupFail("lane%d %s: the bridge has no Longshot control (HOS_CONTROL)" % (lane, x))
         if config.getoption("solo"):
-            _solo_proof(pair, lane)                 # (--solo: game A only, no B to put in play)
-        else:
-            _boot_proof(config, pair, lane)         # (inside the try: a boot not in play is stopped like any other)
+            _solo_proof(pair, lane)                 # (--solo: game A only, co-op idle)
+        _boot_proof(config, pair, lane)             # (inside the try; solo too: A in play in the boot's scene)
         yield pair
         pair.close()
     finally:

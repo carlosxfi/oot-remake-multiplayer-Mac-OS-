@@ -120,6 +120,18 @@ class Suite(unittest.TestCase):
                             or d.get("needs_kit"), d)
             # (a boss row's boot; a --pack test: port-sweep-c131-6 11:46; needs_kit: the gate's kit pair)
 
+    def test_solo_run_of_the_real_suite(self):
+        """--solo on the real suite (gear-link-2): only needs_solo tests run (gear-link's solo row among them), each
+        with no stored reference NO-REF (never PASS), none SETUP-FAIL; every pair test is deselected (needs_pair)."""
+        out = os.path.join(self.tmp, "o")
+        p = pytest_run([".", "--fake", "--solo", "--out", out, "-q"], env={"BT_FAKE_REFS": os.path.join(self.tmp, "r")})
+        s = summary(out)
+        r = results(s)
+        self.assertEqual(r.get("test_gear_hidden_solo"), "NO-REF", p.stdout[-2000:])
+        self.assertEqual(s["counts"]["SETUP-FAIL"], 0, p.stdout[-2000:])
+        self.assertTrue(all(d.get("needs_pair") for d in s["deselected"]), s["deselected"])
+        self.assertGreaterEqual(len(s["deselected"]), suite_size())   # (every test a default run runs is a pair test)
+
     def test_repeat_keeps_one_boot_and_orders_by_round(self):
         out = os.path.join(self.tmp, "o")
         pytest_run([".", "--fake", "--out", out, "-q", "--repeat", "2", "--no-smoke-gate"])
