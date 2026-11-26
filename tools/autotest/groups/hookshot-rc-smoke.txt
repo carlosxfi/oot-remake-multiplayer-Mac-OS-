@@ -1,0 +1,11 @@
+# rc smoke tier (test-speed-c127, B #127 2026-11-26): ~10 min on lane 1 BEFORE an rc's rows; a broken rc stops here.
+# Played by offline/rc-two-lanes.next.ps1 (it drops to-title.now for hs-party-hud-probe's 'mark to-title-now', the
+# way offline/party-hud-probe-run.ps1 does: coop_pause.cpp LICHII_COOP_TEST_TO_TITLE, lib/to-title-trigger.ps1).
+# Covers: boot, menu -> load (run.ps1 loads the kit save first), co-op connect, warp, back to the title, load again,
+# pause menu open/close; the party-hud crash path of row-53-tot-probe-c126 (Hud::Find at menu -> loading).
+# Sources of every expect=: 'coop: connected' = hookshot-smoke.txt [g1] walk; 'back to the title asked (to-title.now)'
+# = hookshot/src/coop_pause.cpp (LOG_INFO after removing to-title.now). The gate is GO/NO-GO (no crash, every expect
+# found, run.ps1 exit 0); the shots of hs-party-hud-probe are still judged with the rc's table (logonly= says so).
+[smoke]
+walk                expect="A:coop: connected"  expect="B:coop: connected"  logonly="rc smoke gate: connect only"  timeout=600
+hs-party-hud-probe  expect="A:back to the title asked \(to-title\.now\)"  expect="B:back to the title asked \(to-title\.now\)"  logonly="rc smoke gate: flow and no crash; shots judged with the rc table"  label="load, warp, title, load again"
