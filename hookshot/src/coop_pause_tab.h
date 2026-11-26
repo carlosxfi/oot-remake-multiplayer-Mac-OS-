@@ -726,7 +726,7 @@ struct ListLine {
     // The end of `name` the player must read whole (a setting's " (restart)", a heading's page line): the module's width
     // fit (FitPut) cuts the words before it, never it; "" or not the name's end: the plain cut. `name_brief`, when not
     // "", a shorter tag that says the same and takes its place when name and tag are wider than the pane (" *").
-    std::string name_tail, name_brief;
+    std::string name_tail = {}, name_brief = {};   // (initialized: the partial ListLine{...} lists stay clean under -Wmissing-field-initializers)
 };
 
 // --- Typing with a pad: the list's rows are the keys ---
