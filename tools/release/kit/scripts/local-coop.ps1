@@ -13,8 +13,9 @@
 #  - Controllers (patch 0015, read behind other windows): game 1 pad 1 and the keyboard/mouse, game N pad N with no
 #    keyboard. A player's own choice in Multiplayer > Settings > Controller stays (coop-player.ini).
 #  - Every game in a window, side by side (2) or in quarters (3, 4) of the primary monitor; games 2..N open without
-#    taking the focus. Each runs at the same steady frame cap (coop-options.ini local_fps, 30 by default): two to four
-#    games want more than one PC gives, and Windows hands the window in front the bigger share, so the others got
+#    taking the focus. Each keeps the player's own frame cap, uncapped as a single game (as up to 0.11.12);
+#    coop-options.ini local_fps = 30 or 60 gives every game the same steady cap instead: two to four games can want
+#    more than one PC gives, and Windows hands the window in front the bigger share, so on a weak PC the others get
 #    uneven leftovers (row 83 / #245). Discord's status comes from game 1 only.
 #  - Nobody's title is pressed: each player loads a save (or presses Continue) as in any join.
 #  - Game 1 closing ends its server, so the others get the usual "the host left".
@@ -119,12 +120,15 @@ function Set-KitLocalIniValue([string]$Text, [string]$Key, [string]$Value, [swit
     return ($lines -join "`r`n")
 }
 
-# The frame cap every local game runs at: coop-options.ini local_fps = 30 or 60 (30 by default and for anything else).
+# The frame cap every local game runs at: coop-options.ini local_fps = 30 or 60 (Longshot's 30 FPS cap or the
+# console's 60), else 0: no cap of ours, each game keeps the player's own frame_rate_cap (uncapped, as up to 0.11.12).
 function Get-KitLocalFps([string]$Kit) {
     $text = ''
     try { $text = [System.IO.File]::ReadAllText((Join-Path $Kit 'coop-options.ini')) } catch { }
-    if ((Get-KitLocalIniValue $text 'local_fps') -eq '60') { return 60 }
-    return 30
+    $v = Get-KitLocalIniValue $text 'local_fps'
+    if ($v -eq '30') { return 30 }
+    if ($v -eq '60') { return 60 }
+    return 0
 }
 
 # Same file (a hard link to it, or a copy that is still the same): length and time agree.
@@ -215,7 +219,8 @@ function Test-KitLocalLinks([string]$Game, [string]$Inst) {
 
 # Player N's own files for this session (N 2 to 4): coop.ini (the session; the name kept, else "Player N"),
 # coop-player.ini (the controller: pad N and no keyboard unless the player chose another there), coop-kit.txt,
-# player-key.txt (made once), longshot_options.ini (a window, no Discord status, the pad's camera, the frame cap).
+# player-key.txt (made once), longshot_options.ini (a window, no Discord status, the pad's camera; the frame cap only
+# with local_fps, else the player's own stays).
 function Write-KitLocalPlayer([string]$Inst, [string]$Kit, [int]$Player, [int]$Port, [string]$Password, [int]$Fps) {
     $ini = Join-Path $Inst 'coop.ini'
     $before = ''
@@ -245,7 +250,9 @@ function Write-KitLocalPlayer([string]$Inst, [string]$Kit, [int]$Player, [int]$P
     $ls = Join-Path $Inst 'longshot_options.ini'
     $o = ''
     try { $o = [System.IO.File]::ReadAllText($ls) } catch { }
-    foreach ($kv in @(@('fullscreen', '0'), @('discord_status', '0'), @('mouse_camera', '0'), @('frame_rate_cap', $(if ($Fps -eq 30) { '-1' } else { '0' })))) {
+    $set = @(@('fullscreen', '0'), @('discord_status', '0'), @('mouse_camera', '0'))
+    if ($Fps -gt 0) { $set += , @('frame_rate_cap', $(if ($Fps -eq 30) { '-1' } else { '0' })) }
+    foreach ($kv in $set) {
         $o = Set-KitLocalIniValue $o $kv[0] $kv[1]
     }
     [System.IO.File]::WriteAllText($ls, $o)
@@ -337,7 +344,7 @@ function Set-KitLocalEnvironment([int]$Player, [int]$Port, [string]$Password, [i
         $env:LICHII_COOP_PAD = '1'
         $env:LICHII_COOP_KEYBOARD = 'focus'
         $env:HOS_FULLSCREEN = '0'                 # (this run only: the player's own options file stays as it is)
-        $env:HOS_FPS_MAX = "$Fps"
+        if ($Fps -gt 0) { $env:HOS_FPS_MAX = "$Fps" }   # (local_fps only: else the player's own cap)
         if ($script:KitLocalPlayer1Color) { $env:LICHII_COOP_COLOR = $script:KitLocalPlayer1Color }
     } else {
         $env:HOS_WINDOW_NOACTIVATE = '1'          # (opens behind: the focus stays where it is)
@@ -384,7 +391,7 @@ function Start-KitLocalCoop([string]$Kit, [string]$Exe, [int]$Players, [int]$Pau
         Write-Host "Local co-op: each game needs about 10 GB of RAM; this PC has $ram GB for $Players games. It may run slowly." -ForegroundColor Yellow
     }
     Write-Host "Local co-op: $Players games on this PC. Game 1 (keyboard and controller 1) hosts; games 2-$Players (controllers 2-$Players) join it."
-    Write-Host "  Every game runs at $fps FPS (coop-options.ini local_fps), so the windows not in front stay smooth."
+    if ($fps -gt 0) { Write-Host "  Every game runs at $fps FPS (coop-options.ini local_fps), so the windows not in front stay smooth." }
     Write-Host '  In each game, load your save or press Continue as usual. Closing game 1 ends the session.'
     $games = @()
     $saved = @{}
