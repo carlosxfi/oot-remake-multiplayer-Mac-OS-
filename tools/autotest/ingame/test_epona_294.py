@@ -104,6 +104,9 @@ def test_epona_complete_without_horse_is_mended(pair):
     with pair.setup():
         need_child_in_play(pair)
         if quest(pair, "A") != COMPLETE:
+            # (her first, so the set-up's own Complete is never a bare one the catch-up mends around the mark)
+            set_horse(pair, "A", EPONA)
+            pair.step_both(APPLY_FRAMES)
             pair.flag("A", QUEST, "Complete")
             pair.until("A's %s is Complete" % QUEST, lambda: quest(pair, "A") == COMPLETE, SHARE_FRAMES)
         mark = pair.log["A"].mark()
