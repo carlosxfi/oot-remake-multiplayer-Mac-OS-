@@ -89,7 +89,8 @@ def pytest_addoption(parser):
     g.addoption("--repeat", type=int, default=1, help="run every test N times on the same boot (the pilot: 10)")
     g.addoption("--no-smoke-gate", action="store_true", help="go on after a smoke test that did not pass")
     g.addoption("--no-rerun", action="store_true", help="no FLAKY rerun of a failed test")
-    g.addoption("--kit-ls", default=None, help="the lanes folder (default: lanes.py's kit root + ls)")
+    g.addoption("--kit-ls", default=None, help="the lanes folder (default: lanes.py's kit root + ls); given, the games "
+                "booted are ITS laneN-A/-B (e.g. the packaged kit's pair of the short gate) and needs_kit tests run")
     g.addoption("--expect-commit", default=None, help="SETUP-FAIL unless the lane's lane-server.txt commit starts so")
     g.addoption("--session-minutes", type=float, default=240, help="live.py --max-minutes of each lane's session")
     g.addoption("--env", action="append", default=[], metavar="NAME=VALUE", help="a game switch for this boot, set at "
@@ -117,6 +118,8 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "smoke: the rc smoke tier (runs first; a miss stops the run)")
+    config.addinivalue_line("markers", "needs_kit: a check of the PACKAGED kit (the short gate's kit pair): runs only "
+                            "with --kit-ls, deselected otherwise (the dev lanes are not the kit players install)")
     config.addinivalue_line("markers", "budget(seconds): the test's own hard deadline (default %d)" % DEFAULT_BUDGET)
     config.addinivalue_line("markers", "row(text): the rc row the test proves (in the summary)")
     config.addinivalue_line("markers", "look: a user-facing look check (bridge shots on each game, compared to refs)")
@@ -184,6 +187,8 @@ def _deselect_line(d):
         return "deselected: needs_pack %s %s" % (" ".join(d["needs_pack"]), d["test"])
     if d.get("needs_boot"):
         return "deselected: needs_boot %s %s" % (d["needs_boot"], d["test"])
+    if d.get("needs_kit"):
+        return "deselected: needs_kit (no --kit-ls) %s" % d["test"]
     return "deselected: needs_env %s %s" % (" ".join(d["needs_env"]), d["test"])
 
 
@@ -193,8 +198,9 @@ def _deselect_needs_env(config, items):
     summary --plan, makes it NOT-RUN if no session ran it):
     - needs_env: a switch this run's --env lacks;
     - needs_boot: a test boots with ONE boot (@pytest.mark.needs_boot(NAME), else DEFAULT_BOOT); a run with another
-      --boot leaves it out (a boss boot is not the Kakariko boot the smoke tier and the rows assume)."""
-    have, boot = boot_env(config), config.getoption("boot")
+      --boot leaves it out (a boss boot is not the Kakariko boot the smoke tier and the rows assume);
+    - needs_kit: a run without --kit-ls (the packaged kit's pair) leaves it out."""
+    have, boot, kit = boot_env(config), config.getoption("boot"), config.getoption("kit_ls")
     packs = set(testpack.names_of(config.getoption("pack")))
     keep, drop = [], []
     for it in items:
@@ -215,6 +221,8 @@ def _deselect_needs_env(config, items):
             config._bt_deselected.append({"test": it.nodeid, "needs_pack": no_pack, "needs_env": lack})
         elif lack:
             config._bt_deselected.append({"test": it.nodeid, "needs_env": lack})
+        elif it.get_closest_marker("needs_kit") and not kit:
+            config._bt_deselected.append({"test": it.nodeid, "needs_kit": True, "needs_env": []})
         else:
             keep.append(it)
             continue
@@ -321,8 +329,11 @@ def boot_args(config, lane, server, session):
                                                                                   "--no-load"]
     for e in boot_env(config):
         args += ["--env", e]
-    if nocs_wanted(config):           # (live.py resolve: --game-b wins over the lane's B with --lane)
-        args += ["--game-b", _lanes(config, lane)["b_nocs"]]
+    kit_ls = _opt(config, "kit_ls")
+    if kit_ls:   # (live.py start --lane N boots lanes.py's laneN folders unless --game-a/-b name others: live.py resolve)
+        args += ["--game-a", game_a_folder(config, lane)]
+    if kit_ls or nocs_wanted(config):   # (live.py resolve: --game-b wins over the lane's B with --lane; ONE --game-b)
+        args += ["--game-b", game_b_folder(config, lane)]
     return args + ["--max-minutes", str(config.getoption("session_minutes")), "--idle-minutes", "15"]
 
 
@@ -334,9 +345,21 @@ def nocs_wanted(config):
     return env_has(boot_env(config), NOCS_ENV)
 
 
-def _lanes(config, lane):
+def _kit_ls(config):
+    """The ls folder this run's lane games live in: --kit-ls, else lanes.py's kit_root()/ls (what P.lane_check reads)."""
     import lanes as L
-    return L.lane(lane, os.path.dirname(config.getoption("kit_ls")) if config.getoption("kit_ls") else None)
+    return _opt(config, "kit_ls") or os.path.join(L.kit_root(), "ls")
+
+
+def game_a_folder(config, lane):
+    """Game A's folder for this lane: <kit ls>/lane<N>-A, the folder boot_args boots and P.lane_check proves."""
+    return os.path.join(_kit_ls(config), "lane%d-A" % lane)
+
+
+def game_b_folder(config, lane):
+    """Game B's folder for this lane: <kit ls>/lane<N>-B, lane<N>-B-nocs with NOCS_ENV = the folder
+    P.lane_check(kit_ls, lane, nocs) proves (pair.py NOCS)."""
+    return os.path.join(_kit_ls(config), "lane%d-B%s" % (lane, P.NOCS if nocs_wanted(config) else ""))
 
 
 def _real_lane_info(config, lane):
@@ -347,7 +370,7 @@ def _real_lane_info(config, lane):
     try:
         info = P.lane_check(kit_ls, lane, nocs=nocs_wanted(config))
     except P.SetupFail as e:
-        if nocs_wanted(config) and not os.path.isfile(os.path.join(_lanes(config, lane)["b_nocs"], L.SERVER_TXT)):
+        if nocs_wanted(config) and not os.path.isfile(os.path.join(game_b_folder(config, lane), L.SERVER_TXT)):
             raise P.SetupFail("%s (make it first: lanes.py nocs --lane %d)" % (e, lane))
         raise
     config._bt_game_b[str(lane)] = {"folder": os.path.basename(info["game_b"]), "exefs": info.get("game_b_exefs", "")}
@@ -598,8 +621,8 @@ def lane_pair(request):
     info = _real_lane_info(config, lane)                    # (SetupFail: every test of this lane is SETUP-FAIL)
     session = os.path.join(out, "session")
     began = time.time()
-    Ln = _lanes(config, lane)
-    folders = [Ln["a"], info.get("game_b") or Ln["b"]]       # (lane<N>-B-nocs with NOCS_ENV: the pack goes where B boots)
+    game_a = game_a_folder(config, lane)                    # (the folders this lane boots: --kit-ls's, not its parent's)
+    folders = [game_a, info.get("game_b") or game_b_folder(config, lane)]   # (lane<N>-B-nocs with NOCS_ENV: the pack goes where B boots)
     if config.getoption("solo"):
         folders = folders[:1]                                 # (--solo: game A only; B is not touched)
         if os.environ.get("LICHII_COOP_SERVER"):
@@ -609,7 +632,7 @@ def lane_pair(request):
     mem = memsample.Sampler(session, out).start()           # (each game's commit from the boot start: C #134)
     try:
         try:                                    # (after lane_check, before the boot: test-bridge-c127-3 11:18)
-            _pack_in(config, lane, folders, out, romfs=os.path.join(Ln["a"], "romfs"))
+            _pack_in(config, lane, folders, out, romfs=os.path.join(game_a, "romfs"))
         except (testpack.PackError, testsave.SaveProfileError, OSError) as e:   # (OSError: review-c123-9 nit a)
             raise P.SetupFail("lane%d pack/save: %s" % (lane, e))
         started = _live(["start"] + boot_args(config, lane, info["server"], session), timeout=1200)

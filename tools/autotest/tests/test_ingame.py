@@ -116,8 +116,9 @@ class Suite(unittest.TestCase):
         self.assertEqual(s["counts"]["SETUP-FAIL"], 0, p.stdout[-2000:])
         self.assertTrue(s["tests"])
         for d in s["deselected"]:
-            self.assertTrue(d["needs_env"] or d.get("needs_boot") or d.get("needs_pack") or d.get("needs_solo"), d)   # (a boss row's boot;
-            # a --pack test: port-sweep-c131-6 11:46)
+            self.assertTrue(d["needs_env"] or d.get("needs_boot") or d.get("needs_pack") or d.get("needs_solo")
+                            or d.get("needs_kit"), d)
+            # (a boss row's boot; a --pack test: port-sweep-c131-6 11:46; needs_kit: the gate's kit pair)
 
     def test_repeat_keeps_one_boot_and_orders_by_round(self):
         out = os.path.join(self.tmp, "o")
@@ -704,7 +705,7 @@ class BootCommand(unittest.TestCase):
         for name in names:
             class Cfg:
                 def getoption(self, opt, name=name):
-                    return {"env": [], "session_minutes": 60, "boot": name}[opt]
+                    return {"env": [], "session_minutes": 60, "boot": name, "kit_ls": None}[opt]
             args = B.boot_args(Cfg(), 1, os.path.join(self.tmp, "coop_server.exe"), os.path.join(self.tmp, "s"))
             i = args.index("--lane")
             args[i:i + 2] = self.games()
@@ -719,7 +720,8 @@ class BootCommand(unittest.TestCase):
 
         class Cfg:
             def getoption(self, name):
-                return {"env": ["LICHII_COOP_PARTY_HUD_PROBE=1"], "session_minutes": 175, "boot": B.DEFAULT_BOOT}[name]
+                return {"env": ["LICHII_COOP_PARTY_HUD_PROBE=1"], "session_minutes": 175, "boot": B.DEFAULT_BOOT,
+                        "kit_ls": None}[name]
         args = B.boot_args(Cfg(), 1, os.path.join(self.tmp, "coop_server.exe"), os.path.join(self.tmp, "s"))
         i = args.index("--lane")
         args[i:i + 2] = self.games()
@@ -751,22 +753,38 @@ class BootCommand(unittest.TestCase):
 
     def test_nocs_switch_boots_b_from_lane_b_nocs(self):
         """--env B:COOP_TEST_NO_CHARACTER_SELECT=1 (no_cs.py's switch): game B boots from lane<N>-B-nocs (--game-b,
-        which live.py resolve takes over the lane's B); without it, no --game-b."""
+        which live.py resolve takes over the lane's B); without it and without --kit-ls, no --game-b. With --kit-ls:
+        --game-a kit/lane<N>-A and exactly ONE --game-b = kit/lane<N>-B, or kit/lane<N>-B-nocs with the switch (the
+        folder P.lane_check(kit_ls, lane, nocs) proves)."""
         import bt_plugin as B
-        for env, nocs in (([], False), ([B.NOCS_ENV], True), (["COOP_TEST_NO_CHARACTER_SELECT=1"], True),
-                          (["A:COOP_TEST_NO_CHARACTER_SELECT=1"], False)):
-            class Cfg:
-                def getoption(self, name, env=env):
-                    return {"env": env, "session_minutes": 60, "boot": B.DEFAULT_BOOT, "kit_ls": self_kit}[name]
-            self_kit = os.path.join(self.tmp, "coop-kit", "ls")
-            args = B.boot_args(Cfg(), 2, "srv", "s")
-            with self.subTest(env=env):
-                self.assertEqual(B.nocs_wanted(Cfg()), nocs)
-                if nocs:
-                    self.assertEqual(args[args.index("--game-b") + 1], os.path.join(self_kit, "lane2-B-nocs"))
-                else:
-                    self.assertNotIn("--game-b", args)
-
+        import lanes as L
+        kit = os.path.join(self.tmp, "coop-kit", "ls")
+        odd = os.path.join(self.tmp, "kit-pair")      # (a --kit-ls whose leaf is not 'ls': review-c123-13 nit)
+        for kit_ls in (None, kit, odd):
+            for env, nocs in (([], False), ([B.NOCS_ENV], True), (["COOP_TEST_NO_CHARACTER_SELECT=1"], True),
+                              (["A:COOP_TEST_NO_CHARACTER_SELECT=1"], False)):
+                class Cfg:
+                    def getoption(self, name, env=env, kit_ls=kit_ls):
+                        return {"env": env, "session_minutes": 60, "boot": B.DEFAULT_BOOT, "kit_ls": kit_ls}[name]
+                args = B.boot_args(Cfg(), 2, "srv", "s")
+                with self.subTest(env=env, kit_ls=kit_ls):
+                    self.assertEqual(B.nocs_wanted(Cfg()), nocs)
+                    base = kit_ls or os.path.join(L.kit_root(), "ls")
+                    if kit_ls:
+                        self.assertEqual(args.count("--game-a"), 1)
+                        self.assertEqual(args[args.index("--game-a") + 1], os.path.join(kit_ls, "lane2-A"))
+                    else:
+                        self.assertNotIn("--game-a", args)
+                    if nocs or kit_ls:
+                        self.assertEqual(args.count("--game-b"), 1, args)
+                        self.assertEqual(args[args.index("--game-b") + 1],
+                                         os.path.join(base, "lane2-B" + ("-nocs" if nocs else "")))
+                        self.assertEqual(args[args.index("--game-b") + 1], B.game_b_folder(Cfg(), 2))
+                    else:
+                        self.assertNotIn("--game-b", args)
+                    # (lane_pair packs into game_a_folder/game_b_folder: the same folders the boot names)
+                    self.assertEqual(B.game_a_folder(Cfg(), 2), os.path.join(base, "lane2-A"))
+                    self.assertEqual(B.game_b_folder(Cfg(), 2), os.path.join(base, "lane2-B" + ("-nocs" if nocs else "")))
 
 HOOK_TESTS = 'import pytest\n\ndef test_hooks(pair):\n    pair.act("A", "frob 3")\n    pair.expect_log("A", r"fake hook: frob 3 on A", max_frames=30)\n    st = pair.state("B")\n    assert any(a.get("name") == "HookActor_B" for a in st["world"]["actors"]), st["world"]\n    assert st.get("hooked") == "shared-1"\n    r = pair.call("A", "ping_hook")\n    assert r.get("pong") is True\n    pair.press("A", ["ZR"], frames=2)\n    pair.expect_log("A", r"fake hook: pressed ZR", max_frames=30)\n\n    import playtest_client as pc\n    with pytest.raises(pc.BridgeError):           # (a plain warp: the boss intro event makes it a timeout)\n        pair.warp_both("BossStage_Test")\n    st = pair.warp_both("BossStage_Test", arrive_in_event=True)\n    assert st["A"]["scene"] == st["B"]["scene"] == "BossStage_Test"\n    assert any("answered timeout in the arrival event" in n for n in pair.notes), pair.notes\n    pair.act("A", "place 0 0 0")\n    pair.call("A", "move", yaw=90, strength=1.0, frames=30)\n    assert pair.state("A")["pos"][0] == 1.0, pair.state("A")["pos"]      # (move_step: the wall at x 1.0)\n    with pytest.raises(pc.BridgeError):           # (a timeout with NO event is not an arrival: review-c123-8)\n        pair.warp_both("NoEventStage_Test", arrive_in_event=True)\n    a_scene, a_frame = pair.state("A")["scene"], pair.state("A")["frame"]\n    st = pair.warp_one("B", "KakarikoVillage_Child")      # (one game; the other stepped the same frames)\n    assert st["scene"] == "KakarikoVillage_Child" and pair.state("A")["scene"] == a_scene\n    assert pair.state("A")["frame"] > a_frame              # (A ran the frames B\'s warp took)\n'
 HOOK_MODULE = 'def setup(game):\n    game.hook_seen = []\n\ndef lane(fl):\n    fl.g["A"].shared = fl.g["B"].shared = {"n": 1}\n\ndef command(game, m):\n    if m.get("cmd") == "ping_hook":\n        return {"ok": True, "pong": True}\n    if m.get("cmd") == "warp" and m.get("scene") in ("BossStage_Test", "NoEventStage_Test"):\n        game.run(40)\n        game.scene = m["scene"]                 # (there, but the bridge says timeout: an intro event, or not)\n        return {"ok": False, "error": "timeout", "message": "still in an event"}\n    return None\n\ndef move_step(game, pos):\n    if game.scene == "BossStage_Test" and pos[0] > 1.0:\n        return [1.0, pos[1], pos[2]]\n    return None\n\ndef after(game, m, r):\n    if m.get("cmd") == "state":\n        r["hooked"] = "shared-%d" % game.shared["n"]\n\ndef press(game, buttons):\n    if "ZR" in buttons:\n        game.say("fake hook: pressed ZR")\n        return True\n    return False\n\ndef act(game, words):\n    if words[0] == "frob":\n        game.say("fake hook: frob %s on %s" % (words[1], game.tag))\n        return True\n    return False\n\ndef actors(game):\n    return [{"id": 99, "name": "HookActor_%s" % game.tag, "kind": "enemy", "pos": [0.0, 0.0, 0.0]}]\n\ndef state(game, st):\n    if game.scene == "BossStage_Test":\n        st["event"] = True                      # (its intro event runs)\n'
