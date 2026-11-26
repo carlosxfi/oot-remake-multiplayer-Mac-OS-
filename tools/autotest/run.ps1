@@ -165,21 +165,36 @@ if ($headFile) {
         elseif ($l -match '^#!\s*timeout\s+(\d+)\s*$' -and -not $PSBoundParameters.ContainsKey('Timeout')) { $Timeout = [int]$Matches[1] }
     }
 }
-# The header is read from the A script (or the steps file) only, for both games. A '#!' line only the B script carries was
-# never applied: epona-seen-keys-3bacc7d0 (2026-11-26) had LICHII_COOP_DEBUG_SOUND=1 in B only, so no sound was logged and the
-# run was VOID. Such a script is refused here, before any game starts, naming each line (SETUP-FAIL, exit 2).
-if ($headFile -eq $scA -and (Test-Path $scB)) {
-    $aLines = @(Get-Content $scA | Where-Object { $_ -match '^#!' } | ForEach-Object { $_.Trim() })
-    $notInA = New-Object System.Collections.Generic.List[string]
-    foreach ($l in @(Get-Content $scB | Where-Object { $_ -match '^#!' } | ForEach-Object { $_.Trim() })) {
-        if ($l -match '^#!\s*switches\s+(.+)$') {
-            foreach ($sw in @($Matches[1] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
-                if ($headSwitches -notcontains $sw) { $notInA.Add("switch $sw") }
+# The header is read from ONE file only, for both games: the steps file when there is one, else the A script. A '#!' line any
+# other script of the run carries was never applied: epona-seen-keys-3bacc7d0 (2026-11-26) had LICHII_COOP_DEBUG_SOUND=1 in
+# B only, so no sound was logged and the run was VOID; with a steps file the A and B scripts' headers are not read either
+# (review-b119: epona.A.txt/epona.B.txt vs epona.steps.txt). Such a run is refused here, before any game starts, naming each
+# file and line (SETUP-FAIL, exit 2). The other scripts: the B script (no steps file), or every script a steps file's `play`
+# lines name ("play A x.A.txt B x.B.txt", tools/autotest/hs_steps.py).
+if ($headFile) {
+    $others = @()
+    if ($headFile -eq $scA) { if (Test-Path $scB) { $others += $scB } }
+    else {
+        foreach ($l in Get-Content $headFile) {
+            if ($l -match '^\s*play\s+(.+)$') {
+                $w = @(($Matches[1] -split '#', 2)[0] -split '\s+' | Where-Object { $_ })
+                for ($i = 1; $i -lt $w.Count; $i += 2) { $f = Join-Path (Split-Path $headFile) $w[$i]; if ((Test-Path $f) -and $others -notcontains $f) { $others += $f } }
             }
-        } elseif ($aLines -notcontains $l) { $notInA.Add("'$l'") }
+        }
     }
-    if ($notInA.Count) {
-        Write-Host "SETUP-FAIL scenario $Scenario`: the B script's header has what the A script's has not (run.ps1 reads the header from the A script only, for both games; put it in $Scenario.A.txt): $($notInA -join ', ')"
+    $hLines = @(Get-Content $headFile | Where-Object { $_ -match '^#!' } | ForEach-Object { $_.Trim() })
+    $notInHead = New-Object System.Collections.Generic.List[string]
+    foreach ($o in $others) {
+        foreach ($l in @(Get-Content $o | Where-Object { $_ -match '^#!' } | ForEach-Object { $_.Trim() })) {
+            if ($l -match '^#!\s*switches\s+(.+)$') {
+                foreach ($sw in @($Matches[1] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+                    if ($headSwitches -notcontains $sw) { $notInHead.Add("$(Split-Path $o -Leaf): switch $sw") }
+                }
+            } elseif ($hLines -notcontains $l) { $notInHead.Add("$(Split-Path $o -Leaf): '$l'") }
+        }
+    }
+    if ($notInHead.Count) {
+        Write-Host "SETUP-FAIL scenario $Scenario`: run.ps1 reads the header from $(Split-Path $headFile -Leaf) only, for both games; these lines elsewhere were never applied (put them in $(Split-Path $headFile -Leaf)): $($notInHead -join ', ')"
         exit 2
     }
 }
