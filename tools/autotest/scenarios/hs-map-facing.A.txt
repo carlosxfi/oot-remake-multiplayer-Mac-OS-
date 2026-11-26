@@ -1,0 +1,54 @@
+# hs-map-facing (Hookshot, regress-fps-map): the other player on A's maps as the game's own map arrow, turned the way
+# they face (regression of 0c034da5b, names only). B turns a quarter every 10 s (B's file); A stands, shoots its
+# minimap every 5 s (mini-*), then opens the - menu and steps R to the Map page (page-*) while B keeps turning.
+# Read: the shots show B's arrow (the game's arrow, B's colour inside, B's name under it) pointing another way in
+# shots 10 s apart; the log line "coop: hud: game look on Hookshot: ... map arrows loaded".
+# Needs a pack with the arrows (map-arrow-NN.png in the lane's coop_hud: the run script writes them).
+# Run: tools\autotest\run.ps1 -Runtime hookshot -Lane 1 -Scenario hs-map-facing
+#! noload
+#! start coop: test warp done
+#! timeout 420
+mark start
+warp InsideTheDekuTree Entrance
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+setflag DungeonInfo.InsideTheDekuTree.IsGetMap 1
+wait 60
+mark mini-1
+wait 300
+mark mini-2
+wait 300
+mark mini-3
+wait 300
+mark mini-4
+wait 300
+mark mini-5
+wait 300
+mark mini-6
+press MINUS
+wait 180
+mark panel
+press R
+wait 120
+mark page-r1
+press R
+wait 300
+mark page-r2
+press R
+wait 300
+mark page-r3
+wait 300
+mark page-r3b
+wait 300
+mark page-r3c
+press B
+wait 240
+mark end

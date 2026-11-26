@@ -1,0 +1,35 @@
+# hs-map-facing, B: walks a little off A at the Deku Tree's entrance, then turns a quarter every 10 s (a short stick
+# tap each), so A's shots show B's map arrow at four facings.
+mark start
+warp InsideTheDekuTree Entrance
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+stick 0 1 30
+wait 120
+mark b-face-1
+stick 1 0 6
+wait 600
+mark b-face-2
+stick 0 -1 6
+wait 600
+mark b-face-3
+stick -1 0 6
+wait 600
+mark b-face-4
+stick 0 1 6
+wait 600
+mark b-face-5
+stick 1 0 6
+wait 600
+mark b-face-6
+stick 0 -1 6
+wait 600
+mark b-end
