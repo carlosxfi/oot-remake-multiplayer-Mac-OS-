@@ -19,8 +19,10 @@
 #   writes only _work and _diag. Registered with --disableupdate (re-run install
 #   for a new runner release; GitHub refuses runners about 30 days out of date).
 # - Job-started hook (job-started.ps1 + job-check.ps1) in C:\ProgramData\oot-ci,
-#   read-only to oot-ci: refuses any job but a push by daurosk to main,
-#   integrate-* or a tag, and any job while a guarded folder is open to oot-ci.
+#   read-only to oot-ci: refuses any job but daurosk's push to main, integrate-*,
+#   release-* or a tag, or daurosk's manual run, and any job while a guarded folder
+#   is open to oot-ci; waits while free commit < 75 GB, refuses at C: < 60 GB free.
+#   Job-completed hook (job-completed.ps1): empties the job's workspace.
 # - official runner zip, SHA-256 checked against GitHub's release notes; the
 #   registration token is never printed.
 param(
@@ -30,7 +32,8 @@ param(
     [string]$HookDir = 'C:\ProgramData\oot-ci',
     [string]$User = 'oot-ci',
     [string]$Repo = 'daurosk/oot-remake-multiplayer',
-    [string]$Gh = 'C:\Program Files\GitHub CLI\gh.exe'
+    [string]$Gh = 'C:\Program Files\GitHub CLI\gh.exe',
+    [string]$Label = 'squadala-win'
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'rights.ps1')
@@ -82,7 +85,7 @@ New-Item -ItemType Directory -Force $HookDir | Out-Null
 & icacls $HookDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "${acct}:(OI)(CI)RX" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'icacls failed on the hook folder.' }
 $hook = Join-Path $HookDir 'job-started.ps1'
-foreach ($f in 'job-started.ps1', 'job-check.ps1') { Copy-Item (Join-Path $PSScriptRoot $f) (Join-Path $HookDir $f) -Force }
+foreach ($f in 'job-started.ps1', 'job-check.ps1', 'job-completed.ps1') { Copy-Item (Join-Path $PSScriptRoot $f) (Join-Path $HookDir $f) -Force }
 Set-Content -Encoding utf8 (Join-Path $HookDir 'runner-dirs.txt') $Root
 # uninstall.ps1 needs the SID to undo the ACEs and rights even after the user is gone.
 Set-Content -Encoding ascii (Join-Path $HookDir 'user-sid.txt') $sid
@@ -120,9 +123,11 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 Remove-Item $zip
 Set-Content -Encoding ascii (Join-Path $Root '.env') @(
     "ACTIONS_RUNNER_HOOK_JOB_STARTED=$hook",
+    "ACTIONS_RUNNER_HOOK_JOB_COMPLETED=$(Join-Path $HookDir 'job-completed.ps1')",
     'PSExecutionPolicyPreference=RemoteSigned'
 )
 [Environment]::SetEnvironmentVariable('ACTIONS_RUNNER_HOOK_JOB_STARTED', $hook, 'Machine')
+[Environment]::SetEnvironmentVariable('ACTIONS_RUNNER_HOOK_JOB_COMPLETED', (Join-Path $HookDir 'job-completed.ps1'), 'Machine')
 
 # 5. Register (token only in a variable) and install the service under oot-ci.
 $token = (& $Gh api -X POST "repos/$Repo/actions/runners/registration-token" --jq .token)
@@ -130,7 +135,7 @@ if (-not $token) { throw 'No registration token.' }
 Push-Location $Root
 try {
     & .\config.cmd --unattended --url "https://github.com/$Repo" --token $token --name "$env:COMPUTERNAME-ci" `
-        --labels daurosk-pc --work _work --replace --disableupdate --runasservice `
+        --labels $Label --work _work --replace --disableupdate --runasservice `
         --windowslogonaccount $acct --windowslogonpassword $plain
     if ($LASTEXITCODE -ne 0) { throw "config.cmd failed ($LASTEXITCODE)." }
 } finally { Pop-Location; $token = $null; $plain = $null }

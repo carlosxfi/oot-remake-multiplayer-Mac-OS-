@@ -1,9 +1,30 @@
-# Self-hosted CI runner (the owner's PC)
+# Self-hosted CI runners (the owner's PC)
 
-The Build workflow's `windows` job (MSVC build, ctest, kit script tests) can run on
-the owner's PC instead of GitHub's `windows-latest`, which queues and takes 12 to
-22 minutes. Everything else stays on GitHub: linux jobs (no WSL here),
-python-tools, content guard, release attest.
+GitHub's free queue holds our Build runs for hours, so our own runs use the owner's PC:
+
+| Runner | Where | Label | Jobs | Switch (repo variable) |
+|---|---|---|---|---|
+| 1 Windows runner | `C:ctions-runner`, service as `oot-ci` | `squadala-win` | `windows` | `COOP_SELF_HOSTED` |
+| 3 Linux runners `squadala-wsl-1..3` | WSL distro `squadala-ci` (Ubuntu 24.04; WSL capped at 32 GB, 24 threads) | `squadala-wsl` | `scope`, `python-tools` (ubuntu row), `linux` (gcc, clang, asan, tsan) | `COOP_SELF_HOSTED_LINUX` |
+
+They take only daurosk's own push to `main`, `integrate-*`, `release-*` or a tag, and daurosk's
+manual runs (workflow_dispatch: only people with write access can start one). Pull requests,
+forks included, always run on GitHub. Stays on GitHub: `linux-longshot` (built on Ubuntu 22.04
+for its glibc 2.35 baseline; the WSL distro is 24.04), `python-tools` on Windows (the Windows
+runner has no Python), `windows-hook` (fork pull requests only), Content guard, release attest.
+The job matrix is the same on both: a run on our runners is the full CI.
+
+**Off switch / runner offline.** A job sent to a runner that is offline waits in the queue (up to
+GitHub's 24 h). Set the variable to `off` and new runs use GitHub's runners again:
+`gh api -X PATCH repos/daurosk/oot-remake-multiplayer/actions/variables/COOP_SELF_HOSTED_LINUX -f value=off`
+(and `COOP_SELF_HOSTED` for Windows). Runs already queued keep their runner: cancel and re-run them.
+
+**Memory and disk guard (every runner).** Before a job starts, its hook waits while Windows' free
+commit is below 75 GB (a stock game pair needs ~62 GB, so a game test always wins), at most 60 min,
+then fails the job ("memory guard: waited 60 min"); it refuses at once when C: has less than 60 GB
+free ("disk guard"). After every job a second hook empties the job's workspace. The Linux runners
+read the Windows numbers from `/run/squadala-ci/status`, fed every 15 s by `status-feed.ps1`
+(below); a stale or missing file counts as "not enough" (fail closed).
 
 ## Who can use it
 
@@ -14,7 +35,8 @@ code someone else wrote and sent. Two layers:
    runner runs `C:\ProgramData\oot-ci\job-started.ps1` (from
    `tools/ci-runner/job-started.ps1`). It fails the job unless it is a `push` to
    `daurosk/oot-remake-multiplayer` by `daurosk` (`GITHUB_ACTOR` and
-   `GITHUB_TRIGGERING_ACTOR`), on `main`, an `integrate-*` branch or a tag. It
+   `GITHUB_TRIGGERING_ACTOR`) on `main`, an `integrate-*` or `release-*` branch or
+   a tag, or a `workflow_dispatch` (manual run) by `daurosk` there. It
    also refuses every job while any guarded folder (below) is open to the runner
    user. It has no switches: no environment variable changes what it checks
    (the checks live in `job-check.ps1`, which the tests load on their own). The
@@ -22,15 +44,17 @@ code someone else wrote and sent. Two layers:
    and the machine environment) are owned by Administrators and only readable by
    the runner user, so neither a pull request nor a job can change them. Tests:
    `tools/ci-runner/job_started_test.ps1` (windows job).
-2. **The workflow's `runs-on`** sends the job to the PC only for that same push
-   and only while the repo variable `COOP_SELF_HOSTED` is `on`; otherwise
-   `windows-latest`. This keeps normal runs off the PC, but it is not protection:
+2. **The workflow's `runs-on`** sends the job to the PC only for those same events
+   and only while the repo variable (`COOP_SELF_HOSTED`, `COOP_SELF_HOSTED_LINUX`) is
+   `on`; otherwise GitHub's runner. A `pull_request` never matches it
+   (`tools/check_actions_test.py` evaluates the gate for every event shape). This keeps normal runs off the PC, but it is not protection:
    GitHub runs a pull request with the pull request's own copy of the workflow,
    which can name the runner however it likes. `tools/check_actions.py` flags such
    an edit in Content guard so a reviewer sees it, but cannot stop that run.
 
-Repo setting: workflows from fork pull requests need approval for every outside
-contributor (`approval_policy: all_external_contributors`). **Before clicking
+Repo setting: workflows from fork pull requests should need approval for every outside
+contributor (`approval_policy: all_external_contributors`; on 2026-11-26 it was
+`first_time_contributors`, see `gh api repos/daurosk/oot-remake-multiplayer/actions/permissions/fork-pr-contributor-approval`). **Before clicking
 "Approve and run" on an outside pull request whose diff touches `.github/`, read
 that diff.** The hook refuses such a job anyway, but a refused job is the signal
 that someone tried.
@@ -77,6 +101,36 @@ Read outside pull requests for hostile build-time code before merging them.
   pushed could copy the key and act as this runner, picking up jobs with
   read-only tokens. That is why only daurosk's reviewed pushes get here at all.
   If it ever happens, run uninstall and install again: that registers a new key.
+
+## Linux runners in WSL
+
+`tools/ci-runner/wsl/`. Same gate as the Windows runner, in `hooks/job-started.sh` (root-owned,
+no switches). The runners have a WSL distro of their own, `squadala-ci` (in
+`%LOCALAPPDATA%\squadala-ci\wsl`); the owner's `Ubuntu-24.04` (local CI, user `lci`, needs `/mnt/c`)
+is not changed. How `squadala-ci` is locked down:
+
+- `%UserProfile%\.wslconfig` (one VM for every distro, so local CI shares the cap): `memory=32GB`, `processors=24`, `swap=2GB`, `autoMemoryReclaim=dropCache`.
+  Never raise them: the test lanes need the rest of the commit.
+- `/etc/wsl.conf`: no Windows interop (a job cannot start Windows programs as the owner) and no
+  Windows drives (`/mnt/c` is gone). install-wsl.ps1 checks both after the restart.
+- Jobs run as `squadala-ci`: no password, no sudo (root in WSL could mount C:), systemd units with
+  `NoNewPrivileges`. `/opt/squadala-ci/bin/sudo` answers the workflow's sudo lines: `apt-get update`
+  is skipped, `apt-get install` passes only for preinstalled packages (`setup.sh` PACKAGES),
+  `sysctl -w vm.mmap_rnd_bits=28` only when it already is 28 (set at boot).
+- Each runner folder `/opt/squadala-ci/runner-N` is root-owned; `squadala-ci` writes only `_work` and
+  `_diag`. Shared: ccache `/var/cache/squadala-ccache` (20 GB cap) and the tool cache.
+- Left as is: the distro reaches the network (it must, for GitHub) and the Windows host's NAT address,
+  so only services bound to 127.0.0.1 on Windows are out of its reach (our listeners bind 127.0.0.1).
+
+Install (owner, normal PowerShell, not elevated; free commit >= 40 GB):
+`powershell -NoProfile -ExecutionPolicy Bypass -File tools\ci-runner\wsl\install-wsl.ps1`. It copies the
+scripts in, runs `setup.sh` as root, restarts the distro, registers `squadala-wsl-1..3` (token piped on
+stdin only), and registers the logon task `squadala-ci status feed` (`status-feed.ps1`, hidden), whose
+`wsl.exe` also keeps the distro and its runners up. Then switch on:
+`gh api -X POST repos/daurosk/oot-remake-multiplayer/actions/variables -f name=COOP_SELF_HOSTED_LINUX -f value=on`.
+The runners start at logon (the task); the PC must be logged in. Remove: switch off, then for each runner
+`wsl -d squadala-ci -u root -- systemctl disable --now squadala-ci-runner@N` and delete it in
+Settings > Actions > Runners; `Unregister-ScheduledTask 'squadala-ci status feed'`.
 
 ## Install, switch, remove (owner, elevated PowerShell)
 
