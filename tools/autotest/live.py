@@ -177,6 +177,8 @@ def runner_argv(a, games, port, pipe, d):
             argv += ["--game-%s" % x.lower(), games[x]]
     if a.server:
         argv += ["--server", a.server]
+    if getattr(a, "host_in_game", False):
+        argv.append("--host-in-game")   # (hookshot.py run refuses it with --server, and without --script-b)
     argv += ["--port", str(port), "--out", d, "--name", "live", "--pipe", pipe, "--keep-open", "--every", "0",
              "--password", SERVER_PASSWORD, "--scenario-timeout", str(a.boot_timeout)]
     if a.no_restore:
@@ -297,6 +299,7 @@ def start(a):
          "runner": {"game_a": games.get("A") and os.path.abspath(games["A"]),
                     "game_b": games.get("B") and os.path.abspath(games["B"]), "port": port, "pipe": pipe,
                     "server": a.server and os.path.abspath(a.server), "env": list(a.env),
+                    "host_in_game": bool(getattr(a, "host_in_game", False)),
                     "display": getattr(a, "display", None), "boot_timeout": a.boot_timeout, "password": SERVER_PASSWORD,
                     "playtest": playtest_base(a.lane) if getattr(a, "playtest", False) else 0}}
     if a.lane and len(games) == 1:
@@ -703,6 +706,10 @@ def relaunch(a, alive=None, runner=None):
     x = a.player
     if x not in session_tags(s):
         return {"error": "game %s is not in this session (it has %s)" % (x, " and ".join(session_tags(s)))}
+    if r.get("host_in_game"):
+        # (relaunch_argv starts game x with --only, so hookshot.py run would give it LICHII_COOP_SERVER and not
+        # the in-game host's LICHII_COOP_TEST_HOST: a different game than the boot's. Refused, never started wrong.)
+        return {"error": "this session's boot hosts in game A (--host-in-game): relaunch is not supported in it"}
     pid = game_pids(d)[0].get(x)
     if pid and alive(pid):
         return {"error": "game %s still runs (pid %d): live.py quit first" % (x, pid)}
@@ -904,6 +911,10 @@ def main(argv=None):
     st.add_argument("--game-b", help="(without --lane: this one, --game-a, or both)")
     st.add_argument("--only", choices=TAGS, help="start only this game (of the lane, or of the two given)")
     st.add_argument("--server", help="coop_server to start (none: the games use their coop.ini)")
+    st.add_argument("--host-in-game", action="store_true",
+                    help="no --server: game A hosts through its own Multiplayer > Host (its boot's `menu host` step, "
+                         "LICHII_COOP_TEST_HOST, on 127.0.0.1 only) and B joins it on 127.0.0.1 (hookshot.py run "
+                         "--host-in-game; rows 260, 292); `server start` and `relaunch` refuse such a session")
     st.add_argument("--port", type=int, help="default %d (a lane: its own)" % PORT)
     st.add_argument("--boot-a")
     st.add_argument("--boot-b")
