@@ -75,6 +75,9 @@ class FakeGame:
         # (the module's ocarina re-equip after each load, Pair.need_ocarina: BT_FAKE_OCARINA_LATE=N frames after the
         # boot and after each warp, default 0 = at once; before it D-pad Left takes nothing out, songs-frogs-733c4d8f)
         self.ocarina_late, self.equipped = int(os.environ.get("BT_FAKE_OCARINA_LATE", "0") or 0), False
+        # (the play UI up again BT_FAKE_UI_LATE frames after a warp, default 20; a tag in BT_FAKE_UI_NEVER: never)
+        self.ui_late = int(os.environ.get("BT_FAKE_UI_LATE", "20") or 20)
+        self.ui_never = tag in os.environ.get("BT_FAKE_UI_NEVER", "")
         # (the game's first-use "Ocarina Audio Input" box on the boot's first D-pad Left, Pair.ocarina_out: the free-Ocarina
         # event line at once, 'plays the ocarina' only after B closes it; probe-ocarina-2f14b333)
         self.box, self.box_seen = False, False
@@ -238,8 +241,16 @@ class FakeGame:
             if want and want != self.age():
                 self.flags["Sequence_IsChildhood"] = 0 if want == "adult" else 1
             self.scene, self.event = m["scene"], False
+            # (the real module's lines, hookshot/src/coop_hookshot.cpp Frame: the load takes the play UI down, the HUD
+            # screen's run after the arrival puts it up; BT_FAKE_UI_LATE=N frames later, default 20; a tag in
+            # BT_FAKE_UI_NEVER: never up again, Pair._until_play_ui's SETUP-FAIL)
+            self.say("coop: native ui: the game's play UI is down (a scene load or the title): no screen is live")
             self.say("coop: native ui: scene load ended (Sequence_IsLoadingBanc): screens handed out once the game's "
                      "HUD screen has run")
+            if not self.ui_never:
+                self.later(self.ui_late,
+                           lambda: self.say("coop: native ui: the game's play UI is up (patch 0018's HUD screen ran "
+                                            "since the load): its screens are live"))
             self.equip_later()
             r.update(arrived=True, via="teleport", map=m["scene"], state=self.state())
         elif cmd == "move":
