@@ -316,6 +316,7 @@ TEST_CASE("look menu (look-link-cs, report 293): Character Select's options on e
     CHECK(v.rows[3].name == "Leather and Boots Colour");
     CHECK(v.rows[4].name == "Equipment");
     CHECK(v.rows[4].value == "Shown");
+    CHECK(v.rows[2].value == "Same as tunic");   // (vest-link: unset, the vest is painted in the tunic's colour)
     // The vest and the leather take any colour (the presets, and the mixer on A) as Link's other parts.
     page.Select(2);
     page.Press(Input::kRight);

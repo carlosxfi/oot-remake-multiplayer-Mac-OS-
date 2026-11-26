@@ -99,8 +99,11 @@ const char* Note(Part part) {
     return "";
 }
 
-// What an unset part shows: the game's own colour; the Cap trim follows the tunic.
-const char* Unset(Part part) { return part == Part::cap_trim ? "Same as tunic" : "Default"; }
+// What an unset part shows: the game's own colour; the Cap trim and the vest (vest-link: unset it is painted in the
+// tunic's colour, as 0.11.12) follow the tunic.
+const char* Unset(Part part) {
+    return part == Part::cap_trim || part == Part::link_vest ? "Same as tunic" : "Default";
+}
 
 std::string ValueText(Part part, const std::optional<std::uint32_t>& colour) {
     if (CoopLook::IsGearSwitch(part)) return CoopI18n::Tr(colour ? "Hidden" : "Shown");
@@ -339,8 +342,8 @@ const std::vector<std::string>& Presets() {
 }
 
 std::uint32_t Shown(const CoopLook::Look& look, Part part) {
-    if (part == Part::cap_trim && !look[part]) {
-        return Shown(look, Part::tunic);   // the cap follows the tunic
+    if ((part == Part::cap_trim || part == Part::link_vest) && !look[part]) {
+        return Shown(look, Part::tunic);   // the cap and the vest follow the tunic
     }
     return look[part] ? (*look[part] & 0xFFFFFFu) : GameColour(part);
 }
@@ -505,8 +508,8 @@ void Page::Open(const CoopLook::Look& look) {
 }
 
 void Page::Focus(Part part) {
-    if (part == Part::cap_trim) {
-        tunic_ = Part::tunic;   // (the trim is on the Kokiri cap)
+    if (part == Part::cap_trim || part == Part::link_vest) {
+        tunic_ = Part::tunic;   // (the trim is on the Kokiri cap, the vest on the Kokiri tunic)
     } else if (IsTunic(part)) {
         tunic_ = part;
     } else if (IsShield(part)) {
