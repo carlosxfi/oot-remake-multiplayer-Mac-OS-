@@ -1056,6 +1056,24 @@ RowAction ActionFor(int row, const Session& s) {
     }
 }
 
+const char* ViewWord(View view) {
+    switch (view) {
+    case View::kMain: return "main";
+    case View::kPlayers: return "players";
+    case View::kLetIn: return "let_in";
+    case View::kJoin: return "join";
+    case View::kSession: return "session";
+    case View::kPlayer: return "player";
+    case View::kPlayerHost: return "player_host";
+    case View::kLan: return "lan";
+    case View::kLanGame: return "lan_game";
+    case View::kPassword: return "password";
+    case View::kMenu: return "menu";
+    case View::kHost: return "host";
+    }
+    return "unknown";
+}
+
 View BackOf(View view) {
     switch (view) {
     case View::kPlayerHost: return View::kPlayer;

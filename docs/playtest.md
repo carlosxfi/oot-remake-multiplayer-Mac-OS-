@@ -232,7 +232,7 @@ edge, the alpha drawn (0..1), their floor minus the one shown, and the words und
 own arrow and is not listed. A test of something a player sees still needs a window shot with the overlay.
 
 **`menu`** (in `state`; `hookshot/src/coop_menu_state.h`): what co-op's menus show, as text, because a bridge shot is
-taken before Longshot draws its overlays and so never has co-op's pages on it. Two members:
+taken before Longshot draws its overlays and so never has co-op's pages on it. Three members:
 
 - `coop`: co-op's tab of Longshot's Insert menu. `{"open":false}` while it is shut, else `"tab":"multiplayer"`, `page`
   (the same word as `coop_menu`), `rows` (each `{"name", "kind"}`; `kind` is `action`, `choice`, `toggle` (with `on`),
@@ -245,6 +245,13 @@ taken before Longshot draws its overlays and so never has co-op's pages on it. T
   six places 0..5, left column top to bottom then the right; empty places are left out), `focused`, `focused_label`,
   `mixer` (the any-colour mixer is open) and `page_no` and `pages` (`0` and `0` for a character with no colour option).
   A character's Eye Colour row is left out when its model is known to have no iris.
+- `minus`: co-op's tabs of the game's - menu (Multiplayer, Lobby, Mods) as co-op last drew them. `{"open":false}`
+  while none of them shows, else `tab` (`multiplayer`, `lobby`, `mods`), `view` (the rows' view: `main`, `session`,
+  `players`, `join`, `lan`, `menu`, ...), `details_page` and `details_pages` of the list on the right of the main and
+  Session views (row 223: page `0` the session's lines, page `1` the key items, turned with ZL and ZR; `details_pages`
+  is `2` while the game's key items can be read, `1` when not, `0` on a view without that list) and `key_items`: on
+  page `1` its lines (each `{"name", "value"}`, e.g. `{"name":"Songs","value":"3 of 12"}`), else `null`. The
+  session's page is never given: it can hold a join code or an address.
 
 The labels and values are co-op's own words in the game's language, never text read from the game. Example, a
 Character Select character with irises:
