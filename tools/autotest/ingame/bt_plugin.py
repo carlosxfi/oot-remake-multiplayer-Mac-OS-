@@ -40,6 +40,28 @@ class GameCrash(AssertionError):
     FAIL with that line, never SETUP-FAIL, because that window is what crash rows guard (review-c123-7 08:53)."""
 
 
+NoRef = P.NoRef     # (the typed NO-REF path lives in pair.py, so row tests need only `pair`)
+
+
+def _exc_kind(e):
+    """A failure's kind from its exception TYPE (B #130 / kokiri-band-c124-4 09:41: never from traceback text, which a
+    FAIL's source lines or message can contain): 'crash', 'noref', 'setup' or 'other'."""
+    if isinstance(e, GameCrash):
+        return "crash"
+    if isinstance(e, NoRef):
+        return "noref"
+    if isinstance(e, P.SetupFail):
+        return "setup"
+    return "other"
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    rep = outcome.get_result()
+    rep.bt_kind = _exc_kind(call.excinfo.value) if call.excinfo is not None else None
+
+
 def pytest_addoption(parser):
     g = parser.getgroup("ingame")
     g.addoption("--lanes", default="1", help="test lanes, comma separated; xdist worker N takes the Nth")
@@ -270,21 +292,33 @@ CRASH_LINE = "CRASH: exception"   # the crash line a game's module log gets (rev
 
 
 def _crash_why(session):
-    """'; A: CRASH: ...' from each game's module log of the session (session.json's games.X.log), first CRASH line
-    each: a boot that failed because a game crashed says so in its SETUP-FAIL."""
+    """'; A: CRASH: ...' for each game of the session that crashed: the first 'CRASH: exception' line of its module
+    log (session.json's games.X.log), or else a crash report the game wrote since the session started
+    (<its folder>/bug-reports/pending/crash-*.txt newer than session.json's 'started'; pganon-cct-287-3 10:23: a game
+    can crash with no module line). A failed boot with either is a GameCrash (FAIL), not a SETUP-FAIL."""
     try:
         with open(os.path.join(session, "session.json"), encoding="utf-8") as f:
-            games = json.load(f).get("games") or {}
+            s = json.load(f)
     except (OSError, ValueError):
         return ""
+    games, since = s.get("games") or {}, float(s.get("started") or 0)
     out = []
     for x in sorted(games):
-        log = (games[x] or {}).get("log")
+        g = games[x] or {}
         try:
-            with open(log, encoding="utf-8", errors="replace") as f:
+            with open(g.get("log"), encoding="utf-8", errors="replace") as f:
                 line = next((ln.strip() for ln in f if CRASH_LINE in ln), None)
         except (OSError, TypeError):
             line = None
+        if not line and g.get("folder"):
+            pend = os.path.join(g["folder"], "bug-reports", "pending")
+            try:
+                new = sorted(n for n in os.listdir(pend) if re.fullmatch(r"crash-[^/]*\.txt", n)
+                             and os.path.getmtime(os.path.join(pend, n)) >= since)
+            except OSError:
+                new = []
+            if new:
+                line = "crash report %s" % os.path.join(pend, new[0])
         if line:
             out.append("%s: %s" % (x, line[:300]))
     return ("; " + "; ".join(out)) if out else ""
@@ -298,6 +332,9 @@ def lane_pair(request):
     refs = os.path.join(HERE, "refs")
     if config.getoption("fake"):
         if os.environ.get("BT_FAKE_BOOT_CRASH"):        # (selftest: a game crashed in the boot's save load)
+            if os.environ.get("BT_FAKE_BOOT_LOG"):      # (selftest: one line per boot tried)
+                with open(os.environ["BT_FAKE_BOOT_LOG"], "a", encoding="utf-8") as f:
+                    f.write("boot\n")
             raise GameCrash("lane%d boot: game A ended; A: %s" % (lane, os.environ["BT_FAKE_BOOT_CRASH"]))
         import fakegame
         lanefake = fakegame.FakeLane(out, env=boot_env(config),     # (fakes/*.py hooks see the boot's switches)
@@ -380,29 +417,25 @@ def pair(request, lane_pair):
     request.node.user_properties.append(("notes", list(lane_pair.notes)))
     missing = lane_pair.no_ref()
     if missing:
-        pytest.fail("NO-REF: no stored reference for %s (candidates under new/)" % ", ".join(missing), pytrace=False)
+        raise NoRef("NO-REF: no stored reference for %s (candidates under new/)" % ", ".join(missing))
 
 
 # -- results ---------------------------------------------------------------------------------------------------
 def _kind(reports):
     """One run's result from its setup / call / teardown reports."""
+    kind = lambda r: getattr(r, "bt_kind", None)      # (pytest_runtest_makereport: the exception's type)
     for r in reports:
         if r.when == "setup" and r.failed:
-            return "FAIL" if "GameCrash" in str(r.longrepr) else "SETUP-FAIL"
+            return "FAIL" if kind(r) == "crash" else "SETUP-FAIL"
         if r.when == "setup" and r.skipped:
             return "SKIP"
     for r in reports:
         if r.when == "call" and r.failed:
-            text = str(r.longrepr)
-            if "SetupFail" in text:
-                return "SETUP-FAIL"
-            if "NO-REF" in text and "AssertionError" in text:
-                return "NO-REF"
-            return "FAIL"
+            return {"setup": "SETUP-FAIL", "noref": "NO-REF"}.get(kind(r), "FAIL")
         if r.when == "call" and r.skipped:
             return "SKIP"
     for r in reports:
-        if r.when == "teardown" and r.failed and "NO-REF" in str(r.longrepr):
+        if r.when == "teardown" and r.failed and kind(r) == "noref":
             return "NO-REF"
     if any(r.failed for r in reports):
         return "FAIL"
@@ -446,7 +479,9 @@ def pytest_runtest_protocol(item, nextitem):
     t0 = time.monotonic()
     reports = runtestprotocol(item, nextitem=nextitem, log=False)
     kind, first = _kind(reports), None
-    if kind == "FAIL" and not item.config.getoption("no_rerun") and not _past_deadline(item.config):
+    # a FAIL reruns once, but never one from set-up (the lane's boot: a GameCrash): that would boot the lane again
+    in_setup = any(r.when == "setup" and r.failed for r in reports)
+    if kind == "FAIL" and not in_setup and not item.config.getoption("no_rerun") and not _past_deadline(item.config):
         first = reports
         reports = runtestprotocol(item, nextitem=nextitem, log=False)
         kind = "FLAKY" if _kind(reports) == "PASS" else "FAIL"

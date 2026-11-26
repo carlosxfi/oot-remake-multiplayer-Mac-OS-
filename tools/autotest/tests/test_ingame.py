@@ -73,8 +73,14 @@ class Suite(unittest.TestCase):
         self.assertEqual(s["counts"]["PASS"], total, p.stdout[-2000:])
         self.assertEqual(s["verdict"], "PASS")
         self.assertEqual(p.returncode, 0)
+        # (derived, not a fixed total, so a row port's look test never edits this: crawl-337-9) every look test kept
+        # shots, each test that shot did so on BOTH games, a few per test (not hundreds), all matching their refs
         shots = [sh for r in s["tests"] for sh in r["shots"]]
-        self.assertEqual(len(shots), 10)            # pause 2 + masks 4 + HUD 4: a few per rc, not hundreds
+        by_test = {r["test"]: r["shots"] for r in s["tests"] if r["shots"]}
+        self.assertGreaterEqual(len(by_test), looks, by_test.keys())
+        for t, sh in by_test.items():
+            self.assertEqual({x["game"] for x in sh}, {"A", "B"}, t)
+            self.assertLessEqual(len(sh), 8, t)
         self.assertTrue(all(sh["ok"] and sh["score"] >= sh["tolerance"] for sh in shots))
 
     def test_default_suite_has_no_setup_fail(self):
@@ -85,7 +91,7 @@ class Suite(unittest.TestCase):
         self.assertEqual(s["counts"]["SETUP-FAIL"], 0, p.stdout[-2000:])
         self.assertTrue(s["tests"])
         for d in s["deselected"]:
-            self.assertTrue(d["needs_env"], d)
+            self.assertTrue(d["needs_env"] or d.get("needs_boot"), d)     # (pganon-cct-287-3: a boss row's boot)
 
     def test_repeat_keeps_one_boot_and_orders_by_round(self):
         out = os.path.join(self.tmp, "o")
@@ -137,6 +143,12 @@ def test_times_out(pair):
 @pytest.mark.smoke
 def test_smoke_ok(pair):
     pass
+
+def test_unproven(pair):
+    pair.unproven("no measured value yet (selftest)")
+
+def test_fail_naming_noref(pair):
+    assert False, "NO-REF SetupFail GameCrash AssertionError: words in a FAIL's own message"
 '''
 
 
@@ -160,7 +172,8 @@ class Labels(unittest.TestCase):
         r = results(summary(self.out))
         self.assertEqual(r, {"test_smoke_ok": "PASS", "test_ok": "PASS", "test_flaky": "FLAKY",
                              "test_always_fails": "FAIL", "test_setup_fails": "SETUP-FAIL",
-                             "test_times_out": "FAIL"}, p.stdout[-3000:])
+                             "test_times_out": "FAIL", "test_fail_naming_noref": "FAIL", "test_unproven": "NO-REF"},
+                         p.stdout[-3000:])
         rows = {x["test"].split("::")[-1]: x for x in summary(self.out)["tests"]}
         self.assertIn("timeout", rows["test_times_out"]["why"])
         self.assertIn("set-up: RuntimeError: no such scene", rows["test_setup_fails"]["why"])
@@ -248,6 +261,29 @@ class BootEnv(unittest.TestCase):
         self.assertEqual(B._crash_why(ses), "; A: CRASH: exception 0xc0000005 at hookshot_coop.dll+0x50594")
         self.assertEqual(B._crash_why(os.path.join(self.tmp, "none")), "")
 
+    def test_boot_crash_report_file(self):
+        """A game that crashed with no module line: its new bug-reports/pending/crash-*.txt names the crash; an older
+        one (before the session started) does not (pganon-cct-287-3 10:23)."""
+        import time as _t
+        import bt_plugin as B
+        ses, game = os.path.join(self.tmp, "ses2"), os.path.join(self.tmp, "gameA")
+        pend = os.path.join(game, "bug-reports", "pending")
+        os.makedirs(ses)
+        os.makedirs(pend)
+        old = os.path.join(pend, "crash-20261126T000000Z.txt")
+        with open(old, "w", encoding="utf-8") as f:
+            f.write("old")
+        os.utime(old, (_t.time() - 3600, _t.time() - 3600))
+        log = os.path.join(ses, "game-out-A.txt")
+        open(log, "w").close()
+        with open(os.path.join(ses, "session.json"), "w", encoding="utf-8") as f:
+            json.dump({"started": _t.time() - 60, "games": {"A": {"log": log, "folder": game}}}, f)
+        self.assertEqual(B._crash_why(ses), "")
+        with open(os.path.join(pend, "crash-20261126T095000Z.txt"), "w", encoding="utf-8") as f:
+            f.write("new")
+        self.assertIn("A: crash report ", B._crash_why(ses))
+        self.assertIn("crash-20261126T095000Z.txt", B._crash_why(ses))
+
     def test_deselected_under_xdist(self):
         out = os.path.join(self.tmp, "ox")
         p = pytest_run([".", "--fake", "--out", out, "-q", "-n", "2", "--lanes", "1,2", "--env", "LICHII_COOP_X=1"],
@@ -260,8 +296,11 @@ class BootEnv(unittest.TestCase):
 
     def test_boot_crash_is_fail_not_setup_fail(self):
         out = os.path.join(self.tmp, "oc")
+        boots = os.path.join(self.tmp, "boots.txt")
         p = pytest_run([".", "--fake", "--out", out, "-q", "--env", "LICHII_COOP_X=1", "--env", "A:LICHII_COOP_Y=2"],
-                       cwd=self.dir, env={"BT_FAKE_BOOT_CRASH": "CRASH: exception 0xc0000005"})
+                       cwd=self.dir, env={"BT_FAKE_BOOT_CRASH": "CRASH: exception 0xc0000005", "BT_FAKE_BOOT_LOG": boots})
+        with open(boots, encoding="utf-8") as f:     # (a FAIL from the lane's boot is never rerun: one boot only)
+            self.assertEqual(f.read().count("boot"), 1, p.stdout[-1500:])
         s = summary(out)
         self.assertEqual(results(s), {"test_needs_x_both": "FAIL", "test_needs_y_on_a": "FAIL"}, p.stdout[-2000:])
         self.assertTrue(all("CRASH: exception 0xc0000005" in r["why"] for r in s["tests"]), s["tests"])
@@ -472,6 +511,26 @@ class BootCommand(unittest.TestCase):
         p = pytest_run([".", "--fake", "--out", out, "-q", "--boot", "no-such-boot"], cwd=d)
         self.assertEqual(p.returncode, 4, p.stdout[-1000:] + p.stderr[-1000:])
 
+    def test_every_live_boot_parses(self):
+        """Every --boot NAME a test can ask (scenarios/live-*.A.txt with its .B.txt) through live.py start --dry-run:
+        hookshot.py run's own parser + a parse of both scripts (pganon-cct-287-3: a broken boot is caught here)."""
+        import glob
+        import bt_plugin as B
+        names = sorted(os.path.basename(f)[:-len(".A.txt")] for f in glob.glob(os.path.join(AUTOTEST, "scenarios",
+                                                                                              "live-*.A.txt")))
+        names = [n for n in names if os.path.isfile(os.path.join(AUTOTEST, "scenarios", n + ".B.txt"))]
+        self.assertIn(B.DEFAULT_BOOT, names)
+        for name in names:
+            class Cfg:
+                def getoption(self, opt, name=name):
+                    return {"env": [], "session_minutes": 60, "boot": name}[opt]
+            args = B.boot_args(Cfg(), 1, os.path.join(self.tmp, "coop_server.exe"), os.path.join(self.tmp, "s"))
+            i = args.index("--lane")
+            args[i:i + 2] = self.games()
+            with self.subTest(boot=name):
+                out = self.live(*(args + ["--dry-run"]))
+                self.assertTrue(out["ok"], out)
+
     def test_real_boot_args_parse(self):
         """bt_plugin.boot_args (what lane_pair boots with) through live.py start --dry-run: hookshot.py run's own
         parser + a parse of both boot scripts. The lane pair is swapped for two folders (CI has no lanes)."""
@@ -489,8 +548,8 @@ class BootCommand(unittest.TestCase):
             self.assertIn(want, out["runner"])
 
 
-HOOK_TESTS = 'import pytest\n\ndef test_hooks(pair):\n    pair.act("A", "frob 3")\n    pair.expect_log("A", r"fake hook: frob 3 on A", max_frames=30)\n    st = pair.state("B")\n    assert any(a.get("name") == "HookActor_B" for a in st["world"]["actors"]), st["world"]\n    assert st.get("hooked") == "shared-1"\n    r = pair.call("A", "ping_hook")\n    assert r.get("pong") is True\n    pair.press("A", ["ZR"], frames=2)\n    pair.expect_log("A", r"fake hook: pressed ZR", max_frames=30)\n\n    import playtest_client as pc\n    with pytest.raises(pc.BridgeError):           # (a plain warp: the boss intro event makes it a timeout)\n        pair.warp_both("BossStage_Test")\n    st = pair.warp_both("BossStage_Test", arrive_in_event=True)\n    assert st["A"]["scene"] == st["B"]["scene"] == "BossStage_Test"\n    assert any("answered timeout in the arrival event" in n for n in pair.notes), pair.notes\n    pair.act("A", "place 0 0 0")\n    pair.call("A", "move", yaw=90, strength=1.0, frames=30)\n    assert pair.state("A")["pos"][0] == 1.0, pair.state("A")["pos"]      # (move_step: the wall at x 1.0)\n'
-HOOK_MODULE = 'def setup(game):\n    game.hook_seen = []\n\ndef lane(fl):\n    fl.g["A"].shared = fl.g["B"].shared = {"n": 1}\n\ndef command(game, m):\n    if m.get("cmd") == "ping_hook":\n        return {"ok": True, "pong": True}\n    if m.get("cmd") == "warp" and m.get("scene") == "BossStage_Test":\n        game.run(40)\n        game.scene = "BossStage_Test"           # (there, but its intro event runs: the bridge says timeout)\n        return {"ok": False, "error": "timeout", "message": "still in an event"}\n    return None\n\ndef move_step(game, pos):\n    if game.scene == "BossStage_Test" and pos[0] > 1.0:\n        return [1.0, pos[1], pos[2]]\n    return None\n\ndef after(game, m, r):\n    if m.get("cmd") == "state":\n        r["hooked"] = "shared-%d" % game.shared["n"]\n\ndef press(game, buttons):\n    if "ZR" in buttons:\n        game.say("fake hook: pressed ZR")\n        return True\n    return False\n\ndef act(game, words):\n    if words[0] == "frob":\n        game.say("fake hook: frob %s on %s" % (words[1], game.tag))\n        return True\n    return False\n\ndef actors(game):\n    return [{"id": 99, "name": "HookActor_%s" % game.tag, "kind": "enemy", "pos": [0.0, 0.0, 0.0]}]\n'
+HOOK_TESTS = 'import pytest\n\ndef test_hooks(pair):\n    pair.act("A", "frob 3")\n    pair.expect_log("A", r"fake hook: frob 3 on A", max_frames=30)\n    st = pair.state("B")\n    assert any(a.get("name") == "HookActor_B" for a in st["world"]["actors"]), st["world"]\n    assert st.get("hooked") == "shared-1"\n    r = pair.call("A", "ping_hook")\n    assert r.get("pong") is True\n    pair.press("A", ["ZR"], frames=2)\n    pair.expect_log("A", r"fake hook: pressed ZR", max_frames=30)\n\n    import playtest_client as pc\n    with pytest.raises(pc.BridgeError):           # (a plain warp: the boss intro event makes it a timeout)\n        pair.warp_both("BossStage_Test")\n    st = pair.warp_both("BossStage_Test", arrive_in_event=True)\n    assert st["A"]["scene"] == st["B"]["scene"] == "BossStage_Test"\n    assert any("answered timeout in the arrival event" in n for n in pair.notes), pair.notes\n    pair.act("A", "place 0 0 0")\n    pair.call("A", "move", yaw=90, strength=1.0, frames=30)\n    assert pair.state("A")["pos"][0] == 1.0, pair.state("A")["pos"]      # (move_step: the wall at x 1.0)\n    with pytest.raises(pc.BridgeError):           # (a timeout with NO event is not an arrival: review-c123-8)\n        pair.warp_both("NoEventStage_Test", arrive_in_event=True)\n'
+HOOK_MODULE = 'def setup(game):\n    game.hook_seen = []\n\ndef lane(fl):\n    fl.g["A"].shared = fl.g["B"].shared = {"n": 1}\n\ndef command(game, m):\n    if m.get("cmd") == "ping_hook":\n        return {"ok": True, "pong": True}\n    if m.get("cmd") == "warp" and m.get("scene") in ("BossStage_Test", "NoEventStage_Test"):\n        game.run(40)\n        game.scene = m["scene"]                 # (there, but the bridge says timeout: an intro event, or not)\n        return {"ok": False, "error": "timeout", "message": "still in an event"}\n    return None\n\ndef move_step(game, pos):\n    if game.scene == "BossStage_Test" and pos[0] > 1.0:\n        return [1.0, pos[1], pos[2]]\n    return None\n\ndef after(game, m, r):\n    if m.get("cmd") == "state":\n        r["hooked"] = "shared-%d" % game.shared["n"]\n\ndef press(game, buttons):\n    if "ZR" in buttons:\n        game.say("fake hook: pressed ZR")\n        return True\n    return False\n\ndef act(game, words):\n    if words[0] == "frob":\n        game.say("fake hook: frob %s on %s" % (words[1], game.tag))\n        return True\n    return False\n\ndef actors(game):\n    return [{"id": 99, "name": "HookActor_%s" % game.tag, "kind": "enemy", "pos": [0.0, 0.0, 0.0]}]\n\ndef state(game, st):\n    if game.scene == "BossStage_Test":\n        st["event"] = True                      # (its intro event runs)\n'
 
 
 class FakeHooks(unittest.TestCase):
@@ -586,6 +645,15 @@ class SetupLimit(unittest.TestCase):
                     pair.state("A")
         self.assertIn("timeout after 30 s", str(cm.exception))
         self.assertLessEqual(clock.t, P.SETUP_LIMIT_S + 7.0)
+
+    def test_hung_warp_stops_at_the_limit(self):
+        """warp_both's own bridge call (not Pair.call) keeps its reply wait inside the deadline (review-c123-8)."""
+        pair, clock = self.make(240)
+        with self.assertRaises(P.SetupFail):
+            with pair.setup():
+                pair.warp_both("PhantomGanonStage", arrive_in_event=True)
+        self.assertLessEqual(clock.t, P.SETUP_LIMIT_S)
+        self.assertTrue(all(w <= P.SETUP_LIMIT_S for w in pair.c["A"].waits), pair.c["A"].waits)
 
     def test_short_test_budget_wins(self):
         pair, clock = self.make(10)

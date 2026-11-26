@@ -62,7 +62,7 @@ unmarked = `live-kakariko-child`; a run with another `--boot` deselects it (`des
 | FAIL | an assert failed, or the test ran past its `budget` (FAIL `timeout`); a failed test reruns ONCE |
 | FLAKY | failed, then passed on the rerun: never a pass |
 | SETUP-FAIL | the lane, the boot, or the test's own set-up (`with pair.setup():`, under 30 s) did not hold; not rerun |
-| NO-REF | a look check has no stored reference yet; its shot is kept under `<dir>/lane<L>/new/` |
+| NO-REF | a look check has no stored reference yet (its shot is kept under `<dir>/lane<L>/new/`), or the test called `pair.unproven(reason)` (it cannot prove its row in this run); judged by the exception type `pair.NoRef`, never by message text |
 | NOT-RUN | `--deadline-min N` passed before it started (never a pass) |
 
 A game that crashes while the lane boots or loads (its module log has a `CRASH` line) makes every test of the
