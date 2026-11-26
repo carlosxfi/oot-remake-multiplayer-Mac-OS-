@@ -687,6 +687,27 @@ class BootCommand(unittest.TestCase):
         for want in ("--script-a", B.BOOT_A, "--script-b", B.BOOT_B, "--no-load", "LICHII_COOP_PARTY_HUD_PROBE=1"):
             self.assertIn(want, out["runner"])
 
+    def test_solo_boot_args_parse_with_game_a_only_and_no_server(self):
+        """--solo through live.py start --dry-run: game A only, no --server (so hookshot.py run gives it no
+        LICHII_COOP_SERVER: co-op idle), no script B."""
+        import bt_plugin as B
+
+        class Cfg:
+            def getoption(self, name):
+                return {"env": [], "session_minutes": 60, "boot": B.DEFAULT_BOOT, "solo": True, "kit_ls": None}[name]
+        args = B.boot_args(Cfg(), 1, os.path.join(self.tmp, "coop_server.exe"), os.path.join(self.tmp, "s"))
+        self.assertNotIn("--server", args)
+        self.assertNotIn("--boot-b", args)
+        i = args.index("--lane")
+        args[i:i + 2] = self.games()[:2]               # (--game-a <folder>: CI has no lanes)
+        j = args.index("--only")
+        del args[j:j + 2]
+        out = self.live(*(args + ["--dry-run"]))
+        self.assertTrue(out["ok"], out)
+        self.assertNotIn("--server", out["runner"])
+        self.assertNotIn("--game-b", out["runner"])
+        self.assertNotIn("--script-b", out["runner"])
+
     def test_nocs_switch_boots_b_from_lane_b_nocs(self):
         """--env B:COOP_TEST_NO_CHARACTER_SELECT=1 (no_cs.py's switch): game B boots from lane<N>-B-nocs (--game-b,
         which live.py resolve takes over the lane's B); without it, no --game-b."""
@@ -739,6 +760,66 @@ def test_pack_is_in(pair):
 def test_plain(pair):
     pass
 """
+
+
+SOLO_TESTS = '''import solo
+
+@solo.MARK
+def test_alone(pair):
+    with pair.setup():
+        solo.prove(pair)
+    assert set(pair.c) == {"A"}
+    pair.step_both(30)
+    pair.press("A", ["A"], frames=4)
+
+def test_plain(pair):
+    pass
+'''
+
+
+class SoloBoot(unittest.TestCase):
+    """--solo (solo.py): game A alone with co-op idle; needs_solo tests run only there, every other test is
+    deselected there (needs_pair); the idle line is the setup proof."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.dir, self.out = os.path.join(self.tmp, "t"), os.path.join(self.tmp, "o")
+        os.makedirs(self.dir)
+        with open(os.path.join(self.dir, "conftest.py"), "w", encoding="utf-8") as f:
+            f.write("import sys\nsys.path.insert(0, %r)\npytest_plugins = ['bt_plugin']\n" % INGAME)
+        with open(os.path.join(self.dir, "test_solo.py"), "w", encoding="utf-8") as f:
+            f.write(SOLO_TESTS)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_(self, extra=(), env=None):
+        return pytest_run([".", "--fake", "--out", self.out, "-q", "-p", "no:cacheprovider"] + list(extra),
+                          cwd=self.dir, env=env or {})
+
+    def test_solo_runs_only_the_solo_tests(self):
+        p = self.run_(["--solo"])
+        s = summary(self.out)
+        self.assertEqual(results(s), {"test_alone": "PASS"}, p.stdout[-3000:] + p.stderr[-2000:])
+        self.assertEqual([d.get("needs_pair") for d in s["deselected"]], [True])
+        self.assertIn("deselected: needs_pair (a --solo run)", p.stdout)
+        self.assertTrue(s["identity"]["solo"])
+
+    def test_without_solo_the_solo_test_is_deselected(self):
+        p = self.run_()
+        s = summary(self.out)
+        self.assertEqual(results(s), {"test_plain": "PASS"}, p.stdout[-2000:])
+        self.assertEqual([d.get("needs_solo") for d in s["deselected"]], [True])
+
+    def test_a_session_line_is_setup_fail(self):
+        p = self.run_(["--solo"], env={"BT_FAKE_SOLO_LOG": "coop: on, server 127.0.0.1:27530, name 'A'"})
+        s = summary(self.out)
+        self.assertEqual(results(s), {"test_alone": "SETUP-FAIL"}, p.stdout[-2000:])
+        self.assertIn("not co-op idle", s["tests"][0]["why"])
+
+    def test_solo_with_the_nocs_switch_is_refused(self):
+        p = self.run_(["--solo", "--env", "B:COOP_TEST_NO_CHARACTER_SELECT=1"])
+        self.assertEqual(p.returncode, 4, p.stdout[-1000:] + p.stderr[-1000:])
 
 
 SAVE_TESTS = '''import os

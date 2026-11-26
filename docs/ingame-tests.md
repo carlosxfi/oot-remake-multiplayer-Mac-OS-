@@ -79,6 +79,16 @@ baseline is put back. Every flag is read back on every save. A test that needs a
 is `{name, sha256: {game: {rel: sha256}}}`. `saves/gohma-alive.py` puts Queen Gohma back alive, with the quest at
 her room (rows 137/138).
 
+SOLO boot (owner rule: features that are not multiplayer must also work solo, with co-op idle): `--solo` boots only
+lane game A, with no co-op session. That means `live.py start --only A` without `--server`, so hookshot.py run gives
+it no `LICHII_COOP_SERVER`, and the lane's `coop.ini` has no server line. Only tests marked `@solo.MARK`
+(`tools/autotest/ingame/solo.py`, marker `needs_solo`) run. Every other test is deselected (`needs_pair`), and a
+run without `--solo` deselects the solo tests (`needs_solo`). The pair has game A only (`pair.c == {'A'}`), and
+`step_both`, `press` and `warp_both` run on A. Setup proof, before any test: game A's module log has
+`solo.IDLE` (`coop: no server in coop.ini: co-op idle until Host or Join ...`, hookshot/src/coop_hookshot.cpp).
+It must also have no session line (`coop: on, server`, `connecting`, `welcomed`, `connected`). Otherwise every
+test is a SETUP-FAIL. `--solo` with the no-CS switch is refused. `identity.solo` is true.
+
 Game B without Character Select: `--env B:COOP_TEST_NO_CHARACTER_SELECT=1` (the switch in
 `tools/autotest/ingame/no_cs.py`) boots game B from `lane<N>-B-nocs` instead of `lane<N>-B`. That folder is made
 only when someone asks for it, with `python -I tools/autotest/lanes.py nocs --lane N` (`--dry-run` first). It is

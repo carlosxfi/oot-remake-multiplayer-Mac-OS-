@@ -340,7 +340,7 @@ class Pair:
         waits for Link in the scene with NO event (coop_playtest_core.cpp WarpArrived), so it answers 'timeout' with
         Link already there; then a fresh state with that scene, no load AND an event running counts as the arrival,
         anything else raises. Each game's wait is ARRIVE_IN_EVENT_WAIT s, and every wait stays inside the deadline."""
-        for x in ("A", "B"):
+        for x in [y for y in ("A", "B") if y in self.c]:     # (a solo pair: A only)
             self.warp_one(x, scene, entrance, arrive_in_event)
         return {x: self.state(x) for x in self.c}
 
