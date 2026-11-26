@@ -1438,6 +1438,22 @@ FlagReading ReadFlag(Core::System& system, std::string_view name) {
         }
         return out;
     }
+    // Row 294: NAME[i] is element i of a String64Array (OwnedHorseList.ActorName[0]), as text.
+    if (name.size() > 3 && name.back() == ']') {
+        const auto open = name.rfind('[');
+        std::uint32_t index = 0;
+        const char* end = name.data() + name.size() - 1;
+        if (open != std::string_view::npos && open > 0 &&
+            std::from_chars(name.data() + open + 1, end, index, 10).ptr == end) {
+            const std::uint32_t array = NameHash(name.substr(0, open));
+            if (array == 0) return out;
+            if (auto t = flags.get_string64_array(array, index)) {
+                out.kind = "text";
+                out.text = std::move(*t);
+            }
+        }
+        return out;
+    }
     const std::uint32_t hash = NameHash(name);
     if (hash == 0) return out;
     if (const auto v = flags.get_int(hash)) {
@@ -1458,6 +1474,31 @@ FlagReading ReadFlag(Core::System& system, std::string_view name) {
         out.text = std::move(*t);
     }
     return out;
+}
+
+namespace {
+// NAME[i]: the String64Array's hash and the element, or nothing.
+std::optional<std::pair<std::uint32_t, std::uint32_t>> ArrayElement(std::string_view name) {
+    if (name.size() <= 3 || name.back() != ']') return std::nullopt;
+    const auto open = name.rfind('[');
+    if (open == std::string_view::npos || open == 0) return std::nullopt;
+    std::uint32_t index = 0;
+    const char* end = name.data() + name.size() - 1;
+    if (std::from_chars(name.data() + open + 1, end, index, 10).ptr != end) return std::nullopt;
+    const std::uint32_t array = NameHash(name.substr(0, open));
+    if (array == 0) return std::nullopt;
+    return std::pair{array, index};
+}
+}  // namespace
+
+bool SetStringArrayElement(Core::System& system, std::string_view name, std::string_view text) {
+    std::lock_guard play_lock(g_play_mu);
+    PlayerXZ(system);
+    CoopHook::EmulatorMemory memory(system.ApplicationMemory(), g_state.main);
+    const auto at = ArrayElement(name);
+    const bool ok = at && coop::host::GameFlags::set_string64_array(memory, at->first, at->second, text);
+    LOG_INFO(Core, "coop: test settext {} \"{}\": {}", name, text, ok ? "set" : "NOT set");
+    return ok;
 }
 
 bool SetEnumHash(Core::System& system, std::string_view name, std::uint32_t value) {

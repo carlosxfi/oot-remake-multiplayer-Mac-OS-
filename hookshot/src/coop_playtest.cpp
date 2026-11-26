@@ -610,6 +610,19 @@ std::string Handle(const Request& r) {
     }
     if (r.cmd == "flag") {
         std::string error;
+        if (r.name.ends_with(']')) {
+            // Row 294: NAME[i] is a String64Array element; the value is its text (through the game's queue).
+            bool done = false;
+            if (!gate.RunHeld([&] { done = CoopTestInput::SetStringArrayElement(*g_system, r.name, r.value); },
+                              kHoldWait)) {
+                return fail("timeout", "the game was not held in time");
+            }
+            if (!done) {
+                return fail("failed", "the text was not queued (" + r.name +
+                                          ": not a String64Array element, past its count, or the queue full)");
+            }
+            return ok("\"name\":" + Quote(r.name) + ",\"value\":" + Quote(r.value));
+        }
         const bool number = IsWholeNumber(r.value);
         if (!number && HashValue(r.value)) {
             // An Enum's value by hash: only one flag_read read from this flag in this run (never a raw number).
