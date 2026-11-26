@@ -198,15 +198,26 @@ def boot_key(boot):
     return json.dumps(norm, sort_keys=True)
 
 
-def ingame_boot_identity(repo=None):
-    """bt_plugin.boot_identity() of the repo's in-game tests: the boot this rc pass will make, from bt_plugin's own
-    code (never copied), in a Python process of its own (bt_plugin imports pair, pytest). Raises Fail when it cannot."""
+def hs():
+    """tools/hookshot/hs.py: run_quiet starts a console child with no window (tools/hookshot/tests/test_no_window.py)."""
+    p = os.path.join(REPO, "tools", "hookshot")
+    if p not in sys.path:
+        sys.path.insert(0, p)
+    import hs as _hs
+    return _hs
+
+
+def ingame_boot_identity(repo=None, name=None):
+    """bt_plugin.boot_identity(name) of the repo's in-game tests (name None: its default boot): the boot this rc pass
+    makes, from bt_plugin's own code (never copied), in a Python process of its own (bt_plugin imports pair, pytest).
+    Raises Fail when it cannot (an unknown boot name too)."""
     ingame = os.path.join(repo or REPO, *INGAME.split("/"))
     code = ("import sys, json; sys.path.insert(0, sys.argv[1]); import bt_plugin; "
-            "print(json.dumps(bt_plugin.boot_identity()))")
+            "a = sys.argv[2:]; print(json.dumps(bt_plugin.boot_identity(*a)))")
     import subprocess
     try:
-        p = subprocess.run([sys.executable, "-I", "-c", code, ingame], capture_output=True, text=True, timeout=120)
+        p = hs().run_quiet([sys.executable, "-I", "-c", code, ingame] + ([name] if name else []),
+                           capture_output=True, text=True, timeout=120)
         boot = json.loads(p.stdout.strip().splitlines()[-1]) if p.returncode == 0 and p.stdout.strip() else None
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         raise Fail("bt_plugin.boot_identity: %s" % e)

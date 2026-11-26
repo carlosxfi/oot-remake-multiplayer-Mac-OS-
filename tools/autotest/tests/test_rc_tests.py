@@ -44,6 +44,18 @@ def items(*specs):
     return [{"test": t, "smoke": s, "env": list(e)} for t, s, e in specs]
 
 
+BOSS = "live-twinrova-room"
+K1, K2 = "test_boss.py::test_twinrova_shooter", "test_boss.py::test_twinrova_hud"
+# bt_plugin 86711283c's own collection step: a test this run's --boot/--env cannot run is deselected, also on
+# --collect-only (the plan's collector must see it anyway).
+DESELECT = ("import pytest\n\n\ndef pytest_collection_modifyitems(config, items):\n"
+            "    keep = [it for it in items if not it.get_closest_marker('needs_boot')\n"
+            "            and not it.get_closest_marker('needs_env')]\n"
+            "    drop = [it for it in items if it not in keep]\n"
+            "    if drop:\n        config.hook.pytest_deselected(items=drop)\n        items[:] = keep\n")
+BOSS_FILE = ("import pytest\n\npytestmark = pytest.mark.needs_boot(%r)\n\n\ndef test_twinrova_shooter(): pass\n\n\n"
+             "@pytest.mark.needs_env('COOP_TEST_PARTY_HUD=1')\ndef test_twinrova_hud(): pass\n" % BOSS)
+
 SUITE = items((S1, True, []), (S2, True, []), (A, False, []), (B, False, []), (C, False, []),
               (H1, False, HUD), (H2, False, HUD))
 
@@ -112,6 +124,15 @@ class Collect(Base):
                          {S1: (True, []), S2: (True, []), A: (False, []), B: (False, []), C: (False, []),
                           H1: (False, HUD), H2: (False, HUD)})
 
+    def test_collect_takes_a_not_pass_session_end_but_not_a_broken_file(self):
+        write(os.path.join(self.ingame, "conftest.py"),
+              "def pytest_sessionfinish(session, exitstatus):\n    session.exitstatus = 1   # bt_plugin: no test ran\n")
+        self.assertEqual(len(rt.collect(self.ingame, self.tmp)), 7)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "ingame-out")))
+        write(os.path.join(self.ingame, "test_broken.py"), "def test_x(:\n")
+        with self.assertRaises(rt.Fail):
+            rt.collect(self.ingame, self.tmp)
+
     def test_env_group_holds_only_the_party_hud_tests_and_default_none(self):
         groups = rt.groups_of(rt.collect(self.ingame, self.tmp))
         self.assertEqual([(g["name"], g["env"], g["tests"]) for g in groups],
@@ -131,6 +152,59 @@ class Collect(Base):
         self.assertFalse(set(groups[0]["tests"]) & env)
         self.assertEqual([g["name"] for g in groups], ["default", "env1"])
         self.assertEqual(set(groups[1]["tests"]), env)
+        for g in groups:                                                     # 86711283c: a needs_boot test only
+            self.assertEqual({x["boot"] for x in got if x["test"] in g["tests"]} - {g["boot"]}, set(), g["name"])
+
+
+class Boots(Base):
+    """bt_plugin 86711283c: @pytest.mark.needs_boot(NAME) runs only under --boot NAME (review-c123-7 09:3x)."""
+
+    def setUp(self):
+        super().setUp()
+        write(os.path.join(self.ingame, "conftest.py"), DESELECT)
+        write(os.path.join(self.ingame, "test_boss.py"), BOSS_FILE)
+        self.ingame_ini = os.path.join(self.ingame, "pytest.ini")
+        write(self.ingame_ini, INI + "    needs_boot: boot scenario\n")
+
+    def test_collect_sees_the_tests_bt_plugin_deselects(self):
+        got = {x["test"]: (x["env"], x["boot"]) for x in rt.collect(self.ingame, self.tmp)}
+        self.assertEqual(got[K1], ([], BOSS))
+        self.assertEqual(got[K2], (["COOP_TEST_PARTY_HUD=1"], BOSS))
+        self.assertEqual(got[H1], (HUD, ""))
+        self.assertEqual(got[A], ([], ""))
+
+    def test_groups_by_boot_and_env_and_sessions_get_boot(self):
+        its = rt.collect(self.ingame, self.tmp)
+        groups = rt.groups_of(its)
+        self.assertEqual([(g["name"], g["boot"], g["env"], g["tests"]) for g in groups],
+                         [("default", "", [], [A, B, C]), (BOSS, BOSS, [], [K1]),
+                          ("%s-env2" % BOSS, BOSS, ["COOP_TEST_PARTY_HUD=1"], [K2]), ("env3", "", HUD, [H1, H2])])
+        doc = self.plan(its=its)
+        for s in doc["sessions"]:
+            cmd = rt.command(s, "p.json", "runs")
+            boots = [cmd[i + 1] for i, x in enumerate(cmd) if x == "--boot"]
+            if s["group"] in ("default", "env3"):
+                self.assertEqual(boots, [], s["id"])                          # the default boot: no --boot
+                self.assertFalse({K1, K2} & set(s["tests"]), s["id"])
+            else:
+                self.assertEqual(boots, [BOSS], s["id"])
+                self.assertFalse({S1, S2} & set(s["tests"]), s["id"])         # smoke only on the default boot
+        played = sorted(sum((s["tests"] for s in doc["sessions"]), []))
+        self.assertEqual(played, sorted([S1, S2] * 2 + [A, B, C, H1, H2, K1, K2]))
+
+    def test_a_boss_test_is_proven_only_by_a_pass_on_its_own_boot(self):
+        runs = os.path.join(self.tmp, "runs")
+        its = rt.collect(self.ingame, self.tmp)
+        boss = {g: dict(BOOT[g], script="tools/autotest/scenarios/%s.%s.txt" % (BOSS, g), sha256=g.lower() * 64)
+                for g in ("A", "B")}
+        boots = {"": BOOT, BOSS: boss}
+        self.summary("runs", [self.row(K1)])                                  # a PASS on the default boot
+        self.assertEqual(self.plan(its=its, proven_roots=[runs], keys=["k1"], boot=boots)["skipped"], [])
+        self.summary("runs", [self.row(K1)], boot=dict(boss, name=BOSS))      # bt_plugin adds the boot's name
+        self.assertEqual([x["test"] for x in self.plan(its=its, proven_roots=[runs], keys=["k1"], boot=boots)["skipped"]],
+                         [K1])
+        with self.assertRaises(rt.Fail):                                       # a boot bt_plugin does not know
+            self.plan(its=its, proven_roots=[runs], keys=["k1"], boot={"": BOOT})
 
 
 class Plan(Base):

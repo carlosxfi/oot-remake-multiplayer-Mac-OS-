@@ -13,8 +13,9 @@ pair at boot and at session end, and env = bt_plugin boot_env()) and each row a 
 
 SESSIONS (B #129 on review-c123-7's point 1 for party-hud-test-c126): a test marked needs_env('NAME=VALUE', ...)
 (bt_plugin) needs game switches that would change what every other test sees (the party HUD probe's made-up hearts in
-every HUD/pause shot), so tests run grouped by their needs_env set: one pytest session per group, each its own boot
-with that group's --env. The default group (no needs_env) gets no extra --env. A lane plays its sessions one after
+every HUD/pause shot), and a test marked needs_boot(NAME) runs only under its own boot (bt_plugin --boot NAME,
+86711283c: boss stages the free-play warp cannot reach), so tests run grouped by (needs_boot, needs_env set): one
+pytest session per group, each its own boot with that group's --boot and --env. The default group (no needs_env) gets no extra --env. A lane plays its sessions one after
 another (one game pair); the lanes play at once. Each session has its own plan file (DIR/<id>.plan.json) and out
 folder (<runs>/<id>); plan prints each session's pytest command.
 
@@ -44,7 +45,6 @@ import argparse
 import json
 import os
 import statistics
-import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -65,27 +65,42 @@ class Fail(Exception):
 
 # -- collection --------------------------------------------------------------------------------------------------
 
-class _Collector:
-    """pytest plugin: each collected test's base nodeid, smoke marker and needs_env switches (in marker order)."""
+def _collector():
+    """pytest plugin: each collected test's base nodeid, smoke marker, needs_env switches (in marker order) and
+    needs_boot name ("" = the default boot). It reads the items BEFORE bt_plugin's own collection_modifyitems, which
+    deselects the tests this run's --env / --boot cannot run (86711283c), even on --collect-only."""
+    import pytest
 
-    def __init__(self):
-        self.items = []
+    class Collector:
+        def __init__(self):
+            self.items = []
+            self.errors = []
 
-    def pytest_collection_finish(self, session):
-        for it in session.items:
-            env = [str(a).strip() for m in it.iter_markers("needs_env") for a in m.args]
-            t = P.base_nodeid(it.nodeid)
-            if all(x["test"] != t for x in self.items):
-                self.items.append({"test": t, "smoke": it.get_closest_marker("smoke") is not None,
-                                   "env": list(dict.fromkeys(env))})
+        def pytest_collectreport(self, report):
+            if report.failed:
+                self.errors.append("%s: %s" % (report.nodeid, str(report.longrepr).strip().splitlines()[-1:]))
+
+        @pytest.hookimpl(tryfirst=True)
+        def pytest_collection_modifyitems(self, config, items):
+            for it in items:
+                env = [str(a).strip() for m in it.iter_markers("needs_env") for a in m.args]
+                m = it.get_closest_marker("needs_boot")
+                t = P.base_nodeid(it.nodeid)
+                if all(x["test"] != t for x in self.items):
+                    self.items.append({"test": t, "smoke": it.get_closest_marker("smoke") is not None,
+                                       "env": list(dict.fromkeys(env)), "boot": str(m.args[0]) if m and m.args else ""})
+    return Collector()
 
 
 def collect_here(folder, out):
     import pytest
-    c = _Collector()
+    c = _collector()
     code = pytest.main([folder, "--collect-only", "-q", "-p", "no:cacheprovider"], plugins=[c])
-    if code != 0:
-        raise Fail("pytest --collect-only %s: exit %s" % (folder, code))
+    # Judged by the collection itself: bt_plugin's session end calls a run with no test NOT PASS (exit 1, 06784ad34),
+    # also on --collect-only; a collection error, an internal/usage error or nothing collected is a Fail.
+    if c.errors or code not in (0, 1) or not c.items:
+        raise Fail("pytest --collect-only %s: exit %s, %d test(s), errors: %s" % (folder, code, len(c.items),
+                                                                                  "; ".join(c.errors) or "-"))
     with open(out, "w", encoding="utf-8") as f:
         json.dump(c.items, f, indent=1)
     return c.items
@@ -94,8 +109,10 @@ def collect_here(folder, out):
 def collect(folder, work):
     """[{test, smoke, env}] of the in-game tests under folder, collected in a pytest process of its own."""
     out = os.path.join(work, "collect.json")
-    p = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), "collect", folder, "--out", out],
-                       capture_output=True, text=True)
+    cwd = os.path.join(work, "collect")   # (bt_plugin's session end writes ingame-out/ into the current folder)
+    os.makedirs(cwd, exist_ok=True)
+    p = P.hs().run_quiet([sys.executable, "-I", os.path.abspath(__file__), "collect", os.path.abspath(folder),
+                          "--out", os.path.abspath(out)], capture_output=True, text=True, cwd=cwd)
     if p.returncode != 0 or not os.path.isfile(out):
         raise Fail("collect %s: exit %s: %s" % (folder, p.returncode, (p.stdout + p.stderr)[-600:]))
     with open(out, encoding="utf-8") as f:
@@ -163,17 +180,25 @@ def proofs(test, keys, docs, repo=None, env=None, boot=None):
 
 # -- plan --------------------------------------------------------------------------------------------------------
 
+def is_smoke(it):
+    return bool(it.get("smoke")) and not it.get("env") and not it.get("boot")
+
+
 def groups_of(items):
-    """[{name, env, tests}]: the default group (no needs_env) first, then one group per needs_env set (the same
-    switches per game = the same group, proven.env_key), in collection order. Smoke tests are not in any group."""
-    out = [{"name": "default", "env": [], "tests": []}]
-    by_key = {P.env_key([]): out[0]}
+    """[{name, boot, env, tests}]: the default group (default boot, no needs_env) first, then one group per
+    (needs_boot, needs_env set) (the same switches per game = the same set, proven.env_key), in collection order.
+    Names: "default", "envN" (default boot), "<boot>" / "<boot>-envN". Smoke tests are not in any group."""
+    out = [{"name": "default", "boot": "", "env": [], "tests": []}]
+    by_key = {("", P.env_key([])): out[0]}
     for it in items:
-        if it.get("smoke") and not it.get("env"):
+        if is_smoke(it):
             continue
-        k = P.env_key(list(it.get("env") or []))
+        boot, env = it.get("boot") or "", list(it.get("env") or [])
+        k = (boot, P.env_key(env))
         if k not in by_key:
-            by_key[k] = {"name": "env%d" % len(by_key), "env": list(it["env"]), "tests": []}
+            n = len(by_key)
+            name = ("env%d" % n) if not boot else (boot if not env else "%s-env%d" % (boot, n))
+            by_key[k] = {"name": name, "boot": boot, "env": env, "tests": []}
             out.append(by_key[k])
         by_key[k]["tests"].append(it["test"])
     return out
@@ -187,7 +212,7 @@ def plan(items, lanes, roots=None, proven_roots=None, keys=None, repo=None, env=
     if not items:
         raise Fail("no in-game test collected")
     tests = [it["test"] for it in items]
-    smoke = [it["test"] for it in items if it.get("smoke") and not it.get("env")]
+    smoke = [it["test"] for it in items if is_smoke(it)]
     groups = groups_of(items)
     extra = [e.strip() for e in (env or [])]
     skipped = []
@@ -196,14 +221,20 @@ def plan(items, lanes, roots=None, proven_roots=None, keys=None, repo=None, env=
             raise Fail("--skip-proven needs --identity (each lane's build key: proven.py identity --lane N)")
         docs = summaries(proven_roots)
         base = P.ingame_base_env(repo) if base_env is None else list(base_env)
-        boot_now = P.boot_key(P.ingame_boot_identity(repo) if boot is None else boot)
-        if boot_now is None:
-            raise Fail("--skip-proven: the lane boot is not known (bt_plugin boot_identity)")
+        boots = {}
+        for g in groups:
+            if g["boot"] not in boots:
+                b = (P.ingame_boot_identity(repo, g["boot"] or None) if boot is None
+                     else (boot.get(g["boot"]) if "A" not in boot else (boot if not g["boot"] else None)))
+                boots[g["boot"]] = P.boot_key(b)
+                if boots[g["boot"]] is None:
+                    raise Fail("--skip-proven: the lane boot %s is not known (bt_plugin boot_identity)"
+                               % (g["boot"] or "(default)"))
         for g in groups:
             want = P.env_key(base + g["env"] + extra)
             keep = []
             for t in g["tests"]:
-                ok, proof = proofs(t, keys, docs, repo, want, boot_now)
+                ok, proof = proofs(t, keys, docs, repo, want, boots[g["boot"]])
                 if ok:
                     skipped.append({"test": t, "group": g["name"], "keys": list(keys), "proof": proof})
                 else:
@@ -228,15 +259,15 @@ def plan(items, lanes, roots=None, proven_roots=None, keys=None, repo=None, env=
             extra_sessions[best].append(g)
     sessions = []
     for n in lanes:
-        sessions.append({"id": "lane%d-default" % n, "lane": n, "group": "default", "env": list(extra),
+        sessions.append({"id": "lane%d-default" % n, "lane": n, "group": "default", "boot": "", "env": list(extra),
                          "tests": smoke + sorted(default[n], key=lambda t: order[t])})
         for g in sorted(extra_sessions[n], key=lambda g: order[g["tests"][0]]):
-            sessions.append({"id": "lane%d-%s" % (n, g["name"]), "lane": n, "group": g["name"],
+            sessions.append({"id": "lane%d-%s" % (n, g["name"]), "lane": n, "group": g["name"], "boot": g["boot"],
                              "env": list(g["env"]) + list(extra), "tests": sorted(g["tests"], key=lambda t: order[t])})
     for s in sessions:
         s["seconds"] = round(BOOT_S + sum(est[t][0] for t in s["tests"]), 1)
     return {"sessions": sessions, "smoke": smoke, "skipped": skipped,
-            "groups": [{"name": g["name"], "env": g["env"]} for g in groups],
+            "groups": [{"name": g["name"], "boot": g["boot"], "env": g["env"]} for g in groups],
             "lane_seconds": {str(n): round(load[n], 1) for n in lanes},
             "estimates": {t: {"seconds": round(est[t][0], 1), "from": est[t][1]} for t in tests},
             "history": list(roots or []), "env": extra,
@@ -246,12 +277,15 @@ def plan(items, lanes, roots=None, proven_roots=None, keys=None, repo=None, env=
 
 def session_plan(s):
     """The plan file one pytest session reads (bt_plugin --plan): lanes[L] = exactly the tests it plays."""
-    return {"session": s["id"], "lanes": {str(s["lane"]): s["tests"]}, "env": s["env"], "skipped": []}
+    return {"session": s["id"], "lanes": {str(s["lane"]): s["tests"]}, "env": s["env"], "boot": s.get("boot") or "",
+            "skipped": []}
 
 
 def command(s, plan_file, runs, expect="<sha>"):
     cmd = ["python", "-I", "-m", "pytest", "tools/autotest/ingame", "--lanes", str(s["lane"]), "--plan", plan_file,
            "--out", os.path.join(runs, s["id"]), "--expect-commit", expect]
+    if s.get("boot"):
+        cmd += ["--boot", s["boot"]]      # (bt_plugin 86711283c: a test runs only under its own boot)
     for e in s["env"]:
         cmd += ["--env", e]
     return cmd
