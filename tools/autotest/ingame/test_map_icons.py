@@ -33,6 +33,9 @@ QUARTER = math.pi / 2
 QUARTER_TOL = math.radians(30)      # as test_map_arrow's QUARTER_TOL (30 deg): the walk's facing within a few degrees
 TURN_WORD = (0x68 - 0x60) // 4      # coop_map_icons.h kPaneTurn = 0x68: index 2 of game_arrow_words (+0x60..)
 SHOT_TOL = 0.90                     # pair.check_shot's default
+# The shots: a few, not one per facing (the harness keeps a test at 8 or fewer, tests/test_ingame.py Suite): the minimap
+# at two opposite facings (the arrow seen turned), the Map page at one; on each game = 6.
+SHOT_AT = {"minimap": (0, 2), "page": (1,)}
 
 
 def _diff(a, b):
@@ -96,7 +99,8 @@ def copy_turns_with(pair, viewer, mover, view, tag):
         turn(pair, mover, yaw)
         c = shown_one(pair, viewer, view)
         seen.append(c["turn"])
-        pair.check_shot(viewer, "map-icons-%s-%d" % (tag, k), SHOT_TOL)
+        if k in SHOT_AT[view]:
+            pair.check_shot(viewer, "map-icons-%s-%d" % (tag, k), SHOT_TOL)
     steps = [_diff(seen[k + 1], seen[k]) for k in range(len(seen) - 1)]
     for k, s in enumerate(steps):
         assert abs(abs(s) - QUARTER) <= QUARTER_TOL, "%s on %s: %s turned a quarter but its arrow turned %.2f rad (%s)" % (
@@ -105,7 +109,7 @@ def copy_turns_with(pair, viewer, mover, view, tag):
     pair.notes.append("%s on %s: turns %s" % (view, viewer, ["%.2f" % t for t in seen]))
 
 
-@pytest.mark.budget(540)   # ESTIMATED: two warps + ~5'000 frames + 16 shots
+@pytest.mark.budget(540)   # ESTIMATED: two warps + ~5'000 frames + 6 shots
 @pytest.mark.look
 @pytest.mark.row("G2b map icons (#255 item 8): the other player on the game's own map icons (arrow turned, name on the place label), minimap and Map page, on each game")
 def test_map_icons_native(pair):
