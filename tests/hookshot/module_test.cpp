@@ -1858,7 +1858,32 @@ TEST_CASE("hookshot: F1 in free play opens co-op's - menu, elsewhere Longshot's 
     CHECK(module.find("if (!g_on) return g_original_on ? 1 : 0;") != std::string::npos);   // (original game: its tab)
     const std::string tab = ReadFile(kRepo / "hookshot" / "src" / "coop_pause_tab_module.cpp");
     CHECK(tab.find("if (g_players_to_main.load()) OpenLongshotMenu();") != std::string::npos);   // (old pack: as before)
-    CHECK(tab.find("SetView(g_players_to_main.load() ? View::kMain : View::kPlayers);") != std::string::npos);
+    CHECK(tab.find("ShowRunPage(g_players_page.exchange(-1));") != std::string::npos);   // (F1: main, or a test's page)
+    CHECK(tab.find("default: SetView(View::kMain); break;") != std::string::npos);
+    CHECK(tab.find("SetView(View::kPlayers);") != std::string::npos);                     // (F6)
+}
+
+TEST_CASE("hookshot: the bridge's menu pages open where a player has them: F1's rule (C #145, f9f3b9c26 gate)") {
+    // host170's `menu main` and test_menu_pages' `menu open PAGE` in free play wanted Longshot's co-op tab, which
+    // Longshot's menu does not carry then (LongshotTabs 0) and whose want it drops (vk_menu.cpp coop_want < coop_tabs):
+    // the page never came. Every page word now goes by OnF1: free play = the - menu's Multiplayer tab on that view.
+    const std::string pause = ReadFile(kRepo / "hookshot" / "src" / "coop_pause.cpp");
+    CHECK(pause.find("CoopMenuTabsRule::OnF1(now) == CoopMenuTabsRule::F1::kMinusMenu && "
+                     "CoopPauseTab::OpenMultiplayerOn(page)") != std::string::npos);
+    const std::size_t at = pause.find("bool TestMenu(const std::string& page) {");
+    REQUIRE(at != std::string::npos);
+    const std::size_t end = pause.find("    if (page == \"close\") {", at);
+    REQUIRE(end != std::string::npos);
+    const std::string body = pause.substr(at, end - at);
+    CHECK(body.find("OpenAsPlayer(CoopPauseMenu::Page::kMain);") != std::string::npos);
+    CHECK(body.find("OpenAsPlayer(CoopPauseMenu::Page::kCustomize);") != std::string::npos);
+    CHECK(body.find("OpenAsPlayer(at);") != std::string::npos);
+    CHECK(body.find(" Open(") == std::string::npos);   // (no page word goes to Longshot's tab past the rule)
+    const std::string tab = ReadFile(kRepo / "hookshot" / "src" / "coop_pause_tab_module.cpp");
+    for (const char* view : {"case P::kJoin: SetView(View::kJoin)", "case P::kHost: SetView(View::kHost)",
+                             "SetView(View::kLan);", "if (MenuTabPage(tab) != static_cast<P>(page)) continue;"}) {
+        CHECK(tab.find(view) != std::string::npos);
+    }
 }
 
 TEST_CASE("hookshot: party-hud-crash-c126: the map page and the pause tab call into no screen that is not live") {
