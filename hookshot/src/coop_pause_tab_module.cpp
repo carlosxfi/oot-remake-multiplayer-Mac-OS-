@@ -12,6 +12,7 @@
 #include "coop_players_open.h"
 #include "coop_browse.h"
 #include "coop_title.h"
+#include "coop_game_clock.h"
 
 #include <algorithm>
 #include <array>
@@ -38,6 +39,7 @@
 #include "coop/protocol/messages.hpp"
 #include "coop_lan.h"
 #include "coop_map_page.h"
+#include "coop_native_ui.h"   // ScreenLive: the strip calls into the pages' screen only while it is live
 #include "coop_lan_net.h"
 #include "coop_mod_screens.h"
 #include "coop_pause.h"
@@ -1356,10 +1358,14 @@ std::uint64_t g_typing_end_ms = 0;
 // Back to the title (ToTitle): 0 none; 1 the pause menu to System and its cursor to Title Screen; 2 Title Screen
 // pressed, the question awaited; 3 the question answered. With when it began, the last tap, and the pages as last seen.
 std::atomic<int> g_to_title{0};
-std::atomic<std::uint64_t> g_to_title_ms{0}, g_to_title_phase_ms{0};
+// Its times are the game's clock (CoopGameClock: it runs only while the game runs its frames, so a held or stalled game
+// does not use the waits up); `held` the time an event held it (the menu cannot open then), `look` its last pad read.
+std::atomic<std::uint64_t> g_to_title_ms{0}, g_to_title_phase_ms{0}, g_to_title_held_ms{0}, g_to_title_look_ms{0};
+std::atomic<bool> g_to_title_holding{false};
 std::uint64_t g_tap = 0, g_tap_until = 0, g_tap_next = 0;   // (a button held for a tap, then let go; g_mutex)
 std::atomic<int> g_tap_downs{0};   // (the steps toward Title Screen so far)
 std::atomic<std::uint64_t> g_pages_seen_ms{0};
+std::atomic<std::uint64_t> g_pages_seen_game_ms{0};   // (the same, on the game's clock: ToTitle)
 std::atomic<int> g_pages_seen_state{-1}, g_pages_seen_page{-1};
 std::atomic<std::uint64_t> g_test_tab_in{0}, g_test_tab_out{0};   // (the last pad with buttons, in and out: TestState)
 int g_set_keep = -1;
@@ -3952,7 +3958,11 @@ void OnScreen(void* ctx, std::uint64_t screen) noexcept {
         Facts f;
         f.kind = KindOf(vtable - base);
         CensusUpdate(screen, vtable - base);   // (the - menu research: only with COOP_TEST_SCREEN_PROBE=1)
-        SnailScreen(ctx, screen);              // (Character Select's Customize screen: co-op's customization in it)
+        // party-hud-crash-c126: this runs in `screen`'s own update (patch 0030): `screen` is live by definition. The
+        // one call into ANOTHER screen (the strip's update into the pages' g_pages_layout, below) asks
+        // CoopNativeUi::ScreenLive for the pages' screen first. (No whole-update gate on the scene load: the game's
+        // Sequence_IsLoadingBanc is on through the whole title, where Character Select's Customize screen runs.)
+        SnailScreen(ctx, screen);             // (Character Select's Customize screen: co-op's customization in it)
         if (vtable - base == kMapMenuVtable && ctx != nullptr && CanCall()) FollowMapUnder(ctx, screen);
         if (f.kind == Kind::kOther) {
             // (native - tabs: co-op's own screen CoopMenu_00, our page in it)
@@ -3979,6 +3989,7 @@ void OnScreen(void* ctx, std::uint64_t screen) noexcept {
         }
         if (f.kind == Kind::kPages) {
             g_pages_seen_ms = NowMs(), g_pages_seen_state = f.state, g_pages_seen_page = f.page;
+            g_pages_seen_game_ms = CoopGameClock::NowMs();
         }
         // (back to the title: the question "Return to the title screen?" open, its first button, Title Screen, chosen
         // as the player's A on it would)
@@ -3997,7 +4008,7 @@ void OnScreen(void* ctx, std::uint64_t screen) noexcept {
             LOG_INFO(Core, "coop: pause tab: back to the title: the question's buttons {}: Title Screen (Pa_Button_00) "
                            "chosen{}",
                      names, called && (took & 1) != 0 ? "" : " (it did not take it)");
-            g_to_title = 3, g_to_title_phase_ms = NowMs();
+            g_to_title = 3, g_to_title_phase_ms = CoopGameClock::NowMs();
         }
         std::vector<std::string> lines;
         Page::Do d;
@@ -4046,6 +4057,7 @@ void OnScreen(void* ctx, std::uint64_t screen) noexcept {
             if (d.any() && calls) {
                 if (f.kind == Kind::kPages) ApplyPages(ctx, f, d);
                 if (f.kind == Kind::kStrip && d.set_page && g_pages_screen != 0 && g_pages_ok &&
+                    CoopNativeUi::ScreenLive(g_pages_screen) &&
                     Read<std::uint64_t>(g_pages_screen + kScreenLayout) == g_pages_layout) {
                     early_live = d.page_shown;
                     Facts pages;
@@ -4105,7 +4117,9 @@ void OnScreen(void* ctx, std::uint64_t screen) noexcept {
                 CoopRoomList::Look(CoopRoomList::Viewer::kFindAGame, false, NowMs(), {});
             }
         }
-        if (early_live && calls && LiveDue(g_pages_gen)) LiveRows(ctx, g_pages_layout, g_pages_gen, ViewNow(ViewShown()));
+        if (early_live && calls && LiveDue(g_pages_gen) && CoopNativeUi::ScreenLive(g_pages_screen)) {
+            LiveRows(ctx, g_pages_layout, g_pages_gen, ViewNow(ViewShown()));   // (another screen's layout: live only)
+        }
         if (!now_shown) g_confirm_until = 0;
         // (trace) A tester saw the screen stop for a moment as the Multiplayer page opened: an update of ours that
         // took long is logged, with the part under our lock (the page's calls) and the rest (the rows' words).
@@ -4129,9 +4143,30 @@ constexpr std::uint64_t kNoStep = ~0ull;
 constexpr std::uint64_t kToTitleSettleMs = 450;
 constexpr std::uint64_t kToTitleSteadyMs = 150;
 std::uint64_t g_to_title_left_ms = 0, g_to_title_on04_ms = 0;
+// Every time here is the game's clock (CoopGameClock), so the waits count the game's frames, not the wall's.
 std::uint64_t ToTitleStep(int phase) {
-    const std::uint64_t now = NowMs();
-    if (now - g_to_title_ms.load() > kToTitleMs || (phase == 3 && now - g_to_title_phase_ms.load() > 3000)) {
+    const std::uint64_t now = CoopGameClock::NowMs();
+    const std::uint64_t look = g_to_title_look_ms.exchange(now);
+    // (a stamp the game's thread took after `now` was read is seen, not 2^64 ms old)
+    const std::uint64_t pages_at = g_pages_seen_game_ms.load();
+    const bool seen = pages_at >= now || now - pages_at < 400, open = seen && g_pages_seen_state.load() == 2;
+    // An event in our game (a talk, a cutscene, the save's arrival) with the pause menu shut: the menu cannot open
+    // until it ends, so the wait is held (a long event does not use it up) and the player's buttons reach the game (a
+    // talk waits for them). With the menu up (seen) nothing is held: then it is not the event that keeps it.
+    const bool hold = phase == 1 && !seen && EventNow();
+    static int hold_logged = 0;
+    if (hold != g_to_title_holding.exchange(hold) && hold_logged < 40) {
+        ++hold_logged;
+        LOG_INFO(Core, "coop: pause tab: back to the title: {}",
+                 hold ? "held: an event runs (the pause menu opens after it)" : "on: the event ended");
+    }
+    if (hold) {
+        if (now > look) g_to_title_held_ms += now - look;
+        g_tap = 0, g_tap_until = 0, g_tap_next = 0;
+        return kNoStep;   // (g_to_title kept: the player's pad this read)
+    }
+    if (CoopGameClock::Counted(g_to_title_ms.load(), g_to_title_held_ms.load(), now) > kToTitleMs ||
+        (phase == 3 && now - g_to_title_phase_ms.load() > 3000)) {
         if (phase != 3) LOG_INFO(Core, "coop: pause tab: back to the title: given up (the menu did not get there)");
         g_to_title = 0, g_tap = 0;
         return kNoStep;
@@ -4144,11 +4179,10 @@ std::uint64_t ToTitleStep(int phase) {
     if (now < g_tap_until) return g_tap;   // (a tap held)
     g_tap = 0;
     if (phase == 3 || now < g_tap_next) return 0;   // (let go between taps; answered: the game's own way to the title)
-    const auto tap = [&](std::uint64_t b, std::uint64_t hold, std::uint64_t gap) {
-        g_tap = b, g_tap_until = now + hold, g_tap_next = now + hold + gap;
+    const auto tap = [&](std::uint64_t b, std::uint64_t hold_ms, std::uint64_t gap) {
+        g_tap = b, g_tap_until = now + hold_ms, g_tap_next = now + hold_ms + gap;
         return b;
     };
-    const bool seen = now - g_pages_seen_ms.load() < 400, open = seen && g_pages_seen_state.load() == 2;
     if (phase == 2) {   // (Title Screen pressed: the question comes; none after 3 s, again from the start)
         if (now - g_to_title_phase_ms.load() > 3000) g_to_title = 1, g_tap_downs = 0;
         return 0;
@@ -4432,7 +4466,7 @@ std::uint64_t OnPad(std::uint64_t buttons, std::int32_t stick[4]) noexcept {
                     seen.free_play = !seen.strip_open && FreePlayNow();
                     seen.blocked = g_page.Typing() >= 0 || CoopHookshot::ChatOpen() || g_hop_on.load();
                     const bool was_open = g_players_run.opened_after_second();
-                    switch (g_players_run.Next(seen, NowMs())) {
+                    switch (g_players_run.Next(seen, CoopGameClock::NowMs())) {
                     case CoopPlayersOpen::Step::kPressMinus: in |= kPadMinus; break;
                     case CoopPlayersOpen::Step::kTapL: in |= kPadL; break;
                     case CoopPlayersOpen::Step::kTapR: in |= kPadR; break;
@@ -4469,7 +4503,7 @@ std::uint64_t OnPad(std::uint64_t buttons, std::int32_t stick[4]) noexcept {
                 const auto step = CoopPauseTab::CharactersHopNext(g_hop, g_page.MinusTab() >= 0,
                                                                     g_page.MinusStripOpen() && g_page.Typing() < 0 &&
                                                                         !CoopHookshot::ChatOpen(),
-                                                                    MinusCategoryNow(), NowMs());
+                                                                    MinusCategoryNow(), CoopGameClock::NowMs());
                 if (step == CoopPauseTab::HopStep::kTapL) in |= kPadL;
                 else if (step != CoopPauseTab::HopStep::kWait) {
                     g_hop_on = false;
@@ -5243,7 +5277,7 @@ bool OpenPlayers() noexcept {
                 LOG_INFO(Core, "coop: pause tab: F6: not in free play (an event, a load or another screen): the held list");
                 return false;
             }
-            g_players_run.Start(NowMs(), menu_up);
+            g_players_run.Start(CoopGameClock::NowMs(), menu_up);
             LOG_INFO(Core, "coop: pause tab: F6: to the Players view ({})",
                      menu_up ? "a menu is up: no Minus" : "Minus opens the - menu");
         }
@@ -5260,7 +5294,7 @@ bool OpenMultiplayer() noexcept {
             const bool menu_up = GameMenuUp();
             if (!menu_up && !FreePlayNow()) return false;   // (an event, a load: F1 stays Longshot's)
             g_players_to_main = true;
-            g_players_run.Start(NowMs(), menu_up);
+            g_players_run.Start(CoopGameClock::NowMs(), menu_up);
             LOG_INFO(Core, "coop: pause tab: F1: to the Multiplayer tab ({})",
                      menu_up ? "a menu is up: no Minus" : "Minus opens the - menu");
         }
@@ -5350,7 +5384,9 @@ bool KeysTaken() noexcept {
 
 void ToTitle() noexcept {
     if (g_to_title.load() != 0) return;
-    g_to_title_ms = NowMs(), g_to_title_phase_ms = NowMs();
+    const std::uint64_t now = CoopGameClock::NowMs();
+    g_to_title_ms = now, g_to_title_phase_ms = now, g_to_title_held_ms = 0, g_to_title_look_ms = now;
+    g_to_title_holding = false;
     g_tap_downs = 0;
     g_to_title = 1;
     LOG_INFO(Core, "coop: pause tab: back to the title: a join with a file loaded (the host's save is loaded there)");
