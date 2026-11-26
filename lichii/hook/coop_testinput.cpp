@@ -690,6 +690,13 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
                 return fail("want: await TICKS REGEX (the runner's own step)");
             }
             continue;
+        } else if (cmd == "SKIPTO") {
+            // tools/autotest/hookshot.py's own step too (epona-seen): "skipto MARK REGEX", the script goes on at the
+            // later mark once the game's log has a matching line. Its shape only: a script played here never skips.
+            if (w.size() < 3) {
+                return fail("want: skipto MARK REGEX (the runner's own step)");
+            }
+            continue;
         } else if (cmd == "BURST") {
             // tools/autotest/hookshot.py's own step too (issue 166): "burst NAME FRAMES [TICKS REGEX]", the game held
             // and shot frame by frame through the bridge; nothing for the module. Its shape only.

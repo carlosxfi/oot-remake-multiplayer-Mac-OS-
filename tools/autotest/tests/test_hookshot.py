@@ -1206,16 +1206,82 @@ class BurstTest(unittest.TestCase):
         self.assertTrue(any("burst own skipped" in ln for ln in log.lines), log.lines)
 
 
+class SkipToTest(unittest.TestCase):
+    """epona-seen: `skipto MARK REGEX`, on at the later mark once the game's own log has a matching line written since
+    the last mark played (a try starts at a mark)."""
+
+    RIDE = "[hos Presentation Thread] coop: ride: we ride Animal_Epona_Adult, sending PLAYER_RIDE (1 horse seen)"
+    SCRIPT = ("mark try1\nskipto on coop: ride: we ride\nmark try2\nskipto on coop: ride: we ride\nmark try3\n"
+              "mark on\nmark after\n")
+
+    @classmethod
+    def run_with(cls, script, text, after_mark):
+        """The ride line comes into the log just after the mark `after_mark` (after the mark's own log read)."""
+        shots, pending = [], []
+
+        def shot(name):
+            shots.append(name)
+            if name == after_mark:
+                pending.append(cls.RIDE)
+
+        def read_log():
+            out = "\n".join(text)
+            text.extend(pending)   # written after this read: the next one sees it
+            pending.clear()
+            return out
+
+        game = FakeGame()
+        log = hs.Log()
+        p = hs.Player(game.connect(), log, shot=shot, connect=game.connect, clock=game.clock, sleep=game.clock.sleep,
+                      read_log=read_log)
+        p.play(hs.parse(script))
+        game.close()
+        return shots, log
+
+    def test_parses_and_needs_a_later_mark(self):
+        steps = hs.parse("skipto on coop: ride: we ride   # a comment\nmark on\n")
+        self.assertEqual((steps[0].kind, steps[0].name, steps[0].start), ("skipto", "on", "coop: ride: we ride"))
+        self.assertNotIn("skipto", hs.MODULE_ONLY)   # the runner's own step
+        for bad in ("skipto on\nmark on\n", "skipto on (\nmark on\n", "skipto on x\n", "mark on\nskipto on x\n"):
+            with self.assertRaises(hs.ScriptError):
+                hs.parse(bad)
+
+    def test_skips_to_the_mark_once_the_line_is_new(self):
+        text = ["coop: hello", self.RIDE + "\r"]   # an older match (and a CRLF log): not since the last mark
+        shots, log = self.run_with(self.SCRIPT, text, "try2")
+        self.assertEqual(shots, ["try1", "try2", "on", "after"])   # try3 not played
+        self.assertTrue(any(ln.startswith("coop: test skipto on: not seen") for ln in log.lines), log.lines)
+        self.assertTrue(any(ln.startswith("coop: test skipto on: seen (") and ln.endswith("1 steps not played")
+                            for ln in log.lines), log.lines)
+
+    def test_counts_from_the_last_mark_only(self):
+        # getting on again logs the line getting on did: the second try (after its mark) must not skip on it
+        text = ["coop: hello"]
+        script = ("mark first\nskipto on1 coop: ride: we ride\nmark miss1\nmark on1\nmark again\n"
+                  "skipto on2 coop: ride: we ride\nmark try2\nmark on2\n")
+        shots, _ = self.run_with(script, text, "first")
+        self.assertEqual(shots, ["first", "on1", "again", "try2", "on2"])
+
+    def test_never_seen_plays_every_step(self):
+        _, log, shots, _, _ = play(self.SCRIPT, read_log=lambda: "coop: hello")
+        self.assertEqual(shots, ["try1", "try2", "try3", "on", "after"])
+
+    def test_skipped_without_a_log(self):
+        _, log, shots, _, _ = play(self.SCRIPT)
+        self.assertEqual(shots, ["try1", "try2", "try3", "on", "after"])
+        self.assertTrue(any(ln.startswith("coop: test skipto skipped") for ln in log.lines), log.lines)
+
+
 class GrammarTest(unittest.TestCase):
     """Row 325 review: one scenario grammar for both readers. The same lists are in tests/lichii/testinput_test.cpp
     ('testinput: the runner's grammar'): every line here is taken by both parsers or refused by both."""
 
     TAKEN = ("wait 1", "wait 36000", "wait 0007", "hold A 36000", "press A 1", "stick -1 +1 5", "stick .5 -0.5 5",
              "toward 1 2 36000", "goto 1.5 -2 0.2 600", "goto .5 5. 1", "goto 1e3 -1E-2", "goto 1000000 -1000000",
-             "burst b 1", "burst hit-1.a_B 600", "burst b 60 600 played its (hit) effect", "burst b 0060 0 x", "await 0 x", "await 99999999999 x", "hit X 80", "drop X 500", "hurt 1", "setflag F -2147483648",
+             "burst b 1", "burst hit-1.a_B 600", "burst b 60 600 played its (hit) effect", "burst b 0060 0 x", "await 0 x", "await 99999999999 x", "skipto z coop: ride: we ride (x)", "hit X 80", "drop X 500", "hurt 1", "setflag F -2147483648",
              "setflag F 2147483647", "setflag F 007")
     REFUSED = ("wait 0", "wait 36001", "wait +5", "wait -0", "wait 1_0", "wait 0000000001", "hold A 0", "press A 0",
-               "stick 0 0 0", "toward 1 2 0", "toward 1 2 36001", "goto 1 2 1 0", "burst b 0", "burst b 601", "burst b 0000000601", "burst b 60 600", "burst b", "burst b/x 60", "burst b +5", "burst b 60 -1 x", "await -1 x", "await +1 x",
+               "stick 0 0 0", "toward 1 2 0", "toward 1 2 36001", "goto 1 2 1 0", "burst b 0", "burst b 601", "burst b 0000000601", "burst b 60 600", "burst b", "burst b/x 60", "burst b +5", "burst b 60 -1 x", "await -1 x", "await +1 x", "skipto z",
                "await 1_0 x", "goto 0x10 2", "goto 1_0 2", "goto inf 2", "goto nan 2", "goto 1000001 2", "goto 1e7 2",
                "goto . 2", "goto 1e 2", "stick 0x1 0 5", "hit X 0", "hit X 81", "hit X ²", "drop X 501",
                "hurt 81", "hurt ³", "setflag F 2147483648", "setflag F -2147483649", "setflag F --5",

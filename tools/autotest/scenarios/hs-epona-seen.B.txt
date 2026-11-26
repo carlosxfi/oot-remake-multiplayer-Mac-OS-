@@ -1,0 +1,146 @@
+# hs-epona-seen (Hookshot), B: the rider, on a save that has WON Epona (adult, Get_Epona Complete, Epona's Song
+# known: offline/epona-seen-run.ps1 stages it as both games' save). A won save has no Epona standing in the field
+# (she is placed only while Get_Epona is not Complete), so B calls her with Epona's Song, gets on, rides at walk,
+# trot and gallop, stops, gets off, walks away and back, and gets on again. A stands 10 m south and watches
+# (hs-epona-seen.A.txt: its marks shoot both games at the same moment, timed by A's own ride lines).
+# Run: tools\autotest\run.ps1 -Runtime hookshot -Scenario hs-epona-seen (through offline/epona-seen-run.ps1).
+# Pass lines (hookshot_log-B.txt / -A.txt), as the big run's epona-sync step:
+#   b-owns       B min=1 coop: ride: Epona is ours \(Get_Epona Complete\)
+#   b-free       B min=1 coop: ride: our Epona is out with nobody on her        (the song brought her)
+#   b-rides      B min=1 coop: ride: we ride Animal_Epona_Adult
+#   b-on-again   B min=1 coop: ride: our Epona has us on her again
+#   a-rides      A min=1 coop: ride: P\d+ rides Animal_Epona_Adult
+#   a-waits      A min=1 coop: ride: P\d+'s Animal_Epona_Adult waits, nobody on her \(the same copy\)
+# VOID, not FAIL: b-free 0 (the song did not bring her: ocarina not on D-pad Left, or the notes missed), or
+# b-rides 0 (no mount round got on: the shots after "epona-came" show where she stopped).
+# Notes as in hs-ocarina-play: A = A, L = Down, R = Right, Y = Left, X = Up. Epona's Song: Up Left Right, twice.
+#! switches LICHII_COOP_PUPPET=1,LICHII_COOP_DEBUG_ANIM=1,LICHII_COOP_OBJECTS=1,LICHII_COOP_CHEATS=1
+#! timeout 900
+mark start
+wait 60
+warp HyruleField_Adult HyruleField_FrontOfMarket
+wait 1200               # the warp lands
+mark field
+place -99.0 151.0 264.5 # open field (where the field's Epona stands in a save that has not won her)
+wait 240
+face -99.0 290.0        # face north, away from A
+press ZL                # camera behind B
+wait 60
+mark on-foot
+press DLEFT 12          # the ocarina out
+wait 240
+mark ocarina
+press X 12              # Epona's Song: Up Left Right, twice
+wait 40
+press Y 12
+wait 40
+press R 12
+wait 40
+press X 12
+wait 40
+press Y 12
+wait 40
+press R 12
+wait 300
+mark song
+await 900 coop: ride: our Epona is out with nobody on her
+wait 480                # she runs up and stops near B
+mark epona-came
+# Mount rounds: she stops somewhere near B. Round 0 is where B stands; then a ring of 2 m, then of 3.5 m round
+# that spot, B facing it each time. The first round that gets on goes on at "mounted" (one more A press would
+# get off again).
+press A 12
+wait 150
+skipto mounted coop: ride: we ride Animal_Epona_Adult
+goto -97.0 264.5 0.4 150
+face -99.0 264.5
+press A 12
+wait 150
+skipto mounted coop: ride: we ride Animal_Epona_Adult
+goto -97.6 265.9 0.4 150
+face -99.0 264.5
+press A 12
+wait 150
+skipto mounted coop: ride: we ride Animal_Epona_Adult
+goto -99.0 266.5 0.4 150
+face -99.0 264.5
+press A 12
+wait 150
+skipto mounted coop: ride: we ride Animal_Epona_Adult
+goto -100.4 265.9 0.4 150
+face -99.0 264.5
+press A 12
+wait 150
+skipto mounted coop: ride: we ride Animal_Epona_Adult
+goto -101.0 264.5 0.4 150
+face -99.0 264.5
+press A 12
+wait 150
+skipto mounted coop: ride: we ride Animal_Epona_Adult
+goto -100.4 263.1 0.4 150
+face -99.0 264.5
+press A 12
+wait 150
+skipto mounted coop: ride: we ride Animal_Epona_Adult
+goto -99.0 262.5 0.4 150
+face -99.0 264.5
+press A 12
+wait 150
+skipto mounted coop: ride: we ride Animal_Epona_Adult
+goto -97.6 263.1 0.4 150
+face -99.0 264.5
+press A 12
+wait 150
+skipto mounted coop: ride: we ride Animal_Epona_Adult
+goto -95.5 264.5 0.4 150
+face -99.0 264.5
+press A 12
+wait 150
+skipto mounted coop: ride: we ride Animal_Epona_Adult
+goto -99.0 268.0 0.4 150
+face -99.0 264.5
+press A 12
+wait 150
+skipto mounted coop: ride: we ride Animal_Epona_Adult
+goto -102.5 264.5 0.4 150
+face -99.0 264.5
+press A 12
+wait 150
+skipto mounted coop: ride: we ride Animal_Epona_Adult
+goto -99.0 261.0 0.4 150
+face -99.0 264.5
+press A 12
+wait 150
+skipto mounted coop: ride: we ride Animal_Epona_Adult
+mark mount-failed       # no round got on: VOID (the phases below run on foot)
+mark mounted
+wait 120
+# Gaits: the stick turned a little to one side, so she rides a circle and stays in A's view. A's marks
+# (walk-*, trot-*, gallop-*) shoot both games while B holds the stick; no mark here lets the stick go.
+stick 0.15 0.25 600     # walk (10 s)
+stick 0.35 0.5 600      # trot (10 s)
+stick 0.5 0.85 600      # gallop (10 s)
+wait 360                # let go: she stops
+mark stopped
+press A 12              # get off (she stands: A is not a carrot then)
+wait 300
+mark dismounted
+stick 1.0 0 90          # walk away from her on foot
+wait 120
+mark walked-away
+stick -1.0 0 90         # and back
+wait 60
+press A 12              # get on again: the others keep the same copy
+wait 150
+skipto mounted-again coop: ride: our Epona has us on her again
+face -99.0 264.5
+press A 12
+wait 150
+skipto mounted-again coop: ride: our Epona has us on her again
+stick -0.5 0 30
+press A 12
+wait 150
+mark mounted-again
+stick 0 0.8 120
+wait 300
+mark end
