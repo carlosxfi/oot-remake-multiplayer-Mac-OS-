@@ -62,6 +62,9 @@ def state(game, st):
 
 
 def command(game, m):
+    if m.get("cmd") == "warp":       # (a warp leaves the scene: its event, the item get, ends with it)
+        game.f1_event = False
+        return None
     if m.get("cmd") != "key":
         return None
     if m.get("key") != "F1":

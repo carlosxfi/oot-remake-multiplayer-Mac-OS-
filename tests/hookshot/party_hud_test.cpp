@@ -831,6 +831,39 @@ TEST_CASE("party hud: a listed status screen that has not run yet is not called 
     ui::SetRunningScreens(std::vector<std::uint64_t>{}, true);
 }
 
+// party-hud-crash-c126-6 (run party-hud-bridge-ece368dd-2, both games): the pause menu's Title Screen goes from play
+// to the title with no scene load (Sequence_IsLoadingBanc stays off), so the play UI stayed 'up' at the title and every
+// listed screen counted as live there. The title's menu up is no play scene: nothing is live until the HUD runs after it.
+TEST_CASE("party hud: the title reached from play (no scene load) is no play scene") {
+    FakeGame game;
+    game.Hud();
+    ui::SetSceneLoading(false);
+    ui::SetRunningScreens(std::vector<std::uint64_t>{}, true);   // in play: the game's HUD screen ran
+    REQUIRE(ui::GameUiUp());
+    REQUIRE(ui::ScreenLayout(game, kStatus) == kLayout);
+    ui::SetTitleUp(true);   // the pause menu's Title Screen: the title's menu is up, no scene load
+    CHECK(ui::PlayUiDown());
+    CHECK_FALSE(ui::SceneLoading());
+    CHECK_FALSE(ui::GameUiUp());
+    CHECK_FALSE(ui::ScreenLive(kStatus));
+    CHECK(ui::ScreenLayout(game, kStatus) == 0);
+    CHECK(ui::ScreenByVtable(game, party::addr::kStatusVtable) == 0);
+    ui::SetRunningScreens(std::vector<std::uint64_t>{kStatus}, true);   // (even a stale 'ran' word: not live at the title)
+    CHECK_FALSE(ui::GameUiUp());
+    CHECK(ui::ScreenLayout(game, kStatus) == 0);
+    party::Hud hud;
+    hud.AllowRunTimeClones(true);
+    std::vector<std::string> log;
+    const int calls = game.calls;
+    CHECK_FALSE(hud.Step(game, {{"Saria", Quarters(12, 12)}}, 0.15, &log));
+    CHECK(game.calls == calls);   // no game function was handed a layout at the title
+    ui::SetTitleUp(false);   // the save's load from the title: the title's menu gone ...
+    CHECK_FALSE(ui::GameUiUp());   // ... the play UI up again only once the HUD screen ran after it
+    ui::SetRunningScreens(std::vector<std::uint64_t>{}, true);
+    CHECK(ui::GameUiUp());
+    CHECK(ui::ScreenLayout(game, kStatus) == kLayout);
+}
+
 // party-hud-crash-c126: at 'menu -> loading' the status screen was still listed while the scene loader reused its
 // layout's memory, and the next layout lookup walked into a scene object (both games crashed). While the game's scene
 // load (Sequence_IsLoadingBanc) is on, nothing of a screen's layout is called into; the HUD is found again after it.

@@ -39,7 +39,12 @@ import re
 
 import pytest
 
+import pair as pair_mod
 import solo
+from pair import READY_FRAMES
+# the way to the title and back, ONE source: test_smoke.py's lines (coop_pause.cpp to-title.now; coop_hook.cpp the
+# title's own line; coop_pause_tab_module.cpp ToTitleStep's give-up) and its frame bound
+from test_smoke import AT_TITLE, TITLE_FRAMES, TO_TITLE_ASKED, TO_TITLE_GAVE_UP, TO_TITLE_ON
 
 # hookshot/src/coop_hookshot.cpp hos_coop_key (the routes) and hos_coop_menu_tabs (the tab count, logged at a change)
 ROUTE_LONGSHOT = r"coop: F1: Longshot's menu on co-op's Multiplayer tab \(our - menu cannot open now\)"
@@ -52,9 +57,6 @@ FREE = re.compile(r"coop: free play: (.+?)\s*$")
 MINUS_RUN = r"coop: pause tab: F1: to the Multiplayer tab"
 MINUS_VIEW = r"coop: pause tab: F1: the Multiplayer view, after"
 MINUS_GONE = r"coop: pause tab: CoopMenu_00 (closing|closed): its page forgotten"   # ForgetCoopMenu
-# test_smoke.py: the way to the title (coop_pause.cpp, LICHII_COOP_TEST_TO_TITLE=1, set by bt_plugin)
-TO_TITLE_ON = r"coop: multiplayer tab: test: to-title\.now in .* starts the way back to the title"
-TO_TITLE_ASKED = r"coop: multiplayer tab: test: back to the title asked \(to-title\.now\)"
 
 # The Deku Tree chest (f1-event.A.txt, its sources there): the slingshot room's chest, opened flag key64
 # 0x0b66198d17d6584e (run f1-event-aebd16089 A log "+ Obj_TBox_A_02 ... hash 0xb66198d17d6584e"; deku-ladder.A.txt:12
@@ -134,26 +136,50 @@ def games(pair):
     return [x for x in ("A", "B") if x in pair.c]
 
 
+def boot_place(pair):
+    """Pair.need_boot_place (both games in play in the boot's scene); on the SOLO boot game A alone, by the same rule:
+    need_boot_place steps until_in_play's default games ("A", "B"), which a solo pair (pair.c == {'A'}) has not."""
+    if len(games(pair)) == 2:
+        return pair.need_boot_place()
+    pair.until_in_play("A in play before the test", games=games(pair), max_frames=READY_FRAMES)
+    st = pair.state("A")
+    if pair.boot_scene and (st.get("scene") or "").lower() != pair.boot_scene.lower():
+        raise pair_mod.SetupFail("not at the boot's place: A is in %s, not the boot's %s" % (st.get("scene"),
+                                                                                         pair.boot_scene))
+    return {"A": st}
+
+
 def to_title(pair):
-    """test_smoke.py's way to the title: to-title.now in each game's folder, its line, then no game in play."""
+    """test_smoke.py's way to the title: to-title.now in each game's folder, its line, then each game AT the title (the
+    title's own line since the ask, not merely out of play: an open menu is out of play too) and the module's free play
+    word 'no (title)' on A. Returns at_title(x) for load_again (Pair.load_both presses only a game at the title)."""
     for x in games(pair):
         assert pair.log[x].find(TO_TITLE_ON, pos=0), "%s: LICHII_COOP_TEST_TO_TITLE is not on" % x
+    asked = {x: pair.log[x].mark() for x in games(pair)}
     for x in games(pair):
         with open(os.path.join(pair.games[x]["folder"], "to-title.now"), "w") as f:
             f.write("bt\n")
     for x in games(pair):
         pair.expect_log(x, TO_TITLE_ASKED, max_frames=300)
-    pair.until("every game left play (title)", lambda: all(not pair.in_play(pair.state(x)) for x in games(pair)),
-               max_frames=900)
+
+    def at_title(x):
+        return pair.log[x].find(AT_TITLE, pos=asked[x]) is not None
+
+    def all_at_title():
+        for x in games(pair):
+            gave_up = pair.log[x].find(TO_TITLE_GAVE_UP, pos=asked[x])
+            assert gave_up is None, "%s: the way back to the title gave up: %s" % (x, gave_up.strip())
+        return all(at_title(x) and not pair.in_play(pair.state(x)) for x in games(pair))
+    pair.until("every game at the title", all_at_title, max_frames=TITLE_FRAMES)
     pair.until("A on the title (free play: no (title))", lambda: last_free_play(pair, "A") == "no (title)",
-               max_frames=900)
+               max_frames=300)
+    return at_title
 
 
-def load_again(pair):
+def load_again(pair, at_title):
     """test_smoke.py: back to play from the title; with a session, both connected again."""
-    pair.load_both(max_frames=3600)
-    for x in games(pair):
-        assert pair.in_play(pair.state(x)), "%s not in play after the load" % x
+    pair.load_both(at_title, max_frames=3600)
+    pair.until_in_play("in play after the load", games=games(pair), max_frames=READY_FRAMES)
     if len(games(pair)) == 2:
         pair.until("both games list two connected players again",
                    lambda: all(len([p for p in ((pair.state(x).get("coop") or {}).get("players") or [])
@@ -162,24 +188,24 @@ def load_again(pair):
 
 def run_title(pair, shot):
     with pair.setup():
-        assert pair.in_play(pair.state("A")), "A not in play at the start"
-    done = False
+        boot_place(pair)
+    done, at_title = False, None
     try:
-        to_title(pair)
+        at_title = to_title(pair)
         f1_longshot_on_coop(pair, "A", shot)
         done = True
     finally:
         def back():
             if coop_tab(pair, "A").get("open"):
                 close_longshot_menu(pair, "A")
-            load_again(pair)
+            if at_title:
+                load_again(pair, at_title)
         way_back(pair, done, back)
 
 
 def run_event(pair, shot):
     with pair.setup():
-        s = pair.state("A")
-        assert pair.in_play(s), "A not in play at the start"
+        boot_place(pair)
         before = pair.flag_read("A", CHEST).get("value")
         # f1-event.A.txt: the chest put back CLOSED, then a warp into the Deku Tree loads it closed (its chests spawn
         # at the scene load: that run's '+ Obj_TBox' came before 'mark after'). The old row set the flag after its
@@ -233,6 +259,7 @@ def way_back(pair, done, fn):
 
 
 @pytest.mark.look
+@pytest.mark.leaves_play     # (the title: runs last in its round, the lane's recovery after it; test_smoke)
 @pytest.mark.budget(300)
 @pytest.mark.row("C3-1 rc-01113 F1 on the title: Longshot's menu on co-op's Multiplayer tab (f1-event title)")
 def test_f1_title(pair):
@@ -251,8 +278,9 @@ def test_f1_event(pair):
 @pytest.mark.row("C3-1 rc-01113 F1 in free play: the game's - menu on co-op's Multiplayer tab (f1-event free)")
 def test_f1_free_play(pair):
     with pair.setup():
+        boot_place(pair)
         s = pair.state("A")
-        assert pair.in_play(s) and s.get("event") is False, "A not in free play at the start"
+        assert s.get("event") is False, "A not in free play at the start (an event)"
         assert last_free_play(pair, "A") == "yes", "the module's free play word is %r, not yes (the old 'state A free')" % (
             last_free_play(pair, "A"))
         assert not coop_tab(pair, "A").get("open"), "Longshot's menu shows co-op's tab before F1"
@@ -277,6 +305,9 @@ def test_f1_free_play(pair):
         done = True
     finally:
         def back():
+            if coop_tab(pair, "A").get("open"):                  # (a FAIL: F1 took Longshot's route; shut it first,
+                close_longshot_menu(pair, "A")                   # the lane's recovery does not, and the next test
+                return                                           # would start with it open)
             pair.press("A", ["MINUS"], frames=8)                 # charpage-288-open.A.txt:25 'press MINUS' = out
             pair.step_both(180)                                  # (its 'wait 180')
             pair.expect_log("A", MINUS_GONE, max_frames=300)
@@ -285,6 +316,7 @@ def test_f1_free_play(pair):
 
 @solo.MARK
 @pytest.mark.look
+@pytest.mark.leaves_play     # (the title: runs last in its round, the lane's recovery after it; test_smoke)
 @pytest.mark.budget(300)
 @pytest.mark.row("C3-1 rc-01113 F1 solo (co-op idle) on the title (f1-event solo title)")
 def test_f1_solo_title(pair):
