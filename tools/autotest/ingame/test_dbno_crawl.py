@@ -34,8 +34,14 @@ HIT_GAP = 60           # frames between hits: hs-dbno-child.B.txt / hs-dbno-adul
 DEFAULT_BLEED_S = 45   # coop/protocol messages.hpp DbnoMode bleed_s default: what the other rows play with
 CHARSEL = "CharacterMenu_SelectedCharacter"   # Character Select's Int (char-npc-v022.A.txt:9)
 CHARSEL_PICK = 7       # the NPC character char-npc-v022.A.txt / crawl-337-charsel.B.txt pick
-BOOT = ("KakarikoVillage_Child", "Kakariko_WellSide")
-RESTORE_S = 120        # the restore's own deadline after a failure (two warps at most)   # the default boot (scenarios/live-kakariko-child.A.txt:7)
+BOOT = ("KakarikoVillage_Child", "Kakariko_WellSide")   # the default boot (scenarios/live-kakariko-child.A.txt:7)
+RESTORE_S = 120        # the restore's own deadline after a failure (two warps at most)
+# The respawn moves B by the /teleport trip (coop_dbno_game.cpp:546-552 CoopTeleport::Beside), so "beside A" is judged
+# as test_rows.py test_teleport_to_player judges /teleport's arrival: < 3.0 m, same scene.
+BESIDE_AFTER_M = 3.0
+# Crawl minimum: the test's own (no old row measured it; hs-dbno-child judged the crawl by shots only): 0.1 m in 120
+# frames of full stick only says "the stick moves the downed Link at all"; the first lane run's value is the measure.
+CRAWL_MIN_M = 0.1
 
 # The downed Link's own lines (lichii/hook/coop_dbno_body.cpp, logged as "coop: dbno: <note>", coop_dbno_game.cpp:453)
 LYING_CHILD = (r"coop: dbno: our downed Link: (the game's own crawl runs \('|.*: the game's AS 'Crouch' \(Tunnel_Wait, "
@@ -44,10 +50,25 @@ LYING_ADULT = r"coop: dbno: our downed adult Link: the game's AS 'DamageLStand' 
 CRAWL_REFUSED = r"coop: dbno: our downed Link: Crawl \(234\) refused"                           # :701
 UP_LINE = r"coop: dbno: our Link up: "                                                          # :668 :707 :719 :839
 UP_REFUSED = r"coop: dbno: our Link up: .* refused"                                             # :712
+CRAWL_TAKEN = r"coop: dbno: our downed Link: Crawl \(234\) asked and taken"                   # :686
+CRAWL_WAITS = r"coop: dbno: our downed Link: Crawl \(234\) waits: the slot took a request"     # :693
+ADULT_UP = r"coop: dbno: our Link up: LDamageStandUp \(85\) asked and taken"                   # :719
+ADULT_UP_WAIT = r"coop: dbno: our Link up: LDamageStandUp \(85\) refused \(\d+\): the game's own Wait stands"  # :712
 
 
 def event(n):
     return r"coop: dbno: our Link: event %d \(by P\d+\)" % n
+
+
+def count(pair, x, pattern):
+    rx = re.compile(pattern)
+    return sum(1 for ln in pair.log[x].since() if rx.search(ln))
+
+
+def same_scene(pair, x, scene, when):
+    """hs-dbno-adult.A.txt check: B still in the scene at every mark (no reload)."""
+    st = pair.state(x)
+    assert (st.get("scene") or "").lower() == scene.lower() and not st.get("loading"),         "%s left %s %s (scene %s, loading %s): a reload" % (x, scene, when, st.get("scene"), st.get("loading"))
 
 
 def dist(a, b):
@@ -197,7 +218,7 @@ def test_downed_child_crawls_and_is_revived(pair):
         pair.notes.append("crawl %.2f m in 120 frames, side %.2f m in 90" % (crawl_m, side_m))
         pair.never_log("B", CRAWL_REFUSED)
         pair.never_log("B", event(EV_BLED_OUT))
-        assert crawl_m > 0.1, "B did not crawl: %.2f m in 120 frames of full stick (downed)" % crawl_m
+        assert crawl_m > CRAWL_MIN_M, "B did not crawl: %.2f m in 120 frames of full stick (downed)" % crawl_m
         held = revive(pair, hold)
         pair.notes.append("revived after A held A %d frames (hold %d tenths)" % (held, hold))
         pair.expect_log("B", UP_LINE, max_frames=300)
@@ -250,22 +271,39 @@ def test_downed_adult_lies_bleeds_out_respawns(pair):
             to_place(pair, "adult", "HyruleField_Adult", "HyruleField_FrontOfKakarikoVillage")   # hs-dbno-adult
             rules(pair, 10)             # hs-dbno-adult.A.txt 'chat /dbno time 10' (kDbnoMinBleedS)
             no_fairy(pair, "B")
+        field = "HyruleField_Adult"
         down(pair)
-        pair.expect_log("B", r"coop: dbno: our downed Link: Crawl \(234\) asked and taken", max_frames=300)   # :686
+        same_scene(pair, "B", field, "after the down")
+        pair.expect_log("B", CRAWL_TAKEN, max_frames=300)
         pair.expect_log("B", LYING_ADULT, max_frames=300)
         pair.never_log("B", CRAWL_REFUSED)
         shots(pair, "dbno-adult-lying")
+        same_scene(pair, "B", field, "lying")
         crawl_m = stick_move(pair, "B", 0, 90)     # hs-dbno-adult.B.txt 'stick 0 1 180', cut to 90: the 10 s bleed-out
         pair.notes.append("adult downed: %.2f m in 90 frames of full stick" % crawl_m)
+        same_scene(pair, "B", field, "after the stick")
         # bleed-out (10 s of B's clock), then spectating, then up beside A once no enemy is near (coop_dbno.h kQuietUs)
         pair.expect_log("B", event(EV_BLED_OUT), max_frames=1800)
         pair.expect_log("A", r"coop: dbno: P2 is spectating", max_frames=300)
+        same_scene(pair, "B", field, "spectating")
         pair.expect_log("B", event(EV_RESPAWNED), max_frames=2400)
         pair.expect_log("B", r"coop: dbno: our Link up: the game's AS 'DamageLStand' played on", max_frames=300)  # :668
+        def stood():
+            if pair.log["B"].find(ADULT_UP_WAIT):
+                raise AssertionError("stand-up FAIL only: LDamageStandUp (85) refused, the game's own Wait stood B up")
+            return pair.log["B"].find(ADULT_UP)
+        pair.until("B log /%s/" % ADULT_UP, stood, max_frames=300)
         pair.never_log("B", UP_REFUSED)
+        # hs-dbno-adult.A.txt checks: 'Crawl (234) asked and taken' once, at most one 'waits: the slot took a request'
+        n_taken, n_waits = count(pair, "B", CRAWL_TAKEN), count(pair, "B", CRAWL_WAITS)
+        assert n_taken == 1, "B: 'Crawl (234) asked and taken' %d times in one down (want once)" % n_taken
+        assert n_waits <= 1, "B: 'Crawl (234) waits: the slot took a request' %d times (want at most one)" % n_waits
         pair.step_both(60)
+        same_scene(pair, "B", field, "after the respawn")
         a, b = pair.state("A")["pos"], pair.state("B")["pos"]
         pair.notes.append("after the respawn B is %.2f m from A" % dist(a, b))
+        assert dist(a, b) < BESIDE_AFTER_M, "B not beside A after the respawn: %.2f m (< %.1f m)" % (
+            dist(a, b), BESIDE_AFTER_M)
         shots(pair, "dbno-adult-respawned", twice=False)
         walk_m = stick_move(pair, "B", 0, 90)
         pair.notes.append("adult walk %.2f m in 90 frames after the respawn" % walk_m)
