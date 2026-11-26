@@ -30,7 +30,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, AUTOTEST)
 import pair as P   # noqa: E402
 
-RESULTS = ("PASS", "FAIL", "FLAKY", "SETUP-FAIL", "NO-REF", "SKIP")
+RESULTS = ("PASS", "FAIL", "FLAKY", "SETUP-FAIL", "NO-REF", "SKIP", "NOT-RUN")
 DEFAULT_BUDGET = 120
 
 
@@ -48,6 +48,9 @@ def pytest_addoption(parser):
     g.addoption("--env", action="append", default=[], metavar="NAME=VALUE", help="a game switch for this boot, set at "
                 "the game launch (live.py start --env; repeatable): NAME=VALUE for both games, A:NAME=VALUE / "
                 "B:NAME=VALUE for one; a scenario's '#! switches' line. Kept in summary.json 'identity'")
+    g.addoption("--deadline-min", type=float, default=None, metavar="N", help="the run's wall-clock limit in minutes "
+                "(set it below the queue's Minutes): past N no new test starts and no rerun, the rest are NOT-RUN "
+                "(never a pass), the games are closed and the lane let go (live.py stop), then summary.json is written")
     g.addoption("--lane-check-only", action="store_true", help="the setup proof of every --lanes lane (lane_check + "
                 "--expect-commit + the tests collect; no game boot, no test run): one SETUP-OK/SETUP-FAIL line per "
                 "lane, OUT/setup.json; exit 0 only if every lane is OK (pytest's own --setup-only is another thing)")
@@ -176,6 +179,7 @@ def lane_pair(request):
         yield pair
         pair.close()
         lanefake.close()
+        config._bt_lane_closed = True
         return
     t0 = time.monotonic()
     info = _real_lane_info(config, lane)                    # (SetupFail: every test of this lane is SETUP-FAIL)
@@ -198,7 +202,8 @@ def lane_pair(request):
         yield pair
         pair.close()
     finally:
-        _live(["stop", "--session", session], timeout=180)
+        stopped = _live(["stop", "--session", session], timeout=180)
+        config._bt_lane_closed = stopped
 
 
 BASE_ENV = ["LICHII_COOP_PUPPET=1", "LICHII_COOP_TEST_TO_TITLE=1"]   # every boot (lane_pair's live.py start)
@@ -280,12 +285,43 @@ def _kind(reports):
 
 
 @pytest.hookimpl(tryfirst=True)
+def _past_deadline(config):
+    n = config.getoption("deadline_min")
+    return n is not None and time.time() - config._bt_started >= n * 60
+
+
+def _not_run(item, why):
+    """A NOT-RUN row for an item that never started (its own report, so xdist's controller gets it too)."""
+    from _pytest.reports import TestReport
+    rep = TestReport(item.nodeid, item.location, {}, "skipped", (str(item.path), 0, why), "teardown",
+                     user_properties=[("result", "NOT-RUN"), ("seconds", 0), ("why", why)])
+    item.ihook.pytest_runtest_logreport(report=rep)
+
+
+def _stop_at_deadline(item):
+    """Past --deadline-min: this item is NOT-RUN (and so is each one after it, as pytest offers it: under xdist a worker
+    sees only its own share). The first time, the session's fixtures are torn down at once (the lane's games: lane_pair
+    -> live.py stop: each game asked to quit through its bridge, killed only if still up after the wait, the lock let
+    go), so the games are closed before pytest_sessionfinish writes the summary."""
+    config = item.config
+    why = "NOT-RUN: --deadline-min %g passed before it started" % config.getoption("deadline_min")
+    item.ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
+    _not_run(item, why)
+    item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
+    if not getattr(config, "_bt_stopped", None):
+        config._bt_stopped = why
+        item.session._setupstate.teardown_exact(None)
+    return True
+
+
 def pytest_runtest_protocol(item, nextitem):
+    if _past_deadline(item.config):
+        return _stop_at_deadline(item)
     item.ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
     t0 = time.monotonic()
     reports = runtestprotocol(item, nextitem=nextitem, log=False)
     kind, first = _kind(reports), None
-    if kind == "FAIL" and not item.config.getoption("no_rerun"):
+    if kind == "FAIL" and not item.config.getoption("no_rerun") and not _past_deadline(item.config):
         first = reports
         reports = runtestprotocol(item, nextitem=nextitem, log=False)
         kind = "FLAKY" if _kind(reports) == "PASS" else "FAIL"
@@ -345,6 +381,8 @@ def pytest_sessionfinish(session, exitstatus):
                "lanes": config.getoption("lanes"), "fake": bool(config.getoption("fake")),
                "repeat": config.getoption("repeat"), "counts": counts, "tests": rows,
                "identity": {"env": boot_env(config), "expect_commit": config.getoption("expect_commit")},
+               "stopped": getattr(config, "_bt_stopped", None),
+               "lane_closed": getattr(config, "_bt_lane_closed", None),
                "verdict": "PASS" if rows and counts["PASS"] == len(rows) else "NOT PASS"}
     with open(os.path.join(out, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=1)
@@ -356,3 +394,5 @@ def pytest_sessionfinish(session, exitstatus):
         lines.append("| %s | %s | %s | %s |" % (r["result"], r["test"], r["seconds"], r["why"].replace("|", "/")))
     with open(os.path.join(out, "summary.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+    if summary["verdict"] != "PASS" and session.exitstatus == 0:
+        session.exitstatus = 1        # (NOT-RUN / SKIP rows are pytest skips: a NOT PASS run never exits 0)

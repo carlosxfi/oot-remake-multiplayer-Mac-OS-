@@ -241,6 +241,56 @@ class BootEnv(unittest.TestCase):
         self.assertIn("leave out -n", p.stdout + p.stderr)
 
 
+DEADLINE_TESTS = """
+import time, pytest
+
+@pytest.mark.smoke
+def test_first(pair):
+    time.sleep(2.0)          # (wall clock on purpose: it carries the run past --deadline-min)
+
+def test_second(pair):
+    pass
+
+def test_third(pair):
+    pass
+"""
+
+
+class DeadlineMin(unittest.TestCase):
+    """--deadline-min: past it no test starts, the rest are NOT-RUN (never PASS), the lane is closed, summary written."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        d = os.path.join(self.tmp, "t")
+        os.makedirs(d)
+        with open(os.path.join(d, "conftest.py"), "w", encoding="utf-8") as f:
+            f.write("import sys\nsys.path.insert(0, %r)\npytest_plugins = ['bt_plugin']\n" % INGAME)
+        with open(os.path.join(d, "test_deadline.py"), "w", encoding="utf-8") as f:
+            f.write(DEADLINE_TESTS)
+        self.dir, self.out = d, os.path.join(self.tmp, "o")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_rest_not_run_lane_closed_summary_written(self):
+        p = pytest_run([".", "--fake", "--out", self.out, "-q", "--deadline-min", "0.02"], cwd=self.dir)
+        s = summary(self.out)
+        self.assertEqual(results(s), {"test_first": "PASS", "test_second": "NOT-RUN", "test_third": "NOT-RUN"},
+                         p.stdout[-2000:])
+        self.assertEqual(s["counts"]["NOT-RUN"], 2)
+        self.assertEqual(s["verdict"], "NOT PASS")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("--deadline-min 0.02", s["stopped"])
+        self.assertTrue(s["lane_closed"])          # (the lane's fixture ran its teardown before the summary)
+        self.assertIn("NOT-RUN", [r for r in s["tests"] if r["test"].endswith("test_third")][0]["why"])
+
+    def test_no_deadline_runs_all(self):
+        p = pytest_run([".", "--fake", "--out", self.out, "-q"], cwd=self.dir)
+        s = summary(self.out)
+        self.assertEqual(s["counts"]["PASS"], 3, p.stdout[-2000:])
+        self.assertIsNone(s["stopped"])
+
+
 class SetupLimit(unittest.TestCase):
     """Pair.setup's 30 s limit holds for the calls inside it (review-c123-6 point 2): a hung bridge in a set-up is a
     SETUP-FAIL at the limit, not a FAIL at the test's budget. A fake clock: no real waiting."""

@@ -45,8 +45,15 @@ One summary per run: `<dir>/summary.json` and `summary.md` (add `--junitxml <fil
 | FLAKY | failed, then passed on the rerun: never a pass |
 | SETUP-FAIL | the lane, the boot, or the test's own set-up (`with pair.setup():`, under 30 s) did not hold; not rerun |
 | NO-REF | a look check has no stored reference yet; its shot is kept under `<dir>/lane<L>/new/` |
+| NOT-RUN | `--deadline-min N` passed before it started (never a pass) |
 
 A smoke test (`@pytest.mark.smoke`) that FAILs or SETUP-FAILs stops the run: the rc is broken.
+
+`--deadline-min N` is the run's wall-clock limit: set it below the queue job's Minutes (the queue's TIMEOUT kills
+the process tree, which would lose `summary.json` and leave the games and the lane lock). Past N no test starts and
+no FAIL is rerun; each test not started is NOT-RUN, the lane's games are closed at once (`live.py stop`: each game
+quits through its bridge, is killed only if still up, the lane lock is let go), then the summary is written
+(`stopped`, `lane_closed`). Every rc pass sets it. A run whose verdict is NOT PASS never exits 0.
 
 Each test has a hard deadline (`@pytest.mark.budget(seconds)`, default 120): every bridge call checks it, and every
 wait is counted in game frames with a ceiling (`pair.until`, `pair.expect_log`), so a test ends by itself.
