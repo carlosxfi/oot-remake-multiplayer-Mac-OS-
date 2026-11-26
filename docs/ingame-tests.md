@@ -56,6 +56,18 @@ where the bridge's `warp` answers `not_in_event` in free play). Each test runs w
 unmarked = `live-kakariko-child`; a run with another `--boot` deselects it (`deselected: needs_boot NAME <test>`, in
 `summary.json` `deselected`). An unknown `--boot` is a usage error before any boot.
 
+Pack files: `--pack NAME[,NAME]` (repeatable) makes co-op pack files with the TESTED sha's tools and puts them into
+BOTH lane games' co-op pack (`mods/contents/0400486024DEC000/coop-puppet/<rel>`) after the lane check and before
+the boot. They come out again after `live.py stop` (a file a pack replaced is put back). The maker is
+`tools/autotest/ingame/packs/NAME.py`: `make(out, ctx) -> {rel: src}`, where rel is '/' separated under coop-puppet
+(`coop_hud/map-arrow.png`). Its `ctx` has `tools`, `romfs` (lane A's extracted romfs, read only), `game_nup`
+(`--pack-game`, else the .nup beside the kit root), `lane` and `say`. `packs/hud.py` makes `coop_hud/` with
+`puppet_pack/hud.py` (fonts, hearts, map arrow, place names; about 60 s from the romfs). Every file is checked by
+sha256 on each game, and `summary.json` `identity.pack` is `{name: {rel: sha256}}`. Each game folder gets a
+`coop-test-pack.json` written before any file moves, so a run that dies leaves something the next boot undoes, with
+or without `--pack`. A test that needs a pack: `@pytest.mark.needs_pack(NAME)`; a run without that `--pack`
+deselects it (`deselected: needs_pack NAME <test>`). A maker that fails is a SETUP-FAIL, and the lane is left as it was.
+
 | Result | When |
 |---|---|
 | PASS | every assert held |
@@ -94,6 +106,40 @@ pytest-timeout (pytest.ini, 1800 s) is only the backstop for a call that never r
   blue (0,60,160) at the same grey scores grey 1.0000, colour 0.1128). Shots are kept with the result
   (`<dir>/lane<L>/shots/`). A test never writes a reference: a person checks a NO-REF candidate and copies it into
   `refs/`.
+
+## The lane's boot proof, recovery and memory
+
+- Boot proof: after `live.py start` and the hello check, inside lane_pair's try (so a miss stops the session),
+  `Pair.boot_ready` steps both games out of the boot's load, warps a game in another scene than the boot scripts'
+  `warp` line there by the bridge, and needs both in play (a fresh Link sample, no load, no event) in that scene.
+  Anything else makes every test of the lane `SETUP-FAIL lane<L> boot: ...`, naming each game's scene, load, event
+  and not_ready. (Pilot test-bridge-pilot-fa63e90f r1: B was left in Graveyard_Child in an event because
+  `hookshot.py run` ended the boot script without waiting for its warp; it now waits, `wait_warps`.)
+- Set-up checks step frames until ready (`pair.until_in_play`, 300 frames at most), never one state read: a stale
+  sample right after a boot or a pause is a game not ready yet, not a FAIL.
+- Recovery: after a test that did not pass, or one marked `leaves_play` (the title test, which runs last in its
+  round), the next test first runs the boot proof again (`Pair.recover`): a miss cannot cascade. It waits on game
+  state, not on a fixed time: 30 s for the stepped part plus 31 s for each game it has to warp back to the boot
+  scene (the worst warp measured, `warp_both` 26.9-31.0 s for both games on a full lane, party-hud-bridge-6947aa3d),
+  so 92 s at most. It is the lane's boot proof, not a test's set-up: a set-up that warps cannot fit 30 s.
+- Module proof, before any bridge call: each game's log must have the module's `coop: playtest: listening on
+  127.0.0.1:<its port>` line, else every test is SETUP-FAIL `lane N boot: X: the module never started` (with the
+  log's last line). `hookshot.py run` counts a game ready only at Longshot's `rx: renderer: Vulkan (` line, not the
+  precompile summary that comes before the start-up ends; a mark or test command the module never read fails the
+  run, so `live.py start` cannot answer ok for a game with no module (party-hud-bridge-85e3b255).
+- A test that PASSES but leaves a game away from the boot's place (not in play, or not in the boot's scene: a
+  forgotten put-back) is caught after it: one state read per game (`Pair.away_from_boot`). The test's notes name it
+  ("left the boot's place"), and the next test starts with the recovery, so it never runs in the wrong map (row 285).
+  Put the boot back in the test anyway (guarded `finally`): the recovery costs the next test up to 92 s.
+- The start precondition of a default-boot test is `pair.need_boot_place(age)` inside `with pair.setup():`. It
+  checks that each game is in play (stepped), in the boot's scene, and of that age. Never check the age alone: a
+  child Link in another map passes that.
+- A warp with `arrive_in_event` (a boss intro) is stepped until the game is in the scene, not loading, in the event
+  once the bridge's own 12 s wait is over; a warp takes longer than that under load.
+- Title test: `load_both` presses A only on a game whose log shows the title line since the way back was asked,
+  never on a game in play (an A there opens and shuts the menu); `back to the title: given up` FAILs it at once.
+- Memory: each game's commit charge is sampled every 30 s from the boot start into `<dir>/lane<L>/commit.csv` and
+  `commit.json` (first, peak and last GB per game), also in summary.json `commit`.
 
 ## Writing a test
 
