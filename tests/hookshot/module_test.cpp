@@ -1858,7 +1858,7 @@ TEST_CASE("hookshot: F1 in free play opens co-op's - menu, elsewhere Longshot's 
     CHECK(module.find("if (!g_on) return g_original_on ? 1 : 0;") != std::string::npos);   // (original game: its tab)
     const std::string tab = ReadFile(kRepo / "hookshot" / "src" / "coop_pause_tab_module.cpp");
     CHECK(tab.find("if (g_players_to_main.load()) OpenLongshotMenu();") != std::string::npos);   // (old pack: as before)
-    CHECK(tab.find("ShowRunPage(g_players_page.exchange(-1));") != std::string::npos);   // (F1: main, or a test's page)
+    CHECK(tab.find("ShowRunPage(g_run_page.exchange(-1));") != std::string::npos);   // (F1: main, or a test's page)
     CHECK(tab.find("default: SetView(View::kMain); break;") != std::string::npos);
     CHECK(tab.find("SetView(View::kPlayers);") != std::string::npos);                     // (F6)
 }

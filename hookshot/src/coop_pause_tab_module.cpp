@@ -2173,8 +2173,8 @@ bool g_strip_looked = false;
 std::atomic<bool> g_players_no_tabs{false};
 std::atomic<bool> g_players_to_main{false};   // the run is F1's (Multiplayer, main view), not F6's (Players)
 // The page the F1 run ends on (a CoopPauseMenu::Page; -1 its main view): the play-test bridge's `menu open PAGE` in free
-// play (OpenMultiplayerOn, C #145). Only F1's run reads it.
-std::atomic<int> g_players_page{-1};
+// play (OpenMultiplayerOn, C #145). Only F1's run reads it. Not g_players_page (the Players view's list page, :92).
+std::atomic<int> g_run_page{-1};
 std::array<std::uint64_t, 4> g_game_tabs{};
 std::array<float, 4> g_game_tabs_x{};
 std::array<std::uint64_t, 4> g_game_words{};   // each game tab's T_Text_00: its drawn width says whether the tab shows a word
@@ -4527,7 +4527,7 @@ std::uint64_t OnPad(std::uint64_t buttons, std::int32_t stick[4]) noexcept {
                     case CoopPlayersOpen::Step::kTapR: in |= kPadR; break;
                     case CoopPlayersOpen::Step::kShowPlayers:
                         if (g_players_to_main.load()) {
-                            ShowRunPage(g_players_page.exchange(-1));   // (it says which view)
+                            ShowRunPage(g_run_page.exchange(-1));   // (it says which view)
                         } else {
                             SetView(View::kPlayers);
                             LOG_INFO(Core, "coop: pause tab: F6: the Players view, after {} Minus press(es) and {} tap(s)",
@@ -5354,12 +5354,12 @@ static bool StartMultiplayerRun(int page) noexcept {
             const bool menu_up = GameMenuUp();
             if (!menu_up && !FreePlayNow()) return false;   // (an event, a load: F1 stays Longshot's)
             g_players_to_main = true;
-            g_players_page = page;
+            g_run_page = page;
             g_players_run.Start(CoopGameClock::NowMs(), menu_up);
             LOG_INFO(Core, "coop: pause tab: F1: to the Multiplayer tab ({})",
                      menu_up ? "a menu is up: no Minus" : "Minus opens the - menu");
         } else if (g_players_to_main.load()) {
-            g_players_page = page;
+            g_run_page = page;
         }
         return true;
     } catch (...) {
