@@ -19,11 +19,12 @@ Set-up and judging, each cited where used:
   name is CoopLookParts::PuppetTunicsName: `ptunics|<colour>=RRGGBB[+capRRGGBB][+vestRRGGBB]...`.
 - A is player 1, B player 2 (the lanes' host and joiner): A's tunic is its slot colour 0x3070FF (blue) and B's 0xFF3030
   (red) (coop/protocol messages.hpp slot_color), so yellow and green vests are far from both on the colour wheel.
-- Colour: imagecheck.changed_hue, the pixels that changed between two shots of the same place and the share of them in
-  the vest's hue (no guessed mask region). Shots also go to refs (NO-REF candidates for the owner).
+- Colour: huecheck.changed_hue (this row's file), the pixels that changed between two shots of the same place and the
+  share of them in the vest's hue (no guessed mask region). Shots also go to refs (NO-REF candidates for the owner).
 - No Character Select: the ONE no-CS lane game, tools/autotest/ingame/no_cs.py (gear-link 812219312, C #132): MARK
   (needs_env B:COOP_TEST_NO_CHARACTER_SELECT=1, harness-c132's switch) and prove() (B has no mod, the module's
   ModPresent read through flag_read).
+- Fake reactions: ingame/fakes/vest_link.py; selftests: tests/test_ingame_vest_link.py.
 """
 import os
 import sys
@@ -32,7 +33,7 @@ import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import imagecheck   # noqa: E402
+import huecheck     # noqa: E402  (this row's colour check)
 import no_cs        # noqa: E402  (the ONE no-Character-Select game)
 from test_gear_link import face_each_other   # noqa: E402  (the shared set-up helpers)
 from test_rows import need_child_in_play   # noqa: E402
@@ -44,9 +45,13 @@ OWN_NO_VEST = r"coop: look: your Link's tunic is (?!\S*-vest-)\S+ now"
 PUP_VEST = r"coop: look: the puppets' tunics are \S*\+vest%06X\S* now"
 PUP_NO_VEST = r"coop: look: the puppets' tunics are (?!\S*\+vest)\S+ now"
 
-# Colour check tolerances (this test's, not the game's): a vest is a few hundred pixels of a 320-wide shot at 2.5 m;
-# at least half of what changed must be the vest's hue (the rest: Link's idle sway, edges).
-MIN_CHANGED, MIN_SHARE = 20, 0.5
+# The colour check's thresholds are starting values, NOT MEASURED (review-rows-c130 11:21 point 2): MIN_CHANGED is the
+# floor under which the vest was clearly not repainted (a FAIL), MIN_SHARE the share of the changed pixels in the vest's
+# hue, and huecheck's moved/saturated/near. Until MEASURED cites a lane run's huecheck lines (yellow, green, and an
+# unchanged pair for the idle-sway floor), a run whose checks all hold ends NO-REF (pair.unproven), never PASS, and a
+# share under MIN_SHARE is noted, not failed. The 0.90 SSIM of unset-again vs before is the same: a starting value.
+MIN_CHANGED, MIN_SHARE, SAME_SSIM = 20, 0.5, 0.90
+MEASURED = None   # e.g. "run <name>: yellow changed .. share .., green .., unchanged pair changed .."
 
 
 def set_vest(pair, x, value):
@@ -74,12 +79,41 @@ def shots(pair, name):
     return {x: pair.check_shot(x, name)["path"] for x in ("A", "B")}
 
 
-def assert_hue(before, after, colour, what):
+def note(pair, line):
+    print(line)
+    pair.notes.append(line)
+
+
+def hue(pair, before, after, colour, what, low):
+    """Each game's changed_hue from `before` to `after`: under MIN_CHANGED is a FAIL (the vest was not repainted); a
+    share under MIN_SHARE goes to `low` (judged only once MEASURED)."""
     for x in ("A", "B"):
-        h = imagecheck.changed_hue(before[x], after[x], colour)
-        assert h["changed"] >= MIN_CHANGED, "%s %s: only %d pixels changed (vest not repainted?) %s" % (x, what, h["changed"], h)
-        assert h["share"] >= MIN_SHARE, "%s %s: %.0f%% of the changed pixels are #%06X's hue (want %.0f%%) %s" % (
-            x, what, h["share"] * 100, colour, MIN_SHARE * 100, h)
+        h = huecheck.changed_hue(before[x], after[x], colour)
+        note(pair, "huecheck %s %s #%06X changed=%d coloured=%d share=%.3f" % (
+            x, what, colour, h["changed"], h["coloured"], h["share"]))
+        assert h["changed"] >= MIN_CHANGED, "%s %s: only %d pixels changed: the vest was not repainted %s" % (
+            x, what, h["changed"], h)
+        if h["share"] < MIN_SHARE:
+            low.append("%s %s: %.0f%% of the changed pixels are #%06X's hue (want %.0f%%)" % (
+                x, what, h["share"] * 100, colour, MIN_SHARE * 100))
+
+
+def judged(pair, low):
+    if not MEASURED:
+        pair.unproven("the vest colour thresholds are not measured yet (MEASURED: the huecheck lines of a lane run)%s"
+                      % ("; low: " + "; ".join(low) if low else ""))
+    assert not low, "; ".join(low)
+
+
+def put_back(pair, done):
+    """Both vests unset for the lane's next test; a failure here is raised only when the test itself passed (else it
+    would hide the test's own FAIL), and noted otherwise."""
+    try:
+        unset_both(pair)
+    except Exception as e:   # noqa: BLE001
+        if done:
+            raise
+        pair.notes.append("put back: %s" % e)
 
 
 def unset_both(pair):
@@ -88,7 +122,9 @@ def unset_both(pair):
     pair.step_both(60)
 
 
-@pytest.mark.budget(240)
+# Budgets: ESTIMATED (not measured), from the waits: set-up < 30 s, each wear() at most 240 + 600 + 30 frames
+# (~29 s at 30 fps), shots and the put-back; 2-3 wear()s per test, the no-CS test 3 + the other game's.
+@pytest.mark.budget(240)   # ESTIMATED
 @pytest.mark.look
 @pytest.mark.row("#293 P2 Link's Vest colour (own Link + puppet)")
 def test_vest_own_and_puppet(pair):
@@ -96,19 +132,22 @@ def test_vest_own_and_puppet(pair):
         need_child_in_play(pair)
         face_each_other(pair)
         unset_both(pair)
+    done, low = False, []
     try:
         before = shots(pair, "vest-link-unset")
         wear(pair, "A", YELLOW)
         yellow = shots(pair, "vest-link-yellow")
-        assert_hue(before, yellow, YELLOW, "unset -> yellow")
+        hue(pair, before, yellow, YELLOW, "unset->yellow", low)
         wear(pair, "A", GREEN)
         green = shots(pair, "vest-link-green")
-        assert_hue(yellow, green, GREEN, "yellow -> green")
+        hue(pair, yellow, green, GREEN, "yellow->green", low)
+        done = True
     finally:
-        unset_both(pair)
+        put_back(pair, done)
+    judged(pair, low)
 
 
-@pytest.mark.budget(240)
+@pytest.mark.budget(240)   # ESTIMATED
 @pytest.mark.look
 @pytest.mark.row("#293 P2 Link's Vest unset = the tunic's colour (0.11.12)")
 def test_vest_unset_is_tunic(pair):
@@ -116,21 +155,32 @@ def test_vest_unset_is_tunic(pair):
         need_child_in_play(pair)
         face_each_other(pair)
         unset_both(pair)
+    done, low = False, []
     try:
         before = shots(pair, "vest-link-unset")
         wear(pair, "A", YELLOW)
         wear(pair, "A", None)
         back = shots(pair, "vest-link-unset-again")
         for x in ("A", "B"):
-            score, err = imagecheck.ssim(before[x], back[x])
-            assert not err and score >= 0.90, "%s: unset again is not the picture before (SSIM %s %s)" % (x, score, err)
-            h = imagecheck.changed_hue(before[x], back[x], YELLOW)
-            assert h["coloured"] < MIN_CHANGED, "%s: yellow left after unset %s" % (x, h)
+            score, err = imagecheck_ssim(before[x], back[x])
+            h = huecheck.changed_hue(before[x], back[x], YELLOW)
+            note(pair, "huecheck %s unset-again #%06X changed=%d coloured=%d ssim=%s" % (
+                x, YELLOW, h["changed"], h["coloured"], score))
+            assert h["coloured"] < MIN_CHANGED, "%s: yellow left on the vest after unset %s" % (x, h)
+            if err or score < SAME_SSIM:
+                low.append("%s: unset again vs before SSIM %s %s (want >= %.2f)" % (x, score, err or "", SAME_SSIM))
+        done = True
     finally:
-        unset_both(pair)
+        put_back(pair, done)
+    judged(pair, low)
 
 
-@pytest.mark.budget(300)
+def imagecheck_ssim(a, b):
+    import imagecheck   # (the shared compare's SSIM: the same measure as every look ref)
+    return imagecheck.ssim(a, b)
+
+
+@pytest.mark.budget(300)   # ESTIMATED
 @pytest.mark.look
 @no_cs.MARK
 @pytest.mark.row("#293 P2 Link's Vest without Character Select (C #132)")
@@ -140,15 +190,18 @@ def test_vest_without_character_select(pair):
         no_cs.prove(pair)
         face_each_other(pair)
         unset_both(pair)
+    done, low = False, []
     try:
         before = shots(pair, "vest-link-no-cs-unset")
         wear(pair, "A", YELLOW)   # A (with the mod) -> its puppet in the CS-less B
         a_yellow = shots(pair, "vest-link-no-cs-a-yellow")
-        assert_hue(before, a_yellow, YELLOW, "A's vest yellow")
+        hue(pair, before, a_yellow, YELLOW, "A unset->yellow", low)
         wear(pair, "A", None)
         unset = shots(pair, "vest-link-no-cs-unset-again")
         wear(pair, "B", GREEN)    # B's own Link without the mod -> its puppet in A (same places: A faces B already)
         b_green = shots(pair, "vest-link-no-cs-b-green")
-        assert_hue(unset, b_green, GREEN, "B's vest green")
+        hue(pair, unset, b_green, GREEN, "B unset->green", low)
+        done = True
     finally:
-        unset_both(pair)
+        put_back(pair, done)
+    judged(pair, low)
