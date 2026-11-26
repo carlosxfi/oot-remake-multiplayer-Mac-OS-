@@ -11,7 +11,7 @@ wait 300
 press A
 wait 2400
 mark b-in
-# Link must live to see the rocks: ten more heart containers (the cheats window's give), each one fills its heart
+# Link must live to see the rocks: ten more heart containers (the cheats window's give; it raises the max only), then life filled
 give PlayerStatus.MaxLife
 wait 120
 give PlayerStatus.MaxLife
@@ -33,6 +33,7 @@ wait 120
 give PlayerStatus.MaxLife
 wait 120
 wait 1800
+setflag PlayerStatus.Life 56   # the gives raise only the max (coop_cheat_give.cpp Wanted: +4); life filled: 16 + 40 quarters
 press ZL 10
 mark b-1
 wait 700
