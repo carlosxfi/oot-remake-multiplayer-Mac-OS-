@@ -10,10 +10,13 @@ Sources of every value (worker-rules "no guessed values"):
 - PLUS = the Switch '+' (the game's pause screen): coop_playtest_core.cpp kButtons; a held pause runs no Link update,
   so the snapshot goes stale (docs/playtest.md "State": 'a title, a pause or a load: no Link update runs').
 - to-title.now + its two log lines: hookshot/src/coop_pause.cpp (LICHII_COOP_TEST_TO_TITLE=1, set by bt_plugin).
+- the boot's scene, in play, no event: proven before any test by bt_plugin's boot proof (Pair.boot_ready).
 """
 import os
 
 import pytest
+
+from pair import READY_FRAMES
 
 pytestmark = pytest.mark.smoke
 
@@ -27,11 +30,11 @@ WARP_TO = "KakarikoVillage_Child"
 @pytest.mark.row("smoke: boot")
 def test_boot(pair):
     with pair.setup():
-        st = {x: pair.state(x) for x in ("A", "B")}
-    for x, s in st.items():
-        assert s.get("control") is True, "%s: Longshot's control bridge did not answer" % x
-        assert pair.in_play(s), "%s not in play after the boot: scene=%s loading=%s event=%s not_ready=%s" % (
-            x, s.get("scene"), s.get("loading"), s.get("event"), s.get("not_ready"))
+        for x in ("A", "B"):
+            assert pair.state(x).get("control") is True, "%s: Longshot's control bridge did not answer" % x
+    # (stepped until both are in play, never one read: a stale sample right after the boot is not a FAIL. The lane's
+    # boot proof, Pair.boot_ready, already put both in the boot scene, in play, with no event; this proves it held.)
+    pair.until_in_play("both games in play after the boot", max_frames=READY_FRAMES)
 
 
 @pytest.mark.budget(90)
@@ -65,8 +68,7 @@ def test_warp(pair):
 @pytest.mark.row("smoke: pause menu open / close (pause page shot on each game)")
 def test_pause(pair):
     with pair.setup():
-        for x in ("A", "B"):
-            assert pair.in_play(pair.state(x)), "%s not in play before the pause" % x
+        pair.until_in_play("both games in play before the pause", max_frames=READY_FRAMES)
     for x in ("A", "B"):
         pair.press(x, ["PLUS"], frames=4)
     pair.until("both games paused (no fresh Link sample)",

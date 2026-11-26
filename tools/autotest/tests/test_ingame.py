@@ -452,10 +452,30 @@ def fake_live(args, timeout):
         return {'ok': False, 'error': 'live.py start: exit 0, no JSON answer: ... renderer ready'}
     if MODE == 'played':
         return {'ok': False, 'boot': 'FAILED (see steps.txt): the session is closed'}
+    if MODE == 'notready':                        # (started and said hello; the boot proof finds B elsewhere)
+        return {'ok': True}
     return {'ok': False, 'lock': 'not taken', 'error': 'refused before the session'}
 
 B._live = fake_live
 B._real_lane_info = lambda config, lane: {'server': 'srv', 'commit': 'abc'}
+
+class _Hello:
+    def hello(self):
+        return {'control': True}
+
+class _NotReadyPair:                              # (test-bridge-pilot-fa63e90f r1: B in Graveyard_Child in an event)
+    def __init__(self, *a, **k):
+        self.c, self.notes = {'A': _Hello(), 'B': _Hello()}, []
+    def begin(self, seconds):
+        pass
+    def boot_ready(self, scene):
+        raise B.P.SetupFail('boot: not in the boot scene ' + str(scene) + ': B: scene=Graveyard_Child event=True')
+    def close(self):
+        pass
+
+if MODE == 'notready':
+    B.P.read_session = lambda session: {}
+    B.P.Pair = _NotReadyPair
 """
 
 
@@ -492,6 +512,15 @@ class BootStopsSession(unittest.TestCase):
             self.assertEqual(calls, ["start", "stop"], (mode, p.stdout[-2000:]))   # one boot, one stop
             self.assertNotEqual(s["verdict"], "PASS", mode)
             self.assertEqual(s["lane_closed"], {"ok": True, "ended": "stop asked"}, mode)
+
+    def test_a_boot_not_in_play_is_stopped_and_setup_fail_boot(self):
+        """review-c123-9 12:10: the boot proof (Pair.boot_ready) runs inside lane_pair's try, so its SetupFail ends
+        with the session stopped like a failed start."""
+        p, calls, s = self.run_mode("notready")
+        self.assertEqual(calls, ["start", "stop"], p.stdout[-2000:])
+        self.assertEqual(set(results(s).values()), {"SETUP-FAIL"}, p.stdout[-2000:])
+        self.assertTrue(all("lane1 boot: not in the boot scene" in r["why"] for r in s["tests"]), s["tests"])
+        self.assertEqual(s["lane_closed"], {"ok": True, "ended": "stop asked"})
 
     def test_no_session_written_no_stop(self):
         p, calls, s = self.run_mode("refused")
@@ -1068,6 +1097,78 @@ def load_tests(loader, tests, pattern):
         spec.loader.exec_module(mod)
         tests.addTests(loader.loadTestsFromModule(mod))
     return tests
+
+
+class BootProof(unittest.TestCase):
+    """NO REPEAT VOIDS after test-bridge-pilot-fa63e90f r1 (B left in Graveyard_Child in an event: every test after it
+    failed) and party-hud-bridge r1 (test_boot read 'no Link sample has been taken yet' once): the lane's boot ends
+    only with both games in play, no event, in the boot's scene (else SETUP-FAIL boot), and set-up checks step frames
+    until ready instead of judging one read."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def lane(self, **env):
+        import fakegame
+        from unittest import mock
+        with mock.patch.dict(os.environ, {k: str(v) for k, v in env.items()}):
+            lane = fakegame.FakeLane(self.tmp)
+        self.addCleanup(lane.close)
+        pair = P.Pair(lane.games(), out_dir=self.tmp)
+        self.addCleanup(pair.close)
+        pair.begin(60)
+        return pair
+
+    def test_boot_scene_is_the_scripts_warp(self):
+        import bt_plugin
+        self.assertEqual(bt_plugin.boot_scene(), "KakarikoVillage_Child")
+        self.assertEqual(bt_plugin.boot_scene("live-twinrova-room"), "TwinrovaStage")
+        self.assertIsNone(bt_plugin.boot_scene("live-leave-solo"))
+
+    def test_a_game_left_in_an_event_elsewhere_is_warped_to_the_boot_scene(self):
+        pair = self.lane(BT_FAKE_BOOT_EVENT="B")
+        self.assertTrue(pair.state("B")["event"])
+        st = pair.boot_ready("KakarikoVillage_Child")
+        for x in ("A", "B"):
+            self.assertTrue(pair.in_play(st[x]), st[x])
+            self.assertEqual(st[x]["scene"], "KakarikoVillage_Child")
+        self.assertTrue(any("B in Graveyard_Child" in n for n in pair.notes), pair.notes)
+
+    def test_a_game_that_stays_in_its_event_is_setup_fail_boot(self):
+        pair = self.lane(BT_FAKE_BOOT_STUCK="B")
+        with self.assertRaisesRegex(P.SetupFail, r"^boot: .*B"):
+            pair.boot_ready("KakarikoVillage_Child", max_frames=100)
+
+    def test_a_stale_sample_is_stepped_not_judged(self):
+        pair = self.lane(BT_FAKE_STALE_FRAMES=50)
+        self.assertFalse(pair.in_play(pair.state("A")))          # (the one read party-hud-bridge r1 failed on)
+        pair.until_in_play("both in play", max_frames=P.READY_FRAMES)
+        self.assertTrue(all(pair.in_play(pair.state(x)) for x in ("A", "B")))
+
+    def test_not_ready_in_time_names_each_game(self):
+        pair = self.lane(BT_FAKE_STALE_FRAMES=5000)
+        with self.assertRaisesRegex(AssertionError, r"not after 300 frames.*A: scene=.*not_ready=.*B: scene="):
+            pair.until_in_play("both in play", max_frames=P.READY_FRAMES)
+
+    def test_suite_on_a_boot_left_in_an_event_passes(self):
+        out = os.path.join(self.tmp, "o")
+        p = pytest_run([".", "--fake", "--out", out, "-q", "-m", "smoke and not look", "--no-smoke-gate"],
+                       env={"BT_FAKE_BOOT_EVENT": "B", "BT_FAKE_STALE_FRAMES": "50"})
+        s = summary(out)
+        self.assertEqual(s["counts"]["PASS"], len(s["tests"]), p.stdout[-2000:])
+
+    def test_suite_on_a_stuck_boot_is_setup_fail_boot_everywhere(self):
+        out = os.path.join(self.tmp, "o")
+        p = pytest_run([".", "--fake", "--out", out, "-q", "-m", "smoke and not look", "--no-smoke-gate"],
+                       env={"BT_FAKE_BOOT_STUCK": "B"})
+        s = summary(out)
+        self.assertTrue(s["tests"], p.stdout[-2000:])
+        for r in s["tests"]:
+            self.assertEqual(r["result"], "SETUP-FAIL", r)
+            self.assertIn("lane1 boot:", r["why"], r)
 
 
 if __name__ == "__main__":

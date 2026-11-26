@@ -201,6 +201,29 @@ def boot_paths(name):
     return a, b
 
 
+def boot_scene(name=DEFAULT_BOOT):
+    """The scene the boot puts both games in: its scripts' first `warp SCENE [start]` line (hookshot.py parse: 'warp'
+    takes a scene and an optional start). Both scripts must name the same one (a boot with none: None, any scene).
+    Pair.boot_ready proves each game is there, in play, with no event, before any test (NO REPEAT VOIDS,
+    test-bridge-pilot-fa63e90f r1: B stayed in Graveyard_Child in an event)."""
+    got = []
+    for path in boot_paths(name):
+        scene = None
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                w = ln.split("#", 1)[0].split()
+                if len(w) >= 2 and w[0] == "warp":
+                    scene = w[1]
+                    break
+        got.append(scene)
+    if got[0] != got[1]:
+        raise pytest.UsageError("--boot %s: the A and B scripts warp to different scenes (%s / %s)" % (name, got[0], got[1]))
+    return got[0]
+
+
+BOOT_READY_S = 240    # the boot proof's own deadline (out of a load, a warp of a game left elsewhere, an event's end)
+
+
 def boot_identity(name=DEFAULT_BOOT):
     """What the boot itself brings, for the proof key (review-c123-7): each boot script's path (repo-relative), sha256
     and its '#! switches' header (hookshot.header_switches: the A script's go to both games, an --env of the same name
@@ -433,11 +456,14 @@ def lane_pair(request):
                                      fakes_dir=os.environ.get("BT_FAKE_FAKES_DIR") or fakegame.FAKES)
         pair = P.Pair(lanefake.games(), out_dir=out, refs_dir=os.environ.get("BT_FAKE_REFS", refs))
         pair.lane, pair.info = lane, {"fake": True}
-        yield pair
-        pair.close()
-        lanefake.close()
-        config._bt_lane_closed = True
-        _pack_out(config, folders)
+        try:
+            _boot_proof(config, pair, lane)
+            yield pair
+        finally:
+            pair.close()
+            lanefake.close()
+            config._bt_lane_closed = True
+            _pack_out(config, folders)
         return
     t0 = time.monotonic()
     info = _real_lane_info(config, lane)                    # (SetupFail: every test of this lane is SETUP-FAIL)
@@ -462,6 +488,7 @@ def lane_pair(request):
             h = pair.c[x].hello()
             if not h.get("control"):
                 raise P.SetupFail("lane%d %s: the bridge has no Longshot control (HOS_CONTROL)" % (lane, x))
+        _boot_proof(config, pair, lane)         # (inside the try: a boot not in play is stopped like any other)
         yield pair
         pair.close()
     finally:
@@ -472,6 +499,17 @@ def lane_pair(request):
         # session's pids.json could name pids that are another program's by now.
         config._bt_lane_closed = _stop_own_session(session, began)
         _pack_out(config, folders)              # (after the games are closed: they hold the pack's files open)
+
+
+def _boot_proof(config, pair, lane):
+    """Both games in play, no event, in the boot's scene (Pair.boot_ready), else SetupFail 'lane N boot: ...': every
+    test of the lane is SETUP-FAIL boot. Its notes (a game warped there) go into pair.info['boot_proof']."""
+    pair.begin(BOOT_READY_S)
+    try:
+        pair.boot_ready(boot_scene(config.getoption("boot")))
+    except P.SetupFail as e:
+        raise P.SetupFail("lane%d %s" % (lane, e)) from e
+    pair.info = dict(pair.info, boot_proof="; ".join(pair.notes) or "both in play, no event, in the boot scene")
 
 
 BASE_ENV = ["LICHII_COOP_PUPPET=1", "LICHII_COOP_TEST_TO_TITLE=1"]   # every boot (lane_pair's live.py start)

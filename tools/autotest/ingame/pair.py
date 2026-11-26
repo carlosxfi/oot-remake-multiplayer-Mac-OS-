@@ -25,6 +25,9 @@ import playtest_client as pc   # noqa: E402
 
 CHUNK = 10            # frames per step while waiting for a condition (a log line, a state)
 SETUP_LIMIT_S = 30.0  # owner rule (worker-rules TEST SYSTEM): a test's set-up proves itself in under 30 s
+BOOT_FRAMES = 2400    # the boot proof's ceiling per wait (80 s of game: a boot script that ended with both games still
+#                       loading out of the menu, party-hud-bridge r1, renderers ready after 168/180 s)
+READY_FRAMES = 300    # a set-up's step-until-in-play ceiling (10 s of game: a stale sample, an event's end; inside 30 s)
 FPS = 30              # Ocarina of Time's calc rate on Hookshot: frames -> seconds in messages only, never for waiting
 
 
@@ -159,6 +162,11 @@ def _patches_line(path):
     return None
 
 
+def _loaded(st):
+    """A scene and no load running (a stale sample may still be there: until_in_play steps that out)."""
+    return bool(st.get("scene")) and not st.get("loading")
+
+
 class Pair:
     """Both games of one lane. `games` = {"A": {"port", "folder", "log"}, "B": {...}} (the live.py session's)."""
 
@@ -265,6 +273,49 @@ class Pair:
     # -- set-up -----------------------------------------------------------------------------------------------
     def in_play(self, st):
         return bool(st.get("scene")) and not st.get("loading") and not st.get("event") and st.get("not_ready") is None
+
+    def why_not(self, x, st=None):
+        """Game x's state in one line: what in_play looks at (for a FAIL / SETUP-FAIL that names each game)."""
+        st = self.state(x) if st is None else st
+        return "%s: scene=%s loading=%s event=%s not_ready=%s" % (x, st.get("scene"), st.get("loading"), st.get("event"),
+                                                               st.get("not_ready"))
+
+    def until_in_play(self, what, games=("A", "B"), max_frames=600):
+        """Steps both games until every one of `games` is in play (a fresh Link sample, a scene, no load, no event).
+        A stale sample ('Link sample older than the frame'), a load or an event is a game not ready YET: it is stepped,
+        never judged from one read (pilot test-bridge-pilot-fa63e90f: test_boot / test_pause read once, failed on a
+        stale sample). After max_frames: AssertionError naming each game's state."""
+        try:
+            return self.until(what, lambda: all(self.in_play(self.state(x)) for x in games), max_frames)
+        except AssertionError as e:
+            raise AssertionError("%s; %s" % (e, "; ".join(self.why_not(x) for x in games))) from None
+
+    def boot_ready(self, scene=None, max_frames=BOOT_FRAMES):
+        """The lane's boot proof (bt_plugin.lane_pair, NO REPEAT VOIDS after test-bridge-pilot-fa63e90f r1: B was left
+        in an event in Graveyard_Child, the save's place, its boot warp never taken): each game is stepped until it is
+        in play; a game in another scene than the boot's `scene` (its scripts' warp line) is warped there by the bridge
+        (warp_one: during an event the module's own request, in free play Longshot's teleport); then both must be in
+        play, no event, in `scene`. Anything else raises SetupFail('boot: ...') naming each game, so every test of
+        the lane is SETUP-FAIL boot and nothing runs on a pair that is not where the tests assume."""
+        try:
+            self.until("both games out of the boot's load",
+                       lambda: all(_loaded(self.state(x)) for x in self.c),
+                       max_frames)
+            for x in self.c:
+                have = (self.state(x).get("scene") or "")
+                if scene and have.lower() != scene.lower():
+                    self.notes.append("boot: %s in %s, not the boot's %s: warped there by the bridge" % (x, have, scene))
+                    self.warp_one(x, scene)
+            self.until_in_play("both games in play after the boot", tuple(self.c), max_frames)
+        except SetupFail:
+            raise
+        except (AssertionError, pc.BridgeError, OSError, TimeoutError) as e:
+            raise SetupFail("boot: %s: %s" % (type(e).__name__, e)) from e
+        wrong = [self.why_not(x) for x in self.c
+                 if scene and (self.state(x).get("scene") or "").lower() != scene.lower()]
+        if wrong:
+            raise SetupFail("boot: not in the boot's scene %s: %s" % (scene, "; ".join(wrong)))
+        return {x: self.state(x) for x in self.c}
 
     def load_both(self, max_frames=3600):
         """Title / file select to play: A pressed 8 frames, then 52 frames of wait, on each game not yet in play
