@@ -25,6 +25,9 @@ constexpr std::uint64_t kParts = 0x9d000000, kBoxes = 0x9e000000;   // our parts
 constexpr std::uint64_t kAttrs = 0x1234;                             // a text pane's own message attributes
 constexpr std::uint64_t kSource = 0x9f000000, kLive = 0xa0000000;   // the game's heart part layout; our run-time memory
 constexpr std::uint64_t kLabelSource = 0x9f800000;                   // the pack's text part layout (its name lines)
+// The game's MenuOverlay_00 (no pack: its Pa_Category_00 = PaMenuCategory_00 is the name lines' source).
+constexpr std::uint64_t kOverlay = 0x93100000, kOverlayLayout = 0x94800000, kOverlayPanes = 0x95800000;
+constexpr std::uint64_t kLayoutType = 0x95000000, kBareSource = 0x9f400000;
 
 struct FakeGame final : party::Game {
     std::map<std::uint64_t, std::uint8_t> mem;
@@ -50,6 +53,9 @@ struct FakeGame final : party::Game {
     std::map<std::uint64_t, int> heart_set;                // controller -> its last state (f_833dca10)
     std::map<std::uint64_t, int> gauge_frame;              // part heart -> its last frame (f_833dcb60)
     int made = 0, attached = 0, unlinked = 0;
+    bool menu_overlay = false;                             // MenuOverlay_00 runs (Pa_Category_00 + T_BtnL_00)
+    std::uint64_t hud_layout = 0;                          // the layout Hud() put on the status screen
+    std::map<std::uint64_t, std::uint64_t> attached_to;    // clone root -> the HUD layout it was attached in
     bool Live(std::uint64_t f, const std::array<std::uint64_t, 5>& x, std::uint64_t& out) {
         out = 0;
         if (f == At(party::addr::kNew)) return out = next_new, next_new += 0x10000, true;
@@ -64,7 +70,8 @@ struct FakeGame final : party::Game {
             for (const auto& [p, n] : clone_panes) if (n == name && p / 0x10000 == x[0] / 0x10000) return out = p, true;
             out = x[0] + 0x100 * (clone_panes.size() % 200 + 1);
             clone_panes[out] = name;
-            if (clone_sources[x[0]] == kLabelSource && (name == "T_Text_00" || name == "T_Text_01")) {
+            if ((clone_sources[x[0]] == kLabelSource || clone_sources[x[0]] == kBareSource) &&
+                (name == "T_Text_00" || name == "T_Text_01")) {
                 // (a text pane of a cloned name line: set as the pack's own, under the clone's name)
                 boxes[out] = clone_names[x[0]] + "/" + name;
                 const std::uint32_t flags = party::addr::kTextPaneKind << 22;
@@ -73,7 +80,7 @@ struct FakeGame final : party::Game {
             }
             return true;
         }
-        if (f == At(party::addr::kAttach)) return ++attached, true;
+        if (f == At(party::addr::kAttach)) return attached_to[x[1]] = hud_layout, ++attached, true;
         if (f == At(party::addr::kGaugeMake)) return true;
         if (f == At(party::addr::kGaugeSetUp)) {   // 20 whole hearts and the part heart, each with its animations
             for (int i = 0; i <= party::kHearts; ++i) {
@@ -116,6 +123,13 @@ struct FakeGame final : party::Game {
         if (std::uint64_t out = 0; game_gauge && Live(f, x, out)) return out;
         if (f == At(ui::addr::kPaneByName)) {
             const std::string name = Str(x[1]);
+            if (x[0] == kOverlayLayout) {   // (MenuOverlay_00: its category part and its own top-level text)
+                if (name == "Pa_Category_00") return Put(kOverlayPanes + party::addr::kPartLayout, kBareSource), kOverlayPanes;
+                return name == "T_BtnL_00" ? kOverlayPanes + 0x100 : 0;
+            }
+            for (const auto& [root, made_as] : clone_names) {   // (our run-time parts, while they hang in that layout)
+                if (made_as == name && attached_to.count(root) && attached_to[root] == x[0]) return root;
+            }
             if (game_gauge && (name == "Pa_HeartGauge_00" || name == "N_ScaleL_00")) {
                 if (panes.count(name) == 0) panes[name] = kPanes + 0x1000 * panes.size();
                 if (name == "Pa_HeartGauge_00") Put(panes[name] + party::addr::kPartLayout, kSource);
@@ -203,12 +217,20 @@ struct FakeGame final : party::Game {
     void Hud(std::uint64_t layout = kLayout) {
         Put(At(ui::addr::kUiManagerGot), kManager - 8);
         Put(kManager - 8, kManager);
-        const std::uint32_t one = 1;
-        Write(kManager + ui::addr::kUiCount, &one, sizeof one);
+        const std::uint32_t count = menu_overlay ? 2 : 1;
+        Write(kManager + ui::addr::kUiCount, &count, sizeof count);
         Put(kManager + ui::addr::kUiScreens, kScreens);
         Put(kScreens, kStatus);
         Put(kStatus, At(party::addr::kStatusVtable));
         Put(kStatus + ui::addr::kScreenLayout, layout);
+        hud_layout = layout;
+        if (menu_overlay) {   // (both layouts of one layout type, as the game's)
+            Put(kScreens + 8, kOverlay);
+            Put(kOverlay, 0x84000000);
+            Put(kOverlay + ui::addr::kScreenLayout, kOverlayLayout);
+            Put(layout, kLayoutType);
+            Put(kOverlayLayout, kLayoutType);
+        }
     }
     float Alpha(const std::string& pane) { return alphas.at(panes.at(pane)); }
     bool Shown(const std::string& pane) { return panes.count(pane) != 0 && shown[panes[pane]] == 1; }
@@ -594,7 +616,7 @@ TEST_CASE("party hud: no pack: a run-time gauge per player, none in solo, forgot
     bool no_names = false;
     for (const auto& l : log) {
         said = said || l.find("run-time gauge 1: made") != std::string::npos;
-        no_names = no_names || l.find("no run-time name lines (no text part of ours in the HUD)") != std::string::npos;
+        no_names = no_names || l.find("no run-time name lines (") != std::string::npos;
     }
     CHECK(said);
     CHECK(no_names);
@@ -653,4 +675,68 @@ TEST_CASE("party hud: a test's no pack (COOP_TEST_PARTY_HUD_NO_PACK): with the p
     bool said = false;
     for (const auto& l : log) said = said || l.find("test: the pack's panes are not looked for") != std::string::npos;
     CHECK(said);
+}
+
+TEST_CASE("party hud: no pack: the name lines from the game's MenuOverlay_00 Pa_Category_00, text only") {
+    FakeGame game;
+    game.pack = false;
+    game.game_gauge = true;
+    game.menu_overlay = true;
+    game.Hud();
+    party::Hud hud;
+    std::vector<std::string> log;
+    const std::vector<party::Block> two = {{"A", Quarters(10, 12)}, {"B", Quarters(16, 16)}};
+    CHECK(hud.Step(game, two, std::nullopt, &log));
+    CHECK(game.made == 4);   // (a gauge and a name line each)
+    CHECK(game.texts["Pa_CoopLiveName_0/T_Text_00"] == "A");
+    CHECK(game.texts["Pa_CoopLiveName_1/T_Text_01"] == "B");
+    std::uint64_t root = 0;
+    for (const auto& [r, n] : game.clone_names) root = n == "Pa_CoopLiveName_0" ? r : root;
+    REQUIRE(root != 0);
+    CHECK(game.clone_sources[root] == kBareSource);
+    CHECK(game.shown[root] == 1);
+    // Its 4 backing panes (the menu tab's pictures) hidden in the clone: the line is text only.
+    int hidden = 0;
+    for (const auto& [p, n] : game.clone_panes) {
+        for (const char* h : party::addr::kBareHide) {
+            if (n == h && p / 0x10000 == root / 0x10000 && game.shown.count(p) && game.shown[p] == 0) ++hidden;
+        }
+    }
+    CHECK(hidden == 4);
+    bool route = false, bare = false;
+    for (const auto& l : log) {
+        route = route || l.find("run-time name lines can be made (the game's MenuOverlay_00 Pa_Category_00)") != std::string::npos;
+        bare = bare || l.find("run-time name line 0: game's Pa_Category_00: 4 of 4 backing panes hidden") != std::string::npos;
+    }
+    CHECK(route);
+    CHECK(bare);
+}
+
+TEST_CASE("party hud: the status screen gone a frame, back with the same layout: run-time parts kept, not made again") {
+    FakeGame game;
+    game.pack = false;
+    game.game_gauge = true;
+    game.menu_overlay = true;
+    game.Hud();
+    party::Hud hud;
+    std::vector<std::string> log;
+    const std::vector<party::Block> two = {{"A", Quarters(10, 12)}, {"B", Quarters(16, 16)}};
+    CHECK(hud.Step(game, two, std::nullopt, &log));
+    REQUIRE(game.made == 4);
+    REQUIRE(game.attached == 4);
+    game.Put(kStatus + ui::addr::kScreenLayout, 0);   // (gone one frame)
+    CHECK_FALSE(hud.Step(game, two, std::nullopt, &log));
+    game.Hud();                                         // (back: the same layout)
+    game.texts.clear();
+    CHECK(hud.Step(game, {{"C", Quarters(10, 12)}, two[1]}, std::nullopt, &log));
+    CHECK(game.made == 4);       // (no second clone)
+    CHECK(game.attached == 4);   // (nothing attached again)
+    CHECK(game.texts["Pa_CoopLiveName_0/T_Text_00"] == "C");   // (the kept line is still its slot's)
+    bool kept = false;
+    for (const auto& l : log) kept = kept || l.find("the same layout again: 4 run-time part(s) kept") != std::string::npos;
+    CHECK(kept);
+    // A new layout (scene, title): made again on it.
+    game.Hud(kLayout + 0x100000);
+    CHECK(hud.Step(game, two, std::nullopt, &log));
+    CHECK(game.made == 8);
 }
