@@ -255,6 +255,29 @@ class BootEnv(unittest.TestCase):
         self.assertEqual(B._crash_why(ses), "; A: CRASH: exception 0xc0000005 at hookshot_coop.dll+0x50594")
         self.assertEqual(B._crash_why(os.path.join(self.tmp, "none")), "")
 
+    def test_boot_crash_report_file(self):
+        """A game that crashed with no module line: its new bug-reports/pending/crash-*.txt names the crash; an older
+        one (before the session started) does not (pganon-cct-287-3 10:23)."""
+        import time as _t
+        import bt_plugin as B
+        ses, game = os.path.join(self.tmp, "ses2"), os.path.join(self.tmp, "gameA")
+        pend = os.path.join(game, "bug-reports", "pending")
+        os.makedirs(ses)
+        os.makedirs(pend)
+        old = os.path.join(pend, "crash-20261126T000000Z.txt")
+        with open(old, "w", encoding="utf-8") as f:
+            f.write("old")
+        os.utime(old, (_t.time() - 3600, _t.time() - 3600))
+        log = os.path.join(ses, "game-out-A.txt")
+        open(log, "w").close()
+        with open(os.path.join(ses, "session.json"), "w", encoding="utf-8") as f:
+            json.dump({"started": _t.time() - 60, "games": {"A": {"log": log, "folder": game}}}, f)
+        self.assertEqual(B._crash_why(ses), "")
+        with open(os.path.join(pend, "crash-20261126T095000Z.txt"), "w", encoding="utf-8") as f:
+            f.write("new")
+        self.assertIn("A: crash report ", B._crash_why(ses))
+        self.assertIn("crash-20261126T095000Z.txt", B._crash_why(ses))
+
     def test_deselected_under_xdist(self):
         out = os.path.join(self.tmp, "ox")
         p = pytest_run([".", "--fake", "--out", out, "-q", "-n", "2", "--lanes", "1,2", "--env", "LICHII_COOP_X=1"],
@@ -267,8 +290,11 @@ class BootEnv(unittest.TestCase):
 
     def test_boot_crash_is_fail_not_setup_fail(self):
         out = os.path.join(self.tmp, "oc")
+        boots = os.path.join(self.tmp, "boots.txt")
         p = pytest_run([".", "--fake", "--out", out, "-q", "--env", "LICHII_COOP_X=1", "--env", "A:LICHII_COOP_Y=2"],
-                       cwd=self.dir, env={"BT_FAKE_BOOT_CRASH": "CRASH: exception 0xc0000005"})
+                       cwd=self.dir, env={"BT_FAKE_BOOT_CRASH": "CRASH: exception 0xc0000005", "BT_FAKE_BOOT_LOG": boots})
+        with open(boots, encoding="utf-8") as f:     # (a FAIL from the lane's boot is never rerun: one boot only)
+            self.assertEqual(f.read().count("boot"), 1, p.stdout[-1500:])
         s = summary(out)
         self.assertEqual(results(s), {"test_needs_x_both": "FAIL", "test_needs_y_on_a": "FAIL"}, p.stdout[-2000:])
         self.assertTrue(all("CRASH: exception 0xc0000005" in r["why"] for r in s["tests"]), s["tests"])
