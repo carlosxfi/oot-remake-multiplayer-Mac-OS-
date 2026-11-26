@@ -576,6 +576,10 @@ public:
     // verbs came). Its wake is then its own brain's alone; the Mover's pose-era give-back of the wake's
     // animation (Sync::TakeOwnWakes) is for the other copies only, or the rise is played twice (rows 109/111).
     bool WakesOwnBrain(std::uint64_t actor) const;
+    // Test only (row 287, the `verb` step): our own boss of this name runs this action verb (slot 0), asked as a move
+    // started over is (restart_action), named by the node its own AI names for it. False: none of ours, dying, or its
+    // AI has asked no move yet (no node to name).
+    bool TestMove(std::string_view name, std::int32_t verb);
     // Row 178: whether this actor is a boss (never a plain enemy) on the brain path: a copy of it made ours
     // goes on through its own AI here (its move started over as ours, or its AI chooses again), so the Mover's
     // issue-157 replay of the animation its AI wanted as a copy is not played over it. That replay put
@@ -751,6 +755,9 @@ public:
     // start (TakeReturns: the game's own set-matrix call the copies are placed with), then its AI chooses again.
     static constexpr float kFallBelowStart = 40.0f;
     static constexpr int kMaxFallRechoices = 3;
+    // Row 287: the count is of falls in a row. A boss seen in its room for this many walks since its last fall is
+    // guarded anew (tester-01111: after 3 falls the guard had left him for the rest of the fight).
+    static constexpr int kFallCalmWalks = 600;
     static constexpr std::size_t kMaxWants = 64;
     static constexpr std::size_t kMaxSkippedKept = 8;
     static constexpr std::size_t kMaxHeld = 8;  // copy bosses held at once (more: not held)
@@ -869,6 +876,7 @@ private:
         std::optional<float> start_y;
         std::optional<coop::protocol::Vec3> start;  // (its first seen place, for the put back)
         int fall_rechoices = 0;
+        int fall_calm = 0;  // walks in its room since its last fall (kFallCalmWalks)
         bool fallen = false;
         // Copy (row 149): the owner's action last put into it, and whether its own AI ran an action of its own
         // since (our event, our hit, its start). A resync whose action is the one put in, with none of its own

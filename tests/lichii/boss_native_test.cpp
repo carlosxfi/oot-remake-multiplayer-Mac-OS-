@@ -2346,6 +2346,44 @@ TEST_CASE("native boss: row 178: our boss fallen far below its fight start choos
     }
 }
 
+TEST_CASE("native boss: row 287: the fall guard counts falls in a row, a calm stretch guards it anew") {
+    FakeGuest g;
+    const std::int32_t brain = 6;
+    g.Write(kBsa + addr::kBsaBrainVerb, &brain, 4);
+    Table t;
+    t.SetOn(true, true);
+    t.Publish({Phantom(Role::owner, 10.0f)});
+    for (int i = 0; i < Table::kMaxFallRechoices; ++i) {
+        t.Publish({Phantom(Role::owner, 10.0f)});
+        t.Publish({Phantom(Role::owner, -40.0f)});
+        REQUIRE(t.Step(g, false, 0, kMain));
+        CHECK_FALSE(t.Step(g, true, 0, kMain));
+        CHECK(t.TakeReturns().size() == 1);
+    }
+    // The next fall in a row: left.
+    t.Publish({Phantom(Role::owner, 10.0f)});
+    t.Publish({Phantom(Role::owner, -40.0f)});
+    CHECK_FALSE(t.Step(g, false, 0, kMain));
+    CHECK(t.TakeReturns().empty());
+    // In its room one walk short of the calm stretch, then a fall: still left (and the stretch starts over).
+    for (int i = 0; i < Table::kFallCalmWalks - 1; ++i) {
+        t.Publish({Phantom(Role::owner, 10.0f)});
+    }
+    t.Publish({Phantom(Role::owner, -40.0f)});
+    CHECK_FALSE(t.Step(g, false, 0, kMain));
+    CHECK(t.TakeReturns().empty());
+    // A whole calm stretch: the next fall is put back and chosen again as the first was.
+    for (int i = 0; i < Table::kFallCalmWalks; ++i) {
+        t.Publish({Phantom(Role::owner, 10.0f)});
+    }
+    CHECK_FALSE(t.Step(g, false, 0, kMain));
+    t.Publish({Phantom(Role::owner, -40.0f)});
+    REQUIRE(t.Step(g, false, 0, kMain));
+    CHECK_FALSE(t.Step(g, true, 0, kMain));
+    CHECK(t.TakeReturns().size() == 1);
+    CHECK(t.Totals().owner_rechosen == static_cast<std::uint64_t>(Table::kMaxFallRechoices) + 1);
+}
+
 TEST_CASE("native boss: row 178: our fallen boss is also put back at its fight start, each fall") {
     // The Forest playtest: Phantom Ganon fell ~3 km; a new AI choice alone does not bring a falling body back up.
     FakeGuest g;
