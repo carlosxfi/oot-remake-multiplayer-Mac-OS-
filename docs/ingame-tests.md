@@ -37,6 +37,12 @@ so with `@pytest.mark.needs_env("NAME=VALUE", ...)`: a run whose `--env` lacks i
 makes it NOT-RUN if no env group ran it), so the default run has no SETUP-FAIL from it. A
 malformed `--env` stops the run before any boot (pytest usage error, exit 4).
 
+A look test sets its colours by switch, never by a lane's `coop-options.ini` (it keeps whatever earlier runs left):
+`LICHII_COOP_COLOR=<colour>` is the tunic, `LICHII_COOP_LOOK=<key>:<colour>[,...]` every other part (its settings key
+without `look_`, e.g. `cap_trim:yellow`). With `LICHII_COOP_LOOK` the module takes only those parts, not the file's, and
+logs `coop: look: the parts are LICHII_COOP_LOOK's (...)` (`hookshot/src/coop_look.h` `EnvParts`). Example:
+`test_look.py::test_kokiri_hood_band`.
+
 ## Results
 
 One summary per run: `<dir>/summary.json` and `summary.md` (add `--junitxml <file>` for JUnit); each test entry of `summary.json` carries its `notes` (`pair.notes`: the set-up time and what the test wrote down, such as where Link landed). The run also prints one
@@ -55,6 +61,52 @@ Another boot: `--boot NAME` boots `scenarios/NAME.A.txt` + `NAME.B.txt` (e.g. `l
 where the bridge's `warp` answers `not_in_event` in free play). Each test runs with ONE boot: `@pytest.mark.needs_boot(NAME)`,
 unmarked = `live-kakariko-child`; a run with another `--boot` deselects it (`deselected: needs_boot NAME <test>`, in
 `summary.json` `deselected`). An unknown `--boot` is a usage error before any boot.
+
+Pack files: `--pack NAME[,NAME]` (repeatable) makes co-op pack files with the TESTED sha's tools and puts them into
+BOTH lane games' co-op pack (`mods/contents/0400486024DEC000/coop-puppet/<rel>`) after the lane check and before
+the boot. They come out again after `live.py stop` (a file a pack replaced is put back). The maker is
+`tools/autotest/ingame/packs/NAME.py`: `make(out, ctx) -> {rel: src}`, where rel is '/' separated under coop-puppet
+(`coop_hud/map-arrow.png`). Its `ctx` has `tools`, `romfs` (lane A's extracted romfs, read only), `game_nup`
+(`--pack-game`, else the .nup beside the kit root), `lane` and `say`. `packs/hud.py` makes `coop_hud/` with
+`puppet_pack/hud.py` (fonts, hearts, map arrow, place names; about 60 s from the romfs). Every file is checked by
+sha256 on each game, and `summary.json` `identity.pack` is `{name: {rel: sha256}}`. Each game folder gets a
+`coop-test-pack.json` written before any file moves, so a run that dies leaves something the next boot undoes, with
+or without `--pack`. A test that needs a pack: `@pytest.mark.needs_pack(NAME)`; a run without that `--pack`
+deselects it (`deselected: needs_pack NAME <test>`). A maker that fails is a SETUP-FAIL, and the lane is left as it was.
+
+Save profiles: `--save NAME` sets the flags of `tools/autotest/ingame/saves/NAME.py` in every
+`autotest-save/slot_NN/progress.sav` of BOTH lane games. It does this after the lane check and before the boot. At
+its start the game copies that baseline over its own saves (hookshot.py `restore_save`). `FLAGS` holds strings in
+`save_flags.py set` form (`bool:0x6b093b51=0`), and each one cites where its hash comes from. Only flags already in
+the save are changed; a missing flag is a SETUP-FAIL. Each save is kept in `coop-test-save-kept/`. A
+`coop-test-save.json` is written before any change, so every boot undoes a run that died. After `live.py stop` the
+baseline is put back. Every flag is read back on every save. A test that needs a profile:
+`@pytest.mark.needs_save(NAME)`. A run with another `--save`, or none, deselects it. `summary.json` `identity.save`
+is `{name, sha256: {game: {rel: sha256}}}`. `saves/gohma-alive.py` puts Queen Gohma back alive, with the quest at
+her room (rows 137/138).
+
+SOLO boot (owner rule: features that are not multiplayer must also work solo, with co-op idle): `--solo` boots only
+lane game A, with no co-op session. That means `live.py start --only A` without `--server`, so hookshot.py run gives
+it no `LICHII_COOP_SERVER`, and the lane's `coop.ini` has no server line. Only tests marked `@solo.MARK`
+(`tools/autotest/ingame/solo.py`, marker `needs_solo`) run. Every other test is deselected (`needs_pair`), and a
+run without `--solo` deselects the solo tests (`needs_solo`). The pair has game A only (`pair.c == {'A'}`), and
+`step_both`, `press` and `warp_both` run on A. Setup proof, before any test: game A's module log has
+`solo.IDLE` (`coop: no server in coop.ini: co-op idle until Host or Join ...`, hookshot/src/coop_hookshot.cpp).
+It must also have no session line (`coop: on, server`, `connecting`, `welcomed`, `connected`). Otherwise every
+test is a SETUP-FAIL. `--solo` with the no-CS switch is refused. `identity.solo` is true.
+
+Game B without Character Select: `--env B:COOP_TEST_NO_CHARACTER_SELECT=1` (the switch in
+`tools/autotest/ingame/no_cs.py`) boots game B from `lane<N>-B-nocs` instead of `lane<N>-B`. That folder is made
+only when someone asks for it, with `python -I tools/autotest/lanes.py nocs --lane N` (`--dry-run` first). It is
+made from lane B: hard links for every file no game writes, copies of the rest, but without the
+`mods/OoT Character Select` folder and its `coop-mods.list` rows. It gets its own co-op pack, made with the lane
+module commit's pack tool (`wt-module-<sha8>`), which then has co-op's own Characters tab and its code patch. It
+also gets the game from the hs cache that was built with that patch instead of his. A cache miss is an error,
+because `nocs` never builds a game. Its `lane-server.txt` is written last and names lane B's module, commit and
+server, plus `nocs_of=lane<N>-B`. The lane check (`pair.lane_check(..., nocs=True)`) then also requires that this
+module, commit and server are lane B's, that the game's `exefs=` line and `exefs_patches.txt` do not name Character
+Select, and that its folder is gone. `summary.json` `identity` keeps `nocs` and `game_b`
+`{lane: {folder, exefs}}`. Make the folder again after every lane prep: the check fails until you do.
 
 | Result | When |
 |---|---|
@@ -99,6 +151,28 @@ pytest-timeout (pytest.ini, 1800 s) is only the backstop for a call that never r
   games run (`resume`), reads Longshot's own 5 s present windows from the logs (`vi: N frames presented (X fps ...)`,
   `vi: present intervals: ...`) with no bridge call in between, and holds them again (`pause`). It needs each game's
   window behind (Longshot's `hid: game window not in front` line; `live.py` opens the games without the focus).
+
+## The lane's boot proof, recovery and memory
+
+- Boot proof: after `live.py start` and the hello check, inside lane_pair's try (so a miss stops the session),
+  `Pair.boot_ready` steps both games out of the boot's load, warps a game in another scene than the boot scripts'
+  `warp` line there by the bridge, and needs both in play (a fresh Link sample, no load, no event) in that scene.
+  Anything else makes every test of the lane `SETUP-FAIL lane<L> boot: ...`, naming each game's scene, load, event
+  and not_ready. (Pilot test-bridge-pilot-fa63e90f r1: B was left in Graveyard_Child in an event because
+  `hookshot.py run` ended the boot script without waiting for its warp; it now waits, `wait_warps`.)
+- Set-up checks step frames until ready (`pair.until_in_play`, 300 frames at most), never one state read: a stale
+  sample right after a boot or a pause is a game not ready yet, not a FAIL.
+- Recovery: after a test that did not pass, or one marked `leaves_play` (the title test, which runs last in its
+  round), the next test first runs the boot proof again (`Pair.recover`): a miss cannot cascade. It waits on game
+  state, not on a fixed time: 30 s for the stepped part plus 31 s for each game it has to warp back to the boot
+  scene (the worst warp measured, `warp_both` 26.9-31.0 s for both games on a full lane, party-hud-bridge-6947aa3d),
+  so 92 s at most. It is the lane's boot proof, not a test's set-up: a set-up that warps cannot fit 30 s.
+- A warp with `arrive_in_event` (a boss intro) is stepped until the game is in the scene, not loading, in the event
+  once the bridge's own 12 s wait is over; a warp takes longer than that under load.
+- Title test: `load_both` presses A only on a game whose log shows the title line since the way back was asked,
+  never on a game in play (an A there opens and shuts the menu); `back to the title: given up` FAILs it at once.
+- Memory: each game's commit charge is sampled every 30 s from the boot start into `<dir>/lane<L>/commit.csv` and
+  `commit.json` (first, peak and last GB per game), also in summary.json `commit`.
 
 ## Writing a test
 

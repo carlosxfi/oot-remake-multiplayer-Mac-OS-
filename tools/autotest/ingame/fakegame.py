@@ -50,7 +50,7 @@ GATE = "Npc_Hylia_Soldier_003_GateOpen"
 
 
 class FakeGame:
-    def __init__(self, tag, folder, lane, env=(), fakes=()):
+    def __init__(self, tag, folder, lane, env=(), fakes=(), solo_log=None):
         self.tag, self.folder, self.lane = tag, folder, lane
         self.env, self.fakes = list(env), list(fakes)
         os.makedirs(os.path.join(folder, "playtest", "dumps"), exist_ok=True)
@@ -62,11 +62,21 @@ class FakeGame:
         self.menu_pause, self.title_until, self.at_title = False, None, False
         self.head, self.ocarina, self.flags, self.pending = None, False, {GATE: 0}, []
         self.other = None
+        # (selftests of the lane's boot proof, Pair.boot_ready: BT_FAKE_BOOT_EVENT=B leaves B where the save puts it,
+        # Graveyard_Child, in an event a warp ends (test-bridge-pilot-fa63e90f r1); BT_FAKE_BOOT_STUCK=B the same but
+        # the event never ends; BT_FAKE_STALE_FRAMES=N: no fresh Link sample for the first N frames, party-hud-bridge r1)
+        self.event, self.stuck = False, tag in os.environ.get("BT_FAKE_BOOT_STUCK", "")
+        if tag in os.environ.get("BT_FAKE_BOOT_EVENT", "") or self.stuck:
+            self.scene, self.event = "Graveyard_Child", True
+        self.stale_until = self.frame + int(os.environ.get("BT_FAKE_STALE_FRAMES", "0") or 0)
         open(self.log_path, "w").close()
         me, them = (1, 2) if tag == "A" else (2, 1)
         self.say("coop: multiplayer tab: test: to-title.now in %s starts the way back to the title" % folder)
-        self.say("coop: connected to 127.0.0.1")
-        self.say("coop: puppet: P%d CoopPuppet_Child_Green spawned after 120 ms" % them)
+        if solo_log:     # (bt_plugin --solo: game A alone, what the module logs with no server: solo.IDLE)
+            self.say(solo_log)
+        else:
+            self.say("coop: connected to 127.0.0.1")
+            self.say("coop: puppet: P%d CoopPuppet_Child_Green spawned after 120 ms" % them)
         if tag == "A":
             self.say("coop: drawing over Hookshot's picture")
         for h in hooks(self.fakes, "setup"):
@@ -95,10 +105,18 @@ class FakeGame:
             if os.path.exists(os.path.join(self.folder, "to-title.now")):
                 os.remove(os.path.join(self.folder, "to-title.now"))
                 self.say("coop: multiplayer tab: test: back to the title asked (to-title.now)")
+                self.title_asked = True
+                if self.tag in os.environ.get("BT_FAKE_TO_TITLE_GIVES_UP", ""):   # (the pilot's way back, both games)
+                    self.later(60, lambda: self.say("coop: pause tab: back to the title: given up (the menu did not "
+                                                    "get there)"))
+                    continue
                 self.at_title = True
+                self.say("coop: live events: the title: the game's earlier event requests are forgotten")
+                self.say("coop: native ui: the title's menu is up: no play scene, no screen is called into until play is back")
+                self.say("coop: map: the title is up: the panes found are forgotten, looked for again after it")
 
     def in_play(self):
-        return not self.at_title and not self.menu_pause
+        return not self.at_title and not self.menu_pause and self.frame >= self.stale_until
 
     def env_on(self, want):
         """Is the switch `want` (NAME=VALUE) on for this game in the boot's env (the 'X=1' or 'A:X=1' form)?"""
@@ -116,7 +134,7 @@ class FakeGame:
         live = self.in_play()
         return {"frame": self.frame, "paused": self.paused, "scene": self.scene if not self.at_title else None,
                 "pos": list(self.pos) if live else None, "facing": self.facing if live else None,
-                "age": "child" if live else None, "loading": False if live else None, "event": False if live else None,
+                "age": "child" if live else None, "loading": False if live else None, "event": self.event if live else None,
                 "not_ready": None if live else "no fresh Link sample", "control": True,
                 "equips": {"weapon": "KokiriSword", "shield": None, "head": self.head, "armor": "Kokiri", "boots": "Normal"},
                 "coop": {"players": [{"number": 1, "name": "A", "state": "connected"},
@@ -158,7 +176,10 @@ class FakeGame:
             r["state"] = self.state()
         elif cmd == "warp":
             self.run(40)
-            self.scene = m["scene"]
+            if self.stuck:     # (the event never ends: the bridge's warp answers timeout, still in it)
+                return {"id": m.get("id"), "ok": False, "error": "timeout", "message": "fake: still in the event",
+                        "frame": self.frame, "paused": self.paused}
+            self.scene, self.event = m["scene"], False
             r.update(arrived=True, via="teleport", map=m["scene"], state=self.state())
         elif cmd == "move":
             self.walk(float(m["yaw"]), float(m.get("strength", 1.0)), int(m.get("frames", 1)))
@@ -201,8 +222,10 @@ class FakeGame:
         o, me = self.other, 1 if self.tag == "A" else 2
         if "PLUS" in buttons:
             self.menu_pause = not self.menu_pause
+        if "A" in buttons and getattr(self, "title_asked", False) and not self.at_title:
+            self.say("fake: A pressed in play after the way back was asked")   # (load_both must never: pilot A :7015)
         if self.at_title and "A" in buttons:
-            self.later(30, lambda: setattr(self, "at_title", False))
+            self.later(30, lambda: (setattr(self, "at_title", False), setattr(self, "title_asked", False)))
             return
         if "LEFT" in buttons:
             self.ocarina = True
@@ -281,10 +304,11 @@ class FakeGame:
 
 
 class FakeLane:
-    def __init__(self, out_dir, lane=1, env=(), fakes_dir=FAKES):
+    def __init__(self, out_dir, lane=1, env=(), fakes_dir=FAKES, solo_log=None):
         root = os.path.join(out_dir, "fake")
         mods = load_fakes(fakes_dir)
-        self.g = {x: FakeGame(x, os.path.join(root, "lane%d-%s" % (lane, x)), lane, env, mods) for x in ("A", "B")}
+        self.g = {x: FakeGame(x, os.path.join(root, "lane%d-%s" % (lane, x)), lane, env, mods, solo_log=solo_log)
+                  for x in ("A", "B")}
         self.g["A"].other, self.g["B"].other = self.g["B"], self.g["A"]
         for h in hooks(mods, "lane"):
             h(self)
