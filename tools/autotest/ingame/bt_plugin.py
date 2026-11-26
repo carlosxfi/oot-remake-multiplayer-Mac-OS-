@@ -307,7 +307,7 @@ def boot_args(config, lane, server, session):
         args += ["--env", e]
     kit_ls = _opt(config, "kit_ls")
     if kit_ls:   # (live.py start --lane N boots lanes.py's laneN folders unless --game-a/-b name others: live.py resolve)
-        args += ["--game-a", os.path.join(kit_ls, "lane%d-A" % lane)]
+        args += ["--game-a", game_a_folder(config, lane)]
     if kit_ls or nocs_wanted(config):   # (live.py resolve: --game-b wins over the lane's B with --lane; ONE --game-b)
         args += ["--game-b", game_b_folder(config, lane)]
     return args + ["--max-minutes", str(config.getoption("session_minutes")), "--idle-minutes", "15"]
@@ -321,17 +321,21 @@ def nocs_wanted(config):
     return env_has(boot_env(config), NOCS_ENV)
 
 
+def _kit_ls(config):
+    """The ls folder this run's lane games live in: --kit-ls, else lanes.py's kit_root()/ls (what P.lane_check reads)."""
+    import lanes as L
+    return _opt(config, "kit_ls") or os.path.join(L.kit_root(), "ls")
+
+
+def game_a_folder(config, lane):
+    """Game A's folder for this lane: <kit ls>/lane<N>-A, the folder boot_args boots and P.lane_check proves."""
+    return os.path.join(_kit_ls(config), "lane%d-A" % lane)
+
+
 def game_b_folder(config, lane):
-    """Game B's folder for this lane: <kit_ls or kit_root()/ls>/lane<N>-B, lane<N>-B-nocs with NOCS_ENV = the folder
+    """Game B's folder for this lane: <kit ls>/lane<N>-B, lane<N>-B-nocs with NOCS_ENV = the folder
     P.lane_check(kit_ls, lane, nocs) proves (pair.py NOCS)."""
-    import lanes as L
-    kit_ls = _opt(config, "kit_ls") or os.path.join(L.kit_root(), "ls")
-    return os.path.join(kit_ls, "lane%d-B%s" % (lane, P.NOCS if nocs_wanted(config) else ""))
-
-
-def _lanes(config, lane):
-    import lanes as L
-    return L.lane(lane, os.path.dirname(config.getoption("kit_ls")) if config.getoption("kit_ls") else None)
+    return os.path.join(_kit_ls(config), "lane%d-B%s" % (lane, P.NOCS if nocs_wanted(config) else ""))
 
 
 def _real_lane_info(config, lane):
@@ -590,8 +594,8 @@ def lane_pair(request):
     info = _real_lane_info(config, lane)                    # (SetupFail: every test of this lane is SETUP-FAIL)
     session = os.path.join(out, "session")
     began = time.time()
-    Ln = _lanes(config, lane)
-    folders = [Ln["a"], info.get("game_b") or Ln["b"]]       # (lane<N>-B-nocs with NOCS_ENV: the pack goes where B boots)
+    game_a = game_a_folder(config, lane)                    # (the folders this lane boots: --kit-ls's, not its parent's)
+    folders = [game_a, info.get("game_b") or game_b_folder(config, lane)]   # (lane<N>-B-nocs with NOCS_ENV: the pack goes where B boots)
     if config.getoption("solo"):
         folders = folders[:1]                                 # (--solo: game A only; B is not touched)
         if os.environ.get("LICHII_COOP_SERVER"):
@@ -601,7 +605,7 @@ def lane_pair(request):
     mem = memsample.Sampler(session, out).start()           # (each game's commit from the boot start: C #134)
     try:
         try:                                    # (after lane_check, before the boot: test-bridge-c127-3 11:18)
-            _pack_in(config, lane, folders, out, romfs=os.path.join(Ln["a"], "romfs"))
+            _pack_in(config, lane, folders, out, romfs=os.path.join(game_a, "romfs"))
         except (testpack.PackError, testsave.SaveProfileError, OSError) as e:   # (OSError: review-c123-9 nit a)
             raise P.SetupFail("lane%d pack/save: %s" % (lane, e))
         started = _live(["start"] + boot_args(config, lane, info["server"], session), timeout=1200)
