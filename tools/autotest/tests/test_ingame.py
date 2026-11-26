@@ -66,6 +66,16 @@ class Suite(unittest.TestCase):
         self.assertEqual(len(shots), 10)            # pause 2 + masks 4 + HUD 4: a few per rc, not hundreds
         self.assertTrue(all(sh["ok"] and sh["score"] >= sh["tolerance"] for sh in shots))
 
+    def test_default_suite_has_no_setup_fail(self):
+        """The default run (no --env) of the real suite: 0 SETUP-FAIL (a needs_env test is deselected, B #129)."""
+        out = os.path.join(self.tmp, "o")
+        p = pytest_run([".", "--fake", "--out", out, "-q", "-m", "not look"])
+        s = summary(out)
+        self.assertEqual(s["counts"]["SETUP-FAIL"], 0, p.stdout[-2000:])
+        self.assertTrue(s["tests"])
+        for d in s["deselected"]:
+            self.assertTrue(d["needs_env"], d)
+
     def test_repeat_keeps_one_boot_and_orders_by_round(self):
         out = os.path.join(self.tmp, "o")
         pytest_run([".", "--fake", "--out", out, "-q", "--repeat", "2", "--no-smoke-gate"])
@@ -212,6 +222,20 @@ class BootEnv(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def test_boot_crash_reason(self):
+        import bt_plugin as B
+        ses = os.path.join(self.tmp, "ses")
+        os.makedirs(ses)
+        la, lb = os.path.join(ses, "game-out-A.txt"), os.path.join(ses, "game-out-B.txt")
+        with open(la, "w", encoding="utf-8") as f:
+            f.write("coop: start\nCRASH: exception 0xc0000005 at hookshot_coop.dll+0x50594\nmore\n")
+        with open(lb, "w", encoding="utf-8") as f:
+            f.write("coop: start\n")
+        with open(os.path.join(ses, "session.json"), "w", encoding="utf-8") as f:
+            json.dump({"games": {"A": {"log": la}, "B": {"log": lb}}}, f)
+        self.assertEqual(B._crash_why(ses), "; A: CRASH: exception 0xc0000005 at hookshot_coop.dll+0x50594")
+        self.assertEqual(B._crash_why(os.path.join(self.tmp, "none")), "")
+
     def test_env_has(self):
         import bt_plugin as B
         self.assertTrue(B.env_has(["X=1"], "X=1"))
@@ -222,9 +246,17 @@ class BootEnv(unittest.TestCase):
         self.assertFalse(B.env_has(["X=2"], "X=1"))
 
     def test_missing_switch_is_setup_fail_and_given_is_pass(self):
-        pytest_run([".", "--fake", "--no-rerun", "--out", self.out, "-q"], cwd=self.dir)
-        s = summary(self.out)
-        self.assertEqual(results(s), {"test_needs_x_both": "SETUP-FAIL", "test_needs_y_on_a": "SETUP-FAIL"})
+        p = pytest_run([".", "--fake", "--no-rerun", "--out", self.out, "-q", "--env", "LICHII_COOP_X=1"], cwd=self.dir)
+        s = summary(self.out)       # (B #129: lacking a switch = deselected, named, never SETUP-FAIL and never hidden)
+        self.assertEqual(results(s), {"test_needs_x_both": "PASS"}, p.stdout[-2000:])
+        self.assertEqual(s["deselected"], [{"test": "test_env.py::test_needs_y_on_a", "needs_env": ["A:LICHII_COOP_Y=2"]}])
+        self.assertIn("deselected: needs_env A:LICHII_COOP_Y=2 test_env.py::test_needs_y_on_a", p.stdout)
+        out0 = os.path.join(self.tmp, "o0")
+        pytest_run([".", "--fake", "--out", out0, "-q"], cwd=self.dir)
+        s = summary(out0)
+        self.assertEqual(s["tests"], [])
+        self.assertEqual(len(s["deselected"]), 2)
+        self.assertEqual(s["verdict"], "NOT PASS")      # (nothing ran: never a pass)
         out2 = os.path.join(self.tmp, "o2")
         p = pytest_run([".", "--fake", "--out", out2, "-q", "--env", "LICHII_COOP_X=1", "--env", "A:LICHII_COOP_Y=2"],
                        cwd=self.dir)

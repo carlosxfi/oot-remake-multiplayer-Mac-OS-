@@ -63,7 +63,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "look: a user-facing look check (bridge shots on each game, compared to refs)")
     config.addinivalue_line("markers", "needs_env(*'NAME=VALUE'): game switches the test needs; a boot without them "
                             "(--env) is SETUP-FAIL for it")
-    config._bt_rows = []
+    config._bt_rows, config._bt_deselected = [], []
     if config.getoption("lane_check_only") and getattr(config.option, "numprocesses", None):
         raise pytest.UsageError("--lane-check-only runs in one process: leave out -n (it checks every --lanes lane)")
     boot_env(config)        # (a malformed --env stops the run before any boot)
@@ -90,8 +90,30 @@ def _rep_of(item):
 def pytest_collection_modifyitems(config, items):
     order = {id(it): i for i, it in enumerate(items)}
     items.sort(key=lambda it: (_rep_of(it), 0 if it.get_closest_marker("smoke") else 1, order[id(it)]))
+    _deselect_needs_env(config, items)
     if config.getoption("lane_check_only"):
         _lane_check_only(config, items)
+
+
+def _deselect_needs_env(config, items):
+    """A needs_env test whose switches this run's --env lacks is DESELECTED (B #129, 2026-11-26), with one
+    'deselected: needs_env ...' line each and a summary.json 'deselected' list: never hidden, and never a SETUP-FAIL of
+    the default run. The rc summary (rc_tests.py summary --plan) makes it NOT-RUN if no env group ran it."""
+    have = boot_env(config)
+    keep, drop = [], []
+    for it in items:
+        lack = [e for m in it.iter_markers("needs_env") for e in m.args if not env_has(have, e)]
+        (drop if lack else keep).append(it)
+        if lack:
+            config._bt_deselected.append({"test": it.nodeid, "needs_env": lack})
+    if not drop:
+        return
+    tr = config.pluginmanager.get_plugin("terminalreporter")
+    for d in config._bt_deselected[-len(drop):]:
+        line = "deselected: needs_env %s %s" % (" ".join(d["needs_env"]), d["test"])
+        tr.write_line(line) if tr else print(line)
+    config.hook.pytest_deselected(items=drop)
+    items[:] = keep
 
 
 def _real_lane_info(config, lane):
@@ -165,6 +187,27 @@ def _live(args, timeout):
         return {"ok": False, "error": "live.py %s: exit %s: %s" % (args[0], p.returncode, (p.stderr or p.stdout)[-600:])}
 
 
+def _crash_why(session):
+    """'; A: CRASH: ...' from each game's module log of the session (session.json's games.X.log), first CRASH line
+    each: a boot that failed because a game crashed says so in its SETUP-FAIL."""
+    try:
+        with open(os.path.join(session, "session.json"), encoding="utf-8") as f:
+            games = json.load(f).get("games") or {}
+    except (OSError, ValueError):
+        return ""
+    out = []
+    for x in sorted(games):
+        log = (games[x] or {}).get("log")
+        try:
+            with open(log, encoding="utf-8", errors="replace") as f:
+                line = next((ln.strip() for ln in f if "CRASH" in ln), None)
+        except (OSError, TypeError):
+            line = None
+        if line:
+            out.append("%s: %s" % (x, line[:300]))
+    return ("; " + "; ".join(out)) if out else ""
+
+
 @pytest.fixture(scope="session")
 def lane_pair(request):
     config = request.config
@@ -191,7 +234,7 @@ def lane_pair(request):
                      "--env", "LICHII_COOP_PUPPET=1", "--env", "LICHII_COOP_TEST_TO_TITLE=1"] + extra + [
                      "--max-minutes", str(config.getoption("session_minutes")), "--idle-minutes", "15"], timeout=1200)
     if not started.get("ok"):
-        raise P.SetupFail("lane%d boot: %s" % (lane, started.get("error") or started.get("boot")))
+        raise P.SetupFail("lane%d boot: %s%s" % (lane, started.get("error") or started.get("boot"), _crash_why(session)))
     try:
         pair = P.Pair(P.read_session(session), out_dir=out, refs_dir=refs)
         pair.lane, pair.info, pair.session = lane, dict(info, boot_s=round(time.monotonic() - t0, 1)), session
@@ -381,6 +424,7 @@ def pytest_sessionfinish(session, exitstatus):
                "lanes": config.getoption("lanes"), "fake": bool(config.getoption("fake")),
                "repeat": config.getoption("repeat"), "counts": counts, "tests": rows,
                "identity": {"env": boot_env(config), "expect_commit": config.getoption("expect_commit")},
+               "deselected": config._bt_deselected,
                "stopped": getattr(config, "_bt_stopped", None),
                "lane_closed": getattr(config, "_bt_lane_closed", None),
                "verdict": "PASS" if rows and counts["PASS"] == len(rows) else "NOT PASS"}

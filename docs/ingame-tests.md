@@ -31,7 +31,9 @@ only (no boot, no test): one `SETUP-OK`/`SETUP-FAIL` line per lane, `<dir>/setup
 Game switches are per boot: `--env NAME=VALUE` (both games) or `--env A:NAME=VALUE` / `--env B:NAME=VALUE` (one
 game), repeatable, set at the game launch (`live.py start --env`) next to the base `LICHII_COOP_PUPPET=1` and
 `LICHII_COOP_TEST_TO_TITLE=1`; the boot's whole list is `summary.json` `identity.env`. A test that needs a switch says
-so with `@pytest.mark.needs_env("NAME=VALUE", ...)`: on a boot without it, it is SETUP-FAIL (never a silent pass). A
+so with `@pytest.mark.needs_env("NAME=VALUE", ...)`: a run whose `--env` lacks it DESELECTS it, with a
+`deselected: needs_env <switches> <test>` line and a `summary.json` `deselected` entry (never hidden; the rc summary
+makes it NOT-RUN if no env group ran it), so the default run has no SETUP-FAIL from it. A
 malformed `--env` stops the run before any boot (pytest usage error, exit 4).
 
 ## Results
