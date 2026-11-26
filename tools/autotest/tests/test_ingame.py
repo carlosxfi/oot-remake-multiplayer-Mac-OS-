@@ -73,8 +73,14 @@ class Suite(unittest.TestCase):
         self.assertEqual(s["counts"]["PASS"], total, p.stdout[-2000:])
         self.assertEqual(s["verdict"], "PASS")
         self.assertEqual(p.returncode, 0)
+        # (derived, not a fixed total, so a row port's look test never edits this: crawl-337-9) every look test kept
+        # shots, each test that shot did so on BOTH games, a few per test (not hundreds), all matching their refs
         shots = [sh for r in s["tests"] for sh in r["shots"]]
-        self.assertEqual(len(shots), 10)            # pause 2 + masks 4 + HUD 4: a few per rc, not hundreds
+        by_test = {r["test"]: r["shots"] for r in s["tests"] if r["shots"]}
+        self.assertGreaterEqual(len(by_test), looks, by_test.keys())
+        for t, sh in by_test.items():
+            self.assertEqual({x["game"] for x in sh}, {"A", "B"}, t)
+            self.assertLessEqual(len(sh), 8, t)
         self.assertTrue(all(sh["ok"] and sh["score"] >= sh["tolerance"] for sh in shots))
 
     def test_default_suite_has_no_setup_fail(self):
