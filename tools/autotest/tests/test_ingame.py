@@ -26,6 +26,15 @@ def pytest_run(args, cwd=INGAME, env=None):
     return p
 
 
+def suite_ids(marks=None):
+    """The real suite's nodeids (its own --collect-only), e.g. the look tests: suite_ids("look")."""
+    out = tempfile.mkdtemp()
+    args = [".", "--fake", "--collect-only", "-q", "-p", "no:cacheprovider", "--out", out] + (["-m", marks] if marks else [])
+    p = pytest_run(args)
+    shutil.rmtree(out, ignore_errors=True)
+    return [ln.strip() for ln in p.stdout.splitlines() if "::" in ln and not ln.startswith("deselected")]
+
+
 def suite_size(marks=None):
     """How many tests the real suite runs (its own collection, as a run with no --env deselects): the counts below
     follow every row added to ingame/, so a new row port does not break these selftests (row-53-ocarina-5)."""
@@ -34,6 +43,9 @@ def suite_size(marks=None):
     p = pytest_run(args)
     shutil.rmtree(out, ignore_errors=True)
     return sum(1 for ln in p.stdout.splitlines() if "::" in ln and not ln.startswith("deselected"))
+
+
+MISSING_REF = "NO-REF: no stored reference"    # (bt_plugin's pair fixture: the text of a missing reference's NoRef)
 
 
 def summary(out):
@@ -60,8 +72,18 @@ class Suite(unittest.TestCase):
         p = pytest_run([".", "--fake", "--out", out1, "-q"], env={"BT_FAKE_REFS": refs})
         s = summary(out1)
         total, looks = suite_size(), suite_size("look")
-        self.assertEqual(s["counts"]["NO-REF"], looks, p.stdout[-2000:])
-        self.assertEqual(s["counts"]["PASS"], total - looks, p.stdout[-2000:])
+        # (vest-link-2 11:27) a NO-REF is either a missing stored reference (bt_plugin's 'NO-REF: no stored reference')
+        # or a test that cannot prove its row yet (pair.unproven): only the first kind goes away once refs exist
+        missing = [r["test"] for r in s["tests"] if r["result"] == "NO-REF" and MISSING_REF in r["why"]]
+        unproven = [r["test"] for r in s["tests"] if r["result"] == "NO-REF" and MISSING_REF not in r["why"]]
+        self.assertLessEqual(len(missing), looks, p.stdout[-2000:])
+        # (review-c123-9 on 423c5e3d9) exact: EVERY look test is missing its ref or unproven on run 1, so a look test
+        # that PASSes with no stored reference is still caught (the screenshot rule's guard)
+        look_ids = suite_ids("look")
+        self.assertEqual(len(look_ids), looks)
+        self.assertLessEqual(set(look_ids), set(missing) | set(unproven), (look_ids, missing, unproven))
+        self.assertEqual(s["counts"]["NO-REF"], len(missing) + len(unproven), p.stdout[-2000:])
+        self.assertEqual(s["counts"]["PASS"], total - len(missing) - len(unproven), p.stdout[-2000:])
         self.assertEqual(s["verdict"], "NOT PASS")
         self.assertNotEqual(p.returncode, 0)
         new = os.path.join(out1, "lane1", "new")
@@ -70,9 +92,12 @@ class Suite(unittest.TestCase):
         out2 = os.path.join(self.tmp, "o2")
         p = pytest_run([".", "--fake", "--out", out2, "-q"], env={"BT_FAKE_REFS": refs})
         s = summary(out2)
-        self.assertEqual(s["counts"]["PASS"], total, p.stdout[-2000:])
-        self.assertEqual(s["verdict"], "PASS")
-        self.assertEqual(p.returncode, 0)
+        self.assertFalse([r["test"] for r in s["tests"] if MISSING_REF in r["why"]], p.stdout[-2000:])
+        still = sorted(r["test"] for r in s["tests"] if r["result"] == "NO-REF")
+        self.assertEqual(still, sorted(unproven), p.stdout[-2000:])      # (only the unproven ones stay NO-REF)
+        self.assertEqual(s["counts"]["PASS"], total - len(unproven), p.stdout[-2000:])
+        self.assertEqual(s["verdict"], "PASS" if not unproven else "NOT PASS")
+        self.assertEqual(p.returncode == 0, not unproven)
         # (derived, not a fixed total, so a row port's look test never edits this: crawl-337-9) every look test kept
         # shots, each test that shot did so on BOTH games, a few per test (not hundreds), all matching their refs
         shots = [sh for r in s["tests"] for sh in r["shots"]]
@@ -185,6 +210,8 @@ class Labels(unittest.TestCase):
         self.assertIn("set-up: RuntimeError: no such scene", rows["test_setup_fails"]["why"])
         self.assertIn("the first run's own reason", rows["test_fails_then_skips"]["why"])   # (review-rows-c130 11:10)
         self.assertTrue(rows["test_fails_then_skips"]["rerun"].startswith("SKIP"), rows["test_fails_then_skips"])
+        self.assertEqual(rows["test_fails_then_skips"]["rerun"],                    # (the skip's message, not a tuple)
+                         "SKIP: Skipped: the rerun skips (a test that changed the boot)")
         self.assertIn("fails the first time only", rows["test_flaky"]["why"])                # (FLAKY: the first failure)
         self.assertTrue(rows["test_flaky"]["rerun"].startswith("PASS"), rows["test_flaky"])
         self.assertEqual(open(os.path.join(self.tmp, "always")).read(), "2")   # rerun once, no more
