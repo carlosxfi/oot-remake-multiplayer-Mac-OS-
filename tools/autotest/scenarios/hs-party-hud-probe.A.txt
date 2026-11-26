@@ -4,7 +4,7 @@
 # and as without it (B: COOP_TEST_PARTY_HUD_NO_PACK=1, coop_party_hud.h Hud::IgnorePack), on a scene change and a
 # return to the title. Both games: COOP_TEST_PARTY_HUD=1, four made-up players (coop_party_hud.cpp TestBlocks).
 #  A (pack, 3 slots): players 1-3 in the pack's slots, player 4 ("Four") in a run-time gauge WITH its name line.
-#  B (no pack): all four in run-time gauges, hearts only (no text part of ours in the HUD).
+#  B (no pack): all four in run-time gauges, each with its name line from the game's MenuOverlay_00 Pa_Category_00 (Hud::BarePart).
 # Values and their sources:
 #  - the kit save: the child in the Graveyard at 10:01 (docs/testing.md "Start place"); run.ps1 loads it first and
 #    checks the default start (a Graveyard object, run.ps1:176).
