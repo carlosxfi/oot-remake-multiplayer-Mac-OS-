@@ -165,6 +165,24 @@ if ($headFile) {
         elseif ($l -match '^#!\s*timeout\s+(\d+)\s*$' -and -not $PSBoundParameters.ContainsKey('Timeout')) { $Timeout = [int]$Matches[1] }
     }
 }
+# The header is read from the A script (or the steps file) only, for both games. A '#!' line only the B script carries was
+# never applied: epona-seen-keys-3bacc7d0 (2026-11-26) had LICHII_COOP_DEBUG_SOUND=1 in B only, so no sound was logged and the
+# run was VOID. Such a script is refused here, before any game starts, naming each line (SETUP-FAIL, exit 2).
+if ($headFile -eq $scA -and (Test-Path $scB)) {
+    $aLines = @(Get-Content $scA | Where-Object { $_ -match '^#!' } | ForEach-Object { $_.Trim() })
+    $notInA = New-Object System.Collections.Generic.List[string]
+    foreach ($l in @(Get-Content $scB | Where-Object { $_ -match '^#!' } | ForEach-Object { $_.Trim() })) {
+        if ($l -match '^#!\s*switches\s+(.+)$') {
+            foreach ($sw in @($Matches[1] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+                if ($headSwitches -notcontains $sw) { $notInA.Add("switch $sw") }
+            }
+        } elseif ($aLines -notcontains $l) { $notInA.Add("'$l'") }
+    }
+    if ($notInA.Count) {
+        Write-Host "SETUP-FAIL scenario $Scenario`: the B script's header has what the A script's has not (run.ps1 reads the header from the A script only, for both games; put it in $Scenario.A.txt): $($notInA -join ', ')"
+        exit 2
+    }
+}
 if ($headNoLoad -and -not $NoLoad) { Write-Host "scenario header: noload"; $NoLoad = [switch]$true }
 if ($headSwitches.Count) {
     $given = @($Switches | ForEach-Object { $_ -split ',' } | ForEach-Object { ($_.Trim() -split '=', 2)[0] })

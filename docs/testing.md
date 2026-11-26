@@ -370,6 +370,8 @@ After `load.txt` the runner checks that each game reached the save point: its lo
 | `#! start REGEX` | what the log must show once loaded; checked at the end for a `noload` script (`#! start coop: test warp done` for the warp scenarios) |
 | `#! timeout 300` | seconds per phase, as `-Timeout` (which wins) |
 
+They apply to both games. A `#!` line (or a switch) that only the B script carries was never applied, so run.ps1 refuses it before any game starts (`SETUP-FAIL scenario NAME: the B script's header has what the A script's has not ...`, exit 2, naming each line and switch). A B copy of A's header is fine. Found by epona-seen-keys-3bacc7d0 (2026-11-26): `LICHII_COOP_DEBUG_SOUND=1` in the B header only, so no sound was logged. Six scenarios carried B-only lines then (gear-join-after-age, giant-blade, lift-by-adult, pvp-probe, pvp-probe-adult, scrub-b-talk-rev).
+
 **Screenshots of the game, not the cheats window.** With `LICHII_COOP_CHEATS=1` the cheats window could be the process's main window, and the screenshots showed it. The runner now picks the process's largest visible window that is not "Co-op item cheats".
 
 ### Steps files

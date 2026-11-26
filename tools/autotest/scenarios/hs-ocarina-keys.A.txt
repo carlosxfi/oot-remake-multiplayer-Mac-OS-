@@ -1,5 +1,6 @@
 # hs-ocarina-keys (Hookshot), A: only in the session while B plays its five keys (hs-ocarina-keys.B.txt).
-#! switches LICHII_COOP_PUPPET=1,LICHII_COOP_CHEATS=1
+# run.ps1 reads the #! header lines from THIS (A) script only, for both games (the B copy below is ignored)
+#! switches LICHII_COOP_PUPPET=1,LICHII_COOP_CHEATS=1,LICHII_COOP_DEBUG_SOUND=1
 #! timeout 600
 mark start
 wait 60
