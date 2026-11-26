@@ -58,6 +58,13 @@ constexpr std::uint32_t kMaxString64Bytes = 64;
 // BoolArray: entries of 0x40, element count u32 at +0x20, bits at *(+0x28).
 constexpr Table kBoolArray{0x70, 0x78, 0x80, 0x8c, 0x40, 0, 0, 0, 0, 0};
 constexpr std::uint64_t kArraySize = 0x20, kArrayBits = 0x28;
+// String64Array (type 17, M + 0x670: the type managers sit 0x60 apart from M + 0x10, save-format.md "Serializer";
+// the serializer 0xba8100 walks it at 0xba92ac: entries of 0x90, file index at +0x14). Row 294: the parser 0xdfb0f4
+// (via 0xdfb310) builds each entry's live array as u32 count at +0x70 and a pointer at +0x78 (saved copy +0x80/+0x88),
+// elements of 0x50 bytes {char* text +0 (to the element's own buffer at +0xc), u32 capacity 0x40 at +8} (0xdfb400).
+constexpr Table kString64Array{0x670, 0x678, 0x680, 0x68c, 0x90, 0, 0, 0, 0, 0};
+constexpr std::uint64_t kStrArrayCount = 0x70, kStrArrayItems = 0x78;
+constexpr std::uint64_t kStrItemSize = 0x50, kStrItemText = 0, kStrItemCap = 8;
 
 // 64-bit keys: a sorted array of 16-byte records {u64 key, u32 file mask,
 // u8 value, s8 file index, u8 flags}, and a queue of {u8 value, u32 record
@@ -398,6 +405,32 @@ std::optional<bool> GameFlags::get_bool_array(std::uint32_t hash, std::uint32_t 
   const auto word = read_u32(memory_, *bits + 4ull * (index / 32));
   if (!word) return std::nullopt;
   return ((*word >> (index % 32)) & 1) != 0;
+}
+
+std::optional<std::string> GameFlags::get_string64_array(std::uint32_t hash, std::uint32_t index) {
+  const auto mgr = manager(memory_);
+  if (!mgr) return std::nullopt;
+  const auto entry_index = find(memory_, *mgr, kString64Array, hash);
+  if (!entry_index) return std::nullopt;
+  const auto entries = read_ptr(memory_, *mgr + kString64Array.entries);
+  if (!entries) return std::nullopt;
+  const std::uint64_t entry = *entries + kString64Array.stride * *entry_index;
+  const auto count = read_u32(memory_, entry + kStrArrayCount);
+  const auto items = read_ptr(memory_, entry + kStrArrayItems);
+  if (!count || !items || index >= *count) return std::nullopt;
+  const std::uint64_t item = *items + kStrItemSize * index;
+  const auto text = read_ptr(memory_, item + kStrItemText);
+  const auto cap = read_u32(memory_, item + kStrItemCap);
+  if (!text || !cap || *cap == 0 || *cap > kMaxString64Bytes) return std::nullopt;
+  std::array<std::uint8_t, kMaxString64Bytes> bytes{};
+  if (!memory_.read(*text, std::span(bytes.data(), *cap))) return std::nullopt;
+  std::string out;
+  for (std::uint32_t i = 0; i < *cap; ++i) {
+    if (bytes[i] == 0) return out;
+    if (bytes[i] < 0x20 || bytes[i] > 0x7e) return std::nullopt;
+    out.push_back(static_cast<char>(bytes[i]));
+  }
+  return std::nullopt;  // not terminated within the buffer
 }
 
 std::optional<std::string> GameFlags::get_string64(std::uint32_t hash) {

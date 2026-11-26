@@ -713,3 +713,28 @@ TEST_CASE("flag setters: a String64 goes to the game's push with its text on the
       [](const void*, std::size_t) -> std::uint64_t { return 0; }));
   CHECK(calls.size() == 1);
 }
+
+TEST_CASE("game flags: String64Array element, row 294 (OwnedHorseList.ActorName, the save's own horses)") {
+  // The layout the parser 0xdfb0f4/0xdfb310 builds: M + 0x670 table, entries of 0x90, live count +0x70 and items
+  // +0x78, items of 0x50 {char* text, u32 capacity 0x40}.
+  auto w = game();
+  auto& m = w.mem;
+  constexpr std::uint64_t kSaEntries = 0x8a00000000ull, kSaSlots = 0x8a10000000ull, kSaItems = 0x8a20000000ull;
+  table(m, 0x670, kSaEntries, kSaSlots, 0x90, {0x7bde80e9u});
+  m.put_u32(kSaEntries + 0x70, 2);
+  m.put_u64(kSaEntries + 0x78, kSaItems);
+  zero(m, kSaItems, 0x50 * 2);
+  const std::string_view name = "Animal_Epona_Adult";
+  for (std::uint32_t i = 0; i < 2; ++i) {
+    m.put_u64(kSaItems + 0x50 * i, kSaItems + 0x50 * i + 0xc);
+    m.put_u32(kSaItems + 0x50 * i + 8, 0x40);
+  }
+  for (std::size_t i = 0; i < name.size(); ++i) m.put_u8(kSaItems + 0xc + i, static_cast<std::uint8_t>(name[i]));
+  GameFlags f(w);
+  CHECK(f.get_string64_array(0x7bde80e9u, 0) == std::string(name));
+  CHECK(f.get_string64_array(0x7bde80e9u, 1) == std::string());  // an empty slot: ""
+  CHECK_FALSE(f.get_string64_array(0x7bde80e9u, 2));              // past the count
+  CHECK_FALSE(f.get_string64_array(0x12345678u, 0));              // not a String64Array
+  m.put_u32(kSaItems + 0x50 + 8, 0x1000);                         // not a 64-byte buffer
+  CHECK_FALSE(f.get_string64_array(0x7bde80e9u, 1));
+}

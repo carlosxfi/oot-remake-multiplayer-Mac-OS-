@@ -73,6 +73,9 @@ class GameFlags {
   // Nothing when the text is not 0-terminated within its buffer or not
   // printable ASCII.
   std::optional<std::string> get_string64(std::uint32_t hash);
+  // Element `index` of a String64Array flag (row 294: OwnedHorseList.ActorName, the save's own
+  // horses). Read only, the live array. Nothing past the array's count, or as get_string64.
+  std::optional<std::string> get_string64_array(std::uint32_t hash, std::uint32_t index);
 
   // Queues a write as the game's setter does. False when the flag is
   // unknown, the queue is full, the game applied the queue while this was
