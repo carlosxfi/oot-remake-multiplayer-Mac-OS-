@@ -82,7 +82,8 @@ $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAM
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 99 -RestartInterval (New-TimeSpan -Minutes 1)
 Register-ScheduledTask -TaskName 'squadala-ci status feed' -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName 'squadala-ci status feed'
-Start-Sleep -Seconds 20
-& $wsl -d $Distro -u root -- sh -c 'echo "status: $(cat /run/squadala-ci/status)"; systemctl --no-pager --plain list-units "squadala-ci-runner@*"'
-& $Gh api "repos/$Repo/actions/runners" --jq '.runners[] | .name + " " + .status + " " + ([.labels[].name] | join(","))'
-"WSL runners installed. Linux jobs use them only while: gh api repos/$Repo/actions/variables/COOP_SELF_HOSTED says on"
+Start-Sleep -Seconds 40
+& $wsl -d $Distro -u root -- sh -c 'echo "status (time, free commit GB, C: free GB): $(cat /run/squadala-ci/status)"; systemctl is-active squadala-ci-runner@1 squadala-ci-runner@2 squadala-ci-runner@3'
+# (no quotes inside the jq filter: Windows PowerShell 5.1 splits a native argument at embedded quotes)
+& $Gh api "repos/$Repo/actions/runners" --jq '.runners[] | [.name, .status] | @tsv'
+"WSL runners installed. Linux jobs use them only while the repo variable COOP_SELF_HOSTED_LINUX is on (docs/ci-runner.md)."

@@ -83,7 +83,9 @@ ConditionPathExists=/opt/squadala-ci/runner-%i/.runner
 [Service]
 User=squadala-ci
 WorkingDirectory=/opt/squadala-ci/runner-%i
-ExecStart=/opt/squadala-ci/runner-%i/run.sh
+# Runner.Listener itself, as the runner's own service script starts it: run.sh would copy run-helper.sh into the
+# root-owned runner folder, which squadala-ci cannot write.
+ExecStart=/opt/squadala-ci/runner-%i/bin/Runner.Listener run --startuptype service
 Restart=always
 RestartSec=15
 KillMode=process

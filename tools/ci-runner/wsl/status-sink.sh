@@ -6,6 +6,7 @@
 set -u
 mkdir -p /run/squadala-ci; chmod 755 /run/squadala-ci
 while read -r commit disk; do
+    disk=${disk%$'\r'}  # status-feed.ps1 writes CRLF lines
     [[ "$commit" =~ ^[0-9]+$ && "$disk" =~ ^[0-9]+$ ]] || continue
     printf '%s %s %s\n' "$(date +%s)" "$commit" "$disk" > /run/squadala-ci/status.tmp
     chmod 644 /run/squadala-ci/status.tmp
