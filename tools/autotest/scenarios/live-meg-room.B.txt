@@ -1,4 +1,8 @@
 # live-meg-room B (see the A file): the save into MegStage with A (same boot as hs-meg-decoys-231.B.txt up to 'mark b-in' + its event line).
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_BOSS=1,LICHII_COOP_DEBUG_OBJECTS=1,LICHII_COOP_CHEATS=1
+#! timeout 900
 mark start
 warp MegStage MegStage
 wait 1200

@@ -1,4 +1,8 @@
 # live-deadhand-room B (see the A file): the save into DeadHandStage with A (same boot as hs-deadhand-grab-232.B.txt up to 'mark b-in' + its event line).
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_BOSS=1,LICHII_COOP_DEBUG_OBJECTS=1,LICHII_COOP_CHEATS=1
+#! timeout 900
 mark start
 nofairy
 warp DeadHandStage DeadHandStage

@@ -1,4 +1,8 @@
 # live-deku-gohma-seen B (see the A file): live-deku-gohma.B.txt with ONE change, hs-intro-seen-gohma.B.txt's 'setflag HavePlayedEvent.Dm_Deku_BossIn 1  # row 244: this save saw the intro before (A clears it)'.
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_BOSS=1,LICHII_COOP_DEBUG_OBJECTS=1,LICHII_COOP_CHEATS=1
+#! timeout 600
 mark start
 warp InsideTheDekuTree Entrance
 wait 1200

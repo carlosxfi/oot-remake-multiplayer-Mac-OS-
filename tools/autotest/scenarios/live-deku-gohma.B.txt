@@ -1,4 +1,8 @@
 # live-deku-gohma B (see the A file): the save into the Deku Tree with A, Gohma's set alive (same boot as hs-boss-away-dungeon.B.txt up to its setflag lines + the quest's setenum).
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_BOSS=1,LICHII_COOP_DEBUG_OBJECTS=1,LICHII_COOP_CHEATS=1
+#! timeout 600
 mark start
 warp InsideTheDekuTree Entrance
 wait 1200
