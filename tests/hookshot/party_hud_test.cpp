@@ -331,6 +331,7 @@ TEST_CASE("party hud: the blocks stay on the picture") {
 TEST_CASE("party hud: an older pack hides the hearts (nothing drawn instead)") {
     FakeGame game;
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     std::vector<std::string> log;
     const std::vector<party::Block> one = {{"A", Quarters(12, 12)}};
     CHECK_FALSE(hud.Step(game, one, std::nullopt, &log));   // no HUD yet
@@ -351,6 +352,7 @@ TEST_CASE("party hud: shows, sets and hides the copies") {
     FakeGame game;
     game.Hud();
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     std::vector<std::string> log;
     // Player 1: 5 hearts, 2 and 3/4 filled. Player 2: 12 hearts, all full.
     std::vector<party::Block> blocks = {{"Saria  Kokiri Forest", Quarters(11, 20)}, {"Ruto", Quarters(48, 48)}};
@@ -437,6 +439,7 @@ TEST_CASE("party hud: a hit glows on the heart that lost, the pinch plays at low
     FakeGame game;
     game.Hud();
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     std::vector<party::Block> blocks = {{"Saria", Quarters(12, 20)}};
     REQUIRE(hud.Step(game, blocks, 0.15, nullptr, 1000));
     CHECK(game.Frame(HeartName(0, 2) + "/GlowState") == 0.0f);   // first sight: no glow
@@ -458,6 +461,7 @@ TEST_CASE("party hud: double defence on every heart, and off") {
     FakeGame game;
     game.Hud();
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     std::vector<party::Block> blocks = {{"Saria", Quarters(10, 12)}};
     blocks[0].double_defence = true;
     REQUIRE(hud.Step(game, blocks, 0.15));
@@ -472,6 +476,7 @@ TEST_CASE("party hud: a player not connected is dimmed, and lit again") {
     FakeGame game;
     game.Hud();
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     std::vector<party::Block> blocks = {{"Saria", Quarters(11, 20)}, {"Ruto", Quarters(12, 12), true}};
     REQUIRE(hud.Step(game, blocks, 0.15));
     CHECK(game.Alpha("Pa_CoopName_0") == 1.0f);
@@ -500,6 +505,7 @@ TEST_CASE("party hud: our own voice line goes first on the game's text part, the
     FakeGame game;
     game.Hud();
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     std::vector<std::string> log;
     const std::vector<party::Block> blocks = {{"Saria", Quarters(11, 20)}};
     REQUIRE(hud.Step(game, blocks, 0.15, &log, 0, "You (talking)"));
@@ -535,6 +541,7 @@ TEST_CASE("party hud: every line's text panes are found by path and the log says
     FakeGame game;
     game.Hud();
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     std::vector<std::string> log;
     REQUIRE(hud.Step(game, party::TestBlocks(0), std::nullopt, &log, 0, party::TestOwn()));
     for (const char* part : {"Pa_CoopName_0", "Pa_CoopName_1", "Pa_CoopName_2", "Pa_CoopMore_0", "Pa_CoopSelf_0"}) {
@@ -570,6 +577,7 @@ TEST_CASE("party hud: parts without text panes: the hearts still show, the log s
     game.Hud();
     game.text_panes = false;
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     std::vector<std::string> log;
     REQUIRE(hud.Step(game, {{"Saria", Quarters(12, 12)}}, std::nullopt, &log));
     CHECK(game.Shown(HeartName(0, 0)));
@@ -584,6 +592,7 @@ TEST_CASE("party hud: the slots the pack has, the rest in +N (row R3)") {
         game.pack_slots = slots;
         game.Hud();
         party::Hud hud;
+        hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
         std::vector<std::string> log;
         std::vector<party::Block> blocks;
         for (int i = 0; i < 6; ++i) blocks.push_back({"P" + std::to_string(i), Quarters(12, 12)});
@@ -595,12 +604,44 @@ TEST_CASE("party hud: the slots the pack has, the rest in +N (row R3)") {
     }
 }
 
+// party-hud-crash-c126 (reports/party-hud-crash-c126-4.md): the game's part clone, called from the module outside a
+// screen's own set-up, crashed every game that ran it. The module's HUD makes none: the pack's slots show, the rest
+// go to "+N" (0.11.12's rule), and without a pack nothing is shown; not one clone call, with the game's gauge there.
+TEST_CASE("party hud: run-time clones are off by default: the pack's slots and +N, no clone call") {
+    FakeGame game;
+    game.Hud();
+    game.game_gauge = true;
+    party::Hud hud;   // (the module's: AllowRunTimeClones never called)
+    std::vector<party::Block> five;
+    for (const char* n : {"A", "B", "C", "D", "E"}) five.push_back({n, Quarters(12, 12)});
+    std::vector<std::string> log;
+    REQUIRE(hud.Step(game, five, std::nullopt, &log));
+    CHECK(game.made == 0);
+    CHECK(game.attached == 0);
+    CHECK(Said(log, "run-time gauges are off (the game's part clone crashes outside a screen's own set-up)"));
+    CHECK_FALSE(Said(log, "run-time name lines can be made"));
+    CHECK(game.Shown(HeartName(2, 0)));
+    CHECK(game.texts["Pa_CoopMore_0/T_Text_00"] == "+2");
+    // No pack (as COOP_TEST_PARTY_HUD_NO_PACK): nothing of ours, hidden, still no clone.
+    FakeGame bare;
+    bare.Hud();
+    bare.pack = false;
+    bare.game_gauge = true;
+    party::Hud hud2;
+    hud2.IgnorePack(false);
+    std::vector<std::string> log2;
+    CHECK_FALSE(hud2.Step(bare, five, std::nullopt, &log2));
+    CHECK(bare.made == 0);
+    CHECK(Said(log2, "the other players' hearts are hidden (nothing drawn instead)"));
+}
+
 TEST_CASE("party hud: no pack: a run-time gauge per player, none in solo, forgotten with the HUD (R2)") {
     FakeGame game;
     game.Hud();
     game.pack = false;
     game.game_gauge = true;
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     std::vector<std::string> log;
     CHECK(hud.Step(game, {}, std::nullopt, &log));   // solo: the HUD is ours, nothing made
     CHECK(game.made == 0);
@@ -641,6 +682,7 @@ TEST_CASE("party hud: the pack's slots first, run-time gauges past them, no +N w
     game.Hud();
     game.game_gauge = true;
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     std::vector<party::Block> five;
     for (const char* n : {"A", "B", "C", "D", "E"}) five.push_back({n, Quarters(12, 12)});
     std::vector<std::string> log;
@@ -671,6 +713,7 @@ TEST_CASE("party hud: a test's no pack (COOP_TEST_PARTY_HUD_NO_PACK): with the p
     game.Hud();
     game.game_gauge = true;
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     hud.IgnorePack(true);
     std::vector<std::string> log;
     const std::vector<party::Block> two = {{"A", Quarters(10, 12)}, {"B", Quarters(16, 16)}};
@@ -690,6 +733,7 @@ TEST_CASE("party hud: no pack: the name lines from the game's MenuOverlay_00 Pa_
     game.menu_overlay = true;
     game.Hud();
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     std::vector<std::string> log;
     const std::vector<party::Block> two = {{"A", Quarters(10, 12)}, {"B", Quarters(16, 16)}};
     CHECK(hud.Step(game, two, std::nullopt, &log));
@@ -725,6 +769,7 @@ TEST_CASE("party hud: the status screen gone a frame, back with the same layout:
     game.menu_overlay = true;
     game.Hud();
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     std::vector<std::string> log;
     const std::vector<party::Block> two = {{"A", Quarters(10, 12)}, {"B", Quarters(16, 16)}};
     CHECK(hud.Step(game, two, std::nullopt, &log));
@@ -758,6 +803,7 @@ TEST_CASE("party hud: a listed status screen that has not run yet is not called 
     ui::SetSceneLoading(false);   // ... and the save's load starts: the flag off,
     ui::SetRunningScreens(std::vector<std::uint64_t>{}, false);   // neither the status nor the HUD screen run yet
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     std::vector<std::string> log;
     const std::vector<party::Block> blocks = {{"Saria", Quarters(12, 12)}, {"Ruto", Quarters(8, 12)},
                                               {"Nabooru", Quarters(4, 12)}, {"Impa", Quarters(16, 16)}};
@@ -792,6 +838,7 @@ TEST_CASE("party hud: a scene load calls nothing into the HUD's layout") {
     FakeGame game;
     game.Hud();
     party::Hud hud;
+    hud.AllowRunTimeClones(true);   // (the clone path's tests: off in the module)
     std::vector<std::string> log;
     const std::vector<party::Block> blocks = {{"Saria", Quarters(12, 12)}};
     REQUIRE(hud.Step(game, blocks, 0.15, &log));

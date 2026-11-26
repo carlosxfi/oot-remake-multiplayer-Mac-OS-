@@ -254,11 +254,17 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
         parent_ = pane("N_ScaleL_00");
     }
     if (parent_ == 0) gauge_part_ = 0;
+    const bool could_clone = gauge_part_ != 0;
+    if (!clones_) gauge_part_ = parent_ = 0;   // (run-time clones off: AllowRunTimeClones)
     live_layout_ = layout;
     if (log && ignore_pack_) log->push_back(std::string(kSay) + "test: the pack's panes are not looked for (no pack)");
     if (log) {
-        log->push_back(std::string(kSay) + (gauge_part_ != 0 ? "run-time gauges can be made (Pa_HeartGauge_00 under N_ScaleL_00)"
-                                                             : "no run-time gauges (Pa_HeartGauge_00 or N_ScaleL_00 not found)"));
+        log->push_back(std::string(kSay) +
+                       (gauge_part_ != 0 ? "run-time gauges can be made (Pa_HeartGauge_00 under N_ScaleL_00)"
+                        : !clones_ && could_clone
+                            ? "run-time gauges are off (the game's part clone crashes outside a screen's own set-up): "
+                              "players past the pack's slots go to \"+N\""
+                            : "no run-time gauges (Pa_HeartGauge_00 or N_ScaleL_00 not found)"));
     }
     slots_ = 0;
     bool all = true;

@@ -177,6 +177,14 @@ public:
     // A test's switch (COOP_TEST_PARTY_HUD_NO_PACK=1, scenario hs-party-hud-probe): the pack's panes are not looked
     // for, so a game with the pack shows what a game without it shows (run-time gauges, no name lines).
     void IgnorePack(bool ignore) { ignore_pack_ = ignore; }
+    // Run-time gauges and name lines (MakeLive, MakeLiveName: the game's part clone f_80791f70 on the HUD's
+    // Pa_HeartGauge_00 / a text part) for players past the pack's slots. OFF in the module (party-hud-crash-c126,
+    // reports/party-hud-crash-c126-4.md): the game calls that clone only inside a screen's own set-up, while its
+    // layout's archive is built; called from the module afterwards it read data that was no longer the layout's, and
+    // every game that ran it crashed in it (6 of 6, at menu -> loading, at a load's end and at play's start). With it
+    // off the pack's slots show (hearts and names) and the rest go to "+N", as in 0.11.12. On only in the tests of the
+    // clone path itself (tests/hookshot/party_hud_test.cpp), until a clone made in the screen's own set-up is proven.
+    void AllowRunTimeClones(bool on) { clones_ = on; }
 
 private:
     struct Pane {
@@ -264,6 +272,7 @@ private:
     std::uint64_t gauge_part_ = 0;   // the HUD's Pa_HeartGauge_00 part layout (0: no run-time gauges)
     std::uint64_t parent_ = 0;       // N_ScaleL_00
     bool ignore_pack_ = false;
+    bool clones_ = false;          // AllowRunTimeClones
     std::uint64_t name_part_ = 0;    // the pack's line of the game's text (PaEnemyLocation_00), else the game's (kBarePart)
     bool name_bare_ = false;         // name_part_ is the game's kBarePart: its backing panes are hidden on each clone
     std::uint64_t BarePart(Game& game, std::uint64_t hud_layout, std::string& why);
