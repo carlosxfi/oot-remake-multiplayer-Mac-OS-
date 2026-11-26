@@ -1,0 +1,193 @@
+"""Look rows in the new form: what a player sees on another player's puppet (shots on each game).
+
+| Test | Old row | Kind |
+|---|---|---|
+| test_kokiri_hood_band | kokiri-band-c124 (coord offline/kokiri-band-c124-run.ps1, scenario kokiri-band-c124.A/B.txt) | LOOK |
+
+kokiri-band-c124 (review-c124 section 5 point 2): the adult Kokiri hood's trims on a puppet near and far, beside the own
+Link in the same look. The fix (3d91ec10a, tools/puppet_pack/look_cap.py) is in the puppet pack's coop_look/cap.bin: its
+smaller mip levels count the cap's texels, so the thin hood band keeps the Cap trim colour at a distance.
+"""
+import math
+import os
+
+import pytest
+
+import pair as P
+from test_rows import need_child_in_play
+
+# The look of both games (the old row wrote both coop-options.ini: `color = blue`, `look_cap_trim = yellow`).
+# LICHII_COOP_COLOR: the kit's tunic switch (lichii/hook/coop_settings.cpp ApplyEnvironment, key `color`);
+# LICHII_COOP_LOOK: the test's parts instead of the settings' (hookshot/src/coop_look.h EnvParts), so a lane file's
+# leftovers never count. Yellow, not red: the Goron tunic is red, so a red trim could not tell OFF from ON on its hood
+# (the old row's -Trim rule). "blue" and "yellow" are presets (hookshot/src/coop_look_menu.cpp kPresets).
+LOOK_ENV = ("LICHII_COOP_COLOR=blue", "LICHII_COOP_LOOK=cap_trim:yellow")
+# The old scenario's `#! switches` line (kokiri-band-c124.A.txt / .B.txt).
+ROW_ENV = ("LICHII_COOP_DEBUG_ANIM=1", "LICHII_COOP_CHEATS=1")
+# The texture name the look paints: blue 3070FF + trim yellow FFC020. Seen in run cap-trim-c44's game-out-A.txt:3013
+# (the old row's gate, kokiri-band-c124-run.ps1 line 18); the form "your Link's tunic is tunic-202020-cap-FFFFFF now"
+# in shots-lane1/bj-242d/20261121-220846/game-out-A.txt.
+TUNIC = "tunic-3070FF-cap-FFC020"
+# The cap.bin of the fix, made from the branch's tools over the romfs dump: "cap.bin: 174220 bytes, 6 textures, 43444
+# offsets, smaller_level=1" (coord offline/kokiri-band-c124/setup-only.txt:26). The module logs the sum of the offsets
+# (hookshot/src/coop_look_live.cpp StartModule, "the Cap trim paints {} blocks of {} tunic textures ({} of the Goron
+# and Zora tunics)"); the pack before the fix gave 43228 (run cap-trim-c44). Any other number: the lane has another
+# pack, and this test would judge nothing.
+CAP_BLOCKS = 43444
+# The probe (review-rows-c130 09:41 point a): KOKIRI_BAND_PROBE_PACK=43228 on the runner's side runs the test on a lane
+# with the pack BEFORE the fix, prints the same bandcheck lines and ends NO-REF, never PASS or FAIL: the two runs' values
+# are what BAND_SHARE / OWN_MIN get measured from.
+PROBE_PACK = os.environ.get("KOKIRI_BAND_PROBE_PACK")
+CAP_LINE = r"the Cap trim paints %s blocks of 6 tunic textures \(3 of the Goron and Zora tunics\)" % (
+    PROBE_PACK or CAP_BLOCKS)
+# The old row's crash patterns (kokiri-band-c124-run.ps1, the pass's checks).
+CRASH = r"exception 0x|crash window: .*caught|FATAL|CRASH:"
+# A's distances in front of B (metres), far to near: the test's own choice in place of the old row's walk (stick 0
+# -0.4 for 15 frames, 6 times, from the spot of run cap-trim-c44 where B's puppet of A was ~150 px tall in 1280x720).
+# 14 m makes the puppet smaller than that (the smaller mip levels the fix is about); 2.5 m is as near as the old last step.
+DISTANCES = (14.0, 11.0, 8.5, 6.5, 5.0, 3.5, 2.5)
+# A stands off B's line of sight (review-rows-c130 09:41 point b): BEARING degrees to the side of B's facing, so from
+# the camera behind B its puppet is beside B's own Link, not behind it. The test's own choice; every shot proves it:
+# the 4 boxes of the band check (both Links and their background boxes) must be apart, else SETUP-FAIL.
+BEARING = 35.0
+SETTLE = 30   # frames after a place: the puppet follows A's samples (the old row waited 90 after each step)
+
+
+def put_in_front(pair, x, of, dist):
+    """Game x's Link `dist` m from game `of`'s Link, BEARING degrees to the side of its facing, facing it
+    ('place X Y Z' / 'face X Z': tools/autotest/hookshot.py:357-366; facing 0 = +z, 90 = +x: docs/playtest.md
+    "State"); returns the distance it stands at after SETTLE frames (a wall or a slope can stop it short)."""
+    s = pair.state(of)
+    px, py, pz = s["pos"]
+    yaw = math.radians(s["facing"] + BEARING)
+    pair.act(x, "place %.2f %.2f %.2f" % (px + dist * math.sin(yaw), py, pz + dist * math.cos(yaw)))
+    pair.act(x, "face %.2f %.2f" % (px, pz))
+    pair.step_both(SETTLE)
+    ax, _, az = pair.state(x)["pos"]
+    return math.hypot(ax - px, az - pz)
+
+
+def puppet_near(pair, x, at, within=2.0):
+    """Game x's world list has an adult puppet within `within` m of `at` (Client.world(), as test_puppets_spawn)."""
+    w = pair.c[x].world().get("world") or {}
+    for a in w.get("actors", []):
+        p = a.get("pos")
+        if (a.get("name") or "").startswith("CoopPuppet_Adult") and p and math.hypot(p[0] - at[0], p[2] - at[2]) < within:
+            return p
+    return None
+
+
+# The band check (review-rows-c130 09:36 point 1: a whole-shot SSIM cannot see a thin band turn blue). On B's shot,
+# trim-yellow pixels in the box of B's own Link and in the box of A's puppet (bandcheck.py), each less the same-size
+# box beside it. B's own Link must show the trim (else the measure itself is wrong); the puppet's trim per pixel of
+# its box must be at least BAND_SHARE of the own Link's: with the bug its band is the tunic's blue (about 0). The
+# share is a starting value, NOT MEASURED: until MEASURED cites the probe runs (the fixed pack and the old 43228 pack,
+# the bandcheck lines of each), a run whose band checks all hold ends NO-REF, never PASS (worker-rules: no guessed
+# values). The same goes for is_trim's hue/saturation/value range, bandcheck.HEAD and the box's half-width.
+OWN_MIN = 4
+BAND_SHARE = 0.35
+MEASURED = None   # e.g. "run <name> (43444) + run <name> (43228): own net .., puppet share .. vs .."
+
+
+def boxes_apart(own, pup, d):
+    """A box over the other Link would measure that Link: the set-up is wrong, not the band (SETUP-FAIL)."""
+    import bandcheck
+    if own and pup:
+        clash = bandcheck.disjoint(own["box"], own["side"], pup["box"], pup["side"])
+        if clash:
+            raise P.SetupFail("%.1f m: the band check's boxes overlap (%s, %s): A's puppet is not beside B's own Link"
+                              % (d, clash[0], clash[1]))
+
+
+def band_check(pair, path, view, own_pos, puppet_pos, d):
+    import bandcheck
+    own = bandcheck.measure(path, view, own_pos, other=puppet_pos)
+    pup = bandcheck.measure(path, view, puppet_pos, other=own_pos)
+    line = "bandcheck %.1f m: own %s puppet %s" % (d, own, pup)
+    print(line)
+    pair.notes.append(line)
+    boxes_apart(own, pup, d)
+    if PROBE_PACK:
+        return
+    assert own and own["net"] >= OWN_MIN, "%.1f m: B's own Link shows no trim on the shot (%s): the measure is wrong" % (
+        d, own)
+    assert pup, "%.1f m: A's puppet is off B's shot" % d
+    share = (pup["net"] / pup["area"]) / (own["net"] / own["area"])
+    assert pup["net"] >= 1 and share >= BAND_SHARE, (
+        "%.1f m: the puppet's hood band is not the trim colour: %d trim px in %d (own Link %d in %d, share %.2f < %.2f)"
+        % (d, pup["net"], pup["area"], own["net"], own["area"], share, BAND_SHARE))
+
+
+@pytest.mark.budget(300)
+@pytest.mark.look
+@pytest.mark.needs_env(*(LOOK_ENV + ROW_ENV))
+@pytest.mark.row("review-c124 5.2 the adult Kokiri hood's trims on a puppet near and far (kokiri-band-c124)")
+def test_kokiri_hood_band(pair):
+    # One boot serves every test of the lane, and the others need child Link in Kakariko (need_child_in_play):
+    # this test makes both games adult, so it puts them back as the boot left them, pass or fail (a failed way back
+    # after a failure does not hide the first one: the lane's next test then says so in its own set-up).
+    done = False
+    try:
+        with pair.setup():
+            need_child_in_play(pair)
+            # the look took, on both games, from the switches (the old row's live gate): A sent 2 parts (tunic + Cap
+            # trim), B wears them (lichii/hook/coop_look_share.cpp "{} part colour(s) sent" / "P{} wears {} part
+            # colour(s)"), both own Links wear TUNIC, and the pack's cap.bin is the fix's
+            for x in ("A", "B"):
+                bad = pair.log[x].find(r"LICHII_COOP_LOOK: '", pos=0)   # (EnvParts: a pair it could not take)
+                assert bad is None, "%s: %s" % (x, bad)
+                assert pair.log[x].find(r"the parts are LICHII_COOP_LOOK's \(cap_trim:yellow\)", pos=0), \
+                    "%s: the module did not take LICHII_COOP_LOOK (a module before kokiri-band-bridge)" % x
+                assert pair.log[x].find(CAP_LINE, pos=0), "%s: the lane's puppet pack is not the fix's cap.bin (%s)" % (
+                    x, pair.log[x].find(r"the Cap trim paints \d+ blocks[^\n]*|no coop_look/cap\.bin", pos=0))
+            assert pair.log["A"].find(r"\b2 part colour\(s\) sent \(PLAYER_LOOK\)", pos=0), "A did not send its 2 parts"
+            assert pair.log["B"].find(r"P\d+ wears 2 part colour\(s\)", pos=0), "B did not get A's 2 parts"
+            # adult: the bridge warp to an _Adult name sets Sequence_IsChildhood first (docs/playtest.md "warp"); the old
+            # scenario: setflag Sequence_IsChildhood 0, then warp KakarikoVillage_Adult
+            pair.warp_both("KakarikoVillage_Adult")
+            for x in ("A", "B"):
+                s = pair.state(x)
+                assert pair.in_play(s) and s.get("age") == "adult", "%s is not adult in play (%s, %s)" % (
+                    x, s.get("age"), s.get("not_ready"))
+            for x in ("A", "B"):   # (the old gate read the whole log: since the session start)
+                pair.until("%s's own Link wears %s" % (x, TUNIC),
+                           lambda: pair.log[x].find(r"your Link's tunic is %s" % TUNIC, pos=0), max_frames=600)
+            got = put_in_front(pair, "A", of="B", dist=DISTANCES[0])
+            assert abs(got - DISTANCES[0]) < 1.0, "A stands %.1f m from B, not %.1f (something in the way)" % (
+                got, DISTANCES[0])
+            # the camera behind B, along its facing (the old B script: `press ZL`; pair.press's 8 frames): B's own
+            # Link near the camera, A's puppet beyond it and to the side (BEARING)
+            pair.press("B", ["ZL"], frames=8)
+            pair.step_both(30)
+        # each distance: the puppet is there (B's world list), then B's shot; A's own Link at the far and the near spot
+        for i, d in enumerate(DISTANCES):
+            if i:
+                got = put_in_front(pair, "A", of="B", dist=d)
+                assert abs(got - d) < 1.0, "A stands %.1f m from B, not %.1f" % (got, d)
+            a = pair.state("A")["pos"]
+            pup = pair.until("B's puppet of A at %.1f m" % d, lambda: puppet_near(pair, "B", a), max_frames=120)
+            sb = pair.state("B")   # (B's camera and Link for the band check; the shot runs at most 5 frames after it)
+            # tolerance 0.80: Kakariko has moving people and birds (docs/ingame-tests.md step 6); the band is a small
+            # thing, so the first run's reference candidates (new/) are what a person judges (yellow band on the puppet as on
+            # B's own Link; FAIL: the puppet's band blue where B's own is yellow)
+            res = pair.check_shot("B", "kokiri-band-%03ddm" % round(d * 10), tolerance=0.80)
+            band_check(pair, res["path"], sb["view"], sb["pos"], pup, d)
+            if i in (0, len(DISTANCES) - 1):
+                pair.check_shot("A", "kokiri-band-%03ddm" % round(d * 10), tolerance=0.80)
+        for x in ("A", "B"):
+            pair.never_log(x, CRASH)
+        done = True
+        if PROBE_PACK or not MEASURED:
+            pair.unproven("%s; the bandcheck lines are in the notes" % (
+                "probe run on the %s pack" % PROBE_PACK if PROBE_PACK else
+                "the band thresholds are not measured yet (MEASURED: run the probe on the fixed and the old pack)"))
+    finally:
+        try:
+            back = pair.warp_both("KakarikoVillage_Child")   # (an _Child name sets Sequence_IsChildhood 1 first)
+        except Exception:
+            if done:
+                raise
+            back = None
+        for x in ("A", "B") if done else ():
+            assert back[x].get("age") == "child", "%s stays %s after the test: the lane's later tests need child" % (
+                x, back[x].get("age"))
