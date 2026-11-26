@@ -69,26 +69,21 @@ struct Look {
     FontMetrics regular_metrics;  // its metrics (MetricsOf on the file)
     int medium = 0;              // font-medium.otf (the regular one when it is missing)
     std::array<int, 5> hearts{};  // heart-0..4.png: 0 to 4 quarters filled
-    // The game's own map arrow (MapIconPlayer_00, Link's arrow on the maps: tools/puppet_pack/hud.py), turned
-    // step * 360 / kMapArrowSteps degrees clockwise: map-arrow-NN.png (its shadow and rim) and map-arrow-fill-NN.png
-    // (its inside, white: drawn tinted with the player's colour). 0: not in the pack (an older one), names only.
-    // 24 turns (15 degrees): Hookshot keeps at most 64 pictures for the module (hookshot/patches/0001-coop-bridge.patch,
-    // image(): images_.size() >= 64 returns 0), and each turn is two (rim, inside): 5 hearts + 48 = 53. With 32 turns
-    // (69) the arrows' loads failed in game (run regress-fps-map-2b12cd6a). tools/puppet_pack/hud.py MAP_ARROW_STEPS
-    // is this number (test_hud reads it from here).
-    static constexpr int kMapArrowSteps = 24;
+    // The game's own map arrow (MapIconPlayer_00, Link's arrow on the maps: tools/puppet_pack/hud.py), pointing up:
+    // map-arrow.png (its shadow and rim) and map-arrow-fill.png (its inside, white: drawn tinted with the player's
+    // colour). Drawn turned to each player's facing by Hookshot (hos_coop_draw3's draw_image_turned, ImGui's
+    // AddImageQuad), at any angle as 0.11.12's drawn arrow and as the game turns its own pane. 0: not loaded (a pack
+    // made before them, or a Hookshot without draw_image_turned): names only.
+    // (Before: one picture per 15-degree turn, 48 pictures, near Hookshot's 64 a module may load, and coarser than
+    // 0.11.12; run regress-fps-map-2b12cd6a lost them all at 32 turns.)
+    int map_arrow = 0;
+    int map_arrow_fill = 0;
+    bool MapArrows() const { return map_arrow != 0 && map_arrow_fill != 0; }
+    // Every picture the module loads into Hookshot: 5 hearts + the arrow's 2. Hookshot keeps at most 64
+    // (hookshot/patches/0001-coop-bridge.patch, image(): images_.size() >= 64 returns 0); LoadLook logs a failed one.
+    static constexpr int kPictures = 5 + 2;
     static constexpr int kHookshotPictures = 64;
-    std::array<int, kMapArrowSteps> map_arrow{};
-    std::array<int, kMapArrowSteps> map_arrow_fill{};
-    bool MapArrows() const {
-        for (int s = 0; s < kMapArrowSteps; ++s) {
-            if (map_arrow[s] == 0 || map_arrow_fill[s] == 0) {
-                return false;
-            }
-        }
-        return true;
-    }
-    static_assert(5 + 2 * kMapArrowSteps <= kHookshotPictures, "the game look's pictures must fit Hookshot's 64");
+    static_assert(kPictures <= kHookshotPictures, "the game look's pictures must fit Hookshot's 64");
     bool On() const {
         for (const int h : hearts) {
             if (h == 0) {
@@ -193,9 +188,9 @@ coop::overlay::map::Box LayoutToScreen(const coop::overlay::map::Box& layout, fl
 // The words after a name for a player `delta` floors from the one shown
 // ("" on the same floor): floors count down as floor_of's do.
 std::string FloorWords(int delta);
-// The map arrow's turn (Look::map_arrow's index) for a facing `angle` on the map (map::Icon::angle: radians,
+// The map arrow's turn, radians clockwise on screen, for a facing `angle` on the map (map::Icon::angle: radians,
 // 0 right, pi/2 down): the game's arrow points up unturned, so a facing to the right is a quarter turn.
-int MapArrowStep(float angle);
+float MapArrowTurn(float angle);
 // The voice state after a name as words (" (talking)", " (muted)", "" quiet): the game's own heart lines'
 // (coop_party_hud.h).
 std::string VoiceWords(CoopVoice::Icon icon);

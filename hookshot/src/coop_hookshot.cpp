@@ -975,18 +975,23 @@ void LoadLook(const HosCoopDraw& d) {
         g_look_state = kLookOff;
         return;
     }
-    // The game's map arrow, turned (optional: a pack made before them has none, the maps then show names only).
+    // The game's map arrow, which Hookshot turns to each player's facing (optional: a pack made before it has none,
+    // a Hookshot without draw_image_turned cannot turn it; the maps then show names only, said once here).
     std::string arrow_why;
-    for (int s = 0; s < CoopDraw::Look::kMapArrowSteps; ++s) {
-        const std::string n = (s < 10 ? "0" : "") + std::to_string(s) + ".png";
-        const auto rim = CoopPng::Load(*dir / ("map-arrow-" + n));
-        const auto fill = CoopPng::Load(*dir / ("map-arrow-fill-" + n));
-        l.map_arrow[s] = rim ? d.image(d.user, rim->width, rim->height, rim->rgba.data()) : 0;
-        l.map_arrow_fill[s] = fill ? d.image(d.user, fill->width, fill->height, fill->rgba.data()) : 0;
-        if (l.map_arrow[s] == 0 || l.map_arrow_fill[s] == 0) {
-            // (a file the pack lacks, or one Hookshot did not take: it holds at most 64 pictures)
-            arrow_why = "map-arrow-" + n + (rim && fill ? " not taken by Hookshot" : " missing in the pack");
-            break;
+    if (d.draw_image_turned == nullptr) {
+        arrow_why = "this Hookshot cannot turn pictures (no hos_coop_draw3: build it again with our patch)";
+    } else {
+        const auto rim = CoopPng::Load(*dir / "map-arrow.png");
+        const auto fill = CoopPng::Load(*dir / "map-arrow-fill.png");
+        if (!rim || !fill) {
+            arrow_why = std::string(!rim ? "map-arrow.png" : "map-arrow-fill.png") + " missing in the pack";
+        } else {
+            l.map_arrow = d.image(d.user, rim->width, rim->height, rim->rgba.data());
+            l.map_arrow_fill = d.image(d.user, fill->width, fill->height, fill->rgba.data());
+            if (!l.MapArrows()) {   // (Hookshot keeps at most 64 pictures: coop_draw.h Look::kPictures)
+                arrow_why = "map-arrow pictures not taken by Hookshot";
+                l.map_arrow = l.map_arrow_fill = 0;
+            }
         }
     }
     if (l.MapArrows()) {
@@ -3332,17 +3337,44 @@ COOP_HOOKSHOT_EXPORT void hos_coop_camera(uint64_t frame, const float* block, fl
         CoopCamera::Publish(frame, block + CoopHookshot::kCameraMatrix, width, height, false);
     });
 }
+// hos_coop_draw3 and hos_coop_draw2 (hos_coop_draw.h): the scene in the game look.
+static void DrawGameLook(const HosCoopDraw& d) {
+    static std::atomic<bool> said{false};
+    if (!said.exchange(true)) {
+        LOG_INFO(Core, "coop: drawing over Hookshot's picture: chat lines, name tags ({}x{}){}", static_cast<int>(d.width),
+                 static_cast<int>(d.height), d.draw_image_turned ? "" : "; no turned pictures (hos_coop_draw2)");
+    }
+    CoopHookshot::DrawWithLook(d);
+    CoopModsRuntime::Overlay(d);
+}
+COOP_HOOKSHOT_EXPORT void hos_coop_draw3(const HosCoopDraw* d) {
+    static CoopBoundary::Site site{"hos_coop_draw3"};
+    CoopExportGuard::Guard(site, [&] {
+        if (g_on && d != nullptr) {
+            DrawGameLook(*d);
+        }
+    });
+}
+// A Hookshot from before draw_image_turned calls this one: its table ends at draw_image (the rest left empty here;
+// the maps then show names only).
 COOP_HOOKSHOT_EXPORT void hos_coop_draw2(const HosCoopDraw* d) {
     static CoopBoundary::Site site{"hos_coop_draw2"};
     CoopExportGuard::Guard(site, [&] {
         if (g_on && d != nullptr) {
-            static std::atomic<bool> said{false};
-            if (!said.exchange(true)) {
-                LOG_INFO(Core, "coop: drawing over Hookshot's picture: chat lines, name tags ({}x{})",
-                         static_cast<int>(d->width), static_cast<int>(d->height));
-            }
-            CoopHookshot::DrawWithLook(*d);
-            CoopModsRuntime::Overlay(*d);
+            HosCoopDraw t{};
+            t.width = d->width;
+            t.height = d->height;
+            t.user = d->user;
+            t.rect = d->rect;
+            t.circle = d->circle;
+            t.triangle = d->triangle;
+            t.text = d->text;
+            t.text_width = d->text_width;
+            t.font = d->font;
+            t.use_font = d->use_font;
+            t.image = d->image;
+            t.draw_image = d->draw_image;
+            DrawGameLook(t);
         }
     });
 }

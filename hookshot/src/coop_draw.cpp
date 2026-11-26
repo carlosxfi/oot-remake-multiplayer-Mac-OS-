@@ -562,14 +562,12 @@ void DrawMap(const HosCoopDraw& d, const MapShown& m, const Look* look) {
         // player faces, its inside in their colour, the name under it; a player past the map's edge at the edge,
         // dimmer. No facing known yet, or a pack without the arrow: the name alone where they are. With names off on
         // the maps, "P<n>" names them.
-        const bool arrow = look != nullptr && icon.angle && look->MapArrows();
+        const bool arrow = look != nullptr && icon.angle && look->MapArrows() && d.draw_image_turned != nullptr;
         if (arrow) {
-            const int step = MapArrowStep(*icon.angle);
+            const float turn = MapArrowTurn(*icon.angle);
             const float half = r * 1.85f;   // (the picture's 80 px hold the arrow's ~52 across any turn)
-            d.draw_image(d.user, look->map_arrow[static_cast<std::size_t>(step)], icon.x - half, icon.y - half,
-                         icon.x + half, icon.y + half, Rgba(255, 255, 255, a));
-            d.draw_image(d.user, look->map_arrow_fill[static_cast<std::size_t>(step)], icon.x - half, icon.y - half,
-                         icon.x + half, icon.y + half, fill);
+            d.draw_image_turned(d.user, look->map_arrow, icon.x, icon.y, half, half, turn, Rgba(255, 255, 255, a));
+            d.draw_image_turned(d.user, look->map_arrow_fill, icon.x, icon.y, half, half, turn, fill);
         }
         std::size_t at = 0;
         while (at < m.players.size() && m.players[at].number != icon.number) {
@@ -600,12 +598,10 @@ coop::overlay::map::Box LayoutToScreen(const coop::overlay::map::Box& b, float w
     return {ox + b.x * s, oy + b.y * s, b.w * s, b.h * s};
 }
 
-int MapArrowStep(float angle) {
+float MapArrowTurn(float angle) {
     constexpr float kTwoPi = 6.28318530718f;
-    constexpr int n = Look::kMapArrowSteps;
     const float turn = std::fmod(angle + kTwoPi / 4, kTwoPi);   // clockwise from up
-    const int step = static_cast<int>(std::lround((turn < 0 ? turn + kTwoPi : turn) / kTwoPi * n));
-    return ((step % n) + n) % n;
+    return turn < 0 ? turn + kTwoPi : turn;
 }
 
 std::string FloorWords(int delta) {

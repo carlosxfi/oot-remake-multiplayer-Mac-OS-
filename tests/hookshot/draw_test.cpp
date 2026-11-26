@@ -23,6 +23,7 @@ struct Call {
     std::uint32_t rgba = 0;
     std::string text;            // an image: its id
     int font = 0;                // a text: the font it was drawn with
+    float angle = 0;             // a turned image: radians clockwise
 };
 
 struct Canvas {
@@ -56,6 +57,10 @@ struct Canvas {
         d.image = [](void*, int, int, const std::uint8_t*) { return 0; };
         d.draw_image = [](void* u, int id, float x0, float y0, float x1, float, std::uint32_t tint) {
             static_cast<Canvas*>(u)->calls.push_back({"image", x0, y0, x1 - x0, tint, std::to_string(id)});
+        };
+        // hos_coop_draw3's: a picture turned about its middle (recorded as an image, its box before the turn).
+        d.draw_image_turned = [](void* u, int id, float cx, float cy, float hw, float, float radians, std::uint32_t tint) {
+            static_cast<Canvas*>(u)->calls.push_back({"image", cx - hw, cy, 2 * hw, tint, std::to_string(id), 0, radians});
         };
     }
 
@@ -907,22 +912,21 @@ TEST_CASE("hookshot draw: the others on the minimap where the game's picture has
 }
 
 TEST_CASE("hookshot draw: the game's map arrow turned the way each player faces (regression 0c034da5b)") {
-    // The turn: the game's arrow points up; a facing right (0) is a quarter turn, down (pi/2) a half, up a none.
+    // The turn: the game's arrow points up; a facing right (0) is a quarter turn, down (pi/2) a half, up a none;
+    // any angle, not steps (0.11.12's drawn arrow turned freely: regress-fps-map-2).
     constexpr float kPi = 3.14159265f;
-    CHECK(CoopDraw::MapArrowStep(-kPi / 2) == 0);
-    CHECK(CoopDraw::MapArrowStep(0) == 6);
-    CHECK(CoopDraw::MapArrowStep(kPi / 2) == 12);
-    CHECK(CoopDraw::MapArrowStep(kPi) == 18);
-    CHECK(CoopDraw::MapArrowStep(-kPi) == 18);
-    CHECK(CoopDraw::MapArrowStep(3 * kPi / 2 - 0.01f) == 0);   // (just short of a whole turn from up: up)
-    CHECK(CoopDraw::MapArrowStep(kPi / 4) == 9);
+    CHECK(CoopDraw::MapArrowTurn(-kPi / 2) == doctest::Approx(0));
+    CHECK(CoopDraw::MapArrowTurn(0) == doctest::Approx(kPi / 2));
+    CHECK(CoopDraw::MapArrowTurn(kPi / 2) == doctest::Approx(kPi));
+    CHECK(CoopDraw::MapArrowTurn(kPi) == doctest::Approx(3 * kPi / 2));
+    CHECK(CoopDraw::MapArrowTurn(-kPi) == doctest::Approx(3 * kPi / 2));
+    CHECK(CoopDraw::MapArrowTurn(0.1f) == doctest::Approx(kPi / 2 + 0.1f));   // (a few degrees: a few degrees)
+    CHECK(CoopDraw::MapArrowTurn(0.1f) != CoopDraw::MapArrowTurn(0.05f));
 
     const auto field = Field();
     CoopDraw::Look look = GameLook();
-    for (int s = 0; s < CoopDraw::Look::kMapArrowSteps; ++s) {
-        look.map_arrow[static_cast<std::size_t>(s)] = 100 + s;       // ids 100.. the rim, 200.. the inside
-        look.map_arrow_fill[static_cast<std::size_t>(s)] = 200 + s;
-    }
+    look.map_arrow = 100;        // the rim
+    look.map_arrow_fill = 200;   // the inside
     CoopDraw::Scene s;
     CoopDraw::MapShown m;
     m.scene = "HyruleField";
@@ -939,11 +943,12 @@ TEST_CASE("hookshot draw: the game's map arrow turned the way each player faces 
     CHECK(c.Of("rect").empty());
     const auto images = c.Of("image");
     REQUIRE(images.size() == 2);
-    const auto down = CoopDraw::MapArrowStep(kPi / 2);
-    CHECK(images[0].text == std::to_string(100 + down));   // the rim, as it is
+    CHECK(images[0].text == "100");   // the rim, as it is
     CHECK(images[0].rgba == CoopDraw::Rgba(255, 255, 255, 255));
-    CHECK(images[1].text == std::to_string(200 + down));   // the inside, in the player's colour
+    CHECK(images[0].angle == doctest::Approx(kPi).epsilon(0.001));   // down: a half turn
+    CHECK(images[1].text == "200");   // the inside, in the player's colour, turned the same
     CHECK(images[1].rgba == CoopDraw::Rgba(0, 255, 0, 255));
+    CHECK(images[1].angle == doctest::Approx(kPi).epsilon(0.001));
     // Centred where the player is (the frame's centre, 1728 x 885), the name under it.
     CHECK(images[0].x + images[0].px / 2 == doctest::Approx(1728).epsilon(0.001));
     const auto darunia = MapLabel(c, "Darunia");
@@ -961,10 +966,15 @@ TEST_CASE("hookshot draw: the game's map arrow turned the way each player faces 
     CoopDraw::Draw(turned.d, s, look);
     const auto images2 = turned.Of("image");
     REQUIRE(images2.size() == 2);
-    const int step2 = std::stoi(images2[0].text) - 100;
-    CHECK((step2 - down + 24) % 24 % 6 == 0);
-    CHECK(step2 != down);
-    CHECK((step2 - down + 24) % 12 != 0);   // (a quarter, not a half turn)
+    const float quarter = std::fmod(images2[0].angle - images[0].angle + 2 * kPi, 2 * kPi);
+    CHECK((quarter == doctest::Approx(kPi / 2).epsilon(0.01) || quarter == doctest::Approx(3 * kPi / 2).epsilon(0.01)));
+
+    // A Hookshot that cannot turn pictures (hos_coop_draw2's table): the names alone, no unturned arrow.
+    Canvas flat(1920, 1080);
+    flat.d.draw_image_turned = nullptr;
+    CoopDraw::Draw(flat.d, s, look);
+    CHECK(flat.Of("image").empty());
+    REQUIRE(MapLabel(flat, "Darunia"));
 
     // A pack without the arrows (made before them): the names alone, as before.
     CoopDraw::Look old = GameLook();

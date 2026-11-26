@@ -1,9 +1,11 @@
 # hs-map-facing (Hookshot, regress-fps-map): the other player on A's maps as the game's own map arrow, turned the way
 # they face (regression of 0c034da5b, names only). B turns a quarter every 10 s (B's file); A stands, shoots its
-# minimap every 5 s (mini-*), then opens the - menu and steps R to the Map page (page-*) while B keeps turning.
+# minimap every 5 s (mini-*), then opens the - menu, which opens on the Map page here (no R: shot
+# hs-map-facing-A-panel-A.png of run regress-fps-map-2b12cd6a shows the Map tab chosen at once), and shoots it every 5 s
+# (page-*) while B keeps turning.
 # Read: the shots show B's arrow (the game's arrow, B's colour inside, B's name under it) pointing another way in
 # shots 10 s apart; the log line "coop: hud: game look on Hookshot: ... map arrows loaded".
-# Needs a pack with the arrows (map-arrow-NN.png in the lane's coop_hud: the run script writes them).
+# Needs a pack with the arrow (map-arrow.png, map-arrow-fill.png in the lane's coop_hud: the run script writes them).
 # Run: tools\autotest\run.ps1 -Runtime hookshot -Lane 1 -Scenario hs-map-facing
 #! noload
 #! start coop: test warp done
@@ -36,19 +38,14 @@ mark mini-6
 press MINUS
 wait 180
 mark panel
-press R
-wait 120
-mark page-r1
-press R
 wait 300
-mark page-r2
-press R
+mark page-1
 wait 300
-mark page-r3
+mark page-2
 wait 300
-mark page-r3b
+mark page-3
 wait 300
-mark page-r3c
+mark page-4
 press B
 wait 240
 mark end

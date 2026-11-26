@@ -10,8 +10,8 @@ plain look and logs why.
 Writes:
   font-regular.otf, font-medium.otf  the game's HUD font (Normal.buif's Latin font)
   heart-0.png ... heart-4.png        a heart with 0 to 4 quarters filled, 96 x 96
-  map-arrow-00.png ... -23.png       the game's map arrow (Link's own), turned 0..23 x 15 degrees
-  map-arrow-fill-00.png ... -23.png  its inside, white: drawn tinted with each player's colour
+  map-arrow.png                      the game's map arrow (Link's own), pointing up (Hookshot turns it as drawn)
+  map-arrow-fill.png                 its inside, white: drawn tinted with each player's colour
   places.json                        {scene: the game's own place name}
   hud.json                           what was made, and the language
 
@@ -50,8 +50,8 @@ MAP_ARROW = "MapIconPlayer_00"
 MAP_ARROW_LINK = "MapIconPlayer_01"
 MAP_ARROW_SHADOW = "MapIconPlayerSh_00"
 MAP_ARROW_TEXTURES = (MAP_ARROW, MAP_ARROW_LINK, MAP_ARROW_SHADOW)
-MAP_ARROW_STEPS = 24    # turns, 15 degrees apart: hookshot/src/coop_draw.h kMapArrowSteps (Hookshot holds 64 pictures)
 MAP_ARROW_SIZE = 80     # the square kept around the picture's centre (the arrow and its shadow, at any turn)
+MAP_ARROW_FILES = ("map-arrow.png", "map-arrow-fill.png")   # (rim, inside): hookshot/src/coop_hookshot.cpp LoadLook
 LOCATIONS = "LocationMsg/Location.msbt"
 # The scene name's age or variant suffix: KokiriForest_Child -> KokiriForest.
 SCENE_SUFFIX = re.compile(r"_(Child|Adult)(_Alternative)?$|_Alternative$")
@@ -319,48 +319,6 @@ def crop_centre(rgba, w, h, size):
     return bytes(out)
 
 
-def turned(rgba, size, degrees):
-    """The square picture turned clockwise on screen (y down) by degrees about its centre, bilinear on
-    premultiplied alpha (outside the source: clear)."""
-    t = math.radians(degrees)
-    c, s = math.cos(t), math.sin(t)
-    mid = size / 2.0
-    out = bytearray(size * size * 4)
-
-    def px(x, y):
-        if 0 <= x < size and 0 <= y < size:
-            o = (y * size + x) * 4
-            a = rgba[o + 3] / 255.0
-            return rgba[o] * a, rgba[o + 1] * a, rgba[o + 2] * a, a
-        return 0.0, 0.0, 0.0, 0.0
-
-    for y in range(size):
-        dy = y + 0.5 - mid
-        for x in range(size):
-            dx = x + 0.5 - mid
-            sx = dx * c + dy * s + mid - 0.5   # (the inverse turn: where this pixel comes from)
-            sy = -dx * s + dy * c + mid - 0.5
-            ix, iy = math.floor(sx), math.floor(sy)
-            fx, fy = sx - ix, sy - iy
-            acc = [0.0, 0.0, 0.0, 0.0]
-            for (qx, qy, k) in ((ix, iy, (1 - fx) * (1 - fy)), (ix + 1, iy, fx * (1 - fy)),
-                                (ix, iy + 1, (1 - fx) * fy), (ix + 1, iy + 1, fx * fy)):
-                if k > 0:
-                    p = px(qx, qy)
-                    for j in range(4):
-                        acc[j] += p[j] * k
-            a = acc[3]
-            if a > 0:
-                o = (y * size + x) * 4
-                out[o:o + 4] = bytes((min(255, int(acc[0] / a + 0.5)), min(255, int(acc[1] / a + 0.5)),
-                                      min(255, int(acc[2] / a + 0.5)), min(255, int(a * 255 + 0.5))))
-    return bytes(out)
-
-
-def map_arrow_names(step):
-    return f"map-arrow-{step:02d}.png", f"map-arrow-fill-{step:02d}.png"
-
-
 def _over(top, under):
     tr, tg, tb, ta = top
     ur, ug, ub, ua = under
@@ -408,15 +366,15 @@ def build(reader, out_dir, lang=DEFAULT_LANG, log=print):
            json.dumps(places, ensure_ascii=False, indent=1, sort_keys=True).encode("utf-8"))
     made["places"] = len(places)
     _write(os.path.join(out_dir, "hud.json"), json.dumps(made, indent=1).encode("utf-8"))
-    log(f"co-op HUD: font, {len(made['hearts'])} hearts, {made['map_arrows']} map arrow turns and "
+    log(f"co-op HUD: font, {len(made['hearts'])} hearts, {made['map_arrows']} map arrow and "
         f"{len(places)} place names "
         f"({lang}) in {out_dir}")
     return made
 
 
 def _write_map_arrows(arrow_px, out_dir, log):
-    """map-arrow-NN.png and map-arrow-fill-NN.png for each turn; the number of turns written (0: the game has not
-    the pictures, the maps then show the players' names only)."""
+    """map-arrow.png and map-arrow-fill.png, pointing up (the module has Hookshot turn them to each player's facing,
+    at any angle); 1 when written (0: the game has not the pictures, the maps then show the players' names only)."""
     if len(arrow_px) != len(MAP_ARROW_TEXTURES):
         log("co-op HUD: no map arrow pictures in this game (" +
             ", ".join(n for n in MAP_ARROW_TEXTURES if n not in arrow_px) + "): names only on the maps")
@@ -428,12 +386,9 @@ def _write_map_arrows(arrow_px, out_dir, log):
     rim, inside = compose_map_arrow(arrow_px, side, side)
     size = min(MAP_ARROW_SIZE, side)
     rim, inside = crop_centre(rim, side, side, size), crop_centre(inside, side, side, size)
-    for step in range(MAP_ARROW_STEPS):
-        deg = step * 360.0 / MAP_ARROW_STEPS
-        rim_name, inside_name = map_arrow_names(step)
-        _write(os.path.join(out_dir, rim_name), texture.png(size, size, turned(rim, size, deg)))
-        _write(os.path.join(out_dir, inside_name), texture.png(size, size, turned(inside, size, deg)))
-    return MAP_ARROW_STEPS
+    _write(os.path.join(out_dir, MAP_ARROW_FILES[0]), texture.png(size, size, rim))
+    _write(os.path.join(out_dir, MAP_ARROW_FILES[1]), texture.png(size, size, inside))
+    return 1
 
 
 def _write(path, data):
