@@ -311,7 +311,9 @@ class Pair:
                 have = (self.state(x).get("scene") or "")
                 if scene and have.lower() != scene.lower():
                     self.notes.append("boot: %s in %s, not the boot's %s: warped there by the bridge" % (x, have, scene))
-                    self.warp_one(x, scene)
+                    # (arrive_in_event=None: a boss stage boot, live-twinrova-room / live-phantom-ganon, starts its intro
+                    # on arrival, so the bridge answers 'timeout' with Link there; the event's end is stepped below)
+                    self.warp_one(x, scene, arrive_in_event=None)
             self.until_in_play("both games in play after the boot", tuple(self.c), max_frames)
         except SetupFail:
             raise
@@ -402,16 +404,19 @@ class Pair:
 
     def warp_one(self, x, scene, entrance=None, arrive_in_event=False):
         """Game x alone to `scene`, by warp_both's rules (entrance, arrive_in_event, waits inside the deadline); the
-        other game is stepped to the same frame count after it (row-286-wake-3). Returns x's state."""
+        other game is stepped to the same frame count after it (row-286-wake-3). Returns x's state.
+        arrive_in_event=None (boot_ready: a boot's scene may or may not start an event on arrival): the bridge's own
+        60 s wait, and a 'timeout' is judged on state like arrive_in_event=True (in the scene, not loading, the event
+        running), anything else raises."""
         extra = {} if entrance in (None, "") else {"entrance": entrance}
         before = self.c[x].last_frame or 0
-        wait = self.ARRIVE_IN_EVENT_WAIT if arrive_in_event else 60
+        wait = self.ARRIVE_IN_EVENT_WAIT if arrive_in_event is True else 60
         t = max(1, int(min(wait, self.deadline.left() - 2)))   # (the bridge answers by t, a little under the deadline)
         self.deadline.check("warp")
         r = self.c[x].request("warp", check=False, reply_timeout=max(0.2, min(t + 15, self.deadline.left())),
                               scene=scene, timeout=t, **extra)        # (the reply wait stays inside the deadline)
         if not r.get("ok"):
-            if not (arrive_in_event and r.get("error") == "timeout"):
+            if not (arrive_in_event is not False and r.get("error") == "timeout"):
                 raise pc.BridgeError(r)
             # (the bridge's wait is over, not the warp: a warp measures 13.5-15.5 s per game, WARP_PAIR_MEASURED_S,
             # more than ARRIVE_IN_EVENT_WAIT; so the arrival is waited for on STATE, stepped, inside the deadline;

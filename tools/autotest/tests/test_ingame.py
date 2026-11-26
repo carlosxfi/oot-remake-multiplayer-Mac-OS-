@@ -1258,6 +1258,46 @@ class BootProof(unittest.TestCase):
         with self.assertRaisesRegex(P.SetupFail, r"^boot: .*B"):
             pair.boot_ready("KakarikoVillage_Child", max_frames=100)
 
+    INTRO_FAKE = (
+        "def setup(game):\n    game.intro_until = 0\n"
+        "def command(game, m):\n"
+        "    if m.get('cmd') != 'warp' or m.get('scene') != 'BossStage':\n        return None\n"
+        "    game.run(40)\n    game.scene, game.intro_until = m['scene'], game.frame + 300\n"
+        "    return {'ok': False, 'error': 'timeout', 'message': 'not in BossStage; held (the intro event)'}\n"
+        "def state(game, st):\n"
+        "    if game.scene == 'BossStage' and game.frame < game.intro_until:\n        st['event'] = True\n")
+
+    def intro_pair(self, fake):
+        import fakegame
+        d = os.path.join(self.tmp, "fakes")
+        os.makedirs(d)
+        with open(os.path.join(d, "intro.py"), "w", encoding="utf-8") as f:
+            f.write(fake)
+        lane = fakegame.FakeLane(self.tmp, fakes_dir=d)
+        self.addCleanup(lane.close)
+        pair = P.Pair(lane.games(), out_dir=self.tmp)
+        self.addCleanup(pair.close)
+        pair.begin(240)
+        return pair
+
+    def test_a_boot_scene_that_starts_an_event_on_arrival_is_waited_out(self):
+        """A boss stage boot (live-twinrova-room, live-phantom-ganon): the bridge's warp answers 'timeout' with Link
+        there, in the intro event (coop_playtest_core.cpp WarpArrived waits for no event). boot_ready takes that
+        arrival on state and steps until the intro ends (was SETUP-FAIL 'boot: BridgeError: timeout': the four
+        test_ingame_boss_wake selftests on integrate-0120 645a7dffd)."""
+        pair = self.intro_pair(self.INTRO_FAKE)
+        st = pair.boot_ready("BossStage")
+        for x in ("A", "B"):
+            self.assertTrue(pair.in_play(st[x]), st[x])
+            self.assertEqual(st[x]["scene"], "BossStage")
+        self.assertTrue(any("answered timeout in the arrival event" in n for n in pair.notes), pair.notes)
+
+    def test_a_boot_warp_timeout_with_no_event_is_still_setup_fail_boot(self):
+        """arrive_in_event=None is no pass for every timeout: in the scene with no event = SETUP-FAIL boot."""
+        pair = self.intro_pair(self.INTRO_FAKE.replace("game.frame + 300", "0"))
+        with self.assertRaisesRegex(P.SetupFail, r"^boot: BridgeError: timeout"):
+            pair.boot_ready("BossStage", max_frames=100)
+
     def test_a_stale_sample_is_stepped_not_judged(self):
         pair = self.lane(BT_FAKE_STALE_FRAMES=50)
         self.assertFalse(pair.in_play(pair.state("A")))          # (the one read party-hud-bridge r1 failed on)
