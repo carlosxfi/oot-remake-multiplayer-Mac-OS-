@@ -695,6 +695,7 @@ void MapIcons(void* ctx) {
     TagsGame game(ctx);
     if (turn_at != 0) g_map_icons.TurnAt(turn_at);
     g_map_icons.Step(game, frame);
+    if (CoopPlaytest::On()) CoopMapIcons::PublishState(CoopMapIcons::Json(g_map_icons.Snapshot(game)));   // (test-only)
     if (g_map_icons.Up()) g_map_native.store(true);
     if (g_map_icons.why() != said) {
         said = g_map_icons.why();

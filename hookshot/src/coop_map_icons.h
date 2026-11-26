@@ -36,9 +36,12 @@ inline constexpr char kCopyName[] = "Pa_CoopMapIcon_%02d";   // (tools/puppet_pa
 inline constexpr std::size_t kCopies = 15;                    // (MAP_ICONS)
 inline constexpr char kClipPane[] = "S_MapIcon_00";
 inline constexpr std::uint64_t kPaneMatrix = 0x28;   // pane+: the global matrix, 3 x 4 by column (CoopMapPage)
-// pane+: the z turn (radians, as the layout files keep it). 0: not known yet, the arrows are not turned (the
-// rotation-offset probe, LICHII_COOP_MAP_PROBE=1, finds it; LICHII_COOP_MAP_TURN_AT=<hex> tries one).
-inline constexpr std::uint64_t kPaneTurn = 0;
+// pane+: the z turn (radians, as the layout files keep it). INFERRED, proven by the bridge test
+// (tools/autotest/ingame/test_map_icons.py: the game's own arrow's word here follows our facing a quarter a turn): a
+// .buil pane record keeps scale +0x10/+0x14, rotation +0x18, translate +0x1c/+0x20 (tools/puppet_pack/ui_pack.py),
+// and a pane in memory has that translate at +0x6c/+0x70 (CoopNativeTags addr::kPaneXY), so the rotation at +0x68.
+// LICHII_COOP_MAP_TURN_AT=<hex> tries another without a rebuild (0: not turned).
+inline constexpr std::uint64_t kPaneTurn = 0x68;
 
 // One other player on the map shown, in the layout's units (3840 x 2160, x right, y down from the top left).
 struct Mark {
@@ -77,6 +80,26 @@ struct Slot {
 // One copy per mark, at most kCopies, in the marks' order; clamped ones and those with no finite point are left out.
 std::vector<Slot> Plan(const Frame& frame, const std::array<float, 6>& inverse);
 
+// What the copies show now, for the play-test bridge's `map_native` member (docs/playtest.md): test-only read.
+struct State {
+    bool up = false, table = false, game_arrow = false;
+    std::string why;
+    std::uint64_t turn_at = 0;
+    std::array<float, 8> game_arrow_words{};   // the game's own arrow's N_PlayerRotate_00 +0x60..+0x7c
+    struct Shown {
+        std::size_t copy = 0;
+        std::array<float, 2> at{};             // the copy pane's translate (+0x6c) in the clip's frame
+        std::optional<float> turn;             // read back at turn_at
+        std::optional<float> wrote_turn;       // what Step wrote there
+        std::string name;
+        bool name_set = false;
+    };
+    std::vector<Shown> shown;
+};
+std::string Json(const State& st);
+void PublishState(std::string json);   // the game's thread
+std::string StateJson();               // the bridge's thread: "null" before the first
+
 class Icons {
 public:
     // False when the map screen, its clip or the copies are not there (no pack, the title, a load): the module then
@@ -87,7 +110,9 @@ public:
     const std::string& why() const { return why_; }
     // The rotation-offset probe: an icon layout's (a PaMapIcon_00 the map screen holds) arrow N_PlayerRotate_00; 0
     // when not found.
-    std::uint64_t ArrowTurnPane(CoopNativeTags::Game& game, std::uint64_t icon_layout);
+    // `table`: the map layout's pane table.
+    std::uint64_t ArrowTurnPane(CoopNativeTags::Game& game, std::uint64_t table);
+    State Snapshot(CoopNativeTags::Game& game);
     // The probe's lines (coop_map_icons.cpp Icons::Probe): the game's own icon part and its run-time copies.
     std::vector<std::string> Probe(CoopNativeTags::Game& game);                      // what Step last missed (the log)
     bool Up() const { return up_; }
@@ -106,7 +131,8 @@ private:
         std::uint64_t pane = 0;
         std::uint64_t icon = 0, entrance = 0, player = 0;   // the part layouts inside it
         std::uint64_t turn = 0, label = 0;                  // N_PlayerRotate_00, T_Location_00
-        bool ready = false;
+        bool ready = false, name_set = false;
+        std::optional<float> turned;
         std::string named;
         std::uint32_t rgb = 0;
         bool rgb_set = false;
@@ -114,10 +140,11 @@ private:
     bool Block(CoopNativeTags::Game& game);
     std::uint64_t Name(const char* name);   // the guest copy of a pane name, 0 when it is not one of ours
     std::uint64_t Find(CoopNativeTags::Game& game, std::uint64_t layout, const char* name);
+    std::uint64_t Own(CoopNativeTags::Game& game, std::uint64_t table, const char* name);
     bool Ready(CoopNativeTags::Game& game, std::size_t i);
     void Show(CoopNativeTags::Game& game, std::uint64_t pane, bool shown);
 
-    std::uint64_t screen_ = 0, layout_ = 0, clip_ = 0;
+    std::uint64_t screen_ = 0, layout_ = 0, clip_ = 0, table_ = 0;
     std::uint64_t block_ = 0;
     bool block_failed_ = false, up_ = false;
     std::uint64_t turn_at_ = kPaneTurn;

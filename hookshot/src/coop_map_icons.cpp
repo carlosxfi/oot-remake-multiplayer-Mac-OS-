@@ -91,10 +91,29 @@ std::uint64_t PartObjectLayout(CoopNativeTags::Game& game, std::uint64_t owner, 
     return 0;
 }
 
-// The layout object a part's pane points at (in its first 0x200 bytes) whose resource is `part_layout`; 0: none.
-std::uint64_t PartLayout(CoopNativeTags::Game& game, std::uint64_t part_pane, const char* part_layout) {
-    for (const auto& h : CoopNativeTags::LayoutsHeld(game, part_pane, 0x200, part_layout)) {
-        if (h.name == part_layout || h.name.rfind(std::string(part_layout) + ".", 0) == 0) return h.layout;
+// The pause tab's proven route to a part's own panes (coop_pause_tab_module.cpp FindOwnPane / PartLayout / PaneIn;
+// pause tab run 2026-11-18, docs/game-ui.md): main+0x43c040(layout + 0x40) -> the layout's pane table; a part's own
+// layout is a node of the holding table's parts list (sentinel table + 0x128, first [table + 0x130], next [node + 8],
+// the part pane's name at [node + 0x148]); main+0x43e300(table, "name") -> the pane by name, a part's own pane too.
+constexpr std::uint64_t kPaneTable = 0x43c040;    // (coop_pause_tab.h kPaneTable)
+constexpr std::uint64_t kOwnPaneByName = 0x43e300;   // (coop_pause_tab.h kPaneByName)
+constexpr std::uint64_t kPathText = 0xa67d30;        // (coop_pause_tab.h kPaneText, coop_title.cpp kPaneText)
+constexpr std::size_t kPathAt = 160;                 // a copy's slot+: the label's path (the name before it)
+static_assert(kPathAt + 64 <= Icons::kSlotBytes);
+
+std::uint64_t PartIn(CoopNativeTags::Game& game, std::uint64_t table, const char* name) {
+    if (table == 0) return 0;
+    const std::uint64_t end = table + 0x128;
+    std::uint64_t node = 0;
+    if (!ReadValue(game, table + 0x130, node)) return 0;
+    for (int guard = 0; node != 0 && node != end && guard < 256; ++guard) {
+        std::uint64_t at = 0;
+        char got[64] = {};
+        if (ReadValue(game, node + 0x148, at) && at != 0 && game.Read(at, got, sizeof got - 1) &&
+            std::strcmp(got, name) == 0) {
+            return node;
+        }
+        if (!ReadValue(game, node + 8, node)) return 0;
     }
     return 0;
 }
@@ -211,31 +230,45 @@ void Icons::Show(CoopNativeTags::Game& game, std::uint64_t pane, bool shown) {
 bool Icons::Ready(CoopNativeTags::Game& game, std::size_t i) {
     Copy& c = copies_[i];
     if (c.ready) return true;
-    if (c.pane == 0) c.pane = Find(game, layout_, CopyName(i).c_str());
+    if (table_ == 0) {
+        const auto t = game.Call(game.MainBase() + kPaneTable, {layout_ + 0x40, 0, 0, 0, 0});
+        table_ = t ? *t : 0;
+    }
+    if (table_ == 0) return why_ = "no pane table of MapMenu_00", false;
+    // (the copy's own pane: Find's f_8078e2b0 hands a part's inner root instead, and the copies are stored hidden on
+    // their own pane, as the pause tab's)
+    if (c.pane == 0) c.pane = Own(game, table_, CopyName(i).c_str());
     if (c.pane == 0) return why_ = "no " + CopyName(i), false;
-    if (c.icon == 0) c.icon = PartLayout(game, c.pane, kIconLayout);
-    if (c.icon == 0) return why_ = CopyName(i) + ": no layout " + kIconLayout, false;
-    if (c.player == 0) c.player = PartLayout(game, Find(game, c.icon, "Pa_Player_00"), kPlayerLayout);
-    if (c.entrance == 0) c.entrance = PartLayout(game, Find(game, c.icon, "Pa_Entrance_00"), kEntranceLayout);
+    if (c.icon == 0) c.icon = PartIn(game, table_, CopyName(i).c_str());
+    if (c.icon == 0) return why_ = CopyName(i) + ": no part layout", false;
+    if (c.player == 0) c.player = PartIn(game, c.icon, "Pa_Player_00");
+    if (c.entrance == 0) c.entrance = PartIn(game, c.icon, "Pa_Entrance_00");
     if (c.player == 0 || c.entrance == 0) return why_ = CopyName(i) + ": no arrow or label layout", false;
-    c.turn = Find(game, c.player, "N_PlayerRotate_00");
-    c.label = Find(game, c.entrance, "T_Location_00");
+    c.turn = Own(game, c.player, "N_PlayerRotate_00");
+    c.label = Own(game, c.entrance, "T_Location_00");
     if (c.label == 0) return why_ = CopyName(i) + ": no T_Location_00", false;
-    for (const char* n : kIconHidden) Show(game, Find(game, c.icon, n), false);
-    for (const char* n : kEntranceHidden) Show(game, Find(game, c.entrance, n), false);
-    Show(game, Find(game, c.player, "N_Type_01"), false);   // N_Type_00: Link's look
-    Show(game, Find(game, c.player, "N_Type_00"), true);
-    Show(game, Find(game, c.entrance, "N_Location_00"), true);
+    for (const char* n : kIconHidden) Show(game, Own(game, c.icon, n), false);
+    for (const char* n : kEntranceHidden) Show(game, Own(game, c.entrance, n), false);
+    Show(game, Own(game, c.player, "N_Type_01"), false);   // N_Type_00: Link's look
+    Show(game, Own(game, c.player, "N_Type_00"), true);
+    Show(game, Own(game, c.entrance, "N_Location_00"), true);
     Show(game, c.label, true);
     c.ready = true;
     return true;
+}
+
+std::uint64_t Icons::Own(CoopNativeTags::Game& game, std::uint64_t table, const char* name) {
+    const std::uint64_t at = Name(name);
+    if (table == 0 || at == 0) return 0;
+    const auto pane = game.Call(game.MainBase() + kOwnPaneByName, {table, at, 0, 0, 0});
+    return pane ? *pane : 0;
 }
 
 bool Icons::Step(CoopNativeTags::Game& game, const Frame& frame) {
     const std::uint64_t screen = CoopNativeTags::ScreenByVtable(game, CoopNativeTags::kMapMenuVtable);
     if (screen != screen_) {   // a new screen (a load): its panes are new
         screen_ = screen;
-        layout_ = clip_ = 0;
+        layout_ = clip_ = table_ = 0;
         copies_ = {};
         shown_.clear();
     }
@@ -252,16 +285,19 @@ bool Icons::Step(CoopNativeTags::Game& game, const Frame& frame) {
     for (const Slot& s : Plan(frame, *inverse)) {
         if (!Ready(game, s.copy)) continue;
         Copy& c = copies_[s.copy];
-        const std::string text = s.name_shown ? CoopNativeTags::Clean(s.name, kSlotBytes - sizeof(Ref) - 1) : "";
+        const std::string text = s.name_shown ? CoopNativeTags::Clean(s.name, kPathAt - sizeof(Ref) - 1) : "";
         if (c.named != text) {
+            // The game's path setter on the map layout (the pause tab's and the title's kPaneText, main+0xa67d30:
+            // (layout, "part/pane", &ref, 1, 0)), the path through the copy's label part; slot: {ref, text, path}.
             const std::uint64_t slot = block_ + kNames * kNameBytes + s.copy * kSlotBytes;
+            const std::string path = CopyName(s.copy) + "/Pa_Entrance_00/T_Location_00";
             Ref ref;
             ref.text = slot + sizeof(Ref);
             ref.bytes = static_cast<std::uint32_t>(text.size());
-            if (game.Write(ref.text, text.c_str(), text.size() + 1) && game.Write(slot, &ref, sizeof ref) &&
-                game.Call(game.MainBase() + addr::kSetPaneText, {c.entrance, Name("T_Location_00"), slot, 1, 0})) {
-                c.named = text;
-            }
+            c.name_set = game.Write(ref.text, text.c_str(), text.size() + 1) && game.Write(slot, &ref, sizeof ref) &&
+                         game.Write(slot + kPathAt, path.c_str(), path.size() + 1) &&
+                         game.Call(game.MainBase() + kPathText, {layout_, slot + kPathAt, slot, 1, 0}).has_value();
+            if (c.name_set) c.named = text;
         }
         if (!c.rgb_set || c.rgb != s.rgb) {   // (as Balloons::Colour: both colours of the text box)
             std::uint64_t inner = 0, box = 0;
@@ -276,12 +312,14 @@ bool Icons::Step(CoopNativeTags::Game& game, const Frame& frame) {
                 }
             }
         }
-        Show(game, Find(game, c.icon, "N_Player_00"), s.arrow);
-        Show(game, Find(game, c.icon, "N_Entrance_00"), true);
+        Show(game, Own(game, c.icon, "N_Player_00"), s.arrow);
+        Show(game, Own(game, c.icon, "N_Entrance_00"), true);
+        c.turned.reset();
         if (turn_at_ != 0 && c.turn != 0 && s.turn) {
             const float turn = *s.turn;
             if (game.Write(c.turn + turn_at_, &turn, sizeof turn)) {
-                game.Call(game.MainBase() + addr::kPaneMarkB, {c.turn, 0, 0, 0, 0});
+                CoopNativeTags::MarkPaneMoved(game, c.turn);
+                c.turned = turn;
             }
         }
         if (CoopNativeTags::MovePane(game, c.pane, s.at)) {
@@ -297,10 +335,83 @@ bool Icons::Step(CoopNativeTags::Game& game, const Frame& frame) {
     return true;
 }
 
-std::uint64_t Icons::ArrowTurnPane(CoopNativeTags::Game& game, std::uint64_t icon_layout) {
+std::uint64_t Icons::ArrowTurnPane(CoopNativeTags::Game& game, std::uint64_t table) {
     if (!Block(game)) return 0;
-    const std::uint64_t player = PartLayout(game, Find(game, icon_layout, "Pa_Player_00"), kPlayerLayout);
-    return Find(game, player, "N_PlayerRotate_00");
+    return Own(game, PartIn(game, PartIn(game, table, kGamePart), "Pa_Player_00"), "N_PlayerRotate_00");
+}
+
+State Icons::Snapshot(CoopNativeTags::Game& game) {
+    State st;
+    st.up = up_;
+    st.why = why_;
+    st.turn_at = turn_at_;
+    st.table = table_ != 0;
+    for (std::size_t i = 0; i < kCopies; ++i) {
+        const Copy& c = copies_[i];
+        if (std::find(shown_.begin(), shown_.end(), i) == shown_.end()) continue;
+        State::Shown one;
+        one.copy = i;
+        float xy[2] = {};
+        if (game.Read(c.pane + addr::kPaneXY, xy, sizeof xy)) one.at = {xy[0], xy[1]};
+        float t = 0;
+        if (c.turn != 0 && turn_at_ != 0 && game.Read(c.turn + turn_at_, &t, sizeof t)) one.turn = t;
+        one.wrote_turn = c.turned;
+        one.name = c.named;
+        one.name_set = c.name_set;
+        st.shown.push_back(std::move(one));
+    }
+    // The game's own icon part (Pa_MapIcon_00, the one it shows Link with): its arrow's words +0x60..+0x7c, for the
+    // turn's place (kPaneTurn) to be read against our own facing.
+    if (table_ != 0) {
+        const std::uint64_t turn = ArrowTurnPane(game, table_);
+        st.game_arrow = turn != 0;
+        if (turn != 0) game.Read(turn + 0x60, st.game_arrow_words.data(), sizeof(float) * st.game_arrow_words.size());
+    }
+    return st;
+}
+
+std::string Json(const State& st) {
+    auto num = [](double v) {
+        char t[32];
+        std::snprintf(t, sizeof t, "%.4f", std::isfinite(v) ? v : 0.0);
+        return std::string(t);
+    };
+    auto quote = [](const std::string& v) {
+        std::string o = "\"";
+        for (const char ch : v) {
+            if (ch == '"' || ch == '\\') o += '\\';
+            if (static_cast<unsigned char>(ch) >= 0x20) o += ch;
+        }
+        return o + "\"";
+    };
+    std::string o = "{\"up\":" + std::string(st.up ? "true" : "false") + ",\"why\":" + quote(st.why) +
+                    ",\"table\":" + (st.table ? "true" : "false") + ",\"turn_at\":" + std::to_string(st.turn_at) +
+                    ",\"game_arrow\":" + (st.game_arrow ? "true" : "false") + ",\"game_arrow_words\":[";
+    for (std::size_t i = 0; i < st.game_arrow_words.size(); ++i) o += (i ? "," : "") + num(st.game_arrow_words[i]);
+    o += "],\"shown\":[";
+    for (std::size_t i = 0; i < st.shown.size(); ++i) {
+        const auto& s = st.shown[i];
+        o += std::string(i ? "," : "") + "{\"copy\":" + std::to_string(s.copy) + ",\"x\":" + num(s.at[0]) +
+             ",\"y\":" + num(s.at[1]) + ",\"turn\":" + (s.turn ? num(*s.turn) : "null") +
+             ",\"wrote_turn\":" + (s.wrote_turn ? num(*s.wrote_turn) : "null") + ",\"name\":" + quote(s.name) +
+             ",\"name_set\":" + (s.name_set ? "true" : "false") + "}";
+    }
+    return o + "]}";
+}
+
+namespace {
+std::mutex g_state_mutex;
+std::string g_state_json;
+}  // namespace
+
+void PublishState(std::string json) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    g_state_json = std::move(json);
+}
+
+std::string StateJson() {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    return g_state_json.empty() ? std::string("null") : g_state_json;
 }
 
 // The probe (LICHII_COOP_MAP_PROBE=1) on the game's own icons, the way Step finds the copies: the screen's layout, its

@@ -18,12 +18,16 @@ namespace {
 namespace M = CoopMapIcons;
 namespace T = CoopNativeTags;
 constexpr std::uint64_t kBase = 0x80020000;
+// The pause tab's route (coop_pause_tab.h): kPaneTable (layout + 0x40) -> table, kPaneByName (table, name) -> own pane,
+// kPaneText (layout, "part/pane", &ref, 1, 0).
+constexpr std::uint64_t kPaneTable = 0x43c040, kOwnPane = 0x43e300, kPathText = 0xa67d30;
 
 struct FakeGame final : T::Game {
     std::map<std::uint64_t, std::uint8_t> mem;
     std::map<std::pair<std::uint64_t, std::string>, std::uint64_t> panes;   // (layout, name) -> pane
     std::map<std::uint64_t, int> shown;                                     // pane -> last kPaneShow
-    std::vector<std::pair<std::uint64_t, std::string>> texts;               // (layout, text) set
+    std::vector<std::pair<std::string, std::string>> texts;                 // (path, text) set
+    std::map<std::uint64_t, std::uint64_t> tables;                          // layout -> its pane table
     std::uint64_t next = 0xc0000000;
 
     std::uint64_t MainBase() const override { return kBase; }
@@ -51,11 +55,19 @@ struct FakeGame final : T::Game {
             const auto it = panes.find({x[0], Str(x[1])});
             return it == panes.end() ? 0 : it->second;
         }
+        if (f == kBase + kPaneTable) {
+            const auto it = tables.find(x[0] - 0x40);
+            return it == tables.end() ? 0 : it->second;
+        }
+        if (f == kBase + kOwnPane) {
+            const auto it = panes.find({x[0], Str(x[1])});
+            return it == panes.end() ? 0 : it->second;
+        }
         if (f == kBase + T::addr::kPaneShow) shown[x[0]] = static_cast<int>(x[1]);
-        if (f == kBase + T::addr::kSetPaneText) {
+        if (f == kBase + kPathText) {
             std::uint64_t text = 0;
             Read(x[2], &text, 8);
-            texts.emplace_back(x[0], Str(text));
+            texts.emplace_back(Str(x[1]), Str(text));
         }
         return 0;
     }
@@ -66,14 +78,24 @@ struct FakeGame final : T::Game {
         panes[{layout, name}] = p;
         return p;
     }
-    // A layout object named `name` (+0xf8 -> resource, resource +0x18 -> its name) held by `part_pane` at +0x40.
-    std::uint64_t Layout(std::uint64_t part_pane, const std::string& name) {
-        const std::uint64_t l = next += 0x1000, res = next += 0x1000, text = next += 0x1000;
-        Put<std::uint64_t>(l + 0xf8, res);
-        Put<std::uint64_t>(res + 0x18, text);
+    // A pane table with an empty parts list (sentinel +0x128, first +0x130).
+    std::uint64_t Table() {
+        const std::uint64_t t = next += 0x1000;
+        Put<std::uint64_t>(t + 0x130, t + 0x128);
+        return t;
+    }
+    // The part pane `name` in `table` (its own pane) and its layout: a node of the table's parts list (next +8, the
+    // part's name at +0x148), itself a pane table.
+    std::uint64_t Part(std::uint64_t table, const std::string& name) {
+        Pane(table, name);
+        const std::uint64_t node = Table(), text = next += 0x1000;
         Write(text, name.c_str(), name.size() + 1);
-        Put<std::uint64_t>(part_pane + 0x40, l);
-        return l;
+        Put<std::uint64_t>(node + 0x148, text);
+        std::uint64_t first = 0;
+        Read(table + 0x130, &first, 8);
+        Put<std::uint64_t>(node + 8, first);
+        Put<std::uint64_t>(table + 0x130, node);
+        return node;
     }
 };
 
@@ -89,17 +111,20 @@ void SetUp(FakeGame& g, std::size_t copies) {
     g.Put<std::uint64_t>(kScreen, kBase + T::kMapMenuVtable);
     g.Put<std::uint64_t>(kScreen + T::addr::kScreenLayout, kLayout);
     const std::uint64_t clip = g.Pane(kLayout, M::kClipPane);
+    const std::uint64_t table = g.tables[kLayout] = g.Table();
+    const std::uint64_t game_icon = g.Part(table, "Pa_MapIcon_00");
+    g.Pane(g.Part(game_icon, "Pa_Player_00"), "N_PlayerRotate_00");
     const float id[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
     g.Write(clip + M::kPaneMatrix, id, sizeof id);
     for (std::size_t i = 0; i < copies; ++i) {
         char name[32];
         std::snprintf(name, sizeof name, M::kCopyName, static_cast<int>(i));
-        const std::uint64_t icon = g.Layout(g.Pane(kLayout, name), "PaMapIcon_00");
+        const std::uint64_t icon = g.Part(table, name);
         for (const char* n : {"N_Door_00", "N_Player_00", "N_Entrance_00", "N_Ruto_00"}) g.Pane(icon, n);
-        const std::uint64_t player = g.Layout(g.Pane(icon, "Pa_Player_00"), "PaMapIconPlayer_00");
+        const std::uint64_t player = g.Part(icon, "Pa_Player_00");
         g.Pane(player, "N_PlayerRotate_00");
         g.Pane(player, "N_Type_01");
-        const std::uint64_t entrance = g.Layout(g.Pane(icon, "Pa_Entrance_00"), "PaMapIconEntrance_00");
+        const std::uint64_t entrance = g.Part(icon, "Pa_Entrance_00");
         g.Pane(entrance, "T_Location_00");
         g.Pane(entrance, "N_Mini_00");
     }
@@ -207,7 +232,13 @@ TEST_CASE("map icons: the steps show a copy per player with the name on its labe
     CHECK(xy[1] == doctest::Approx(100.0f));
     REQUIRE(g.texts.size() == 2);
     CHECK(g.texts[0].second == "Saria");
+    CHECK(g.texts[0].first == "Pa_CoopMapIcon_00/Pa_Entrance_00/T_Location_00");
     CHECK(g.texts[1].second == "Mido");
+    // the arrow turned at kPaneTurn (no facing given here: not turned); the state says what is shown
+    const std::string js = M::Json(icons.Snapshot(g));
+    CHECK(js.find("\"up\":true") != std::string::npos);
+    CHECK(js.find("\"game_arrow\":true") != std::string::npos);
+    CHECK(js.find("\"name\":\"Saria\",\"name_set\":true") != std::string::npos);
     // the icon types not ours hidden (in the two copies used), the arrow and the label shown, the other look hidden
     int doors = 0, players = 0, minis = 0;
     for (const auto& [key, pane] : g.panes) {
@@ -242,4 +273,21 @@ TEST_CASE("map icons: a game without the pack's copies has nothing touched and s
     CHECK(icons.why().find("Pa_CoopMapIcon_00") != std::string::npos);
     CHECK(g.shown.empty());
     CHECK(g.texts.empty());
+}
+
+TEST_CASE("map icons: a facing turns the copy's arrow at kPaneTurn, read back in the state") {
+    FakeGame g;
+    SetUp(g, 1);
+    M::Icons icons;
+    M::Frame f;
+    f.marks = {At(2, 2020, 980, "Saria")};
+    f.marks[0].angle = 0.0f;   // facing right on the screen: a quarter turn clockwise from up
+    REQUIRE(icons.Step(g, f));
+    const M::State st = icons.Snapshot(g);
+    REQUIRE(st.shown.size() == 1);
+    REQUIRE(st.shown[0].turn.has_value());
+    REQUIRE(st.shown[0].wrote_turn.has_value());
+    CHECK(*st.shown[0].turn == doctest::Approx(*st.shown[0].wrote_turn));
+    CHECK(*st.shown[0].turn == doctest::Approx(-1.5707963f));
+    CHECK(st.turn_at == M::kPaneTurn);
 }

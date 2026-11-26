@@ -11,6 +11,7 @@
 // - dump: the shared flags (CoopTestInput::SharedFlags) and the state, as one JSON file in <game>/playtest/dumps.
 // - flag_read: one flag by name (CoopTestInput::ReadFlag), read only, inside the hold.
 // A client that leaves (closed, crashed) lets a held game go at once.
+#include "coop_map_icons.h"
 #include "coop_playtest.h"
 
 #include <atomic>
@@ -394,6 +395,7 @@ std::string StateMembers(bool full_world = false, std::optional<Value> status = 
     out += "]}";
     out += ",\"coop_menu\":" + Quote(CoopPause::MenuState());
     out += ",\"menu\":" + CoopMenuState::Json(CoopPause::MenuTab(), CoopPauseTab::CustomizeScreen());
+    out += ",\"map_native\":" + CoopMapIcons::StateJson();   // (coop_map_icons.h State: the others on the game's map icons)
     out += WorldText(full_world);
     out += StrikeMember(CoopStrike::TheBook().Last());
     return out;
