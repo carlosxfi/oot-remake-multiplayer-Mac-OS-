@@ -1125,9 +1125,16 @@ TEST_CASE("dbno body: issue 337, each down gets its own anchor key, kept while h
 }
 
 TEST_CASE("dbno body: issue 337, the game's own crawl commands") {
-    CHECK(CrawlCommand("Tunnel_Move_F"));
-    CHECK(CrawlCommand("TunnelWait"));
-    CHECK(CrawlCommand("Crawl"));
+    // The three commands of AS/Player_Child.root.asb that play the Tunnel_* clips (the 0.11.13 FAIL run's
+    // slot 0 read 'CrouchLockOnMove' while the crawl ran).
+    CHECK(CrawlCommand("Crouch"));
+    CHECK(CrawlCommand("CrouchLockOnMove"));
+    CHECK(CrawlCommand("CrouchLockOnMoveEnd"));
+    // Clip names and guesses are not commands.
+    CHECK_FALSE(CrawlCommand("Tunnel_Move_F"));
+    CHECK_FALSE(CrawlCommand("Crawl"));
+    CHECK_FALSE(CrawlCommand("CrouchGuard"));
+    CHECK_FALSE(CrawlCommand("CrouchMove"));
     CHECK_FALSE(CrawlCommand("Wait"));
     CHECK_FALSE(CrawlCommand("Walk"));
     CHECK_FALSE(CrawlCommand("DamageLStand"));
@@ -1218,7 +1225,7 @@ TEST_CASE("dbno body: issue 337, a child's Crawl is asked only when the game its
     CHECK(c.Skip(kBsa, Req(verb::kWait), false));  // taken: our crawl holds the slot
 
     // The game's crawl runs: nothing more is asked, however long.
-    SetAs(g, "Tunnel_St", 1.0f);
+    SetAs(g, "CrouchLockOnMove", 1.0f);
     for (int i = 0; i < 3 * Crawl::kCrawlStartReads; ++i) {
         CHECK(Verbs(RunFrame(c, g, 1100 + 16 * i)).empty());
     }

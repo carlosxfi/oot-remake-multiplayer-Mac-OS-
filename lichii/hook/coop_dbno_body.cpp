@@ -53,9 +53,12 @@ bool Riding(std::string_view c) {
 }
 
 bool CrawlCommand(std::string_view c) {
-    // The AS root's crawl commands (the Tunnel_* clips' own; the log names them).
-    const auto starts = [c](std::string_view p) { return c.substr(0, p.size()) == p; };
-    return starts("Tunnel") || starts("Crawl");
+    // Read from AS/Player_Child.root.asb (471 commands): none is named Tunnel* or Crawl*. The crawl's clips
+    // are played by three commands: `Crouch` (its root node is the Tunnel_Wait clip itself),
+    // `CrouchLockOnMove` (Tunnel_St, Tunnel_Move_F) and `CrouchLockOnMoveEnd` (Tunnel_Ed, Tunnel_Ed_B).
+    // (Issue 337, 0.11.13: Tunnel* / Crawl* were guessed here, so a crawl that ran was never seen and its
+    // slot was given back to the game's Wait 30 frames after it started.)
+    return c == "Crouch" || c == "CrouchLockOnMove" || c == "CrouchLockOnMoveEnd";
 }
 
 std::optional<AnchorSpot> AnchorFor(bool lying, bool event, bool adult, const std::array<float, 3>& link,
@@ -390,7 +393,8 @@ std::optional<CoopPuppet::Call> Crawl::StepPose(CoopPuppet::Guest& guest, std::u
         riding_ = false;
         const std::optional<AsSlot> slot =
             want_.lying && want_.actor != 0 ? ReadSlot0(guest, want_.actor) : std::nullopt;
-        const bool now = slot && CrawlCommand(slot->name);
+        // (Only under our taken Crawl: `Crouch` is also a standing child's own crouch.)
+        const bool now = crawling_ && slot && CrawlCommand(slot->name);
         if (now) {
             ++counts_.game_crawl;
             start_reads_ = 0;

@@ -206,7 +206,8 @@ std::optional<AsSlot> ReadSlot0(CoopPuppet::Guest& guest, std::uint64_t actor);
 // Issue 337: the actor's do action (addr::kWorkDoAction), or nothing (no actor, no work object).
 std::optional<std::uint32_t> ReadDoAction(CoopPuppet::Guest& guest, std::uint64_t actor);
 // Issue 337: whether an AS command of our child Link's is one of the game's
-// own crawl (Player.action.crawl plays the Tunnel_* clips under it). A Crawl
+// own crawl: Crouch / CrouchLockOnMove / CrouchLockOnMoveEnd, the three
+// commands of AS/Player_Child.root.asb that play the Tunnel_* clips. A Crawl
 // verb "taken" by the BSA is only the crawl when slot 0 shows one of these.
 bool CrawlCommand(std::string_view as_command);
 
