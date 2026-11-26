@@ -27,10 +27,11 @@ then A starts again on B's host and is welcomed there; the session is put back a
 Needs a module with testhost-170 (715803341); before it, TestHost refuses and the test FAILS at TEST_HOST_ON (the job's
 --expect-commit must contain 715803341).
 Only the Host path is driven. The Join rows on a dead line (JoinPasteNow / JoinLanNow / JoinRoomNow / RejoinNow ->
-Join() EndLauncher) share the same LauncherLive rule but are NOT proven in game here. NOT here either: a shot of B's
-Multiplayer page after the host (Session view hosting, not 'Co-op is on'): no bridge step opens that page without acting
-(TestMenu: host/paste/customize/close/leave; only paste opens kMain, and it joins), so it needs a module `menu main`
-step first (follow-up).
+Join() EndLauncher) share the same LauncherLive rule but are NOT proven in game here.
+The player-facing part, B's Multiplayer page after the host (the Session view hosting, not 'Co-op is on'), is a bridge
+shot of B: `menu main` (testhost-170 d06ef04bb: opens co-op's Multiplayer page, presses nothing), state.menu.coop.page
+== 'main' (coop_menu_state.cpp:30, PageWord kMain), check_shot B 'row170-host-page' (NO-REF until a ref is stored),
+then `menu close`. --expect-commit must contain d06ef04bb.
 """
 import json
 import os
@@ -132,6 +133,12 @@ def free_port(taken=()):
     raise SetupFail("170: no free UDP port on 127.0.0.1")
 
 
+def mp_page(st):
+    """state.menu.coop's page word when co-op's tab is open (coop_menu_state.cpp:30), else None."""
+    coop = ((st or {}).get("menu") or {}).get("coop") or {}
+    return coop.get("page") if coop.get("open") else None
+
+
 def run_170(pair, dead, host, password, boot_a=BOOT_A, boot_b=BOOT_B):
     """The step itself, after the set-up (the selftests drive it with a fake live.py)."""
     pair.rejoin("B", boot=boot_b, env=["LICHII_COOP_SERVER=127.0.0.1:%d" % dead,
@@ -143,6 +150,10 @@ def run_170(pair, dead, host, password, boot_a=BOOT_A, boot_b=BOOT_B):
     pair.expect_log("B", LISTENING, max_frames=600)
     pair.expect_log("B", START_ENDED, max_frames=600)
     pair.never_log("B", NOT_HOSTING)
+    pair.act("B", "menu main")                        # (d06ef04bb: the page opened, nothing pressed)
+    pair.until("170: B's Multiplayer page open", lambda: mp_page(pair.state("B")) == "main", max_frames=120)
+    pair.check_shot("B", "row170-host-page")
+    pair.act("B", "menu close")
 
     pair.rejoin("A", boot=boot_a, env=["LICHII_COOP_SERVER=127.0.0.1:%d" % host, "LICHII_COOP_PASSWORD=%s" % password])
     pair.expect_log("A", WELCOMED + re.escape("127.0.0.1:%d" % host), max_frames=900)
@@ -159,6 +170,7 @@ def run_170(pair, dead, host, password, boot_a=BOOT_A, boot_b=BOOT_B):
 
 
 @pytest.mark.needs_env(OPT_IN_170)
+@pytest.mark.look
 @pytest.mark.budget(2400)   # 4 rejoins (<= 60 s quit + <= 420 s boot each, Pair.REJOIN_*) + the waits
 @pytest.mark.row("#170 related: TestHost hosts on a server line naming no server, as the Host row (testhost-170)")
 def test_testhost_on_a_dead_server_line(pair):

@@ -71,6 +71,9 @@ class Run170(unittest.TestCase):
         self.pair = P.Pair(games, client=FakeClient)
         self.pair.session = self.tmp
         self.pair.in_play = lambda st: True
+        self.pair.state = lambda x: {"menu": {"coop": {"open": True, "tab": "multiplayer", "page": "main"}}}
+        self.shots = []
+        self.pair.check_shot = lambda x, name: self.shots.append((x, name))
         self.asked = []
 
     def fake_live(self, refuse=False):
@@ -111,6 +114,12 @@ class Run170(unittest.TestCase):
         self.assertIn("--env=LICHII_COOP_SERVER=127.0.0.1:50002", relaunch[1])
         self.assertFalse([a for a in relaunch[2] + relaunch[3] if a.startswith("--env")])   # (the session back)
         self.assertIn("act", sum((c.calls for c in FakeClient.made), []))   # (B's `menu host`)
+        self.assertEqual(self.shots, [("B", "row170-host-page")])
+
+    def test_mp_page(self):
+        self.assertEqual(self.T.mp_page({"menu": {"coop": {"open": True, "page": "main"}}}), "main")
+        self.assertIsNone(self.T.mp_page({"menu": {"coop": {"open": False}}}))
+        self.assertIsNone(self.T.mp_page({}))
 
     def test_testhost_refusal_fails(self):
         with self.assertRaises(AssertionError) as e:
