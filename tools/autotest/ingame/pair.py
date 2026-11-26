@@ -575,7 +575,7 @@ class Pair:
     REJOIN_BOOT_S = 420      # live.py relaunch: the runner's start + the boot script (live-kakariko-child: ~2900
                              # frames of script) inside the session's boot_timeout; the call's own wall-clock limit
 
-    def rejoin(self, x, boot=None):
+    def rejoin(self, x, boot=None, env=()):
         """Game x quits (live.py quit: asked to close, killed after QUIT_WAIT) and starts again into the SAME session
         (live.py relaunch: its save kept, `boot` = a scenario file played as its boot; default the one the lane booted
         x with, Pair.boot), so it joins the session's server again. A boot script takes the title itself, so it goes
@@ -584,7 +584,10 @@ class Pair:
         not answer the rejoiner's save round (docs/flags.md, "The save sent is the host's game now").
         Afterwards game x has a NEW bridge client (same port: relaunch_argv keeps the session's playtest ports) and its
         log is read from the new game-out file's first line (relaunch keeps the old one beside it as game-out-X.txt.N).
-        A hung quit/relaunch (_live's subprocess timeout) is an AssertionError naming the step. Returns live.py relaunch's answer; AssertionError if a step did not hold."""
+        A hung quit/relaunch (_live's subprocess timeout) is an AssertionError naming the step. `env` (K=V each) is for
+        this start of game x only (live.py relaunch --env, after the session's own: it wins; row 251:
+        LICHII_COOP_SERVER=<LAN IP>:<port>, LICHII_COOP_PASSWORD=); the next rejoin without it starts game x with the
+        session's own env again. Returns live.py relaunch's answer; AssertionError if a step did not hold."""
         if not (self.session and self.live):
             raise SetupFail("rejoin %s: no live.py session (Pair.session / Pair.live) for live.py quit/relaunch" % x)
         live = self.live
@@ -600,6 +603,8 @@ class Pair:
                      timeout=max(1.0, min(self.REJOIN_QUIT_S, self.deadline.left())))
             assert q.get("player") == x and not q.get("error"), "%s: live.py quit: %s" % (x, q)
             args = ["relaunch", "--session", self.session, x] + (["--boot", boot, "--no-load"] if boot else [])
+            for kv in env:
+                args.append("--env=%s" % kv)     # (one token: an empty value 'K=' stays one argument)
             step = "relaunch"
             self.deadline.check("rejoin relaunch")
             r = live(args, timeout=max(1.0, min(self.REJOIN_BOOT_S, self.deadline.left())))
@@ -617,6 +622,39 @@ class Pair:
         assert h.get("control"), "%s: after the relaunch the bridge has no Longshot control: %s" % (x, h)
         self.notes.append("%s rejoined: quit %s; relaunch %s" % (x, q.get("how"), r.get("boot")))
         return r
+
+    SERVER_RESTART_S = 30    # live.py server stop (a kill) + start (its own 1 s settle): the call's wall-clock limit
+
+    def server_restart(self, args=()):
+        """The session's coop_server stops (killed) and starts again on the same exe, port and password (live.py server
+        stop + start), with `args` as extra server arguments for this start only (e.g. "--same-network-open",
+        "--bind", "<LAN IP>"; each passed as --server-arg=X); a restart without them puts the session's own server
+        back. The games run in real time meanwhile (bridge `resume`, `pause` after), as in rejoin: a game held between
+        frames does not see its connection drop. Its output goes to the session's server-out-N.txt (N = 1, 2, ...:
+        the boot's own is server-out.txt); returns live.py server start's answer ({server, pid, port, args, out})."""
+        if not (self.session and self.live):
+            raise SetupFail("server_restart: no live.py session (Pair.session / Pair.live) for live.py server")
+        live = self.live
+        for y in self.c:
+            self.c[y].resume()
+        try:
+            self.deadline.check("server restart")
+            t = max(1.0, min(self.SERVER_RESTART_S, self.deadline.left()))
+            q = live(["server", "--session", self.session, "stop"], timeout=t)
+            assert q.get("server") == "stopped", "live.py server stop: %s" % q
+            r = live(["server", "--session", self.session, "start"] + ["--server-arg=%s" % v for v in args], timeout=t)
+            assert r.get("server") == "started", "live.py server start: %s" % r
+        finally:
+            for y in self.c:
+                self.c[y].pause()
+        self.notes.append("server restarted%s -> %s" % (" with " + " ".join(args) if args else "", r.get("out")))
+        return r
+
+    def server_log(self, name):
+        """A Log of the session's server output file `name` (server-out.txt, server-out-N.txt), read from its start."""
+        lg = Log(os.path.join(self.session, name))
+        lg.pos = 0
+        return lg
 
     # -- looks ------------------------------------------------------------------------------------------------
     def check_shot(self, x, name, tolerance=0.90):
