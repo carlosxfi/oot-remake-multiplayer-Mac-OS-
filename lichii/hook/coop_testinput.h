@@ -181,7 +181,13 @@ struct Step {
 
 struct Script {
     std::vector<Step> steps;
+    // The first `song` line (the runners write songs out as presses; Parse only checks its shape), 0 for none:
+    // a script loaded to be played with one is refused (SongNotWrittenOut).
+    int song_line = 0;
 };
+
+// The error for a script about to be played that still has a `song` line, or "" when it has none.
+std::string SongNotWrittenOut(const Script& script);
 
 // Why `warp scene [start]` must not be asked of the game, or an empty string when it may. The scene must be one the
 // game has (CoopTeleport::IsKnownScene; the error names the likely ones: "Market" is not a scene, Market_Child and

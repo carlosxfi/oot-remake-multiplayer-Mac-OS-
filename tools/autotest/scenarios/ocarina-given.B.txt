@@ -5,34 +5,23 @@ mark before
 press DLEFT 12
 wait 240
 mark out
-mark note-A
+mark note-a
 press A 12
 wait 120
-mark note-down
+mark note-d
 press L 12
 wait 120
-mark note-right
+mark note-f
 press R 12
 wait 120
-mark note-left
+mark note-b
 press Y 12
 wait 120
-mark note-up
+mark note-highd
 press X 12
 wait 120
 mark saria
-press R 12
-wait 40
-press Y 12
-wait 40
-press X 12
-wait 40
-press R 12
-wait 40
-press Y 12
-wait 40
-press X 12
-wait 40
+song SariaSong  # Saria's Song: F, A, B twice (R A Y R A Y, tools/autotest/ocarina_notes.py)
 wait 300
 mark after-song
 press B 12

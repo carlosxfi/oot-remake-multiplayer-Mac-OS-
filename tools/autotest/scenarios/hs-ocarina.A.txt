@@ -44,17 +44,7 @@ mark note-A
 hold A 30
 wait 90
 mark lullaby
-press X 15
-wait 30
-press A 15
-wait 30
-press Y 15
-wait 30
-press X 15
-wait 30
-press A 15
-wait 30
-press Y 15
+song ZeldaLullaby  # keys from tools/autotest/ocarina_notes.py (Y X A Y X A)
 wait 300
 mark after-song
 press B 12

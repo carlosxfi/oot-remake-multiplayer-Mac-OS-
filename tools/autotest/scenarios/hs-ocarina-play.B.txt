@@ -1,6 +1,6 @@
 # hs-ocarina-play, B: see hs-ocarina-play.A.txt. B never got the ocarina (no-ocarina baseline) and gets
 # A's through item sharing, then takes it out and plays it in the Graveyard, walks into Kakariko (a scene
-# load) and tries again. Notes: the module's note keys (lichii/hook/coop_ocarina_sound.cpp NoteOf): L = D, R = F, Y = A, X = B, A = high D (N64: A, C-down, C-right, C-left, C-up).
+# load) and tries again. Notes: the keys from tools/autotest/ocarina_notes.py, the ONE key table, read from the game: run epona-seen-keys-fec750ad (L = D, R = F, Y = B, X = high D, A = A).
 mark start
 wait 240
 setflag IsGet.Item_Melody_ZeldaLullaby 1        # the song, whatever the lane save holds
@@ -11,17 +11,7 @@ mark out-1
 press A 12
 wait 120
 mark note-a
-press X 12                                      # Zelda's Lullaby: B, high D, A, twice (X A Y)
-wait 40
-press A 12
-wait 40
-press Y 12
-wait 40
-press X 12
-wait 40
-press A 12
-wait 40
-press Y 12
+song ZeldaLullaby  # Zelda's Lullaby: B, high D, A, twice (Y X A Y X A)
 wait 300
 mark lullaby
 press B 12
