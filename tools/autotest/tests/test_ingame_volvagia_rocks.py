@@ -30,19 +30,21 @@ class VolvagiaRocks(unittest.TestCase):
         return p, results(summary(out))
 
     def test_rocks_at_each_link_is_no_ref_never_pass(self):
-        """Good game: the positions agree; the shots have no owner-approved reference yet, so NO-REF (never PASS)."""
+        """Good game: the positions agree, but the judge values are not measured yet (review-rows-c130 10:32 (1)) and
+        the shots have no owner-approved reference: NO-REF (never PASS)."""
         p, r = self.run_file(self.OBJ)
         self.assertEqual(r, {NAME: "NO-REF"}, p.stdout[-3000:])
+        self.assertIn("judge values not measured yet", p.stdout, p.stdout[-3000:])
 
     def test_one_target_for_both_games_fails(self):
         p, r = self.run_file(self.OBJ, env={"BT_FAKE_BROKEN": "vr-one-target"})
         self.assertEqual(r, {NAME: "FAIL"}, p.stdout[-3000:])
-        self.assertIn("B: only 0 of", p.stdout, p.stdout[-3000:])
+        self.assertIn("B: one target: only 0 of", p.stdout, p.stdout[-3000:])
 
-    def test_no_falling_rock_fails(self):
+    def test_no_falling_rock_is_no_ref_never_pass(self):
         p, r = self.run_file(self.OBJ, env={"BT_FAKE_BROKEN": "vr-asleep"})
-        self.assertEqual(r, {NAME: "FAIL"}, p.stdout[-3000:])
-        self.assertIn("A: no falling rock", p.stdout, p.stdout[-3000:])
+        self.assertEqual(r, {NAME: "NO-REF"}, p.stdout[-3000:])
+        self.assertIn("no falling rock seen in A and B", p.stdout, p.stdout[-3000:])
 
     def test_place_off_the_floor_is_setup_fail(self):
         p, r = self.run_file(self.OBJ, env={"BT_FAKE_BROKEN": "vr-lava"})

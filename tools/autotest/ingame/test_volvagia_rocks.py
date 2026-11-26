@@ -9,10 +9,10 @@ both games), as does a game with no falling rock at all (its arena never switche
 
 | Test | Proves |
 |---|---|
-| test_volvagia_rocks_fall_at_each_link | each game's falling rocks land at its own Link (>= 3/4 of them nearer it than the other Link) |
+| test_volvagia_rocks_fall_at_each_link | each game's falling rocks land at its own Link (>= 3/4 of them nearer it than the other Link); until MEASURED is cited: NO-REF, and FAIL only for one target (most rocks nearer the other Link) |
 
 Sources (worker-rules "no guessed values"):
-- Set-up, arrival, hearts: test_boss_respawn.start_check / boss_arrival / hearts_in (boss-respawn-289-4's, imported, not
+- Set-up, arrival, hearts: test_boss_respawn.start_check / boss_arrival / give_hearts + hearts_in (boss-respawn-289-4's, imported, not
   copied): the ten MaxLife gives + Life 56 so both Links live through the rocks (lane-c3-234-rocks died at 4 hearts).
 - The rocks: docs/agent-handoff.md "Volvagia's rocks" and docs/boss-multiplayer.md row 234: Obj_FallingRockManager_A_03
   wakes a pool of up to 30 Obj_FallingRock_A_06 (made at load, ASLEEP) every 30-90 frames, aimed at the local Link
@@ -57,6 +57,11 @@ FALL_XZ = 2.0                                 # ... and it stays over the same g
 SAMPLE_EVERY, SAMPLE_MAX = 5, 900
 MIN_FALLING = 3
 OWN_SHARE = 0.75
+# review-rows-c130 10:32 (1), the kokiri-band rule chain: MIN_APART_M, FALL_DY, FALL_XZ, MIN_FALLING and OWN_SHARE are
+# NOT measured yet. Until MEASURED cites a probe run (run name + per-rock distances own/other, the spread), a run that
+# meets them ends pair.unproven (NO-REF, never PASS); only a clear one-target game (most of its falling rocks nearer the
+# OTHER Link) FAILS. A run with no falling rock seen is NO-REF too (a fall the 5-frame dumps missed is not the game's).
+MEASURED = None
 
 
 def b_spot():
@@ -136,8 +141,12 @@ def sample(pair):
 
 
 def judge(pair, x, seen, ids):
-    """Game x: each falling rock's LAST sighting (nearest its landing) nearer x's own Link than the other Link."""
-    assert ids, ("%s: no falling rock in its world list (its arena never dropped one while its rocks line came)" % x)
+    """Game x: each falling rock's LAST sighting (nearest its landing) against x's own Link and the other Link.
+    Returns (share nearer its own Link, how many rocks, the rows); None when it saw no falling rock. A clear
+    one-target game (most rocks nearer the OTHER Link) FAILS here."""
+    if not ids:
+        pair.notes.append("%s: no falling rock in its world list" % x)
+        return None
     lastpos = {}
     for rid, pos, own, other in seen:
         lastpos[rid] = (pos, own, other)
@@ -148,9 +157,9 @@ def judge(pair, x, seen, ids):
         near_own += 1 if do < dt else 0
         rows.append("%s: rock %s at %.1f m from its Link, %.1f m from the other" % (x, rid, do, dt))
     pair.notes.extend(rows)
-    share = near_own / float(len(lastpos))
-    assert share >= OWN_SHARE, "%s: only %d of %d falling rocks nearer its own Link (want >= %d%%): %s" % (
-        x, near_own, len(lastpos), int(OWN_SHARE * 100), "; ".join(rows))
+    n = len(lastpos)
+    assert 2 * near_own > n, "%s: one target: only %d of %d falling rocks nearer its own Link, the rest nearer the other "         "Link: %s" % (x, near_own, n, "; ".join(rows))
+    return near_own / float(n), n, rows
 
 
 @pytest.mark.budget(900)                      # as test_volvagia_rocks_each_game: 'await 10800' + the sampling
@@ -160,13 +169,7 @@ def judge(pair, x, seen, ids):
 def test_volvagia_rocks_fall_at_each_link(pair, back_after):
     with pair.setup():
         BR.start_check(pair)
-        for x in ("A", "B"):                  # test_volvagia_rocks_each_game's hearts (its source lines)
-            for _ in range(10):
-                pair.give(x, "PlayerStatus.MaxLife")
-                pair.step_both(4)
-            pair.flag(x, "PlayerStatus.Life", 56)
-        pair.step_both(30)
-        BR.hearts_in(pair, "after ten gives")
+        BR.give_hearts(pair)                  # the one heart set-up of the row 234 tests (review-rows-c130 10:32 (2))
     BR.boss_arrival(pair, STAGE, then=lambda: BR.hearts_in(pair, "after the arrival"))
     stand_apart(pair)
     for x in ("A", "B"):
@@ -175,5 +178,14 @@ def test_volvagia_rocks_fall_at_each_link(pair, back_after):
     pair.expect_log("B", r"coop: objects: rocks: \d+ new falling rocks", max_frames=10800)
     seen, ids, n = sample(pair)
     pair.notes.append("%d dumps; falling rocks A %d, B %d" % (n, len(ids["A"]), len(ids["B"])))
+    got = {x: judge(pair, x, seen[x], ids[x]) for x in ("A", "B")}
+    none = [x for x in ("A", "B") if got[x] is None]
+    if none:
+        pair.unproven("no falling rock seen in %s's world list (rocks lines came; a fall the %d-frame dumps missed is "
+                      "not the game's)" % (" and ".join(none), SAMPLE_EVERY))
+    if MEASURED is None:
+        pair.unproven("judge values not measured yet (MIN_APART_M, FALL_DY, FALL_XZ, MIN_FALLING, OWN_SHARE): nearer own "
+                      "Link A %.0f%% of %d, B %.0f%% of %d" % (100 * got["A"][0], got["A"][1], 100 * got["B"][0], got["B"][1]))
     for x in ("A", "B"):
-        judge(pair, x, seen[x], ids[x])
+        assert got[x][0] >= OWN_SHARE, "%s: only %.0f%% of %d falling rocks nearer its own Link (want >= %d%%, %s): %s" % (
+            x, 100 * got[x][0], got[x][1], int(OWN_SHARE * 100), MEASURED, "; ".join(got[x][2]))
