@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_ingame as T   # noqa: E402
 
 ARGS = ["test_epona_294.py", "--fake", "-q", "--no-rerun",
-        "--env", "LICHII_COOP_PUPPET=1", "--env", "LICHII_COOP_DEBUG_ANIM=1", "--env", "LICHII_COOP_OBJECTS=1"]   # test 3's needs_env
+        "--env", "LICHII_COOP_PUPPET=1", "--env", "LICHII_COOP_DEBUG_ANIM=1", "--env", "LICHII_COOP_OBJECTS=1",
+        "--env", "LICHII_COOP_OCARINA_PROBE=1"]   # test 3's needs_env
 
 
 class Row294EponaWithHorse(unittest.TestCase):
