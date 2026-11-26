@@ -516,8 +516,9 @@ def _boot_proof(config, pair, lane):
     """Both games in play, no event, in the boot's scene (Pair.boot_ready), else SetupFail 'lane N boot: ...': every
     test of the lane is SETUP-FAIL boot. Its notes (a game warped there) go into pair.info['boot_proof']."""
     pair.begin(BOOT_READY_S)
+    pair.boot_scene = boot_scene(config.getoption("boot"))   # (every test's start place: Pair.need_boot_place)
     try:
-        pair.boot_ready(boot_scene(config.getoption("boot")))
+        pair.boot_ready(pair.boot_scene)
     except P.SetupFail as e:
         raise P.SetupFail("lane%d %s" % (lane, e)) from e
     pair.info = dict(pair.info, boot_proof="; ".join(pair.notes) or "both in play, no event, in the boot scene")
@@ -578,6 +579,14 @@ def pair(request, lane_pair):
         import live
         live.touch(lane_pair.session)          # (the session's watchdog counts it as a tester's command)
     yield lane_pair
+    if not getattr(request.config, "_bt_dirty", False):
+        # (a test that PASSED but left a game away from the boot's place, e.g. no put-back after a warp: the next
+        # test starts with the recovery instead of running in the wrong map; row 285, B #136 14:38. Named here, on
+        # the test that left it, so its owner sees the missing put-back)
+        away = lane_pair.away_from_boot()
+        if away:
+            request.config._bt_dirty = True
+            lane_pair.notes.append("left the boot's place (the next test recovers first): %s" % "; ".join(away))
     request.node.user_properties.append(("shots", list(lane_pair.shots)))
     request.node.user_properties.append(("notes", list(lane_pair.notes)))
     missing = lane_pair.no_ref()
