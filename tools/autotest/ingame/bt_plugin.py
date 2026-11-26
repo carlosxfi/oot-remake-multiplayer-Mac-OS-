@@ -57,6 +57,8 @@ def pytest_addoption(parser):
     g.addoption("--deadline-min", type=float, default=None, metavar="N", help="the run's wall-clock limit in minutes "
                 "(set it below the queue's Minutes): past N no new test starts and no rerun, the rest are NOT-RUN "
                 "(never a pass), the games are closed and the lane let go (live.py stop), then summary.json is written")
+    g.addoption("--boot", default=DEFAULT_BOOT, metavar="NAME", help="the lane's boot: scenarios/NAME.A.txt + NAME.B.txt "
+                "(default %(default)s); tests run only with their own boot (@pytest.mark.needs_boot(NAME), else the default)")
     g.addoption("--lane-check-only", action="store_true", help="the setup proof of every --lanes lane (lane_check + "
                 "--expect-commit + the tests collect; no game boot, no test run): one SETUP-OK/SETUP-FAIL line per "
                 "lane, OUT/setup.json; exit 0 only if every lane is OK (pytest's own --setup-only is another thing)")
@@ -67,12 +69,15 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "budget(seconds): the test's own hard deadline (default %d)" % DEFAULT_BUDGET)
     config.addinivalue_line("markers", "row(text): the rc row the test proves (in the summary)")
     config.addinivalue_line("markers", "look: a user-facing look check (bridge shots on each game, compared to refs)")
+    config.addinivalue_line("markers", "needs_boot(NAME): the test boots with scenarios/NAME.A/B.txt (run with --boot NAME); "
+                            "without it a test needs the default boot")
     config.addinivalue_line("markers", "needs_env(*'NAME=VALUE'): game switches the test needs; a run whose "
                             "--env lacks them deselects it (named in the output and summary.json 'deselected')")
     config._bt_rows, config._bt_deselected = [], []
     if config.getoption("lane_check_only") and getattr(config.option, "numprocesses", None):
         raise pytest.UsageError("--lane-check-only runs in one process: leave out -n (it checks every --lanes lane)")
     boot_env(config)        # (a malformed --env stops the run before any boot)
+    boot_paths(config.getoption("boot"))   # (an unknown --boot too)
     config._bt_started = time.time()
 
 
@@ -101,22 +106,38 @@ def pytest_collection_modifyitems(config, items):
         _lane_check_only(config, items)
 
 
+def _deselect_line(d):
+    if d.get("needs_boot"):
+        return "deselected: needs_boot %s %s" % (d["needs_boot"], d["test"])
+    return "deselected: needs_env %s %s" % (" ".join(d["needs_env"]), d["test"])
+
+
 def _deselect_needs_env(config, items):
-    """A needs_env test whose switches this run's --env lacks is DESELECTED (B #129, 2026-11-26), with one
-    'deselected: needs_env ...' line each and a summary.json 'deselected' list: never hidden, and never a SETUP-FAIL of
-    the default run. The rc summary (rc_tests.py summary --plan) makes it NOT-RUN if no env group ran it."""
-    have = boot_env(config)
+    """A test this run cannot run is DESELECTED (B #129, 2026-11-26), with one 'deselected: ...' line each and a
+    summary.json 'deselected' list: never hidden, and never a SETUP-FAIL of the default run (the rc summary, rc_tests.py
+    summary --plan, makes it NOT-RUN if no session ran it):
+    - needs_env: a switch this run's --env lacks;
+    - needs_boot: a test boots with ONE boot (@pytest.mark.needs_boot(NAME), else DEFAULT_BOOT); a run with another
+      --boot leaves it out (a boss boot is not the Kakariko boot the smoke tier and the rows assume)."""
+    have, boot = boot_env(config), config.getoption("boot")
     keep, drop = [], []
     for it in items:
-        lack = [e for m in it.iter_markers("needs_env") for e in m.args if not env_has(have, e)]
-        (drop if lack else keep).append(it)
-        if lack:
+        m = it.get_closest_marker("needs_boot")
+        want = m.args[0] if m else DEFAULT_BOOT
+        lack = [e for mk in it.iter_markers("needs_env") for e in mk.args if not env_has(have, e)]
+        if want != boot:
+            config._bt_deselected.append({"test": it.nodeid, "needs_boot": want, "needs_env": lack})
+        elif lack:
             config._bt_deselected.append({"test": it.nodeid, "needs_env": lack})
+        else:
+            keep.append(it)
+            continue
+        drop.append(it)
     if not drop:
         return
     tr = config.pluginmanager.get_plugin("terminalreporter")
     for d in config._bt_deselected[-len(drop):]:
-        line = "deselected: needs_env %s %s" % (" ".join(d["needs_env"]), d["test"])
+        line = _deselect_line(d)
         tr.write_line(line) if tr else print(line)
     config.hook.pytest_deselected(items=drop)
     items[:] = keep
@@ -126,18 +147,31 @@ def _deselect_needs_env(config, items):
 # header: "boot for live.py start": child save, warp to Kakariko by the well, through the title; '#! noload' + its
 # switches line). --no-load: the boot scripts take the title themselves (live.py start --no-load help; the same form
 # as offline/desync-275-run.ps1:41-42). hookshot.py run needs --script-a (its own check: '--script-a (or --only B)').
-BOOT_A = os.path.join(AUTOTEST, "scenarios", "live-kakariko-child.A.txt")
-BOOT_B = os.path.join(AUTOTEST, "scenarios", "live-kakariko-child.B.txt")
+DEFAULT_BOOT = "live-kakariko-child"
+BOOT_A = os.path.join(AUTOTEST, "scenarios", DEFAULT_BOOT + ".A.txt")
+BOOT_B = os.path.join(AUTOTEST, "scenarios", DEFAULT_BOOT + ".B.txt")
 
 
-def boot_identity():
+def boot_paths(name):
+    """--boot NAME: scenarios/NAME.A.txt and NAME.B.txt (both must exist; e.g. live-twinrova-room for a boss stage,
+    where the bridge's warp answers not_in_event in free play: docs/playtest.md warp)."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name or ""):
+        raise pytest.UsageError("--boot %r: a scenario name (scenarios/NAME.A.txt + NAME.B.txt)" % name)
+    a, b = (os.path.join(AUTOTEST, "scenarios", "%s.%s.txt" % (name, x)) for x in ("A", "B"))
+    for f in (a, b):
+        if not os.path.isfile(f):
+            raise pytest.UsageError("--boot %s: no %s" % (name, f))
+    return a, b
+
+
+def boot_identity(name=DEFAULT_BOOT):
     """What the boot itself brings, for the proof key (review-c123-7): each boot script's path (repo-relative), sha256
     and its '#! switches' header (hookshot.header_switches: the A script's go to both games, an --env of the same name
     wins; live-kakariko-child.A.txt turns LICHII_COOP_CHEATS=1 on). A different boot, or one without those switches,
     is a different identity."""
     import hookshot
     out = {}
-    for x, path in (("A", BOOT_A), ("B", BOOT_B)):
+    for x, path in zip(("A", "B"), boot_paths(name)):
         with open(path, "rb") as f:
             sha = hashlib.sha256(f.read()).hexdigest()
         out[x] = {"script": os.path.relpath(path, os.path.dirname(os.path.dirname(AUTOTEST))).replace(os.sep, "/"),
@@ -149,7 +183,8 @@ def boot_args(config, lane, server, session):
     """live.py start's arguments for this lane's boot (after 'start'): the ONE list lane_pair boots with and
     --lane-check-only proves (live.py start --dry-run = hookshot.py run's own parser + script parse)."""
     args = ["--session", session, "--lane", str(lane), "--playtest", "--server", server,
-            "--boot-a", BOOT_A, "--boot-b", BOOT_B, "--no-load"]
+            "--boot-a", boot_paths(config.getoption("boot"))[0], "--boot-b", boot_paths(config.getoption("boot"))[1],
+            "--no-load"]
     for e in boot_env(config):
         args += ["--env", e]
     return args + ["--max-minutes", str(config.getoption("session_minutes")), "--idle-minutes", "15"]
@@ -463,7 +498,7 @@ def pytest_testnodedown(node, error):
             continue
         seen.add(d["test"])
         config._bt_deselected.append(d)
-        line = "deselected: needs_env %s %s" % (" ".join(d["needs_env"]), d["test"])
+        line = _deselect_line(d)
         tr.write_line(line) if tr else print(line)
 
 
@@ -487,7 +522,7 @@ def pytest_sessionfinish(session, exitstatus):
                "lanes": config.getoption("lanes"), "fake": bool(config.getoption("fake")),
                "repeat": config.getoption("repeat"), "counts": counts, "tests": rows,
                "identity": {"env": boot_env(config), "expect_commit": config.getoption("expect_commit"),
-                            "boot": boot_identity()},
+                            "boot": dict(boot_identity(config.getoption("boot")), name=config.getoption("boot"))},
                "deselected": config._bt_deselected,
                "stopped": getattr(config, "_bt_stopped", None),
                "lane_closed": getattr(config, "_bt_lane_closed", None),

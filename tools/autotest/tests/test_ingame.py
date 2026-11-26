@@ -432,7 +432,33 @@ class BootCommand(unittest.TestCase):
         self.assertEqual(len(idn["B"]["sha256"]), 64)
         out = os.path.join(self.tmp, "o")
         pytest_run([".", "--fake", "--out", out, "-q", "-m", "not look", "-k", "test_boot"])
-        self.assertEqual(summary(out)["identity"]["boot"], idn)
+        self.assertEqual(summary(out)["identity"]["boot"], dict(idn, name="live-kakariko-child"))
+
+    def test_needs_boot(self):
+        """--boot NAME: only tests of that boot run (needs_boot(NAME); unmarked = the default boot); the rest are
+        deselected and named. An unknown boot is a usage error before any boot."""
+        d = os.path.join(self.tmp, "nb")
+        os.makedirs(d)
+        with open(os.path.join(d, "conftest.py"), "w", encoding="utf-8") as f:
+            f.write("import sys\nsys.path.insert(0, %r)\npytest_plugins = ['bt_plugin']\n" % INGAME)
+        with open(os.path.join(d, "test_nb.py"), "w", encoding="utf-8") as f:
+            f.write("import pytest\n\ndef test_plain(pair):\n    pass\n\n"
+                    "@pytest.mark.needs_boot('live-twinrova-room')\ndef test_boss(pair):\n    pass\n")
+        out = os.path.join(self.tmp, "o1")
+        p = pytest_run([".", "--fake", "--out", out, "-q"], cwd=d)
+        s = summary(out)
+        self.assertEqual(results(s), {"test_plain": "PASS"}, p.stdout[-2000:])
+        self.assertEqual(s["deselected"], [{"test": "test_nb.py::test_boss", "needs_boot": "live-twinrova-room",
+                                            "needs_env": []}])
+        self.assertIn("deselected: needs_boot live-twinrova-room test_nb.py::test_boss", p.stdout)
+        out = os.path.join(self.tmp, "o2")
+        p = pytest_run([".", "--fake", "--out", out, "-q", "--boot", "live-twinrova-room"], cwd=d)
+        s = summary(out)
+        self.assertEqual(results(s), {"test_boss": "PASS"}, p.stdout[-2000:])
+        self.assertEqual(s["identity"]["boot"]["name"], "live-twinrova-room")
+        self.assertTrue(s["identity"]["boot"]["A"]["script"].endswith("live-twinrova-room.A.txt"))
+        p = pytest_run([".", "--fake", "--out", out, "-q", "--boot", "no-such-boot"], cwd=d)
+        self.assertEqual(p.returncode, 4, p.stdout[-1000:] + p.stderr[-1000:])
 
     def test_real_boot_args_parse(self):
         """bt_plugin.boot_args (what lane_pair boots with) through live.py start --dry-run: hookshot.py run's own
@@ -441,7 +467,7 @@ class BootCommand(unittest.TestCase):
 
         class Cfg:
             def getoption(self, name):
-                return {"env": ["LICHII_COOP_PARTY_HUD_PROBE=1"], "session_minutes": 175}[name]
+                return {"env": ["LICHII_COOP_PARTY_HUD_PROBE=1"], "session_minutes": 175, "boot": B.DEFAULT_BOOT}[name]
         args = B.boot_args(Cfg(), 1, os.path.join(self.tmp, "coop_server.exe"), os.path.join(self.tmp, "s"))
         i = args.index("--lane")
         args[i:i + 2] = self.games()

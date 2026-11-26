@@ -51,6 +51,11 @@ Cheats are ON in every lane boot: `live-kakariko-child.A.txt` has `#! switches L
 switches go to both games), which the bridge's `act`/`warp`/`flag`/`give` need. `summary.json` `identity.boot` keeps
 each boot script's path, sha256 and switches, so a run with another boot never counts as the same proof.
 
+Another boot: `--boot NAME` boots `scenarios/NAME.A.txt` + `NAME.B.txt` (e.g. `live-twinrova-room` for a boss stage,
+where the bridge's `warp` answers `not_in_event` in free play). Each test runs with ONE boot: `@pytest.mark.needs_boot(NAME)`,
+unmarked = `live-kakariko-child`; a run with another `--boot` deselects it (`deselected: needs_boot NAME <test>`, in
+`summary.json` `deselected`). An unknown `--boot` is a usage error before any boot.
+
 | Result | When |
 |---|---|
 | PASS | every assert held |
@@ -117,6 +122,8 @@ function (or a few, one per thing it proves) in a `test_<area>.py` file in `tool
 2. **Fixture and budget.** Take the `pair` fixture (both games of the lane, already booted, in play after the smoke
    tier). Give `@pytest.mark.budget(seconds)`: the whole test's hard limit, a little over what it needs. Switches from
    `#! switches` -> `@pytest.mark.needs_env("LICHII_COOP_X=1")` (and the run gets `--env`); `A:`/`B:` for one game.
+   A row whose place cannot be reached by `warp` in free play (a boss stage) -> `@pytest.mark.needs_boot(NAME)` with a
+   `scenarios/NAME.A/B.txt` boot (the run gets `--boot NAME`).
 3. **Set-up only by the bridge, inside `with pair.setup():`** (SETUP-FAIL if anything fails or it passes 30 s):
    - place: `pair.warp_both(scene)`, `pair.act(x, "place X Y Z")`, `pair.act(x, "face X Z")`; never walk to a spot
      (scenario `goto` / `toward` / `hold LSTICK_*` used only to get somewhere -> `place`/`face`).
