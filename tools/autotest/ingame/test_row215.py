@@ -44,6 +44,7 @@ NAMES = (ROOT,) + SISTERS
 INTRO_WAIT = 3600       # frames: both games past the intro (test_ux_sweep.py test_boss_final_blow_frames' until)
 STRIKE_WAIT = 120       # frames for a strike's answer in state.strike (test_ux_sweep.py: max_frames=120)
 MERGE_WAIT = 1800       # frames for the merged Twinrova after the sisters' kills (ESTIMATED: the merge event; no run yet)
+OWNER_WAIT = 300        # frames for both lists to name one owner after the merge (10 s; ESTIMATED, the share's first owner)
 STABS = 3               # the copy's strikes at life 0 (the owner's playtest: several stab attempts)
 STAB_GAP = 30           # frames between them
 WATCH = 900             # frames from the kill: her death (docs/dungeons-boss.md:49: a death event is taken by 15 s)
@@ -153,8 +154,17 @@ def test_twinrova_finish_stays_with_its_owner(pair, back_after):
             pair.unproven("no merged %s after the sisters' kills: %s" % (ROOT, e))
 
     # The finish: her owner kills her; from then on no rule may hand her over.
+    def agreed():        # (review-rows-c136-4: right after the merge the lists may not yet name one owner)
+        try:
+            return owner_game(pair, {x: pair.state(x) for x in ("A", "B")}, ROOT)
+        except AssertionError:
+            return None
+    try:
+        own, num, copy = pair.until("both games name one owner for %s" % ROOT, agreed, max_frames=OWNER_WAIT)
+    except AssertionError:
+        owner_game(pair, {x: pair.state(x) for x in ("A", "B")}, ROOT)   # (FAIL naming what each game says)
+        raise
     st = {x: pair.state(x) for x in ("A", "B")}
-    own, num, copy = owner_game(pair, st, ROOT)
     pair.notes.append("owner game %s (player %d), copy %s" % (own, num, copy))
     srv_mark = srv.mark()
     kept_before = [int(m.group(1)) for m in map(KEPT.search, srv.since(0)) if m]
