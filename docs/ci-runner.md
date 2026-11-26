@@ -2,7 +2,7 @@
 
 GitHub's free queue holds our Build runs for hours, so our own runs use the owner's PC:
 3 Linux runners `squadala-wsl-1..3` (label `squadala-wsl`) in a WSL distro of their own,
-`squadala-ci` (Ubuntu 24.04; WSL capped at 32 GB, 24 threads). They run `scope`, `python-tools`
+`squadala-ci` (Ubuntu 24.04; WSL capped at 20 GB, 24 threads). They run `scope`, `python-tools`
 (ubuntu row) and `linux` (gcc, clang, asan, tsan) while the repo variable `COOP_SELF_HOSTED_LINUX`
 is `on`.
 
@@ -23,12 +23,19 @@ GitHub's 24 h). Set the variable to `off` and new runs use GitHub's runners agai
 `gh api -X PATCH repos/daurosk/oot-remake-multiplayer/actions/variables/COOP_SELF_HOSTED_LINUX -f value=off`.
 Runs already queued keep their runner: cancel and re-run them. Keep it `off` whenever WSL is held down.
 
-**Memory and disk guard.** Before a job starts, its hook waits while Windows' free commit is below
-75 GB (a stock game pair needs ~62 GB, so a game test always wins), at most 60 min, then fails the job
-("memory guard: waited 60 min"); it refuses at once when C: has less than 60 GB free ("disk guard").
-After every job a second hook empties the job's workspace. The runners read the Windows numbers from
-`/run/squadala-ci/status`, fed every 15 s by `status-feed.ps1` (below); a stale or missing file counts
-as "not enough" (fail closed).
+**Memory and disk guard.** The games always win, in two halves:
+- Before a job starts, its hook waits while a test-lane game or offline-queue job runs (a lane lock
+  `oot-remake-multiplayer\laneN.lock`, or a first `LANE1:`/`LANE2:` line of `coord-multiplayer\TEST-TURN` that
+  is not free/none: queue jobs, manual holders and owner-playing lines alike) or Windows' free commit is below
+  75 GB, at most 5 h, then fails the job ("memory guard: waited ..."). It refuses at once when C: has less than
+  60 GB free ("disk guard"). After every job a second hook empties the job's workspace.
+- The offline queue's start gate (`coord-multiplayer\offline\lib\wsl-reserve.ps1`, Get-WslReserveGB) counts a
+  live WSL VM as its whole `.wslconfig` memory cap already taken, so a game pair never starts into memory a
+  running CI job can still grow into.
+The hook reads the Windows side from `/run/squadala-ci/status` ("time, free commit GB, C: free GB, lanes busy
+0/1"), fed every 15 s by `status-feed.ps1` (below; tests: `tools/ci-runner/wsl/status_feed_test.ps1`, windows
+job). A stale, missing or old-format file counts as "not enough" (fail closed). Only the 0/1 enters the distro:
+TEST-TURN text never reaches a public job log.
 
 ## Linux runners in WSL
 
@@ -37,7 +44,8 @@ no switches). The runners have a WSL distro of their own, `squadala-ci` (in
 `%LOCALAPPDATA%\squadala-ci\wsl`); the owner's `Ubuntu-24.04` (local CI, user `lci`, needs `/mnt/c`)
 is not changed. How `squadala-ci` is locked down:
 
-- `%UserProfile%\.wslconfig` (one VM for every distro, so local CI shares the cap): `memory=32GB`, `processors=24`, `swap=2GB`, `autoMemoryReclaim=dropCache`.
+- `%UserProfile%\.wslconfig` (one VM for every distro, so local CI shares the cap): `memory=20GB` (3 jobs at
+  make -j4), `processors=24`, `swap=8GB` (a file on the VM's side, not Windows commit), `autoMemoryReclaim=dropCache`.
   Never raise them: the test lanes need the rest of the commit.
 - `/etc/wsl.conf`: no Windows interop (a job cannot start Windows programs as the owner) and no
   Windows drives (`/mnt/c` is gone). install-wsl.ps1 checks both after the restart.

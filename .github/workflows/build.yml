@@ -414,6 +414,8 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/kit_deps_test.ps1
       - name: CI runner hook tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/ci-runner/job_started_test.ps1
+      - name: WSL runners' lane check tests (status-feed.ps1)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/ci-runner/wsl/status_feed_test.ps1
       - name: CI runner script checks
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/ci-runner/scripts_test.ps1
 

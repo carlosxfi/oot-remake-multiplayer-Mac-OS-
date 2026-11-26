@@ -3,7 +3,7 @@
 # user lci is never touched), label squadala-wsl. Runs as the owner, NOT elevated, from a checkout of this repo:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\ci-runner\wsl\install-wsl.ps1
 # Safe to run again (it skips registered runners). What it does:
-#  1. checks gh is daurosk, %UserProfile%\.wslconfig caps WSL (memory <= 32GB, processors <= 24) and free commit >= 75 GB;
+#  1. checks gh is daurosk, %UserProfile%\.wslconfig caps WSL (memory <= 20GB, processors <= 24) and free commit >= 40 GB;
 #  2. copies tools\ci-runner\wsl into the distro over stdin and runs setup.sh as root (packages, user squadala-ci
 #     without sudo, wsl.conf without interop or Windows drives, hooks, runner folders, systemd units);
 #  3. restarts the distro so wsl.conf applies, then checks /mnt/c is gone and Windows programs do not start;
@@ -35,7 +35,7 @@ function Invoke-WslStdin([string]$Arguments, [byte[]]$Bytes) {
 $login = (& $Gh api user --jq .login)
 if ($login -ne 'daurosk') { throw "gh is signed in as '$login', not daurosk." }
 $cfg = Get-Content -Raw (Join-Path $env:USERPROFILE '.wslconfig') -ErrorAction SilentlyContinue
-if (-not ($cfg -match '(?m)^\s*memory\s*=\s*(\d+)GB' -and [int]$Matches[1] -le 32)) { throw '.wslconfig must cap memory at <= 32GB (docs/ci-runner.md).' }
+if (-not ($cfg -match '(?m)^\s*memory\s*=\s*(\d+)GB' -and [int]$Matches[1] -le 20)) { throw '.wslconfig must cap memory at <= 20GB (docs/ci-runner.md).' }
 if (-not ($cfg -match '(?m)^\s*processors\s*=\s*(\d+)' -and [int]$Matches[1] -le 24)) { throw '.wslconfig must cap processors at <= 24.' }
 $free = [math]::Floor((Get-CimInstance Win32_OperatingSystem).FreeVirtualMemory / 1MB)
 if ($free -lt 40) { throw "free commit is $free GB (< 40 GB): a game test is running; run this later (jobs keep their own 75 GB guard)." }
@@ -79,9 +79,13 @@ for ($i = 1; $i -le $Runners; $i++) {
 
 # 5. Status feed at every logon (it also keeps the distro up), started now.
 $dir = Join-Path $env:LOCALAPPDATA 'squadala-ci'
+# The folder that holds oot-remake-multiplayer (lane locks) and coord-multiplayer (TEST-TURN): status-feed.ps1 reads
+# the lanes' state there. From a worktree (..\wt-*), its parent is that folder too.
+$ootRoot = Split-Path (Split-Path (Split-Path (Split-Path $src)))
+if (-not (Test-Path -LiteralPath (Join-Path $ootRoot 'coord-multiplayer\TEST-TURN'))) { throw "no coord-multiplayer\TEST-TURN next to the checkout ($ootRoot)." }
 New-Item -ItemType Directory -Force $dir | Out-Null
 Copy-Item (Join-Path $src 'status-feed.ps1') (Join-Path $dir 'status-feed.ps1') -Force
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$dir\status-feed.ps1`" -Distro $Distro"
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$dir\status-feed.ps1`" -Distro $Distro -Root `"$ootRoot`""
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 99 -RestartInterval (New-TimeSpan -Minutes 1)
 Register-ScheduledTask -TaskName 'squadala-ci status feed' -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
