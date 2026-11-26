@@ -295,9 +295,9 @@ class RunnerTest(unittest.TestCase):
     def test_key_lands_or_setup_fail_stops_the_run(self):
         # (f1-event-c31) A posted F1 counts only once the module's "coop: F1: " line for it is in the log.
         self.g.landed = True
-        self.r.run(hs.parse_steps("key A F1\nlines after A min=1 coop: F1: \n"))
+        self.r.run(hs.parse_steps("key A F1\nlines after A min=1 coop: F1: Longshot\n"))
         self.assertEqual(self.g.calls[-1], ("key", "A", 0x70, 0x3B))
-        self.assertEqual(self.counts(), ["PASS after (A: 1 lines match 'coop: F1: ', at least 1)"])
+        self.assertEqual(self.counts(), ["PASS after (A: 1 lines match 'coop: F1: Longshot', at least 1)"])
         self.g.landed = False
         fails = self.r.run(hs.parse_steps("key A F1\nshot never\n"))
         c = self.counts()
