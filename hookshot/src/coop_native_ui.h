@@ -254,6 +254,13 @@ private:
 // CoopTitle in the title screen's hook, CoopModsRuntime) is live by definition. Any thread.
 void SetSceneLoading(bool on);
 bool SceneLoading();
+// party-hud-crash-c126-6: the title's menu is up (CoopTitle::Up, set at the frame site with SetSceneLoading). The game's
+// Sequence_IsLoadingBanc is on through the boot's title but NOT through a title reached from play (the pause menu's
+// Title Screen: play -> title with no scene load), where every play screen co-op knew is freed. So the title counts as
+// no play scene too: no screen is live (ScreenLive), the play UI is down (GameUiUp) until the HUD runs after it.
+void SetTitleUp(bool up);
+// No play scene: a scene loads (SceneLoading) or the title's menu is up (SetTitleUp). Nothing is live then.
+bool PlayUiDown();
 // Patch 0018's word this frame: the screens that ran in the last 100 ms, and whether its HUD screen ran (nullopt: this
 // exe's patch 0018 does not say them). A load (SetSceneLoading(true)) forgets that the HUD ran.
 void SetRunningScreens(std::optional<std::vector<std::uint64_t>> screens, std::optional<bool> hud_runs);
