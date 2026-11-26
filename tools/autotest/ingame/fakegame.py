@@ -169,7 +169,18 @@ class FakeGame:
             r.update(reads=int(m.get("frames", 1)), no_camera=0, stick=[0.0, float(m.get("strength", 1.0))], view=0.0,
                      state=self.state())
         elif cmd == "act":
-            self.act(m["lines"])
+            # The real bridge's rule (hookshot/src/coop_playtest_core.cpp ParseRequest "act"): one line, no control
+            # character, '#' or ';'. Refused the same way here, so a test that sends one fails in the fakes, not on a
+            # lane (hair-link-4217f901 16:48: 'menu look hair=#RRGGBB' was refused on both games).
+            lines = m.get("lines") or ""
+            if not lines or len(lines) > 256:
+                return {"id": m.get("id"), "ok": False, "error": "bad_request",
+                        "message": "lines: one test line of at most 256 characters (kill NAME, hit NAME N, hurt N, "
+                                   "place X Y Z, ...)"}
+            if any(ord(ch) < 0x20 or ch in "\x7f#;" for ch in lines):
+                return {"id": m.get("id"), "ok": False, "error": "bad_request",
+                        "message": "lines: one line, with no new line, ';' or '#'"}
+            self.act(lines)
             r.update(lines=1, note="ok")
         elif cmd == "give":
             r["result"] = "given"
