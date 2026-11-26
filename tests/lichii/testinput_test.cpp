@@ -1020,12 +1020,9 @@ TEST_CASE("testinput: menu leave leaves the session as the Multiplayer page's Le
 
 TEST_CASE("testinput: menu main opens the Multiplayer page and presses nothing (row 170's page shot)") {
     std::string error;
-    CHECK_FALSE(Parse("menu main now
-", error));
-    CHECK_FALSE(Parse("menu map
-", error));
-    Runner r(Must("menu Main
-"));
+    CHECK_FALSE(Parse("menu main now\n", error));
+    CHECK_FALSE(Parse("menu map\n", error));
+    Runner r(Must("menu Main\n"));
     std::vector<std::string> log;
     r.Advance(0.0, std::nullopt, log);
     const auto requests = r.TakeRequests();
