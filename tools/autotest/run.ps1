@@ -971,15 +971,15 @@ function Stop-NetSim {
 $failed = $null
 $stepFails = 0
 $stepUnproven = 0
+# The emulator runtime's games and their window placement use Python (placement.py); a monitor name that does not
+# exist goes to the primary monitor (placement.py says so); no monitor at all stops the run here.
+$py = @(Find-Python)
+$pyArgs = @($py | Select-Object -Skip 1)
 # The scenario's `song` lines (ocarina_notes.py expand, as Play writes them out) checked before any game starts.
 foreach ($f in @($scA, $scB) | Where-Object { -not $steps -and (Test-Path $_) }) {
     & $py[0] @pyArgs -I "$here\ocarina_notes.py" expand $f | Out-Null
     if ($LASTEXITCODE) { Write-Host "SETUP-FAIL scenario $Scenario`: $f has a bad song line (above)"; exit 2 }
 }
-# The emulator runtime's games and their window placement use Python (placement.py); a monitor name that does not
-# exist goes to the primary monitor (placement.py says so); no monitor at all stops the run here.
-$py = @(Find-Python)
-$pyArgs = @($py | Select-Object -Skip 1)
 $mon = (& $py[0] @pyArgs -I "$here\placement.py" rects @(Display-Args) 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE) { throw $mon }
 Write-Host "windows go to: $mon"
