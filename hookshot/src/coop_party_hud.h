@@ -11,7 +11,7 @@
 // probe's second run). The pack (tools/puppet_pack/party_hud.py) adds our own copies of the same two part layouts to
 // PlayerStatus_00, hidden: kSlots players x (kHearts whole hearts + one part heart + one line of the game's text), and
 // two more lines ("+N" and our own). This file places, shows and sets them with the same calls. No game object owns the copies, so
-// nothing sets them back. A pack without the copies: Step answers false and the drawn blocks stay (coop_draw).
+// nothing sets them back. Players past the pack's slots, or every player without a pack, get a run-time gauge (Live).
 //
 // Split for tests (tests/hookshot/party_hud_test.cpp): everything goes through Game.
 #pragma once
@@ -55,6 +55,28 @@ inline constexpr std::uint64_t kPaneSetMsg = 0x439520;     // (text pane, &{text
 inline constexpr std::uint64_t kPaneMsgAttrs = 0x10;       // text pane+: the message attributes it keeps
 inline constexpr std::uint64_t kPaneTextWidth = 0x13c;     // text pane+: f32 the width its text was drawn
 inline constexpr std::uint32_t kTextPaneKind = 2;          // pane flags bits 22..25: a text box
+// Run-time gauges (R2/R3: a player without a pack copy), made as the status screen makes its own (f_834053e0 at
+// 0x83405b70): the HUD's Pa_HeartGauge_00 part layout cloned (f_80791f70), a gauge object built on the clone
+// (f_833db800) and set up (f_8078fd00: its 20 whole hearts Pa_NoGauge_00..19 and part hearts Pa_Gauge_00/01, each with
+// its 0x78 controller in the layout's animation list). The gauge object's own update (vtable 0x84c011b8 slots 4/5,
+// f_8019de20) reads Link's life from the game's data, so ours is taken out of that list at once (its base destructor
+// f_80caaf70 only unlinks it) and its children are set with the game's own setters.
+inline constexpr std::uint64_t kNew = 0x8005eca0 - 0x80020000;          // (align, bytes): the game's global new
+inline constexpr std::uint64_t kClonePart = 0x80791f70 - 0x80020000;    // (0x98 object, part layout, name, 0, 0)
+inline constexpr std::uint64_t kAttach = 0x80235dc0 - 0x80020000;       // ([parent+0x18], pane, parent)
+inline constexpr std::uint64_t kGaugeMake = 0x833db800 - 0x80020000;    // (0x788 object, part layout)
+inline constexpr std::uint64_t kGaugeSetUp = 0x8078fd00 - 0x80020000;   // (gauge, heap 0, 1)
+inline constexpr std::uint64_t kGaugeUnlink = 0x80caaf70 - 0x80020000;  // (gauge): out of the animation list
+inline constexpr std::uint64_t kHeartSet = 0x833dca10 - 0x80020000;     // (heart, 0 none / 1 empty / 2 full)
+inline constexpr std::uint64_t kGaugeFrame = 0x833dcb60 - 0x80020000;   // (part heart, s32 HeartGauge frame)
+inline constexpr std::uint64_t kCloneBytes = 0x98, kGaugeBytes = 0x788;
+inline constexpr std::uint64_t kPartLayout = 0xa0;         // part pane+: its part layout
+inline constexpr std::uint64_t kParentOwner = 0x18;        // pane+: what the attach call takes first
+inline constexpr std::uint64_t kGaugeWhole = 0x30;         // gauge+: 20 whole hearts' controllers
+inline constexpr std::uint64_t kGaugePart = 0x6c8;         // gauge+: the part heart's controller (then +0x6d0 a second)
+inline constexpr std::uint64_t kHeartBase = 0x30;          // controller+: its BaseState animation (the setter's first)
+inline constexpr std::uint64_t kHeartGauge = 0x58;         // controller+: HeartGauge (f_833dcb60)
+inline constexpr std::uint64_t kPaneScale = 0x84;          // pane+: f32 scale x, y (after translate and rotate; NOT proven)
 }  // namespace addr
 
 // Where the copies go, in the frame of their parent (N_ScaleL_00: the picture's top left corner, y up; the layout is
@@ -200,6 +222,32 @@ private:
     };
     std::array<Glow, kSlots> glows_{};
     std::array<Label, kSlots + 2> labels_{};   // then "+N", then our own line
+
+    // A run-time gauge (a slot past the pack's, or every slot without a pack): made the first time a player needs it,
+    // never in solo. It hangs in the HUD's layout: when that layout goes (scene, title, HUD made again) its panes go with
+    // it and ours are forgotten (Drop), never freed (the gauge object and clone, 0x820 bytes, stay: freeing them while
+    // a layout could still hold the clone's panes would be worse than that).
+    struct Live {
+        bool tried = false;
+        std::uint64_t obj = 0, gauge = 0, root = 0;
+        std::array<std::uint64_t, kHearts> whole{}, at{};   // controllers, and their part panes in the clone
+        std::uint64_t part = 0, part_pane = 0, part2_pane = 0;
+        std::int32_t gauge_last = -1;
+        std::array<int, kHearts> state{};
+        int part_frame = -1, shown = -1, part_shown = -1, part_on = -1;
+        float alpha = -1.0f;
+        std::array<float, 2> root_at{};
+        bool placed = false;
+    };
+    bool MakeLive(Game& game, int slot, std::vector<std::string>* log);
+    void StepLive(Game& game, int slot, const Plan& plan, float top, float alpha);
+    void HideLive(Game& game, Live& v);
+    void Drop(Game& game);
+    std::uint64_t gauge_part_ = 0;   // the HUD's Pa_HeartGauge_00 part layout (0: no run-time gauges)
+    std::uint64_t parent_ = 0;       // N_ScaleL_00
+    std::array<float, 2> source_at_{};   // Pa_HeartGauge_00's place there
+    std::array<Live, kSlots> live_{};
+    std::uint64_t live_layout_ = 0;  // the layout live_ hangs in
 };
 
 // Test builds, COOP_TEST_PARTY_HUD=1 (scenario hs-party-hud): the blocks of four made-up players, their life going

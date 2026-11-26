@@ -23,6 +23,7 @@ constexpr std::uint64_t kManager = 0x96000000, kScreens = 0x97000000, kStatus = 
 constexpr std::uint64_t kBlock = 0x9a000000, kPanes = 0x9b000000, kAnims = 0x9c000000;
 constexpr std::uint64_t kParts = 0x9d000000, kBoxes = 0x9e000000;   // our parts' layouts, their text panes
 constexpr std::uint64_t kAttrs = 0x1234;                             // a text pane's own message attributes
+constexpr std::uint64_t kSource = 0x9f000000, kLive = 0xa0000000;   // the game's heart part layout; our run-time memory
 
 struct FakeGame final : party::Game {
     std::map<std::uint64_t, std::uint8_t> mem;
@@ -38,6 +39,44 @@ struct FakeGame final : party::Game {
     int pack_slots = 3;                                  // party_hud.py SLOTS
     std::int32_t gauge_last = 100;
     int calls = 0;
+    // The game's own heart part (Pa_HeartGauge_00 under N_ScaleL_00): run-time gauges can be made from it (R2/R3).
+    bool game_gauge = false;
+    std::uint64_t next_new = kLive;
+    std::map<std::uint64_t, std::uint64_t> clone_roots;   // clone root -> clone
+    std::map<std::uint64_t, std::string> clone_panes;      // a pane in a clone -> its name
+    std::map<std::uint64_t, int> heart_set;                // controller -> its last state (f_833dca10)
+    std::map<std::uint64_t, int> gauge_frame;              // part heart -> its last frame (f_833dcb60)
+    int made = 0, attached = 0, unlinked = 0;
+    bool Live(std::uint64_t f, const std::array<std::uint64_t, 5>& x, std::uint64_t& out) {
+        out = 0;
+        if (f == At(party::addr::kNew)) return out = next_new, next_new += 0x10000, true;
+        if (f == At(party::addr::kClonePart)) return ++made, clone_roots[x[0] + 0x1000] = x[0], true;
+        if (f == At(party::addr::kPaneTable) && clone_roots.count(x[0] - 0x40 + 0x1000)) return out = x[0] - 0x40 + 0x1000, true;
+        if (f == At(party::addr::kTablePane) && clone_roots.count(x[0])) {
+            const std::string name = Str(x[1]);
+            for (const auto& [p, n] : clone_panes) if (n == name && p / 0x10000 == x[0] / 0x10000) return out = p, true;
+            out = x[0] + 0x100 * (clone_panes.size() % 200 + 1);
+            clone_panes[out] = name;
+            return true;
+        }
+        if (f == At(party::addr::kAttach)) return ++attached, true;
+        if (f == At(party::addr::kGaugeMake)) return true;
+        if (f == At(party::addr::kGaugeSetUp)) {   // 20 whole hearts and the part heart, each with its animations
+            for (int i = 0; i <= party::kHearts; ++i) {
+                const std::uint64_t c = x[0] + 0x2000 + 0x100 * static_cast<std::uint64_t>(i);
+                Put(c + party::addr::kHeartBase, c + 0x80);
+                Put(c + party::addr::kHeartGauge, c + 0x90);
+                Put(c + 0x90 + party::addr::kAnimPlayer, c + 0xa0);   // (its last frame: gauge_last)
+                Put(i < party::kHearts ? x[0] + party::addr::kGaugeWhole + 8 * static_cast<std::uint64_t>(i)
+                                       : x[0] + party::addr::kGaugePart, c);
+            }
+            return true;
+        }
+        if (f == At(party::addr::kGaugeUnlink)) return ++unlinked, true;
+        if (f == At(party::addr::kHeartSet)) return heart_set[x[0]] = static_cast<int>(x[1]), true;
+        if (f == At(party::addr::kGaugeFrame)) return gauge_frame[x[0]] = static_cast<int>(x[1]), true;
+        return false;
+    }
 
     bool Read(std::uint64_t a, void* out, std::size_t n) override {
         auto* o = static_cast<std::uint8_t*>(out);
@@ -60,8 +99,14 @@ struct FakeGame final : party::Game {
     std::optional<std::uint64_t> Call(std::uint64_t f, const std::array<std::uint64_t, 5>& x) override {
         ++calls;
         if (f == At(ui::addr::kMalloc)) return kBlock;
+        if (std::uint64_t out = 0; game_gauge && Live(f, x, out)) return out;
         if (f == At(ui::addr::kPaneByName)) {
             const std::string name = Str(x[1]);
+            if (game_gauge && (name == "Pa_HeartGauge_00" || name == "N_ScaleL_00")) {
+                if (panes.count(name) == 0) panes[name] = kPanes + 0x1000 * panes.size();
+                if (name == "Pa_HeartGauge_00") Put(panes[name] + party::addr::kPartLayout, kSource);
+                return panes[name];
+            }
             if (!pack || name.rfind("Pa_Coop", 0) != 0) return 0;
             for (const char* slotted : {"Pa_CoopHeart_", "Pa_CoopGauge_", "Pa_CoopName_"}) {
                 const std::size_t n = std::string(slotted).size();
@@ -248,9 +293,10 @@ TEST_CASE("party hud: an older pack hides the hearts (nothing drawn instead)") {
     game.pack = false;
     CHECK_FALSE(hud.Step(game, one, std::nullopt, &log));
     CHECK_FALSE(hud.native());
-    REQUIRE(log.size() == 1);
-    CHECK(log[0].find("older pack") != std::string::npos);
-    CHECK(log[0].find("hidden") != std::string::npos);
+    REQUIRE(log.size() == 2);
+    CHECK(log[0].find("no run-time gauges") != std::string::npos);
+    CHECK(log[1].find("older pack") != std::string::npos);
+    CHECK(log[1].find("hidden") != std::string::npos);
     const int calls = game.calls;
     CHECK_FALSE(hud.Step(game, one, std::nullopt, &log));   // asked once per HUD
     CHECK(game.calls == calls);
@@ -502,4 +548,52 @@ TEST_CASE("party hud: the slots the pack has, the rest in +N (row R3)") {
         CHECK(game.panes.count(HeartName(slots, 0)) == 0);
         CHECK(game.texts["Pa_CoopMore_0/T_Text_00"] == "+" + std::to_string(6 - slots));
     }
+}
+
+TEST_CASE("party hud: no pack: a run-time gauge per player, none in solo, forgotten with the HUD (R2)") {
+    FakeGame game;
+    game.Hud();
+    game.pack = false;
+    game.game_gauge = true;
+    party::Hud hud;
+    std::vector<std::string> log;
+    CHECK(hud.Step(game, {}, std::nullopt, &log));   // solo: the HUD is ours, nothing made
+    CHECK(game.made == 0);
+    const std::vector<party::Block> two = {{"A", Quarters(10, 12)}, {"B", Quarters(16, 16), true}};
+    CHECK(hud.Step(game, two, std::nullopt, &log));
+    CHECK(game.made == 2);
+    CHECK(game.attached == 2);
+    CHECK(game.unlinked == 2);   // (out of the animation list: it would show Link's life)
+    // A: 3 hearts, 10 quarters: two full, the third empty under the part heart at 2 quarters; the rest none.
+    const std::uint64_t ga = kLive + 0x10000;   // (the first gauge: after its clone)
+    CHECK(game.heart_set[ga + 0x2000] == 2);
+    CHECK(game.heart_set[ga + 0x2100] == 2);
+    CHECK(game.heart_set[ga + 0x2200] == 1);
+    CHECK(game.heart_set[ga + 0x2300] == 0);
+    CHECK(game.heart_set[ga + 0x2000 + 0x100 * party::kHearts] == 2);
+    CHECK(game.gauge_frame[ga + 0x2000 + 0x100 * party::kHearts] == 50);
+    bool said = false;
+    for (const auto& l : log) said = said || l.find("run-time gauge 1: made") != std::string::npos;
+    CHECK(said);
+    // Back to solo: hidden, nothing new made.
+    CHECK(hud.Step(game, {}, std::nullopt, &log));
+    CHECK(game.shown[kLive + 0x1000] == 0);
+    CHECK(game.made == 2);
+    // The HUD made again (scene, title): the old ones are forgotten, new ones made on the new layout.
+    game.Hud(kLayout + 0x100000);
+    CHECK(hud.Step(game, two, std::nullopt, &log));
+    CHECK(game.made == 4);
+}
+
+TEST_CASE("party hud: the pack's slots first, run-time gauges past them, no +N while they fit (R3)") {
+    FakeGame game;
+    game.Hud();
+    game.game_gauge = true;
+    party::Hud hud;
+    std::vector<party::Block> five;
+    for (const char* n : {"A", "B", "C", "D", "E"}) five.push_back({n, Quarters(12, 12)});
+    CHECK(hud.Step(game, five, std::nullopt));
+    CHECK(game.made == 2);   // (3 in the pack)
+    CHECK(game.Shown(HeartName(2, 0)));
+    CHECK_FALSE(game.Shown("Pa_CoopMore_0"));
 }

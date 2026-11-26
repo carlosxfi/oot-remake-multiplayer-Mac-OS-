@@ -15,7 +15,8 @@ constexpr std::size_t kNameBytes = 64;                    // block+0: a name for
 constexpr std::size_t kTextBytes = 200;                   // a line's text at most
 constexpr std::size_t kLineBytes = sizeof(CoopNativeUi::Ref) + kTextBytes + 8;
 constexpr std::size_t kOutAt = kNameBytes + kLineBytes * (kSlots + 2);   // block+: the path lookup's layout out
-constexpr std::size_t kBlockBytes = kOutAt + 16;
+constexpr std::size_t kNamesAt = kOutAt + 16;             // block+: the run-time gauges' names (32 bytes each)
+constexpr std::size_t kBlockBytes = kNamesAt + 32 * kSlots;
 constexpr std::size_t kMore = kSlots, kSelf = kSlots + 1;   // labels_ after the players' lines
 
 
@@ -184,17 +185,33 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
         }
         return *a;
     };
-    if (pane(PaneName("Heart", 0, 0)) == 0) {
-        if (log) {
-            log->push_back(std::string(kSay) +
-                           "the HUD has no hearts of ours (an older pack): the other players' hearts are hidden (nothing "
-                           "drawn instead)");
-        }
-        return false;
+    // The run-time gauges' source: the game's own heart part and its parent (R2: no pack, or players past its slots).
+    Drop(game);
+    gauge_part_ = parent_ = 0;
+    source_at_ = {};
+    if (const std::uint64_t src = pane("Pa_HeartGauge_00"); src != 0) {
+        ReadValue(game, src + addr::kPartLayout, gauge_part_);
+        game.Read(src + addr::kPaneXY, source_at_.data(), sizeof(float) * 2);
+        parent_ = pane("N_ScaleL_00");
     }
-    // The slots the pack has, each complete (an older pack has fewer than kSlots: those are used, the rest go to "+N").
+    if (parent_ == 0) gauge_part_ = 0;
+    live_layout_ = layout;
+    if (log) {
+        log->push_back(std::string(kSay) + (gauge_part_ != 0 ? "run-time gauges can be made (Pa_HeartGauge_00 under N_ScaleL_00)"
+                                                             : "no run-time gauges (Pa_HeartGauge_00 or N_ScaleL_00 not found)"));
+    }
     slots_ = 0;
     bool all = true;
+    if (pane(PaneName("Heart", 0, 0)) == 0) {
+        if (log) {
+            log->push_back(std::string(kSay) + "the HUD has no hearts of ours (an older pack): " +
+                           (gauge_part_ != 0 ? "every other player gets a run-time gauge"
+                                             : "the other players' hearts are hidden (nothing drawn instead)"));
+        }
+        if (gauge_part_ == 0) return false;
+        all = false;
+    }
+    // The slots the pack has, each complete (an older pack has fewer than kSlots: those are used, the rest go to "+N").
     for (int s = 0; s < kSlots && all; ++s) {
         if (s > 0 && pane(PaneName("Heart", s, 0)) == 0) break;   // (no more slots in this pack)
         for (int i = 0; i <= kHearts; ++i) {   // (the last: the slot's part heart)
@@ -245,10 +262,147 @@ bool Hud::Find(Game& game, std::uint64_t layout, std::vector<std::string>* log) 
         }
         log->push_back(std::string(kSay) + (all ? "the game's HUD shows the other players' hearts (its own heart parts, " +
                                                       std::to_string(slots_) + " slots)"
-                                                : "some of our hearts or their animations are missing: none shown"));
+                                                : "no complete slot of ours in the pack"));
     }
-    native_ = all;
-    return all;
+    native_ = all || gauge_part_ != 0;
+    return native_;
+}
+
+void Hud::Drop(Game&) {
+    live_ = {};   // (the old layout's: forgotten, see Live)
+}
+
+// One run-time gauge, made as the status screen makes its own, taken out of the animation list (it would show Link's
+// life), its hearts placed in the game's two rows of ten and hidden until set. The log says what was made or why not.
+bool Hud::MakeLive(Game& game, int slot, std::vector<std::string>* log) {
+    Live& v = live_[static_cast<std::size_t>(slot)];
+    if (v.tried) return v.gauge != 0;
+    v.tried = true;
+    const std::string who = "run-time gauge " + std::to_string(slot) + ": ";
+    const auto say = [&](const std::string& what) {
+        if (log) log->push_back(std::string(kSay) + who + what);
+        return false;
+    };
+    const auto call = [&](std::uint64_t f, std::array<std::uint64_t, 5> x) -> std::uint64_t {
+        const auto r = game.Call(game.At(f), x);
+        return r ? *r : 0;
+    };
+    if (gauge_part_ == 0 || block_ == 0) return say("no source");
+    // (its name kept in our block for the clone's life: the clone may keep the pointer)
+    char name[32];
+    std::snprintf(name, sizeof name, "Pa_CoopLive_%d", slot);
+    const std::uint64_t name_at = block_ + kNamesAt + 32 * static_cast<std::uint64_t>(slot);
+    if (!game.Write(name_at, name, std::strlen(name) + 1)) return say("name not written");
+    v.obj = call(addr::kNew, {8, addr::kCloneBytes, 0, 0, 0});
+    if (v.obj == 0) return say("no memory");
+    if (!game.Call(game.At(addr::kClonePart), {v.obj, gauge_part_, name_at, 0, 0})) return v.obj = 0, say("clone failed");
+    v.root = call(addr::kPaneTable, {v.obj + 0x40, 0, 0, 0, 0});
+    std::uint64_t owner = 0;
+    if (v.root == 0 || !ReadValue(game, parent_ + addr::kParentOwner, owner)) return v.obj = 0, say("clone has no root pane");
+    game.Call(game.At(addr::kAttach), {owner, v.root, parent_, 0, 0});
+    const std::uint64_t gauge = call(addr::kNew, {8, addr::kGaugeBytes, 0, 0, 0});
+    if (gauge == 0) return say("no memory for the gauge");
+    game.Call(game.At(addr::kGaugeMake), {gauge, v.obj, 0, 0, 0});
+    game.Call(game.At(addr::kGaugeSetUp), {gauge, 0, 1, 0, 0});
+    game.Call(game.At(addr::kGaugeUnlink), {gauge, 0, 0, 0, 0});
+    // Its children and their part panes in the clone (Pa_NoGauge_NN, Pa_Gauge_00/01), each checked before use: the
+    // setters read their animations with no check of their own.
+    int hearts = 0;
+    for (int i = 0; i < kHearts; ++i) {
+        std::uint64_t c = 0, base = 0;
+        ReadValue(game, gauge + addr::kGaugeWhole + 8 * static_cast<std::uint64_t>(i), c);
+        if (c != 0 && ReadValue(game, c + addr::kHeartBase, base) && base != 0) v.whole[static_cast<std::size_t>(i)] = c;
+        std::snprintf(name, sizeof name, "Pa_NoGauge_%02d", i);
+        const std::uint64_t n = Name(game, name);
+        v.at[static_cast<std::size_t>(i)] = n == 0 ? 0 : call(addr::kTablePane, {v.root, n, 0, 0, 0});
+        hearts += v.whole[static_cast<std::size_t>(i)] != 0 && v.at[static_cast<std::size_t>(i)] != 0;
+    }
+    std::uint64_t part = 0, base = 0, anim = 0, player = 0;
+    ReadValue(game, gauge + addr::kGaugePart, part);
+    if (part != 0 && ReadValue(game, part + addr::kHeartBase, base) && base != 0 &&
+        ReadValue(game, part + addr::kHeartGauge, anim) && anim != 0) {
+        v.part = part;
+        if (ReadValue(game, anim + addr::kAnimPlayer, player) && player != 0) {
+            const auto l = game.Call(game.At(addr::kAnimLastFrame), {player, 0, 0, 0, 0});
+            v.gauge_last = l ? static_cast<std::int32_t>(static_cast<std::uint32_t>(*l)) : -1;
+        }
+    }
+    for (const char* p : {"Pa_Gauge_00", "Pa_Gauge_01"}) {
+        const std::uint64_t n = Name(game, p);
+        (p[10] == '0' ? v.part_pane : v.part2_pane) = n == 0 ? 0 : call(addr::kTablePane, {v.root, n, 0, 0, 0});
+    }
+    if (hearts < kHearts || v.part == 0 || v.part_pane == 0) {
+        // (kept out of sight: hearts half there would be worse than none)
+        game.Call(game.At(addr::kPaneShow), {v.root, 0, 0, 0, 0});
+        return say("made but incomplete (" + std::to_string(hearts) + " of 20 hearts, part heart " +
+                   (v.part != 0 && v.part_pane != 0 ? "there" : "missing") + "): not shown");
+    }
+    v.gauge = gauge;
+    const float scale[2] = {kScale, kScale};
+    game.Write(v.root + addr::kPaneScale, scale, sizeof scale);
+    // The game's own rows: one heart and one row apart (78, 61) from the first heart's place.
+    std::array<float, 2> first{};
+    game.Read(v.at[0] + addr::kPaneXY, first.data(), sizeof first);
+    for (int i = 1; i < kHearts; ++i) {
+        MovePane(game, v.at[static_cast<std::size_t>(i)],
+                 {first[0] + 78.0f * static_cast<float>(i % kPerRow), first[1] - 61.0f * static_cast<float>(i / kPerRow)});
+    }
+    if (v.part2_pane != 0) game.Call(game.At(addr::kPaneShow), {v.part2_pane, 0, 0, 0, 0});
+    HideLive(game, v);
+    if (log) {
+        char b[160];
+        std::snprintf(b, sizeof b, "made (clone %#llx, root %#llx, gauge %#llx, first heart at %.0f, %.0f, part heart last frame %d)",
+                      static_cast<unsigned long long>(v.obj), static_cast<unsigned long long>(v.root),
+                      static_cast<unsigned long long>(gauge), first[0], first[1], v.gauge_last);
+        say(b);
+    }
+    return true;
+}
+
+void Hud::HideLive(Game& game, Live& v) {
+    if (v.root == 0 || v.shown == 0) return;
+    if (game.Call(game.At(addr::kPaneShow), {v.root, 0, 0, 0, 0})) v.shown = 0;
+}
+
+// A run-time gauge set as the game sets its own: each whole heart (none past the player's), the part heart moved onto
+// the heart partly filled; the whole gauge placed as the pack's copies are (HeartAt), dimmed on its root.
+void Hud::StepLive(Game& game, int slot, const Plan& plan, float top, float alpha) {
+    Live& v = live_[static_cast<std::size_t>(slot)];
+    if (v.gauge == 0) return;
+    std::array<float, 2> first{};
+    game.Read(v.at[0] + addr::kPaneXY, first.data(), sizeof first);
+    const std::array<float, 2> want = HeartAt(top, 0);
+    const std::array<float, 2> root = {want[0] - kScale * first[0], want[1] - kScale * first[1]};
+    if (!v.placed || v.root_at != root) {
+        if (MovePane(game, v.root, root)) v.placed = true, v.root_at = root;
+    }
+    for (int i = 0; i < kHearts; ++i) {
+        const int state = i < plan.hearts ? plan.whole[static_cast<std::size_t>(i)] : 0;
+        int& had = v.state[static_cast<std::size_t>(i)];
+        if (had != state + 1 && game.Call(game.At(addr::kHeartSet), {v.whole[static_cast<std::size_t>(i)],
+                                                                     static_cast<std::uint64_t>(state), 0, 0, 0})) {
+            had = state + 1;   // (0: not set yet)
+        }
+    }
+    const bool part = plan.part_at >= 0;
+    if (part) {
+        if (v.part_on != plan.part_at) {
+            std::array<float, 2> at{};
+            game.Read(v.at[static_cast<std::size_t>(plan.part_at)] + addr::kPaneXY, at.data(), sizeof at);
+            if (MovePane(game, v.part_pane, at)) v.part_on = plan.part_at;
+        }
+        const int frame = static_cast<int>(GaugeFrame(plan.part_quarters, v.gauge_last));
+        if (v.part_frame != frame) {
+            const bool a = game.Call(game.At(addr::kHeartSet), {v.part, 2, 0, 0, 0}).has_value();
+            const bool b = game.Call(game.At(addr::kGaugeFrame), {v.part, static_cast<std::uint64_t>(frame), 0, 0, 0}).has_value();
+            if (a && b) v.part_frame = frame;
+        }
+    }
+    if (v.part_shown != (part ? 1 : 0) && game.Call(game.At(addr::kPaneShow), {v.part_pane, part ? 1u : 0u, 0, 0, 0})) {
+        v.part_shown = part ? 1 : 0;
+    }
+    Alpha(game, v.root, v.alpha, alpha);
+    if (v.shown != 1 && game.Call(game.At(addr::kPaneShow), {v.root, 1, 0, 0, 0})) v.shown = 1;
 }
 
 void Hud::Show(Game& game, Pane& p, bool shown) {
@@ -374,14 +528,24 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
     }
     std::vector<int> counts;
     for (const Block& b : blocks) counts.push_back(PlanHearts(b.hearts).hearts);
-    const std::size_t shown = BlocksThatFit(top, counts, static_cast<std::size_t>(slots_));
+    // The pack's slots first, then a run-time gauge for each player past them (R2/R3).
+    const std::size_t shown = BlocksThatFit(top, counts, static_cast<std::size_t>(gauge_part_ != 0 ? kSlots : slots_));
+    std::size_t shown_now = shown;
     for (int s = 0; s < kSlots; ++s) {
         auto& hearts = hearts_[static_cast<std::size_t>(s)];
         Pane& gauge = gauges_[static_cast<std::size_t>(s)];
         Label& label = labels_[static_cast<std::size_t>(s)];
         Glow& glow = glows_[static_cast<std::size_t>(s)];
+        const bool live = s >= slots_;
+        if (static_cast<std::size_t>(s) < shown && live && !MakeLive(game, s, log)) {
+            // (no run-time gauge: this player and the rest are left out, "+N" counts them below)
+            for (int r = s; r < kSlots; ++r) HideLive(game, live_[static_cast<std::size_t>(r)]);
+            shown_now = static_cast<std::size_t>(s);
+            break;
+        }
         if (static_cast<std::size_t>(s) >= shown) {   // nobody there (solo: every slot), no room, or not in the pack
             glow = {};
+            HideLive(game, live_[static_cast<std::size_t>(s)]);
             for (Pane& p : hearts) Show(game, p, false);
             Show(game, gauge, false);
             Show(game, label, false);
@@ -401,6 +565,11 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
         const std::uint64_t glow_for = glow_last > 0 ? static_cast<std::uint64_t>(glow_last) * 1000 / 30 + 1 : kGlowMs;
         if (glow.heart >= 0 && glow_ms > glow_for) glow.heart = -1;
         const bool pinch = LowLife(life, plan.hearts * 4);
+        if (live) {   // (no line of the game's text in a run-time slot yet: only the hearts)
+            StepLive(game, s, plan, top, alpha);
+            top -= BlockHeight(plan.hearts);
+            continue;
+        }
         SetLabel(game, static_cast<std::size_t>(s), b.text, {kLabelX, top - kLabelHeight / 2.0f}, alpha, log);
         for (int i = 0; i < kHearts; ++i) {
             Pane& p = hearts[static_cast<std::size_t>(i)];
@@ -421,7 +590,7 @@ bool Hud::Step(Game& game, const std::vector<Block>& blocks, std::optional<doubl
         }
         top -= BlockHeight(plan.hearts);
     }
-    const std::string more = MoreText(blocks.size() - shown);
+    const std::string more = MoreText(blocks.size() - std::min(shown, shown_now));
     if (more.empty()) Show(game, labels_[kMore], false);
     else SetLabel(game, kMore, more, {kLabelX, top - kLabelHeight / 2.0f}, 1.0f, log);
     return true;
