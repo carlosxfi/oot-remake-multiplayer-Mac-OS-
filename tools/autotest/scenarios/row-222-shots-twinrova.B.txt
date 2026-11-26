@@ -1,0 +1,91 @@
+# row-222-shots-twinrova, B (see row-222-shots-twinrova.A.txt): the same times, ZL held, no marks (A's marks shoot both games).
+mark start
+warp TwinrovaStage TwinrovaStage
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark b-in
+wait 1800               # the intro, then the fight
+hold ZL 240
+hold ZL 90
+wait 510
+hold ZL 90
+wait 510
+hold ZL 90
+wait 510
+hold ZL 90
+wait 510
+hold ZL 90
+wait 510
+hold ZL 90
+wait 510
+hold ZL 90
+wait 510
+hold ZL 90
+wait 510
+hold ZL 90
+wait 510
+hold ZL 90
+kill Enemy_DungeonBoss_Koume
+wait 60
+kill Enemy_DungeonBoss_Kotake
+wait 600
+mark b-k
+wait 2400               # the merge cutscene
+hold ZL 240
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 60
+hold ZL 90
+wait 600
+mark end
