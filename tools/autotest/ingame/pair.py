@@ -28,6 +28,9 @@ CHUNK = 10            # frames per step while waiting for a condition (a log lin
 SETUP_LIMIT_S = 30.0  # owner rule (worker-rules TEST SYSTEM): a test's set-up proves itself in under 30 s
 BOOT_FRAMES = 2400    # the boot proof's ceiling per wait (80 s of game: a boot script that ended with both games still
 #                       loading out of the menu, party-hud-bridge r1, renderers ready after 168/180 s)
+MODULE_WAIT_S = 10.0  # the module's bridge line in each game's log (written at the module's load, before live.py start
+                      # returns; the wait only covers the log's flush)
+AWAY_CHECK_S = 10.0   # after each test: the one state read per game of away_from_boot (a bridge reply is < 1 s)
 READY_FRAMES = 300    # a set-up's step-until-in-play ceiling (10 s of game: a stale sample, an event's end; inside 30 s)
 FPS = 30              # Ocarina of Time's calc rate on Hookshot: frames -> seconds in messages only, never for waiting
 # A warp's wall time is the game's (a load), not ours: measured, not guessed. warp_both (A then B, Longshot's teleport)
@@ -234,6 +237,7 @@ class Pair:
         self.refs_dir = refs_dir
         self.deadline = Deadline(3600)
         self.shots = []        # [{"game", "name", "path", "ref", "score", "ok"}] of the running test
+        self.boot_scene = None # the boot's scene (bt_plugin._boot_proof): where every default-boot test starts
         self.notes = []
         self.window_shooter = None   # (x, path) -> path: window shots (windowshot.Shooter; the fake lane's own)
 
@@ -374,6 +378,62 @@ class Pair:
                  if scene and (self.state(x).get("scene") or "").lower() != scene.lower()]
         if wrong:
             raise SetupFail("boot: not in the boot's scene %s: %s" % (scene, "; ".join(wrong)))
+        return {x: self.state(x) for x in self.c}
+
+    def module_started(self, seconds=MODULE_WAIT_S, clock=time.monotonic, sleep=time.sleep):
+        """Each game's log has the module's 'coop: playtest: listening on 127.0.0.1:<its port>' line
+        (hookshot/src/coop_playtest.cpp:836), else SetupFail naming the game: its module never started, so nothing
+        a test sends can reach it. party-hud-bridge-85e3b255 (B #137 14:57): B's Longshot start-up never ended, no
+        'coop:' line at all, yet live.py start said ok and test_boot died on ConnectionRefusedError after 336 s."""
+        end = clock() + seconds
+        for x, g in self.games.items():
+            rx = r"coop: playtest: listening on 127\.0\.0\.1:%d(?!\d)" % int(g["port"])   # (not :50210 for :5021)
+            while not self.log[x].find(rx, pos=0):
+                if clock() >= end:
+                    tail = self.log[x].since(0)[-1:] or ["(empty log)"]
+                    raise SetupFail("%s: the module never started (no 'coop: playtest: listening on 127.0.0.1:%d' in %s; "
+                                    "last line: %s)" % (x, int(g["port"]), g["log"], tail[0][:200]))
+                sleep(0.5)
+        return True
+
+    def away_from_boot(self, seconds=AWAY_CHECK_S):
+        """[why] for each game NOT at the boot's place (in play, in self.boot_scene), one state read each, on its own
+        short deadline (the test's may be used up). [] when both are there, or no boot scene is known. A read that
+        fails counts as away (the recovery is safe; a missed one poisons every later test: row 285 levitate)."""
+        if not self.boot_scene:
+            return []
+        outer, out = self.deadline, []
+        self.deadline = Deadline(seconds, clock=outer.clock)
+        try:
+            for x in self.c:
+                try:
+                    st = self.state(x)
+                except Exception as e:
+                    out.append("%s: no state (%s: %s)" % (x, type(e).__name__, e))
+                    continue
+                if (st.get("scene") or "").lower() != self.boot_scene.lower() or not self.in_play(st):
+                    out.append("%s (age %s), not in play in the boot's %s" % (self.why_not(x, st), st.get("age"),
+                                                                             self.boot_scene))
+        finally:
+            self.deadline = outer
+        return out
+
+    def need_boot_place(self, age=None, max_frames=READY_FRAMES):
+        """THE default-boot precondition (call it inside `with pair.setup():`): both games in play (stepped, never one
+        read), in the boot's scene, and of `age` ('child'/'adult') when given. Checking the age alone let a test run in
+        whatever map the test before left (row 285 test_levitate stayed in the Deku Tree; review-rows-c130-2 14:38).
+        The pair fixture already recovers a pair left away by a test that passed (away_from_boot after every test), so
+        a miss here means that recovery did not hold: SetupFail naming each game."""
+        self.until_in_play("both games in play before the test", max_frames=max_frames)
+        bad = []
+        for x in self.c:
+            st = self.state(x)
+            if self.boot_scene and (st.get("scene") or "").lower() != self.boot_scene.lower():
+                bad.append("%s is in %s, not the boot's %s" % (x, st.get("scene"), self.boot_scene))
+            if age and st.get("age") != age:
+                bad.append("%s is %s, this test needs %s Link" % (x, st.get("age"), age))
+        if bad:
+            raise SetupFail("not at the boot's place: %s" % "; ".join(bad))
         return {x: self.state(x) for x in self.c}
 
     def recover(self, scene=None, max_frames=READY_FRAMES * 2):
