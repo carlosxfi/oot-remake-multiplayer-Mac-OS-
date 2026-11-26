@@ -1,0 +1,6 @@
+# f1-event-open, A (see f1-event.steps.txt): after f1-event.A.txt left A in front of the slingshot room's chest and the
+# steps proved it closed (`flag A key64:0x0b66198d17d6584e 0`), A presses A to open it: the item get, an event whose
+# text waits for A. No press after it, so the text is still up when this ends; the steps prove it with `state A event`.
+press A
+wait 300
+mark event
