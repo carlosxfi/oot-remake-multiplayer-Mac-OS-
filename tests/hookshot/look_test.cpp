@@ -2236,6 +2236,36 @@ TEST_CASE("look (0.11.9): the puppets' tunic copies, each repainted in the exact
           CopyMarked(CoopLookParts::TunicPainted(green, 0x30D041u)[0].texels));
 }
 
+TEST_CASE("look (kokiri-band-c124): a puppet's tunic copy holds your own Link's texels for the same look, Cap trim too") {
+    // The run cap-trim-c44: P1 (3070FF, Cap trim FFC020) showed a yellow hood band on their own Link and a blue one on
+    // their puppet. Same look: same texels (but for the copy's mark); the difference was the distance (cap.bin's
+    // smaller mip levels, tools/puppet_pack/look_cap.py smaller_level), not the copy.
+    const auto green = GreenTunic();
+    auto blue = green;
+    for (auto& t : blue) t.texels.back() ^= CoopLookParts::kSelfMark ^ CoopLookParts::kTunicMark;   // (as the pack marks)
+    const std::vector<std::pair<std::string, CoopLookTunic::Texels>> copies = {{"blue", blue}};
+    const auto cap = *CoopLookParts::ParseCap(
+        CapFile({{kChildParts, 16, {16, 48}}, {kAdultAcs, 8, {0, 8}}, {"Mt_Vest_Player_Adult_Alb", 16, {0, 16}}}));
+    using Paint = CoopLookParts::TunicPaint;
+    for (const std::optional<std::uint32_t> tunic : {std::optional<std::uint32_t>{0x3070FFu}, std::optional<std::uint32_t>{},
+                                                     std::optional<std::uint32_t>{0x202020u}}) {
+        for (const std::optional<std::uint32_t> trim : {std::optional<std::uint32_t>{0xFFC020u}, std::optional<std::uint32_t>{}}) {
+            // Your own Link: the painting's name (TunicPainting) read back (TunicPaintOf), as the wardrobe's file is made.
+            const auto name = CoopLookParts::TunicPainting(tunic, trim);
+            const auto paint = CoopLookParts::TunicPaintOf(name);
+            const auto own = paint ? CoopLookParts::TunicPainted(green, *paint, &cap) : green;   // (no paint: the game's own)
+            const auto puppet = CoopLookParts::PuppetTunicsTexels(copies, green, {{"blue", Paint{tunic, trim}}}, &cap);
+            REQUIRE(puppet.size() == own.size());
+            for (std::size_t i = 0; i < own.size(); ++i) {
+                if (own[i].name == "Angin_Tile_A_Dark_Alb") continue;   // (the copies' dark tile: BC3, another size)
+                CAPTURE(name);
+                CAPTURE(own[i].name);
+                CHECK(puppet[i].texels == CopyMarked(own[i].texels));
+            }
+        }
+    }
+}
+
 TEST_CASE("look (row 198): no puppet's tunic copy is drawn in your own Link's texels, and its wardrobe never takes yours") {
     const auto green = GreenTunic();   // (your own Link's: green.bin, the game's own texels marked kSelfMark)
     auto cyan = green;

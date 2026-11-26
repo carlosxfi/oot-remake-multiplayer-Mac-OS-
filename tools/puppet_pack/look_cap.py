@@ -181,6 +181,32 @@ def block_size(fmt):
     raise TunicError(f"texture format 0x{fmt:02x} is not read")
 
 
+def smaller_level(cap0, used0, w, h, lw, lh, fw, fh):
+    """{(bx, by)} of a smaller mip level's cap blocks (lw x lh texels): a block is the cap's when most of
+    the first level's blocks under it that any triangle uses are cap-only (`cap0`; `used0` the first
+    level's blocks any triangle covers). A smaller level is the first one filtered down, so such a
+    block shows the cap's cloth more than anything else. (kokiri-band-c124: the old rule, no other
+    triangle touching the block at that level, dropped a thin trim's blocks level by level, the adult
+    hood's front band on Mt_Vest_Player_Adult_Alb kept 28% at level 3 and 13% at level 4, so a Link
+    seen from a few metres away, as a puppet is, showed the band in the tunic's colour.)"""
+    wb, hb = (lw + fw - 1) // fw, (lh + fh - 1) // fh
+    out = set()
+    for by in range(hb):
+        # the first level's blocks under this one: its texels scaled by w / lw, h / lh
+        y0, y1 = by * fh * h // lh // fh, min(((by + 1) * fh * h // lh + fh - 1) // fh, (h + fh - 1) // fh)
+        for bx in range(wb):
+            x0, x1 = bx * fw * w // lw // fw, min(((bx + 1) * fw * w // lw + fw - 1) // fw, (w + fw - 1) // fw)
+            cap = used = 0
+            for y in range(y0, y1):
+                for x in range(x0, x1):
+                    if (x, y) in used0:
+                        used += 1
+                        cap += (x, y) in cap0
+            if 2 * cap > used:
+                out.add((bx, by))
+    return out
+
+
 def blocks(bntx, cap_tris, other_tris):
     """(the byte offsets of the texture's cap blocks, every mip level; (cap blocks, blocks) of the
     first level)."""
@@ -188,10 +214,13 @@ def blocks(bntx, cap_tris, other_tris):
     fw, fh, step = block_size(fmt)
     offs = []
     first = (0, 0)
+    cap0 = covered(cap_tris, w, h, fw, fh)
+    used0 = cap0 | covered(other_tris, w, h, fw, fh)
+    cap0 -= covered(other_tris, w, h, fw, fh)
     for level, start in enumerate(mips):
         lw, lh = max(1, w >> level), max(1, h >> level)
         wb, hb = (lw + fw - 1) // fw, (lh + fh - 1) // fh
-        cap = covered(cap_tris, lw, lh, fw, fh) - covered(other_tris, lw, lh, fw, fh)
+        cap = cap0 if level == 0 else smaller_level(cap0, used0, w, h, lw, lh, fw, fh)
         if level == 0:
             first = (len(cap), wb * hb)
         g = lm.mip_gobs_tall(bh, hb)

@@ -275,9 +275,23 @@ class LookCapTest(unittest.TestCase):
         cap, other, _ = lc.uv_triangles(m, "Tex_A")
         offs, first = lc.blocks(texture(), cap, other)
         level0 = blocks_at([(0, 0), (1, 0), (3, 0)], 4, 4)
-        level1 = [512 + a for a in blocks_at([(1, 0)], 2, 2)]   # (0, 0) holds the body's too
+        # (0, 0): two of the three first-level blocks under it that are used are cap-only ((0, 1) is the body's too)
+        level1 = [512 + a for a in blocks_at([(0, 0), (1, 0)], 2, 2)]
         self.assertEqual(offs, sorted(level0 + level1))
         self.assertEqual(first, (3, 16))
+
+    def test_smaller_levels_keep_a_thin_trim(self):
+        # kokiri-band-c124: a band of cap-only blocks between body blocks (8x8 blocks of 4x4 texels, 32x32 texels):
+        # the band is x = 2..5; every block is used. A smaller level's block is the cap's when most of the first
+        # level's used blocks under it are cap-only, so the band stays the cap's as it is filtered down.
+        used0 = {(x, y) for x in range(8) for y in range(8)}
+        cap0 = {(x, y) for x in range(2, 6) for y in range(8)}
+        self.assertEqual(lc.smaller_level(cap0, used0, 32, 32, 16, 16, 4, 4), {(x, y) for x in (1, 2) for y in range(4)})
+        self.assertEqual(lc.smaller_level(cap0, used0, 32, 32, 8, 8, 4, 4), set())   # (half the band: not most)
+        # unused texels do not count: one cap-only block alone under a block is the cap's
+        self.assertEqual(lc.smaller_level({(0, 0)}, {(0, 0)}, 32, 32, 16, 16, 4, 4), {(0, 0)})
+        # a texture whose levels do not halve evenly (ASTC 8x5 over 40 rows)
+        self.assertEqual(lc.smaller_level({(0, 0), (0, 1)}, {(0, 0), (0, 1), (0, 2)}, 16, 40, 8, 20, 8, 5), {(0, 0)})
 
     def test_cap_file(self):
         logs = []
@@ -298,7 +312,7 @@ class LookCapTest(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         name, step, offs = entries[0]
         self.assertEqual((name, step), ("Tex_A", 8))
-        self.assertEqual(len(offs), 4)
+        self.assertEqual(len(offs), 5)
         self.assertTrue(any("3 of 16 blocks hold only the cap (18.8%" in line for line in logs), logs)
         # a model that cannot be read: said, nothing made
         logs.clear()
