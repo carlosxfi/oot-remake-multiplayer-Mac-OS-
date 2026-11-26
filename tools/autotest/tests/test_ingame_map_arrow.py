@@ -1,6 +1,6 @@
 """G2a's selftest (ingame/test_map_arrow.py + ingame/fakes/map_arrow.py; owner port-sweep-c131-6), run by
-test_ingame.py's load_tests: NO-REF on the fake with --pack hud (state checks pass; no window shot helper yet, so never
-PASS), deselected without --pack hud, FAIL under each real bug, SETUP-FAIL when the pack has no arrow (an empty pack is the harness's own SETUP-FAIL)."""
+test_ingame.py's load_tests: NO-REF on the fake with --pack hud (state checks pass; A's window shots have no stored
+reference, so never PASS), deselected without --pack hud, FAIL under each real bug, SETUP-FAIL when the pack has no arrow (an empty pack is the harness's own SETUP-FAIL)."""
 import os
 import shutil
 import sys
@@ -53,12 +53,15 @@ class MapArrow(unittest.TestCase):
         r = [(t["result"], t["why"]) for t in s["tests"] if t["test"].endswith("test_map_arrow_turns")]
         return r
 
-    def test_fake_no_ref_state_only(self):
+    def test_fake_no_ref_window_shots(self):
         p, s = self.run_fake("ok")
         r = self.result(s)
         self.assertEqual(len(r), 1, (p.stdout, s))
         self.assertEqual(r[0][0], "NO-REF", r)
-        self.assertIn("state only", r[0][1])
+        self.assertIn("no stored reference", r[0][1])
+        for k in range(4):                     # (a window shot of A at each turn, minimap and page)
+            for tag in ("mini", "page"):
+                self.assertIn("map-arrow-%s-%d-window-A" % (tag, k), r[0][1])
 
     def test_deselected_without_pack(self):
         p, s = self.run_fake("nopack-arg", pack=False)
