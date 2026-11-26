@@ -38,7 +38,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "puppet_pack"  # noqa: A001
 
-from . import ainb, asb_carry, byml, charsel_ui, coop_menu, dumpcheck, dungeon_rooms, hud, look_cap, look_items, look_live, look_metal, map_captures, nup, pause_menu, rstb, sarc, skin, title_menu, tunic, tunic_extra, ui_pack, zs  # noqa: E402
+from . import ainb, asb_carry, byml, charsel_ui, coop_menu, dumpcheck, dungeon_rooms, hud, look_cap, look_items, look_live, look_metal, map_captures, map_icons, nup, pause_menu, rstb, sarc, skin, title_menu, tunic, tunic_extra, ui_pack, zs  # noqa: E402
 
 TITLE_ID = "0400486024DEC000"
 DEFAULT_MOD_NAME = "coop-puppet"
@@ -2589,6 +2589,17 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
         except (coop_menu.CoopMenuError, charsel_ui.CharselError, ui_pack.UiPackError, sarc.SarcError, OSError,
                 ValueError, KeyError, IndexError, struct.error) as e:   # (it was made a moment ago: never seen)
             log(f"co-op's - menu screen: NOT made after its trial ({e}); the - menu's tabs have no page this time")
+    # The other players on the game's own maps (map_icons.py, native-ui-audit item 8): hidden copies of the map icon
+    # part in MapMenu_00, after the menus' steps through the same view (ui_run), so their edits of Common are kept.
+    # Hookshot's game only (the module shows them); left out on any trouble: the maps then show no other players.
+    if pause_tab:
+        try:
+            pause_files += map_icons.build(romfs, out_romfs, dicts, table,
+                                           lambda root, r, data: write(os.path.join(root, r), data), recompress,
+                                           log, run=ui_run)
+        except (map_icons.MapIconsError, ui_pack.UiPackError, sarc.SarcError, OSError, ValueError, KeyError,
+                IndexError, struct.error) as e:
+            log(f"map icons: left out ({e}); the maps show no other players")
 
     if characters:
         # The mod's own rows first, the pack's own over them, then the player's own Link's heaps (as the mod alone).

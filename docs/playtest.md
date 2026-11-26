@@ -258,6 +258,18 @@ The labels and values are co-op's own words in the game's language, never text r
 Character Select character with irises:
 `"menu":{"coop":{"open":false},"customize_screen":{"open":true,"driven":true,"title":"Eyes (page 1 of 1)  A: exact hue","options":[{"option":0,"label":"Eye Colour","value":"Game's own"}],"focused":0,"focused_label":"Eye Colour","mixer":false,"page_no":1,"pages":1}}`.
 
+**`map_native`** (the bridge adds it to `state`; `null` until the module first published it): the
+other players on the game's own map icons (hookshot/src/coop_map_icons.h `State`, #255 item 8). `up` (the pack's
+copies of `Pa_MapIcon_00` found), `why` (what is missing when not), `table` (the map layout's pane table found),
+`turn_at` (the pane word the arrow's turn is written to, kPaneTurn), `game_arrow` and `game_arrow_words` (the game's own
+icon part's arrow `N_PlayerRotate_00`, words +0x60..+0x7c), and `shown`: per copy shown its `copy` number, `x` / `y`
+(the pane's place in the map clip's frame), `turn` (read back from the pane) and `wrote_turn` (what was written),
+`name` and `name_set` (the game's path setter took the label's name). While the copies are not stepped (no turn
+place known, solo, nobody else on the map) it is the turn probe's instead (`Icons::ProbeArrow`, every 30 frames,
+solo too): `probe` true, nothing up or shown, `game_arrow_words` and `run_arrow_words` (the same words of up to 4 of the
+game's run-time icon copies under the map screen), every pane looked up fresh (tools/autotest/ingame/test_map_turn_probe.py).
+Test-only: nothing here changes what is shown.
+
 **`world`** (the bridge adds it to `state` and to a `dump`): the actors the object walk sees, nearest to our Link first,
 the kinds that matter (player, enemy, npc, chest, door, switch, item) before `other` (grass, pots, ...). The walk
 reads the place of every actor it sees and keeps up to 200, `other` last, because the sync checks need grass, bushes and

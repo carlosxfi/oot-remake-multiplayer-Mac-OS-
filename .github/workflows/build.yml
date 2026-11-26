@@ -254,6 +254,8 @@ jobs:
         run: python tools/puppet_pack/tests/test_eye_switches.py -v
       - name: HUD pack tests
         run: python tools/puppet_pack/tests/test_hud.py -v
+      - name: Puppet pack map icons tests
+        run: python tools/puppet_pack/tests/test_map_icons.py -v
       - name: Party HUD pack tests
         run: python tools/puppet_pack/tests/test_party_hud.py -v
       - name: Look cap tests
