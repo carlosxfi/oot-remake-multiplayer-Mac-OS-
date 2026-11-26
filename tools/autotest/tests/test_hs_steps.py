@@ -631,7 +631,7 @@ class HookshotGamesTest(unittest.TestCase):
                                 "--out", os.path.join(self.tmp, "o2"), "--display", "DISPLAY9"])
         self.assertEqual(code, 2)
         with open(os.path.join(self.tmp, "o2", "steps.txt")) as f:
-            self.assertIn("no monitor called DISPLAY9", f.read())
+            self.assertIn("no monitor is connected", f.read())   # (placement.py: with none connected, whatever --display names)
 
     def test_fresh_log_each_start_and_the_old_one_kept(self):
         log = os.path.join(self.games["B"], "longshot_log.txt")

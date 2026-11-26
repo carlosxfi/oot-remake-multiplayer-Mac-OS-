@@ -3,6 +3,7 @@
 #include "coop_native_ui.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -142,8 +143,8 @@ bool Open(Game& game, std::uint64_t screen, std::uint64_t mode) {
 
 // Sets the pane named by the game's string at main+`pane_name` in the screen's layout.
 bool SetPane(Game& game, std::uint64_t screen, std::uint64_t pane_name, std::uint64_t ref) {
-    std::uint64_t layout = 0;
-    if (!ReadValue(game, screen + addr::kScreenLayout, layout) || layout == 0) return false;
+    const std::uint64_t layout = ScreenLayout(game, screen);
+    if (layout == 0) return false;
     return game.Call(game.At(addr::kSetPaneText), {layout, game.At(pane_name), ref, 1, 0}).has_value();
 }
 
@@ -488,9 +489,10 @@ std::uint64_t TextRing::PutFixed(Game& game, std::size_t index, std::string_view
 }
 
 std::uint64_t PaneTextBox(Game& game, std::uint64_t screen, std::uint64_t pane_name) {
-    std::uint64_t layout = 0, inner = 0, box = 0;
+    std::uint64_t inner = 0, box = 0;
     std::uint32_t flags = 0;
-    if (!ReadValue(game, screen + addr::kScreenLayout, layout) || layout == 0) return 0;
+    const std::uint64_t layout = ScreenLayout(game, screen);
+    if (layout == 0) return 0;
     const auto found = game.Call(game.At(addr::kPaneByName), {layout, game.At(pane_name), 0, 0, 0});
     const std::uint64_t pane = found ? *found : 0;
     // Only a text pane's text box, as the docs have it: *(*(pane+8)+8), checked by the pane's kind.
@@ -501,7 +503,51 @@ std::uint64_t PaneTextBox(Game& game, std::uint64_t screen, std::uint64_t pane_n
     return box;
 }
 
+namespace {
+std::atomic<bool> g_scene_loading{false};
+std::atomic<bool> g_title_up{false};   // (party-hud-crash-c126-6: the title's menu is up)
+std::atomic<bool> g_ui_up{false};        // patch 0018's HUD screen ran since the last scene load ended
+std::mutex g_running_mutex;
+std::vector<std::uint64_t> g_running;   // patch 0018's running screens (empty: none, or not said)
+}  // namespace
+
+void SetSceneLoading(bool on) {
+    g_scene_loading.store(on);
+    if (on) g_ui_up.store(false);   // (a load: the play UI is up again only once the HUD screen has run after it)
+}
+bool SceneLoading() { return g_scene_loading.load(); }
+
+void SetTitleUp(bool up) {
+    g_title_up.store(up);
+    if (up) g_ui_up.store(false);   // (the title: the play UI is up again only once the HUD screen has run after it)
+}
+bool PlayUiDown() { return g_scene_loading.load() || g_title_up.load(); }
+
+void SetRunningScreens(std::optional<std::vector<std::uint64_t>> screens, std::optional<bool> hud_runs) {
+    {
+        std::lock_guard lock(g_running_mutex);
+        g_running = screens ? std::move(*screens) : std::vector<std::uint64_t>{};
+    }
+    if (hud_runs.value_or(false) && !PlayUiDown()) g_ui_up.store(true);
+}
+
+bool GameUiUp() { return !PlayUiDown() && g_ui_up.load(); }
+
+bool ScreenLive(std::uint64_t screen) {
+    if (screen == 0 || PlayUiDown()) return false;
+    if (g_ui_up.load()) return true;
+    std::lock_guard lock(g_running_mutex);
+    return std::find(g_running.begin(), g_running.end(), screen) != g_running.end();
+}
+
+std::uint64_t ScreenLayout(Game& game, std::uint64_t screen) {
+    std::uint64_t layout = 0;
+    if (!ScreenLive(screen) || !ReadValue(game, screen + addr::kScreenLayout, layout)) return 0;
+    return layout;
+}
+
 std::uint64_t ScreenByVtable(Game& game, std::uint64_t vtable_offset) {
+    if (PlayUiDown()) return 0;   // (nothing is live: ScreenLive)
     const std::uint64_t vtable = game.At(vtable_offset);
     std::uint64_t got = 0, manager = 0, screens = 0;
     std::uint32_t count = 0;
@@ -512,7 +558,8 @@ std::uint64_t ScreenByVtable(Game& game, std::uint64_t vtable_offset) {
     }
     for (std::uint32_t i = 0; i < count; ++i) {
         std::uint64_t screen = 0, vt = 0;
-        if (ReadValue(game, screens + i * 8ull, screen) && screen != 0 && ReadValue(game, screen, vt) && vt == vtable) {
+        if (ReadValue(game, screens + i * 8ull, screen) && screen != 0 && ReadValue(game, screen, vt) && vt == vtable &&
+            ScreenLive(screen)) {
             return screen;
         }
     }

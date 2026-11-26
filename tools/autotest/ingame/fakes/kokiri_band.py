@@ -2,7 +2,7 @@
 
 Only with the test's switch LICHII_COOP_LOOK=cap_trim:yellow (+ LICHII_COOP_COLOR=blue): the module's look lines, an
 adult Kakariko, a camera (view.clip) and on each shot both Links in blue with the hood band yellow.
-Selftest variables: BT_FAKE_CAP_BLOCKS (43228 = the pack before the fix), BT_FAKE_BAND=blue (the row's bug: the
+Selftest variables: BT_FAKE_CAP_BLOCKS (43600 = look_cap_old's pack before the fix, 43228 an older one), BT_FAKE_BAND=blue (the row's bug: the
 puppet's band in the tunic's blue), BT_FAKE_KOKIRI_ON_LINE=1 (a camera with A on B's line of sight: boxes overlap).
 """
 import os

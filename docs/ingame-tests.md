@@ -93,6 +93,16 @@ A miss is SETUP-FAIL, naming each game. To prove that the game runs the profile'
 those flags itself (`scenarios/live-deku-gohma-reset.*.txt` is `live-deku-gohma` without them). Rows 138(4)/137
 (`test_boss_reset.py`): `--boot live-deku-gohma-reset --save gohma-alive`.
 
+SOLO boot (owner rule: features that are not multiplayer must also work solo, with co-op idle): `--solo` boots only
+lane game A, with no co-op session. That means `live.py start --only A` without `--server`, so hookshot.py run gives
+it no `LICHII_COOP_SERVER`, and the lane's `coop.ini` has no server line. Only tests marked `@solo.MARK`
+(`tools/autotest/ingame/solo.py`, marker `needs_solo`) run. Every other test is deselected (`needs_pair`), and a
+run without `--solo` deselects the solo tests (`needs_solo`). The pair has game A only (`pair.c == {'A'}`), and
+`step_both`, `press` and `warp_both` run on A. Setup proof, before any test: game A's module log has
+`solo.IDLE` (`coop: no server in coop.ini: co-op idle until Host or Join ...`, hookshot/src/coop_hookshot.cpp).
+It must also have no session line (`coop: on, server`, `connecting`, `welcomed`, `connected`). Otherwise every
+test is a SETUP-FAIL. `--solo` with the no-CS switch is refused. `identity.solo` is true.
+
 Game B without Character Select: `--env B:COOP_TEST_NO_CHARACTER_SELECT=1` (the switch in
 `tools/autotest/ingame/no_cs.py`) boots game B from `lane<N>-B-nocs` instead of `lane<N>-B`. That folder is made
 only when someone asks for it, with `python -I tools/autotest/lanes.py nocs --lane N` (`--dry-run` first). It is
@@ -144,6 +154,33 @@ pytest-timeout (pytest.ini, 1800 s) is only the backstop for a call that never r
   blue (0,60,160) at the same grey scores grey 1.0000, colour 0.1128). Shots are kept with the result
   (`<dir>/lane<L>/shots/`). A test never writes a reference: a person checks a NO-REF candidate and copies it into
   `refs/`.
+
+- Frame rate, the one wall-clock check (`test_unfocus.py`, row 83): fps is real time, so that test alone lets both
+  games run (`resume`), reads Longshot's own 5 s present windows from the logs (`vi: N frames presented (X fps ...)`,
+  `vi: present intervals: ...`) with no bridge call in between, and holds them again (`pause`). It needs each game's
+  window behind (Longshot's `hid: game window not in front` line; `live.py` opens the games without the focus).
+
+## The lane's boot proof, recovery and memory
+
+- Boot proof: after `live.py start` and the hello check, inside lane_pair's try (so a miss stops the session),
+  `Pair.boot_ready` steps both games out of the boot's load, warps a game in another scene than the boot scripts'
+  `warp` line there by the bridge, and needs both in play (a fresh Link sample, no load, no event) in that scene.
+  Anything else makes every test of the lane `SETUP-FAIL lane<L> boot: ...`, naming each game's scene, load, event
+  and not_ready. (Pilot test-bridge-pilot-fa63e90f r1: B was left in Graveyard_Child in an event because
+  `hookshot.py run` ended the boot script without waiting for its warp; it now waits, `wait_warps`.)
+- Set-up checks step frames until ready (`pair.until_in_play`, 300 frames at most), never one state read: a stale
+  sample right after a boot or a pause is a game not ready yet, not a FAIL.
+- Recovery: after a test that did not pass, or one marked `leaves_play` (the title test, which runs last in its
+  round), the next test first runs the boot proof again (`Pair.recover`): a miss cannot cascade. It waits on game
+  state, not on a fixed time: 30 s for the stepped part plus 31 s for each game it has to warp back to the boot
+  scene (the worst warp measured, `warp_both` 26.9-31.0 s for both games on a full lane, party-hud-bridge-6947aa3d),
+  so 92 s at most. It is the lane's boot proof, not a test's set-up: a set-up that warps cannot fit 30 s.
+- A warp with `arrive_in_event` (a boss intro) is stepped until the game is in the scene, not loading, in the event
+  once the bridge's own 12 s wait is over; a warp takes longer than that under load.
+- Title test: `load_both` presses A only on a game whose log shows the title line since the way back was asked,
+  never on a game in play (an A there opens and shuts the menu); `back to the title: given up` FAILs it at once.
+- Memory: each game's commit charge is sampled every 30 s from the boot start into `<dir>/lane<L>/commit.csv` and
+  `commit.json` (first, peak and last GB per game), also in summary.json `commit`.
 
 ## Writing a test
 
