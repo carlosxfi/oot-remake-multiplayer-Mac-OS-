@@ -27,6 +27,8 @@ CHUNK = 10            # frames per step while waiting for a condition (a log lin
 SETUP_LIMIT_S = 30.0  # owner rule (worker-rules TEST SYSTEM): a test's set-up proves itself in under 30 s
 BOOT_FRAMES = 2400    # the boot proof's ceiling per wait (80 s of game: a boot script that ended with both games still
 #                       loading out of the menu, party-hud-bridge r1, renderers ready after 168/180 s)
+MODULE_WAIT_S = 10.0  # the module's bridge line in each game's log (written at the module's load, before live.py start
+                      # returns; the wait only covers the log's flush)
 AWAY_CHECK_S = 10.0   # after each test: the one state read per game of away_from_boot (a bridge reply is < 1 s)
 READY_FRAMES = 300    # a set-up's step-until-in-play ceiling (10 s of game: a stale sample, an event's end; inside 30 s)
 FPS = 30              # Ocarina of Time's calc rate on Hookshot: frames -> seconds in messages only, never for waiting
@@ -324,6 +326,22 @@ class Pair:
         if wrong:
             raise SetupFail("boot: not in the boot's scene %s: %s" % (scene, "; ".join(wrong)))
         return {x: self.state(x) for x in self.c}
+
+    def module_started(self, seconds=MODULE_WAIT_S, clock=time.monotonic, sleep=time.sleep):
+        """Each game's log has the module's 'coop: playtest: listening on 127.0.0.1:<its port>' line
+        (hookshot/src/coop_playtest.cpp:836), else SetupFail naming the game: its module never started, so nothing
+        a test sends can reach it. party-hud-bridge-85e3b255 (B #137 14:57): B's Longshot start-up never ended, no
+        'coop:' line at all, yet live.py start said ok and test_boot died on ConnectionRefusedError after 336 s."""
+        end = clock() + seconds
+        for x, g in self.games.items():
+            rx = r"coop: playtest: listening on 127\.0\.0\.1:%d(?!\d)" % int(g["port"])   # (not :50210 for :5021)
+            while not self.log[x].find(rx, pos=0):
+                if clock() >= end:
+                    tail = self.log[x].since(0)[-1:] or ["(empty log)"]
+                    raise SetupFail("%s: the module never started (no 'coop: playtest: listening on 127.0.0.1:%d' in %s; "
+                                    "last line: %s)" % (x, int(g["port"]), g["log"], tail[0][:200]))
+                sleep(0.5)
+        return True
 
     def away_from_boot(self, seconds=AWAY_CHECK_S):
         """[why] for each game NOT at the boot's place (in play, in self.boot_scene), one state read each, on its own

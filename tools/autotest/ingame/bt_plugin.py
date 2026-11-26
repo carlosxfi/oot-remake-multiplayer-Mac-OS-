@@ -465,6 +465,7 @@ def lane_pair(request):
         pair = P.Pair(lanefake.games(), out_dir=out, refs_dir=os.environ.get("BT_FAKE_REFS", refs))
         pair.lane, pair.info = lane, {"fake": True}
         try:
+            _module_proof(pair, lane)
             _boot_proof(config, pair, lane)
             yield pair
         finally:
@@ -494,6 +495,7 @@ def lane_pair(request):
             raise GameCrash(why) if crash else P.SetupFail(why)
         pair = P.Pair(P.read_session(session), out_dir=out, refs_dir=refs)
         pair.lane, pair.info, pair.session = lane, dict(info, boot_s=round(time.monotonic() - t0, 1)), session
+        _module_proof(pair, lane)               # (before any bridge call: a game with no module refuses the connection)
         for x in ("A", "B"):
             h = pair.c[x].hello()
             if not h.get("control"):
@@ -510,6 +512,15 @@ def lane_pair(request):
         config._bt_lane_closed = _stop_own_session(session, began)
         _pack_out(config, folders)              # (after the games are closed: they hold the pack's files open)
         config._bt_commit = dict(getattr(config, "_bt_commit", None) or {}, **{"lane%d" % lane: mem.stop()})
+
+
+def _module_proof(pair, lane):
+    """Each game's module started (Pair.module_started), else SetupFail 'lane N boot: X: the module never started': every
+    test of the lane is SETUP-FAIL boot at once (B #137 14:57, party-hud-bridge-85e3b255: ConnectionRefusedError 336 s in)."""
+    try:
+        pair.module_started()
+    except P.SetupFail as e:
+        raise P.SetupFail("lane%d boot: %s" % (lane, e)) from e
 
 
 def _boot_proof(config, pair, lane):
