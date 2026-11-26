@@ -788,7 +788,12 @@ public:
         }
         if (sharing_) {  // row 272: once-per-save rewards (bottles, upgrades) given once for the group
             for (const auto family : coop::host::rewards::kFamilies) {  // each family on its own
-                session_->guard_reward(coop::host::rewards::units(family), coop::host::rewards::sources(family));
+                std::vector<coop::protocol::FlagKey> sources = coop::host::rewards::sources(family);
+                if (scrub_sale_on_) {  // C2-5: a scrub's bag tier is paid by its own sale Bool (rewards::kSales)
+                    const auto sales = coop::host::rewards::sales(family);
+                    sources.insert(sources.end(), sales.begin(), sales.end());
+                }
+                session_->guard_reward(coop::host::rewards::units(family), sources);
             }
             for (const auto& r : coop::host::rewards::kOther) {
                 session_->share_pickup_named(coop::protocol::FlagKey(r.hash, std::uint16_t{0}));
