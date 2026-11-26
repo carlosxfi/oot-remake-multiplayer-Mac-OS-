@@ -7,7 +7,7 @@ module; places are the old scenarios' (test_enemies.py constants).
   quarters): shared ...' (coop_objects_sync.cpp:3403), the other game 'share scream: the owner's Enemy_ReDead froze its
   Link; ours is in its reach (X m): frozen here too' (:4418) inside 5.5 m, else 'is out of its reach (X m)' (:4421),
   then 'scream: our Link plays 'Paralysis' 0.5 s after the shared scream's hit' (coop_objects.cpp:2384) 30 frames on.
-- Boss boots (BT_FAKE_BOOT=live-meg-room / live-deadhand-room, as the selftest's --boot): the game starts in that stage
+- Boss boots (BT_FAKE_BOOT=live-meg-room / live-deadhand-room / live-deadhand-room-b, as the selftest's --boot): the game starts in that stage
   and its state lists coop.players with self (docs/playtest.md state).
 - MegStage: Meg (owner 1); a split 600 frames after the first look, then every 900: three decoys of the owner at the run's seats
   (shots-lane1/ep230-hs-meg-decoys-231/20261123-090930) on both games, each logged 'coop: objects: + ..._Dummy ... at'.
@@ -20,7 +20,8 @@ module; places are the old scenarios' (test_enemies.py constants).
 Selftest switch BT_FAKE_ENEMY_BUG (tests/test_ingame_enemies.py): noshare -> the other game says 'ours not seen';
 nofreeze -> its Link plays 'Wait'; noscream -> no scream at all; extra -> B keeps its own 3 decoys beside the copies;
 loop -> B logs the minions loop line; twice -> B logs the death twice; nohandover -> Dead Hand stays with his owner;
-apart -> B's copy of Dead Hand stands at the other hand.
+apart -> B's copy of Dead Hand stands at the other hand; bowns -> B owns Dead Hand from the start (a boot an earlier
+Dead Hand test used: review-rows-c130-2's empty-PASS case).
 """
 import math
 import os
@@ -31,7 +32,8 @@ SEATS = [[-1.54, 100.0, 1.21], [-2.54, 100.0, 5.34], [2.59, 100.0, 2.22]]
 OWN_ROLL = [[-1.98, 100.0, 7.54], [4.22, 100.0, 5.78], [0.26, 100.0, -1.78]]
 DH = [-0.16, 92.31, -105.06]
 HANDS = [[0.0, 92.4, -108.43], [0.0, 92.4, -98.43]]
-BOOTS = {"live-meg-room": (MEG_STAGE, [0.0, 100.0, 6.0]), "live-deadhand-room": (DH_STAGE, [0.0, 92.4, -112.0])}
+BOOTS = {"live-meg-room": (MEG_STAGE, [0.0, 100.0, 6.0]), "live-deadhand-room": (DH_STAGE, [0.0, 92.4, -112.0]),
+         "live-deadhand-room-b": (DH_STAGE, [0.0, 92.4, -112.0])}
 
 
 def _bug():
@@ -51,7 +53,8 @@ def _a(game):
 
 
 def setup(game):
-    game.en = {"round": 0, "screamed": 0, "meg_alive": True, "split_at": None, "splits": 0, "dh_owner": 1,
+    game.en = {"round": 0, "screamed": 0, "meg_alive": True, "split_at": None, "splits": 0,
+               "dh_owner": 2 if _bug() == "bowns" else 1,
                "held": None, "grab_due": None, "dh_at": list(DH)}
     boot = BOOTS.get(os.environ.get("BT_FAKE_BOOT", ""))
     if boot:

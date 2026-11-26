@@ -7,14 +7,15 @@ scream-share-230-run 4dc5e7324; the module code they prove is on this base: fd60
 | test_redead_scream | hs-redead-scream-230 (row 230) | default (child Kakariko) | scream lines on both games + Link reaction line + shots |
 | test_meg_decoys | hs-meg-decoys-231 (row 231 + enemies-dying e8184823) | live-meg-room | decoy seats from both world lists + death lines + shots |
 | test_deadhand_grab | hs-deadhand-grab-232 (row 232) | live-deadhand-room | grab lines + Dead Hand's owner in both world lists + shots |
-| test_deadhand_grab_other_way | hs-deadhand-grab-232b (row 232, B held while A owns him) | live-deadhand-room | as above |
+| test_deadhand_grab_other_way | hs-deadhand-grab-232b (row 232, B held while A owns him) | live-deadhand-room-b | as above |
 
 Boots: the Redead row loads the kit save (the default boot) and makes both Links adult in the ruined Market; the way
 back leaves both child in Kakariko for the lane's later tests. Meg and Dead Hand live in boss rush stages that a free-play
 warp cannot reach (docs/playtest.md `warp`: a map outside Longshot's list answers not_in_event) and that need the rush's
 arrival event (`event DreamBossStage_Rematch_Arrive`, not an `act` kind): the old scenarios' own boot lines are
-scenarios/live-meg-room.* and live-deadhand-room.* (run with --boot NAME; needs_boot keeps these tests off any other
-boot). They change the stage for good (Meg killed, Dead Hand's owner moved), so nothing is put back.
+scenarios/live-meg-room.*, live-deadhand-room.* and live-deadhand-room-b.* (run with --boot NAME; needs_boot keeps these
+tests off any other boot). They change the stage for good (Meg killed, Dead Hand's owner moved), so nothing is put back,
+and each Dead Hand test has its own boot; its set-up also checks the game to be held does not own him yet (NO-REF).
 
 Every log pattern is the module's own line (cited at its writer); every place is the old scenario's (cited). Judged by
 game state (module log lines, each game's world list: owner, alive, pos: docs/playtest.md "world"), with shots on each
@@ -42,7 +43,8 @@ AWAIT_SCREAM = 2400                # 'await 2400 scream: ...'
 REACH_M = 5.5                      # kScreamReachM (lichii/hook/coop_objects_sync.h:441; InScreamReach, coop_objects_sync.cpp:863)
 FROZEN = "Paralysis"               # the AS node of a frozen Link (lichii/hook/coop_objects.cpp:2379-2385 comment)
 LINE_FRAMES = 120                  # a peer's line after the owner's: one sample (sent at once, coop_objects_sync.cpp:3401)
-#                                    + the reaction look 0.5 s on (kScreamLookUs = 500'000, coop_objects.cpp:6871), 2 s room
+#                                    + the reaction look 0.5 s on (kScreamLookUs = 500'000, coop_objects.cpp:6871); the rest
+#                                    of the 2 s is an ESTIMATED margin (not measured)
 SCREAM_ENV = ("LICHII_COOP_DEBUG_OBJECTS=1",)   # hs-redead-scream-230.A.txt '#! switches' (CHEATS=1 is the default boot's)
 
 # 'coop: objects: share <note>' (coop_objects.cpp:2660) of coop_objects_sync.cpp's notes:
@@ -69,6 +71,9 @@ BOSS_ENV = ("LICHII_COOP_DEBUG_BOSS=1", "LICHII_COOP_DEBUG_OBJECTS=1")   # hs-me
 
 # ---- row 232: Dead Hand's grab ------------------------------------------------------------------------------------
 DH_BOOT, DH_STAGE, DEADHAND = "live-deadhand-room", "DeadHandStage", "Enemy_DeadHand"
+# 232b gets its own boot (= its own lane job): 232 moves Dead Hand's owner for good, so on 232's boot B already owns
+# him and 232b's hand-over would hold with no grab (review-rows-c130-2 BLOCKER). Same steps as live-deadhand-room.
+DH_BOOT_B = "live-deadhand-room-b"
 BY_FIRST = (0.0, 92.4, -107.2)     # hs-deadhand-grab-232.A.txt 'place 0.0 92.4 -107.2 # by the first hand (0, -108.43)'
 BY_SECOND = (0.0, 92.4, -99.6)     # hs-deadhand-grab-232.B.txt 'place 0.0 92.4 -99.6 # by the order-2 hand'
 OUT_OF_REACH = (0.0, 92.4, -112.0)   # hs-deadhand-grab-232.A.txt 'place 0.0 92.4 -112.0 # back, out of the hands' reach'
@@ -211,7 +216,7 @@ def market_back(pair, done):
                 "%s stays %s after the test: the lane's later tests need child Link" % (x, s.get("age")))
 
 
-@pytest.mark.budget(600)
+@pytest.mark.budget(600)   # ESTIMATED: ~8'200 game frames (2 rounds x 3'900 of the waits above + the warp's 60 + walk) + shots
 @pytest.mark.look
 @pytest.mark.needs_env(*SCREAM_ENV)
 @pytest.mark.row("#230 a Redead's scream freezes every Link in its reach, not only its owner's (hs-redead-scream-230)")
@@ -228,6 +233,7 @@ def test_redead_scream(pair):
                 s = pair.state(x)
                 assert pair.in_play(s) and s.get("age") == "adult", "%s not an adult in play in %s (%s, %s)" % (
                     x, MARKET, s.get("scene"), s.get("age"))
+            # 'at the scenario's spot' = within 4 goto tolerances (2 m): an ESTIMATED margin, not measured
             rd = [a for a in alive(actors(pair, "B", REDEAD)) if flat(a["pos"], RD) < WALK_TOL * 4]
             assert rd, "no standing %s at %.2f %.2f %.2f in B's world list (the scenario's Redead)" % ((REDEAD,) + RD)
         seen = [scream_round(pair, r) for r in (1, 2)]
@@ -269,7 +275,7 @@ def seats_match(pair, n, num):
     return own, len(mine)
 
 
-@pytest.mark.budget(900)
+@pytest.mark.budget(900)   # ESTIMATED: ~11'300 game frames (SPLIT_FIRST + 2 x SPLIT_NEXT + 3 x 638 + kill/death 1'020) + shots
 @pytest.mark.look
 @pytest.mark.needs_boot(MEG_BOOT)
 @pytest.mark.needs_env(*BOSS_ENV)
@@ -326,6 +332,16 @@ def deadhand_at(pair, x):
     return d[0] if d else None
 
 
+def not_owned_yet(pair, held, num):
+    """Set-up: the game that is to be held must not own Dead Hand yet, or the hand-over check holds with no grab (a boot
+    an earlier Dead Hand test already used: it moves his owner for good). Then the row cannot be proven here: NO-REF."""
+    own = {x: deadhand_at(pair, x).get("owner") for x in ("A", "B")}
+    if num[held] in own.values():
+        pair.unproven("%s (player %s) already owns %s before any grab (owner A: %s / B: %s): this boot was used by an "
+                      "earlier Dead Hand test, the hand-over cannot be seen (give the test its own boot)" % (
+                          held, num[held], DEADHAND, own["A"], own["B"]))
+
+
 def handed_to(pair, held, num):
     """After `held`'s grab: Dead Hand's owner is `held`'s number in both world lists, and the copy stands at the owner's
     hand (DH_SAME_M). Returns the two positions."""
@@ -355,6 +371,7 @@ def grab_run(pair, first, second, tag):
         num = {x: me(pair, x) for x in ("A", "B")}
         assert deadhand_at(pair, "A") and deadhand_at(pair, "B"), "no living %s in a world list (the rush's event placed " \
             "no boss: hs-deadhand-grab-232 run 1 VOID)" % DEADHAND
+    not_owned_yet(pair, second, num)                # (after set-up: a NO-REF inside it is a SETUP-FAIL)
     start = {x: pair.log[x].mark() for x in ("A", "B")}
     place(pair, first, BY_FIRST)
     place(pair, second, BY_SECOND)
@@ -384,7 +401,7 @@ def grab_run(pair, first, second, tag):
     shots(pair, "%s-grab-%s-6s" % (tag, second))
 
 
-@pytest.mark.budget(900)
+@pytest.mark.budget(900)   # ESTIMATED: ~15'200 game frames (60 + GRAB_FIRST + 180 + GRAB_FREE + GRAB_SECOND + HANDOVER + 180) + shots
 @pytest.mark.look
 @pytest.mark.needs_boot(DH_BOOT)
 @pytest.mark.needs_env(*BOSS_ENV)
@@ -393,9 +410,9 @@ def test_deadhand_grab(pair):
     grab_run(pair, "A", "B", "deadhand")
 
 
-@pytest.mark.budget(900)
+@pytest.mark.budget(900)   # ESTIMATED: ~7'800 game frames (60 + GRAB_SECOND + HANDOVER + 180) + shots
 @pytest.mark.look
-@pytest.mark.needs_boot(DH_BOOT)
+@pytest.mark.needs_boot(DH_BOOT_B)
 @pytest.mark.needs_env(*BOSS_ENV)
 @pytest.mark.row("#232 the other way: B held by the first hand while A owns him (hs-deadhand-grab-232b)")
 def test_deadhand_grab_other_way(pair):
@@ -405,6 +422,7 @@ def test_deadhand_grab_other_way(pair):
         in_stage(pair, DH_STAGE)
         num = {x: me(pair, x) for x in ("A", "B")}
         assert deadhand_at(pair, "A") and deadhand_at(pair, "B"), "no living %s in a world list" % DEADHAND
+    not_owned_yet(pair, "B", num)                # (after set-up: a NO-REF inside it is a SETUP-FAIL)
     start = pair.log["B"].mark()
     place(pair, "A", BY_SECOND)                   # hs-deadhand-grab-232b.A.txt 'place 0.0 92.4 -99.6'
     place(pair, "B", BY_FIRST)                    # hs-deadhand-grab-232b.B.txt 'place 0.0 92.4 -107.2'

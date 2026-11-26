@@ -12,7 +12,8 @@ import test_ingame as T   # noqa: E402
 
 SCREAM = ["--env", "LICHII_COOP_DEBUG_OBJECTS=1"]
 BOSS = ["--env", "LICHII_COOP_DEBUG_BOSS=1", "--env", "LICHII_COOP_DEBUG_OBJECTS=1"]
-DH = ("test_deadhand_grab", "test_deadhand_grab_other_way")
+# each Dead Hand test on its own boot (232 moves his owner for good: review-rows-c130-2)
+DH = {"live-deadhand-room": "test_deadhand_grab", "live-deadhand-room-b": "test_deadhand_grab_other_way"}
 
 
 class Enemies(unittest.TestCase):
@@ -43,7 +44,7 @@ class Enemies(unittest.TestCase):
         self.assertEqual(T.results(s), {"test_redead_scream": "NO-REF"}, p.stdout[-2000:])
         self.assertIn("no stored reference", self.why(s, "test_redead_scream"))
         names = [d["test"] for d in s.get("deselected", [])]      # the boss rows need their own boots
-        for t in ("test_meg_decoys",) + DH:
+        for t in ("test_meg_decoys",) + tuple(DH.values()):
             self.assertTrue(any(n.endswith(t) for n in names), names)
 
     def test_scream_without_the_switch_deselected(self):
@@ -81,18 +82,24 @@ class Enemies(unittest.TestCase):
 
     # -- row 232 ---------------------------------------------------------------------------------------------------
     def test_deadhand_ok_is_no_ref(self):
-        p, s = self.run_fake("dh", boot="live-deadhand-room", row=BOSS)
-        self.assertEqual(T.results(s), {t: "NO-REF" for t in DH}, p.stdout[-2000:])
-        for t in DH:
+        for i, (boot, t) in enumerate(DH.items()):   # one test per boot: the other is deselected
+            p, s = self.run_fake("dh%d" % i, boot=boot, row=BOSS)
+            self.assertEqual(T.results(s), {t: "NO-REF"}, p.stdout[-2000:])
             self.assertIn("no stored reference", self.why(s, t))
 
     def test_deadhand_bugs_fail(self):
         for bug, rx in (("nohandover", "no hand-over to the held game"), ("apart", "at another hand")):
-            p, s = self.run_fake("dh-" + bug, boot="live-deadhand-room", row=BOSS, bug=bug)
-            r = T.results(s)
-            for t in DH:
-                self.assertEqual(r[t], "FAIL", p.stdout[-2000:])
+            for i, (boot, t) in enumerate(DH.items()):
+                p, s = self.run_fake("dh%d-%s" % (i, bug), boot=boot, row=BOSS, bug=bug)
+                self.assertEqual(T.results(s)[t], "FAIL", p.stdout[-2000:])
                 self.assertIn(rx, self.why(s, t))
+
+    def test_deadhand_already_owned_is_no_ref(self):
+        """B owns him before any grab (a used boot): NO-REF in set-up, never the empty PASS (review-rows-c130-2)."""
+        for i, (boot, t) in enumerate(DH.items()):
+            p, s = self.run_fake("dh%d-bowns" % i, boot=boot, row=BOSS, bug="bowns")
+            self.assertEqual(T.results(s)[t], "NO-REF", p.stdout[-2000:])
+            self.assertIn("already owns Enemy_DeadHand before any grab", self.why(s, t))
 
 
 if __name__ == "__main__":
