@@ -83,7 +83,10 @@ the save are changed; a missing flag is a SETUP-FAIL. Each save is kept in `coop
 baseline is put back. Every flag is read back on every save. A test that needs a profile:
 `@pytest.mark.needs_save(NAME)`. A run with another `--save`, or none, deselects it. `summary.json` `identity.save`
 is `{name, sha256: {game: {rel: sha256}}}`. `saves/gohma-alive.py` puts Queen Gohma back alive, with the quest at
-her room (rows 137/138).
+her room (rows 137/138). A profile may also have `CLEAR_TEXT = [0x...]`: String64 flags whose 64 bytes of text are
+emptied ("") in every save, checked in every save after, and read back as `""` by `prove`; a save without one is a
+SETUP-FAIL. `saves/no-ocarina.py` takes both ocarinas out of both games (`save_flags.NO_OCARINA` and
+`PlayerStatus.EquipOcarina`, issue 190): `test_songs.test_ocarina_given_saria`.
 
 SOLO boot (owner rule: features that are not multiplayer must also work solo, with co-op idle): `--solo` boots only
 lane game A, with no co-op session. That means `live.py start --only A` without `--server`, so hookshot.py run gives
@@ -146,6 +149,13 @@ pytest-timeout (pytest.ini, 1800 s) is only the backstop for a call that never r
   blue (0,60,160) at the same grey scores grey 1.0000, colour 0.1128). Shots are kept with the result
   (`<dir>/lane<L>/shots/`). A test never writes a reference: a person checks a NO-REF candidate and copies it into
   `refs/`.
+- Longshot's ImGui overlays (co-op's map arrows, tabs, name tags, its menu) are drawn after the bridge's `shot` is
+  taken, so they are never in it. For those, `pair.window_shot(game, name, tolerance)`: the screen's copy of the
+  game's window through the shared `coord-multiplayer/offline/lib/screen-shot.ps1` (game raised, cover check;
+  helper from `OOT_WINDOW_SHOT`, else that default path), cut to the window's client area (no title bar, no
+  desktop), compared the same way to `refs/<name>-window-<game>.png`. A covered window, a failed copy, no helper or
+  no pid is SETUP-FAIL, never PASS. It shows the last frame the game presented: step first when a newer one is
+  needed. Code: `ingame/windowshot.py`; selftests `tests/test_ingame_windowshot.py`.
 
 - Frame rate, the one wall-clock check (`test_unfocus.py`, row 83): fps is real time, so that test alone lets both
   games run (`resume`), reads Longshot's own 5 s present windows from the logs (`vi: N frames presented (X fps ...)`,

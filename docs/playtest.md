@@ -221,8 +221,18 @@ load). `coop_menu` is where co-op's own menu is (`"closed"`, or the page's name 
 `"customize"`). It does not see the game's own pause screen: `"closed"` says only that co-op's menu is shut, so a
 tester who pressed Start reads the screen (`shot`), not this.
 
+**`map_icons`** (in `state`; `hookshot/src/coop_map_drawn.h`): what co-op drew on the maps in the last present,
+because the others' map arrows and names are drawn through Longshot's overlay (`coop_draw.cpp` DrawMap) and a bridge
+shot leaves them out. `view` is `"minimap"` (the HUD minimap), `"page"` (the Map page's picture) or `"none"` (no map
+drawn); `presents` counts the presents that wrote it (it grows while the game draws); `width` and `height` are the
+present's size. `icons`: one per other player drawn, each `{"number", "x", "y", "turn", "arrow", "clamped", "alpha",
+"floor_delta", "label"}`: the centre in present pixels (y down), the arrow's turn in radians clockwise (`null` with no
+facing known yet), `arrow` true when the game's map arrow was drawn (false: the name alone), `clamped` at the map's
+edge, the alpha drawn (0..1), their floor minus the one shown, and the words under it. Our own Link is the game's
+own arrow and is not listed. A test of something a player sees still needs a window shot with the overlay.
+
 **`menu`** (in `state`; `hookshot/src/coop_menu_state.h`): what co-op's menus show, as text, because a bridge shot is
-taken before Longshot draws its overlays and so never has co-op's pages on it. Two members:
+taken before Longshot draws its overlays and so never has co-op's pages on it. Three members:
 
 - `coop`: co-op's tab of Longshot's Insert menu. `{"open":false}` while it is shut, else `"tab":"multiplayer"`, `page`
   (the same word as `coop_menu`), `rows` (each `{"name", "kind"}`; `kind` is `action`, `choice`, `toggle` (with `on`),
@@ -235,6 +245,13 @@ taken before Longshot draws its overlays and so never has co-op's pages on it. T
   six places 0..5, left column top to bottom then the right; empty places are left out), `focused`, `focused_label`,
   `mixer` (the any-colour mixer is open) and `page_no` and `pages` (`0` and `0` for a character with no colour option).
   A character's Eye Colour row is left out when its model is known to have no iris.
+- `minus`: co-op's tabs of the game's - menu (Multiplayer, Lobby, Mods) as co-op last drew them. `{"open":false}`
+  while none of them shows, else `tab` (`multiplayer`, `lobby`, `mods`), `view` (the rows' view: `main`, `session`,
+  `players`, `join`, `lan`, `menu`, ...), `details_page` and `details_pages` of the list on the right of the main and
+  Session views (row 223: page `0` the session's lines, page `1` the key items, turned with ZL and ZR; `details_pages`
+  is `2` while the game's key items can be read, `1` when not, `0` on a view without that list) and `key_items`: on
+  page `1` its lines (each `{"name", "value"}`, e.g. `{"name":"Songs","value":"3 of 12"}`), else `null`. The
+  session's page is never given: it can hold a join code or an address.
 
 The labels and values are co-op's own words in the game's language, never text read from the game. Example, a
 Character Select character with irises:
@@ -395,7 +412,7 @@ only, no `pip install`.
 | `flag name [value]` | Sets a flag (name or `0x` hash; a number, true/false or an enum name) inside the held frame; replies with the old value |
 | `give item` | Gives the item at once (the item, its `IsGet` and its ammo); the reply's `result` says what changed, and `get_state` with `inventory` true shows it with no step |
 | `kill actor [id]`, `hit actor amount [id]` (`actor` is the **name**. With no `id` the game takes the nearest actor of that name with a life. With the `id` and `name` `get_world` gave, it takes exactly that actor, and answers `refused: actor 7 (NAME) is gone` when the walk's list has no actor with that id and that name; an id is refused in solo. The tool steps up to 12 frames, looking every 2, for the answer in `state.strike`: `ok`, `refused: ...`, or `unknown: no result after 12 frames (the strike may still land: look with get_world)`. For a `kill` that struck, with an id, it then waits up to `wait_frames` more frames (default 36, a guess: S8 saw one die only after Link came near it; 0 to 600) for the actor to be gone, not alive or at life 0: `ok` with `died` true. If it is still alive: `struck: the hit landed, but NAME still lives after N frames` with `died` false (a far actor may not die until Link is near it, S8). With no id, or with no world list to look in, the answer is `struck: ...` with `died` null (not checked). A `hit` is `ok` when it struck. It never retries, because a second strike could land twice) | One `act` line each, then the wait above. |
-| `hurt quarter_hearts`, `place x y z [facing or face_x face_z]` (with a facing in degrees, 0 = +z, 90 = +x, or a point to look at, Link is placed and then turned by the test `face` line, 2 frames each: a chest or a talk needs no walk; both ways together are refused), `wear part name`, `dress [part]`, `assign item`, `chat text`, `menu page` | One `act` line each (the arguments are checked here first: no spaces in a name, `amount` and `quarter_hearts` 1 to 80, `part` one of weapon, shield, head, armor, boots, hand, `page` customize or close). Same gate and refusal text as `act`. They take effect on the next frames: `step`, then `get_state` |
+| `hurt quarter_hearts`, `place x y z [facing or face_x face_z]` (with a facing in degrees, 0 = +z, 90 = +x, or a point to look at, Link is placed and then turned by the test `face` line, 2 frames each: a chest or a talk needs no walk; both ways together are refused), `wear part name`, `dress [part]`, `assign item`, `chat text`, `menu page` | One `act` line each (the arguments are checked here first: no spaces in a name, `amount` and `quarter_hearts` 1 to 80, `part` one of weapon, shield, head, armor, boots, hand, `page` customize, close, host, paste, leave or main: main opens co-op's Multiplayer page and presses nothing). Same gate and refusal text as `act`. They take effect on the next frames: `step`, then `get_state` |
 | `go_to_actor id name [near_m] [max_frames]`, `face id name`, `attack id name [button] [max_frames]`, `use_item item [button]`, `talk`, `open`, `interact id name [near_m] [max_frames]` | The helpers below: a few calls in one, each bounded to 120 frames, each saying why it stopped |
 | `checkpoint tag` | The game's `dump` (every shared flag) with its frame and state, appended to `<log dir>/<player>.checkpoints.jsonl` |
 | `desync_check [all] [flags_only]` | `desync_check.py --clients` on the log folder: tags matched across every game, each game's frame printed, every game's flags compared, and the games' actors compared by what [sync-coverage.md](sync-coverage.md) says about each name (below). `flags_only` leaves the actors out |

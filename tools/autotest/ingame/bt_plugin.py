@@ -34,6 +34,7 @@ import pair as P   # noqa: E402
 import testpack    # noqa: E402
 import testsave    # noqa: E402
 import solo        # noqa: E402
+import windowshot  # noqa: E402
 
 RESULTS = ("PASS", "FAIL", "FLAKY", "SETUP-FAIL", "NO-REF", "SKIP", "NOT-RUN")
 DEFAULT_BUDGET = 120
@@ -68,6 +69,16 @@ def pytest_runtest_makereport(item, call):
     # starts with the recovery, the pair fixture's boot_ready; a miss cannot cascade into the tests after it)
     if rep.failed or (rep.when == "call" and item.get_closest_marker("leaves_play")):
         item.config._bt_dirty = True
+
+
+def _fake_window_shooter(lanefake):
+    """The fake lane's Pair.window_shooter. BT_FAKE_WINDOW_COVERED=A[,B] (selftest): that game's window is covered,
+    the SETUP-FAIL windowshot.Shooter gives for screen-shot.ps1's exit 3."""
+    def shoot(x, path):
+        if x in (os.environ.get("BT_FAKE_WINDOW_COVERED") or "").split(","):
+            raise P.SetupFail("window shot %s: not taken (exit 3: COVERED %s: fake cover)" % (x, path))
+        return lanefake.window_picture(x, path)
+    return shoot
 
 
 def pytest_addoption(parser):
@@ -225,6 +236,10 @@ def _deselect_needs_env(config, items):
 DEFAULT_BOOT = "live-kakariko-child"
 BOOT_A = os.path.join(AUTOTEST, "scenarios", DEFAULT_BOOT + ".A.txt")
 BOOT_B = os.path.join(AUTOTEST, "scenarios", DEFAULT_BOOT + ".B.txt")
+# Boots whose game A hosts through its own Multiplayer > Host (the A script's `menu host` step, LICHII_COOP_TEST_HOST,
+# 127.0.0.1 only: hookshot/src/coop_host_menu.cpp:401-404) and whose B joins it on 127.0.0.1: live.py start
+# --host-in-game, no --server (rows 292, 170; B #138: B joins on 127.0.0.1, the LAN-list path is test_lan251's).
+HOST_IN_GAME_BOOTS = ("live-kakariko-host",)
 
 
 def boot_paths(name):
@@ -239,24 +254,31 @@ def boot_paths(name):
     return a, b
 
 
-def boot_scene(name=DEFAULT_BOOT):
-    """The scene the boot puts both games in: its scripts' first `warp SCENE [start]` line (hookshot.py parse: 'warp'
-    takes a scene and an optional start). Both scripts must name the same one (a boot with none: None, any scene).
-    Pair.boot_ready proves each game is there, in play, with no event, before any test (NO REPEAT VOIDS,
-    test-bridge-pilot-fa63e90f r1: B stayed in Graveyard_Child in an event)."""
+def boot_place(name=DEFAULT_BOOT):
+    """(scene, start) the boot puts both games at: its scripts' first `warp SCENE [start]` line (hookshot.py parse:
+    'warp' takes a scene and an optional start; start None when the line has none). Both scripts must name the same
+    scene (a boot with none: (None, None), any scene). The one source of a test's way back to the lane's boot place."""
     got = []
     for path in boot_paths(name):
-        scene = None
+        place = (None, None)
         with open(path, encoding="utf-8", errors="replace") as f:
             for ln in f:
                 w = ln.split("#", 1)[0].split()
                 if len(w) >= 2 and w[0] == "warp":
-                    scene = w[1]
+                    place = (w[1], w[2] if len(w) >= 3 else None)
                     break
-        got.append(scene)
-    if got[0] != got[1]:
-        raise pytest.UsageError("--boot %s: the A and B scripts warp to different scenes (%s / %s)" % (name, got[0], got[1]))
-    return got[0]
+        got.append(place)
+    if got[0][0] != got[1][0]:
+        raise pytest.UsageError("--boot %s: the A and B scripts warp to different scenes (%s / %s)"
+                                % (name, got[0][0], got[1][0]))
+    return got[1] if got[1][1] else got[0]
+
+
+def boot_scene(name=DEFAULT_BOOT):
+    """The scene the boot puts both games in (boot_place's scene). Pair.boot_ready proves each game is there, in play,
+    with no event, before any test (NO REPEAT VOIDS, test-bridge-pilot-fa63e90f r1: B stayed in Graveyard_Child in an
+    event)."""
+    return boot_place(name)[0]
 
 
 BOOT_READY_S = 240    # the boot proof's own deadline (out of a load, a warp of a game left elsewhere, an event's end)
@@ -289,12 +311,14 @@ def _opt(config, name):
 def boot_args(config, lane, server, session):
     """live.py start's arguments for this lane's boot (after 'start'): the ONE list lane_pair boots with and
     --lane-check-only proves (live.py start --dry-run = hookshot.py run's own parser + script parse)."""
-    a, b = boot_paths(config.getoption("boot"))
+    boot = config.getoption("boot")
+    a, b = boot_paths(boot)
     if _opt(config, "solo"):         # (solo.py: game A alone, no --server, so no LICHII_COOP_SERVER: hookshot.py run)
         args = ["--session", session, "--lane", str(lane), "--only", solo.GAME, "--playtest", "--boot-a", a, "--no-load"]
     else:
-        args = ["--session", session, "--lane", str(lane), "--playtest", "--server", server, "--boot-a", a,
-                "--boot-b", b, "--no-load"]
+        host = ["--host-in-game"] if boot in HOST_IN_GAME_BOOTS else ["--server", server]
+        args = ["--session", session, "--lane", str(lane), "--playtest"] + host + ["--boot-a", a, "--boot-b", b,
+                                                                                  "--no-load"]
     for e in boot_env(config):
         args += ["--env", e]
     if nocs_wanted(config):           # (live.py resolve: --game-b wins over the lane's B with --lane)
@@ -549,12 +573,14 @@ def lane_pair(request):
         lanefake = fakegame.FakeLane(out, env=boot_env(config),     # (fakes/*.py hooks see the boot's switches)
                                      fakes_dir=os.environ.get("BT_FAKE_FAKES_DIR") or fakegame.FAKES,
                                      solo_log=(os.environ.get("BT_FAKE_SOLO_LOG") or solo.IDLE)
-                                     if config.getoption("solo") else None)
+                                     if config.getoption("solo") else None,
+                                     boot=config.getoption("boot"))   # (and its name: game.boot)
         games = lanefake.games()
         if config.getoption("solo"):     # (the fake A logs what the real module logs with no server: solo.IDLE)
             games = {solo.GAME: games[solo.GAME]}
         pair = P.Pair(games, out_dir=out, refs_dir=os.environ.get("BT_FAKE_REFS", refs))
         pair.lane, pair.info = lane, {"fake": True}
+        pair.window_shooter = _fake_window_shooter(lanefake)
         try:
             _module_proof(pair, lane)
             if config.getoption("solo"):
@@ -593,6 +619,9 @@ def lane_pair(request):
             raise GameCrash(why) if crash else P.SetupFail(why)
         pair = P.Pair(P.read_session(session), out_dir=out, refs_dir=refs)
         pair.lane, pair.info, pair.session = lane, dict(info, boot_s=round(time.monotonic() - t0, 1)), session
+        pair.live = _live                       # (Pair.rejoin: live.py quit + relaunch in this session)
+        pair.boot = dict(zip(("A", "B"), boot_paths(config.getoption("boot"))))   # (rejoin: the lane's own boot)
+        pair.window_shooter = windowshot.Shooter(session)   # (screen-shot.ps1 on the session's game pids)
         _module_proof(pair, lane)               # (before any bridge call: a game with no module refuses the connection)
         for x in pair.c:
             h = pair.c[x].hello()

@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -46,6 +47,26 @@ RECOVER_BASE_S = SETUP_LIMIT_S          # a recovery's other part: out of a load
 # 20 a second (playtest_client.py input/move: timeout + frames / 20.0). 0.3 + 0.25 + 5/20 = 0.8 s, x2.5 margin.
 REPLY_MIN_S = 2.0
 CLIENT_FPS = 20.0     # the client's worst stepping rate (playtest_client.py input/move reply waits)
+# The ocarina on the D-pad after a scene load: the module's equip (coop/host/src/game_items.cpp OcarinaEquip: arm() waits
+# kSettleFrames = 30 frames, game_items.hpp:232, with Link known and not busy; the line at game_items.cpp:817; docs/items.md
+# 'The game's own equip') re-equips it from the flags after each load and logs this line; a D-pad press before it takes
+# nothing out (songs-frogs-733c4d8f SETUP-FAIL 11-26: B's line, hookshot_log-B.txt:4581, came after a 0.7 s event at the
+# Kakariko gate and after the test's LEFT; no bridge run had taken an ocarina out before).
+OCARINA_EQUIPPED = r"coop: items: ocarina '\w+' equipped by the game from its flags"
+SCENE_LOADED = r"coop: native ui: scene load ended"     # (seen: songs-frogs-733c4d8f hookshot_log-B.txt:4289, then :4581)
+OCARINA_FRAMES = 600  # 20 s of game: the mend's 30 frames + an arrival event's end (the frogs' boot event: 0.7 s)
+# D-pad Left's two module lines (probe-ocarina-2f14b333, 11-26, both games, cited by its game-out-X.txt line): the press
+# ALWAYS starts the game's free-Ocarina event (OCARINA_FREE: B :4810, A :5814; also both frogs SETUP-FAIL runs, 733c4d8f
+# :4748, 58f13b22 :4898). The first time on a boot the game's first-use "Ocarina Audio Input" box is up
+# (probe-oca-12f-30-B.png) and Link does not play yet: OCARINA_PLAYS came only after B closed that box (B :5540, A :6440;
+# 500 frames and a second 30-frame LEFT before it brought nothing). The frogs runs waited for OCARINA_PLAYS alone.
+OCARINA_FREE = r"coop: event: the running event is our free Ocarina"      # coop/host/include/coop/host/event_owner.hpp:58, docs/scenes.md:41
+OCARINA_PLAYS = r"ocarina probe: our Link plays the ocarina"              # lichii/hook/coop_ocarina.cpp:320 (PROBE=1)
+# The no-box wait for OCARINA_PLAYS after LEFT: 240 frames, the scenario's own 'press DLEFT 12' + 'wait 240'
+# (scenarios/hs-ocarina.A.txt:23-24) that run 20261115-185256 proved (docs/items.md:340: the plays line after DLEFT
+# within it). Not shortened: no run measured the no-box gap itself (review-c123-13 17:47). In the box case nothing
+# closes it by itself (probe: 240 + 30 + 240 frames and no plays line until B).
+OCARINA_PLAYS_FRAMES = 240
 
 
 class SetupFail(Exception):
@@ -234,14 +255,19 @@ class Pair:
 
     def __init__(self, games, client=pc.Client, out_dir=None, refs_dir=None):
         self.games = games
+        self._client = client
         self.c = {x: client(g["port"], timeout=30.0) for x, g in games.items()}
         self.log = {x: Log(g["log"]) for x, g in games.items()}
+        self.session = None    # the live.py session folder (bt_plugin lane_pair sets it; rejoin needs it)
+        self.live = None       # live.py runner (args, timeout) -> its JSON answer (bt_plugin lane_pair sets _live)
+        self.boot = {}         # {x: the boot script the lane booted x with} (bt_plugin lane_pair, boot_paths(--boot))
         self.out_dir = out_dir
         self.refs_dir = refs_dir
         self.deadline = Deadline(3600)
         self.shots = []        # [{"game", "name", "path", "ref", "score", "ok"}] of the running test
         self.boot_scene = None # the boot's scene (bt_plugin._boot_proof): where every default-boot test starts
         self.notes = []
+        self.window_shooter = None   # (x, path) -> path: window shots (windowshot.Shooter; the fake lane's own)
 
     # -- per test ---------------------------------------------------------------------------------------------
     def begin(self, seconds):
@@ -355,6 +381,45 @@ class Pair:
                 raise AssertionError("%s: not after %d frames (~%d s of game)" % (what, ran, ran // FPS))
             self.step_both(CHUNK)
             ran += CHUNK
+
+    def ocarina_ready(self, x):
+        """True once game x's module log has OCARINA_EQUIPPED after its last SCENE_LOADED (the boot's or a warp's)."""
+        lines = self.log[x].since(0)
+        load = re.compile(SCENE_LOADED)
+        last = max([i for i, ln in enumerate(lines) if load.search(ln)] or [-1])
+        equip = re.compile(OCARINA_EQUIPPED)
+        return any(equip.search(ln) for ln in lines[last + 1:])
+
+    def need_ocarina(self, x, max_frames=OCARINA_FRAMES):
+        """THE precondition of every D-pad ocarina press (call it inside `with pair.setup():` before the press, after
+        the boot and after every warp): steps both games until game x's ocarina is equipped again since its last scene
+        load (ocarina_ready), else AssertionError naming it (a SETUP-FAIL in a set-up). Without it the press raced the
+        module's re-equip (songs-frogs-733c4d8f)."""
+        return self.until("%s: the ocarina back on the D-pad after the load ('%s' since the last '%s')"
+                          % (x, OCARINA_EQUIPPED, SCENE_LOADED), lambda: self.ocarina_ready(x), max_frames)
+
+    def ocarina_out(self, x, max_frames=OCARINA_PLAYS_FRAMES):
+        """THE way to take game x's ocarina out (test_songs, test_epona, test_rows; needs LICHII_COOP_OCARINA_PROBE=1):
+        need_ocarina, D-pad Left (12 frames), then OCARINA_PLAYS within max_frames: done. Else OCARINA_FREE must be
+        there (else AssertionError: nothing came out, the #190 bug's sign): the first-use box is up, B closes it (the
+        probe's proven press; not A, a note key), and OCARINA_PLAYS must come AFTER the B press (the log is marked right
+        before it), within max_frames. Ends with Link playing (no note sent by the set-up)."""
+        self.need_ocarina(x)
+        pos = self.log[x].mark()
+        self.press(x, ["LEFT"], frames=12)
+        try:
+            return self.until("%s: '%s' after D-pad Left" % (x, OCARINA_PLAYS),
+                              lambda: self.log[x].find(OCARINA_PLAYS, pos=pos), max_frames)
+        except AssertionError:
+            pass
+        assert self.log[x].find(OCARINA_FREE, pos=pos), (
+            "%s: nothing came out after D-pad Left: neither '%s' nor '%s' in %d frames"
+            % (x, OCARINA_PLAYS, OCARINA_FREE, max_frames))
+        self.notes.append("%s: ocarina out with the first-use 'Ocarina Audio Input' box up: closed with B" % x)
+        at_b = self.log[x].mark()
+        self.press(x, ["B"], frames=8)
+        return self.until("%s: '%s' after B closed the first-use box" % (x, OCARINA_PLAYS),
+                          lambda: self.log[x].find(OCARINA_PLAYS, pos=at_b), max_frames)
 
     def expect_log(self, x, pattern, max_frames=600):
         """A module log line of game x matching `pattern`, written since this test began."""
@@ -546,7 +611,7 @@ class Pair:
         Link already there; then a fresh state with that scene, no load AND an event running counts as the arrival,
         anything else raises. The bridge waits ARRIVE_IN_EVENT_WAIT s per game; a game still loading then is stepped
         until that state (frame-bounded), and every wait stays inside the deadline."""
-        for x in tuple(self.c):            # (the pair's own games: a --solo pair has A only)
+        for x in [y for y in ("A", "B") if y in self.c]:     # (a solo pair: A only)
             self.warp_one(x, scene, entrance, arrive_in_event)
         return {x: self.state(x) for x in self.c}
 
@@ -637,6 +702,92 @@ class Pair:
     def flag_read(self, x, name):
         return self.call(x, "flag_read", name=name)
 
+    # -- a game leaves and comes back (regress step 4, row 249) ---------------------------------------------------
+    REJOIN_QUIT_S = 60       # live.py quit: QUIT_WAIT 15 s to quit, then a kill (live.py:58)
+    REJOIN_BOOT_S = 420      # live.py relaunch: the runner's start + the boot script (live-kakariko-child: ~2900
+                             # frames of script) inside the session's boot_timeout; the call's own wall-clock limit
+
+    def rejoin(self, x, boot=None, env=()):
+        """Game x quits (live.py quit: asked to close, killed after QUIT_WAIT) and starts again into the SAME session
+        (live.py relaunch: its save kept, `boot` = a scenario file played as its boot; default the one the lane booted
+        x with, Pair.boot), so it joins the session's server again. A boot script takes the title itself, so it goes
+        with --no-load, as the lane's own boot (bt_plugin boot_args): never the loader's A presses before the script.
+        The other game runs in real time meanwhile (bridge `resume`, `pause` after): a host held between frames could
+        not answer the rejoiner's save round (docs/flags.md, "The save sent is the host's game now").
+        Afterwards game x has a NEW bridge client (same port: relaunch_argv keeps the session's playtest ports) and its
+        log is read from the new game-out file's first line (relaunch keeps the old one beside it as game-out-X.txt.N).
+        A hung quit/relaunch (_live's subprocess timeout) is an AssertionError naming the step. `env` (K=V each) is for
+        this start of game x only (live.py relaunch --env, after the session's own: it wins; row 251:
+        LICHII_COOP_SERVER=<LAN IP>:<port>, LICHII_COOP_PASSWORD=); the next rejoin without it starts game x with the
+        session's own env again. Returns live.py relaunch's answer; AssertionError if a step did not hold."""
+        if not (self.session and self.live):
+            raise SetupFail("rejoin %s: no live.py session (Pair.session / Pair.live) for live.py quit/relaunch" % x)
+        live = self.live
+        boot = boot or self.boot.get(x)
+        others = [y for y in self.c if y != x]
+        self.c[x].close()
+        for y in others:
+            self.c[y].resume()
+        try:
+            step = "quit"
+            self.deadline.check("rejoin quit")
+            q = live(["quit", "--session", self.session, x],
+                     timeout=max(1.0, min(self.REJOIN_QUIT_S, self.deadline.left())))
+            assert q.get("player") == x and not q.get("error"), "%s: live.py quit: %s" % (x, q)
+            args = ["relaunch", "--session", self.session, x] + (["--boot", boot, "--no-load"] if boot else [])
+            for kv in env:
+                args.append("--env=%s" % kv)     # (one token: an empty value 'K=' stays one argument)
+            step = "relaunch"
+            self.deadline.check("rejoin relaunch")
+            r = live(args, timeout=max(1.0, min(self.REJOIN_BOOT_S, self.deadline.left())))
+            assert r.get("ok"), "%s: live.py relaunch: %s" % (x, r)
+        except subprocess.TimeoutExpired as e:   # (a hung quit/relaunch: a FAIL with its step, never a raw error)
+            raise AssertionError("%s: live.py %s did not answer in %s s (game %s may be down)"
+                                 % (x, step, e.timeout, x))
+        finally:
+            for y in others:
+                self.c[y].pause()
+        self.c[x] = self._client(self.games[x]["port"], timeout=30.0)
+        self.log[x] = Log(self.games[x]["log"])
+        self.log[x].pos = 0
+        h = self.c[x].hello()
+        assert h.get("control"), "%s: after the relaunch the bridge has no Longshot control: %s" % (x, h)
+        self.notes.append("%s rejoined: quit %s; relaunch %s" % (x, q.get("how"), r.get("boot")))
+        return r
+
+    SERVER_RESTART_S = 30    # live.py server stop (a kill) + start (its own 1 s settle): the call's wall-clock limit
+
+    def server_restart(self, args=()):
+        """The session's coop_server stops (killed) and starts again on the same exe, port and password (live.py server
+        stop + start), with `args` as extra server arguments for this start only (e.g. "--same-network-open",
+        "--bind", "<LAN IP>"; each passed as --server-arg=X); a restart without them puts the session's own server
+        back. The games run in real time meanwhile (bridge `resume`, `pause` after), as in rejoin: a game held between
+        frames does not see its connection drop. Its output goes to the session's server-out-N.txt (N = 1, 2, ...:
+        the boot's own is server-out.txt); returns live.py server start's answer ({server, pid, port, args, out})."""
+        if not (self.session and self.live):
+            raise SetupFail("server_restart: no live.py session (Pair.session / Pair.live) for live.py server")
+        live = self.live
+        for y in self.c:
+            self.c[y].resume()
+        try:
+            self.deadline.check("server restart")
+            t = max(1.0, min(self.SERVER_RESTART_S, self.deadline.left()))
+            q = live(["server", "--session", self.session, "stop"], timeout=t)
+            assert q.get("server") == "stopped", "live.py server stop: %s" % q
+            r = live(["server", "--session", self.session, "start"] + ["--server-arg=%s" % v for v in args], timeout=t)
+            assert r.get("server") == "started", "live.py server start: %s" % r
+        finally:
+            for y in self.c:
+                self.c[y].pause()
+        self.notes.append("server restarted%s -> %s" % (" with " + " ".join(args) if args else "", r.get("out")))
+        return r
+
+    def server_log(self, name):
+        """A Log of the session's server output file `name` (server-out.txt, server-out-N.txt), read from its start."""
+        lg = Log(os.path.join(self.session, name))
+        lg.pos = 0
+        return lg
+
     # -- looks ------------------------------------------------------------------------------------------------
     def check_shot(self, x, name, tolerance=0.90):
         """A bridge shot of game x (the game's framebuffer, no overlay), compared to refs/<name>-<x>.png by SSIM.
@@ -651,6 +802,27 @@ class Pair:
         if res["why"].startswith("NO-REF"):
             return res        # (the test goes on; bt_plugin labels it NO-REF at its end, never PASS)
         assert res["ok"], "shot %s-%s: %s" % (name, x, res["why"])
+        return res
+
+    def window_shot(self, x, name, tolerance=0.90):
+        """A WINDOW shot of game x: the screen's copy of its window, Longshot's ImGui overlays (co-op's map arrows, tabs,
+        name tags, its menu) included, which check_shot's bridge shot never has. Taken by self.window_shooter
+        (windowshot.Shooter: the shared offline/lib/screen-shot.ps1, raise + own-pid cover check), compared like
+        check_shot to refs/<name>-window-<x>.png. No reference: NO-REF, the candidate kept under <out>/new/. A covered,
+        failed or missing shot, or a pair without a shooter: SETUP-FAIL (never PASS). The window shows the last
+        frame the game presented: step the games first if the test needs a newer one."""
+        import imagecheck
+        if self.window_shooter is None:
+            raise SetupFail("window shot %s-%s: this pair has no window shooter" % (name, x))
+        wname = "%s-window" % name
+        path = os.path.join(self.out_dir or os.path.join(HERE, "out"), "window", "%s-%s.png" % (wname, x))
+        path = self.window_shooter(x, path)
+        ref = os.path.join(self.refs_dir or os.path.join(HERE, "refs"), "%s-%s.png" % (wname, x))
+        res = imagecheck.compare(path, ref, tolerance, keep_dir=self.out_dir)
+        self.shots.append(dict(res, game=x, name=wname, window=True))
+        if res["why"].startswith("NO-REF"):
+            return res
+        assert res["ok"], "window shot %s-%s: %s" % (wname, x, res["why"])
         return res
 
     def unproven(self, reason):
