@@ -190,6 +190,11 @@ class FakeGame:
             if self.stuck:     # (the event never ends: the bridge's warp answers timeout, still in it)
                 return {"id": m.get("id"), "ok": False, "error": "timeout", "message": "fake: still in the event",
                         "frame": self.frame, "paused": self.paused}
+            # (the real verb: a name ending in the other age first sets Sequence_IsChildhood, docs/playtest.md 'warp';
+            # so the age follows the flag, FakeGame.age, and no fake hook writes st['age'] for its scenes)
+            want = {"_adult": "adult", "_child": "child"}.get(m["scene"][-6:].lower())
+            if want and want != self.age():
+                self.flags["Sequence_IsChildhood"] = 0 if want == "adult" else 1
             self.scene, self.event = m["scene"], False
             r.update(arrived=True, via="teleport", map=m["scene"], state=self.state())
         elif cmd == "move":

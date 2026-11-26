@@ -37,6 +37,17 @@ class FakeAge(unittest.TestCase):
         lane.g["A"].flags["Sequence_IsChildhood"] = 1
         self.assertEqual(self.ages(lane)["A"], "child")
 
+    def test_a_warp_to_a_scene_of_the_other_age_sets_the_flag_as_the_real_verb(self):
+        """docs/playtest.md 'warp': a name ending in the other age first sets Sequence_IsChildhood; no suffix keeps it."""
+        lane = self.lane()
+        g = lane.g["A"]
+        g.answer({"cmd": "warp", "scene": "KokiriForest_Adult"})
+        self.assertEqual((g.flags.get("Sequence_IsChildhood"), self.ages(lane)), (0, {"A": "adult", "B": "child"}))
+        g.answer({"cmd": "warp", "scene": "TwinrovaStage"})
+        self.assertEqual(self.ages(lane)["A"], "adult")
+        g.answer({"cmd": "warp", "scene": "KokiriForest_Child"})
+        self.assertEqual((g.flags.get("Sequence_IsChildhood"), self.ages(lane)["A"]), (1, "child"))
+
 
 if __name__ == "__main__":
     unittest.main()
