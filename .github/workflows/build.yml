@@ -426,9 +426,47 @@ jobs:
           cmake --build build-hook --target hookshot_coop --parallel 4
       - name: ccache stats
         run: ccache --show-stats
-      - name: Test unrelated suite
+      - name: Test unrelated suite A-D
+        if: always()
         run: >
           ctest --test-dir build --output-on-failure
+          -R '^[A-Da-d]'
+          -E '^(flag watcher:|game flags:|session:)'
+      - name: Test unrelated suite E-H
+        if: always()
+        run: >
+          ctest --test-dir build --output-on-failure
+          -R '^[E-He-h]'
+          -E '^(flag watcher:|game flags:|session:)'
+      - name: Test unrelated suite I-L
+        if: always()
+        run: >
+          ctest --test-dir build --output-on-failure
+          -R '^[I-Li-l]'
+          -E '^(flag watcher:|game flags:|session:)'
+      - name: Test unrelated suite M-P
+        if: always()
+        run: >
+          ctest --test-dir build --output-on-failure
+          -R '^[M-Pm-p]'
+          -E '^(flag watcher:|game flags:|session:)'
+      - name: Test unrelated suite Q-T
+        if: always()
+        run: >
+          ctest --test-dir build --output-on-failure
+          -R '^[Q-Tq-t]'
+          -E '^(flag watcher:|game flags:|session:)'
+      - name: Test unrelated suite U-Z
+        if: always()
+        run: >
+          ctest --test-dir build --output-on-failure
+          -R '^[U-Zu-z]'
+          -E '^(flag watcher:|game flags:|session:)'
+      - name: Test unrelated suite non-letter
+        if: always()
+        run: >
+          ctest --test-dir build --output-on-failure
+          -R '^[^A-Za-z]'
           -E '^(flag watcher:|game flags:|session:)'
       - name: Test existing flag-watcher behavior
         if: always()
