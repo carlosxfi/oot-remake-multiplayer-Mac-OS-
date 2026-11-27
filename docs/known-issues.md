@@ -56,6 +56,7 @@ In 0.12.0 (game rebuild on Longshot v3.2.0; protocol 18). Checked in a game by m
 - **Twinrova** (rows 222, 286): the witches' shots now come from the game that runs the fight, so which sister's ice or fire comes when and where a shot lands are the same for everyone. Fixed in this build; **not yet seen in a game**.
 - **Phantom Ganon** (row 287): when the fight passes from one player's game to another's, the boss keeps its move and no longer falls out of the room. Fixed in this build; **not yet seen in a game**.
 - **Fixed since the first 0.12.0 tests**: the frame spikes every 30 seconds while hosting (row 292); a crash when going back to the title from the pause menu; the minimap arrows turn smoothly again, as in 0.11.12; a 0.11.12 look keeps its cap and hood as made (the cap trim shows only when asked for); another player's hood no longer shows a band in the tunic colour from afar; a deku stick or nut upgrade bought from a scrub is no longer taken back when another player got one just before; the Multiplayer page rows work when co-op was started with the game (row 170). **Not yet seen in a game**, except the title-screen crash fix.
+- **Also in this build, not yet seen in a game**: the party HUD lines sit left-aligned on their hearts and fit on the screen; Link's hair in any colour on your own Link and on the other players (row 293); Epona's song from another player ends with the horse, and a finished save with no horse is mended (row 294).
 - **Frame drops on a boss's final blow for a guest** (row 283): reported, no logs yet. Send `/bugreport` right after it happens.
 - **Redead and Gibdo freeze, Meg's decoys, Dead Hand's hands** (tracker rows 230 to 232): fixed (rows 231 and 232 passed in a game; row 230's fix is in the code). Tell us if one still differs between games.
 - **Kit tools by Geno, PRs #338 and #339** (kit instances keep their own logs and caches; Nucleus Co-op root path fix): from Geno, merged with our review fixes; not seen in a game yet.
@@ -116,6 +117,10 @@ In 0.11.8. Watched working in a two-game run (marked *seen*): the Gold Skulltula
 
 ## Known issues
 
+- **Link customization, Characters tab: two markers are missing**: the marker that shows the exact hue you pick and the marker for changing the page do not show. The rows still work. To be fixed in 0.12.1.
+- **The typing indicator blinks**: while a player types in the chat, the indicator over them blinks in and out. To be fixed in 0.12.1.
+- **A downed player cannot crawl away**: at zero hearts the crawl animation plays, but the downed player cannot move, and the view does not go first person. A teammate can still help them up. To be fixed in 0.12.1.
+- **The revive message flickers**: while a player is being helped up, their message blinks rapidly. To be fixed in 0.12.1.
 - **A ceiling Gold Skulltula does not turn for the other player**: when a ceiling Gold Skulltula turns to face a player, it stays still on the other player's screen. Killing it and its token are shared as before.
 - **Gold Skulltulas Not shared: your race is kept on your computer**: your own tokens, the Skulltula House rewards you claimed and the wallets and Stone of Agony they gave you, with each of a host's saves, come back when you join again and after a load. A new game of the host's starts every race from 0. Not checked in a game yet.
 - **Linux: away/paused state, Map page and HUD refresh** ([#150](https://github.com/daurosk/oot-remake-multiplayer/issues/150)): fixed in the code, not yet checked on Linux.
