@@ -426,19 +426,40 @@ jobs:
           cmake --build build-hook --target hookshot_coop --parallel 4
       - name: ccache stats
         run: ccache --show-stats
-      - name: Test unchanged suite
+      - name: Test unrelated suite
         run: >
           ctest --test-dir build --output-on-failure
-          -E '^(flag watcher: the settling tail uses sliced audits and one exit scan|game flags: frame-scoped reuse caches manager, table metadata and hash probes|session: a held client lock does not stall the game frame)$'
+          -E '^(flag watcher:|game flags:|session:)'
+      - name: Test existing flag-watcher behavior
+        if: always()
+        run: >
+          ctest --test-dir build --output-on-failure
+          -R '^flag watcher:'
+          -E '^flag watcher: the settling tail uses sliced audits and one exit scan$'
+      - name: Test existing game-flag behavior
+        if: always()
+        run: >
+          ctest --test-dir build --output-on-failure
+          -R '^game flags:'
+          -E '^game flags: frame-scoped reuse caches manager, table metadata and hash probes$'
+      - name: Test existing session behavior
+        if: always()
+        run: >
+          ctest --test-dir build --output-on-failure
+          -R '^session:'
+          -E '^session: a held client lock does not stall the game frame$'
       - name: Test settling-tail optimization
+        if: always()
         run: >
           ctest --test-dir build --output-on-failure
           -R '^flag watcher: the settling tail uses sliced audits and one exit scan$'
       - name: Test frame-scoped flag cache
+        if: always()
         run: >
           ctest --test-dir build --output-on-failure
           -R '^game flags: frame-scoped reuse caches manager, table metadata and hash probes$'
       - name: Test calc-thread lock isolation
+        if: always()
         run: >
           ctest --test-dir build --output-on-failure
           -R '^session: a held client lock does not stall the game frame$'
