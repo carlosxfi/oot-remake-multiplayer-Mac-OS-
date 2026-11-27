@@ -25,13 +25,18 @@ typedef struct HosCoopDraw {
     void (*use_font)(void *user, int id);             /* text and text_width draw with it from now on; 0: Hookshot's own */
     int (*image)(void *user, int w, int h, const uint8_t *rgba);   /* a picture (w*h*4 bytes, rows top down, straight alpha) copied in; its id, 0 on failure */
     void (*draw_image)(void *user, int id, float x0, float y0, float x1, float y1, uint32_t tint);   /* the whole picture into the rectangle */
+    /* Since hos_coop_draw3 below (only its table has it): a picture turned about its middle (cx, cy), half_w x half_h
+       each side of it, by radians clockwise on screen, as the game turns a pane (the maps' player arrows: one picture
+       for every facing). */
+    void (*draw_image_turned)(void *user, int id, float cx, float cy, float half_w, float half_h, float radians, uint32_t tint);
 } HosCoopDraw;
 
 /* The module's exports (extern "C"), all optional (an older module has none: nothing is drawn). Hookshot calls
-   hos_coop_draw2 when the module has it, else hos_coop_draw. */
+   hos_coop_draw3 when the module has it, else hos_coop_draw2, else hos_coop_draw. */
 typedef int (*hos_coop_draw_wanted_fn)(void);             /* 1: something to draw now (Hookshot then makes an ImGui frame) */
 typedef void (*hos_coop_draw_fn)(const HosCoopDraw *d);   /* draws it (the table up to text_width) */
-typedef void (*hos_coop_draw2_fn)(const HosCoopDraw *d);  /* draws it (the whole table) */
+typedef void (*hos_coop_draw2_fn)(const HosCoopDraw *d);  /* draws it (the table up to draw_image) */
+typedef void (*hos_coop_draw3_fn)(const HosCoopDraw *d);  /* draws it (the whole table) */
 /* The game's camera, for co-op's name tags and edge arrows (optional exports; an older module has none). For each draw
    into the scene's colour target (B10G11R11 with depth), on the thread that records it: hos_coop_camera_wanted says
    whether this frame (Hookshot's frame number) still wants a camera from a target this size (the largest of a frame

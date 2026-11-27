@@ -1,4 +1,4 @@
-From cb5893b41638e2ceb585dd6b4ca0b548dbc7077c Mon Sep 17 00:00:00 2001
+From 6aa06cf71b5fa0e3ef61cb476b1974aa143b2b71 Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Mon, 16 Nov 2026 01:38:18 -0900
 Subject: [PATCH] Co-op save-load wraps: every save the game loads, to the

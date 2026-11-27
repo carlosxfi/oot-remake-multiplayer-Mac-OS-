@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: coop-fetch <coop-fetch@localhost>
+Date: Wed, 25 Nov 2026 13:50:00 -0600
+Subject: [PATCH] Co-op shooter wraps: the Shooter component's prepare, shoot
+ and sleep to the module
+
+Three more wrapped game functions in patch 0005's table
+(nx2/coop_world_wraps.py WRAPS; their ids in host/hos_coop_boss_shooter.h),
+for oot-remake-multiplayer's row 286 (a boss's copy throws no bullet;
+docs/dungeons-boss.md "Shooter probe"):
+- 28: main+0x2eb1ed0, prepare (wakes a bullet the shooter keeps)
+- 29: main+0x2eb2a40, shoot
+- 30: main+0x2eb26b0, back to sleep
+The module only reads and logs (LICHII_COOP_SHOOTER_PROBE=1): phase 0
+answers 0 and no register changes. Nothing else changes: the wrap
+machinery, the checks (build id, first words) and the hello's bits are
+0005's.
+---
+ host/hos_coop_boss_shooter.h | 25 ++++++++++++++++++++
+ nx2/coop_world_wraps.py      |  5 +++++
+ 2 files changed, 30 insertions(+)
+ create mode 100644 host/hos_coop_boss_shooter.h
+
+diff --git a/host/hos_coop_boss_shooter.h b/host/hos_coop_boss_shooter.h
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/host/hos_coop_boss_shooter.h
+@@ -0,0 +1,25 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later
++   The Shooter component's three verbs, on Hookshot (oot-remake-multiplayer, docs/dungeons-boss.md "Shooter probe").
++
++   Three wrapped game functions more in the one wrap table (patch 0005's nx2/coop_world_wraps.py WRAPS; the ids are in
++   the one wrap space of hos_coop_world.h). Patch 0045 adds their rows and this file (Hookshot's
++   host/hos_coop_boss_shooter.h is the same file). The module's hos_coop_wrap gets them; Hookshot announces them in
++   HOS_COOP_WORLD_HELLO's bits. The rows:
++     (28, 0x2eb1ed0, (0xd503237f, 0xa9bd7bfd, 0xf9000bf5, 0xa9024ff4, 0x910003fd, 0x52832e08)),
++     (29, 0x2eb2a40, (0xd503237f, 0xa9bd7bfd, 0xf9000bf5, 0xa9024ff4, 0x910003fd, 0xf9400028)),
++     (30, 0x2eb26b0, (0x34000341, 0xb9402c08, 0x34000308, 0xd503237f)),
++   The module only reads (row 286's probe, LICHII_COOP_SHOOTER_PROBE=1): phase 0 always answers 0. Plain C. */
++#ifndef HOS_COOP_BOSS_SHOOTER_H
++#define HOS_COOP_BOSS_SHOOTER_H
++
++/* main+0x2eb1ed0: a shooter prepares a bullet it keeps (x0 the shooter, x1 the prepare params: +0 the u32 key, +0x14
++   the s32 index or -1). Returns the s32 record index, < 0 when refused. Every way into main+0x2eb4c30, which wakes the
++   bullet's actor, goes through it: the AI nodes ExecuteShooterPrepare and ...WithTarget, and main+0x2eb2f20. */
++#define HOS_COOP_WRAP_SHOOTER_PREPARE 28u
++/* main+0x2eb2a40: a shooter shoots a prepared bullet (x0 the shooter, x1 the shoot params, an object: +0x1928 the u32
++   key, +0x192c the s32 index). Returns a bool. The AI node OneShotShooterShoot tail-calls it. */
++#define HOS_COOP_WRAP_SHOOTER_SHOOT 29u
++/* main+0x2eb26b0: a shooter puts a bullet back to sleep (x0 the shooter, w1 the key, w2 the index). Returns a bool. */
++#define HOS_COOP_WRAP_SHOOTER_SLEEP 30u
++
++#endif
+diff --git a/nx2/coop_world_wraps.py b/nx2/coop_world_wraps.py
+index 0000000..0000000 100644
+--- a/nx2/coop_world_wraps.py
++++ b/nx2/coop_world_wraps.py
+@@ -63,6 +63,11 @@ WRAPS = (
+     # HOS_COOP_WRAP_PANE_ALIAS (patch 0042): the set-text of each pane of a layout with a matching alias (x0 the
+     # pane, x1 a reference {+0 the text, +8 its length}). For the play-test bridge only, reads only
+     (27, 0x377a990, (0xd503237f, 0xa9bc7bfd, 0xf9000bf7, 0xa90257f6)),  # pacibsp; stp x29, x30; str x23; stp x22, x21
++    # HOS_COOP_WRAP_SHOOTER_PREPARE, _SHOOT, _SLEEP (patch 0045): a Shooter component prepares, shoots or puts back a
++    # bullet it keeps (x0 the shooter; x1 the params, or w1 the key and w2 the index). Reads only (row 286's probe)
++    (28, 0x2eb1ed0, (0xd503237f, 0xa9bd7bfd, 0xf9000bf5, 0xa9024ff4, 0x910003fd, 0x52832e08)),  # pacibsp; stp x29, x30; str x21; stp x20, x19; mov x29, sp; mov w8, #0x1970
++    (29, 0x2eb2a40, (0xd503237f, 0xa9bd7bfd, 0xf9000bf5, 0xa9024ff4, 0x910003fd, 0xf9400028)),  # pacibsp; stp x29, x30; str x21; stp x20, x19; mov x29, sp; ldr x8, [x1]
++    (30, 0x2eb26b0, (0x34000341, 0xb9402c08, 0x34000308, 0xd503237f)),  # cbz w1; ldr w8, [x0, #0x2c]; cbz w8; pacibsp
+ )
+
+
+--
+2.56.0.windows.4
+

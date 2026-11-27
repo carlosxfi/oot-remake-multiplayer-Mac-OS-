@@ -7,6 +7,8 @@
 // This file turns that table into CoopVoice's Backend.
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <optional>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -15,6 +17,7 @@
 #include <vector>
 
 #include "coop_hookshot.h"
+#include "coop_longshot_settings.h"
 #include "coop_voice.h"
 #include "hos_coop_voice.h"
 #include "coop_export_guard.h"
@@ -106,7 +109,43 @@ bool KeyDown(std::uint32_t vk) {
 #endif
 }
 
+// Row 229: one of Longshot's rows by its key, its index kept (the rows do not move within a run; checked by its key).
+std::optional<CoopLongshotSettings::Setting> RowByKey(const char* key, int* at) {
+    if (*at >= 0) {
+        if (auto r = CoopLongshotSettings::At(*at); r && r->key == key) return r;
+    }
+    for (int i = 0; i < CoopLongshotSettings::kMaxRows; ++i) {
+        auto r = CoopLongshotSettings::At(i);
+        if (!r) break;
+        if (r->key == key) {
+            *at = i;
+            return r;
+        }
+    }
+    *at = -1;
+    return std::nullopt;
+}
+
 } // namespace
+
+namespace CoopVoiceGameMic {
+// The game frame, no lock of ours held (each read takes Longshot's menu lock a moment): Longshot's Insert-menu
+// Microphone ("microphone": 0 Off, 1 the default, 2.. one by name) and its gain ("microphone_gain", 0 to 400 %), for
+// the voice's Default, at most every 3 s while voice is on. Rows not there (an older Longshot): not known.
+void Poll() {
+    static std::chrono::steady_clock::time_point next{};
+    static int mic_at = -1, gain_at = -1;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next || g_voice == nullptr || !CoopVoice::Available() || !CoopLongshotSettings::Available() ||
+        CoopVoice::Get().mode == coop::voice::Mode::off) {
+        return;
+    }
+    next = now + std::chrono::seconds(3);
+    const auto mic = RowByKey("microphone", &mic_at);
+    const auto gain = RowByKey("microphone_gain", &gain_at);
+    CoopVoice::SetGameMic(!mic ? -1 : (mic->value == 0 || (gain && gain->value == 0)) ? 0 : 1);
+}
+}  // namespace CoopVoiceGameMic
 
 extern "C" {
 // hos_coop_voice.h: once, from Hookshot's mixer thread, maybe before

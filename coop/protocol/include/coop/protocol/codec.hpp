@@ -87,6 +87,11 @@ std::uint32_t flag_hash(std::string_view name);
 // finite), and a key64 flag a bool.
 bool valid_flag(const FlagEntry& entry);
 
+// A mod id (ModEntry::id: 1 to kMaxModIdChars of a-z 0-9 . _ -, not starting with . _ -) and a mod key (ModSetting::key,
+// ModData::key: 1 to kMaxModSettingKeyChars of a-z 0-9 _), as the codec checks them.
+bool is_mod_id(std::string_view id);
+bool is_mod_key(std::string_view key);
+
 // Splits a whole flag table into FLAG_SNAPSHOT parts of at most
 // kMaxFlagEntries entries each, in order. An empty table gives one empty part.
 // Nothing when the table needs more than 65535 parts or holds a key twice.

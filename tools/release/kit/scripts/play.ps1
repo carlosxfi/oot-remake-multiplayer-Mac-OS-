@@ -75,7 +75,7 @@ function Read-YesNo([string]$Question, [int]$Seconds) {
         $line = [Console]::In.ReadLine()
         return -not ($line -and $line.Trim() -match '^(?i)(n|no)$')
     }
-    Write-Host -NoNewline "$Question [Y/n] (yes in $Seconds s) "
+    Write-Host -NoNewline "$Question [Y/n] (press Y or N; no key in $Seconds s: yes) "
     $end = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $end) {
         if ([Console]::KeyAvailable) {
@@ -197,6 +197,12 @@ if ($Hookshot) {
     # needs your tunic tile there (row 265). The original game (coop-options.ini original_game) touches no size table.
     $originalGame = @(Get-Content (Join-Path $kit 'coop-options.ini') -ErrorAction SilentlyContinue |
         Where-Object { $_ -match '^\s*original_game\s*=\s*(on|1|yes|true)\s*$' }).Count -gt 0
+    # The game's mods list in step with that switch before any build check reads it (row 266: a list an older kit
+    # wrote, the switch set or taken out by hand; kit-paths.ps1 Sync-KitOriginalMods, the module's CoopOriginal::Sync).
+    if ($exe) {
+        $l = Sync-KitOriginalMods (Join-Path (Split-Path -Parent $exe) 'mods') $originalGame
+        if ($l) { Write-Host $l }
+    }
     function Invoke-KitStartMerge {
         if (-not $exe -or $originalGame) { return }
         foreach ($l in @(Invoke-KitSizeTableMerge $kit (Split-Path -Parent $exe))) { Write-Host $l }
@@ -233,24 +239,33 @@ if ($Hookshot) {
         Write-Host (Get-KitHookshotNeedText $need) -ForegroundColor Yellow
         exit 1
     }
+    # (kit-harden) Files of two builds, or a test kit whose patches are not its game's: never started, never built here.
+    if ($need -eq 'held') {
+        Write-Host (Get-KitHookshotNeedText $need $hsGame $hsOnly $kit) -ForegroundColor Yellow
+        Wait-AnyKey 60
+        exit 1
+    }
+    # ('mixed' goes on below: the start names the file, asks, and builds the game again with -Rebuild on yes. The game is
+    # never started in any other case: a no, or a build that failed, ends the start here.)
     $built = $true
     if ($need) {
-        Write-Host (Get-KitHookshotNeedText $need $hsGame $hsOnly)
+        Write-Host (Get-KitHookshotNeedText $need $hsGame $hsOnly $kit)
         # The long builds ask first (yes by itself after a minute, so an unattended start still builds).
         $question = Get-KitHookshotNeedQuestion $need
         if ($question -and -not (Read-YesNo "$question (then the game starts; closing this window cancels)" 60)) {
-            if (Restore-KitCharacterSelectStart) { $built = $false }
+            if ($need -ne 'mixed' -and (Restore-KitCharacterSelectStart)) { $built = $false }
             else {
-                Write-Host $(if ($hsOnly) { 'Not now. Start "Start Squadala.bat" again when you want to set it up.' } else { 'Not now. Build-Hookshot-Coop.bat sets it up (SETUP.md, "Play on Hookshot"); then start this again.' })
+                Write-Host $(if ($need -eq 'mixed') { 'Not now. The game is not started with files of two builds; start again and answer yes to build it again.' } elseif ($hsOnly) { 'Not now. Start "Start Squadala.bat" again when you want to set it up.' } else { 'Not now. Build-Hookshot-Coop.bat sets it up (SETUP.md, "Play on Hookshot"); then start this again.' })
                 exit 1
             }
         } else {
             $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-            & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'hookshot-build.ps1')
+            $buildArgs = if ($need -eq 'mixed') { @('-Rebuild') } else { @() }
+            & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'hookshot-build.ps1') @buildArgs
             $builtNow = $LASTEXITCODE -eq 0
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "The co-op game could not be brought up to date (above: why). $hsRetry to try again."
-                if (Restore-KitCharacterSelectStart) { $built = $false }
+                if ($need -ne 'mixed' -and (Restore-KitCharacterSelectStart)) { $built = $false }
                 else { Wait-AnyKey 60; exit 1 }
             }
             $hsGame = Get-KitHookshotGame $kit
@@ -467,6 +482,10 @@ if ($inviteJoin) {
     # The invite code holds the join password: nothing to type.
     $Password = $inviteJoin.Password
 }
+elseif ($relayJoin -and $relayJoin.Password) {
+    # The host's relay line with its join password after it (as the game's host copies it): nothing to type.
+    $Password = $relayJoin.Password
+}
 elseif ($Mode -eq 'host') {
     $hostAccess = Read-KitServerAccess $optionsFile
     $Password = $hostAccess.Password
@@ -618,6 +637,9 @@ if ($Hookshot) {
     # Original game (Co-op settings, coop-options.ini original_game = on; hookshot/src/coop_original.h): the game as it
     # came. The module stays off and Longshot loads no mod (the game's mods list says so), so nothing of the pack, the
     # size tables or Discord is touched here either.
+    # (C2-3: an SDL or renhdrum the player swapped is one warning line, never a stop: kit-paths.ps1 Get-KitGameBuildCheck)
+    $extrasText = Get-KitGameExtrasText @(Get-KitGameBuildExtras (Get-KitHookshotGame $kit))
+    if ($extrasText) { Write-Host $extrasText -ForegroundColor Yellow }
     $optionsFile = Join-Path $kit 'coop-options.ini'
     if ((Test-Path $optionsFile) -and @(Get-Content $optionsFile -ErrorAction SilentlyContinue |
             Where-Object { $_ -match '^\s*original_game\s*=\s*(on|1|yes|true)\s*$' }).Count -gt 0) {
@@ -638,6 +660,20 @@ if ($Hookshot) {
     foreach ($l in @(Invoke-KitDiscordStatus $kit $emu)) { Write-Host $l }   # ('Playing Squadala!' on Discord)
     $started = Get-Date
     foreach ($l in @(Get-KitSteamInputHint)) { Write-Host $l -ForegroundColor Yellow }   # (player report 202: a Steam Controller outside Steam)
+    # Local co-op (scripts\local-coop.ps1): 2 to 4 players on this PC, one game each, game 1 hosts, the others join it.
+    # Asked only for the kit's own start (title mode), never in the autotest's kit mode.
+    $localPlayers = 1
+    if ($Mode -eq 'title' -and -not $env:OOT_COOP_TEST_KIT) {
+        . (Join-Path $PSScriptRoot 'local-coop.ps1')
+        $localPlayers = Read-KitLocalPlayers $kit
+    }
+    if ($localPlayers -gt 1) {
+        $games = @(Start-KitLocalCoop $kit $exe $localPlayers)
+        if (-not $games) { exit 1 }
+        foreach ($g in $games) { try { & (Join-Path $PSScriptRoot 'problem-send.ps1') -Watch $g.Id } catch { } }
+        Write-Host "Games started. Each one's log: longshot_log.txt in its logs folder (game 2 to $localPlayers`: $(Join-Path (Split-Path -Parent $exe) 'local-players')); collect-logs.cmd takes them all."
+        exit 0
+    }
     $game = Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) -PassThru
     if ($game) { try { & (Join-Path $PSScriptRoot 'problem-send.ps1') -Watch $game.Id } catch { } }   # (sending on: after it closes)
     Write-Host "Game started. Its log (longshot_log.txt in the game's logs folder) says 'coop: module loaded', then 'coop: connected'."

@@ -216,8 +216,8 @@ def metal(read_tex, log=print):
     return pack(entries)
 
 
-def pack(entries):
-    out = [MAGIC, struct.pack("<I", len(entries))]
+def pack(entries, magic=MAGIC):
+    out = [magic, struct.pack("<I", len(entries))]
     for name, part, offs in entries:
         n = name.encode("ascii")
         if not 0 < len(n) < NAME_BYTES:
@@ -227,10 +227,10 @@ def pack(entries):
     return b"".join(out)
 
 
-def unpack(blob):
-    """The metal file -> [(name, part, [offsets])]."""
-    if blob[:8] != MAGIC:
-        raise TunicError("not a metal file")
+def unpack(blob, magic=MAGIC):
+    """The metal file (or the region file, under its magic) -> [(name, part, [offsets])]."""
+    if blob[:8] != magic:
+        raise TunicError("not a region file" if magic == REGION_MAGIC else "not a metal file")
     count = struct.unpack_from("<I", blob, 8)[0]
     out, at = [], 12
     for _ in range(count):
@@ -244,3 +244,135 @@ def unpack(blob):
         out.append((name, part, list(struct.unpack_from(f"<{n}I", blob, at))))
         at += 4 * n
     return out
+
+
+# ---- the parts' regions (row 185) ----
+#
+# A BC1/ASTC block's end colours are the encoder's, not the texture's: next to the Hylian Shield
+# frame's grey the encoder often put a pale green (165, 199, 148) or a dark brown (66, 60, 49) end
+# that no texel shows as such (the frame's texels are blends of the two). By tone those ends are
+# green or brown, so no rule took them: the block was painted at one end only and its texels came
+# out half painted, specks of the old grey all over the frame (3896 of the frame's 15929 blocks).
+# So the part's region comes from the game's own metalness texture: a colour block whose every
+# texel lies on metal (and that shows no unpainted metal part's colour, as the Triforce's gold)
+# is wholly that metal part, and the module paints all its pale or dark ends that no part's tone
+# takes with that part (hookshot/src/coop_look_paint.cpp Region).
+#
+# `coop_look/region.bin`, the metal file's layout under its own magic: per entry the colour
+# texture's name, the part, and the byte offsets of its blocks in that texture's texels (every mip
+# level). Offsets only, made from the user's own romfs.
+
+REGION_FILE = "region.bin"
+REGION_MAGIC = b"COOPRGN1"
+ON_METAL = 40         # a metalness texel this high or more is metal
+SPREAD = 0.35         # an end paler than this (spread under 35% of its brightness) or black may be forced
+
+
+def forceable(c, all_tones):
+    """An end the region's part may take (the module's Painter::Forceable): no part's tone, and grey
+    enough (or too dark to say) to be an encoder's end, not a coloured part (gold guard, Triforce)."""
+    t = tone_of(c)
+    if t & all_tones:
+        return False
+    hi, lo = max(c[:3]), min(c[:3])
+    return hi < 25 or hi - lo < SPREAD * hi
+
+
+def _ends(fmt, blk):
+    if fmt in ASTC:
+        return [e[:3] for e in tunic_extra._astc_ends(int.from_bytes(blk, "little"))]
+    o = 8 if fmt == BC3 else 0
+    c0, c1, idx = struct.unpack_from("<HHI", blk, o)
+    return [_unpack565(c0), _unpack565(c1)] if (c0 or c1 or idx) else []
+
+
+def _metal_map(mtl_bntx):
+    """(width, height, [value per texel]) of a BC4 metalness texture's first mip level."""
+    fmt, w, h, bh, _, image = info(mtl_bntx)
+    if fmt != BC4:
+        raise TunicError(f"metalness texture format 0x{fmt:02x} is not BC4")
+    wb, hb = (w + 3) // 4, (h + 3) // 4
+    lin = tx.deswizzle(image, wb * 8, hb, bh)
+    out = [0] * (w * h)
+    for by in range(hb):
+        for bx in range(wb):
+            v = tx.bc4_block(lin[(by * wb + bx) * 8:(by * wb + bx + 1) * 8])
+            for k in range(16):
+                x, y = bx * 4 + (k & 3), by * 4 + (k >> 2)
+                if x < w and y < h:
+                    out[y * w + x] = v[k][0]
+    return w, h, out
+
+
+def region_blocks(mtl_bntx, alb_bntx, rules):
+    """{part: [byte offsets of the colour texture's blocks wholly on that part's metal, every mip
+    level]}: blocks with an end the part may take (forceable) only."""
+    mw, mh, metal = _metal_map(mtl_bntx)
+    fmt, w, h, bh, mips, image = info(alb_bntx)
+    if fmt in ASTC:
+        fw, fh = ASTC[fmt]
+        step = 16
+    elif fmt in (BC1, BC3):
+        fw = fh = 4
+        step = 8 if fmt == BC1 else 16
+    else:
+        raise TunicError(f"colour texture format 0x{fmt:02x} is not read")
+    all_tones = 0
+    for _, tones in rules:
+        all_tones |= tones
+    # A block no end of which names a part is the texture's grey (metal) part's.
+    greys = [p for p, tones in rules if tones & GREY]
+    lone = rules[0][0] if len(rules) == 1 else greys[0] if len(greys) == 1 else None
+    out = {}
+    for level, start in enumerate(mips):
+        lw, lh = max(1, w >> level), max(1, h >> level)
+        wb, hb = (lw + fw - 1) // fw, (lh + fh - 1) // fh
+        g = mip_gobs_tall(bh, hb)
+        for by in range(hb):
+            for bx in range(wb):
+                a = start + block_at(bx, by, wb * step, hb, g, step)
+                if a + step > len(image):
+                    continue
+                ends = _ends(fmt, image[a:a + step])
+                if not ends:
+                    continue
+                parts, force = set(), False
+                for e in ends:
+                    t = tone_of(e)
+                    p = next((p for p, tones in rules if tones & t), None)
+                    if p is not None:
+                        parts.add(p)
+                    elif forceable(e, all_tones):
+                        force = True
+                    else:
+                        parts.add(None)   # an unpainted part's colour (the Triforce's gold): not this
+                if not force or None in parts or len(parts) > 1:
+                    continue
+                part = next(iter(parts)) if parts else lone
+                if part is None:
+                    continue
+                # Every texel of the block (clipped to the level) on metal, by texture coordinates.
+                on = all(metal[min(mh - 1, int((y + 0.5) * mh / lh)) * mw + min(mw - 1, int((x + 0.5) * mw / lw))]
+                         >= ON_METAL
+                         for y in range(by * fh, min(lh, (by + 1) * fh))
+                         for x in range(bx * fw, min(lw, (bx + 1) * fw)))
+                if on:
+                    out.setdefault(part, []).append(a)
+    return {p: sorted(v) for p, v in out.items()}
+
+
+def regions(read_tex, log=print):
+    """The region file from `read_tex(name)`; None when no item has both of its textures."""
+    entries = []
+    for mtl, alb, rules in METAL:
+        m, a = read_tex(mtl), read_tex(alb)
+        if m is None or a is None:
+            continue
+        try:
+            for part, offs in sorted(region_blocks(m, a, rules).items()):
+                entries.append((alb, part, offs))
+        except (TunicError, ValueError, struct.error) as e:
+            log(f"look: {alb}: {e}; its part is painted by tones only")
+    if not entries:
+        return None
+    return pack(entries, REGION_MAGIC)

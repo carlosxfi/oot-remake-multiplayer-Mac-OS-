@@ -181,6 +181,73 @@ TEST_CASE("title native: the column is raised until its lowest box ends on the s
     CHECK(500.0f + tall <= kScreenTop + 0.01f);
 }
 
+TEST_CASE("title native: the pages' cursor is the shared one: notes skipped, a held direction never goes round") {
+    View v;
+    v.rows = {R("Heading", "", RowKind::kHeading), R("Code", "X"), R("", "Players  1/4", RowKind::kNote),
+              R("Same network", "Copy"), R("Stop hosting")};
+    // (a fresh press: the next row that can be picked, the note stepped over; round at the ends)
+    CHECK(RowStep(v, 1, 1, false) == 3);
+    CHECK(RowStep(v, 3, -1, false) == 1);
+    CHECK(RowStep(v, 4, 1, false) == 1);    // (the heading is not picked either)
+    CHECK(RowStep(v, 1, -1, false) == 4);
+    // (held: on to the end, and it stays there)
+    CHECK(RowStep(v, 3, 1, true) == 4);
+    CHECK(RowStep(v, 4, 1, true) == 4);
+    CHECK(RowStep(v, 1, -1, true) == 1);
+    CHECK(RowStep(v, -1, 1, false) == -1);   // (no row: nothing)
+    // The typing keys: Letter, Delete, OK; round on a press, not while held
+    const int letter = static_cast<int>(Key::kLetter), ok = static_cast<int>(Key::kOk);
+    CHECK(KeyStep(ok, 1, false) == letter);
+    CHECK(KeyStep(ok, 1, true) == ok);
+    CHECK(KeyStep(letter, -1, true) == letter);
+    CHECK(KeyStep(letter, 1, true) == static_cast<int>(Key::kDelete));
+    CHECK(MoveKey(ok, 1) == letter);   // (MoveKey: a fresh press)
+    // Letter's letters: held Right runs on and stops at the last; a press there goes round to the first
+    const std::size_t last = Letters().size() - 1;
+    CHECK(LetterStep(0, 1, true) == 1);
+    CHECK(LetterStep(last, 1, true) == last);
+    CHECK(LetterStep(last, 1, false) == 0);
+    CHECK(LetterStep(0, -1, true) == 0);
+    CHECK(LetterStep(0, -1, false) == last);
+}
+
+TEST_CASE("title native: a co-op page's column is centred on the screen, the foot and the top kept on it") {
+    // (the game's four and the hint at their own place, low on the screen: raised until their middle is the screen's)
+    const float r = ColumnCentre(-1000.0f, -470.0f, 0.0f, 1.0f);
+    CHECK(r == doctest::Approx(735.0f));
+    // (drawn with that raise, the middle is the screen's: it stays)
+    CHECK(ColumnCentre(-1000.0f + r, -470.0f + r, r, 1.0f) == doctest::Approx(r));
+    // (a scale of 2 screen units a pane unit: half the raise in pane units)
+    CHECK(ColumnCentre(-1000.0f, -470.0f, 0.0f, 2.0f) == doctest::Approx(367.5f));
+    // (a column taller than the screen: its top kept on the screen, never raised past it)
+    const float tall = ColumnCentre(-1600.0f, 300.0f, 0.0f, 1.0f);
+    CHECK(300.0f + tall <= kScreenTop + 0.01f);
+    // (never below the game's own place)
+    CHECK(ColumnCentre(200.0f, 600.0f, 0.0f, 1.0f) == 0.0f);
+}
+
+TEST_CASE("title native: a row too long for its button cuts its name, never its value (the audit's item 16)") {
+    // (a game on the Join list: the players and the kind stay whole)
+    Row g = R("Kakariko-crew-of-good-friends (Saria)", "3/16  Public, password");
+    g.own_name = true;
+    const std::string t = RowText(g);
+    CHECK(t.size() <= kTextBytes);
+    CHECK(t.find("...: 3/16  Public, password") != std::string::npos);
+    CHECK(t.rfind("Kakariko", 0) == 0);
+    // (one that fits: as it is)
+    CHECK(FitRow("Host9", ": 0/16  Public", kTextBytes) == "Host9: 0/16  Public");
+    // (a value as long as the button: the whole cut at its end, as before)
+    const std::string longv = FitRow("Name", ": " + std::string(60, 'v'), kTextBytes);
+    CHECK(longv.size() <= kTextBytes);
+    CHECK(longv.rfind("Name: v", 0) == 0);
+    // (wide letters count twice: a Chinese name is cut to the width that is left)
+    const std::string zh = FitRow("\xE5\x8A\xA0\xE5\x85\xA5\xE5\x8A\xA0\xE5\x85\xA5\xE5\x8A\xA0\xE5\x85\xA5\xE5\x8A\xA0\xE5\x85\xA5",
+                                  ": 0/16  Public", 20);
+    CHECK(CoopTextFit::Halves(zh) <= 40);
+    CHECK(zh.size() <= 20);
+    CHECK(zh.find(": 0/16  Public") != std::string::npos);
+}
+
 TEST_CASE("title native: a row with two cells is the page's toggle, on its button, none without, none when fixed") {
     View v;
     Row who = R("Who can join", "Private", RowKind::kChoice);

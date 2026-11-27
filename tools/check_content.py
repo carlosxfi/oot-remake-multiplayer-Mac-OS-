@@ -21,6 +21,7 @@ keeps only a hash of the name, so the name itself is not in this file either.
 
 import hashlib
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -48,6 +49,21 @@ _STRING = r'"((?:[^"' + "\\\\" + r']|' + "\\\\" + r'.)*)"'  # a C++ string liter
 TEST_NAME = re.compile(
     r'\b(?:TEST_CASE|SUBCASE|SCENARIO|TEST_CASE_TEMPLATE)\s*\(\s*' + _STRING
     + r'|\bTEST_CASE_FIXTURE\s*\(\s*[\w:<>]+\s*,\s*' + _STRING)
+
+# The shared play-test library (tools/playtest): numbers and names we wrote down, in text only.
+PLAYTEST_DIR = "tools/playtest/"
+PLAYTEST_EXTENSIONS = (".md", ".json", ".jsonl")
+PLAYTEST_MAX_BYTES = 256 * 1024
+PLAYTEST_LOCAL = re.compile(
+    r"\b[A-Za-z]:[\\/]"                                        # a drive path
+    r"|(?:^|[\\/\s\"'])(?:Users|home)[\\/][A-Za-z0-9._-]+"     # a user folder
+    r"|(?<![\d.])(?!127\.0\.0\.1(?![\d.]))\d{1,3}(?:\.\d{1,3}){3}(?![\d.])"   # an IPv4 address
+)
+
+# What a play-test run writes (shots, call logs, session files, the .mcp.json with local paths): never committed,
+# wherever it sits. Shots are pictures of the game.
+PLAYTEST_OUTPUT_FILES = ("calls.jsonl", "state-history.json", "session.json", ".mcp.json")
+PLAYTEST_OUTPUT_DIRS = ("playtest-logs", "sessions")
 
 # Files that may name a release because they cannot change ("path": "why").
 RELEASE_NAME_ALLOWED = {}
@@ -151,13 +167,122 @@ def test_name_problems(root, path):
     return found
 
 
+INGAME_DIR, INGAME_SELFTEST = "tools/autotest/ingame/", "tools/autotest/tests/test_ingame.py"
+
+
+def unlisted_python_tests(paths, workflow_text, runner_text=""):
+    """Python test files (tools/**/test_*.py and *_test.py) that no workflow names by path and no runner script
+    (tools/hookshot/host_compile_check.*) names by file: CI runs them by name, so a new one would never run."""
+    out = []
+    for p in paths:
+        q = p.replace("\\", "/")
+        if not re.match(r"^tools/.*(/test_[^/]*|_test)\.py$", q) or "/" not in q:
+            continue
+        name = q.rsplit("/", 1)[1]
+        # the in-game suite (tools/autotest/ingame/test_*.py) is played whole on two fake bridges by the selftest
+        # tools/autotest/tests/test_ingame.py (docs/ingame-tests.md): a workflow naming that one runs every row file
+        if q.startswith(INGAME_DIR) and INGAME_SELFTEST in workflow_text:
+            continue
+        # a row port's own selftests (tools/autotest/tests/test_ingame_<row>.py) run inside test_ingame.py (load_tests)
+        if re.match(r"^tools/autotest/tests/test_ingame_[^/]+\.py$", q) and INGAME_SELFTEST in workflow_text:
+            continue
+        if q in workflow_text or re.search(r"(?<![A-Za-z0-9_.-])" + re.escape(name) + r"(?![A-Za-z0-9_-])", runner_text):
+            continue
+        out.append(p)
+    return out
+
+
+def listed_cpp_tests(root, paths):
+    """The repository paths of the *_test.cpp files that a CMakeLists.txt or .cmake file names. Each name is resolved
+    against the folder of the file that names it (tests/server/CMakeLists.txt lists bare names), a leading
+    ${CMAKE_CURRENT_SOURCE_DIR}/ is dropped, and '#' comments are skipped: a name in a comment lists nothing."""
+    listed = set()
+    for p in paths:
+        q = p.replace("\\", "/")
+        if not (q.endswith("CMakeLists.txt") or q.endswith(".cmake")):
+            continue
+        try:
+            with open(os.path.join(root, p), encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        here = q.rsplit("/", 1)[0] if "/" in q else ""
+        for line in lines:
+            code = line.split("#", 1)[0]
+            for tok in re.findall(r"[A-Za-z0-9_./${}-]+_test\.cpp", code):
+                tok = tok.replace("${CMAKE_CURRENT_SOURCE_DIR}/", "")
+                listed.add(posixpath.normpath(posixpath.join(here, tok)))
+    return listed
+
+
+def unlisted_cpp_tests(paths, listed):
+    """C++ test sources (*_test.cpp) that no CMakeLists.txt names by full path (listed_cpp_tests): tests/CMakeLists.txt
+    lists them one by one (its GLOB_RECURSE only checks the test names), so a new one would never be built. Full
+    paths, not file names: session_test.cpp exists in host/ and server/, and flags_test.cpp ends game_flags_test.cpp."""
+    return [p for p in paths if p.replace("\\", "/").endswith("_test.cpp") and p.replace("\\", "/") not in listed]
+
+
+def runner_text(root, paths):
+    text = ""
+    for p in paths:
+        if re.match(r"^tools/hookshot/host_compile_check\.", p.replace("\\", "/")):
+            try:
+                with open(os.path.join(root, p), encoding="utf-8", errors="replace") as f:
+                    text += f.read() + "\n"
+            except OSError:
+                pass
+    return text
+
+
+def workflow_text(root):
+    text = ""
+    wdir = os.path.join(root, ".github", "workflows")
+    if os.path.isdir(wdir):
+        for name in sorted(os.listdir(wdir)):
+            if name.endswith((".yml", ".yaml")):
+                with open(os.path.join(wdir, name), encoding="utf-8") as f:
+                    text += f.read() + "\n"
+    return text
+
+
+def playtest_output_problems(path):
+    """A file a play-test run writes (shot, call log, session file, .mcp.json), wherever it was put in the tree."""
+    parts = path.replace("\\", "/").split("/")
+    if parts[-1].lower() in PLAYTEST_OUTPUT_FILES:
+        return ["is a play-test run's own file (keep it outside git; add only your tools/playtest file)"]
+    if any(part in PLAYTEST_OUTPUT_DIRS for part in parts[:-1]):
+        return ["is in a play-test run folder (keep it outside git; add only your tools/playtest file)"]
+    if "shots" in parts[:-1] and parts[-1].lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
+        return ["is a shot of the game (never commit it)"]
+    return []
+
+
+def playtest_problems(root, path):
+    """What a file of the play-test library may not be or hold: not text we wrote, too big, or naming this PC."""
+    norm = path.replace("\\", "/")
+    found = playtest_output_problems(norm)
+    if not norm.startswith(PLAYTEST_DIR):
+        return found
+    if not norm.lower().endswith(PLAYTEST_EXTENSIONS):
+        found.append("only .md, .json and .jsonl files go in tools/playtest (no pictures, logs or game files)")
+    full = os.path.join(root, path)
+    if os.path.isfile(full) and os.path.getsize(full) > PLAYTEST_MAX_BYTES:
+        found.append("is larger than 256 KB")
+    for number, line in enumerate(text_lines(root, path), 1):
+        if PLAYTEST_LOCAL.search(line):
+            found.append("line %d holds a local path, a user folder or an IP address" % number)
+    return found
+
+
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     bad = []
     named = []
     private = []
     semicolons = []
-    for path in tracked_files(root):
+    playtest = []
+    files = tracked_files(root)
+    for path in files:
         reason = problem(root, path)
         if reason:
             bad.append(f"{path}: {reason}")
@@ -167,6 +292,8 @@ def main():
             private.append(f"{path}: {where}")
         for where in test_name_problems(root, path):
             semicolons.append(f"{path}: {where}")
+        for where in playtest_problems(root, path):
+            playtest.append(f"{path}: {where}")
     if bad:
         print("Content guard failed. Remove these files:")
         for line in bad:
@@ -185,7 +312,24 @@ def main():
         print("tests/CMakeLists.txt refuses them at configure). Use ',' or ':' instead:")
         for line in semicolons:
             print("  " + line)
-    if bad or named or private or semicolons:
+    if playtest:
+        print("Content guard failed. The play-test library (tools/playtest) holds only text about the game,")
+        print("with no local path, user folder or IP address:")
+        for line in playtest:
+            print("  " + line)
+    unlisted = unlisted_python_tests(files, workflow_text(root), runner_text(root, files)) if os.path.isdir(os.path.join(root, ".github", "workflows")) else []
+    cpp_unlisted = unlisted_cpp_tests(files, listed_cpp_tests(root, files))
+    if unlisted:
+        print("Content guard failed. CI runs each Python test file by name (.github/workflows/build.yml, python-tools job);")
+        print("these are named by no workflow, so they would never run. Add a step for each:")
+        for line in unlisted:
+            print("  " + line)
+    if cpp_unlisted:
+        print("Content guard failed. These C++ test sources are named in no CMakeLists.txt, so they are never built or run.")
+        print("Add each to the test target (tests/CMakeLists.txt coop_tests):")
+        for line in cpp_unlisted:
+            print("  " + line)
+    if bad or named or private or semicolons or playtest or unlisted or cpp_unlisted:
         return 1
     print("Content guard passed.")
     return 0

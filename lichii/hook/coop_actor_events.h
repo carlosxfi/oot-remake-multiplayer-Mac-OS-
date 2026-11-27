@@ -24,11 +24,16 @@ enum class Kind : std::uint32_t {
     Create = 1,  // a create request: name, handle slot, caller, create argument
     Delete = 2,  // a delete request: actor, reason
     Damage = 3,  // a Life step's frame damage (not 0): Life component, amount
+    Refused = 4, // a Life step took a give tied to our replayed hit, which its damage step never took (LifeTable):
+                 // Life component; from: the component's life flags (Life + 0x1d18);
+                 // flags kWithdrawn: the replay was still waiting in the component, withdrawn
 };
 
 // Event::flags.
 inline constexpr std::uint32_t kOwn = 1;      // asked inside one of the module's own game calls (a copy, a remove)
 inline constexpr std::uint32_t kStopped = 2;  // Create: the module had the game refuse it (a copy enemy's own shot)
+inline constexpr std::uint32_t kWithdrawn = 4;  // Refused: our replay was still waiting, withdrawn (present cleared)
+inline constexpr std::uint32_t kIdUnread = 8;   // Refused: the last hit id could not be read (taken as not reached)
 
 // Whether a create or delete the game asks for is the module's own (kOwn: a copy, a remove; never stopped): asked
 // inside one of the module's game calls, unless that call runs a copy's own game code (CoopPuppet::Call::copy_game:
@@ -154,11 +159,37 @@ constexpr std::int32_t Amount(std::uint64_t b) {
     return static_cast<std::int32_t>(static_cast<std::uint32_t>(b));
 }
 
+// No hit id (a Life component's last hit id before its first hit, and "no replay of ours").
+inline constexpr std::uint32_t kNoHitId = 0xffffffffu;
+// In the Life component (coop_hit_replay.h names the same: kLastHitId, kHitRecord + 8 and + 0xc; checked there):
+inline constexpr std::uint64_t kLifeLastHitId = 0x1b18;     // u32, the last hit its damage step took
+inline constexpr std::uint64_t kLifeRecordId = 0x248;       // u32, the waiting hit record's id
+inline constexpr std::uint64_t kLifeRecordPresent = 0x24c;  // u32, != 0 while that record waits
+
+// Has a Life component whose last hit id (Life + 0x1b18) is `last` taken the hit `ours` we replayed into it?
+// Hit ids only grow (compared as a wrapping difference). No id read, or no replay of ours: no.
+constexpr bool HitIdReached(std::uint32_t last, std::uint32_t ours) {
+    return last != kNoHitId && ours != kNoHitId && static_cast<std::int32_t>(last - ours) >= 0;
+}
+
 // Damage another player dealt, for the game's own Life step to take (the
 // LIFE_STEP hook adds it to that frame's sum, on the game's thread): no
 // write into the game's damage field from our thread. One writer (the
-// Objects step), the game's job threads taking. A component keeps its slot
-// until Clear (a new scene); a full table refuses (Give answers false).
+// Objects step), the game's job threads taking. A full table refuses (Give
+// answers false).
+//
+// Row 270 (the same cause as CoopDifficulty::Kinds): a slot is its
+// component's only while the component lives. The object walk ends with
+// Sweep, and a component the walk has not seen for kKeepSweeps walks (its
+// actor deleted) gives its slot back; what was still given to it is owed to
+// nobody. Before, a component kept its slot until Clear (a new scene), so a
+// long stay in one scene filled the 256 slots and the other players' hits on
+// every later enemy were lost.
+//
+// A give may be tied to a hit we replayed into the same component (enemy-late-kill): the owner's fall that the
+// replay was to deal, given because its damage step had not taken the replay. At the step it is dropped when the
+// component's last hit id has reached the replay's (its damage step took the replay after all, which dealt it), and
+// taken otherwise; the step then withdraws the replay (Step's `withdraw`), so the same fall is never dealt twice.
 class LifeTable {
 public:
     static constexpr std::size_t kSlots = 256;
@@ -166,40 +197,118 @@ public:
 
     // `judged`: the life its owner's game says this copy has (CoopObjects' Lower), not a hit for our game to judge:
     // a step that takes it to a death goes past the component's own life stops (PassStops).
-    bool Give(std::uint64_t component, std::int32_t amount, bool judged = false) noexcept {
+    // `tied_to`: the hit id of our replay this give stands in for (kNoHitId: none).
+    bool Give(std::uint64_t component, std::int32_t amount, bool judged = false,
+              std::uint32_t tied_to = kNoHitId) noexcept {
         if (component == 0 || amount == 0) {
             return false;
         }
-        for (std::size_t i = 0; i < kProbes; ++i) {
-            Slot& s = slots_[(Hash(component) + i) % kSlots];
-            std::uint64_t key = s.key.load(std::memory_order_acquire);
-            if (key == 0) {
-                // (only this writer inserts: no race on the key)
-                s.key.store(component, std::memory_order_release);
-                key = component;
-            }
+        if (component == kFreed) {
+            return false;
+        }
+        Slot* slot = nullptr;
+        std::size_t slot_at = 0;
+        bool found = false;
+        for (std::size_t i = 0; i < kProbes && !found; ++i) {
+            const std::size_t at = (Hash(component) + i) % kSlots;
+            const std::uint64_t key = slots_[at].key.load(std::memory_order_acquire);
             if (key == component) {
-                if (judged) {
-                    s.judged.store(true, std::memory_order_release);
+                slot = &slots_[at];
+                slot_at = at;
+                found = true;
+            } else if (key == kFreed || key == 0) {
+                if (slot == nullptr) {  // the first freed or empty slot on the way: a new component goes there
+                    slot = &slots_[at];
+                    slot_at = at;
                 }
-                s.add.fetch_add(amount, std::memory_order_acq_rel);
-                return true;
+                if (key == 0) {
+                    break;  // the end of the run: the component is not in the table
+                }
             }
         }
-        return false;
+        if (slot == nullptr) {
+            return false;
+        }
+        Slot& s = *slot;
+        seen_[slot_at] = sweep_;
+        if (!found) {
+            // (only this writer inserts: no race on the key) A freed slot holds nothing (Sweep).
+            s.key.store(component, std::memory_order_release);
+        }
+        if (tied_to != kNoHitId) {
+            if (judged) {
+                s.tied_judged.store(true, std::memory_order_release);
+            }
+            s.tied_to.store(tied_to, std::memory_order_release);  // (the newest replay: ids only grow)
+            s.tied.fetch_add(amount, std::memory_order_acq_rel);
+        } else {
+            if (judged) {
+                s.judged.store(true, std::memory_order_release);
+            }
+            s.add.fetch_add(amount, std::memory_order_acq_rel);
+        }
+        return true;
+    }
+    // The end of one whole object walk (the writer's thread). `alive(component)`: the walk saw that Life
+    // component, or a give to it still waits for its sleeping actor. A component not alive for kKeepSweeps walks,
+    // and given nothing in them, is gone: its slot is free for the next new component, with what it still held.
+    static constexpr std::uint64_t kKeepSweeps = 120;  // (a few seconds: a walk that misses one read frees nothing)
+    template <class Alive>
+    void Sweep(Alive&& alive) noexcept {
+        for (std::size_t at = 0; at < kSlots; ++at) {
+            Slot& s = slots_[at];
+            const std::uint64_t key = s.key.load(std::memory_order_relaxed);
+            if (key == 0 || key == kFreed) {
+                continue;
+            }
+            if (alive(key)) {
+                seen_[at] = sweep_;
+            } else if (sweep_ - seen_[at] >= kKeepSweeps) {
+                // The key first: no reader finds the slot while it is emptied. (Its actor is deleted: no
+                // Life step of that component runs.)
+                s.key.store(kFreed, std::memory_order_release);
+                s.add.store(0, std::memory_order_relaxed);
+                s.tied.store(0, std::memory_order_relaxed);
+                s.tied_to.store(kNoHitId, std::memory_order_relaxed);
+                s.tied_judged.store(false, std::memory_order_relaxed);
+                s.judged.store(false, std::memory_order_relaxed);
+            }
+        }
+        ++sweep_;
     }
     // What the step adds this frame (0 for a component never given any).
     // judged (when given): whether any of it was a judged give.
-    std::int32_t Take(std::uint64_t component, bool* judged = nullptr) noexcept {
+    // `last_id`: the component's last hit id now (kNoHitId: not read): a tied give whose replay it reached is dropped.
+    // `withdraw` (when given): the replay's hit id when a tied give was taken (its replay to withdraw), else kNoHitId.
+    std::int32_t Take(std::uint64_t component, bool* judged = nullptr, std::uint32_t last_id = kNoHitId,
+                      std::uint32_t* withdraw = nullptr) noexcept {
         if (judged != nullptr) {
             *judged = false;  // (nothing given: nothing judged)
         }
+        if (withdraw != nullptr) {
+            *withdraw = kNoHitId;
+        }
         Slot* s = Find(component);
-        if (s == nullptr || s->add.load(std::memory_order_relaxed) == 0) {
+        if (s == nullptr ||
+            (s->add.load(std::memory_order_relaxed) == 0 && s->tied.load(std::memory_order_relaxed) == 0)) {
             return 0;
         }
-        const std::int32_t add = s->add.exchange(0, std::memory_order_acq_rel);
-        const bool was = s->judged.exchange(false, std::memory_order_acq_rel);
+        std::int32_t add = s->add.exchange(0, std::memory_order_acq_rel);
+        bool was = s->judged.exchange(false, std::memory_order_acq_rel);
+        if (s->tied.load(std::memory_order_acquire) != 0) {
+            // The id first, then the amount: a Give between the two (it stores its id, then adds) leaves its id
+            // with what it added, never an amount with no id.
+            const std::uint32_t id = s->tied_to.exchange(kNoHitId, std::memory_order_acq_rel);
+            const bool tied_was = s->tied_judged.exchange(false, std::memory_order_acq_rel);
+            const std::int32_t tied = s->tied.exchange(0, std::memory_order_acq_rel);
+            if (!HitIdReached(last_id, id)) {
+                add += tied;
+                was = was || tied_was;
+                if (withdraw != nullptr) {
+                    *withdraw = id;
+                }
+            }
+        }
         if (judged != nullptr) {
             *judged = was && add != 0;
         }
@@ -208,27 +317,37 @@ public:
     // Given and not yet taken (for the Objects step's fallback and logs).
     std::int32_t Pending(std::uint64_t component) noexcept {
         Slot* s = Find(component);
-        return s == nullptr ? 0 : s->add.load(std::memory_order_acquire);
+        return s == nullptr ? 0 : s->add.load(std::memory_order_acquire) + s->tied.load(std::memory_order_acquire);
     }
     void Clear() noexcept {
         for (auto& s : slots_) {
             s.add.store(0, std::memory_order_relaxed);
+            s.tied.store(0, std::memory_order_relaxed);
+            s.tied_to.store(kNoHitId, std::memory_order_relaxed);
+            s.tied_judged.store(false, std::memory_order_relaxed);
             s.judged.store(false, std::memory_order_relaxed);
             s.key.store(0, std::memory_order_release);
         }
+        seen_.fill(0);
+        sweep_ = 1;
     }
 
 private:
     struct Slot {
         std::atomic<std::uint64_t> key{0};
         std::atomic<std::int32_t> add{0};
+        std::atomic<std::int32_t> tied{0};             // given in place of our replay (Give's tied_to)
+        std::atomic<std::uint32_t> tied_to{kNoHitId};  // that replay's hit id
+        std::atomic<bool> tied_judged{false};          // (judged, for the tied part alone)
         std::atomic<bool> judged{false};
     };
     static std::size_t Hash(std::uint64_t c) noexcept {
         return static_cast<std::size_t>(((c >> 4) * 0x9e3779b97f4a7c15ull) >> 56);
     }
+    // A freed slot's key: no component, and not the end of a probe run (Find goes on past it).
+    static constexpr std::uint64_t kFreed = 1;
     Slot* Find(std::uint64_t component) noexcept {
-        if (component == 0) {
+        if (component == 0 || component == kFreed) {
             return nullptr;
         }
         for (std::size_t i = 0; i < kProbes; ++i) {
@@ -244,6 +363,9 @@ private:
         return nullptr;
     }
     std::array<Slot, kSlots> slots_{};
+    // The writer's own: the sweep in which each slot's component was last alive or given to, and the sweep now.
+    std::array<std::uint64_t, kSlots> seen_{};
+    std::uint64_t sweep_ = 1;
 };
 
 inline LifeTable& TheLifeTable() {
@@ -359,8 +481,11 @@ inline bool SkipRevive(KeptDeaths& kept, std::uint64_t component, bool passed) n
 // One Life step through the module: the damage the game dealt this frame
 // (pushed as a Damage event when not 0) and the sum the step then takes.
 // judged: whether the given part was a judged give (LifeTable::Give).
+// last_id: the component's last hit id (Life + 0x1b18) as the step runs, after this frame's damage step; withdraw:
+// the hit id of our replay to withdraw (a tied give was taken in its place), else kNoHitId (LifeTable::Take).
 inline std::int32_t Step(Ring& ring, LifeTable& table, std::uint64_t component, std::int32_t sum,
-                         bool* judged = nullptr) noexcept {
+                         bool* judged = nullptr, std::uint32_t last_id = kNoHitId,
+                         std::uint32_t* withdraw = nullptr) noexcept {
     if (sum != 0) {
         Event e;
         e.kind = Kind::Damage;
@@ -368,7 +493,15 @@ inline std::int32_t Step(Ring& ring, LifeTable& table, std::uint64_t component, 
         e.b = static_cast<std::uint32_t>(sum);
         ring.Push(e);
     }
-    return sum + table.Take(component, judged);
+    return sum + table.Take(component, judged, last_id, withdraw);
+}
+
+// enemy-late-kill: a give tied to our replay was taken in the replay's place (Step's `withdraw`). The replay still
+// waiting in the component (its record's hit id is the replay's and its present word is set) is withdrawn, so a
+// damage step that takes it later cannot deal the same fall again. `record_id`/`present`: the record's hit id
+// (Life + 0x248) and present word (Life + 0x24c) as read now. True: clear the present word.
+constexpr bool WithdrawReplay(std::uint32_t withdraw, std::uint32_t record_id, std::uint32_t present) {
+    return withdraw != kNoHitId && record_id == withdraw && present != 0;
 }
 
 // Review-boss-0114 risk 2 (Gohma's copy held at life 1): the game's Life step

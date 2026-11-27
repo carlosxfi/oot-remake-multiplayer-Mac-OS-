@@ -3,6 +3,7 @@
 #include <chrono>
 #include <utility>
 
+#include "coop/host/event_owner.hpp"
 #include "coop/protocol/codec.hpp"
 
 namespace coop::host {
@@ -30,6 +31,9 @@ FrameReport Session::frame(const std::optional<PlayerReading>& reading, FlagStor
     report.connected = client_.state() == net::State::connected;
     if (report.connected) report.server_now_us = client_.server_now_us();
     number = client_.player_number();
+    // Race mode (coop/protocol/race.hpp): once this session's host says on, our flags stay ours for as long as
+    // this session lives. Turned off again, nothing is pushed or pulled: sharing comes back with a new session.
+    if (client_.race()) race_ = true;
     inbox.swap(inbox_);
   }
 
@@ -57,7 +61,7 @@ FrameReport Session::frame(const std::optional<PlayerReading>& reading, FlagStor
           }
           break;
       }
-    } else if (watcher_) {
+    } else if (watcher_ && !race_) {
       watcher_->receive(std::get<protocol::Message>(in));
     }
   }
@@ -68,21 +72,30 @@ FrameReport Session::frame(const std::optional<PlayerReading>& reading, FlagStor
 
   std::vector<Outbound> out;
   if (report.connected) {
-    if (std::exchange(reset_sampler_, false)) sampler_.reset();
-    sampler_.set_player_number(number);
-    const std::uint64_t sample_us =
-        frame_aligned_us(report.server_now_us, game_frame_age_us_ ? game_frame_age_us_() : 0);
-    for (const Outgoing& m : sampler_.frame(reading, sample_us, title_up_)) {
+    std::vector<Outgoing> sampled;
+    {
+      std::lock_guard lock(sampler_mutex_);
+      if (std::exchange(reset_sampler_, false)) sampler_.reset();
+      sampler_.set_player_number(number);
+      const std::uint64_t sample_us =
+          frame_aligned_us(report.server_now_us, game_frame_age_us_ ? game_frame_age_us_() : 0);
+      sampled = sampler_.frame(reading, sample_us, title_up_);
+    }
+    for (const Outgoing& m : sampled) {
       protocol::Message message;
       if (protocol::decode(m.bytes, message) == protocol::Error::none) {
         out.emplace_back(std::move(message));
       }
     }
-    if (watcher_ && flags != nullptr) {
+    if (watcher_ && flags != nullptr && !race_) {
       // No Link to read: the game is loading (FlagWatcher::set_loading). Hookshot's title menu up is never play
       // either, Link or not (forest-temple-a: a host's save load through it was not seen as one, and the old
       // save's floors were put back into the new save, once a frame).
       watcher_->set_loading(!reading.has_value() || title_up_);
+      // C2-5: our Link's event, for the reward guard (FlagWatcher::set_our_event); not read: the last word stays.
+      watcher_->set_our_event(reading && reading->event_running
+                                  ? std::optional<bool>(our_link_in_event(*reading->event_running, reading->event_whose))
+                                  : std::nullopt);
       watcher_->set_scene(scene_readable_);
       queue_flags(watcher_->frame(*flags), out);
     }
@@ -101,7 +114,12 @@ FrameReport Session::frame(const std::optional<PlayerReading>& reading, FlagStor
       report.save_load_native = seen->native;
       report.save_load_retry = seen->retry;
     }
+    if (race_) {  // no snapshot comes in race mode: the game is never held for one
+      report.holding = false;
+      report.hold_timeout = false;
+    }
   }
+  report.race = race_;
   report.queued = out.size();
 
   if (!out.empty()) {
@@ -142,6 +160,28 @@ void Session::service() {
   std::lock_guard lock(net_mutex_);
   for (auto& out : outbox_) send(out);
   outbox_.clear();
+  // Held (set_held): no frame() comes, so the last sample goes again from here,
+  // or the others would fade us out and delete our puppet (docs/puppet.md).
+  if (held_.load(std::memory_order_relaxed) && client_.state() == net::State::connected) {
+    // A WELCOME while held: the status and equipment too (no frame() comes to
+    // send them after its reset), so the new connection's others see our gear.
+    std::vector<Outgoing> again;
+    {
+      std::lock_guard lock(sampler_mutex_);
+      const std::uint64_t now = client_.server_now_us();
+      if (std::exchange(welcomed_held_, false)) {
+        again = sampler_.hold_reconnected(now);
+      } else if (auto one = sampler_.hold(now)) {
+        again.push_back(std::move(*one));
+      }
+    }
+    for (const Outgoing& o : again) {
+      protocol::Message message;
+      if (protocol::decode(o.bytes, message) == protocol::Error::none) client_.send(message);
+    }
+  } else {
+    welcomed_held_ = false;  // the frames after the release send it (frame()'s reset)
+  }
   client_.service(0);
   while (auto event = client_.next_event()) {
     handle(*event);
@@ -174,6 +214,7 @@ void Session::handle(const net::Event& event) {
     case EventKind::welcomed:
     case EventKind::reconnected: {
       inbox_.emplace_back(Control::reset);
+      welcomed_held_ = held_.load(std::memory_order_relaxed);
       std::lock_guard lock(presence_mutex_);
       presence_.on_welcome(event.welcome);
       break;

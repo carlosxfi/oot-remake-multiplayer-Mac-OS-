@@ -52,6 +52,11 @@ void SetColor(std::optional<std::uint32_t> color);
 // off.
 void SetJoinPassword(const std::string& password);
 
+// The game is held now (the play-test bridge's hold, hookshot/src/coop_playtest.h): no frame runs, so the network
+// thread sends our last sample again each keep-alive time (coop::host::Session::set_held), and the others keep a
+// still puppet of us instead of fading us out. Any thread, lock-free; nothing with co-op off.
+void SetHeld(bool held);
+
 // What the co-op window shows: one line of text each. Empty when co-op is
 // off. Any thread.
 struct OverlayLine {
@@ -119,6 +124,10 @@ struct ChatLine {
     std::uint64_t age_ms = 0;
 };
 std::vector<ChatLine> ChatLines();
+// The session's chat and notices so far (at most CoopChat::kHistory, oldest
+// first; none when no session: a new session starts with none). Row 282: the
+// - menu's Players view lists them.
+std::vector<ChatLine> ChatHistory();
 // Everyone in the room, this player first, then by number.
 struct PlayerRow {
     std::uint8_t number = 0;

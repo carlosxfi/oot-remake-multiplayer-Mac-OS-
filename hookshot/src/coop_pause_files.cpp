@@ -12,6 +12,9 @@
 #include <sstream>
 #include <system_error>
 
+#include "coop_gold_mode.h"
+#include "coop_race_mode.h"
+#include "coop_switch_stand_mode.h"
 #include "coop_name_privacy.h"
 #include "coop_runtime.h"
 
@@ -70,7 +73,16 @@ fs::path PathOf(const std::string& s) {
     return fs::path(std::u8string(s.begin(), s.end()));
 }
 
+// This module's file reads and writes, one at a time (a leaf lock: nothing else is called while it is held). Since
+// row 236 the menu reads its files outside its own lock (coop_pause.cpp Gather), so a read could meet a write's
+// move: on Windows the move over a file open for reading fails and the setting was not saved.
+static std::mutex& FilesMutex() {
+    static std::mutex mu;
+    return mu;
+}
+
 std::string ReadText(const fs::path& p) {
+    std::lock_guard lock(FilesMutex());
     std::ifstream f(p, std::ios::binary);
     std::ostringstream s;
     s << f.rdbuf();
@@ -79,6 +91,7 @@ std::string ReadText(const fs::path& p) {
 
 // Written whole: a new file beside it, then moved over the old one.
 bool WriteText(const fs::path& p, const std::string& text) {
+    std::lock_guard lock(FilesMutex());
     const fs::path tmp = p.string() + ".new";
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
@@ -222,9 +235,13 @@ void CheckName() {
 
 CoopTitleMenu::Options ReadOptions() {
     CheckName();
-    const auto kit = CoopTitle::KitOptionsFile();   // (the one the game reads at its start, and Save writes)
+    // (the one the game reads at its start, and Save writes: with this game's coop-player.ini over it)
     const std::string coop = ReadText(CoopIni());
-    auto o = CoopTitleMenu::Options::Read(coop, kit ? ReadText(*kit) : std::string());
+    auto o = CoopTitleMenu::Options::Read(coop, CoopTitle::ReadKitOptions());
+    // Row 63: the next Host's Gold Skulltula mode (a Host.bat start too: this is read at the module's start).
+    CoopGoldMode::SetChoice(o.gold_own ? CoopGoldMode::Mode::own : CoopGoldMode::Mode::shared);
+    CoopRaceMode::SetChoice(o.race);   // (race mode, the same way)
+    CoopSwitchStandMode::SetChoice(o.floor_switches);   // (shared floor switches too)
     if (o.name.empty() && !g_fallback_name.empty()) {
         o.name = g_fallback_name;
     }

@@ -28,6 +28,7 @@ its owner's process on this PC is gone.
 Nothing here runs a game. Every command that changes something has --dry-run.
 """
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
@@ -40,17 +41,87 @@ import sys
 import time
 
 WINDOWS = os.name == "nt"
+CREATE_NO_WINDOW = 0x08000000   # a console program started with this gets no window, and its own children none either
+
+
+def no_window(kw=None):
+    """Popen keywords with CREATE_NO_WINDOW added on Windows (other keywords and other creation flags kept).
+    Why: a console program (powershell, tasklist, cmd, git, ninja, a python helper) started by a process that has no
+    console of its own, such as the lane watchdog or a harness's shell, gets a NEW visible console window; started from
+    a long run, they flash on the screen in a chain. Use run_quiet and popen_quiet for every such child. NEVER for a
+    game (Longshot's exe): its window is the game's own and a hidden console would change how it starts."""
+    kw = dict(kw or {})
+    if WINDOWS:
+        kw["creationflags"] = kw.get("creationflags", 0) | CREATE_NO_WINDOW
+    return kw
+
+
+def run_quiet(cmd, **kw):
+    """subprocess.run of a console program with no window on Windows (see no_window)."""
+    return subprocess.run(cmd, **no_window(kw))
+
+
+def kill_tree(p):
+    """Stops process p and every process it started (Windows: taskkill /T while p still lives, so the tree is known;
+    elsewhere: p's own process group, see run_tree). Then waits for p."""
+    if p.poll() is None:
+        if WINDOWS:
+            run_quiet(["taskkill", "/PID", str(p.pid), "/T", "/F"], stdout=subprocess.DEVNULL,
+                      stderr=subprocess.DEVNULL)
+        else:
+            try:
+                os.killpg(p.pid, 9)
+            except OSError:
+                pass
+    try:
+        p.kill()
+    except OSError:
+        pass
+    p.wait()
+
+
+def run_tree(cmd, input=None, timeout=None, **kw):
+    """run_quiet, but a timeout stops the whole process tree, not only cmd (subprocess.run's timeout kills cmd alone).
+    Why (u2-fix, U2 from v0.11.10/v0.11.11): a kit's start timed out while its game build ran; the build's children
+    lived on and wrote their game into the folder after the next build had, so that folder ended on the old Longshot.
+    Raises subprocess.TimeoutExpired after the tree is stopped."""
+    if not WINDOWS:
+        kw.setdefault("start_new_session", True)
+    if input is not None:
+        kw["stdin"] = subprocess.PIPE
+    with popen_quiet(cmd, **kw) as p:
+        try:
+            out, err = p.communicate(input, timeout=timeout)
+        except BaseException:   # (the timeout, or the harness stopped: never leave the tree running)
+            kill_tree(p)
+            raise
+        return subprocess.CompletedProcess(p.args, p.returncode, out, err)
+
+
+def popen_quiet(cmd, **kw):
+    """subprocess.Popen of a console program with no window on Windows (see no_window)."""
+    return subprocess.Popen(cmd, **no_window(kw))
+
+
+def server_bind(args):
+    """A test coop_server's arguments with --bind 127.0.0.1 added unless they name their own --bind (a LAN test such
+    as lan-nopw passes its LAN address). Test listeners bind 127.0.0.1: one on all adapters, from the new exe path of
+    each build, raised Windows Firewall's prompt over the windows the runs screenshot (crash-cookie-4-run)."""
+    args = list(args)
+    return args if "--bind" in args else args + ["--bind", "127.0.0.1"]
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 # build-game.lock: a game build (a cache miss) is running; it stops both test lanes (tools/autotest/lanes.py), whose
 # runs hold lane1.lock / lane2.lock. A module build (build-hs.lock alone) stops no lane.
 LOCK_NAMES = {"emu": "build-emu.lock", "hs": "build-hs.lock", "game": "build-game.lock", "lane1": "lane1.lock",
               "lane2": "lane2.lock"}
-LANE_LOCKS = ("lane1", "lane2")
+# Each game of a lane is a lane of its own too (a one-game live session): laneN-A.lock, laneN-B.lock.
+LOCK_NAMES.update({"lane%d-%s" % (n, x): "lane%d-%s.lock" % (n, x) for n in (1, 2) for x in "AB"})
+LANE_LOCKS = tuple(k for k in LOCK_NAMES if k.startswith("lane"))
 OLD_LOCK = "build.lock"
 # What is per player or per run in a game folder: never cached, never overwritten in a pair.
 PER_PLAYER = {"hookshot_coop.dll", "coop.ini", "coop-options.ini", "user", "save", "autotest-save", "mods",
-              "longshot_log.txt", "longshot_log.old.txt", "control.json"}
+              "longshot_log.txt", "longshot_log.old.txt", "control.json", ".coop-romfs-shared.txt"}
 CACHE_GAME = "game"
 CACHE_NAME = re.compile(r"^[0-9a-f]{20}(\.part|\.build)?$")
 # Caches the game writes while it runs (shaders, pipelines): copied into a pair that has none, never overwritten,
@@ -152,7 +223,7 @@ def has_code_patches(mods):
     return False
 
 
-def code_mods_line(mods, repo=REPO, run=subprocess.run):
+def code_mods_line(mods, repo=REPO, run=run_quiet):
     """The code patches' part of a game's stamp for a mods folder: '' without code patches, else the kit's own line
     (Get-KitExefsStampLine: each patch file's path and SHA-256, and those mods' on/off rows in coop-mods.list)."""
     if not has_code_patches(mods):
@@ -168,7 +239,7 @@ def code_mods_line(mods, repo=REPO, run=subprocess.run):
     return r.stdout.replace("\r", "")
 
 
-def code_mods_mismatch(game, repo=REPO, run=subprocess.run):
+def code_mods_mismatch(game, repo=REPO, run=run_quiet):
     """None when a game folder's mods have the code patches its game was built with (coop-built-from.txt's exefs= line,
     none without), else why not. A code mod put into a pair after its build (lane-0119 2026-11-21: Character Select
     copied into lane1's mods) shows his menus without his code: no Characters tab, a pick does nothing."""
@@ -188,7 +259,7 @@ def code_mods_mismatch(game, repo=REPO, run=subprocess.run):
 PACK_DIR = os.path.join("mods", "contents", "0400486024DEC000", "coop-puppet")
 
 
-def sync_charsel_native(pairs, repo=REPO, run=subprocess.run):
+def sync_charsel_native(pairs, repo=REPO, run=run_quiet):
     """Co-op's own Characters tab's code patch (charsel/data/charsel-native.ips) put into or taken out of each pair's
     pack folder before the pairs' code patches are read, by the kit's own rule (kit-paths.ps1
     Sync-KitCharselNativePatch, what hookshot-build.ps1 does before its stamp): a pair without Character Select's code
@@ -211,7 +282,7 @@ def sync_charsel_native(pairs, repo=REPO, run=subprocess.run):
     return {p: g for (p, _), g in zip(packs, got)}
 
 
-def pairs_code_mods(pairs, repo=REPO, run=subprocess.run):
+def pairs_code_mods(pairs, repo=REPO, run=run_quiet):
     """(line, mods folder) of the pairs' code patches; ('', None) when no pair has any. One game serves every pair,
     so pairs with different code patches cannot be built together (Fail)."""
     found = [(code_mods_line(os.path.join(p, "mods"), repo, run), os.path.join(p, "mods")) for p in pairs]
@@ -246,17 +317,45 @@ def key_of(stamp_text):
 
 # --- the cache ---------------------------------------------------------------------------------------------------
 
+_packaged_warned = set()
+
+
+def packaged(path):
+    """Whether a path resolves into a packaged (MSIX) app's own copy of AppData (<...>/AppData/Local/Packages/):
+    a process started from such an app writes its %LOCALAPPDATA% files there, where no other process sees them."""
+    p = os.path.realpath(path).replace("\\", "/").lower()
+    return "/appdata/local/packages/" in p
+
+
 def cache_root():
     root = os.environ.get("OOT_COOP_HS_CACHE")
     if not root:
         base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".cache")
         root = os.path.join(base, "oot-coop", "hs-cache")
+    if root not in _packaged_warned and packaged(root):
+        _packaged_warned.add(root)
+        sys.stderr.write("hs.py: WARNING: the cache %s resolves into a packaged app's own AppData (%s): its files are"
+                         " invisible to processes started outside that app (the kit's start, Explorer) and go with"
+                         " the app. Set OOT_COOP_HS_CACHE to a folder outside AppData (docs/testing.md).\n"
+                         % (root, os.path.realpath(root)))
     return root
+
+
+IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003   # (a junction's reparse tag: stat.IO_REPARSE_TAG_MOUNT_POINT, Windows)
 
 
 def is_link(path):
     """A symlink or (Windows) a junction: the game folders link romfs to a shared copy."""
-    return os.path.islink(path) or (hasattr(os.path, "isjunction") and os.path.isjunction(path))
+    if os.path.islink(path):
+        return True
+    if hasattr(os.path, "isjunction"):   # (Python 3.12+)
+        return os.path.isjunction(path)
+    # Before 3.12 (CI's 3.10): the junction's reparse tag. Without this a junction looked like a real folder, and
+    # remove_tree / cache_prune went into it and deleted the shared romfs it points to.
+    try:
+        return os.lstat(path).st_reparse_tag == IO_REPARSE_TAG_MOUNT_POINT
+    except (OSError, AttributeError):   # (missing, or not Windows: no st_reparse_tag)
+        return False
 
 
 def entries(root=None):
@@ -324,16 +423,23 @@ def link_or_copy(s, d):
         return False
 
 
-def copy_tree(src, dst, skip_top=PER_PLAYER, dry=False, say=print, runtime_too=False, in_cache=False, share=False):
+def copy_tree(src, dst, skip_top=PER_PLAYER, dry=False, say=print, runtime_too=False, in_cache=False, share=False,
+              skip_shared=False, progress=None, _count=None):
     """Copies src into dst: new or changed files (size or mtime) only, links recreated as links (never followed),
     the top-level names in skip_top left alone on both sides; dst's runtime caches (at the top, or in the top's
     cache folder: in_cache) kept unless runtime_too. Returns (files copied, links made).
     A top-level folder in SHARED_TOP (romfs: the game files) is hard-linked file by file, not copied (share): every
     game folder made from one (a pin, the cache's entries, the test pairs) shares one copy of its ~26 GB. Copied in
-    full to every one of them, they filled the disk (longshot-rc6-a's offline run 2: no space left for the next pin)."""
+    full to every one of them, they filled the disk (longshot-rc6-a's offline run 2: no space left for the next pin).
+    skip_shared: the top-level SHARED_TOP folders are left out (cache_restore: the pair's romfs is already the cache's
+    shared copy, romfs_shared). progress(n): called every PROGRESS_EVERY files looked at (a walk of 186,587 romfs files
+    takes minutes when the disk's metadata is cold, and printed nothing: lane-prep-ae97cc77 looked hung)."""
     copied = links = 0
+    count = _count if _count is not None else [0]
     for name in sorted(os.listdir(src)):
         if name.lower() in skip_top:
+            continue
+        if skip_shared and skip_top is PER_PLAYER and name.lower() in SHARED_TOP:
             continue
         s, d = os.path.join(src, name), os.path.join(dst, name)
         if is_link(s):
@@ -349,9 +455,13 @@ def copy_tree(src, dst, skip_top=PER_PLAYER, dry=False, say=print, runtime_too=F
                 os.makedirs(d, exist_ok=True)
             c, n = copy_tree(s, d, set(), dry, say, runtime_too,
                              in_cache=skip_top is PER_PLAYER and name.lower() == CACHE_DIR,
-                             share=share or (skip_top is PER_PLAYER and name.lower() in SHARED_TOP))
+                             share=share or (skip_top is PER_PLAYER and name.lower() in SHARED_TOP),
+                             progress=progress, _count=count)
             copied, links = copied + c, links + n
         else:
+            count[0] += 1
+            if progress and count[0] % PROGRESS_EVERY == 0:
+                progress(count[0])
             if os.path.isfile(d) and not is_link(d):
                 if (skip_top is PER_PLAYER or in_cache) and RUNTIME_CACHE.match(name) and not runtime_too:
                     continue
@@ -381,16 +491,109 @@ def make_link(path, target):
         else:
             raise Fail("%s is a real folder; will not replace it with a link to %s" % (path, target))
     if WINDOWS and os.path.isdir(target):
-        r = subprocess.run(["cmd", "/c", "mklink", "/J", path, target], capture_output=True, text=True)
+        r = run_quiet(["cmd", "/c", "mklink", "/J", path, target], capture_output=True, text=True)
         if r.returncode:
             raise Fail("mklink /J %s failed: %s" % (path, r.stdout + r.stderr))
     else:
         os.symlink(target, path, target_is_directory=os.path.isdir(target))
 
 
+PROGRESS_EVERY = 20000
+# The pair's romfs is the cache's shared copy (C #125, runner-c124-2): a full restore walked all 186,587 romfs files of
+# a pair on every build although they already were hard links of the cache's (~8 stat calls each: minutes when cold,
+# 31.8 min for lane1-A+B under load). A cache entry keeps the list of its romfs files with their file ids
+# (ROMFS_MANIFEST, made after its first full restore); a pair gets ROMFS_MARK after a full restore that ended (removed
+# before one starts, so a broken or half-done restore never has it). The walk is left out only when the mark names the
+# entry's list AND the top-level names match AND every top-level file and an evenly spread sample of the rest are the
+# very files of the list (same file id and size, in the pair and in the cache): else the full restore, as before.
+ROMFS_MARK = ".coop-romfs-shared.txt"
+ROMFS_MANIFEST = "romfs-files.txt"
+ROMFS_SAMPLE = 512
+
+
+def romfs_rows(game):
+    """[(relative path, file id, size)] of every file under game/romfs, sorted by path."""
+    base = os.path.join(game, "romfs")
+    rows = []
+    for top, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if not is_link(os.path.join(top, d))]
+        for f in files:
+            p = os.path.join(top, f)
+            st = os.stat(p)
+            rows.append((os.path.relpath(p, base).replace(os.sep, "/"), st.st_ino, st.st_size))
+    return sorted(rows)
+
+
+def romfs_digest(rows):
+    h = hashlib.sha256()
+    for rel, ino, size in rows:
+        h.update(("%s\t%x\t%d\n" % (rel, ino, size)).encode("utf-8"))
+    return h.hexdigest()
+
+
+def romfs_manifest(entry, make=False):
+    """(digest, rows) of a cache entry's romfs list; made from its game folder when missing and make. (None, []) else."""
+    path = os.path.join(entry, ROMFS_MANIFEST)
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().split("\n")
+        if lines and lines[0].startswith("digest="):
+            rows = []
+            for line in lines[1:]:
+                if line:
+                    rel, ino, size = line.split("\t")
+                    rows.append((rel, int(ino, 16), int(size)))
+            if romfs_digest(rows) == lines[0][7:]:
+                return lines[0][7:], rows
+    if not make:
+        return None, []
+    rows = romfs_rows(os.path.join(entry, CACHE_GAME))
+    d = romfs_digest(rows)
+    tmp = path + ".part"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write("digest=%s\n" % d + "".join("%s\t%x\t%d\n" % r for r in rows))
+    os.replace(tmp, path)
+    return d, rows
+
+
+def romfs_shared(entry, dst):
+    """('', what was checked) when dst's romfs is the cache entry's shared copy, else (why not, '')."""
+    try:
+        with open(os.path.join(dst, ROMFS_MARK), encoding="utf-8") as f:
+            mark = dict(line.split("=", 1) for line in f.read().split("\n") if "=" in line)
+    except OSError:
+        return "no %s (no full restore ended in this pair since)" % ROMFS_MARK, ""
+    digest, rows = romfs_manifest(entry)
+    if not digest:
+        return "the cache entry has no %s yet" % ROMFS_MANIFEST, ""
+    if mark.get("digest") != digest:
+        return "the pair's mark names another romfs list", ""
+    src, d = os.path.join(entry, CACHE_GAME, "romfs"), os.path.join(dst, "romfs")
+    try:
+        if is_link(d) or sorted(os.listdir(src)) != sorted(os.listdir(d)):
+            return "the top-level romfs names differ", ""
+    except OSError as e:
+        return "romfs unreadable (%s)" % e, ""
+    step = max(1, len(rows) // ROMFS_SAMPLE)
+    pick = [r for i, r in enumerate(rows) if "/" not in r[0] or i % step == 0]
+    for rel, ino, size in pick:
+        for base in (src, d):
+            try:
+                st = os.stat(os.path.join(base, *rel.split("/")))
+            except OSError:
+                return "%s missing in %s" % (rel, base), ""
+            if st.st_ino != ino or st.st_size != size:
+                return "%s in %s is not the cache's file" % (rel, base), ""
+    return "", "%d of %d files checked by file id" % (len(pick), len(rows))
+
+
 def cache_store(src, repo=REPO, force=False, dry=False, say=print, want=None):
     """Stores a built game folder under the current key (want: the stamp; default the repo's with the folder's own
-    mods' code patches). The folder's coop-built-from.txt must match the stamp."""
+    mods' code patches). The folder's coop-built-from.txt must match the stamp. A pin's game folder has no mods of a
+    player (its mods hold the last kit build's puppet pack): its want must be given (the pairs': cache store --pair)."""
+    if not want and in_pins(src):
+        raise Fail("%s is a pin's game folder: its mods are the last kit build's, not a pair's; name the pairs whose"
+                   " game it is (cache store --pair <pair>)" % src)
     want = want or stamp(repo) + code_mods_line(os.path.join(src, "mods"), repo)
     k = key_of(want)
     if not find_exe(src):
@@ -443,8 +646,21 @@ def cache_restore(dst, repo=REPO, dry=False, say=print, want=None):
     other = bool(have.strip()) and key_of(have) != k
     if other:
         say("cache: %s held another build (%s): its runtime caches are replaced" % (dst, key_of(have)))
-    c, n = copy_tree(os.path.join(folder, CACHE_GAME), dst, dry=dry, say=lambda *_: None, runtime_too=other)
+    why, how = romfs_shared(folder, dst)
+    if why:
+        say("cache: %s: full romfs walk (%s)" % (dst, why))
+        if not dry and os.path.lexists(os.path.join(dst, ROMFS_MARK)):
+            os.remove(os.path.join(dst, ROMFS_MARK))   # (a walk that does not end leaves no mark)
+    else:
+        say("cache: %s: romfs already the cache's shared copy (%s): not walked" % (dst, how))
+    c, n = copy_tree(os.path.join(folder, CACHE_GAME), dst, dry=dry, say=lambda *_: None, runtime_too=other,
+                     skip_shared=not why, progress=lambda i: say("cache: %s: %d files looked at..." % (dst, i)))
     say("cache: %s -> %s: %d file(s) %s, %d link(s)" % (k, dst, c, "to copy" if dry else "copied", n))
+    if why and not dry and os.path.isdir(os.path.join(dst, "romfs")):
+        digest, _ = romfs_manifest(folder, make=True)
+        with open(os.path.join(dst, ROMFS_MARK), "w", encoding="utf-8") as f:
+            f.write("# hs.py cache_restore: this pair's romfs is the cache's shared copy (romfs_shared checks it)\n"
+                    "digest=%s\nentry=%s\n" % (digest, k))
     # (a build without code patches has no list; an older build's would say the game holds patches it does not: the
     # kit's own restore takes it away too, kit-paths.ps1 Restore-KitGameVariant)
     stale = os.path.join(dst, EXEFS_LIST)
@@ -620,24 +836,59 @@ def remove_tree(path):
 def main_root(repo=REPO):
     """The main checkout's root (locks are shared by all worktrees)."""
     try:
-        common = subprocess.run(["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        common = run_quiet(["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
                                 capture_output=True, text=True, check=True).stdout.strip()
         return os.path.dirname(common)
     except (OSError, subprocess.CalledProcessError):
         return repo
 
 
-def pid_alive(pid):
-    if pid <= 0:
-        return False
-    if WINDOWS:
-        r = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid, "/NH", "/FO", "CSV"], capture_output=True, text=True)
-        return ('"%d"' % pid) in r.stdout
+def _win_pid_probe(pid):
+    """'alive', 'gone' or 'unknown' for a pid, from the process itself (OpenProcess and a zero wait on its handle).
+    Gone only when Windows says so: no such process (ERROR_INVALID_PARAMETER) or its handle is signalled (exited).
+    Anything else (access denied, an API error) is 'unknown'."""
+    import ctypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.OpenProcess.restype = ctypes.c_void_p
+    k.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
+    k.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_ulong)
+    k.WaitForSingleObject.restype = ctypes.c_ulong
+    k.CloseHandle.argtypes = (ctypes.c_void_p,)
+    h = k.OpenProcess(0x00100000 | 0x1000, False, pid)   # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        err = ctypes.get_last_error()
+        return "gone" if err == 87 else ("alive" if err == 5 else "unknown")   # 87 no such pid, 5 exists but denied
+    try:
+        w = k.WaitForSingleObject(h, 0)
+        return "gone" if w == 0 else ("alive" if w == 0x102 else "unknown")   # WAIT_OBJECT_0: exited; WAIT_TIMEOUT
+    finally:
+        k.CloseHandle(h)
+
+
+def _posix_pid_probe(pid):
     try:
         os.kill(pid, 0)
-        return True
+        return "alive"
+    except PermissionError:
+        return "alive"      # (exists, someone else's)
+    except ProcessLookupError:
+        return "gone"
     except OSError:
+        return "unknown"
+
+
+def pid_alive(pid, probe=None):
+    """False only when the process is known to be gone. A probe that cannot tell (an API error, a busy PC) counts as
+    alive: every caller ends a session, kills or takes a lock on False, so a wrong False is the harmful one (a live game
+    once had its session closed under it when one tasklist call came back empty). The lock's age limit still frees a
+    lock whose owner can never be probed."""
+    if pid <= 0:
         return False
+    probe = probe or (_win_pid_probe if WINDOWS else _posix_pid_probe)
+    try:
+        return probe(pid) != "gone"
+    except Exception:
+        return True
 
 
 def host_id():
@@ -759,7 +1010,7 @@ def msvc_prefix():
                            "Microsoft Visual Studio", "Installer", "vswhere.exe")
     if not os.path.isfile(vswhere):
         raise Fail("no cl.exe on PATH and no vswhere.exe: run from a VS developer prompt")
-    inst = subprocess.run([vswhere, "-latest", "-products", "*", "-requires",
+    inst = run_quiet([vswhere, "-latest", "-products", "*", "-requires",
                            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"],
                           capture_output=True, text=True).stdout.strip()
     bat = os.path.join(inst, "VC", "Auxiliary", "Build", "vcvars64.bat")
@@ -799,7 +1050,7 @@ def run_steps(steps, prefix, dry, say=print, cwd=None, env=None):
         say("$ " + " ".join('"%s"' % c if " " in c else c for c in s))
         if dry:
             continue
-        r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, errors="replace")
+        r = run_quiet(cmd, cwd=cwd, env=env, capture_output=True, text=True, errors="replace")
         if r.returncode:
             tail = (r.stdout + r.stderr).strip().splitlines()[-25:]
             say("\n".join(tail))
@@ -829,7 +1080,7 @@ def compile_all(build, emu_build=None, jobs=8, repo=REPO, dry=False, say=print, 
                 say("$ ninja -C %s -t targets all  (then: ninja -C %s -j %d <lichii/hook objects>)"
                     % (emu_build, emu_build, jobs))
             else:
-                r = subprocess.run(prefix + ["ninja", "-C", emu_build, "-t", "targets", "all"],
+                r = run_quiet(prefix + ["ninja", "-C", emu_build, "-t", "targets", "all"],
                                    capture_output=True, text=True, errors="replace")
                 objs = hook_objects(r.stdout)
                 if not objs:
@@ -854,6 +1105,28 @@ def find_dll(build):
         if os.path.isfile(p):
             return p
     return os.path.join(build, "hookshot", "hookshot_coop.dll")
+
+
+@contextlib.contextmanager
+def kit_game_folder_kept(kit, dry=False):
+    """The kit's hookshot\\game-folder.txt as it was before (or still absent) once the block ends, also on a failed or
+    stopped build: a cache build of the kit's hookshot-build.ps1 is not the game the kit starts."""
+    p = os.path.join(kit, "hookshot", "game-folder.txt")
+    try:
+        with open(p, "rb") as f:
+            was = f.read()
+    except OSError:
+        was = None
+    try:
+        yield
+    finally:
+        if not dry:
+            if was is None:
+                if os.path.isfile(p):
+                    os.remove(p)
+            else:
+                with open(p, "wb") as f:
+                    f.write(was)
 
 
 def build_script_args(script):
@@ -882,6 +1155,27 @@ def romfs_source(out, root=None):
             continue
         found.append((os.path.getmtime(stamp_file), game))
     return max(found)[1] if found else None
+
+
+NO_MODS = "no-mods"   # (in the cache root: an empty mods folder for builds whose pairs have no code mods)
+
+
+def no_mods_dir(dry=False):
+    """The empty folder a game build gets as HOS_MODS when the pairs have no mods with code patches (made empty again
+    if anything was put into it: it must never decide what goes into a build)."""
+    d = os.path.join(cache_root(), NO_MODS)
+    if not dry:
+        if os.path.isdir(d) and os.listdir(d):
+            remove_tree(d)
+        os.makedirs(d, exist_ok=True)
+    return os.path.abspath(d)
+
+
+def in_pins(folder):
+    """Whether a folder is (in) a pin's shared folder of the cache: its game folder's mods are the last kit build's."""
+    pins = os.path.normcase(os.path.realpath(os.path.join(cache_root(), "pins")))
+    f = os.path.normcase(os.path.realpath(folder))
+    return f.startswith(pins + os.sep)
 
 
 def build(pairs, build_dir, kit=None, game=None, jobs=0, keep=3, repo=REPO, dry=False, say=print, root=None,
@@ -937,11 +1231,18 @@ def build(pairs, build_dir, kit=None, game=None, jobs=0, keep=3, repo=REPO, dry=
             else:
                 say("cache: miss; this kit's hookshot-build.ps1 has no -Tools/-Work (a kit from before hs-build-speed):"
                     " a full build in the kit's own folders")
+            # HOS_MODS always set (nx2/exefs_patches.py and Get-KitExefsStampLine read it): the pairs' mods, or an
+            # empty folder. Unset, both fall back to the OUTPUT folder's own mods: the pin's game folder keeps the
+            # puppet pack of its last kit build, with whatever code patch that build had (rejoin-host-273: a pair
+            # without code mods got a game with co-op's Characters-tab patch from it, and the store was refused).
             env = dict(os.environ)
-            env.pop("HOS_MODS", None)
-            if mods:
-                env["HOS_MODS"] = os.path.abspath(mods)   # (nx2/exefs_patches.py and Get-KitExefsStampLine read it)
-            if not run_steps([cmd], [], dry, say, env=env):
+            env["HOS_MODS"] = os.path.abspath(mods) if mods else no_mods_dir(dry)
+            # The kit's script notes its -Out as the kit's own game (hookshot\game-folder.txt: where the kit starts):
+            # this build's -Out is the cache's, so the kit keeps the game it named before (u2-fix-3: U2 from v0.11.10,
+            # a cache miss left kit-A starting the pin's game folder instead of lane1-A, and its start never ran).
+            with kit_game_folder_kept(kit, dry):
+                built = run_steps([cmd], [], dry, say, env=env)
+            if not built:
                 raise Fail("hookshot-build.ps1 failed")
             if dry:
                 say("cache: would store %s as %s" % (out, k))
@@ -992,6 +1293,8 @@ def main(argv=None):
     c = sub.add_parser("cache")
     c.add_argument("action", choices=["list", "status", "store", "restore", "prune"])
     c.add_argument("--from", dest="src")
+    c.add_argument("--pair", action="append", default=[],
+                   help="store: the pairs whose game it is (their mods' code patches are in its key; repeat)")
     c.add_argument("--to")
     c.add_argument("--keep", type=int, default=3)
     c.add_argument("--force", action="store_true")
@@ -1048,7 +1351,10 @@ def main(argv=None):
             if a.action == "store":
                 if not a.src:
                     raise Fail("--from <game folder>")
-                cache_store(os.path.abspath(a.src), repo, a.force, a.dry_run)
+                want = None
+                if a.pair:
+                    want = stamp(repo) + pairs_code_mods([os.path.abspath(p) for p in a.pair], repo)[0]
+                cache_store(os.path.abspath(a.src), repo, a.force, a.dry_run, want=want)
                 return 0
             if a.action == "restore":
                 if not a.to:

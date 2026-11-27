@@ -1,0 +1,24 @@
+# hs-join-early-228: the Minus menu (map, Threads of Time, Important pages), a shot on each page.
+mark m-before
+press MINUS
+wait 240
+mark m-open
+press R
+wait 90
+mark m-r1
+press R
+wait 90
+mark m-r2
+press L
+wait 90
+press L
+wait 90
+mark m-l1
+press L
+wait 90
+mark m-l2
+press MINUS
+wait 120
+press B
+wait 120
+mark m-closed

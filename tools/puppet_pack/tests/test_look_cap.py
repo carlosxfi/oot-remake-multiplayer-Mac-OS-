@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from puppet_pack import bfres, look_cap as lc, look_metal as lm  # noqa: E402
+from puppet_pack import bfres, look_cap as lc, look_live, look_metal as lm  # noqa: E402
 from puppet_pack.tunic import TunicError  # noqa: E402
 
 SRC = os.path.join(os.path.dirname(__file__), "..", "..", "..", "hookshot", "src")
@@ -275,22 +275,58 @@ class LookCapTest(unittest.TestCase):
         cap, other, _ = lc.uv_triangles(m, "Tex_A")
         offs, first = lc.blocks(texture(), cap, other)
         level0 = blocks_at([(0, 0), (1, 0), (3, 0)], 4, 4)
-        level1 = [512 + a for a in blocks_at([(1, 0)], 2, 2)]   # (0, 0) holds the body's too
+        # (0, 0): 26 of the 36 used texels under it are the cap's alone ((0, 1) is the body's too)
+        level1 = [512 + a for a in blocks_at([(0, 0), (1, 0)], 2, 2)]
         self.assertEqual(offs, sorted(level0 + level1))
         self.assertEqual(first, (3, 16))
+
+    def test_texels(self):
+        C, O = lc.CAP_TEXEL, lc.OTHER_TEXEL
+        # a cap triangle over (0, 0), (4, 0), (0, 4) of a 16x16 texture: the texels whose centre is in it
+        t = lc.texels([((0, 0), (0.25, 0), (0, 0.25))], [], 16, 16)
+        self.assertEqual(t.count(C), 10)
+        self.assertEqual([t[x] for x in range(5)], [C, C, C, C, 0])
+        self.assertEqual(t[3 * 16], C)
+        self.assertEqual(t[3 * 16 + 1], 0)
+        # wrapped, and shared with another triangle: both bits. In row 0 the other triangle's edge passes through
+        # texel 12's centre (x = 12.5) and edges are included, so texel 12 is both; row 1's texel 12 is the cap's.
+        t = lc.texels([((-0.25, 0), (0, 0), (-0.25, 0.25))], [((0.75, 0), (1.0, 0), (1.0, 0.25))], 16, 16)
+        self.assertEqual((t[12], t[15], t[16 + 12], t[16 + 14], t[16 + 15], t[3 * 16 + 12]),
+                         (C | O, C | O, C, C | O, O, C))
+        self.assertEqual(t[0], 0)
+
+    def test_smaller_levels_keep_a_thin_trim(self):
+        # kokiri-band-c124: a smaller level's block is the cap's when more than half of the first level's used
+        # texels under it are the cap's alone. A band of cap texels (x = 8..23 of 32) between the body's:
+        def rows(w, h, kind):
+            return bytearray(kind(x, y) for y in range(h) for x in range(w))
+        band = rows(32, 32, lambda x, y: lc.CAP_TEXEL if 8 <= x < 24 else lc.OTHER_TEXEL)
+        self.assertEqual(lc.smaller_level(band, 32, 32, 16, 16, 4, 4), {(x, y) for x in (1, 2) for y in range(4)})
+        self.assertEqual(lc.smaller_level(band, 32, 32, 8, 8, 4, 4), set())   # (half the band: not more than half)
+        # counted by texel, not by first-level block: under the block (0, y) the first level's blocks are one cap
+        # block (x = 0..3) and one the body shares (x = 4..7: the cap's 3 texels, the body's 1); 7 of 8 texels
+        # are the cap's. Texels no triangle uses (x = 8..15) do not count.
+        edge = rows(16, 16, lambda x, y: lc.CAP_TEXEL if x < 7 else lc.OTHER_TEXEL if x == 7 else 0)
+        self.assertEqual(lc.smaller_level(edge, 16, 16, 8, 8, 4, 4), {(0, 0), (0, 1)})
+        # texels both the cap's and another's are not the cap's alone
+        both = rows(16, 16, lambda x, y: lc.CAP_TEXEL | lc.OTHER_TEXEL)
+        self.assertEqual(lc.smaller_level(both, 16, 16, 8, 8, 4, 4), set())
+        # a texture whose levels do not halve evenly (ASTC 8x5 over 40 rows: each 8x20 level block is 10 rows)
+        tall = rows(16, 40, lambda x, y: lc.CAP_TEXEL if y < 13 else lc.OTHER_TEXEL if y < 30 else 0)
+        self.assertEqual(lc.smaller_level(tall, 16, 40, 8, 20, 8, 5), {(0, 0)})
 
     def test_cap_file(self):
         logs = []
         tex = texture()
         blob = lc.cap(lambda n: tex if n == "Mt_Cloth_Parts_Player_Child_Alb" else None,
-                      lambda v: test_model() if v == "Child" else None, logs.append)
+                      lambda v: test_model() if v == "Player_Child" else None, logs.append)
         self.assertIsNone(blob)   # the test model's material samples Tex_A, not the game's name
         self.assertTrue(any("0 of 16 blocks" in line for line in logs), logs)
         self.assertTrue(any("no Mt_Vest_Player_Adult_Alb" in line for line in logs), logs)
         # The texture under the name a material of the model samples.
         old = lc.CAP
         try:
-            lc.CAP = (("Tex_A", "Child"),)
+            lc.CAP = (("Tex_A", "Player_Child"),)
             blob = lc.cap(lambda n: tex, lambda v: test_model(), logs.append)
         finally:
             lc.CAP = old
@@ -298,7 +334,7 @@ class LookCapTest(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         name, step, offs = entries[0]
         self.assertEqual((name, step), ("Tex_A", 8))
-        self.assertEqual(len(offs), 4)
+        self.assertEqual(len(offs), 5)
         self.assertTrue(any("3 of 16 blocks hold only the cap (18.8%" in line for line in logs), logs)
         # a model that cannot be read: said, nothing made
         logs.clear()
@@ -316,12 +352,33 @@ class LookCapTest(unittest.TestCase):
             lc.unpack(b"COOPMTL1" + blob[8:])
 
     def test_the_module_paints_these_textures(self):
-        # Each texture is a tunic texture of the module's (green.bin holds its texels), painted in green.
+        # The Kokiri tunic's are tunic textures of the module's (green.bin holds their texels), painted in
+        # green; the Goron and Zora tunics' (row 278) are gear textures (gear.bin), painted in their tones.
         with open(os.path.join(SRC, "coop_look_parts.cpp"), encoding="utf-8") as f:
             src = f.read()
-        for name in lc.TEXTURES:
-            self.assertIn(f'{{"{name}", Format::', src)
+        tunic = src[src.index("TunicTextures() {"):]
+        tunic = tunic[:tunic.index("\n}\n")]
+        gear = src[src.index("Gear() {"):]
+        gear = gear[:gear.index("\n}\n")]
+        self.assertEqual(lc.TUNIC_TEXTURES + lc.GEAR_TEXTURES, lc.TEXTURES)
+        for name in lc.TUNIC_TEXTURES:
+            self.assertIn(f'{{"{name}", Format::', tunic)
+        for name in lc.GEAR_TEXTURES:
+            self.assertIn(f'{{"{name}", Format::', gear)
+            self.assertIn(name, look_live.GEAR)   # gear.bin holds its texels
         self.assertTrue('"COOPCAP1"' in src, "the module reads cap.bin (CoopLookParts::ParseCap)")
+
+    def test_every_tunic_has_its_trim(self):
+        # Row 278: the Cap trim on the Kokiri tunic only. Every tunic model of the game has its trims listed,
+        # each from the model that draws it.
+        models = {m for _, m in lc.CAP}
+        self.assertEqual(models, {"Player_Child", "Player_Adult", "Armor_Adult_Goron", "Armor_Adult_Zora"})
+        for name, model in lc.CAP:
+            self.assertEqual(lc.model_path(model), f"Model/{model}.{model}.bfres.zs")
+            if "Armor_Adult_Goron" in name:
+                self.assertEqual(model, "Armor_Adult_Goron")
+            if "Armor_Adult_Zora" in name:
+                self.assertEqual(model, "Armor_Adult_Zora")
 
 
 if __name__ == "__main__":

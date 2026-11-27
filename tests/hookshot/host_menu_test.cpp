@@ -15,13 +15,16 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <variant>
 #include <vector>
 
 #include <enet/enet.h>
 
 #include "coop/net/client.hpp"
+#include "coop/protocol/difficulty.hpp"
 #include "coop/protocol/join_password.hpp"
 #include "coop_host_menu.h"
+#include "coop_title_menu.h"
 #include "nat_codes.hpp"
 #include "nat_net.hpp"
 #include "relay.hpp"
@@ -146,6 +149,27 @@ bool wait_for(const std::function<bool()>& done, int ms, const std::function<voi
     return false;
 }
 
+// A join is done when BOTH sides say so: the host's server counts the player when it sends WELCOME, but the
+// game's client is connected only once it has read that WELCOME in a later service(). Waiting on the host's
+// count alone and then checking the client raced (CI: guest state 2 'handshaking' == 3 'connected').
+bool wait_joined(const CoopHostMenu::Menu& host, std::size_t players, const std::vector<coop::net::Client*>& clients,
+                 int ms, const std::function<void()>& pump) {
+    const bool ok = wait_for(
+        [&] {
+            if (status_of(host).players != players) return false;
+            for (auto* c : clients) {
+                if (c->state() != coop::net::State::connected) return false;
+            }
+            return true;
+        },
+        ms, pump);
+    if (!ok) {
+        MESSAGE("host players " << status_of(host).players << ", wanted " << players);
+        for (auto* c : clients) MESSAGE("client state " << static_cast<int>(c->state()) << ", wanted 3 (connected)");
+    }
+    return ok;
+}
+
 HosCoopHostOptions host_options() {
     HosCoopHostOptions o{};
     o.size = sizeof o;
@@ -174,8 +198,7 @@ TEST_CASE("host menu: Host makes a password, runs the server and points this gam
     CHECK(t.password == std::string(s.password));
 
     game.start_client();
-    REQUIRE(wait_for([&] { return status_of(menu).players == 1; }, 5000, [&] { game.client->service(1); }));
-    CHECK(game.client->state() == coop::net::State::connected);
+    REQUIRE(wait_joined(menu, 1, {game.client.get()}, 5000, [&] { game.client->service(1); }));
 
     // A second Host while hosting is refused, and says why.
     CHECK(menu.HostStart(&o) == 0);
@@ -343,6 +366,81 @@ TEST_CASE("host menu: Join with a room name through a relay: the relay lets this
     link.stop();
 }
 
+TEST_CASE("host menu: a private room's copied line joins when pasted: the password goes with it (private-lobby-fix)") {
+    namespace relay = coop::server::relay;
+    EnetLife enet;
+    relay::RelayServer relay_server(0, 0x7F000001u, relay::RelayConfig{});  // (127.0.0.1 only)
+    REQUIRE(relay_server.start());
+    const std::uint16_t relay_port = relay_server.port();
+    relay::RelayLinkConfig lc;
+    lc.relay_host = "127.0.0.1";
+    lc.relay_port = relay_port;
+    lc.bind = 0x7F000001u;
+    lc.server_port = 1;  // no game server here: only the room is held
+    lc.room = "Drumstick";
+    std::atomic<bool> room_held{false};
+    lc.on_room = [&room_held](const std::string&) { room_held = true; };
+    relay::RelayLink link(lc);
+    std::string why;
+    REQUIRE(link.start(why));
+    std::atomic<bool> done{false};
+    std::thread serve([&] {
+        while (!done) {
+            relay_server.service(5);
+            link.service();
+        }
+    });
+    REQUIRE(wait_for([&] { return room_held.load(); }, 3000));
+
+    // What the host's status holds (relay_room, as host_service sets it) and its random join password.
+    const std::string relay_room = "Drumstick@127.0.0.1:" + std::to_string(relay_port);
+    const std::string password = coop::server::nat::make_password();
+    // The friend pastes what the host copied (CoopPause's Join: ReadJoin, then the host menu's Join).
+    const auto join_with = [&](CoopHostMenu::Menu& menu, const std::string& pasted) {
+        const auto target = CoopTitleMenu::ReadJoin(pasted, {});
+        const auto* address = std::get_if<CoopTitleMenu::JoinAddress>(&target);
+        REQUIRE(address != nullptr);
+        HosCoopJoinOptions o{};
+        o.size = sizeof o;
+        o.name = "Link";
+        o.target = address->server.c_str();
+        o.password = address->password.empty() ? nullptr : address->password.c_str();
+        return menu.Join(&o);
+    };
+
+    Game game;
+    CoopHostMenu::Menu menu(game.hooks());
+    // The bug: the room line alone (what 0.11.12 and before copied) is refused before the relay is ever asked.
+    CHECK(CoopTitleMenu::RelayLineWithoutPassword(relay_room));
+    CHECK(join_with(menu, relay_room) == 0);
+    CHECK(status_of(menu).problem == HOS_COOP_PROBLEM_NO_PASSWORD);   // (refused here: the relay never asked)
+
+    // The fix: the line the host copies now has the password after it; pasted, it reaches the relay and the game
+    // connects with the host's password.
+    const std::string shared = CoopTitleMenu::RelayShareLine(relay_room, password);
+    CHECK(shared == relay_room + " " + password);
+    CHECK_FALSE(CoopTitleMenu::RelayLineWithoutPassword(shared));
+    REQUIRE(join_with(menu, shared) == 1);
+    REQUIRE(wait_for([&] { return status_of(menu).state == HOS_COOP_CONNECTED; }, 5000));
+    CHECK(game.target()->password == password);
+    CHECK(game.target()->port == relay_port);
+    menu.Leave();
+    // Pasted with the room in another case, or from a chat with spaces around it: the same room.
+    REQUIRE(join_with(menu, "  " + CoopTitleMenu::RelayShareLine("drumstick@127.0.0.1:" + std::to_string(relay_port),
+                                                                  password) + "  ") == 1);
+    REQUIRE(wait_for([&] { return status_of(menu).state == HOS_COOP_CONNECTED; }, 5000));
+    CHECK(game.target()->password == password);
+    menu.Leave();
+
+    done = true;
+    serve.join();
+    link.stop();
+    // (read once the serving thread is done) The relay heard only the two joins with the password, both right: the
+    // line without it never reached the relay, so nothing of it was in the relay's journal or counts.
+    CHECK(relay_server.relay().stats().lookups_wrong == 0);
+    CHECK(relay_server.relay().stats().lookups_ok >= 2);
+}
+
 TEST_CASE("host menu: a broken invite code is explained, not used as an address") {
     Game game;
     CoopHostMenu::Menu menu(game.hooks());
@@ -406,11 +504,10 @@ TEST_CASE("host menu: Host with an invite code, and a second game joins with onl
     CHECK(t.port != hs.port);  // the helper's port, not the host's
     CHECK(t.password == std::string(hs.password));
     guest_game.start_client();
-    REQUIRE(wait_for([&] { return status_of(host).players == 2; }, 8000, [&] {
+    REQUIRE(wait_joined(host, 2, {host_game.client.get(), guest_game.client.get()}, 8000, [&] {
         host_game.client->service(0);
         guest_game.client->service(0);
     }));
-    CHECK(guest_game.client->state() == coop::net::State::connected);
 
     guest_game.client->stop();
     guest.Leave();
@@ -442,6 +539,23 @@ TEST_CASE("host menu: Host takes up to 16 players by default, as coop_server") {
     CHECK(CoopHostMenu::HostMaxPlayers(40) == 16);  // more than the protocol has numbers for
 }
 
+// HosCoopHostOptions::difficulty (the lobby's, picked as it was made) as the server's start choice.
+TEST_CASE("host menu: the lobby's difficulty from the host options, automatic for an older caller") {
+    using coop::protocol::DifficultyPreset;
+    CHECK(CoopHostMenu::HostDifficulty(0, 0, 0, 0) == coop::protocol::DifficultyChoice{});   // (older caller: 0)
+    CHECK(CoopHostMenu::HostDifficulty(9, 100, 100, 100) == coop::protocol::DifficultyChoice{});
+    const auto easy = CoopHostMenu::HostDifficulty(1, 0, 0, 0);
+    CHECK_FALSE(easy.auto_scale);
+    CHECK(easy.preset == DifficultyPreset::easy);
+    CHECK(CoopHostMenu::HostDifficulty(2, 0, 0, 0).preset == DifficultyPreset::normal);
+    CHECK(CoopHostMenu::HostDifficulty(3, 0, 0, 0).preset == DifficultyPreset::hard);
+    const auto custom = CoopHostMenu::HostDifficulty(4, 150, 900, 100);
+    CHECK(custom.preset == DifficultyPreset::custom);
+    CHECK(custom.custom == coop::protocol::DifficultyValues{150, 400, 100, 150, 400});   // (within the sliders' ends)
+    // The struct's tail: an older caller's size stops before it.
+    CHECK(offsetof(HosCoopHostOptions, difficulty) >= offsetof(HosCoopHostOptions, bans_file) + sizeof(const char*));
+}
+
 TEST_CASE("host menu: the same helper nonce and port for the same invite on this PC, others differ") {
     const coop::server::nat::Addr host{0xCB007105u, 27510};
     const auto a = CoopHostMenu::RejoinIds("pc-one", "PW", host);
@@ -454,7 +568,7 @@ TEST_CASE("host menu: the same helper nonce and port for the same invite on this
     CHECK(CoopHostMenu::RejoinIds("pc-one", "PW2", host).nonce != a.nonce);  // another session
 }
 
-TEST_CASE("host menu: Paste friend's answer says plainly what was wrong with the clipboard") {
+TEST_CASE("host menu: Paste answer code says plainly what was wrong with the clipboard") {
     using CoopHostMenu::ReadPastedAnswer;
     namespace nat = coop::server::nat;
     constexpr std::uint64_t now = 1'800'000'000;
@@ -519,8 +633,7 @@ TEST_CASE("host menu: Host on a custom port: a manual IP and port join gets in w
     CHECK(join_game.target()->server == "127.0.0.1");
     CHECK(join_game.target()->port == 38515);
     join_game.start_client();
-    REQUIRE(wait_for([&] { return status_of(host_menu).players == 1; }, 5000, [&] { join_game.client->service(1); }));
-    CHECK(join_game.client->state() == coop::net::State::connected);
+    REQUIRE(wait_joined(host_menu, 1, {join_game.client.get()}, 5000, [&] { join_game.client->service(1); }));
 
     join_game.client->stop();
     join_menu.Leave();
@@ -537,8 +650,8 @@ TEST_CASE("host menu: with approve_joins the host's game is asked about a new pl
     REQUIRE(wait_for([&] { return status_of(menu).state == HOS_COOP_HOSTING && game.target().has_value(); }, 3000));
     game.start_client();
     // The host's own game is never asked about: it is the first in.
-    REQUIRE(wait_for([&] { return game.client->state() == coop::net::State::connected; }, 5000,
-                     [&] { game.client->service(1); }));
+    // (and the host's count of 1 seen, so the players == 1 check below is not a stale 0 from the host thread)
+    REQUIRE(wait_joined(menu, 1, {game.client.get()}, 5000, [&] { game.client->service(1); }));
 
     const Target t = *game.target();
     coop::net::ClientConfig config;
@@ -567,11 +680,10 @@ TEST_CASE("host menu: with approve_joins the host's game is asked about a new pl
     CHECK(riley.state() == coop::net::State::handshaking);
     CHECK(status_of(menu).players == 1);
     REQUIRE(game.client->send(coop::protocol::JoinAllow{asked->knock, true, false}));
-    REQUIRE(wait_for([&] { return riley.state() == coop::net::State::connected && status_of(menu).players == 2; }, 5000,
-                     [&] {
-                         game.client->service(1);
-                         riley.service(1);
-                     }));
+    REQUIRE(wait_joined(menu, 2, {game.client.get(), &riley}, 5000, [&] {
+        game.client->service(1);
+        riley.service(1);
+    }));
     riley.stop();
     game.client->stop();
     menu.Leave();
@@ -583,10 +695,24 @@ TEST_CASE("host menu: the process memory line reads this process's numbers (row 
 #ifdef _WIN32
   CHECK(line.find(" private ") != std::string::npos);
   CHECK(line.find(", handles ") != std::string::npos);
+  // Row 271: every heap summed, and private outside them (Longshot's and the driver's own blocks)
+  CHECK(line.find(" heaps: allocated ") != std::string::npos);
+  CHECK(line.find("; outside the heaps ") != std::string::npos);
 #else
   CHECK(line.find("VmRSS") != std::string::npos);
 #endif
   CHECK(CoopHostMenu::kMemoryLineMs == 30'000);
+}
+
+TEST_CASE("host menu: every game's memory line is due once a minute, the first at once (row 271)") {
+  std::uint64_t next = 0;
+  CHECK(CoopHostMenu::MemoryLineDue(5'000, next));
+  CHECK(next == 5'000 + CoopHostMenu::kGameMemoryLineMs);
+  CHECK_FALSE(CoopHostMenu::MemoryLineDue(5'001, next));
+  CHECK_FALSE(CoopHostMenu::MemoryLineDue(64'999, next));
+  CHECK(CoopHostMenu::MemoryLineDue(65'000, next));
+  CHECK(next == 125'000);
+  CHECK(CoopHostMenu::kGameMemoryLineMs == 60'000);
 }
 
 TEST_CASE("host menu: the autotest's in-game host reads PORT:PASSWORD and nothing else (row 260)") {

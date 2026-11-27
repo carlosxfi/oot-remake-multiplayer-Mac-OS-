@@ -144,6 +144,54 @@ TEST_CASE("actor events: a judged give is told to its step once, only an owner's
     CHECK_FALSE(judged);
 }
 
+TEST_CASE("actor events: a fall given in place of a replay its damage step never took is taken once, never twice") {
+    static Ring ring;
+    static CoopActorEvents::LifeTable table;
+    using CoopActorEvents::kNoHitId;
+    using CoopActorEvents::HitIdReached;
+    using CoopActorEvents::WithdrawReplay;
+    // Hit ids only grow; none read or none of ours: not reached.
+    CHECK(HitIdReached(0x1000, 0x1000));
+    CHECK(HitIdReached(0x1002, 0x1000));
+    CHECK_FALSE(HitIdReached(0x0ffe, 0x1000));
+    CHECK_FALSE(HitIdReached(kNoHitId, 0x1000));
+    CHECK_FALSE(HitIdReached(0x1000, kNoHitId));
+    // enemy-late-kill: the Deku Baba's copy. Our replay 0x1000 waits; its hit id stays 0xffffffff. The owner's
+    // death (3) is given tied to the replay and the next Life step takes it, judged, and names the replay.
+    bool judged = false;
+    std::uint32_t withdraw = 0;
+    CHECK(table.Give(0x900, 3, true, 0x1000));
+    CHECK(table.Pending(0x900) == 3);
+    CHECK(CoopActorEvents::Step(ring, table, 0x900, 0, &judged, kNoHitId, &withdraw) == 3);
+    CHECK(judged);
+    CHECK(withdraw == 0x1000);
+    CHECK(CoopActorEvents::Step(ring, table, 0x900, 0, &judged, kNoHitId, &withdraw) == 0);  // (once)
+    CHECK(withdraw == kNoHitId);
+    // The replay still waiting in the record (its id, present set) is withdrawn; another, or one taken, is not.
+    CHECK(WithdrawReplay(0x1000, 0x1000, 1));
+    CHECK_FALSE(WithdrawReplay(0x1000, 0x1000, 0));
+    CHECK_FALSE(WithdrawReplay(0x1000, 0x1002, 1));
+    CHECK_FALSE(WithdrawReplay(kNoHitId, kNoHitId, 1));
+    // The replay landed after all (the damage step took it this frame: the id reached it, its hit dealt the fall):
+    // the tied give is dropped, a plain give with it is still taken.
+    CHECK(table.Give(0x900, 2, true, 0x1002));
+    CHECK(table.Give(0x900, 1));
+    CHECK(CoopActorEvents::Step(ring, table, 0x900, 2, &judged, 0x1002, &withdraw) == 3);
+    CHECK_FALSE(judged);  // (the judged part was dropped)
+    CHECK(withdraw == kNoHitId);
+    CHECK(table.Pending(0x900) == 0);
+    ring.Drain();
+    // Taken back on our own thread (stale): all of it, tied or not, so the fall can be given again.
+    CHECK(table.Give(0x900, 2, true, 0x1004));
+    CHECK(table.Give(0x900, 1));
+    CHECK(table.Take(0x900) == 3);
+    CHECK(table.Pending(0x900) == 0);
+    table.Give(0x900, 2, true, 0x1004);
+    table.Clear();
+    CHECK(CoopActorEvents::Step(ring, table, 0x900, 0, &judged, kNoHitId, &withdraw) == 0);
+    CHECK(withdraw == kNoHitId);
+}
+
 TEST_CASE("actor events: a create keeps its name") {
     Event e;
     e.SetName("Shootable_DekuSeed");
@@ -224,4 +272,61 @@ TEST_CASE("boss-die-0116: a death kept past its revive stays kept on the steps a
     twice.Keep(kGohma);
     twice.Alive(kGohma);
     CHECK_FALSE(twice.Kept(kGohma));
+}
+
+TEST_CASE("actor events: a Life component the walk no longer sees gives its slot back (row 270)") {
+    using CoopActorEvents::LifeTable;
+    static LifeTable table;
+    table.Clear();
+    // One scene, never left: wave after wave of enemies, each hit by another player. Far more components than
+    // slots pass through; every give finds room, and the step takes it.
+    const std::uint64_t kAlive = 30;
+    for (std::uint64_t wave = 0; wave < 100; ++wave) {  // 3000 components through 256 slots
+        const std::uint64_t base = 0x7100'0000 + wave * 0x10000;
+        for (std::uint64_t i = 0; i < kAlive; ++i) {
+            REQUIRE(table.Give(base + i * 0x200, 2));
+        }
+        CHECK(table.Take(base) == 2);
+        const auto alive = [base](std::uint64_t c) { return c >= base && c < base + 0x10000; };
+        for (std::uint64_t walk = 0; walk < LifeTable::kKeepSweeps + 1; ++walk) {
+            table.Sweep(alive);
+        }
+        CHECK(table.Pending(base + 0x200) == 2);  // alive: kept, with what it was given
+        if (wave > 0) {
+            CHECK(table.Pending(base - 0x10000 + 0x200) == 0);  // the wave before: gone, with what it held
+        }
+    }
+    table.Clear();
+}
+
+TEST_CASE("actor events: a give waits through walks that miss its component, and a freed slot holds nothing") {
+    using CoopActorEvents::LifeTable;
+    static LifeTable table;
+    table.Clear();
+    const auto nothing = [](std::uint64_t) { return false; };
+    CHECK(table.Give(0x500, 3, true));
+    for (std::uint64_t walk = 0; walk + 1 < LifeTable::kKeepSweeps; ++walk) {
+        table.Sweep(nothing);  // (a load, a missed read)
+    }
+    CHECK(table.Pending(0x500) == 3);
+    // Seen again (or a kept give still waiting on it: the caller's `alive`): the count starts over.
+    table.Sweep([](std::uint64_t c) { return c == 0x500; });
+    for (std::uint64_t walk = 0; walk + 1 < LifeTable::kKeepSweeps; ++walk) {
+        table.Sweep(nothing);
+    }
+    CHECK(table.Pending(0x500) == 3);
+    table.Sweep(nothing);
+    CHECK(table.Pending(0x500) == 0);  // gone for good
+    bool judged = true;
+    CHECK(table.Take(0x500, &judged) == 0);
+    CHECK_FALSE(judged);
+    // The same address again (another actor's component): a slot with nothing of the old one's.
+    CHECK(table.Give(0x500, 1));
+    CHECK(table.Take(0x500, &judged) == 1);
+    CHECK_FALSE(judged);
+    // A give counts as seen: a new component is never freed before its first walks.
+    CHECK(table.Give(0x900, 4));
+    table.Sweep(nothing);
+    CHECK(table.Pending(0x900) == 4);
+    table.Clear();
 }

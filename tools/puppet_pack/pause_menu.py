@@ -329,6 +329,19 @@ def make(reader, dicts, recompress, strings=ui_pack.STRINGS, minus_page=True):
             raise PauseMenuError("%s has no %s" % (COMMON_ARCHIVE, layout))
         entries, new = ui_pack.edit_entries(entries, layout, edit)   # (every copy of the layout)
         growth.append((layout, len(olds[0]), len(new[olds[0]]), False))
+    # The other players' hearts on the game's HUD (party_hud.py): one more layout of the same archive, which has one
+    # writer. Not required: a game whose HUD is not as read keeps its own, and the module draws its blocks as before.
+    from . import party_hud
+    olds = [data for name, data in entries if name == party_hud.LAYOUT]
+    if olds:
+        try:
+            with_party, new = ui_pack.edit_entries(entries, party_hud.LAYOUT, party_hud.add_party)
+            ui_pack.check_own_parts(read, with_party, COMMON_ARCHIVE)
+        except ui_pack.UiPackError as e:
+            print("pause menu: the HUD keeps the game's own layout, no hearts of the other players on it (%s)" % e)
+        else:
+            entries = with_party
+            growth.append((party_hud.LAYOUT, len(olds[0]), len(new[olds[0]]), False))
     ui_pack.check_own_parts(read, entries, COMMON_ARCHIVE)   # (every part's layout in Common: the game's own rule)
     archive = sarc.write(entries, data_align=16)   # (as the game's own: 16)
     growth.append((COMMON_ARCHIVE, len(plain), len(archive), True))

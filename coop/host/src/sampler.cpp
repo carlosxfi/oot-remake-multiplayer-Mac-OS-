@@ -95,6 +95,7 @@ void Sampler::reset() {
   previous_.reset();
   last_sent_.reset();
   equipment_sent_.reset();
+  hold_floor_us_ = 0;  // a new connection's clock
 }
 
 std::optional<Vec3> Sampler::velocity(const PlayerReading& reading, std::uint64_t now) const {
@@ -139,7 +140,19 @@ bool Sampler::should_send(const PlayerReading& reading, std::uint64_t now) const
 }
 
 std::vector<Outgoing> Sampler::frame(const std::optional<PlayerReading>& reading,
-                                     std::uint64_t server_now_us, bool title_up) {
+                                     std::uint64_t frame_us, bool title_up) {
+  // Just after a hold the frame's time can be older than the last held
+  // sample's: stamp after it (hold), each frame a little later, until the
+  // frames pass it.
+  std::uint64_t server_now_us = frame_us;
+  // The floor covers only a frame's age (kFrameAgeMaxUs). A frame further back is another clock (a new server).
+  if (hold_floor_us_ != 0) {
+    if (frame_us <= hold_floor_us_ && hold_floor_us_ - frame_us <= kFrameAgeMaxUs) {
+      server_now_us = ++hold_floor_us_;
+    } else {
+      hold_floor_us_ = 0;
+    }
+  }
   std::vector<Outgoing> out;
   const std::uint8_t flags = status_bits(flags_, reading, title_up);
   if (!status_sent_ || flags != flags_) {
@@ -185,6 +198,41 @@ std::vector<Outgoing> Sampler::frame(const std::optional<PlayerReading>& reading
 
   previous_ = reading;
   previous_time_us_ = server_now_us;
+  return out;
+}
+
+std::optional<Outgoing> Sampler::hold(std::uint64_t server_now_us) {
+  if (!previous_ || !last_sent_ || !last_sent_->position) return std::nullopt;
+  const std::uint64_t last = last_sent_->time.server_time_us;
+  if (server_now_us <= last || server_now_us - last < settings_.keepalive_us) return std::nullopt;
+  protocol::PlayerSample sample = *last_sent_;
+  sample.time = {server_now_us, sequence_};
+  sample.velocity = Vec3{0.0f, 0.0f, 0.0f};  // held: standing, not moving on
+  ++sequence_;
+  std::vector<Outgoing> out;
+  push(out, sample);
+  if (out.empty()) return std::nullopt;
+  last_sent_ = std::move(sample);
+  hold_floor_us_ = server_now_us;
+  return std::move(out.front());
+}
+
+std::vector<Outgoing> Sampler::hold_reconnected(std::uint64_t server_now_us) {
+  std::vector<Outgoing> out;
+  if (!previous_ || !last_sent_ || !last_sent_->position) return out;
+  push(out, protocol::PlayerStatus{protocol::kPlayerSelf, flags_});
+  status_sent_ = true;
+  if (equipment_sent_) push(out, protocol::PlayerEquip{protocol::kPlayerSelf, *equipment_sent_});
+  protocol::PlayerSample sample = *last_sent_;
+  // The new connection's clock: after a server restart the old sample's time is the old server's uptime, and the
+  // others' presence forgot the old samples with their own WELCOME.
+  const std::uint64_t at = server_now_us;
+  sample.time = {at, sequence_};
+  sample.velocity = Vec3{0.0f, 0.0f, 0.0f};
+  ++sequence_;
+  push(out, sample);
+  last_sent_ = std::move(sample);
+  hold_floor_us_ = at;
   return out;
 }
 

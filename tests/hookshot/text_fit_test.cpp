@@ -79,3 +79,53 @@ TEST_CASE("text fit: LineEnd breaks at a space, and never inside a letter of a t
     }
     CHECK(at == zh.size());
 }
+
+TEST_CASE("text fit: a text the game drew wider than its box is cut to the width that fits") {
+    // (menu-polish-01113: "Co-op came with the game", 24 letters, ran past its button)
+    const std::string row = "Co-op came with the game";
+    CHECK(CoopTextFit::LettersForWidth(row, 200.0f, 220.0f) == 0);   // (fits: nothing cut)
+    CHECK(CoopTextFit::LettersForWidth(row, 220.0f, 220.0f) == 0);
+    const std::size_t n = CoopTextFit::LettersForWidth(row, 264.0f, 220.0f);
+    CHECK(n == 20);                                                   // (24 letters at 220/264)
+    CHECK(CoopTextFit::Fit(row, n).size() <= 20);
+    CHECK(CoopTextFit::Fit(row, n).find("...") != std::string::npos);
+    CHECK(CoopTextFit::LettersForWidth(row, 221.0f, 220.0f) == 23);   // (a hair too wide: always a letter shorter)
+    CHECK(CoopTextFit::LettersForWidth(row, 2000.0f, 220.0f) == 4);   // (never below one letter and "...")
+    CHECK(CoopTextFit::LettersForWidth("Back", 500.0f, 100.0f) == 0); // (nothing to cut)
+    CHECK(CoopTextFit::LettersForWidth(row, 300.0f, 0.0f) == 0);      // (no box read: left as it is)
+}
+
+TEST_CASE("text fit: a tag at the end is kept whole and the words before it are cut (menu-restart-c41)") {
+    const std::string tag = " (restart)";
+    CHECK(FitTail("Aspect ratio", tag, 30) == "Aspect ratio (restart)");   // (both fit: as they are)
+    const std::string cut = FitTail("A very long setting name that cannot fit", tag, 30);
+    CHECK(cut.size() <= 30);
+    CHECK(Halves(cut) <= 60);
+    CHECK(cut.substr(cut.size() - tag.size()) == tag);
+    CHECK(cut.find("...") != std::string::npos);
+    CHECK(FitTail("Name", tag, 12).empty());   // (no room for 4 letters of the name: the caller picks)
+    const std::string zh = "\xE7\x94\xBB\xE9\x9D\xA2\xE8\xAE\xBE\xE7\xBD\xAE";   // (4 wide letters, 12 bytes)
+    const std::string wide = FitTail(zh + zh + zh, tag, 30);
+    CHECK(ValidUtf8(wide));
+    CHECK(wide.size() <= 30);
+    CHECK(wide.substr(wide.size() - tag.size()) == tag);
+}
+
+TEST_CASE("text fit: the width fit's words with a tag: whole, the brief tag, then cut before the tag") {
+    const std::string tag = " (restart)", brief = " *", name = "Intel shader compiles";
+    const std::string words = name + tag;
+    CHECK(FitShown(words, tag, brief, false, 0) == words);
+    CHECK(FitShown(words, tag, brief, true, 0) == name + brief);   // (0.11.12's text, exactly)
+    const std::string cut = FitShown(words, tag, brief, false, 25);
+    CHECK(cut.substr(cut.size() - tag.size()) == tag);
+    CHECK(cut.size() <= 25);
+    const std::string cut_brief = FitShown(words, tag, brief, true, 16);
+    CHECK(cut_brief.substr(cut_brief.size() - 2) == brief);
+    CHECK(cut_brief.size() <= 16);
+    // No tag, or words that do not end in it (a translation changed them): the plain cut, as before.
+    CHECK(FitShown(words, "", "", false, 25) == Fit(words, 25));
+    CHECK(FitShown("Other words here, longer than ten", tag, brief, true, 10) == Fit("Other words here, longer than ten", 10));
+    CHECK(FitShown("Abc", "", "", false, 0) == "Abc");
+    // A tag too long for the budget: the plain cut, never "".
+    CHECK(FitShown(words, tag, "", false, 8) == Fit(words, 8));
+}

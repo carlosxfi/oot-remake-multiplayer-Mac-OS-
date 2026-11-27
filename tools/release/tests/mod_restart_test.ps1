@@ -54,6 +54,9 @@ try {
     $plainDir = Find-KitGameVariant $kit $plain $false
     Check ([bool]$plainDir) 'find: the plain build is kept'
     Check (-not (Find-KitGameVariant $kit $plain $true)) 'find: not for a DLSS game (kept apart)'
+    Check (-not (Find-KitGameVariant $kit $plain $false $true)) 'find: not for an AMD FSR 4 game (kept apart, #326)'
+    Check ((ConvertTo-KitVariantStamp $plain $false) -eq (ConvertTo-KitVariantStamp $plain $false $false) -and
+        (ConvertTo-KitVariantStamp $plain $false $true) -like '*dlss=0*fsr4=1') 'stamp: without FSR 4 the key is as before #326; with it, fsr4=1'
     Check (-not (Find-KitGameVariant $kit $withCs $false)) 'find: nothing kept with Character Select yet'
     Check ((Save-KitGameVariant $kit $g) -eq '') 'save: the same build again -> kept already, nothing copied'
     # The build with Character Select.

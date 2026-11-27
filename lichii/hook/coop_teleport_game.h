@@ -45,6 +45,14 @@ bool Beside(std::uint8_t number, std::string name);
 // The respawn's fallback: our scene again at its entrance nearest our Link
 // (the game's own scene change to a start point: its own respawn place).
 bool ToEntrance();
+// The play-test bridge's `warp` in free play (docs/playtest.md): our scene change to `scene` at its start point `start`
+// by the game's own map change event (Dm_SY_BancChangeGo), as an entrance does it, with no player to follow and no
+// talk or sign needed: any scene of the start list, a boss stage included. The caller has checked the names
+// (CoopTestInput::WarpProblem); `start` empty means the scene's first start point (DefaultStart). False when
+// teleport is off or the map change event is off (LICHII_COOP_TELEPORT=0, LICHII_COOP_TELEPORT_EVENT=0), or there is
+// no start point. The event is asked at the next frames for 5 s (the respawn's window); the caller waits for the
+// scene. Any thread.
+bool MapChange(std::string scene, std::string start);
 // How the last Beside / ToEntrance went, once known: true moved (or the
 // scene change asked), false not (refused, no answer, not moved, no start
 // point). Nothing while not known. Taken once.

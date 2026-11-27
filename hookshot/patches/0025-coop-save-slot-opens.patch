@@ -1,4 +1,4 @@
-From 5c7202690629029eaf0f90e985ff194672e5e967 Mon Sep 17 00:00:00 2001
+From 50f6eef7eede4d45ae95a738ddbfcd6f0055c72a Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Mon, 16 Nov 2026 11:37:15 -0900
 Subject: [PATCH] Co-op save slot opens: the slot folder the game opened last,
@@ -17,7 +17,7 @@ on disk. Nothing else changes: the open itself is as before.
  1 file changed, 40 insertions(+)
 
 diff --git a/host/nn_fs.c b/host/nn_fs.c
-index 4b9e4918..5e28c66d 100644
+index fa745c1b..149f2590 100644
 --- a/host/nn_fs.c
 +++ b/host/nn_fs.c
 @@ -1121,6 +1121,45 @@ HOS_COOP_FS_EXPORT int hos_coop_fs_save_remount(const char *root) {
@@ -66,7 +66,7 @@ index 4b9e4918..5e28c66d 100644
  
  /* nn::fs::IsSaveDataExisting(ApplicationId, account::Uid const&) -> bool */
  HLE(_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE) {
-@@ -1316,6 +1355,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
+@@ -1353,6 +1392,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
      }
      snprintf(fh->path, sizeof fh->path, "%s", g);
      G64(ARG(0)) = new_handle(fh);

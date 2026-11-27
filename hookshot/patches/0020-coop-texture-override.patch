@@ -1,4 +1,4 @@
-From 1d07bca716a77bf606f717a5daf05d8a0887d65f Mon Sep 17 00:00:00 2001
+From dde63da946a836e9b40be7aae0db3906aabd76dc Mon Sep 17 00:00:00 2001
 From: daurosk <354202035+daurosk@users.noreply.github.com>
 Date: Fri, 13 Nov 2026 20:38:47 -0900
 Subject: [PATCH] Co-op texture overrides: a module may have a texture drawn
@@ -18,19 +18,19 @@ override set or taken away marks its pages written, so the texture is
 uploaded again. A texture finalized takes its overrides with it.
 The Link customizer paints Link's gear with it.
 ---
- gpu/vk/vk_texture.cpp   |  54 ++++++++++-
+ gpu/vk/vk_texture.cpp   |  56 +++++++++++-
  host/coop_texture.c     | 196 ++++++++++++++++++++++++++++++++++++++++
  host/hos_coop_texture.h |  43 +++++++++
  host/nvn_native.c       |   9 ++
- 4 files changed, 298 insertions(+), 4 deletions(-)
+ 4 files changed, 299 insertions(+), 5 deletions(-)
  create mode 100644 host/coop_texture.c
  create mode 100644 host/hos_coop_texture.h
 
 diff --git a/gpu/vk/vk_texture.cpp b/gpu/vk/vk_texture.cpp
-index 8c16a702..0994247e 100644
+index 427fbf77..48a608af 100644
 --- a/gpu/vk/vk_texture.cpp
 +++ b/gpu/vk/vk_texture.cpp
-@@ -1278,8 +1278,40 @@ LevelGeo level_geo(const Texture& tex, uint32_t level) {   // (level: the image'
+@@ -1322,8 +1322,40 @@ LevelGeo level_geo(const Texture& tex, uint32_t level) {   // (level: the image'
      return g;
  }
  
@@ -72,7 +72,7 @@ index 8c16a702..0994247e 100644
      uint64_t avail = 0;
      const uint8_t* p = host->gpu_ptr(gpu, &avail);
      // (below 1 TB the GPU address is the guest's: the storage as it was at the submit being replayed, where the game has
-@@ -1304,6 +1336,15 @@ const uint8_t* guest_bytes(uint64_t gpu, uint64_t n, std::vector<uint8_t>& scrat
+@@ -1348,6 +1380,15 @@ const uint8_t* guest_bytes(uint64_t gpu, uint64_t n, std::vector<uint8_t>& scrat
      }
      return scratch.data();
  }
@@ -88,7 +88,7 @@ index 8c16a702..0994247e 100644
  
  /// The alpha an RGB format widened to RGBA gets: one in the format's own encoding (by component size alone, SNORM8 read
  /// -0.008, UNORM16 0.23 and the integer formats 255, 15360 or 0x3F800000)
-@@ -2215,13 +2256,16 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
+@@ -2321,14 +2362,17 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
      up_route = UP_CPU;
      if (tex.bc) return false;   // (no CPU path into BC3)
      // (the GPU's unswizzle reads guest memory as it is: not where the capture kept the storage as it was at its submit)
@@ -102,12 +102,22 @@ index 8c16a702..0994247e 100644
      int widen_from = 0;
      const VkFormat src_vf = tex.d.format ? vk_format(tex.nvn_format).format : tex.format;
      widened(src_vf, &widen_from);
--    if (upload_all_zero(tex, total, dirty, widen_from != 0)) return true;
-+    if (!coop_over && upload_all_zero(tex, total, dirty, widen_from != 0)) return true;
-     const int src_bpb = tex.bpb;
-     const int out_bpb = tex.astc ? 4 : widen_from ? (widen_from == 3 ? 4 : widen_from == 6 ? 8 : 16) : src_bpb;
-     const uint32_t copy_layers = tex.type == VK_IMAGE_TYPE_3D ? 1 : tex.layers;
-@@ -2301,7 +2345,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
+     bool large_zero_checked = false;
+-    if (upload_all_zero(tex, total, dirty, widen_from != 0, large_zero_checked)) return true;
++    if (!coop_over && upload_all_zero(tex, total, dirty, widen_from != 0, large_zero_checked)) return true;
+     {   // (RX_VK_DEPTH_ZERO) a depth buffer read before the GPU drew it, its storage all zero: cleared on the GPU, not
+         // unswizzled on the CPU (upload_all_zero takes only storage 32 MB and more; these are 1-9 MB in a virtual pool).
+         // In Kokiri 15 of 25 such reads were of zero storage: the shadow maps the game draws at one size (816 x 816) and
+@@ -2336,7 +2380,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
+         // them; a depth image cleared to 0 is what unswizzling zero storage makes. RX_VK_DEPTH_ZERO=0: off
+         static const bool dz_on = [] { const char* e = getenv("RX_VK_DEPTH_ZERO"); return !(e && env_value_off(e)); }();
+         static std::atomic<int64_t> dz_n{0}, dz_bytes{0}, dz_not{0};
+-        if (dz_on && !large_zero_checked && !dirty && (tex.aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && tex.image && !tex.sparse && tex.type != VK_IMAGE_TYPE_3D) {
++        if (dz_on && !coop_over && !large_zero_checked && !dirty && (tex.aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && tex.image && !tex.sparse && tex.type != VK_IMAGE_TYPE_3D) {
+             static thread_local std::vector<uint8_t> zs;
+             bool zero = true;
+             for (uint64_t at = 0; at < total && zero; at += 16ull << 20) {
+@@ -2446,7 +2490,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                                                    ? std::clamp(std::thread::hardware_concurrency() / 2, 1u, 8u) : 1u;
                      uint64_t avail = 0;
                      const uint8_t* direct = host->gpu_ptr(tex.gpu + from, &avail);
@@ -116,7 +126,7 @@ index 8c16a702..0994247e 100644
                      const uint8_t* src = nullptr;
                      if (gather_parts) {
                      } else if (from < total && total - from >= need) {
-@@ -2309,6 +2353,8 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
+@@ -2454,6 +2498,8 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                      } else {
                          scratch.assign(need, 0);
                          if (from < total) host->gpu_read(tex.gpu + from, scratch.data(), total - from);

@@ -1,0 +1,21 @@
+#! timeout 420
+# hs-party-hud-solo (party-hud-runtime, 0.11.13): alone makes no gauge. ONE game (A, with the pack) on the server
+# alone (`start A` only: B never starts, so nobody else is there), no test players (COOP_TEST_PARTY_HUD not set).
+# The HUD is found (Hud::Find's line: run-time gauges are off since party-hud-crash-c126, 88f63dfb1) and nothing is
+# made: no "run-time gauge N: made" and no
+# "run-time name line N: made" line; the shots show Link's own hearts and magic only, on load and after a scene change.
+# (Without the pack alone: the same Step with no blocks, unit test "no pack: ... none in solo".)
+# Values: `start/sleep 40/load/sleep 30` as hs-heart-137.steps.txt; the kit save and the warp as
+# hs-party-hud-probe.A.txt (sources listed there); the log lines from coop_party_hud.cpp (Hud::Find, MakeLive).
+start A
+sleep 40
+load A
+sleep 30
+shot solo-loaded
+lines a-hud-found A min=1 coop: party hud: run-time gauges are off
+play A hs-party-hud-solo-warp.A.txt
+sleep 10
+shot solo-warped
+lines a-hud-again A min=2 coop: party hud: run-time gauges are off
+lines a-none-made A max=0 coop: party hud: run-time (gauge|name line) [0-9]+: made
+lines a-no-crash A max=0 unhandled exception|fault at|coop: null read

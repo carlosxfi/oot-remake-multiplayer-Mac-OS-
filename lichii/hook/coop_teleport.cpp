@@ -22,6 +22,7 @@ struct StartPoint {
     float x;
     float y;
     float z;
+    bool entrance_actor;  // the scene has a FieldAndDungeonEntranceEventRequestActor of this name
 };
 
 constexpr StartPoint kStartPoints[] = {
@@ -288,6 +289,58 @@ std::string ArrivalEvent(std::string_view scene, std::string_view start) {
     return "Dm_SY_BancChangeArrive";
 }
 
+bool ArrivalHasStarter(std::string_view scene, std::string_view start) {
+    for (const auto& p : kStartPoints) {
+        if (p.scene == scene && p.name == start) {
+            return p.entrance_actor;
+        }
+    }
+    return true;
+}
+
+void ArrivalStarter::Begin(std::string_view scene, std::string_view start, std::uint64_t now_us) {
+    *this = ArrivalStarter{};
+    if (scene.empty() || start.empty() || ArrivalHasStarter(scene, start)) {
+        return;
+    }
+    active_ = true;
+    since_us_ = now_us;
+    scene_ = scene;
+    start_ = start;
+}
+
+bool ArrivalStarter::Tick(const std::optional<std::string>& reserved_banc,
+                          const std::optional<std::string>& reserved_starter, bool loading, std::uint64_t now_us) {
+    if (!active_) {
+        return false;
+    }
+    if (!seen_ && reserved_banc && *reserved_banc == scene_) {
+        seen_ = true;  // the game's event reserved our scene: from here the reservation is watched
+        since_us_ = now_us;
+    }
+    if (!seen_) {
+        if (now_us - since_us_ >= kUnseenUs) {
+            active_ = false;  // the event was never taken: nothing of the game's was touched
+        }
+        return false;
+    }
+    if (loading) {
+        loaded_ = true;
+    }
+    // The starter is read by the game once, after its load, and the game clears its reservation after the arrival:
+    // then (or after a time no load takes) this map change is over.
+    const bool cleared = loaded_ && !loading && reserved_banc && *reserved_banc != scene_;
+    if (cleared || now_us - since_us_ >= kSeenUs) {
+        active_ = false;
+        return false;
+    }
+    if (reserved_starter && *reserved_starter == start_) {
+        ++writes_;
+        return true;
+    }
+    return false;
+}
+
 bool IsKnownScene(std::string_view scene) {
     if (scene.empty()) {
         return false;
@@ -301,6 +354,15 @@ bool IsKnownScene(std::string_view scene) {
         }
     }
     return false;
+}
+
+std::optional<std::string> DefaultStart(std::string_view scene) {
+    for (const auto& p : kStartPoints) {
+        if (p.scene == scene) {
+            return std::string(p.name);
+        }
+    }
+    return std::nullopt;
 }
 
 std::vector<std::string> ScenesLike(std::string_view name, std::size_t most) {

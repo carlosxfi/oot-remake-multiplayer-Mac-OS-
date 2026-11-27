@@ -27,6 +27,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import hs  # noqa: E402  (run_quiet: a console child with no window)
+
 EXTRA = ["-Wunknown-escape-sequence", "-Werror=unknown-escape-sequence", "-Wmultichar", "-Werror=multichar"]
 C_EXT = (".c", ".cpp", ".cc")
 H_EXT = (".h", ".hpp", ".inc")
@@ -138,7 +141,7 @@ def main():
     for r, why, cc, path, flags in sorted(picked):
         # (the job's own flags; -c/-o and dependency-file options are not in them: compile_one adds those)
         cmd = [cc] + list(flags) + ["-fsyntax-only"] + EXTRA + [path]
-        p = subprocess.run(cmd, cwd=os.path.join(src, "nx2"), capture_output=True, text=True, errors="replace")
+        p = hs.run_quiet(cmd, cwd=os.path.join(src, "nx2"), capture_output=True, text=True, errors="replace")
         if p.returncode:
             failed.append(r)
             print("FAIL %s (%s)\n%s" % (r, why, (p.stdout + p.stderr)[-4000:]), flush=True)

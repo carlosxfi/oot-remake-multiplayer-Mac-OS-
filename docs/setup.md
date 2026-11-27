@@ -20,9 +20,9 @@ The kit has one file to start: **`Start Squadala.bat`**. Everything else is done
 1. **Download** `Squadala-<version>-windows.zip` (up to v0.11.2 `oot-coop-<version>-windows.zip`; the `oot-coop-<version>.zip` beside it is the same file, for older kits' updaters) from the newest release on the [releases page](https://github.com/daurosk/oot-remake-multiplayer/releases).
 2. **Unzip it.** Right-click the zip, choose **Extract All...**, and extract it to a short folder on a drive with 60 GB free, for example `C:\OoT-Coop`. Not inside the zip, not in OneDrive (your Desktop and Documents are often in OneDrive), not under Program Files.
 3. **Double-click `Start Squadala.bat`** in that folder. A window opens and checks the kit first (see [If something goes wrong](#if-something-goes-wrong)).
-4. **The first time, give it your game.** It asks you to drag your game's `.nup` file into the window and press Enter (for a `romfs` folder it then asks for the `exefs` folder). It remembers the file; it never asks again. Then it builds the game: **10 to 45 minutes, once**. The window shows each stage; the PC stays usable. It also makes the puppet pack (the other players' Link and tunic colours) from your game, and puts a **Play OoT Co-op** shortcut on your desktop.
-5. **The game starts.** **Host** and **Join** are in the game's menu, on its first tab, **Multiplayer**. To open it: on a controller **−** and **+** together (on an Xbox-style pad **View** and **Menu**), or **Home**; on the keyboard **F1** (Insert and Esc also open it unless you changed that in the menu); on the title screen **−** alone. The D-pad or the arrow keys choose, A or Enter confirms, B or Esc goes back.
-   - **Host:** one press. The Host screen's first line says it: *Invite code copied to your clipboard. Share it in DMs only: it contains your internet address.* Send the code in a DM (Discord, a text), never in a public channel; that is all most hosts need. Below it: **Paste friend's answer (or Ctrl+V)** when a friend's game shows an answer code, **Same network** for friends in the same house, **VPN** for friends on Radmin VPN, Hamachi, ZeroTier, Tailscale or WireGuard with you, and **Port** to choose a custom UDP port (1 to 65535; default 27510; changing it while hosting restarts hosting: friends join again with the new code).
+4. **The first time, give it your game.** It asks you to drag your game's `.nup` file into the window and press Enter (for a `romfs` folder it then asks for the `exefs` folder). It remembers the file; it never asks again. Then it builds the game: **10 to 45 minutes, once**. The window shows each stage; the PC stays usable. It also makes the puppet pack (the other players' Link and tunic colours) from your game, and puts a **Play OoT Co-op** shortcut on your desktop. With the Character Select mod, the pack also makes each character's voice from your game's own clips: about 15 more minutes the first time, and again after an update that changes the pack.
+5. **The game starts.** **Host** and **Join** are in the game's menu, on the **Multiplayer** tab (with **Lobby** and **Mods** after it). To open it: in play press **F1**, or **−** and then **R** along the tabs (on a controller **−**, then R past Map); on the title screen press **−**. The D-pad or the arrow keys choose, A or Enter confirms, B or Esc goes back.
+   - **Host:** one press. The Host screen's first row, **Code**, shows the invite code, already on your clipboard (A copies it again). Send the code in a DM (Discord, a text), never in a public channel; that is all most hosts need. Below it: **Paste answer code (or Ctrl+V)** when a friend's game shows an answer code, **Same network** for friends in the same house, **VPN** for friends on Radmin VPN, Hamachi, ZeroTier, Tailscale or WireGuard with you, and **Port** to choose a custom UDP port (1 to 65535; default 27510; changing it while hosting restarts hosting: friends join again with the new code).
    - **Join:** type your friend's room name or address into **Room or address**, then their **Password** (and **Port** for an address), then **Join**. A code or an address line on your clipboard pastes with Ctrl+V, or with A on **Room or address** on a controller.
    - **Co-op Settings:** your name, your colour, the number of players and port when you host (`Players when you host`, `Port when you host`), voice chat.
 6. **Next time**, double-click `Start Squadala.bat` or the desktop shortcut: the game starts in seconds.
@@ -59,6 +59,8 @@ On Linux the same is `bash revert.sh` and `bash scripts/update.sh --version <tag
 | `Revert.bat` | Goes back to the version before the last update ([above](#going-back-to-an-older-version)); `previous\` holds the versions kept for it |
 | `coop-options.ini` | Co-op switches; the game's Co-op Settings write it too |
 | `NVIDIA DLSS.bat` | Builds the game again with NVIDIA DLSS ([below](#nvidia-dlss)) |
+| `AMD FSR 4.bat` | Builds the game again with AMD FSR 4 and its native AA ([below](#amd-fsr-4)) |
+| `Intel XeSS.bat` | Puts Intel's XeSS library beside the game, no build ([below](#intel-xess)) |
 | `start-server.cmd`, `server\` | A dedicated co-op server, only if you want one (Host in the game needs neither) |
 | `hookshot\` | The co-op module and Longshot's pin and patches; after the first start also `tools\` (1.1 GB), `downloads\` (0.3 GB), `work\` (0.7 GB; kept so updates are quick, deleting them makes the next build take the full time) and `game\` (your built game, 35 GB) |
 | `scripts\`, `tools\` | What the start runs; `scripts\collect-logs.cmd` makes a log zip for a bug report |
@@ -87,6 +89,8 @@ The start window says what is wrong and what to do. What it checks:
 - Whatever Windows said, `logs\windows-checks.txt` in the kit has what the start found. It is in the log zip `scripts\collect-logs.cmd` makes; when that zip cannot be made, it makes `coop-logs-windows-checks.zip` instead.
 - What the start window and the update said is in `hookshot\logs\start-log.txt` (the start before: `start-log.1.txt`), also in that zip (with the user and PC names masked).
 - **"The co-op game this kit built is not in <folder> any more"**: the built game folder was moved or deleted. Moved it? Answer **n**, move it back to that folder and start again. Otherwise answer **Y** and it is built again.
+- **"The co-op game's files are not from one build, so the game is not started"**: a file of the built game (`hookshot.exe`, `image.bin`, `longshot_vk.dll` and the others Longshot copied in) is not the one Longshot put there, for example one file was copied over from another build. The start names the file, changes nothing and asks **Build the game again now?** Answer **Y** (or wait a minute): it takes the wrong files out and builds the game again (5 to 45 minutes); your saves and settings stay. **n** ends the start; the game is never started with files of two builds. `NVIDIA DLSS.bat` and the kit's own build refuse the same way and say to start `Start Squadala.bat`; a kit with `Build-Hookshot-Coop.bat` can also run `Build-Hookshot-Coop.bat -Rebuild`. A mixed game is also never kept as a build for later (`hookshot\game-variants`). The check compares each file with the checksum in the game's `.longshot_installed.json`; a game without that note (the first start, or an older Longshot) is not checked, and `exefs_patches.txt` is not covered.
+- **"This kit is a test kit (hookshot\hold-game.txt)"**: only kits for testers have the file `hookshot\hold-game.txt`; players never need it. With it the kit never builds its game again for other patches or another Longshot pin than the game was built from (a kit with old `hookshot\patches` once built a game of two builds). The message says which parts differ. To go on, copy `hookshot\patches`, `PIN` and `TOOLS.txt` from the build the game came from, or delete `hookshot\hold-game.txt` to build it again on purpose. Updates and `Revert.bat` of a normal kit build again as before.
 - **"The co-op module hookshot_coop.dll is missing"**: antivirus took it, as in the line above: restore it, add the exclusion, start again. Building again does not help.
 - **"Files of this kit are missing"**: the unzip did not finish. Unzip the kit again.
 - **"The Microsoft Visual C++ runtime is missing"**: install it from Microsoft ([vc_redist.x64.exe](https://aka.ms/vs/17/release/vc_redist.x64.exe)) and start again.
@@ -147,6 +151,26 @@ Longshot has **NVIDIA DLSS** and **DLAA** (and DLSS Frame Generation on RTX 40 a
 3. In the game: **Graphics → Upscaler: NVIDIA DLSS** (DLAA is DLSS's **Native** on the Render resolution row).
 
 The kit remembers the choice (`hookshot\dlss.txt`): the builds after an update keep DLSS. `"NVIDIA DLSS.bat" -NoDlss` builds the game again without it. A game built with DLSS holds NVIDIA's files (`ngx\`): never share that game folder. With Nucleus split screen, each game has its own settings: pick **Upscaler: NVIDIA DLSS** once in each Nucleus game (the handler links in the `ngx` folder at every start). Linux: `bash start-squadala.sh --dlss` ([setup-linux.md](setup-linux.md#nvidia-dlss)).
+
+## AMD FSR 4
+
+Every build has **AMD FSR 3.1**. Longshot has **AMD FSR 4** and **AMD FSR 4 Native AA** (FSR 4's anti-aliasing at full size, no upscaling) only in a game built with FSR 4 that has AMD's FSR runtime beside it (`amd_fidelityfx_loader_vk.dll`, `amd_fidelityfx_upscaler_vk.dll`), which is under AMD's own license. The kit does not carry it. With an AMD Radeon card (RX 6000 and newer; AMD's runtime picks the model for your card):
+
+1. Double-click `AMD FSR 4.bat` in the kit folder. It shows AMD's license and asks whether you accept it (**y**).
+2. It builds the game again with FSR 4 and downloads AMD's runtime (FSR SDK 2.4, into `hookshot\work\ffx-sdk`, each file checked against its SHA-256) into the game folder: much shorter than the first build. If the download fails (offline?), `"AMD FSR 4.bat" -NoFsr4` builds the game without FSR 4.
+3. In the game: **Graphics → Upscaler: AMD FSR 4** or **AMD FSR 4 Native AA**. If the row says AMD's files have no FSR 4 for this GPU, your card cannot run it: keep AMD FSR 3.1.
+
+The kit remembers the choice (`hookshot\fsr4.txt`): the builds after an update keep FSR 4. `"AMD FSR 4.bat" -NoFsr4` builds the game again without it. DLSS and FSR 4 can both be in one game. Linux: `bash start-squadala.sh --fsr4` ([setup-linux.md](setup-linux.md#amd-fsr-4)).
+
+## Intel XeSS
+
+Every game also has **Intel XeSS** and **Intel XeSS Native AA** on the Upscaler row, once Intel's XeSS library (`libxess.dll`, Intel's, under Intel's own license) is beside the game. The kit does not carry it. XeSS runs on Intel Arc cards and on most AMD and NVIDIA cards too:
+
+1. Double-click `Intel XeSS.bat` in the kit folder. It shows Intel's license and asks whether you accept it (**y**).
+2. It downloads Intel's library (XeSS 2.0.2, about 78 MB, into `hookshot\work\xess-sdk`, each file checked against its SHA-256) and puts it beside the game. No game build: it takes a minute. If the download fails (offline?), the game works as before; run `Intel XeSS.bat` again later.
+3. In the game: **Graphics → Upscaler: Intel XeSS** or **Intel XeSS Native AA**. If the row says XeSS cannot run on this GPU, keep another upscaler.
+
+The kit remembers the choice (`hookshot\xess.txt`): every game it builds or copies after that gets Intel's library too. `"Intel XeSS.bat" -NoXess` takes it out again (a `libxess.dll` you put there yourself is left alone). Linux has no XeSS: Intel publishes no Linux library.
 
 ## Low frame rate
 

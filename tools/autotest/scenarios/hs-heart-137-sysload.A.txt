@@ -18,6 +18,9 @@ mark a-sys-list
 press A
 wait 180
 mark a-sys-confirm
+press DUP                  # the confirm opens on Cancel (run rows-269-mapdrop 2026-11-25): up to Load
+wait 60
+mark a-sys-on-load
 press A
 wait 1800
 mark a-sys-loaded

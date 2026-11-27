@@ -14,9 +14,24 @@ $script:RelayRoomPattern = '^[A-Za-z0-9_-]{3,24}$'
 # A room name works the same way (issue 261): 'forest-gang@relay.example.net:27530', when the host
 # set relay_room. Then Code is $null and Room is the name. A text that can be both (8 code letters,
 # with or without a dash: 'lake-gang') gets both: the code is tried first, then the room.
+# The game's host copies the line with its join password after it ('forest-gang@relay:27530 PASSWORD'): then
+# Password is that word, and Join.bat asks for none (private-lobby-fix, 2026-11-24). A line without one: $null.
 function ConvertTo-RelayJoin([string]$Text) {
     if ($null -eq $Text) { return $null }
-    $t = ($Text -replace '[\s"''<>]', '').TrimEnd('/', '.', ',', ';')
+    $s = $Text.Trim()
+    $at = $s.IndexOf('@')
+    if ($at -lt 0) { return $null }
+    # (the relay is the first word after the '@'; a word after it is the password, which has no spaces)
+    # (a port pasted apart from its relay, 'relay : 27530', is the relay's, not a password)
+    $after = $s.Substring($at + 1).TrimStart() -replace '^([^\s:]+)\s*:\s*(\d{1,5})(?=\s|$)', '$1:$2'
+    $password = $null
+    $gap = [regex]::Match($after, '\s')
+    if ($gap.Success) {
+        $password = $after.Substring($gap.Index).Trim()
+        $after = $after.Substring(0, $gap.Index)
+        if ($password -match '\s' -or $password.Length -gt 128) { return $null }
+    }
+    $t = (($s.Substring(0, $at) + '@' + $after) -replace '[\s"''<>]', '').TrimEnd('/', '.', ',', ';')
     if ($t -notmatch '^([A-Za-z0-9_-]{3,24})@([A-Za-z0-9._-]{1,253})(:(\d{1,5}))?$') { return $null }
     $what = $Matches[1]
     $relay = $Matches[2].TrimEnd('.')
@@ -29,7 +44,7 @@ function ConvertTo-RelayJoin([string]$Text) {
     $isRoom = $what -match $script:RelayRoomPattern
     if (-not $isCode -and -not $isRoom) { return $null }
     return @{ Code = $(if ($isCode) { $code } else { $null }); Room = $(if ($isRoom) { $what } else { $null });
-        Relay = $relay; Port = $port }
+        Relay = $relay; Port = $port; Password = $(if ($password) { $password } else { $null }) }
 }
 
 # 'ABCDEFGH' -> 'ABCD-EFGH@relay:port', the way the host's window shows it; a room as typed.

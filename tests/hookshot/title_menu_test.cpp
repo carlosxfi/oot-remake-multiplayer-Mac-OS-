@@ -180,20 +180,25 @@ TEST_CASE("title menu: Host and Join in plain words, nothing about ports or pass
     h.invite = "ABCDE-FGHJK";
     h.copied = true;
     h.players = 1;
+    // Hosting as it should: nothing. The Host page's rows say it (Code, Players, Room); the lines were the page's help
+    // under them, the same words twice (the audit's item 16: "Code: Starting..." and "Starting...").
     auto s = PlainStatus(h);
-    REQUIRE(s.size() >= 3);
-    // First: the invite code is the way to host (it is on the clipboard); the other rows come after.
-    CHECK(s[0] == "Invite code copied to your clipboard. Share it in DMs only: it contains your internet address.");
-    CHECK(s[1] == "ABCDE-FGHJK");
-    CHECK(s[2] == "Waiting for your friends to join...");
+    CHECK(s.empty());
     h.copied = false;
-    CHECK(PlainStatus(h)[0].find("Share it in DMs only") != std::string::npos);
-    CHECK(PlainStatus(h)[2].find("Copy the code again") != std::string::npos);
-    h.copied = true;
     h.players = 3;
-    CHECK(PlainStatus(h).back() == "2 friend(s) joined.");
-    h.invite.clear();
-    CHECK(PlainStatus(h)[0] == "Making your code...");
+    CHECK(PlainStatus(h).empty());
+    h.invite.clear();   // (the code still being made: the Code row says "Starting...")
+    CHECK(PlainStatus(h).empty());
+    h.invite_done = true;   // (none could be made: said, the row says "None")
+    CHECK(PlainStatus(h)[0] == "No code could be made: your internet connection blocks it.");
+    h.invite_done = false;
+    h.problem = HOS_COOP_PROBLEM_UPNP_REFUSED;   // (what no row says stays)
+    CHECK(PlainStatus(h) == std::vector<std::string>{
+                                "Your router may block friends: if they cannot join, turn on UPnP in the router's settings."});
+    h.state = HOS_COOP_STARTING;
+    h.problem = HOS_COOP_PROBLEM_NONE;
+    CHECK(PlainStatus(h).empty());
+    h.state = HOS_COOP_HOSTING;
     h.problem = HOS_COOP_PROBLEM_PORT_TAKEN;
     CHECK(PlainStatus(h)[0] == "Another co-op window is already open on this PC.");
     h.problem = HOS_COOP_PROBLEM_BAD_CODE;   // the host pasted an answer code that is not right
@@ -214,7 +219,7 @@ TEST_CASE("title menu: Host and Join in plain words, nothing about ports or pass
     j.answer = "QWERT-YUPAS";
     s = PlainStatus(j);
     CHECK(s[0] == "Your friend's router blocks the way in.");
-    CHECK(s[1] == "Send your friend this answer code; they press \"Paste friend's answer\" on their Host page:");
+    CHECK(s[1] == "Send your friend this answer code; they press \"Paste answer code\" on their Host page:");
     CHECK(s[2] == "QWERT-YUPAS");
     // Row 209: still no way in after the helper's wait. That can be a host who has not pasted yet, so the answer code
     // and where to paste it stay on the page; the VPN is for when a paste did not help (review-ui-tabs-0119).
@@ -222,7 +227,7 @@ TEST_CASE("title menu: Host and Join in plain words, nothing about ports or pass
     s = PlainStatus(j);
     REQUIRE(s.size() == 4);
     CHECK(s[0] == "Your friend's router blocks the way in.");
-    CHECK(s[1] == "Send your friend this answer code; they press \"Paste friend's answer\" on their Host page:");
+    CHECK(s[1] == "Send your friend this answer code; they press \"Paste answer code\" on their Host page:");
     CHECK(s[2] == "QWERT-YUPAS");
     CHECK(s[3].rfind("If they pasted it and nothing happens", 0) == 0);
     CHECK(s[3].find("Radmin VPN or Tailscale") != std::string::npos);
@@ -550,8 +555,6 @@ TEST_CASE("Same network and VPN: two rows, the VPN found by its card's name") {
     CHECK(LanLinePassword("127.0.0.1", "pw", true) == "pw");       // (the server never takes the key from there)
     CHECK(LanLinePassword("172.32.0.1", "pw", true) == "pw");
     CHECK(LanLinePassword("not an address", "pw", true) == "pw");
-    CHECK(HostHeadline(true) ==
-          "Invite code copied to your clipboard. Share it in DMs only: it contains your internet address.");
 }
 
 TEST_CASE("title menu: players on the map are on unless turned off: off writes 0, on takes the line away") {
@@ -680,7 +683,10 @@ TEST_CASE("title menu: a join told to connect says joining until the session's w
     HostView h;
     h.state = HOS_COOP_CONNECTED;
     h.in_session = false;
-    CHECK(PlainStatus(h) == std::vector<std::string>{"Joining your friend's game..."});
+    CHECK(PlainStatus(h).empty());   // (the Join page's note says it: "Joining your friend's game")
+    h.state = HOS_COOP_JOINING;
+    CHECK(PlainStatus(h).empty());
+    h.state = HOS_COOP_CONNECTED;
     h.refused = "the session is full";
     CHECK(PlainStatus(h)[0] == "Your friend's game turned this one away: the session is full.");
     CHECK(PlainStatus(h)[1] == "Press Leave, then join again.");
@@ -914,6 +920,22 @@ TEST_CASE("title menu: Skip title screen is free solo and held while co-op does 
     SkipTitleInput join;
     join.host_state = HOS_COOP_CONNECTED;
     CHECK(std::string(SkipTitleHold(join)) == "co-op is joining");
+}
+
+TEST_CASE("title menu: gold_skulltulas (the host's) is read from coop-options.ini, shared without a line") {
+    CHECK_FALSE(Options::Read("", "").gold_own);
+    CHECK_FALSE(Options::Read("", "gold_skulltulas = shared\r\n").gold_own);
+    CHECK_FALSE(Options::Read("", "# gold_skulltulas = own\r\n").gold_own);
+    CHECK(Options::Read("", "gold_skulltulas = own\r\n").gold_own);
+    Options o;
+    std::string coop, options;
+    o.gold_own = true;
+    o.Write(coop, options);
+    CHECK(IniGet(options, "gold_skulltulas") == "own");
+    CHECK(Options::Read("", options).gold_own);
+    o.gold_own = false;
+    o.Write(coop, options);
+    CHECK_FALSE(IniGet(options, "gold_skulltulas").has_value());   // (shared: no line)
 }
 
 TEST_CASE("title menu: approve_joins (the host's) is read from coop-options.ini, off without a line, kept as written") {
@@ -1222,6 +1244,42 @@ TEST_CASE("title menu: the relay and the room name: written when set, the kit's 
     CHECK_FALSE(RelayOk("a:b:27530"));
 }
 
+TEST_CASE("title menu: a host's relay line goes out with its join password, so a paste joins (private-lobby-fix)") {
+    const std::string room = "Drumstick@159.54.182.85:27530";
+    const std::string password = "KQ7MZ3XAHN4PWR8TBC2D";
+    const std::string line = RelayShareLine(room, password);
+    CHECK(line == room + " " + password);
+    const auto target = ReadJoin(line, {});
+    const auto* address = std::get_if<JoinAddress>(&target);
+    REQUIRE(address != nullptr);
+    CHECK(address->server == room);
+    CHECK(address->password == password);
+    // The join code's line too; an invite code (it holds its password) and empty parts as they are.
+    CHECK(RelayShareLine("ABCD-EFGH@159.54.182.85:27530", password) == "ABCD-EFGH@159.54.182.85:27530 " + password);
+    CHECK(RelayShareLine("ABCDE-FGHJK-LMNPQ", password) == "ABCDE-FGHJK-LMNPQ");
+    CHECK(RelayShareLine(room, "") == room);
+    CHECK(RelayShareLine("", password).empty());
+    CHECK(RelayShareLine(room, "two words") == room);   // (no password Join could read back: none)
+    // A public game's line: its password is the room's own, and it joins the same way.
+    CHECK(RelayShareLine(" games@159.54.182.85 ", "pub-abc") == "games@159.54.182.85 pub-abc");
+    // The line an older host copied: a room or code with its relay and nothing after it.
+    CHECK(RelayLineWithoutPassword(room));
+    CHECK(RelayLineWithoutPassword("  abcd-efgh@relay.example.net "));
+    CHECK_FALSE(RelayLineWithoutPassword(line));
+    CHECK_FALSE(RelayLineWithoutPassword("192.168.1.20:27510"));
+    CHECK_FALSE(RelayLineWithoutPassword("mypc"));
+    CHECK_FALSE(RelayLineWithoutPassword("bad room@relay"));
+    // The Host page's Code row shows the bare line (never a letter of the password: ShownCode keeps the line's ends);
+    // only the clipboard's has the password after it.
+    CHECK(HostShareText(room, "ABCD-EFGH@159.54.182.85:27530", "", password, false) == room);
+    CHECK(HostShareText(room, "ABCD-EFGH@159.54.182.85:27530", "", password, true) == line);
+    CHECK(HostShareText("", "ABCD-EFGH@1.2.3.4", "INVITE", password, false) == "ABCD-EFGH@1.2.3.4");
+    CHECK(HostShareText("", "ABCD-EFGH@1.2.3.4", "INVITE", password, true) == "ABCD-EFGH@1.2.3.4 " + password);
+    CHECK(HostShareText("", "", "ABCDE-FGHJK", password, true) == "ABCDE-FGHJK");   // (the invite holds it already)
+    CHECK(HostShareText("", "", "", password, true).empty());
+    CHECK(HostShareText(room, "", "", password, false).find(password.substr(password.size() - 8)) == std::string::npos);
+}
+
 TEST_CASE("title menu: a bare Join name is a PC or a room, and its line through the relay") {
     CHECK(BareJoinName("mypc") == "mypc");
     CHECK(BareJoinName("forest-gang kokiri") == "forest-gang");
@@ -1253,4 +1311,53 @@ TEST_CASE("title menu: an unchanged relay or room name line is kept as the playe
     o.Write(c, opt);
     CHECK(IniGet(opt, "relay_room") == "new-room");
     CHECK(opt.find("relay=old.example.net:27530   # my friend's\r\n") != std::string::npos);
+}
+
+TEST_CASE("title menu: a player's own settings over the shared kit's, and back into both files") {
+    // (local co-op's local-players\playerN and Nucleus instances: coop-player.ini beside the game, the kit's file shared)
+    CHECK(PlayerKey("LICHII_COOP_PAD"));
+    CHECK(PlayerKey("LICHII_COOP_KEYBOARD"));
+    CHECK(PlayerKey("color"));
+    CHECK(PlayerKey("look_hat"));
+    CHECK_FALSE(PlayerKey("auto_rejoin"));
+    CHECK_FALSE(PlayerKey("LICHII_COOP_MAP"));
+
+    const std::string kit = "auto_rejoin = on\r\ncolor = red\r\nLICHII_COOP_PAD=1\r\nLICHII_COOP_MAP=1\r\n";
+    // No coop-player.ini lines: the kit's player keys are another player's, so they do not count here.
+    const std::string bare = WithPlayerOptions(kit, "");
+    CHECK(IniGet(bare, "auto_rejoin") == "on");
+    CHECK_FALSE(IniGet(bare, "color").has_value());
+    CHECK_FALSE(IniGet(bare, "LICHII_COOP_PAD").has_value());
+    CHECK(IniGet(bare, "LICHII_COOP_MAP") == "1");
+
+    const std::string mine = "LICHII_COOP_PAD=3\r\ncolor = blue\r\nlook_hat = green\r\n";
+    std::string merged = WithPlayerOptions(kit, mine);
+    CHECK(IniGet(merged, "LICHII_COOP_PAD") == "3");
+    CHECK(IniGet(merged, "color") == "blue");
+    CHECK(IniGet(merged, "look_hat") == "green");
+    CHECK(IniGet(merged, "auto_rejoin") == "on");
+
+    // The game edits the merged text (a shared setting and the player's own), then splits it back.
+    merged = IniSet(merged, "auto_rejoin", "off", true);
+    merged = IniSet(merged, "LICHII_COOP_PAD", "2", false);
+    merged = IniUnset(merged, "look_hat");
+    std::string kit_out = kit, player_out;
+    SplitPlayerOptions(merged, kit_out, player_out);
+    CHECK(IniGet(kit_out, "auto_rejoin") == "off");          // the shared one reaches the kit (every game)
+    CHECK(IniGet(kit_out, "color") == "red");                // the kit's own player lines stay as they were
+    CHECK(IniGet(kit_out, "LICHII_COOP_PAD") == "1");
+    CHECK(IniGet(kit_out, "LICHII_COOP_MAP") == "1");
+    CHECK(kit_out.find("look_hat") == std::string::npos);   // (never the kit's: not even a commented line is left there)
+    CHECK(kit_out.find("auto_rejoin = off\r\ncolor = red\r\nLICHII_COOP_PAD=1\r\n") == 0);   // (in place, as it was)
+    CHECK(IniGet(player_out, "LICHII_COOP_PAD") == "2");     // the player's go to coop-player.ini
+    CHECK(IniGet(player_out, "color") == "blue");
+    CHECK_FALSE(IniGet(player_out, "look_hat").has_value());
+    CHECK_FALSE(IniGet(player_out, "auto_rejoin").has_value());
+    CHECK(player_out.find("LICHII_COOP_PAD=2\r\n") != std::string::npos);   // (the kit's KEY=value form for switches)
+    CHECK(player_out.find("color = blue\r\n") != std::string::npos);
+    // Read again, the split files give the same settings.
+    const std::string again = WithPlayerOptions(kit_out, player_out);
+    CHECK(IniGet(again, "LICHII_COOP_PAD") == "2");
+    CHECK(IniGet(again, "auto_rejoin") == "off");
+    CHECK(IniGet(again, "color") == "blue");
 }

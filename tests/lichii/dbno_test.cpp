@@ -803,6 +803,11 @@ TEST_CASE("dbno pad: a downed player keeps pause, the camera and a slow stick, a
     CHECK(rev.buttons == (everything & ~pad::a));
     CHECK(rev.stick == in.stick);
     CHECK(CoopDbno::DownedPad(Pad{}) == Pad{});
+
+    // Issue 337: in the game's own crawl the stick is whole (its own crawl speed); buttons as before.
+    const Pad crawl = CoopDbno::DownedPad(in, true);
+    CHECK(crawl.buttons == down.buttons);
+    CHECK(crawl.stick == in.stick);
 }
 
 TEST_CASE("dbno rules: the server's message, and the host's ask kept within the limits") {

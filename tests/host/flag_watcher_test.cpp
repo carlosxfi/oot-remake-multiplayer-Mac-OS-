@@ -3,6 +3,7 @@
 #include <cstddef>
 
 #include <map>
+#include <memory>
 #include <string_view>
 #include <set>
 #include <string>
@@ -1817,6 +1818,105 @@ TEST_CASE("flag watcher: a guest's held load revert is written once the hold end
   hold = false;
   w.frame(store);
   CHECK(game_store.get(kDoor) == 1);
+}
+
+namespace {
+
+// Row 275's guest: joined at the title (no join snapshot), its own save loads, the host's save load (FLAG_RESET)
+// comes inside that load window while `hold` keeps kDoor (the Deku Scrub talk hold), then Link is back.
+struct HeldResetGuest {
+  FakeStore game_store = game();
+  bool hold = true;
+  HoldFlagStore store{game_store, [this](FlagKey key) { return hold && key == kDoor; }};
+  FlagWatcher w{shared(), FlagRole::player};
+
+  void load_own_save(std::uint32_t door, std::uint32_t chest) {
+    w.set_native_loads(true);
+    w.set_loading(true);
+    w.set_scene(false);
+    w.set_title(true);
+    w.frame(store);  // the title's defaults: all 0
+    w.note_save_load_start();
+    game_store.set(kDoor, door);  // our own save
+    game_store.set(kChest, chest);
+    w.frame(store);
+    w.note_save_loaded();
+    w.frame(store);
+  }
+};
+
+bool sends(const std::vector<Outgoing>& out, FlagKey key) {
+  for (const auto& m : decode(out)) {
+    if (const auto* set = std::get_if<proto::FlagSet>(&m)) {
+      for (const auto& e : set->flags) {
+        if (key_of(e) == key) return true;
+      }
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+TEST_CASE("flag watcher: a host's save value held in a guest's load window is not put back to the title's (row 275)") {
+  // Geno's kit, lane 1: both games on the same save; the six Deku Scrub talk flags (1 in both saves) were held by
+  // the event hold when the host's FLAG_RESET came, and the window's end wrote the title screen's 0 back as 'the
+  // group's value from before the load': 1 on the host, 0 on the guest for the whole session.
+  HeldResetGuest g;
+  g.load_own_save(1, 1);
+  CHECK(g.w.receive(proto::Message{proto::FlagReset{1, {entry(kDoor, 1), entry(kChest, 1)}}}));
+  g.w.frame(g.store);
+  CHECK(g.w.stats().held_retries >= 1);  // kDoor waited
+  const auto sent = link_back(g.w, g.store);
+  CHECK(g.game_store.get(kDoor) == 1);  // our save's 1 stays: the host's value too
+  CHECK(g.game_store.get(kChest) == 1);
+  CHECK(g.w.stats().load_reverts == 0);
+  CHECK_FALSE(sends(sent, kDoor));
+  g.hold = false;
+  for (int i = 0; i < 3; ++i) CHECK_FALSE(sends(g.w.frame(g.store), kDoor));
+  CHECK(g.game_store.get(kDoor) == 1);
+}
+
+TEST_CASE("flag watcher: a host's save value our save lacks waits for the hold and then lands, not dropped (row 275)") {
+  HeldResetGuest g;
+  g.load_own_save(0, 0);
+  CHECK(g.w.receive(proto::Message{proto::FlagReset{1, {entry(kDoor, 1), entry(kChest, 1)}}}));
+  g.w.frame(g.store);
+  const auto sent = link_back(g.w, g.store);
+  CHECK(g.game_store.get(kChest) == 1);
+  CHECK(g.game_store.get(kDoor) == 0);  // held: not yet
+  CHECK_FALSE(sends(sent, kDoor));
+  for (int i = 0; i < 5; ++i) g.w.frame(g.store);  // the retry keeps it while the hold lasts
+  CHECK(g.game_store.get(kDoor) == 0);
+  g.hold = false;
+  CHECK_FALSE(sends(g.w.frame(g.store), kDoor));
+  CHECK(g.game_store.get(kDoor) == 1);  // the host's save value, once the hold ended
+  for (int i = 0; i < 3; ++i) CHECK(g.w.frame(g.store).empty());
+}
+
+TEST_CASE("flag watcher: a host's save value held before our own save loads is put back after it (row 275)") {
+  // The other order: the FLAG_RESET comes at the title, held; our own save then loads an older 0. The group's value
+  // is known while it waits, so the load window keeps it waiting instead of losing it.
+  HeldResetGuest g;
+  g.w.set_native_loads(true);
+  g.w.set_loading(true);
+  g.w.set_scene(false);
+  g.w.set_title(true);
+  g.w.frame(g.store);
+  CHECK(g.w.receive(proto::Message{proto::FlagReset{1, {entry(kDoor, 1), entry(kChest, 1)}}}));
+  g.w.frame(g.store);
+  CHECK(g.game_store.get(kChest) == 1);
+  CHECK(g.game_store.get(kDoor) == 0);  // held
+  g.w.note_save_load_start();
+  g.game_store.set(kChest, 0);  // our own, older save
+  g.w.frame(g.store);
+  g.w.note_save_loaded();
+  const auto sent = link_back(g.w, g.store);
+  CHECK(g.game_store.get(kChest) == 1);  // the group's value back
+  CHECK_FALSE(sends(sent, kDoor));
+  g.hold = false;
+  for (int i = 0; i < 2; ++i) CHECK_FALSE(sends(g.w.frame(g.store), kDoor));
+  CHECK(g.game_store.get(kDoor) == 1);
 }
 
 TEST_CASE("flag watcher: a save in with no load start (the title's New Game) is still the save load (patch 0024)") {
@@ -3895,4 +3995,563 @@ TEST_CASE("heart containers: only a shared named flag, and the item store takes 
   CHECK(game_store.get(kHeartMax) == 16u);
   CHECK_FALSE(store.write(hearts_delta(-4)));  // a maximum never goes down by a change
   CHECK(game_store.get(kHeartMax) == 16u);
+}
+
+// Row 63, Gold Skulltulas Not shared (coop_gold_mode.h): the keys, the count and its IsGet stay in each game.
+TEST_CASE("keep local: a Skulltula's key and the token count are never sent, nor written from a message") {
+  TokenStore store = token_game();
+  FlagWatcher w(token_shared(), FlagRole::player);
+  w.set_learn_pickups(true);
+  guard(w);
+  const FlagKey local[] = {kSkull, kSkull2, kTokens};
+  CHECK(w.keep_local(local) == 3);
+  CHECK_FALSE(w.shared().contains(kSkull));
+  CHECK_FALSE(w.shared().contains(kTokens));
+  CHECK(w.shared().contains(kChest));  // the rest is shared as before
+  CHECK(w.kept_local(kSkull));
+  w.frame(store);
+
+  // Our pickup: nothing about it goes out, and our count stays ours.
+  store.set(kSkull, 1);
+  store.tokens(6);
+  CHECK(entries(w.frame(store)).empty());
+  CHECK(run_hold(w, store).empty());
+  CHECK(store.tokens() == 6);
+
+  // Another game's pickup (a host from before, or a message on its way): not written here.
+  w.receive(state({entry(kSkull2, 1), token_total(9)}));
+  w.frame(store);
+  CHECK(store.values.at(kSkull2).value == 0);
+  CHECK(store.tokens() == 6);
+
+  // Never shared again: not by the guard, a pickup note, or learning.
+  guard(w);
+  CHECK_FALSE(w.share_pickup(kSkull));
+  CHECK_FALSE(w.shared().contains(kSkull));
+  CHECK_FALSE(w.shared().contains(kSkull2));
+  CHECK(w.pickups() == 0);
+}
+
+// Row 272: a once-per-save reward (a bottle) got in two games at once.
+namespace {
+
+constexpr FlagKey kAnju{0x7001u, 0};    // a bottle reward's own Bool (Anju's MiniGame_CatchCucco_IsCompleted)
+constexpr FlagKey kTalon{0x7002u, 0};   // another bottle reward's
+constexpr FlagKey kStockA{0x7100u, 0};  // bottle slot A: StockNum
+constexpr FlagKey kValidA{0x7101u, 0};  //                IsValid
+constexpr FlagKey kStockB{0x7200u, 0};
+constexpr FlagKey kValidB{0x7201u, 0};
+constexpr FlagKey kStockC{0x0100u, 0};  // a slot whose keys sort before the rewards' Bools (as slot B's IsValid does)
+constexpr FlagKey kValidC{0x0101u, 0};
+
+FakeStore bottle_game() {
+  FakeStore store;
+  for (FlagKey k : {kAnju, kTalon, kStockA, kValidA, kStockB, kValidB, kStockC, kValidC}) store.set(k, 0);
+  return store;
+}
+
+SharedFlags bottle_shared() { return SharedFlags({kStockA, kValidA, kStockB, kValidB, kStockC, kValidC}); }
+
+void bottle_guard(FlagWatcher& w) {
+  const std::vector<std::vector<FlagKey>> units{{kStockA, kValidA}, {kStockB, kValidB}, {kStockC, kValidC}};
+  const FlagKey sources[] = {kAnju, kTalon};
+  w.guard_reward(units, sources);
+}
+
+void give(FakeStore& store, FlagKey stock, FlagKey valid) {
+  store.set(stock, 1);
+  store.set(valid, 1);
+}
+
+}  // namespace
+
+TEST_CASE("reward guard: the rewards' own Bools are shared (row 272)") {
+  FlagWatcher w(bottle_shared(), FlagRole::player);
+  bottle_guard(w);
+  CHECK(w.shared().contains(kAnju));
+  CHECK(w.shared().contains(kTalon));
+}
+
+TEST_CASE("reward guard: our own bottle reward alone is sent (row 272)") {
+  FakeStore store = bottle_game();
+  FlagWatcher w(bottle_shared(), FlagRole::player);
+  bottle_guard(w);
+  w.frame(store);
+  store.set(kAnju, 1);  // the flow sets its Bool, then gives the bottle
+  w.frame(store);
+  give(store, kStockA, kValidA);
+  const auto sent = entries(w.frame(store));
+  CHECK(has(sent, entry(kStockA, 1)));
+  CHECK(has(sent, entry(kValidA, 1)));
+  CHECK(w.stats().rewards_guarded == 0);
+}
+
+TEST_CASE("reward guard: the same bottle reward got here after another player's copy came is put back (row 272)") {
+  FakeStore store = bottle_game();
+  FlagWatcher w(bottle_shared(), FlagRole::player);
+  bottle_guard(w);
+  w.frame(store);
+  // Another player finished Anju's cuccos first: her Bool, then the bottle in their slot A.
+  w.receive(state({entry(kAnju, 1), entry(kStockA, 1), entry(kValidA, 1)}));
+  w.frame(store);
+  CHECK(store.get(kValidA) == 1);
+  // Our game was past its flow's check (the same cutscene at the same time): it gives its own copy, into
+  // the first empty slot, B.
+  give(store, kStockB, kValidB);
+  const auto sent = entries(w.frame(store));
+  CHECK_FALSE(has(sent, entry(kStockB, 1)));
+  CHECK_FALSE(has(sent, entry(kValidB, 1)));
+  CHECK(store.get(kStockB) == 0);  // one bottle, as in every other game
+  CHECK(store.get(kValidB) == 0);
+  CHECK(store.get(kValidA) == 1);
+  CHECK(w.stats().rewards_guarded == 1);
+  const auto told = w.take_rewards_guarded();
+  REQUIRE(told.size() == 1);
+  CHECK(told[0].key == kStockB);
+  // Nothing goes out later either.
+  for (int f = 0; f < 5; ++f) CHECK(entries(w.frame(store)).empty());
+}
+
+TEST_CASE("reward guard: two players get the same bottle reward in the same tick: one bottle (row 272)") {
+  FakeStore store = bottle_game();
+  FlagWatcher w(bottle_shared(), FlagRole::player);
+  bottle_guard(w);
+  w.frame(store);
+  // Our flow sets its Bool and gives into slot B in the same scan that another player's Bool and slot A
+  // land (both games' writes before either heard of the other).
+  store.set(kAnju, 1);
+  give(store, kStockB, kValidB);
+  w.receive(state({entry(kAnju, 1), entry(kStockA, 1), entry(kValidA, 1)}));
+  const auto sent = entries(w.frame(store));
+  CHECK_FALSE(has(sent, entry(kValidB, 1)));
+  CHECK(store.get(kValidB) == 0);
+  CHECK(store.get(kValidA) == 1);
+  CHECK(w.stats().rewards_guarded == 1);
+}
+
+TEST_CASE("reward guard: two different bottle rewards at once are two bottles (row 272)") {
+  FakeStore store = bottle_game();
+  FlagWatcher w(bottle_shared(), FlagRole::player);
+  bottle_guard(w);
+  w.frame(store);
+  w.receive(state({entry(kAnju, 1), entry(kStockA, 1), entry(kValidA, 1)}));  // Anju's, from another player
+  w.frame(store);
+  store.set(kTalon, 1);  // ours is Talon's: its own Bool, in the same scan as the bottle
+  give(store, kStockB, kValidB);
+  const auto sent = entries(w.frame(store));
+  CHECK(has(sent, entry(kValidB, 1)));
+  CHECK(has(sent, entry(kTalon, 1)));
+  CHECK(store.get(kValidB) == 1);
+  CHECK(w.stats().rewards_guarded == 0);
+}
+
+TEST_CASE("reward guard: a bottle with no reward given now (a shop, a randomizer chest) is kept (row 272)") {
+  FakeStore store = bottle_game();
+  FlagWatcher w(bottle_shared(), FlagRole::player);
+  bottle_guard(w);
+  w.frame(store);
+  w.receive(state({entry(kStockA, 1), entry(kValidA, 1)}));  // another player's bottle, from no known reward
+  w.frame(store);
+  give(store, kStockB, kValidB);
+  CHECK(has(entries(w.frame(store)), entry(kValidB, 1)));
+  CHECK(w.stats().rewards_guarded == 0);
+}
+
+TEST_CASE("reward guard: after the reward's time a bottle is not guarded (row 272)") {
+  FakeStore store = bottle_game();
+  FlagWatcher w(bottle_shared(), FlagRole::player);
+  bottle_guard(w);
+  w.frame(store);
+  w.receive(state({entry(kAnju, 1), entry(kStockA, 1), entry(kValidA, 1)}));
+  w.frame(store);
+  for (std::uint64_t f = 0; f <= FlagWatcher::kRewardFrames; ++f) w.frame(store);
+  give(store, kStockB, kValidB);
+  CHECK(has(entries(w.frame(store)), entry(kValidB, 1)));
+  CHECK(w.stats().rewards_guarded == 0);
+}
+
+TEST_CASE("reward guard: the host puts back its own second copy too (row 272)") {
+  FakeStore store = bottle_game();
+  FlagWatcher h(bottle_shared(), FlagRole::host);
+  bottle_guard(h);
+  h.frame(store);
+  proto::FlagSet set{2, {entry(kAnju, 1), entry(kStockA, 1), entry(kValidA, 1)}};
+  h.receive(proto::Message{set});
+  h.frame(store);
+  CHECK(store.get(kValidA) == 1);
+  give(store, kStockB, kValidB);
+  h.frame(store);
+  CHECK(store.get(kValidB) == 0);
+  CHECK(h.stats().rewards_guarded == 1);
+}
+
+TEST_CASE("reward guard: another player's bottle whose keys sort before the reward's Bool still counts (row 272)") {
+  // Review of 6b3fb1d7: entries land in key order, so a slot key below the Bool came before it and was lost.
+  FakeStore store = bottle_game();
+  FlagWatcher w(bottle_shared(), FlagRole::player);
+  bottle_guard(w);
+  w.frame(store);
+  w.frame(store);
+  w.receive(state({entry(kStockC, 1), entry(kValidC, 1), entry(kAnju, 1)}));
+  w.frame(store);
+  CHECK(store.get(kValidC) == 1);
+  give(store, kStockB, kValidB);  // ours, into the next empty slot
+  w.frame(store);
+  CHECK(store.get(kValidB) == 0);
+  CHECK(w.stats().rewards_guarded == 1);
+}
+
+TEST_CASE("reward guard: another player's bottle in an earlier message than its Bool still counts (row 272)") {
+  FakeStore store = bottle_game();
+  FlagWatcher w(bottle_shared(), FlagRole::player);
+  bottle_guard(w);
+  w.frame(store);
+  w.frame(store);
+  w.receive(state({entry(kStockA, 1), entry(kValidA, 1)}));  // the bottle a frame before its flow's Bool
+  w.frame(store);
+  w.receive(state({entry(kAnju, 1)}));
+  w.frame(store);
+  give(store, kStockB, kValidB);
+  w.frame(store);
+  CHECK(store.get(kValidB) == 0);
+  CHECK(w.stats().rewards_guarded == 1);
+}
+
+TEST_CASE("reward guard: the review's three-bottle case gives the group two (row 272)") {
+  // Both hold slot A; another player gets Anju's bottle in slot C; our game, mid-cutscene, gets theirs and
+  // then its own flow gives the next empty slot, B.
+  FakeStore store = bottle_game();
+  store.set(kStockA, 1);
+  store.set(kValidA, 1);
+  FlagWatcher w(bottle_shared(), FlagRole::player);
+  bottle_guard(w);
+  w.frame(store);
+  w.frame(store);
+  w.receive(state({entry(kAnju, 1), entry(kStockC, 1), entry(kValidC, 1)}));
+  w.frame(store);
+  give(store, kStockB, kValidB);
+  const auto sent = entries(w.frame(store));
+  CHECK_FALSE(has(sent, entry(kValidB, 1)));
+  CHECK(store.get(kValidA) + store.get(kValidB) + store.get(kValidC) == 2);
+}
+
+TEST_CASE("reward guard: what a join brings is no reward given now (row 272)") {
+  FakeStore store = bottle_game();
+  FlagWatcher w(bottle_shared(), FlagRole::player);
+  bottle_guard(w);
+  w.frame(store);
+  w.frame(store);
+  // The join snapshot: Anju's Bool and her bottle, got long ago in the host's save.
+  proto::FlagSnapshot part;
+  part.part = 0;
+  part.part_count = 1;
+  part.flags = {entry(kAnju, 1), entry(kStockA, 1), entry(kValidA, 1)};
+  w.receive(part);
+  w.frame(store);
+  CHECK(store.get(kValidA) == 1);
+  // A bottle got here now (a shop's, say): not the same reward.
+  give(store, kStockB, kValidB);
+  CHECK(has(entries(w.frame(store)), entry(kValidB, 1)));
+  CHECK(w.stats().rewards_guarded == 0);
+}
+
+TEST_CASE("reward guard: another player's bottle with no reward and our own Anju bottle are both kept (row 272)") {
+  // Review of 26dbfa8d: a gain with no reward of its sender (a randomizer chest's bottle) used Anju's allowance.
+  FakeStore store = bottle_game();
+  FlagWatcher w(bottle_shared(), FlagRole::player);
+  bottle_guard(w);
+  w.frame(store);
+  w.frame(store);
+  w.receive(state({entry(kStockA, 1), entry(kValidA, 1)}));  // player 1: a chest's bottle
+  w.frame(store);
+  store.set(kAnju, 1);  // ours: Anju's reward
+  give(store, kStockB, kValidB);
+  CHECK(has(entries(w.frame(store)), entry(kValidB, 1)));
+  CHECK(store.get(kValidA) + store.get(kValidB) == 2);
+  CHECK(w.stats().rewards_guarded == 0);
+}
+
+TEST_CASE("reward guard: one player's chest bottle and another's Anju bottle: our own Anju copy is put back (row 272)") {
+  FakeStore store = bottle_game();
+  FlagWatcher w(bottle_shared(), FlagRole::player);
+  bottle_guard(w);
+  w.frame(store);
+  w.frame(store);
+  w.receive(proto::FlagState{1, {entry(kStockA, 1), entry(kValidA, 1)}});                  // player 1: a chest's
+  w.receive(proto::FlagState{2, {entry(kAnju, 1), entry(kStockC, 1), entry(kValidC, 1)}});  // player 2: Anju's
+  w.frame(store);
+  give(store, kStockB, kValidB);  // ours: the same Anju reward, its flow past the check
+  w.frame(store);
+  CHECK(store.get(kValidB) == 0);
+  CHECK(store.get(kValidA) + store.get(kValidC) == 2);
+  CHECK(w.stats().rewards_guarded == 1);
+}
+
+TEST_CASE("reward guard: our own Bool coming back in the host's answer is ours, not another player's (row 272)") {
+  FakeStore store = bottle_game();
+  FlagWatcher w(bottle_shared(), FlagRole::player);
+  bottle_guard(w);
+  w.set_reward_self(3);
+  w.frame(store);
+  w.frame(store);
+  store.set(kAnju, 1);
+  w.frame(store);
+  give(store, kStockA, kValidA);
+  w.frame(store);
+  w.receive(proto::FlagState{3, {entry(kAnju, 1), entry(kStockA, 1), entry(kValidA, 1)}});  // the host's answer
+  w.frame(store);
+  w.receive(proto::FlagState{1, {entry(kStockB, 1), entry(kValidB, 1)}});  // player 1: a shop's bottle
+  w.frame(store);
+  store.set(kStockC, 1);  // ours: a shop's bottle too
+  store.set(kValidC, 1);
+  CHECK(has(entries(w.frame(store)), entry(kValidC, 1)));
+  CHECK(w.stats().rewards_guarded == 0);
+}
+
+TEST_CASE("reward guard: a scrub's stick upgrade and a Skulltula wallet at once are both kept (row 272)") {
+  // Review of 26dbfa8d: one guard held every tier, so another family's gain used the wallet's allowance.
+  constexpr FlagKey kReward10{0x8001u, 0};  // KakarikoVillage_GatheringTokenGold_GetReward10
+  constexpr FlagKey kTheater{0x8002u, 0};   // the Deku Theater's stick prize
+  constexpr FlagKey kStickM{0x8100u, 0}, kStickMGot{0x8101u, 0};
+  constexpr FlagKey kWalletM{0x8200u, 0}, kWalletMGot{0x8201u, 0};
+  FakeStore store;
+  for (FlagKey k : {kReward10, kTheater, kStickM, kStickMGot, kWalletM, kWalletMGot}) store.set(k, 0);
+  FlagWatcher w(SharedFlags({kStickM, kStickMGot, kWalletM, kWalletMGot}), FlagRole::player);
+  const std::vector<std::vector<FlagKey>> sticks{{kStickM, kStickMGot}};
+  const std::vector<std::vector<FlagKey>> wallets{{kWalletM, kWalletMGot}};
+  const FlagKey stick_bools[] = {kTheater};
+  const FlagKey wallet_bools[] = {kReward10};
+  w.guard_reward(sticks, stick_bools);
+  w.guard_reward(wallets, wallet_bools);
+  w.frame(store);
+  w.frame(store);
+  w.receive(state({entry(kStickM, 1), entry(kStickMGot, 1)}));  // player 1 buys a scrub's stick upgrade
+  w.frame(store);
+  store.set(kReward10, 1);  // ours: the 10-token wallet
+  store.set(kWalletM, 1);
+  store.set(kWalletMGot, 1);
+  const auto sent = entries(w.frame(store));
+  CHECK(has(sent, entry(kWalletM, 1)));
+  CHECK(store.get(kWalletM) == 1);
+  CHECK(w.stats().rewards_guarded == 0);
+}
+
+namespace {
+// C2-5 (0.12.0): one game with a reward family's real units and Bools (rewards::units/sources/sales), every
+// unit empty but the first (held: the small bag, bottle slot A), our Link's event told as the hook does.
+struct FamilyGame {
+  std::vector<std::vector<FlagKey>> units;
+  std::vector<FlagKey> sources;
+  std::vector<FlagKey> sales;
+  FakeStore store;
+  std::unique_ptr<FlagWatcher> w;
+  explicit FamilyGame(rewards::Family family)
+      : units(rewards::units(family)), sources(rewards::sources(family)), sales(rewards::sales(family)) {
+    std::vector<FlagKey> keys;
+    for (const auto& u : units) keys.insert(keys.end(), u.begin(), u.end());
+    w = std::make_unique<FlagWatcher>(SharedFlags(keys), FlagRole::player);
+    for (const FlagKey k : keys) store.set(k, 0);
+    for (const FlagKey k : units[0]) store.set(k, 1);
+    for (const FlagKey k : sources) store.set(k, 0);
+    for (const FlagKey k : sales) store.set(k, 0);
+    std::vector<FlagKey> paid = sources;
+    paid.insert(paid.end(), sales.begin(), sales.end());
+    w->guard_reward(units, paid);
+    event(false);
+    frame();
+    frame();
+  }
+  void event(bool in) { w->set_our_event(in); }
+  std::vector<proto::FlagEntry> frame() { return entries(w->frame(store)); }
+  void give(std::size_t u) {
+    for (const FlagKey k : units[u]) store.set(k, 1);
+  }
+  bool got(std::size_t u) const { return store.get(units[u].front()) != 0; }
+  // Another player's reward `s` with its unit `u`.
+  void theirs(FlagKey s, std::size_t u) {
+    std::vector<proto::FlagEntry> in{entry(s, 1)};
+    for (const FlagKey k : units[u]) in.push_back(entry(k, 1));
+    w->receive(state(in));
+  }
+};
+}  // namespace
+
+TEST_CASE("reward guard: another player's reward before our event, our own Bool-less gain in it: kept, every family (C2-5)") {
+  for (const rewards::Family family : rewards::kFamilies) {
+    FamilyGame g(family);
+    INFO(static_cast<int>(family));
+    REQUIRE(g.units.size() >= 3);
+    REQUIRE_FALSE(g.sources.empty());
+    g.theirs(g.sources[0], 1);  // another player's reward: its Bool and the next unit, while we walk
+    g.frame();
+    REQUIRE(g.got(1));
+    for (int f = 0; f < 120; ++f) g.frame();
+    g.event(true);  // our talk: a scrub's sale, a shop, a randomizer chest's get (no reward Bool of ours seen)
+    g.frame();
+    g.give(2);
+    const auto sent = g.frame();
+    CHECK(g.got(2));  // 0.11.12 kept it
+    CHECK(has(sent, entry(g.units[2].front(), 1)));
+    g.event(false);
+    for (int f = 0; f < 5; ++f) g.frame();
+    CHECK(g.got(2));
+    CHECK(g.w->stats().rewards_guarded == 0);
+  }
+}
+
+TEST_CASE("reward guard: our gain first, another player's reward after: both kept, every family (C2-5)") {
+  for (const rewards::Family family : rewards::kFamilies) {
+    FamilyGame g(family);
+    INFO(static_cast<int>(family));
+    g.event(true);
+    g.frame();
+    g.give(1);  // ours: the next unit
+    CHECK(has(g.frame(), entry(g.units[1].front(), 1)));
+    g.event(false);
+    g.frame();
+    g.theirs(g.sources[0], 2);  // theirs came later: the unit after ours
+    for (int f = 0; f < 5; ++f) g.frame();
+    CHECK(g.got(1));
+    CHECK(g.got(2));
+    CHECK(g.w->stats().rewards_guarded == 0);
+  }
+}
+
+TEST_CASE("reward guard: another player's copy landing in our own reward event is still the same reward twice (row 272 kept, C2-5)") {
+  for (const rewards::Family family : rewards::kFamilies) {
+    FamilyGame g(family);
+    INFO(static_cast<int>(family));
+    g.event(true);  // our flow past its check (its Bool was 0)
+    g.frame();
+    g.theirs(g.sources[0], 1);  // the other player's copy of the same reward lands now
+    g.frame();
+    g.give(2);  // our flow gives the unit after the one it holds now
+    const auto sent = g.frame();
+    CHECK_FALSE(g.got(2));
+    CHECK_FALSE(has(sent, entry(g.units[2].front(), 1)));
+    CHECK(g.w->stats().rewards_guarded == 1);
+    g.event(false);
+    for (int f = 0; f < 200; ++f) CHECK_FALSE(has(g.frame(), entry(g.units[2].front(), 1)));
+    CHECK(g.got(1));  // the group's one copy
+  }
+}
+
+TEST_CASE("reward guard: another player's theatre stick tier landing in our scrub talk, then our sale's Bool: our tier comes back (C2-5)") {
+  for (const rewards::Family family : {rewards::Family::stick_bag, rewards::Family::nut_bag}) {
+    FamilyGame g(family);
+    INFO(static_cast<int>(family));
+    REQUIRE(g.sales.size() == 1);
+    g.event(true);  // our Business Scrub's sale talk
+    g.frame();
+    g.theirs(g.sources[0], 1);  // the theatre prize of another player lands in it
+    g.frame();
+    g.give(2);  // our scrub gives the next tier
+    g.frame();
+    CHECK(g.w->stats().rewards_guarded == 1);  // looks like the same reward twice for now
+    for (int f = 0; f < 30; ++f) g.frame();
+    g.store.set(g.sales[0], 1);  // the sale's Bool, set after the buy
+    auto sent = g.frame();
+    CHECK(g.got(2));
+    CHECK(g.w->stats().rewards_given_again == 1);
+    const auto next = g.frame();  // the unit's keys go out in this scan or the next (key order)
+    sent.insert(sent.end(), next.begin(), next.end());
+    CHECK(has(sent, entry(g.units[2].front(), 1)));  // and the group gets it
+    CHECK(g.frame().empty());
+    g.event(false);
+    for (int f = 0; f < 5; ++f) g.frame();
+    CHECK(g.got(2));
+  }
+}
+
+TEST_CASE("reward guard: another player's scrub sale and our own theatre prize in our event: both kept (C2-5)") {
+  FamilyGame g(rewards::Family::stick_bag);
+  g.event(true);  // our theatre talk
+  g.frame();
+  g.theirs(g.sales[0], 1);  // another player's scrub bag lands in it
+  g.frame();
+  g.store.set(g.sources[0], 1);  // our flow's own Bool (0 here before)
+  g.give(2);
+  g.frame();
+  for (int f = 0; f < 5; ++f) g.frame();
+  CHECK(g.got(2));
+  CHECK(g.w->stats().rewards_guarded == 0);
+}
+
+TEST_CASE("reward guard: never told of our Link's events (the emulator), the 60 s rule holds as before (C2-5)") {
+  FakeStore store;
+  constexpr FlagKey kT{0x5db0e8edu, 0}, kM{0x41db7ab5u, 0}, kMG{0xcbf00480u, 0}, kL{0x48e53698u, 0}, kLG{0xa10f2dcfu, 0};
+  for (FlagKey k : {kT, kM, kMG, kL, kLG}) store.set(k, 0);
+  FlagWatcher w(SharedFlags({kM, kMG, kL, kLG}), FlagRole::player);
+  const std::vector<std::vector<FlagKey>> units{{kM, kMG}, {kL, kLG}};
+  const FlagKey sources[] = {kT};
+  w.guard_reward(units, sources);
+  w.frame(store);
+  w.frame(store);
+  w.receive(state({entry(kT, 1), entry(kM, 1), entry(kMG, 1)}));
+  w.frame(store);
+  store.set(kL, 1);
+  store.set(kLG, 1);
+  w.frame(store);
+  CHECK(store.get(kLG) == 0);
+  CHECK(w.stats().rewards_guarded == 1);
+}
+
+TEST_CASE("keep local: two Not shared racers each reach 10 tokens: each claims its own reward and wallet (review-01112-h)") {
+  // The Skulltula House's 10-token reward and the wallet tier it gives, guarded for the group (row 272) while
+  // Shared; Not shared keeps both in each game (coop::host::gold_race_flags), so the guard never judges them.
+  constexpr FlagKey kReward10{0x9001u, 0};  // KakarikoVillage_GatheringTokenGold_GetReward10
+  constexpr FlagKey kReward30{0x9002u, 0};  // ..._GetReward30
+  constexpr FlagKey kWalletS{0x9100u, 0}, kWalletSGot{0x9101u, 0};
+  constexpr FlagKey kWalletM{0x9200u, 0}, kWalletMGot{0x9201u, 0};
+  const auto racer = [&] {
+    FakeStore store;
+    for (FlagKey k : {kReward10, kReward30, kWalletS, kWalletSGot, kWalletM, kWalletMGot}) store.set(k, 0);
+    return store;
+  };
+  const auto watcher = [&](FlagRole role) {
+    auto w = std::make_unique<FlagWatcher>(SharedFlags({kWalletS, kWalletSGot, kWalletM, kWalletMGot}), role);
+    const std::vector<std::vector<FlagKey>> wallets{{kWalletS, kWalletSGot}, {kWalletM, kWalletMGot}};
+    const FlagKey sources[] = {kReward10, kReward30};
+    w->guard_reward(wallets, sources);
+    const FlagKey local[] = {kReward10, kReward30, kWalletS, kWalletSGot, kWalletM, kWalletMGot};
+    CHECK(w->keep_local(local) == 6);   // the four wallet keys and the two Bools the guard shared
+    return w;
+  };
+  FakeStore a = racer(), b = racer();
+  auto wa = watcher(FlagRole::host);
+  auto wb = watcher(FlagRole::player);
+  for (FlagKey k : {kReward10, kReward30, kWalletS, kWalletSGot, kWalletM, kWalletMGot}) {
+    CHECK(wa->kept_local(k));
+    CHECK_FALSE(wa->shared().contains(k));
+  }
+  for (int f = 0; f < 2; ++f) {
+    wa->frame(a);
+    wb->frame(b);
+  }
+  // A reaches 10 first: its own reward and its own wallet, nothing of it sent.
+  a.set(kReward10, 1);
+  a.set(kWalletS, 1);
+  a.set(kWalletSGot, 1);
+  CHECK(entries(wa->frame(a)).empty());
+  // B reaches 10 a moment later (inside the guard's time): its own, never put back as a second copy.
+  b.set(kReward10, 1);
+  b.set(kWalletS, 1);
+  b.set(kWalletSGot, 1);
+  CHECK(entries(wb->frame(b)).empty());
+  CHECK(b.get(kWalletS) == 1);
+  CHECK(b.get(kReward10) == 1);
+  CHECK(wb->stats().rewards_guarded == 0);
+  // A host from before that still sends them: not written here (B's reward 30 stays B's to claim).
+  wb->receive(proto::FlagState{1, {entry(kReward30, 1), entry(kWalletM, 1), entry(kWalletMGot, 1)}});
+  wb->frame(b);
+  CHECK(b.get(kReward30) == 0);
+  CHECK(b.get(kWalletM) == 0);
+  // Each wallet is its racer's: A's next tier is not B's.
+  a.set(kReward30, 1);
+  a.set(kWalletM, 1);
+  a.set(kWalletMGot, 1);
+  CHECK(entries(wa->frame(a)).empty());
+  CHECK(b.get(kWalletM) == 0);
+  CHECK(wa->stats().rewards_guarded == 0);
+  CHECK(wb->take_rewards_guarded().empty());
 }

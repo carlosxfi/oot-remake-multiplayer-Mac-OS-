@@ -44,6 +44,9 @@ inline constexpr const char* kCustomizeHelp =
     "A colour for each part of your tunics, shields, swords, boots and gauntlets, with a picture. Your Link wears it "
     "when you close the menu.";
 inline constexpr const char* kCommandsHelp = "The chat's commands, and the key that opens the chat.";
+// The word the play-test bridge's `menu` state member shows for a page (docs/playtest.md): "main", "host", "join",
+// "local", "settings", "commands", "customize", "find".
+const char* PageWord(Page page);
 // The key that opens the chat box, in words, from LICHII_COOP_CHAT_KEY ("T"
 // by default; "off": none).
 std::string ChatKeyWords(const std::string& chat_key);
@@ -56,6 +59,8 @@ std::vector<std::string> MicChoices(const std::vector<std::string>& listed, cons
 // ("..." at its end), with " (not connected)" when it is not listed.
 constexpr std::size_t kMicChars = 28;
 std::string MicWords(const std::string& chosen, const std::vector<std::string>& listed);
+// With the voice's state after it (SetVoiceStatus's words), unless the name already says "(not connected)".
+std::string MicWords(const std::string& chosen, const std::vector<std::string>& listed, const std::string& status);
 // The most bytes one of the title's own buttons shows (CoopTitleNative::RowText cuts a longer row, "..." at its end).
 constexpr std::size_t kTitleRowBytes = 40;
 // A game's name on a title row that has `rest` bytes after it ("1/4  Public", " asks for a password"), so the row's own
@@ -79,6 +84,8 @@ struct DifficultyState {
     bool can_edit = false;    // we host
     coop::protocol::DifficultyChoice choice;
     coop::protocol::DifficultyValues values;
+    // Not in a session: this player's next lobby's (CoopDifficulty::NextLobby), what the lobby-creation rows set.
+    coop::protocol::DifficultyChoice next;
 };
 
 struct Request {
@@ -108,7 +115,10 @@ struct Request {
                       // what changed; the server takes it from the host only.
                       kChat,
                       kDifficulty,     // kDifficulty: `text` the host's new choice (CoopDifficulty::FormatChoice)
-                      kCharAges };     // kCharAges: "on", "off", "child=N" or "adult=N" (coop_char_ages.h)
+                      kCharAges,       // kCharAges: "on", "off", "child=N" or "adult=N" (coop_char_ages.h)
+                      // kLocalStart: `text` is how many games this PC runs (kLocalFewest to kLocalMost), this one
+                      // included: this game hosts them (when it does not yet) and the launcher starts the missing ones
+                      kLocalStart };
     Kind kind = Kind::kHost;
     std::string text;
 };
@@ -130,6 +140,7 @@ struct Session {
     bool by_launcher = false;  // co-op came with the game's start (Host.bat, Join.bat, coop.ini): not stopped here
     int players = 0;           // in the session, this one included (0: not known)
     std::string code;          // the invite code (hosting), or the answer code (kWaitHost)
+    bool code_done = false;    // hosting: the code's making ended (an empty `code` then: none could be made)
     std::vector<std::string> lines;   // what it is doing or what went wrong, in plain words
     std::string password;      // the host's join password while it hosts ("" none): shown on A, never logged
     std::vector<std::string> asking;  // who asks to join this host now, oldest first (CoopLobby::Asking)
@@ -137,11 +148,30 @@ struct Session {
     // of Co-op settings; `rules` false: not heard yet (not in a session), the rows show what the next Host uses.
     bool rules = false;
     bool pvp = false;
+    bool gold_own = false;   // Gold Skulltulas not shared in this session (CoopGoldMode::InForce)
+    bool race = false;       // race mode in this session (CoopRaceMode::InForce)
+    bool floor_switches = true;   // shared floor switches in this session (CoopSwitchStandMode::InForce)
     bool dbno = true;
     int dbno_bleed_s = 45, dbno_revive_tenths = 50, dbno_revive_life = 12;
 
     bool operator==(const Session&) const = default;
 };
+
+// Local co-op started from the game (the Local co-op page; owner 2026-11-24: two to four games on one PC, one click):
+// this PC's games as the module sees them (SetLocal; coop_local_start.h starts them).
+struct LocalGames {
+    bool offered = false;   // this game can start the others (a Windows kit with the launcher; not an extra game)
+    int player = 0;         // this game is player N (2 to 4) of this PC's games, an extra game; 0 not one
+    int asked = 0;          // the local session's games (0: no local session in this game)
+    int running = 0;        // this PC's games that run, this one included (0: not counted)
+    int joined = 0;         // the players in this game's session, this one included
+    bool starting = false;  // the launcher is starting games now
+    std::string note;       // what the last start did ("" nothing yet)
+    std::string problem;    // the launcher's one problem line ("" none): the Start row's help says it first
+    bool operator==(const LocalGames&) const = default;
+};
+// The most games of one PC: a controller each and a quarter of the screen (the kit's scripts\local-coop.ps1).
+inline constexpr int kLocalFewest = 2, kLocalMost = 4;
 
 // A row as Hookshot draws it (the numbers are hos_coop_menu.h's HOS_COOP_MENU_*).
 enum class RowKind : std::uint8_t { kAction = 0, kChoice = 1, kToggle = 2, kHeading = 3, kNote = 4 };
@@ -190,6 +220,9 @@ public:
     // One press; false when nothing took it (a Back on the first page: the
     // caller closes the whole menu). A request may be waiting after it.
     bool Press(Input input);
+    // Whether a Back now would be taken (Press(kBack) true): typing ends, or a page under the first goes back. Hookshot's
+    // menu is answered from it at once while the press waits for the game's thread (coop_menu_handoff.h, row 279).
+    bool BackTaken() const { return typing_ || page_ != Page::kMain; }
     // The mouse: over a row, and a click on its name (side 0) or on the left
     // (-1) or right (1) half of its value.
     void Select(std::size_t row);
@@ -205,6 +238,10 @@ public:
 
     // What co-op is doing now; the pages follow it.
     void SetSession(Session session);
+    // This PC's games (the Local co-op page's rows follow them).
+    void SetLocal(LocalGames local);
+    const LocalGames& local() const { return local_; }
+    int local_count() const { return local_count_; }
     // The answer to the last request, shown until the next press ("Settings
     // saved.", "Copy your friend's answer code first").
     void SetNote(std::vector<std::string> lines);
@@ -221,6 +258,10 @@ public:
     // (CoopVoice::Microphones). None: this game cannot choose one for the
     // voice (an older patch 0009), so the row is not shown.
     void SetMicrophones(std::optional<std::vector<std::string>> listed);
+    // Row 229: what the voice's microphone gives now (CoopVoice::MicStatus): the Microphone row's words after its
+    // name ("(Off in Longshot)", MicStatusWords) and one sentence after the Proximity voice chat row's help
+    // (MicStatusNote); both "" when it reaches the others or is not known yet.
+    void SetVoiceStatus(std::string words, std::string note);
     // The look shown now (the one waiting for the menu to close, else the one
     // worn): the Customize page opens on it.
     void SetLook(const CoopLook::Look& look);
@@ -309,9 +350,10 @@ private:
         kOpenCustomize, kNgPlus, kSaveSet,
         kOpenFind, kFindList, kFindSearch, kFindGame, kFindFilter, kFindSort, kFindRefresh, kFindPage,
         kShowPassword, kNewPassword, kLetIn, kRefuse, kListRoom, kAutoRejoin, kOriginal,
-        kApproveJoins, kPvp, kDbno, kDbnoTime, kDbnoHold, kDbnoHearts,
+        kApproveJoins, kGoldSkulltulas, kRace, kFloorSwitches, kPvp, kDbno, kDbnoTime, kDbnoHold, kDbnoHearts,
         kDifficulty, kDifficultyLife, kDifficultyDamage, kDifficultyCount,
-        kCharAges, kCharChild, kCharAdult
+        kCharAges, kCharChild, kCharAdult,
+        kLocalGames, kLocalStart
     };
     struct Line;   // a row, what it does and its help
     std::vector<Line> Lines() const;
@@ -319,6 +361,9 @@ private:
     void TitleListLines(std::vector<Line>& out, bool off) const;
     void TitleCodeLines(std::vector<Line>& out, bool off) const;
     void TitleHostLines(std::vector<Line>& out, bool host, bool guest) const;
+    // The Host page's Code row's value, on the title and the - page alike: the code (ShownCode), "Starting..." until
+    // there is one, "None" when none could be made (the page's help says why).
+    std::string CodeValue() const;
     void HostRuleLines(std::vector<Line>& out, bool guest) const;
     bool Selectable(const Line& line) const;
     void Go(Page page, Act select = Act::kNone);
@@ -358,6 +403,7 @@ private:
     std::string rejoin_host_, rejoin_code_;
     std::string controller_row_, keyboard_row_;
     std::optional<std::vector<std::string>> microphones_;
+    std::string voice_words_, voice_note_;   // SetVoiceStatus
     int ngplus_level_ = 0, ngplus_unlocked_ = 0, ngplus_hearts_ = 0;   // (Navi) New Game+ (SetNgPlus)
     struct CharAges {   // SetCharacterAges
         bool shown = false, on = false;
@@ -371,6 +417,9 @@ private:
     coop::protocol::DifficultyChoice DifficultyShown() const;
     coop::protocol::DifficultyValues DifficultyValuesShown() const;
     void DifficultyLines(std::vector<Line>& out) const;
+    // Whether this player's Difficulty rows change something: the host's in the session, or the next lobby's while
+    // in none (a guest's and a joining game's are read only).
+    bool DifficultyEditable() const;
     bool character_ = false;  // SetCharacter
     bool snail_home_ = false;  // SetSnailHome
     bool title_ = false;      // SetTitle
@@ -383,6 +432,9 @@ private:
     std::vector<Found> found_;                // what it lists now (SetFound), the search kept
     std::string found_state_;                 // why it lists none ("" looking)
     Session session_;
+    LocalGames local_;        // SetLocal
+    int local_count_ = kLocalFewest;   // the Games on this PC row (kLocalFewest to kLocalMost)
+    void LocalLines(std::vector<Line>& out) const;
     std::vector<std::string> note_;
     std::optional<Request> request_;
     // The Customize page (coop_look_menu.h): it has its own rows and presses.

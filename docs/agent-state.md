@@ -16,6 +16,13 @@ Last updated: 2026-11-22.
   section "Play-testing the game"; this page does not repeat them.
 - Nothing is merged to main without the maintainer's go.
 
+## Work in progress: Gold Skulltulas shared or not
+
+Branch `token-share` (worker token-share). A host setting, `coop-options.ini` `gold_skulltulas = own`, sent as
+`MOD_SETTINGS` mod `coop` key `gold_skulltula`. Shared: the owed token (`WorldSync::OweToken`). Not shared:
+`FlagWatcher::keep_local`. Unit tests done; the lane run (a kill in A, the pickup in B, both modes) is open.
+See [world.md](world.md), "Gold Skulltulas: shared or not".
+
 ## Work in progress: Character Select pick per age
 
 Branch `char-ages`, local and not yet pushed.
@@ -63,12 +70,18 @@ Material for a submission to the mod author and to the Squadala community. Nothi
 
 - Customize colours do not reach Character Select characters on the player's own model. Cause: co-op dressed only
   Link's own eyes and hair (`LinkOnly` in `lichii/hook/coop_char_colours.h`, called from `DressCharacters` in
-  `hookshot/src/coop_hookshot.cpp`). Fixed in the code on branch `dress-colours`, not yet checked in a game: the Eye
-  Colour (and the ini's hair colour, real hair only) goes on every player model that has the material for it (your
-  own, the pause menu's model of it, the other players' character puppets); Customize offers a character an Eyes page
-  unless its model has no iris; an age or character switch dresses the new model at once. The tunics and the Cap trim
-  stay Link's. Open: the iris shift for a character whose iris texture is another colour (Impa's red). Details in
-  [puppet.md](puppet.md), "Co-op's colours on a character".
+  `hookshot/src/coop_hookshot.cpp`). Fixed in the code on branch `dress-colours`, checked in a two-game run on
+  2026-11-23: the Eye Colour (and the ini's hair colour, real hair only) goes on every player model that has the
+  material for it (your own, the pause menu's model of it, the other players' character puppets); Customize offers a
+  character an Eyes page unless its model has no iris; an age or character switch dresses the new model (timing not
+  measured). The tunics and the Cap trim stay Link's. Seen in the game: the colour on your own character (field and
+  pause picture) and on its puppet, after an age and a character switch. The test set the pick by its flag; that flag
+  with `CharacterMenu_FieldSwapPending` and a Customize open and close did not rebuild your own model, only an age
+  change did ([puppet.md](puppet.md)'s rule). The Character Select menu's own swap was not tried. For a character with
+  no iris (Phantom Ganon) the log says it has none (log only). Open: the Customize page itself (Eyes page, the no-iris
+  line) was not seen, the test screenshots do not show the co-op menu; Impa's red iris showed a plain green for green,
+  other colours not tried; the ini's hair colour not checked. Details in [puppet.md](puppet.md), "Co-op's colours on a
+  character".
 - The Cow's run animation (see A above).
 - A crash at start while the PC's memory ran out (a `std::bad_alloc` thrown out of the look worker's thread). Fixed in
   the code on branch `look-crash`, not yet checked in a game: the texture compare no longer allocates a heap buffer

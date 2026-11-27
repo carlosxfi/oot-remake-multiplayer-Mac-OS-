@@ -1,6 +1,8 @@
 #include "session.hpp"
 
 #include "coop/protocol/animation_words.hpp"
+#include "coop/protocol/mod_world.hpp"
+#include "coop/protocol/race.hpp"
 #include "coop/protocol/scene_place.hpp"
 
 #include <algorithm>
@@ -92,6 +94,7 @@ std::uint64_t Stats::dropped() const {
 
 Session::Session(SessionConfig config) : config_(std::move(config)), pvp_(config_.pvp), dbno_(config_.dbno) {
   dbno_.set_by = 0;
+  difficulty_ = lobby_difficulty();
   for (const std::string& id : config_.kept_bans) {
     if (id.rfind("k:", 0) == 0) banned_ids_.insert(id);   // (SessionConfig::kept_bans: keys only)
   }
@@ -521,6 +524,16 @@ void Session::admit(ConnectionId id, Connection& c, const Hello& hello,
     }
   }
   if (mod_settings_) send(id, kChannelSession, *mod_settings_);
+  // The mods' values of everyone else (MOD_DATA, protocol 18).
+  for (const auto& entry : connections_) {
+    if (entry.first == id || entry.second.state != State::joined) continue;
+    // What the others have of it; a value that still waits for the budget goes to the joiner with them.
+    for (const auto& [mod_id, keys] : entry.second.mod_data_shown) {
+      for (const auto& [key, value] : keys) {
+        send(id, kChannelSession, ModData{entry.second.number, mod_id, key, value});
+      }
+    }
+  }
   // The Lobby: who the host muted (the joiner too, when it was muted before
   // it left); the others learn it of the joiner.
   for (const auto& entry : connections_) {
@@ -732,6 +745,14 @@ void Session::dispatch_player_message(ConnectionId id, Connection& c, std::uint8
     ++stats_.repeated_hello;
     return;
   }
+  if (race_ && race_private(message)) {  // race mode: the world stays in each game, neither kept nor relayed
+    ++stats_.race_dropped;
+    return;
+  }
+  if (c.world_held && race_private(message)) {  // another randomizer seed than the host's: not the host's world
+    ++stats_.world_held_dropped;
+    return;
+  }
   if (std::holds_alternative<LocalJoin>(message) || std::holds_alternative<LocalLeave>(message) ||
       std::holds_alternative<LocalSample>(message) || std::holds_alternative<LocalMessage>(message)) {
     on_local(id, c, message, now_us);
@@ -779,6 +800,10 @@ void Session::dispatch_player_message(ConnectionId id, Connection& c, std::uint8
   }
   if (std::holds_alternative<ModList>(message) || std::holds_alternative<ModSettings>(message)) {
     on_mods(id, c, message);
+    return;
+  }
+  if (auto* data = std::get_if<ModData>(&message)) {
+    on_mod_data(id, c, *data, now_us);
     return;
   }
   if (std::holds_alternative<PvpHit>(message)) {
@@ -1050,6 +1075,13 @@ void Session::on_difficulty(ConnectionId id, Connection& c, const Difficulty& m)
       std::to_string(now.values.count_pct) + "%");
 }
 
+DifficultyChoice Session::lobby_difficulty() const {
+  DifficultyChoice c = config_.difficulty;
+  if (static_cast<std::uint8_t>(c.preset) >= kDifficultyPresets) c.preset = DifficultyPreset::normal;
+  c.custom = clamp_difficulty(c.custom);
+  return c;
+}
+
 void Session::tell_difficulty_change(ConnectionId except) {
   const Difficulty now = difficulty();
   if (now.values == difficulty_told_) return;
@@ -1068,11 +1100,142 @@ void Session::on_mods(ConnectionId id, Connection& c, Message& message) {
   if (const auto* list = std::get_if<ModList>(&message)) {
     c.mods = *list;
     log("player " + std::to_string(c.number) + " runs " + std::to_string(list->mods.size()) + " shared mods");
+    update_world_held();
   } else {
     mod_settings_ = std::get<ModSettings>(message);
+    // Race mode: on from the host's first "on" until the session empties. An "off" later does not bring
+    // sharing back: what each game did alone is never pushed or pulled (docs/world.md, "Race mode").
+    if (race_of(mod_settings_->settings).value_or(false) && !race_) {
+      race_ = true;
+      log("race mode on: the world stays in each game");
+    }
   }
   send_to_others(id, kChannelSession, message);
   ++stats_.relayed;
+}
+
+// Row 281: a player whose randomizer seed is not the host's plays another world (other items in chests), so nothing
+// of its world is taken (its game holds itself back too, by the same check). Until both lists are known nobody is held.
+void Session::update_world_held() {
+  const Connection* host = host_ ? &connections_.at(*host_) : nullptr;
+  for (auto& [cid, oc] : connections_) {
+    if (oc.parent) continue;  // a seat: its game's connection decides
+    coop::protocol::World w;
+    if (host != nullptr && host_ != cid && host->mods && oc.mods) w = world_of(*host->mods, *oc.mods);
+    const bool held = w.diff != WorldDiff::same;
+    if (held == oc.world_held) continue;
+    oc.world_held = held;
+    log("player " + std::to_string(oc.number) +
+        (held ? " held out of the host's world: randomizer seed " + w.seed +
+                    (w.diff == WorldDiff::missing       ? " (the host's) not played"
+                     : w.diff == WorldDiff::other_files ? " built unlike the host's"
+                                                        : " not the host's")
+              : " plays the host's world now"));
+  }
+}
+
+namespace {
+const std::vector<std::uint8_t>* mod_data_value(const ModDataValues& values, const std::string& mod_id,
+                                                const std::string& key) {
+  const auto mod = values.find(mod_id);
+  if (mod == values.end()) return nullptr;
+  const auto value = mod->second.find(key);
+  return value == mod->second.end() ? nullptr : &value->second;
+}
+}  // namespace
+
+// MOD_DATA (protocol 18, issue 250; docs/protocol.md "Mods"): a player's own values, by mod id and key. Kept per
+// player (forgotten when it leaves), relayed when they change, given to joiners; the bytes are never read.
+//
+// The send budget never loses a value: a game marks what it sent as the server's and does not send it again, so a
+// change over the budget (sends bunched by a stall, a relay hiccup or ENet resends) is kept like any other and its
+// key waits until the budget lets one go (run_held_mod_data); the others then get the key's value of that moment.
+// Only the count limits refuse, and a game keeps those itself (coop_mod_data.h Store::Set), so no answer is needed.
+//
+// Only a key whose kept value is not what the others have (mod_data_shown) waits: one set and cleared, or changed and
+// changed back, before its turn has nothing left to tell and stops waiting. Waiting clears go first, so a new key goes
+// out only when every shown key is a kept one: the others never hold more of a player than the limits either, and at
+// most kMaxModDataHeld keys wait whatever a game sends.
+void Session::on_mod_data(ConnectionId id, Connection& c, ModData& data, std::uint64_t now_us) {
+  auto mod = c.mod_data.find(data.mod_id);
+  if (data.value.empty()) {  // clears the key
+    if (mod == c.mod_data.end() || mod->second.erase(data.key) == 0) return;
+    if (mod->second.empty()) c.mod_data.erase(mod);
+  } else {
+    if (mod == c.mod_data.end()) {
+      if (c.mod_data.size() >= kMaxModDataMods) {
+        ++stats_.mod_data_refused;
+        return;
+      }
+      mod = c.mod_data.emplace(data.mod_id, std::map<std::string, std::vector<std::uint8_t>>{}).first;
+    }
+    auto key = mod->second.find(data.key);
+    if (key == mod->second.end()) {
+      if (mod->second.size() >= kMaxModDataKeysPerMod) {
+        ++stats_.mod_data_refused;
+        return;
+      }
+      mod->second.emplace(data.key, data.value);
+    } else if (key->second == data.value) {
+      return;  // no change
+    } else {
+      key->second = data.value;
+    }
+  }
+  std::pair<std::string, std::string> held{data.mod_id, data.key};
+  const auto waiting = std::find(c.mod_data_held.begin(), c.mod_data_held.end(), held);
+  const auto* kept = mod_data_value(c.mod_data, data.mod_id, data.key);
+  const auto* shown = mod_data_value(c.mod_data_shown, data.mod_id, data.key);
+  if (kept == nullptr ? shown == nullptr : shown != nullptr && *kept == *shown) {  // the others have it so
+    if (waiting != c.mod_data_held.end()) c.mod_data_held.erase(waiting);
+    return;
+  }
+  if (waiting != c.mod_data_held.end()) return;  // it goes when its turn comes, with its value then
+  if (!c.mod_data_held.empty() || !take_mod_data_slot(c, now_us)) {  // others already wait, or over the budget
+    c.mod_data_held.push_back(std::move(held));
+    ++stats_.mod_data_held;
+    stats_.mod_data_held_most = std::max<std::uint64_t>(stats_.mod_data_held_most, c.mod_data_held.size());
+    return;
+  }
+  relay_mod_data(id, c, data.mod_id, data.key);
+}
+
+// The budget: a burst of kModDataSendsPerSecond, then one each gap (a game sends at most one each gap anyway).
+bool Session::take_mod_data_slot(Connection& c, std::uint64_t now_us) {
+  constexpr std::uint64_t kGapUs = 1'000'000 / kModDataSendsPerSecond;
+  const std::uint64_t due = std::max(c.mod_data_due_us, now_us);
+  if (due - now_us > kGapUs * (kModDataSendsPerSecond - 1)) return false;
+  c.mod_data_due_us = due + kGapUs;
+  return true;
+}
+
+// The key's value as the server keeps it now (none: the key was cleared), with the player's number.
+void Session::relay_mod_data(ConnectionId id, Connection& c, const std::string& mod_id, const std::string& key) {
+  ModData out{c.number, mod_id, key, {}};
+  if (const auto* value = mod_data_value(c.mod_data, mod_id, key)) {
+    out.value = *value;
+    c.mod_data_shown[mod_id][key] = *value;
+  } else if (const auto mod = c.mod_data_shown.find(mod_id); mod != c.mod_data_shown.end()) {
+    mod->second.erase(key);
+    if (mod->second.empty()) c.mod_data_shown.erase(mod);
+  }
+  send_to_others(id, kChannelSession, out);
+  ++stats_.mod_data_relayed;
+}
+
+void Session::run_held_mod_data(std::uint64_t now_us) {
+  for (auto& [id, c] : connections_) {
+    if (c.state != State::joined) continue;
+    while (!c.mod_data_held.empty() && take_mod_data_slot(c, now_us)) {
+      auto next = std::find_if(c.mod_data_held.begin(), c.mod_data_held.end(), [&kept = c.mod_data](const auto& key) {
+        return mod_data_value(kept, key.first, key.second) == nullptr;  // a clear first
+      });
+      if (next == c.mod_data_held.end()) next = c.mod_data_held.begin();
+      const auto held = *next;
+      c.mod_data_held.erase(next);
+      relay_mod_data(id, c, held.first, held.second);
+    }
+  }
 }
 
 // To the victim only, and only while PvP is on: a game with PvP off never
@@ -1747,7 +1910,17 @@ void Session::on_object_message(ConnectionId id, Connection& c, std::uint8_t cha
     Object& o = it->second;
     o.actor = spawn->actor;
     o.spawn_flags = spawn->flags;
-    if (!o.last_state) o.last_state = spawn->state;
+    // Protocol 18: its keyed values (25-28) are merged into what is kept (a room's, sync plan S4) either way.
+    ObjectState next = spawn->state;
+    stats_.keyed_dropped += KeepKeyed(o.last_state ? &*o.last_state : nullptr, next);
+    if (!o.last_state) {
+      o.last_state = std::move(next);
+    } else {
+      o.last_state->brain = std::move(next.brain);
+      o.last_state->plugs = std::move(next.plugs);
+      o.last_state->clocks = std::move(next.clocks);
+      o.last_state->events = std::move(next.events);
+    }
   } else if (spawn) {
     oid = spawn->id;
     if (spawn->id.maker != c.number || objects_.count(oid)) {
@@ -1768,6 +1941,7 @@ void Session::on_object_message(ConnectionId id, Connection& c, std::uint8_t cha
     o.actor = spawn->actor;
     o.spawn_flags = spawn->flags;
     o.last_state = spawn->state;
+    stats_.keyed_dropped += KeepKeyed(nullptr, *o.last_state);  // protocol 18: 25-28 kept as full lists
   } else if (const auto* sample = std::get_if<ObjectSample>(&message)) {
     oid = sample->id;
     auto it = objects_.find(oid);
@@ -1789,7 +1963,11 @@ void Session::on_object_message(ConnectionId id, Connection& c, std::uint8_t cha
         (o.hit_at == 0 || now_us - o.hit_at > config_.hit_window_us)) {
       o.owner_hit_at = stamp(now_us);
     }
-    o.last_state = sample->state;
+    // Protocol 18: keyed values (25-28) are kept merged (a delta changes the keys it names, a list the sample
+    // lacks stays), so the last state holds all of them; the sample is relayed as it came.
+    ObjectState next = sample->state;
+    stats_.keyed_dropped += KeepKeyed(o.last_state ? &*o.last_state : nullptr, next);
+    o.last_state = std::move(next);
   } else {
     auto& remove = std::get<ObjectRemove>(message);
     oid = remove.id;
@@ -1930,7 +2108,8 @@ void Session::on_damage(ConnectionId id, Connection& c, Damage& d, std::uint64_t
   }
 
   if (o.ask || o.root || o.projectile || o.fish || busy(c) || !has_loaded(id, o)) return;
-  if (o.changed_at != 0 && now_us - o.changed_at < config_.handover_cooldown_us) return;
+  const std::uint64_t cooldown_us = d.amount == 0 ? config_.stun_handover_cooldown_us : config_.handover_cooldown_us;
+  if (o.changed_at != 0 && now_us - o.changed_at < cooldown_us) return;
   auto owner = connections_.find(*o.owner);
   if (owner == connections_.end()) return;
   auto mine = distance_to(c, o, now_us);
@@ -1943,6 +2122,17 @@ void Session::on_damage(ConnectionId id, Connection& c, Damage& d, std::uint64_t
       !(now_us > c.position_at && now_us - c.position_at > config_.position_stale_us)) {
     const double at = metres(*c.position, d.position);
     if (!mine || at < *mine) mine = at;
+  }
+  // ai-stuns: a stun on a copy (a nut, boomerang or hookshot: a DAMAGE of 0) is in the stunner's game only, and
+  // the owner's enemy goes on attacking. The stunner within handover_near_m takes it, whatever the margin, the
+  // hand-back or the sticky-target rule (the stun is a player's own act, sent at most every 2 s; only the
+  // 1 s stun_handover_cooldown_us above holds, not the 5 s one), and every game then follows its stunned enemy.
+  if (d.amount == 0) {
+    if (mine && *mine <= config_.handover_near_m &&
+        ask_handover(d.id, o, id, now_us, "a stun by a copy (ai-stuns)")) {
+      ++stats_.stun_to_stunner;
+    }
+    return;
   }
   const auto theirs = distance_to(owner->second, o, now_us);
   if (mine && theirs && *mine <= config_.handover_near_m &&
@@ -2388,6 +2578,11 @@ std::optional<ConnectionId> Session::next_turn(Object& o, ConnectionId owner, st
   if (o.fight_began == 0) o.fight_began = stamp(now_us);
   const std::uint64_t turn_began = std::max(o.fight_began, o.changed_at);
   if (now_us - turn_began < config_.boss_turn_us) return std::nullopt;
+  // A plain enemy (ai-turns): only a kind its owner's game lists (takes_turns: the hook's big melee kinds), and at
+  // most one move per enemy_turn_gap_us (report 138's shuttle).
+  if (!o.boss && (!o.takes_turns.contains(owner) || now_us - turn_began < config_.enemy_turn_gap_us)) {
+    return std::nullopt;
+  }
   // Only right where its own attack ended in its owner's game (boss_turn_edge_us): never in an attack or in a
   // reaction's tail (Phantom Ganon's SmallDamage into 'Run'), never in a phase with no attack, and never for an
   // owner that reads no attacks. An edge older than the turn (the old owner's) does not count.
@@ -2417,8 +2612,18 @@ std::optional<ConnectionId> Session::next_turn(Object& o, ConnectionId owner, st
   const auto own = connections_.find(owner);
   if (own == connections_.end()) return std::nullopt;
   const std::uint8_t from = own->second.number;
+  if (!o.boss) {
+    // Two fit players near it: its owner too must be up and within enemy_turn_m of it, else the chase, near and
+    // unfit rules decide as before.
+    const auto od = distance_to(own->second, o, now_us);
+    if (busy(own->second) || !od || *od > config_.enemy_turn_m) return std::nullopt;
+  }
   std::optional<ConnectionId> after;  // the lowest number above the owner's
   std::optional<ConnectionId> first;  // the lowest number of all (round)
+  std::size_t owner_load = 0;
+  std::optional<ConnectionId> lightest;  // a plain enemy: the near player with the fewest fighting enemies
+  std::size_t lightest_load = 0;
+  if (!o.boss) owner_load = fighting_enemies(owner, now_us);
   for (ConnectionId other : o.present) {
     if (other == owner || !has_loaded(other, o) || o.unready.contains(other)) continue;
     // An older build (no takes_turns) would keep it for the rest of the fight: it sends no attack end.
@@ -2430,10 +2635,36 @@ std::optional<ConnectionId> Session::next_turn(Object& o, ConnectionId owner, st
     const auto lower = [&](const std::optional<ConnectionId>& than) {
       return !than || pc.number < connections_.at(*than).number;
     };
+    if (!o.boss) {
+      // Balance: the fewest fighting enemies, the next number after the owner's (round) among equals.
+      const std::size_t load = fighting_enemies(other, now_us);
+      const auto rank = [&](const Connection& c) { return c.number > from ? c.number : c.number + 256; };
+      if (!lightest || load < lightest_load ||
+          (load == lightest_load && rank(pc) < rank(connections_.at(*lightest)))) {
+        lightest = other;
+        lightest_load = load;
+      }
+      continue;
+    }
     if (pc.number > from && lower(after)) after = other;
     if (lower(first)) first = other;
   }
+  if (!o.boss) {
+    // Only to a player with fewer fighting enemies than the owner keeps: two players with one each keep theirs.
+    if (lightest && lightest_load + 1 <= owner_load) return lightest;
+    return std::nullopt;
+  }
   return after ? after : first;
+}
+
+std::size_t Session::fighting_enemies(ConnectionId owner, std::uint64_t now_us) const {
+  std::size_t n = 0;
+  for (const auto& entry : objects_) {
+    const Object& e = entry.second;
+    if (e.removed || e.boss || e.fish || e.projectile || !e.owner || *e.owner != owner) continue;
+    if (in_fight(e, now_us)) ++n;
+  }
+  return n;
 }
 
 bool Session::hands_back_soon(const Object& o, ConnectionId to, std::uint64_t now_us) {
@@ -2629,6 +2860,7 @@ void Session::finish_handover(const ObjectId& oid, Object& o, const ObjectState*
       if (!s.life) s.life = old.life;
       if (!s.fuse) s.fuse = old.fuse;  // a bomb's (BOMB_TAKE); enemies have none
     }
+    stats_.keyed_dropped += KeepKeyed(o.last_state ? &*o.last_state : nullptr, s);  // protocol 18: 25-28
     // The answer's life is the owner's with every DAMAGE it had when it read
     // the ask (its pending replays included). What was passed on after the
     // ask it read later, and as a copy: taken off here, or the new owner
@@ -2963,7 +3195,7 @@ void Session::run_ownership(std::uint64_t now_us) {
     // A boss in a fight takes turns: its AI fights only its owner's Link, so
     // every player gets it for a while (Phantom Ganon's ball, a charge, a
     // breath aimed at each in turn). Every other enemy too, among the players
-    // near it, when enemy_turns is on (off by default: a mob would shuttle between Links, report 138).
+    // near it, of the kinds the hook lists (takes_turns), under next_turn's caps (a mob would shuttle, report 138).
     if (o.boss || (config_.enemy_turns && !o.fish)) {
       if (auto next = next_turn(o, owner, now_us)) {
         ++(o.boss ? stats_.boss_turns : stats_.enemy_turns);
@@ -3223,6 +3455,7 @@ void Session::on_voice(ConnectionId id, const Connection& c, VoiceFrame& m,
 
 void Session::send_to_place(const std::string& scene, std::optional<ConnectionId> except,
                             std::uint8_t channel, const Message& m) {
+  if (race_held(m)) return;
   std::vector<std::uint8_t> bytes;
   if (encode(m, bytes) != Error::none) return;
   for (const auto& [id, c] : connections_) {
@@ -3234,6 +3467,7 @@ void Session::send_to_place(const std::string& scene, std::optional<ConnectionId
 
 void Session::send_to_scene(const std::string& scene, std::optional<ConnectionId> except,
                             std::uint8_t channel, const Message& m) {
+  if (race_held(m)) return;
   std::vector<std::uint8_t> bytes;
   if (encode(m, bytes) != Error::none) return;
   for (const auto& [id, c] : connections_) {
@@ -3605,10 +3839,11 @@ void Session::remove_player(ConnectionId id, LeaveReason reason, std::uint64_t n
     pvp_set_by_ = 0;
     dbno_ = config_.dbno;
     dbno_.set_by = 0;
-    difficulty_ = {};
+    difficulty_ = lobby_difficulty();
     difficulty_set_by_ = 0;
     difficulty_told_ = {};
     mod_settings_.reset();
+    race_ = false;
     lobby_mutes_.clear();
     banned_ids_.clear();
     for (const std::string& id : config_.kept_bans) {   // (the host's kept bans stay: SessionConfig::kept_bans)
@@ -3625,7 +3860,7 @@ void Session::remove_player(ConnectionId id, LeaveReason reason, std::uint64_t n
     boss_hearts_.clear();  // as the flags: a new group (a new save) has its own containers
     boss_beaten_.clear();
   } else if (host_ == id) {
-    // The remaining player with the lowest number takes over. Everyone is
+    // The remaining player in the session longest takes over. Everyone is
     // told on the progress channel, so the new host learns it hosts before
     // any FLAG_SET relayed to it.
     std::optional<ConnectionId> next;
@@ -3640,6 +3875,7 @@ void Session::remove_player(ConnectionId id, LeaveReason reason, std::uint64_t n
     const std::uint8_t number = connections_.at(*host_).number;
     send_to_others(id, kChannelProgress, Host{number});
     log("player " + std::to_string(number) + " hosts now");
+    update_world_held();  // each player against the new host's list
   }
   // Host approval: the host who was asked left, so nobody answers them.
   if (was_host) refuse_held(now_us, "the host left before answering");
@@ -3648,6 +3884,7 @@ void Session::remove_player(ConnectionId id, LeaveReason reason, std::uint64_t n
 
 void Session::tick(std::uint64_t now_us) {
   run_deferred(now_us);  // reliable messages that waited for their sender's rate
+  run_held_mod_data(now_us);  // MOD_DATA changes that waited for their sender's budget
   // Wrong-password counts whose window and block are both over.
   for (auto it = wrong_guesses_.begin(); it != wrong_guesses_.end();) {
     const WrongGuesses& g = it->second;
@@ -3753,6 +3990,13 @@ std::vector<Action> Session::take_actions() {
     return std::get<EncryptAction>(a).who >= kLocalPlayerIds;
   });
   return std::exchange(actions_, {});
+}
+
+std::string Session::world_tag() const {
+  if (!host_) return {};
+  const auto it = connections_.find(*host_);
+  if (it == connections_.end() || !it->second.mods) return {};
+  return coop::protocol::world_tag(*it->second.mods, mod_settings_ ? &mod_settings_->settings : nullptr);
 }
 
 std::size_t Session::player_count() const {
@@ -3904,13 +4148,21 @@ std::uint8_t Session::free_number(std::uint8_t preferred) const {
   return 0;  // unreachable: on_hello refuses a full session first
 }
 
+bool Session::race_held(const Message& m) {
+  if (!race_ || !race_private(m)) return false;
+  ++stats_.race_dropped;
+  return true;
+}
+
 void Session::send(ConnectionId to, std::uint8_t channel, const Message& m) {
+  if (race_held(m)) return;  // what the server kept or makes of the world (a snapshot, an owner) too
   SendAction action{to, channel, {}};
   if (encode(m, action.bytes) != Error::none) return;  // our own message; cannot happen
   actions_.push_back(std::move(action));
 }
 
 void Session::send_to_others(ConnectionId except, std::uint8_t channel, const Message& m) {
+  if (race_held(m)) return;
   std::vector<std::uint8_t> bytes;
   if (encode(m, bytes) != Error::none) return;
   for (const auto& [id, c] : connections_) {

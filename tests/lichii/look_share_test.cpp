@@ -570,3 +570,24 @@ TEST_CASE("look share (row 198, 0.11.9): a coloured copy the game did not make i
     CHECK_FALSE(CopyRefused("Weapon_Shield_Hylian", "Weapon_Shield_Deku"));                // (not a copy: not ours)
     CHECK_FALSE(CopyRefused("Weapon_Shield_Hylian_Look1", ""));                            // name not read
 }
+
+TEST_CASE("character voices: each puppet's sound list is read from the pack's manifest") {
+    using namespace CoopPuppet;
+    // As build.py writes it (character_voices): a character with a voice names its own list, every other puppet
+    // CoopPuppet_<Age> (the Character Select mod's hook gives Player_<Age> the viewer's own pick).
+    const std::string manifest =
+        R"({"actors": [{"actor": "CoopPuppet_Adult_C005"}], "sound_user": null,)"
+        R"( "sound_lists": {"CoopPuppet_Adult_C005": "Player_Adult_V07", "CoopPuppet_Child": "CoopPuppet_Child",)"
+        R"( "CoopPuppet_Child_Red_Quiet": "CoopPuppet_Child"}, "xlink": "player"})";
+    const auto lists = PackSoundLists(manifest);
+    CHECK(lists.size() == 3);
+    CHECK(lists.at("CoopPuppet_Adult_C005") == "Player_Adult_V07");
+    CHECK(lists.at("CoopPuppet_Child_Red_Quiet") == "CoopPuppet_Child");
+    // A pack without the mod's voices: none (every puppet names Player_<Age>, as before).
+    CHECK(PackSoundLists(R"({"actors": [], "sound_user": null, "xlink": "player"})").empty());
+    CHECK(PackSoundLists(R"({"sound_lists": null})").empty());
+    CHECK(PackSoundLists(R"({"sound_lists": {}})").empty());
+    // Only our puppets, and a row it cannot finish is left out.
+    CHECK(PackSoundLists(R"({"sound_lists": {"Player_Child": "X", "CoopPuppet_Adult": ""}})").empty());
+    CHECK(PackSoundLists(R"({"sound_lists": {"CoopPuppet_Adult": "CoopPuppet_Adult", "CoopPuppet_Child")").size() == 0);
+}

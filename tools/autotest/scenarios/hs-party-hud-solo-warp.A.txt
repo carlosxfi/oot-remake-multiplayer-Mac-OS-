@@ -1,0 +1,6 @@
+# hs-party-hud-solo, A: a scene change (warp KokiriForest_Child, as hs-party-hud-probe.A.txt), shots after it.
+mark solo-before-warp
+warp KokiriForest_Child
+wait 1500
+mark solo-warped-in
+wait 180

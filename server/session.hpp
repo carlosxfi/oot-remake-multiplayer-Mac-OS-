@@ -34,6 +34,11 @@ using ConnectionId = std::uint32_t;
 // session numbers them from here (a transport id this high is refused).
 inline constexpr ConnectionId kLocalPlayerIds = 0xF000'0000u;
 
+// MOD_DATA values by mod id and key, and the most keys of one player that can wait for its send budget: every key it
+// keeps now plus every key the others still have of it (Session::on_mod_data).
+using ModDataValues = std::map<std::string, std::map<std::string, std::vector<std::uint8_t>>>;
+inline constexpr std::size_t kMaxModDataHeld = 2 * protocol::kMaxModDataMods * protocol::kMaxModDataKeysPerMod;
+
 // An IPv4 address or a range of them ("25.1.2.3", "25.0.0.0/8"), as numbers
 // with the first dotted part highest. For --allow.
 struct AddressRange {
@@ -101,6 +106,10 @@ struct SessionConfig {
   // out"): a player at no hearts is downed and can be revived. On unless the
   // server or the host turns it off; every player gets the value at join.
   protocol::DbnoMode dbno{};
+  // Difficulty (coop_server --difficulty; the host's choice when it made the lobby, HosCoopHostOptions): in force
+  // from the first player on, and again whenever the session empties. The host may change it in the session
+  // (DIFFICULTY). Default: automatic, by the number of players.
+  protocol::DifficultyChoice difficulty{};
   // Guessing the join password: an address that sends max_wrong_passwords
   // wrong proofs within wrong_password_window_us is closed at connect for
   // wrong_password_block_us (counted in password_blocked). 0: no limit.
@@ -208,6 +217,11 @@ struct SessionConfig {
   float handover_chase_m = 20.0f;
   std::uint64_t handover_hold_us = 3'000'000;
   std::uint64_t handover_cooldown_us = 5'000'000;
+  // ai-stuns: a stun on a copy (DAMAGE of 0 for a plain enemy) waits only this long after the last change, not
+  // handover_cooldown_us: the stun is the stunner's own act and is sent once, so one refused right after a turn or a
+  // chase change left the stunner's copy stunned while the owner's enemy kept attacking (geno-polish-ai). A stun
+  // cannot shuttle: a copy that shows its owner's stun never asks, so a new ask needs a new stun.
+  std::uint64_t stun_handover_cooldown_us = 1'000'000;
   // Issue 101: a game that is not the owner says its copy chases its own
   // Link (OBJECT_PRESENT flag targeting). Its game is the only one whose
   // enemy moves right, so out of a fight the object goes to that player once
@@ -283,12 +297,18 @@ struct SessionConfig {
   std::uint64_t boss_turn_us = 4'000'000;
   std::uint64_t boss_turn_quiet_us = 3'000'000;
   float boss_turn_m = 40.0f;
-  // Every enemy takes turns too (#308): the same rule, among the players near it (enemy_turn_m). OFF by default
-  // (review-geno-0119-4, owner): a plain enemy's AI chases only its owner's Link, so a turn at each attack's end
-  // walks it to the other player and back (report 138's shuttle; the turn skips the sticky/hand-back rules), where
-  // solo it keeps the Link it fights. The chase, near and sticky rules already give it to the player it fights.
-  bool enemy_turns = false;
+  // A plain enemy takes turns too (#308), among the players near it (enemy_turn_m): the same rule as a boss's, only
+  // for the kinds the hook lists with object_presence::takes_turns (the big melee kinds: Moblin, Lizalfos, Dinolfos,
+  // Stalfos, Like Like, Iron Knuckle; coop_objects_sync.h TurnsAsEnemy), so any other plain enemy keeps the player it
+  // fights. Report 138's shuttle (a turn at each attack's end walked it to the other player and back) is held by
+  // caps: at most one move per enemy per enemy_turn_gap_us (counted from its last change of owner or its fight's
+  // start), never mid-attack, only when its owner and the next player are both up and within enemy_turn_m of it
+  // (2 fit players near; solo and a lone player in range never turn), and a turn goes to the near player who owns
+  // the fewest fighting enemies, only if that player owns fewer than the owner does (balance: a pack spreads, two
+  // players with one Moblin each keep theirs). false: no plain enemy turns.
+  bool enemy_turns = true;
   float enemy_turn_m = 12.0f;
+  std::uint64_t enemy_turn_gap_us = 15'000'000;
   // ...and only right at the end of the boss's own attack (boss-turns-0119): its owner's samples say an attack
   // ran (object_state::attacking, the hook's addr::InAttackSequence: after a reaction it stays on until the
   // boss's own next attack ends) and the latest one says it ended, within boss_turn_edge_us. An owner whose
@@ -427,6 +447,12 @@ struct Stats {
   std::uint64_t dbno_revives_dropped = 0;  // mode off, to nobody, or to themselves
   std::uint64_t difficulty_refused = 0;  // DIFFICULTY from a player who does not host
   std::uint64_t mod_settings_refused = 0;  // MOD_SETTINGS from a player who does not host
+  std::uint64_t mod_data_relayed = 0;      // MOD_DATA kept and passed on (a change)
+  std::uint64_t mod_data_refused = 0;      // MOD_DATA over its limits: a 9th key or a 17th mod (never answered: the game keeps the same limits)
+  std::uint64_t mod_data_held = 0;         // MOD_DATA changes kept but relayed later (over the send budget)
+  std::uint64_t mod_data_held_most = 0;    // the most keys one player ever had waiting (at most kMaxModDataHeld)
+  std::uint64_t race_dropped = 0;          // race mode: world messages neither relayed nor sent
+  std::uint64_t world_held_dropped = 0;    // a held player's world messages (another randomizer seed, row 281)
   // The Lobby (docs/protocol.md "Lobby"): the host's kicks, bans and mutes.
   std::uint64_t lobby_done = 0;      // LOBBY_ACTIONs carried out
   std::uint64_t lobby_refused = 0;   // LOBBY_ACTION from a player who does not host
@@ -512,9 +538,11 @@ struct Stats {
   std::uint64_t owner_changes = 0;      // owner set or moved (not first owner)
   std::uint64_t damage_relayed = 0;     // DAMAGE passed on to an owner
   std::uint64_t boss_to_hitter = 0;     // a boss asked over to the player who hurt it (issue 150)
+  std::uint64_t stun_to_stunner = 0;    // a plain enemy asked over to the player who stunned it (ai-stuns)
   std::uint64_t boss_to_near = 0;       // a boss asked over to the player near it (issue 150)
   std::uint64_t boss_to_grabbed = 0;    // row 232: a boss asked over to a game whose Link its summoned piece holds
   std::uint64_t boss_turns = 0;          // a boss asked over to the next player's turn (boss_turn_us)
+  std::uint64_t keyed_dropped = 0;       // protocol 18: keyed values (components 25-28) not kept, list full
   std::uint64_t enemy_turns = 0;         // a plain enemy asked over to the next player's turn (enemy_turns)
   std::uint64_t boss_from_cutscene = 0;  // a boss asked away from an owner in a cutscene of its own
   std::uint64_t boss_kept_from_unready = 0;  // row 189: ticks a ready, unfit owner's boss was not asked to an unready game
@@ -615,6 +643,9 @@ class Session {
   // Addresses with recent wrong join passwords (max_wrong_passwords).
   std::size_t wrong_guess_addresses() const { return wrong_guesses_.size(); }
   std::size_t player_count() const;
+  // Row 281: the room list's tag for the host's world (coop/protocol/mod_world.hpp world_tag): its randomizer seed
+  // and settings name; empty while the host plays none or its MOD_LIST is not in yet.
+  std::string world_tag() const;
   // How much the session holds now (row 260: the host's memory line, every 30 s): each a count of entries, the
   // deferred one also in bytes. Each is bounded (its own cap); a number that only grows is the one to look at.
   struct Sizes {
@@ -647,6 +678,8 @@ class Session {
   const protocol::DbnoMode& dbno() const { return dbno_; }
   // The difficulty in force now, as every player has been told (DIFFICULTY).
   protocol::Difficulty difficulty() const;
+  // The session's choice now (the room list's listing shows it: protocol/difficulty.hpp with_listed_difficulty).
+  const protocol::DifficultyChoice& difficulty_choice() const { return difficulty_; }
   // (Navi) New Game+: the hosting game's level (protocol/difficulty.hpp
   // ngplus_difficulty), on top of the difficulty in force; a change is told
   // to everyone at once. 0: none. Only the in-game host's server sets it.
@@ -735,6 +768,20 @@ class Session {
     std::string nickname;
     // Its last MOD_LIST, with its number (docs/protocol.md, "Mods").
     std::optional<protocol::ModList> mods;
+    // Held out of the host's world (coop/protocol/mod_world.hpp, row 281): its list and the host's are known and its
+    // randomizer seed is not the host's. Its world messages (race_private's list) are neither kept nor relayed.
+    bool world_held = false;
+    // Its MOD_DATA values (protocol 18, issue 250), by mod id and key; forgotten with the connection. And its send
+    // budget: the theoretical arrival time of its next MOD_DATA (a burst of kModDataSendsPerSecond, then one each
+    // 1/kModDataSendsPerSecond of a second). A change over the budget is kept all the same and its key waits in
+    // mod_data_held (mod id, key; first come, first served) until the budget lets it go: the others then get the value
+    // it has by then, so a bunch of sends after a stall is never lost (the game marks a sent value as the server's and
+    // does not resend it). mod_data_shown is what the others have; mod_data_held is exactly the keys whose kept value
+    // is not the shown one, so it is never more than the keys of both (kMaxModDataHeld).
+    ModDataValues mod_data;
+    ModDataValues mod_data_shown;
+    std::uint64_t mod_data_due_us = 0;
+    std::deque<std::pair<std::string, std::string>> mod_data_held;
     // The scene the player is in, from its latest OBJECT_PRESENT or
     // PLAYER_SAMPLE scene; empty while not known.
     std::string scene;
@@ -954,7 +1001,15 @@ class Session {
   // but `except` (the joiner, told already; the leaver). Nothing when the
   // values in force are the ones told before, as with the host's own choice.
   void tell_difficulty_change(ConnectionId except);
+  // SessionConfig::difficulty with its custom values kept within the sliders' ends.
+  protocol::DifficultyChoice lobby_difficulty() const;
   void on_mods(ConnectionId id, Connection& c, protocol::Message& message);
+  // Each player's world_held again, after a MOD_LIST or a host change (logged when it changes).
+  void update_world_held();
+  void on_mod_data(ConnectionId id, Connection& c, protocol::ModData& data, std::uint64_t now_us);
+  bool take_mod_data_slot(Connection& c, std::uint64_t now_us);
+  void relay_mod_data(ConnectionId id, Connection& c, const std::string& mod_id, const std::string& key);
+  void run_held_mod_data(std::uint64_t now_us);
   // The Lobby: the host's kick, ban and mutes (docs/protocol.md "Lobby").
   void on_lobby(ConnectionId id, const protocol::LobbyAction& a, std::uint64_t now_us);
   // A kick, ban or mute on player a.target, by the host (`actor`: its connection, which may not be its own target)
@@ -1121,6 +1176,8 @@ class Session {
   bool owner_hit_lately(const Object& o, std::uint64_t now_us) const;
   // attack_hold_max_us: its owner's attack runs (never moved but by a turn or an unfit owner).
   bool mid_attack(const Object& o, std::uint64_t now_us) const;
+  // ai-turns: how many plain enemies in a fight this game owns (a turn goes to the near player with the fewest).
+  std::size_t fighting_enemies(ConnectionId owner, std::uint64_t now_us) const;
   // Boss turns (boss_turn_us): the player whose turn it is now, if a boss
   // root in its fight is due for one at a calm moment.
   std::optional<ConnectionId> next_turn(Object& o, ConnectionId owner, std::uint64_t now_us);
@@ -1159,6 +1216,7 @@ class Session {
   std::uint8_t free_number(std::uint8_t preferred = 0) const;
   std::uint8_t max_players() const;  // config_.max_players, 1 to kMaxPlayers
 
+  bool race_held(const protocol::Message& m);  // race mode drops it (counted)
   void send(ConnectionId to, std::uint8_t channel, const protocol::Message& m);
   void send_to_others(ConnectionId except, std::uint8_t channel,
                       const protocol::Message& m);
@@ -1211,10 +1269,9 @@ class Session {
   // told, so its game gets their beaten sets (G2, #241). Forgotten when the host loads a save and when the session
   // empties.
   std::map<std::pair<std::uint8_t, std::string>, protocol::BossScene> boss_beaten_;
-  // Difficulty (protocol/difficulty.hpp): automatic, by the number of
-  // players, until the host chooses; the host's choice then stays whoever
-  // joins or leaves, a new host included. Automatic again when the session
-  // empties. `difficulty_set_by_` is DIFFICULTY's set_by; `difficulty_told_`
+  // Difficulty (protocol/difficulty.hpp): the lobby's (SessionConfig::difficulty, automatic by default) until the
+  // host chooses; the host's choice then stays whoever joins or leaves, a new host included. The lobby's again
+  // when the session empties (lobby_difficulty). `difficulty_set_by_` is DIFFICULTY's set_by; `difficulty_told_`
   // the values the players in the session were last told.
   protocol::DifficultyChoice difficulty_;
   std::uint8_t difficulty_set_by_ = 0;
@@ -1224,6 +1281,7 @@ class Session {
   // host leaves until the new host sends its own; forgotten when the session
   // empties.
   std::optional<protocol::ModSettings> mod_settings_;
+  bool race_ = false;  // race mode (coop/protocol/race.hpp): on until the session empties
   // Every shared flag value the host has sent, by key. Kept when
   // the host leaves; forgotten when the session empties.
   std::map<protocol::FlagKey, protocol::FlagEntry> flags_;

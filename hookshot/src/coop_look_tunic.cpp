@@ -394,7 +394,7 @@ void Wardrobe::Once(std::uint64_t now_ms) {
         // What the game's memory may hold: the start's colour first (the kit put
         // its files in), then the game's own, then the one asked for.
         std::vector<std::shared_ptr<const Texels>> colours;
-        for (const auto& c : {start_, green_, target_}) {
+        for (const auto& c : {start_, green_, host_.target_in_memory ? target_ : nullptr}) {
             if (c && std::find(colours.begin(), colours.end(), c) == colours.end()) {
                 colours.push_back(c);
             }
@@ -478,7 +478,7 @@ void Wardrobe::Once(std::uint64_t now_ms) {
     } else {
         // Nothing made or finalized: the young misses only (texels that came in late).
         std::vector<std::shared_ptr<const Texels>> colours;
-        for (const auto& c : {start_, green_, target_}) {
+        for (const auto& c : {start_, green_, host_.target_in_memory ? target_ : nullptr}) {
             if (c && std::find(colours.begin(), colours.end(), c) == colours.end()) {
                 colours.push_back(c);
             }

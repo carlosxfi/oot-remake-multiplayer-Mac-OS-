@@ -1,4 +1,4 @@
-From 9332506cbd265d99910f097a060f4761ce839a2e Mon Sep 17 00:00:00 2001
+From 1a43b45901e41bb17da71f84c6503cfbe2d76eee Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Fri, 13 Nov 2026 01:34:58 -0900
 Subject: [PATCH] Co-op menu tabs: the module's tabs lead the menu's strip
@@ -242,7 +242,7 @@ index 59acc4be..17c4cf0d 100644
 +
  }  // namespace mkwvk::coop
 diff --git a/gpu/vk/vk_menu.cpp b/gpu/vk/vk_menu.cpp
-index 9bf441c4..49ae7b6c 100644
+index 88124d57..c9140300 100644
 --- a/gpu/vk/vk_menu.cpp
 +++ b/gpu/vk/vk_menu.cpp
 @@ -15,6 +15,9 @@
@@ -471,7 +471,7 @@ index 9bf441c4..49ae7b6c 100644
      // the rows, in the column; the help beside it
      float cx0, cx1, hx0, hx1;
      bool narrow;
-@@ -4899,7 +5023,7 @@ void game_lang_tick() {
+@@ -4901,7 +5025,7 @@ void game_lang_tick() {
          return -1;
      }();
      if (row < 0 || opts.game_lang == i18n::game_lang_index()) return;
@@ -480,7 +480,7 @@ index 9bf441c4..49ae7b6c 100644
                          tab_row_to_global(cur_tab, tab_selected[cur_tab]) == row;
      if (on_row) return;
      if (!i18n::set_game_language(opts.game_lang)) {
-@@ -4963,6 +5087,59 @@ void outputs_follow_screen() {
+@@ -4965,6 +5089,59 @@ void outputs_follow_screen() {
           dm::ratio_name({sw, sh}).c_str(), added);
  }
  
@@ -540,7 +540,7 @@ index 9bf441c4..49ae7b6c 100644
  void menu_tick() {
      std::lock_guard lk(menu_mu);   // (the control bridge's settings: menu_setting_set)
      share_finish();   // (Save my pipeline list's worker, done)
-@@ -5171,6 +5348,23 @@ void menu_tick() {
+@@ -5173,6 +5350,23 @@ void menu_tick() {
      // ESC alone (the gamepad's back is Esc only while it is open, above). The press that opened it does not go back a page
      // below; with the compact menu key held it opens the compact bar, as Insert and F1 do (tune_mode). No
      // control can be bound to Esc, so nothing in play changes; the window gives the captured mouse back on the close)
@@ -564,7 +564,7 @@ index 9bf441c4..49ae7b6c 100644
      const bool esc_opens = opts.menu_shortcut == 2 && press[5] && !open_now.load();
      if (esc_opens) press[5] = false;
      const bool comparing = open_now.load() && reshade_menu::comparing();
-@@ -5475,11 +5669,13 @@ void menu_tick() {
+@@ -5477,11 +5671,13 @@ void menu_tick() {
              else teleport_choice = std::clamp(teleport_step_rows(teleport_choice, rows) + (press[4] - press[3]), 0, kTeleports - 1);
              if (teleport_choice != was) teleport_follow = true, changed = true;
          }
@@ -580,7 +580,7 @@ index 9bf441c4..49ae7b6c 100644
              if (ht != hover_tab) hover_tab = ht, changed = true;
              int& sel = cur_tab == TAB_MODS ? mods_sel : tab_selected[cur_tab];   // (the Mods tab: its line, draw_mods)
              const bool on_row = hit.part == menu_hit::kRow || hit.part == menu_hit::kSlider;
-@@ -5502,7 +5698,7 @@ void menu_tick() {
+@@ -5504,7 +5700,7 @@ void menu_tick() {
              if ((ptr.pressed & HOS_MOUSE_LEFT) && drag_row < 0) {
                  if (hit.part == menu_hit::kTabPrev) tab_left = true;
                  else if (hit.part == menu_hit::kTabNext) tab_right = true;
@@ -589,7 +589,7 @@ index 9bf441c4..49ae7b6c 100644
                  else if (hit.part == menu_hit::kRow && cur_tab == TAB_MODS) {
                      if (hit.side) press[hit.side < 0 ? 3 : 4] = true;   // (a switch's halves: Off and On)
                  } else if (hit.part == menu_hit::kSlider) {
-@@ -5554,7 +5750,10 @@ void menu_tick() {
+@@ -5556,7 +5752,10 @@ void menu_tick() {
          if ((tab_left || tab_right) && cur_tab == TAB_RECORDINGS) cur_tab = TAB_DEBUG;
          if ((tab_left || tab_right) && cur_tab == TAB_SPEAKER) cur_tab = TAB_AUDIO;
          if ((tab_left || tab_right) && cur_tab == TAB_SIM_TURF) cur_tab = TAB_GRAPHICS;
@@ -601,7 +601,7 @@ index 9bf441c4..49ae7b6c 100644
              do cur_tab = (cur_tab + (tab_left ? TAB_COUNT - 1 : 1)) % TAB_COUNT;
              while (!tab_shown(cur_tab));
              changed = true;
-@@ -5634,6 +5833,7 @@ void menu_tick() {
+@@ -5636,6 +5835,7 @@ void menu_tick() {
              changed = true;
          }
      }

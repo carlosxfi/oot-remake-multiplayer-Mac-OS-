@@ -10,6 +10,8 @@ plain look and logs why.
 Writes:
   font-regular.otf, font-medium.otf  the game's HUD font (Normal.buif's Latin font)
   heart-0.png ... heart-4.png        a heart with 0 to 4 quarters filled, 96 x 96
+  map-arrow.png                      the game's map arrow (Link's own), pointing up (Hookshot turns it as drawn)
+  map-arrow-fill.png                 its inside, white: drawn tinted with each player's colour
   places.json                        {scene: the game's own place name}
   hud.json                           what was made, and the language
 
@@ -18,6 +20,7 @@ come from the files given.
 """
 import argparse
 import json
+import math
 import os
 import re
 import struct
@@ -40,6 +43,15 @@ HEART_BASE = "HeartBase_00"          # the heart's shape, grey: drawn dark for a
 HEART_SHADOW = "HeartSh_00"
 HEART_QUARTERS = ("HeartGlowBase_01", "HeartGlowBase_02", "HeartGlowBase_03")  # 1/4, 2/4, 3/4
 TEXTURES = (HEART_FULL, HEART_BASE, HEART_SHADOW) + HEART_QUARTERS
+# The map's player arrow (PaMapIconPlayer_00, Link's own arrow on the minimap and the Map page): _00 is the game's
+# mask (white rim, black inside: the game fills the inside with the icon's colour), _01 Link's own (red inside, its
+# rim's cream), Sh_00 its shadow. The other players get it with their colour inside, turned the way they face.
+MAP_ARROW = "MapIconPlayer_00"
+MAP_ARROW_LINK = "MapIconPlayer_01"
+MAP_ARROW_SHADOW = "MapIconPlayerSh_00"
+MAP_ARROW_TEXTURES = (MAP_ARROW, MAP_ARROW_LINK, MAP_ARROW_SHADOW)
+MAP_ARROW_SIZE = 80     # the square kept around the picture's centre (the arrow and its shadow, at any turn)
+MAP_ARROW_FILES = ("map-arrow.png", "map-arrow-fill.png")   # (rim, inside): hookshot/src/coop_hookshot.cpp LoadLook
 LOCATIONS = "LocationMsg/Location.msbt"
 # The scene name's age or variant suffix: KokiriForest_Child -> KokiriForest.
 SCENE_SUFFIX = re.compile(r"_(Child|Adult)(_Alternative)?$|_Alternative$")
@@ -274,6 +286,39 @@ def compose_hearts(px, w, h):
     return out
 
 
+def compose_map_arrow(px, w, h):
+    """(rim, inside) of the game's player arrow, as RGBA bytes (w x h), from the decoded pictures {name: rgba}.
+    rim: the shadow and the rim in Link's arrow's own colours, drawn as it is; inside: white, shaded as Link's red
+    inside, drawn tinted with the player's colour over the rim picture (the game's own mask splits the two)."""
+    mask, link, shadow = px[MAP_ARROW], px[MAP_ARROW_LINK], px[MAP_ARROW_SHADOW]
+    n = w * h
+    inside_a = [mask[i * 4 + 3] / 255.0 * (1.0 - mask[i * 4] / 255.0) for i in range(n)]
+    peak = max((link[i * 4] for i in range(n) if inside_a[i] > 0.5), default=255) or 255
+    rim, inside = bytearray(n * 4), bytearray(n * 4)
+    for i in range(n):
+        ra = mask[i * 4 + 3] / 255.0 * (mask[i * 4] / 255.0)
+        r, g, b, a = _over((link[i * 4], link[i * 4 + 1], link[i * 4 + 2], ra),
+                           (0.0, 0.0, 0.0, shadow[i * 4 + 3] * SHADOW_ALPHA / 255.0))
+        rim[i * 4:i * 4 + 4] = bytes((int(r + 0.5), int(g + 0.5), int(b + 0.5), int(a * 255 + 0.5)))
+        v = min(255, int(link[i * 4] * 255 / peak + 0.5))
+        inside[i * 4:i * 4 + 4] = bytes((v, v, v, int(inside_a[i] * 255 + 0.5)))
+    return bytes(rim), bytes(inside)
+
+
+def crop_centre(rgba, w, h, size):
+    """The size x size square around the picture's centre (outside it: clear)."""
+    out = bytearray(size * size * 4)
+    x0, y0 = (w - size) // 2, (h - size) // 2
+    for y in range(size):
+        sy = y0 + y
+        if 0 <= sy < h:
+            for x in range(size):
+                sx = x0 + x
+                if 0 <= sx < w:
+                    out[(y * size + x) * 4:(y * size + x) * 4 + 4] = rgba[(sy * w + sx) * 4:(sy * w + sx) * 4 + 4]
+    return bytes(out)
+
+
 def _over(top, under):
     tr, tg, tb, ta = top
     ur, ug, ub, ua = under
@@ -294,12 +339,13 @@ def build(reader, out_dir, lang=DEFAULT_LANG, log=print):
         return zs.maybe_decompress(dicts, reader.read(rel))
 
     os.makedirs(out_dir, exist_ok=True)
-    made = {"format": FORMAT, "language": lang, "fonts": [], "hearts": [], "places": 0}
+    made = {"format": FORMAT, "language": lang, "fonts": [], "hearts": [], "map_arrows": 0, "places": 0}
     for out_name, font in FONTS.items():
         rel = _one(reader, f"{FONT_DIR}/{font}.*.bf?tf.zs")
         _write(os.path.join(out_dir, out_name), deobfuscate_font(read(rel)))
         made["fonts"].append(out_name)
-    tex = texture.read_bntx(read(_one(reader, BNTX)), set(TEXTURES))
+    tex = texture.read_bntx(read(_one(reader, BNTX)), set(TEXTURES) | set(MAP_ARROW_TEXTURES))
+    arrow_px = {n: texture.decode(tex.pop(n)) for n in MAP_ARROW_TEXTURES if n in tex}
     missing = [n for n in TEXTURES if n not in tex]
     if missing:
         raise HudError(f"the game's HUD pictures have no {', '.join(missing)}")
@@ -311,7 +357,8 @@ def build(reader, out_dir, lang=DEFAULT_LANG, log=print):
         name = f"heart-{q}.png"
         _write(os.path.join(out_dir, name), texture.png(w, h, rgba))
         made["hearts"].append(name)
-    mals = sarc.read(read(_one(reader, f"Mals/{lang}.Product.*.sarc.zs")))
+    made["map_arrows"] = _write_map_arrows(arrow_px, out_dir, log)
+    mals =sarc.read(read(_one(reader, f"Mals/{lang}.Product.*.sarc.zs")))
     if LOCATIONS not in mals:
         raise HudError(f"the {lang} text has no {LOCATIONS}")
     places = place_names(parse_msbt(mals[LOCATIONS]), banc_scenes(reader))
@@ -319,9 +366,29 @@ def build(reader, out_dir, lang=DEFAULT_LANG, log=print):
            json.dumps(places, ensure_ascii=False, indent=1, sort_keys=True).encode("utf-8"))
     made["places"] = len(places)
     _write(os.path.join(out_dir, "hud.json"), json.dumps(made, indent=1).encode("utf-8"))
-    log(f"co-op HUD: font, {len(made['hearts'])} hearts and {len(places)} place names "
+    log(f"co-op HUD: font, {len(made['hearts'])} hearts, {made['map_arrows']} map arrow and "
+        f"{len(places)} place names "
         f"({lang}) in {out_dir}")
     return made
+
+
+def _write_map_arrows(arrow_px, out_dir, log):
+    """map-arrow.png and map-arrow-fill.png, pointing up (the module has Hookshot turn them to each player's facing,
+    at any angle); 1 when written (0: the game has not the pictures, the maps then show the players' names only)."""
+    if len(arrow_px) != len(MAP_ARROW_TEXTURES):
+        log("co-op HUD: no map arrow pictures in this game (" +
+            ", ".join(n for n in MAP_ARROW_TEXTURES if n not in arrow_px) + "): names only on the maps")
+        return 0
+    side = math.isqrt(len(arrow_px[MAP_ARROW]) // 4)
+    if any(len(p) != side * side * 4 for p in arrow_px.values()):
+        log("co-op HUD: the map arrow pictures are not all one square size: names only on the maps")
+        return 0
+    rim, inside = compose_map_arrow(arrow_px, side, side)
+    size = min(MAP_ARROW_SIZE, side)
+    rim, inside = crop_centre(rim, side, side, size), crop_centre(inside, side, side, size)
+    _write(os.path.join(out_dir, MAP_ARROW_FILES[0]), texture.png(size, size, rim))
+    _write(os.path.join(out_dir, MAP_ARROW_FILES[1]), texture.png(size, size, inside))
+    return 1
 
 
 def _write(path, data):

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "coop_pickups.h"
+#include "../test_temp.h"
 
 namespace {
 
@@ -54,7 +55,7 @@ TEST_CASE("pickups: the one-time list of the kit's start (row 219)") {
 }
 
 TEST_CASE("pickups: a one-time list's holders only while its served list is the same (row 219)") {
-    const auto dir = std::filesystem::temp_directory_path() / "coop_one_time_test";
+    const auto dir = ModTestDir("coop_one_time_test");
     std::filesystem::remove_all(dir);
     const std::string served = "seed mod/romfs/GameData/GameDataList.Product.110.byml.zs";
     WriteFile(dir / served, "the seed's list");

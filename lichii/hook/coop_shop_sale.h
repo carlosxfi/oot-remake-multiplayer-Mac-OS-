@@ -134,32 +134,68 @@ private:
     coop::host::FlagStore& inner_;
 };
 
-// The randomizer's Great Fairy gifts, given once for the group (tracker row 95's related case). Read from OOTRR 0.7.3
-// (data/flow_extra.json "<fountain> Great Fairy Reward", commit fdb29c1): with the rewards shuffled, a returning visit
-// no longer asks IsGet of the fountain's vanilla reward (a shuffled gift never sets it, so she gave it on every visit);
-// it asks a spare saved Bool, an unused HavePlayedEvent.Dm_Title_* row (ResetTypeValue 8) set right after the gift.
-// The fountain's first visit (HavePlayedEvent.Dm_FairyFountain_*) is shared as story, these Bools were not: after one
-// player's gift, every other game's fountain took the next visit as a returning one with the gift not given, and gave
-// the shuffled reward again. Shared by the pickup rule (0 to 1 goes out, a 1 never back to 0), as the scrubs' sales;
-// another player's 1 waits while our Link is in an event (a fountain's own), so a running gift scene is never cut.
-// No vanilla flow sets them, so they are shared in every session (nothing changes without a seed that shuffles them).
+// One-time gifts whose "already given" Bool no list shared, so each player got the gift again (row 237, "OOTRR
+// items repeat"; rows 171/179, #244). Each is shared by the pickup rule (0 to 1 goes out, a 1 never back to 0), as
+// the scrubs' sales; another player's 1 waits while our Link is in an event (the gift's own scene), so a running
+// gift is never cut. Shared in every session: what they hold back is a gift of the group's.
+//
+// The randomizer's gates (read from OOTRR 0.8.2's data/flow_extra.json; the same rows since 0.7.x): a returning
+// visit or a second talk no longer asks IsGet / the pouch for the vanilla item (a shuffled gift never sets it); it asks
+// a spare saved Bool (an unused row, ResetTypeValue 8) that OOTRR's flow sets right after the gift. No vanilla flow
+// sets them, so nothing changes without a seed that shuffles these spots.
+// - The six Great Fairy rewards (commit fdb29c1, "<fountain> Great Fairy Reward"): HavePlayedEvent.Dm_Title_*.
+//   The fountain's first visit (HavePlayedEvent.Dm_FairyFountain_*) is shared as story; with these not shared,
+//   every other game took the next visit as a returning one with the gift not given and gave it again.
+// - Cowsanity's eight cows ("... Cow", kind once_grant): the milk entry asks HavePlayedEvent.Dm_StaffCredit_0023..
+//   0030 and, while clear, sets it and hands out the seed's item; milk is repeatable, so each player's cow paid.
+// - Medigoron ("GC Medigoron"): his stock check asks the dead talk flag
+//   HaveTalked_Special.Npc_Goron_Medigoron_Adult_Talk_Event26 instead of the Giant's Knife; the shop sets it after
+//   the hand over: a second player bought the seed's item again.
+// The frogs (Zora's River, MiniGame_FrogTenors.bfevfl, read from the romfs): TeachNewMusic pays each song once,
+// asked by its own Bool (MiniGame_FrogTenors_<song>, set as the song is taught); the bug game (MushiToriGame) pays
+// the Heart Piece while MiniGame_FrogTenors_InsectRepellent is 0 (event 100; the first win sets it, event 63) and a
+// Blue Rupee after. The Song of Storms pays a Heart Piece too: event 22 (MiniGame_FrogTenors_StormSong clear) ->
+// 167 -> 184 -> fork 141 (146 -> 23 sets the Bool) -> 145 -> 247 GetInEvent Obj_Heart_Piece; the scene's
+// HeartPieceAnchor names the same Bool. Under OOTRR ("ZR Frogs <song>", "ZR Frogs Ocarina Game" = event 247, in every
+// seed's pool, "ZR Frogs Bug Game") each payout is the seed's item, so every player got all seven again; in the base
+// game each player got the song rupees and the group two Heart Pieces more. All six song Bools are shared, so the
+// frogs' own talk sets MiniGame_FrogTenors_SongClear (events 13-19) and opens the bug game in every game. The Storms
+// Bool is also the only input of Zora's River's water group (coop_room_objects.cpp kGroupFlags): shared, it moves
+// that water in every game, as the dungeon groups do. The payout tier (MiniGame_FrogTenors_GetCount) and the bug
+// game's win count stay each game's own.
 struct GiftFlag {
     std::uint32_t hash;  // Murmur3 x86 32, seed 0, of the name
     std::string_view name;
     std::string_view what;  // for the log
 };
 
-inline constexpr std::array<GiftFlag, 6> kFairyGifts{{
+inline constexpr std::array<GiftFlag, 22> kOnceGifts{{
     {0xbc9cec9b, "HavePlayedEvent.Dm_Title_0080", "the Death Mountain Trail Great Fairy's gift (Din)"},
     {0x93ada401, "HavePlayedEvent.Dm_Title_0096", "the Hyrule Castle Great Fairy's gift (Power)"},
     {0x0f39b5f4, "HavePlayedEvent.Dm_Title_0110", "the Zora's Fountain Great Fairy's gift (Farore)"},
     {0x573cbeb9, "HavePlayedEvent.Dm_Title_0120", "the Desert Colossus Great Fairy's gift (Nayru)"},
     {0x75241a60, "HavePlayedEvent.Dm_Title_0056", "the outside Ganon's Castle Great Fairy's gift (Courage)"},
     {0x881fb42a, "HavePlayedEvent.Dm_Title_0100", "the Death Mountain Crater Great Fairy's gift (Wisdom)"},
+    {0xdd17d3eb, "HavePlayedEvent.Dm_StaffCredit_0023", "the randomizer's Gerudo Fortress cow"},
+    {0x88e4cc5a, "HavePlayedEvent.Dm_StaffCredit_0024", "the randomizer's Hyrule Field grotto cow"},
+    {0xf0746d5f, "HavePlayedEvent.Dm_StaffCredit_0025", "the randomizer's Lon Lon stable left cow"},
+    {0xf064742b, "HavePlayedEvent.Dm_StaffCredit_0026", "the randomizer's Lon Lon stable right cow"},
+    {0x4f4c1315, "HavePlayedEvent.Dm_StaffCredit_0027", "the randomizer's Link's house cow"},
+    {0xce98af96, "HavePlayedEvent.Dm_StaffCredit_0028", "the randomizer's Gerudo Valley cow"},
+    {0xa643c625, "HavePlayedEvent.Dm_StaffCredit_0029", "the randomizer's Death Mountain grotto cow"},
+    {0xe099da54, "HavePlayedEvent.Dm_StaffCredit_0030", "the randomizer's Impa's house cow"},
+    {0x0e3dad8a, "HaveTalked_Special.Npc_Goron_Medigoron_Adult_Talk_Event26", "the randomizer's Medigoron sale"},
+    {0x6e3948e7, "MiniGame_FrogTenors_ZeldaLullaby", "the frogs' Zelda's Lullaby payout"},
+    {0x8d068302, "MiniGame_FrogTenors_EponaSong", "the frogs' Epona's Song payout"},
+    {0xf675a0f2, "MiniGame_FrogTenors_SariaSong", "the frogs' Saria's Song payout"},
+    {0x61305ed4, "MiniGame_FrogTenors_SunSong", "the frogs' Sun's Song payout"},
+    {0xcc4216b9, "MiniGame_FrogTenors_TimeSong", "the frogs' Song of Time payout"},
+    {0xd578df95, "MiniGame_FrogTenors_StormSong", "the frogs' Song of Storms Heart Piece"},
+    {0x8ffec767, "MiniGame_FrogTenors_InsectRepellent", "the frogs' bug game Heart Piece"},
 }};
 
 inline const GiftFlag* FindGift(std::uint32_t hash) {
-    for (const GiftFlag& f : kFairyGifts) {
+    for (const GiftFlag& f : kOnceGifts) {
         if (f.hash == hash) return &f;
     }
     return nullptr;
@@ -172,7 +208,7 @@ inline std::size_t MergeGifts(std::optional<coop::host::SharedFlags>& shared) {
     std::vector<coop::host::FlagKey> keys;
     if (shared) keys = shared->keys();
     const std::size_t before = shared ? shared->size() : 0;
-    for (const GiftFlag& f : kFairyGifts) keys.push_back(coop::host::FlagKey(f.hash, std::uint16_t{0}));
+    for (const GiftFlag& f : kOnceGifts) keys.push_back(coop::host::FlagKey(f.hash, std::uint16_t{0}));
     shared = coop::host::SharedFlags(std::move(keys));
     return shared->size() - before;
 }

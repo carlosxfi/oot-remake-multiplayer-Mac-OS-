@@ -73,6 +73,49 @@ inline std::string Fit(const std::string& t, std::size_t n) {
     return t.substr(0, PrefixEnd(t, n - 3, 2 * n - 6)) + "...";
 }
 
+// `head` + `tail` in `n` letters (and bytes) as Fit counts them, the tail kept whole: whole when both fit, else the head
+// cut (Fit's "...") before the tail. "" when the tail leaves no room for a head of 4 letters (the caller picks what
+// shows then). One rule for every text that ends in a tag the player must read whole: a list heading's page line
+// (CoopListPages::Heading), a setting's " (restart)" (menu-restart-c41: the tag was taken from a fixed budget and cut
+// "Intel shader compiles" where it fitted in 0.11.12).
+inline std::string FitTail(const std::string& head, const std::string& tail, std::size_t n) {
+    const std::string whole = head + tail;
+    if (whole.size() <= n && Halves(whole) <= 2 * n) return whole;
+    const std::size_t tail_bytes = tail.size(), tail_halves = Halves(tail);
+    if (tail_bytes + 4 > n || tail_halves + 8 > 2 * n) return std::string();
+    const std::string cut = Fit(head, std::min(n - tail_bytes, (2 * n - tail_halves) / 2));
+    return cut.empty() ? std::string() : cut + tail;
+}
+
+// What a text pane shows of `words` that end in `tail` (kept whole; "" or not its end: none), for the width fit
+// (coop_pause_tab_module.cpp FitPut): `brief`, when `use_brief`, takes the tail's place (a shorter tag that says the
+// same: a setting's " *" for " (restart)", as 0.11.12 showed it); `n` the letter budget (0: whole). Never "" for words
+// that are not: a tail too long for `n` gives way to the plain cut.
+inline std::string FitShown(const std::string& words, const std::string& tail, const std::string& brief, bool use_brief,
+                            std::size_t n) {
+    const bool tailed = !tail.empty() && words.size() >= tail.size() &&
+                        words.compare(words.size() - tail.size(), tail.size(), tail) == 0;
+    if (!tailed) return n != 0 ? Fit(words, n) : words;
+    const std::string head = words.substr(0, words.size() - tail.size());
+    const std::string& end = use_brief && !brief.empty() ? brief : tail;
+    if (n == 0) return head + end;
+    const std::string kept = FitTail(head, end, n);
+    return kept.empty() ? Fit(head + end, n) : kept;
+}
+
+// The letter budget (for Fit) that makes `shown`, drawn `drawn` wide by the game, fit its box `box` wide
+// (menu-polish-01113: a count of letters alone cannot know a proportional font: "Co-op came with the game" is 24
+// letters and ran past its button). The drawn width scaled down to the box, always at least a letter shorter than now,
+// never below 4 (one letter and "..."); 0 when it fits already, or there is nothing to cut.
+inline std::size_t LettersForWidth(const std::string& shown, float drawn, float box) {
+    if (!(box > 0.0f) || !(drawn > box)) return 0;
+    const std::size_t now = (Halves(shown) + 1) / 2;
+    if (now <= 4) return 0;
+    std::size_t n = static_cast<std::size_t>(static_cast<float>(now) * box / drawn);
+    if (n >= now) n = now - 1;
+    return n < 4 ? 4 : n;
+}
+
 // The end of the first line of `t` from `at`, for a line of `n` letters: the last space that fits, else the letter
 // before the one that does not (never inside a letter; at least one letter, so a loop always moves on).
 inline std::size_t LineEnd(const std::string& t, std::size_t at, std::size_t n) {

@@ -43,7 +43,10 @@ The pack's menu files (build.py --title-rows / --pause-tab: larger copies of fil
 (guard_menus): kept out of the pack's romfs, in `<pack>/_coop-menus`, while the table the game reads lacks their sizes;
 else the language archive fails to load and the game crashes at boot.
 
-    python -I merge_tables.py --mods <game>/mods [--romfs <game>/romfs] [--undo]
+    python -I merge_tables.py --mods <game>/mods [--romfs <game>/romfs] [--undo] [--in-game]
+
+One merge at a time on a mods folder (merge_lock). `--in-game`: the game runs this itself at a start the kit did not
+make (the Insert menu's Restart now, longshot.exe by hand; host/mods.c, patch 0011, player report 288).
 
 Prints what it did, one line each. Exit 0 also when there is nothing to do; 1 when a table could not be merged
 (said why; the game starts anyway and the module says the puppets are off).
@@ -56,9 +59,9 @@ import sys
 
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from puppet_pack import byml, msbt, pause_menu, rstb, sarc, title_menu, tunic, tunic_extra, ui_pack, zs  # noqa: E402
+    from puppet_pack import byml, charsel_names, msbt, pause_menu, rstb, sarc, title_menu, tunic, tunic_extra, ui_pack, zs  # noqa: E402
 else:
-    from . import byml, msbt, pause_menu, rstb, sarc, title_menu, tunic, tunic_extra, ui_pack, zs
+    from . import byml, charsel_names, msbt, pause_menu, rstb, sarc, title_menu, tunic, tunic_extra, ui_pack, zs
 
 LIST_FILE = "coop-mods.list"
 KEEP_DIR = "_coop-size-table"
@@ -80,7 +83,9 @@ MENU_KEEP = "_coop-menus"     # the pack's menu files while the table the game r
 # (coop_puppet.json's "menu_keys": the file lists kept aside together, ui_pack.MENU_KEYS when the pack was made; a pack
 # without the field has the two old keys)
 MEMBERS_KEEP = "_coop-archives"   # a mod's own copies of archives the pack's members were merged into (merge_members)
-MEMBERS_HEAD = "coop-members 1"
+# (2: menu-customize-01113, Character Select's picker names made readable (add_snail_placeholders' tidy_picker): a
+# kit merged before re-merges once from its kept copies)
+MEMBERS_HEAD = "coop-members 2"
 
 
 class MergeError(Exception):
@@ -640,7 +645,7 @@ def merge_members(root, romfs, say=print):
     pack's members (its texts, MenuOverlay_00, PlusMenu_00) were lost. The winner's copy gets every member the pack
     changed from the game's own archive (romfs) where the winner left that member as the game has it; a member both
     changed stays the winner's and is named (a decision for the two mods: the pause header). Its own copy is kept in
-    `<mod>/_coop-archives/<path>` with `<path>.txt` (`coop-members 1` / `out <the file written>` / `in <the pack's
+    `<mod>/_coop-archives/<path>` with `<path>.txt` (`coop-members 2` / `out <the file written>` / `in <the pack's
     copy>` / `fit <size path> <size>`), so the next start merges again only when one of them changed, from the kept
     copy; --undo puts it back. Needs the game's romfs (to tell which member changed); without it nothing is merged.
 
@@ -716,11 +721,65 @@ SNAIL_PLACEHOLDER = "." * 64
 
 
 def add_snail_placeholders(entries):
-    """(entries with the placeholders in his Customize screen's message file, whether one changed)."""
+    """(entries with the placeholders in his Customize screen's message file and his picker's names readable,
+    whether one changed)."""
     labels = {"Coop_Custom_%02d" % i: SNAIL_PLACEHOLDER for i in range(SNAIL_SLOTS)}
     out, changed = [], False
     for n, d in entries:
         if n == SNAIL_MSG:
+            d2 = ui_pack.add_labels(d, labels, replace=True)
+            changed = changed or d2 != d
+            d = d2
+        elif n == charsel_names.PICKER_MSG:
+            # (menu-customize-01113: his picker's model ids, "Gerudo_GEN_002", as readable names; charsel_names.py)
+            d2 = charsel_names.tidy_picker(d)
+            changed = changed or d2 != d
+            d = d2
+        out.append((n, d))
+    return out, changed
+
+
+# menu-customize-01113 (lane A's ask: "keep the words out of the title once the icons show"): his Customize screen's
+# keys as the game shows keys, in its footer's guide-key part (PaGuideKey_00: its words, then the button letter in the
+# button-icon font External_00, docs/game-ui.md "Button letters"); button letters drawn in his title's words pane are
+# empty boxes, so the title said "Y: page  A: Fine-tune" in words. Two copies of that part go into his layout
+# (CharacterCustomize_00, under its RootPane: a copy is a last pane, and only the root's subtree reaches the last one;
+# his N_Custom_00 ends before his overlay and message panes) on the footer's line, left of the game's own "Back"
+# (its icon at x 1794, its words from x 1629; each copy has room for about twelve letters), stored hidden: the module
+# shows each one while its key does something (hookshot/src/coop_snail_custom.h Driver::Keys) and hides both when his
+# screen is left (they are not under his open/close panes). Their words and button
+# letters are messages of his file ("<part>-<pane>", as his Pa_MarkL_00-T_Icon_00), English as his own.
+SNAIL_LAYOUT = "CharacterCustomize_00.buil"
+SNAIL_KEY_SOURCE = "Pa_MarkL_00"      # (his ZL key beside a value: a part, x -300 under N_Mark_00, scale 0.7)
+SNAIL_KEY_PARENT = "RootPane"         # (at 0, 0)
+SNAIL_KEY_LAYOUT = "PaGuideKey_00"
+SNAIL_KEY_SIZE = (200.0, 200.0)       # (MenuOverlay_00's Pa_Guide_NN)
+SNAIL_KEY_Y = -1018.0                 # (the footer's guide line: MenuOverlay_00 A_FirstGuide_00)
+# (name, icon centre x, button letter, words)
+SNAIL_KEYS = (("Pa_CoopKeyY_00", 1510.0, "\ue043", "Next page"),
+              ("Pa_CoopKeyA_00", 1050.0, "\ue040", "Fine-tune"))
+
+
+def add_snail_keys(entries):
+    """(entries with co-op's key parts in his Customize layout and their messages in his message file, whether one
+    changed). A layout or file that has them already is left as it is."""
+    out, changed = [], False
+    for n, d in entries:
+        if n == SNAIL_LAYOUT:
+            panes, _ = ui_pack.read_layout(d)
+            names = {p.name for p in panes}
+            if SNAIL_KEY_SOURCE in names and SNAIL_KEY_PARENT in names and SNAIL_KEYS[0][0] not in names:
+                source_x, source_y = pause_menu._xy(d, SNAIL_KEY_SOURCE)
+                d = ui_pack.clone_parts(d, [ui_pack.Copy(SNAIL_KEY_SOURCE, name, (x - source_x, SNAIL_KEY_Y - source_y),
+                                                         parent=SNAIL_KEY_PARENT, hidden=True, part_layout=SNAIL_KEY_LAYOUT,
+                                                         size=SNAIL_KEY_SIZE, scale=(1.0, 1.0))
+                                            for name, x, _, _ in SNAIL_KEYS])
+                changed = True
+        elif n == SNAIL_MSG:
+            labels = {}
+            for name, _, icon, words in SNAIL_KEYS:
+                labels[name + "-T_Icon_00"] = icon
+                labels[name + "-T_Guide_00"] = words
             d2 = ui_pack.add_labels(d, labels, replace=True)
             changed = changed or d2 != d
             d = d2
@@ -1024,6 +1083,8 @@ def merge_members_one(root, codec, rel, win_name, win_path, pack_path, game, say
             out.append((n, d))
     out.extend((n, x) for n in sorted(take) if n not in done for x in take[n])
     out, placeholders = add_snail_placeholders(out)
+    out, keys = add_snail_keys(out)
+    placeholders = placeholders or keys
     if take or placeholders:
         new_data = sarc.write(out, data_align=16)
         data = codec.pack(new_data, orig_raw)
@@ -1049,8 +1110,8 @@ def merge_members_one(root, codec, rel, win_name, win_path, pack_path, game, say
         + (f" A label both changed, the nearer mod's kept: {', '.join(labels_kept)}." if labels_kept else "")
         + (f" {', '.join(gave_english)}: no archive in this language, its English messages taken."
            if gave_english else "")
-        + (" Its Customize screen's messages got co-op's placeholders (co-op's customization in it)."
-           if placeholders else ""))
+        + (" Character Select's screens got co-op's part (his Customize screen's placeholders and keys, his picker's"
+           " names readable)." if placeholders else ""))
     return need
 
 
@@ -1254,7 +1315,7 @@ def _menu_short(codec, order, pack_path, files):
     return None, 0
 
 
-def guard_menus(root, romfs, say=print):
+def guard_menus(root, romfs, say=print, put_back=True):
     """The menu files only where the game can load them. They are larger than the game's own (more labels, more panes),
     so the size table the game reads must hold the pack's sizes for them: the game loads a file larger than its entry
     as a failed resource, and the language archive failing at boot crashed the game (0xc0000005 reading guest 0x8 in
@@ -1264,7 +1325,10 @@ def guard_menus(root, romfs, say=print):
     <pack>/_coop-menus (beside its romfs: the game never reads them there) and the game keeps its own menus (the module
     keeps the title rows and the pause tab off without their panes). They go back at the first start the table holds
     them again; a pack made since (its files in romfs again) drops the kept copies. Returns 1 when it could not move
-    a file, else 0."""
+    a file, else 0.
+    put_back=False (--in-game: the game runs this merge itself, at a start the kit did not make, player report 288):
+    files kept aside stay there. The game was built without the code that goes with them (charsel_native_parked), and
+    the game cannot build itself; the next start with the kit puts them back and builds."""
     order = load_order(root)
     pack_path = next((p for n, p in order if fold(n) == PACK), None)
     if pack_path is None:
@@ -1292,6 +1356,11 @@ def guard_menus(root, romfs, say=print):
                     "pack's menu files: the title's co-op rows and the pause menu's Multiplayer tab are off this start "
                     "(the game's own menus; co-op still works from the Minus menu). Turn that mod off, or merge the "
                     "pack's entries into its table, and they come back.")
+            return 0
+        if not put_back:
+            if os.path.isdir(keep):
+                say("Menus: the puppet pack's menu files stay aside this start (the game was built without them): "
+                    "start the game with Start Squadala and they come back.")
             return 0
         back = 0
         for rel in files:
@@ -1347,6 +1416,44 @@ def park_menus(root, say=print):
         say(f"Menus: the title's co-op rows and the pause menu's Multiplayer tab are off this start ({moved} files "
             "kept aside: the size tables could not be checked); the next start that can merge puts them back.")
     return moved
+
+
+LOCK_WAIT = 120.0   # seconds a start waits for another start's merge of the same mods folder (the game's limit: 180)
+
+
+def merge_lock(root, wait=None):
+    """One merge at a time on a mods folder (player report 288: the game runs this merge itself at a start the kit did
+    not make, so two games of one folder started together, Nucleus Co-op or local co-op, would both write the merged
+    files). A lock on a file in the temp folder named by the mods folder's path (nothing is put into the mods folder),
+    held by the operating system for this process only, so a merge that died leaves none. Returns the open file (keep
+    it until the merge is done), False when the lock cannot be made here (the merge runs as before), None when
+    another merge still held it after `wait` seconds."""
+    import tempfile
+    import time
+    try:
+        key = fnv64_bytes(os.path.normcase(os.path.realpath(root)).encode("utf-8", "surrogateescape"))
+        f = open(os.path.join(tempfile.gettempdir(), f"coop-merge-{key}.lock"), "a+b")
+    except OSError:
+        return False
+    until = time.monotonic() + (LOCK_WAIT if wait is None else wait)
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return f
+        except OSError:
+            if time.monotonic() >= until:
+                f.close()
+                return None
+            time.sleep(0.2)
+        except ImportError:
+            f.close()
+            return False
 
 
 def original_table(root, mod_path, fname):
@@ -1888,9 +1995,24 @@ def main(argv=None):
     ap.add_argument("--mods", required=True)
     ap.add_argument("--romfs", default="")
     ap.add_argument("--undo", action="store_true")
+    ap.add_argument("--in-game", action="store_true",
+                    help="run by the game itself (host/mods.c, patch 0011): menu files kept aside stay aside")
     a = ap.parse_args(argv)
     if not os.path.isdir(a.mods):
         return 0
+    lock = merge_lock(a.mods)
+    if lock is None:
+        print(f"Size tables: not merged (another start of the game was still merging this mods folder after "
+              f"{LOCK_WAIT:.0f} s).")
+        return 1
+    try:
+        return _main(a)
+    finally:
+        if lock:
+            lock.close()
+
+
+def _main(a):
     if a.undo:
         undo(a.mods)
         return 0
@@ -1905,7 +2027,7 @@ def main(argv=None):
         models_failed = merge_self_models(a.mods, a.romfs)   # (row 202: your Link's colours with Character Select)
         failed = merge_mods(a.mods, a.romfs, fit=fit) + members_failed + models_failed
         # Last, on the tables as the game will read them: the pack's menu files only where they can load.
-        menus_failed = guard_menus(a.mods, a.romfs)
+        menus_failed = guard_menus(a.mods, a.romfs, put_back=not a.in_game)
         return 1 if (failed or rows_failed or menus_failed or once_failed) else 0
     except SystemExit:  # (zs._zstd: no zstandard package)
         print("Size tables: not merged (this Python has no zstandard package): with a mod that has its own size "

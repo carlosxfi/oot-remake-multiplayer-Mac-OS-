@@ -20,8 +20,12 @@
 #include <fmt/format.h>
 
 #include "common/logging.h"
+#include "coop_auto_press.h"
+#include "coop_game_clock.h"
 #include "coop_hook.h"
 #include "coop_i18n.h"
+#include "coop_lobby.h"
+#include "coop_lobby_game.h"
 #include "coop_pack_notice.h"
 #include "coop_mod_screens.h"
 #include "coop_mods_runtime.h"
@@ -32,6 +36,7 @@
 #include "coop_runtime.h"
 #include "coop_save.h"
 #include "coop_title_menu.h"
+#include "coop_menu_nav.h"
 #include "coop_title_native.h"
 #include "hos_coop_menu.h"
 
@@ -198,9 +203,7 @@ std::atomic<std::uint64_t> g_auto_load_until{0};   // LoadHostSaveOnTitle: Conti
 std::atomic<bool> g_auto_load_test{false};          // (a test's: no session to wait for)
 std::atomic<std::uint64_t> g_auto_press_ms{0};      // the presses that load it began (0: none)
 // (the game's Continue, then its save list's newest save (the host's, the co-op folder's only one), then Load: an A
-// each, at these times after the focus went to Continue; the player's buttons wait meanwhile)
-constexpr std::array<std::uint64_t, 4> kAutoPressAt{400, 2900, 5400, 7900};   // (the last again: Load came late once)
-constexpr std::uint64_t kAutoPressHold = 100, kAutoPressEnd = 9000;
+// each, at CoopAutoPress::kAtMs after the focus went to Continue; the player's pad, keys and mouse wait meanwhile)
 std::uint64_t g_title_since = 0;   // when the title's menu came up (0: not up)
 const char* g_sound = nullptr;     // a sound to play at the next step
 std::uint64_t g_swallow = 0;       // pad bits kept from the game until let go (the rows the module answers)
@@ -585,9 +588,8 @@ const char* StopBtnNum(void* ctx, std::uint64_t layout, float frame) {
 // tools/puppet_pack/title_menu.py): the list's buttons a page uses shown (kSetVisible, the pause tab's), the hint line
 // put right under the last (its own place, the buttons' step under Pa_Button_03), the column raised (its alignment
 // pane A_BtnAlign_00 moved up, CoopTitleNative::ColumnRaise on the buttons' boxes as the game draws them) so the
-// lowest ends on the screen, the logo (N_LogoAll_00) hidden while the column is taller than the game's four, and a
-// row that cannot be used dimmed (the button's own alpha, kPaneAlpha). All put back for the title's own menu. The
-// title's step only.
+// lowest ends on the screen (on a co-op page: centred, the logo hidden; ShowColumn), and a row that cannot be used
+// dimmed (the button's own alpha, kPaneAlpha). All put back for the title's own menu. The title's step only.
 constexpr std::uint64_t kSetVisible = CoopPauseTab::kSetVisible, kPaneAlpha = CoopPauseTab::kPaneAlpha,
                         kPaneMoved = CoopPauseTab::kPaneMoved;
 constexpr std::uint64_t kOwnY = CoopPauseTab::kPaneOwnY;
@@ -600,6 +602,7 @@ struct Column {
     float raised = 0, measured = 0;                // the raise now; the lowest box it was made for
     int shown = -1;                                // list buttons shown (-1: not set yet)
     bool hint_on = false, logo_off = false;
+    bool centred = false;                          // the raise was made for a co-op page (ColumnCentre)
     std::array<bool, CoopTitleNative::kMaxButtons> dim{};
     bool logged = false;
 };
@@ -656,8 +659,12 @@ void FindColumn(void* ctx, std::uint64_t screen, std::uint64_t layout) {
 }
 
 // The column for `buttons` shown (the game's four: the title's own menu), the hint line under them or not, rows dimmed.
+// `page`: a co-op page (Host a game, Join a game, a code, Co-op Settings...): the logo (N_LogoAll_00) hidden and the
+// column in the screen's middle (CoopTitleNative::ColumnCentre) on every one of them, however many rows it has. Before,
+// the logo went only while the column was taller than the game's four, so it came and went from page to page (the
+// audit's item 16). The title's own menu and Multiplayer's rows (`page` false) keep the logo and the game's place.
 void ShowColumn(void* ctx, std::uint64_t screen, int buttons, bool hint,
-                const std::array<bool, CoopTitleNative::kMaxButtons>& dim) {
+                const std::array<bool, CoopTitleNative::kMaxButtons>& dim, bool page = false) {
     const std::uint64_t layout = Read64(screen + kTitleLayout);
     if (layout == 0 || ctx == nullptr) return;
     if (g_column.layout != layout) FindColumn(ctx, screen, layout);
@@ -695,10 +702,13 @@ void ShowColumn(void* ctx, std::uint64_t screen, int buttons, bool hint,
         const float lowest = std::min(last->y0, last->y1) - (hint ? row : 0.0f);
         const float highest = std::max(first->y0, first->y1);
         raise = c.raised;
-        if (lowest != c.measured) {   // (the boxes moved since the last raise: drawn with it, so measured again)
-            raise = buttons > CoopTitleNative::kButtons || hint ? CoopTitleNative::ColumnRaise(lowest, highest, c.raised, scale)
-                                                                : 0.0f;
-            c.measured = lowest;
+        // (the boxes moved since the last raise: drawn with it, so measured again; or a co-op page came or went, whose
+        // column is centred, not raised: the same four buttons and hint as Multiplayer's rows measure the same)
+        if (lowest != c.measured || page != c.centred) {
+            raise = page ? CoopTitleNative::ColumnCentre(lowest, highest, c.raised, scale)
+                    : buttons > CoopTitleNative::kButtons || hint ? CoopTitleNative::ColumnRaise(lowest, highest, c.raised, scale)
+                                                                  : 0.0f;
+            c.measured = lowest, c.centred = page;
         }
         if (!c.logged) {
             c.logged = true;
@@ -707,11 +717,26 @@ void ShowColumn(void* ctx, std::uint64_t screen, int buttons, bool hint,
                      buttons, hint ? " and the hint" : "", first->y0, first->y1, last->y0, last->y1, row, raise);
         }
     }
-    if (buttons == CoopTitleNative::kButtons && !hint) raise = 0;
+    if (buttons == CoopTitleNative::kButtons && !hint && !page) raise = 0;
     if (raise != c.raised) PlaceY(ctx, c.align, c.align_y + raise), c.raised = raise;
-    const bool logo_off = buttons > CoopTitleNative::kButtons;
+    const bool logo_off = page;
     if (logo_off != c.logo_off && c.logo != 0) GameCall3(ctx, Main(kSetVisible), c.logo, logo_off ? 0 : 1);
     c.logo_off = logo_off;
+}
+
+// The screen's own menu sound by name (kScreenSound: xlink's searchAndEmit on the title's user), its bit 0 whether it
+// started. Each name's first play says so in the log once: a name the title's sound user does not know is silent
+// ("button_cancel", the back sound before mc_ReturnFromDetail, is in no table of the game's: SLink2 checked offline,
+// menu-title-01113), so a run's log shows which of ours the title really plays.
+void TitleSound(void* ctx, std::uint64_t screen, const char* name) {
+    const std::uint64_t at = g_api->scratch(ctx, name, std::strlen(name) + 1);
+    if (at == 0) return;
+    const auto r = GameCall3(ctx, Main(kScreenSound), screen, at);
+    static std::vector<std::string> said;   // (the title's step only)
+    if (std::find(said.begin(), said.end(), name) != said.end()) return;
+    said.emplace_back(name);
+    LOG_INFO(Core, "coop: title: the menu sound {} {}", name,
+             r && (*r & 1) != 0 ? "started" : "NOT started (a name the title does not know?)");
 }
 
 // The game moves its cursor a step after it is asked (kSetFocus), so the cursor read back is the old one until then.
@@ -946,7 +971,8 @@ void StepNative(void* ctx, std::uint64_t screen) {
             const std::string& letters = CoopTitleNative::Letters();
             look = CoopTitleNative::TypingLook(v, letters[g_native_letter % letters.size()], g_native_key);
         } else {
-            look = CoopTitleNative::LookFor(v, g_native_top, g_page_buttons.load());
+            static CoopPauseTab::HelpPager hint_pager;   // (g_mutex: a long help's parts in turn on the hint line)
+            look = CoopTitleNative::LookFor(v, g_native_top, g_page_buttons.load(), &hint_pager, NowMs());
             g_native_top = look.top;
         }
         refocus = std::exchange(g_native_refocus, false);
@@ -977,7 +1003,7 @@ void StepNative(void* ctx, std::uint64_t screen) {
     }
     if (g_column.layout != layout) FindColumn(ctx, screen, layout);
     const bool hint = !look.hint.empty() && g_column.hint != 0 && SetLiveText(ctx, layout, kHintSlot, look.hint);
-    ShowColumn(ctx, screen, look.buttons, hint, look.dim);
+    ShowColumn(ctx, screen, look.buttons, hint, look.dim, true);
     if (ok) StepToggle(ctx, screen, layout, look);
     else HideToggle(ctx);
     if (!ok) {   // (an older pack: the page in the overlay, as before)
@@ -992,11 +1018,7 @@ void StepNative(void* ctx, std::uint64_t screen) {
         if (const std::uint64_t button = TitleButton(screen, look.focus); button != 0) AskFocus(ctx, screen, button);
     }
     KeepFocusShown(ctx, screen, look.buttons);   // (after the page's own cursor, which it then leaves alone)
-    if (sound != nullptr) {
-        if (const std::uint64_t at = g_api->scratch(ctx, sound, std::strlen(sound) + 1); at != 0) {
-            GameCall3(ctx, Main(kScreenSound), screen, at);
-        }
-    }
+    if (sound != nullptr) TitleSound(ctx, screen, sound);
 }
 
 // After a crash, the ask to send /bugreport (coop_problem_ask.h): looked for once a run, at the first title the menu
@@ -1054,7 +1076,7 @@ void CloseAsk(bool seen) {
         // to the first button (Continue, Start or New Game), where the title's set-up puts it. Left on the fourth,
         // the next A chose the title's own row there (Multiplayer, then Host's page: smoke hs-players, kit-0119).
         // Not when co-op's page or the host's save took the title: those give the focus themselves.
-        if (seen) g_sound = "button_decide", g_focus_to = 0;
+        if (seen) g_sound = CoopMenuNav::kSoundDecide, g_focus_to = 0;
     }
     if (seen && !CoopProblemAsk::WriteAsked(AskFolder(), CoopProblemAsk::AskedAfter(pending))) {
         LOG_WARNING(Core, "coop: title: bug-reports\\coop-asked.txt could not be written: the ask may come again");
@@ -1098,11 +1120,7 @@ void StepAsk(void* ctx, std::uint64_t screen) {
             AskFocus(ctx, screen, button);
         }
     }
-    if (sound != nullptr) {
-        if (const std::uint64_t at = g_api->scratch(ctx, sound, std::strlen(sound) + 1); at != 0) {
-            GameCall3(ctx, Main(kScreenSound), screen, at);
-        }
-    }
+    if (sound != nullptr) TitleSound(ctx, screen, sound);
 }
 
 // The pad while the ask shows: the title gets none of it; A, B or + (a mouse click is an A) closes it.
@@ -1175,10 +1193,20 @@ void StepMenu(void* ctx, std::uint64_t screen) {
                                 ? CoopTitleMenu::MenuHint(look.rows[static_cast<std::size_t>(f)].action)
                                 : nullptr;
         if (words == nullptr && !sub && CoopPackNotice::DirectOn()) words = CoopPackNotice::kDirectHint;   // (player report 225: solo has no chat box)
+        std::string host_line;   // (in a session: who hosts, so the player knows whose save Continue loads)
+        if (words == nullptr && !sub && wait_line.empty()) {
+            const CoopLobby::Seen seen = CoopLobby::Now();
+            std::string host_name;
+            for (const auto& p : seen.players) {
+                if (p.host) host_name = p.name;
+            }
+            host_line = CoopLobby::TitleHostLine(seen.connected && seen.host != 0, seen.host == seen.self, host_name);
+        }
         // (the host's save on its way after a Join here comes first: "Loading Saria's save...", the name is data)
         const std::string said = !wait_line.empty() ? CoopI18n::Tr(wait_line)
                                  : words != nullptr  ? CoopI18n::Tr(words)
-                                                     : std::string();
+                                 : !host_line.empty() ? host_line
+                                                      : std::string();
         const bool hint = !said.empty() && layout != 0 && g_column.hint != 0 && SetLiveText(ctx, layout, kHintSlot, said);
         g_wait_on_hint.store(hint && !wait_line.empty());
         ShowColumn(ctx, screen, CoopTitleNative::kButtons, hint, {});
@@ -1213,11 +1241,7 @@ void StepMenu(void* ctx, std::uint64_t screen) {
         LOG_INFO(Core, "coop: title: menu: the game's button {} chosen in the row's place{}", decide,
                  r && (*r & 1) != 0 ? "" : " (it did not take it)");
     }
-    if (sound != nullptr) {
-        if (const std::uint64_t at = g_api->scratch(ctx, sound, std::strlen(sound) + 1); at != 0) {
-            GameCall3(ctx, Main(kScreenSound), screen, at);
-        }
-    }
+    if (sound != nullptr) TitleSound(ctx, screen, sound);
 }
 
 // From the title's step (its ctx may call()): after a switch of the save folder (CoopSave::TakeSaveListStale) the game
@@ -1231,6 +1255,12 @@ void RefreshSaveList(void* ctx) {
     const std::uint64_t mgr = CaptionMgr();
     std::uint8_t state = 0;
     const bool found = mgr != 0 && CoopRuntime::Read(mgr + kCaptionState, &state, 1);
+    // (rejoin-host-273-2) the title's slot fixes went into the folder the game mounted: it is mounted again, only
+    // while the game is not reading its list; the switch marks the list stale, read again just below
+    if (found && CoopSave::RestageDue()) {
+        const auto busy = GameCall(ctx, Main(kCaptionBusy), mgr);
+        if (busy && (*busy & 1) == 0) CoopSave::RestageSaveFolder();
+    }
     R::Input in;
     in.stale = CoopSave::TakeSaveListStale();
     in.stale = g_mod_asked.exchange(false) || in.stale;
@@ -1326,18 +1356,59 @@ void Init(const HosCoopApi* api) {
 }
 
 fs::path LookFile() {
+    if (const auto player = PlayerOptionsFile()) {
+        return *player;   // (the look is the player's own: coop-player.ini)
+    }
     return KitOptionsFile().value_or(CoopIni());
 }
 
+std::string LookText() {
+    return KitOptionsFile() || PlayerOptionsFile() ? ReadKitOptions() : ReadText(CoopIni());
+}
+
 void SaveLook(const CoopLook::Look& look) {
-    const auto kit = KitOptionsFile();   // (as LookFile: the kit's, or beside longshot.exe, else coop.ini below)
+    // (as LookText: the kit's file with this player's over it, or the one beside longshot.exe, else coop.ini below)
+    const bool kit = KitOptionsFile() || PlayerOptionsFile();
     std::string coop = ReadText(CoopIni());
-    std::string options = kit ? ReadText(*kit) : std::string();
+    std::string options = kit ? ReadKitOptions() : std::string();
     const bool ok = !CoopLook::WriteSettings(look, coop, kit ? &options : nullptr) ||
-                    (kit ? WriteText(*kit, options) : WriteText(CoopIni(), coop));
+                    (kit ? WriteKitOptions(options) : WriteText(CoopIni(), coop));
     const std::string colour = CoopLook::ColourText(look[CoopLook::Part::tunic]);
     LOG_INFO(Core, "coop: look: colour {} saved to {}{}", colour.empty() ? std::string("by player number") : colour,
-             kit ? "coop-options.ini" : "coop.ini", ok ? "" : " (the file could not be written)");
+             Utf8Path(LookFile().filename()), ok ? "" : " (the file could not be written)");
+}
+
+std::optional<fs::path> PlayerOptionsFile() {
+    const fs::path p = CoopRuntime::GameDir() / "coop-player.ini";
+    std::error_code ec;
+    if (!fs::exists(p, ec)) {
+        return std::nullopt;
+    }
+    return p;
+}
+
+std::string ReadKitOptions() {
+    const auto kit = KitOptionsFile();
+    const std::string text = kit ? ReadText(*kit) : std::string();
+    const auto player = PlayerOptionsFile();
+    return player ? CoopTitleMenu::WithPlayerOptions(text, ReadText(*player)) : text;
+}
+
+bool WriteKitOptions(const std::string& text) {
+    const auto kit = KitOptionsFile();
+    const auto player = PlayerOptionsFile();
+    if (!player) {
+        return kit ? WriteText(*kit, text) : false;
+    }
+    std::string kit_text = kit ? ReadText(*kit) : std::string();
+    const std::string before = kit_text;
+    std::string own;
+    CoopTitleMenu::SplitPlayerOptions(text, kit_text, own);
+    bool ok = WriteText(*player, own);
+    if (kit && kit_text != before) {
+        ok = WriteText(*kit, kit_text) && ok;   // (the other games of this PC read it too: written only when it changed)
+    }
+    return ok;
 }
 
 // Whether `kit` (FindKit's) is this game's own: named (OOT_COOP_KIT, coop-kit.txt), or the game is its
@@ -1369,14 +1440,15 @@ std::optional<fs::path> KitOptionsFile() {
 
 void ApplyKitOptions() {
     const auto file = KitOptionsFile();
-    if (!file) {
+    const auto player = PlayerOptionsFile();
+    if (!file && !player) {
         return;
     }
-    const fs::path kit = file->parent_path();
+    const fs::path kit = file ? file->parent_path() : CoopRuntime::GameDir();
     std::error_code same_ec;
     const bool found = !fs::equivalent(kit, CoopRuntime::GameDir(), same_ec);   // (a kit above the game)
     int set = 0;
-    for (auto [k, v] : CoopTitleMenu::KitVariables(ReadText(*file))) {
+    for (auto [k, v] : CoopTitleMenu::KitVariables(ReadKitOptions())) {   // (this game's coop-player.ini over the kit's)
         if (std::getenv(k.c_str()) != nullptr) {
             continue;   // the launcher set it (or the player did)
         }
@@ -1388,8 +1460,8 @@ void ApplyKitOptions() {
         ++set;
     }
     if (set != 0) {
-        LOG_INFO(Core, "coop: {} switch(es) from {}\\coop-options.ini ({})", set, Utf8Path(kit),
-                 found ? "the game was started without the kit's launcher" : "beside the game: no kit above it");
+        LOG_INFO(Core, "coop: {} switch(es) from {}\\coop-options.ini{} ({})", set, Utf8Path(kit),
+                 player ? " and this game's coop-player.ini" : "", found ? "the game was started without the kit's launcher" : "beside the game: no kit above it");
     }
 }
 
@@ -1494,7 +1566,10 @@ void NotePlayerPad(std::uint64_t buttons) {
 // the buttons are its keys (CoopTitleNative::TypingLook: up and down move between them, left and right pick Letter's
 // letter, A presses the key the title's cursor is on, B is Cancel, + is OK). CoopPause is called after the lock (it
 // calls in here).
-std::uint64_t g_native_last = 0;   // (g_mutex)
+// The directions held repeat as on every co-op list (CoopMenuNav::Repeat, the game's own timing): before, a held
+// direction moved one row and Letter's 77 letters one press each. A repeat never goes round an end (only a fresh
+// press does), so holding Down stops on the last row and holding Right on the last letter.
+CoopMenuNav::Repeat g_native_repeat;   // (g_mutex)
 std::uint64_t NativePad(std::uint64_t buttons, std::int32_t stick[4]) {
     constexpr std::uint64_t kPlus = 1ull << 10, kLeft = 1ull << 12, kUp = 1ull << 13, kRight = 1ull << 14,
                             kDown = 1ull << 15;
@@ -1515,8 +1590,8 @@ std::uint64_t NativePad(std::uint64_t buttons, std::int32_t stick[4]) {
     {
         std::lock_guard lock(g_mutex);
         const int opened = g_native_page.load();
-        std::uint64_t down = in & ~g_native_last;
-        g_native_last = in;
+        std::uint64_t repeats = 0;
+        std::uint64_t down = g_native_repeat.Presses(in, NowMs(), kUp | kDown | kLeft | kRight, &repeats);
         if (opened < 0) {
             g_native_seen = -1;   // (none open: the next one, the same page again too, is a page that came)
             return 0;
@@ -1536,16 +1611,21 @@ std::uint64_t NativePad(std::uint64_t buttons, std::int32_t stick[4]) {
         const CoopTitleNative::Look look = CoopTitleNative::LookFor(v, g_native_top, g_page_buttons.load());
         if (v.typing) {
             using CoopTitleNative::Key;
+            // (the keys and Letter's letters on the shared cursor: a repeat stops at an end, a fresh press goes round)
             const int dy = (down & kDown) != 0 ? 1 : (down & kUp) != 0 ? -1 : 0;
-            if (dy != 0) {
-                g_native_key = CoopTitleNative::MoveKey(g_native_key, dy);
-                g_native_refocus = true, g_sound = "button_on";
+            if (const int to = CoopTitleNative::KeyStep(g_native_key, dy, (repeats & (kUp | kDown)) != 0);
+                dy != 0 && to != g_native_key) {
+                g_native_key = to;
+                g_native_refocus = true, g_sound = CoopMenuNav::kSoundMove;
             }
             const int dx = (down & kRight) != 0 ? 1 : (down & kLeft) != 0 ? -1 : 0;
             if (dx != 0 && g_native_key == static_cast<int>(Key::kLetter)) {
-                const std::size_t n = CoopTitleNative::Letters().size();
-                g_native_letter = (g_native_letter % n + n + static_cast<std::size_t>(static_cast<int>(n) + dx)) % n;
-                g_sound = "button_on";
+                const std::size_t to =
+                    CoopTitleNative::LetterStep(g_native_letter, dx, (repeats & (kLeft | kRight)) != 0);
+                if (to != g_native_letter % CoopTitleNative::Letters().size()) {
+                    g_native_letter = to;
+                    g_sound = CoopMenuNav::kSoundMove;
+                }
             }
             if ((down & kA) != 0) {   // (the key the title's cursor is on: a mouse click focuses it first)
                 const int key = focused >= CoopTitleNative::kFirstKey && focused <= CoopTitleNative::kLastKey ? focused
@@ -1561,21 +1641,28 @@ std::uint64_t NativePad(std::uint64_t buttons, std::int32_t stick[4]) {
                 case Key::kOk: keys.push_back(0x0D); break;
                 case Key::kField: break;
                 }
-                g_native_refocus = true, g_sound = "button_decide";
+                g_native_refocus = true, g_sound = CoopMenuNav::kSoundDecide;
             }
-            if ((down & kB) != 0) keys.push_back(0x1B), g_native_refocus = true;    // (Cancel: the field as it was)
+            if ((down & kB) != 0) {   // (Cancel: the field as it was)
+                keys.push_back(0x1B), g_native_refocus = true, g_sound = CoopMenuNav::kSoundBack;
+            }
             if ((down & kY) != 0) keys.push_back(0x08), g_native_refocus = true;    // (Y: the letter before the cursor off)
             if ((down & kPlus) != 0) keys.push_back(0x0D), g_native_refocus = true; // (OK)
         } else {
             // (the step from the row the title shows lit: the mouse's hover moves the game's focus, not the menu's own
             // row, and Down on the last shown row went from an older row, wrapping to the top instead of scrolling on
             // to Room name and Relay, a test run 2026-11-20)
-            if ((down & (kUp | kDown)) != 0 && focused >= 0 && focused < look.back &&
-                look.rows[static_cast<std::size_t>(focused)] >= 0) {
-                events.emplace_back(HOS_COOP_MENU_SELECT, look.rows[static_cast<std::size_t>(focused)]);
+            // (Up and Down on the shared cursor, CoopTitleNative::RowStep: the menu's own Up or Down is sent only when
+            // the step lands on another row, so a held direction stops at the last row (Menu::Move alone goes round)
+            // and the move sound plays only for a real move)
+            const bool on_row = focused >= 0 && focused < look.back && look.rows[static_cast<std::size_t>(focused)] >= 0;
+            const int from = on_row ? look.rows[static_cast<std::size_t>(focused)] : v.selected;
+            const int dir = (down & kDown) != 0 ? 1 : (down & kUp) != 0 ? -1 : 0;
+            if (dir != 0 && CoopTitleNative::RowStep(v, from, dir, (repeats & (kUp | kDown)) != 0) != from) {
+                if (on_row) events.emplace_back(HOS_COOP_MENU_SELECT, from);
+                events.emplace_back(dir < 0 ? HOS_COOP_MENU_UP : HOS_COOP_MENU_DOWN, 0);
+                g_sound = CoopMenuNav::kSoundMove;
             }
-            if ((down & kUp) != 0) events.emplace_back(HOS_COOP_MENU_UP, 0);
-            if ((down & kDown) != 0) events.emplace_back(HOS_COOP_MENU_DOWN, 0);
             if ((down & kLeft) != 0) events.emplace_back(HOS_COOP_MENU_LEFT, 0);
             if ((down & kRight) != 0) events.emplace_back(HOS_COOP_MENU_RIGHT, 0);
             const bool back = (down & kB) != 0 || ((down & kA) != 0 && focused == look.back);
@@ -1589,7 +1676,7 @@ std::uint64_t NativePad(std::uint64_t buttons, std::int32_t stick[4]) {
                 look.rows[static_cast<std::size_t>(focused)] >= 0) {
                 events.emplace_back(HOS_COOP_MENU_SELECT, look.rows[static_cast<std::size_t>(focused)]);
                 events.emplace_back(HOS_COOP_MENU_CONFIRM, 0);
-                g_sound = "button_decide";
+                g_sound = CoopMenuNav::kSoundDecide;
                 g_native_key = CoopTitleNative::kFirstKey, g_native_letter = 0;   // (a field it may open: from Letter, a)
             }
             // (ZL and ZR: the page of rows before or after, its first row selected)
@@ -1597,12 +1684,15 @@ std::uint64_t NativePad(std::uint64_t buttons, std::int32_t stick[4]) {
                 const int row = CoopTitleNative::PageJump(v, look, (down & kZL) != 0 ? -1 : 1);
                 if (row >= 0) {
                     events.emplace_back(HOS_COOP_MENU_SELECT, row);
-                    g_native_refocus = true, g_sound = "button_on";
+                    g_native_refocus = true, g_sound = CoopMenuNav::kSoundMove;
                 }
             }
             // (Y on the list of games: asked again)
-            if ((down & kY) != 0 && page == CoopPauseMenu::Page::kFind) refresh = true, g_sound = "button_decide";
+            if ((down & kY) != 0 && page == CoopPauseMenu::Page::kFind) {
+                refresh = true, g_sound = CoopMenuNav::kSoundDecide;
+            }
             if (back) {
+                g_sound = CoopMenuNav::kSoundBack;   // (as every co-op list's B: coop_menu_nav.h)
                 if (back_leaves || page == CoopPauseMenu::Page::kMain) {
                     leave = true;
                 } else {
@@ -1663,10 +1753,9 @@ std::uint64_t NativePad(std::uint64_t buttons, std::int32_t stick[4]) {
                 events.emplace_back(HOS_COOP_MENU_SELECT, look.rows[static_cast<std::size_t>(focused)]);
                 events.emplace_back(edge_dir > 0 ? HOS_COOP_MENU_DOWN : HOS_COOP_MENU_UP, 0);
                 g_hover_since = now_ms;
-                g_sound = "button_on";
+                g_sound = CoopMenuNav::kSoundMove;
             }
             if (!events.empty() && edge_dir == 0) g_native_refocus = true;   // (a scroll by the mouse: its focus stays)
-            if ((down & (kUp | kDown)) != 0) g_sound = "button_on";
         }
         if (leave) {   // (the Multiplayer rows again, the title's cursor on the page's row)
             using CoopTitleMenu::TitleDo;
@@ -1676,7 +1765,7 @@ std::uint64_t NativePad(std::uint64_t buttons, std::int32_t stick[4]) {
             g_native_page = -1;
             g_sub = true;
             g_focus_to = CoopTitleMenu::RowOf(CoopTitleMenu::MenuFor(g_any_save, true, g_one_start), row);
-            g_sound = "button_decide";
+            g_sound = CoopMenuNav::kSoundBack;   // (B or Back: the back sound, as on every co-op list)
             g_apply_until = NowMs() + kApplyForMs, g_apply_next = 0;
             g_swallow |= buttons;   // (the B or A that left: not the Multiplayer rows' too)
             // (nor a press of theirs: still held at their next read, the B went on to leave Multiplayer's rows as
@@ -1732,16 +1821,13 @@ std::uint64_t OnPad(std::uint64_t buttons, std::int32_t stick[4]) {
         CoopPause::CloseNative();
     }
     if (const std::uint64_t t0 = g_auto_press_ms.load(); t0 != 0) {   // (the host's save loading by itself)
-        const std::uint64_t e = NowMs() - t0;
-        if (e >= kAutoPressEnd || InGame()) {
+        const std::uint64_t e = CoopGameClock::NowMs() - t0;   // (the game's clock: coop_game_clock.h)
+        if (e >= CoopAutoPress::kEndMs || InGame()) {
             g_auto_press_ms = 0;
             LOG_INFO(Core, "coop: title: the host's save: the presses that load it are done ({})",
                      InGame() ? "Link is in the game" : "the player has the pad again");
         } else {
-            for (const std::uint64_t at : kAutoPressAt) {
-                if (e >= at && e < at + kAutoPressHold) return kA;
-            }
-            return 0;
+            return CoopAutoPress::Pad(e, kA);   // (only the presses' A: the player's buttons wait)
         }
     }
     {   // (the mouse's left button: when it last went down, so a press it made is told from the pad's; when the mouse
@@ -1812,7 +1898,7 @@ std::uint64_t OnPad(std::uint64_t buttons, std::int32_t stick[4]) {
                        NowMs() - g_title_view_ms.load() >= 1000) {
                 g_auto_load_until = 0;
                 g_focus_to = 0;   // (the game's first button, Continue; then the A presses: OnPad's start)
-                g_auto_press_ms = NowMs();
+                g_auto_press_ms = CoopGameClock::NowMs();
                 LOG_INFO(Core, "coop: title: the host's save is in: Continue, its newest save and Load pressed for "
                                "the player");
             }
@@ -1844,7 +1930,7 @@ std::uint64_t OnPad(std::uint64_t buttons, std::int32_t stick[4]) {
             const auto change = [&](bool sub, int focus) {
                 g_sub = sub;
                 g_title_view_ms = NowMs();
-                g_focus_to = clicked ? -1 : focus, g_sound = "button_decide";
+                g_focus_to = clicked ? -1 : focus, g_sound = CoopMenuNav::kSoundDecide;
                 g_apply_until = NowMs() + kApplyForMs, g_apply_next = 0;
             };
             const auto back = [&] {   // (the title's rows again, the cursor on Multiplayer)
@@ -1856,10 +1942,10 @@ std::uint64_t OnPad(std::uint64_t buttons, std::int32_t stick[4]) {
                     LOG_INFO(Core, "coop: title: menu: the row waits (the host's save is on its way)");
                     return;
                 }
-                open = p, g_sound = "button_decide";
+                open = p, g_sound = CoopMenuNav::kSoundDecide;
                 // (the A that opened it, still held a few reads after a click, is not the page's first press: a
                 // tester's click on Join went on to the page's Password row, 2026-11-19)
-                g_native_last = buttons;
+                g_native_repeat.Forget(buttons);
                 // (the title's own buttons show the page: no overlay; StepNative falls back to it for an older pack)
                 g_native_page = static_cast<int>(p), g_native_top = 0, g_native_refocus = !clicked;
                 g_title_view_ms = NowMs(), g_native_seen = -1;   // (a click's next A is not the page's: NativePad)
@@ -1955,6 +2041,11 @@ void StopSaveWait() {
     std::lock_guard lock(g_mutex);
     g_wait.Stop();
     g_auto_load_until = 0;
+}
+
+bool MenuMouseHeld() {
+    const std::uint64_t t0 = g_auto_press_ms.load();
+    return CoopAutoPress::Running(t0, CoopGameClock::NowMs()) && !InGame();
 }
 
 void LoadHostSaveOnTitle(bool test) {

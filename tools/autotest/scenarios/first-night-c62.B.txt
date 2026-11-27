@@ -1,0 +1,11 @@
+# first-night-c62, B (guest): adult, the first adult night's flag at 1, then outside Hyrule Field so Longshot 3.2 clears it here.
+mark start
+setflag Sequence_IsChildhood 0
+warp HyruleField_Adult
+wait 900                # the warp's load (hs-adult.A.txt); in Hyrule Field Longshot leaves the flag
+setflag HrlField_HasEnteredFirstTime_Adult 1
+wait 300
+mark flag-set
+warp KakarikoVillage_Adult
+wait 900                # the warp's load; Longshot's map refresh clears the flag (hos_main.c oot_first_night_fix)
+mark cleared

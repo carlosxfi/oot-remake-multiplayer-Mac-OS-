@@ -42,6 +42,14 @@ std::string OffList(const std::vector<std::string>& mods);
 // there was none). False: a file could not be written (`why` says which).
 bool ApplyMods(const std::filesystem::path& mods, bool on, std::string& why);
 
+// The list in step with the switch at each start (coop_hookshot.cpp; the kit's start does the same before the game:
+// kit-paths.ps1 Sync-KitOriginalMods). The switch alone (Tab, the Co-op settings row) wrote the list, so a list an older
+// kit wrote (no "default off": mods put in later loaded, report 266), the switch set or taken out by hand in
+// coop-options.ini, or a mod taken out or put in, left the list out of step. On: ApplyMods(on) unless the list already
+// is the off list of the folder as it is now (and the player's is kept); off: the kept list back, when there is one.
+// `changed`: a file was written (Longshot read the list before the module: the next start has it).
+bool Sync(const std::filesystem::path& mods, bool on, bool& changed, std::string& why);
+
 // The F1 menu while original (the module off): one tab with the switch. `options` is the coop-options.ini to write.
 class Tab {
 public:

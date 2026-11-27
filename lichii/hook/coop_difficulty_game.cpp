@@ -133,6 +133,26 @@ bool Set(const Choice& choice) {
     return true;
 }
 
+Choice NextLobby() {
+    Glue& g = TheGlue();
+    std::lock_guard lock(g.mutex);
+    return Kept(g).value_or(Choice{});
+}
+
+bool SetNextLobby(const Choice& choice) {
+    Glue& g = TheGlue();
+    {
+        std::lock_guard lock(g.mutex);
+        if (g.state.connected) {
+            return false;
+        }
+        g.kept = choice;
+        g.kept_read = true;
+    }
+    Keep(choice);
+    return true;
+}
+
 void OnEvent(const coop::net::Event& event, coop::net::Client& client) {
     using coop::net::EventKind;
     Glue& g = TheGlue();
@@ -194,16 +214,17 @@ static void LogHits() {
     if (!every.Due(CoopEvery::NowUs())) {
         return;
     }
-    // A full table (Kinds::kSlots in one scene): what it could not mark goes unscaled. Said once a scene.
+    // A full table (Kinds::kSlots live addresses at once: row 270, the gone ones give their slots back): what the
+    // last walk could not mark goes unscaled. Said once each time it fills.
     static bool full_said = false;
     const std::uint64_t unmarked = TheKinds().Unmarked();
     if (unmarked == 0) {
         full_said = false;
     } else if (!full_said) {
         full_said = true;
-        LOG_WARNING(Core, "coop: difficulty: the kinds table is full ({} slots): {} actors or Life components "
-                          "in this scene are not scaled",
-                    Kinds::kSlots, unmarked);
+        LOG_WARNING(Core, "coop: difficulty: the kinds table is full ({} of {} slots hold a live actor or Life "
+                          "component): {} more are not scaled now",
+                    TheKinds().Held(), Kinds::kSlots, unmarked);
     }
     const std::uint64_t enemy = TheKinds().EnemyHits();
     const std::uint64_t link = TheKinds().LinkHits();
@@ -247,7 +268,7 @@ void Frame(coop::host::Session* session) {
         if (g.wish) {
             send = std::exchange(g.wish, std::nullopt);
             g.offered = true;  // the host chose here: the kept one is this one
-        } else if (OffersKept(g.state.can_edit, g.state.set_by, Kept(g), g.offered)) {
+        } else if (OffersKept(g.state.can_edit, g.state.set_by, Kept(g), g.offered, g.state.choice.auto_scale)) {
             send = g.kept;
             g.offered = true;
         }

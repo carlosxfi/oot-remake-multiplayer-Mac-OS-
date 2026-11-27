@@ -73,6 +73,16 @@ std::optional<std::int32_t> OurLinkLife();
 // Rows 93/103 (docs/items.md, "The game's own equip"): our Link's actor (Player_Child or Player_Adult) as the
 // object walk last saw it; nothing when no walk saw it in the last 1.5 s. Any thread.
 std::optional<std::uint64_t> OurLinkActor();
+// The play-test give and setflag (coop_cheat_give.h LinkBackedFlags): the addresses of the two words of our Link's
+// Life component (now, the most; quarter hearts), which the game draws the hearts from and mirrors into
+// PlayerStatus.Life/MaxLife each frame. Found now by a fresh walk of the actor list from `main` (the main module),
+// so it needs no session and no earlier walk (solo play, a held game); nothing when no Player_Child or
+// Player_Adult is listed (a load, the title). Test calls only (a held game: no frame runs under it).
+struct LinkLifeWords {
+    std::uint64_t life = 0;
+    std::uint64_t max = 0;
+};
+std::optional<LinkLifeWords> FindOurLinkLife(Core::System& system, std::uint64_t main);
 // Any thread: take `quarters` off our Link at the next walk, as the game's
 // own hit at `at` from `from` (Link flinches), or by writing the life when
 // the game does not take that hit within 0.4 s (LICHII_COOP_PVP_REPLAY=0:
@@ -158,15 +168,21 @@ void ForgetKeptBreaks();
 
 // Test only (coop_testinput's "kill NAME" step): the nearest actor of that
 // name to our Link takes a hit of its whole life from our Link in the next
-// walk of LICHII_COOP_OBJECTS (logs "coop: test kill ..."). Any thread.
-void QueueTestKill(std::string name);
+// walk of LICHII_COOP_OBJECTS (logs "coop: test kill ..."). Any thread. `id` (the address `get_world` lists, from
+// "kill ID NAME"): exactly that actor, resolved in the walk against the walk's own list and refused when no actor
+// there has that name (CoopStrike::PickTarget). Returns the strike's number: the walk leaves its result under it
+// (CoopStrike::TheBook, the bridge's `state.strike`).
+std::uint64_t QueueTestKill(std::string name, std::uint64_t id = 0);
 // Test only ("place PLATFORM UP", #196): the place of the moving platform (a PlatformSync driver) of that name
 // nearest our Link at the last walk; nothing when none is here.
 std::optional<std::array<float, 3>> TestPlatformPlace(const std::string& name);
-// Test only ("hit NAME N"): as QueueTestKill, a hit of `amount` through the game's own Life step.
-void QueueTestHit(std::string name, std::int32_t amount);
-// Test only ("aim X Y Z", row 173): our next arrow (nocked within 10 s) is put on its way into the world point the
-// first frame it flies (the mover's AimStep); logs "coop: test aim ...".
+// Test only ("hit NAME N", "hit ID NAME N"): as QueueTestKill, a hit of `amount` through the game's own Life step.
+// 0 (no strike queued, no number) for an amount below 1 or a full queue.
+std::uint64_t QueueTestHit(std::string name, std::int32_t amount, std::uint64_t id = 0);
+// Test only ("aim X Y Z", row 173): our arrow or seed in Link's hands within 10 s (one listed before the aim counts:
+// the slingshot makes its next seed right after a shot) is watched; the first frame it flies, when its flight already
+// points within CoopTestInput::kAimNudgeDeg and kAimNudgeM of the world point, it is moved sideways onto the line
+// through it (the mover's AimStep, CoopTestInput::AimNudge). Link is not turned. Logs "coop: test aim ...".
 void QueueTestAim(float x, float y, float z);
 // Test only ("stun NAME"): our copy of the nearest boss of that name says its owner a stun (Sync::TestStun).
 void QueueTestStun(std::string name);
@@ -174,6 +190,9 @@ void QueueTestStun(std::string name);
 // down at the next placing (the set-matrix call the copies are placed with), so the fall guard and the copies' fall
 // line run in a game. A copy (or none here) is not moved. Logs "coop: test drop ...". Any thread.
 void QueueTestDrop(std::string name, float metres);
+// The `verb` step (row 287, test only): the boss of that name that our game owns runs this action verb (slot 0), asked
+// through the game's own request as a move started over is (CoopBossNative::Table::TestMove). Logged.
+void QueueTestVerb(const std::string& name, std::int32_t verb);
 
 // Present thread: the actors of the shared things this game owns now (for
 // coop_drops: a drop beside one of them is its owner's to decide).

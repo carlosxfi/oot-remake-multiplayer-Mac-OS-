@@ -1,0 +1,51 @@
+#! switches COOP_TEST_PARTY_HUD=1,LICHII_COOP_TEST_TO_TITLE=1,B:COOP_TEST_PARTY_HUD_NO_PACK=1
+#! timeout 600
+# hs-party-hud-probe (party-hud-runtime, 0.11.13 R2/R3): the run-time gauges and their name lines, with the pack (A)
+# and as without it (B: COOP_TEST_PARTY_HUD_NO_PACK=1, coop_party_hud.h Hud::IgnorePack), on a scene change and a
+# return to the title. Both games: COOP_TEST_PARTY_HUD=1, four made-up players (coop_party_hud.cpp TestBlocks).
+#  Since party-hud-crash-c126 (88f63dfb1) the module makes no run-time gauge or name line (the game's part clone
+#  crashed every game that ran it; reports in coord-multiplayer/reports/party-hud-crash-c126-4.md):
+#  A (pack, 3 slots): players 1-3 in the pack's slots, player 4 ("Four") in "+1".
+#  B (no pack): none of ours (hidden), nothing made. The bridge test tools/autotest/ingame/test_party_hud.py judges it.
+# Values and their sources:
+#  - the kit save: the child in the Graveyard at 10:01 (docs/testing.md "Start place"); run.ps1 loads it first and
+#    checks the default start (a Graveyard object, run.ps1:176).
+#  - warp KokiriForest_Child: a child scene the runner warps to mid-game (hs-gear-age.A.txt warps mid-game; this
+#    scene name in 37 scenarios, e.g. hs-shield-tilt).
+#  - mark = a shot of both games (tools/autotest/hookshot.py mark: log + module mark + shot).
+#  - mark to-title-now: offline/party-hud-probe-run.ps1 then drops to-title.now in each game's folder (the folder
+#    the game logs: coop_pause.cpp, LICHII_COOP_TEST_TO_TITLE), the module's way back to the title.
+#  - the title presses: hs-gear-age.A.txt's (press A, wait 180, x3, wait 300, press A, wait 2400).
+#  - menu customize / close: hs-party-hud.A.txt's.
+# 60 ticks a second (hs-party-hud.A.txt: wait 180 = 3 s).
+# PASS needs the shots (both games, every mark): see offline/party-hud-probe-run.ps1's result.txt for the list.
+wait 300
+mark loaded
+wait 180
+mark loaded-2
+warp KokiriForest_Child
+wait 1500
+mark warped
+wait 180
+mark warped-2
+mark to-title-now
+wait 900
+mark at-title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark back-in
+wait 180
+mark back-in-2
+menu customize
+wait 120
+mark menu-open
+menu close
+wait 120
+mark menu-closed
+wait 60

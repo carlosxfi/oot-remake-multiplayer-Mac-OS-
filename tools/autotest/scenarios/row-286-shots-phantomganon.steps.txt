@@ -1,0 +1,19 @@
+# row-286-shots-phantomganon (rows 222/286, twinrova-shots-222): the owner's game decides the boss's shots; plays row-286-shots-phantomganon.A/.B.txt.
+# Run: tools\autotest\run.ps1 -Runtime hookshot -Lane 1 -Scenario row-286-shots-phantomganon (offline/row-222-shooter-run.ps1 runs both).
+# Lines (each game's own log): "coop: test warp done" (hookshot.py warp); "coop: bosses: boss shots the owner's
+# (wrapped)" (coop_hookshot.cpp SetBossShooter: module has the fix AND hookshot.exe has patch 0045's wraps 28-30);
+# "<boss>: native boss sync on (BSA 0x.., ours|a copy)" (coop_boss_native.cpp:527). The shot counts ("coop: bosses:
+# boss shots: ours sent N ...; copies: ... N owner's made ...", coop_hookshot.cpp LogBossShooter) and the bullets
+# ("coop: objects: + <name> ...", coop_objects.cpp, LICHII_COOP_DEBUG_OBJECTS) are judged by the run script.
+#! switches LICHII_COOP_DEBUG_BOSS=1,LICHII_COOP_DEBUG_OBJECTS=1,LICHII_COOP_CHEATS=1
+start A B
+play A row-286-shots-phantomganon.A.txt B row-286-shots-phantomganon.B.txt
+shot end
+lines warp-A A min=1 coop: test warp done
+lines warp-B B min=1 coop: test warp done
+lines shooter-A A min=1 coop: bosses: boss shots the owner's \(wrapped\)
+lines shooter-B B min=1 coop: bosses: boss shots the owner's \(wrapped\)
+lines sync-A A min=1 Enemy_DungeonBoss_PhantomGanon: native boss sync on \(BSA 0x[0-9a-f]+, (ours|a copy)\)
+lines sync-B B min=1 Enemy_DungeonBoss_PhantomGanon: native boss sync on \(BSA 0x[0-9a-f]+, (ours|a copy)\)
+lines no-crash-A A max=0 exception 0x|FATAL
+lines no-crash-B B max=0 exception 0x|FATAL

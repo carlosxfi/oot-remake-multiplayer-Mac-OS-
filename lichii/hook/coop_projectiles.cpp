@@ -381,6 +381,23 @@ std::string_view HitEffect(Kind kind) {
     }
 }
 
+std::string_view HitSound(Kind kind) {
+    switch (kind) {
+    case Kind::seed:
+        // ReactionHit's (romfs SLink2 table; lava, sand, water and bog
+        // variants by the surface's material are picked by the game).
+        return "Hit_SlingShot_Bullet";
+    case Kind::arrow:
+        return "Hit_Bow_Arrow";
+    case Kind::nut:
+        // The nut's AI plays this key through SLinkCall as well (#248 left
+        // the sound out).
+        return "Chemical_Light";
+    default:
+        return {};
+    }
+}
+
 bool IsImpact(std::string_view actor) {
     for (const Kind kind : {Kind::seed, Kind::arrow}) {
         for (const std::string_view name : ImpactActors(kind)) {
@@ -456,6 +473,11 @@ void Blasts::Reset() {
 Blasts& TheBlasts() {
     static Blasts blasts;
     return blasts;
+}
+
+Blasts& TheShotHits() {
+    static Blasts hits;
+    return hits;
 }
 
 void OwnShots::Note(std::uint64_t address, std::uint64_t now_us) {

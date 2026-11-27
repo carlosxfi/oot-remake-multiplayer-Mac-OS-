@@ -1,0 +1,103 @@
+# row-222-shots-twinrova (rows 222/286, twinrova-shots-222): does the copy's game fire the owner's Twinrova shots?
+# Fix under test (branch twinrova-shots-222): the owner's game decides a boss's shots; a copy's own AI calls of the
+# Shooter's prepare/shoot/sleep are skipped and the owner's are made through the game's own functions (patch 0045
+# wraps 28-30, coop_boss_shooter_table.h). Route as hs-twinrova-fire (runs 20261123-041540 .. 20261125-102356: the
+# boss-rush warp, the intro, 'kill' of both sisters, the merge, all reached): phase 1 (Koume and Kotake) with 10
+# paired shots a-p1-NN about 10 s apart, then the merge and 24 paired shots f-NN about 2.5 s apart (hold 90 + wait 60
+# ticks = 2.5 s: offline/row-286-probe/drive.py fused comment). A's marks take the shot on BOTH games
+# (hookshot.py shooter(): one 'shot' request to each game's bridge); B (row-222-shots-twinrova.B.txt) holds ZL at
+# the same times without marks. Steps and checks: row-222-shots-twinrova.steps.txt.
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_BOSS=1,LICHII_COOP_DEBUG_OBJECTS=1,LICHII_COOP_CHEATS=1
+#! timeout 900
+mark start
+warp TwinrovaStage TwinrovaStage
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark a-in
+wait 1800               # the intro, then the fight
+hold ZL 240
+hold ZL 90 a-p1-01
+wait 510
+hold ZL 90 a-p1-02
+wait 510
+hold ZL 90 a-p1-03
+wait 510
+hold ZL 90 a-p1-04
+wait 510
+hold ZL 90 a-p1-05
+wait 510
+hold ZL 90 a-p1-06
+wait 510
+hold ZL 90 a-p1-07
+wait 510
+hold ZL 90 a-p1-08
+wait 510
+hold ZL 90 a-p1-09
+wait 510
+hold ZL 90 a-p1-10
+kill Enemy_DungeonBoss_Koume
+wait 60
+kill Enemy_DungeonBoss_Kotake
+wait 600
+mark a-k
+wait 2400               # the merge cutscene
+hold ZL 240
+hold ZL 90 f-01
+wait 60
+hold ZL 90 f-02
+wait 60
+hold ZL 90 f-03
+wait 60
+hold ZL 90 f-04
+wait 60
+hold ZL 90 f-05
+wait 60
+hold ZL 90 f-06
+wait 60
+hold ZL 90 f-07
+wait 60
+hold ZL 90 f-08
+wait 60
+hold ZL 90 f-09
+wait 60
+hold ZL 90 f-10
+wait 60
+hold ZL 90 f-11
+wait 60
+hold ZL 90 f-12
+wait 60
+hold ZL 90 f-13
+wait 60
+hold ZL 90 f-14
+wait 60
+hold ZL 90 f-15
+wait 60
+hold ZL 90 f-16
+wait 60
+hold ZL 90 f-17
+wait 60
+hold ZL 90 f-18
+wait 60
+hold ZL 90 f-19
+wait 60
+hold ZL 90 f-20
+wait 60
+hold ZL 90 f-21
+wait 60
+hold ZL 90 f-22
+wait 60
+hold ZL 90 f-23
+wait 60
+hold ZL 90 f-24
+wait 600
+mark end

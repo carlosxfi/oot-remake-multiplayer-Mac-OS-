@@ -3,6 +3,8 @@
 
 #include "coop_i18n.h"
 #include "coop_list_pages.h"
+#include "coop_menu_nav.h"
+#include "coop_pause_tab.h"
 #include "coop_text_fit.h"
 
 #include <algorithm>
@@ -26,19 +28,32 @@ std::string RowText(const CoopPauseMenu::Row& r) {
     // is: a name that is also a word of the table must not turn into the table's line.
     const std::string name = r.own_name ? r.name : CoopI18n::Tr(r.name);
     const std::string value = r.own_value ? r.value : CoopI18n::Tr(r.value);
-    std::string t = name;
+    std::string tail;   // (what follows the name: the value, which is what the row is read for)
     switch (r.kind) {
-    case RowKind::kToggle: t += CoopI18n::Tr(": ") + (r.on ? CoopI18n::Tr("On") : CoopI18n::Tr("Off")); break;
+    case RowKind::kToggle: tail = CoopI18n::Tr(": ") + (r.on ? CoopI18n::Tr("On") : CoopI18n::Tr("Off")); break;
     case RowKind::kChoice:
-        t += CoopI18n::Tr(": ") + std::string(r.left ? "< " : "") + value + (r.right ? " >" : "");
+        tail = CoopI18n::Tr(": ") + std::string(r.left ? "< " : "") + value + (r.right ? " >" : "");
         break;
     default:
         // (a value that only says the row's own word again, "Join: Join", is left off)
         if (!value.empty() && (name.empty() || r.name.rfind(r.value, 0) != 0))
-            t += t.empty() ? value : CoopI18n::Tr(": ") + value;
+            tail = name.empty() ? value : CoopI18n::Tr(": ") + value;
         break;
     }
-    return Fit(t, kTextBytes);
+    return FitRow(name, tail, kTextBytes);
+}
+
+std::string FitRow(const std::string& name, const std::string& tail, std::size_t n) {
+    const std::string whole = name + tail;
+    if (whole.size() <= n && CoopTextFit::Halves(whole) <= 2 * n) return whole;
+    // (too long: the name is cut, never the value. A game's row "Kakariko-crew-of-friends (Saria): 3/16  Public" read
+    // "...: 3/16..." with the players and the kind gone, the audit's item 16; a value longer than the button alone is
+    // cut at its end as before)
+    const std::size_t tail_bytes = tail.size(), tail_halves = CoopTextFit::Halves(tail);
+    if (name.empty() || tail_bytes + 4 > n || tail_halves + 8 > 2 * n) return Fit(whole, n);
+    const std::size_t room = std::min(n - tail_bytes, (2 * n - tail_halves) / 2);
+    const std::string cut = Fit(name, room);
+    return cut.empty() ? Fit(whole, n) : cut + tail;
 }
 
 const std::string& Letters() {
@@ -47,10 +62,27 @@ const std::string& Letters() {
     return letters;
 }
 
-int MoveKey(int key, int dy) {
+int MoveKey(int key, int dy) { return KeyStep(key, dy, false); }   // (a fresh press: round)
+
+int RowStep(const CoopPauseMenu::View& v, int from, int dir, bool repeat) {
+    const int n = static_cast<int>(v.rows.size());
+    if (from < 0 || from >= n || dir == 0) return from;
+    return CoopMenuNav::Step(from, dir, n, !repeat, [&v](int i) {
+        const CoopPauseMenu::RowKind k = v.rows[static_cast<std::size_t>(i)].kind;
+        return k != CoopPauseMenu::RowKind::kHeading && k != CoopPauseMenu::RowKind::kNote;
+    });
+}
+
+int KeyStep(int key, int dy, bool repeat) {
     const int n = kLastKey - kFirstKey + 1;
-    const int at = (key < kFirstKey || key > kLastKey ? 0 : key - kFirstKey) + dy;
-    return kFirstKey + ((at % n) + n) % n;
+    const int at = key < kFirstKey || key > kLastKey ? 0 : key - kFirstKey;
+    return kFirstKey + CoopMenuNav::Step(at, dy, n, !repeat, [](int) { return true; });
+}
+
+std::size_t LetterStep(std::size_t at, int dx, bool repeat) {
+    const int n = static_cast<int>(Letters().size());
+    return static_cast<std::size_t>(
+        CoopMenuNav::Step(static_cast<int>(at % static_cast<std::size_t>(n)), dx, n, !repeat, [](int) { return true; }));
 }
 
 Look TypingLook(const CoopPauseMenu::View& v, char letter, int key) {
@@ -97,7 +129,7 @@ std::vector<int> Shown(const CoopPauseMenu::View& v, int* at) {
 
 }  // namespace
 
-Look LookFor(const CoopPauseMenu::View& v, int top, int buttons) {
+Look LookFor(const CoopPauseMenu::View& v, int top, int buttons, CoopPauseTab::HelpPager* pager, std::uint64_t now_ms) {
     Look l;
     buttons = std::clamp(buttons, kButtons, kMaxButtons);
     const int per_page = buttons - 1;   // (the last button: Back)
@@ -135,11 +167,22 @@ Look LookFor(const CoopPauseMenu::View& v, int top, int buttons) {
     // before the cut: the page is the table's shape, the row's help its line. The buttons in words: the title's
     // archive has no icon pane of the game's (coop_list_pages.h), and the game's letters in this words pane drew as
     // empty boxes, row 264)
+    // A help longer than what is left of the line: a part at a time (CoopPauseTab::HelpPager), never cut with "..."
+    // and never past the screen's edges (native-ui-audit: 159 letters in one line ran off both).
     const std::string paged = CoopListPages::Line(l.page, l.pages, true);
-    l.hint = Fit(paged.empty()   ? CoopI18n::Tr(v.help)
-                 : v.help.empty() ? paged
-                                  : paged + "   " + CoopI18n::Tr(v.help),
-                 kHintBytes);
+    const std::string lead = paged.empty() || v.help.empty() ? paged : paged + "   ";
+    const std::size_t lead_letters = (CoopTextFit::Halves(lead) + 1) / 2;
+    std::string help;
+    if (!v.help.empty() && lead_letters + 8 < kHintLetters && lead.size() + 8 < kHintBytes) {
+        const std::string said = CoopI18n::Tr(v.help);
+        const std::size_t letters = kHintLetters - lead_letters, bytes = kHintBytes - lead.size();
+        if (pager != nullptr) {
+            help = pager->Shown(said, now_ms, letters, bytes);
+        } else if (const auto parts = CoopPauseTab::LinePages(said, letters, bytes); !parts.empty()) {
+            help = parts.front();
+        }
+    }
+    l.hint = Fit(lead + help, kHintBytes);
     return l;
 }
 
@@ -149,6 +192,17 @@ float ColumnRaise(float lowest, float highest, float raised, float scale) {
     if (lowest < kScreenFoot) want += (kScreenFoot - lowest) / scale;            // (the foot: up by what is under it)
     else if (lowest > kScreenFoot + 1.0f) want -= (lowest - kScreenFoot) / scale;   // (room under it: back down)
     // (the top kept on the screen: the column taller than the screen is never raised past its first row)
+    const float top_after = highest + (want - raised) * scale;
+    if (top_after > kScreenTop) want -= (top_after - kScreenTop) / scale;
+    return std::max(0.0f, want);
+}
+
+float ColumnCentre(float lowest, float highest, float raised, float scale) {
+    if (scale <= 0.0f) scale = 1.0f;
+    float want = raised - (lowest + highest) / 2.0f / scale;   // (its middle on the screen's: y 0)
+    // (still on the screen: the foot kept above the screen's foot, then the top below its top, as ColumnRaise)
+    const float foot_after = lowest + (want - raised) * scale;
+    if (foot_after < kScreenFoot) want += (kScreenFoot - foot_after) / scale;
     const float top_after = highest + (want - raised) * scale;
     if (top_after > kScreenTop) want -= (top_after - kScreenTop) / scale;
     return std::max(0.0f, want);

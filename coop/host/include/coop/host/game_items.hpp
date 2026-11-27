@@ -92,11 +92,20 @@ std::uint32_t merge_item(ItemRule rule, protocol::FlagKind kind, std::uint32_t l
 // count raised only by a Skulltula's token. Taking the token sets the 64-bit
 // key of that Skulltula's placement (Enemy_Skulltula_Gold) in the same scan.
 inline constexpr std::uint32_t kGoldTokenCount = 0x04735978;
+// IsGet.Item_Token_Gold (item_flags): the first token's get flag.
+inline constexpr std::uint32_t kGoldTokenGet = 0x6ba394fe;
 // The placement keys of all 100 Gold Skulltulas (the Enemy_Skulltula_Gold
 // placements of every map, Child and Adult the same key; each key is in the
 // game's key list), sorted. The hook shares them all from the start and
 // guards the token count with them (FlagWatcher::guard_count).
 std::span<const std::uint64_t> gold_skulltula_keys();
+// Gold Skulltulas Not shared (row 63, review-01112-h): everything of the Gold Skulltulas is each racer's own, so
+// beside the Skulltulas' keys, the token count and its IsGet each racer keeps these named flags (Bool or Int): the
+// Skulltula House's five rewards (KakarikoVillage_GatheringTokenGold_GetReward10..50, each racer claims its own)
+// and what only those rewards give: the wallet tiers (rewards 10 and 30; PouchData.Item_Wallet_*.StockNum and
+// IsGet.Item_Wallet_*, the row 272 wallet family's units) and the Stone of Agony (20; IsGet and StockNum). The 40
+// (bombchus) and 50 (a heart piece) give items other places give too: those items stay the group's.
+std::span<const std::uint32_t> gold_race_flags();
 
 // What the game gives with an item, besides the item itself: the ammo
 // capacity (Int struct 0xf80f8077, one member per ammo) and the ammo it
@@ -412,6 +421,72 @@ std::optional<std::uint32_t> ruto_letter_bottle(std::optional<bool> got, std::op
                                                 std::optional<bool> king_moved,
                                                 const std::function<std::optional<bool>(std::uint32_t)>& valid,
                                                 const std::function<std::optional<std::uint32_t>(std::uint32_t)>& item);
+
+// Row 272 (docs/items.md, "Rewards given once per save"): a reward an NPC or a minigame gives once per save.
+// Its flow sets a saved Bool as it gives it (read from the game's Event/EventFlow), and that Bool was each
+// player's own, so every game gave the reward again; where the game gives it relative to what it holds (the
+// first empty bottle, the tier after the one it has, one more heart piece), the share added the copies up
+// (4 players, 4 bottles from Anju). The Bools are shared now (FlagWatcher::guard_reward /
+// share_pickup_named), and the bottle and upgrade gains are guarded against the same reward got in two games
+// at once (FlagWatcher::guard_reward).
+namespace rewards {
+// What a reward gives: each family is guarded on its own (FlagWatcher::guard_reward), so a reward of one
+// never pays for a gain of another.
+enum class Family : std::uint8_t { bottle, wallet, seed_bag, quiver, bomb_bag, stick_bag, nut_bag, none };
+inline constexpr std::array<Family, 7> kFamilies{Family::bottle,   Family::wallet,    Family::seed_bag, Family::quiver,
+                                                 Family::bomb_bag, Family::stick_bag, Family::nut_bag};
+struct Source {
+  std::uint32_t hash;     // flag_hash(name)
+  std::string_view name;  // the Bool in the game (each one is in GameDataList)
+  Family family;
+};
+// Rewards that are a bottle or an upgrade's next tier (each upgrade flow asks the pouch's tier,
+// EventQueryIsExistInPouch, and gives the next).
+inline constexpr std::array<Source, 14> kGuarded{{
+    {0x7a7961c3, "MiniGame_CatchCucco_IsCompleted", Family::bottle},  // Anju's cuccos, child (Minigame_CatchCucco)
+    {0x084da83f, "IsClear_Minigame_FindOutCucco", Family::bottle},    // Talon's cuccos, child (Minigame_FindOutCucco)
+    {0x9e47f045, "Npc_Hylia_048_BottleShop_Full", Family::bottle},    // the poe collector's 1000 points, adult
+    {0x170b5df2, "IsGet.Item_Bottle_Letter", Family::bottle},         // Ruto's Letter (shared since issue 58)
+    {0x9086a22e, "KakarikoVillage_GatheringTokenGold_GetReward10", Family::wallet},  // 10 tokens
+    {0xcdcc9add, "KakarikoVillage_GatheringTokenGold_GetReward30", Family::wallet},  // 30 tokens
+    {0x4bafdf70, "LostWood_HitTargetOfDekuScrub_FirstClear", Family::seed_bag},      // the Lost Woods target
+    {0x893fa7cb, "MiniGame_HitTarget_HrlCity_Get_BulletBag", Family::seed_bag},      // the Market gallery
+    {0xdda8aaf7, "MiniGame_HitTarget_Kakariko_Get_Quiver", Family::quiver},          // the Kakariko gallery
+    {0x7c6e3b6b, "MiniGame_HorseBackArchery_Get_Quiver", Family::quiver},            // horseback archery
+    {0x19e5a36b, "MiniGame_BombchuBowling_ClearFirstTime", Family::bomb_bag},        // bombchu bowling's first prize
+    {0x1fb5294d, "GoronCity_GetBombBag_fromGoron006", Family::bomb_bag},             // the rolling Goron
+    {0x5db0e8ed, "LostWood_ScrubForestStage_SkullMaskEventLaunched", Family::stick_bag},  // Deku Theater
+    {0xcdf86c43, "LostWood_ScrubForestStage_TrueMaskEventLaunched", Family::nut_bag},     // Deku Theater
+}};
+// Other once-per-save rewards: shared only (a heart piece is a count: two at once still add up, docs/items.md).
+inline constexpr std::array<Source, 10> kOther{{
+    {0x6b8fc751, "DeathMountain_Enemy_Scrub_Business_HeartPiece_01", Family::none},
+    {0xe41e1597, "HyruleField_Enemy_Scrub_Business_HeartPiece_01", Family::none},
+    {0x1d1793e9, "GoronLargePot_IsGetHeartPiece", Family::none},
+    {0x1657d7d8, "Minigame_SkullKidSession_IsGetHeartPiece", Family::none},
+    {0xcdd1c1dd, "MiniGame_BombchuBowling_ClearSecondTime", Family::none},         // a heart piece
+    {0x39dad76d, "KakarikoVillage_GatheringTokenGold_GetReward20", Family::none},  // the Stone of Agony
+    {0x8dc37ac6, "KakarikoVillage_GatheringTokenGold_GetReward40", Family::none},  // bombchus
+    {0xe3c6e4a3, "KakarikoVillage_GatheringTokenGold_GetReward50", Family::none},  // a heart piece
+    {0x3f43245b, "MiniGame_HorsebackArchery_GotaHeart", Family::none},             // horseback archery: a heart piece
+    {0x46e5bc53, "MiniGame_HorsebackArchery_ISGetSpecialPrize", Family::none},
+}};
+// A family's units, each one or more keys got together: a bottle slot (PouchData.Bottle<X>.StockNum and
+// BottleInfo.Bottle<X>.IsValid, A to E); an upgrade's tiers (PouchData.<tier>.StockNum and IsGet.<tier>, small
+// to large).
+std::vector<std::vector<FlagKey>> units(Family family);
+// A family's reward Bools, from kGuarded.
+std::vector<FlagKey> sources(Family family);
+// C2-5 (0.12.0): a Business Scrub's one-time sale of a family's next tier (docs/items.md "One-time sales"; the
+// hook shares them, coop_scrub_sale.h kSaleFlags). No reward, but a Bool of the buyer's own: given to the guard
+// as one more source, so a bought tier is paid by its own Bool and never taken for another player's reward.
+inline constexpr std::array<Source, 2> kSales{{
+    {0x8c98cf5a, "LostWood_Enemy_Scrub_Business_DekuStickPouch_01", Family::stick_bag},
+    {0x5ef24799, "Lostwood_Enemy_Scrub_Business_DekuNutsPouch_01", Family::nut_bag},
+}};
+// A family's sale Bools, from kSales.
+std::vector<FlagKey> sales(Family family);
+}  // namespace rewards
 
 // When to mend (ItemFlagStore::mend), kept by the hook across frames: for
 // the first frames after Link comes into the game (a save or a scene

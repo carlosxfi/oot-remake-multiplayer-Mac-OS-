@@ -1,4 +1,4 @@
-From 4ec9dba3bc4a3e6b4dd4ca3aaded7dc954137d3e Mon Sep 17 00:00:00 2001
+From 6b9464e6b1a79010d0919336530067d894989731 Mon Sep 17 00:00:00 2001
 From: daurosk <354202035+daurosk@users.noreply.github.com>
 Date: Fri, 13 Nov 2026 16:33:05 -0900
 Subject: [PATCH] Co-op menu picture: a module tab may draw shapes, or show the
@@ -142,7 +142,7 @@ index 17c4cf0d..a3931bcb 100644
  
  }  // namespace mkwvk::coop
 diff --git a/gpu/vk/vk_menu.cpp b/gpu/vk/vk_menu.cpp
-index 49ae7b6c..07985c1d 100644
+index c9140300..c4b8953f 100644
 --- a/gpu/vk/vk_menu.cpp
 +++ b/gpu/vk/vk_menu.cpp
 @@ -2603,6 +2603,30 @@ void draw_mods(ui::Ctx& c, float cx0, float cx1, float hx0, float hx1, bool narr
@@ -295,10 +295,10 @@ index 00000000..2e7b586d
 +
 +#endif
 diff --git a/host/hos_main.c b/host/hos_main.c
-index 914e8271..461df64c 100644
+index 907fd165..b3349f85 100644
 --- a/host/hos_main.c
 +++ b/host/hos_main.c
-@@ -1986,6 +1986,33 @@ static void oot_build_free_view(Ctx *c, uint64_t view, uint64_t out) {
+@@ -2005,6 +2005,33 @@ static void oot_build_free_view(Ctx *c, uint64_t view, uint64_t out) {
          }
      }
  }
@@ -332,7 +332,7 @@ index 914e8271..461df64c 100644
  #endif
  
  void hos_oot_free_view(Ctx *c, uint64_t view) {
-@@ -1995,6 +2022,7 @@ void hos_oot_free_view(Ctx *c, uint64_t view) {
+@@ -2014,6 +2041,7 @@ void hos_oot_free_view(Ctx *c, uint64_t view) {
  
      // Camera zero supplies the gameplay view. The same matrix routine also serves other cameras.
      if (oot_gameplay_view(c) != view) return;

@@ -259,8 +259,9 @@ Choice Applied(const Choice& now, const Command& change) {
     return c;
 }
 
-bool OffersKept(bool hosts, std::uint8_t set_by, const std::optional<Choice>& kept, bool offered) {
-    return hosts && set_by == 0 && kept && !kept->auto_scale && !offered;
+bool OffersKept(bool hosts, std::uint8_t set_by, const std::optional<Choice>& kept, bool offered,
+                bool session_auto) {
+    return hosts && set_by == 0 && session_auto && kept && !kept->auto_scale && !offered;
 }
 
 std::int32_t EnemyTakes(std::int32_t sum, std::uint16_t hp_pct, std::int32_t& carry) {
@@ -292,24 +293,18 @@ std::size_t Kinds::Hash(std::uint64_t address) noexcept {
 }
 
 bool Kinds::Mark(std::uint64_t address, Kind kind, std::uint64_t fold_key) noexcept {
-    if (address == 0) {
+    if (address == 0 || address == kFreed) {
         return false;
     }
     const auto k = static_cast<std::uint8_t>(kind);
+    Slot* room = nullptr;  // the first freed or empty slot on the way: a new address goes there
+    std::size_t room_at = 0;
     for (std::size_t i = 0; i < kProbes; ++i) {
-        Slot& s = slots_[(Hash(address) + i) % kSlots];
+        const std::size_t at = (Hash(address) + i) % kSlots;
+        Slot& s = slots_[at];
         const std::uint64_t key = s.key.load(std::memory_order_acquire);
-        if (key == 0) {
-            // (only this writer inserts: no race on the key) The kind goes in
-            // first, so a reader that finds the key reads its kind.
-            s.carry.store(0, std::memory_order_relaxed);
-            s.pass.store(0, std::memory_order_relaxed);
-            s.fold_key.store(fold_key, std::memory_order_relaxed);
-            s.kind.store(k, std::memory_order_release);
-            s.key.store(address, std::memory_order_release);
-            return true;
-        }
         if (key == address) {
+            marked_[at] = walk_;
             s.fold_key.store(fold_key, std::memory_order_release);
             if (s.kind.load(std::memory_order_relaxed) != k) {
                 s.carry.store(0, std::memory_order_relaxed);  // another actor at that address now
@@ -318,9 +313,53 @@ bool Kinds::Mark(std::uint64_t address, Kind kind, std::uint64_t fold_key) noexc
             }
             return true;
         }
+        if (key == kFreed || key == 0) {
+            if (room == nullptr) {
+                room = &s;
+                room_at = at;
+            }
+            if (key == 0) {
+                break;  // the end of the run: the address is not in the table
+            }
+            // (a freed slot: the address may still be further on)
+        }
     }
-    unmarked_.fetch_add(1, std::memory_order_relaxed);
-    return false;
+    if (room == nullptr) {
+        unmarked_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    // (only this writer inserts: no race on the key) The kind goes in first,
+    // so a reader that finds the key reads its kind.
+    marked_[room_at] = walk_;
+    room->carry.store(0, std::memory_order_relaxed);
+    room->pass.store(0, std::memory_order_relaxed);
+    room->fold_key.store(fold_key, std::memory_order_relaxed);
+    room->kind.store(k, std::memory_order_release);
+    room->key.store(address, std::memory_order_release);
+    return true;
+}
+
+void Kinds::Sweep() noexcept {
+    std::uint64_t held = 0;
+    for (std::size_t at = 0; at < kSlots; ++at) {
+        Slot& s = slots_[at];
+        const std::uint64_t key = s.key.load(std::memory_order_relaxed);
+        if (key == 0 || key == kFreed) {
+            continue;
+        }
+        if (walk_ - marked_[at] >= kKeepWalks) {
+            // Its actor is gone. The kind first: a reader that still finds
+            // the key reads no enemy. (A reader inside Step with this slot
+            // can at most leave a carry of under one life point in it.)
+            s.kind.store(0, std::memory_order_release);
+            s.key.store(kFreed, std::memory_order_release);
+        } else {
+            ++held;
+        }
+    }
+    held_.store(held, std::memory_order_relaxed);
+    unmarked_last_.store(unmarked_.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
+    ++walk_;
 }
 
 void Kinds::Forget(std::uint64_t address) noexcept {
@@ -358,7 +397,7 @@ std::int32_t Kinds::Passed(Slot& s, std::int32_t sum, std::uint64_t now_ms) noex
 }
 
 const Kinds::Slot* Kinds::Find(std::uint64_t address) const noexcept {
-    if (address == 0) {
+    if (address == 0 || address == kFreed) {  // (a freed slot is passed over, never found)
         return nullptr;
     }
     for (std::size_t i = 0; i < kProbes; ++i) {
@@ -391,10 +430,14 @@ void Kinds::Clear() noexcept {
         s.carry.store(0, std::memory_order_relaxed);
         s.pass.store(0, std::memory_order_relaxed);
     }
+    marked_.fill(0);
+    walk_ = 1;
     unmarked_.store(0, std::memory_order_relaxed);
+    unmarked_last_.store(0, std::memory_order_relaxed);
+    held_.store(0, std::memory_order_relaxed);
 }
 
-std::int32_t Kinds::Scaled(Slot& s, std::int32_t sum, std::uint16_t pct, Rule rule,
+std::int32_t Kinds::Scaled(Slot& s, std::int32_t sum, std::uint16_t pct, Rule rule, std::int32_t first,
                            std::atomic<std::uint64_t>& hits) noexcept {
     if (pct == 100) {
         return sum;
@@ -402,7 +445,9 @@ std::int32_t Kinds::Scaled(Slot& s, std::int32_t sum, std::uint16_t pct, Rule ru
     // The game steps each component once a frame, one at a time, so a plain
     // load and store of its carry is enough.
     const std::uint32_t packed = s.carry.load(std::memory_order_relaxed);
-    std::int32_t carry = (packed >> 16) == pct ? static_cast<std::int32_t>(packed & 0xffff) : 0;
+    std::int32_t carry = (packed >> 16) == pct
+                             ? static_cast<std::int32_t>(packed & 0xffff)
+                             : static_cast<std::int32_t>(std::min<std::int64_t>(std::int64_t{first} * sum, 0xffff));
     const std::int32_t taken = rule(sum, pct, carry);
     s.carry.store(static_cast<std::uint32_t>(pct) << 16 | static_cast<std::uint32_t>(carry & 0xffff),
                   std::memory_order_relaxed);

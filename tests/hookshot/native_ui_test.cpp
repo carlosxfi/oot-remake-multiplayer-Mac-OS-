@@ -3,10 +3,12 @@
 // and a list of the calls made.
 #include <doctest/doctest.h>
 
+#include <cstdint>
 #include <cstring>
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "coop_native_ui.h"
@@ -18,6 +20,12 @@ namespace {
 constexpr std::uint64_t kMain = 0x80020000;
 
 struct FakeGame final : ui::Game {
+    // A pretend game in play: the game's play UI is up (patch 0018's HUD screen ran since the last load), so its
+    // listed screens are live (CoopNativeUi::ScreenLive, party-hud-crash-c126).
+    FakeGame() {
+        CoopNativeUi::SetSceneLoading(false);
+        CoopNativeUi::SetRunningScreens(std::vector<std::uint64_t>{}, true);
+    }
     std::map<std::uint64_t, std::uint8_t> mem;
     struct Made {
         std::uint64_t function;
@@ -204,44 +212,133 @@ TEST_CASE("native ui: columns: Latin 1, Chinese, Japanese and Korean 2") {
     CHECK(ui::Columns("\xEF\xBC\x81") == 2);                        // a full-width !
 }
 
+TEST_CASE("native ui: width: the game font's advances, else guesses never narrower than its Latin fonts") {
+    ui::ResetFontWidths();
+    CHECK(ui::Width("") == 0);
+    CHECK(ui::Width("W") == ui::kGuessWidest);   // (1.10 em in Clarimo UD PE DemiBold: the widest Latin letter)
+    CHECK(ui::kGuessWidest >= 110);
+    CHECK(ui::Width("i") == ui::kGuessNarrow);
+    CHECK(ui::Width(" ") == ui::kGuessSpace);
+    CHECK(ui::Width("a") == ui::kGuessLower);
+    CHECK(ui::Width("A") == ui::kGuessUpper);
+    CHECK(ui::Width("m") == ui::kGuessBroad);
+    CHECK(ui::Width("t") == ui::kGuessSlim);
+    CHECK(ui::Width("\xE4\xBD\xA0\xE5\xA5\xBD") == 2 * ui::kWideWidth);   // 你好: 1 em each
+    CHECK(ui::Width("\xC3\xA9") == ui::kGuessWidest);                     // é: no font, the widest guess
+    CHECK(ui::Width("\xD0\x9F") == ui::kGuessWidest);                     // П
+    // The bar: never wider than the game's own widest banner line (27.3 em), every guess at least the game's.
+    CHECK(ui::kBannerWidth <= 2731);
+    CHECK(ui::kNameWidth + 300 < ui::kBannerWidth);
+}
+
+namespace {
+// A small OpenType font: 'head' (units per em 1000), 'hhea' (3 advances), 'hmtx' (500, 700, 1234), 'cmap' format 4
+// mapping A -> glyph 1 and B -> glyph 2.
+std::vector<std::uint8_t> TinyFont() {
+    std::vector<std::uint8_t> b(222, 0);
+    const auto be = [&](std::size_t at, std::uint32_t v, int n) {
+        for (int k = n - 1; k >= 0; --k, v >>= 8) b[at + static_cast<std::size_t>(k)] = static_cast<std::uint8_t>(v);
+    };
+    be(0, 0x00010000, 4);
+    be(4, 4, 2);
+    const std::uint32_t tags[4] = {0x68656164u, 0x68686561u, 0x686d7478u, 0x636d6170u};   // head hhea hmtx cmap
+    const std::uint32_t offs[4] = {76, 130, 166, 178}, lens[4] = {54, 36, 12, 44};
+    for (std::size_t i = 0; i < 4; ++i) {
+        be(12 + 16 * i, tags[i], 4);
+        be(12 + 16 * i + 8, offs[i], 4);
+        be(12 + 16 * i + 12, lens[i], 4);
+    }
+    be(76 + 18, 1000, 2);    // unitsPerEm
+    be(130 + 34, 3, 2);      // numberOfHMetrics
+    be(166, 500, 2);
+    be(170, 700, 2);
+    be(174, 1234, 2);
+    be(178 + 2, 1, 2);       // one subtable: platform 3, encoding 1, at +12
+    be(178 + 4, 3, 2);
+    be(178 + 6, 1, 2);
+    be(178 + 8, 12, 4);
+    const std::size_t f = 190;
+    be(f, 4, 2);
+    be(f + 2, 32, 2);
+    be(f + 6, 4, 2);         // two segments
+    be(f + 14, 0x42, 2);     // ends
+    be(f + 16, 0xFFFF, 2);
+    be(f + 20, 0x41, 2);     // starts (after the pad)
+    be(f + 22, 0xFFFF, 2);
+    be(f + 24, 0x10000 - 0x40, 2);   // deltas: A (0x41) -> 1
+    be(f + 26, 1, 2);
+    return b;
+}
+}  // namespace
+
+TEST_CASE("native ui: width: the font's own advances (cmap + hmtx), rounded up, bad bytes leave the guesses") {
+    const auto w = ui::FontWidths(TinyFont());
+    REQUIRE(w.size() == 2);
+    CHECK(w[0] == std::pair<std::uint32_t, std::uint16_t>{0x41, 70});
+    CHECK(w[1] == std::pair<std::uint32_t, std::uint16_t>{0x42, 124});   // 1.234 em, rounded up
+    REQUIRE(ui::SetFontWidths(TinyFont()));
+    CHECK(ui::Width("AB") == 194);
+    CHECK(ui::Width("AC") == 70 + ui::kGuessUpper);   // C: not in the font, guessed
+    CHECK(ui::Width("\xE4\xBD\xA0") == ui::kWideWidth);
+    auto cut = TinyFont();
+    cut.resize(100);
+    CHECK(ui::FontWidths(cut).empty());
+    CHECK_FALSE(ui::SetFontWidths(cut));
+    CHECK(ui::Width("AB") == 194);   // (a bad file keeps what was read)
+    CHECK_FALSE(ui::SetFontWidths({}));
+    CHECK(ui::FontWidths(std::vector<std::uint8_t>(64, 0xFF)).empty());
+    ui::ResetFontWidths();
+    CHECK(ui::Width("A") == ui::kGuessUpper);
+}
+
 TEST_CASE("native ui: wrapping fits the game's pane: whole words, pages, nothing lost") {
-    const auto one = ui::Wrap("hello there", 44, 2);
+    ui::ResetFontWidths();
+    const auto one = ui::Wrap("hello there", 4400, 2);
     REQUIRE(one.size() == 1);
     CHECK(one[0] == "hello there");
-    const auto two = ui::Wrap("aaaa bbbb cccc", 9, 2);
+    const auto two = ui::Wrap("aaaa bbbb cccc", 600, 2);   // (aaaa bbbb: 558)
     REQUIRE(two.size() == 1);
     CHECK(two[0] == "aaaa bbbb\ncccc");
-    const auto pages = ui::Wrap("aaaa bbbb cccc dddd eeee", 9, 2);
+    const auto pages = ui::Wrap("aaaa bbbb cccc dddd eeee", 600, 2);
     REQUIRE(pages.size() == 2);
     CHECK(pages[0] == "aaaa bbbb\ncccc dddd");
     CHECK(pages[1] == "eeee");
     // A word longer than a line breaks inside, at a character; every row fits.
     const std::string longword(100, 'x');
-    const auto cut = ui::Wrap(longword, 44, 2);
+    const auto cut = ui::Wrap(longword, 2904, 2);
     std::string joined;
     for (const auto& p : cut) {
         std::size_t from = 0;
         while (from <= p.size()) {
             const auto nl = p.find('\n', from);
             const std::string row = p.substr(from, nl == std::string::npos ? std::string::npos : nl - from);
-            CHECK(ui::Columns(row) <= 44);
+            CHECK(ui::Width(row) <= 2904);
             joined += row;
             if (nl == std::string::npos) break;
             from = nl + 1;
         }
     }
     CHECK(joined == longword);
-    // Chinese: two columns a character, broken anywhere.
+    // Chinese: 1 em a character, broken anywhere.
     std::string zh;
     for (int i = 0; i < 30; ++i) zh += "\xE4\xBD\xA0";
-    const auto zp = ui::Wrap(zh, 44, 2);
+    const auto zp = ui::Wrap(zh, 2200, 2);
     REQUIRE(zp.size() == 1);
     const auto nl = zp[0].find('\n');
     REQUIRE(nl != std::string::npos);
-    CHECK(ui::Columns(zp[0].substr(0, nl)) == 44);
-    CHECK(ui::Columns(zp[0].substr(nl + 1)) == 16);
-    CHECK(ui::Wrap("", 44, 2).empty());
-    CHECK(ui::Wrap("   ", 44, 2).empty());
+    CHECK(ui::Width(zp[0].substr(0, nl)) == 2200);
+    CHECK(ui::Width(zp[0].substr(nl + 1)) == 800);
+    CHECK(ui::Wrap("", 4400, 2).empty());
+    CHECK(ui::Wrap("   ", 4400, 2).empty());
+    // The worst line: 200 of the widest letter, each page inside the banner's line (48 columns of W were 48.7 em, past
+    // the game's pane), and nothing lost.
+    const std::string ws(200, 'W');
+    std::string back;
+    for (const auto& p : ui::Wrap(ws, ui::kBannerWidth, 1)) {
+        CHECK(ui::Width(p) <= ui::kBannerWidth);
+        back += p;
+    }
+    CHECK(back == ws);
 }
 
 TEST_CASE("native ui: the feed shows each line once, in banner pages, game-paced, and drops stale ones") {
@@ -265,7 +362,7 @@ TEST_CASE("native ui: the feed shows each line once, in banner pages, game-paced
     for (int i = 0; i < 40; ++i) words += "word ";
     f.Update({{"Mido: " + words, false, 0, 0}}, 20000);
     const std::size_t pages = f.waiting();
-    CHECK(pages == 5);  // 200 columns, 42 a page after "Mido: " (8 words)
+    CHECK(pages == 7);  // 40 words after "Mido: ", 6 a page with the "... " marks (hud-fit-0120: 6 pages of 7 before)
     std::uint64_t t = 20000;
     for (std::size_t k = 0; k < pages; ++k) {
         const auto p = f.Next(t);
@@ -273,7 +370,7 @@ TEST_CASE("native ui: the feed shows each line once, in banner pages, game-paced
         CHECK(p->speaker == "Mido");
         CHECK(p->first == (k == 0));
         CHECK(p->text.find('\n') == std::string::npos);
-        CHECK(ui::Columns(ui::BannerText(*p)) <= ui::kBannerColumns);
+        CHECK(ui::Width(ui::BannerText(*p)) <= ui::kBannerWidth);
         CHECK(p->seconds <= 6.0f);
         t += static_cast<std::uint64_t>(p->seconds * 1000.0f) + 1;
     }
@@ -313,20 +410,27 @@ TEST_CASE("native ui: the typed line: the end that fits the banner line, a caret
     CHECK(t.text == "hello_");
     CHECK(ui::BannerText(t) == "you: hello_");
     CHECK(t.seconds == ui::kTypingSeconds);
-    CHECK(ui::TypingLine("you", "hi", true, "(pas envoy\xC3\xA9)").text == "hi_ (pas envoy\xC3\xA9)");
+    CHECK(t.colour == 0);   // (the caller gives it the speaker's colour)
+    const auto failed = ui::TypingLine("you", "hi", true, "(pas envoy\xC3\xA9)");
+    CHECK(failed.text == "hi_ (pas envoy\xC3\xA9)");
+    CHECK(failed.colour == ui::kFailedColour);   // a send that failed: plain at a glance
     const auto l = ui::TypingLine("you", std::string(200, 'y'), false);
     CHECK(l.text.substr(0, 3) == "...");
     CHECK(l.text.substr(l.text.size() - 2) == "y_");
     CHECK(l.text.find('\n') == std::string::npos);
-    CHECK(ui::Columns(ui::BannerText(l)) == ui::kBannerColumns);  // the line full, never past it
+    // The line full (one more y would not fit), never past it.
+    CHECK(ui::Width(ui::BannerText(l)) <= ui::kBannerWidth);
+    CHECK(ui::Width(ui::BannerText(l)) + ui::Width("y") > ui::kBannerWidth);
     std::string zh;
-    for (int i = 0; i < 20; ++i) zh += "\xE4\xBD\xA0";  // 20 x 2 columns
-    CHECK(ui::Columns(ui::BannerText(ui::TypingLine("you", zh, false))) <= ui::kBannerColumns);
+    for (int i = 0; i < 20; ++i) zh += "\xE4\xBD\xA0";  // 20 em
+    CHECK(ui::TypingLine("you", zh, false).text == zh + "_");
+    CHECK(ui::Width(ui::BannerText(ui::TypingLine("you", zh, false))) <= ui::kBannerWidth);
     CHECK(ui::TypingLine("you", std::string("a\x0E" "b", 3), false).text == "ab_");
     // A long name: cut, and the line still fits.
     const auto n = ui::TypingLine(std::string(60, 'N'), std::string(100, 'y'), true);
-    CHECK(ui::Columns(n.speaker) == ui::kNameColumns);
-    CHECK(ui::Columns(ui::BannerText(n)) <= ui::kBannerColumns);
+    CHECK(n.speaker == std::string(10, 'N'));   // (10 x 0.82 em of the 9 a name has)
+    CHECK(ui::Width(n.speaker) <= ui::kNameWidth);
+    CHECK(ui::Width(ui::BannerText(n)) <= ui::kBannerWidth);
 }
 
 TEST_CASE("native ui: texts live in the game's memory, the Ref as the game reads it") {
@@ -625,4 +729,43 @@ TEST_CASE("native ui: the held line waits for the game's own banner, and never c
     CHECK_FALSE(b.Step(w.g, w.ring, ui::HeldBanner(), 0));
     CHECK(w.g.CallsTo(kClose).empty());
     CHECK_FALSE(b.up());  // (pages are free to wait for it again)
+}
+
+// hud-fit-0120 (gate-hud shot of 2f734963a, B: the banner showed a page of only "things changed)"): a long line's
+// pages are about the same width, each but the last ends " ..." and each but the first starts "... ", none wider than
+// the banner, and the words are all there in order.
+TEST_CASE("native ui: banner pages are balanced and marked as going on") {
+    ui::ResetFontWidths();
+    const std::string notice = "A loaded a save - the group follows it (26 items, 2 songs, 1 maps and compasses, "
+                               "1 heart containers, 1 tokens, 5 other things changed)";
+    const auto pages = ui::BannerPages(notice, ui::kBannerWidth);
+    REQUIRE(pages.size() >= 2);
+    CHECK(pages.size() == ui::Wrap(notice, ui::kBannerWidth - 2 * (ui::Width("...") + ui::Width(" ")), 1).size());
+    std::string back;
+    std::size_t narrowest = ui::kBannerWidth, widest = 0;
+    for (std::size_t k = 0; k < pages.size(); ++k) {
+        CAPTURE(pages[k]);
+        CHECK(ui::Width(pages[k]) <= ui::kBannerWidth);
+        std::string body = pages[k];
+        if (k > 0) {
+            REQUIRE(body.rfind("... ", 0) == 0);
+            body = body.substr(4);
+        }
+        if (k + 1 < pages.size()) {
+            REQUIRE(body.size() > 4);
+            CHECK(body.substr(body.size() - 4) == " ...");
+            body.resize(body.size() - 4);
+        }
+        back += (back.empty() ? "" : " ") + body;
+        narrowest = std::min(narrowest, ui::Width(body));
+        widest = std::max(widest, ui::Width(body));
+    }
+    CHECK(back == notice);
+    CHECK(narrowest * 2 >= widest);   // no page a short tail of the line ("things changed)" alone)
+    CHECK(pages.back() != "... things changed)");
+    // A line that fits: one page, unmarked.
+    CHECK(ui::BannerPages("Ruto joined", ui::kBannerWidth) == std::vector<std::string>{"Ruto joined"});
+    CHECK(ui::BannerPages("", ui::kBannerWidth).empty());
+    // One word longer than any page: still every page fits.
+    for (const auto& p : ui::BannerPages(std::string(300, 'W'), ui::kBannerWidth)) CHECK(ui::Width(p) <= ui::kBannerWidth);
 }

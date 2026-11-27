@@ -50,9 +50,87 @@ class FindMonitor(unittest.TestCase):
         self.assertIn("primary", msg)
         self.assertIn(pl.ENV, msg)
 
+    def test_primary_names_the_primary_monitor(self):
+        self.assertEqual(pl.find_monitor(MONS, "primary")["name"], "\\\\.\\DISPLAY1")
+        self.assertEqual(pl.find_monitor(MONS, "PRIMARY")["name"], "\\\\.\\DISPLAY1")
+
+    def test_the_default_gone_is_the_primary_monitor(self):
+        one = [MONS[0]]   # (a laptop alone: no DISPLAY2)
+        self.assertEqual(pl.find_monitor(one, pl.DEFAULT_DISPLAY, primary_if_gone=True)["name"], "\\\\.\\DISPLAY1")
+        with self.assertRaises(pl.PlacementError):   # (a name asked for stays an error)
+            pl.find_monitor(one, pl.DEFAULT_DISPLAY)
+
+    def test_check_display_keeps_the_monitor_when_it_exists(self):
+        real, env = pl.monitors, os.environ.pop(pl.ENV, None)
+        pl.monitors = lambda: MONS
+        try:
+            mon = pl.check_display()
+            self.assertEqual(mon["name"], "\\\\.\\DISPLAY2")
+            self.assertNotIn("note", mon)
+            self.assertEqual(pl.check_display("DISPLAY3")["name"], "\\\\.\\DISPLAY3")
+        finally:
+            pl.monitors = real
+            if env is not None:
+                os.environ[pl.ENV] = env
+
+    def test_check_display_falls_back_to_primary_when_the_monitor_is_missing(self):
+        one = [MONS[0]]
+        real, env = pl.monitors, os.environ.pop(pl.ENV, None)
+        pl.monitors = lambda: one
+        try:
+            mon = pl.check_display()   # the default DISPLAY2 is off
+            self.assertEqual(mon["name"], "\\\\.\\DISPLAY1")
+            self.assertIn("DISPLAY2", mon["note"])
+            self.assertIn("primary", mon["note"])
+            self.assertEqual(pl.check_display("DISPLAY2")["name"], "\\\\.\\DISPLAY1")   # --display
+            os.environ[pl.ENV] = "DISPLAY2"   # a stale OOT_TEST_DISPLAY
+            self.assertEqual(pl.check_display()["name"], "\\\\.\\DISPLAY1")
+            self.assertNotIn("note", pl.check_display("primary"))
+            self.assertNotIn("note", pl.check_display("DISPLAY1"))
+        finally:
+            pl.monitors = real
+            os.environ.pop(pl.ENV, None)
+            if env is not None:
+                os.environ[pl.ENV] = env
+
     def test_no_monitors_at_all(self):
         with self.assertRaises(pl.PlacementError):
             pl.find_monitor([], "DISPLAY2")
+        with self.assertRaises(pl.PlacementError):
+            pl.choose_monitor([], None, {})
+
+
+class ChooseMonitor(unittest.TestCase):
+    """The owner's order (2026-11-26, as coord's offline/lib/test-display.ps1): the asked name if connected, else
+    OOT_TEST_DISPLAY if connected, else DISPLAY2 if connected, else the primary; skipped names are in the note."""
+
+    def test_stale_env_goes_to_display2_when_it_is_connected(self):
+        mon = pl.choose_monitor(MONS, None, {pl.ENV: "DISPLAY9"})
+        self.assertEqual(mon["name"], "\\\\.\\DISPLAY2")
+        self.assertIn("DISPLAY9", mon["note"])
+        self.assertNotIn("primary monitor", mon["note"])
+
+    def test_stale_arg_goes_to_a_connected_env(self):
+        mon = pl.choose_monitor(MONS, "DISPLAY9", {pl.ENV: "DISPLAY3"})
+        self.assertEqual(mon["name"], "\\\\.\\DISPLAY3")
+        self.assertIn("DISPLAY9", mon["note"])
+
+    def test_nothing_connected_of_the_three_is_the_primary(self):
+        one = [MONS[0]]
+        mon = pl.choose_monitor(one, "DISPLAY8", {pl.ENV: "DISPLAY9"})
+        self.assertEqual(mon["name"], "\\\\.\\DISPLAY1")
+        for n in ("DISPLAY8", "DISPLAY9", "DISPLAY2", "primary monitor"):
+            self.assertIn(n, mon["note"])
+
+    def test_connected_choices_have_no_note(self):
+        self.assertNotIn("note", pl.choose_monitor(MONS, None, {}))                       # the default DISPLAY2
+        self.assertNotIn("note", pl.choose_monitor(MONS, None, {pl.ENV: "DISPLAY3"}))
+        self.assertNotIn("note", pl.choose_monitor([MONS[0]], "primary", {}))
+        self.assertEqual(pl.choose_monitor(MONS, "display3", {pl.ENV: "DISPLAY1"})["name"], "\\\\.\\DISPLAY3")
+
+    def test_the_same_missing_name_twice_is_named_once(self):
+        mon = pl.choose_monitor([MONS[0]], "DISPLAY2", {pl.ENV: "\\\\.\\DISPLAY2"})
+        self.assertEqual(mon["note"].count("DISPLAY2"), 1)
 
 
 class Layout(unittest.TestCase):
@@ -111,10 +189,12 @@ class RealMonitors(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             self.assertEqual(pl.main(["rects", "--display", prim, "--count", "2"]), 0)
         self.assertEqual(len(json.loads(buf.getvalue())["rects"]), 2)
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            self.assertEqual(pl.main(["rects", "--display", "\\\\.\\DISPLAY99"]), 2)
-        self.assertIn("DISPLAY99", err.getvalue())
+        buf = io.StringIO()   # a missing monitor: the primary one, with the note
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(pl.main(["rects", "--display", "\\\\.\\DISPLAY99"]), 0)
+        out = json.loads(buf.getvalue())
+        self.assertEqual(out["display"], prim)
+        self.assertIn("DISPLAY99", out["note"])
 
 
 if __name__ == "__main__":

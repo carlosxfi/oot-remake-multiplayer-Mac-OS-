@@ -1,6 +1,4 @@
 # giant-blade B (proof-0116): stands 2.5 m west of A (x 191.93 against 194.43) facing it, watches.
-#! noload
-#! start coop: test warp done
 #! switches LICHII_COOP_DEBUG_OBJECTS=1
 #! timeout 360
 mark start

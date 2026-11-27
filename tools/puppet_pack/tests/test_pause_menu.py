@@ -253,12 +253,14 @@ class RowsTest(unittest.TestCase):
             pm.add_help(low)   # (a page whose last row is so low the help would run off: refused, not shipped)
 
     def test_the_helps_lines_are_the_modules(self):
-        # pause_menu's HELP_LINES and the module's kHelpLines (CoopPauseTab::HelpText's cut) are the same number
+        # pause_menu's HELP_LINES and the module's kHelpLines (CoopPauseTab::HelpText's cut) are the same number, and the
+        # module's line (kHelpWidth, hundredths of an em; the caption's words are 60 units an em) fits the help's width
         header = os.path.join(os.path.dirname(__file__), "..", "..", "..", "hookshot", "src", "coop_pause_tab.h")
         with open(header, encoding="utf-8") as f:
-            m = re.search(r"kHelpColumns = (\d+), kHelpLines = (\d+);", f.read())
+            m = re.search(r"kHelpWidth = (\d+), kHelpLines = (\d+);", f.read())
         self.assertIsNotNone(m)
         self.assertEqual(int(m.group(2)), pm.HELP_LINES)
+        self.assertLessEqual(int(m.group(1)) * 60 / 100, pm.HELP_SIZE[0])
 
     def test_another_part_layout_needs_its_size_and_takes_no_parameters(self):
         d = system()

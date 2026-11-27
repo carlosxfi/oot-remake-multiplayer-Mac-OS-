@@ -337,6 +337,14 @@ TEST_CASE("teleport: a map change event the game does not take is asked again, t
     CHECK(t < 15 * kS);  // well before the 60 s give-up
 }
 
+TEST_CASE("teleport: a scene's default start is its first start point, a boss stage has its own") {
+    CHECK(CoopTeleport::DefaultStart("GohmaStage") == "GohmaStage");
+    CHECK(CoopTeleport::DefaultStart("InsideTheDekuTree") == "Entrance");
+    CHECK(CoopTeleport::DefaultStart("MorphaStage") == "MorphaStage");
+    CHECK_FALSE(CoopTeleport::DefaultStart("Market").has_value());   // no age: not a scene
+    CHECK_FALSE(CoopTeleport::DefaultStart("").has_value());
+}
+
 TEST_CASE("teleport: the arrival event is the entrance's own, else the plain one") {
     CHECK(CoopTeleport::ArrivalEvent("KakarikoVillage_Child", "KakarikoVillage_Entrance") ==
           "Dm_SY_BancChangeArrive_KakarikoVillage_01");
@@ -792,4 +800,89 @@ TEST_CASE("teleport: IsKnownScene is exact and ScenesLike completes a name given
     CHECK(CoopTeleport::ScenesLike("Nothing").empty());
     CHECK(CoopTeleport::ScenesLike("").empty());
     CHECK(CoopTeleport::ScenesLike("Zora", 3).size() == 3);  // capped
+}
+
+// Issue 289: a start with no entrance actor of its name (a boss stage) has no starter for its arrival event.
+TEST_CASE("teleport: the arrival's starter: only a start with an entrance actor has one") {
+    using CoopTeleport::ArrivalHasStarter;
+    // The stages the game enters with the starter '' (DreamBossStage's EventReserveBancChange) and EnemyMuseum.
+    for (const char* stage :
+         {"GohmaStage", "DodongoStage", "BarinadeStage", "PhantomGanonStage", "VolvagiaStage", "MorphaStage",
+          "BongoBongoStage", "TwinrovaStage", "GanondorfStage", "GanonStage", "BigOctoStage", "DarkLinkStage",
+          "DeadHandStage", "DinolfosStage", "FlareDancerStage", "GerudoThiefStage", "IronKnuckleBlackStage",
+          "IronKnuckleWhiteStage", "LizalfosStage", "MegStage", "NaboruStage", "StalfosStage", "StalfosWeakStage",
+          "WolfosStage", "WolfosWhiteStage", "EnemyMuseum"}) {
+        CAPTURE(stage);
+        const auto start = CoopTeleport::DefaultStart(stage);
+        REQUIRE(start);
+        CHECK_FALSE(ArrivalHasStarter(stage, *start));
+    }
+    // Entrances the game's own loading zones use.
+    CHECK(ArrivalHasStarter("DodongoCavern", "DodongoCavern_MountainTrailSide"));
+    CHECK(ArrivalHasStarter("InsideTheDekuTree", "Entrance"));
+    CHECK(ArrivalHasStarter("KakarikoVillage_Child", "KakarikoVillage_Entrance"));
+    // A start the list lacks: the game's reservation is left alone.
+    CHECK(ArrivalHasStarter("VolvagiaStage", "NoSuchStart"));
+    CHECK(ArrivalHasStarter("NoSuchScene", "NoSuchStart"));
+}
+
+TEST_CASE("teleport: the arrival's starter is emptied for a boss stage, after the game reserved it") {
+    using CoopTeleport::ArrivalStarter;
+    const std::optional<std::string> none;
+    const std::optional<std::string> stage = std::string("VolvagiaStage");
+    const std::optional<std::string> empty = std::string();
+    ArrivalStarter s;
+    CHECK_FALSE(s.active());
+    CHECK_FALSE(s.Tick(stage, stage, false, 0));  // nothing asked: never a write
+
+    s.Begin("VolvagiaStage", "VolvagiaStage", 1 * kS);
+    REQUIRE(s.active());
+    // Before the game's event reserved our scene nothing is written, whatever the starter holds.
+    CHECK_FALSE(s.Tick(empty, stage, false, 1 * kS + 1));
+    CHECK_FALSE(s.Tick(none, none, false, 1 * kS + 2));
+    // The event reserved the scene and named the start as the starter: emptied.
+    CHECK(s.Tick(stage, stage, false, 2 * kS));
+    CHECK(s.writes() == 1);
+    CHECK_FALSE(s.Tick(stage, empty, false, 2 * kS + 1));  // it is empty: nothing to write
+    // Written again by the game (its queue): emptied again, also during the load.
+    CHECK(s.Tick(stage, stage, true, 3 * kS));
+    CHECK(s.writes() == 2);
+    CHECK_FALSE(s.Tick(none, none, true, 4 * kS));  // flags not read: nothing
+    CHECK(s.active());
+    // The load is over and the game cleared its reservation: over.
+    CHECK_FALSE(s.Tick(empty, empty, false, 8 * kS));
+    CHECK_FALSE(s.active());
+    CHECK_FALSE(s.Tick(stage, stage, false, 9 * kS));
+}
+
+TEST_CASE("teleport: the arrival's starter: an entrance with its actor is never touched, an event never taken ends") {
+    using CoopTeleport::ArrivalStarter;
+    const std::optional<std::string> cavern = std::string("DodongoCavern");
+    const std::optional<std::string> side = std::string("DodongoCavern_MountainTrailSide");
+    ArrivalStarter s;
+    s.Begin("DodongoCavern", "DodongoCavern_MountainTrailSide", 0);
+    CHECK_FALSE(s.active());
+    CHECK_FALSE(s.Tick(cavern, side, false, 1));
+
+    // A stage, but the game never reserved it (the event was refused): given up, nothing written.
+    const std::optional<std::string> other = std::string("FireTemple");
+    const std::optional<std::string> stage = std::string("VolvagiaStage");
+    s.Begin("VolvagiaStage", "VolvagiaStage", 0);
+    CHECK_FALSE(s.Tick(other, stage, false, ArrivalStarter::kUnseenUs - 1));
+    CHECK(s.active());
+    CHECK_FALSE(s.Tick(other, stage, false, ArrivalStarter::kUnseenUs));
+    CHECK_FALSE(s.active());
+    CHECK(s.writes() == 0);
+
+    // Reserved but never cleared by the game: ends after a time no load takes.
+    s.Begin("VolvagiaStage", "VolvagiaStage", 0);
+    CHECK(s.Tick(stage, stage, false, 1 * kS));
+    CHECK_FALSE(s.Tick(stage, std::string(), false, 1 * kS + ArrivalStarter::kSeenUs));
+    CHECK_FALSE(s.active());
+
+    // A new ask starts afresh.
+    s.Begin("GohmaStage", "GohmaStage", 500 * kS);
+    CHECK(s.active());
+    CHECK(s.writes() == 0);
+    CHECK(s.scene() == "GohmaStage");
 }

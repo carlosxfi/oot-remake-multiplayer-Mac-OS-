@@ -61,6 +61,8 @@ The terminal says what happened and what to do. Common ones:
 | "too old (glibc ...)" | Your Linux is older than 2022: update it. |
 | "Missing on this PC: curl" | Install it (`sudo apt install curl`, `sudo dnf install curl`, `sudo pacman -S curl`). |
 | The download or build stopped | Start again: it goes on from where it stopped. |
+| "The co-op game's files are not from one build" | A file of the built game is not the one Longshot put there (the message names it). Nothing was changed and the game is not started. `bash start-squadala.sh --rebuild` takes the wrong files out and builds the game again (5 to 60 minutes); saves and settings stay. A game without `.longshot_installed.json` (an older Longshot) is not checked. |
+| "This kit is a test kit (data/hold-game.txt)" | Only test kits have `data/hold-game.txt`; players never need it. The kit then never builds its game for other patches or another Longshot release than the game was built from. Put `data/longshot` (PIN, LINUX.txt, patches) of the build the game came from back, or delete `data/hold-game.txt` to build it again on purpose. |
 
 For a bug report: `bash start-squadala.sh --logs` writes `coop-logs-<time>.zip` beside it (passwords, codes,
 addresses and your user name are masked). On the [Squadala! Discord](https://discord.gg/GwtRKAqng5) type `/bugreport`, say what happened and
@@ -76,6 +78,10 @@ As on Windows ([setup.md, "Discord status"](setup.md#discord-status)): with Disc
 A normal build offers AMD FSR 3.1 and the game's own upscaler: Longshot has **NVIDIA DLSS** and **DLAA** only in a game built with NVIDIA's DLSS SDK, which is under NVIDIA's own license and never in the kit. With an NVIDIA RTX card, run `bash start-squadala.sh --dlss` from a terminal once: it asks whether you accept NVIDIA's license (**y**), downloads the SDK into `data/work/ngx-sdk` and builds the game again with it. Then in the game: **Graphics → Upscaler: NVIDIA DLSS**.
 
 The kit remembers it (`data/dlss.txt`), so the builds after an update keep DLSS; `--no-dlss` builds the game again without it. NVIDIA's Linux driver loads DLSS only from a folder whose whole path is plain ASCII: keep the kit in a folder such as `~/OoT-Coop`. A game built with DLSS holds NVIDIA's files (`data/game/ngx/`): never share it.
+
+## AMD FSR 4
+
+Longshot has **AMD FSR 4** and **AMD FSR 4 Native AA** only in a game built with FSR 4 that has AMD's FSR 4 library beside it. `bash start-squadala.sh --fsr4` builds the game again with FSR 4 (the kit remembers it in `data/fsr4.txt`; `--no-fsr4` builds it again without). AMD publishes its FSR 4 runtime for Windows only, so on Linux the kit downloads nothing: put a Vulkan `amd_fidelityfx_upscaler_vk.so` in `data/game/` yourself. Then in the game: **Graphics → Upscaler: AMD FSR 4**; without that file the row says AMD's files were not found, and AMD FSR 3.1 stays in every build.
 
 ## Going back to an older version
 

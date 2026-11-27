@@ -17,7 +17,8 @@
 #
 # The kit:
 #   start-squadala.sh (the one start file; its old name start-oot-coop.sh is gone from v0.11.4 on: update.sh --tidy
-#   points the menu and Steam entries at start-squadala.sh), revert.sh (back to the version before the last update), README.txt, VERSION.txt, MANIFEST.txt
+#   points the menu and Steam entries at start-squadala.sh), revert.sh (back to the version before the last update), uninstall-character-select.sh and reinstall-character-select.sh
+#   (Snail's mod out of the game, or made again: scripts/character-select.sh sets the answer, then the start runs), README.txt, VERSION.txt, MANIFEST.txt
 #   scripts/      start.sh, build.sh, update.sh, collect-logs.sh, lib.sh, apply_patch.py, coop.ini.template
 #   data/         coop-options.ini, server/coop_server, longshot/ (PIN, LINUX.txt, patches/, hookshot_coop.so),
 #                 tools/puppet_pack/, docs/ (SETUP-LINUX.md, KNOWN-ISSUES.md), licenses/
@@ -68,15 +69,17 @@ text() {   # text FROM TO: LF line ends
 text "$src/start-squadala.sh" "$kit/start-squadala.sh"
 text "$src/README.txt" "$kit/README.txt"
 text "$src/revert.sh" "$kit/revert.sh"
-for f in start.sh build.sh update.sh collect-logs.sh lib.sh; do text "$src/scripts/$f" "$kit/scripts/$f"; done
+for f in uninstall-character-select.sh reinstall-character-select.sh; do text "$src/$f" "$kit/$f"; done
+for f in start.sh build.sh update.sh collect-logs.sh lib.sh character-select.sh; do text "$src/scripts/$f" "$kit/scripts/$f"; done
 text "$repo/tools/release/kit/scripts/apply_patch.py" "$kit/scripts/apply_patch.py"
 text "$repo/tools/release/kit/scripts/discord_status.py" "$kit/scripts/discord_status.py"
 text "$src/scripts/problem_report.py" "$kit/scripts/problem_report.py"
 text "$repo/tools/release/kit/scripts/problem-send-url.txt" "$kit/scripts/problem-send-url.txt"
+text "$repo/tools/release/kit/scripts/game-core-files.txt" "$kit/scripts/game-core-files.txt"   # (C2-3: the core build, build.sh game_mismatch)
 text "$repo/tools/release/kit/coop.ini.template" "$kit/scripts/coop.ini.template"
 text "$repo/tools/release/kit/coop-options.ini" "$kit/data/coop-options.ini"
 cp -- "$repo/tools/release/kit/assets/squadala-icon.png" "$kit/data/squadala-icon.png"   # (the window and menu icon, start.sh)
-chmod 755 "$kit/start-squadala.sh" "$kit/revert.sh" "$kit"/scripts/*.sh
+chmod 755 "$kit/start-squadala.sh" "$kit/revert.sh" "$kit"/*-character-select.sh "$kit"/scripts/*.sh
 install -m 755 "$server" "$kit/data/server/coop_server"
 install -m 644 "$module" "$kit/data/longshot/hookshot_coop.so"
 text "$pin" "$kit/data/longshot/PIN"
@@ -95,7 +98,7 @@ done
 # The puppet pack tool: make_kit_hookshot.ps1's list, plus every module build.py imports.
 pack=$repo/tools/puppet_pack
 files=(ainb.py build.py __init__.py byml.py dumpcheck.py dungeon_rooms.py hud.py nup.py rstb.py sarc.py texture.py
-    title_menu.py tunic.py tunic_extra.py zs.py self_tunic.py merge_tables.py)   # (self_tunic.py, merge_tables.py: start.sh)
+    title_menu.py tunic.py tunic_extra.py zs.py self_tunic.py merge_tables.py part_check.py)   # (self_tunic.py, merge_tables.py: start.sh; part_check.py: build.sh, row 280)
 # Followed through every module they import, and theirs (title_menu.py -> ui_pack.py -> msbt.py): one missing from
 # the kit stops build.py at its first import, and the pack is never made on the players' PCs.
 imports_of() {   # the modules a file imports from its own package, one per line

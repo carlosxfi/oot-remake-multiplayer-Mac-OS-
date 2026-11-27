@@ -42,13 +42,16 @@ struct Values {
 // A saved game in tools/autotest/save_flags.py's layout: Bool (type 0), Int (type 2), UInt (type 20), padding.
 Bytes FakeSave(const Values& v) {
   Bytes d(0x20, 0);
+  // The header (the first 0x20 bytes) is written in place; the table after it only grows by appended bytes. (A put that
+  // resized the buffer made gcc 15 -O2 see writes past the first 0x20 bytes: -Werror=stringop-overflow/array-bounds.)
   const auto put = [&](std::size_t at, std::uint32_t x) {
-    if (d.size() < at + 4) d.resize(at + 4, 0);
-    for (std::size_t i = 0; i < 4; ++i) d[at + i] = static_cast<std::uint8_t>(x >> (8 * i));
+    for (std::size_t i = 0; i < 4; ++i) d.at(at + i) = static_cast<std::uint8_t>(x >> (8 * i));
+  };
+  const auto add = [&](std::uint32_t x) {
+    for (std::size_t i = 0; i < 4; ++i) d.push_back(static_cast<std::uint8_t>(x >> (8 * i)));
   };
   put(0, 0x01020304);
-  std::size_t at = 0x20;
-  const auto rec = [&](std::uint32_t a, std::uint32_t b) { put(at, a), put(at + 4, b), at += 8; };
+  const auto rec = [&](std::uint32_t a, std::uint32_t b) { add(a), add(b); };
   for (std::uint32_t type = 0; type < 0x20; ++type) {
     rec(0, type);
     if (type == 0) {
@@ -70,7 +73,7 @@ Bytes FakeSave(const Values& v) {
   }
   rec(0, 0x20);
   rec(0x12345678, 0);
-  put(8, static_cast<std::uint32_t>(at));
+  put(8, static_cast<std::uint32_t>(d.size()));  // where the table ends
   d.resize(d.size() + 64, 0xab);  // a pool after the table
   return d;
 }

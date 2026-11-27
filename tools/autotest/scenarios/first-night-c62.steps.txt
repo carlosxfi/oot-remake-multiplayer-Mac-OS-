@@ -1,0 +1,36 @@
+# first-night-c62 (C6-2, owner-proofs-0120): Longshot 3.2's first adult night fix clears the saved Bool
+# HrlField_HasEnteredFirstTime_Adult (0x8592aa82, docs/time.md "Clock gate") in a game outside Hyrule Field
+# (ls32-src/host/hos_main.c oot_first_night_fix: not in a HyruleField* map, no event, flag 1 -> set 0, log
+# "oot: cleared the first adult night's time lock"). Does that clear reach a host that is in Hyrule Field?
+# Run: tools\autotest\run.ps1 -Runtime hookshot -Lane 1 -Scenario first-night-c62
+# A (host): adult, warps to HyruleField_Adult, sets the flag to 1 there (Longshot leaves it: HyruleField map).
+# B (guest): adult, sets the flag to 1, warps to KakarikoVillage_Adult: Longshot clears it in B only.
+# Pass: B logs the clear and its watched Bool going 1 -> 0; A's watched Bool is 1 and never goes back to 0
+# after it was 1; no line in A names 0x8592aa82 other than the watch (the flag is on no shared list:
+# tests/lichii/story_test.cpp "the clock gate's two flags are on no shared list"). Shots: A's sky before and
+# 60 s after B's clear (A's clock is A's own, unchanged by B).
+# Values: Sequence_IsChildhood 0 / warp names / wait 900: hs-adult.A.txt, hs-graveyard and 17 (HyruleField_Adult)
+# and 25 (KakarikoVillage_Adult) scenario uses; LICHII_COOP_DEBUG_BOOL + the "coop: flags debug: get_bool(0x...) = V
+# (was W)" line: lichii/hook/coop_flags.cpp FlagDebug; LICHII_COOP_DEBUG_TIME "time: sent": docs/time.md.
+# setup-*-setflag: lichii/hook/coop_testinput.cpp setflag ("coop: test setflag NAME (bool) V: set"); a-no-sync-line leaves out
+# the start line "coop: flags debug off, watching bool 0x..." (lichii/hook/coop_flags.cpp, FlagDebug setup).
+#! switches LICHII_COOP_PUPPET=1,LICHII_COOP_DEBUG_TIME=1,LICHII_COOP_DEBUG_BOOL=0x8592aa82
+start A B
+load A
+play A first-night-c62.A.txt
+shot a-field-flag1
+load B
+play B first-night-c62.B.txt
+shot b-kakariko-cleared
+sleep 60
+shot a-field-60s-after
+lines setup-a-setflag A min=1 coop: test setflag HrlField_HasEnteredFirstTime_Adult \(bool\) 1: set
+lines setup-b-setflag B min=1 coop: test setflag HrlField_HasEnteredFirstTime_Adult \(bool\) 1: set
+lines setup-a-watch A min=1 get_bool\(0x8592aa82\) = 1
+lines setup-b-watch B min=1 get_bool\(0x8592aa82\) = 1
+lines b-cleared B min=1 cleared the first adult night's time lock
+lines b-watch-cleared B min=1 get_bool\(0x8592aa82\) = 0 \(was 1\)
+lines a-never-cleared A max=0 get_bool\(0x8592aa82\) = 0 \(was 1\)
+lines a-not-cleared-by-longshot A max=0 cleared the first adult night's time lock
+lines a-no-sync-line A max=0 ^(?!.*(get_bool|watching bool)).*8592aa82
+lines a-time-sent A min=1 time: sent

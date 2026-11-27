@@ -8,10 +8,16 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
+
+#include "coop_off_frame.h"
 
 namespace CoopLan {
 
@@ -72,5 +78,46 @@ bool Joinable(const Heard& h, int my_protocol);
 // empty): the first that can be joined, in the list's order; else the one whose host has that name (any case). None:
 // nothing.
 std::optional<Heard> PickToJoin(const std::vector<Heard>& heard, const std::string& want, int my_protocol);
+
+// Row 292: where a host's announcement goes. This PC's networks (a cable, a VPN) are read again every
+// kNetworksEveryMs, but on a thread of their own (CoopOffFrame): reading them (GetAdaptersAddresses) took ~850 ms a
+// time on a player's PC, in the frame, every 30 s. Now never waits for a read: until the first one is in, and while
+// one runs, it gives the last addresses read; 255.255.255.255 (this network) and 127.0.0.1 (another game window on
+// this PC) always. `read` gives the broadcast addresses (host order) and is called only on the read's own thread.
+inline constexpr std::uint64_t kNetworksEveryMs = 30000;
+inline constexpr std::uint32_t kEveryNetwork = 0xffffffffu, kThisPc = 0x7f000001u;
+class NetworkTargets {
+public:
+    using Read = std::function<std::vector<std::uint32_t>()>;
+    explicit NetworkTargets(Read read) : read_(std::move(read)) {}
+    std::set<std::uint32_t> Now(std::uint64_t now_ms) {
+        std::lock_guard lock(mutex_);
+        if ((asked_ms_ == 0 || now_ms - asked_ms_ >= kNetworksEveryMs) &&
+            slot_.Start([this] {
+                const std::vector<std::uint32_t> got = read_();
+                std::lock_guard done(mutex_);
+                read_targets_ = std::set<std::uint32_t>(got.begin(), got.end());
+                ++reads_;
+            })) {
+            asked_ms_ = now_ms == 0 ? 1 : now_ms;   // (a read still running: asked again next time)
+        }
+        std::set<std::uint32_t> out = read_targets_;
+        out.insert(kEveryNetwork);
+        out.insert(kThisPc);
+        return out;
+    }
+    int Reads() const {
+        std::lock_guard lock(mutex_);
+        return reads_;
+    }
+
+private:
+    Read read_;
+    mutable std::mutex mutex_;
+    std::uint64_t asked_ms_ = 0;
+    std::set<std::uint32_t> read_targets_;
+    int reads_ = 0;
+    CoopOffFrame::Slot slot_;   // (last: its end waits for a read still running, before the rest goes)
+};
 
 }  // namespace CoopLan

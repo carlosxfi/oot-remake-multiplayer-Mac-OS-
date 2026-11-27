@@ -32,27 +32,37 @@ TEST_CASE("snail customize: his six options show co-op's parts, ZL / ZR step the
     d.Open(start, 0);
     REQUIRE(d.Active());
     auto t = d.Shown();
-    CHECK(t.title == "Link (page 1 of 4)  Y: page  A: exact hue");
+    CHECK(t.title == "Link (page 1 of 5)  Y: page  A: Fine-tune");
     CHECK(t.labels[0] == "Eye Colour");
     CHECK(t.labels[1] == "Kokiri Tunic");
-    CHECK(t.labels[3] == "Goron Tunic");   // (his right column)
-    CHECK(t.labels[4] == "Zora Tunic");
-    CHECK(t.labels[5].empty());
-    CHECK(t.values[4] == "Red");   // (capitalised as his own values: the UI gate, review-ui-tabs-0119-4)
-    CHECK(t.values[1] == "Game's own");
-    // The d-pad is his (his marker moves); co-op follows: right to Goron Tunic, down to Zora Tunic.
+    CHECK(t.labels[2] == "Cap Trim");
+    CHECK(t.labels[3] == "Cap Trim on Hoods");   // (his right column; C4-4: off, as 0.11.12)
+    CHECK(t.values[3] == "Off");
+    CHECK(t.labels[4] == "Goron Tunic");
+    CHECK(t.labels[5] == "Zora Tunic");
+    CHECK(t.values[5] == "Red");   // (capitalised as his own values: the UI gate, review-ui-tabs-0119-4)
+    CHECK(t.values[1] == "Default");
+    // The d-pad is his (his marker moves); co-op follows: right to Cap Trim on Hoods, down twice to Zora Tunic.
     CHECK(d.Pad(kRight) == kRight);
     CHECK(d.Pad(kDown) == kDown);
-    CHECK(d.Focus() == 4);
+    CHECK(d.Pad(kDown) == kDown);
+    CHECK(d.Focus() == 5);
     // ZR: Zora Tunic to the next preset; never his (his option Int stays 0).
     CHECK(d.Pad(kZR) == 0);
     const auto change = d.TakeChange();
     REQUIRE(change);
     CHECK((*change)[Part::zora_tunic] != CoopColors::Parse("red"));
-    // Y: the Shields page, the same six places.
+    // Y: Link's page of Character Select's options (look-link-cs), then the Shields page, the same six places.
     CHECK(d.Pad(kY) == 0);
     t = d.Shown();
-    CHECK(t.title == "Shields (page 2 of 4)  Y: page  A: exact hue");
+    CHECK(t.title == "Hair and clothes (page 2 of 5)  Y: page  A: Fine-tune");
+    CHECK(t.labels[0] == "Hair Colour");
+    CHECK(t.labels[1] == "Vest Colour");
+    CHECK(t.labels[2] == "Leather and Boots Colour");
+    CHECK(t.labels[3] == "Equipment");
+    CHECK(d.Pad(kY) == 0);
+    t = d.Shown();
+    CHECK(t.title == "Shields (page 3 of 5)  Y: page  A: Fine-tune");
     CHECK(t.labels[0] == "Hylian Shield Frame");
     CHECK(t.labels[5] == "Deku Shield");
     // B and -: his (back to his picker).
@@ -70,7 +80,7 @@ TEST_CASE("snail customize: A opens co-op's any-colour mixer in his six places, 
     CHECK(t.labels[1] == "Saturation");
     CHECK(t.labels[2] == "Brightness");
     CHECK(t.labels[3] == "Preset");
-    CHECK(t.labels[4] == "Game's own colour");
+    CHECK(t.labels[4] == "Default colour");
     CHECK(t.values[4] == "A");
     CHECK(t.labels[5] == "Done");
     CHECK(t.title.find("Y:") == std::string::npos);   // (no page turn in the mixer)
@@ -130,7 +140,7 @@ TEST_CASE("snail customize: a place with nothing is given a space, never an empt
 TEST_CASE("snail customize: his option past a page's parts does nothing") {
     Driver d;
     d.Open(Look{}, 0);
-    d.Pad(kY), d.Pad(kY), d.Pad(kY);             // (the Boots and gauntlets page: two parts)
+    d.Pad(kY), d.Pad(kY), d.Pad(kY), d.Pad(kY);   // (the Boots and gauntlets page, 5th since look-link-cs: two parts)
     REQUIRE(d.Shown().labels[1] == "Gauntlets");
     d.Pad(kDown), d.Pad(kDown);                  // (his third option: past the page's two)
     REQUIRE(d.Focus() == 2);
@@ -158,19 +168,20 @@ TEST_CASE("snail customize: his screen's texts in the game's language, as co-op'
     CHECK(t.labels[0] == CoopI18n::Tr(hans, "Eye Colour"));
     CHECK(t.labels[0] != "Eye Colour");
     CHECK(t.labels[1] == CoopI18n::Tr(hans, "Kokiri Tunic"));
-    CHECK(t.values[4] == CoopI18n::Tr(hans, "red"));
-    CHECK(t.values[4] != "red");
-    CHECK(t.values[4] != CoopI18n::Tr(hans, "Red"));   // (capitalised after the table: the colour, not a colour's red part)
-    CHECK(t.values[1] == CoopI18n::Tr(hans, "Game's own"));
-    CHECK(t.values[3] == d.Shown(nullptr).values[3]);   // (#123456 stays)
+    CHECK(t.values[5] == CoopI18n::Tr(hans, "red"));
+    CHECK(t.values[5] != "red");
+    CHECK(t.values[5] != CoopI18n::Tr(hans, "Red"));   // (capitalised after the table: the colour, not a colour's red part)
+    CHECK(t.values[1] == CoopI18n::Tr(hans, "Default"));
+    CHECK(t.values[3] == CoopI18n::Tr(hans, "Off"));   // (C4-4's switch: its value in the table)
+    CHECK(t.values[4] == d.Shown(nullptr).values[4]);   // (#123456 stays)
     // English (no table): the same texts as before.
-    CHECK(d.Shown(nullptr).title == "Link (page 1 of 4)  Y: page  A: exact hue");
-    CHECK(d.Shown(nullptr).values[4] == "Red");
+    CHECK(d.Shown(nullptr).title == "Link (page 1 of 5)  Y: page  A: Fine-tune");
+    CHECK(d.Shown(nullptr).values[5] == "Red");
 }
 
-TEST_CASE("snail customize: values capitalised as his own (Red next to Game's own), the rest unchanged") {
+TEST_CASE("snail customize: values capitalised as his own (Red next to Default), the rest unchanged") {
     CHECK(Capitalised("red") == "Red");
-    CHECK(Capitalised("Game's own") == "Game's own");
+    CHECK(Capitalised("Default") == "Default");
     CHECK(Capitalised("#123456") == "#123456");
     CHECK(Capitalised("") == "");
     CHECK(Capitalised("çº¢è²") == "çº¢è²");   // (Chinese: unchanged)
@@ -181,16 +192,44 @@ TEST_CASE("snail customize: the title fits its pane (61 bytes) on every page in 
     for (int i = 0; i < CoopI18n::kLangCount; ++i) {
         Driver d;
         d.Open(Look{}, 0);
-        for (int page = 0; page < 4; ++page) {
+        for (int page = 0; page < 5; ++page) {   // (look-link-cs: Link's five pages)
             const auto t = d.Shown(&CoopI18n::kLangs[i]);
             INFO(CoopI18n::kLangs[i].code << " page " << page + 1 << ": " << t.title);
             CHECK(t.title.size() <= 61);
-            const auto name = CoopI18n::Tr(&CoopI18n::kLangs[i], std::vector<std::string>{"Link", "Shields", "Swords", "Boots and gauntlets"}[static_cast<std::size_t>(page)]);
+            const auto name = CoopI18n::Tr(&CoopI18n::kLangs[i], std::vector<std::string>{"Link", "Hair and clothes", "Shields", "Swords", "Boots and gauntlets"}[static_cast<std::size_t>(page)]);
             CHECK(t.title.compare(0, name.size(), name) == 0);   // (the group's name first)
-            const auto y = CoopI18n::Tr(&CoopI18n::kLangs[i], "Y: page"), a = CoopI18n::Tr(&CoopI18n::kLangs[i], "A: exact hue");
+            const auto y = CoopI18n::Tr(&CoopI18n::kLangs[i], "Y: page"), a = CoopI18n::Tr(&CoopI18n::kLangs[i], "A: Fine-tune");
             if (t.title.find(y) == std::string::npos || t.title.find(a) == std::string::npos) ++lost;
             d.Pad(kY);
         }
     }
     CHECK(lost == 0);   // (no title loses a hint: the hints are short enough for all of them)
+}
+
+TEST_CASE("snail customize: Y and A as the game's guide keys (menu-customize-01113), the title then the page's name only") {
+    Driver d;
+    CHECK(d.KeysNow() == Driver::Keys{});   // (closed: no key)
+    d.Open(Look{}, 0);
+    // Link: five pages, each with parts: both keys.
+    CHECK(d.KeysNow() == Driver::Keys{true, true});
+    // Without the key parts in his layout (a kit not merged again) the title keeps the hints in words.
+    CHECK(d.Shown().title.find("Y:") != std::string::npos);
+    d.SetKeysShown(true);
+    auto t = d.Shown();
+    CHECK(t.title.find("Y:") == std::string::npos);
+    CHECK(t.title.find("A:") == std::string::npos);
+    CHECK(t.title.rfind("Link", 0) == 0);
+    // The mixer: neither key (A is on its own rows' values, B the footer's Back).
+    CHECK(d.Pad(kA) == 0);
+    REQUIRE(d.Editing());
+    CHECK(d.KeysNow() == Driver::Keys{});
+    CHECK(d.Pad(kB) == 0);
+    CHECK(d.KeysNow() == Driver::Keys{true, true});
+    // A character with one page (the equipment only): no page key, the mix key stays.
+    Driver c;
+    c.Open(Look{}, 9);
+    c.SetRows(32 | 0x80);
+    CHECK(c.KeysNow() == Driver::Keys{false, true});
+    c.Close();
+    CHECK(c.KeysNow() == Driver::Keys{});
 }

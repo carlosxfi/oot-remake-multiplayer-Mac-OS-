@@ -23,6 +23,10 @@
 #include "hos_coop_host.h"
 #include "nat_codes.hpp"
 
+namespace coop::protocol {
+struct DifficultyChoice;
+}
+
 namespace CoopHostMenu {
 
 // Where this game's own co-op client connects.
@@ -61,6 +65,12 @@ struct Hooks {
 // or with 0 the server's own default (coop::server::kDefaultMaxPlayers, as coop_server without --max-players).
 std::uint8_t HostMaxPlayers(std::uint8_t asked);
 
+// The server's start difficulty from HosCoopHostOptions::difficulty and its custom values (life, damage, enemies):
+// 0 or a code past custom automatic; custom values kept within the sliders' ends. (Declared with the protocol type
+// incomplete: coop/protocol/difficulty.hpp's std::min would meet windows.h's macro in coop_hookshot.cpp.)
+coop::protocol::DifficultyChoice HostDifficulty(std::uint8_t code, std::uint16_t life, std::uint16_t damage,
+                                                std::uint16_t enemies);
+
 class Menu {
 public:
     explicit Menu(Hooks hooks);
@@ -69,6 +79,9 @@ public:
     Menu& operator=(const Menu&) = delete;
 
     int HostStart(const HosCoopHostOptions* options);
+    // The next HostStart only (local co-op's game 1, CoopPause's LocalHostStep): its listener on 127.0.0.1 alone, the
+    // session of this PC's games. A later Host from the menu in the same run is a usual host again.
+    void LoopbackNextHost() { loopback_next_ = true; }
     int Join(const HosCoopJoinOptions* options);
     int Answer(const char* code);
     // The host's new join password while hosting (the pause menu's Session view): players who join from now on
@@ -91,6 +104,10 @@ private:
         std::uint32_t pose_upload_kbps = 0;
         bool public_game = false;   // (HosCoopHostOptions::public_game)
         std::string bans_file;      // (HosCoopHostOptions::bans_file)
+        bool loopback = false;      // (LoopbackNextHost: listen on 127.0.0.1 only)
+        // (HosCoopHostOptions::difficulty and its custom values, as given: the server's start choice, RunHost)
+        std::uint8_t difficulty = 0;
+        std::uint16_t difficulty_life = 100, difficulty_damage = 100, difficulty_enemies = 100;
     };
     struct JoinJob {
         std::string name, password;
@@ -111,12 +128,18 @@ private:
     void RunHost(HostJob job);
     void RunJoin(JoinJob job);
     void RunRelayJoin(RelayJoinJob job);
+    // The direct way first (issue 261): the relay passes this game's answer code to the host, whose address comes
+    // back only when the host took it; then the join helper's way through both routers. True: joined that way and
+    // served until Leave (or stopped). False: no direct way, the caller goes through the relay as before.
+    // `relay_host` / `relay_port`: the relay as ENet keeps it.
+    bool TryRelayDirect(const RelayJoinJob& job, std::uint32_t relay_host, std::uint16_t relay_port);
     std::vector<coop::server::nat::Addr> StunServers() const;
     std::string NameOr(const char* given) const;
 
     Hooks hooks_;
     std::thread thread_;
     std::atomic<bool> stop_{false};
+    std::atomic<bool> loopback_next_{false};   // (LoopbackNextHost)
     bool direct_connected_ = false;  // a plain address: the client only, no thread
     std::mutex calls_;  // one start, join or leave at a time (the menu and the game's exit)
     mutable std::mutex mutex_;
@@ -138,20 +161,36 @@ void CopyText(char* out, std::size_t size, const std::string& text);
 // Row 260: this process's memory as one log line: private (commit) bytes, the working set, the process heap's
 // allocated and committed bytes, the handle count (Windows); resident and virtual bytes (Linux). Read-only, cheap
 // (no heap walk). The host's game logs it every kMemoryLineMs with the server's sizes (HostService::memory_line).
+// Row 271: on Windows also every heap of the process summed (HeapSummary each: the driver's and other DLLs' heaps
+// too) and the private bytes outside them (taken straight from Windows: Longshot's and the driver's own blocks).
 std::string ProcessMemoryText();
+// Row 271: every game (solo, guest, host) logs `coop: memory: <ProcessMemoryText>` once per kGameMemoryLineMs from its
+// frame hook, so a player's log shows whether private grows in the heaps (allocations, ours among them) or outside.
+// True when the line is due at now_ms (then next_ms moves on by kGameMemoryLineMs; the first call is due at once).
+bool MemoryLineDue(std::uint64_t now_ms, std::uint64_t& next_ms);
 // The autotest's in-game host (tools/autotest hookshot.py --host-in-game, scenario step `menu host`): the game hosts
 // through its own Multiplayer > Host (CoopPause::TestHost), on the port and with the password the harness gives in
 // LICHII_COOP_TEST_HOST=PORT:PASSWORD (a password of 1 to 64 printable letters). Nothing for any other text. Test
 // only: such a host listens on 127.0.0.1 alone (Menu::RunHost) and opens no router port or invite.
 inline constexpr const char* kTestHostEnv = "LICHII_COOP_TEST_HOST";
 std::optional<std::pair<std::uint16_t, std::string>> ParseTestHost(std::string_view text);
+// The autotest's relay room host (private-lobby-fix): with LICHII_COOP_TEST_RELAY=<host:port> (CoopTitleMenu::RelayOk)
+// and LICHII_COOP_TEST_RELAY_ROOM=<room> (RoomNameOk) also set, `menu host` holds that private room on that relay
+// (a loopback relay in every run), so a guest's `menu paste` joins it as a player's paste does. Test only.
+inline constexpr const char* kTestRelayEnv = "LICHII_COOP_TEST_RELAY";
+inline constexpr const char* kTestRelayRoomEnv = "LICHII_COOP_TEST_RELAY_ROOM";
+// Local co-op's host (the kit's scripts\local-coop.ps1, CoopPause's LocalHostStep): game 1 of 2 to 4 games on one PC
+// hosts at its start, OOT_COOP_LOCAL_HOST=PORT:PASSWORD (as ParseTestHost reads it). That host alone listens on
+// 127.0.0.1 only (Menu::LoopbackNextHost): the session is this PC's.
+inline constexpr const char* kLocalHostEnv = "OOT_COOP_LOCAL_HOST";
 inline constexpr std::uint64_t kMemoryLineMs = 30'000;
+inline constexpr std::uint64_t kGameMemoryLineMs = 60'000;
 
 } // namespace CoopHostMenu
 
 namespace CoopHostMenu {
 
-// The host's "Paste friend's answer" (the pause menu's Host page), checked at once so the player is told plainly what
+// The host's "Paste answer code" (the pause menu's Host page), checked at once so the player is told plainly what
 // was wrong: nothing when the clipboard could not be read. The answer code may sit anywhere in what was copied (a
 // whole chat message: name, time, "code:", quotes, line breaks; nat::find_codes).
 struct PastedAnswer {

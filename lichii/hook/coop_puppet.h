@@ -438,6 +438,8 @@ public:
     void SetPoseCopy(bool on) { pose_copy_ = on; }
     // Character Select's colour routine (PackCharacterColours): main's offset and the 16 bytes it begins with.
     // offset 0: none, no colours on a character's puppet.
+    // The sound list each puppet's row names (PackSoundLists): added to its "spawned" line.
+    void SetSoundLists(std::map<std::string, std::string, std::less<>> lists) { sound_lists_ = std::move(lists); }
     void SetCharacterApply(std::uint64_t offset, const std::array<std::uint8_t, 16>& head) {
         character_apply_ = offset;
         character_apply_head_ = head;
@@ -763,6 +765,7 @@ private:
     bool anim_;
     bool pose_copy_ = false;
     std::uint64_t character_apply_ = 0;
+    std::map<std::string, std::string, std::less<>> sound_lists_;
     std::array<std::uint8_t, 16> character_apply_head_{};
     int character_apply_state_ = 0;   // 0 not checked, 1 the routine is there, 2 it is not (or cannot be called)
     // Its calls in a row that the runtime could not make (a routine that is not a game function the build knows):
@@ -903,6 +906,8 @@ struct PlannerSettings {
     // The pack's map of the mod's stored character numbers to its model files
     // (PackCharacterNumbers): a number it does not list shows the colour puppet.
     std::map<std::uint16_t, std::uint16_t> character_files;
+    // The sound list each puppet's ActorInfo row names (PackSoundLists): said when the puppet is made.
+    std::map<std::string, std::string, std::less<>> sound_lists;
     // That mod's colour routine for a puppet (PackCharacterColours): main's offset (0: none) and the
     // 16 bytes it begins with.
     std::uint64_t character_apply = 0;
@@ -930,6 +935,11 @@ std::map<std::uint16_t, std::uint16_t> PackCharacterNumbers(std::string_view man
 bool IsCharacterActor(std::string_view actor);
 // The character puppets a pack's coop_puppet.json lists, sorted.
 std::vector<std::string> PackCharacterActors(std::string_view manifest);
+// The sound list each puppet's ActorInfo row names, as a pack made with the Character Select mod's voices lists them
+// ("sound_lists": {"<puppet>": "<list>", ...}, tools/puppet_pack character_voices): a puppet with a voice names its
+// character's Player_<Age>_V<NN>, any other CoopPuppet_<Age>. Empty for a pack without them (every puppet names the
+// player's list, Player_<Age>, which that mod's hook gives the viewer's own pick).
+std::map<std::string, std::string, std::less<>> PackSoundLists(std::string_view manifest);
 // The mod's colour routine as a pack's coop_puppet.json names it ("colours": {"offset": n, "head": "32 hex
 // digits"}): main's offset and its first 16 bytes; nothing when the manifest has none or it does not read.
 std::optional<std::pair<std::uint64_t, std::array<std::uint8_t, 16>>> PackCharacterColours(std::string_view manifest);

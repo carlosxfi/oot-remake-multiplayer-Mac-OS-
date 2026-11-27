@@ -1,0 +1,95 @@
+# row-286-shots-phantomganon, B (see the .A.txt): hs-phantom-ganon-ball.B.txt up to t4b and its goto + toward (B ~3 m from A: beside A he chose the spear only, run 021811; review-c124-2), then ZL held at A's shot times, no marks.
+mark start
+warp PhantomGanonStage PhantomGanonStage
+wait 1200               # the title screen
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A                 # loads the save, then the warp
+wait 2400
+mark b-in
+wait 3900               # the intro, then the fight (run 040054: no boss at 2400, lane1 save)
+press ZL 10             # lock on
+wait 600
+mark t1
+wait 300
+hit Enemy_DungeonBoss_PhantomGanon 2   # row 177 MUST 1: A replays it with our puppet as the attacker
+wait 300
+mark t2
+wait 300
+hit Enemy_DungeonBoss_PhantomGanon 2   # row 177 MUST 1: A replays it with our puppet as the attacker
+wait 300
+mark t3
+wait 300
+hit Enemy_DungeonBoss_PhantomGanon 2   # row 177 MUST 1: A replays it with our puppet as the attacker
+wait 300
+mark t4
+hit Enemy_DungeonBoss_PhantomGanon 1   # 1 every 150 frames x6: since row 178 (hit-state) a hit while he rides is
+wait 150                               # life only, so his phase change needs one he can take below the line
+hit Enemy_DungeonBoss_PhantomGanon 1
+wait 150
+hit Enemy_DungeonBoss_PhantomGanon 1
+wait 150
+hit Enemy_DungeonBoss_PhantomGanon 1
+wait 150
+hit Enemy_DungeonBoss_PhantomGanon 1
+wait 150
+hit Enemy_DungeonBoss_PhantomGanon 1
+wait 150
+mark t4b
+goto -3.9 -65.7 0.4 300   # ~3 m from A toward the arena centre (beside A he chose the spear only, 021811); his balls aimed at A pass B
+toward 0 -63 10
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+hold ZL 90
+wait 210
+wait 600
+mark end

@@ -7,6 +7,7 @@ checks as problem_report_test.ps1 and problem_send_test.ps1 for the Windows kit.
 import http.server
 import io
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -120,6 +121,11 @@ class Kit(unittest.TestCase):
         # sending off: no request at all; on or unanswered: asked; a slow lookup is cut by wall time
         calls = []
         self.assertEqual(self.kit.update_address(lambda: calls.append(1) or "https://x.example.org/a", send="off"), "")
+        os.environ["OOT_COOP_PROBLEM_ADDRESS_LOOKUP"] = "off"   # (tests whose kit must not see main's live address)
+        try:
+            self.assertEqual(self.kit.update_address(lambda: calls.append(1) or "https://x.example.org/a"), "")
+        finally:
+            del os.environ["OOT_COOP_PROBLEM_ADDRESS_LOOKUP"]
         self.assertEqual(calls, [])
         self.kit.update_address(lambda: calls.append(1) or "https://x.example.org/a", send="on")
         self.kit.update_address(lambda: calls.append(1) or "https://x.example.org/a", send="")

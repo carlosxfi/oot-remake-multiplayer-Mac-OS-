@@ -24,7 +24,7 @@
 namespace CoopMods {
 
 // The plugin interface this loader serves (coop_mod_api.h COOP_MOD_API_VERSION).
-inline constexpr int kApiVersion = 3;
+inline constexpr int kApiVersion = 4;
 
 inline constexpr std::size_t kMaxId = 48;
 inline constexpr std::size_t kMaxVersion = 32;
@@ -192,9 +192,14 @@ struct Hashes {
     Hash code{};        // the library's bytes; zero without one
     std::uint64_t files = 0, bytes = 0;
 };
+// What stands for one of a mod's game files in its hash (`key`: its romfs path, lower case, '/'): the file itself,
+// another file (the mod's own copy of one the kit rewrote on this PC), or nothing (left out: not the mod's content).
+using StandIn =
+    std::function<std::optional<std::filesystem::path>(const std::filesystem::path& file, const std::string& key)>;
 // Reads the whole mod (slow for a big one: call it off the game's threads). `stop`, when given, is asked now and
-// then; true ends the work early with nothing.
-std::optional<Hashes> HashMod(const Mod& mod, const std::function<bool()>* stop = nullptr);
+// then; true ends the work early with nothing. `stand_in`, when given, picks each game file's bytes (StandIn).
+std::optional<Hashes> HashMod(const Mod& mod, const std::function<bool()>* stop = nullptr,
+                              const StandIn* stand_in = nullptr);
 std::string Hex(const Hash& hash);
 
 }  // namespace CoopMods

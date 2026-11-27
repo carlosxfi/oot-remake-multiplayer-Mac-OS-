@@ -6,12 +6,13 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "coop_dbno_draw.h"
 #include "coop_debug_panels.h"
 #include "coop_hud_hearts.h"
-#include "coop_hud_layout.h"
 #include "coop_i18n.h"
+#include "coop_map_drawn.h"
 
 namespace CoopDraw {
 namespace {
@@ -23,16 +24,8 @@ constexpr float kChatWidth = 520.0f;
 // The co-op window's sizes for the game look, in the game's 720-line picture.
 constexpr float kGameHeight = 720.0f;
 constexpr float kHudLeft = 40.0f;
-constexpr float kHudNamePx = 21.0f;   // (25, 19, 16 and hearts 38 before: a little big, a tester 2026-11-20)
-constexpr float kHudPlacePx = 16.0f;
-constexpr float kHudGap = 12.0f;
-// The heart pictures are 96 x 96 with the heart about half as wide in the
-// middle: drawn kHeartPx big, kHeartStep apart (the co-op window's HudLayer).
-constexpr float kHeartPx = 32.0f;
-constexpr float kHeartStep = 0.55f;
 constexpr float kChatGamePx = 23.0f;
 constexpr float kListGamePx = 24.0f;
-constexpr float kHudRoom = 0.3f;   // the HUD blocks' column: a name or place at most this share of the picture wide
 
 int Alpha(float a) {
     return std::clamp(static_cast<int>(a * 255.0f), 0, 255);
@@ -473,6 +466,8 @@ void DrawPlayers(const HosCoopDraw& d, const std::vector<CoopHook::PlayerRow>& r
     }
 }
 
+}  // namespace
+
 // The voice state after a name (docs/voice.md, "Who is talking"), as words in the game's font: " (talking)",
 // " (muted)", nothing while quiet. (Before 2026-11-21 a drawn microphone: no own-drawn shapes on the HUD, owner.)
 std::string VoiceWords(CoopVoice::Icon icon) {
@@ -483,92 +478,7 @@ std::string VoiceWords(CoopVoice::Icon icon) {
     }
 }
 
-// The game look's chat: the top of its lines and box (the picture's bottom
-// when there are none), so the HUD blocks stop above it.
-float ChatTopGame(const HosCoopDraw& d, const Scene& s, const Look& look) {
-    const ChatPlace at = ChatAt(d, &look);
-    const float box = s.box ? at.px * 1.4f + 6.0f : 0.0f;   // (DrawBox's game look)
-    float top = d.height - kMargin - (box > 0 ? box + 4.0f : 0.0f);   // (DrawChatGame's bottom)
-    if (!s.chat.empty()) {
-        top -= kPad + at.px * 1.3f * static_cast<float>(s.chat.size());
-    }
-    return top;
-}
-
-// One HUD block's height, its gap under it included (as DrawHud steps).
-float BlockHeight(const HudBlock& b, float u) {
-    float h = kHudNamePx * u + 2 * u;
-    if (!b.hearts.empty()) {
-        const int rows = (static_cast<int>(b.hearts.size()) + CoopHudHearts::kPerRow - 1) / CoopHudHearts::kPerRow;
-        h += rows * kHeartPx * u * kHeartStep + 3 * u;
-    }
-    if (!b.place.empty()) {
-        h += kHudPlacePx * u;
-    }
-    return h + kHudGap * u;
-}
-
-// The other players under the game's own hearts, top left, as the game would
-// draw them (the co-op window's HudLayer): per player their name in the
-// game's font, a row of their hearts with the game's heart pictures, and the
-// game's name of the place they are in. No box. Game look only. Row 141: the
-// first block's top is below the game's own HUD as it is laid out this frame
-// (`hud_bottom`; none: the fixed top), and blocks that would run into the
-// chat at `floor` are left out, a "+N" line saying how many.
-void DrawHud(const HosCoopDraw& d, const std::vector<HudBlock>& blocks, CoopVoice::Icon own_voice, const Look& look,
-             std::optional<double> hud_bottom, float floor) {
-    const Pic p = Picture(d);
-    const float u = p.u;
-    const float x = p.left + kHudLeft * u;
-    float y = static_cast<float>(CoopHudLayout::BlocksTop(d.width, d.height, hud_bottom));
-    const float heart = kHeartPx * u;
-    const float name_px = kHudNamePx * u;
-    const float place_px = kHudPlacePx * u;
-    // A name or place never runs past the blocks' column (a long name, a narrow window): cut with "..." to
-    // kHudRoom of the picture's width (ui-audit-01112 B4: everything fits on the screen).
-    const float room = p.width * kHudRoom;
-    if (own_voice != CoopVoice::Icon::none && !blocks.empty()) {   // our own row: "You" and our voice state
-        Font(d, look.medium);
-        const std::string you = Elided(d, name_px, CoopI18n::Tr("You") + VoiceWords(own_voice), room);
-        GameText(d, x, y, name_px, Rgba(255, 255, 255, 255), you.c_str());
-        y += name_px + kHudGap * u;
-    }
-    std::vector<double> heights;
-    heights.reserve(blocks.size());
-    for (const auto& b : blocks) {
-        heights.push_back(BlockHeight(b, u));
-    }
-    const std::size_t shown = CoopHudLayout::BlocksThatFit(y, heights, floor, name_px);
-    for (std::size_t i = 0; i < shown; ++i) {
-        const auto& b = blocks[i];
-        const int a = b.dim ? 150 : 255;
-        Font(d, look.medium);
-        GameText(d, x, y, name_px, Rgba(255, 255, 255, a), Elided(d, name_px, b.name + VoiceWords(b.voice), room).c_str());
-        y += name_px + 2 * u;
-        if (!b.hearts.empty()) {
-            for (std::size_t i = 0; i < b.hearts.size(); ++i) {
-                const int col = static_cast<int>(i) % CoopHudHearts::kPerRow;
-                const int row = static_cast<int>(i) / CoopHudHearts::kPerRow;
-                const float hx = x - heart * 0.22f + col * heart * kHeartStep;
-                const float hy = y - heart * 0.2f + row * heart * kHeartStep;
-                d.draw_image(d.user, look.hearts[std::clamp(b.hearts[i], 0, 4)], hx, hy, hx + heart, hy + heart,
-                             Rgba(255, 255, 255, a));
-            }
-            const int rows = (static_cast<int>(b.hearts.size()) + CoopHudHearts::kPerRow - 1) / CoopHudHearts::kPerRow;
-            y += rows * heart * kHeartStep + 3 * u;
-        }
-        if (!b.place.empty()) {
-            Font(d, look.regular);
-            GameText(d, x, y, place_px, Rgba(225, 225, 225, a), Elided(d, place_px, b.place, room).c_str());
-            y += place_px;
-        }
-        y += kHudGap * u;
-    }
-    if (shown < blocks.size()) {   // (row 141: more players than fit above the chat)
-        Font(d, look.medium);
-        GameText(d, x, y, name_px, Rgba(225, 225, 225, 255), ("+" + std::to_string(blocks.size() - shown)).c_str());
-    }
-}
+namespace {
 
 void DrawCheats(const HosCoopDraw& d, const CheatsView& c) {
     const CheatsBox b = CheatsAt(d.width, d.height, c);
@@ -611,12 +521,13 @@ void DrawCheats(const HosCoopDraw& d, const CheatsView& c) {
 
 // The others on the maps (MapShown): on the Map page's picture while it is
 // shown, else on the HUD minimap while the game shows it (where the game's
-// own minimap panes are this frame: CoopMapPage::Minimap). An
-// arrow each in their colour, turned the way they face (a dot when that is
-// not known), on a dark rim; a player off the map is held at its edge, a
+// own minimap panes are this frame: CoopMapPage::Minimap). The game's own
+// map arrow each (Look::map_arrow, from the pack), turned the way they face,
+// its inside in their colour; a player off the map is held at its edge, a
 // little paler, and one on another floor paler still. Their name under the
-// icon when the names are on. Our own Link is the game's arrow.
-void DrawMap(const HosCoopDraw& d, const MapShown& m, const Look* look) {
+// arrow (alone where they are without one). Our own Link is the game's arrow.
+// `drawn` gets what was drawn (the bridge's map_icons, coop_map_drawn.h).
+void DrawMap(const HosCoopDraw& d, const MapShown& m, const Look* look, CoopMapDrawn::Frame& drawn) {
     namespace map = coop::overlay::map;
     static thread_local std::vector<map::Icon> icons;  // (the present's thread: kept between frames)
     static thread_local std::string label;
@@ -625,6 +536,7 @@ void DrawMap(const HosCoopDraw& d, const MapShown& m, const Look* look) {
         const map::Box pic = LayoutToScreen(*m.page, d.width, d.height);
         r = std::max(6.0f, d.height * 0.012f);
         map::picture_icons(pic, *m.capture, m.page_floor, m.players, icons);
+        drawn.view = "page";
     } else if (m.minimap && m.capture != nullptr) {
         const map::Box layout = LayoutToScreen({0, 0, kLayoutW, kLayoutH}, d.width, d.height);
         const float s = layout.w / kLayoutW;
@@ -632,6 +544,7 @@ void DrawMap(const HosCoopDraw& d, const MapShown& m, const Look* look) {
         map::MinimapPanes mini = *m.minimap;
         mini.edge_inset = r / s;
         map::minimap_icons(mini, *m.capture, m.minimap_floor, m.players, icons);
+        drawn.view = "minimap";
         for (auto& icon : icons) {
             icon.x = layout.x + icon.x * s;
             icon.y = layout.y + icon.y * s;
@@ -650,37 +563,46 @@ void DrawMap(const HosCoopDraw& d, const MapShown& m, const Look* look) {
         }
         const std::uint32_t rgb = icon.rgb;
         const std::uint32_t fill = Rgba(static_cast<int>(rgb >> 16), static_cast<int>(rgb >> 8), static_cast<int>(rgb), a);
-        const std::uint32_t dark = Rgba(0, 0, 0, a * 3 / 4);
-        if (icon.angle) {
-            const float ca = std::cos(*icon.angle), sa = std::sin(*icon.angle);
-            const auto arrow = [&](float k, std::uint32_t c) {
-                d.triangle(d.user, icon.x + ca * r * k, icon.y + sa * r * k,                                       //
-                           icon.x - ca * r * 0.7f * k - sa * r * 0.75f * k, icon.y - sa * r * 0.7f * k + ca * r * 0.75f * k,  //
-                           icon.x - ca * r * 0.7f * k + sa * r * 0.75f * k, icon.y - sa * r * 0.7f * k - ca * r * 0.75f * k, c);
-            };
-            arrow(1.35f, dark);
-            arrow(1.0f, fill);
-        } else {
-            d.circle(d.user, icon.x, icon.y, r * 0.6f + 1.5f, dark, 0.0f);
-            d.circle(d.user, icon.x, icon.y, r * 0.6f, fill, 0.0f);
+        // The game's own map arrow (Link's, from the pack: no drawn shapes, the owner's UI rule) turned the way the
+        // player faces, its inside in their colour, the name under it; a player past the map's edge at the edge,
+        // dimmer. No facing known yet, or a pack without the arrow: the name alone where they are. With names off on
+        // the maps, "P<n>" names them.
+        const bool arrow = look != nullptr && icon.angle && look->MapArrows() && d.draw_image_turned != nullptr;
+        if (arrow) {
+            const float turn = MapArrowTurn(*icon.angle);
+            const float half = r * 1.85f;   // (the picture's 80 px hold the arrow's ~52 across any turn)
+            d.draw_image_turned(d.user, look->map_arrow, icon.x, icon.y, half, half, turn, Rgba(255, 255, 255, a));
+            d.draw_image_turned(d.user, look->map_arrow_fill, icon.x, icon.y, half, half, turn, fill);
         }
         std::size_t at = 0;
         while (at < m.players.size() && m.players[at].number != icon.number) {
             ++at;
         }
-        if (at >= m.names.size() || m.names[at].empty()) {
-            continue;
+        if (at < m.names.size() && !m.names[at].empty()) {
+            label.assign(m.names[at]);
+        } else {
+            label.assign("P" + std::to_string(icon.number));
         }
-        label.assign(m.names[at]);
         label += FloorWords(icon.floor_delta);
         const float tw = d.text_width(d.user, px, label.c_str());
         const float x = std::clamp(icon.x - tw / 2, 2.0f, std::max(2.0f, d.width - tw - 2.0f));
-        const float y = icon.y + r * 1.2f;
+        const float y = std::clamp(arrow ? icon.y + r * 1.3f : icon.y - px / 2, 2.0f, std::max(2.0f, d.height - px - 2.0f));
         if (look) {
             GameText(d, x, y, px, fill, label.c_str());
         } else {
             Outlined(d, x, y, px, fill, a, label.c_str());
         }
+        CoopMapDrawn::Icon shown;
+        shown.number = icon.number;
+        shown.x = icon.x;
+        shown.y = icon.y;
+        if (icon.angle) shown.turn = MapArrowTurn(*icon.angle);
+        shown.arrow = arrow;
+        shown.clamped = icon.clamped;
+        shown.alpha = a / 255.0f;
+        shown.floor_delta = icon.floor_delta;
+        shown.label = label;
+        drawn.icons.push_back(std::move(shown));
     }
 }
 
@@ -690,6 +612,51 @@ coop::overlay::map::Box LayoutToScreen(const coop::overlay::map::Box& b, float w
     const float s = std::min(width / kLayoutW, height / kLayoutH);
     const float ox = (width - kLayoutW * s) / 2, oy = (height - kLayoutH * s) / 2;
     return {ox + b.x * s, oy + b.y * s, b.w * s, b.h * s};
+}
+
+float MapArrowTurn(float angle) {
+    constexpr float kTwoPi = 6.28318530718f;
+    const float turn = std::fmod(angle + kTwoPi / 4, kTwoPi);   // clockwise from up
+    return turn < 0 ? turn + kTwoPi : turn;
+}
+
+CoopMapIcons::Frame MapMarks(const MapShown& m) {
+    namespace map = coop::overlay::map;
+    CoopMapIcons::Frame out;
+    if (m.capture == nullptr || (!m.page && !m.minimap)) return out;
+    std::vector<map::Player> players = m.players;
+    map::Player self;
+    self.number = 0;
+    self.position = {m.self[0], m.self[1], m.self[2]};
+    self.scene = m.scene;
+    players.push_back(self);
+    std::vector<map::Icon> icons;
+    if (m.page) {
+        map::picture_icons(*m.page, *m.capture, m.page_floor, players, icons);
+    } else {
+        map::MinimapPanes mini = *m.minimap;
+        mini.edge_inset = 19.3f;   // (DrawMap's at a scale of 1: the layout as the picture)
+        map::minimap_icons(mini, *m.capture, m.minimap_floor, players, icons);
+    }
+    for (const auto& icon : icons) {
+        if (icon.number == 0) {
+            if (!icon.clamped) out.self = std::array<float, 2>{icon.x, icon.y};
+            continue;
+        }
+        CoopMapIcons::Mark k;
+        k.number = icon.number;
+        k.x = icon.x, k.y = icon.y;
+        k.angle = icon.angle;
+        k.clamped = icon.clamped;
+        k.floor_delta = icon.floor_delta;
+        k.rgb = icon.rgb;
+        std::size_t at = 0;
+        while (at < m.players.size() && m.players[at].number != icon.number) ++at;
+        k.name = at < m.names.size() && !m.names[at].empty() ? m.names[at] : "P" + std::to_string(icon.number);
+        k.name += FloorWords(icon.floor_delta);
+        out.marks.push_back(std::move(k));
+    }
+    return out;
 }
 
 std::string FloorWords(int delta) {
@@ -910,7 +877,7 @@ bool Wanted(const Scene& s) {
     if (s.title && !s.title->prompt.empty()) {
         return true;
     }
-    return !s.chat.empty() || !s.hud.empty() || s.box.has_value() || s.cheats.has_value() || (s.markers && !s.markers->items.empty()) || s.players.has_value() ||
+    return !s.chat.empty() || s.box.has_value() || s.cheats.has_value() || (s.markers && !s.markers->items.empty()) || s.players.has_value() ||
            (s.panel && !s.panel->empty()) || s.dbno.has_value() || (s.map != nullptr && !s.map->players.empty() && ((s.map->minimap && s.map->capture != nullptr) || s.map->page));
 }
 
@@ -923,15 +890,17 @@ void Draw(const HosCoopDraw& d, const Scene& s, const Look& look) {
         return;
     }
     const Look* game = GameLook(d, look) ? &look : nullptr;
+    CoopMapDrawn::Frame drawn;
+    drawn.view = "none";
+    drawn.width = static_cast<int>(d.width);
+    drawn.height = static_cast<int>(d.height);
     if (s.markers) {
         DrawMarkers(d, *s.markers, s, game);
     }
     if (s.map) {
-        DrawMap(d, *s.map, game);
+        DrawMap(d, *s.map, game, drawn);
     }
-    if (game) {
-        DrawHud(d, s.hud, s.own_voice, *game, s.game_hud_bottom, ChatTopGame(d, s, *game));
-    }
+    CoopMapDrawn::Set(std::move(drawn));   // (every present: "none" when no map was drawn)
     if (CoopDebugPanels::kOn && s.panel) {   // (release kits: none, coop_debug_panels.h)
         Font(d, 0);
         DrawPanel(d, *s.panel);

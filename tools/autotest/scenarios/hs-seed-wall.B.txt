@@ -1,0 +1,36 @@
+# hs-seed-wall, B (see hs-seed-wall.A.txt): B shoots three seeds at the map chest / the wall behind it,
+# ~3-4 m ahead. After each release B is held and shot every frame or two for 45 shots (burst ownN):
+# its own seed's flight, wall hit and the game's own effect there. A's spark comes at the seed's REMOVE
+# (1.5-5 s on in run -r3: the seed bounces and lies), so A bursts on its own log line (hs-seed-wall.A.txt).
+mark start
+warp InsideTheDekuTree Entrance
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark after
+wait 300
+place 4.4 108.9 5.1
+wait 30
+toward 6.51 7.25 4        # face the chest
+press ZL 10
+wait 60
+mark ready
+hold ZR 90
+burst own1 45        # B held: its own seed's flight and wall hit, frame by frame
+wait 1500            # A's burst on its emit line ends before the next shot
+hold ZR 90
+burst own2 45        # B held: its own seed's flight and wall hit, frame by frame
+wait 1500            # A's burst on its emit line ends before the next shot
+hold ZR 90
+burst own3 45        # B held: its own seed's flight and wall hit, frame by frame
+wait 1500            # A's burst on its emit line ends before the next shot
+press B
+wait 30
+mark end

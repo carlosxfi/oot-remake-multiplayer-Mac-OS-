@@ -1,0 +1,199 @@
+# kd-pit-solo-149 (row 149, kd-roll-149-6, C #114 lead 2): the solo reference for kd-roll-hold-325 round 3 of run
+# 20261125-080748. There A's KD walked INTO the centre lava pit up to A's Link standing at the pit's south edge
+# (27.9 73.4 -75.0, the warp-in spot), fired, then rolled from inside the pit (roll centre 27.84 75.03 -65.82, y 75.03 =
+# KD at ~72.6, the pit floor) and was held in 'Rolling_Loop' 3 x 25 s. Does the game do that with NO co-op?
+# Game A is ALONE (game B gets a dead server, run with --env B:LICHII_COOP_SERVER=127.0.0.1:9), its Link put back on
+# that spot every minute, facing the pit. Read A's log:
+#  - GAME'S OWN: a "+ Enemy_DungeonBoss_Dodongo_Attention_RollingCenter ... at x 75.0x z" (y ~75.0, not ~75.9) and
+#    'Rolling_Loop' with no 'Rolling_End*' after it / "held 'Rolling_Loop'"; shots show KD rolling in the pit.
+#  - NOT THE GAME'S OWN: every roll centre at y ~75.9 (KD on the floor), every roll ends, over at least 4 rolls.
+# VOID: KD stays in 'Wait' (no Rolling_* line), or A's Link dies before 4 rolls.
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_BOSS=1,LICHII_COOP_DEBUG_OBJECTS=1,LICHII_COOP_CHEATS=1
+#! timeout 1200
+mark start
+warp DodongoStage DodongoStage
+wait 1200               # the title screen
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A                 # loads the save, then the warp
+wait 2400
+mark a-in
+event Get_StoneOfFire_AppearBoss   # his appear (the rematch's boot event)
+wait 1800               # the intro, then the fight
+mark a-fight
+place 27.9 73.4 -75.0
+face 24.0 -63.0
+wait 600
+mark a-m01-1
+wait 600
+mark a-m01-2
+wait 600
+mark a-m01-3
+wait 600
+mark a-m01-4
+wait 600
+mark a-m01-5
+wait 600
+mark a-m01-6
+place 27.9 73.4 -75.0
+face 24.0 -63.0
+wait 600
+mark a-m02-1
+wait 600
+mark a-m02-2
+wait 600
+mark a-m02-3
+wait 600
+mark a-m02-4
+wait 600
+mark a-m02-5
+wait 600
+mark a-m02-6
+place 27.9 73.4 -75.0
+face 24.0 -63.0
+wait 600
+mark a-m03-1
+wait 600
+mark a-m03-2
+wait 600
+mark a-m03-3
+wait 600
+mark a-m03-4
+wait 600
+mark a-m03-5
+wait 600
+mark a-m03-6
+place 27.9 73.4 -75.0
+face 24.0 -63.0
+wait 600
+mark a-m04-1
+wait 600
+mark a-m04-2
+wait 600
+mark a-m04-3
+wait 600
+mark a-m04-4
+wait 600
+mark a-m04-5
+wait 600
+mark a-m04-6
+place 27.9 73.4 -75.0
+face 24.0 -63.0
+wait 600
+mark a-m05-1
+wait 600
+mark a-m05-2
+wait 600
+mark a-m05-3
+wait 600
+mark a-m05-4
+wait 600
+mark a-m05-5
+wait 600
+mark a-m05-6
+place 27.9 73.4 -75.0
+face 24.0 -63.0
+wait 600
+mark a-m06-1
+wait 600
+mark a-m06-2
+wait 600
+mark a-m06-3
+wait 600
+mark a-m06-4
+wait 600
+mark a-m06-5
+wait 600
+mark a-m06-6
+place 27.9 73.4 -75.0
+face 24.0 -63.0
+wait 600
+mark a-m07-1
+wait 600
+mark a-m07-2
+wait 600
+mark a-m07-3
+wait 600
+mark a-m07-4
+wait 600
+mark a-m07-5
+wait 600
+mark a-m07-6
+place 27.9 73.4 -75.0
+face 24.0 -63.0
+wait 600
+mark a-m08-1
+wait 600
+mark a-m08-2
+wait 600
+mark a-m08-3
+wait 600
+mark a-m08-4
+wait 600
+mark a-m08-5
+wait 600
+mark a-m08-6
+place 27.9 73.4 -75.0
+face 24.0 -63.0
+wait 600
+mark a-m09-1
+wait 600
+mark a-m09-2
+wait 600
+mark a-m09-3
+wait 600
+mark a-m09-4
+wait 600
+mark a-m09-5
+wait 600
+mark a-m09-6
+place 27.9 73.4 -75.0
+face 24.0 -63.0
+wait 600
+mark a-m10-1
+wait 600
+mark a-m10-2
+wait 600
+mark a-m10-3
+wait 600
+mark a-m10-4
+wait 600
+mark a-m10-5
+wait 600
+mark a-m10-6
+place 27.9 73.4 -75.0
+face 24.0 -63.0
+wait 600
+mark a-m11-1
+wait 600
+mark a-m11-2
+wait 600
+mark a-m11-3
+wait 600
+mark a-m11-4
+wait 600
+mark a-m11-5
+wait 600
+mark a-m11-6
+place 27.9 73.4 -75.0
+face 24.0 -63.0
+wait 600
+mark a-m12-1
+wait 600
+mark a-m12-2
+wait 600
+mark a-m12-3
+wait 600
+mark a-m12-4
+wait 600
+mark a-m12-5
+wait 600
+mark a-m12-6
+mark end

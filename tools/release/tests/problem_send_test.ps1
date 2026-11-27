@@ -50,7 +50,7 @@ function Key([string]$K) { $k2 = $K; { [pscustomobject]@{ Key = $k2 } }.GetNewCl
 Check ((Read-ProblemSendAnswer 5 (Key 'Y')) -eq $true) 'Y sends'
 Check ((Read-ProblemSendAnswer 5 (Key 'N')) -eq $false) 'N does not'
 Check ((Read-ProblemSendAnswer 5 (Key 'Enter')) -eq $false) 'Enter is No (the default)'
-$shown = @(& { [void](Read-ProblemSendAnswer 5 (Key 'N')) } 6>&1 | ForEach-Object { "$_" } | Where-Object { $_.Trim() -and $_.Trim() -ne 'n' -and $_ -notmatch 'no in \d' })
+$shown = @(& { [void](Read-ProblemSendAnswer 5 (Key 'N')) } 6>&1 | ForEach-Object { "$_" } | Where-Object { $_.Trim() -and $_.Trim() -ne 'n' -and $_ -notmatch 'no key in \d' })
 Check ($shown.Count -eq 2 -and $shown[0] -match '\(y/n\)' -and $shown[1] -match 'problem-report\.cmd off') 'the question is one line and one line under it'
 $t0 = Get-Date
 Check ((Read-ProblemSendAnswer 1 { $null }) -eq $false) 'no key in time is No'
@@ -68,25 +68,34 @@ $env:OOT_COOP_PROBLEM_SEND_URL = ''
 
 # The address looked up at a start (docs/problem-send-address.txt on main): cached, wins over the kit's file, never http
 [System.IO.File]::WriteAllText((Join-Path $kit 'scripts\problem-send-url.txt'), "https://kit.example.org/v1/problem-report`n")
-Check ((Update-ProblemSendAddress $kit { "# c`nhttps://new.example.org/v1/problem-report`n" }) -eq 'https://new.example.org/v1/problem-report') 'a lookup answer is read'
+# Every check below that reads what a lookup block answered gives the lookup a long wall-time limit ($long). With the
+# kit's own short limit (problem-send.ps1 $script:SendLookupMs) a busy test PC that needed longer to start the block's
+# runspace got no answer, and these checks failed by timing alone (or passed without the block ever running). Only the
+# 'stuck lookup' check below is about the limit itself.
+$long = 120000
+Check ((Update-ProblemSendAddress $kit { "# c`nhttps://new.example.org/v1/problem-report`n" } -Ms $long) -eq 'https://new.example.org/v1/problem-report') 'a lookup answer is read'
 Check ((Get-ProblemSendUrl $kit) -eq 'https://new.example.org/v1/problem-report') 'the cached lookup wins over the kit file'
-Check ((Update-ProblemSendAddress $kit { "http://evil.example.org/x`n" }) -eq '') 'an http lookup answer is refused'
-Check ((Update-ProblemSendAddress $kit { throw 'offline' }) -eq '') 'a failed lookup returns nothing'
+Check ((Update-ProblemSendAddress $kit { "http://evil.example.org/x`n" } -Ms $long) -eq '') 'an http lookup answer is refused'
+Check ((Update-ProblemSendAddress $kit { throw 'offline' } -Ms $long) -eq '') 'a failed lookup returns nothing'
 # (the lookup's work block runs in its own runspace: it counts by appending to a marker file, not a variable)
 $mark = Join-Path $kit 'lookup-marker.txt'
 $counted = [scriptblock]::Create("Add-Content -LiteralPath '$mark' -Value x; 'https://x.example.org/a'")
 Check ((Update-ProblemSendAddress $kit $counted -Send 'off') -eq '' -and -not (Test-Path -LiteralPath $mark)) 'sending off: no lookup at all'
-[void](Update-ProblemSendAddress $kit $counted -Send 'on')
-[void](Update-ProblemSendAddress $kit $counted)
+$env:OOT_COOP_PROBLEM_ADDRESS_LOOKUP = 'off'
+Check ((Update-ProblemSendAddress $kit $counted) -eq '' -and -not (Test-Path -LiteralPath $mark)) 'OOT_COOP_PROBLEM_ADDRESS_LOOKUP=off (tests): no lookup at all'
+Remove-Item Env:OOT_COOP_PROBLEM_ADDRESS_LOOKUP
+[void](Update-ProblemSendAddress $kit $counted -Send 'on' -Ms $long)
+[void](Update-ProblemSendAddress $kit $counted -Ms $long)
 Check (@(Get-Content -LiteralPath $mark).Count -eq 2) 'sending on or not answered: the lookup is made'
 Remove-Item -LiteralPath $mark -Force
-# the wall-time bound: a lookup stuck for 4 s is cut at 300 ms and the cache is kept
+# the wall-time bound: a lookup stuck for 60 s is cut at 300 ms and the cache is kept. The time checked is far under the
+# 60 s the block would take and far over the limit, so the time a busy PC needs to start the runspace cannot fail it.
 $sw = [Diagnostics.Stopwatch]::StartNew()
-$slow = Update-ProblemSendAddress $kit { Start-Sleep -Seconds 4; 'https://slow.example.org/a' } -Ms 300
+$slow = Update-ProblemSendAddress $kit { Start-Sleep -Seconds 60; 'https://slow.example.org/a' } -Ms 300
 $sw.Stop()
-Check ($slow -eq '' -and $sw.ElapsedMilliseconds -lt 2500) "a stuck lookup is cut by wall time ($($sw.ElapsedMilliseconds) ms)"
+Check ($slow -eq '' -and $sw.ElapsedMilliseconds -lt 30000) "a stuck lookup is cut by wall time ($($sw.ElapsedMilliseconds) ms)"
 Remove-Item -LiteralPath (Join-Path $kit 'logs\problem-send-address.txt') -Force
-[void](Update-ProblemSendAddress $kit { "https://new.example.org/v1/problem-report`n" })
+[void](Update-ProblemSendAddress $kit { "https://new.example.org/v1/problem-report`n" } -Ms $long)
 Check ((Get-ProblemSendUrl $kit) -eq 'https://new.example.org/v1/problem-report') 'a failed lookup keeps the cache'
 Remove-Item -LiteralPath (Join-Path $kit 'logs\problem-send-address.txt') -Force
 Check ((Get-ProblemSendUrl $kit) -eq 'https://kit.example.org/v1/problem-report') 'without a cache the kit file is used'

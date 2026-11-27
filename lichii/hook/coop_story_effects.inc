@@ -4,22 +4,44 @@
 // (its played flag came from another game) sets through the game's own Bool setter (CoopStory::Effects).
 // {played flag hash, flag hash, value, setting, flag}
 constexpr Effect kEffects[] = {
+    {0x603cc0d0u, 0xd0e4b0dau, true, "Dm_DeathMtCrater_0000", "IsVisitLocation.DeathMountainCrater"},
+    {0x6d033b74u, 0x3c72143au, true, "Dm_DeathMtTrail_0000", "IsVisitLocation.DeathMountainTrail"},
+    {0x520f5421u, 0x94493c6fu, true, "Dm_Deku_0000", "IsVisitLocation.InsideTheDekuTree"},
+    {0x7607c748u, 0x607d9fe6u, true, "Dm_DesertColossus_0000", "IsVisitLocation.DesertColossus"},
+    {0x8ab78984u, 0xecf401b9u, true, "Dm_Goron_0000", "IsVisitLocation.GoronCity"},
+    {0xfd925132u, 0xb7c0f231u, true, "Dm_HrlCastle_0000", "IsVisitLocation.HyruleCastle"},
+    {0xadbfc26au, 0xc88633f0u, true, "Dm_HrlCastle_0005", "IsVisitLocation.Market"},
     {0xb9d7d709u, 0x31060ce0u, true, "Dm_HrlCastle_0020", "Talon_AfterWakeUp"},
     {0xc4cef662u, 0x223a2987u, true, "Dm_HrlCastle_0070", "HrlCastle_GateOpen"},
+    {0xd35d3f12u, 0xdda673cbu, true, "Dm_HrlField_0000", "IsVisitLocation.HyruleField"},
+    {0xf38be607u, 0x5c9e740fu, true, "Dm_Kakariko_0000", "IsVisitLocation.KakarikoVillage"},
     {0x16f7f759u, 0xa017cc88u, true, "Dm_Kakariko_0050", "KakarikoVillage_Npc_Hylia_009_Child_ForWaterways"},
     {0x16f7f759u, 0x5097976fu, true, "Dm_Kakariko_0050", "KakarikoVillage_Npc_Hylia_009_Child_OcarinaPlayedFirsttime"},
     {0x16f7f759u, 0xba0a7dbbu, true, "Dm_Kakariko_0050", "Npc_Hylia_009_Child_IsInWindmill"},
+    {0x8bb76427u, 0x2e315eb6u, true, "Dm_Kokiri_0045", "IsVisitLocation.KokiriForest"},
+    {0x3725522fu, 0x36778630u, true, "Dm_LakeHrl_0000", "IsVisitLocation.LakeHylia"},
+    {0x81924fa3u, 0x36778630u, true, "Dm_LakeHrl_0003", "IsVisitLocation.LakeHylia"},
+    {0xe7cfb651u, 0x36778630u, true, "Dm_LakeHrl_0005", "IsVisitLocation.LakeHylia"},
     {0xee47df95u, 0xbe4e744fu, true, "Dm_MelodyGet_Time", "MelodyGet_Time_EndConversationWithZelda"},
+    {0xb38319abu, 0x5de8bbd8u, true, "Dm_ZoraFountain_0000", "IsVisitLocation.ZoraFountain"},
+    {0xc06dceb8u, 0xede02703u, true, "Dm_Zora_0000", "IsVisitLocation.ZoraDomain"},
     {0xbf9dfc7eu, 0x17ecc09bu, true, "Dm_Zora_0010", "Npc_Zora_KingZora_child_EnableClothCollidable"},
     {0x6c52e546u, 0x7ae9c652u, true, "ForestTemple_Room22_FallingCeiling", "Introduction_FallingCeiling"},
     {0x13e870d1u, 0xf130b01eu, false, "GoTo_DeathMountainCrater", "DeathMtCrater_IsFirstEntry"},
     {0x62e6144cu, 0xf130b01eu, false, "GoTo_DeathMountainCrater_FromGoronCity", "DeathMtCrater_IsFirstEntry"},
+    {0x62e6144cu, 0xd0e4b0dau, true, "GoTo_DeathMountainCrater_FromGoronCity", "IsVisitLocation.DeathMountainCrater"},
+    {0x8b591e04u, 0xb43c6db8u, true, "Goto_KakarikoWells", "IsVisitLocation.BottomOfTheWell"},
+    {0x712fffd5u, 0xeb724c83u, true, "Goto_SacredForest", "IsVisitLocation.SacredForestMeadow"},
+    {0x71fb94e3u, 0xede02703u, true, "Goto_ZoraDomain", "IsVisitLocation.ZoraDomain"},
+    {0x816983e3u, 0x2e975eedu, true, "Goto_ZoraRiver", "IsVisitLocation.ZoraRiver"},
     {0x78a420f6u, 0xbe4e744fu, true, "HyruleField_DoorOfTime_GetOcarinaOfTime", "MelodyGet_Time_EndConversationWithZelda"},
     {0x98bf10c1u, 0x804aec99u, true, "HyruleField_Goto_HyruleCastle_Kaepora", "HyruleField_ArriveEntrance"},
+    {0x98bf10c1u, 0xdda673cbu, true, "HyruleField_Goto_HyruleCastle_Kaepora", "IsVisitLocation.HyruleField"},
     {0xcff5a7dfu, 0x07bac3ceu, true, "SageOfFire_CityIn_CrackWall", "SageOfFire_GenerateDaruniaJr"},
 };
 
 // Left out (setting: flag = value: why):
+//   Dm_DeathMtCrater_0000_FromTop: IsVisitLocation.DeathMountainCrater = 1: behind a switch
 //   Dm_DeathMtTrail_0050: GetSwordBigGoron_IsAfterFirstShowEyeDrop_Npc_BigGoron = 1: behind a switch
 //   Dm_DeathMtTrail_0050: UI_IsNeedOpenPlusMenuBootActionGuide = 0: behind a switch
 //   Dm_DeathMtTrail_0050: UI_IsNeedOpenPlusMenuHeadActionGuide = 0: behind a switch
@@ -107,6 +129,8 @@ constexpr Effect kEffects[] = {
 //   Dm_FairyFountain_Wisdom: GreatFairy_MeetFirst = 1: behind a switch
 //   Dm_FireTemple_0029: FireTemple_Room14_HammmerStair_Complete = 1: shared: the sync carries it
 //   Dm_ForestTemple_0010: ForestTemple_Elevator_BeforeDm0010 = 1: shared: the sync carries it
+//   Dm_GerudoValley_0000: IsVisitLocation.GerudoValley = 1: behind a switch
+//   Dm_Gerudo_0000: IsVisitLocation.GerudoFortress = 1: behind a switch
 //   Dm_Gerudo_0020: GerudoFortress_Npc_Gerudo_001_IsInFirstPlace = 1: behind a switch
 //   Dm_Gerudo_0020: UI_IsNeedOpenPlusMenuBootActionGuide = 0: behind a switch
 //   Dm_Gerudo_0020: UI_IsNeedOpenPlusMenuHeadActionGuide = 0: behind a switch
@@ -136,6 +160,7 @@ constexpr Effect kEffects[] = {
 //   Dm_Gerudo_0025: UI_IsNeedOpenShortCutActionGuide = 0: behind a switch
 //   Dm_Gerudo_0025: UI_IsNeedOpenPlusMenuItemActionGuide = 0: behind a switch
 //   Dm_Gerudo_0025: UI_IsNeedOpenPlusMenuEquipActionGuide = 0: behind a switch
+//   Dm_Graveyard_0000: IsVisitLocation.Graveyard = 1: behind a switch
 //   Dm_Graveyard_0010: GraveYard_RoyalFamilyTomb_Open = 1: shared: the sync carries it
 //   Dm_Graveyard_0010: GraveYard_RoyalFamilyTomb_Breaked = 1: shared: the sync carries it
 //   Dm_HrlCastle_0020: HyruleCastle_IsMalonAppear = 0: already its default
@@ -148,6 +173,7 @@ constexpr Effect kEffects[] = {
 //   Dm_Kokiri_0075: KokiriForest_Meet_DekuTree_OpenDekuTreeMouth = 1: shared: the sync carries it
 //   Dm_LakeHrl_0003: Npc_Kaepora_LakeHrl_Appeared_FromValley = 1: shared: the sync carries it
 //   Dm_LakeHrl_0005: Npc_Kaepora_LakeHrl_Appeared_FromValley = 1: shared: the sync carries it
+//   Dm_LonLon_0010: IsVisitLocation.LonLonRanch = 1: behind a switch
 //   Dm_LonLon_0010: LonLonRanch_IsVisited_Child = 1: behind a switch
 //   Dm_LostWood_0040: Lostwood_HitTargetOfDekuScrub_Talked_01 = 1: behind a switch
 //   Dm_LostWood_0040: LostWood_HitTargetOfDekuScrub_FirstClear = 1: behind a switch
@@ -208,7 +234,9 @@ constexpr Effect kEffects[] = {
 //   Get_StoneOfWater_Complete: IsHyruleFieldBridgeClose = 1: behind a switch
 //   Get_StoneOfWater_DiscoveryStone: Get_StoneOfWater_DiscoveryStone = 1: behind a switch
 //   GoTo_DeathMountainCrater: SageOfFire_NaviCraterTalk = 1: behind a switch
+//   GoTo_DeathMountainCrater: IsVisitLocation.DeathMountainCrater = 1: behind a switch
 //   GoTo_DeathMountainCrater_FromGoronCity: SageOfFire_NaviCraterTalk = 1: behind a switch
+//   Goto_LakeHylia: IsVisitLocation.LakeHylia = 1: behind a switch
 //   HyruleField_Goto_HyruleCastle_Kaepora: HyruleField_ChangeENV = 0: already its default
 //   HyruleField_Goto_HyruleCastle_Kaepora: UI_IsFinishChallengeMenuOpenEvent = 1: shared: the sync carries it
 //   HyruleField_Goto_HyruleCastle_Kaepora: NaviHint_Disp_FieldHint_01 = 0: already its default
@@ -267,10 +295,10 @@ constexpr Effect kEffects[] = {
 //   SpritTemple_Room23_StepSwitch: SpiritTemple_Room23_StepSwitchOnLink = 1: shared: the sync carries it
 //   StoneOfWater_ElevatedFloor: InsidejaubjabuBelly_gimic_GetoffLift = 0: already its default
 //   WaterTempleRoom14StepSwitch: WaterTemple_Room14_DemoClearSound = 1: shared: the sync carries it
-//   WaterTemple_DarkLink_DoorMovement: WaterTemple_Room23_ResetDeletedRoom = 0: shared: the sync carries it
-//   WaterTemple_DarkLink_DoorMovement: WaterTemple_Room23_DeleteBackRoom = 1: shared: the sync carries it
-//   WaterTemple_DarkLink_DoorMovement: WaterTemple_SwitchDarkLinkDome = 1: shared: the sync carries it
-//   WaterTemple_DarkLink_DoorMovement: WaterTemple_Room23_DeleteFrontRoom = 1: shared: the sync carries it
+//   WaterTemple_DarkLink_DoorMovement: WaterTemple_Room23_ResetDeletedRoom = 0: behind a switch
+//   WaterTemple_DarkLink_DoorMovement: WaterTemple_Room23_DeleteBackRoom = 1: behind a switch
+//   WaterTemple_DarkLink_DoorMovement: WaterTemple_SwitchDarkLinkDome = 1: behind a switch
+//   WaterTemple_DarkLink_DoorMovement: WaterTemple_Room23_DeleteFrontRoom = 1: behind a switch
 //   WaterTemple_DarkLink_DoorMovement: WaterTemple_DefeatDarkLinkAndGo = 1: shared: the sync carries it
 //   WaterTemple_DarkLink_DoorMovement: WaterTemple_Room22_Cleared_Provisional = 0: shared: the sync carries it
 //   WaterTemple_WaterLevelChange01: WaterTemple_WaterLevelChange01 = 1: shared: the sync carries it

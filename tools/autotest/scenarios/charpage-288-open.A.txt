@@ -1,0 +1,29 @@
+# charpage-288-open (row 288, part A and the repro). Run only through tools\autotest\proof-charpage-288.ps1
+# (-Mode merge: the game merges at its start, the page opens; -Mode repro on a kit WITHOUT this fix: the crash).
+# The lane kit must have a Characters tab's code in the game (Character Select ON, or co-op's own). A only; B idles.
+# Path: - menu (opens on Map) -> L, L, L to the Characters tab -> wait on the page -> Minus out -> Link in the field.
+# PASS for -Mode merge (read the shots and the log):
+# 1. no crash in the whole run;
+# 2. shot characters-page: the Characters page, whole (portrait, names; no missing panes);
+# 3. shot field: Link in the field;
+# 4. log: "mods: the game was started again", "merge: ...", "the merge ended with 0"; none "the Characters page is held".
+# -Mode repro: FATAL in the log at or after mark key-items = the report's crash reproduced.
+mark start
+wait 300
+press MINUS
+wait 150
+mark minus-open
+press L
+wait 150
+mark threads
+press L
+wait 150
+mark key-items
+press L
+wait 240
+mark characters-page
+press MINUS
+wait 180
+mark field
+wait 120
+mark end

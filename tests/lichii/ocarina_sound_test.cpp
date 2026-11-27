@@ -114,12 +114,13 @@ TEST_CASE("the ocarina's notes are the game's table") {
     CHECK(AssetName(19) == "Ocarina_HighF");
     CHECK(AssetName(0).empty());
     CHECK(AssetName(20).empty());
-    // L R Y X A, low to high, as the game's prompt lists them.
+    // What the game plays for each key (run epona-seen-keys-fec750ad: the game's own emits; tools/autotest/ocarina_notes.py,
+    // whose test checks this table against it). Not the prompt's order (L R Y X A is not low to high).
     CHECK(AssetName(NoteOf(kButtonL)) == "Ocarina_D");
     CHECK(AssetName(NoteOf(kButtonR)) == "Ocarina_F");
-    CHECK(AssetName(NoteOf(kButtonY)) == "Ocarina_A");
-    CHECK(AssetName(NoteOf(kButtonX)) == "Ocarina_B");
-    CHECK(AssetName(NoteOf(kButtonA)) == "Ocarina_HighD");
+    CHECK(AssetName(NoteOf(kButtonY)) == "Ocarina_B");
+    CHECK(AssetName(NoteOf(kButtonX)) == "Ocarina_HighD");
+    CHECK(AssetName(NoteOf(kButtonA)) == "Ocarina_A");
     CHECK(NoteOf(1u << 1) == 0);  // B puts the Ocarina away
 }
 
@@ -141,9 +142,9 @@ TEST_CASE("a note is sent when pressed and 0 when let go") {
 
 TEST_CASE("a newer press wins and letting it go goes back to the one held") {
     NoteSender s;
-    CHECK(s.Update(true, kButtonY) == std::optional<std::uint8_t>(11));
-    CHECK(s.Update(true, kButtonY | kButtonX) == std::optional<std::uint8_t>(13));
-    CHECK(s.Update(true, kButtonY) == std::optional<std::uint8_t>(11));  // X let go, Y still down
+    CHECK(s.Update(true, kButtonY) == std::optional<std::uint8_t>(13));
+    CHECK(s.Update(true, kButtonY | kButtonX) == std::optional<std::uint8_t>(16));
+    CHECK(s.Update(true, kButtonY) == std::optional<std::uint8_t>(13));  // X let go, Y still down
     CHECK_FALSE(s.Update(true, kButtonY | (1u << 1)).has_value());     // B is no note
     CHECK(s.Update(true, 0) == std::optional<std::uint8_t>(0));
 }
@@ -151,10 +152,10 @@ TEST_CASE("a newer press wins and letting it go goes back to the one held") {
 TEST_CASE("no notes unless the Ocarina is played, and stopping lets the note go") {
     NoteSender s;
     CHECK_FALSE(s.Update(false, kButtonA).has_value());
-    CHECK(s.Update(true, kButtonA) == std::optional<std::uint8_t>(16));
+    CHECK(s.Update(true, kButtonA) == std::optional<std::uint8_t>(11));
     CHECK(s.Update(false, kButtonA) == std::optional<std::uint8_t>(0));
     // Pressed again only once playing again, and as a new press.
-    CHECK(s.Update(true, kButtonA) == std::optional<std::uint8_t>(16));
+    CHECK(s.Update(true, kButtonA) == std::optional<std::uint8_t>(11));
 }
 
 TEST_CASE("a note on a puppet: search the asset, then emit it on the sound user") {

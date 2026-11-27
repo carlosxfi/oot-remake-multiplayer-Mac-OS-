@@ -1,0 +1,67 @@
+# hs-epona-seen (Hookshot), A: the watcher (see hs-epona-seen.B.txt for the run and the pass lines). A stands 10 m
+# south of B, faces B, and takes its marks timed by its OWN ride lines (B's mount rounds take a varying time): every
+# mark shoots both games at the same moment, so each pair shows B's horse on A's screen and on B's own.
+# Shots to judge (both games): horse-here*, mounted, walk-1..4, trot-1..4, gallop-1..4, stopped, dismounted,
+# walked-away, mounted-again, riding-again, end. Same gait on both screens = the same pair shows the same legs.
+#! switches LICHII_COOP_PUPPET=1,LICHII_COOP_DEBUG_ANIM=1,LICHII_COOP_OBJECTS=1,LICHII_COOP_CHEATS=1
+#! timeout 900
+mark start
+wait 60
+warp HyruleField_Adult HyruleField_FrontOfMarket
+wait 1200               # the warp lands
+mark field
+place -100.5 151.0 254.5 # 10 m south of B
+wait 240
+face -99.0 264.5        # face B
+press ZL                # camera behind A
+wait 60
+mark a-ready
+await 3600 coop: ride: P\d+'s Animal_Epona_Adult is here, nobody on her
+mark horse-here
+wait 225
+mark horse-here-2
+wait 225
+mark horse-came
+await 4800 coop: ride: P\d+ rides Animal_Epona_Adult
+wait 30
+mark mounted
+# B after its ride line: up to 150 ticks of its mount round, its mark, wait 120, then walk 600, trot 600, gallop
+# 600, stop 360 (hs-epona-seen.B.txt). Each mark here takes about 15 ticks.
+wait 285
+mark walk-1
+wait 105
+mark walk-2
+wait 105
+mark walk-3
+wait 105
+mark walk-4
+wait 225
+mark trot-1
+wait 105
+mark trot-2
+wait 105
+mark trot-3
+wait 105
+mark trot-4
+wait 225
+mark gallop-1
+wait 105
+mark gallop-2
+wait 105
+mark gallop-3
+wait 105
+mark gallop-4
+wait 450
+mark stopped
+await 1200 coop: ride: P\d+'s Animal_Epona_Adult waits, nobody on her
+wait 30
+mark dismounted
+wait 300
+mark walked-away
+await 1800 coop: ride: P\d+ rides Animal_Epona_Adult \(horse copy CoopRide_Epona, the same copy\)
+wait 30
+mark mounted-again
+wait 150
+mark riding-again
+wait 300
+mark end

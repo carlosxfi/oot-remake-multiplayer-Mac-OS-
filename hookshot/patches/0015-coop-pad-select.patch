@@ -1,4 +1,4 @@
-From 51a25cabfcb15a5e414549a6b7fca0d78dae1a0f Mon Sep 17 00:00:00 2001
+From 330e1fe4dcdfb61851b832c4a0a71d13cde22f2f Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Fri, 13 Nov 2026 02:56:35 -0900
 Subject: [PATCH] Co-op pad select: this game's controller and keyboard, for
@@ -53,10 +53,10 @@ index 5d83ae2f..f86294c8 100644
      case WM_KEYDOWN: {
          extern int hos_coop_key(unsigned key, int repeat);   /* (oot-remake-multiplayer: the chat box's keys first) */
 diff --git a/host/nn_hid.c b/host/nn_hid.c
-index 6e41f42c..f4d006c2 100644
+index 7ea662a1..324fc948 100644
 --- a/host/nn_hid.c
 +++ b/host/nn_hid.c
-@@ -1017,6 +1017,8 @@ static void xinput_poll(int64_t now, uint64_t *out_raw, int32_t s[4]) {
+@@ -1030,6 +1030,8 @@ static void xinput_poll(int64_t now, uint64_t *out_raw, int32_t s[4]) {
          {XINPUT_GAMEPAD_DPAD_UP, HOS_PAD_UP}, {XINPUT_GAMEPAD_DPAD_RIGHT, HOS_PAD_RIGHT},
          {XINPUT_GAMEPAD_DPAD_DOWN, HOS_PAD_DOWN}};
      for (int p = 0; p < XUSER_MAX_COUNT && xinput_get; p++) {
@@ -65,7 +65,7 @@ index 6e41f42c..f4d006c2 100644
          if (now < retry[p]) continue;
          XINPUT_STATE xs;
          if (xinput_get((DWORD)p, &xs) != ERROR_SUCCESS) {
-@@ -1392,6 +1394,22 @@ static void move_keys_stick(int x, int y, int percent, int32_t out[2]) {
+@@ -1405,6 +1407,22 @@ static void move_keys_stick(int x, int y, int percent, int32_t out[2]) {
          logged = percent, hos_log("hid: walking: the movement keys tilt the left stick to %d%% (%d, %d)", percent, out[0], out[1]);
  }
  
@@ -88,7 +88,7 @@ index 6e41f42c..f4d006c2 100644
  /* *taps: the host's own presses (hos_hid_tap), apart from the rest */
  static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
      *buttons = *taps = 0;
-@@ -1451,8 +1469,14 @@ static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
+@@ -1464,8 +1482,14 @@ static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
          static const char *env;
          static int looked;
          if (!looked) looked = 1, env = getenv("HOS_INPUT_BACKGROUND");
@@ -104,7 +104,7 @@ index 6e41f42c..f4d006c2 100644
          walk_held(0, 0, rx_option(HOS_OPT_WALK_MODE, 0) == 1);   /* (behind: a toggled walk is kept) */
          goto done;
      }
-@@ -1480,6 +1504,11 @@ static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
+@@ -1493,6 +1517,11 @@ static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
              ps[3] > 12000 || ps[3] < -12000)
              player_used();
      }
@@ -117,10 +117,10 @@ index 6e41f42c..f4d006c2 100644
      for (int i = 0; i < HOS_SW_N; i++)
          if (bound_down(i, 0)) *buttons |= 1ULL << i, down |= 1ULL << i;
 diff --git a/host/pad_sdl.c b/host/pad_sdl.c
-index 56c0ab1c..fceb0367 100644
+index 36d1d602..330dea13 100644
 --- a/host/pad_sdl.c
 +++ b/host/pad_sdl.c
-@@ -205,6 +205,53 @@ static int hd_poll(int i, const uint8_t side[3][4], long long now) {
+@@ -210,6 +210,53 @@ static int hd_poll(int i, const uint8_t side[3][4], long long now) {
      return 1;
  }
  
@@ -174,7 +174,7 @@ index 56c0ab1c..fceb0367 100644
  /* (motion) the sensors on while Motion controls is on (HOS_OPT_GYRO, on without the menu), off otherwise; the pad with
     them that was used last read into the filter. count: the pads open */
  static void motion_poll(int64_t now, int count) {
-@@ -233,7 +280,7 @@ static void motion_poll(int64_t now, int count) {
+@@ -238,7 +285,7 @@ static void motion_poll(int64_t now, int count) {
                  pads[i].motion_retry_ns = 0;
              }
          }
@@ -183,7 +183,7 @@ index 56c0ab1c..fceb0367 100644
      }
      InterlockedExchange(&gyro_status, any ? 2 : count ? 1 : 0);
      float a[3], g[3];
-@@ -464,6 +511,7 @@ static void pads_poll(void) {
+@@ -519,6 +566,7 @@ static void pads_poll(void) {
                      pads[i].rumble_lo = pads[i].rumble_hi = 0;
                      pads[i].rumble_ns = 0;
                      pads[i].motion = pads[i].motion_on = 0;
@@ -191,7 +191,7 @@ index 56c0ab1c..fceb0367 100644
                  }
              int32_t ids[32];
              int opens[32];
-@@ -503,6 +551,26 @@ static void pads_poll(void) {
+@@ -563,6 +611,26 @@ static void pads_poll(void) {
                  pads[slot].steam = hos_sdl_pad_steam_handle(gc);
                  pads[slot].motion_only = 0;   /* (the poll below decides, and says so) */
                  hos_sdl_pad_log_connection(gc, pads[slot].motion, pads[slot].steam != 0);
@@ -218,7 +218,7 @@ index 56c0ab1c..fceb0367 100644
              }
              {   /* (longshot) the controller speaker follows the DualSense that is open (host/pad_speaker.c) */
                  void *dualsense = NULL;
-@@ -557,6 +625,14 @@ static void pads_poll(void) {
+@@ -617,6 +685,14 @@ static void pads_poll(void) {
          for (int i = 0; i < MAX_PADS; i++) {
              void *gc = pads[i].gc;
              if (!gc) continue;
@@ -233,7 +233,7 @@ index 56c0ab1c..fceb0367 100644
              /* (longshot) a real Valve pad beside its Steam stand-in: its motion is read (motion_poll), its buttons and
                 sticks come through the stand-in as the player's Steam layout maps them, so they are not merged twice,
                 and its rumble goes through Steam too. Its own presses still mark it the pad used last, for motion */
-@@ -801,3 +877,31 @@ void hos_sdl_rumble_hd(int side, const float value[4]) {
+@@ -866,3 +942,31 @@ void hos_sdl_rumble_hd(int side, const float value[4]) {
  /* (longshot) the game is over: RenHDrum's backends stop and let go of the pads (host/rumble_renhdrum.c); hos_main.c calls
     it once nnMain has returned */
  void hos_sdl_vibration_shutdown(void) { rh_shutdown(); }

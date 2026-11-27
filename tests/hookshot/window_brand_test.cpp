@@ -8,6 +8,7 @@
 #include <string>
 
 #include "coop_window_brand.h"
+#include "../test_temp.h"
 
 TEST_CASE("window brand: the title is Squadala!") {
     CHECK(std::string(CoopWindowBrand::kTitle) == "Squadala!");
@@ -37,7 +38,7 @@ TEST_CASE("window brand: the title shows the kit's release (0.11.6)") {
 
 TEST_CASE("window brand: the kit's VERSION.txt is found above the game's folder") {
     namespace fs = std::filesystem;
-    const fs::path root = fs::temp_directory_path() / "coop-window-brand-test";
+    const fs::path root = ModTestDir("coop-window-brand-test");
     fs::remove_all(root);
     const fs::path game = root / "kit" / "hookshot" / "game";
     fs::create_directories(game);

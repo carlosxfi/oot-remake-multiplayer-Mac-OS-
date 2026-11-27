@@ -6,7 +6,7 @@
 // left and right across, no wrap; the first option at the start). Co-op drives what it shows and what its keys do:
 // the six options are a page of co-op's look (CoopLookMenu::Page in pages of six: Clothes, Shields, Swords), every
 // value pane of an option shows co-op's value, ZL / ZR (his slider keys) step the focused part's colour, A opens
-// co-op's any-colour mixer in the same six places (Hue, Saturation, Brightness | Preset, Game's own colour, Done), Y
+// co-op's any-colour mixer in the same six places (Hue, Saturation, Brightness | Preset, Default colour, Done), Y
 // turns the page, B leaves the mixer (else his: back). The d-pad stays his graph's, so his marker moves, and this
 // mirrors his rule to know the row.
 //
@@ -66,8 +66,21 @@ public:
     // His screen's texts in the game's language (CoopI18n::Current); Shown(lang) in that one (nullptr: English).
     Texts Shown() const;
     Texts Shown(const CoopI18n::Lang* lang) const;
+    // menu-customize-01113: the keys his screen shows as the game's guide keys (the pack's Pa_CoopKeyY_00 / _A_00 in
+    // his layout, merge_tables.py add_snail_keys): Y turns the page (more than one page, the mixer closed), A opens the
+    // mixer (a page with parts, the mixer closed). With them shown (SetKeysShown(true)) the title is the page's name
+    // alone; without them (a kit not merged again) it keeps the hints in words.
+    struct Keys {
+        bool page = false, mix = false;
+        bool operator==(const Keys&) const = default;
+    };
+    Keys KeysNow() const;
+    void SetKeysShown(bool on) { keys_shown_ = on; }
     int Focus() const { return focus_; }
     bool Editing() const { return page_.editing(); }
+    // The page of six shown (1 first) and how many there are (0: none to show, a character with no options).
+    int PageNo() const { return page_.GroupsOffered() == 0 ? 0 : static_cast<int>(page_.PageIndex()) + 1; }
+    int Pages() const { return static_cast<int>(page_.GroupsOffered()); }
     // The look after a change, once.
     std::optional<CoopLook::Look> TakeChange() { return page_.TakeChange(); }
 
@@ -75,6 +88,7 @@ private:
     CoopLookMenu::Page page_;
     int focus_ = 0;
     bool active_ = false;
+    bool keys_shown_ = false;
 };
 
 }  // namespace CoopSnailCustom

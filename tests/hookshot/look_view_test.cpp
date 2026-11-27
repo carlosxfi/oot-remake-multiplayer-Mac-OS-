@@ -38,7 +38,7 @@ TEST_CASE("look view: Link's middle at the window's middle, his height filling i
             const auto middle = Project(s, {feet[0], feet[1] + height * 0.5, feet[2]}, w.aspect);
             CHECK(middle[0] == doctest::Approx((w.x0 + w.x1) * 0.5).epsilon(1e-6));
             CHECK(middle[1] == doctest::Approx((w.y0 + w.y1) * 0.5).epsilon(1e-6));
-            // Head to feet: kFill of the window's height (the elevation tilts it a little).
+            // Head to feet: kFill of the window's height (the distance allows for the elevation's tilt).
             const auto top = Project(s, {feet[0], feet[1] + height, feet[2]}, w.aspect);
             const auto bottom = Project(s, {feet[0], feet[1], feet[2]}, w.aspect);
             const double filled = (bottom[1] - top[1]) / (w.y1 - w.y0);
@@ -49,7 +49,7 @@ TEST_CASE("look view: Link's middle at the window's middle, his height filling i
     }
 }
 
-TEST_CASE("look view: the eye is on the side the yaw names, a little above him, further for a taller Link") {
+TEST_CASE("look view: the eye is on the side the yaw names, above him, further for a taller Link") {
     const Window w = Square();
     const std::array<float, 3> feet{0, 0, 0};
     const Shot front = CoopLookView::Aim(feet, 1.9f, 0.0, w);   // yaw 0: from +z
@@ -59,6 +59,70 @@ TEST_CASE("look view: the eye is on the side the yaw names, a little above him, 
     CHECK(side.eye[0] > 2.0);
     const Shot child = CoopLookView::Aim(feet, 1.35f, 0.0, w);
     CHECK(Distance(child.eye, {0, 0.675, 0}) < Distance(front.eye, {0, 0.95, 0}));
+}
+
+TEST_CASE("look view: his feet show over a 0.5 m step in front of him (the Kakariko ledge)") {
+    // beta-test-1: at 8 degrees up the line to his feet fell about 16 degrees, so a stone step's edge 0.3 m high
+    // 1 m in front of him hid them. Now it falls kFeetDrop, for either age, any side, any window and field of view.
+    const std::array<float, 3> feet{-119.1f, 96.7f, 58.7f};
+    const Window small{0.70f, 0.10f, 0.92f, 0.49f, 16.0f / 9.0f};
+    const Window wide{0.60f, 0.15f, 0.95f, 0.75f, 21.0f / 9.0f};
+    for (const Window& w : {Square(), small, wide}) {
+        for (const double fov : {0.785398, 0.872665, 1.047198}) {   // 45, 50, 60 degrees
+            for (const double yaw : {0.0, 1.5707, 3.0, -2.2}) {
+                for (const float height : {1.35f, 1.9f}) {
+                    CAPTURE(fov);
+                    CAPTURE(yaw);
+                    CAPTURE(height);
+                    const Shot s = CoopLookView::Aim(feet, height, yaw, w, fov);
+                    CHECK(CoopLookView::FeetDrop(s, feet) == doctest::Approx(CoopLookView::kFeetDrop).epsilon(0.005));
+                    // The step's edge, 0.9 m from him toward the eye: the line to his feet passes over it.
+                    const double out = std::hypot(s.eye[0] - feet[0], s.eye[2] - feet[2]);
+                    const double line_at_edge = (s.eye[1] - feet[1]) * 0.9 / out;
+                    CHECK(line_at_edge > 0.5);
+                    // Still all of him in the window, his middle at its middle, from the side the yaw names.
+                    const auto middle = Project(s, {feet[0], feet[1] + height * 0.5, feet[2]}, w.aspect, fov);
+                    CHECK(middle[0] == doctest::Approx((w.x0 + w.x1) * 0.5).epsilon(1e-6));
+                    CHECK(middle[1] == doctest::Approx((w.y0 + w.y1) * 0.5).epsilon(1e-6));
+                    const auto top = Project(s, {feet[0], feet[1] + height, feet[2]}, w.aspect, fov);
+                    const auto bottom = Project(s, {feet[0], feet[1], feet[2]}, w.aspect, fov);
+                    CHECK(top[1] > w.y0);
+                    CHECK(bottom[1] < w.y1);
+                    CHECK((bottom[1] - top[1]) / (w.y1 - w.y0) == doctest::Approx(CoopLookView::kFill).epsilon(0.01));
+                    // The view looks along the yaw. Aimed beside him (the window is off the screen's middle), the
+                    // eye stands to one side of that line, more the steeper the view, but well in front of him.
+                    const double look = std::atan2(s.eye[0] - s.target[0], s.eye[2] - s.target[2]);
+                    CHECK(std::fabs(std::remainder(look - yaw, 2 * kPi)) < 1e-6);
+                    const double side = std::atan2(s.eye[0] - feet[0], s.eye[2] - feet[2]);
+                    CHECK(std::fabs(std::remainder(side - yaw, 2 * kPi)) < 0.8);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("look view: the camera never lower than kElevationMin, where his feet fall more than kFeetDrop") {
+    // The whole screen as the window at a wide field of view: he is framed from so close that the line to his feet
+    // falls more than kFeetDrop even at the lowest elevation. The camera stays at kElevationMin, never lower.
+    const Window full{0.0f, 0.0f, 1.0f, 1.0f, 16.0f / 9.0f};
+    const std::array<float, 3> feet{0, 0, 0};
+    for (const float height : {1.35f, 1.9f}) {
+        const Shot s = CoopLookView::Aim(feet, height, 0.0, full, 2.0);
+        const double pitch =
+            std::atan2(s.eye[1] - s.target[1], std::hypot(s.eye[0] - s.target[0], s.eye[2] - s.target[2]));
+        CHECK(pitch == doctest::Approx(CoopLookView::kElevationMin).epsilon(1e-6));
+        CHECK(CoopLookView::FeetDrop(s, feet) > CoopLookView::kFeetDrop);
+    }
+}
+
+TEST_CASE("look view: the camera never steeper than kElevationMax nor lower than kElevationMin") {
+    // A window so short that Link would be framed from close up: the drop wants more than 45 degrees.
+    const Window tiny{0.80f, 0.10f, 0.84f, 0.13f, 16.0f / 9.0f};
+    const std::array<float, 3> feet{0, 0, 0};
+    const Shot s = CoopLookView::Aim(feet, 1.35f, 0.0, tiny);
+    const double pitch = std::atan2(s.eye[1] - s.target[1], std::hypot(s.eye[0] - s.target[0], s.eye[2] - s.target[2]));
+    CHECK(pitch >= CoopLookView::kElevationMin - 1e-9);
+    CHECK(pitch <= CoopLookView::kElevationMax + 1e-9);
 }
 
 TEST_CASE("look view: the turn starts at his front, from the game's camera behind him") {

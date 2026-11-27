@@ -40,6 +40,20 @@ std::string IniSet(std::string_view text, std::string_view key, std::string_view
 // default comes back.
 std::string IniUnset(std::string_view text, std::string_view key);
 
+// One player's own settings where several games share one kit (local co-op's
+// <game>\local-players\playerN, Nucleus Co-op's instances): coop-player.ini
+// beside that game's longshot.exe holds them, the kit's coop-options.ini the
+// rest, so a setting changed in the kit reaches every game.
+// Whether `key` is one of them: the controller, the keyboard, the look.
+bool PlayerKey(std::string_view key);
+// The kit's text with the player's lines over it: each player key as
+// coop-player.ini has it, or unset (the kit's value is another player's).
+std::string WithPlayerOptions(std::string_view kit, std::string_view player);
+// `merged` (WithPlayerOptions' text after an edit) back into the two files:
+// `kit` (in: the kit's text before) gets every other line, its own player keys
+// kept as they were; `player` the player keys `merged` sets.
+void SplitPlayerOptions(std::string_view merged, std::string& kit, std::string& player);
+
 // ---------------------------------------------------------------------------
 // What the Settings page edits.
 
@@ -84,6 +98,9 @@ struct Options {
     bool show_players = false;     // LICHII_COOP_SHOW_PLAYERS (the list always shown)
     bool pvp = false;              // pvp (the host's)
     bool approve_joins = false;    // approve_joins (the host's: each new player waits for /allow or /deny); read only
+    bool gold_own = false;         // gold_skulltulas = own (the host's: Gold Skulltulas not shared; no line: shared)
+    bool race = false;             // race = on (the host's race mode, coop_race_mode.h; no line: off)
+    bool floor_switches = true;    // floor_switches = off (the host's: coop_switch_stand_mode.h; no line: on)
     bool same_network_open = true;    // the host's: on, the default, players from a private address join without
                                       // the join password; off (same_network_password = on), they need it too
     bool auto_rejoin = false;      // auto_rejoin (join the last friend's game again by itself: coop_auto_rejoin.h)
@@ -169,6 +186,20 @@ bool AddressOk(std::string_view typed);
 std::optional<std::string> BareJoinName(std::string_view join_line);
 // That line through the relay: "<name>@<relay>[ <password>]".
 std::string RoomJoinLine(std::string_view join_line, std::string_view relay);
+// The line a host gives its friends for its relay room or join code ("<room or code>@<relay>", hos_coop_host.h's
+// relay_room / relay_code): with the join password after it, as Join reads a line (ReadJoin), so a friend's paste joins
+// at once. Without it a pasted room line was refused before the relay was ever asked ("type the join password"), and
+// almost no guest reached a private room (private-lobby-fix, 2026-11-24). `relay_line` as it is when it has no '@'
+// (an invite code holds its password already) or there is no password.
+std::string RelayShareLine(std::string_view relay_line, std::string_view password);
+// The code a host gives its friends: its relay room line, else the relay's join code line, else the invite code (which
+// holds its password); "" none yet. `copied` (the clipboard) puts the join password after a relay line
+// (RelayShareLine); shown (the Host page's Code row) it is bare: the password is shown only when the player asks.
+std::string HostShareText(std::string_view relay_room, std::string_view relay_code, std::string_view invite,
+                          std::string_view password, bool copied);
+// A Join line that names a relay room or join code ("<room or code>@<relay>") but no join password after it: the line
+// an older host copied. Join cannot use it alone; the guest types the host's password.
+bool RelayLineWithoutPassword(std::string_view join_line);
 // Valid UDP port in 1..65535 (after trimming ends), or empty.
 std::optional<std::uint16_t> ParsePort(std::string_view text);
 
@@ -242,8 +273,6 @@ std::vector<std::string> HomeLines(const std::vector<LanAddress>& home, std::uin
                                    bool copied, bool same_network_open = false);
 std::vector<std::string> VpnLines(const std::vector<LanAddress>& vpn, std::uint16_t port, std::string_view password,
                                   bool copied, bool same_network_open = false);
-// The Host dialog's first line while hosting with an invite code: the code is the way to host, the rows the others.
-std::string HostHeadline(bool copied);
 
 // After Join connects at the title: what the title's bottom-left line says
 // while the host's save (lichii/hook/coop_save.h, the co-op folder) comes.

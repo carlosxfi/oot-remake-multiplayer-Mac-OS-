@@ -10,7 +10,7 @@ function Copy-KitPack([string]$Repo, [string]$Kit, [int]$Port) {
     $packTool = Join-Path $Repo 'tools\puppet_pack'
     # (the former emulator kit builder's list: its tests and the scene-placing test helper stay out), plus every module build.py imports.
     $packFiles = @('ainb.py', 'build.py', '__init__.py', 'byml.py', 'dumpcheck.py', 'dungeon_rooms.py', 'hud.py', 'nup.py', 'rstb.py',
-        'sarc.py', 'texture.py', 'title_menu.py', 'tunic.py', 'tunic_extra.py', 'zs.py', 'merge_tables.py')   # (merge_tables.py: play.ps1, #48)
+        'sarc.py', 'texture.py', 'title_menu.py', 'tunic.py', 'tunic_extra.py', 'zs.py', 'merge_tables.py', 'part_check.py')   # (merge_tables.py: play.ps1, #48; part_check.py: kit-paths.ps1, row 280)
     # And every module those import, and theirs (title_menu.py -> ui_pack.py -> msbt.py): one missing from the kit stops
     # build.py at its first import, and the pack is never made on the players' PCs.
     $packSeen = @{}

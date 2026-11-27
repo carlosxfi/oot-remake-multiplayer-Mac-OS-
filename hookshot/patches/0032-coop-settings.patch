@@ -1,4 +1,4 @@
-From 06e539fa21d68430edc4255c3973cbb52b0f967d Mon Sep 17 00:00:00 2001
+From 163b20a22b3cfb12d016eb77893c090b26e39648 Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Thu, 19 Nov 2026 11:58:55 -0600
 Subject: [PATCH] Co-op settings: the Insert menu's settings for the module
@@ -70,10 +70,10 @@ index 6032a4f8..4cc092f0 100644
  
  // (the microphone test: on while the player has it on (Test microphone), the levels the host measured and its state)
 diff --git a/gpu/vk/vk_menu.cpp b/gpu/vk/vk_menu.cpp
-index 8d6084e1..c721770d 100644
+index 7f5dbc99..491af88c 100644
 --- a/gpu/vk/vk_menu.cpp
 +++ b/gpu/vk/vk_menu.cpp
-@@ -4847,6 +4847,9 @@ static void bridge_probe_first() { (void)upscalers_available(), (void)dlss_why()
+@@ -4849,6 +4849,9 @@ static void bridge_probe_first() { (void)upscalers_available(), (void)dlss_why()
  int menu_setting(int index, MkwVkSetting* out) {
      bridge_probe_first();
      std::lock_guard lk(menu_mu);
@@ -83,7 +83,7 @@ index 8d6084e1..c721770d 100644
      for (int i = 0, n = 0; i < (int)std::size(rows); i++)
          if (bridge_row(i) && n++ == index) return bridge_fill(i, out), 1;
      return 0;
-@@ -4944,11 +4947,17 @@ void menu_auto_tune(double gpu_ms, double draws, double fps) {
+@@ -4946,11 +4949,17 @@ void menu_auto_tune(double gpu_ms, double draws, double fps) {
  /// through a list of their own (the Upscaler, Render resolution, the output resolution) are walked to value: walk_to. out: the
  /// row as it is now. 1 set, 0 no such row, -1 nothing to choose on this PC (row_fixed), -2 none of a list row's steps reach
  /// value here (the row and the rest as they were)

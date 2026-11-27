@@ -123,6 +123,46 @@ class Classify(unittest.TestCase):
         self.assertNotIn("D", got)
 
 
+class LocationVisit(unittest.TestCase):
+    """Row 228: an area's first scene opens the location UI, whose graph sets IsVisitLocation.<location>."""
+    SAVED_OFF = (se.SAVED, False)
+    PATH = "Work/Location/HyruleField.game__location__Location.gyml"
+
+    def opens(self, path=PATH, cond=False):
+        return ("UISystemActor", se.OPEN_LOCATION, {"LocationName": path}, cond)
+
+    def test_the_flag_is_named_from_the_location_path(self):
+        self.assertEqual(se.visit_flag(self.PATH), "IsVisitLocation.HyruleField")
+        self.assertEqual(se.visit_flag("Work\Location\Market.game__location__Location.gyml"), "IsVisitLocation.Market")
+        self.assertIsNone(se.visit_flag(""))
+        self.assertIsNone(se.visit_flag(None))
+
+    def test_an_open_is_a_write_of_one(self):
+        rows = bools(**{"IsVisitLocation.HyruleField": self.SAVED_OFF})
+        writes = {"IsVisitLocation.HyruleField": {True}}
+        kept, out = se.classify("Dm_HrlField_0000", [self.opens()], rows, set(), writes, {})
+        self.assertEqual(kept, [("IsVisitLocation.HyruleField", True)])
+        self.assertEqual(out, [])
+        _k, out = se.classify("S", [self.opens(cond=True)], rows, set(), writes, {})
+        self.assertIn("behind a switch", out[0][2])
+        asks = ("UISystemActor", "EventQueryIsNotVisitCurrentBaseLocation", {}, False)
+        _k, out = se.classify("S", [self.opens(), asks], rows, set(), writes, {})
+        self.assertIn("asked by a switch", out[0][2])
+
+    def test_the_current_location_is_left_out_with_why(self):
+        kept, out = se.classify("S", [("UISystemActor", se.OPEN_CURRENT_LOCATION, {}, False)], {}, set(), {}, {})
+        self.assertEqual(kept, [])
+        self.assertIn("no name in the flow", out[0][2])
+
+    def test_flow_writes_count_the_opens(self):
+        actors = [("UISystemActor", "", (se.OPEN_LOCATION,)), ("EventSystemActor", "", (SET,))]
+        events = [evfl.Event(0, N, 0, 0, (), (), N, None, None, {"LocationName": self.PATH}),
+                  evfl.Event(0, N, 1, 0, (), (), N, None, None,
+                             {"GameDataName": "IsVisitLocation.HyruleField", "Value": False})]
+        got = se.flow_writes([evfl.Flowchart("F", actors, events, {"Start": 0}, [(), ()])])
+        self.assertEqual(got["IsVisitLocation.HyruleField"], {True, False})
+
+
 class Committed(unittest.TestCase):
     def setUp(self):
         with open(os.path.join(REPO, "lichii", "hook", "coop_story_effects.inc"), encoding="utf-8") as f:
@@ -138,6 +178,9 @@ class Committed(unittest.TestCase):
     def test_the_owl_row_is_there(self):
         self.assertIn(("98bf10c1", "804aec99", "true", "HyruleField_Goto_HyruleCastle_Kaepora",
                        "HyruleField_ArriveEntrance"), self.rows)
+
+    def test_the_hyrule_field_visit_row_is_there(self):
+        self.assertIn(("d35d3f12", "dda673cb", "true", "Dm_HrlField_0000", "IsVisitLocation.HyruleField"), self.rows)
 
     def test_rows_hash_their_names_and_follow_the_rules(self):
         self.assertTrue(self.rows)

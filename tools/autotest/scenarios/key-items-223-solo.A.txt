@@ -1,0 +1,87 @@
+# key-items-223-solo (row 223): ONE game, co-op OFF (run.ps1 -NoCoop): the - menu's Multiplayer page, its details list's two pages (ZL / ZR): page 1 the session's
+# lines, page 2 "Key items" (Songs, Medallions, Spiritual Stones, Dungeon items as "n of N"). Shots: page 1, page 2 as
+# the save has it, then every counted flag set (the full list) and page 2 again, page 1 again after a ZL. One game (A).
+mark start
+wait 300
+press MINUS
+wait 150
+mark minus-open
+press R
+wait 120
+mark page1
+press ZR
+wait 90
+mark page2-start
+setflag DungeonInfo.BottomOfTheWell.IsGetBossKey 1
+setflag DungeonInfo.BottomOfTheWell.IsGetCompass 1
+setflag DungeonInfo.BottomOfTheWell.IsGetMap 1
+setflag DungeonInfo.DodongoCavern.IsGetBossKey 1
+setflag DungeonInfo.DodongoCavern.IsGetCompass 1
+setflag DungeonInfo.DodongoCavern.IsGetMap 1
+setflag DungeonInfo.FinalBattleField.IsGetBossKey 1
+setflag DungeonInfo.FinalBattleField.IsGetCompass 1
+setflag DungeonInfo.FinalBattleField.IsGetMap 1
+setflag DungeonInfo.FireTemple.IsGetBossKey 1
+setflag DungeonInfo.FireTemple.IsGetCompass 1
+setflag DungeonInfo.FireTemple.IsGetMap 1
+setflag DungeonInfo.ForestTemple.IsGetBossKey 1
+setflag DungeonInfo.ForestTemple.IsGetCompass 1
+setflag DungeonInfo.ForestTemple.IsGetMap 1
+setflag DungeonInfo.GerudoFortress.IsGetBossKey 1
+setflag DungeonInfo.GerudoFortress.IsGetCompass 1
+setflag DungeonInfo.GerudoFortress.IsGetMap 1
+setflag DungeonInfo.GerudoTrainingGround.IsGetBossKey 1
+setflag DungeonInfo.GerudoTrainingGround.IsGetCompass 1
+setflag DungeonInfo.GerudoTrainingGround.IsGetMap 1
+setflag DungeonInfo.IceCavern.IsGetBossKey 1
+setflag DungeonInfo.IceCavern.IsGetCompass 1
+setflag DungeonInfo.IceCavern.IsGetMap 1
+setflag DungeonInfo.InsideGanonCastle.IsGetBossKey 1
+setflag DungeonInfo.InsideGanonCastle.IsGetCompass 1
+setflag DungeonInfo.InsideGanonCastle.IsGetMap 1
+setflag DungeonInfo.InsideJabuJabuBelly.IsGetBossKey 1
+setflag DungeonInfo.InsideJabuJabuBelly.IsGetCompass 1
+setflag DungeonInfo.InsideJabuJabuBelly.IsGetMap 1
+setflag DungeonInfo.InsideTheDekuTree.IsGetBossKey 1
+setflag DungeonInfo.InsideTheDekuTree.IsGetCompass 1
+setflag DungeonInfo.InsideTheDekuTree.IsGetMap 1
+setflag DungeonInfo.ShadowTemple.IsGetBossKey 1
+setflag DungeonInfo.ShadowTemple.IsGetCompass 1
+setflag DungeonInfo.ShadowTemple.IsGetMap 1
+setflag DungeonInfo.SpiritTemple.IsGetBossKey 1
+setflag DungeonInfo.SpiritTemple.IsGetCompass 1
+setflag DungeonInfo.SpiritTemple.IsGetMap 1
+setflag DungeonInfo.WaterTemple.IsGetBossKey 1
+setflag DungeonInfo.WaterTemple.IsGetCompass 1
+setflag DungeonInfo.WaterTemple.IsGetMap 1
+setflag IsGet.Item_Medal_Fire 1
+setflag IsGet.Item_Medal_Forest 1
+setflag IsGet.Item_Medal_Light 1
+setflag IsGet.Item_Medal_Shadow 1
+setflag IsGet.Item_Medal_Spirit 1
+setflag IsGet.Item_Medal_Water 1
+setflag IsGet.Item_Melody_EponaSong 1
+setflag IsGet.Item_Melody_FireBolero 1
+setflag IsGet.Item_Melody_ForestMinuet 1
+setflag IsGet.Item_Melody_LightPrelude 1
+setflag IsGet.Item_Melody_SariaSong 1
+setflag IsGet.Item_Melody_ScarecrowSong 1
+setflag IsGet.Item_Melody_ShadowNocturne 1
+setflag IsGet.Item_Melody_SpiritRequiem 1
+setflag IsGet.Item_Melody_StormSong 1
+setflag IsGet.Item_Melody_SunSong 1
+setflag IsGet.Item_Melody_TimeSong 1
+setflag IsGet.Item_Melody_WaterSerenade 1
+setflag IsGet.Item_Melody_ZeldaLullaby 1
+setflag IsGet.Item_Stone_Fire 1
+setflag IsGet.Item_Stone_Forest 1
+setflag IsGet.Item_Stone_Water 1
+wait 90
+press ZL
+wait 60
+press ZR
+wait 120
+mark page2-full
+press ZL
+wait 90
+mark page1-again

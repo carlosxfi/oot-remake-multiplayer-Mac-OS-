@@ -1,0 +1,144 @@
+"""tools/ci_scope.py: which Build runs may skip the C++ jobs (B #131 2026-11-26)."""
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import ci_scope as cs  # noqa: E402
+
+WORK = "refs/heads/test-speed-boot-key"
+D = "workflow_dispatch"
+
+
+class Decide(unittest.TestCase):
+    def test_python_only_diff_is_scoped(self):
+        full, why = cs.decide(D, WORK, ["tools/autotest/rc_tests.py", "tools/autotest/tests/test_rc_tests.py", "docs/testing.md"])
+        self.assertFalse(full)
+        self.assertTrue(why.startswith("python-only (files: tools/autotest/rc_tests.py"), why)
+
+    def test_one_cpp_file_is_full(self):
+        full, why = cs.decide(D, WORK, ["tools/autotest/rc_tests.py", "hookshot/src/coop_menu.cpp"])
+        self.assertTrue(full)
+        self.assertIn("hookshot/src/coop_menu.cpp", why)
+
+    def test_workflow_change_is_full(self):
+        self.assertTrue(cs.decide(D, WORK, ["tools/autotest/rc_tests.py", ".github/workflows/build.yml"])[0])
+
+    def test_kit_and_cpp_side_tool_folders_are_full(self):
+        for f in ("tools/hookshot/hs.py", "tools/puppet_pack/pack.py", "tools/release/kit_pack.ps1", "tools/nucleus/handler.js",
+                  "tools/ci-runner/x.ps1", "tools/coop_test/main.cpp", "tools/playtest/scripts/a.txt", "lichii/PIN",
+                  "hookshot/patches/0001.patch", "CMakeLists.txt", "server/main.cpp", "tools/dev-check.ps1"):
+            self.assertTrue(cs.decide(D, WORK, [f])[0], f)
+
+    def test_md_anywhere_is_scoped(self):
+        self.assertFalse(cs.decide(D, WORK, ["hookshot/README.md", "docs/plan.md"])[0])
+
+    def test_main_integrate_release_tags_always_full(self):
+        for ref in ("refs/heads/main", "refs/heads/integrate-0120", "refs/heads/release-01112", "refs/tags/v0.12.0"):
+            self.assertTrue(cs.decide(D, ref, ["docs/a.md"])[0], ref)
+
+    def test_other_events_always_full(self):
+        for ev in ("push", "pull_request", "", "schedule"):
+            self.assertTrue(cs.decide(ev, WORK, ["docs/a.md"])[0], ev)
+
+    def test_unknown_or_empty_diff_is_full(self):
+        self.assertTrue(cs.decide(D, WORK, None)[0])
+        self.assertTrue(cs.decide(D, WORK, [])[0])
+
+    def test_prefix_is_a_folder_not_a_name_start(self):
+        self.assertTrue(cs.decide(D, WORK, ["tools/autotest_extra.cpp"])[0])
+        self.assertTrue(cs.decide(D, WORK, ["tools/rando.cpp"])[0])
+
+    def test_bad_base_name_gives_no_diff(self):
+        self.assertIsNone(cs.changed_files("x; rm -rf /"))
+
+
+def run(cwd, *args):
+    subprocess.run(list(args), cwd=cwd, check=True, capture_output=True, text=True)
+
+
+class RealGit(unittest.TestCase):
+    """changed_files + main on a throwaway repo with its own 'origin'."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = self.tmp.name
+        self.origin = os.path.join(t, "origin.git")
+        self.repo = os.path.join(t, "repo")
+        run(t, "git", "init", "-q", "--bare", self.origin)
+        run(t, "git", "init", "-q", self.repo)
+        for k, v in (("user.name", "t"), ("user.email", "t@example.invalid"), ("commit.gpgsign", "false")):
+            run(self.repo, "git", "config", k, v)
+        self.write("hookshot/src/a.cpp", "int a;\n")
+        run(self.repo, "git", "add", "-A")
+        run(self.repo, "git", "commit", "-q", "-m", "base")
+        run(self.repo, "git", "remote", "add", "origin", self.origin)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:refs/heads/integrate-0120")
+        run(self.repo, "git", "checkout", "-q", "-b", "work")
+        self.cwd = os.getcwd()
+        os.chdir(self.repo)
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        self.tmp.cleanup()
+
+    def write(self, rel, text):
+        p = os.path.join(self.repo, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def commit(self, rel):
+        self.write(rel, "x\n")
+        run(self.repo, "git", "add", "-A")
+        run(self.repo, "git", "commit", "-q", "-m", rel)
+
+    def main_out(self):
+        from io import StringIO
+        out, err = StringIO(), StringIO()
+        old = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        try:
+            cs.main(["--event", D, "--ref", "refs/heads/work", "--base", "integrate-0120"])
+        finally:
+            sys.stdout, sys.stderr = old
+        return out.getvalue().strip(), err.getvalue().strip()
+
+    def test_python_only_branch(self):
+        self.commit("tools/autotest/x.py")
+        self.assertEqual(cs.changed_files("integrate-0120"), ["tools/autotest/x.py"])
+        out, err = self.main_out()
+        self.assertEqual(out, "full=false")
+        self.assertEqual(err, "scope: python-only (files: tools/autotest/x.py) (base integrate-0120)")
+
+    def test_cpp_branch(self):
+        self.commit("tools/autotest/x.py")
+        self.commit("hookshot/src/b.cpp")
+        self.assertEqual(self.main_out()[0], "full=true")
+
+    def test_base_moved_on_counts_only_own_commits(self):
+        self.commit("tools/autotest/x.py")
+        run(self.repo, "git", "checkout", "-q", "-b", "other", "HEAD~1")
+        self.commit("hookshot/src/c.cpp")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:refs/heads/integrate-0120")
+        run(self.repo, "git", "checkout", "-q", "work")
+        self.assertEqual(cs.changed_files("integrate-0120"), ["tools/autotest/x.py"])
+
+    def test_move_out_of_cpp_path_is_full(self):
+        os.makedirs(os.path.join(self.repo, "tools", "autotest"))
+        run(self.repo, "git", "mv", "hookshot/src/a.cpp", "tools/autotest/a.cpp")
+        run(self.repo, "git", "commit", "-q", "-m", "move")
+        self.assertEqual(sorted(cs.changed_files("integrate-0120")), ["hookshot/src/a.cpp", "tools/autotest/a.cpp"])
+        self.assertEqual(self.main_out()[0], "full=true")
+
+    def test_missing_base_is_full(self):
+        self.commit("tools/autotest/x.py")
+        self.assertIsNone(cs.changed_files("no-such-branch"))
+        self.assertTrue(cs.decide(D, "refs/heads/work", None)[0])
+
+
+if __name__ == "__main__":
+    unittest.main()

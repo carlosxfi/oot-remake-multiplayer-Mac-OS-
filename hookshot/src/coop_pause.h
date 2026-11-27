@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <string>
 
+#include "coop_menu_state.h"
 #include "coop_pause_menu.h"
 #include "hos_coop_menu.h"
 #include "hos_coop_menu_picture.h"
@@ -34,10 +35,13 @@ const std::string& ExefsList();
 
 // Each game frame (HOS_COOP_SITE_FRAME), shown or not: what follows from
 // co-op's state (the invite code copied, a connected join remembered and the
-// host's save loaded at the title). At most every 250 ms.
+// host's save loaded at the title). At most every 250 ms. Also each frame: the
+// presses Hookshot's menu queued on its tabs, carried out, and their pages
+// published (coop_menu_handoff.h).
 void Tick();
 
-// hos_coop_menu.h's exports.
+// hos_coop_menu.h's exports, on Hookshot's present thread under its menu lock: they take no co-op lock (row 279). Page
+// and Picture read the page Tick last published; Input queues the press for Tick and answers from that page.
 int Tabs();
 const char* TabName(int tab);
 bool Page(int tab, HosCoopMenuPage* out);
@@ -50,6 +54,13 @@ int Wanted();
 inline constexpr int kWantLongshotMenu = -3;
 // The pause menu's Longshot Settings button: Longshot's own menu opens at the next menu tick, in front or not.
 void WantLongshotMenu();
+// Longshot's own menu closed at its next tick, if it is open (F1 taken for co-op's - menu: nothing of Longshot's left over it).
+void WantClose();
+// Longshot's own menu opened (or brought) on the Multiplayer tab at its next tick (F1 where our - menu cannot open now:
+// coop_menu_tabs_rule.h). Any thread.
+void WantMultiplayerTab();
+// One of co-op's tabs shows in Longshot's menu now (HOS_COOP_MENU_SHOW .. _HIDE). Any thread, no co-op lock.
+bool TabShown();
 
 // The window's keys and characters (Unicode) while the tab types into a
 // field: true when taken. Hookshot's own keys (F1, Insert) are never taken.
@@ -118,6 +129,11 @@ bool RelaySet();
 bool AutoRejoin();
 void SetAutoRejoin(bool on);
 bool AutoRejoining();
+// Row 281: a restart to play the host's seed is due or not (a guest held out of the host's world): the next start joins
+// the last game again once (coop.ini rejoin_once), Auto-rejoin on or off. Any thread; written at the next update, only
+// while this game is in a friend's game it joined itself (never with co-op from the game's start), and taken back when
+// it is due no more or the player leaves, hosts or joins (CoopAutoRejoin::RestartMark).
+void RejoinAfterRestart(bool due);
 // Hosting with a relay room puts it on the relay's public room list (coop-options.ini list_room), or not; saved at once.
 bool ListRoom();
 // The kit's relay ("host" or "host:port", coop-options.ini relay), "" none: the files' setting.
@@ -142,9 +158,17 @@ bool Rejoin(std::string* host);
 // of it.
 void PasteAnswerNow();
 
-// The autotest's `menu customize|close|host` step (LICHII_COOP_TEST_COMMANDS only, coop_testinput.h): the menu
+// The autotest's `menu customize|close|host|paste|leave|main` step (LICHII_COOP_TEST_COMMANDS only, coop_testinput.h): the menu
 // opened on the Customize page, or closed, or the game hosts through the Multiplayer page's Host
-// (LICHII_COOP_TEST_HOST, CoopHostMenu::ParseTestHost). Never asked in a player's game (no commands file there).
+// (LICHII_COOP_TEST_HOST, CoopHostMenu::ParseTestHost; a relay room with kTestRelayEnv/kTestRelayRoomEnv), or joins
+// with the clipboard's code as the page's "Paste code and join" (JoinPasteNow), or leaves (LeaveNow), or opens the
+// Multiplayer page and presses nothing (main). Never asked in a player's game (no commands file there).
 bool TestMenu(const std::string& page);
+// Where co-op's own menu is, for the play-test bridge's `coop_menu` state member: "closed" while it is shut, else the
+// page word (CoopPauseMenu::PageWord). It does not see the game's own pause screen, so "closed" is not "the game's
+// pause menu is shut".
+std::string MenuState();
+// The same menu for the bridge's `menu` member: open, its page word and its rows (coop_menu_state.h).
+CoopMenuState::Tab MenuTab();
 
 }  // namespace CoopPause

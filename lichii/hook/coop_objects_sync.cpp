@@ -6,6 +6,7 @@
 #include "coop_boss.h"
 #include "coop_dungeon.h"
 #include "coop_enemy_shots.h"
+#include "coop_gold_mode.h"
 #include "coop_guard.h"
 #include "coop_pickups.h"
 #include "coop_world.h"
@@ -262,6 +263,8 @@ std::optional<bool> BossHurt(const std::vector<Seen>& seen, std::span<const std:
 
 bool IsShared(std::string_view name) {
     if (IsOwnPuzzle(name)) return false;  // before the Npc_ rule: the pond owner is one
+    // Gold Skulltulas Not shared (race mode, coop_gold_mode.h): each game keeps its own.
+    if (CoopGoldMode::NotShared() && name == "Enemy_Skulltula_Gold") return false;
     if (IsOwnFollower(name)) return false;  // before the Npc_ and Animal_ rules (row 214)
     // Enemy shots (Enemy_MoblinClub_ShockWave is named like an enemy)
     // stay with the spawn sync: the game whose enemy fired one sends it.
@@ -517,7 +520,10 @@ LifeRouted RouteLife(const LifeAsk& a) {
     const bool steppable = a.step_seen && a.has_component && a.old >= 0 && (a.hurt > 0 || a.life < a.old);
     if (steppable) {
         if (a.native && a.hurt <= 0 && !a.replay_seen) {
-            return {LifeRoute::wait_replay, 0};
+            // enemy-late-kill: our replay is not taken yet (a damage step may refuse it and never move its hit
+            // id: a Deku Baba's copy did, to the owner's death). The fall goes to the Life step now, tied to the
+            // replay: dropped there if the replay lands first, the replay withdrawn if the fall is taken.
+            return {LifeRoute::step, a.old - a.life, true};
         }
         if (a.native) {
             // A stale give is merged: a fall to a life already holds it, a hurt adds it.
@@ -528,6 +534,24 @@ LifeRouted RouteLife(const LifeAsk& a) {
         }
     }
     return {a.native ? LifeRoute::lost : LifeRoute::write, 0};
+}
+
+GivenFate StaleGivenFate(const GivenAsk& a) {
+    if (!a.due) {
+        return GivenFate::wait;
+    }
+    // A kept give can outlive its actor (A's remove while B's copy sleeps): its address is then freed, and a write
+    // there would land in another actor's memory (reviewer-12). Off the walk it is gone, before any write.
+    if (!a.on_walk || !a.same_component) {
+        return GivenFate::gone;
+    }
+    if (a.pending == 0) {
+        return GivenFate::taken;
+    }
+    // An enemy's life is never written, and taking the change back lost it for good: the copy kept its full life
+    // while its owner's had fallen (lane NEXT5b). Its own Life step takes it when the enemy wakes, with the same
+    // tie to the replay (dropped if the replay lands first, the replay withdrawn if the fall is taken).
+    return a.native ? GivenFate::keep : GivenFate::write;
 }
 
 bool PlaysByFrame(std::string_view name) {
@@ -582,6 +606,22 @@ std::optional<bool> AttackWithRally(const Seen& s, const std::vector<std::string
     return false;
 }
 
+std::vector<std::uint64_t> RallyReturnedTo(const std::vector<Seen>& seen, const std::vector<std::string_view>& makers) {
+    std::vector<std::uint64_t> out;
+    for (const Seen& s : seen) {
+        if (s.address == 0 || std::find(out.begin(), out.end(), s.address) != out.end()) {
+            continue;
+        }
+        for (const std::string_view m : makers) {
+            if (s.name.starts_with(m)) {
+                out.push_back(s.address);
+                break;
+            }
+        }
+    }
+    return out;
+}
+
 std::string_view PackFamily(std::string_view name) {
     // Pair/pack survey (2026-11-21): these fight together by messages each one's AI writes into its ally's
     // blackboard (Lizalfos/Dinolfos: SetBattlingAllyFromReferenceLink, IsRequestingCoop, IsReceivedCoop*Message;
@@ -613,6 +653,17 @@ bool IsBossOrPart(std::string_view name) {
         if (rule.part.boss && rule.part.roots.front() == name) return true;
     }
     return false;
+}
+
+bool TurnsAsEnemy(std::string_view name) {
+    // Every variant the game has (romfs Pack/Actor, 2026-11-24; not the _Dictionary display models, the _Haribote
+    // decoys or the club's shock wave). There is no plain "Enemy_IronKnuckle": each one is Black, White or Silver.
+    static constexpr std::string_view kKinds[] = {
+        "Enemy_Moblin",          "Enemy_Moblin_Club",        "Enemy_Lizalfos",          "Enemy_Dinolfos",
+        "Enemy_Stalfos",         "Enemy_Stalfos_Weak",       "Enemy_Stalfos_ForChild",  "Enemy_Stalfos_AlwaysRespawn",
+        "Enemy_LikeLike",        "Enemy_IronKnuckle_Black",  "Enemy_IronKnuckle_White", "Enemy_IronKnuckle_Silver",
+    };
+    return !IsBossOrPart(name) && std::find(std::begin(kKinds), std::end(kKinds), name) != std::end(kKinds);
 }
 
 namespace {
@@ -968,6 +1019,16 @@ bool IsStunAnimation(std::string_view name) {
            first == "LightArrowDamage" || first == "Lightarrow" || base.starts_with("Dark_Chance") ||
            first.starts_with("DarkChance") || first == "Paralysis" || first.starts_with("Freeze") ||
            base.starts_with("Tail_Chance");
+}
+
+bool IsPlainStunAnimation(std::string_view name) {
+    const std::string_view base = AnimationBase(name);
+    const std::string_view first = base.substr(0, base.find('_'));
+    return first.starts_with("Stun") || first == "ShortStun" || first == "Paralysis" || first == "Faint";
+}
+
+bool IsStunFor(std::string_view actor, std::string_view animation) {
+    return IsBossOrPart(actor) ? IsStunAnimation(animation) : IsPlainStunAnimation(animation);
 }
 
 proto::Quat QuatOf(const Mat3& m) {
@@ -1479,6 +1540,24 @@ std::vector<std::pair<std::uint64_t, proto::BossBsa>> Sync::BossVerbsIn() const 
     return out;
 }
 
+std::optional<proto::BossVariants> Sync::BossVariantsIn(std::uint64_t address) const {
+    const auto it = objects_.find(address);
+    if (it == objects_.end() || !it->second.bsa_in) {
+        return std::nullopt;
+    }
+    return it->second.variants_in;
+}
+
+std::vector<std::pair<std::uint64_t, proto::KeyedValues>> Sync::BrainStateIn() const {
+    std::vector<std::pair<std::uint64_t, proto::KeyedValues>> out;
+    for (const auto& [address, o] : objects_) {
+        if (o.brain_in) {
+            out.emplace_back(address, *o.brain_in);
+        }
+    }
+    return out;
+}
+
 std::vector<std::pair<std::uint64_t, proto::BossOrders>> Sync::BossOrdersIn() const {
     std::vector<std::pair<std::uint64_t, proto::BossOrders>> out;
     for (const auto& [address, o] : objects_) {
@@ -1488,6 +1567,20 @@ std::vector<std::pair<std::uint64_t, proto::BossOrders>> Sync::BossOrdersIn() co
         const auto owner = owners_.find(o.id);
         if (owner != owners_.end() && owner->second.player != 0 && owner->second.player != self_) {
             out.emplace_back(address, *o.orders_in);
+        }
+    }
+    return out;
+}
+
+std::vector<std::pair<std::uint64_t, proto::BossShooterCalls>> Sync::BossShooterIn() const {
+    std::vector<std::pair<std::uint64_t, proto::BossShooterCalls>> out;
+    for (const auto& [address, o] : objects_) {
+        if (!o.shooter_in) {
+            continue;
+        }
+        const auto owner = owners_.find(o.id);
+        if (owner != owners_.end() && owner->second.player != 0 && owner->second.player != self_) {
+            out.emplace_back(address, *o.shooter_in);
         }
     }
     return out;
@@ -1580,6 +1673,33 @@ std::vector<std::pair<std::uint64_t, std::string>> Sync::Owned() const {
     return out;
 }
 
+std::vector<CoopDigest::Entry> Sync::DigestEntries() const {
+    std::map<proto::ObjectId, CoopDigest::Entry> by_id;
+    for (const auto& [address, o] : objects_) {
+        const auto owner = owners_.find(o.id);
+        if (owner == owners_.end() || by_id.contains(o.id)) {
+            continue;  // not shared yet (no owner news), or a second actor of one id: the first is written
+        }
+        CoopDigest::Entry e{o.id, {}};
+        e.fields.emplace_back("name", o.name);
+        e.fields.emplace_back("owner", std::to_string(owner->second.player));
+        e.fields.emplace_back("epoch", std::to_string(owner->second.epoch));
+        e.fields.emplace_back("life", o.life ? std::to_string(*o.life) : std::string("-"));
+        e.fields.emplace_back("max", std::to_string(o.max));
+        e.fields.emplace_back("dead", o.life ? (*o.life <= 0 ? "1" : "0") : "-");
+        if (owner->second.player != self_ && o.owner_life) {
+            e.fields.emplace_back("local.owner_life", std::to_string(*o.owner_life));
+        }
+        by_id.emplace(o.id, std::move(e));
+    }
+    std::vector<CoopDigest::Entry> out;
+    out.reserve(by_id.size());
+    for (auto& [id, e] : by_id) {
+        out.push_back(std::move(e));
+    }
+    return out;
+}
+
 void Sync::Written(std::uint64_t address, std::int32_t life, std::uint64_t now_us) {
     const auto it = objects_.find(address);
     if (it == objects_.end()) {
@@ -1664,6 +1784,18 @@ void Sync::Stepped(std::uint64_t address, std::int32_t amount, std::uint64_t now
     }
 }
 
+void Sync::KeepGiven(std::uint64_t address, std::int32_t amount, std::uint64_t now_us) {
+    const auto it = objects_.find(address);
+    if (it == objects_.end() || amount <= 0) {
+        return;
+    }
+    Object& o = it->second;
+    o.late_left = std::max(o.late_left, amount);  // (the same fall the hurt's end booked: never added twice)
+    o.late_until = std::max(o.late_until, now_us + kHurtLateUs);
+    o.step_given = std::max(o.step_given, amount);
+    o.step_given_until = std::max(o.step_given_until, now_us + kStepGivenUs);
+}
+
 std::int32_t Sync::StepHits(Object& o, std::int32_t fell, std::int32_t life, std::uint64_t now_us) {
     std::int32_t hits = 0;
     std::int32_t stepped = std::exchange(o.step_new, 0);
@@ -1721,8 +1853,17 @@ proto::ObjectState Sync::StateOf(Object& o, std::uint64_t now_us) {
     if (o.bsa) {
         state.bsa = o.bsa;  // native boss sync: a boss's brain and action verbs
     }
+    if (o.bsa && o.variants) {
+        state.variants = o.variants;  // row 222 part 2: its action variations (component 24)
+    }
     if (o.orders) {
         state.orders = o.orders;  // row 222: its battle manager's orders
+    }
+    if (o.shooter) {
+        state.shooter = o.shooter;  // rows 222, 286: its Shooter's calls
+    }
+    if (o.brain) {
+        state.brain = o.brain;  // row 149: its blackboard move state (every sample: the server's hand-over state)
     }
     if (o.rotation) {
         state.rotation = QuatOf(*o.rotation);
@@ -2353,25 +2494,35 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         // server to hand the boss to us, whose boss is the stunned one.
         // Row 169: every walk while a stun begun here plays, it is the copy's own time (TakeOwnStuns); a stun the
         // copy began as the owner's is not, also in the walk or two it still plays after the owner's ended.
+        // ai-stuns: a plain enemy's copy the same (a nut, boomerang or hookshot stun here takes no life): the
+        // server hands it to us, the stunner, whose enemy is the stunned one. Only a boss goes to the boss table.
         bool own_stun = false;
-        if (s.animation && IsStunAnimation(s.animation->name) && IsBossOrPart(s.name)) {
+        if (s.animation && IsStunFor(s.name, s.animation->name)) {
             const auto owner = owners_.find(o.id);
             const std::string owners = !o.received.empty() && o.received.back().animation
                                            ? o.received.back().animation->name
                                            : std::string{};
             if (owner != owners_.end() && owner->second.player != 0 &&
-                owner->second.player != self && !IsStunAnimation(owners)) {
-                if (!(o.animation && IsStunAnimation(o.animation->name))) {
+                owner->second.player != self && !IsStunFor(s.name, owners)) {
+                // (One rule for both sides: a plain enemy's owner in its own Down or Fall is in no stun, so our
+                // copy's own stun still asks; before, the boss rule read the owner's and kept the enemy there.)
+                if (!(o.animation && IsStunFor(s.name, o.animation->name))) {
                     own_stun = true;
                     o.react_at = now_us;
                     o.react_over = owners;
-                    if (o.stun_at == 0 || now_us - o.stun_at >= kStunEveryUs) {
+                    // Not when another player's shot copy hit there: that stun is the thrower's (its game asks).
+                    // Unless its game's own hit record says the hit was ours (issue 133): then the stun is ours.
+                    const bool ours = (s.hit_ours && *s.hit_ours) ||
+                                      (o.ours_hit_at != 0 && now_us >= o.ours_hit_at &&
+                                       now_us - o.ours_hit_at <= kOurHitKeepUs);
+                    const bool theirs = !ours && shot_hit_near_ && shot_hit_near_(s.position, now_us);
+                    if (!theirs && (o.stun_at == 0 || now_us - o.stun_at >= kStunEveryUs)) {
                         o.stun_due = true;
                     }
                 } else {
                     own_stun = o.own_stun;
                 }
-                if (own_stun && own_stuns_.size() < 64) {
+                if (own_stun && IsBossOrPart(s.name) && own_stuns_.size() < 64) {
                     own_stuns_.push_back(o.address);
                 }
             }
@@ -2397,7 +2548,13 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         }
         o.slots = s.slots;
         o.bsa = s.bsa;
+        o.variants = s.variants;
         o.orders = s.orders;
+        o.shooter = s.shooter;
+        o.brain = s.brain;
+        if (s.brain) {
+            o.brain_in.reset();  // row 149: our own values are sent from here on
+        }
         o.attacking = AttackWithRally(s, rally_makers);
         const bool rally_held = o.attacking.value_or(false) && !s.attacking.value_or(true);
         if (rally_held && !o.rally_held) {
@@ -2791,7 +2948,13 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         o.animation = s->animation;
         o.slots = s->slots;
         o.bsa = s->bsa;
+        o.variants = s->variants;
         o.orders = s->orders;
+        o.shooter = s->shooter;
+        o.brain = s->brain;
+        if (s->brain) {
+            o.brain_in.reset();  // row 149: our own values are sent from here on
+        }
         o.attacking = AttackWithRally(*s, rally_makers);
         o.seen_at = now_us;
         o.name = s->name;
@@ -3190,7 +3353,7 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
                 notes_.emplace_back("its copy died here (a painting, our hit): the kill goes to its owner: " + o.name);
             }
         }
-        // Issue 150: our boss copy's own stun, as a DAMAGE of 0.
+        // Issue 150: our boss copy's own stun, as a DAMAGE of 0 (ai-stuns: a plain enemy's copy too).
         if (o.stun_due) {
             o.stun_due = false;
             if (known && owner->second.player != self) {
@@ -3257,7 +3420,8 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
                                  Turned(rotation, o.sent_rotation) ||
                                  animation != o.sent_animation || slots != o.sent_slots ||
                                  (o.bsa && o.sent_bsa_seq != o.bsa->seq) ||  // native boss sync: a new boss verb at once
-                                 (o.orders && o.sent_orders_seq != o.orders->seq);  // row 222: a new order at once
+                                 (o.orders && o.sent_orders_seq != o.orders->seq) ||  // row 222: a new order at once
+                                 (o.shooter && o.sent_shooter_seq != o.shooter->seq);  // rows 222, 286: a new shot at once
             if (!o.sent_once || changed || now_us - o.sent_at >= kStillEveryUs) {
                 proto::ObjectSample sample;
                 sample.id = o.id;
@@ -3282,6 +3446,9 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
                 }
                 if (o.orders) {
                     o.sent_orders_seq = o.orders->seq;
+                }
+                if (o.shooter) {
+                    o.sent_shooter_seq = o.shooter->seq;
                 }
             }
         }
@@ -3535,8 +3702,8 @@ void Sync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t now_u
         if (std::find(unready_.begin(), unready_.end(), o.name) != unready_.end()) {
             flags |= proto::object_presence::unready;
         }
-        if (takes_turns_ && IsBossOrPart(o.name)) {
-            flags |= proto::object_presence::takes_turns;  // boss turns: this build reads attacks
+        if (takes_turns_ && (IsBossOrPart(o.name) || TurnsAsEnemy(o.name))) {
+            flags |= proto::object_presence::takes_turns;  // boss turns, ai-turns kinds: this build reads attacks
         }
         if (PresenceFlagsBattleManager(IsBattleManager(o.name), shares_orders_)) {
             flags |= proto::object_presence::battle_manager;  // row 222 C: its group moves only from an unfit owner
@@ -4071,6 +4238,13 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
                 remove->id.kind == proto::ObjectKind::placed &&
                 (had == owners_.end() || remove->epoch >= had->second.epoch)) {
                 Object* o = find(remove->id);
+                if (o != nullptr && o->dead_at == 0 && o->name == "Enemy_Skulltula_Gold" &&
+                    !CoopGoldMode::NotShared() && !gold_taken_.contains(remove->id.value)) {
+                    // Row 63: its token is owed here whatever our copy's death does (far, asleep, or deleted
+                    // after kDeadGraceUs with no death): CoopWorld::WorldSync::OweToken makes it when our game
+                    // made none.
+                    if (gold_deaths_.size() < 64) gold_deaths_.push_back({remove->id.value, o->position});
+                }
                 if (o != nullptr && o->fish && o->dead_at == 0) {
                     // Issue 151: caught in its owner's game. Ours goes now.
                     o->dead_now = true;
@@ -4150,7 +4324,9 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
             // new owner's first state is the one the copy starts from.
             o->received.clear();
             o->bsa_in.reset();
+            o->variants_in.reset();
             o->orders_in.reset();
+            o->shooter_in.reset();
             if (owner->owner == self) {
                 // Ours now, where it stands here: nothing pulls it. A hit of
                 // ours not yet sent is already in its life, and the others
@@ -4191,10 +4367,19 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
             }
             if (sample->state.bsa) {
                 o->bsa_in = sample->state.bsa;  // native boss sync: the owner's boss verbs
+                o->variants_in = sample->state.variants;  // row 222 part 2: with it (none from an older owner)
                 o->boss_native = true;
             }
             if (sample->state.orders) {
                 o->orders_in = sample->state.orders;  // row 222: the owner's battle manager orders
+            }
+            if (sample->state.shooter) {
+                o->shooter_in = sample->state.shooter;  // rows 222, 286: the owner's Shooter calls
+            }
+            if (sample->state.brain) {
+                // Row 149: the owner's blackboard move state (a full list replaces ours, a delta changes it).
+                std::size_t dropped = 0;
+                o->brain_in = proto::MergeKeyed(o->brain_in ? &*o->brain_in : nullptr, *sample->state.brain, dropped);
             }
             if (sample->state.position && Finite(*sample->state.position)) {
                 const std::uint64_t t = sample->state.time.server_time_us;
@@ -4401,6 +4586,9 @@ void Sync::Apply(std::uint8_t self, std::uint64_t now_us, std::vector<proto::Mes
             send.emplace_back(std::move(state));
         } else if (const auto* handed = std::get_if<proto::HandoverState>(&m)) {
             Object* o = find(handed->id);
+            if (o != nullptr && handed->state.brain) {
+                o->brain_in = handed->state.brain;  // row 149: the old owner's blackboard move state, ours to take
+            }
             // The old owner's life never has our own hits of the last kDamageSumUs in it (summed here, not sent
             // yet): they come off it, or the hand-over gives that life back. A boss always takes its old owner's
             // life; an enemy only where that is the lower one (its own life has our hits in it otherwise).
@@ -4761,7 +4949,10 @@ bool CoversOwnReaction(const PlayWish& wish, std::string_view slot_name) {
     if (wish.keep_own_death && IsDeathAnimation(slot_name) && !IsDeathAnimation(wish.name)) {
         return true;
     }
-    return wish.keep_own_stun && IsStunAnimation(slot_name) && !IsStunAnimation(wish.name);
+    const auto stun = [&wish](std::string_view name) {
+        return wish.stun_plain ? IsPlainStunAnimation(name) : IsStunAnimation(name);
+    };
+    return wish.keep_own_stun && stun(slot_name) && !stun(wish.name);
 }
 
 bool DeathReadFromAnimation(std::string_view name, bool reacts, bool life_read) {
@@ -4888,10 +5079,11 @@ void Sync::Plays(std::uint64_t now_us, std::vector<PlayWish>& out) const {
             wish.frame =
                 CoopNpcAnim::Wrapped(FrameAfter(wanted->frame, wish.run, age), wish.loop);
         }
-        // Row 175: its own death (or a boss's own stun) here is read from its own animation: never covered by the
-        // owner's (CoversOwnReaction).
+        // Row 175: its own death (or its own stun, ai-stuns: a plain enemy's too) here is read from its own
+        // animation: never covered by the owner's (CoversOwnReaction).
         out.back().keep_own_death = DeathReadFromAnimation(o.name, o.reacts, o.life.has_value());
-        out.back().keep_own_stun = IsBossOrPart(o.name);
+        out.back().keep_own_stun = true;
+        out.back().stun_plain = !IsBossOrPart(o.name);
         // Issue 150: a boss's other slots (Gohma's eye guard and eyelids,
         // whose AS events open and close the eye's guard). Without them
         // each game's copy kept its own AI's guard: the eye stood open for

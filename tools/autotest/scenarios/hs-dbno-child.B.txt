@@ -1,0 +1,35 @@
+# hs-dbno-child, B: child in Kokiri Forest in front of the Deku Tree (open ground, no crawlspace), downed by five
+# one-heart hits of the game's own (the guard holds the lethal one while A is up), the game's own CrawlAnchor made in
+# front of him and its crawl entered, pushes the stick forward then sideways (the game's crawl moves him at its
+# own speed), bleeds out in 10 s (A's /dbno time 10), spectates A, respawns beside A and stands up (the game's Wait).
+mark start
+setflag Sequence_IsChildhood 1
+warp KokiriForest_Child FrontDekuTree
+wait 1200
+mark field
+nofairy                  # every bottle emptied: a bottled fairy revives instead of downing
+wait 360                 # A's /dbno time 10 is in
+hurt 4
+wait 60
+hurt 4
+wait 60
+hurt 4
+wait 60
+hurt 4
+wait 60
+hurt 4
+mark downed
+wait 120
+mark lying
+stick 0 1 120            # forward: the game's crawl
+mark stick
+stick 1 0 90             # sideways: does the game's crawl turn him
+mark side
+wait 60
+mark still-down
+wait 300                 # 10 s of bleed-out, then spectating
+mark watching
+wait 1200                # quiet 3 s (no enemy near A), then the move beside A and up
+mark after-respawn
+wait 300
+mark end
