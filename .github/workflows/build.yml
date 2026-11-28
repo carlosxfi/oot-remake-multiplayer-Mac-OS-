@@ -432,11 +432,29 @@ jobs:
           ctest --test-dir build --output-on-failure
           -R '^[A-Da-d]'
           -E '^(flag watcher:|game flags:|session:)'
-      - name: Test unrelated suite E-H
+      - name: Test unrelated suite E
         if: always()
         run: >
           ctest --test-dir build --output-on-failure
-          -R '^[E-He-h]'
+          -R '^[Ee]'
+          -E '^(flag watcher:|game flags:|session:)'
+      - name: Test unrelated suite F
+        if: always()
+        run: >
+          ctest --test-dir build --output-on-failure
+          -R '^[Ff]'
+          -E '^(flag watcher:|game flags:|session:)'
+      - name: Test unrelated suite G
+        if: always()
+        run: >
+          ctest --test-dir build --output-on-failure
+          -R '^[Gg]'
+          -E '^(flag watcher:|game flags:|session:)'
+      - name: Test unrelated suite H
+        if: always()
+        run: >
+          ctest --test-dir build --output-on-failure
+          -R '^[Hh]'
           -E '^(flag watcher:|game flags:|session:)'
       - name: Test unrelated suite I-L
         if: always()
