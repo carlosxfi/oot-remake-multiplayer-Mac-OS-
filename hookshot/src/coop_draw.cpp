@@ -876,7 +876,13 @@ bool LookFontFits() {
 #ifdef __APPLE__
 void DrawMacMarkers(const HosCoopDraw& draw, const Scene& scene) {
     if (scene.markers) DrawMarkers(draw, *scene.markers, scene, nullptr);
-    if (scene.map) DrawMap(draw, *scene.map, nullptr);
+    if (scene.map) {
+        CoopMapDrawn::Frame drawn;
+        drawn.view = "none";
+        drawn.width = static_cast<int>(draw.width);
+        drawn.height = static_cast<int>(draw.height);
+        DrawMap(draw, *scene.map, nullptr, drawn);
+    }
 }
 #endif
 
