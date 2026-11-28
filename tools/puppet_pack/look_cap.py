@@ -6,24 +6,36 @@ alone), so the cap's cloth always has the tunic's colour. But three of his unwra
 have regions only the cap's triangles use: the child's headband and knot
 (Mt_Cloth_Parts_Player_Child_Alb), the adult's hood trims (Mt_Vest_Player_Adult_Alb,
 Mt_Angin_Acs_Player_Adult_Alb). The module paints those blocks in the Cap trim colour over the
-tunic's painting (hookshot/src/coop_look_parts.cpp, TunicPainted). This file works them out from
-the user's own romfs, once, when the pack is made:
+tunic's painting (hookshot/src/coop_look_parts.cpp, TunicPainted).
 
-- the shapes of Link's model (Model/Player_<age>.Player_<age>.bfres, every level of detail) whose
-  material samples the texture;
+The Goron and Zora tunics (row 278: the trim showed on the Kokiri tunic only) are models of their
+own (Model/Armor_Adult_Goron, Armor_Adult_Zora; the adult's only: the game has no child model of
+them), drawn over Link's body, with their hood made the Kokiri way: the hood's cloth its own texture
+(Mt_Angin_Armor_Adult_*), its trims the vest's and the accessories' (the shapes Pg_HoodLether_B /
+Hood_Paterrm on Mt_Vest_Armor_Adult_*, Angin_Upper_Rope on Mt_Angin_Acs_Armor_Adult_Zora_Alb; the
+Goron's HoodAcs buckle and beads have no cap-only block). Those are gear textures (gear.bin holds
+their texels, look_live.GEAR), so the gear painting paints them (CoopLookParts::Painted), in their
+tunic's tones (the Goron's red, the Zora's blue and cyan: 73% and 100% of their cap blocks' end
+colours). This file works them all out from the user's own romfs, once, when the pack is made:
+
+- the shapes of the model (Model/<model>.<model>.bfres, every level of detail) whose material
+  samples the texture;
 - a vertex belongs to the cap when its heaviest bone is the cap's (Ph_Cap*, Ph_HatFringe*,
   Ph_HatString*, or the head itself: the hood is skinned to it); a triangle is the cap's when all
   three of its vertices are;
 - the triangles' texture coordinates (`_u0`, the set that samples these unwrapped textures, scale 1)
   over the texture's block grid, every mip level (BC1 4x4, ASTC its own block size; texture
-  coordinates repeat): a block is the cap's when a cap triangle covers some of it and no other
-  triangle of those shapes does.
+  coordinates repeat): a first-level block is the cap's when a cap triangle covers some of it and
+  no other triangle of those shapes does; a smaller level's block when more than half of the used
+  first-level texels under it are the cap's alone (smaller_level).
 
 `coop_look/cap.bin` beside green.bin (green.bin holds the textures' own texels). Little-endian:
 
     "COOPCAP1", u32 count, then per texture: its name in the game (64 bytes, NUL-filled), u32 the
     bytes of one block (8 BC1, 16 BC3 and ASTC), u32 n, then n u32 byte offsets of its cap blocks
-    in the texture's texels (green.bin's image: every mip level, block-linear as the game holds it).
+    in the texture's texels (green.bin's or gear.bin's image: every mip level, block-linear as the
+    game holds it). A module before row 278 passes the gear textures' entries over (it paints only
+    the tunic textures it knows by name).
 
 Nothing from the game is in this file: offsets only, made from the user's own romfs.
 """
@@ -38,21 +50,28 @@ FILE = "cap.bin"
 MAGIC = b"COOPCAP1"
 NAME_BYTES = 64
 
-# (texture, the model whose shapes sample it): the textures with cap-only regions. The module's
-# CoopLookParts::TunicTextures has all three (green.bin holds them).
+# (texture, the model whose shapes sample it): the textures with cap-only regions. The Kokiri
+# tunic's are the module's CoopLookParts::TunicTextures (green.bin holds them); the Goron and Zora
+# tunics' are its gear textures (CoopLookParts::Gear, gear.bin).
 CAP = (
-    ("Mt_Cloth_Parts_Player_Child_Alb", "Child"),   # headband and knot
-    ("Mt_Vest_Player_Adult_Alb", "Adult"),          # the hood's trims
-    ("Mt_Angin_Acs_Player_Adult_Alb", "Adult"),     # the hood's and cap's trims
+    ("Mt_Cloth_Parts_Player_Child_Alb", "Player_Child"),        # headband and knot
+    ("Mt_Vest_Player_Adult_Alb", "Player_Adult"),               # the hood's trims
+    ("Mt_Angin_Acs_Player_Adult_Alb", "Player_Adult"),          # the hood's and cap's trims
+    ("Mt_Vest_Armor_Adult_Goron_Alb", "Armor_Adult_Goron"),     # the Goron hood's trims (row 278)
+    ("Mt_Vest_Armor_Adult_Zora_Alb", "Armor_Adult_Zora"),       # the Zora hood's pattern trims
+    ("Mt_Angin_Acs_Armor_Adult_Zora_Alb", "Armor_Adult_Zora"),  # the Zora hood's rope
 )
 TEXTURES = tuple(t for t, _ in CAP)
+# The ones the Kokiri tunic's painting paints (green.bin); the rest are gear (gear.bin).
+TUNIC_TEXTURES = TEXTURES[:3]
+GEAR_TEXTURES = TEXTURES[3:]
 CAP_BONES = ("Ph_Cap", "Ph_HatFringe", "Ph_HatString")
 HEAD_BONES = ("Head", "Head_2")
 UV = "_u0"
 
 
-def model_path(variant):
-    return f"Model/Player_{variant}.Player_{variant}.bfres.zs"
+def model_path(model):
+    return f"Model/{model}.{model}.bfres.zs"
 
 
 def is_cap_bone(name):
@@ -163,6 +182,72 @@ def block_size(fmt):
     raise TunicError(f"texture format 0x{fmt:02x} is not read")
 
 
+CAP_TEXEL, OTHER_TEXEL = 1, 2
+
+
+def texels(cap_tris, other_tris, width, height):
+    """The first level's texels as bytes, row by row: CAP_TEXEL where a cap triangle covers the texel's
+    centre, OTHER_TEXEL where another triangle does, both bits where both do, 0 where none does;
+    texture coordinates repeat."""
+    out = bytearray(width * height)
+    for bit, tris in ((CAP_TEXEL, cap_tris), (OTHER_TEXEL, other_tris)):
+        for tri in tris:
+            ox, oy = math.floor(min(p[0] for p in tri)), math.floor(min(p[1] for p in tri))
+            t = tuple(((u - ox) * width, (v - oy) * height) for u, v in tri)
+            for ky in range(math.ceil(max(p[1] for p in t) / height)):
+                for kx in range(math.ceil(max(p[0] for p in t) / width)):
+                    _fill(out, width, height, tuple((x - kx * width, y - ky * height) for x, y in t), bit)
+    return out
+
+
+def _fill(out, width, height, tri, bit):
+    """Sets `bit` on the texels whose centre lies in the triangle (in texels; edges included)."""
+    ys = [p[1] for p in tri]
+    for y in range(max(0, math.ceil(min(ys) - 0.5)), min(height - 1, math.floor(max(ys) - 0.5)) + 1):
+        c = y + 0.5
+        xs = []
+        for k in range(3):
+            (ax, ay), (bx, by) = tri[k], tri[(k + 1) % 3]
+            if ay == by:
+                if ay == c:
+                    xs += [ax, bx]
+                continue
+            if min(ay, by) <= c <= max(ay, by):
+                xs.append(ax + (c - ay) * (bx - ax) / (by - ay))
+        if not xs:
+            continue
+        x0, x1 = max(0, math.ceil(min(xs) - 0.5)), min(width - 1, math.floor(max(xs) - 0.5))
+        row = y * width
+        for x in range(x0, x1 + 1):
+            out[row + x] |= bit
+
+
+def smaller_level(first, w, h, lw, lh, fw, fh):
+    """{(bx, by)} of a smaller mip level's cap blocks (lw x lh texels): a block is the cap's when more than
+    half of the first level's texels under it that any triangle uses are the cap's alone (`first`, from
+    texels()). A smaller level is the first one filtered down, so such a block's colour is mostly the cap's
+    cloth. (kokiri-band-c124: the old rule, no other triangle touching the block at that level, dropped a
+    thin trim's blocks level by level, the adult hood's front band on Mt_Vest_Player_Adult_Alb kept 28% at
+    level 3 and 13% at level 4, so a Link seen from a few metres away, as a puppet is, showed the band in
+    the tunic's colour. Counted by texel, not by first-level block: a block the cap shares with the body
+    still holds the cap's texels, and the filtered level averages them in.)"""
+    wb, hb = (lw + fw - 1) // fw, (lh + fh - 1) // fh
+    out = set()
+    for by in range(hb):
+        # the first level's texels under this block: its texels scaled by w / lw, h / lh
+        y0, y1 = by * fh * h // lh, min(-(-(by + 1) * fh * h // lh), h)
+        for bx in range(wb):
+            x0, x1 = bx * fw * w // lw, min(-(-(bx + 1) * fw * w // lw), w)
+            cap = used = 0
+            for y in range(y0, y1):
+                row = first[y * w + x0:y * w + x1]
+                cap += row.count(CAP_TEXEL)
+                used += len(row) - row.count(0)
+            if 2 * cap > used:
+                out.add((bx, by))
+    return out
+
+
 def blocks(bntx, cap_tris, other_tris):
     """(the byte offsets of the texture's cap blocks, every mip level; (cap blocks, blocks) of the
     first level)."""
@@ -170,10 +255,12 @@ def blocks(bntx, cap_tris, other_tris):
     fw, fh, step = block_size(fmt)
     offs = []
     first = (0, 0)
+    cap0 = covered(cap_tris, w, h, fw, fh) - covered(other_tris, w, h, fw, fh)
+    first_texels = texels(cap_tris, other_tris, w, h) if len(mips) > 1 else None
     for level, start in enumerate(mips):
         lw, lh = max(1, w >> level), max(1, h >> level)
         wb, hb = (lw + fw - 1) // fw, (lh + fh - 1) // fh
-        cap = covered(cap_tris, lw, lh, fw, fh) - covered(other_tris, lw, lh, fw, fh)
+        cap = cap0 if level == 0 else smaller_level(first_texels, w, h, lw, lh, fw, fh)
         if level == 0:
             first = (len(cap), wb * hb)
         g = lm.mip_gobs_tall(bh, hb)
@@ -185,22 +272,23 @@ def blocks(bntx, cap_tris, other_tris):
 
 
 def cap(read_tex, read_model, log=print):
-    """The cap file from `read_tex(name)` (a texture's BNTX, or None) and `read_model(variant)` (Link's
-    model file of that age, or None); None when no texture has a cap block."""
+    """The cap file from `read_tex(name)` (a texture's BNTX, or None) and `read_model(model)` (the
+    model file of that name: "Player_Child", "Armor_Adult_Goron"; or None); None when no texture has a
+    cap block."""
     models = {}
     entries = []
-    for name, variant in CAP:
+    for name, model_name in CAP:
         bntx = read_tex(name)
-        if variant not in models:
-            raw = read_model(variant)
+        if model_name not in models:
+            raw = read_model(model_name)
             try:
-                models[variant] = bfres.Bfres(raw) if raw is not None else None
+                models[model_name] = bfres.Bfres(raw) if raw is not None else None
             except bfres.BfresError as e:
-                log(f"look: {model_path(variant)}: {e}; the Cap trim leaves that age's cap alone")
-                models[variant] = None
-        model = models[variant]
+                log(f"look: {model_path(model_name)}: {e}; the Cap trim leaves that model's cap alone")
+                models[model_name] = None
+        model = models[model_name]
         if bntx is None or model is None:
-            log(f"look: no {name if bntx is None else model_path(variant)} in the romfs: the Cap trim "
+            log(f"look: no {name if bntx is None else model_path(model_name)} in the romfs: the Cap trim "
                 f"leaves {name} alone")
             continue
         try:

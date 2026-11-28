@@ -26,6 +26,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -91,6 +93,8 @@ struct FlagStats {
   std::uint64_t host_resets = 0;       // host: FLAG_RESETs sent after its save load
   std::uint64_t reset_applied = 0;     // player: values written from a FLAG_RESET
   std::uint64_t counts_guarded = 0;    // a guarded count's gain taken back (guard_count)
+  std::uint64_t rewards_guarded = 0;   // row 272: a once-per-save reward got twice, put back (guard_reward)
+  std::uint64_t rewards_given_again = 0;  // C2-5: a put-back gain a Bool of our own then paid for, given again
   std::uint64_t doubled_gains = 0;     // a chest opened again here: its gain taken back (expect_doubled_gain)
   std::uint64_t raced_gains = 0;       // host: a player's guarded gain for a source the group had: not added
   std::uint64_t entries_unsent = 0;    // entries a message kind cannot carry: left out, the rest sent
@@ -149,6 +153,13 @@ class FlagWatcher {
   // to 0 through the session (a key that the game resets on a scene change
   // must not put the pickup back for the others). False: already a pickup.
   bool share_pickup(FlagKey key);
+  // These keys stay in this game for the rest of the session: off the shared
+  // list, the pickups and the count guards, never sent, never written from a
+  // message, and never shared again by a later share_* call or by learning
+  // (Gold Skulltulas Not shared, docs/world.md; the mode holds for a whole
+  // session, so there is no way back). Returns how many were shared before.
+  std::size_t keep_local(std::span<const FlagKey> keys);
+  bool kept_local(FlagKey key) const { return local_.contains(key); }
   // Row 218 (heart containers given to only some players): a max-rule int32
   // (PlayerStatus.MaxLife) whose rises add up across players as a heart
   // piece's count does, while the store still merges it by the highest value
@@ -291,6 +302,42 @@ class FlagWatcher {
   };
   // The gains guard_count put back since the last call, for the log.
   std::vector<CountGuarded> take_counts_guarded() { return std::exchange(counts_guarded_, {}); }
+
+  // Row 272: a reward the game gives once per save (a bottle, an upgrade's next tier), got in two games at
+  // once. Each game gives it relative to what it holds (the first empty bottle slot, the tier after the one
+  // it has), so a game that already holds the other player's copy gives a second one somewhere else, and
+  // the share (OR per slot, max per tier) keeps both. `units` are the reward's places, each one or more keys
+  // that are got together (a bottle slot: its StockNum and its IsValid); `sources` are the once-per-save
+  // Bools the reward's own flow sets as it gives it (Anju's MiniGame_CatchCucco_IsCompleted, ...), shared
+  // from now on (share_pickup_named), so a game that hears of one first does not give it at all.
+  // One guard per reward family (bottles; wallets; seed bags; quivers; bomb bags; stick and nut capacity):
+  // each family's sources only ever pay for that family's units. Within it, every sender (each player, and
+  // our own game) is counted apart over the last kRewardFrames: a Bool its flow set (or sent, even when ours
+  // had it already) and a unit that went from empty to got. A sender's units count only up to its own Bools,
+  // so a unit with no reward of its sender (a shop's bottle, a randomizer chest's) never uses another
+  // reward's allowance. Our own gain is the same reward twice when another player's paired copy came and
+  // every Bool on in that time is used up: put back in the same frame (each of its keys, exactly), never
+  // sent. Other players' writes are judged once a frame, each unit and Bool as a whole (judge_rewards), so
+  // the keys' order and a unit that comes a message before its Bool do not change the count; a join or reset
+  // counts nothing. The flow's own give cannot be stopped from here (it read the Bool before the other
+  // player's came, and our hook has no part in the game's pouch write). Co-op idle runs none of this.
+  void guard_reward(std::span<const std::vector<FlagKey>> units, std::span<const FlagKey> sources);
+  static constexpr std::uint64_t kRewardFrames = 60 * 60;  // a get scene's whole length, with room
+  struct RewardGuarded {
+    FlagKey key;  // the unit's first key
+  };
+  // The own gains guard_reward put back since the last call, for the log.
+  std::vector<RewardGuarded> take_rewards_guarded() { return std::exchange(rewards_guarded_, {}); }
+  // Our own player number, so the host's answer to our own reward Bool is not taken for another player's.
+  void set_reward_self(std::uint8_t number) { reward_self_ = number; }
+  // C2-5 (0.12.0): whether our Link is in an event now (our_link_in_event), before frame(); nullopt: not read
+  // this frame (a load), the last word stays. Our own reward flow can give its copy only inside an event of our
+  // Link (its check and its give are one talk or cutscene), so another player's copy counts against our gain
+  // only when it landed in our Link's current event (or kRewardAfterEventFrames after it ended): one that came
+  // before it (a theatre prize, then our Business Scrub's bag tier bought later) was there at our flow's check.
+  // Never told (the emulator, a reader without the event word): every copy in kRewardFrames counts, as before.
+  void set_our_event(std::optional<bool> in);
+  static constexpr std::uint64_t kRewardAfterEventFrames = 2 * 60;  // the gain read a little after the event
 
   // Issue 195: our Link opened a chest that another player had opened
   // already (the hook shows it open, but its AI still lets it open again).
@@ -579,6 +626,7 @@ class FlagWatcher {
   SharedFlags shared_;
   FlagRole role_;
   std::set<FlagKey> pickups_;  // one-way 64-bit keys
+  std::set<FlagKey> local_;    // keep_local: never shared again
   std::set<FlagKey> containers_;  // row 218: max-rule ints whose rises add up (share_containers)
   std::set<FlagKey> one_way_;  // one-way named flags, no load write-back (share_one_way)
   std::set<FlagKey> down_only_;  // share_down_only
@@ -669,6 +717,63 @@ class FlagWatcher {
   std::map<FlagKey, FlagKey> guard_source_;  // a source: its count
   Table added_;                              // count deltas add() put in this frame
   std::vector<CountGuarded> counts_guarded_;  // take_counts_guarded
+  // guard_reward (row 272).
+  static constexpr std::uint8_t kRewardSelf = 0xff;  // our own game, as a sender
+  struct RewardEvent {
+    std::uint64_t at = 0;      // the frame
+    std::uint8_t sender = 0;   // who: a player number, or kRewardSelf
+    bool gain = false;         // a unit got; else `source` went on (or came, from another player's flow)
+    FlagKey source{};
+    std::uint64_t event = 0;   // another player's: the serial of our Link's event it landed in, 0 none
+  };
+  struct RewardPutBack {
+    std::uint64_t at = 0;      // the frame
+    std::size_t unit = 0;
+    std::vector<protocol::FlagEntry> got;  // the unit's keys as our game gave them
+  };
+  struct RewardGuard {
+    std::vector<std::vector<FlagKey>> units;
+    std::vector<bool> got;             // each unit as last judged (any key not 0)
+    std::vector<FlagKey> sources;
+    std::vector<bool> source_on;       // each source as last judged
+    std::deque<RewardEvent> events;    // the last kRewardFrames
+    bool ready = false;                // every key read once: the save's own is no reward given now
+    std::deque<RewardPutBack> put_backs;     // our gains put back in the last kRewardFrames (given again when a
+                                       // Bool of our own then pays for them: a sale's Bool set after its give)
+  };
+  struct RewardUnit {
+    std::size_t guard = 0;
+    std::size_t unit = 0;
+    std::uint64_t pass = 0;     // the diff pass that decided `put_back`
+    bool put_back = false;
+  };
+  std::vector<RewardGuard> reward_guards_;
+  std::map<FlagKey, std::pair<std::size_t, std::size_t>> reward_source_;  // source -> guard, its index
+  std::map<FlagKey, RewardUnit> reward_key_;      // unit key -> its guard and unit
+  std::map<FlagKey, std::uint8_t> reward_received_;  // unit and source keys other players wrote, by whom
+  bool reward_quiet_ = false;                     // a join or reset state came: judged without counting
+  std::uint8_t reward_self_ = 0;                  // set_reward_self: our player number (0: not known)
+  std::vector<RewardGuarded> rewards_guarded_;    // take_rewards_guarded
+  bool event_known_ = false;                      // set_our_event was ever told
+  bool our_event_ = false;                        // our Link in an event now
+  std::uint64_t event_serial_ = 0;                // counts our Link's events
+  std::uint64_t event_end_ = 0;                   // the frame our Link's last event ended
+  // Whether another player's event `e` may be the same reward our flow gives now (set_our_event).
+  bool reward_races(const RewardEvent& e) const;
+  // A Bool of our own just went on: our put-back gains it now pays for are given again (and sent).
+  void reward_give_again(FlagStore& store, RewardGuard& guard);
+  // Drops what is older than kRewardFrames.
+  void prune_reward(RewardGuard& guard) const;
+  // Whether our own gain of a unit now is a reward got twice (guard_reward).
+  bool reward_twice(RewardGuard& guard) const;
+  // Another player's write of `entry` landed (or is about to): judged at judge_rewards().
+  void note_reward_received(FlagStore& store, const protocol::FlagEntry& entry);
+  // Once a frame, after every received write and before our own changes are read: each source and unit as a
+  // whole, so what other players' writes turned on counts whatever the keys' order or messages.
+  void judge_rewards();
+  // Our own change `before` -> `now` of `key`: true when it was put back (the reward got twice).
+  bool reward_put_back(FlagStore& store, FlagKey key, const protocol::FlagEntry& before,
+                       const protocol::FlagEntry& now);
   std::int32_t doubled_ = 0;                  // expect_doubled_gain: gains still to drop
   std::uint64_t doubled_until_ = 0;           // the frame they lapse
   void settle_guards(FlagStore& store, Table& changes);
@@ -748,6 +853,8 @@ class FlagWatcher {
   // A refused write: held_retries when the store holds the key (and the hold refuses this write: hold_applies) or
   // is busy, else a write failure named by key and site.
   void note_write_failure(FlagStore& store, const FlagKey& key, const char* site, bool hold_applies = true);
+  // Row 275: an exact (host's save / join snapshot) value that waits for a hold: group_ and last_ (see the .cpp).
+  void note_waiting(FlagStore& store, const protocol::FlagEntry& entry);
   // use_events
   const std::vector<FlagKey>& diff_keys();
   bool events_ = false;

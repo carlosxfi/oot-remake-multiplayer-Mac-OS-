@@ -76,6 +76,40 @@ bool Ticks(std::string_view word, std::uint32_t& out) {
 // A runner-only step's TICKS (await): hookshot.py's _await_ticks, any whole number from 0 up (the most it waits; 0: no
 // wait). Not Ticks: that is the rule of the module's own timed steps (1 up to kMaxStepTicks), and a line the runner
 // plays must not be refused here.
+// A burst's NAME and FRAMES (hookshot.py _BURST_NAME, BURST_MAX): the shots' file names, 1..600 shots.
+bool BurstName(std::string_view word) {
+    if (word.empty()) {
+        return false;
+    }
+    for (const char c : word) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ||
+                        c == '.' || c == '-';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool RunnerTicks(std::string_view word);
+
+bool BurstFrames(std::string_view word) {
+    if (!RunnerTicks(word) || word.size() > 9) {
+        return false;
+    }
+    const long n = std::stol(std::string(word));
+    return n >= 1 && n <= 600;
+}
+
+// A `song` line's HOLD or GAP: 1 to 36000 ticks (a wait's or a press's most), ASCII digits only, at most 9 of them (ocarina_notes.py _ticks).
+bool SongTicks(std::string_view word) {
+    if (!RunnerTicks(word) || word.size() > 9) {
+        return false;
+    }
+    const long n = std::stol(std::string(word));
+    return n >= 1 && n <= 36000;
+}
+
 bool RunnerTicks(std::string_view word) {
     if (word.empty()) {
         return false;
@@ -326,6 +360,28 @@ std::string WarpGiveUpLine(std::string_view target, double seconds, const std::o
     return line + ")";
 }
 
+bool AllDigits(std::string_view s) {
+    return !s.empty() && std::all_of(s.begin(), s.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
+}
+
+// The words of "kill [ID] NAME" and "hit [ID] NAME N": a first word that is all digits is the actor's id (its address, as
+// get_world lists it), and then the actor's name must follow (never a number). `at` is where the NAME is; `id` the id
+// (0: none given). False for an id of 0 or too long, or an id with no name after it.
+bool StrikeId(const std::vector<std::string_view>& w, std::size_t& at, std::uint64_t& id) {
+    at = 1;
+    id = 0;
+    if (w.size() < 2 || !AllDigits(w[1])) {
+        return true;
+    }
+    const std::string_view n = w[1];
+    const auto r = std::from_chars(n.data(), n.data() + n.size(), id);
+    if (r.ec != std::errc{} || r.ptr != n.data() + n.size() || id == 0 || w.size() < 3 || AllDigits(w[2])) {
+        return false;
+    }
+    at = 2;
+    return true;
+}
+
 std::optional<Script> Parse(std::string_view text, std::string& error) {
     Script script;
     int number = 0;
@@ -451,22 +507,55 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             const auto to = static_cast<std::size_t>(w.back().data() + w.back().size() - line.data());
             step.mark = std::string(line.substr(from, to - from));
         } else if (cmd == "MENU") {
-            // menu customize|close|host: the Customize page opened, the menu closed, or the game hosts through the
-            // Multiplayer page's Host (hookshot.py --host-in-game: LICHII_COOP_TEST_HOST). Test only.
-            std::string page = w.size() == 2 ? std::string(w[1]) : std::string{};
-            std::transform(page.begin(), page.end(), page.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (page != "customize" && page != "close" && page != "host") {
-                return fail("want: menu customize|close|host");
+            // menu customize|close|host|paste|leave|main: the Customize page opened, the menu closed, the game hosts through the
+            // Multiplayer page's Host (hookshot.py --host-in-game: LICHII_COOP_TEST_HOST), joins with the clipboard's
+            // code as the page's "Paste code and join" (private-lobby-fix), or leaves the
+            // session as the page's Leave row does (remount-leave), or the Multiplayer page opened and nothing pressed (its
+            // rows for a shot, row 170); `menu open PAGE` (B #138): any page of the tab, nothing pressed (kMenuPages,
+            // coop_testinput.h). gear-link: menu look KEY=VALUE (a settings key without look_, e.g. link_gear=hidden;
+            // VALUE none unsets it): that part chosen as the Customize page chooses it and worn as when the menu closes.
+            // Test only.
+            const auto low = [](std::string_view v) {
+                std::string out(v);
+                std::transform(out.begin(), out.end(), out.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                return out;
+            };
+            const auto joined = [](const auto& list) {
+                std::string out;
+                for (std::size_t i = 0; i < list.size(); ++i) out += (i ? "|" : "") + std::string(list[i]);
+                return out;
+            };
+            const std::string page = w.size() >= 2 ? low(w[1]) : std::string{};
+            const std::string arg = w.size() == 3 ? low(w[2]) : std::string{};
+            if (page == "look" && arg.find('=') != std::string::npos) {
+                step.kind = Kind::menu;
+                step.mark = "look " + arg;
+            } else if (page == "open") {
+                if (std::find(kMenuPages.begin(), kMenuPages.end(), arg) == kMenuPages.end()) {
+                    return fail("want: menu open " + joined(kMenuPages));
+                }
+                step.kind = Kind::menu;
+                step.mark = "open " + arg;
+            } else {
+                if (w.size() != 2 || std::find(kMenuWords.begin(), kMenuWords.end(), page) == kMenuWords.end()) {
+                    return fail("want: menu " + joined(kMenuWords) + ", menu open " + joined(kMenuPages) +
+                                ", or menu look KEY=VALUE");
+                }
+                step.kind = Kind::menu;
+                step.mark = page;
             }
-            step.kind = Kind::menu;
-            step.mark = page;
         } else if (cmd == "KILL") {
-            if (w.size() != 2) {
-                return fail("want: kill ACTOR");
+            // kill NAME, or kill ID NAME (the ID is the address get_world lists; the NAME is the one it lists with it)
+            std::size_t at = 1;
+            if (!StrikeId(w, at, step.id)) {
+                return fail("want: kill [ID] ACTOR (an ID needs the actor's name after it)");
+            }
+            if (w.size() != at + 1) {
+                return fail("want: kill [ID] ACTOR");
             }
             step.kind = Kind::kill;
-            step.mark = std::string(w[1]);
+            step.mark = std::string(w[at]);
         } else if (cmd == "DROP") {
             // drop ACTOR METRES: test only (row 178's fall guard): the nearest boss of that name that our game owns
             // is put METRES straight down by the set-matrix call the copies are placed with (a copy: not moved).
@@ -479,15 +568,31 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             step.kind = Kind::drop;
             step.mark = std::string(w[1]);
             step.start = std::string(w[2]);
+        } else if (cmd == "VERB") {
+            // verb ACTOR N: test only (row 287): the boss of that name that our game owns runs action verb N (slot 0)
+            // through the game's own request, so a move the harness cannot bring about (his knock-down) is played.
+            int verb = 0;
+            const std::string_view n = w.size() == 3 ? std::string_view(w[2]) : std::string_view();
+            const auto r = std::from_chars(n.data(), n.data() + n.size(), verb);
+            if (w.size() != 3 || r.ec != std::errc{} || r.ptr != n.data() + n.size() || verb < 1 || verb > 500) {
+                return fail("want: verb ACTOR N (1 to 500)");
+            }
+            step.kind = Kind::verb;
+            step.mark = std::string(w[1]);
+            step.start = std::string(w[2]);
         } else if (cmd == "HIT") {
             int amount = 0;
-            const std::string_view n = w.size() == 3 ? std::string_view(w[2]) : std::string_view();
+            std::size_t at = 1;
+            if (!StrikeId(w, at, step.id)) {
+                return fail("want: hit [ID] ACTOR N (1 to 80; an ID needs the actor's name after it)");
+            }
+            const std::string_view n = w.size() == at + 2 ? std::string_view(w[at + 1]) : std::string_view();
             const auto r = std::from_chars(n.data(), n.data() + n.size(), amount);
-            if (w.size() != 3 || r.ec != std::errc{} || r.ptr != n.data() + n.size() || amount < 1 || amount > 80) {
-                return fail("want: hit ACTOR N (1 to 80)");
+            if (w.size() != at + 2 || r.ec != std::errc{} || r.ptr != n.data() + n.size() || amount < 1 || amount > 80) {
+                return fail("want: hit [ID] ACTOR N (1 to 80)");
             }
             step.kind = Kind::hit;
-            step.mark = std::string(w[1]);
+            step.mark = std::string(w[at]);
             step.start = std::to_string(amount);
         } else if (cmd == "STUN") {
             if (w.size() != 2) {
@@ -523,6 +628,14 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
             }
             step.kind = Kind::event;
             step.mark = std::string(w[1]);
+        } else if (cmd == "AUTOSAVE") {
+            // autosave: our game asked for its own autosave, the call its EventTriggerRequestAutoSave node makes
+            // (Hookshot; CoopSave::AskOwnAutoSave). Test only. rejoin-host-273-2: a `warp` is a scene change the game
+            // never saves on (no save in any run after one), so a scenario that checks a save on disk asks for it.
+            if (w.size() != 1) {
+                return fail("want: autosave");
+            }
+            step.kind = Kind::autosave;
         } else if (cmd == "SETFLAG") {
             // setflag NAME VALUE: this game's Int or Bool flag NAME (a GameDataList
             // name) to VALUE, through the game's queue. Test only.
@@ -624,6 +737,33 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
                 return fail("want: await TICKS REGEX (the runner's own step)");
             }
             continue;
+        } else if (cmd == "SKIPTO") {
+            // tools/autotest/hookshot.py's own step too (epona-seen): "skipto MARK REGEX", the script goes on at the
+            // later mark once the game's log has a matching line. Its shape only: a script played here never skips.
+            if (w.size() < 3) {
+                return fail("want: skipto MARK REGEX (the runner's own step)");
+            }
+            continue;
+        } else if (cmd == "SONG") {
+            // epona-seen-2: "song NAME [HOLD [GAP]]", an Ocarina song written out as its key presses by the runners
+            // from the ONE key table (tools/autotest/ocarina_notes.py expand: hookshot.py, and run.ps1 before the
+            // emulator reads the script). Its shape only; the module never plays one: a script that still has one
+            // when it is loaded is refused (Load, PlayNow), so a song is never skipped without a word.
+            if (w.size() < 2 || w.size() > 4 || (w.size() >= 3 && !SongTicks(w[2])) || (w.size() >= 4 && !SongTicks(w[3]))) {
+                return fail("want: song NAME [HOLD [GAP]] (the runner's own step)");
+            }
+            if (!script.song_line) {
+                script.song_line = number;
+            }
+            continue;
+        } else if (cmd == "BURST") {
+            // tools/autotest/hookshot.py's own step too (issue 166): "burst NAME FRAMES [TICKS REGEX]", the game held
+            // and shot frame by frame through the bridge; nothing for the module. Its shape only.
+            if (!(w.size() == 3 || w.size() >= 5) || !BurstName(w[1]) || !BurstFrames(w[2]) ||
+                (w.size() >= 5 && !RunnerTicks(w[3]))) {
+                return fail("want: burst NAME FRAMES [TICKS REGEX] (the runner's own step)");
+            }
+            continue;
         } else {
             return fail("unknown command " + std::string(w[0]));
         }
@@ -634,6 +774,15 @@ std::optional<Script> Parse(std::string_view text, std::string& error) {
         return std::nullopt;
     }
     return script;
+}
+
+std::string SongNotWrittenOut(const Script& script) {
+    if (!script.song_line) {
+        return {};
+    }
+    return "line " + std::to_string(script.song_line) +
+           ": SETUP-FAIL song not written out as presses (tools/autotest/run.ps1 and hookshot.py write it out from "
+           "ocarina_notes.py; the module never plays a song line)";
 }
 
 Runner::Runner(Script script) : script_(std::move(script)) {}
@@ -724,11 +873,11 @@ void Runner::Advance(double now_s, std::optional<std::array<float, 2>> player,
             return;
         }
         if (s.kind == Kind::warp || s.kind == Kind::give || s.kind == Kind::wear ||
-            s.kind == Kind::assign || s.kind == Kind::dress || s.kind == Kind::chat || s.kind == Kind::kill || s.kind == Kind::drop || s.kind == Kind::hurt ||
+            s.kind == Kind::assign || s.kind == Kind::dress || s.kind == Kind::chat || s.kind == Kind::kill || s.kind == Kind::drop || s.kind == Kind::verb || s.kind == Kind::hurt ||
             s.kind == Kind::hit || s.kind == Kind::stun ||
             s.kind == Kind::setflag || s.kind == Kind::setenum || s.kind == Kind::menu || s.kind == Kind::dump ||
-            s.kind == Kind::event) {
-            requests_.push_back(Request{s.kind, s.mark, s.start});
+            s.kind == Kind::event || s.kind == Kind::autosave) {
+            requests_.push_back(Request{s.kind, s.mark, s.start, {}, s.id});
             ++index_;
             continue;
         }
@@ -850,34 +999,82 @@ void Runner::Steer(const Step& step, double now_s, std::optional<std::array<floa
     Hold(angle, now_s);
 }
 
-std::optional<std::array<float, 12>> AimPlace(const std::array<float, 3>& from, const std::array<float, 3>& target,
-                                             float short_m) {
-    const float d[3] = {target[0] - from[0], target[1] - from[1], target[2] - from[2]};
-    const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-    if (!std::isfinite(len) || len < 1e-3f || !std::isfinite(short_m)) {
+std::optional<AimNudged> AimNudge(const std::array<float, 3>& at, const std::array<float, 3>& flight,
+                                  const std::array<float, 3>& target, float max_deg, float max_side_m) {
+    const float d[3] = {target[0] - at[0], target[1] - at[1], target[2] - at[2]};
+    const float dl = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    const float fl = std::sqrt(flight[0] * flight[0] + flight[1] * flight[1] + flight[2] * flight[2]);
+    if (!std::isfinite(dl) || !std::isfinite(fl) || !std::isfinite(max_deg) || !std::isfinite(max_side_m) || dl < 1e-3f || fl < 1e-6f) {
         return std::nullopt;
     }
-    const float f[3] = {d[0] / len, d[1] / len, d[2] / len};  // the way it faces (column 2)
-    // Right (column 0): the world's up crossed with f, flat; straight up or down has none, so +x is taken.
-    float r[3] = {f[2], 0.0f, -f[0]};
-    const float rl = std::sqrt(r[0] * r[0] + r[2] * r[2]);
-    if (rl < 1e-4f) {
-        r[0] = 1.0f;
-        r[2] = 0.0f;
-    } else {
-        r[0] /= rl;
-        r[2] /= rl;
+    const float f[3] = {flight[0] / fl, flight[1] / fl, flight[2] / fl};
+    const float along = d[0] * f[0] + d[1] * f[1] + d[2] * f[2];   // how far along the flight the target is passed
+    AimNudged out;
+    out.off_deg = std::acos(std::clamp(along / dl, -1.0f, 1.0f)) * 57.2957795f;
+    out.side_m = dl * std::sin(out.off_deg / 57.2957795f);
+    if (along <= 0.0f || out.off_deg > max_deg || out.side_m > max_side_m) return out;
+    // The place whose line along f goes through the target, `along` before it: only the sideways miss is taken away.
+    std::array<float, 3> p{};
+    for (int i = 0; i < 3; ++i) p[i] = target[i] - f[i] * along;
+    out.put = p;
+    return out;
+}
+
+} // namespace CoopTestInput
+
+namespace CoopTestInput {
+
+const std::vector<Kind>& ActKinds() {
+    static const std::vector<Kind> kinds = {Kind::kill, Kind::hit,  Kind::hurt,    Kind::place, Kind::face,
+                                            Kind::aim,  Kind::wear, Kind::dress,   Kind::assign, Kind::chat,
+                                            Kind::menu, Kind::setflag, Kind::setenum, Kind::verb};
+    return kinds;
+}
+
+const char* KindWord(Kind kind) {
+    switch (kind) {
+    case Kind::timed: return "timed";
+    case Kind::mark: return "mark";
+    case Kind::go: return "goto";
+    case Kind::toward: return "toward";
+    case Kind::warp: return "warp";
+    case Kind::give: return "give";
+    case Kind::wear: return "wear";
+    case Kind::assign: return "assign";
+    case Kind::dress: return "dress";
+    case Kind::chat: return "chat";
+    case Kind::place: return "place";
+    case Kind::face: return "face";
+    case Kind::aim: return "aim";
+    case Kind::kill: return "kill";
+    case Kind::hurt: return "hurt";
+    case Kind::hit: return "hit";
+    case Kind::stun: return "stun";
+    case Kind::drop: return "drop";
+    case Kind::verb: return "verb";
+    case Kind::setflag: return "setflag";
+    case Kind::setenum: return "setenum";
+    case Kind::event: return "event";
+    case Kind::sync: return "sync";
+    case Kind::menu: return "menu";
+    case Kind::dump: return "dump";
+    case Kind::autosave: return "autosave";
     }
-    const float u[3] = {f[1] * r[2] - f[2] * r[1], f[2] * r[0] - f[0] * r[2], f[0] * r[1] - f[1] * r[0]};  // f x r
-    const float back = std::min(std::max(short_m, 0.0f), len);
-    std::array<float, 12> t{};
-    for (int i = 0; i < 3; ++i) {
-        t[i] = target[i] - f[i] * back;
-        t[3 + i * 3 + 0] = r[i];
-        t[3 + i * 3 + 1] = u[i];
-        t[3 + i * 3 + 2] = f[i];
+    return "?";
+}
+
+std::string NotAllowed(const Script& script, const std::vector<Kind>& allowed) {
+    for (const Step& s : script.steps) {
+        if (std::find(allowed.begin(), allowed.end(), s.kind) != allowed.end()) {
+            continue;
+        }
+        std::string list;
+        for (const Kind k : allowed) {
+            list += (list.empty() ? "" : " ") + std::string(KindWord(k));
+        }
+        return "line " + std::to_string(s.line) + ": " + KindWord(s.kind) + " is not allowed here (allowed: " + list + ")";
     }
-    return t;
+    return {};
 }
 
 } // namespace CoopTestInput
@@ -896,6 +1093,7 @@ std::optional<std::array<float, 12>> AimPlace(const std::array<float, 3>& from, 
 #include "coop/host/flags.hpp"
 #include "coop/host/game_flags.hpp"
 #include "coop/host/player_reader.hpp"
+#include "coop_cheat_give.h"
 #include "coop_cheats.h"
 #include "coop_every.h"
 #include "coop_boss.h"
@@ -903,7 +1101,9 @@ std::optional<std::array<float, 12>> AimPlace(const std::array<float, 3>& from, 
 #include "coop_flags.h"
 #include "coop_dungeon.h"
 #include "coop_hook.h"
+#include "coop_link_life.h"
 #include "coop_objects.h"
+#include "coop_save.h"
 #include "coop_story.h"
 #include "core/arm/debug.h"
 #include "core/core.h"
@@ -1160,7 +1360,15 @@ void SetFlag(Core::System& system, const std::string& name, int value) {
     coop::host::GameFlags flags(memory);
     bool ok = false;
     const char* type = "unknown";
-    if (flags.get_int(hash)) {
+    if (flags.get_int(hash) && CoopCheatGive::LinkBacked(hash) != CoopCheatGive::LinkWord::none) {
+        // PlayerStatus.Life/MaxLife: the game keeps it in our Link's Life component and writes the flag from it
+        // every frame, so the component is written first (else the next frame puts the old value back).
+        type = "int, our Link's Life component";
+        CoopLinkLife::GameLinkLife link(system, g_state.main);
+        const bool in = CoopCheatGive::LinkBacked(hash) == CoopCheatGive::LinkWord::max ? link.set_max(value)
+                                                                                         : link.set_life(value);
+        ok = in && coop::host::GameFlags::set_int(memory, hash, value);
+    } else if (flags.get_int(hash)) {
         type = "int";
         ok = coop::host::GameFlags::set_int(memory, hash, value);
     } else if (flags.get_bool(hash)) {
@@ -1207,6 +1415,109 @@ std::optional<std::string> FlagText(Core::System& system, std::string_view name)
     PlayerXZ(system);
     CoopHook::EmulatorMemory memory(system.ApplicationMemory(), g_state.main);
     return coop::host::GameFlags(memory).get_string64(coop::host::flag_hash(std::string(name)));
+}
+
+namespace {
+// A 0x name (0x and 1 to 8 hex digits, not 0) as its hash; else the flag_hash of the name.
+std::uint32_t NameHash(std::string_view name) {
+    if (name.size() > 2 && name.size() <= 10 && name[0] == '0' && (name[1] == 'x' || name[1] == 'X')) {
+        std::uint32_t hash = 0;
+        const char* end = name.data() + name.size();
+        if (std::from_chars(name.data() + 2, end, hash, 16).ptr == end && hash != 0) return hash;
+        return 0;
+    }
+    return coop::host::flag_hash(std::string(name));
+}
+}  // namespace
+
+FlagReading ReadFlag(Core::System& system, std::string_view name) {
+    std::lock_guard play_lock(g_play_mu);
+    PlayerXZ(system);
+    CoopHook::EmulatorMemory memory(system.ApplicationMemory(), g_state.main);
+    coop::host::GameFlags flags(memory);
+    FlagReading out;
+    if (name.starts_with("key64:0x") || name.starts_with("key64:0X")) {
+        std::uint64_t key = 0;
+        const char* end = name.data() + name.size();
+        if (std::from_chars(name.data() + 8, end, key, 16).ptr == end && key != 0) {
+            if (const auto v = flags.get_key64(key)) {
+                out.kind = "key64";
+                out.number = *v ? 1 : 0;
+            }
+        }
+        return out;
+    }
+    // Row 294: NAME[i] is element i of a String64Array (OwnedHorseList.ActorName[0]), as text.
+    if (name.size() > 3 && name.back() == ']') {
+        const auto open = name.rfind('[');
+        std::uint32_t index = 0;
+        const char* end = name.data() + name.size() - 1;
+        if (open != std::string_view::npos && open > 0 &&
+            std::from_chars(name.data() + open + 1, end, index, 10).ptr == end) {
+            const std::uint32_t array = NameHash(name.substr(0, open));
+            if (array == 0) return out;
+            if (auto t = flags.get_string64_array(array, index)) {
+                out.kind = "text";
+                out.text = std::move(*t);
+            }
+        }
+        return out;
+    }
+    const std::uint32_t hash = NameHash(name);
+    if (hash == 0) return out;
+    if (const auto v = flags.get_int(hash)) {
+        out.kind = "int";
+        out.number = *v;
+        out.live = flags.get_int_live(hash);
+    } else if (const auto b = flags.get_bool(hash)) {
+        out.kind = "bool";
+        out.number = *b ? 1 : 0;
+    } else if (const auto e = flags.get_enum(hash)) {
+        out.kind = "enum";
+        out.hash = *e;
+    } else if (const auto u = flags.get_uint(hash)) {
+        out.kind = "uint";
+        out.number = *u;
+    } else if (auto t = flags.get_string64(hash)) {
+        out.kind = "text";
+        out.text = std::move(*t);
+    }
+    return out;
+}
+
+namespace {
+// NAME[i]: the String64Array's hash and the element, or nothing.
+std::optional<std::pair<std::uint32_t, std::uint32_t>> ArrayElement(std::string_view name) {
+    if (name.size() <= 3 || name.back() != ']') return std::nullopt;
+    const auto open = name.rfind('[');
+    if (open == std::string_view::npos || open == 0) return std::nullopt;
+    std::uint32_t index = 0;
+    const char* end = name.data() + name.size() - 1;
+    if (std::from_chars(name.data() + open + 1, end, index, 10).ptr != end) return std::nullopt;
+    const std::uint32_t array = NameHash(name.substr(0, open));
+    if (array == 0) return std::nullopt;
+    return std::pair{array, index};
+}
+}  // namespace
+
+bool SetStringArrayElement(Core::System& system, std::string_view name, std::string_view text) {
+    std::lock_guard play_lock(g_play_mu);
+    PlayerXZ(system);
+    CoopHook::EmulatorMemory memory(system.ApplicationMemory(), g_state.main);
+    const auto at = ArrayElement(name);
+    const bool ok = at && coop::host::GameFlags::set_string64_array(memory, at->first, at->second, text);
+    LOG_INFO(Core, "coop: test settext {} \"{}\": {}", name, text, ok ? "set" : "NOT set");
+    return ok;
+}
+
+bool SetEnumHash(Core::System& system, std::string_view name, std::uint32_t value) {
+    std::lock_guard play_lock(g_play_mu);
+    PlayerXZ(system);
+    CoopHook::EmulatorMemory memory(system.ApplicationMemory(), g_state.main);
+    const std::uint32_t hash = NameHash(name);
+    const bool ok = hash != 0 && value != 0 && coop::host::GameFlags::set_enum(memory, hash, value);
+    LOG_INFO(Core, "coop: test setenum {} {:#010x}: {}", name, value, ok ? "set" : "NOT set");
+    return ok;
 }
 
 namespace {
@@ -1262,31 +1573,39 @@ void SetEnum(Core::System& system, const std::string& name, const std::string& v
              known ? fmt::format("{:#010x}", *was) : std::string("-"));
 }
 
-// give: bombs, bow and hookshot are the item flags of each; any other name is
-// given as it is. Needs LICHII_COOP_CHEATS=1 (applied on the co-op frame).
-void Give(const std::string& item) {
-    std::vector<std::string> names;
-    if (item == "bombs") {
-        names = {"PouchData.Item_BombBag_Small.StockNum", "PouchData.Item_Bomb.StockNum"};
-    } else if (item == "bow") {
-        names = {"PouchData.Weapon_Range_Bow.StockNum", "PouchData.Item_Quiver_Small.StockNum",
-                 "PouchData.Item_Arrow_Normal.StockNum"};
-    } else if (item == "hookshot") {
-        names = {"PouchData.Item_Hookshot.StockNum"};
+// give: bombs, bow and hookshot are the item flags of each; any other name is given as it is. Needs
+// LICHII_COOP_CHEATS=1. The flags are written at once, into the game's own store (as setflag does), not queued for
+// the co-op frame: the bridge's held call (and a script step) sees the new value as soon as this returns, and a game
+// with no co-op session gets it too. What it did is logged and kept for LastGive.
+std::mutex g_give_mu;
+std::string g_last_give;
+
+void Give(Core::System& system, const std::string& item) {
+    std::string said;
+    {
+        std::lock_guard lock(g_give_mu);
+        g_last_give.clear();  // so a give that never got to run cannot show the last one's text
+    }
+    if (!CoopCheats::On()) {
+        said = item + ": NOT given (LICHII_COOP_CHEATS is off)";
+        LOG_INFO(Core, "coop: test give {}", said);
     } else {
-        names = {item};
-    }
-    const auto known = CoopCheats::Items();
-    for (const auto& name : names) {
-        const bool listed = std::find(known.begin(), known.end(), name) != known.end();
-        if (listed && CoopCheats::On()) {
-            CoopCheats::Give(name);
+        CoopHook::EmulatorMemory memory(system.ApplicationMemory(), g_state.main);
+        coop::host::GameFlagStore flags(memory);
+        CoopLinkLife::GameLinkLife link(system, g_state.main);   // (PlayerStatus.MaxLife and Life: into our Link's component, the flag its mirror)
+        CoopCheatGive::LinkBackedFlags store(flags, &link);
+        for (const auto& name : CoopCheatGive::Names(item)) {
+            const auto done = CoopCheatGive::Give(store, name);
+            // "PARTLY given": the item is in but its IsGet or a grant failed (the bridge answers ok, with the text).
+            const std::string line = done.ok ? (done.changed ? "" : "no change: ") + done.text
+                                   : done.wrote ? "PARTLY given: " + done.text
+                                                : "NOT given: " + done.text;
+            LOG_INFO(Core, "coop: test give {}: {}", name, line);
+            said += (said.empty() ? "" : "; ") + line;
         }
-        LOG_INFO(Core, "coop: test give {}: {}", name,
-                 !CoopCheats::On() ? "NOT given (LICHII_COOP_CHEATS is off)"
-                 : listed          ? "queued"
-                                   : "NOT given (unknown item flag)");
     }
+    std::lock_guard lock(g_give_mu);
+    g_last_give = said;
 }
 
 void StopRunning() {
@@ -1393,7 +1712,10 @@ void CheckFile(Core::System& system) {
 #endif
     std::string error;
     auto script = Parse(text.str(), error);
-    if (!script) {
+    if (script) {
+        error = SongNotWrittenOut(*script);   // (a bare song: refused, never skipped)
+    }
+    if (!script || !error.empty()) {
         LOG_ERROR(Core, "coop: test script {}: {}", g_state.path.string(), error);
         return;
     }
@@ -1413,8 +1735,8 @@ bool NowKind(Kind k) {
     switch (k) {
     case Kind::mark: case Kind::give: case Kind::wear: case Kind::assign: case Kind::dress: case Kind::chat:
     case Kind::place: case Kind::face: case Kind::aim: case Kind::kill: case Kind::hurt: case Kind::hit:
-    case Kind::stun: case Kind::drop: case Kind::setflag: case Kind::setenum: case Kind::menu: case Kind::dump:
-    case Kind::event:
+    case Kind::stun: case Kind::drop: case Kind::verb: case Kind::setflag: case Kind::setenum: case Kind::menu: case Kind::dump:
+    case Kind::event: case Kind::autosave:
         return true;
     default:
         return false;
@@ -1456,6 +1778,12 @@ void Do(Core::System& system, const Runner::Request& request, double now,
         // requester's own lines say when it was asked and whether the game took it.
         CoopBoss::WantEvent(request.name);
         LOG_INFO(Core, "coop: test event {}: handed to the live-event requester", request.name);
+    } else if (request.kind == Kind::autosave) {
+        // (the game's own gate may still refuse it: its autosave off, its cooldown, a state it does not save in; the
+        // save itself shows as "fs: save: published" (a second one after the load's))
+        LOG_INFO(Core, "coop: test autosave: {}", CoopSave::AskOwnAutoSave()
+                                                      ? "our game is asked for its own autosave at its next step"
+                                                      : "not asked (no file played, or no way to ask in this runtime)");
     } else if (request.kind == Kind::place && !request.name.empty()) {
         const auto on = CoopObjects::TestPlatformPlace(request.name);
         const bool ok = on && CoopBoss::MoveLink(system, g_state.main,
@@ -1477,20 +1805,19 @@ void Do(Core::System& system, const Runner::Request& request, double now,
             LOG_INFO(Core, "coop: test face {:.2f} {:.2f}: failed", request.at[0], request.at[2]);
         }  // done: logged where it is turned
     } else if (request.kind == Kind::aim) {
-        // Row 173: Link turned to the target (as face), then our next arrow put on its way into it.
-        if (!CoopBoss::FaceLink(system, g_state.main, request.at[0], request.at[2])) {
-            LOG_INFO(Core, "coop: test aim {:.2f} {:.2f} {:.2f}: Link not turned", request.at[0], request.at[1],
-                     request.at[2]);
-        }
+        // Row 173: our next arrow is watched and, when its flight already points at the target, nudged the last bit.
+        // Link is not turned here: the tester aims with the sticks (kit_move.shoot).
         CoopObjects::QueueTestAim(request.at[0], request.at[1], request.at[2]);
     } else if (request.kind == Kind::kill) {
-        CoopObjects::QueueTestKill(request.name);  // logged where it is done
+        CoopObjects::QueueTestKill(request.name, request.id);  // logged where it is done
     } else if (request.kind == Kind::hit) {
-        CoopObjects::QueueTestHit(request.name, Whole(request.start));  // logged where it is done
+        CoopObjects::QueueTestHit(request.name, Whole(request.start), request.id);  // logged where it is done
     } else if (request.kind == Kind::stun) {
         CoopObjects::QueueTestStun(request.name);  // logged where it is done
     } else if (request.kind == Kind::drop) {
         CoopObjects::QueueTestDrop(request.name, static_cast<float>(Whole(request.start)));  // logged there
+    } else if (request.kind == Kind::verb) {
+        CoopObjects::QueueTestVerb(request.name, Whole(request.start));  // logged there
     } else if (request.kind == Kind::hurt) {
         if (g_state.link) {
             const std::array<float, 3> at = *g_state.link;
@@ -1508,20 +1835,35 @@ void Do(Core::System& system, const Runner::Request& request, double now,
         const bool sent = CoopHook::SendChat(request.name);
         LOG_INFO(Core, "coop: test chat '{}': {}", request.name, sent ? "sent" : "NOT sent");
     } else {
-        Give(request.name);
+        Give(system, request.name);
     }
 }
 
 } // namespace
 
+std::string LastGive() {
+    std::lock_guard lock(g_give_mu);
+    return g_last_give;
+}
+
 void SetMenuOpener(MenuOpener opener) {
     g_menu_opener = std::move(opener);
 }
 
-bool PlayNow(Core::System& system, std::string_view lines, std::string& error) {
+bool PlayNow(Core::System& system, std::string_view lines, std::string& error, const std::vector<Kind>* allowed) {
     auto script = Parse(lines, error);
     if (!script) {
         return false;
+    }
+    error = SongNotWrittenOut(*script);
+    if (!error.empty()) {
+        return false;
+    }
+    if (allowed) {
+        error = NotAllowed(*script, *allowed);
+        if (!error.empty()) {
+            return false;
+        }
     }
     std::lock_guard play_lock(g_play_mu);
     const auto player = PlayerXZ(system);

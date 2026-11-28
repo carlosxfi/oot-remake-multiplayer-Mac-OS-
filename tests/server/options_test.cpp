@@ -193,6 +193,30 @@ TEST_CASE("command line: --pvp on or off, off by default") {
   }
 }
 
+TEST_CASE("command line: --difficulty, the lobby's from the start, automatic by default") {
+  using coop::protocol::DifficultyPreset;
+  std::string error;
+  CHECK(parse_command_line({}, error)->difficulty == coop::protocol::DifficultyChoice{});
+  auto hard = parse_command_line({"--difficulty", "hard"}, error);
+  REQUIRE(hard.has_value());
+  CHECK_FALSE(hard->difficulty.auto_scale);
+  CHECK(hard->difficulty.preset == DifficultyPreset::hard);
+  auto custom = parse_command_line({"--difficulty", "custom:150,125,200"}, error);
+  REQUIRE(custom.has_value());
+  CHECK(custom->difficulty.preset == DifficultyPreset::custom);
+  CHECK(custom->difficulty.custom == coop::protocol::DifficultyValues{150, 125, 200, 150, 125});
+  CHECK(parse_difficulty("auto") == coop::protocol::DifficultyChoice{});
+  for (const char* bad : {"", "medium", "custom:", "custom:150,125", "custom:150,125,200,1", "custom:160,125,200",
+                          "custom:600,100,100", "custom:100,100,50", "custom:a,b,c"}) {
+    INFO(bad);
+    CHECK_FALSE(parse_difficulty(bad).has_value());
+  }
+  error.clear();
+  CHECK_FALSE(parse_command_line({"--difficulty", "medium"}, error).has_value());
+  CHECK(!error.empty());
+  CHECK_FALSE(parse_command_line({"--difficulty"}, error).has_value());
+}
+
 TEST_CASE("command line: --approve-joins, off by default (docs/protocol.md, Host approval)") {
   std::string error;
   CHECK_FALSE(parse_command_line({}, error)->approve_joins);

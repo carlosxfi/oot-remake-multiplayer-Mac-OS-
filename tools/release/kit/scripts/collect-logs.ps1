@@ -123,8 +123,23 @@ foreach ($inst in @($nucInst | Where-Object { $_ -and (Test-Path -LiteralPath $_
     }
     $gameLogs += $logs.Count
     $picked += $logs | ForEach-Object { @($_.File.FullName, $(if ($_.Sub) { "$to\$($_.Sub)\$($_.File.Name)" } else { "$to\$($_.File.Name)" })) }
-    foreach ($f in 'coop.ini', 'coop-options.ini') {
+    foreach ($f in 'coop.ini', 'coop-options.ini', 'coop-player.ini') {
         $picked += @((Join-Path $inst $f), "$to\$f")
+    }
+}
+# Local co-op (Start Squadala with 2 to 4 players on this PC, scripts\local-coop.ps1): games 2 to 4 run from
+# <game>\local-players\playerN, each with its own logs and coop.ini / coop-player.ini (game 1 is the kit's own game, above).
+foreach ($hsExe2 in $hsExes) {
+    foreach ($d in (Get-KitHookshotLogDirs $hsExe2)) {
+        foreach ($inst in @(Get-ChildItem (Join-Path $d 'local-players') -Directory -Filter 'player*' -ErrorAction SilentlyContinue)) {
+            $to = "local-players\$($inst.Name)"
+            $logs = @(Get-KitHookshotLogFiles $inst.FullName)
+            $gameLogs += $logs.Count
+            $picked += $logs | ForEach-Object { @($_.File.FullName, $(if ($_.Sub) { "$to\$($_.Sub)\$($_.File.Name)" } else { "$to\$($_.File.Name)" })) }
+            foreach ($f in 'coop.ini', 'coop-player.ini') {
+                $picked += @((Join-Path $inst.FullName $f), "$to\$f")
+            }
+        }
     }
 }
 $logHelp = @()

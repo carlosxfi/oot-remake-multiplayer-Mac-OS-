@@ -40,7 +40,7 @@ Co-op now also runs on [Hookshot](https://git.notrexed.dev/Hookshot/Hookshot) (N
 
 ### Co-op on Hookshot
 
-The same co-op code runs on Hookshot as in the emulator, drawn over the game's picture instead of in the emulator's window. Some keys differ, because Enter and Tab are the game's Plus button on Hookshot:
+The same co-op code runs on Hookshot as in the emulator, drawn over the game's picture instead of in the emulator's window. Some keys differ, because Tab is the game's Plus button on Hookshot (and Enter too before Longshot v3.2.0):
 
 | What | On Hookshot |
 |---|---|
@@ -211,6 +211,8 @@ Press Enter in the game to open the chat box. A line that starts with `/teleport
   - In another scene the game changes scene first, at once, the way a loading zone does (its own event `Dm_SY_BancChangeGo`; with `LICHII_COOP_TELEPORT_EVENT=0`, or in 0.11.5: talk to someone or read a sign within a minute, and when the talk ends): a fade and a load, arriving at that place's entrance nearest the other player. After the load you are moved next to them, in a dungeon into any room (from 0.11.6; in 0.11.5 only when they were in the room you arrive in, otherwise you stayed at the entrance and typed `/teleport` again). A scene change not taken in 60 seconds is given up. **Known issue, before this rule:** when the other player was inside a dungeon (seen: Kokiri Forest to the Deku Tree's slingshot room), the screen could stay black after the load and your Link could not move ([#197](https://github.com/daurosk/oot-remake-multiplayer/issues/197)). If it still happens, close the game and start it again, and walk there instead. In our test, teleporting from Kakariko to the Graveyard worked.
   - Refused, with a line in the chat box: while your game loads or plays a cutscene or a talk, during your boss fight, while the other player is busy (loading, a cutscene, a talk, in the air) or in a boss fight, and when the other player is in a place only for the other age (`_Child` or `_Adult`) than your Link, or in a place with no entrance to arrive at (the boss-rush room, the ending, the Sage room). Lake Hylia, Lon Lon Ranch, the Temple of Time and the houses are parts of Hyrule Field, the Market or their village, so those work. A dungeon gives a warning: you may need its items to get on from there.
   - A player with an older build does not answer: "no answer from" after 5 seconds.
+
+A line that starts with a gesture name is a command too. `/wave`, `/yes`, `/no`, `/look`, `/here` (a gesture and a call, which every other player also reads in the chat, wherever they are; where they see you, your Navi also flies up over your head for a few seconds) and `/wow` (or `/emote <name>`; `/emote` alone lists them) make your Link play that gesture on the other players' screens, as the game's own talk gestures. It stops when you move. Alone in the game, or within 1.5 seconds of the last one, nothing is sent and a line in the chat box says so. Your own screen shows only that line.
 
 `LICHII_COOP_TELEPORT=0` turns it off in your game: the command says so, and the others' requests to come to you are refused.
 

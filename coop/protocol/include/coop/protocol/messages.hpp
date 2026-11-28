@@ -32,7 +32,13 @@ namespace coop::protocol {
 // 16: OBJECT_SAMPLE component 23, a battle manager's orders (BossOrders, row 222 Twinrova, 0.11.11): a protocol 15
 // server keeps only the components it knows in an object's last state (HANDOVER_STATE), and a 0.11.9 game's copies
 // would follow their own manager again, so mixed versions are refused at HELLO.
-inline constexpr std::uint16_t kProtocolVersion = 16;
+// 18 (0.12.0; 17 was never released): PLAYER_RIDE flag bit 1 (kRideFree) with a world place, a player's own Epona
+// while nobody rides her (epona-sync; a protocol 16 reader refuses the bit as bad_value), and
+// OBJECT_SAMPLE components 25-28, an object's kept keyed values (KeyedValues, sync plan S1, 0.12.0): one bump
+// for the whole sync plan. A protocol 17 server drops them from an object's last state, so a new owner or a late
+// player would get none of them; mixed versions are refused at HELLO. Nobody else bumps the version in 0.12.0: new
+// keyed data goes in 25-28 under new keys (docs/protocol.md "Keyed values").
+inline constexpr std::uint16_t kProtocolVersion = 18;
 // A public game (anyone joins without typing a password) lists itself on the relay's room list with this bit
 // on top of kProtocolVersion; the relay repeats the version as given. A listing without it is a private game
 // (or an older kit's): the joiner asks for the host's password and never tries the public one on it.
@@ -184,6 +190,7 @@ enum class MessageType : std::uint16_t {
   voice_frame = 420,  // 420 to 424: proximity voice chat (docs/protocol.md, "Voice")
   mod_list = 490,  // 490 to 499: mods (docs/protocol.md, "Mods")
   mod_settings = 491,
+  mod_data = 492,  // protocol 18 (issue 250): the mods' own small values per player
   lobby_action = 510,  // 510 to 519: the Lobby's host moderation (docs/protocol.md, "Lobby")
   lobby_mutes = 511,
   lobby_result = 512,
@@ -209,6 +216,7 @@ enum class MessageType : std::uint16_t {
   pvp_strike = 540,  // 540 to 544: PvP on real bodies (docs/protocol.md, "PvP on real bodies")
   pvp_result = 541,
   pvp_native = 542,
+  emote = 615,  // 615 to 619: emotes and pings (docs/protocol.md, "Emotes")
 };
 
 // PLAYER_SAMPLE component ids.
@@ -467,16 +475,23 @@ struct Animation {
 // at the puppet's place plus `offset` (the horse's place minus the rider's,
 // metres), turned `rotation`, playing `animation` (the horse's AS slot 0).
 // Same player field rules as PLAYER_STATUS. Floats must be finite.
+// Protocol 18 (epona-sync): kRideFree, the player's own Epona while nobody
+// rides her (called with her song, waiting where the rider got off): the copy
+// is at `place` (the world, metres) turned `rotation` (the world), `offset`
+// zero. Never with kRideRiding. `place` is zero without kRideFree.
 inline constexpr std::uint8_t kRideRiding = 0x01;
+inline constexpr std::uint8_t kRideFree = 0x02;
 inline constexpr float kMaxRideOffset = 10.0f;  // each axis
+inline constexpr float kMaxRidePlace = 100000.0f;  // each axis
 inline constexpr std::size_t kMaxRideHorseChars = 64;
 struct PlayerRide {
   std::uint8_t player_number = kPlayerSelf;  // 0 from a client, 1 to 16 relayed
-  std::uint8_t flags = 0;                     // kRideRiding; other bits refused
+  std::uint8_t flags = 0;                     // kRideRiding or kRideFree; other bits refused
   std::string horse;                          // the horse's actor name; empty when off
   Vec3 offset{};
   Quat rotation{0.0f, 0.0f, 0.0f, 1.0f};
   std::optional<Animation> animation;
+  Vec3 place{};                               // kRideFree only: the horse's place in the world
   bool operator==(const PlayerRide&) const = default;
 };
 
@@ -859,6 +874,15 @@ enum class ObjectComponent : std::uint16_t {
   hit = 21,    // protocol 14: the hit the owner's game took (ObjectHit below)
   strike = 22,  // row 230: a Redead's or Gibdo's scream that froze the owner's Link (ObjectStrike below)
   orders = 23,  // protocol 16, row 222: the battle manager's orders this enemy took (BossOrders below)
+  variants = 24,  // row 222 part 2: the variation (plug name) of the owner's boss actions (BossVariants below)
+  // 25-28: protocol 18, sync plan S1, keyed values (KeyedValues below) the server keeps and merges for every object
+  // without knowing what they mean.
+  brain = 25,   // an actor's AI blackboard keys, by the hash of the game's key name (sync plan S2: row 149 and on)
+  plugs = 26,   // a room's plugs: switches, torches, block seats, held floor switches (sync plan S4)
+  clocks = 27,  // a room's platform clocks: mover words on the server clock (sync plan S4)
+  events = 28,  // a room's running gimmick events, with their start time (sync plan S4/S6)
+  // 29: the outside PR #335 (boss shots it counts).
+  shooter = 30,  // rows 222, 286: the calls a boss part's Shooter took on its owner's game (BossShooterCalls below)
 };
 
 struct ObjectLife {
@@ -990,6 +1014,96 @@ struct BossOrders {
   bool operator==(const BossOrders&) const = default;
 };
 
+// Component 24 (row 222 part 2, protocol 17: an older reader skips it by its length, but a protocol 16 server keeps
+// only the components it knows in an object's last state, and a 0.11.12 copy runs its own variation): the variation of the owner's boss actions. The game asks a move with an optional plug name and runs
+// the command '<verb's name>:<plug name>' (no plug: the verb's plain command), main+0xbe070: Twinrova's ranged
+// attack is plain for Fire and 'Ice', '1FeintFire', ... for the others. The bsa component (20) carries no name, so a
+// copy named its own last plug and could run another variation. One entry per action change in bsa's recent (its
+// seq), the plug name or empty for a plain ask; recent holds the newest kMaxBossVariants, oldest first; names are
+// 1 to kMaxBossVariantChars printable ASCII characters or empty.
+inline constexpr std::size_t kMaxBossVariants = 8;
+inline constexpr std::size_t kMaxBossVariantChars = 32;
+struct BossVariant {
+  std::uint32_t seq = 0;  // the action change's seq (bsa's recent)
+  std::string name;       // its plug name; empty: asked with no plug
+  // A named ask's places (row 222, diag run 20261123-160338: Twinrova's 'Ice' aims at the Link these name): bsa's
+  // action leaves them out for an ask by plug, as older copies expect. Finite; none for a plain ask (bsa has them).
+  std::array<std::optional<Vec3>, 3> places{};
+  // The ask's place kind (its request's word at 0x34; the game's default 0x10), plain or named. Row 222 (run
+  // 20261124-011531): the game keeps it with the move's places and each asking node sets its own (Twinrova's 121
+  // node 0, another of her nodes 0x10); the owner's places put in under another kind gave the copy no shot.
+  std::uint32_t kind = 0x10;
+  bool operator==(const BossVariant&) const = default;
+};
+struct BossVariants {
+  std::vector<BossVariant> recent;
+  bool operator==(const BossVariants&) const = default;
+};
+// Whether a plug name may go on the wire (empty, or 1 to kMaxBossVariantChars printable ASCII characters).
+bool ValidVariantName(std::string_view name);
+
+// Component 30 (rows 222 and 286, protocol 18; 0.12.0 is the first release with it, so no bump): the calls a boss
+// part's Shooter took on its owner's game, the game's own three verbs (prepare wakes a kept bullet, shoot fires it,
+// sleep puts it back; hos_coop_boss_shooter.h). A copy runs the same calls through the same verbs
+// (lichii/hook/coop_boss_shooter.h), so the owner's game decides every shot. `asked`: the record the caller asked
+// (-1: the first free one); `index`: the record prepare took (else as asked). `tail` holds the params' plain words:
+// kBossShooterPrepareTail for prepare, kBossShooterShootTail for shoot (the rest 0), none for sleep; on the wire
+// only those bytes. seq is the owner's count for this part, from 1; recent holds the newest kMaxBossShooterCalls,
+// oldest first, seqs rising, nonzero, at most `seq`. An empty list with any seq (also 0) is valid: it tells a copy
+// its owner shares shots.
+inline constexpr std::size_t kBossShooterTail = 0x48;
+inline constexpr std::size_t kBossShooterPrepareTail = 0x48;
+inline constexpr std::size_t kBossShooterShootTail = 0x20;
+inline constexpr std::size_t kMaxBossShooterCalls = 8;
+enum class BossShooterKind : std::uint8_t { prepare = 1, shoot = 2, sleep = 3 };
+struct BossShooterCall {
+  std::uint32_t seq = 0;
+  BossShooterKind kind = BossShooterKind::prepare;
+  std::uint32_t key = 0;
+  std::int32_t asked = -1;
+  std::int32_t index = -1;
+  std::array<std::uint8_t, kBossShooterTail> tail{};
+  bool operator==(const BossShooterCall&) const = default;
+};
+struct BossShooterCalls {
+  std::uint32_t seq = 0;  // the newest call's seq (0: none yet)
+  std::vector<BossShooterCall> recent;
+  bool operator==(const BossShooterCalls&) const = default;
+};
+// The bytes of a call's tail that go on the wire.
+constexpr std::size_t BossShooterTailOnWire(BossShooterKind kind) {
+  return kind == BossShooterKind::prepare ? kBossShooterPrepareTail
+       : kind == BossShooterKind::shoot   ? kBossShooterShootTail
+                                          : 0;
+}
+
+// Components 25-28 (protocol 18, sync plan S1): keyed values of an object (25 its AI blackboard; 26-28 a room's) (docs/protocol.md "Keyed
+// values"). A key is an owner (u64: a placement hash, or 0 for the object itself) and a name (u32: Murmur3 of the
+// game's own name for it: a blackboard key, a plug, a word, an event). The server keeps one merged list per component in the object's
+// last state, so HANDOVER_STATE, a late player's OBJECT_SPAWN and a new owner all get every value: a full list
+// replaces it, a delta changes only the keys it names (remove takes a key away). Keys rise (owner, then name), each
+// once; a full list holds no remove; floats finite; at most kMaxKeyedValues, kept or sent.
+inline constexpr std::size_t kMaxKeyedValues = 256;
+struct KeyedRemove {
+  bool operator==(const KeyedRemove&) const = default;
+};
+// Wire type: 0 remove, 1 s32 (a bool as 0 or 1), 2 f32, 3 vec3, 4 u64 time (server clock, microseconds).
+using KeyedData = std::variant<KeyedRemove, std::int32_t, float, Vec3, std::uint64_t>;
+struct KeyedValue {
+  std::uint64_t owner = 0;
+  std::uint32_t name = 0;
+  KeyedData value = std::int32_t{0};
+  bool operator==(const KeyedValue&) const = default;
+};
+struct KeyedValues {
+  bool full = false;  // the whole list (replaces what is kept); false: a delta
+  std::vector<KeyedValue> values;
+  bool operator==(const KeyedValues&) const = default;
+};
+// kept (if any) changed by in, as a full list without removes. Keys a delta adds past kMaxKeyedValues are left out
+// and counted in dropped.
+KeyedValues MergeKeyed(const KeyedValues* kept, const KeyedValues& in, std::size_t& dropped);
+
 // The components of OBJECT_SAMPLE, OBJECT_SPAWN and HANDOVER_STATE. time is
 // always sent; the others when the sender has them. Floats must be finite.
 struct ObjectState {
@@ -1006,8 +1120,17 @@ struct ObjectState {
   std::optional<ObjectHit> hit;                     // protocol 14: the owner's newest hit taken
   std::optional<ObjectStrike> strike;               // row 230: the owner's Link frozen by its scream
   std::optional<BossOrders> orders;                 // protocol 16: its battle manager's orders (row 222)
+  std::optional<BossVariants> variants;             // row 222 part 2: its owner's action variations (protocol 17)
+  std::optional<KeyedValues> brain;                 // protocol 18 (sync plan S1): keyed values, components 25-28
+  std::optional<KeyedValues> plugs;
+  std::optional<KeyedValues> clocks;
+  std::optional<KeyedValues> events;
+  std::optional<BossShooterCalls> shooter;          // rows 222, 286: its Shooter's calls (component 30)
   bool operator==(const ObjectState&) const = default;
 };
+// The server's keep rule for components 25-28: each of s's keyed lists merged onto kept's (MergeKeyed); a list s
+// lacks stays as kept. Returns the keys left out (over kMaxKeyedValues).
+std::size_t KeepKeyed(const ObjectState* kept, ObjectState& s);
 
 namespace object_presence {
 inline constexpr std::uint8_t awake = 1u << 0;
@@ -1020,6 +1143,7 @@ inline constexpr std::uint8_t unready = 1u << 3;
 // Boss turns (boss-turns-older-0119): this game reads its bosses' attacks (object_state::attack_read in its
 // samples when it owns one) and takes turns. An older build never sets it: the server gives it no turn, as a
 // boss it owned would never send an attack end and keep its one owner for the rest of the fight.
+// A game also sets it on the plain enemy kinds it lists for turns (ai-turns, CoopObjects::TurnsAsEnemy): no layout change.
 inline constexpr std::uint8_t takes_turns = 1u << 4;
 // Row 212 (gerudo-212): this game's own level logic made this encounter (not a copy of another game's) and answers
 // its death with its own defeat event: Gerudo Fortress's cell guards (GerudoFortress_Common_Level_CarpenterSet_0N:
@@ -1803,6 +1927,18 @@ struct BossAlive {
   bool operator==(const BossAlive&) const = default;
 };
 
+// EMOTE (protocol 17, branch ai-emotes, 615): one emote or ping of the sender's Link (/wave, /yes, /no, /look, /here), by its
+// number in the emote table (lichii/hook/coop_emote.h). A one-shot event, never kept: the others' games play the
+// emote's animation on the sender's puppet for a moment and start its sound there. The id is any 1 to
+// kMaxEmoteId; a game that does not know the id ignores it, so the table can grow with no version bump.
+inline constexpr std::uint8_t kMaxEmoteId = 32;
+
+struct Emote {
+  std::uint8_t player_number = kPlayerSelf;  // 0 from a client, 1 to 16 relayed
+  std::uint8_t id = 0;                       // 1 to kMaxEmoteId
+  bool operator==(const Emote&) const = default;
+};
+
 // VOICE_FRAME (protocol 11, branch proximity-voip): 20 ms of the sender's
 // microphone as one Opus packet (48 kHz mono), or an empty packet with
 // voice::end that closes a talk spurt (the gate closed). Channel 5,
@@ -1843,8 +1979,8 @@ struct ModEntry {
 };
 
 // MOD_LIST: the mods a game runs that every player needs alike (mod.json
-// "coop" not "own"), in its load order. Sent once per connection, when the
-// game has hashed its mods; the server writes the sender's number, keeps the
+// "coop" not "own"), in its load order. Sent on each connection, its hashes
+// zero until the game has hashed its mods, then again with them; the server writes the sender's number, keeps the
 // last one of each player and gives a joiner everyone else's.
 struct ModList {
   std::uint8_t player_number = kPlayerSelf;  // 0 from the sender, 1 to 16 relayed
@@ -1867,6 +2003,23 @@ struct ModSettings {
   std::uint8_t player_number = kPlayerSelf;  // 0 from the host, its number relayed
   std::vector<ModSetting> settings;          // 0 to kMaxModSettingEntries
   bool operator==(const ModSettings&) const = default;
+};
+
+// MOD_DATA (protocol 18, issue 250; docs/protocol.md "Mods"): one small value a mod gives for its own player, by key.
+// The server writes the sender's number, keeps the latest value per player, mod and key, relays it to the others,
+// gives a joiner every value it keeps and forgets a player's values when the player leaves. It never reads the bytes.
+// An empty value clears the key. A game hands a value only to the mod of the same id (co-op's own keys: mod id "coop").
+inline constexpr std::size_t kMaxModDataBytes = 64;
+inline constexpr std::size_t kMaxModDataKeysPerMod = 8;   // per player and mod; the server refuses a 9th key
+inline constexpr std::size_t kMaxModDataMods = 16;        // per player; the server refuses a 17th mod id
+inline constexpr unsigned kModDataSendsPerSecond = 4;     // the server's limit per player (a burst of 4, then 4 a second)
+inline constexpr unsigned kModDataSendGapMs = 250;        // a game sends a changed key at most this often
+struct ModData {
+  std::uint8_t player_number = kPlayerSelf;  // 0 from the sender, 1 to 16 relayed
+  std::string mod_id;                        // as ModEntry::id
+  std::string key;                           // as ModSetting::key: 1 to kMaxModSettingKeyChars, [a-z0-9_]
+  std::vector<std::uint8_t> value;           // 0 to kMaxModDataBytes; empty clears the key
+  bool operator==(const ModData&) const = default;
 };
 
 // The Lobby (protocol 11, docs/protocol.md "Lobby"): the host's moderation,
@@ -2186,11 +2339,11 @@ using Message = std::variant<Hello, Welcome, Refused, PlayerJoined, PlayerLeft,
                              PvpMode, PvpHit, PvpHurt, FishLure, RejoinToken, RejoinClaim, DungeonEvent, PlayerRide,
                              OcarinaNote, PlatformClock, PlatformCounter,
                              DbnoMode, DbnoStatus, DbnoRevive, DbnoThreat, Difficulty, VoiceFrame,
-                             ModList, ModSettings, LobbyAction, LobbyMutes, LobbyResult,
+                             ModList, ModSettings, ModData, LobbyAction, LobbyMutes, LobbyResult,
                              LocalJoin, LocalJoined, LocalLeave, LocalSample, LocalMessage, LinkSound,
                              BossScene, BossHeart, PlayerLook, SwitchState, JoinKnock, JoinAllow,
                              BombTake, BombAnswer, BombShare, LiftAsk, LiftAnswer, LiftPlace,
-                             LiftShare, PvpStrike, PvpResult, PvpNative, BossAlive>;
+                             LiftShare, PvpStrike, PvpResult, PvpNative, BossAlive, Emote>;
 
 MessageType type_of(const Message& message);
 

@@ -211,6 +211,101 @@ std::string IniUnset(std::string_view text, std::string_view key) {
     return changed ? Join(lines, crlf) : std::string(text);
 }
 
+namespace {
+// The key of a "key = value" line without a comment mark, else nothing.
+std::optional<std::string> ActiveKey(std::string_view line) {
+    const std::string_view t = Trim(line);
+    if (t.empty() || t.front() == '#' || t.front() == ';') {
+        return std::nullopt;
+    }
+    const std::size_t eq = t.find('=');
+    if (eq == std::string_view::npos || eq == 0) {
+        return std::nullopt;
+    }
+    return std::string(Trim(t.substr(0, eq)));
+}
+
+// The player's keys set (or commented) in `text`, each once.
+void PlayerKeysIn(std::string_view text, std::vector<std::string>& keys) {
+    bool crlf = false;
+    for (const auto& line : Lines(text, crlf)) {
+        std::string_view t = Trim(line);
+        while (!t.empty() && (t.front() == '#' || t.front() == ';')) {
+            t.remove_prefix(1);
+        }
+        if (const auto k = ActiveKey(t); k && PlayerKey(*k) && std::find(keys.begin(), keys.end(), *k) == keys.end()) {
+            keys.push_back(*k);
+        }
+    }
+    for (const char* k : {"LICHII_COOP_PAD", "LICHII_COOP_KEYBOARD", "color"}) {
+        if (std::find(keys.begin(), keys.end(), k) == keys.end()) {
+            keys.emplace_back(k);
+        }
+    }
+}
+
+// `text` without any line of `key`, set or commented.
+std::string DropKey(std::string_view text, std::string_view key) {
+    bool crlf = false;
+    std::vector<std::string> kept;
+    bool changed = false;
+    for (auto& line : Lines(text, crlf)) {
+        std::string_view t = Trim(line);
+        while (!t.empty() && (t.front() == '#' || t.front() == ';')) {
+            t.remove_prefix(1);
+        }
+        if (const auto k = ActiveKey(t); k && *k == key) {
+            changed = true;
+            continue;
+        }
+        kept.push_back(line);
+    }
+    return changed ? Join(kept, crlf) : std::string(text);
+}
+
+bool Spaced(std::string_view key) {
+    return key.rfind("LICHII_COOP_", 0) != 0;   // (the kit writes its LICHII_COOP_* switches as KEY=value)
+}
+}  // namespace
+
+bool PlayerKey(std::string_view key) {
+    return key == "LICHII_COOP_PAD" || key == "LICHII_COOP_KEYBOARD" || key == "color" || key.rfind("look_", 0) == 0;
+}
+
+std::string WithPlayerOptions(std::string_view kit, std::string_view player) {
+    std::vector<std::string> keys;
+    PlayerKeysIn(kit, keys);
+    PlayerKeysIn(player, keys);
+    std::string out(kit);
+    for (const auto& k : keys) {
+        const auto mine = IniGet(player, k);
+        out = mine ? IniSet(out, k, *mine, Spaced(k)) : IniUnset(out, k);
+    }
+    return out;
+}
+
+void SplitPlayerOptions(std::string_view merged, std::string& kit, std::string& player) {
+    std::vector<std::string> keys;
+    PlayerKeysIn(merged, keys);
+    PlayerKeysIn(kit, keys);
+    const std::string kit_before = kit;
+    std::string out(merged);
+    std::string own =
+        "# This player's own co-op settings (controller, keyboard, look) on a PC where several games share one kit.\r\n"
+        "# Everything else is in the kit's coop-options.ini. Written by the game.\r\n";
+    for (const auto& k : keys) {
+        if (const auto mine = IniGet(merged, k)) {
+            own += Line(k, *mine, Spaced(k)) + "\r\n";
+        }
+        // (the kit's own line for it stays as it was; one the kit never had, set or commented, goes: WithPlayerOptions put it in)
+        const auto theirs = IniGet(kit_before, k);
+        const bool kit_had = DropKey(kit_before, k) != kit_before;
+        out = theirs ? IniSet(out, k, *theirs, Spaced(k)) : kit_had ? IniUnset(out, k) : DropKey(out, k);
+    }
+    kit = out;
+    player = own;
+}
+
 const std::vector<std::string>& Colours() {
     // The ten tunic colours (lichii/hook/coop_colors.cpp kTunics), after "" (the player number's).
     static const std::vector<std::string> list = {"",     "red",   "orange", "yellow", "green", "cyan",
@@ -287,6 +382,9 @@ Options Options::Read(std::string_view coop_ini, std::string_view options_ini) {
     o.show_players = On(IniGet(options_ini, "LICHII_COOP_SHOW_PLAYERS"));
     o.pvp = On(IniGet(options_ini, "pvp"));
     o.approve_joins = On(IniGet(options_ini, "approve_joins"));
+    o.gold_own = IniGet(options_ini, "gold_skulltulas").value_or("") == "own";
+    o.race = On(IniGet(options_ini, "race"));
+    o.floor_switches = IniGet(options_ini, "floor_switches").value_or("") != "off";
     // The password on this network (row 251, dauro 2026-11-22: LAN joins need none): not needed unless the kit's
     // documented line says so (same_network_password = on, as Host.bat reads it) or an older build's line was
     // hand-set to off (same_network_open = off). The host still lets only a private source address in that way.
@@ -385,6 +483,9 @@ void Options::Write(std::string& coop_ini, std::string& options_ini) const {
     if (On(IniGet(o, "approve_joins")) != approve_joins) {   // (Co-op settings' Approve joins; unchanged: as written)
         o = approve_joins ? IniSet(o, "approve_joins", "on", true) : IniUnset(o, "approve_joins");
     }
+    o = gold_own ? IniSet(o, "gold_skulltulas", "own", true) : IniUnset(o, "gold_skulltulas");
+    o = race ? IniSet(o, "race", "on", true) : IniUnset(o, "race");
+    o = floor_switches ? IniUnset(o, "floor_switches") : IniSet(o, "floor_switches", "off", true);
     o = auto_rejoin ? IniSet(o, "auto_rejoin", "on", true) : IniUnset(o, "auto_rejoin");
     o = original_game ? IniSet(o, "original_game", "on", true) : IniUnset(o, "original_game");
     // (one line for it, the kit's own: same_network_password = on while this network needs the password; the older
@@ -532,6 +633,26 @@ std::string RoomJoinLine(std::string_view join_line, std::string_view relay) {
     std::string out = std::string(t.substr(0, space)) + "@" + std::string(Trim(relay));
     if (!password.empty()) out += " " + std::string(password);
     return out;
+}
+
+std::string RelayShareLine(std::string_view relay_line, std::string_view password) {
+    const std::string_view line = Trim(relay_line);
+    const std::string_view pass = Trim(password);
+    if (line.empty() || line.find('@') == std::string_view::npos || pass.empty() || !PasswordOk(pass)) {
+        return std::string(line);
+    }
+    return std::string(line) + " " + std::string(pass);
+}
+
+std::string HostShareText(std::string_view relay_room, std::string_view relay_code, std::string_view invite,
+                          std::string_view password, bool copied) {
+    const std::string_view line = !Trim(relay_room).empty() ? relay_room : !Trim(relay_code).empty() ? relay_code : invite;
+    return copied ? RelayShareLine(line, password) : std::string(Trim(line));
+}
+
+bool RelayLineWithoutPassword(std::string_view join_line) {
+    const std::string_view t = Trim(join_line);
+    return t.find('@') != std::string_view::npos && t.find_first_of(" \t") == std::string_view::npos && AddressOk(t);
 }
 
 JoinTarget ReadJoin(std::string_view typed, const CodeResult& code) {
@@ -783,11 +904,6 @@ std::vector<std::string> VpnLines(const std::vector<LanAddress>& vpn, std::uint1
     return AddressLines(vpn, port, password, copied, same_network_open);
 }
 
-std::string HostHeadline(bool copied) {
-    return copied ? "Invite code copied to your clipboard. Share it in DMs only: it contains your internet address."
-                  : "Your invite code is below. Share it in DMs only: it contains your internet address.";
-}
-
 
 std::vector<std::string> PlainStatus(const HostView& v) {
     std::vector<std::string> out;
@@ -815,18 +931,14 @@ std::vector<std::string> PlainStatus(const HostView& v) {
     }
     if (v.host) {
         switch (v.state) {
+        // (starting, and hosting with a code: nothing here. The Host page's rows show it (Code: the code or
+        // "Starting...", Players, Room) and the - page's gold line says "Starting your game..." / "Hosting: ...";
+        // these lines were shown under them as the page's help, the same words twice, the audit's item 16)
         case HOS_COOP_STARTING:
-            return {"Starting..."};
+            return {};
         case HOS_COOP_HOSTING:
-            if (!v.invite.empty()) {
-                out = {HostHeadline(v.copied), v.invite};
-                if (!v.copied) {
-                    out.push_back("Press \"Copy the code again\" to put it on the clipboard.");
-                }
-                out.push_back(v.players <= 1 ? "Waiting for your friends to join..."
-                                             : std::to_string(v.players - 1) + " friend(s) joined.");
-            } else if (!v.invite_done) {
-                out = {"Making your code..."};
+            if (!v.invite.empty() || !v.invite_done) {
+                // (nothing: see above)
             } else {
                 out = {"No code could be made: your internet connection blocks it.",
                        "Friends on the same home network or VPN can still join."};
@@ -844,25 +956,25 @@ std::vector<std::string> PlainStatus(const HostView& v) {
     switch (v.state) {
     case HOS_COOP_STARTING:
     case HOS_COOP_JOINING:
-        return {"Joining your friend..."};
+        return {};   // (the Join page's note says "Joining your friend's game"; the - page's gold line too)
     case HOS_COOP_WAIT_HOST:
         // (row 209: where the host pastes it, by the row's own name on their Host page)
         if (v.problem == HOS_COOP_PROBLEM_NO_WAY) {
             // Row 209: still no way in after the helper's wait (join_helper punch_ms). That is also a host who has not
             // pasted the code yet, so the code stays and the VPN is for when a paste did not help.
             return {"Your friend's router blocks the way in.",
-                    "Send your friend this answer code; they press \"Paste friend's answer\" on their Host page:", v.answer,
+                    "Send your friend this answer code; they press \"Paste answer code\" on their Host page:", v.answer,
                     "If they pasted it and nothing happens, both routers are strict or a provider shares one address (CGNAT): both join a free VPN network (Radmin VPN or Tailscale); the host copies the line from \"VPN\" on their Host page and you paste it in Join a game."};
         }
         return {"Your friend's router blocks the way in.",
-                "Send your friend this answer code; they press \"Paste friend's answer\" on their Host page:", v.answer,
+                "Send your friend this answer code; they press \"Paste answer code\" on their Host page:", v.answer,
                 "Or ask them to turn on UPnP in their router's settings and host again."};
     case HOS_COOP_CONNECTED:
         if (!v.refused.empty()) {
             return {RefusedLine(v.refused), v.banned ? "Press Leave." : "Press Leave, then join again."};
         }
         if (!v.in_session) {
-            return {"Joining your friend's game..."};
+            return {};   // (still joining: as above)
         }
         return {"Connected! Choose your file and play."};
     case HOS_COOP_FAILED:

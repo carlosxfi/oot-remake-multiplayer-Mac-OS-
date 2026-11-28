@@ -36,6 +36,10 @@ if (-not $lock) { Stop-Start @('Squadala is already starting in another window (
 # (this window's lines from here on into hookshot\logs\start-log.txt, the start before kept as start-log.1.txt: kit-paths.ps1
 # Start-KitStartLog; play.ps1 and update.ps1 add theirs; collect-logs.ps1 zips both)
 [void](Start-KitStartLog $kit -Fresh)
+# Players on this PC (local co-op, local-coop.ps1): said now, so a digit 2 to 4 pressed while the start goes on makes play.ps1
+# ask the question before the game starts (C2-2: only its answer starts more games). A solo start waits for nothing.
+$localCoop = Join-Path $PSScriptRoot 'local-coop.ps1'
+if (Test-Path -LiteralPath $localCoop) { try { . $localCoop; Show-KitLocalPlayersHint $kit } catch { } }
 
 # 3. Files an antivirus or a broken unzip took.
 $missing = @(Get-KitMissingFiles $kit)
@@ -67,7 +71,9 @@ if ($problem) {
     if (-not (Read-Yes "Copy the kit to $to and start it from there?")) {
         Stop-Start @("Move this kit folder to a short folder such as $to yourself, then start it there.")
     }
-    & robocopy $kit $to /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XD (Join-Path $kit 'logs') | Out-Null
+    # (/XJD: no folder link followed, such as local co-op's links of a game into hookshot\game\local-players: a copy of
+    # each would be a whole game; the players' own files there are copied)
+    & robocopy $kit $to /E /XJD /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XD (Join-Path $kit 'logs') | Out-Null
     if ($LASTEXITCODE -ge 8 -or -not (Test-Path -LiteralPath (Join-Path $to 'Start Squadala.bat'))) {
         Stop-Start @("Copying to $to failed. Move this kit folder there yourself, then start it there.")
     }

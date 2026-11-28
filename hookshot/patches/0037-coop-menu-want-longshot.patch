@@ -1,4 +1,4 @@
-From 892ea2ccad73629de22db282365d9822d7fcd8fa Mon Sep 17 00:00:00 2001
+From 9718c14d41c06f67063bfed4fa1b3e920052cd12 Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Sun, 22 Nov 2026 23:59:42 -0900
 Subject: [PATCH] Co-op menu: the module may ask for Longshot's own menu
@@ -30,10 +30,10 @@ index 6d6bd07e..11818ab5 100644
  
  #endif
 diff --git a/gpu/vk/vk_menu.cpp b/gpu/vk/vk_menu.cpp
-index c721770d..fc75d6c1 100644
+index 491af88c..b83f6b84 100644
 --- a/gpu/vk/vk_menu.cpp
 +++ b/gpu/vk/vk_menu.cpp
-@@ -5445,6 +5445,10 @@ void menu_tick() {
+@@ -5447,6 +5447,10 @@ void menu_tick() {
      } else if (coop_want == HOS_COOP_MENU_WANT_CLOSE && open_now.load()) {
          open_now = false, page = 0, listening = 0, tune_mode = false, changed = true;
          press[0] = press[6] = false;
@@ -44,6 +44,3 @@ index c721770d..fc75d6c1 100644
      }
      const bool esc_opens = opts.menu_shortcut == 2 && press[5] && !open_now.load();
      if (esc_opens) press[5] = false;
--- 
-2.56.0.windows.4
-

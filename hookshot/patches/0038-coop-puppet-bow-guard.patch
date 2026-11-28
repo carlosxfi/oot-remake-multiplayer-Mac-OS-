@@ -1,4 +1,4 @@
-From 6312c3d23fbc59966f62937c44a71774c6808ccf Mon Sep 17 00:00:00 2001
+From d46af45657f842572ac82f895438d73e1b6fe546 Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Mon, 23 Nov 2026 00:55:25 -0900
 Subject: [PATCH] Co-op bow guard: a bow or slingshot worn by another player's
@@ -106,6 +106,3 @@ index 00000000..9fc9c496
 +    print("co-op bow guard: at main+%#x (a bow worn by a Link with no Player component takes main+%#x)" % (
 +        SITE, SKIP))
 +    return 1
--- 
-2.56.0.windows.4
-

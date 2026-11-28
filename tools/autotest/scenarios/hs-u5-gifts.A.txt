@@ -1,0 +1,84 @@
+# hs-u5-gifts (row 237, u5-rando): Saria's gift on the bridge in a seed that shuffles it (A, host) and the frogs'
+# payout (B). Positions are from the scene actor data (romfs Banc KokiriForest_Child_Static):
+#   Npc_Kokiri_Saria_Child "KokiriForest_ArriveLostWood" at -117.10 114.47 -38.20; its EventRequestActor
+#   (RequestEventName KokiriForest_ArriveLostWood) Area at -116.57 114.15 -38.09 (4.4 x 2.5 x 3.8 m);
+#   StartPos LostWoodBridge_FrontOfHyruleField at -126.50 114.70 -38.40 (west end of the same bridge).
+# BEFORE the run (offline/u5-rando-run.ps1): both baseline saves get HavePlayedEvent.KokiriForest_ArriveLostWood,
+# Dm_Kokiri_0150 and Dm_Kokiri_0155 = 0, so the bridge zone is there at load (it is deleted once 0150 = 1).
+# Seed ON (U5GIFTA: LW Gift from Saria = Progressive Wallet): the bridge scene gives the wallet, both logs say
+# "coop: randomizer: Saria's gift on the bridge gives the seed's item", no mend line. Seed OFF: the Fairy Ocarina.
+# Then A sets the Medigoron gift flag (kOnceGifts): B's flag debug shows 0x0e3dad8a 0 -> 1.
+# In view: `face` Saria's spot, `press ZL` (camera behind Link), then the mark; u5-framing-check.py grades it.
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_FLAGS=1
+#! timeout 600
+mark start
+warp KokiriForest_Child LostWoodBridge_FrontOfHyruleField
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark after
+wait 600
+face -117.10 -38.20      # Saria's bridge spot (KokiriForest_ArriveLostWood)
+press ZL
+wait 60
+mark a-bridge-before
+goto -116.6 -38.1 0.8 600
+wait 120
+mark a-bridge-ev-01
+wait 240
+mark a-bridge-ev-02
+wait 240
+mark a-bridge-ev-03
+press A
+wait 160
+mark a-bridge-ev-04
+press A
+wait 160
+mark a-bridge-ev-05
+press A
+wait 160
+mark a-bridge-ev-06
+press A
+wait 160
+mark a-bridge-ev-07
+press A
+wait 160
+mark a-bridge-ev-08
+press A
+wait 160
+mark a-bridge-ev-09
+press A
+wait 160
+mark a-bridge-ev-10
+press A
+wait 160
+mark a-bridge-ev-11
+press A
+wait 160
+mark a-bridge-ev-12
+press A
+wait 160
+mark a-bridge-ev-13
+press A
+wait 160
+mark a-bridge-ev-14
+press A
+wait 240
+mark a-bridge-ev-15
+press B
+wait 240
+mark a-bridge-after
+setflag HaveTalked_Special.Npc_Goron_Medigoron_Adult_Talk_Event26 1
+wait 600
+mark a-medigoron-set
+wait 4800                  # B plays the Lullaby, then the Song of Storms: its Bool must arrive here
+mark end

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "coop_world.h"
+#include "coop_gold_mode.h"
 #include "coop_pickups.h"
 #include "coop_show_delay.h"
 
@@ -281,6 +282,66 @@ std::vector<std::string> TakeGiveBacks() {
     return std::exchange(give_backs, {});
 }
 
+namespace {
+std::mutex token_keys_mutex;
+std::vector<TokenKeyJob> token_keys;
+}  // namespace
+
+void QueueTokenKeys(std::uint64_t placement, int tries) {
+    std::lock_guard lock(token_keys_mutex);
+    if (token_keys.size() < 64) {
+        token_keys.push_back(TokenKeyJob{placement, tries});
+    }
+}
+
+std::vector<TokenKeyJob> TakeTokenKeys() {
+    std::lock_guard lock(token_keys_mutex);
+    return std::exchange(token_keys, {});
+}
+
+std::string WriteTokenKeys(coop::host::FlagStore& game, TokenKeyJob job) {
+    int written = 0;
+    int already = 0;
+    int failed = 0;
+    for (const std::uint64_t key : {job.placement, job.placement + 2}) {
+        const coop::protocol::FlagKey k = coop::protocol::FlagKey::key64_flag(key);
+        if (const auto now = game.read(k); now && now->value != 0) {
+            ++already;
+            continue;
+        }
+        if (game.write(coop::protocol::FlagEntry(k, coop::protocol::FlagKind::boolean, 1))) {
+            ++written;
+        } else {
+            ++failed;
+        }
+    }
+    const int tries = job.tries + 1;
+    char line[192];
+    if (failed > 0 && tries < kTokenKeyTries) {
+        QueueTokenKeys(job.placement, tries);
+        if (job.tries > 0) {
+            return {};  // still refused: no line each frame
+        }
+        std::snprintf(line, sizeof line,
+                      "world: %016llx token we made was taken here: %d of its 2 keys written (%d were set), "
+                      "%d refused: trying again",
+                      static_cast<unsigned long long>(job.placement), written, already, failed);
+        return line;
+    }
+    if (failed > 0) {
+        std::snprintf(line, sizeof line,
+                      "world: %016llx token we made was taken here: %d of its 2 keys still refused after %d tries: "
+                      "given up (the Skulltula can come back after a reload)",
+                      static_cast<unsigned long long>(job.placement), failed, tries);
+        return line;
+    }
+    std::snprintf(line, sizeof line,
+                  "world: %016llx token we made was taken here: %d of its 2 keys written (%d were set)%s",
+                  static_cast<unsigned long long>(job.placement), written, already,
+                  job.tries > 0 ? ", after a retry" : "");
+    return line;
+}
+
 std::string GiveBack(coop::host::FlagStore& game, std::string_view count) {
     const std::optional<std::string> name = count.empty() ? std::nullopt
                                                            : std::optional<std::string>(count);
@@ -430,6 +491,7 @@ void WorldSync::Reset() {
     skulltulas_.clear();
     skulltulas_seen_us_.clear();
     skulltulas_dead_.clear();
+    owed_.clear();
     token_spots_.clear();
     // What TakenKey remembered belongs to the session that took it (review of
     // #257): a player who reconnects and loads a different save would otherwise
@@ -557,6 +619,9 @@ std::uint64_t WorldSync::IdentifyToken(const proto::Vec3& at, std::uint64_t now_
 }
 
 void WorldSync::Token(const proto::WorldBreak& b) {
+    if (CoopGoldMode::NotShared()) {
+        return;  // race mode: another game's token is nothing of ours
+    }
     auto& spots = token_spots_[scene_];
     // The token whose key `b` names is taken here too, whichever id the two
     // games picked. The id is a distance guess; the placement is the fact, and
@@ -715,6 +780,13 @@ void WorldSync::LocalBreak(Object& o, std::uint64_t now_us, const char* how, Out
     }
     out.send.emplace_back(std::move(b));
     out.notes.push_back(Line("world: %016llx %s broken here (%s): sent", o.hash, o.name, how));
+    if (IsGoldToken(o.name)) {
+        // A token we made carries no placement for the game's own pickup to set: we set its keys.
+        const std::uint64_t placement = PlacementOfTokenId(o.hash);
+        if (const auto w = owed_.find(placement); placement != 0 && w != owed_.end() && w->second.made) {
+            out.token_keys.push_back(placement);
+        }
+    }
 }
 
 void WorldSync::Refund(Break& b, std::uint64_t hash, std::uint64_t now_us, const char* why) {
@@ -804,6 +876,74 @@ void WorldSync::ForgetKept() {
             o.remove = false;
             o.life_written_us = 0;
         }
+    }
+}
+
+void WorldSync::OweToken(std::uint64_t placement, const proto::Vec3& at, std::uint64_t now_us) {
+    if (placement == 0 || CoopGoldMode::NotShared() || !Finite(at) || IsSkulltulaTaken(placement) ||
+        IsTokenTaken(TokenId(placement)) || owed_.contains(placement) || owed_.size() >= 64) {
+        return;
+    }
+    Owed w;
+    w.at = at;
+    w.due_us = now_us + kTokenOwedUs;
+    owed_.emplace(placement, w);
+}
+
+std::vector<WorldSync::MadeToken> WorldSync::MadeTokens() const {
+    std::vector<MadeToken> made;
+    for (const auto& [placement, w] : owed_) {
+        if (w.made) {
+            made.push_back({placement, w.at, w.actor});
+        }
+    }
+    return made;
+}
+
+void WorldSync::BindMadeToken(std::uint64_t placement, std::uint64_t actor) {
+    if (const auto w = owed_.find(placement); w != owed_.end() && w->second.made && w->second.actor == 0) {
+        w->second.actor = actor;
+    }
+}
+
+void WorldSync::SettleOwed(std::uint64_t now_us, Out& out) {
+    for (auto it = owed_.begin(); it != owed_.end();) {
+        const std::uint64_t placement = it->first;
+        Owed& w = it->second;
+        const std::uint64_t id = TokenId(placement);
+        if (IsTokenTaken(id) || IsSkulltulaTaken(placement)) {
+            it = owed_.erase(it);  // taken by someone: TakenKey removes what is here
+            continue;
+        }
+        std::vector<Object*> tokens;
+        for (auto& [address, o] : objects_) {
+            if (IsGoldToken(o.name) && o.hash == id && !o.remove) {
+                tokens.push_back(&o);
+            }
+        }
+        if (!w.made) {
+            if (!tokens.empty()) {
+                out.notes.push_back(Line("world: %016llx %s owed here: our game made it itself", placement, "Obj_Token_Gold", ""));
+                it = owed_.erase(it);
+                continue;
+            }
+            if (now_us >= w.due_us) {
+                w.made = true;
+                out.notes.push_back(Line("world: %016llx %s owed here (its Gold Skulltula died in another game, "
+                                         "none made here): made by us",
+                                         placement, "Obj_Token_Gold", ""));
+            }
+            ++it;
+            continue;
+        }
+        // Ours is the one the director made; any other of this id is our game's own, made late.
+        for (Object* o : tokens) {
+            if (w.actor != 0 && o->address != w.actor) {
+                o->remove = true;
+                out.notes.push_back(Line("world: %016llx %s made twice here: our game's own deleted", placement, "Obj_Token_Gold", ""));
+            }
+        }
+        ++it;
     }
 }
 
@@ -1353,6 +1493,7 @@ void WorldSync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t 
         skulltulas_.clear();  // token_spots_ stay: a room loaded again
         skulltulas_seen_us_.clear();
         skulltulas_dead_.clear();
+        owed_.clear();  // a token we made goes with its room; the keys say the rest
         anchor_holds_.clear();
         anchor_of_.clear();  // the next room's anchors are new actors
         std::lock_guard lock(inbox_mutex_);
@@ -1394,7 +1535,16 @@ void WorldSync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t 
         with_tokens = seen;
         for (CoopObjects::Seen& s : with_tokens) {
             if (IsGoldToken(s.name) && (s.hash == 0 || s.hash == kNoHash)) {
-                s.hash = IdentifyToken(s.position, now_us);
+                // One we made (OweToken) is that placement's for sure; else the distance guess.
+                for (const auto& [placement, w] : owed_) {
+                    if (w.made && w.actor != 0 && s.address == w.actor) {
+                        s.hash = TokenId(placement);
+                        break;
+                    }
+                }
+                if (s.hash == 0 || s.hash == kNoHash) {
+                    s.hash = IdentifyToken(s.position, now_us);
+                }
             }
         }
         walk = &with_tokens;
@@ -1414,6 +1564,9 @@ void WorldSync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t 
         }
         const bool faller = IsFaller(s.name);
         const bool token = IsGoldToken(s.name);
+        if (token && CoopGoldMode::NotShared()) {
+            continue;  // race mode: each game's tokens are its own (coop_gold_mode.h)
+        }
         const bool key = IsLyingKey(s.name) || token;
         const bool shifter = IsShifter(s.name);
         const bool breakable = IsBreakable(s.name) || faller || key;
@@ -1578,6 +1731,7 @@ void WorldSync::Tick(const std::string& scene, std::uint8_t self, std::uint64_t 
         }
         it = objects_.erase(it);
     }
+    SettleOwed(now_us, out);
     if (!player) {
         for (const Gone& g : gone_) {
             if (const auto b = broken_.find(g.object.hash); b != broken_.end() && b->second.lent) {

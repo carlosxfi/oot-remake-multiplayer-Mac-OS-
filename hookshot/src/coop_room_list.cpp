@@ -12,53 +12,13 @@
 #include "common/logging.h"
 #include "coop/net/bind_guard.hpp"
 #include "coop/protocol/messages.hpp"
-#include "coop_i18n.h"
 #include "coop_pause_tab.h"
 #include "coop_title_menu.h"
 #include "relay_link.hpp"
 
 namespace CoopRoomList {
 
-std::string CellText(const Room& r, int my_protocol) {
-    std::string tail;
-    if (r.protocol != my_protocol) {
-        tail = " (other version)";
-    } else if (r.max > 0 && r.players >= r.max) {
-        tail = " (full)";
-    } else if (r.max > 0) {
-        tail = " (" + std::to_string(r.players) + "/" + std::to_string(r.max) + ")";
-    }
-    // (the browser's list shows the name the room is listed under on its own line, CoopPauseTab::ListName)
-    return r.room + tail;
-}
-
-bool Joinable(const Room& r, int my_protocol) {
-    return r.protocol == my_protocol && (r.max <= 0 || r.players < r.max);
-}
-
-static_assert(kPublicListingBit == coop::protocol::kPublicListingBit);
-
-Room FromListing(std::string room, std::string host, int players, int max, int version) {
-    Room r{std::move(room), std::move(host), players, max, version & ~int{coop::protocol::kPublicListingBit}, false, false};
-    r.is_public = (version & coop::protocol::kPublicListingBit) != 0;
-    return r;
-}
-
-std::string DetailText(const Room& r, int my_protocol) {
-    // (each piece in the player's language: coop_i18n's table has the pieces, not the built line)
-    using CoopI18n::Tr;
-    if (r.protocol > my_protocol) return Tr("Needs an update: this game is newer than yours");
-    if (r.protocol != my_protocol) return Tr("Another version: the host needs to update");
-    std::string out = r.official    ? Tr("Official public game")
-                      : r.is_public ? Tr("Public game")
-                                    : Tr("Needs the host's password");
-    if (r.max > 0) {
-        out += Tr(", ") + (r.players >= r.max ? Tr("Full")
-                                              : Tr("Players") + " " + std::to_string(r.players) + "/" +
-                                                    std::to_string(r.max));
-    }
-    return out;
-}
+// (CellText, Joinable, FromListing, DifficultyWord, DetailText: coop_room_list_text.cpp, linked by the tests too)
 
 namespace {
 
@@ -77,6 +37,8 @@ std::thread g_thread;              // under g_mutex
 // (a relay before 0.11.8 never does: asked again every kProofsRetryMs, not with every refresh).
 constexpr std::uint64_t kProofsRetryMs = 10 * 60 * 1000;
 std::atomic<std::uint64_t> g_proofs_silent_until_ms{0};
+// The same for the rooms' tags (row 281; a relay before 0.12.0 never answers), asked of any relay.
+std::atomic<std::uint64_t> g_tags_silent_until_ms{0};
 
 std::string KitsRelayName() {
     std::string host;
@@ -110,9 +72,14 @@ void Ask(std::string relay) {
             const std::string kits = KitsRelayName();
             // (proofs only from the kit's own relay: the official game is listed nowhere else)
             const bool ask_proofs = asked == kits && SteadyMs() >= g_proofs_silent_until_ms.load();
-            if (const auto list = relay_ns::list_rooms_on_relay(at, [] { return g_stop.load(); }, ask_proofs, coop::net::test_bind())) {
+            const bool ask_tags = SteadyMs() >= g_tags_silent_until_ms.load();
+            if (const auto list = relay_ns::list_rooms_on_relay(at, [] { return g_stop.load(); }, ask_proofs,
+                                                                coop::net::test_bind(), ask_tags)) {
                 if (ask_proofs && !list->rooms.empty() && !list->proofs_answered && !g_stop.load()) {
                     g_proofs_silent_until_ms = SteadyMs() + kProofsRetryMs;
+                }
+                if (ask_tags && !list->rooms.empty() && !list->tags_answered && !g_stop.load()) {
+                    g_tags_silent_until_ms = SteadyMs() + kProofsRetryMs;
                 }
                 for (const auto& e : list->rooms) {
                     s.rooms.push_back(FromListing(e.room, e.host, e.players, e.max_players, e.version));
@@ -123,6 +90,9 @@ void Ask(std::string relay) {
                     proofs.push_back(Proof{p.room, coop::protocol::OfficialProof{p.time_s, p.signature}});
                 }
                 Order(s.rooms, proofs, coop::protocol::official_now_s(), asked, kits);
+                std::vector<Tag> tags;
+                for (const auto& t : list->tags) tags.push_back(Tag{t.room, t.tag});
+                ApplyTags(s.rooms, tags);
                 if (s.rooms.empty()) s.state = kNoGames;
             } else {
                 s.state = kCantReach;   // (no answer: no internet, the server down, or one from before the list)

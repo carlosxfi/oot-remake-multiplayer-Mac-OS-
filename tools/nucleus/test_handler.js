@@ -66,6 +66,12 @@ var System = {
         },
         // FileAttributes as Jint may hand it over: a number (Directory 16, ReparsePoint 1024), or an object with
         // ToString (and valueOf: the number) or the enum's text, as attrMode says.
+        FileInfo: function (p) {
+            var f = fso.GetFile(p);
+            this.Length = f.Size;
+            this.LastWriteTimeUtc = String(f.DateLastModified);
+            this.Attributes = f.Attributes;
+        },
         DirectoryInfo: function (p) {
             var link = (fso.GetFolder(p).Attributes & 1024) !== 0, n = link ? 1040 : 16;
             var text = link ? "Directory, ReparsePoint" : "Directory";
@@ -116,6 +122,11 @@ mkdirs(fso.BuildPath(game, "ngx"));                       // DLSS's runtime, bui
 writeFile(fso.BuildPath(game, "ngx\\nvngx_dlss.dll"), "dlss");
 mkdirs(fso.BuildPath(game, "logs"));
 writeFile(fso.BuildPath(game, "newfile.dll"), "new");
+writeFile(fso.BuildPath(game, "exefs_patches.txt"), "built with");
+mkdirs(fso.BuildPath(game, "texts"));                     // a folder a later build added
+writeFile(fso.BuildPath(game, "texts\en.txt"), "words");
+mkdirs(fso.BuildPath(game, "cache"));                     // the solo game's shader cache: each instance keeps its own
+writeFile(fso.BuildPath(game, "language.txt"), "solo");
 writeFile(fso.BuildPath(game, "coop.ini"), "own");
 writeFile(fso.BuildPath(game, "coop-saves.ini"), "solo");
 writeFile(fso.BuildPath(game, "coop-name-checked.txt"), "solo");
@@ -125,7 +136,7 @@ for (var i = 0; i < 3; i++) {
     instances[i] = fso.BuildPath(root, "content\\OoTCoopLongshot\\Instance" + i);
     mkdirs(instances[i]);
     writeFile(fso.BuildPath(instances[i], "longshot_options.ini"),
-              "fullscreen=1\r\nvsync=0\r\ndiscord_status=1\r\nmouse_camera=1\r\n");
+              "fullscreen=1\r\nvsync=0\r\ndiscord_status=1\r\nmouse_camera=1\r\nframe_rate_cap=2\r\n");
 }
 // The game's logs, which an older handler's instance folders linked (instance 0): the link goes, the logs stay.
 // Instance 2 has its own logs folder already: kept.
@@ -134,6 +145,21 @@ writeFile(fso.BuildPath(game, "logs\\longshot_log.txt"), "the game's own log");
 shell.Run("cmd /c mklink /J \"" + fso.BuildPath(instances[0], "logs") + "\" \"" + fso.BuildPath(game, "logs") + "\"", 0, true);
 mkdirs(fso.BuildPath(instances[2], "logs"));
 writeFile(fso.BuildPath(instances[2], "logs\\longshot_log.txt"), "player 3's log");
+// Instance 1 holds an old copy of a build file, and a file an older build had that the game folder no longer has.
+writeFile(fso.BuildPath(instances[1], "exefs_patches.txt"), "old build");
+writeFile(fso.BuildPath(instances[1], "gone.dll"), "old");
+writeFile(fso.BuildPath(instances[1], "coop-linked.txt"), "gone.dll\r\n");
+writeFile(fso.BuildPath(instances[1], "language.txt"), "player 2's");
+// What each game writes beside its exe: its log, the caches it writes in place (Game.FileSymlinkCopyInstead) and
+// the big one it writes through a .tmp over Nucleus's link. The game folder has its own, with other bytes: kept.
+writeFile(fso.BuildPath(game, "longshot_log.txt"), "the solo game's log");
+writeFile(fso.BuildPath(game, "longshot_pipeline_states.bin"), "solo states");
+writeFile(fso.BuildPath(game, "longshot_pipelines.bin"), "solo pipelines");
+writeFile(fso.BuildPath(game, "longshot_pipeline_states_shipped.bin"), "shipped, new build");
+writeFile(fso.BuildPath(instances[1], "longshot_log.txt"), "player 2's log");
+writeFile(fso.BuildPath(instances[1], "longshot_pipeline_states.bin"), "player 2's states");
+writeFile(fso.BuildPath(instances[1], "longshot_pipelines.bin"), "player 2's pipelines");
+writeFile(fso.BuildPath(instances[1], "longshot_pipeline_states_shipped.bin"), "shipped, an older build");
 // Instance 1 has a real user folder from an earlier start (Nucleus copied it): kept beside, renamed.
 mkdirs(fso.BuildPath(instances[1], "user"));
 
@@ -208,6 +234,16 @@ for (var q = 0; q < 3; q++) {
 }
 check(readFile(fso.BuildPath(instances[0], "ngx\\nvngx_dlss.dll")) === "dlss" && (fso.GetFolder(fso.BuildPath(instances[0], "ngx")).Attributes & 1024) !== 0, "ngx folder linked into an instance made before it");
 check(readFile(fso.BuildPath(instances[1], "newfile.dll")) === "new", "a new game DLL copied in");
+check(readFile(fso.BuildPath(instances[1], "exefs_patches.txt")) === "built with", "the build's mod code list copied in");
+check(readFile(fso.BuildPath(instances[0], "texts\en.txt")) === "words", "a folder a later build added is linked in");
+check(!fso.FolderExists(fso.BuildPath(instances[0], "cache")), "the game's cache is not taken");
+check(!fso.FileExists(fso.BuildPath(instances[1], "gone.dll")), "a copied file the game no longer has is removed");
+check(readFile(fso.BuildPath(instances[1], "language.txt")) === "player 2's", "a player's own setting is kept");
+check(readFile(fso.BuildPath(instances[1], "longshot_log.txt")) === "player 2's log", "a player's own log is kept");
+check(readFile(fso.BuildPath(instances[1], "longshot_pipeline_states.bin")) === "player 2's states" &&
+      readFile(fso.BuildPath(instances[1], "longshot_pipelines.bin")) === "player 2's pipelines", "a player's own shader caches are kept");
+check(readFile(fso.BuildPath(instances[1], "longshot_pipeline_states_shipped.bin")) === "shipped, new build", "the build's shipped pipeline states are brought up to date");
+check(!fso.FileExists(fso.BuildPath(instances[0], "longshot_log.txt")) && !fso.FileExists(fso.BuildPath(instances[0], "longshot_pipelines.bin")), "a game's log and caches are not copied into an instance without them");
 check(!fso.FileExists(fso.BuildPath(instances[1], "coop-saves.ini")) && !fso.FileExists(fso.BuildPath(instances[1], "coop-name-checked.txt")), "per-player files the solo game wrote are not taken");
 check(!fso.FolderExists(fso.BuildPath(instances[0], "logs")), "logs stay the instance's own");
 var noted = readFile(fso.BuildPath(game, "nucleus-players\\instances.txt"));
@@ -241,11 +277,20 @@ check(m1.indexOf("mouse_camera=0") >= 0 && m1.indexOf("mouse_camera=1") < 0, "pl
 check(m2.indexOf("mouse_camera=0") >= 0 && m2.indexOf("mouse_camera=1") < 0, "player 2 (pad): mouse camera off: " + m2);
 check(m3.indexOf("mouse_camera=1") >= 0 && m3.indexOf("mouse_camera=0") < 0, "player 3 (keyboard) keeps it: " + m3);
 
-var o1 = readFile(fso.BuildPath(instances[0], "coop-options.ini"));
-var o2 = readFile(fso.BuildPath(instances[1], "coop-options.ini"));
-var o3 = readFile(fso.BuildPath(instances[2], "coop-options.ini"));
+// The settings: the kit's coop-options.ini for every game (coop-kit.txt names the kit), each game's own lines in its
+// coop-player.ini (controller, keyboard, look), no full copy of its own (it went stale: known issue up to 0.11.12).
+var o1 = readFile(fso.BuildPath(instances[0], "coop-player.ini"));
+var o2 = readFile(fso.BuildPath(instances[1], "coop-player.ini"));
+var o3 = readFile(fso.BuildPath(instances[2], "coop-player.ini"));
+for (var oi = 0; oi < 3; oi++) {
+    check(!fso.FileExists(fso.BuildPath(instances[oi], "coop-options.ini")), "instance " + oi + ": no copy of the options");
+    check(readFile(fso.BuildPath(instances[oi], "coop-kit.txt")) === kit + "\r\n", "instance " + oi + ": coop-kit.txt names the kit");
+    check(readFile(fso.BuildPath(instances[oi], "longshot_options.ini")).indexOf("frame_rate_cap=2\r\n") >= 0,
+          "instance " + oi + ": no local_fps, no cap of ours (the player's own, uncapped as 0.11.12)");
+}
 check(o1.indexOf("LICHII_COOP_PAD=2\r\n") >= 0 && o1.indexOf("LICHII_COOP_KEYBOARD=off") >= 0, "player 1 pad 2: " + o1);
-check(o1.indexOf("color = red") >= 0 && o1.indexOf("LICHII_COOP_PUPPET=1") >= 0, "player 1 keeps the kit's switches");
+check(o1.indexOf("color = red") >= 0, "player 1 takes the kit's colour: " + o1);
+check(o1.indexOf("LICHII_COOP_PUPPET") < 0 && o1.indexOf("name = Saria") < 0, "the kit's other lines stay in the kit's file: " + o1);
 check(o2.indexOf("LICHII_COOP_PAD=2\r\n") >= 0 && o2.indexOf("color") < 0, "player 2: 2nd controller player, no colour: " + o2);
 check(o2.split("LICHII_COOP_PAD=").length === 2, "one pad line");
 check(o3.indexOf("LICHII_COOP_PAD=none") >= 0 && o3.indexOf("LICHII_COOP_KEYBOARD=focus") >= 0, "keyboard player: " + o3);
@@ -261,7 +306,7 @@ writeFile(fso.BuildPath(game, "newfile.dll"), "rebuilt");   // a rebuild replace
 Game.Play();
 check(readFile(fso.BuildPath(instances[1], "coop.ini")).indexOf("password = " + pw + "\r\n") >= 0, "password from session.txt");
 check(readFile(fso.BuildPath(instances[1], "newfile.dll")) === "rebuilt", "a DLL the handler copied is copied again after a rebuild");
-check(readFile(fso.BuildPath(instances[1], "coop-options.ini")).indexOf("LICHII_COOP_PAD=3\r\n") >= 0, "Nucleus's pad 3");
+check(readFile(fso.BuildPath(instances[1], "coop-player.ini")).indexOf("LICHII_COOP_PAD=3\r\n") >= 0, "Nucleus's pad 3");
 
 // Runs again (the next session): links stay, a new password.
 Context.PlayerID = 0;
@@ -393,8 +438,11 @@ check(threw && startedWindows.length === 1 && /^[0-9a-f]{32}$/.test(startedWindo
 newSession();
 logged = [];
 System.Diagnostics.Process.running = 1;
-playAs(0);
+var blocked = 0;
+try { playAs(0); } catch (e) { blocked++; }
+try { playAs(1); } catch (e) { blocked++; }
 System.Diagnostics.Process.running = 0;
+check(blocked === 2, "a running server: no game of the session starts (it would be a guest there): " + blocked);
 check(startedWindows.length === 0 && startedServers.length === 0, "a running server: none started");
 check(logged.join("\n").indexOf("already running") >= 0, "a running server: the player is told: " + logged.join(" | "));
 
@@ -439,8 +487,8 @@ joinOnly(j[0], "first", "join: player 1's coop.ini");
 joinOnly(j[1], "first", "join: player 2's coop.ini");
 joinOnly(j[2], "first", "join: player 3's coop.ini");
 check(j[0].indexOf("name = Saria\r\n") >= 0 && j[2].indexOf("name = Player 3\r\n") >= 0, "join: the names kept");
-check(readFile(fso.BuildPath(instances[1], "coop-options.ini")).indexOf("LICHII_COOP_PAD=") >= 0 &&
-      readFile(fso.BuildPath(instances[2], "coop-options.ini")).indexOf("LICHII_COOP_KEYBOARD=focus") >= 0,
+check(readFile(fso.BuildPath(instances[1], "coop-player.ini")).indexOf("LICHII_COOP_PAD=") >= 0 &&
+      readFile(fso.BuildPath(instances[2], "coop-player.ini")).indexOf("LICHII_COOP_KEYBOARD=focus") >= 0,
       "join: the pads and the keyboard player as before");
 check(readFile(fso.BuildPath(instances[0], "longshot_options.ini")).indexOf("fullscreen=0") >= 0, "join: longshot options");
 
@@ -559,29 +607,50 @@ check(afterBad.indexOf("name = Kokiri Kid\r\n") >= 0 && afterBad.indexOf("look_b
       "the start after a bad code still has the name and look: " + afterBad);
 
 // What the player set in the game stays over a new start: the name typed in the game and the look in coop.ini, and the
-// settings the game saved beside it (coop-options.ini); the controller lines are the handler's again.
+// player's own lines the game saved in coop-player.ini; the controller lines are the handler's again.
 var w = "# Written by the Nucleus Co-op handler (tools/nucleus/OoTCoop.js) at each start.\r\n";
 writeFile(fso.BuildPath(instances[0], "coop.ini"),
           w + "server = 127.0.0.1\r\nport = 27510\r\nname = Kokiri Kid\r\npassword = x\r\nlook_boots = black\r\n");
-writeFile(fso.BuildPath(instances[0], "coop-options.ini"),
-          w + "LICHII_COOP_CHAT_KEY=Y\r\nlook_hylian_frame = red\r\nLICHII_COOP_PAD=4\r\n");
+var ownFile = fso.BuildPath(instances[0], "coop-player.ini");
+writeFile(ownFile, "# mine\r\nlook_hylian_frame = red\r\nLICHII_COOP_PAD=4\r\n");
 newSession();
 var kept = playAs(0);
 check(kept.indexOf("name = Kokiri Kid\r\n") >= 0 && kept.indexOf("name = Saria") < 0, "the name typed in the game stays: " + kept);
 check(kept.indexOf("look_boots = black\r\n") >= 0, "the look in coop.ini stays: " + kept);
 check(kept.indexOf("server = 127.0.0.1\r\n") >= 0 && kept.indexOf("password = x") < 0, "the session's lines new: " + kept);
-var keptOptions = readFile(fso.BuildPath(instances[0], "coop-options.ini"));
-check(keptOptions.indexOf("LICHII_COOP_CHAT_KEY=Y") >= 0 && keptOptions.indexOf("look_hylian_frame = red") >= 0,
-      "the game's own settings stay: " + keptOptions);
-check(keptOptions.indexOf("LICHII_COOP_PAD=4") < 0 && keptOptions.indexOf("LICHII_COOP_PAD=") >= 0,
+var keptOptions = readFile(ownFile);
+check(keptOptions.indexOf("look_hylian_frame = red") >= 0, "the player's own look stays: " + keptOptions);
+check(keptOptions.indexOf("LICHII_COOP_PAD=4") < 0 && keptOptions.split("LICHII_COOP_PAD=").length === 2,
       "the controller line is the handler's: " + keptOptions);
-check(keptOptions.split(w).length === 2, "one header line: " + keptOptions);
-// Removed, the next start takes the kit's switches again
-fso.DeleteFile(fso.BuildPath(instances[0], "coop-options.ini"));
+
+// An instance of an older handler (0.11.8 to 0.11.12): a full copy of the options beside the game. Its player lines are
+// taken over once and the copy goes, so the kit's settings reach this game again.
+fso.DeleteFile(ownFile);
+writeFile(fso.BuildPath(instances[0], "coop-options.ini"),
+          w + "LICHII_COOP_CHAT_KEY=Y\r\nlook_hylian_frame = blue\r\ncolor = pink\r\nLICHII_COOP_PAD=4\r\n");
 newSession();
 playAs(0);
-check(readFile(fso.BuildPath(instances[0], "coop-options.ini")).indexOf("LICHII_COOP_CHAT_KEY=Y") < 0,
-      "no coop-options.ini: the kit's again");
+var moved = readFile(ownFile);
+check(!fso.FileExists(fso.BuildPath(instances[0], "coop-options.ini")), "the old copy goes");
+check(moved.indexOf("look_hylian_frame = blue") >= 0 && moved.indexOf("color = pink") >= 0, "its look is taken over: " + moved);
+check(moved.indexOf("LICHII_COOP_CHAT_KEY") < 0, "its other lines are the kit's again: " + moved);
+// A coop-options.ini the player put there themselves (not the handler's) is left alone.
+writeFile(fso.BuildPath(instances[0], "coop-options.ini"), "mine = 1\r\n");
+newSession();
+playAs(0);
+check(readFile(fso.BuildPath(instances[0], "coop-options.ini")) === "mine = 1\r\n", "a player's own file stays");
+fso.DeleteFile(fso.BuildPath(instances[0], "coop-options.ini"));
+
+// local_fps = 60 in the kit's options: the console's 60 for every game.
+writeFile(kitOptions, kitOptionsText + "local_fps = 60\r\n");
+newSession();
+playAs(1);
+check(readFile(fso.BuildPath(instances[1], "longshot_options.ini")).indexOf("frame_rate_cap=0") >= 0, "local_fps = 60");
+writeFile(kitOptions, kitOptionsText + "local_fps = 30\r\n");
+newSession();
+playAs(1);
+check(readFile(fso.BuildPath(instances[1], "longshot_options.ini")).indexOf("frame_rate_cap=-1") >= 0, "local_fps = 30");
+writeFile(kitOptions, kitOptionsText);
 
 // Clean up: the links first (rmdir removes a link, not what it names), then the rest.
 for (var r = 0; r < 3; r++) shell.Run("cmd /c rmdir \"" + fso.BuildPath(instances[r], "user") + "\"", 0, true);

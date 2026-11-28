@@ -3,15 +3,15 @@
 # files). lock_sha256 is of that tools.lock (also in the release's SHA256SUMS); each tool is checked against
 # the SHA-256 the file lists. The source built is hookshot\PIN's commit.
 # Move release= (and lock_sha256=) when a newer release's tools are needed.
-release=v3.1.1
+release=v3.2.0
 lock_sha256=f32667a0be4adf267e0ab518a060364d0f96b1d155e85dd96e2e67f4f2e6a09c
 # Longshot's source: Forgejo's zip archive of hookshot\PIN's commit
 # (https://git.magicbean.dev/api/v1/repos/MagicBeanDev/Longshot/archive/<commit>.zip; the web /archive/ path
 # answers 404 since 2026-11-13, same bytes) and its SHA-256. Moves with the pin.
-source_commit=a2dc5385901812d183c4b7f0f9d48b295f17a510
-source_sha256=feef5496ce3b39d9ac60dad6757d34ad9c8627f7c61d2118748c1f7d3a688e60
+source_commit=79d192c655b52ef69a42918e385ff79b6dfabd1f
+source_sha256=bf482dbbc375f5944f28f032f5b5574c8d192db0af50233ffdfc630ca16d3ffa
 # The co-op mirror (kit-mirror): a GitHub release of ours holding the same files (tools.lock, the tool zips as
 # <sha256>-<name>.zip, the source as longshot-<commit>.zip, the Linux AppImage), made by tools/release/mirror_longshot.ps1.
 # Tried after Longshot's own servers; every file is still checked against the SHA-256s above and in tools.lock.
 # Moves with release= (a new tag per Longshot release).
-mirror=https://github.com/daurosk/oot-remake-multiplayer/releases/download/longshot-mirror-v3.1.1
+mirror=https://github.com/daurosk/oot-remake-multiplayer/releases/download/longshot-mirror-v3.2.0

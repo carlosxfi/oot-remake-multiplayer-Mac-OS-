@@ -21,9 +21,11 @@ Tab* TheTab() {  // under g_mutex
         s.loader = CoopModsRuntime::Loader();
         s.coop = [] {
             const CoopModShare::View v = CoopModShare::Now();
-            std::vector<std::string> out;
+            // (row 280: a part with files left out says so first, solo too: coop_part_fallback.h)
+            std::vector<std::string> out = CoopModsRuntime::PartFallbackLines();
             if (!v.connected) return out;
             if (!v.hosting && !v.host_list_known) out.push_back("Co-op: waiting for the host's list of mods.");
+            if (!v.held.empty()) out.push_back(v.held);
             for (const std::string& d : v.differences) out.push_back("Co-op: " + d);
             for (const std::string& g : v.guests_differ) out.push_back("Co-op: " + g);
             if (!v.hosting && v.host_list_known && v.differences.empty()) {
@@ -40,11 +42,6 @@ Tab* TheTab() {  // under g_mutex
     return g_tab.get();
 }
 
-struct Drawn {
-    CoopPauseMenu::View view;
-    std::vector<HosCoopMenuRow> rows;
-};
-
 }  // namespace
 
 bool Available() {
@@ -53,43 +50,6 @@ bool Available() {
 
 const char* TabName() {
     return "Mods";
-}
-
-bool Page(HosCoopMenuPage* out) {
-    if (out == nullptr || out->size < sizeof(HosCoopMenuPage)) return false;
-    thread_local Drawn drawn;
-    {
-        std::lock_guard lock(g_mutex);
-        Tab* tab = TheTab();
-        if (tab == nullptr) return false;
-        drawn.view = tab->view();
-    }
-    const CoopPauseMenu::View& v = drawn.view;
-    drawn.rows.resize(v.rows.size());
-    for (std::size_t i = 0; i < v.rows.size(); ++i) {
-        const CoopPauseMenu::Row& r = v.rows[i];
-        HosCoopMenuRow& h = drawn.rows[i];
-        h = HosCoopMenuRow{};
-        h.name = r.name.c_str();
-        h.value = r.value.c_str();
-        h.kind = static_cast<std::uint8_t>(r.kind);
-        h.on = r.on ? 1 : 0;
-        h.left = r.left ? 1 : 0;
-        h.right = r.right ? 1 : 0;
-        h.fixed = r.fixed ? 1 : 0;
-    }
-    out->rows_n = static_cast<std::int32_t>(drawn.rows.size());
-    out->rows = drawn.rows.data();
-    out->selected = v.selected;
-    out->typing = v.typing ? 1 : 0;
-    out->help_title = v.help_title.c_str();
-    out->help = v.help.c_str();
-    out->hint = v.hint.c_str();
-    out->gold = v.gold.c_str();
-    out->change = v.change.c_str();
-    out->confirm = v.confirm.c_str();
-    out->back = v.back.c_str();
-    return true;
 }
 
 bool View(CoopPauseMenu::View* out, bool* on_mod_page) {

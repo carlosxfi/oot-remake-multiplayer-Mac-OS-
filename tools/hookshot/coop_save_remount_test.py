@@ -142,10 +142,13 @@ def main():
     with tempfile.TemporaryDirectory(prefix="coop-save-remount-") as temporary:
         tmp = Path(temporary)
         (tmp / "a64.h").write_text(h.A64)
-        # (+ the one nn_fs.c call the harness's stand-ins leave out: a Windows DLL links every name, where Linux's .so
-        #  left it unresolved; oot_damaged_files.c's stand-in for an incomplete dump, never one here)
-        (tmp / "stubs.c").write_text(h.STUBS + "\nint hos_stand_in_damaged(const char *guest, char *path, size_t cap) "
-                                      "{ (void)guest; (void)path; (void)cap; return 0; }\n")
+        # (+ the one nn_fs.c call Longshot 3.1's harness stand-ins leave out: a Windows DLL links every name, where
+        #  Linux's .so left it unresolved; oot_damaged_files.c's stand-in for an incomplete dump, never one here.
+        #  Longshot 3.2's harness has it itself, and a second definition does not compile)
+        extra = "" if "hos_stand_in_damaged" in h.STUBS else (
+            "\nint hos_stand_in_damaged(const char *guest, char *path, size_t cap) "
+            "{ (void)guest; (void)path; (void)cap; return 0; }\n")
+        (tmp / "stubs.c").write_text(h.STUBS + extra)
         libpath = tmp / "fs.dll"
         # (Longshot's own Windows build of the harness: tests/test_fs_save_commit.py main; string.h first, as the game's
         #  build has it before hos.h, whose inline helpers use memset and memcpy)

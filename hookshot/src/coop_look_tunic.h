@@ -166,6 +166,11 @@ public:
         // base: the kit put that colour's files in (LICHII_COOP_SELF_TUNIC),
         // so its texels are what the game's memory holds.
         std::string start;
+        // Whether the game's memory may hold the colour asked for (your own Link: the kit's files, a restart in it).
+        // The puppets' wardrobes: false. Their copies' memory holds the pack's texels (the base) only and a painting
+        // is only ever drawn, so a search for it could only find another wardrobe's texture: a painting with your own
+        // Link's texels took your Link's tunic for a puppet's (row 198, 0.11.10 log 'cross guard').
+        bool target_in_memory = true;
     };
 
     // A Host missing a part never stops the game (0.11.9 lane crash: a Host copied after it was moved from had no

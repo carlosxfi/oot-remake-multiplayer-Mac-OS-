@@ -333,12 +333,17 @@ Error encode_body(const PlayerLife& m, Writer& w) {
 
 Error check_player_ride(const PlayerRide& m) {
   if (!valid_player_or_self(m.player_number)) return Error::bad_value;
-  if ((m.flags & ~kRideRiding) != 0) return Error::bad_value;
+  if ((m.flags & ~(kRideRiding | kRideFree)) != 0) return Error::bad_value;
+  const bool unridden = (m.flags & kRideFree) != 0;
+  if (unridden && (m.flags & kRideRiding) != 0) return Error::bad_value;  // ridden or free, never both
   COOP_TRY(check_string(m.horse, kMaxRideHorseChars));
-  if ((m.flags & kRideRiding) != 0 && m.horse.empty()) return Error::bad_value;
-  if (!all_finite(m.offset) || !all_finite(m.rotation)) return Error::bad_value;
+  if (m.flags != 0 && m.horse.empty()) return Error::bad_value;
+  if (!all_finite(m.offset) || !all_finite(m.rotation) || !all_finite(m.place)) return Error::bad_value;
   for (float f : m.offset) {
-    if (std::fabs(f) > kMaxRideOffset) return Error::bad_value;
+    if (std::fabs(f) > kMaxRideOffset || (unridden && f != 0.0f)) return Error::bad_value;
+  }
+  for (float f : m.place) {
+    if (std::fabs(f) > kMaxRidePlace || (!unridden && f != 0.0f)) return Error::bad_value;
   }
   if (m.animation) {
     COOP_TRY(check_string(m.animation->name, kMaxAnimationChars));
@@ -350,7 +355,7 @@ Error check_player_ride(const PlayerRide& m) {
 }
 
 // u8 player, u8 flags, horse name, offset 3 x f32, rotation 4 x f32, u8 1 when an
-// animation follows (name, f32 frame, f32 rate), else 0.
+// animation follows (name, f32 frame, f32 rate), else 0; with kRideFree, place 3 x f32.
 Error encode_body(const PlayerRide& m, Writer& w) {
   COOP_TRY(check_player_ride(m));
   w.u8(m.player_number);
@@ -363,6 +368,9 @@ Error encode_body(const PlayerRide& m, Writer& w) {
     w.str(m.animation->name);
     w.f32(m.animation->frame);
     w.f32(m.animation->rate);
+  }
+  if ((m.flags & kRideFree) != 0) {
+    for (float f : m.place) w.f32(f);
   }
   return Error::none;
 }
@@ -653,6 +661,43 @@ void write_object_id(const ObjectId& id, Writer& w) {
   w.u64(id.value);
 }
 
+// Components 25-28 (KeyedValues): keys rising (owner, then name), each once; no remove in a full list; finite.
+bool keyed_before(const KeyedValue& a, const KeyedValue& b) {
+  return a.owner != b.owner ? a.owner < b.owner : a.name < b.name;
+}
+
+Error check_keyed_value(const KeyedValue& v, bool full) {
+  if (std::holds_alternative<KeyedRemove>(v.value)) return full ? Error::bad_value : Error::none;
+  if (const auto* f = std::get_if<float>(&v.value); f && !std::isfinite(*f)) return Error::bad_value;
+  if (const auto* p = std::get_if<Vec3>(&v.value); p && !all_finite(*p)) return Error::bad_value;
+  return Error::none;
+}
+
+Error check_keyed(const KeyedValues& k) {
+  if (k.values.size() > kMaxKeyedValues) return Error::bad_value;
+  for (std::size_t i = 0; i < k.values.size(); ++i) {
+    if (i > 0 && !keyed_before(k.values[i - 1], k.values[i])) return Error::bad_value;
+    COOP_TRY(check_keyed_value(k.values[i], k.full));
+  }
+  return Error::none;
+}
+
+void write_keyed(const KeyedValues& k, Writer& w) {
+  w.u8(k.full ? 1 : 0);
+  w.u16(static_cast<std::uint16_t>(k.values.size()));
+  for (const KeyedValue& v : k.values) {
+    w.u64(v.owner);
+    w.u32(v.name);
+    w.u8(static_cast<std::uint8_t>(v.value.index()));
+    if (const auto* i = std::get_if<std::int32_t>(&v.value)) w.u32(static_cast<std::uint32_t>(*i));
+    if (const auto* f = std::get_if<float>(&v.value)) w.f32(*f);
+    if (const auto* p = std::get_if<Vec3>(&v.value)) {
+      for (float f : *p) w.f32(f);
+    }
+    if (const auto* t = std::get_if<std::uint64_t>(&v.value)) w.u64(*t);
+  }
+}
+
 Error check_object_state(const ObjectState& s) {
   if (s.position && !all_finite(*s.position)) return Error::bad_value;
   if (s.velocity && !all_finite(*s.velocity)) return Error::bad_value;
@@ -678,11 +723,39 @@ Error check_object_state(const ObjectState& s) {
   }
   if (s.hit && s.hit->seq == 0) return Error::bad_value;  // (seqs count from 1)
   if (s.strike && s.strike->seq == 0) return Error::bad_value;
+  if (s.variants) {
+    if (s.variants->recent.size() > kMaxBossVariants) return Error::bad_value;
+    std::uint32_t before = 0;
+    for (const BossVariant& v : s.variants->recent) {
+      if (v.seq == 0 || v.seq <= before || !ValidVariantName(v.name)) return Error::bad_value;
+      for (const auto& p : v.places) {
+        if (p && (v.name.empty() || !all_finite(*p))) return Error::bad_value;
+      }
+      before = v.seq;
+    }
+  }
+  for (const auto* k : {&s.brain, &s.plugs, &s.clocks, &s.events}) {
+    if (*k) COOP_TRY(check_keyed(**k));
+  }
   if (s.orders) {
     if (s.orders->recent.size() > kMaxBossOrders) return Error::bad_value;
     std::uint32_t before = 0;
     for (const BossOrder& o : s.orders->recent) {
       if (o.seq == 0 || o.seq <= before || o.seq > s.orders->seq) return Error::bad_value;
+      before = o.seq;
+    }
+  }
+  if (s.shooter) {
+    if (s.shooter->recent.size() > kMaxBossShooterCalls) return Error::bad_value;
+    std::uint32_t before = 0;
+    for (const BossShooterCall& o : s.shooter->recent) {
+      if (o.seq == 0 || o.seq <= before || o.seq > s.shooter->seq) return Error::bad_value;
+      const auto k = static_cast<std::uint8_t>(o.kind);
+      if (k < 1 || k > 3) return Error::bad_value;
+      // Bytes past the kind's wire tail never go out: a list that holds any would not read back the same.
+      for (std::size_t i = BossShooterTailOnWire(o.kind); i < o.tail.size(); ++i) {
+        if (o.tail[i] != 0) return Error::bad_value;
+      }
       before = o.seq;
     }
   }
@@ -814,7 +887,94 @@ void write_object_state(const ObjectState& s, Writer& w) {
       }
     });
   }
+  if (s.variants) {
+    component(ObjectComponent::variants, [&] {
+      w.u8(static_cast<std::uint8_t>(s.variants->recent.size()));
+      for (const BossVariant& v : s.variants->recent) {
+        w.u32(v.seq);
+        w.str(v.name);
+        std::uint8_t mask = 0;  // (row 222: a named ask's places, BossVariant::places)
+        for (std::size_t i = 0; i < v.places.size(); ++i) {
+          if (v.places[i]) mask |= static_cast<std::uint8_t>(1u << i);
+        }
+        w.u8(mask);
+        for (const auto& p : v.places) {
+          if (p) {
+            for (float f : *p) w.f32(f);
+          }
+        }
+        w.u32(v.kind);  // (row 222: the ask's place kind)
+      }
+    });
+  }
+  if (s.brain) component(ObjectComponent::brain, [&] { write_keyed(*s.brain, w); });
+  if (s.plugs) component(ObjectComponent::plugs, [&] { write_keyed(*s.plugs, w); });
+  if (s.clocks) component(ObjectComponent::clocks, [&] { write_keyed(*s.clocks, w); });
+  if (s.events) component(ObjectComponent::events, [&] { write_keyed(*s.events, w); });
+  if (s.shooter) {
+    component(ObjectComponent::shooter, [&] {
+      w.u32(s.shooter->seq);
+      w.u8(static_cast<std::uint8_t>(s.shooter->recent.size()));
+      for (const BossShooterCall& o : s.shooter->recent) {
+        w.u32(o.seq);
+        w.u8(static_cast<std::uint8_t>(o.kind));
+        w.u32(o.key);
+        w.u32(static_cast<std::uint32_t>(o.asked));
+        w.u32(static_cast<std::uint32_t>(o.index));
+        w.bytes(o.tail.data(), BossShooterTailOnWire(o.kind));
+      }
+    });
+  }
 }
+
+}  // namespace
+
+bool ValidVariantName(std::string_view name) {
+  if (name.size() > kMaxBossVariantChars) return false;
+  for (const char ch : name) {
+    if (ch < 0x21 || ch > 0x7e) return false;  // printable ASCII, no space
+  }
+  return true;
+}
+
+KeyedValues MergeKeyed(const KeyedValues* kept, const KeyedValues& in, std::size_t& dropped) {
+  KeyedValues out;
+  out.full = true;
+  if (!in.full && kept) out.values = kept->values;
+  for (const KeyedValue& v : in.values) {
+    const auto at = std::lower_bound(out.values.begin(), out.values.end(), v, keyed_before);
+    const bool there = at != out.values.end() && at->owner == v.owner && at->name == v.name;
+    if (std::holds_alternative<KeyedRemove>(v.value)) {
+      if (there) out.values.erase(at);
+    } else if (there) {
+      at->value = v.value;
+    } else if (out.values.size() >= kMaxKeyedValues) {
+      ++dropped;
+    } else {
+      out.values.insert(at, v);
+    }
+  }
+  return out;
+}
+
+std::size_t KeepKeyed(const ObjectState* kept, ObjectState& s) {
+  std::size_t dropped = 0;
+  auto keep = [&](std::optional<KeyedValues> ObjectState::*list) {
+    const std::optional<KeyedValues>* old = kept ? &(kept->*list) : nullptr;
+    if (!(s.*list)) {
+      if (old && *old) s.*list = **old;
+      return;
+    }
+    s.*list = MergeKeyed(old && *old ? &**old : nullptr, *(s.*list), dropped);
+  };
+  keep(&ObjectState::brain);
+  keep(&ObjectState::plugs);
+  keep(&ObjectState::clocks);
+  keep(&ObjectState::events);
+  return dropped;
+}
+
+namespace {
 
 bool has_duplicate_id(const std::vector<ObjectPresence>& objects) {
   std::vector<ObjectId> ids;
@@ -1149,6 +1309,12 @@ Error decode_body(Reader& r, PlayerRide& m) {
   m = PlayerRide{};
   COOP_READ(r.u8(m.player_number));
   COOP_READ(r.u8(m.flags));
+  // The flags say what follows (a place with kRideFree), so a bad flags byte is refused as a bad value
+  // here, before it can make the reader run past the end looking for a place that was never sent.
+  if ((m.flags & ~(kRideRiding | kRideFree)) != 0 ||
+      (m.flags & (kRideRiding | kRideFree)) == (kRideRiding | kRideFree)) {
+    return Error::bad_value;
+  }
   COOP_TRY(r.str(m.horse, kMaxRideHorseChars));
   for (float& f : m.offset) COOP_READ(r.f32(f));
   for (float& f : m.rotation) COOP_READ(r.f32(f));
@@ -1161,6 +1327,9 @@ Error decode_body(Reader& r, PlayerRide& m) {
     COOP_READ(r.f32(a.frame));
     COOP_READ(r.f32(a.rate));
     m.animation = std::move(a);
+  }
+  if ((m.flags & kRideFree) != 0) {
+    for (float& f : m.place) COOP_READ(r.f32(f));
   }
   return check_player_ride(m);
 }
@@ -1467,6 +1636,45 @@ Error read_boss_action(Reader& c, BossAction& a) {
   return Error::none;
 }
 
+Error read_keyed(Reader& c, KeyedValues& k) {
+  std::uint8_t mode = 0;
+  std::uint16_t count = 0;
+  COOP_READ(c.u8(mode));
+  COOP_READ(c.u16(count));
+  if (mode > 1 || count > kMaxKeyedValues) return Error::bad_value;
+  k.full = mode == 1;
+  if (c.left() < std::size_t{count} * 13) return Error::truncated;
+  k.values.reserve(count);
+  for (std::uint16_t i = 0; i < count; ++i) {
+    KeyedValue& v = k.values.emplace_back();
+    std::uint8_t type = 0;
+    COOP_READ(c.u64(v.owner));
+    COOP_READ(c.u32(v.name));
+    COOP_READ(c.u8(type));
+    switch (type) {
+      case 0: v.value = KeyedRemove{}; break;
+      case 1: {
+        std::uint32_t word = 0;
+        COOP_READ(c.u32(word));
+        v.value = static_cast<std::int32_t>(word);
+        break;
+      }
+      case 2: {
+        float f = 0;
+        COOP_READ(c.f32(f));
+        v.value = f;
+        break;
+      }
+      case 3: COOP_TRY(read_floats(c, v.value.emplace<Vec3>())); break;
+      case 4: COOP_READ(c.u64(v.value.emplace<std::uint64_t>())); break;
+      default: return Error::bad_value;
+    }
+    if (i > 0 && !keyed_before(k.values[i - 1], v)) return Error::bad_value;
+    COOP_TRY(check_keyed_value(v, k.full));
+  }
+  return Error::none;
+}
+
 Error decode_component(ObjectComponent id, Reader& c, ObjectState& s, bool& known) {
   known = true;
   switch (id) {
@@ -1546,6 +1754,65 @@ Error decode_component(ObjectComponent id, Reader& c, ObjectState& s, bool& know
       }
       return Error::none;
     }
+    case ObjectComponent::shooter: {
+      BossShooterCalls& b = s.shooter.emplace();
+      std::uint8_t count = 0;
+      COOP_READ(c.u32(b.seq));
+      COOP_READ(c.u8(count));
+      if (count > kMaxBossShooterCalls) return Error::bad_value;
+      std::uint32_t before = 0;
+      for (std::uint8_t i = 0; i < count; ++i) {
+        BossShooterCall& o = b.recent.emplace_back();
+        std::uint8_t kind = 0;
+        std::uint32_t asked = 0;
+        std::uint32_t index = 0;
+        COOP_READ(c.u32(o.seq));
+        COOP_READ(c.u8(kind));
+        COOP_READ(c.u32(o.key));
+        COOP_READ(c.u32(asked));
+        COOP_READ(c.u32(index));
+        if (o.seq == 0 || o.seq <= before || o.seq > b.seq || kind < 1 || kind > 3) return Error::bad_value;
+        before = o.seq;
+        o.kind = static_cast<BossShooterKind>(kind);
+        o.asked = static_cast<std::int32_t>(asked);
+        o.index = static_cast<std::int32_t>(index);
+        for (std::size_t k = 0; k < BossShooterTailOnWire(o.kind); ++k) COOP_READ(c.u8(o.tail[k]));
+      }
+      return Error::none;
+    }
+    case ObjectComponent::variants: {
+      BossVariants& b = s.variants.emplace();
+      std::uint8_t count = 0;
+      COOP_READ(c.u8(count));
+      if (count > kMaxBossVariants) return Error::bad_value;
+      std::uint32_t before = 0;
+      for (std::uint8_t i = 0; i < count; ++i) {
+        BossVariant& v = b.recent.emplace_back();
+        COOP_READ(c.u32(v.seq));
+        COOP_TRY(c.str(v.name, kMaxBossVariantChars));
+        if (v.seq == 0 || v.seq <= before || !ValidVariantName(v.name)) return Error::bad_value;
+        std::uint8_t mask = 0;
+        COOP_READ(c.u8(mask));
+        if (mask > 0x7 || (mask != 0 && v.name.empty())) return Error::bad_value;
+        for (std::size_t k = 0; k < v.places.size(); ++k) {
+          if (mask & (1u << k)) {
+            COOP_TRY(read_floats(c, v.places[k].emplace()));
+            if (!all_finite(*v.places[k])) return Error::bad_value;
+          }
+        }
+        COOP_READ(c.u32(v.kind));
+        before = v.seq;
+      }
+      return Error::none;
+    }
+    case ObjectComponent::brain:
+      return read_keyed(c, s.brain.emplace());
+    case ObjectComponent::plugs:
+      return read_keyed(c, s.plugs.emplace());
+    case ObjectComponent::clocks:
+      return read_keyed(c, s.clocks.emplace());
+    case ObjectComponent::events:
+      return read_keyed(c, s.events.emplace());
     case ObjectComponent::strike: {
       ObjectStrike& k = s.strike.emplace();
       COOP_READ(c.u32(k.seq));
@@ -2383,6 +2650,39 @@ Error decode_body(Reader& r, ModSettings& m) {
   return check_mod_settings(m);
 }
 
+Error check_mod_data(const ModData& m) {
+  if (!valid_player_or_self(m.player_number) || !valid_mod_id(m.mod_id) || !valid_mod_key(m.key) ||
+      m.value.size() > kMaxModDataBytes) {
+    return Error::bad_value;
+  }
+  return Error::none;
+}
+
+// MOD_DATA: u8 player, str mod id, str key, u8 length (0 to 64), then the value's bytes.
+Error encode_body(const ModData& m, Writer& w) {
+  COOP_TRY(check_mod_data(m));
+  w.u8(m.player_number);
+  w.str(m.mod_id);
+  w.str(m.key);
+  w.u8(static_cast<std::uint8_t>(m.value.size()));
+  w.bytes(m.value.data(), m.value.size());
+  return Error::none;
+}
+
+Error decode_body(Reader& r, ModData& m) {
+  m = ModData{};
+  std::uint8_t size = 0;
+  COOP_READ(r.u8(m.player_number));
+  COOP_TRY(r.str(m.mod_id, kMaxModIdChars));
+  COOP_TRY(r.str(m.key, kMaxModSettingKeyChars));
+  COOP_READ(r.u8(size));
+  if (size > kMaxModDataBytes) return Error::bad_value;
+  std::span<const std::uint8_t> bytes;
+  COOP_READ(r.take(size, bytes));
+  m.value.assign(bytes.begin(), bytes.end());
+  return check_mod_data(m);
+}
+
 // LOCAL_LEAVE: u8 seat.
 Error encode_body(const LocalLeave& m, Writer& w) {
   if (!valid_seat(m.seat)) return Error::bad_value;
@@ -2488,6 +2788,26 @@ Error decode_body(Reader& r, BossAlive& m) {
   COOP_READ(r.u16(m.known));
   COOP_READ(r.u16(m.alive));
   return check_boss_alive(m);
+}
+
+// EMOTE: u8 player, u8 id (1 to kMaxEmoteId).
+Error check_emote(const Emote& m) {
+  if (!valid_player_or_self(m.player_number) || m.id == 0 || m.id > kMaxEmoteId) return Error::bad_value;
+  return Error::none;
+}
+
+Error encode_body(const Emote& m, Writer& w) {
+  COOP_TRY(check_emote(m));
+  w.u8(m.player_number);
+  w.u8(m.id);
+  return Error::none;
+}
+
+Error decode_body(Reader& r, Emote& m) {
+  m = Emote{};
+  COOP_READ(r.u8(m.player_number));
+  COOP_READ(r.u8(m.id));
+  return check_emote(m);
 }
 
 // BOSS_HEART: u8 player, u8 boss (0 to 15), u8 given (0, 1), u32 max life (1 to 80).
@@ -3389,7 +3709,7 @@ MessageType type_of(const Message& message) {
       MessageType::dbno_threat,
       MessageType::difficulty,
       MessageType::voice_frame,
-      MessageType::mod_list,      MessageType::mod_settings,
+      MessageType::mod_list,      MessageType::mod_settings, MessageType::mod_data,
       MessageType::lobby_action,  MessageType::lobby_mutes, MessageType::lobby_result,
       MessageType::local_join,
       MessageType::local_joined,
@@ -3406,6 +3726,7 @@ MessageType type_of(const Message& message) {
       MessageType::lift_share,
       MessageType::pvp_strike,  MessageType::pvp_result,  MessageType::pvp_native,
       MessageType::boss_alive,
+      MessageType::emote,
   };
   static_assert(std::size(kTypes) == std::variant_size_v<Message>);
   return kTypes[message.index()];
@@ -3500,6 +3821,7 @@ bool allowed_on_channel(MessageType type, std::uint8_t channel) {
     case MessageType::difficulty:
     case MessageType::mod_list:
     case MessageType::mod_settings:
+    case MessageType::mod_data:
     case MessageType::lobby_action:
     case MessageType::lobby_mutes:
     case MessageType::lobby_result:
@@ -3513,6 +3835,7 @@ bool allowed_on_channel(MessageType type, std::uint8_t channel) {
     case MessageType::local_message:
     case MessageType::player_look:
     case MessageType::link_sound:
+    case MessageType::emote:
     case MessageType::boss_scene:
     case MessageType::boss_heart:
     case MessageType::join_knock:
@@ -3646,6 +3969,7 @@ bool may_send(Sender from, MessageType type) {
     case MessageType::difficulty:
     case MessageType::mod_list:
     case MessageType::mod_settings:
+    case MessageType::mod_data:
     case MessageType::pvp_hit:
     case MessageType::pvp_hurt:
     case MessageType::ocarina_note:
@@ -3658,6 +3982,7 @@ bool may_send(Sender from, MessageType type) {
     case MessageType::boss_scene:
     case MessageType::boss_heart:
     case MessageType::boss_alive:
+    case MessageType::emote:
     case MessageType::lift_ask:
     case MessageType::lift_answer:
     case MessageType::lift_place:
@@ -3705,9 +4030,10 @@ auto* player_field(M& message) {
                       std::is_same_v<T, DbnoThreat> ||
                       std::is_same_v<T, VoiceFrame> ||
                       std::is_same_v<T, ModList> || std::is_same_v<T, ModSettings> ||
+                      std::is_same_v<T, ModData> ||
                       std::is_same_v<T, LinkSound> ||
                       std::is_same_v<T, BossScene> || std::is_same_v<T, BossHeart> ||
-                      std::is_same_v<T, BossAlive> || std::is_same_v<T, PlayerLook> || std::is_same_v<T, LiftAsk> ||
+                      std::is_same_v<T, BossAlive> || std::is_same_v<T, Emote> || std::is_same_v<T, PlayerLook> || std::is_same_v<T, LiftAsk> ||
                       std::is_same_v<T, LiftAnswer> || std::is_same_v<T, LiftPlace> ||
                       std::is_same_v<T, PvpStrike> || std::is_same_v<T, PvpResult> ||
                       std::is_same_v<T, PvpNative>) {
@@ -3850,6 +4176,7 @@ Error decode(std::span<const std::uint8_t> bytes, Message& out) {
     case MessageType::voice_frame: return decode_as<VoiceFrame>(body, out);
     case MessageType::mod_list: return decode_as<ModList>(body, out);
     case MessageType::mod_settings: return decode_as<ModSettings>(body, out);
+    case MessageType::mod_data: return decode_as<ModData>(body, out);
     case MessageType::lobby_action: return decode_as<LobbyAction>(body, out);
     case MessageType::lobby_mutes: return decode_as<LobbyMutes>(body, out);
     case MessageType::lobby_result: return decode_as<LobbyResult>(body, out);
@@ -3873,6 +4200,7 @@ Error decode(std::span<const std::uint8_t> bytes, Message& out) {
     case MessageType::boss_scene: return decode_as<BossScene>(body, out);
     case MessageType::boss_heart: return decode_as<BossHeart>(body, out);
     case MessageType::boss_alive: return decode_as<BossAlive>(body, out);
+    case MessageType::emote: return decode_as<Emote>(body, out);
     case MessageType::drop_spawn: return decode_as<DropSpawn>(body, out);
     case MessageType::drop_take: return decode_as<DropTake>(body, out);
     case MessageType::drop_ask: return decode_as<DropAsk>(body, out);
@@ -3923,6 +4251,9 @@ bool GrassCut::operator==(const GrassCut& o) const {
 }  // namespace coop::protocol
 
 namespace coop::protocol {
+
+bool is_mod_id(std::string_view id) { return valid_mod_id(id); }
+bool is_mod_key(std::string_view key) { return valid_mod_key(key); }
 
 std::uint32_t flag_hash(std::string_view name) {
   // MurmurHash3_x86_32 (Austin Appleby, public domain), seed 0, written out

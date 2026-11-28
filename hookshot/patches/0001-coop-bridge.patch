@@ -1,4 +1,4 @@
-From f0e055a94b709187fd24c9ca95fbf9d52fa076a3 Mon Sep 17 00:00:00 2001
+From d2a3f499c3163fd4e5a464553c45165a8b6b8a9e Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Wed, 11 Nov 2026 22:08:58 -0900
 Subject: [PATCH] Co-op bridge: frame hook, AI hold and the co-op module's
@@ -31,8 +31,8 @@ finds with dlsym (hos_coop_fs_*, hos_coop_input_*, hos_coop_pad_info/read/take,
 hos_coop_texture*, hos_coop_menu_state and hos_coop_hud_refresh from later
 patches); on Windows they are dllexport.
 ---
- gpu/vk/hos_coop_draw.h   |  43 +++++++++
- gpu/vk/vk_coop.cpp       | 160 ++++++++++++++++++++++++++++++
+ gpu/vk/hos_coop_draw.h   |  48 +++++++++
+ gpu/vk/vk_coop.cpp       | 173 ++++++++++++++++++++++++++++++
  gpu/vk/vk_coop.h         |  20 ++++
  gpu/vk/vk_draw.cpp       |   2 +
  gpu/vk/vk_menu.cpp       |   9 +-
@@ -45,7 +45,7 @@ patches); on Windows they are dllexport.
  nx2/build.py             |  10 +-
  nx2/coop_hooks.py        |  61 ++++++++++++
  nx2/lift.py              |   2 +
- 14 files changed, 673 insertions(+), 8 deletions(-)
+ 14 files changed, 691 insertions(+), 8 deletions(-)
  create mode 100644 gpu/vk/hos_coop_draw.h
  create mode 100644 gpu/vk/vk_coop.cpp
  create mode 100644 gpu/vk/vk_coop.h
@@ -58,7 +58,7 @@ new file mode 100644
 index 00000000..9329c4bd
 --- /dev/null
 +++ b/gpu/vk/hos_coop_draw.h
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,48 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later
 +   The co-op module's drawing over the picture (oot-remake-multiplayer, docs/hookshot.md).
 +
@@ -86,13 +86,18 @@ index 00000000..9329c4bd
 +    void (*use_font)(void *user, int id);             /* text and text_width draw with it from now on; 0: Hookshot's own */
 +    int (*image)(void *user, int w, int h, const uint8_t *rgba);   /* a picture (w*h*4 bytes, rows top down, straight alpha) copied in; its id, 0 on failure */
 +    void (*draw_image)(void *user, int id, float x0, float y0, float x1, float y1, uint32_t tint);   /* the whole picture into the rectangle */
++    /* Since hos_coop_draw3 below (only its table has it): a picture turned about its middle (cx, cy), half_w x half_h
++       each side of it, by radians clockwise on screen, as the game turns a pane (the maps' player arrows: one picture
++       for every facing). */
++    void (*draw_image_turned)(void *user, int id, float cx, float cy, float half_w, float half_h, float radians, uint32_t tint);
 +} HosCoopDraw;
 +
 +/* The module's exports (extern "C"), all optional (an older module has none: nothing is drawn). Hookshot calls
-+   hos_coop_draw2 when the module has it, else hos_coop_draw. */
++   hos_coop_draw3 when the module has it, else hos_coop_draw2, else hos_coop_draw. */
 +typedef int (*hos_coop_draw_wanted_fn)(void);             /* 1: something to draw now (Hookshot then makes an ImGui frame) */
 +typedef void (*hos_coop_draw_fn)(const HosCoopDraw *d);   /* draws it (the table up to text_width) */
-+typedef void (*hos_coop_draw2_fn)(const HosCoopDraw *d);  /* draws it (the whole table) */
++typedef void (*hos_coop_draw2_fn)(const HosCoopDraw *d);  /* draws it (the table up to draw_image) */
++typedef void (*hos_coop_draw3_fn)(const HosCoopDraw *d);  /* draws it (the whole table) */
 +/* The game's camera, for co-op's name tags and edge arrows (optional exports; an older module has none). For each draw
 +   into the scene's colour target (B10G11R11 with depth), on the thread that records it: hos_coop_camera_wanted says
 +   whether this frame (Hookshot's frame number) still wants a camera from a target this size (the largest of a frame
@@ -107,7 +112,7 @@ new file mode 100644
 index 00000000..693d1247
 --- /dev/null
 +++ b/gpu/vk/vk_coop.cpp
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,173 @@
 +// (oot-remake-multiplayer) Co-op's drawing over the picture: hookshot_coop.dll's hos_coop_draw_wanted / hos_coop_draw
 +// (hos_coop_draw.h), found once host/coop_bridge.c has loaded it, drawn in the menu's Dear ImGui frame (vk_menu.cpp
 +// menu_record). Nothing happens without the module: no ImGui frame is made for it. A module with hos_coop_draw2 also gets
@@ -139,7 +144,8 @@ index 00000000..693d1247
 +
 +std::atomic<hos_coop_draw_wanted_fn> wanted_fn{nullptr};
 +std::atomic<hos_coop_draw_fn> draw_fn{nullptr};
-+std::atomic<hos_coop_draw2_fn> draw2_fn{nullptr};   // (a module with the game look: the whole table)
++std::atomic<hos_coop_draw2_fn> draw2_fn{nullptr};   // (a module with the game look: the table up to draw_image)
++std::atomic<hos_coop_draw3_fn> draw3_fn{nullptr};   // (one that also turns pictures: the whole table)
 +std::atomic<hos_coop_camera_wanted_fn> camera_wanted_fn{nullptr};   // (a module with name tags on Hookshot)
 +std::atomic<hos_coop_camera_fn> camera_fn{nullptr};
 +
@@ -154,6 +160,7 @@ index 00000000..693d1247
 +    auto w = (hos_coop_draw_wanted_fn)(void *)GetProcAddress(m, "hos_coop_draw_wanted");
 +    auto d = (hos_coop_draw_fn)(void *)GetProcAddress(m, "hos_coop_draw");
 +    auto d2 = (hos_coop_draw2_fn)(void *)GetProcAddress(m, "hos_coop_draw2");
++    auto d3 = (hos_coop_draw3_fn)(void *)GetProcAddress(m, "hos_coop_draw3");
 +    auto cw = (hos_coop_camera_wanted_fn)(void *)GetProcAddress(m, "hos_coop_camera_wanted");
 +    auto cf = (hos_coop_camera_fn)(void *)GetProcAddress(m, "hos_coop_camera");
 +#else
@@ -161,12 +168,14 @@ index 00000000..693d1247
 +    auto w = (hos_coop_draw_wanted_fn)(m ? dlsym(m, "hos_coop_draw_wanted") : dlsym(RTLD_DEFAULT, "hos_coop_draw_wanted"));
 +    auto d = (hos_coop_draw_fn)(m ? dlsym(m, "hos_coop_draw") : dlsym(RTLD_DEFAULT, "hos_coop_draw"));
 +    auto d2 = (hos_coop_draw2_fn)(m ? dlsym(m, "hos_coop_draw2") : dlsym(RTLD_DEFAULT, "hos_coop_draw2"));
++    auto d3 = (hos_coop_draw3_fn)(m ? dlsym(m, "hos_coop_draw3") : dlsym(RTLD_DEFAULT, "hos_coop_draw3"));
 +    auto cw = (hos_coop_camera_wanted_fn)(m ? dlsym(m, "hos_coop_camera_wanted") : dlsym(RTLD_DEFAULT, "hos_coop_camera_wanted"));
 +    auto cf = (hos_coop_camera_fn)(m ? dlsym(m, "hos_coop_camera") : dlsym(RTLD_DEFAULT, "hos_coop_camera"));
 +#endif
 +    if (!w || !d) return;   // (an older module: nothing to draw)
 +    wanted_fn.store(w, std::memory_order_release);
 +    draw2_fn.store(d2, std::memory_order_release);
++    draw3_fn.store(d3, std::memory_order_release);
 +    if (cw && cf) {
 +        camera_fn.store(cf, std::memory_order_release);
 +        camera_wanted_fn.store(cw, std::memory_order_release);
@@ -220,6 +229,13 @@ index 00000000..693d1247
 +    ImGui::GetForegroundDrawList()->AddImage(images_[id - 1]->GetTexRef(), ImVec2(x0, y0), ImVec2(x1, y1), ImVec2(0, 0),
 +                                             ImVec2(1, 1), tint);
 +}
++void draw_image_turned(void *, int id, float cx, float cy, float hw, float hh, float radians, uint32_t tint) {
++    if (id <= 0 || id > (int)images_.size()) return;
++    const float c = cosf(radians), s = sinf(radians);   // (y down: clockwise on screen)
++    const auto at = [&](float x, float y) { return ImVec2(cx + x * c - y * s, cy + x * s + y * c); };
++    ImGui::GetForegroundDrawList()->AddImageQuad(images_[id - 1]->GetTexRef(), at(-hw, -hh), at(hw, -hh), at(hw, hh),
++                                                 at(-hw, hh), ImVec2(0, 0), ImVec2(1, 0), ImVec2(1, 1), ImVec2(0, 1), tint);
++}
 +void rect(void *, float x0, float y0, float x1, float y1, uint32_t rgba, float rounding) {
 +    ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), rgba, rounding);
 +}
@@ -260,9 +276,11 @@ index 00000000..693d1247
 +void draw(uint32_t w, uint32_t h) {
 +    const auto d = draw_fn.load(std::memory_order_acquire);
 +    if (!d) return;
-+    HosCoopDraw c{(float)w, (float)h, nullptr, rect, circle, triangle, text, text_width, font_load, use_font, image, draw_image};
++    HosCoopDraw c{(float)w, (float)h, nullptr, rect, circle, triangle, text, text_width, font_load, use_font,
++                  image, draw_image, draw_image_turned};
 +    chosen = nullptr;
-+    if (const auto d2 = draw2_fn.load(std::memory_order_acquire)) d2(&c);
++    if (const auto d3 = draw3_fn.load(std::memory_order_acquire)) d3(&c);
++    else if (const auto d2 = draw2_fn.load(std::memory_order_acquire)) d2(&c);
 +    else d(&c);
 +    chosen = nullptr;   // (the menu's text after it: Hookshot's own font)
 +}
@@ -295,7 +313,7 @@ index 00000000..59acc4be
 +
 +}  // namespace mkwvk::coop
 diff --git a/gpu/vk/vk_draw.cpp b/gpu/vk/vk_draw.cpp
-index 230a4d0f..185cc472 100644
+index 813d3430..0789e64d 100644
 --- a/gpu/vk/vk_draw.cpp
 +++ b/gpu/vk/vk_draw.cpp
 @@ -59,6 +59,7 @@
@@ -306,7 +324,7 @@ index 230a4d0f..185cc472 100644
  #include "vk_fsr3.h"          // (AMD FSR 3.1 in the gameplay upscale's place)
  #include "vk_fsr3_inputs.h"
  #include "reactive_policy.h"
-@@ -8891,6 +8892,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
+@@ -9073,6 +9074,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
      // FSR 3.1 (vk_fsr3_inputs.cpp). The vertex stage's uniform buffer 3 (NVN's binding 0)
      if (at.n && at.color[0] && at.depth) {
          temporal_note_scene_draw(at.color[0], at.width, at.height, at.depth, s.ubo[0][0].addr, s.ubo[0][0].size);
@@ -315,7 +333,7 @@ index 230a4d0f..185cc472 100644
          if (upscale_route::wanted() && s.ubo[0][0].addr && s.ubo[0][0].size >= 0x230 && route_scene_format(at.color[0]->format))
              upscale_route::note_scene(at.width, at.height);
 diff --git a/gpu/vk/vk_menu.cpp b/gpu/vk/vk_menu.cpp
-index 2f7366ff..9bf441c4 100644
+index 78a74af7..88124d57 100644
 --- a/gpu/vk/vk_menu.cpp
 +++ b/gpu/vk/vk_menu.cpp
 @@ -44,6 +44,7 @@
@@ -326,7 +344,7 @@ index 2f7366ff..9bf441c4 100644
  #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
  #include "vk_dlss.h"
  #include "vk_framegen.h"   // (Frame generation by: who makes the frames now, framegen_maker)
-@@ -5681,7 +5682,8 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h, in
+@@ -5683,7 +5684,8 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h, in
      const bool start = startup_on.load(std::memory_order_acquire);
      const bool fps = opts.show_fps && !start;   // (no game frames yet: not "0 FPS" over the start-up screen)
      const bool open = open_now.load(std::memory_order_relaxed);
@@ -336,7 +354,7 @@ index 2f7366ff..9bf441c4 100644
          // (but a new window size or Menu size since the last bake: one frame with nothing drawn that bakes the menu's glyphs
          // and measures its page for the new size, so the next open has no hitch whatever was resized while nothing showed)
          if (prebake_needed(w, h) && ui::begin(w, h)) {
-@@ -5704,6 +5706,7 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h, in
+@@ -5706,6 +5708,7 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h, in
      ui::Ctx c = ui_ctx(w, h);
      prebake(c);   // (the menu's glyphs at this size, before it opens: no hitch then)
      if (start) draw_startup(c);   // (under the menu)
@@ -344,7 +362,7 @@ index 2f7366ff..9bf441c4 100644
      if (open) draw_menu(c);
      if (fps) draw_fps(c, open);
      ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
-@@ -5713,9 +5716,11 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h, in
+@@ -5715,9 +5718,11 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h, in
  void menu_record_image(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h) {
      const bool open = open_now.load(std::memory_order_relaxed);
      const bool fps = opts.show_fps && !startup_on.load(std::memory_order_acquire);
@@ -716,10 +734,10 @@ index 00000000..9e2075c4
 +
 +#endif
 diff --git a/host/nn_hid.c b/host/nn_hid.c
-index 2cd5f943..2f401d30 100644
+index e1e7da0d..eb47959a 100644
 --- a/host/nn_hid.c
 +++ b/host/nn_hid.c
-@@ -62,7 +62,8 @@ static int64_t sampling;
+@@ -63,7 +63,8 @@ static int64_t sampling;
  
  int rx_option(int id, int otherwise);
  /* (the Insert menu takes the keyboard while it is open) */
@@ -729,7 +747,7 @@ index 2cd5f943..2f401d30 100644
  
  int hos_mouse_take(int32_t *dx, int32_t *dy);   /* display.c */
  
-@@ -1554,6 +1555,7 @@ done:
+@@ -1567,6 +1568,7 @@ done:
  static void vibration_send(uint64_t handle, uint64_t value);
  volatile int64_t hos_hid_last_read;
  volatile uint64_t hos_hid_buttons;   /* (the buttons the game was last given: HidNpadButton bits) */
@@ -737,7 +755,7 @@ index 2cd5f943..2f401d30 100644
  
  /* GetNpadStates(State* out, int count, unsigned int const& npadId): the latest state first */
  static void npad_states(Ctx *c) {
-@@ -1685,6 +1687,7 @@ static void npad_states(Ctx *c) {
+@@ -1698,6 +1700,7 @@ static void npad_states(Ctx *c) {
          hos_input_movie_end(&pad);   /* (recording: the frame's pad) */
      }
      int64_t s = ++sampling;
@@ -874,10 +892,10 @@ index 3d76f1bb..b4edaf14 100644
          const int asked = __atomic_exchange_n(&fullscreen_asked, -1, __ATOMIC_ACQ_REL);
          if (asked >= 0) set_fullscreen(asked);
 diff --git a/nx2/build.py b/nx2/build.py
-index dac1d534..e642e102 100644
+index e9af3555..c2bd2624 100644
 --- a/nx2/build.py
 +++ b/nx2/build.py
-@@ -2090,7 +2090,7 @@ def main():
+@@ -2089,7 +2089,7 @@ def main():
                         "-DIMGUI_DISABLE_WIN32_FUNCTIONS", "-DIMGUI_DISABLE_DEMO_WINDOWS", "-DIMGUI_DISABLE_DEBUG_TOOLS"]
          imgui_deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (imgui, os.path.join(imgui, "backends"), zbic)
                                for f in sorted(os.listdir(d)) if f.endswith(".h"))
@@ -886,7 +904,7 @@ index dac1d534..e642e102 100644
          for f in ("imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "backends/imgui_impl_vulkan.cpp"):
              vk_jobs.append((cxx, os.path.join(imgui, *f.split("/")),
                              os.path.join(obj_dir, "vk_imgui_" + os.path.basename(f)[:-4] + ".o"), tp_vflags + imgui_flags,
-@@ -2311,11 +2311,17 @@ def main():
+@@ -2310,11 +2310,17 @@ def main():
          exe = os.path.join(out, EXE)   # (+ longshot.map: crash offsets -> f_<guest address>)
          t = time.time()
          # (--export-dynamic-symbol: the window's state, which the Vulkan back end's own Win32 calls read by name)

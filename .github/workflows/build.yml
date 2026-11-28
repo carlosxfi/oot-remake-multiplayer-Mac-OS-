@@ -1,7 +1,7 @@
 name: Build
 
 # Two tiers (docs/testing.md, "CI tiers"). One full run per batch, not per branch:
-# - branch tier, on a push to any other branch: linux gcc unit tests (plus a compile of
+# - branch tier (a push to a work branch no longer starts Build: see `on: push` below; kept for a pull request from a fork, which runs it): linux gcc unit tests (plus a compile of
 #   the Hookshot module, the hook code) and python-tools on ubuntu with Python 3.12, and
 #   Content guard (its own workflow). The Fritchii emulator is retired (0.11.12): no job
 #   builds or ships it; lichii/hook stays, compiled into the Hookshot module. A
@@ -19,6 +19,10 @@ name: Build
 # A pull request from a branch of this repo into anything but main runs nothing:
 # the push already ran it. A pull request from a fork runs the branch tier.
 # Docs-only changes skip Build; Content guard still checks them.
+# Scope (B #131, 2026-11-26): a manual run on a work branch whose diff vs its merge-base with the `base` input
+# (default integrate-0120) touches only python-only paths (tools/ci_scope.py SCOPED: tools/autotest, docs, *.md, ...)
+# runs python-tools only; windows, linux and linux-longshot are SKIPPED and the scope job's summary says
+# 'scope: python-only (files: ...)'. main, integrate-*, release-*, tags, pushes and pull requests always run full.
 #
 # The full-tier test is repeated in each job's `if` or matrix (GitHub has no
 # shared expressions):
@@ -30,6 +34,15 @@ name: Build
 
 on:
   push:
+    # Only main, integrate-*, release-* and tags: a push to a work branch starts nothing (every work-branch push used to start a
+    # full Build while the worker dispatched one on the same sha: 13 duplicate runs, 2026-11-25). A work branch gets
+    # Build by workflow_dispatch (one full run on the sha logged ready); Content guard is its own workflow and still runs.
+    branches:
+      - main
+      - "integrate-*"
+      - "release-*"
+    tags:
+      - "**"
     paths-ignore:
       - "docs/**"
       - "**/*.md"
@@ -40,21 +53,42 @@ on:
       - "**/*.md"
       - ".github/ISSUE_TEMPLATE/**"
   workflow_dispatch:
+    inputs:
+      base:
+        description: "Branch the scope job diffs against (merge-base); a python-only diff skips the C++ jobs"
+        required: false
+        default: integrate-0120
 
 permissions:
   contents: read
 
-# A new push to a work branch cancels that branch's older run. The event is in the
-# group so a push does not cancel a manual full run on the same branch. Runs on main,
-# integrate-* and tags are kept, each merge with its own finished proof: their group
-# also holds the commit, because a group keeps only one waiting run and a third push
-# would otherwise cancel the second while the first still runs (0.11.4: back-to-back
-# integration pushes left twelve merges without a finished run).
+# A manual run on a work branch (the only Build a work branch gets: its pushes start none) cancels that
+# branch's older manual run. The event is in the group so a push does not cancel a manual full run on the
+# same branch. Runs on main, integrate-*, release-* and tags are kept, each with its own finished proof: their
+# group also holds the commit, because a group keeps only one waiting run and a third push would otherwise
+# cancel the second while the first still runs (0.11.4: back-to-back integration pushes left twelve merges
+# without a finished run).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/integrate-') || startsWith(github.ref, 'refs/tags/')) && format('-{0}', github.sha) || '' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/integrate-') && !startsWith(github.ref, 'refs/tags/') }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/integrate-') || startsWith(github.ref, 'refs/heads/release-') || startsWith(github.ref, 'refs/tags/')) && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/integrate-') && !startsWith(github.ref, 'refs/heads/release-') && !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  # Full or python-only (header, 'Scope'). Runs on every event; only a manual run on a work branch can come out
+  # python-only. The C++ jobs need it, so it must never be skipped.
+  scope:
+    runs-on: ${{ (github.repository == 'daurosk/oot-remake-multiplayer' && github.actor == 'daurosk' && github.triggering_actor == 'daurosk' && vars.COOP_SELF_HOSTED_LINUX == 'on' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/integrate-') || startsWith(github.ref, 'refs/heads/release-') || startsWith(github.ref, 'refs/tags/'))))) && fromJSON('["self-hosted", "linux", "x64", "squadala-wsl"]') || 'ubuntu-latest' }}
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: scope
+        env:
+          SCOPE_BASE: ${{ inputs.base || 'integrate-0120' }}
+        run: python3 tools/ci_scope.py --event "$GITHUB_EVENT_NAME" --ref "$GITHUB_REF" --base "$SCOPE_BASE" >> "$GITHUB_OUTPUT"
+
   # The puppet pack tool runs on the player's PC (Windows, any recent Python 3), so its
   # tests run there too, on the oldest and newest Python we support. The tests use
   # made-up data only; nothing from the game is needed. Fast tier: ubuntu, 3.12 only.
@@ -65,16 +99,22 @@ jobs:
       matrix:
         os: ${{ fromJSON((github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/integrate-')))) && '["ubuntu-latest", "windows-latest"]' || '["ubuntu-latest"]') }}
         python: ${{ fromJSON((github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/integrate-')))) && '["3.10", "3.12"]' || '["3.12"]') }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'daurosk/oot-remake-multiplayer' && github.actor == 'daurosk' && github.triggering_actor == 'daurosk' && vars.COOP_SELF_HOSTED_LINUX == 'on' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/integrate-') || startsWith(github.ref, 'refs/heads/release-') || startsWith(github.ref, 'refs/tags/'))))) && fromJSON('["self-hosted", "linux", "x64", "squadala-wsl"]') || matrix.os }}
     name: python-tools (${{ matrix.os }}, ${{ matrix.python }})
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install zstandard
+      - run: python -m pip install zstandard numpy pytest pytest-xdist pytest-timeout pillow scikit-image   # (in-game test system: tools/autotest/ingame)
       - name: Puppet pack tests
         run: python tools/puppet_pack/tests/test_puppet_pack.py -v
+      - name: Sound archive reader and writer tests
+        run: python tools/puppet_pack/tests/test_bwav.py -v
+      - name: Character Select voice rules tests
+        run: python tools/puppet_pack/tests/test_voice_map.py -v
+      - name: Character Select voice builder tests
+        run: python tools/puppet_pack/tests/test_voices.py -v
       - name: Title menu rows tests
         run: python tools/puppet_pack/tests/test_title_menu.py -v
       - name: UI pack library tests (parts, labels, strings files)
@@ -97,18 +137,58 @@ jobs:
         run: python tools/puppet_pack/tests/test_autogen_flags.py -v
       - name: Boss beaten sets tests
         run: python tools/puppet_pack/tests/test_boss_beaten.py -v
+      - name: Start points table tests
+        run: python tools/puppet_pack/tests/test_start_points.py -v
       - name: Story event effects tests
         run: python tools/puppet_pack/tests/test_story_effects.py -v
       - name: Save flags tests
         run: python tools/autotest/tests/test_save_flags.py -v
       - name: Hookshot autotest driver tests
         run: python tools/autotest/tests/test_hookshot.py -v
+      - name: Ocarina key/note table tests
+        run: python tools/autotest/tests/test_ocarina_notes.py -v
       - name: Live play-test kit tests (desync check, MCP server)
         run: python tools/autotest/tests/test_playtest.py -v
+      - name: Sync digest compare tests
+        run: python tools/autotest/tests/test_compare_digest.py -v
       - name: Play-test bridge client and MCP tools tests (fake bridge)
         run: python tools/autotest/tests/test_playtest_bridge.py -v
+      # (it plays tools/autotest/ingame/test_smoke.py, tools/autotest/ingame/test_rows.py and
+      # tools/autotest/ingame/test_gear_link.py and tools/autotest/ingame/test_leather_link.py on two fake bridges)
+      - name: In-game test system selftests (fake games, no game)
+        run: python tools/autotest/tests/test_ingame.py -v
+      - name: In-game rejoin, server restart, lan251 and host-menu (rows 292/170) selftests (fake live.py)
+        run: |
+          python tools/autotest/tests/test_ingame_rejoin.py -v
+          python tools/autotest/tests/test_ingame_host_menu.py -v
       - name: Test game window placement tests
         run: python tools/autotest/tests/test_placement.py -v
+      - name: hs.py cache, locks and game build tests
+        run: python tools/hookshot/tests/test_hs.py -v
+      - name: Play-test kit helpers tests (step_until, delta state, call log, doctor)
+        run: python tools/autotest/tests/test_kit_tools.py -v
+      - name: Play-test look (one-call situation text) tests
+        run: python tools/autotest/tests/test_kit_look.py -v
+      - name: Play-test wait_until tests
+        run: python tools/autotest/tests/test_kit_wait.py -v
+      - name: Play-test fight tests
+        run: python tools/autotest/tests/test_kit_fight.py -v
+      - name: Play-test go_to and record_route (routes) tests
+        run: python tools/autotest/tests/test_kit_route.py -v
+      - name: Play-test kit moves tests (shoot, climb, push, jump)
+        run: python tools/autotest/tests/test_kit_move.py -v
+      - name: Play-test kit doctor tests
+        run: python tools/autotest/tests/test_kit_doctor.py -v
+      - name: Shared play-test library (scripts and data) tests
+        run: python tools/autotest/tests/test_kit_library.py -v
+      - name: Shared play-test library check (every script and data file)
+        run: python tools/autotest/kit_library.py check
+      - name: Play-test bridge proof checks tests
+        run: python tools/autotest/tests/test_bridge_proof.py -v
+      - name: Play-test desync check (world compare, sync-coverage rows) tests
+        run: python tools/autotest/tests/test_desync_check.py -v
+      - name: hs.py no-window helpers tests (no console flashing in lane runs)
+        run: python tools/hookshot/tests/test_no_window.py -v
       - name: hs.py shared game files tests
         run: python tools/hookshot/tests/test_hs_share.py -v
       - name: Mods' code patches (Longshot patches 0034, 0035) tests
@@ -117,10 +197,20 @@ jobs:
         run: python tools/hookshot/tests/test_puppet_bow_guard.py -v
       - name: The kit's size table, actor rows and menu archives merge tests
         run: python tools/puppet_pack/tests/test_merge_tables.py -v
+      - name: The kit's Character Select part check (row 280) tests
+        run: python tools/puppet_pack/tests/test_part_check.py -v
+      - name: Character Select's readable names tests
+        run: python tools/puppet_pack/tests/test_charsel_names.py -v
       - name: Test lanes tests
         run: python tools/autotest/tests/test_lanes.py -v
+      - name: Steps files on Hookshot (hs_steps.py, its key verb) tests
+        run: python tools/autotest/tests/test_hs_steps.py -v
       - name: Autotest groups tests
         run: python tools/autotest/tests/test_groups.py -v
+      - name: rc plan (both lanes) tests
+        run: python tools/autotest/tests/test_rc_plan.py -v
+      - name: rc in-game tests plan + summary tests
+        run: python tools/autotest/tests/test_rc_tests.py -v
       - name: Screenshot proof tests
         run: python tools/autotest/tests/test_proof.py -v
       - name: Kit-mode autotest tests
@@ -135,6 +225,8 @@ jobs:
         run: python tools/release/tests/test_problem_report_py.py -v
       - name: Content guard tests (test names with ';')
         run: python tools/tests/test_check_content.py -v
+      - name: Build scope (python-only runs) tests
+        run: python tools/tests/test_ci_scope.py -v
       - name: Study tools tests (main reader, vtables, callers)
         run: python tools/game_scan/tests/test_game_scan.py -v
       - name: Game names file tests
@@ -147,6 +239,37 @@ jobs:
         run: python tools/release/tests/test_apply_patch.py -v
       - name: Kit Discord status tests
         run: python tools/release/tests/test_discord_status.py -v
+      - name: Randomizer kit presets tests
+        run: python tools/rando/tests/test_check_presets.py -v
+      - name: Randomizer kit presets decoded with the pinned OOTRR (row 53; downloads it, fails when it cannot)
+        run: python tools/rando/check_presets.py
+      # Test files no step named before (tools/check_content.py now fails any test_*.py under tools/ that no workflow names).
+      - name: Steps file tests
+        run: python tools/autotest/tests/test_hs_steps.py -v
+      - name: Kit setup tests
+        run: python tools/autotest/tests/test_kit_setup.py -v
+      - name: Character Select UI tests
+        run: python tools/puppet_pack/tests/test_charsel_ui.py -v
+      - name: Eye switch tests
+        run: python tools/puppet_pack/tests/test_eye_switches.py -v
+      - name: HUD pack tests
+        run: python tools/puppet_pack/tests/test_hud.py -v
+      - name: Puppet pack map icons tests
+        run: python tools/puppet_pack/tests/test_map_icons.py -v
+      - name: Party HUD pack tests
+        run: python tools/puppet_pack/tests/test_party_hud.py -v
+      - name: Look cap tests
+        run: python tools/puppet_pack/tests/test_look_cap.py -v
+      - name: Look metal tests
+        run: python tools/puppet_pack/tests/test_look_metal.py -v
+      - name: Presence gate tests
+        run: python tools/puppet_pack/tests/test_presence_gates.py -v
+      - name: Room graph tests
+        run: python tools/puppet_pack/tests/test_room_graph.py -v
+      - name: Self tunic tests
+        run: python tools/puppet_pack/tests/test_self_tunic.py -v
+      - name: Shared anchor tests
+        run: python tools/puppet_pack/tests/test_shared_anchors.py -v
       # The Windows kit's puppet pack tool staged as make_kit_hookshot.ps1 stages it (kit_pack.ps1) and run from that
       # copy alone: a module, data folder or strings file the pack needs and the kit misses fails here (the 0.11.12
       # integrate-01110 kit lacked charsel\data and coopmenu\data). Here, not in the windows job: that one may run on the
@@ -155,6 +278,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/kit_pack_test.ps1
+      - name: Windows kit puppet pack without numpy (regression C2-1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/puppet_pack_numpy_test.ps1
       - name: Puppet pack command lines
         run: |
           python tools/puppet_pack/build.py --help
@@ -174,8 +301,13 @@ jobs:
   # COOP_SELF_HOSTED is 'on'. Pull requests (forks included), manual runs and
   # pushes by anyone else always get windows-latest. Turn the runner off by
   # setting COOP_SELF_HOSTED to anything else; jobs fall back to GitHub.
+  # (Not installed: the owner dropped the Windows runner on 2026-11-26; COOP_SELF_HOSTED stays unset.)
+  # The Linux jobs (scope, python-tools' ubuntu row, linux) use the WSL runners (squadala-wsl): daurosk's own
+  # push to main, integrate-*, release-* or a tag, or daurosk's manual run, while COOP_SELF_HOSTED_LINUX is
+  # 'on'; pull requests never. linux-longshot stays on ubuntu-22.04 (its glibc 2.35 baseline).
   windows:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/integrate-')))
+    needs: scope
+    if: needs.scope.outputs.full == 'true' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/integrate-'))))
     runs-on: ${{ (github.event_name == 'push' && github.repository == 'daurosk/oot-remake-multiplayer' && github.actor == 'daurosk' && github.triggering_actor == 'daurosk' && vars.COOP_SELF_HOSTED == 'on') && fromJSON('["self-hosted", "windows", "x64", "daurosk-pc"]') || 'windows-latest' }}
     timeout-minutes: 90
     env:
@@ -253,12 +385,16 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/update_test.ps1
       - name: Kit path check tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/paths_test.ps1
+      - name: Kit Nucleus handler refresh tests
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/nucleus_handler_test.ps1
       - name: Kit no-Python menu park tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/menu_park_test.ps1
       - name: Kit hosting tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/hosting_test.ps1
       - name: Nucleus handler tests
         run: cscript //nologo //E:jscript tools/nucleus/test_handler.js
+      - name: Kit local co-op (2 to 4 games on one PC) tests
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/local_coop_test.ps1
       - name: Kit launch-update tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/launch_test.ps1
       - name: Kit test-mode game start (no window activation) tests
@@ -267,6 +403,8 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/mods_test.ps1
       - name: Kit mod restart tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/mod_restart_test.ps1
+      - name: Kit game files and test-kit hold tests
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/kit_build_files_test.ps1
       - name: Kit path question tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/paste_test.ps1
       - name: Kit log masking tests
@@ -279,6 +417,8 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/tests/kit_deps_test.ps1
       - name: CI runner hook tests
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/ci-runner/job_started_test.ps1
+      - name: WSL runners' lane check tests (status-feed.ps1)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/ci-runner/wsl/status_feed_test.ps1
       - name: CI runner script checks
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/ci-runner/scripts_test.ps1
 
@@ -331,8 +471,9 @@ jobs:
   # Debug with ASan + UBSan. tsan: clang Debug with TSan. asan and tsan also run
   # coop_test with 2 clients for 20 seconds. Everything but gcc is full tier.
   linux:
-    if: (github.event_name != 'pull_request' || github.base_ref == 'main' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
-    runs-on: ubuntu-latest
+    needs: scope
+    if: needs.scope.outputs.full == 'true' && (github.event_name != 'pull_request' || github.base_ref == 'main' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    runs-on: ${{ (github.repository == 'daurosk/oot-remake-multiplayer' && github.actor == 'daurosk' && github.triggering_actor == 'daurosk' && vars.COOP_SELF_HOSTED_LINUX == 'on' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/integrate-') || startsWith(github.ref, 'refs/heads/release-') || startsWith(github.ref, 'refs/tags/'))))) && fromJSON('["self-hosted", "linux", "x64", "squadala-wsl"]') || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -363,9 +504,16 @@ jobs:
             *) echo "unknown job $JOB"; exit 1 ;;
           esac
           { echo "CC=$cc"; echo "CXX=$cxx"; echo "COOP_ARGS=$args"; echo "COOP_SOAK=$soak"; } >> "$GITHUB_ENV"
+      # The WSL runners share one ccache (setup.sh: /var/cache/squadala-ccache, 20 GB) instead of the Actions cache.
+      - name: Shared ccache on the WSL runners
+        if: runner.environment == 'self-hosted'
+        run: |
+          { echo "CCACHE_DIR=/var/cache/squadala-ccache"; echo "CCACHE_MAXSIZE=20G"; } >> "$GITHUB_ENV"
+          echo "runner $RUNNER_NAME: shared ccache /var/cache/squadala-ccache"
       - name: Install ccache
         run: sudo apt-get install -y -q ccache || { sudo apt-get update -q && sudo apt-get install -y -q ccache; }
       - name: ccache
+        if: runner.environment != 'self-hosted'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: .ccache
@@ -452,7 +600,8 @@ jobs:
   # The game itself needs a player's files: not here. Full tier, pushes to linux-longshot, and the tag tier
   # (a release tag v*: the only Build job of a tag push).
   linux-longshot:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/integrate-') || startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/linux-longshot'))
+    needs: scope
+    if: needs.scope.outputs.full == 'true' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/integrate-') || startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/linux-longshot')))
     runs-on: ubuntu-22.04
     name: linux-longshot (module, kit, patched renderer)
     env:

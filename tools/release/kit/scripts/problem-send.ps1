@@ -105,7 +105,7 @@ $script:SendLookupWork = {
 # through the same timed path; it runs in its own runspace, see Invoke-ProblemSendTimed). $Ms = the wall-time limit.
 # $Send is the player's answer: with 'off' (no sending) nothing is requested at all.
 function Update-ProblemSendAddress([string]$Kit, [scriptblock]$Fetch = $null, [string]$Send = '', [int]$Ms = $script:SendLookupMs) {
-    if ($Send -eq 'off') { return '' }
+    if ($Send -eq 'off' -or "$env:OOT_COOP_PROBLEM_ADDRESS_LOOKUP".Trim() -eq 'off') { return '' }   # (the env: tests whose kit must not see main's live address)
     try {
         if ($Fetch) { $text = Invoke-ProblemSendTimed $Fetch @() $Ms }
         else { $text = Invoke-ProblemSendTimed $script:SendLookupWork @($script:SendAddressLookup, $Ms) $Ms }
@@ -172,7 +172,7 @@ function Read-ProblemSendAnswer([int]$Seconds = $script:SendAskSeconds, [scriptb
     $left = -1
     while ((Get-Date) -lt $end) {
         $now = [int][Math]::Ceiling(($end - (Get-Date)).TotalSeconds)
-        if ($now -ne $left) { $left = $now; Write-Host -NoNewline "`r  (y/n, no in $left s)  " }
+        if ($now -ne $left) { $left = $now; Write-Host -NoNewline "`r  (press Y to send, N not to; no key in $left s: no)  " }
         $key = if ($ReadKey) { & $ReadKey } elseif ([Console]::KeyAvailable) { [Console]::ReadKey($true) } else { $null }
         if ($key) {
             if ("$($key.Key)" -eq 'Y') { Write-Host 'y'; return $true }

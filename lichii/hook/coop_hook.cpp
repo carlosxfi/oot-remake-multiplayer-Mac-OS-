@@ -59,10 +59,12 @@
 #include "coop/presence/presence.hpp"
 #include "coop/version.hpp"
 #include "coop_boss.h"
+#include "coop_gold_mode.h"
 #include "coop_boss_beaten.h"
 #include "coop_frame_clock.h"
 #include "coop_boss_scenes.h"
 #include "coop_teleport_game.h"
+#include "coop_emote_game.h"
 #include "coop_pvp_game.h"
 #include "coop_lift_player_game.h"
 #include "coop_pvp_native_game.h"
@@ -70,6 +72,7 @@
 #include "coop_dbno_game.h"
 #include "coop_hallway.h"
 #include "coop_mod_share.h"
+#include "coop_mod_data.h"
 #include "coop_pack_notice.h"
 #include "coop_name_privacy.h"
 #include "coop_scene_probe.h"
@@ -78,6 +81,7 @@
 #include "coop_chat.h"
 #include "coop_hud.h"  // the HUD's hearts (PLAYER_LIFE), docs/overlay.md
 #include "coop_cheats.h"
+#include "coop_link_life.h"
 #include "coop_chests.h"
 #include "coop_flags.h"
 #ifdef COOP_HOOKSHOT
@@ -147,6 +151,9 @@ std::atomic<bool> g_pick_said{false};
 // black-01112 (coop_stuck_load.h): a scene load ran CoopStuckLoad::kStuckMs; a session's Frame says so in the chat once.
 std::atomic<bool> g_stuck_said{false};
 
+// SetHeld: the play-test bridge holds the game; the network thread passes it to the session each round.
+std::atomic<bool> g_game_held{false};
+
 // The game and build the addresses in coop/host are for.
 constexpr u64 kOcarinaProgramId = 0x0400486024DEC000ULL;
 // The builds it knows: coop_game_build.h (docs/game-builds.md).
@@ -192,6 +199,43 @@ constexpr float kHeadAdult = 1.9f;
 
 float HeadHeight(std::optional<coop::protocol::Age> age) {
     return age == coop::protocol::Age::adult ? kHeadAdult : kHeadChild;
+}
+
+// Row 294 (CoopQuests::CheckEpona): Epona in this save's OwnedHorseList, registered when she is not there
+// as the game's own EventCopyAndRegisterOwnedHorse leaves a won save: ActorName[first empty] =
+// Animal_Epona_Adult, through the game's String64Array queue (GameFlags::set_string64_array), so the applier
+// writes the live element and the saved copy. True once she is there or queued (or the list is full of other
+// horses: nothing to give her, the end is not held for it).
+bool EnsureEpona(coop::host::WritableGameMemory& memory, const char* why) {
+    coop::host::GameFlags flags(memory);
+    const auto check = CoopQuests::CheckEpona(
+        [&](std::uint32_t i) { return flags.get_string64_array(CoopQuests::kOwnedHorseActorName, i); });
+    static std::atomic<bool> said_full{false}, said_failed{false};
+    switch (check.state) {
+    case CoopQuests::EponaHorse::owned:
+        return true;
+    case CoopQuests::EponaHorse::unread:
+        return false;
+    case CoopQuests::EponaHorse::full:
+        if (!said_full.exchange(true)) {
+            LOG_WARNING(Core, "coop: story: Epona is not in OwnedHorseList and its {} places are taken: not "
+                              "registered (row 294)", CoopQuests::kOwnedHorses);
+        }
+        return true;
+    case CoopQuests::EponaHorse::missing:
+        break;
+    }
+    if (!coop::host::GameFlags::set_string64_array(memory, CoopQuests::kOwnedHorseActorName, check.free,
+                                                    CoopQuests::kEponaActor)) {
+        if (!said_failed.exchange(true)) {
+            LOG_WARNING(Core, "coop: story: Epona could not be registered yet (OwnedHorseList.ActorName[{}], "
+                              "the game's queue): tried again (row 294)", check.free);
+        }
+        return false;
+    }
+    LOG_INFO(Core, "coop: story: Epona registered as this game's own horse (OwnedHorseList.ActorName[{}] = {}): "
+                   "{} (row 294)", check.free, CoopQuests::kEponaActor, why);
+    return true;
 }
 
 // An environment variable that is set and not "0".
@@ -358,7 +402,7 @@ void MendGifts(EmulatorMemory& memory, coop::host::GameFlags& flags, MendClocks&
     for (std::size_t i = 0; i < gifts.size() && i < CoopStory::kGiftsMax; ++i) {
         const auto& gift = gifts[i];
         auto& since = clocks.gifts[i];
-        const bool due = gift.mend && idle && !clocks.gift_given[i] &&
+        const bool due = gift.mend && !CoopStory::GiftShuffled(i) && idle && !clocks.gift_given[i] &&
                          CoopStory::GiftDue(gift, [&](std::uint32_t h) { return flags.get_bool(h); },
                                             [&](std::uint32_t h) { return flags.get_int(h); });
         if (!due) {
@@ -535,6 +579,7 @@ public:
         config.hello.nickname = settings_.name;
         config.player_key = settings_.player_key;
         config.join_password = settings_.password;
+        CoopGoldMode::OnConnection();  // row 63: an earlier session's mode ends here; Shared until told
         client_ = std::make_unique<coop::net::Client>(std::move(config));
         if (!client_->start()) {
             LOG_ERROR(Core, "coop: ENet did not start; co-op is off");
@@ -560,9 +605,9 @@ public:
         }
         // docs/items.md "One-time sales": a randomizer seed with shops sells each one-time shelf once for the group.
         shop_sale_ = shop_sale_on_ && CoopShopSale::SeedHasShops();
-        if (flag_error.empty() && shop_sale_on_) {  // the randomizer's Great Fairy gifts: given once for the group
+        if (flag_error.empty() && shop_sale_on_) {  // one-time gifts (coop_shop_sale.h kOnceGifts): once for the group
             const std::size_t added = CoopShopSale::MergeGifts(session.shared);
-            LOG_INFO(Core, "coop: fairies: sharing {} randomizer Great Fairy gift flags", added);
+            LOG_INFO(Core, "coop: gifts: sharing {} one-time gift flags (Great Fairies, cows, Medigoron, frogs)", added);
         }
         if (flag_error.empty() && shop_sale_) {
             const std::size_t added = CoopShopSale::Merge(session.shared);
@@ -583,6 +628,9 @@ public:
         // presents (high refresh presents up to 165 a second).
         session.clock = [] { return CoopEvery::NowUs(); };
         pickups_given_ = 0;
+        gold_local_ = false;  // a new session's watcher shares them until the mode says not
+        race_loaded_.clear();  // row 63: our race is kept only once the race save is loaded
+        race_read_at_ = 0;
         // Called by service() on the network thread, with the client.
         session.on_event = [this](const coop::net::Event& event, coop::net::Client& client) {
             OnSessionEvent(event, client, false);
@@ -763,8 +811,8 @@ public:
                 session_->share_pickup_named(coop::protocol::FlagKey(f.hash, std::uint16_t{0}));
             }
         }
-        if (sharing_ && shop_sale_on_) {  // a Great Fairy's shuffled gift (coop_shop_sale.h): given once for everyone
-            for (const auto& f : CoopShopSale::kFairyGifts) {
+        if (sharing_ && shop_sale_on_) {  // a one-time gift (coop_shop_sale.h kOnceGifts): given once for everyone
+            for (const auto& f : CoopShopSale::kOnceGifts) {
                 session_->share_pickup_named(coop::protocol::FlagKey(f.hash, std::uint16_t{0}));
             }
         }
@@ -775,6 +823,19 @@ public:
             }
             session_->guard_count(coop::protocol::FlagKey(coop::host::kGoldTokenCount, std::uint16_t{0}),
                                   skulltulas);
+        }
+        if (sharing_) {  // row 272: once-per-save rewards (bottles, upgrades) given once for the group
+            for (const auto family : coop::host::rewards::kFamilies) {  // each family on its own
+                std::vector<coop::protocol::FlagKey> sources = coop::host::rewards::sources(family);
+                if (scrub_sale_on_) {  // C2-5: a scrub's bag tier is paid by its own sale Bool (rewards::kSales)
+                    const auto sales = coop::host::rewards::sales(family);
+                    sources.insert(sources.end(), sales.begin(), sales.end());
+                }
+                session_->guard_reward(coop::host::rewards::units(family), sources);
+            }
+            for (const auto& r : coop::host::rewards::kOther) {
+                session_->share_pickup_named(coop::protocol::FlagKey(r.hash, std::uint16_t{0}));
+            }
         }
         // Row 218: heart containers add up across players as heart pieces do (FlagWatcher::share_containers).
         session_->share_containers(coop::protocol::FlagKey{0xfbe01da1u, 0});
@@ -791,6 +852,9 @@ public:
             Log(event);
         }
         CoopPuppet::OnEvent(event);
+        if (!left) {
+            CoopEmote::OnEvent(event, client);  // a call (/here) is read in the chat too (coop_emote_game.h)
+        }
         CoopPose::OnEvent(event, SteadyMs());
         if (!left) {
             Chat(event, client);
@@ -807,6 +871,17 @@ public:
         CoopDbno::OnEvent(event, client);  // down but not out (docs/play-online.md)
         CoopDifficulty::OnEvent(event, client);  // docs/play-online.md "Difficulty"
         CoopModShare::OnEvent(event, client);  // mods (docs/mods.md "Mods in co-op")
+        CoopModData::OnEvent(event, client);  // the mods' data channel (MOD_DATA, issue 250)
+        if (event.kind == coop::net::EventKind::welcomed ||
+            (event.kind == coop::net::EventKind::message && !client.is_host() &&
+             std::holds_alternative<coop::protocol::ModSettings>(event.message))) {
+            // Row 63: the Gold Skulltula mode in force (CoopModShare puts it: our choice as the first player in,
+            // else Shared until the host's MOD_SETTINGS).
+            LOG_INFO(Core, "coop: Gold Skulltulas: {} ({}): {}",
+                     event.kind == coop::net::EventKind::welcomed ? "welcomed" : "the host's settings",
+                     client.is_host() ? "the host" : "a guest",
+                     CoopGoldMode::NotShared() ? "Not shared" : (CoopGoldMode::Told() ? "Shared" : "Shared until told"));
+        }
         CoopSave::OnEvent(event, client);  // the host's save for the guests (issue 167)
         CoopHud::OnEvent(event);  // the others' hearts for the HUD (PLAYER_LIFE)
         CoopLookShare::OnEvent(event, client);  // looks of several parts (PLAYER_LOOK, coop_look_share.h)
@@ -886,7 +961,8 @@ public:
                 }
             }
             if (cheats_) {
-                CoopCheats::Frame(*game_store);
+                CoopLinkLife::GameLinkLife link(system, base_);   // (MaxLife: our Link's component first)
+                CoopCheats::Frame(*game_store, &link);
             }
             if (sharing_ && load_mend_.ready() && CoopStory::On() &&
                 quest_catch_up_.Due(CoopEvery::NowUs())) {
@@ -899,6 +975,15 @@ public:
                 // the game's to write, and it arrives through the flag list.
                 for (const std::string& count : CoopWorld::TakeGiveBacks()) {
                     LOG_INFO(Core, "coop: {}", CoopWorld::GiveBack(*game_store, count));
+                }
+                // Row 63: but a token the world sync made here (another game's kill, ours made none) has no
+                // placement for the game's pickup to set: its two keys are written here, within the count
+                // guard's hold of the count's gain, and the flag sync shares the take.
+                // A write the game refuses is tried again on the next frames (kTokenKeyTries).
+                for (const CoopWorld::TokenKeyJob& job : CoopWorld::TakeTokenKeys()) {
+                    if (const std::string line = CoopWorld::WriteTokenKeys(*game_store, job); !line.empty()) {
+                        LOG_INFO(Core, "coop: {}", line);
+                    }
                 }
             }
             if (sharing_) {
@@ -933,6 +1018,29 @@ public:
                     ocarina_equip_.link(false, {});  // a load or scene change: the next stay asks again (row 103)
                 }
             }
+        }
+        if (session_ && !gold_local_ && CoopGoldMode::KeepLocalNow()) {
+            // Row 63, Gold Skulltulas Not shared (coop_gold_mode.h): every Skulltula's two keys, the token
+            // count and its IsGet stay in this game for the rest of the session, and so do the Skulltula House's
+            // rewards and what only they give (gold_race_flags, review-01112-h: each racer claims its own; the
+            // row 272 guard is for Shared).
+            gold_local_ = true;
+            std::vector<coop::protocol::FlagKey> keys;
+            for (const std::uint64_t key : coop::host::gold_skulltula_keys()) {
+                keys.push_back(coop::protocol::FlagKey::key64_flag(key));
+                keys.push_back(coop::protocol::FlagKey::key64_flag(key + 2));
+            }
+            keys.push_back(coop::protocol::FlagKey(coop::host::kGoldTokenCount, std::uint16_t{0}));
+            keys.push_back(coop::protocol::FlagKey(coop::host::kGoldTokenGet, std::uint16_t{0}));
+            for (const std::uint32_t hash : coop::host::gold_race_flags()) {
+                keys.push_back(coop::protocol::FlagKey(hash, std::uint16_t{0}));
+            }
+            const std::size_t was = session_->keep_local(keys);
+            LOG_INFO(Core, "coop: flags: Gold Skulltulas not shared: {} keys kept in this game ({} were shared)",
+                     keys.size(), was);
+        }
+        if (session_ && gold_local_ && !race_loaded_.empty() && race_loaded_ == CoopGoldMode::RaceId() && game_store && reading && CoopSave::PlaysRaceSave()) {
+            RaceFrame(*game_store);
         }
         if (pickups_) {
             const auto keys = CoopPickups::Since(pickups_given_);
@@ -972,7 +1080,9 @@ public:
                     return coop::host::GameFlags::set_enum(*memory, hash, value);
                 },
                 // row 150: Get_Epona's end waits only while a race against Ingo runs here
-                [&memory](std::uint32_t hash) { return coop::host::GameFlags(*memory).get_bool(hash); });
+                [&memory](std::uint32_t hash) { return coop::host::GameFlags(*memory).get_bool(hash); },
+                // row 294: and comes only with the horse, registered here first
+                [&memory]() { return EnsureEpona(*memory, "another player won her: Get_Epona's end comes with her"); });
             // Released only after a real load (0.5 s without Link), not on one
             // frame the reader missed; the scene as last read. Timed, not
             // counted in presents: high refresh (Ctrl+U) presents up to 2.75
@@ -1078,14 +1188,17 @@ public:
                 if (CoopStory::On() && CoopStory::GiftHolds(key.hash, gifts_held)) {
                     return true;  // rows 195/204: a gift scene played elsewhere lands once its item is ours
                 }
-                if (talk.Holds(key.hash) || CoopScrubTalk::NearHolds(near, key.hash)) {
+                // Row 275: the event hold only in the scrubs' own scene; the near guard is about a scrub loaded here.
+                if (CoopScrubTalk::HoldsIn(talk, scene ? std::optional<std::string_view>(*scene) : std::nullopt,
+                                           key.hash) ||
+                    CoopScrubTalk::NearHolds(near, key.hash)) {
                     return true;
                 }
                 if (shop_on && CoopShopSale::Waits(key.hash, sale_here.in_event)) {
                     return true;  // a shelf another player sold out waits while our shop talk runs
                 }
                 if (gift_on && CoopShopSale::GiftWaits(key.hash, sale_here.in_event)) {
-                    return true;  // a Great Fairy's gift another player got waits while our event runs
+                    return true;  // a one-time gift another player got waits while our event runs (kOnceGifts)
                 }
                 if (sale_on) {
                     CoopScrubSale::Here here = sale_here;
@@ -1168,7 +1281,7 @@ public:
             ++presents_;
             const std::uint64_t now_us = CoopEvery::NowUs();
             if (samples_log_.Due(now_us)) {
-                const std::uint32_t seq = session_->sampler().next_sequence();
+                const std::uint32_t seq = session_->next_sample_sequence();
                 if (samples_log_at_ != 0 && now_us > samples_log_at_) {
                     const double seconds = static_cast<double>(now_us - samples_log_at_) / 1e6;
                     LOG_INFO(Core, "coop: samples: {:.1f} sent/s, {:.1f} presents/s",
@@ -1197,10 +1310,15 @@ public:
                      report.save_load_flags, report.save_load_frames,
                      report.save_load_native ? "the game's own load nodes" : "the old signs");
             CoopTime::SaveLoaded(report.server_now_us);  // issue 159
+            // Row 63: a loaded race save gets our race back, then keeps it. Another save (the player's own, still
+            // in the game at the title) is never read into the race.
+            race_loaded_ = CoopSave::PlaysRaceSave() ? CoopGoldMode::RaceId() : std::string();
+            race_put_tries_ = kRacePutTries;
             lent_keys_.forget();  // dungeon-sync-b: the save has its own key counts
             start_source_.Reset();  // deku-sync-fix: what the game asked before the load is not ours now
             story_source_.Reset();
-            coop::host::map_drop_log().note("save load seen (" + std::to_string(report.save_load_flags) + " flags back)");
+            coop::host::map_drop_log().game_reset("save load seen (" + std::to_string(report.save_load_flags) +
+                                                  " flags back)");
         }
         // deku-dungeon-2 (DUNGEON_EVENT, issues 176 and 196): a gimmick event
         // our game starts goes out at once, and another player's start is
@@ -1505,6 +1623,21 @@ public:
                      "coop: flags: count {:#010x} +{} here was a pickup another player had taken: "
                      "put back, not sent",
                      g.count.hash, g.amount);
+        }
+        if (sharing_) {  // row 272: our number, so the host's answer to our own reward Bool counts as ours
+            std::uint8_t self = 0;
+            session_->with_client([&](coop::net::Client& c) {
+                self = c.player_number();
+                return 0;
+            });
+            session_->set_reward_self(self);
+        }
+        for (const auto& g : session_->take_rewards_guarded()) {  // row 272 (docs/items.md)
+            const auto* item = coop::host::find_item(g.key.hash);
+            LOG_INFO(Core,
+                     "coop: flags: reward {} ({:#010x}) got here while another player's copy of the same reward "
+                     "had come: put back, not sent (row 272)",
+                     item != nullptr ? item->name : std::string_view("?"), g.key.hash);
         }
         {  // issue 195: a chest another player had opened, opened again here
             const bool in_event = OurLinkInEvent(reading);  // G1: our Link's get scene, not another player's event here
@@ -1876,15 +2009,27 @@ public:
         CoopRide::Frame(system, view.game ? base_ : 0, report.connected ? session_.get() : nullptr,
                         view.scene, event, view.position,
                         reading ? reading->rotation : std::nullopt,
-                        reading ? reading->animation : std::nullopt, report.server_now_us);
+                        reading ? reading->animation : std::nullopt, report.server_now_us,
+                        // epona-sync: Epona is this game's own, so she is sent while nobody rides her too
+                        // (coop_ride.h). Row 294: owning her is OwnedHorseList, not Get_Epona's step.
+                        [&memory]() {
+                            if (!memory) return false;
+                            coop::host::GameFlags flags(*memory);
+                            return CoopQuests::CheckEpona([&](std::uint32_t i) {
+                                       return flags.get_string64_array(CoopQuests::kOwnedHorseActorName, i);
+                                   }).state == CoopQuests::EponaHorse::owned;
+                        });
+        // Race mode (coop/protocol/race.hpp): the world's parts run as alone, so this game owns all its enemies,
+        // bosses, drops, spawns and its clock; the players still see each other, chat and talk.
+        coop::host::Session* const world = report.connected && !report.race ? session_.get() : nullptr;
         // jitter-b: stamped with the game frame the objects were read from (coop_frame_clock.h).
-        CoopObjects::Share(system, report.connected ? session_.get() : nullptr, view.scene,
+        CoopObjects::Share(system, world, view.scene,
                            coop::host::frame_aligned_us(report.server_now_us, CoopFrameClock::PresentAgeUs()));
         CoopHud::Frame(report.connected ? session_.get() : nullptr);  // our hearts (PLAYER_LIFE)
-        CoopSpawn::Frame(system, report.connected ? session_.get() : nullptr, view.scene, report.server_now_us);
-        CoopDrops::Frame(system, report.connected ? session_.get() : nullptr, view.scene, report.server_now_us);
+        CoopSpawn::Frame(system, world, view.scene, report.server_now_us);
+        CoopDrops::Frame(system, world, view.scene, report.server_now_us);
         if (!reading) CoopTime::Loading(report.server_now_us);  // issue 159: a reload, a death
-        CoopTime::Frame(system, view.game ? base_ : 0, report.connected ? session_.get() : nullptr,
+        CoopTime::Frame(system, view.game ? base_ : 0, world,
                         report.server_now_us,
                         reading && reading->event_running.value_or(false),  // issue 192: no nudge in a cutscene
                         // Row 164 follow-up: our game paused (a menu in front, no event), for the host's catch-up.
@@ -1907,7 +2052,7 @@ public:
         }
         CoopBoss::Frame(system, view.game ? base_ : 0, view.scene, view.position,
                         reading && reading->event_running.value_or(false), boss_shut_in,
-                        report.connected ? session_.get() : nullptr, report.server_now_us);
+                        world, report.server_now_us);
         // /teleport <player> (docs/setup.md "Chat commands"), after the boss
         // rooms: it reads whether our boss fight runs.
         CoopTeleport::Frame(system, view.game ? base_ : 0, reading, report.connected ? session_.get() : nullptr);
@@ -1917,6 +2062,9 @@ public:
         // LICHII_COOP_SCENE_PROBE=1 only (docs/scenes.md "Free-play scene change").
         CoopSceneProbe::Frame(system, view.game ? base_ : 0, reading);
         for (auto& line : CoopTeleport::TakeLines()) {
+            chat_.Add(std::move(line), true);
+        }
+        for (auto& line : CoopEmote::TakeLines()) {
             chat_.Add(std::move(line), true);
         }
         // PvP (docs/play-online.md "PvP"), after the objects and spawn syncs:
@@ -1970,6 +2118,7 @@ public:
         }
         // Mods (docs/mods.md "Mods in co-op"): our list, the host's shared settings, a warning when they differ.
         CoopModShare::Frame(report.connected ? session_.get() : nullptr);
+        CoopModData::Frame(report.connected ? session_.get() : nullptr, SteadyMs());  // MOD_DATA (issue 250)
         for (auto& line : CoopModShare::TakeLines()) {
             chat_.Add(std::move(line), true);
         }
@@ -2055,6 +2204,9 @@ public:
         if (CoopPvp::OnChat(text, *session_)) {
             return true;  // /pvp: the same
         }
+        if (CoopEmote::OnChat(text, *session_)) {
+            return true;  // /wave, /here, /emote ...: the same (coop_emote.h)
+        }
         if (CoopDbno::OnChat(text, *session_)) {
             return true;  // /dbno: the same
         }
@@ -2076,10 +2228,10 @@ public:
         return sent;
     }
 
-    std::vector<ChatLine> ChatLines() const {
+    std::vector<ChatLine> ChatLines(bool history = false) const {
         std::vector<ChatLine> out;
         const auto now = CoopChat::Clock::now();
-        for (auto& l : chat_.Lines()) {
+        for (auto& l : history ? chat_.History() : chat_.Lines()) {
             const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - l.at);
             out.push_back({std::move(l.text), l.notice, static_cast<std::uint64_t>(age.count())});
         }
@@ -2603,6 +2755,7 @@ private:
     void Run() {
         auto last_state = coop::net::State::idle;
         while (!stop_) {
+            session_->set_held(g_game_held.load(std::memory_order_relaxed));  // SetHeld
             session_->service();
             session_->with_client([](coop::net::Client& c) { CoopPose::Send(c, SteadyMs()); });
             RoomView room = session_->with_client([&](coop::net::Client& c) {
@@ -2862,6 +3015,48 @@ private:
     bool doubled_event_seen_ = false;     // its get scene (our Link's event) began
     static constexpr std::uint64_t kDoubledNoEventMs = 1000;
     std::size_t pickups_given_ = 0;  // CoopPickups keys handed to the session
+    bool gold_local_ = false;        // row 63: this session's Gold Skulltula flags kept in our game (Not shared)
+    // Row 63, Not shared, a guest: our race with this host (CoopGoldMode::TheRace), put back into the game after
+    // each load of the race save (tries left), and kept from what the game shows (read time).
+    static constexpr int kRacePutTries = 120;
+    std::string race_loaded_;  // the race id of the race save the game loaded ("": none; another: not ours now)
+    int race_put_tries_ = 0;
+    std::uint64_t race_read_at_ = 0;
+
+    void RaceFrame(coop::host::FlagStore& game) {
+        if (race_put_tries_ > 0) {
+            const CoopGoldMode::Race race = CoopGoldMode::TheRace();
+            const CoopGoldMode::PutBack put =
+                CoopGoldMode::PutRaceBack(game, race, coop::host::kGoldTokenCount, coop::host::kGoldTokenGet);
+            --race_put_tries_;
+            if (put.done()) {
+                race_put_tries_ = 0;
+                if (put.written > 0) {
+                    LOG_INFO(Core, "coop: flags: Gold Skulltulas not shared: our race with this host put back "
+                                   "({} flags: {} Skulltulas, count {}, {} rewards and items)",
+                             put.written, race.keys.size(), race.count, race.flags.size());
+                }
+            } else if (race_put_tries_ == 0) {
+                LOG_WARNING(Core, "coop: flags: Gold Skulltulas not shared: our race could not all be put back "
+                                  "({} written, {} refused, {} unread)",
+                            put.written, put.failed, put.unread);
+            }
+            return;   // read the game's again once ours is in it
+        }
+        const std::uint64_t now = CoopEvery::NowUs();
+        if (now - race_read_at_ < 500'000) return;
+        race_read_at_ = now;
+        const auto seen = CoopGoldMode::ReadRace(game, coop::host::gold_skulltula_keys(),
+                                                 coop::host::kGoldTokenCount, coop::host::kGoldTokenGet,
+                                                 coop::host::gold_race_flags());
+        if (seen && CoopGoldMode::GrowRace(*seen)) {
+            const CoopGoldMode::Race race = CoopGoldMode::TheRace();
+            LOG_INFO(Core, "coop: flags: Gold Skulltulas not shared: our race with this host kept ({} Skulltulas, "
+                           "count {}, {} rewards and items{})",
+                     race.keys.size(), race.count, race.flags.size(),
+                     CoopGoldMode::RaceId().empty() ? ", this session only" : "");
+        }
+    }
     bool holding_logged_ = false;  // issue 129: HoldFlagStore held something last frame
     std::uint32_t sale_held_logged_ = 0;  // a scrub sale flag the hold kept last frame (log)
 #ifdef COOP_HOOKSHOT
@@ -3222,6 +3417,11 @@ private:
         if (in_event) {
             return;
         }
+        // Row 294: a save at Get_Epona Complete with no owned horse (the end shared without her before 0.12.0:
+        // the field Epona is gone and Ingo no longer races, so she could never be won again) gets her back.
+        if (flags.get_enum(CoopQuests::kGetEpona) == std::optional<std::uint32_t>{CoopQuests::kGetEponaComplete}) {
+            EnsureEpona(memory, "Get_Epona was Complete here with no owned horse (mended)");
+        }
         std::vector<CoopQuest::StepWant> wants;
         for (const auto& quest : CoopQuest::Quests()) {
             if (auto w = CoopQuest::LiveWant(quest, value)) wants.push_back(std::move(*w));
@@ -3514,15 +3714,17 @@ Coop* LastEnded() {
 // player-key.txt beside coop.ini (made there once), so the host's mutes and
 // bans follow the player and not the name.
 static void WithPlayerKey(Settings& settings) {
-    if (settings.player_key) {
-        return;
+    const auto config = Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir);
+    if (!settings.player_key) {
+        std::string note;
+        settings.player_key = LoadPlayerKey(config / "player-key.txt", note);
+        if (!note.empty()) {
+            LOG_INFO(Core, "coop: {}", note);
+        }
     }
-    std::string note;
-    settings.player_key =
-        LoadPlayerKey(Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir) / "player-key.txt", note);
-    if (!note.empty()) {
-        LOG_INFO(Core, "coop: {}", note);
-    }
+    // Row 63, Gold Skulltulas Not shared: each race is kept per host beside coop.ini (coop_gold_mode.h).
+    CoopGoldMode::SetRaceDir(config / "gold-race");
+    if (settings.player_key) CoopGoldMode::SetOwnKey(*settings.player_key);
 }
 
 void Start() {
@@ -3622,7 +3824,7 @@ void KeepMapsAlone(EmulatorMemory& memory, bool in_play, const std::optional<std
     coop::host::GameFlagStore flags(memory);
     const coop::host::MapDropBecause because("the solo keeper (minimap-b)");
     const auto restored = keeper.frame(flags, in_play, coop::host::view_of(scene));
-    if (keeper.take_save_load()) coop::host::map_drop_log().note("save load (no scene for a while: the title)");
+    if (keeper.take_save_load()) coop::host::map_drop_log().game_reset("save load (no scene for a while: the title)");
     if (keeper.take_hud_refresh() && StartMapRefresh()) CoopMapRefresh::TheRefresher().WantNow(SteadyMs());  // rows 140, 183
     for (const auto key : restored) {
         const auto* item = coop::host::find_item(key.hash);
@@ -3645,6 +3847,10 @@ void WatchMapDrops(EmulatorMemory& memory, bool in_play, const std::optional<std
     for (const auto& line : coop::host::map_drop_log().frame(
              flags, coop::host::view_of(scene), in_play, link)) {
         LOG_WARNING(Core, "{}", line);
+    }
+    // Row 269: the game's own clear at a save load or the title is no drop in play: information.
+    for (const auto& line : coop::host::map_drop_log().take_info()) {
+        LOG_INFO(Core, "{}", line);
     }
 }
 
@@ -4140,6 +4346,7 @@ void OnFrameBody(Core::System& system) {
         coop->Frame(system);
         break;
     case CoopSessionEnd::Path::solo:
+        CoopSave::SoloFrame();   // remount-leave: a guest that left goes back to its own saves on the title
         LocalFrameOff(system, true);
         break;
     case CoopSessionEnd::Path::read_only: {
@@ -4151,6 +4358,7 @@ void OnFrameBody(Core::System& system) {
                            "Customize picture, menus, settings); nothing is written to the game (story and map "
                            "mends, split screen, a left session's clean-up) while the mod is installed");
         }
+        CoopSave::SoloFrame();   // (the save folder only, through the exe's own mount: nothing written to the game)
         LocalFrameOff(system, false);
         break;
     }
@@ -4216,6 +4424,10 @@ void SetColor(std::optional<std::uint32_t> color) {
              color ? CoopColors::Text(*color) : std::string("none chosen (slot colour)"));
 }
 
+void SetHeld(bool held) {
+    g_game_held.store(held, std::memory_order_relaxed);
+}
+
 std::vector<OverlayLine> OverlayLines() {
     if (g_mod_refused) {
         return {{"Co-op is off: a code mod is installed"}};
@@ -4263,6 +4475,16 @@ bool SendChat(const std::string& text) {
     }
     auto* coop = Get();
     return coop && coop->SendChat(text);
+}
+
+std::vector<ChatLine> ChatHistory() {
+    if (g_mod_refused) {
+        return {};
+    }
+    if (auto* coop = Get()) {
+        return coop->ChatLines(true);
+    }
+    return {};
 }
 
 std::vector<ChatLine> ChatLines() {

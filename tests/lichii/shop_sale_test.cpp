@@ -113,10 +113,10 @@ TEST_CASE("shop sale: off until the randomizer says its seed has shops") {
     CHECK_FALSE(CoopShopSale::SeedHasShops());
 }
 
-TEST_CASE("fairy gifts: each flag's name hashes to its listed hash, and no other list shares it") {
-    CHECK(CoopShopSale::kFairyGifts.size() == 6);
+TEST_CASE("one-time gifts: each flag's name hashes to its listed hash, and no other list shares it") {
+    CHECK(CoopShopSale::kOnceGifts.size() == 22);
     const auto items = coop::host::item_shared_flags();
-    for (const auto& f : CoopShopSale::kFairyGifts) {
+    for (const auto& f : CoopShopSale::kOnceGifts) {
         CHECK(proto::flag_hash(std::string(f.name)) == f.hash);
         CHECK(CoopShopSale::FindGift(f.hash) == &f);
         CHECK_FALSE(CoopShopSale::IsCounter(f.hash));
@@ -127,8 +127,28 @@ TEST_CASE("fairy gifts: each flag's name hashes to its listed hash, and no other
     }
     CHECK_FALSE(CoopShopSale::IsGift(kOther));
     std::optional<coop::host::SharedFlags> shared;
-    CHECK(CoopShopSale::MergeGifts(shared) == 6);
+    CHECK(CoopShopSale::MergeGifts(shared) == 22);
     CHECK(CoopShopSale::MergeGifts(shared) == 0);
+}
+
+TEST_CASE("one-time gifts: OOTRR's cows and Medigoron, the frogs' payouts (row 237)") {
+    using CoopShopSale::IsGift;
+    for (const char* n : {"HavePlayedEvent.Dm_StaffCredit_0023", "HavePlayedEvent.Dm_StaffCredit_0024",
+                          "HavePlayedEvent.Dm_StaffCredit_0025", "HavePlayedEvent.Dm_StaffCredit_0026",
+                          "HavePlayedEvent.Dm_StaffCredit_0027", "HavePlayedEvent.Dm_StaffCredit_0028",
+                          "HavePlayedEvent.Dm_StaffCredit_0029", "HavePlayedEvent.Dm_StaffCredit_0030",
+                          "HaveTalked_Special.Npc_Goron_Medigoron_Adult_Talk_Event26",
+                          "MiniGame_FrogTenors_ZeldaLullaby", "MiniGame_FrogTenors_EponaSong",
+                          "MiniGame_FrogTenors_SariaSong", "MiniGame_FrogTenors_SunSong", "MiniGame_FrogTenors_TimeSong",
+                          "MiniGame_FrogTenors_StormSong", "MiniGame_FrogTenors_InsectRepellent"}) {
+        CHECK_MESSAGE(IsGift(proto::flag_hash(n)), n);
+    }
+    // Each game's own: the open bug game (each game's talk sets it once the six shared song Bools are 1), the payout
+    // tier, the bug game's win count, and the credits' own scene.
+    for (const char* n : {"MiniGame_FrogTenors_SongClear", "MiniGame_FrogTenors_GetCount",
+                          "MiniGame_FrogTenors_InsectRepellent_Clearnumber", "HavePlayedEvent.Dm_StaffCredit_0000"}) {
+        CHECK_FALSE_MESSAGE(IsGift(proto::flag_hash(n)), n);
+    }
 }
 
 TEST_CASE("fairy gifts: another player's gift waits only while our Link is in an event") {

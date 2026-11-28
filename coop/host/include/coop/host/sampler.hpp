@@ -118,6 +118,22 @@ class Sampler {
   // velocity afresh. The sequence keeps counting.
   void reset();
 
+  // The game is held and runs no frame() (the play-test bridge's hold,
+  // docs/playtest.md "Frame control"): the last sample sent again with this
+  // time and no velocity, once the keep-alive time has passed since it. The
+  // others then see a player standing still, not one whose samples stopped:
+  // presence fades those out after extrapolate_us + fade_us, and a faded
+  // player has no puppet (docs/puppet.md). Nothing while not in play (the
+  // last frame() had no reading) or before any sample.
+  // frame() after a hold stamps no sample at or before the last held one: its
+  // time is the game frame's (now less the frame's age), which can be older
+  // than the held sample's, and presence would drop it as too old.
+  std::optional<Outgoing> hold(std::uint64_t server_now_us);
+  // A reconnect while held (no frame() comes to send them): the status, the
+  // equipment and the last sample, as the first frame after a WELCOME sends
+  // them. Empty while not in play or before any sample.
+  std::vector<Outgoing> hold_reconnected(std::uint64_t server_now_us);
+
   // The player changed their colour while the game runs (docs/puppet.md,
   // "Changing your colour in the game"): the next frame() sends it in
   // PLAYER_EQUIP. Unset after a colour ("by player number" in the menu):
@@ -153,6 +169,7 @@ class Sampler {
   std::uint64_t previous_time_us_ = 0;
   std::optional<protocol::PlayerSample> last_sent_;
   std::optional<protocol::Equipment> equipment_sent_;
+  std::uint64_t hold_floor_us_ = 0;  // the last held sample's time: frame() stamps after it
 };
 
 }  // namespace coop::host

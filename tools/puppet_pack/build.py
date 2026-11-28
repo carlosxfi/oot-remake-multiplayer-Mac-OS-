@@ -23,10 +23,12 @@ The input is never changed, and the tables are always rebuilt from the game's ow
 copies, so running the tool again gives the same result.
 """
 import argparse
+import copy
 import glob
 import hashlib
 import json
 import os
+import re
 import shutil
 import struct
 import sys
@@ -36,7 +38,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "puppet_pack"  # noqa: A001
 
-from . import ainb, asb_carry, byml, charsel_ui, coop_menu, dumpcheck, dungeon_rooms, hud, look_cap, look_items, look_live, look_metal, map_captures, nup, pause_menu, rstb, sarc, skin, title_menu, tunic, tunic_extra, ui_pack, zs  # noqa: E402
+from . import ainb, asb_carry, byml, charsel_ui, coop_menu, dumpcheck, dungeon_rooms, hud, look_cap, look_items, look_live, look_metal, map_captures, map_icons, nup, pause_menu, rstb, sarc, skin, title_menu, tunic, tunic_extra, ui_pack, zs  # noqa: E402
 
 TITLE_ID = "0400486024DEC000"
 DEFAULT_MOD_NAME = "coop-puppet"
@@ -205,6 +207,11 @@ STAND_IN_COMPONENTS = ("ModelInfoRef", "LODRef")
 # itself; the hook's CoopSpawn::EffectStandIn has the same names.
 STAND_IN_XLINK = ("CoopShotFx_Seed", "CoopShotFx_Arrow")
 STAND_IN_XLINK_COMPONENTS = ("ELinkRef", "SLinkRef", "XLinkRef")
+# Issue 166: their sound user is the shared `ReactionHit` (not the shootable's, which has only
+# `Shoot` for the seed): its `Hit_SlingShot_Bullet` / `Hit_Bow_Arrow` are the sounds the shootable's
+# own hit code plays where it lands. The hook plays that key on the copy with the game's own SLink
+# emit (CoopProjectiles::HitSound). The copy never shoots, so the `Shoot` key is not missed.
+STAND_IN_SLINK_USER = {"CoopShotFx_Seed": "ReactionHit", "CoopShotFx_Arrow": "ReactionHit"}
 # Components some stand-ins keep beyond the model (by stand-in name): the animation set, so the
 # hook can play the owner's animation on it (the bomb's Bomb_Blink; the hookshot tip's chain, whose
 # length is its animation set's ChainExtend, issue 85).
@@ -334,6 +341,58 @@ def charsel_native_wanted(mod_dir):
     return True
 
 
+# The Character Select mod retargets the player's animation sets: its own Pack/Actor/Player_<age>.pack has the
+# player's AnimationParam with IsRetarget on every set, because a character's leg bones carry the character's own
+# lengths and the game keeps them only when the clips are retargeted (the mod's README, "The ankles"). A character's
+# puppet is built from the player's pack, so it takes the mod's AnimationParam too: built from the game's, it played
+# Link's clips with Link's leg lengths on the character's legs, which the player's own character does not.
+ANIMATION_PARAM_DIR = "Component/AnimationParam/"
+
+
+def character_animation_params(members, mod_members):
+    """{member path: bytes} of each AnimationParam of `members` (the game's Player_<age> pack) that the mod's own copy
+    of that pack (`mod_members`) changed. Nothing else of the mod's pack is taken."""
+    return {p: mod_members[p] for p in members
+            if p.startswith(ANIMATION_PARAM_DIR) and p in mod_members and mod_members[p] != members[p]}
+
+
+# A character with clips of its own (the cow, 2026-11-23): the mod's AnimationParam names the sets 04 and 01
+# Player_<age>_<set>C_Animation, and the mod's code turns that name into the file of the character the player picked
+# (Model/Player_<age>_<set>_Animation_C<nnn>.anim.bfres, its own clips where it has them) or into the game's set. That
+# code goes by the player's own pick, not by the actor, so a character's puppet names its character's file itself.
+OWN_SET_NAME = re.compile(r"Player_(Adult|Child)_(\d\d)C_Animation")
+
+
+def own_set_file(age, anim_set, file):
+    return f"Model/Player_{age}_{anim_set}_Animation_C{file:03d}.anim.bfres.zs"
+
+
+def character_own_sets(params, file, has_file):
+    """{path: bytes} of the AnimationParams `params` (character_animation_params) for the character `file`: each set
+    named OWN_SET_NAME becomes Player_<age>_<set>_Animation_C<file> when has_file(own_set_file(...)), else the game's
+    Player_<age>_<set>_Animation. A param without such a set is returned as it is."""
+    out = {}
+    for path, data in params.items():
+        doc = byml.loads(data)
+        renamed = False
+        for r in doc.get("AnimationResources", []) if isinstance(doc, dict) else []:
+            m = OWN_SET_NAME.fullmatch(str(r.get("ModelProjectName", "")))
+            if m:
+                age, anim_set = m.groups()
+                own = has_file(own_set_file(age, anim_set, file))
+                r["ModelProjectName"] = (f"Player_{age}_{anim_set}_Animation_C{file:03d}" if own
+                                         else f"Player_{age}_{anim_set}_Animation")
+                renamed = True
+        out[path] = byml.dumps(doc, struct.unpack_from("<H", data, 2)[0]) if renamed else data
+    return out
+
+
+def character_param_entry(game_entry, old, new):
+    """The size-table entry of a packed file the mod made longer: the game parses it in a heap of the entry, so the
+    entry grows by the growth, 32-byte aligned (the mod's own rule: 80 bytes short, the loading thread died)."""
+    return game_entry + ((max(0, len(new) - len(old)) + 0x1F) & ~0x1F)
+
+
 def mod_list_off(mods_root, name):
     """The Mods tab's list (mods/coop-mods.list, "coop-mods 1") names `name` (its path under mods with '/') off: the
     first row for it, letters without case (as Longshot reads it). No list or no row: on (C #58: a mod switched off
@@ -384,8 +443,10 @@ def find_characters(mod_dir, log=print):
                                                              if root == roots[0] else name)):
                     log(f"characters: {name} is switched off in the Mods tab: no character puppets from it")
                     continue
-                files, numbers = {}, {}
+                files, numbers, names = {}, {}, {}
                 for row in doc["characters"]:
+                    if row.get("picker") and "number" in row and "name" in row:
+                        names[int(row["number"])] = str(row["name"])
                     if "file" not in row:
                         continue
                     n = int(row["file"])
@@ -408,7 +469,7 @@ def find_characters(mod_dir, log=print):
                 continue
             if files:
                 return {"mod": name, "dir": os.path.join(root, name), "files": files, "heaps": heaps,
-                        "numbers": numbers, "colours": colours}
+                        "numbers": numbers, "names": names, "colours": colours}
     return None
 
 
@@ -484,6 +545,126 @@ def merge_character_table(table, characters, rs_rel, dicts, log=print):
             table.add_new(path, ((size + 0x1F) & ~0x1F) + PACK_SIZE_MARGIN)
             changed += 1
     return changed
+
+
+# Character Select's voices (docs/puppet.md, "Character voices"). An actor's ActorInfo row names in SLinkUserName the
+# sound list it asks for in Sound/ResourceListPack/BarslistPack. The mod adds a list Player_<Age>_V<NN> per voice (NN:
+# the stored character number in two upper-case hex digits), and its hook turns every request for Player_Child or
+# Player_Adult into the list of the VIEWER's own pick. A puppet with the player's row would speak with the viewer's
+# voice. So, when the mod has voice lists, each puppet names its own list: a character with a voice its
+# Player_<Age>_V<NN>, every other puppet CoopPuppet_<Age> (a copy of the game's Player_<Age> list under a name the hook
+# leaves alone). The pack's BarslistPack replaces the mod's (one file per path, as the RSDB tables): it is the mod's
+# with the two copies added, made at pack time from the player's own files.
+BARSLIST_GLOB = "Sound/ResourceListPack/BarslistPack.Product.*.byml.zs"
+BARSLIST_TABLE = "BarslistTable"
+
+
+def voice_list(variant, number):
+    return f"Player_{variant}_V{number:02X}"
+
+
+def puppet_sound_list(variant):
+    return f"CoopPuppet_{variant}"
+
+
+def character_voices(characters, romfs, dicts, log=print):
+    """The mod's BarslistPack for the game's version: {"rel": its path, "sha256": of the mod's file, "doc": the mod's
+    lists with CoopPuppet_<Age> added, "lists": the names in it} when it has a voice list, else the first two only
+    (the manifest records them, so the kit sees the file change). None when the mod has none or it cannot be read."""
+    games = sorted(glob.glob(os.path.join(romfs, *BARSLIST_GLOB.split("/"))))
+    for path in games:
+        r = rel(romfs, path)
+        mine = os.path.join(characters["dir"], "romfs", r)
+        if not os.path.isfile(mine):
+            continue
+        try:
+            raw = read(mine)
+            doc = byml.loads(dicts.decompress(raw))
+            game = byml.loads(dicts.decompress(read(path)))
+            lists, base = doc[BARSLIST_TABLE], game[BARSLIST_TABLE]
+            if not isinstance(lists, dict) or not isinstance(base, dict):
+                raise ValueError(f"no {BARSLIST_TABLE}")
+        except (OSError, ValueError, KeyError, IndexError, TypeError, struct.error) as e:
+            log(f"characters: {characters['mod']}'s {r} could not be read ({e}): puppets keep the player's sound list")
+            return None
+        found = {"rel": r, "sha256": hashlib.sha256(raw).hexdigest()}
+        voiced = sorted(k for k in lists if any(k.startswith(f"Player_{v}_V") for v in VARIANTS))
+        if not voiced:
+            log(f"characters: {characters['mod']}'s {r} has no voice lists: puppets keep the player's sound list")
+            return found
+        missing = [f"Player_{v}" for v in VARIANTS if f"Player_{v}" not in base]
+        if missing:
+            log(f"characters: the game's {r} has no {', '.join(missing)}: puppets keep the player's sound list")
+            return found
+        for v in VARIANTS:
+            lists[puppet_sound_list(v)] = copy.deepcopy(base[f"Player_{v}"])
+        log(f"characters: {len(voiced)} voice lists in {characters['mod']}'s {r}; puppets get their own sound lists")
+        # Every pickable character's voice, made here from the player's own game (voices.py). The kit deletes the
+        # mod's own voice files, so no list may still name one: a character whose voice is not made (no numpy, a
+        # broken rule, a picker row the table does not know, a list for a number that is no picker row) gets the
+        # silent archive, never Link's clips. Link's own models keep the game's Player_<Age> list (no V list).
+        from . import voices
+        names = characters.get("names") or {}
+        made, why = None, None
+        try:
+            made = voices.build(voices.RomfsFiles(romfs, dicts), names, log=log)
+        except (ImportError, OSError, ValueError, KeyError, IndexError, struct.error) as e:
+            why = str(e)
+            log(f"characters: no voices made ({e})")
+        files = dict(made["files"]) if made else {}
+        if made:
+            for v in VARIANTS:
+                for number, archive in made["lists"][v].items():
+                    lists[voice_list(v, number)] = voices.list_entry(base[f"Player_{v}"], archive)
+            log(f"characters: voices made for {len(made['lists']['Child'])} characters "
+                f"({len(made['files'])} files)")
+        try:
+            table = voices.load_table()
+        except (OSError, ValueError) as e:
+            table = {}
+            log(f"characters: {os.path.basename(voices.TABLE)} could not be read ({e})")
+        link = {n for n, name in names.items() if (table.get(name) or {}).get("link")}
+        unvoiced = {}   # list name -> character number
+        for v in VARIANTS:
+            done = set(made["lists"][v]) if made else set()
+            for k in [k for k in lists if k.startswith(f"Player_{v}_V")]:
+                try:
+                    number = int(k[len(f"Player_{v}_V"):], 16)
+                except ValueError:
+                    number = None
+                if number in link:   # a Link model: the game's own Player_<Age> list, never the mod's deleted files
+                    lists[k] = copy.deepcopy(base[f"Player_{v}"])
+                elif number not in done:
+                    unvoiced[k] = number
+            for number in names:
+                if number not in done and number not in link:
+                    unvoiced[voice_list(v, number)] = number
+        if unvoiced:
+            who = sorted({names.get(n) or ("#%s" % n) for n in unvoiced.values()})
+            reason = why or "the mod has a voice list for a number that is no picker row"
+            try:
+                quiet = voices.silent(voices.RomfsFiles(romfs, dicts), log=log)
+            except (OSError, ValueError, KeyError, IndexError, struct.error) as e:
+                quiet = None
+                for k in unvoiced:
+                    del lists[k]
+                log(f"characters: no voice for {', '.join(who)} ({reason}), and no silent archive ({e}): "
+                    f"their lists are left out")
+            if quiet:
+                files.update(quiet["files"])
+                for k in unvoiced:
+                    v = "Child" if k.startswith("Player_Child_") else "Adult"
+                    lists[k] = voices.list_entry(base[f"Player_{v}"], quiet["archives"][v])
+                log(f"characters: no voice for {', '.join(who)} ({reason}): they are silent")
+        return {**found, "doc": doc, "lists": set(lists), "made": made, "files": files}
+    return None
+
+
+def puppet_sound_list_for(voices, variant, number):
+    """The sound list a puppet's row names: its character's voice list when the mod has one, else CoopPuppet_<Age>."""
+    if number is not None and voice_list(variant, number) in voices["lists"]:
+        return voice_list(variant, number)
+    return puppet_sound_list(variant)
 
 
 def guard_scenes(romfs, dicts):
@@ -1087,6 +1268,11 @@ def build_stand_in(members, source, name, template=None):
         extra, comps = effect_files(template, name, effect[0], None, effect[1])
         files.update(extra)
         doc["Components"].update(comps)
+    sound_user = STAND_IN_SLINK_USER.get(name)
+    if sound_user:  # its own SLink param in place of the shootable's
+        path = slink_path(name)
+        files[path] = byml.dumps({"UserName": sound_user})
+        doc["Components"]["SLinkRef"] = "?" + path
     ap = byml.dumps(doc)
     files[actor_param_path(name)] = ap
     return sarc.write(files), ap, sorted(files)
@@ -1146,6 +1332,8 @@ def stand_in_row(source_row, name, with_effect=False):
     row = {k: v for k, v in source_row.items() if k not in drop}
     if with_effect and name in STAND_IN_EFFECTS:
         row["ELinkUserName"] = STAND_IN_EFFECTS[name][0]
+    if name in STAND_IN_SLINK_USER:
+        row["SLinkUserName"] = STAND_IN_SLINK_USER[name]
     row.update(INFO_OVERRIDES)  # calculated wherever it is, as the puppet (a far shot)
     row["__RowId"] = name
     return row
@@ -1455,7 +1643,7 @@ def write_tunics(romfs, out_romfs, dicts, table, colors, log=print, self_dir=Non
                 m_data = dicts.decompress(m_raw)
                 data = tunic.model_for(m_data, c, dark=dark is not None)
                 data = tunic_extra.model_names(data, c, names)
-                data = look_items.body_model_for(data, c) if boots else data   # (the puppets' only)
+                data = look_items.body_model_for(data, c, tuple(boots)) if boots else data   # (the puppets' only)
                 own_model = None
                 if own_set and v in SELF_MODEL_VARIANTS:
                     own_model = tunic.model_for(m_data, c, dark=dark is not None, letter=tunic.SELF_LETTER)
@@ -1483,6 +1671,16 @@ def write_tunics(romfs, out_romfs, dicts, table, colors, log=print, self_dir=Non
             write(os.path.join(out_romfs, b_dst), recompress(dicts, b_raw, b_data))
             table.add_new(strip_zs(b_dst), table.get(strip_zs(b_rel)) or len(b_data) + PACK_SIZE_MARGIN)
             paths.append(b_dst)
+            if name == look_items.HAIR:
+                # hair-link: the child's model names a hair copy of its own (look_items.child_hair_name).
+                try:
+                    h_data = look_items.child_hair_texture_for(dicts.decompress(b_raw), c)
+                except tunic.TunicError as e:
+                    raise BuildError(f"{b_rel}: {e}")
+                h_dst = f"Tex/{look_items.child_hair_name(c)}.bntx.zs"
+                write(os.path.join(out_romfs, h_dst), recompress(dicts, b_raw, h_data))
+                table.add_new(strip_zs(h_dst), table.get(strip_zs(b_rel)) or len(h_data) + PACK_SIZE_MARGIN)
+                paths.append(h_dst)
         if look_dir:
             write(os.path.join(look_dir, f"{c}.bin"), look_live.pack(look))
             look_files[c] = f"{look_live.DIR}/{c}.bin"
@@ -2044,11 +2242,17 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
             if metal_blob is not None:
                 write(os.path.join(mod_dir, look_live.DIR, look_metal.FILE), metal_blob)
                 look_files["metal"] = f"{look_live.DIR}/{look_metal.FILE}"
-        # The blocks of the tunic's textures that only the cap uses (the Customize page's Cap trim,
-        # look_cap), beside green.bin, which holds their texels.
+            # Which colour blocks lie wholly on a metal part (row 185, look_metal.regions).
+            region_blob = look_metal.regions(read_tex, log)
+            if region_blob is not None:
+                write(os.path.join(mod_dir, look_live.DIR, look_metal.REGION_FILE), region_blob)
+                look_files["region"] = f"{look_live.DIR}/{look_metal.REGION_FILE}"
+        # The blocks of the tunics' textures that only the cap uses (the Customize page's Cap trim,
+        # look_cap), beside green.bin and gear.bin, which hold their texels (the Kokiri tunic's, the
+        # Goron and Zora tunics').
         if "green" in look_files:
-            def read_model(variant):
-                p = os.path.join(romfs, *look_cap.model_path(variant).split("/"))
+            def read_model(model):
+                p = os.path.join(romfs, *look_cap.model_path(model).split("/"))
                 return dicts.decompress(read(p)) if os.path.isfile(p) else None
             cap_blob = look_cap.cap(read_tex, read_model, log)
             if cap_blob is not None:
@@ -2083,6 +2287,11 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
     # Each skin's puppet per age, with its quiet copy for the guard scenes when puppets are seen.
     jobs += [(v, None, q, (sk, refs)) for sk, refs, _ in skin_list for v in refs
              for q in ((False, True) if seen_by else (False,))]
+    # The Character Select mod's voices: each puppet its own sound list (character_voices; none: as before). The
+    # --sound-user test switch names one for all.
+    voices = character_voices(characters, romfs, dicts, log) if characters and sound and not sound_user else None
+    voiced = voices if voices and "lists" in voices else None
+    sound_lists = {}   # puppet -> the sound list its row names (the module says it when the puppet is made)
     # Each character of the Character Select mod per age it has, with its quiet copy as the skins'.
     jobs = [(*j, None) for j in jobs]
     if characters:
@@ -2092,6 +2301,28 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
     jobs = [(*j, False) for j in jobs]
     if clients:
         jobs = [j for job in jobs for j in (job, (*job[:5], True))]
+    mod_anims = {}   # variant: the mod's changed AnimationParams for its characters' puppets
+    param_entries = {}   # member path: the game's size-table entry of a param the mod changed
+
+    def character_anims(v, members):
+        if v not in mod_anims:
+            mod_anims[v] = {}
+            src = os.path.join(characters["dir"], "romfs", "Pack", "Actor", f"Player_{v}.pack.zs")
+            if os.path.isfile(src):
+                try:
+                    theirs = sarc.read(dicts.decompress(read(src)))
+                except (OSError, ValueError, KeyError, IndexError, struct.error) as e:
+                    log(f"characters: {characters['mod']}'s Player_{v} pack could not be read ({e}): its puppets "
+                        "keep the game's AnimationParam")
+                    theirs = {}
+                mod_anims[v] = character_animation_params(members, theirs)
+                for path, data in mod_anims[v].items():
+                    entry = param_entries[path] = table.get(path)
+                    if entry is not None:
+                        table.set(path, max(entry, character_param_entry(entry, members[path], data)))
+                    log(f"characters: the Player_{v} puppets take {characters['mod']}'s {path} (retargeted clips)")
+        return mod_anims[v]
+
     for v, color, quiet, own_skin, char, pvp_copy in jobs:
         player = f"Player_{v}"
         # A skin job, or (--test-skin) any puppet of an age the tested skin changes.
@@ -2113,6 +2344,19 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
             if not os.path.isfile(src):
                 raise BuildError(f"missing {rel(romfs, src)}")
             members = sarc.read(dicts.decompress(read(src)))
+            if char is not None:
+                mod_romfs = os.path.join(characters["dir"], "romfs")
+                params = character_own_sets(character_anims(v, members), char,
+                                            lambda rel: os.path.isfile(os.path.join(mod_romfs, rel)))
+                for path, data in params.items():   # one entry per member path: the longest of the puppets
+                    entry = param_entries[path]     # the game's: the growth counts from it, never twice
+                    if data == mod_anims[v][path]:
+                        continue
+                    log(f"characters: {actor} names its sets in {path}: "
+                        + ", ".join(r["ModelProjectName"] for r in byml.loads(data)["AnimationResources"]))
+                    if entry is not None:
+                        table.set(path, max(table.get(path), character_param_entry(entry, members[path], data)))
+                members = {**members, **params}
         pack, ap, names, keys = build_pack(members, v, sound, player_footsteps, sound_user, actor, project,
                                            basic_xlink=basic_xlink, perception=None if quiet else seen_by,
                                            as_ref=wears[1][v] if wears else None, body=body,
@@ -2122,7 +2366,9 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
         write(os.path.join(out_romfs, dst_rel), dicts.compress(pack, PACK_DICT))
         if player not in ai_rows:
             raise BuildError(f"ActorInfo has no row {player}")
-        new_ai.append(info_row(ai_rows[player], actor, heaps.get(actor), sound, sound_user))
+        number = characters["numbers"][char] if char is not None else None
+        sound_list = puppet_sound_list_for(voiced, v, number) if voiced else None
+        new_ai.append(info_row(ai_rows[player], actor, heaps.get(actor), sound, sound_list or sound_user))
         if project:
             new_ai[-1]["ModelProjectName"] = project
         if wears:
@@ -2198,6 +2444,8 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
                      "skin": wears[0].id if wears else None, "pack": dst_rel, "pack_bytes": len(pack),
                      "instance_heap": _num(new_ai[-1].get("InstanceHeapSize", 0)), "param_size": ap_size,
                      "members": names, "equipment_keys": keys, "footstep": footstep, "body": body_files})
+        if sound_list:
+            sound_lists[actor] = sound_list
         if lift_file:
             made[-1]["liftable"] = lift_file  # (off: the manifest as before)
         if pvp_copy:
@@ -2341,6 +2589,17 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
         except (coop_menu.CoopMenuError, charsel_ui.CharselError, ui_pack.UiPackError, sarc.SarcError, OSError,
                 ValueError, KeyError, IndexError, struct.error) as e:   # (it was made a moment ago: never seen)
             log(f"co-op's - menu screen: NOT made after its trial ({e}); the - menu's tabs have no page this time")
+    # The other players on the game's own maps (map_icons.py, native-ui-audit item 8): hidden copies of the map icon
+    # part in MapMenu_00, after the menus' steps through the same view (ui_run), so their edits of Common are kept.
+    # Hookshot's game only (the module shows them); left out on any trouble: the maps then show no other players.
+    if pause_tab:
+        try:
+            pause_files += map_icons.build(romfs, out_romfs, dicts, table,
+                                           lambda root, r, data: write(os.path.join(root, r), data), recompress,
+                                           log, run=ui_run)
+        except (map_icons.MapIconsError, ui_pack.UiPackError, sarc.SarcError, OSError, ValueError, KeyError,
+                IndexError, struct.error) as e:
+            log(f"map icons: left out ({e}); the maps show no other players")
 
     if characters:
         # The mod's own rows first, the pack's own over them, then the player's own Link's heaps (as the mod alone).
@@ -2364,6 +2623,23 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
     if characters:
         n = merge_character_table(table, characters, rel(romfs, rs_path), dicts, log)
         log(f"characters: {n} size-table entries from {characters['mod']} (its own table and model files)")
+    if voiced:
+        data = byml.dumps(voiced["doc"])
+        path = os.path.join(romfs, voiced["rel"])
+        write(os.path.join(out_romfs, voiced["rel"]), recompress(dicts, read(path), data))
+        key = strip_zs(voiced["rel"])
+        table.set(key, max(table.get(key) or 0, ((len(data) + 0x1F) & ~0x1F) + PACK_SIZE_MARGIN))
+        log(f"wrote {voiced['rel']} ({characters['mod']}'s with {', '.join(puppet_sound_list(v) for v in VARIANTS)})")
+        if voiced.get("files"):
+            from . import voices as voice_files   # not "voices": build() has a local of that name
+            like = read(os.path.join(romfs, voice_files.RESOURCE, "Player_Child.bars.zs"))
+            for r, data in sorted(voiced["files"].items()):
+                if r.endswith(".bars"):
+                    write(os.path.join(out_romfs, r + ".zs"), recompress(dicts, like, data))
+                    table.add_new(r, ((len(data) + 0x1F) & ~0x1F) + PACK_SIZE_MARGIN)
+                else:
+                    write(os.path.join(out_romfs, r), data)
+            log(f"wrote {len(voiced['files'])} voice files")
     for path, new in ((ai_path, ai_new), (gai_path, gai_new), (rs_path, table.dumps())):
         r = rel(romfs, path)
         write(os.path.join(out_romfs, r), recompress(dicts, read(path), new))
@@ -2391,7 +2667,12 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
         "tunics_off": tunics_off,
         "characters": ({"mod": characters["mod"], "numbers": {str(n): characters["numbers"][n] for n in sorted(characters["files"])},
                         "variants": {str(n): characters["files"][n] for n in sorted(characters["files"])},
-                        "colours": characters.get("colours")} if characters else None),
+                        "colours": characters.get("colours"),
+                        # row 285: per variant, the mod's AnimationParams its puppets took (retargeted clips), as the
+                        # log's "the Player_<v> puppets take ...'s <path> (retargeted clips)" lines; a test reads it
+                        "animation_params": {v: sorted(p) for v, p in sorted(mod_anims.items()) if p},
+                        **({"barslist": {"file": voices["rel"], "sha256": voices["sha256"], "voices": bool(voiced)}}
+                           if voices else {})} if characters else None),
         "test_tunic": test_tunic,
         "sound": sound,
         "footsteps": "player" if player_footsteps or not sound else "puppet",
@@ -2400,6 +2681,7 @@ def build(romfs, mod_dir, log=print, heaps=None, sound=True, player_footsteps=Fa
         "quiet_scenes": quiet_scenes,
         "guards": guards,
         "sound_user": sound_user if sound and sound_user else None,
+        **({"sound_lists": sound_lists} if sound_lists else {}),   # (no voices: the manifest as before)
         "xlink": "player" if sound and not basic_xlink else "basic",
         "tables": [rel(romfs, p) for p in (ai_path, gai_path, rs_path)],
         "title_rows": bool(title_rows),  # asked for (--title-rows); title_menu: what was made

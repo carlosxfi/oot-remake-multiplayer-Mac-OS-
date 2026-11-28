@@ -29,6 +29,7 @@
 #include "coop_dbno_game.h"
 #include "coop_hook.h"
 #include "coop_i18n.h"
+#include "coop_map_icons.h"
 #include "coop_voice.h"
 #include "hos_coop_draw.h"
 
@@ -69,6 +70,21 @@ struct Look {
     FontMetrics regular_metrics;  // its metrics (MetricsOf on the file)
     int medium = 0;              // font-medium.otf (the regular one when it is missing)
     std::array<int, 5> hearts{};  // heart-0..4.png: 0 to 4 quarters filled
+    // The game's own map arrow (MapIconPlayer_00, Link's arrow on the maps: tools/puppet_pack/hud.py), pointing up:
+    // map-arrow.png (its shadow and rim) and map-arrow-fill.png (its inside, white: drawn tinted with the player's
+    // colour). Drawn turned to each player's facing by Hookshot (hos_coop_draw3's draw_image_turned, ImGui's
+    // AddImageQuad), at any angle as 0.11.12's drawn arrow and as the game turns its own pane. 0: not loaded (a pack
+    // made before them, or a Hookshot without draw_image_turned): names only.
+    // (Before: one picture per 15-degree turn, 48 pictures, near Hookshot's 64 a module may load, and coarser than
+    // 0.11.12; run regress-fps-map-2b12cd6a lost them all at 32 turns.)
+    int map_arrow = 0;
+    int map_arrow_fill = 0;
+    bool MapArrows() const { return map_arrow != 0 && map_arrow_fill != 0; }
+    // Every picture the module loads into Hookshot: 5 hearts + the arrow's 2. Hookshot keeps at most 64
+    // (hookshot/patches/0001-coop-bridge.patch, image(): images_.size() >= 64 returns 0); LoadLook logs a failed one.
+    static constexpr int kPictures = 5 + 2;
+    static constexpr int kHookshotPictures = 64;
+    static_assert(kPictures <= kHookshotPictures, "the game look's pictures must fit Hookshot's 64");
     bool On() const {
         for (const int h : hearts) {
             if (h == 0) {
@@ -109,15 +125,6 @@ struct ChatBoxView {
 // `room` pixels; the placeholder when empty, in the player's language.
 inline constexpr const char* kChatPlaceholder = "Say something (Enter sends, Esc closes)";
 inline std::string ChatPlaceholder() { return CoopI18n::Tr(kChatPlaceholder); }
-
-// One other player under your hearts (the co-op window's HudLayer).
-struct HudBlock {
-    std::string name;
-    std::string place;        // the place's name, or ""
-    std::vector<int> hearts;  // quarters filled in each (CoopHudHearts::Quarters)
-    bool dim = false;         // not connected
-    CoopVoice::Icon voice = CoopVoice::Icon::none;   // the voice state after the name, as words (CoopVoice::IconFor)
-};
 
 // The item cheats panel, when it is open.
 struct CheatsView {
@@ -182,18 +189,20 @@ coop::overlay::map::Box LayoutToScreen(const coop::overlay::map::Box& layout, fl
 // The words after a name for a player `delta` floors from the one shown
 // ("" on the same floor): floors count down as floor_of's do.
 std::string FloorWords(int delta);
+// The map arrow's turn, radians clockwise on screen, for a facing `angle` on the map (map::Icon::angle: radians,
+// 0 right, pi/2 down): the game's arrow points up unturned, so a facing to the right is a quarter turn.
+float MapArrowTurn(float angle);
+// The voice state after a name as words (" (talking)", " (muted)", "" quiet): the game's own heart lines'
+// (coop_party_hud.h).
+std::string VoiceWords(CoopVoice::Icon icon);
+// The others on the maps for the game's own map icons (coop_map_icons.h): where DrawMap puts them, in the layout's
+// units (the picture as the layout: 3840 x 2160), with their names (and floor words) and our own place.
+CoopMapIcons::Frame MapMarks(const MapShown& m);
 
 // What to draw this present.
 struct Scene {
     std::optional<TitleView> title;
     std::optional<CheatsView> cheats;
-    std::vector<HudBlock> hud;
-    // Our own voice state (CoopVoice::IconFor): not none, a "You" row with it as words
-    // over the HUD blocks (only when there are any).
-    CoopVoice::Icon own_voice = CoopVoice::Icon::none;
-    // Row 141: the bottom of the game's own top-left HUD this frame, as a fraction of the picture height
-    // (CoopMapPage::GameHudBottom); the HUD blocks start below it. None: at CoopHudLayout::kBlocksTop.
-    std::optional<double> game_hud_bottom;
     std::optional<ChatBoxView> box;
     std::vector<ChatShown> chat;
     std::optional<CoopHook::Markers> markers;
@@ -243,8 +252,8 @@ PlayerListSize PlayerListAt(float width, float height, float top, std::size_t ro
 
 // The keys (docs/hookshot.md): F6 opens the game's - menu on the Players view (list_press, once as F6 goes down;
 // coop_players_open.h), or, without our - tabs, holding it shows the drawn list (list); F7 turns the panel on and
-// off (developer builds). Tab and Enter, the emulator's keys, are the game's Plus on Hookshot. Update turns the panel
-// over when F7 goes down.
+// off (developer builds). Tab, an emulator key, is the game's Plus on Hookshot (Enter too before Longshot v3.2.0).
+// Update turns the panel over when F7 goes down.
 struct Keys {
     bool list = false;
     bool list_press = false;   // F6 went down at this Update

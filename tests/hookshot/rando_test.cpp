@@ -4,6 +4,8 @@
 // lines, and the host's seed in co-op.
 #include <doctest/doctest.h>
 
+#include <atomic>
+
 #include <algorithm>
 #include <cstring>
 #include <cstdlib>
@@ -565,12 +567,16 @@ TEST_CASE("rando: switching it on or off says to restart, in the chat and in the
     World w;
     CoopMods::Loader loader(w.mods, {nullptr, 1, nullptr, nullptr});
     loader.Start();
-    Rando rando(loader, w.Hooks());
+    std::atomic<bool> for_host{false};
+    auto hooks = w.Hooks();
+    hooks.restart_for_host = [&](bool due) { for_host = due; };
+    Rando rando(loader, std::move(hooks));
     rando.Start();
     w.Settings(loader);
     REQUIRE(loader.Set(kFolder, "on", "1"));
     rando.Wait();
     CHECK(rando.TakeLines() == std::vector<std::string>{SwitchLine(true), ReadyLine(loader.Value(kId, "seed"))});
+    CHECK_FALSE(for_host.load());   // (row 281: our own switch, alone: no rejoin after the restart)
     CHECK(SwitchLine(true).find("until this chat says the seed is ready") != std::string::npos);
     const auto why = loader.RestartNeeded().why;
     CHECK(std::find(why.begin(), why.end(), SwitchLine(true)) != why.end());
@@ -590,13 +596,33 @@ TEST_CASE("rando: a host's switch reaching a guest says to restart") {
     World w;
     CoopMods::Loader loader(w.mods, {nullptr, 1, nullptr, nullptr});
     loader.Start();
-    Rando rando(loader, w.Hooks());
+    std::atomic<bool> for_host{false};
+    auto hooks = w.Hooks();
+    hooks.restart_for_host = [&](bool due) { for_host = due; };
+    Rando rando(loader, std::move(hooks));
     rando.Start();
     w.Settings(loader);
     loader.SetHostValues(std::vector<CoopMods::SharedValue>{{kId, "on", "1"}, {kId, "seed", "HOST8"}});
     rando.Wait();
     CHECK(rando.TakeLines() == std::vector<std::string>{SwitchLine(true), ReadyLine("HOST8")});
     CHECK(On(loader, "randomizer-HOST8"));
+    CHECK(for_host.load());   // (row 281: the host's seed after a restart: the next start joins the host again once)
+    loader.SetHostValues(std::vector<CoopMods::SharedValue>{{kId, "on", "0"}});   // the host switches it off again
+    rando.Recheck();
+    rando.Wait();
+    CHECK_FALSE(for_host.load());   // (as this run started: no restart is due any more)
+    loader.SetHostValues(std::vector<CoopMods::SharedValue>{{kId, "on", "1"}, {kId, "seed", "HOST8"}});
+    rando.Recheck();
+    rando.Wait();
+    CHECK(for_host.load());
+    loader.SetHostValues(std::nullopt);   // left (or dropped): the seed is off again, so is the rejoin
+    rando.Recheck();
+    rando.Wait();
+    CHECK_FALSE(for_host.load());
+    loader.SetHostValues(std::vector<CoopMods::SharedValue>{{kId, "on", "1"}, {kId, "seed", "HOST8"}});
+    rando.Recheck();
+    rando.Wait();
+    CHECK(for_host.load());   // (the same host joined again: due again)
 }
 
 TEST_CASE("rando: a guest of a host without the randomizer plays without it") {
@@ -1026,11 +1052,41 @@ TEST_CASE("rando: the kit's own open presets are OOTRR1- strings given to genera
         const auto args = GenerateArgs(p, "abc", "seed.ootrr", "");
         REQUIRE(args.size() >= 2);
         CHECK(args[1] == s);
-        CHECK(FolderFor("abc", p) == std::string("randomizer-abc-") + p);
+        const std::string folder = FolderFor("abc", p);
+        CHECK(folder.rfind(std::string("randomizer-abc-") + p + "-", 0) == 0);
+        CHECK(folder.size() == std::string("randomizer-abc-").size() + std::string(p).size() + 9);
+        CHECK(folder != FolderFor("abc", "default"));
     }
+    // Row 53: the folder carries the string's hash, so a string changed under the same name is another folder (the
+    // seed built before is not taken for the new world), and the two presets never share one.
+    CHECK(FolderFor("abc", "open") != FolderFor("abc", "open_fast"));
+    CHECK(FolderFor("abc", "open") == FolderFor("abc", "open"));
+    CHECK(FolderFor("abc", "open") != "randomizer-abc-open");      // the 0.11.x folder is not reused
+    CHECK(FolderFor("abc", "open_fast") != "randomizer-abc-open_fast");
+    CHECK(FolderFor("abc", "keysanity") == "randomizer-abc-keysanity");  // OOTRR's own presets keep their name
     CHECK(std::string(OwnPresetString("easy")).empty());
     CHECK(GenerateArgs("easy", "abc", "seed.ootrr", "")[1] == "easy");
     CHECK(ManifestText().find("\"value\": \"open\"") != std::string::npos);
+}
+
+TEST_CASE("rando: a kit preset's seed built before 0.12.0 is made again under its string's folder (row 53)") {
+    // 0.11.x named it "randomizer-<seed>-open" (no hash): its world may be another string's (open_fast's changed in
+    // 0.12.0), so it is never taken; the seed is built under the new name and the old folder is only switched off.
+    const std::string now = FolderFor("AB12", "open_fast");
+    {
+        const std::vector<Built> built{{"randomizer-AB12-open_fast", "AB12", "open_fast", ""}};
+        const Plan p = Decide({true, "AB12", "open_fast"}, built, {RowNamed("randomizer-AB12-open_fast", true)});
+        CHECK(p.what == Plan::Do::build);
+        CHECK(p.folder == now);
+    }
+    {   // built again: the new one on, the old one off (it stays on disk)
+        const std::vector<Built> built{{"randomizer-AB12-open_fast", "AB12", "open_fast", ""}, {now, "AB12", "open_fast", ""}};
+        const Plan p = Decide({true, "AB12", "open_fast"}, built,
+                              {RowNamed("randomizer-AB12-open_fast", true), RowNamed(now, false)});
+        CHECK(p.what == Plan::Do::use);
+        CHECK(p.on == std::vector<std::string>{now});
+        CHECK(p.off == std::vector<std::string>{"randomizer-AB12-open_fast"});
+    }
 }
 
 TEST_CASE("rando: the preset cache's text") {
@@ -1657,6 +1713,24 @@ TEST_CASE("rando: a seed file that places shop items (coop_shop_sale.h)") {
     CHECK_FALSE(SeedShops(""));
 }
 
+TEST_CASE("rando: the item a seed file places at a location (row 237, coop_story.h GiftShuffled)") {
+    // OOTRR settings/seed.rs: "placements" is an object, location name -> item name.
+    const std::string seed = "{\n  \"format\": \"ootrr-seed\",\n  \"settings\": \"OOTRR1-AB\",\n  \"placements\": {\n"
+                             "    \"HF Ocarina of Time Item\": \"Ocarina\",\n"
+                             "    \"KF Midos Top Left Chest\": \"LW Gift from Saria\",\n"
+                             "    \"LW Gift from Saria\" : \"Progressive Hookshot\"\n  },\n  \"shops\": {}\n}\n";
+    CHECK(SeedPlacement(seed, "LW Gift from Saria") == std::optional<std::string>("Progressive Hookshot"));
+    CHECK(SeedPlacement(seed, "HF Ocarina of Time Item") == std::optional<std::string>("Ocarina"));
+    CHECK(SeedPlacement(seed, "KF Midos Top Left Chest") == std::optional<std::string>("LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement(seed, "GC Darunias Joy").has_value());  // not listed: vanilla
+    CHECK(SeedPlacement("{\"placements\":{\"A\":\"Say \\\"hi\\\"\"}}", "A") == std::optional<std::string>("Say \"hi\""));
+    CHECK_FALSE(SeedPlacement("{\"hint\": \"placements\", \"LW Gift from Saria\": \"Bow\"}", "LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement("{\"placements\": []}", "LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement("{\"placements\": {\"LW Gift from Saria\": 3}}", "LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement("{\"placements\": {\"LW Gift from Saria\": \"Bo", "LW Gift from Saria"));
+    CHECK_FALSE(SeedPlacement("", "LW Gift from Saria"));
+}
+
 TEST_CASE("rando: the settings string of a seed file") {
     // As OOTRR 0.6.1 writes it (generate default abc); 0.6.2 and 0.7.0 to 0.8.1 write the same layout (settings/seed.rs is unchanged).
     CHECK(SeedSettings("{\n  \"format\": \"ootrr-seed\",\n  \"version\": 1,\n  \"generator\": \"ootrr-core 0.6.1\",\n"
@@ -2267,4 +2341,236 @@ TEST_CASE("rando: a hand-put seed's size table that wins counts as an outside mo
     const std::vector<std::string> hand_wins{pack, "randomizer-hand"}, mine_wins{pack, "randomizer-MINE1"};
     CHECK(OutsideSizeTable(w.mods, {}, &hand_wins) == std::optional<std::string>("randomizer-hand"));
     CHECK_FALSE(OutsideSizeTable(w.mods, {}, &mine_wins));
+}
+
+// Row 274: one seed built on one kit by two players hashes alike in co-op (ShareStandIn), whatever each PC merged into
+// it: its size table (OOTRR builds it beside the other mods' tables, e.g. Character Select's own looks; the button
+// prompts and the kit's start merge into it) and the files the kit merged the puppet pack's rows into (kept copies).
+TEST_CASE("rando: a seed's co-op hash leaves out its size table and reads the kit's kept copies (row 274)") {
+    const fs::path base = ModTestDir("coop-rando-share-hash");
+    const fs::path table = fs::path("System") / "Resource" / "ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs";
+    const fs::path rows = fs::path("RSDB") / "ActorInfo.Product.111.rstbl.byml.zs";
+    const auto pc = [&](const std::string& name, const std::string& chest, const std::string& sizes) {
+        const fs::path mods = base / name;
+        const fs::path seed = mods / "randomizer-utnqymaageg5";
+        Put(seed / "romfs" / "Event" / "Flow.bfevfl.zs", chest);
+        Put(seed / "romfs" / rows, "actor rows");
+        Put(seed / "romfs" / table, sizes);
+        Put(seed / kSeedFile, "UTNQYMAAGEG5\n");
+        return mods;
+    };
+    const auto hash = [](const fs::path& mods, bool stand_in) {
+        const std::vector<CoopMods::Mod> found = CoopMods::Scan(mods);
+        const auto m = std::find_if(found.begin(), found.end(),
+                                    [](const CoopMods::Mod& x) { return x.name == "randomizer-utnqymaageg5"; });
+        REQUIRE(m != found.end());
+        const CoopMods::StandIn pick = [&](const fs::path& file, const std::string& key) {
+            return ShareStandIn(m->folder, file, key);
+        };
+        return CoopMods::HashMod(*m, nullptr, stand_in ? &pick : nullptr).value().game_files;
+    };
+    const fs::path a = pc("a", "chest: hookshot", "sizes with Character Select (player A's looks)");
+    const fs::path b = pc("b", "chest: hookshot", "sizes with Character Select (player B's looks), prompts");
+    CHECK(hash(a, false) != hash(b, false));  // (before: the line said 'built unlike the host's' every time)
+    CHECK(hash(a, true) == hash(b, true));
+    // B's kit start merged the puppet pack's rows into the seed and kept its own copy, with the stamp naming the merge.
+    const fs::path b_seed = b / "randomizer-utnqymaageg5";
+    Put(b_seed / "_coop-rows" / rows.filename(), "actor rows");
+    Put(b_seed / "romfs" / rows, "actor rows + puppet rows");
+    PutKeptStamp(b_seed, fs::path("_coop-rows") / (rows.filename().string() + ".txt"), "coop-rows 1", rows);
+    CHECK(hash(a, true) == hash(b, true));
+    // Another world (other items in chests) still differs, and so do the seed's own rows.
+    CHECK(hash(a, true) != hash(pc("c", "chest: bombs", "sizes"), true));
+    const fs::path d = pc("d", "chest: hookshot", "sizes");
+    Put(d / "randomizer-utnqymaageg5" / "romfs" / rows, "other actor rows");
+    CHECK(hash(a, true) != hash(d, true));
+    // Only size tables are left out: another file in System/Resource still counts.
+    const fs::path e = pc("e", "chest: hookshot", "sizes");
+    Put(e / "randomizer-utnqymaageg5" / "romfs" / "System" / "Resource" / "Other.bin", "x");
+    CHECK(hash(a, true) != hash(e, true));
+    // The same for any mod (not only seeds): e.g. Character Select's own size table.
+    const fs::path f = base / "f" / "OoT Character Select" / "romfs";
+    Put(f / table, "one PC's sizes");
+    CHECK_FALSE(ShareStandIn(base / "f" / "OoT Character Select", f / table,
+                             "system/resource/resourcesizetable.product.111.nin_ounce_nvn2.rsizetable.zs"));
+    CHECK(ShareStandIn(base / "f" / "OoT Character Select" / "", f / "Event" / "x", "event/x") == f / "Event" / "x");
+}
+
+// A #98 (row 274's related case): Character Select's look files are each player's own (its NPC part is an opt-in
+// download; its looks differ per PC), so two players with it are not told 'your files differ'; what changes the game
+// (its menus, saved values, actor tables, text, packs) still counts. Other mods' look files still count.
+TEST_CASE("rando: Character Select's look files are left out of the co-op hash, its game files count (row 274)") {
+    CHECK(IsCharacterSelectFolder("OoT Character Select"));
+    CHECK(IsCharacterSelectFolder("my CHARACTER SELECT v2"));
+    CHECK_FALSE(IsCharacterSelectFolder("randomizer-utnqymaageg5"));
+    CHECK_FALSE(IsCharacterSelectFolder("CharacterSelect"));
+    CHECK(IsLookFile("tex/angin_tile_a_dark_ac3.bntx.zs"));
+    CHECK(IsLookFile("model/player_child.player_child.bfres.zs"));
+    CHECK(IsLookFile("phive/cloth/player_adult_cac.nin_ounce_nvn2.bphcl"));
+    CHECK_FALSE(IsLookFile("phive/shape/dungeon_wall.bphsh"));  // (collision: it changes the world)
+    CHECK(IsLookFile("sound/resource/playervoice_adult_x.bars.zs"));
+    CHECK_FALSE(IsLookFile("ui/layoutarchivecategory.product.100.byml.zs"));
+    CHECK_FALSE(IsLookFile("pack/actor/player_child.pack.zs"));
+    CHECK_FALSE(IsLookFile("texture/x"));  // (only the folders themselves)
+
+    const fs::path base = ModTestDir("coop-rando-share-charsel");
+    const auto pc = [&](const std::string& name, const std::string& folder, const std::string& look,
+                        const std::string& menu, bool npc_part) {
+        const fs::path mod = base / name / folder;
+        Put(mod / "romfs" / "Tex" / "Mt_Boots_Player_Adult_Ac6.bntx.zs", look);
+        Put(mod / "romfs" / "Model" / "Player_Child.Player_Child.bfres.zs", "model " + look);
+        Put(mod / "romfs" / "Sequence" / "CharacterMenu.module.ainb", menu);
+        Put(mod / "romfs" / "GameData" / "GameDataList.Product.110.byml.zs", "saved values");
+        Put(mod / "romfs" / "Pack" / "Actor" / "Player_Child.pack.zs", "pack");
+        if (npc_part) {
+            Put(mod / "romfs" / "Tex" / "Npc_A.bntx.zs", "npc");
+            Put(mod / "romfs" / "Sound" / "Resource" / "PlayerVoice_Adult_X.bars.zs", "voice");
+            Put(mod / "romfs" / "Phive" / "Cloth" / "Player_Adult_CAC.Nin_Ounce_NVN2.bphcl", "cloth");
+        }
+        return base / name;
+    };
+    const auto hash = [](const fs::path& mods, const std::string& folder) {
+        const std::vector<CoopMods::Mod> found = CoopMods::Scan(mods);
+        const auto m = std::find_if(found.begin(), found.end(), [&](const CoopMods::Mod& x) { return x.name == folder; });
+        REQUIRE(m != found.end());
+        const CoopMods::StandIn pick = [&](const fs::path& file, const std::string& key) {
+            return ShareStandIn(m->folder, file, key);
+        };
+        return CoopMods::HashMod(*m, nullptr, &pick).value().game_files;
+    };
+    const std::string cs = "OoT Character Select";
+    const auto a = hash(pc("a", cs, "player A's boots", "menu", false), cs);
+    CHECK(a == hash(pc("b", cs, "player B's boots", "menu", true), cs));  // other looks, NPC part opted in
+    CHECK(a != hash(pc("c", cs, "player A's boots", "another menu", false), cs));  // the game's menu differs
+    // GameData merged by the kit: its kept copy stands for it (the same as a seed's).
+    const fs::path d = pc("d", cs, "boots", "menu", false);
+    const fs::path d_mod = d / cs;
+    const fs::path gd = fs::path("GameData") / "GameDataList.Product.110.byml.zs";
+    Put(d_mod / "_coop-gamedata" / gd.filename(), "saved values");
+    Put(d_mod / "romfs" / gd, "saved values + pack's");
+    PutKeptStamp(d_mod, fs::path("_coop-gamedata") / (gd.filename().string() + ".txt"), "coop-gamedata 1", gd);
+    CHECK(a == hash(d, cs));
+    // A collision shape in Character Select still counts (only Phive/Cloth is a look).
+    const fs::path g = pc("g", cs, "boots", "menu", false);
+    Put(g / cs / "romfs" / "Phive" / "Shape" / "Wall.bphsh", "wall");
+    CHECK(a != hash(g, cs));
+    // A renamed Character Select is known by its own files (characters.json, or the kit's coop-charsel.txt): its looks
+    // are still left out.
+    const fs::path h = pc("h", "CS", "player A's boots", "menu", false);
+    const fs::path i = pc("i", "CS", "player B's boots", "menu", true);
+    CHECK(hash(h, "CS") != hash(i, "CS"));  // (not known yet: a plain mod)
+    Put(h / "CS" / "characters.json", "{}");
+    Put(i / "CS" / "characters.json", "{}");
+    CHECK(hash(h, "CS") == hash(i, "CS"));
+    CHECK(IsCharacterSelectMod(h / "CS"));
+    const fs::path j = base / "j" / "OoT_CS";
+    Put(j / "coop-charsel.txt", "v0.2.2 - - - ui cz2\n");
+    CHECK(IsCharacterSelectMod(j));
+    CHECK_FALSE(IsCharacterSelectMod(base / "e" / "Hylian Tunics"));
+    // Another mod's textures are its content: they still count.
+    const std::string other = "Hylian Tunics";
+    CHECK(hash(pc("e", other, "red", "menu", false), other) != hash(pc("f", other, "blue", "menu", false), other));
+}
+
+namespace {
+const fs::path kLayouts = fs::path("UI") / "Layout2Archive" / "Common.Product.100.Nin_Ounce_NVN2.blarc.zs";
+
+// The kit's merge of the winner's layout archive: its own copy kept, and the stamp naming the file as it is now.
+void MarkLayouts(const fs::path& mods, const std::string& mod) {
+    Put(mods / mod / "_coop-archives" / kLayouts, "the mod's own copy");
+    fs::path stamp = fs::path("_coop-archives") / kLayouts;
+    PutKeptStamp(mods / mod, stamp += ".txt", "coop-archive 1", kLayouts);
+}
+}  // namespace
+
+TEST_CASE("rando (row 288): a layout archive that wins without the Characters page's layouts is found") {
+    World w;
+    const std::string pack = "contents\\0400486024DEC000\\coop-puppet";
+    Put(w.mods / kPackFolder / "romfs" / kLayouts, "game layouts + co-op's");
+    Put(w.mods / "OoT Character Select" / "romfs" / kLayouts, "game layouts + the Characters page's");
+    Put(w.mods / "randomizer-S1" / "romfs" / kLayouts, "game layouts, the seed's");
+    Put(w.mods / "aaa-textures" / "romfs" / "UI" / "Layout2Archive" / "Other.Product.100.blarc.zs", "not the menus'");
+    using Order = std::vector<std::string>;
+    using Code = CharactersCode;
+    // The seed made in the game sorts last: its whole archive is the one read, the page's layouts are not in the game.
+    const Order seed_last{pack, "aaa-textures", "OoT Character Select", "randomizer-S1"};
+    CHECK(OutsideLayouts(w.mods, {}, &seed_last, Code::character_select) == std::optional<std::string>("randomizer-S1"));
+    CHECK(OutsideLayouts(w.mods, {}, &seed_last, Code::pack) == std::optional<std::string>("randomizer-S1"));
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &seed_last, Code::none));   // (no Characters code in the game: no page)
+    // The page's own mod wins: its layouts are the ones read.
+    const Order charsel_last{pack, "randomizer-S1", "OoT Character Select"};
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &charsel_last, Code::character_select));
+    // ... but co-op's own page (the pack's code) would lack its layouts there.
+    CHECK(OutsideLayouts(w.mods, {}, &charsel_last, Code::pack) == std::optional<std::string>("OoT Character Select"));
+    const Order pack_last{"randomizer-S1", pack};
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &pack_last, Code::pack));
+    // A mod without the menus' archive never wins it; with no mod over the pack nothing is outside.
+    const Order no_seed{pack, "aaa-textures"};
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &no_seed, Code::pack));
+    // Character Select's code built in but his mod not among the mods read: his screens are gone too, no page.
+    const Order no_charsel{pack, "randomizer-S1"};
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &no_charsel, Code::character_select));
+    CHECK(OutsideLayouts(w.mods, {}, &no_charsel, Code::pack));
+    // Hookshot's own order (no list): by name, the last wins.
+    CHECK(OutsideLayouts(w.mods, {Indexed("OoT Character Select"), Indexed("randomizer-S1")}, nullptr,
+                         Code::character_select) == std::optional<std::string>("randomizer-S1"));
+    CHECK_FALSE(OutsideLayouts(w.mods, {Indexed("OoT Character Select"), Indexed("aaa-textures")}, nullptr,
+                               Code::character_select));
+    CHECK_FALSE(OutsideLayouts(w.mods, {Indexed("aaa-textures")}, nullptr, Code::pack));
+    // The kit's start merged every mod's layouts into the winner: trusted while its stamp names the file as it is.
+    MarkLayouts(w.mods, "randomizer-S1");
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &seed_last, Code::character_select));
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &seed_last, Code::pack));
+    Put(w.mods / "randomizer-S1" / "romfs" / kLayouts, "a new seed made in the same folder");
+    CHECK(OutsideLayouts(w.mods, {}, &seed_last, Code::character_select));
+    // A renamed Character Select is still the page's mod (its characters.json).
+    Put(w.mods / "CS" / "characters.json", "{}");
+    Put(w.mods / "CS" / "romfs" / kLayouts, "game layouts + the Characters page's");
+    const Order renamed_last{pack, "randomizer-S1", "CS"};
+    CHECK_FALSE(OutsideLayouts(w.mods, {}, &renamed_last, Code::character_select));
+    CHECK(LayoutsLine(std::string(80, 'x')).size() <= 300);
+}
+
+TEST_CASE("rando (row 288): a run without the Characters page's layouts says so and holds the page") {
+    World w;
+    Put(w.mods / kPackFolder / "romfs" / kLayouts, "game layouts + co-op's");
+    Put(w.mods / "randomizer-S1" / "romfs" / kLayouts, "game layouts, the seed's");
+    PlaysSeed(w, "randomizer-S1", 7);
+    const auto hooks = [&](CharactersCode code) {
+        Rando::Hooks h = w.Hooks();
+        h.characters_code = [code] { return code; };
+        return h;
+    };
+    {
+        CoopMods::Loader loader(w.mods, {nullptr, 7, nullptr, nullptr});
+        loader.Start();
+        Rando rando(loader, hooks(CharactersCode::pack));
+        rando.Start();
+        rando.Wait();
+        CHECK(rando.LayoutsMissing());
+        const std::string line = ChatSafe(LayoutsLine("randomizer-S1"), 300);
+        CHECK(line.find("the Characters page is held") != std::string::npos);
+        CHECK(Count(rando.TakeLines(), line) == 1);
+        rando.SayLayouts();   // (the page asked for: said again)
+        CHECK(Count(rando.TakeLines(), line) == 1);
+    }
+    {   // (no Characters code in the game, or no hook: nothing held, nothing said)
+        CoopMods::Loader loader(w.mods, {nullptr, 7, nullptr, nullptr});
+        loader.Start();
+        Rando rando(loader, w.Hooks());
+        rando.Start();
+        rando.Wait();
+        CHECK_FALSE(rando.LayoutsMissing());
+        rando.SayLayouts();
+        CHECK(Count(rando.TakeLines(), ChatSafe(LayoutsLine("randomizer-S1"), 300)) == 0);
+    }
+    MarkLayouts(w.mods, "randomizer-S1");
+    {
+        CoopMods::Loader loader(w.mods, {nullptr, 7, nullptr, nullptr});
+        loader.Start();
+        Rando rando(loader, hooks(CharactersCode::pack));
+        rando.Start();
+        rando.Wait();
+        CHECK_FALSE(rando.LayoutsMissing());
+    }
 }

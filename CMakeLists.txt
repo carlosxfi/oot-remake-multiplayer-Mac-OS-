@@ -42,6 +42,12 @@ else()
     target_compile_options(coop_warnings INTERFACE -Wno-error=maybe-uninitialized)
   endif()
 endif()
+# windows.h (pulled in by ENet, sockets and the hook layer) defines min and max as macros, which breaks every
+# std::min(...) / std::max(...) / numeric_limits<T>::max() in a file that sees it (MSVC C2589). One rule for all our
+# targets instead of a guard per header or (std::min) per call (PR #315's session_test.cpp hit it).
+if(WIN32)
+  target_compile_definitions(coop_warnings INTERFACE NOMINMAX)
+endif()
 
 # Sanitizers apply to everything, ENet included, so its memory is checked too.
 if(COOP_SANITIZE)

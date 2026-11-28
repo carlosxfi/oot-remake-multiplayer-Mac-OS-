@@ -17,7 +17,7 @@ Everything is on the game's banner, `SimpleInfo_00`: the frame `W_Bg_00` and the
 |---|---|
 | A chat line | "Saria: hi", the line in the speaker's colour; a long line in pages, each "Saria: " and what fits after it |
 | A room notice ("Saria joined") | the notice, in the game's own colour |
-| What you type (T) | "you: hello_" (the end of what you type, a caret, "(not sent)" after a send that failed), changing as you type |
+| What you type (T) | "you: hello_" (the end of what you type, a caret, "(not sent)" in red after a send that failed), changing as you type |
 | A held line (down but not out: "You are down  0:32", from `coop_dbno_draw`) | kept up while held, in the game's own colour; chat waits |
 
 ### Why not the "message window" `MessageInGame_00`
@@ -51,10 +51,23 @@ own layout (`W_Bg_00`, shown), no option, and the game shows its own short notic
   (`+0x2b0`, found by its set-up `f_80de2490`) to its first frame with `f_802f0fe0` (only kind `0x1d` plays it to the
   end), the text into `T_Text_00`, then its open call (slot 5, mode 2). A page that follows one of ours still up only
   changes the text.
-- **It fits.** `T_Text_00` is 2100 x 86 at 0.8 in its `W_Bg_00` frame (1880 x 136): one line. A page is 48 columns,
-  "speaker: " included (a name at most 20), a Chinese, Japanese or Korean character two columns. A long line is
-  several pages shown in turn, never cut and never past the frame. The column count is a safe guess at the game's font
-  (NOT proven: the LANE1 screenshot run settles it; `kBannerColumns` is in one place).
+- **It fits.** `T_Text_00` is 2100 x 86 at 0.8 in its `W_Bg_00` frame (1880 x 136): one line. A page is measured as
+  the game draws it: each character by its advance in the game's own font (the HUD pack's `font-medium.otf`, Cetra
+  Display Pro Medium, the Latin font of the game's Normal set; its `cmap` and `hmtx` read once, `SetFontWidths`), and
+  never wider than 26 em, "speaker: " included (a name at most 9 em). The bar is the game's own: its widest banner text
+  in `LayoutMsg/SimpleInfo_00`, in any language of the 1.1.1 romfs, is 27.3 em in that font (German, French, Italian,
+  Spanish and Polish lines of 57 to 62 letters; English's widest is 22.0 em), and the game shows it on that pane on
+  one line. The layout scales as one with the window, so the same 26 em fits at 16:9 and in the smallest window.
+  Without the pack (or a font it cannot read) every character takes a guess that is never narrower than its advance
+  in any of the game's Latin fonts (Cetra Display Pro Regular and Medium, Clarimo UD PE Regular and DemiBold: "W" 1.12,
+  "m" 1.00, a capital 0.82, a small letter 0.66, "t" 0.50, "i" 0.40, a space 0.30, any other letter 1.12 em). A
+  Chinese, Japanese or Korean character is 1 em. A long line is several pages shown in turn, never cut and never past
+  the frame. (0.11.12 counted 48 columns, a guess: 48 "W" are 48.7 em, far past the game's widest line.) Not seen on
+  screen yet: the LANE1 screenshot list in the worker's report checks English, a wide-letter line and Chinese.
+- **The typed line.** It is "you: " then the end of what is typed that fits, a caret (the game font's own
+  underscore) and, after a send that failed, "(not sent)" with the whole line in red (`kFailedColour`, through the
+  text box's own colours as a speaker's colour is), so it is plain the line did not go; the text stays for another
+  Enter, and any change to it clears the mark.
 - **Timing.** A page shows 3 s plus 60 ms a column (at most 6 s); co-op closes its own page when its time is over
   (slot 6, only a banner of ours), so it never depends on the banner closing by itself. At most 16 pages wait; when
   more come the oldest line goes, all its pages. A line not begun 20 s after it came is dropped, all of it; a line
@@ -88,10 +101,11 @@ own layout (`W_Bg_00`, shown), no option, and the game shows its own short notic
 - `coop: native ui: first chat line|notice shown on the game's banner`
 - `coop: native ui: the game's banner is not free now; the line waits`
 - `coop: native ui: typing on the game's banner`
+- `coop: native ui: banner lines measured with the game's font (N bytes)` (or `... measured by safe guesses`)
 - `coop: native ui: the game gave no memory for its texts; chat drawn as before`
 
 ## Not proven yet (one LANE1 screenshot run)
 
 Every step above in a game: the banner's frame around our text, the line colour, the close of our own page, the text
-box pointer at `+0xf0` as the banner's owner test, that 48 columns fit at 16:9 and a narrow window, in English and in
-Chinese.
+box pointer at `+0xf0` as the banner's owner test, that a 26 em page fits at 16:9 and in the smallest window, in
+English and in Chinese, and the red of a failed send.

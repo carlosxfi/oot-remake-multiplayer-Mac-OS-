@@ -1,0 +1,40 @@
+# kokiri-band-c124 B: adult in Kakariko as A, backs off and faces up the path (hat-trim-278.B.txt's moves), then a shot
+# every 100 frames while A walks toward it (kokiri-band-c124.A.txt says what to look at). The shots are judged by what
+# they show (the puppet's size), not by A's mark names: the two games' clocks drift by seconds.
+#! switches LICHII_COOP_DEBUG_ANIM=1,LICHII_COOP_CHEATS=1
+#! timeout 420
+mark start
+warp KakarikoVillage_Child Kakariko_WellSide
+wait 1200               # the warp lands
+mark after
+setflag Sequence_IsChildhood 0  # set AFTER the save is loaded (run.ps1 loads it first): at the title the load put the save's age back
+wait 60                 # the flag takes 30+ frames before the warp (kit_setup: Link loads at the flag's age)
+warp KakarikoVillage_Adult Kakariko_WellSide
+wait 1500
+stick 0 -0.6 30         # walk back toward the camera
+stick 0 0.3 8           # turn to face up the path
+press ZL                # camera behind B
+wait 60
+mark b-0
+wait 100
+mark b-1
+wait 100
+mark b-2
+wait 100
+mark b-3
+wait 100
+mark b-4
+wait 100
+mark b-5
+wait 100
+mark b-6
+wait 100
+mark b-7
+wait 100
+mark b-8
+wait 100
+mark b-9
+wait 100
+mark b-10
+wait 600
+mark end

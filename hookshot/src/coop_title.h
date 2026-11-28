@@ -30,9 +30,19 @@ void ApplyKitOptions();
 // The coop-options.ini ApplyKitOptions reads: the kit's, or the one beside longshot.exe (a game with no kit of its own);
 // none when neither is there.
 std::optional<std::filesystem::path> KitOptionsFile();
+// This game's own player file, coop-player.ini beside longshot.exe (CoopTitleMenu::PlayerKey: the controller, the
+// keyboard, the look), when it has one: a local co-op game (<game>\local-players\playerN) or a Nucleus Co-op instance.
+std::optional<std::filesystem::path> PlayerOptionsFile();
+// The coop-options.ini text this game goes by: KitOptionsFile's, with coop-player.ini's lines over it.
+std::string ReadKitOptions();
+// `text` (ReadKitOptions' after an edit) written back: the player's keys to coop-player.ini when there is one, the rest
+// to KitOptionsFile. False when a file could not be written (or there is neither file).
+bool WriteKitOptions(const std::string& text);
 // The file Link's look is saved to (SaveLook) and read from at the start (coop_look_live): KitOptionsFile, else
 // coop.ini. One place, so the two never differ (row 198).
 std::filesystem::path LookFile();
+// The text Link's look is read from at the start: ReadKitOptions when there is a kit's or a player's file, else coop.ini.
+std::string LookText();
 // The look the player chose in the pause menu (coop_look.h), written to the
 // kit's coop-options.ini (else coop.ini) so the next start keeps it (the
 // title's Settings page reads the files when it opens). The calc thread.
@@ -52,7 +62,10 @@ void StopSaveWait();
 // A join with a file loaded went back to the title (CoopPauseTab::ToTitle): once the host's save is in and the title's
 // menu is up, its Continue is chosen for the player (the host's save loads), within kAutoLoadMs. Any thread.
 inline constexpr std::uint64_t kAutoLoadMs = 180000;
-void LoadHostSaveOnTitle(bool test = false);   // (test: no session; the save as it is (LICHII_COOP_TEST_TO_TITLE))
+void LoadHostSaveOnTitle(bool test = false);
+// The presses that load it run now (coop_auto_press.h): the game's menu mouse neither points nor clicks
+// (hos_coop_menu_mouse_held, Longshot patch 0030). Any thread.
+bool MenuMouseHeld();   // (test: no session; the save as it is (LICHII_COOP_TEST_TO_TITLE))
 // The title waits for the host's save (Longshot patch 0028's hold, hos_coop_title_hold).
 bool SaveWaitWaiting();
 // Player 1's buttons before the code mods' holds come off (coop_pad_order.h step 2), for the player's own A on the

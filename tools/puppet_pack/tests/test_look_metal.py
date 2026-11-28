@@ -180,3 +180,62 @@ class LookMetalTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# Row 185 reopened: the Hylian frame's own end pairs (565, read from the game's texture).
+FRAME = struct.pack("<HHI", 0xA632, 0xA473, 0xE4E4E4E4)     # (165, 199, 148) green + (165, 142, 156) grey
+FRAME_DARK = struct.pack("<HHI", 0xA513, 0x6B2B, 0xE4E4E4E4)  # grey + (107, 101, 90) dark brown
+TRIFORCE = struct.pack("<HHI", 0xFE6D, 0xA632, 0)            # gold (255, 207, 107) + the green end
+
+
+class LookRegionTest(unittest.TestCase):
+    RULES = ((3, lm.GREY | lm.WARM_GREY), (4, lm.BLUE | lm.PURPLE), (5, lm.RED))
+
+    def test_forceable_as_the_module(self):
+        tones = lm.GREY | lm.WARM_GREY | lm.BLUE | lm.PURPLE | lm.RED
+        for c in ((165, 199, 148), (107, 101, 90), (66, 60, 49), (8, 4, 0)):
+            self.assertTrue(lm.forceable(c, tones), c)
+        for c in ((247, 207, 107), (140, 60, 30), (41, 44, 90), (165, 142, 156)):
+            self.assertFalse(lm.forceable(c, tones), c)
+        with open(os.path.join(SRC, "coop_look_paint.cpp"), encoding="utf-8") as f:
+            self.assertIn(f"hi - lo < {lm.SPREAD} * hi", f.read())
+
+    def textures(self):
+        # colour 8x8 (BC1, 2x2 blocks): the frame's pairs on the left, the same pair top right (not on
+        # metal), the Triforce's gold beside a green end bottom right; metal everywhere but the top
+        # right; a second 4x4 level, one frame block over all of it (the top right too)
+        alb = full_bntx(0x1A, 8, 8, 0, [swizzle([[FRAME, FRAME], [FRAME_DARK, TRIFORCE]], 8, 1),
+                                        swizzle([[FRAME]], 8, 1)])
+        mtl = full_bntx(0x1D, 8, 8, 0, [swizzle([[METAL, NONE], [METAL, METAL]], 8, 1)])
+        return alb, mtl
+
+    def test_the_frame_blocks_wholly_on_metal(self):
+        alb, mtl = self.textures()
+        _, _, _, _, mips, image = lm.info(alb)
+        at = lambda x, y: lm.block_at(x, y, 16, 2, 1, 8)
+        got = lm.region_blocks(mtl, alb, self.RULES)
+        # the left column; not the top right (no metal), the Triforce's (its gold is no part's), nor the
+        # small level's block (it lies on the top right's no-metal too)
+        self.assertEqual(got, {3: sorted([at(0, 0), at(0, 1)])})
+        self.assertEqual(len(mips), 2)
+        self.assertEqual(image[at(0, 0):at(0, 0) + 8], FRAME)
+
+    def test_a_block_with_nothing_to_force_is_left_out(self):
+        alb = full_bntx(0x1A, 8, 8, 0, [swizzle([[GREY, BLUE], [GREY, GREY]], 8, 1)])
+        _, mtl = self.textures()
+        self.assertEqual(lm.region_blocks(mtl, alb, self.RULES), {})
+
+    def test_the_file(self):
+        alb, mtl = self.textures()
+        have = {"Mt_Weapon_Shield_Hylian_Alb": alb, "Mt_Weapon_Shield_Hylian_Mtl": mtl}
+        blob = lm.regions(have.get, lambda s: None)
+        self.assertEqual(blob[:8], b"COOPRGN1")
+        entries = lm.unpack(blob, lm.REGION_MAGIC)
+        self.assertEqual([(n, p, len(o)) for n, p, o in entries], [("Mt_Weapon_Shield_Hylian_Alb", 3, 2)])
+        with self.assertRaises(tunic.TunicError) as e:
+            lm.unpack(blob)   # never read as a metal file
+        self.assertEqual(str(e.exception), "not a metal file")
+        with self.assertRaises(tunic.TunicError) as e:
+            lm.unpack(b"COOPMTL1" + blob[8:], lm.REGION_MAGIC)
+        self.assertEqual(str(e.exception), "not a region file")
+        self.assertIsNone(lm.regions(lambda name: None))

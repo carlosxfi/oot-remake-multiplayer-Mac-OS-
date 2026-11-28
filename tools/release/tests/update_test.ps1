@@ -29,6 +29,23 @@ Check ((Compare-KitVersion 'v0.10.1' 'v0.1.0-beta10') -eq 1) 'v0.10.1 is newer t
 Check ((Compare-KitVersion 'v0.1.0-beta10' 'v0.10.1') -eq -1) 'an old v0.1.0-<build> tag is older than v0.10.1'
 Check ((Compare-KitVersion 'v0.11.0' 'v0.10.1') -eq 1) 'v0.11.0 is newer than v0.10.1'
 Check ((Compare-KitVersion 'v0.11.1' 'v0.11.0') -eq 1) 'a hotfix v0.11.1 is newer than v0.11.0'
+# 0.12.0, the release after 0.11.12: newer than every 0.11.x (two-digit hotfix parts too), older than a later 0.12.x.
+Check ((Compare-KitVersion 'v0.12.0' 'v0.11.12') -eq 1) 'v0.12.0 is newer than v0.11.12'
+Check ((Compare-KitVersion 'v0.11.12' 'v0.12.0') -eq -1) 'v0.11.12 is older than v0.12.0'
+Check ((Compare-KitVersion 'v0.12.0' 'v0.11.99') -eq 1) 'v0.12.0 is newer than any v0.11.x'
+Check ((Compare-KitVersion 'v0.12.0-test-1234abcd' 'v0.11.12') -eq 1) 'a v0.12.0 test kit is newer than v0.11.12'
+Check ((Compare-KitVersion 'v0.12.1' 'v0.12.0') -eq 1) 'a hotfix v0.12.1 is newer than v0.12.0'
+$r0120 = Select-KitRelease @(
+    [pscustomobject]@{ tag_name = 'v0.11.12'; draft = $false; html_url = 'p/v0.11.12'; assets = @(
+        [pscustomobject]@{ name = 'Squadala-v0.11.12-windows.zip'; browser_download_url = 'dl/a'; size = 1 },
+        [pscustomobject]@{ name = 'Squadala-v0.11.12-windows.zip.sha256'; browser_download_url = 'dl/b'; size = 1 }) },
+    [pscustomobject]@{ tag_name = 'v0.12.0'; draft = $false; html_url = 'p/v0.12.0'; assets = @(
+        [pscustomobject]@{ name = 'Squadala-v0.12.0-windows.zip'; browser_download_url = 'dl/c'; size = 1 },
+        [pscustomobject]@{ name = 'Squadala-v0.12.0-windows.zip.sha256'; browser_download_url = 'dl/d'; size = 1 }) },
+    [pscustomobject]@{ tag_name = 'v0.11.9'; draft = $false; html_url = 'p/v0.11.9'; assets = @(
+        [pscustomobject]@{ name = 'Squadala-v0.11.9-windows.zip'; browser_download_url = 'dl/e'; size = 1 },
+        [pscustomobject]@{ name = 'Squadala-v0.11.9-windows.zip.sha256'; browser_download_url = 'dl/f'; size = 1 }) })
+Check ($r0120 -and $r0120.Tag -eq 'v0.12.0') 'the newest release of v0.11.12, v0.12.0 and v0.11.9 is v0.12.0'
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('oot-coop-update-test-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null

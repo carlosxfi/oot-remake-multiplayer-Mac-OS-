@@ -255,6 +255,19 @@ std::string AnswerLine(std::string_view name, bool allow, bool always) {
     return "you turned " + n + " away" + (always ? "; they are kept out until you stop hosting" : "");
 }
 
+std::string HostChangedLine(std::uint8_t before, std::uint8_t after, std::string_view name, bool self) {
+    // (this game: the host_changed event's own line says it, "you host now: ...", in the player's language)
+    if (before == 0 || after == 0 || before == after || self) return {};
+    return std::string(name) + " is now the host: their save is the one played";
+}
+
+std::string TitleHostLine(bool connected, bool self_hosts, std::string_view host_name) {
+    if (!connected) return {};
+    if (self_hosts) return "Co-op: you host. Continue loads your save.";
+    return "Co-op: " + (host_name.empty() ? std::string("another player") : std::string(host_name)) +
+           " hosts. Continue loads their save.";
+}
+
 std::string NoKnockLine(std::string_view word, std::string_view who) {
     const std::string w(word);
     if (who.empty()) {

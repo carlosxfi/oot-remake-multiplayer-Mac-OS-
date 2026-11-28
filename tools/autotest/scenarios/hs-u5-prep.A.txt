@@ -1,0 +1,29 @@
+# hs-u5-prep (u5-rando, run order): the boot before a judged run. The randomizer's switch and seed are game files the
+# game mounts once at its start (coop_rando.cpp SwitchLine/ReadyLine: "restart the game"), so a run that turns the
+# seed on or off needs one boot first. A also warps to HyruleField_Adult (taken on hookshot, unlike KokiriForest_Adult
+# from a child save) and asks for its own autosave: offline/u5-rando-run.ps1 keeps that save as A's ADULT baseline
+# for hs-u5-cow.
+#! noload
+#! start coop: test warp done
+#! timeout 420
+mark start
+warp HyruleField_Adult
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark after
+await 9000 randomizer: (Randomizer seed \S+ is ready|seed \S+ .*is switched on|the randomizer is off|Randomizer off)
+wait 600
+mark adult
+autosave
+wait 1200
+mark saved
+wait 600
+mark end

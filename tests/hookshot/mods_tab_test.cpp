@@ -4,6 +4,7 @@
 // of each kind, typing, the host's locked values and the notes.
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <optional>
 #include <fstream>
@@ -91,6 +92,7 @@ TEST_CASE("mods tab: the list shows each mod with its switch, and Left / Right s
     CHECK(v.rows[0].name.rfind("Restart needed: ", 0) == 0);
     tab.Press(Input::kRight);
     CHECK(tab.view().rows[RowNamed(tab.view(), "Big HUD 2")].on);
+    CHECK_FALSE(tab.BackTaken());  // (Hookshot's menu is answered from it: coop_menu_handoff.h)
     CHECK_FALSE(tab.Press(Input::kBack));  // the list: the menu closes
 }
 
@@ -104,7 +106,10 @@ TEST_CASE("mods tab: a mod's page moves it and changes each kind of setting") {
     CHECK(v.rows[0].kind == RowKind::kHeading);
     CHECK(v.rows[0].name == "Big HUD");
     CHECK(RowNamed(v, "By someone, version 2") > 0);
-    CHECK(v.rows[v.selected].name == "On");
+    CHECK(v.rows[v.selected].name == "About");   // (the page opens on its text: the description)
+    CHECK(v.help == "Bigger hearts.");
+    tab.Press(Input::kDown);  // On
+    CHECK(tab.view().rows[tab.view().selected].name == "On");
 
     tab.Press(Input::kDown);  // Move up: first already
     tab.Press(Input::kDown);  // Move down
@@ -152,8 +157,10 @@ TEST_CASE("mods tab: a mod's page moves it and changes each kind of setting") {
     tab.Press(Input::kDecide);
     CHECK(m.Value("glow") == "1");
 
+    CHECK(tab.BackTaken());
     CHECK(tab.Press(Input::kBack));
     CHECK_FALSE(tab.on_mod_page());
+    CHECK_FALSE(tab.BackTaken());
     // back on Big HUD's row, the first under the restart note's rows (the note breaks at the list's width: 1 or more)
     v = tab.view();
     int notes = 0;
@@ -169,7 +176,7 @@ TEST_CASE("mods tab: typing stops at the setting's max_length and a long value s
     Tab tab({m.loader.get(), nullptr, nullptr});
     tab.Show();
     tab.Press(Input::kDecide);
-    for (int i = 0; i < 4; ++i) tab.Press(Input::kDown);
+    for (int i = 0; i < 5; ++i) tab.Press(Input::kDown);   // (About first)
     tab.Press(Input::kDown);  // Size, look, Label
     auto v = tab.view();
     REQUIRE(v.rows[v.selected].name == "Label");
@@ -198,7 +205,7 @@ TEST_CASE("mods tab: Paste into a text row (the pad's way) and Ctrl+V while typi
     Tab tab({m.loader.get(), nullptr, nullptr});
     tab.Show();
     tab.Press(Input::kDecide);
-    for (int i = 0; i < 5; ++i) tab.Press(Input::kDown);
+    for (int i = 0; i < 6; ++i) tab.Press(Input::kDown);   // (About first)
     auto v = tab.view();
     REQUIRE(v.rows[v.selected].name == "Label");
     CHECK(v.change == "Paste");
@@ -242,7 +249,7 @@ TEST_CASE("mods tab: Paste is only for text rows (a number row still steps)") {
     Tab tab({m.loader.get(), nullptr, nullptr});
     tab.Show();
     tab.Press(Input::kDecide);
-    for (int i = 0; i < 3; ++i) tab.Press(Input::kDown);
+    for (int i = 0; i < 4; ++i) tab.Press(Input::kDown);   // (About first)
     auto v = tab.view();
     REQUIRE(v.rows[v.selected].name == "Size");
     CHECK(v.change == "Switch");
@@ -303,8 +310,10 @@ TEST_CASE("mods tab: the randomizer's row is its name and a Settings button that
     const int sw = RowNamed(v, "Randomizer");
     REQUIRE(sw > 0);
     CHECK(v.rows[sw].kind == RowKind::kToggle);
+    CHECK(tab.BackTaken());
     CHECK(tab.Press(Input::kBack));
     CHECK_FALSE(tab.on_mod_page());
+    CHECK_FALSE(tab.BackTaken());
     tab.Select(static_cast<std::size_t>(row));
     CHECK(tab.Press(Input::kRight));  // Left / Right on the button change nothing
     CHECK_FALSE(tab.on_mod_page());
@@ -373,33 +382,74 @@ TEST_CASE("mods tab: a text longer than a row is handed over as several note row
     }
 }
 
-TEST_CASE("mods tab: a mod's long description shows as several rows of its page") {
+namespace {
+// Whole in the help box (kHelpWidth x kHelpLines): a fifth line would be the cut.
+bool FitsHelpBox(const std::string& text) {
+    const std::string shown = CoopPauseTab::HelpText(text, CoopPauseTab::kHelpWidth, CoopPauseTab::kHelpLines + 1);
+    return std::count(shown.begin(), shown.end(), '\n') < static_cast<std::ptrdiff_t>(CoopPauseTab::kHelpLines);
+}
+}  // namespace
+
+TEST_CASE("mods tab: a long note and description are pages of the About row, the note first, nothing cut") {
     const fs::path root = ModTestDir("coop-mods-tab-long");
     std::error_code ec;
     fs::remove_all(root, ec);
     const std::string description =
-        "打乱宝箱、迷宫道具和奖励（OOTRR）。联机时所有人玩房主的种子，拾取共享。换种子只需重启游戏，不用重新构建。";
+        "Shuffles chests, dungeon items and rewards (OOTRR). In co-op everyone plays the host's seed and every pickup is shared. A new seed needs a restart of the game, never a game build.";
     Put(root / "long" / "mod.json",
-        R"json({"id": "long", "name": "Long", "description": "打乱宝箱、迷宫道具和奖励（OOTRR）。联机时所有人玩房主的种子，拾取共享。换种子只需重启游戏，不用重新构建。"})json");
+        R"json({"id": "long", "name": "Long", "description": "Shuffles chests, dungeon items and rewards (OOTRR). In co-op everyone plays the host's seed and every pickup is shared. A new seed needs a restart of the game, never a game build."})json");
     {
         CoopMods::Loader loader(root, {nullptr, 1, nullptr, nullptr});
         loader.Start();
         Tab tab({&loader, nullptr, nullptr});
         tab.Show();
+        // the list: the help is a first page that fits whole (no "...")
+        const auto list = tab.view();
+        CHECK(list.help.find("...") == std::string::npos);
+        CHECK(FitsHelpBox(list.help));
         tab.Press(Input::kDecide);
         REQUIRE(tab.on_mod_page());
+        for (const auto& row : tab.view().rows) CHECK((row.kind != RowKind::kNote || row.name.rfind("By ", 0) == 0));
+        const auto first = tab.view();
+        REQUIRE(first.rows[first.selected].name == "About");
+        const std::string count = first.rows[first.selected].value;   // "1/2"
+        REQUIRE(count.size() == 3);
+        REQUIRE(count.rfind("1/", 0) == 0);
+        const int pages = count[2] - '0';
+        REQUIRE(pages >= 2);   // (183 letters do not fit 40 x 4)
         std::string joined;
-        int notes = 0;
-        for (const auto& row : tab.view().rows) {
-            if (row.kind == RowKind::kNote) {
-                ++notes;
-                joined += row.name;
-            }
+        for (int page = 0; page < pages; ++page) {
+            const auto v = tab.view();
+            REQUIRE(v.rows[v.selected].name == "About");
+            CHECK(FitsHelpBox(v.help));   // fits the help box whole: nothing cut
+            CHECK(v.help.find("...") == std::string::npos);
+            joined += (joined.empty() ? "" : " ") + v.help;
+            tab.Press(Input::kDecide);   // the next page; the last one goes round to the first
         }
-        CHECK(notes >= 2);
-        CHECK(joined == description);
+        CHECK(tab.view().rows[tab.view().selected].value == "1/" + std::to_string(pages));
+        std::string flat;
+        for (const char c : joined) flat += c == '\n' ? ' ' : c;
+        CHECK(flat == description);
     }
     fs::remove_all(root, ec);
+}
+
+TEST_CASE("mods tab: HelpPages puts the note before the description and every page fits the help box") {
+    const std::string note = "Start Squadala.bat once so the game is built with this mod, then turn it on.";
+    const std::string text = note + "\n" +
+        "Shuffles chests, dungeon items and rewards (OOTRR). In co-op everyone plays the host's seed.";
+    const auto pages = CoopModsTab::HelpPages(text);
+    REQUIRE(pages.size() >= 2);
+    CHECK(pages.front().rfind("Start Squadala.bat", 0) == 0);
+    for (const auto& p : pages) {
+        CHECK(FitsHelpBox(p));
+        CHECK(p.find("...") == std::string::npos);
+    }
+    CHECK(CoopModsTab::HelpPages("").empty());
+    CHECK(CoopModsTab::HelpPages("Short.") == std::vector<std::string>{"Short."});
+    // Chinese has no spaces: the pages still fit
+    const auto zh = CoopModsTab::HelpPages("打乱宝箱、迷宫道具和奖励（OOTRR）。联机时所有人玩房主的种子，拾取共享。换种子只需重启游戏，不用重新构建。再加一句话让它变得更长一些。");
+    for (const auto& p : zh) CHECK(FitsHelpBox(p));
 }
 
 TEST_CASE("mods tab: a mod's title, settings and text are its author's own words, never looked up in the translation table") {

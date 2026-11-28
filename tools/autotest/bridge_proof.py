@@ -6,7 +6,7 @@ Talks to both games' bridges (standard library only) and checks, in this order, 
   2. step: 60 frames on each advance exactly 60;
   3. shot: one screenshot of each game;
   4. input: A walks (stick up, 30 frames): Link moved, and the frame advanced 30;
-  5. warp: both to --scene; arrived, held;
+  5. warp: both to --scene (free play: Longshot's teleport); arrived, held;
   6. flag + dump: --flag set to 1 in A; after a few frames both dumps have it 1 (synced);
   7. give: bombs in A (needs LICHII_COOP_CHEATS=1);
   8. a client killed in the middle of a long step (3600) lets game A run again at once;
@@ -108,8 +108,46 @@ class Bridge:
 
 
 def players_connected(state):
+    """Both players are still in the session. "quiet" counts: the other game, held 30 s, sends nothing for a while and the
+    list calls it quiet; it is not disconnected (S8: both games showed it, the session was fine)."""
     players = ((state or {}).get("coop") or {}).get("players") or []
-    return len(players) >= 2 and all(p.get("state") == "connected" for p in players)
+    return len(players) >= 2 and all(p.get("state") in ("connected", "quiet") for p in players)
+
+
+def scene_matches(in_state, scene):
+    """The module's rule (WarpArrived): the same name in any case, or `scene` with its `_Child`/`_Adult` ending is the
+    map (the map may not carry the age)."""
+    have, want = str(in_state or "").lower(), str(scene or "").lower()
+    if not have or not want:
+        return False
+    if have == want:
+        return True
+    return any(want.endswith(x) and want[:-len(x)] == have for x in ("_child", "_adult"))
+
+
+def warp_verdict(reply, scene):
+    """(pass, seen) for the warp check: it arrived in `scene` and the game is held. In free play the warp goes by
+    Longshot's teleport (a map of its list, no entrance); a refusal (`not_in_event`: the scene is not in that list) is a
+    FAIL here, with its message in `seen`, so a wrong --scene is told apart from a hang."""
+    st = reply.get("state") or {}
+    seen = {"ok": reply.get("ok"), "error": reply.get("error"), "scene": st.get("scene"), "frame": reply.get("frame"),
+            "via": reply.get("via"), "map": reply.get("map"), "message": reply.get("message")}
+    # Longshot's teleport picks the map for Link's age: the reply's `map` (what it sent) is what Link should be in
+    want = reply.get("map") or scene
+    return bool(reply.get("ok") and reply.get("arrived") and scene_matches(st.get("scene"), want)
+                and reply.get("paused")), seen
+
+
+def moved_verdict(before, after, reply):
+    """(pass, seen) for the input check. Both places must be read (a null place is a stale snapshot, F1: the check says
+    so, it does not call it "did not move")."""
+    p0, p1 = before.get("pos"), after.get("pos")
+    seen = {"from": p0, "to": p1, "frames": [reply.get("from"), reply.get("frame")],
+            "snapshot_stale": [before.get("snapshot_stale"), after.get("snapshot_stale")]}
+    if not (p0 and p1):
+        return False, dict(seen, why="no place read (stale snapshot)")
+    moved = abs(p0[0] - p1[0]) + abs(p0[2] - p1[2]) > 0.3
+    return bool(reply.get("ok") and moved and reply.get("frame") - reply.get("from", -1) == 30), seen
 
 
 def main(argv=None):
@@ -184,20 +222,16 @@ def main(argv=None):
         # 4. input moves Link
         s0 = call("A", "state")
         r = call("A", "input", stick=[0, 1.0], frames=30)
-        s1 = r.get("state") or {}
-        p0, p1 = s0.get("pos"), s1.get("pos")
-        moved = bool(p0 and p1) and abs(p0[0] - p1[0]) + abs(p0[2] - p1[2]) > 0.3
-        note("input stick 30 frames A: Link moved, frame +30",
-             r.get("ok") and moved and r.get("frame") - r.get("from", -1) == 30,
-             {"from": p0, "to": p1, "frames": [r.get("from"), r.get("frame")], "camera": s1.get("camera"),
-              "facing": [s0.get("facing"), s1.get("facing")]})
+        ok, seen = moved_verdict(s0, r.get("state") or {}, r)
+        seen.update(camera=(r.get("state") or {}).get("camera"))
+        note("input stick 30 frames A: Link moved, frame +30", ok, seen)
 
-        # 5. warp both
+        # 5. warp both. In free play it goes by Longshot's teleport (a map of its list, no entrance); unproven through
+        # this verb until a lane run (docs/playtest.md).
         for g in games:
             r = call(g, "warp", scene=a.scene, timeout=60)
-            st = r.get("state") or {}
-            note("warp %s %s" % (a.scene, g), r.get("ok") and r.get("arrived") and st.get("scene") == a.scene and r.get("paused"),
-                 {"ok": r.get("ok"), "error": r.get("error"), "scene": st.get("scene"), "frame": r.get("frame")})
+            ok, seen = warp_verdict(r, a.scene)
+            note("warp %s %s" % (a.scene, g), ok, seen)
 
         # 6. flag in A, synced to B (both stepped), dumps agree
         if a.flag:
@@ -218,10 +252,13 @@ def main(argv=None):
 
         # 7. give
         r = call("A", "give", item="bombs")
-        call("A", "step", frames=2)
+        # (the give is written inside the held call: no step is needed; the state lists the per-player counts too)
         s = call("A", "state")
-        bombs = (s.get("inventory") or {}).get("PouchData.Item_Bomb.StockNum")
-        note("give bombs A", r.get("ok") and (bombs or 0) > 0, {"reply": r, "bombs": bombs})
+        inv = s.get("inventory") or {}
+        bag = inv.get("PouchData.Item_BombBag_Small.StockNum")
+        bombs = inv.get("PouchData.Item_Bomb.StockNum")
+        note("give bombs A", r.get("ok") and (bag or 0) > 0 and (bombs or 0) > 0,
+             {"reply": r, "bag": bag, "bombs": bombs, "keys": sorted(inv)[:12]})
 
         for g in games:
             r = call(g, "shot", name="proof-end-" + g)
@@ -235,7 +272,9 @@ def main(argv=None):
                              "s = socket.create_connection(('127.0.0.1', %d))" % a.port_a,
                              "s.sendall(%r)" % msgs,
                              "time.sleep(600)"])
-        child = subprocess.Popen([sys.executable, "-I", "-c", code])
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hookshot"))
+        import hs
+        child = hs.popen_quiet([sys.executable, "-I", "-c", code])
         time.sleep(3)
         child.kill()
         child.wait()

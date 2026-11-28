@@ -1,4 +1,4 @@
-From 7c6769c57c1e41ae0b96094f8a326022fb8fd885 Mon Sep 17 00:00:00 2001
+From 492a1cc34dc9b2ab9c9989c873e5b8741874729d Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Thu, 12 Nov 2026 18:34:41 -0900
 Subject: [PATCH] Co-op host save: the account save's folder and a re-mount,
@@ -17,15 +17,21 @@ black-01112: OpenFile logs, always, a file of the game's RomFS that neither
 the game nor any mod has (the first 32 distinct paths, then every 256th
 such open with the count): player report 242's black world (a mod's model
 naming textures no folder had) left nothing in the log.
+
+rejoin-host-273-2: a remount of the folder already mounted copies it into
+its work copy again when nothing is open or unpublished there (else it is
+kept, and said). Without it a file the module wrote into the folder after
+its mount (the slot fixes on the title) was never seen by the game, and
+its next Commit of that file wrote over it.
 ---
- host/nn_fs.c | 160 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 159 insertions(+), 1 deletion(-)
+ host/nn_fs.c | 182 ++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 181 insertions(+), 1 deletion(-)
 
 diff --git a/host/nn_fs.c b/host/nn_fs.c
-index 40f2c342..fa745c1b 100644
+index 40f2c342..d217cca6 100644
 --- a/host/nn_fs.c
 +++ b/host/nn_fs.c
-@@ -862,11 +862,61 @@ int hos_fs_save_root(char *out, size_t cap) {
+@@ -862,11 +862,65 @@ int hos_fs_save_root(char *out, size_t cap) {
  }
  void hos_fs_save_end(void) { ReleaseSRWLockShared(&save_lock); }
  
@@ -33,6 +39,10 @@ index 40f2c342..fa745c1b 100644
 +   it, the folder it is mounted from instead of user\save\<uid> (a guest's <uid>-coop, the multiplayer saves' <uid>-mp,
 +   ...); empty while it is user\save\<uid> itself. Each folder has its own work copy and Save (coop_work_name). */
 +static char coop_save_name[32], coop_save_uid[40], coop_save_dir[HOS_FS_PATH];
++/* (patch 0008) set under save_lock by hos_coop_fs_save_remount for a remount of the folder already mounted: save_mount
++   copies it into its work copy again when nothing is open or unpublished there (files the module wrote into the folder
++   after its mount, the slot fixes on the title, are seen then) */
++static int coop_restage;
 +/* (patch 0008) two folder paths the same: '\\' and '/' alike, no trailing separator, and on Windows without case */
 +static int coop_same_dir(const char *a, const char *b) {
 +    size_t na = strlen(a), nb = strlen(b);
@@ -87,7 +97,7 @@ index 40f2c342..fa745c1b 100644
      make_dirs(root);
      CreateDirectoryA(root, NULL);
      const int ok = mount(name, root, 1);
-@@ -899,11 +949,18 @@ static int save_own(Save *s) {
+@@ -899,11 +953,18 @@ static int save_own(Save *s) {
  }
  
  static int save_mount(const char *name, const char *uid) {
@@ -107,10 +117,22 @@ index 40f2c342..fa745c1b 100644
      Save *s;
      for (s = saves; s && strcmp(s->work, work); s = s->next) {}
      int live = 0, direct = s && s->direct;
-@@ -919,6 +976,14 @@ static int save_mount(const char *name, const char *uid) {
+@@ -919,6 +980,26 @@ static int save_mount(const char *name, const char *uid) {
          return mounted;
      }
      if (s && s->handles) live = 1;
++    /* (patch 0008) the module's remount of the folder already mounted: its work copy is the live mount, so it would be
++       kept as it is. With no file open in it and nothing staged and unpublished, it is copied again from the folder
++       (below, as a first mount); else it is kept (said) */
++    if (coop_restage && live && s && coop_same_dir(s->committed, committed)) {
++        if (!s->handles && !s->writers && !s->notes && !s->deleted && !s->lost) {
++            hos_log("fs: save: the work copy %s is copied again from %s (asked by the module)", s->work, committed);
++            live = 0;
++        } else {
++            hos_log("fs: save: the work copy %s is kept: %d open files, %s", s->work, s->handles,
++                    s->notes || s->deleted ? "changes not yet published" : "nothing unpublished");
++        }
++    }
 +    /* (patch 0008) a Save staging another committed folder than this one is never reused as it is: in use, refused;
 +       else its unfinished save goes into its own folder (save_replay below), then it stages this one */
 +    const int stale = s && !coop_same_dir(s->committed, committed);
@@ -122,7 +144,7 @@ index 40f2c342..fa745c1b 100644
      int ok = strlen(work) + sizeof ".journal.tmp" <= HOS_FS_PATH, pending = 0;
      if (ok && !s) {
          s = calloc(1, sizeof *s);
-@@ -958,6 +1023,10 @@ static int save_mount(const char *name, const char *uid) {
+@@ -958,6 +1039,10 @@ static int save_mount(const char *name, const char *uid) {
              }
              if (pending) ok = 0;
          }
@@ -133,7 +155,7 @@ index 40f2c342..fa745c1b 100644
          if (ok) {
              char tmp[HOS_FS_PATH];
              ok = snprintf(tmp, sizeof tmp, "%s.tmp", s->journal) < (int)sizeof tmp && save_remove(tmp);
-@@ -995,12 +1064,64 @@ static int save_mount(const char *name, const char *uid) {
+@@ -995,12 +1080,70 @@ static int save_mount(const char *name, const char *uid) {
          if (!ok && s) s->direct = 1;
          AcquireSRWLockExclusive(&mount_lock);
          snprintf(save_root, sizeof save_root, "%s", committed);
@@ -187,10 +209,16 @@ index 40f2c342..fa745c1b 100644
 +    AcquireSRWLockExclusive(&save_lock);
 +    snprintf(was, sizeof was, "%s", coop_save_dir);
 +    snprintf(coop_save_dir, sizeof coop_save_dir, "%s", is_own ? "" : dir);
++    coop_restage = 1;   /* (only a remount of the folder already mounted finds its work copy live: save_mount) */
 +    ReleaseSRWLockExclusive(&save_lock);
-+    if (save_mount(name, uid)) return 1;
-+    AcquireSRWLockExclusive(&save_lock);   /* (not mounted: the next mount stays where it was) */
-+    snprintf(coop_save_dir, sizeof coop_save_dir, "%s", was);
++    const int mounted = save_mount(name, uid);
++    AcquireSRWLockExclusive(&save_lock);
++    coop_restage = 0;
++    if (mounted) {
++        ReleaseSRWLockExclusive(&save_lock);
++        return 1;
++    }
++    snprintf(coop_save_dir, sizeof coop_save_dir, "%s", was);   /* (not mounted: the next mount stays where it was) */
 +    ReleaseSRWLockExclusive(&save_lock);
 +    return 0;
 +}
@@ -198,7 +226,7 @@ index 40f2c342..fa745c1b 100644
  /* nn::fs::IsSaveDataExisting(ApplicationId, account::Uid const&) -> bool */
  HLE(_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE) {
      char root[HOS_FS_PATH];
-@@ -1118,6 +1239,42 @@ int hos_fs_resolve_read(const char *guest, char *path, size_t cap) {
+@@ -1118,6 +1261,42 @@ int hos_fs_resolve_read(const char *guest, char *path, size_t cap) {
      fs_overlay_path(guest, path, cap);
      return 1;
  }
@@ -241,7 +269,7 @@ index 40f2c342..fa745c1b 100644
  /* OpenFile(FileHandle*, char const* path, int mode): mode bit 0 read, bit 1 write, bit 2 append */
  HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
      char path[HOS_FS_PATH];
-@@ -1171,6 +1328,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
+@@ -1171,6 +1350,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
      if (h == INVALID_HANDLE_VALUE) {
          if (save) { ReleaseSRWLockExclusive(&save_lock); if (away) hos_vcore_back(); }
          if (hos_trace || fs_trace()) hos_log("fs: OpenFile(%s): not found", g);

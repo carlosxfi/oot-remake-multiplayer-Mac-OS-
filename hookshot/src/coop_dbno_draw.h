@@ -26,11 +26,11 @@ std::string Progress(float progress);
 // is held. Spectating: the caption only.
 std::string Line(const CoopDbno::View& view);
 
-// The line for the game's banner (SimpleInfo_00, one line of `columns` columns, CoopNativeUi::Columns: a wide letter
-// 2): always fits, and the live part (the clock, the revive's share, "A: next player") is never cut. Too long (a
+// The line for the game's banner (SimpleInfo_00, one line at most `width` wide, CoopNativeUi::Width: the game's font,
+// kBannerWidth): always fits, and the live part (the clock, the revive's share, "A: next player") is never cut. Too long (a
 // 16-letter name, a wide-letter name, a long translation): "(out of sight)" goes first, then the name is cut with
 // "...", then the words before the live part.
-std::string BannerLine(const CoopDbno::View& view, std::size_t columns);
+std::string BannerLine(const CoopDbno::View& view, std::size_t width);
 
 // Whether the game's banner is held for `view` now (`now_ms` any steady clock). Downed and reviving: always (short:
 // the bleed-out clock). Spectating can last minutes, and notices wait while the banner is held, so it is held only

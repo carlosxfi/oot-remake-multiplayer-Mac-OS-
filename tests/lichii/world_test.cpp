@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "coop/protocol/codec.hpp"
+#include "coop_gold_mode.h"
 #include "coop_objects_sync.h"
 #include "coop_pickups.h"
 #include "coop_world.h"
@@ -3287,4 +3288,234 @@ TEST_CASE("world: our Link at a block another player still moves is said once ev
     CHECK_FALSE(Said(Walk(far, 2050 * kMs, {Thing(0x100, 0x50, std::nullopt, kBox, {1.2f, 2.0f, 3.0f})},
                           proto::Vec3{20.0f, 2.0f, 3.0f}),
                      "our Link is at it"));
+}
+
+// ------------------------------------- Gold Skulltulas Shared: the owed token (row 63)
+
+namespace {
+bool Has(const std::vector<std::uint64_t>& list, std::uint64_t v) {
+    return std::find(list.begin(), list.end(), v) != list.end();
+}
+// B saw its copy of the Skulltula, then the copy went with no death of its own (asleep, far, or deleted
+// after the objects sync's grace): A's kill owes B the token.
+void CopyGoesWithNoDeath(WorldSync& b) {
+    GraveWalk(b, 1000 * kMs, {Thing(0x100, kGoldHash, 1, kGold, kGoldAt)});
+    GraveWalk(b, 1100 * kMs, {});
+    b.OweToken(kGoldHash, kGoldAt, 1100 * kMs);
+}
+} // namespace
+
+TEST_CASE("world: Shared: a Skulltula killed in another game whose copy here made no token gets one made here") {
+    CoopGoldMode::ResetForTest();
+    WorldSync b;
+    CopyGoesWithNoDeath(b);
+    for (std::uint64_t t = 1200; t < 1100 + WorldSync::kTokenOwedUs / 1000; t += 100) {
+        GraveWalk(b, t * kMs, {});
+        CHECK(b.MadeTokens().empty());  // not yet: B's own death may still make it
+    }
+    const auto due = GraveWalk(b, (1100 + WorldSync::kTokenOwedUs / 1000) * kMs, {});
+    REQUIRE(b.MadeTokens().size() == 1);
+    CHECK(b.MadeTokens()[0].placement == kGoldHash);
+    CHECK(b.MadeTokens()[0].actor == 0);
+    // The director made it: bound, then it shows in the walk and is that placement's token.
+    b.BindMadeToken(kGoldHash, 0x300);
+    CHECK(b.MadeTokens()[0].actor == 0x300);
+    std::uint64_t t = 5200;
+    GraveWalk(b, t * kMs, {Token(0x300, kGoldAt)});
+    GraveWalk(b, (t += 100) * kMs, {Token(0x300, kGoldAt)});
+    // Our player takes it: one break with the placement's id, and its two keys to write here.
+    std::vector<proto::WorldBreak> sent;
+    std::vector<std::uint64_t> keys;
+    for (int i = 0; i < 20; ++i) {
+        const auto out = GraveWalk(b, (t += 100) * kMs, {});
+        for (const auto& k : Sent<proto::WorldBreak>(out)) sent.push_back(k);
+        keys.insert(keys.end(), out.token_keys.begin(), out.token_keys.end());
+    }
+    REQUIRE(sent.size() == 1);
+    CHECK(sent[0].hash == CoopWorld::TokenId(kGoldHash));
+    REQUIRE(keys.size() == 1);
+    CHECK(keys[0] == kGoldHash);
+}
+
+TEST_CASE("world: Shared: our own copy's death made the token in time: none is made, and its keys are the game's") {
+    CoopGoldMode::ResetForTest();
+    WorldSync b;
+    CopyGoesWithNoDeath(b);
+    GraveWalk(b, 1500 * kMs, {Token(0x200)});  // the game's own, by the Skulltula's place
+    for (std::uint64_t t = 1600; t <= 9000; t += 100) {
+        GraveWalk(b, t * kMs, {Token(0x200)});
+    }
+    CHECK(b.MadeTokens().empty());
+    CHECK(b.Removes().empty());
+    // Taken: the break goes, no key is written by us (the game's own pickup sets them).
+    std::vector<std::uint64_t> keys;
+    std::size_t breaks = 0;
+    for (std::uint64_t t = 9100; t <= 11000; t += 100) {
+        const auto out = GraveWalk(b, t * kMs, {});
+        breaks += Sent<proto::WorldBreak>(out).size();
+        keys.insert(keys.end(), out.token_keys.begin(), out.token_keys.end());
+    }
+    CHECK(breaks == 1);
+    CHECK(keys.empty());
+}
+
+TEST_CASE("world: Shared: our game makes its own token after ours was made: the second one is deleted") {
+    CoopGoldMode::ResetForTest();
+    WorldSync b;
+    CopyGoesWithNoDeath(b);
+    std::uint64_t t = 1100;
+    while (b.MadeTokens().empty() && t < 20000) {
+        GraveWalk(b, (t += 100) * kMs, {});
+    }
+    REQUIRE(b.MadeTokens().size() == 1);
+    b.BindMadeToken(kGoldHash, 0x300);
+    GraveWalk(b, (t += 100) * kMs, {Token(0x300, kGoldAt)});
+    // A late death replay here: the game's own token next to ours.
+    GraveWalk(b, (t += 100) * kMs, {Token(0x300, kGoldAt), Token(0x400, kGoldAt)});
+    GraveWalk(b, (t += 100) * kMs, {Token(0x300, kGoldAt), Token(0x400, kGoldAt)});
+    const auto removes = b.Removes();
+    CHECK(Has(removes, 0x400));
+    CHECK_FALSE(Has(removes, 0x300));
+}
+
+TEST_CASE("world: Shared: a token another player took before ours was due is never made") {
+    CoopGoldMode::ResetForTest();
+    WorldSync b;
+    CopyGoesWithNoDeath(b);
+    GraveWalk(b, 1500 * kMs, {});
+    b.TakenKey(kGoldHash);  // the placement's key came 1 through the flag sync
+    for (std::uint64_t t = 1600; t <= 9000; t += 100) {
+        GraveWalk(b, t * kMs, {});
+    }
+    CHECK(b.MadeTokens().empty());
+    // And one owed after the take is refused.
+    b.OweToken(kGoldHash, kGoldAt, 9000 * kMs);
+    GraveWalk(b, 20000 * kMs, {});
+    CHECK(b.MadeTokens().empty());
+}
+
+TEST_CASE("world: a scene change forgets an owed token (the keys say the rest)") {
+    CoopGoldMode::ResetForTest();
+    WorldSync b;
+    CopyGoesWithNoDeath(b);
+    GraveWalk(b, 1200 * kMs, {}, "Spot_Field");
+    GraveWalk(b, 20000 * kMs, {}, "Spot_Field");
+    CHECK(b.MadeTokens().empty());
+}
+
+TEST_CASE("world: Not shared: nothing is owed, a token taken here sends no break, and another's break is ignored") {
+    CoopGoldMode::ResetForTest();
+    CoopGoldMode::SetChoice(CoopGoldMode::Mode::own);
+    CoopGoldMode::OnConnection();
+    CoopGoldMode::OnHosting();
+    REQUIRE(CoopGoldMode::NotShared());
+    WorldSync b;
+    CopyGoesWithNoDeath(b);
+    for (std::uint64_t t = 1200; t <= 9000; t += 100) {
+        GraveWalk(b, t * kMs, {});
+    }
+    CHECK(b.MadeTokens().empty());
+
+    WorldSync a;
+    GraveWalk(a, 1000 * kMs, {Thing(0x100, kGoldHash, 1, kGold, kGoldAt)});
+    GraveWalk(a, 1100 * kMs, {Token(0x200)});
+    std::size_t breaks = 0;
+    for (std::uint64_t t = 1200; t <= 3000; t += 100) {
+        breaks += Sent<proto::WorldBreak>(GraveWalk(a, t * kMs, {})).size();
+    }
+    CHECK(breaks == 0);
+
+    WorldSync c;
+    GraveWalk(c, 1000 * kMs, {Thing(0x100, kGoldHash, 1, kGold, kGoldAt)});
+    GraveWalk(c, 1100 * kMs, {Token(0x200)});
+    c.Receive(BreakOf(CoopWorld::TokenId(kGoldHash), 0, kGrave));
+    GraveWalk(c, 1200 * kMs, {Token(0x200)});
+    CHECK(c.Removes().empty());
+    CoopGoldMode::ResetForTest();
+}
+
+namespace {
+// Key64 flags; the first `refuse` writes fail (the game's queue busy, issue 175).
+class BusyKeyStore final : public coop::host::FlagStore {
+public:
+    std::map<std::uint64_t, std::uint32_t> keys;
+    int refuse = 0;
+    int writes = 0;
+    std::optional<proto::FlagEntry> read(coop::host::FlagKey key) override {
+        const auto it = keys.find(key.key);
+        if (it == keys.end()) {
+            return std::nullopt;
+        }
+        return proto::FlagEntry(key, proto::FlagKind::boolean, it->second);
+    }
+    bool write(const proto::FlagEntry& e) override {
+        ++writes;
+        if (refuse > 0) {
+            --refuse;
+            return false;
+        }
+        keys[e.key.key] = e.value;
+        return true;
+    }
+};
+}  // namespace
+
+TEST_CASE("world: a made token's key write the game refuses is tried again (review of f36a8852)") {
+    CoopWorld::TakeTokenKeys();  // nothing left from another test
+    constexpr std::uint64_t kPlacement = 0x032f42f523be6425ull;
+
+    SUBCASE("written at once: one line, nothing queued") {
+        BusyKeyStore game;
+        const std::string line = CoopWorld::WriteTokenKeys(game, {kPlacement, 0});
+        CHECK(line.find("2 of its 2 keys written (0 were set)") != std::string::npos);
+        CHECK(game.keys[kPlacement] == 1);
+        CHECK(game.keys[kPlacement + 2] == 1);
+        CHECK(CoopWorld::TakeTokenKeys().empty());
+    }
+    SUBCASE("refused three times: queued again until both keys are set") {
+        BusyKeyStore game;
+        game.refuse = 3;
+        CoopWorld::QueueTokenKeys(kPlacement);
+        std::vector<std::string> lines;
+        int frames = 0;
+        for (auto jobs = CoopWorld::TakeTokenKeys(); !jobs.empty(); jobs = CoopWorld::TakeTokenKeys()) {
+            ++frames;
+            REQUIRE(frames < 10);
+            REQUIRE(jobs.size() == 1);
+            CHECK(jobs[0].placement == kPlacement);
+            if (std::string line = CoopWorld::WriteTokenKeys(game, jobs[0]); !line.empty()) {
+                lines.push_back(std::move(line));
+            }
+        }
+        CHECK(game.keys[kPlacement] == 1);
+        CHECK(game.keys[kPlacement + 2] == 1);
+        CHECK(frames == 3);  // frame 1: both refused; frame 2: one refused, one written; frame 3: the last
+        REQUIRE(lines.size() == 2);  // the first refusal and the end, no line for the silent retry
+        CHECK(lines[0].find("refused: trying again") != std::string::npos);
+        CHECK(lines[1].find("after a retry") != std::string::npos);
+    }
+    SUBCASE("refused for good: given up after kTokenKeyTries, with a line") {
+        BusyKeyStore game;
+        game.refuse = 1 << 20;
+        CoopWorld::QueueTokenKeys(kPlacement);
+        int frames = 0;
+        std::string last;
+        for (auto jobs = CoopWorld::TakeTokenKeys(); !jobs.empty(); jobs = CoopWorld::TakeTokenKeys()) {
+            ++frames;
+            REQUIRE(frames <= CoopWorld::kTokenKeyTries);
+            if (std::string line = CoopWorld::WriteTokenKeys(game, jobs[0]); !line.empty()) {
+                last = std::move(line);
+            }
+        }
+        CHECK(frames == CoopWorld::kTokenKeyTries);
+        CHECK(last.find("given up") != std::string::npos);
+        CHECK(game.keys.empty());
+    }
+    SUBCASE("a key already set is not written again") {
+        BusyKeyStore game;
+        game.keys[kPlacement] = 1;
+        const std::string line = CoopWorld::WriteTokenKeys(game, {kPlacement, 0});
+        CHECK(line.find("1 of its 2 keys written (1 were set)") != std::string::npos);
+        CHECK(game.writes == 1);
+    }
 }

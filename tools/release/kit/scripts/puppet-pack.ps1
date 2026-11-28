@@ -24,7 +24,7 @@ elseif (Get-Command py.exe -ErrorAction SilentlyContinue) { $python = @('py.exe'
 elseif (Get-Command python.exe -ErrorAction SilentlyContinue) { $python = @('python.exe') }
 if (-not $python) {
     Write-Host 'No Python found. Install Python 3 from python.org, then in a Command Prompt:'
-    Write-Host '  py -m pip install zstandard'
+    Write-Host '  py -m pip install zstandard numpy   (numpy: the character voices; without it they are silent)'
     exit 1
 }
 $exe = $python[0]; $pre = @($python | Select-Object -Skip 1)
@@ -38,6 +38,21 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "  $($python -join ' ') -m pip install zstandard"
     exit 1
 }
+# numpy only makes the character voices from your game's own clips (docs/puppet.md); the pack itself needs only
+# zstandard (as in 0.11.12). Without numpy, try pip once (short time limit: an offline PC must not wait); else the
+# pack is made anyway and those characters are silent (build.py: voices.silent(), never Link's clips, never a stop).
+$ErrorActionPreference = 'Continue'
+& $exe @pre -c 'import numpy' 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'Python is missing the numpy package (it makes the character voices). Trying pip ...'
+    & $exe @pre -m pip install --user --disable-pip-version-check --retries 1 --timeout 15 numpy *>$null
+    & $exe @pre -c 'import numpy' 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'numpy could not be installed: the pack is made, and Character Select''s characters are silent.'
+        Write-Host "  For their voices, in a Command Prompt: $($python -join ' ') -m pip install numpy, then run make-puppet-pack.cmd again."
+    }
+}
+$ErrorActionPreference = 'Stop'
 
 # The game check: finds the game's .nup in the emulator's game list folders, else the
 # emulator's RomFS dump, and says, one line per problem, what is wrong and what to do.

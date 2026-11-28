@@ -1,4 +1,4 @@
-From fa9f00b48a631fc68dfcbc77dd343fc7f17cb114 Mon Sep 17 00:00:00 2001
+From 8b78901b3338d09bc788f189ed5793323e42069f Mon Sep 17 00:00:00 2001
 From: daurosk <354202035+daurosk@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 23:28:22 -0900
 Subject: [PATCH] Co-op title: Skip title screen chooses natively, presses

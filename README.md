@@ -1,6 +1,6 @@
 # Squadala! for macOS
 
-This fork ports [Squadala!](https://github.com/daurosk/oot-remake-multiplayer) to Apple Silicon using nxnative. This Mac build uses the Squadala v0.11.12 protocol (16).
+This fork ports [Squadala!](https://github.com/daurosk/oot-remake-multiplayer) to Apple Silicon using nxnative. This Mac build uses the Squadala v0.12.0 protocol (18).
 
 ## Build and play on a Mac
 

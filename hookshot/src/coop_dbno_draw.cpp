@@ -83,11 +83,9 @@ void PopChar(std::string& s) {
 
 }  // namespace
 
-std::string BannerLine(const CoopDbno::View& view, std::size_t columns) {
+std::string BannerLine(const CoopDbno::View& view, std::size_t width) {
     const std::string tail = Tail(view);
-    const auto fits = [&](const std::string& head) {
-        return CoopNativeUi::Columns(head) + 2 + CoopNativeUi::Columns(tail) <= columns;
-    };
+    const auto fits = [&](const std::string& head) { return CoopNativeUi::Width(head + "  " + tail) <= width; };
     std::string head = Head(view, view.name, true);
     if (!fits(head)) {
         head = Head(view, view.name, false);

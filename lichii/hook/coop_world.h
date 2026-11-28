@@ -165,6 +165,22 @@ std::vector<std::uint64_t> TakeTakenPlacements();
 // below 0 (the frame that writes flags). The flag watcher sends the -1 like
 // any change, so the group's count rose once. Returns the log line.
 std::string GiveBack(coop::host::FlagStore& game, std::string_view count);
+// Row 63: the placements of tokens we made and our player took (WorldSync::Out::token_keys), from the
+// objects' thread to the frame that writes the game's flags. Thread safe.
+// `tries`: the writes done before (a retry).
+struct TokenKeyJob {
+    std::uint64_t placement = 0;
+    int tries = 0;
+};
+void QueueTokenKeys(std::uint64_t placement, int tries = 0);
+std::vector<TokenKeyJob> TakeTokenKeys();
+// A write the game refused (its queue busy, issue 175) is tried again on the next frames, up to this many
+// writes in all (about 5 s): without the key the Skulltula would come back after a reload (review of f36a8852).
+inline constexpr int kTokenKeyTries = 300;
+// Writes 1 to the placement's key and to key + 2 where not 1 yet (the frame that writes flags). A failed
+// write queues the job again (QueueTokenKeys, tries + 1) until kTokenKeyTries. The log line: empty for a
+// retry that failed again (no line each frame).
+std::string WriteTokenKeys(coop::host::FlagStore& game, TokenKeyJob job);
 
 // Research for signs (issue 90; docs/world.md, "Signs: the probe"). A sign's
 // cut is not in its life and its pack keeps no flag for it, and whether the
@@ -634,6 +650,10 @@ public:
             int tries = 0;  // the glue's: walks its push node was not found or busy
         };
         std::vector<BlockFix> blocks;
+        // Row 63: Gold Skulltula placements whose token we made (OweToken) and our player took: the hook
+        // writes their two keys (the placement and key + 2, as the game's own pickup does) in our game, so the
+        // flag sync shares the take and every save keeps it (QueueTokenKeys).
+        std::vector<std::uint64_t> token_keys;
         std::vector<std::string> notes;  // log lines
     };
 
@@ -670,6 +690,24 @@ public:
     // be taken a second time (41 -> 42). The key is the fact that crosses
     // every game; the token's actor is what it removes.
     void TakenKey(std::uint64_t placement);
+    // Row 63, Gold Skulltulas Shared (coop_gold_mode.h): another game's player killed this placement's
+    // Gold Skulltula, whose copy was here at `at`. Its token is owed to our game: if no token of it shows
+    // in our walk within kTokenOwedUs (our copy's death did not run: far, asleep, or deleted after the
+    // objects sync's grace), MadeTokens asks for one there, made by the game's own create. A token of it
+    // our game makes itself in that time settles it; a second one of the same id is deleted, so the
+    // group sees one. Not when the placement is taken, or in Not shared mode.
+    void OweToken(std::uint64_t placement, const coop::protocol::Vec3& at, std::uint64_t now_us);
+    struct MadeToken {
+        std::uint64_t placement = 0;
+        coop::protocol::Vec3 at{};
+        std::uint64_t actor = 0;  // the director's actor once made (BindMadeToken), else 0
+    };
+    // The tokens to make or that we made in this scene (the objects' frame hands them to the director).
+    std::vector<MadeToken> MadeTokens() const;
+    void BindMadeToken(std::uint64_t placement, std::uint64_t actor);
+    // The owed tokens against our walk (Tick): made, settled by our game's own, or deduplicated.
+    void SettleOwed(std::uint64_t now_us, Out& out);
+    static constexpr std::uint64_t kTokenOwedUs = 4'000'000;  // past the objects sync's 3 s grace
     // Whether this token id / Gold Skulltula placement is one the group has
     // taken (the sets TakenKey fills): its actor is never "back from the dead".
     bool IsTokenTaken(std::uint64_t token_id) const {
@@ -879,6 +917,14 @@ private:
     std::map<std::uint64_t, coop::protocol::Vec3> skulltulas_;
     std::map<std::uint64_t, std::uint64_t> skulltulas_seen_us_;  // and when, in the last walk it was in
     std::set<std::uint64_t> skulltulas_dead_;  // last seen with life 0 (or none readable)
+    // OweToken, by placement: this scene only.
+    struct Owed {
+        coop::protocol::Vec3 at{};
+        std::uint64_t due_us = 0;
+        bool made = false;          // asked of the director
+        std::uint64_t actor = 0;    // BindMadeToken
+    };
+    std::map<std::uint64_t, Owed> owed_;
     // Tokens by scene, then id: where they were. Kept across scene changes,
     // so a token the game makes again on a reload is known.
     std::map<std::string, std::map<std::uint64_t, coop::protocol::Vec3>> token_spots_;

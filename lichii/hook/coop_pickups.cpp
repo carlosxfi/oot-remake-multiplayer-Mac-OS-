@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "coop_pickups.h"
+#include "coop_gold_mode.h"
 
 #include <algorithm>
 #include <charconv>
@@ -94,6 +95,9 @@ bool IsPickup(std::string_view name) {
 void Note(std::string_view name, std::uint64_t hash) {
     if (hash == 0 || hash == ~std::uint64_t{0} || !IsPickup(name)) {
         return;
+    }
+    if (CoopGoldMode::NotShared() && (name == "Enemy_Skulltula_Gold" || name == "Obj_Token_Gold")) {
+        return;  // row 63, Not shared: each game's Gold Skulltulas are its own
     }
     Noted& n = TheNoted();
     std::lock_guard lock(n.mutex);

@@ -22,6 +22,7 @@
 
 #include "common/logging.h"
 #include "coop_hud_layout.h"
+#include "coop_native_ui.h"   // SceneLoading: no screen's layout called into while a scene loads
 #include "coop_pause_files.h"
 #include "coop_runtime.h"
 #include "coop_pause_tab.h"
@@ -422,6 +423,33 @@ void Frame(void* ctx, const HosCoopApi* api) {
     if (ctx == nullptr || !CanCall(api)) {
         return;
     }
+    // party-hud-crash-c126: while no play scene runs (CoopNativeUi::PlayUiDown: the game's Sequence_IsLoadingBanc, or
+    // the title's menu up, both set at the frame site before this) no FindPane into any screen (Search, SearchStatus,
+    // the anew walk), and every pane found before is forgotten, so nothing reads one; after it each screen is a new one
+    // (trackers reset). Nothing of the maps shows at the title or during a load.
+    // party-hud-crash-c126-6: the title reached from play (the pause menu's Title Screen) has no scene load, and patch
+    // 0018 keeps handing out the HUD and panel screens it last saw (forgotten only when their tracker slot is reused):
+    // freed there, their layout word changed, the anew walk took that for a new screen and SearchMinimap called the
+    // game's FindPane into a freed layout (both games crashed at the title). So the title counts too, and a screen is
+    // looked in only while it runs (patch 0018's running screens / HUD ran time): a freed screen never runs.
+    static bool load_said = false;   // (Frame's thread: said once per load or title)
+    if (CoopNativeUi::PlayUiDown()) {
+        for (Found* f : {&g_field, &g_dungeon, &g_mini_dungeon, &g_mini_field, &g_mini_window, &g_mini_field_window,
+                         &g_mini_root}) {
+            f->pane = 0, f->from = 0;
+        }
+        g_searched_hud = 0, g_searched_panel = 0;
+        g_hud_at = {}, g_panel_at = {};
+        ForgetStatus();
+        g_status_panes = CoopScreen::ScreenPanes{};
+        if (!load_said) {
+            LOG_INFO(Core, "coop: map: {}: the panes found are forgotten, looked for again after it",
+                     CoopNativeUi::SceneLoading() ? "a scene loads" : "the title is up");
+        }
+        load_said = true;
+        return;
+    }
+    load_said = false;
     const auto menu = MenuState();
     if (!menu) {
         return;
@@ -436,13 +464,15 @@ void Frame(void* ctx, const HosCoopApi* api) {
     const auto anew = [&](CoopScreen::ScreenInstance& at, std::uint64_t screen) {
         return screen != 0 && at.Next(screen, Read64(screen + kScreenLayout), true, now);
     };
-    if (anew(g_hud_at, menu->hud_screen)) {
+    // (only a screen that runs now is called into: the HUD screen ran in the last 100 ms, the panel's is one of the
+    // running screens; a gap while it does not run makes its next run a new one, looked in again)
+    if (menu->HudRuns() && anew(g_hud_at, menu->hud_screen)) {
         const std::uint64_t old = g_searched_hud.exchange(menu->hud_screen);
         Forget(g_field, old), Forget(g_dungeon, old);
         for (Found* f : {&g_mini_dungeon, &g_mini_field, &g_mini_window, &g_mini_field_window, &g_mini_root}) Forget(*f, old);
         Search(ctx, api, menu->hud_screen, "HUD");
     }
-    if (anew(g_panel_at, menu->panel_screen)) {
+    if (menu->Runs(menu->panel_screen) && anew(g_panel_at, menu->panel_screen)) {
         const std::uint64_t old = g_searched_panel.exchange(menu->panel_screen);
         Forget(g_field, old), Forget(g_dungeon, old);
         Search(ctx, api, menu->panel_screen, "panel's");

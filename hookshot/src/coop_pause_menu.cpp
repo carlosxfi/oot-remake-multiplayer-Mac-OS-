@@ -227,6 +227,12 @@ const std::vector<Command>& Commands() {
          "place, talk to someone or read a sign within a minute to travel. Not during a cutscene, a talk or a boss "
          "fight."},
         {"/tp <player>", "The same as /teleport."},
+        // Emotes and pings (lichii/hook/coop_emote.cpp Parse): everyone sees your Link play a gesture.
+        {"/emote", "Lists the emotes."},
+        {"/wave, /yes, /no, /look, /here, /wow",
+         "Your Link plays a gesture, on your screen when he stands still and on the other players' (/emote wave is "
+         "the same). /here also sends Navi to call out, and every player reads the call in the chat. It stops when "
+         "you move. Nothing happens when you play alone."},
         {"/pvp", "Says whether players can hurt each other (PvP) in this game."},
         {"/pvp on, /pvp off", "The host only: lets players hurt each other, or stops it, for everyone."},
         // Down but not out (docs/play-online.md "Down but not out"; lichii/hook/coop_dbno.cpp Parse).
@@ -327,6 +333,27 @@ std::string MicWords(const std::string& chosen, const std::vector<std::string>& 
     return there ? words : words + " (not connected)";
 }
 
+std::string MicWords(const std::string& chosen, const std::vector<std::string>& listed, const std::string& status) {
+    std::string words = MicWords(chosen, listed);
+    const std::string gone = " (not connected)";
+    const bool says_gone = words.size() >= gone.size() && words.compare(words.size() - gone.size(), gone.size(), gone) == 0;
+    return status.empty() || says_gone || status == "(not connected)" ? words : words + " " + status;
+}
+
+const char* PageWord(Page page) {
+    switch (page) {
+    case Page::kMain: return "main";
+    case Page::kHost: return "host";
+    case Page::kJoin: return "join";
+    case Page::kLocal: return "local";
+    case Page::kSettings: return "settings";
+    case Page::kCommands: return "commands";
+    case Page::kCustomize: return "customize";
+    case Page::kFind: return "find";
+    }
+    return "unknown";
+}
+
 std::string ChatKeyWords(const std::string& chat_key) {
     std::string k = chat_key.empty() ? std::string("T") : chat_key;
     std::string low = k;
@@ -379,6 +406,56 @@ void Menu::HostRuleLines(std::vector<Line>& out, bool guest) const {
                          : std::string("On: each player who asks to join waits until you let them in or refuse them "
                                        "(Let in on Your game, or /allow and /deny in the chat). Applies at your next "
                                        "Host.")});
+    // Rows race mode overrides (coop/protocol/race.hpp: a race keeps every Gold Skulltula and floor switch in each
+    // game whatever those rows say). One rule for both: their help follows the race mode of the next Host (the one
+    // chosen here, or the session's while it is a race: a restart there would not share them either, so no "stop
+    // hosting" advice), and the "This game:" part the session's mode. The race note stands alone (not before the
+    // On/Off text): a help longer than the caption's 160 characters is cut.
+    const bool race_rules = options_.race || (live && session_.race);
+    auto ruled_help = [&](bool differs, const char* race_note, const std::string& now, const char* usual) {
+        if (guest) return std::string(kYourNextHost) + " " + now;
+        if (race_rules) return std::string(race_note) + (live ? " " + now : std::string());
+        if (live && differs) return "Applies at your next Host: stop hosting, then start again. " + now;
+        return std::string(usual);
+    };
+    // Row 63 (coop_gold_mode.h): this player's choice for the next Host, as Approve joins; the session's mode
+    // holds until it ends.
+    const std::string gold_now =
+        !live           ? std::string()
+        : session_.race ? std::string("This game: Not shared (race mode).")
+                        : std::string(session_.gold_own ? "This game: Not shared." : "This game: Shared.");
+    out.push_back({Choice("Gold Skulltulas", options_.gold_own ? "Not shared" : "Shared"), Act::kGoldSkulltulas,
+                   ruled_help(options_.gold_own != session_.gold_own,
+                              "Race mode is on, so Gold Skulltulas are not shared whatever is set here.", gold_now,
+                              options_.gold_own ? "Not shared: a race. Each player's Gold Skulltulas, tokens and "
+                                                  "count are their own. Applies at your next Host."
+                                                : "Shared: a kill drops the token in every game, and one pickup "
+                                                  "counts once for everyone. Applies at your next Host.")});
+    // Race mode (coop_race_mode.h), as Gold Skulltulas: the choice for the next Host; a session keeps its mode.
+    const std::string race_now = live ? std::string(session_.race ? "This game: On." : "This game: Off.") : std::string();
+    out.push_back({Toggle("Race mode", options_.race), Act::kRace,
+                   guest ? std::string(kYourNextHost) + " " + race_now
+                   : live && options_.race != session_.race
+                       ? "Applies at your next Host: stop hosting, then start again. " + race_now
+                       : std::string(options_.race
+                                         ? "On: everyone sees each other, chats and talks, and plays the world alone: "
+                                           "no items, enemies, doors, switches or saves are shared. PvP works as "
+                                           "set below. Applies at your next Host."
+                                         : "Off: the world is shared (the usual co-op). Applies at your next Host.")});
+    // Shared floor switches (coop_switch_stand_mode.h), the same way: on by default (the stander in coop_objects.cpp
+    // shares none in a race).
+    const std::string switches_now =
+        !live           ? std::string()
+        : session_.race ? std::string("This game: Off (race mode).")
+                        : std::string(session_.floor_switches ? "This game: On." : "This game: Off.");
+    out.push_back({Toggle("Shared floor switches", options_.floor_switches), Act::kFloorSwitches,
+                   ruled_help(options_.floor_switches != session_.floor_switches,
+                              "Race mode is on, so floor switches are not shared whatever is set here.", switches_now,
+                              options_.floor_switches
+                                  ? "On: another player standing on a floor switch holds it down in every game. "
+                                    "Applies at your next Host."
+                                  : "Off: a floor switch is held only by your own Link or a block. Applies at your "
+                                    "next Host.")});
     Row pvp = Toggle("PvP", live ? session_.pvp : options_.pvp);
     pvp.fixed = guest;
     out.push_back({pvp, Act::kPvp,
@@ -487,16 +564,20 @@ std::vector<Menu::Line> Menu::Lines() const {
             }
             // (a public game: relay only, so no row that holds an address or a password: no code, answer,
             // same-network, VPN or password line)
+            // (the code and the room as rows, as on the title's Host page: they were only in the page's status lines,
+            // which both pages then showed again under their rows: "Code: Starting..." and "Starting...", the audit's
+            // item 16)
+            if (session_.public_game) out.push_back({NamedNote("Room  ", options_.relay_room, ""), Act::kNone, {}});
             if (!session_.public_game) {
-            out.push_back({Action("Copy the code again", "Copy", session_.code.empty()), Act::kCopyInvite,
-                           "Puts your code on the clipboard again. Share it in DMs only: it contains your internet address."});
-            out.push_back({Action("Paste friend's answer (or Ctrl+V)", "Paste"), Act::kPasteAnswer,
+            out.push_back({Action("Code", CodeValue(), session_.code.empty()), Act::kCopyInvite,
+                           "Puts the invite code on the clipboard. Share it in DMs only (it contains your internet address); your friend pastes it in Join a game."});
+            out.push_back({Action("Paste answer code (or Ctrl+V)", "Paste"), Act::kPasteAnswer,
                            "Only when a friend's game shows an answer code (their way in was blocked): copy the code they "
                            "send you, then press this."});
-            out.push_back({Action("Same network", "Copy the line"), Act::kCopyLan,
+            out.push_back({Action("Same network", "Copy address"), Act::kCopyLan,
                            "For friends in the same house, on your home network: copies one line with this PC's address. "
                            "They paste it in Join a game instead of the code."});
-            out.push_back({Action("VPN", "Copy the line"), Act::kCopyVpn,
+            out.push_back({Action("VPN", "Copy address"), Act::kCopyVpn,
                            "For friends on a VPN with you (Radmin VPN, Hamachi, ZeroTier, Tailscale, WireGuard): copies one "
                            "line with this PC's VPN address. They paste it in Join a game instead of the code."});
             if (session_.state == State::kHosting && !session_.password.empty()) {
@@ -538,6 +619,7 @@ std::vector<Menu::Line> Menu::Lines() const {
             }
             out.push_back({Choice("Players", std::to_string(options_.max_players)), Act::kPlayers,
                            "The most players in your game, you included."});
+            DifficultyLines(out);   // (the lobby's, as the title's Host page: in force from the start)
             out.push_back({Action("Port", port_value), Act::kHostPort, kHostPortHelp});
         }
         break;
@@ -662,6 +744,12 @@ std::vector<Menu::Line> Menu::Lines() const {
         break;
     }
     case Page::kLocal:
+        if (local_.offered || local_.player >= kLocalFewest) {
+            LocalLines(out);
+            break;
+        }
+        // (no launcher to start the others from here: a Linux game, a game with no kit, a Nucleus Co-op instance:
+        // the steps by hand)
         out.push_back({Note("Split screen (experimental): two full games on this PC."), Act::kNone, {}});
         out.push_back({Note("1. Two kits (or Nucleus Co-op), each started once."), Act::kNone, {}});
         out.push_back({Note("2. Each game its own controller: Settings > Controller."), Act::kNone, {}});
@@ -724,11 +812,18 @@ std::vector<Menu::Line> Menu::Lines() const {
                        "Only on a network you trust: a tunnel, a VPN or a port forward can bring others in that way."});
         HostRuleLines(out, guest);
         DifficultyLines(out);   // (the host's rows: the host changes them, everyone else sees them)
-        out.push_back({Toggle("Proximity voice chat", options_.voice), Act::kVoice,
-                       "Talk with players near your Link through your microphone; they sound quieter the farther away "
-                       "they are. Off: you neither send nor hear voices."});
+        {
+            const char* voice_help = "Talk with players near your Link through your microphone; they sound quieter the "
+                                     "farther away they are. Off: you neither send nor hear voices.";
+            if (options_.voice && !voice_note_.empty()) {   // (row 229: a microphone that reaches nobody says so)
+                out.push_back({Toggle("Proximity voice chat", options_.voice), Act::kVoice,
+                               CoopI18n::Tr(voice_help) + " " + CoopI18n::Tr(voice_note_), true});
+            } else {
+                out.push_back({Toggle("Proximity voice chat", options_.voice), Act::kVoice, voice_help});
+            }
+        }
         if (options_.voice && microphones_) {
-            out.push_back({Choice("Microphone", MicWords(options_.voice_mic, *microphones_)), Act::kMic,
+            out.push_back({Choice("Microphone", MicWords(options_.voice_mic, *microphones_, voice_words_)), Act::kMic,
                            "The microphone your voice is recorded from. Default: the one Longshot's Insert menu "
                            "chooses (Gameplay: Microphone), the Ocarina's too. Left and Right go through the "
                            "microphones plugged in now. One unplugged: the others hear nothing until it is back."});
@@ -833,6 +928,64 @@ std::vector<Menu::Line> Menu::Lines() const {
 // The Host and Join pages of co-op that came with the game's start (Host.bat, Join.bat, coop.ini): nothing to
 // start or stop here, so they say what is on and where the players are (the page's help: kByLauncher).
 // The title's Join list: the last game again, the games (this network's first), then Enter a code or address.
+// The Local co-op page when this game can start this PC's other games (LocalGames::offered), or is one of them: how
+// many games, one press to start them (this game hosts them; each other game is its own player with its own controller,
+// colour and name, and joins), and how they stand. A start with fewer games than asked, a game closed, a game started
+// again: the same Start row starts the missing ones into the same session.
+void Menu::LocalLines(std::vector<Line>& out) const {
+    if (local_.player >= kLocalFewest) {   // (an extra game: game 1 has the rows)
+        out.push_back({Note("This game is player " + std::to_string(local_.player) + " of this PC's games."), Act::kNone, {}});
+        out.push_back({Note("Game 1 hosts: closing it ends the session."), Act::kNone, {}});
+        out.push_back({Note("Your controller: Settings, Controller."), Act::kNone, {}});
+        return;
+    }
+    const bool local = local_.asked > 0;   // (this game hosts a local session)
+    if (InSession() && !local) {   // (a friend's game or an online one of this game's: local co-op starts its own)
+        out.push_back({Note("Leave this game first (Host or Join page)."), Act::kNone, {}});
+        out.push_back({Note("Local co-op hosts a game of its own."), Act::kNone, {}});
+        return;
+    }
+    out.push_back({Choice("Games on this PC", std::to_string(local_count_)), Act::kLocalGames,
+                   "How many games run on this PC, this one included: a player and a controller each (2 to " +
+                       std::to_string(kLocalMost) + "). This game is player 1 with controller 1 and the keyboard."});
+    const int running = std::max(local_.running, local ? 1 : 0);
+    const bool missing = !local || running < local_count_;
+    if (local_.starting) {
+        out.push_back({Action("Start the games", "Starting...", true), Act::kLocalStart,
+                       "The other games are starting. Each opens in its own window and joins this one."});
+    } else if (missing) {
+        out.push_back({Action(local ? "Start missing games" : "Start the games",
+                              local ? std::to_string(running) + " of " + std::to_string(local_count_) : std::string()),
+                       Act::kLocalStart,
+                       (local_.problem.empty() ? std::string() : local_.problem + " ") +
+                       (local ? "Starts the games of this PC that are not running (one closed, or did not start), "
+                               "into this session. Their players keep their saves, controller, colour and name."
+                             : "This game hosts a private game for this PC only, and the other games start beside it: "
+                               "each its own window, controller, colour and name. Each player then loads a save or "
+                               "presses Continue. About 10 GB of RAM a game.")});
+    }
+    if (local) {
+        out.push_back({Note("Players in: " + std::to_string(std::max(local_.joined, 1)) + " of " +
+                            std::to_string(std::max(local_.asked, local_count_))),
+                       Act::kNone, {}});
+        out.push_back({Note("Closing this game ends the session."), Act::kNone, {}});
+    }
+    if (!local_.note.empty()) out.push_back({Note(local_.note), Act::kNone, {}});
+}
+
+void Menu::SetLocal(LocalGames local) {
+    if (local == local_) return;
+    const auto before = Lines();
+    const Act act = selected_ < before.size() ? before[selected_].act : Act::kNone;
+    if (local.asked > local_.asked) local_count_ = std::clamp(local.asked, kLocalFewest, kLocalMost);   // (the launcher's count)
+    local_ = std::move(local);
+    if (page_ != Page::kLocal) return;
+    const auto after = Lines();
+    const auto same = std::find_if(after.begin(), after.end(), [act](const Line& l) { return l.act == act; });
+    if (same != after.end()) selected_ = static_cast<std::size_t>(same - after.begin());
+    Clamp();
+}
+
 void Menu::TitleListLines(std::vector<Line>& out, bool off) const {
     if (!rejoin_code_.empty()) {
         out.push_back({NamedAction("Join ", rejoin_host_, " again", "", off), Act::kRejoin,
@@ -862,7 +1015,7 @@ void Menu::TitleCodeLines(std::vector<Line>& out, bool off) const {
         const std::string asks = " asks for a password";
         out.push_back({NamedNote("", TitleGameName(picked_, picked_host_, asks.size()), asks), Act::kNone, {}});
         out.push_back({Action("Password", password, off), Act::kJoinPassword,
-                       "The host sees it on their Hosting screen. Type it with Letter, or on the keyboard."});
+                       "The host sees it on their Hosting screen. Type it with the on-screen keys, or on the keyboard."});
         out.push_back({Action("Join", "", off), Act::kJoinNow, "Joins the game with this password."});
         return;
     }
@@ -870,7 +1023,7 @@ void Menu::TitleCodeLines(std::vector<Line>& out, bool off) const {
     out.push_back({Action("Paste a code", code_in ? ShownCode(std::string(Trim(join_))) : std::string(), off),
                    Act::kCode, "Your friend sees the code on their Host screen. Copy it, then press A here."});
     out.push_back({Action("Type an address", typing_ip ? join_ip_ + "_" : join_ip_, off), Act::kJoinIp,
-                   "A room name, an IP address or a PC name, typed with Letter or on the keyboard."});
+                   "A room name, an IP address or a PC name, typed with the on-screen keys or on the keyboard."});
     if (!join_ip_.empty()) {
         out.push_back({Action("Password", password, off), Act::kJoinPassword,
                        "The host's join password, if their game has one."});
@@ -895,6 +1048,7 @@ void Menu::TitleHostLines(std::vector<Line>& out, bool host, bool guest) const {
                                                                                     : options_.relay_room),
                            Act::kRoom, "Your game's name in Join a game: 3 to 24 letters, digits, - or _."});
         }
+        DifficultyLines(out);   // (the lobby's, picked as it is made: in force from the start, shown in the lists)
         out.push_back({Action("Start hosting", "", guest), Act::kStartHost,
                        guest ? "You are in a friend's game: leave it first (Join a game)."
                              : "Starts your game on this PC. They play on your save."});
@@ -911,23 +1065,27 @@ void Menu::TitleHostLines(std::vector<Line>& out, bool host, bool guest) const {
         out.push_back({NamedNote("Room  ", options_.relay_room, ""), Act::kNone, {}});
         out.push_back({Note("Players  " + players), Act::kNone, {}});
     } else {
-        out.push_back({Action("Code", session_.code.empty() ? std::string("Starting...") : ShownCode(session_.code),
-                              session_.code.empty()),
+        out.push_back({Action("Code", CodeValue(), session_.code.empty()),
                        Act::kCopyInvite,
-                       "The code is copied. Send it in a DM; your friend picks Join a game > Enter a code > Paste a code."});
+                       "Puts the invite code on the clipboard. Share it in DMs only (it contains your internet address); your friend pastes it in Join a game."});
         if (session_.state == State::kHosting && !session_.password.empty()) {
             const std::string shown = show_password_ ? PasswordLines(session_.password).front() : Ph("Hidden");
             out.push_back({Action("Password", shown), Act::kShowPassword,
                            "Your friend types it after picking your game. A shows it."});
         }
         out.push_back({Note("Players  " + players), Act::kNone, {}});
-        out.push_back({Action("Same network", "Copy the line"), Act::kCopyLan,
+        out.push_back({Action("Same network", "Copy address"), Act::kCopyLan,
                        "For friends on your home network: copies one line they paste in Enter a code."});
-        out.push_back({Action("Paste friend's answer", ""), Act::kPasteAnswer,
+        out.push_back({Action("Paste answer code", ""), Act::kPasteAnswer,
                        "Only when your friend's game shows an answer code: copy it, then press A here."});
     }
     out.push_back({Action("Stop hosting", confirm_leave_ ? "Press again" : ""), Act::kLeave,
                    "Ends your game for everyone in it. Back keeps it going."});
+}
+
+std::string Menu::CodeValue() const {
+    if (!session_.code.empty()) return ShownCode(session_.code);
+    return session_.state == State::kHosting && session_.code_done ? Ph("None") : std::string("Starting...");
 }
 
 void Menu::SetTitle(bool on) {
@@ -1119,6 +1277,10 @@ void Menu::SetRejoin(std::string host, std::string code) {
     const auto same = std::find_if(after.begin(), after.end(), [act](const Line& l) { return l.act == act; });
     selected_ = same != after.end() ? static_cast<std::size_t>(same - after.begin()) : 0;
     Clamp();
+}
+
+void Menu::SetVoiceStatus(std::string words, std::string note) {
+    voice_words_ = std::move(words), voice_note_ = std::move(note);   // (the same rows: the cursor stays)
 }
 
 void Menu::SetMicrophones(std::optional<std::vector<std::string>> listed) {
@@ -1587,7 +1749,7 @@ bool Menu::Press(Input input) {
         }
         if (page_ == Page::kHost && std::any_of(lines.begin(), lines.end(), [](const Line& l) {
                 return l.act == Act::kPasteAnswer;
-            })) {   // Ctrl+V on the Host page: the same as Paste friend's answer
+            })) {   // Ctrl+V on the Host page: the same as Paste answer code
             request_ = Request{Request::Kind::kPasteAnswer, {}};
             return true;
         }
@@ -1601,7 +1763,10 @@ bool Menu::Press(Input input) {
 void Menu::Decide(Act act) {
     switch (act) {
     case Act::kOpenHost:
-        Go(Page::kHost);
+        // (the title's Host page opens on Start hosting: one A hosts with the choices as they are (Private, the
+        // players from Co-op Settings), the most a host needs; the choices are one Up away. It opened on Who can join,
+        // two Downs from hosting: the audit's item 16, as few steps as possible)
+        Go(Page::kHost, title_ && !InSession() && !session_.by_launcher ? Act::kStartHost : Act::kNone);
         if (!InSession() && !title_) {   // (the title: its choices first, Start hosting hosts)   // one press hosts; the page then shows the code
             request_ = Request{Request::Kind::kHost, {}};
         }
@@ -1629,6 +1794,9 @@ void Menu::Decide(Act act) {
         break;
     case Act::kOpenLocal:
         Go(Page::kLocal);
+        break;
+    case Act::kLocalStart:
+        if (!local_.starting) request_ = Request{Request::Kind::kLocalStart, std::to_string(local_count_)};
         break;
     case Act::kOpenSettings:
         Go(Page::kSettings);
@@ -1850,6 +2018,7 @@ void Menu::Decide(Act act) {
     case Act::kDifficultyCount:
     case Act::kCharChild:
     case Act::kCharAdult:
+    case Act::kLocalGames:
         Change(act, 1);
         break;
     case Act::kVoice:
@@ -1862,6 +2031,9 @@ void Menu::Decide(Act act) {
     case Act::kOriginal:
     case Act::kGameKind:
     case Act::kApproveJoins:
+    case Act::kGoldSkulltulas:
+    case Act::kRace:
+    case Act::kFloorSwitches:
     case Act::kPvp:
     case Act::kDbno:
         Change(act, 0);   // (a toggle: A flips it)
@@ -1892,6 +2064,12 @@ void Menu::Change(Act act, int step) {
                        CoopTitleMenu::kMinPlayers;
         options_.max_players = CoopTitleMenu::kMinPlayers + (at + (step < 0 ? span - 1 : 1)) % span;
         request_ = Request{Request::Kind::kSave, {}};
+        break;
+    }
+    case Act::kLocalGames: {   // (2, 3, 4, 2...: this page only, not saved; Start uses it)
+        const int span = kLocalMost - kLocalFewest + 1;
+        const int at = std::clamp(local_count_, kLocalFewest, kLocalMost) - kLocalFewest;
+        local_count_ = kLocalFewest + (at + (step < 0 ? span - 1 : 1)) % span;
         break;
     }
     case Act::kVoice:
@@ -1993,6 +2171,18 @@ void Menu::Change(Act act, int step) {
         options_.approve_joins = step > 0 ? true : step < 0 ? false : !options_.approve_joins;
         request_ = Request{Request::Kind::kSave, {}};
         break;
+    case Act::kGoldSkulltulas:
+        options_.gold_own = !options_.gold_own;   // (two choices: either way flips it)
+        request_ = Request{Request::Kind::kSave, {}};
+        break;
+    case Act::kRace:
+        options_.race = step > 0 ? true : step < 0 ? false : !options_.race;
+        request_ = Request{Request::Kind::kSave, {}};
+        break;
+    case Act::kFloorSwitches:
+        options_.floor_switches = step > 0 ? true : step < 0 ? false : !options_.floor_switches;
+        request_ = Request{Request::Kind::kSave, {}};
+        break;
     case Act::kPvp: {
         const bool now = session_.rules ? session_.pvp : options_.pvp;
         const bool want = step > 0 ? true : step < 0 ? false : !now;
@@ -2028,8 +2218,9 @@ void Menu::Change(Act act, int step) {
     case Act::kDifficulty:
     case Act::kDifficultyLife:
     case Act::kDifficultyDamage:
-    case Act::kDifficultyCount: {   // (the host's: the server says it to everyone, the chat says it then)
-        if (!difficulty_.connected || !difficulty_.can_edit) {
+    case Act::kDifficultyCount: {   // (the host's: the server says it to everyone, the chat says it then; with no
+                                    // session the next lobby's, kept at once)
+        if (!DifficultyEditable()) {
             break;
         }
         const CoopDifficulty::Choice now = DifficultyShown();
@@ -2289,6 +2480,10 @@ bool Menu::Paste(std::string_view text) {
         typing_fresh_ = false;
         replace_typed_ = false;
         Go(Page::kJoin, Act::kJoinNow);
+        // (the title's Paste a code with a whole invite code: it joins at once. The code holds the address and the
+        // password, so nothing is left to fill, and Join was the next press every time: one press, not two. An address
+        // or a room name waits on Join, as it may still need its password)
+        if (title_ && CodeShaped(join_)) request_ = Request{Request::Kind::kJoin, join_};
         return true;
     }
     std::string* t = Typed();
@@ -2385,6 +2580,17 @@ View Menu::view() const {
         break;
     case Page::kLocal:
         v.help_title = CoopI18n::Tr("Local co-op");
+        if (local_.player >= kLocalFewest) {
+            v.help = CoopI18n::Tr("One of this PC's games: game 1 hosts the session and this game joined it. Your "
+                                  "controller, colour and name are this game's own (Settings).");
+            break;
+        }
+        if (local_.offered) {
+            v.help = CoopI18n::Tr("Two to four games on this PC, one per player, each with its own controller: pick "
+                                  "how many, then Start. This game hosts them; the others open in their own windows "
+                                  "and join. About 10 GB of RAM a game. Closing this game ends the session.");
+            break;
+        }
         v.help = CoopI18n::Tr("Split screen (experimental) runs two full games on this PC, one per player: about 10 GB "
                  "of RAM each "
                  "and a strong graphics card. Start two kits (or use Nucleus Co-op), give each game its own controller"
@@ -2495,7 +2701,10 @@ void Menu::SetDifficulty(const DifficultyState& state, int players) {
                           (w.auto_scale || (state.choice.preset == w.preset &&
                                             (w.preset != CoopDifficulty::Preset::custom ||
                                              state.values == coop::protocol::clamp_difficulty(w.custom))));
-        if (said || !state.connected || !state.can_edit) {
+        // (not in a session: the next lobby's, kept by the module at once; a host's wish is kept the same way, so
+        // one that the session's end overtook is said there too)
+        const bool lobby_said = !state.connected && state.next == w;
+        if ((state.connected && (said || !state.can_edit)) || lobby_said) {
             difficulty_wish_.reset();
         }
     }
@@ -2504,27 +2713,27 @@ void Menu::SetDifficulty(const DifficultyState& state, int players) {
 }
 
 CoopDifficulty::Choice Menu::DifficultyShown() const {
-    return difficulty_wish_ ? *difficulty_wish_ : difficulty_.choice;
+    return difficulty_wish_ ? *difficulty_wish_ : difficulty_.connected ? difficulty_.choice : difficulty_.next;
 }
 
 CoopDifficulty::Values Menu::DifficultyValuesShown() const {
-    return difficulty_wish_ ? coop::protocol::difficulty_in_force(
-                                  *difficulty_wish_, static_cast<std::size_t>(std::max(difficulty_players_, 1)))
-                            : difficulty_.values;
+    if (difficulty_.connected && !difficulty_wish_) return difficulty_.values;
+    return coop::protocol::difficulty_in_force(DifficultyShown(),
+                                               static_cast<std::size_t>(std::max(difficulty_players_, 1)));
+}
+
+bool Menu::DifficultyEditable() const {
+    return difficulty_.connected ? difficulty_.can_edit : !InSession();
 }
 
 // The Difficulty rows: the host's choice with its arrows (and Custom's three sliders), or the guest's, read only.
 void Menu::DifficultyLines(std::vector<Line>& out) const {
     static const char* const kNames[kDifficultyRows] = {"Automatic", "Easy", "Normal", "Hard", "Custom"};
-    if (!difficulty_.connected) {   // (not in a game, or a server that says none: the game as it is)
+    if (!difficulty_.connected && InSession()) {   // (joining, or a server that says none: the game as it is)
         Row r = Choice("Difficulty", "Normal");
         r.left = r.right = false;
         r.fixed = true;
-        out.push_back({r, Act::kDifficulty,
-                       InSession() ? std::string("This game's server does not say a difficulty: enemies as in the game.")
-                                   : std::string("The host chooses it for everyone while hosting: Automatic, Easy, "
-                                                 "Normal, Hard or Custom. Playing alone, enemies are as in the game "
-                                                 "(New Game+ aside).")});
+        out.push_back({r, Act::kDifficulty, "This game's server does not say a difficulty: enemies as in the game."});
         return;
     }
     const CoopDifficulty::Choice shown = DifficultyShown();
@@ -2538,16 +2747,22 @@ void Menu::DifficultyLines(std::vector<Line>& out) const {
         return first + (first == now ? ". " : "。") + CoopI18n::Tr(rest);
     };
     Row r = Choice("Difficulty", kNames[DifficultyIndex(shown)]);
-    if (!difficulty_.can_edit) {
+    if (!difficulty_.connected) {   // (no session: the lobby this player makes next starts with it)
+        out.push_back({r, Act::kDifficulty,
+                       help("For the game you host: everyone plays with it from the start, and the game lists show "
+                            "it. Automatic: more as more players join. Custom: your values on the rows below. "
+                            "Playing alone, enemies are as in the game.")});
+    } else if (!difficulty_.can_edit) {
         r.left = r.right = false;
         r.fixed = true;
         out.push_back({r, Act::kDifficulty, help("Only the host can change it.")});
         return;
+    } else {
+        out.push_back({r, Act::kDifficulty,
+                       help("For everyone in your game: enemies' life, the damage they deal and how many there are. "
+                            "Automatic: more as more players join. Custom: your own values on the rows below. Also "
+                            "/difficulty in the chat.")});
     }
-    out.push_back({r, Act::kDifficulty,
-                   help("For everyone in your game: enemies' life, the damage they deal and how many there are. "
-                        "Automatic: more as more players join. Custom: your own values on the rows below. Also "
-                        "/difficulty in the chat.")});
     if (shown.auto_scale || shown.preset != CoopDifficulty::Preset::custom) {
         return;
     }

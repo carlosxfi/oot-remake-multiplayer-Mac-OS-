@@ -53,19 +53,18 @@ inline std::string Line(int page, int pages, bool words = false) {
     return words ? at + " (ZL/ZR)" : at;
 }
 
+// The end of a heading that Heading keeps whole ("  Page 2/3"; "" with one page): a list line's name_tail
+// (coop_pause_tab.h ListLine), so the pane's width fit cuts the title before it as well (menu-restart-c41).
+inline std::string Tail(const std::string& page_line) { return page_line.empty() ? std::string() : "  " + page_line; }
+
 // A list's heading with its page line: `title`, two spaces, `page_line`, within `n` letters of width and bytes
 // (CoopTextFit). The page line is never cut: a long title is cut first ("Public ga...  Page 2/3"); with no room
 // for any of it, the page line alone. An empty page line: the title as Fit cuts it.
 inline std::string Heading(const std::string& title, const std::string& page_line, std::size_t n) {
     if (page_line.empty()) return CoopTextFit::Fit(title, n);
-    const std::string whole = title + "  " + page_line;
-    if (whole.size() <= n && CoopTextFit::Halves(whole) <= 2 * n) return whole;
-    const std::size_t line_halves = CoopTextFit::Halves(page_line) + 4, line_bytes = page_line.size() + 2;
-    if (line_bytes + 4 > n || line_halves + 8 > 2 * n) return CoopTextFit::Fit(page_line, n);
-    // (the room left for the title: its letters and its bytes both, as Fit counts them; Fit's "..." inside it)
-    const std::size_t room = std::min(n - line_bytes, (2 * n - line_halves) / 2);
-    const std::string cut = CoopTextFit::Fit(title, room);
-    return cut.empty() ? CoopTextFit::Fit(page_line, n) : cut + "  " + page_line;
+    // (the title cut before the page line, which stays whole: CoopTextFit::FitTail; no room for both, the line alone)
+    const std::string cut = CoopTextFit::FitTail(title, Tail(page_line), n);
+    return cut.empty() ? CoopTextFit::Fit(page_line, n) : cut;
 }
 
 }  // namespace CoopListPages

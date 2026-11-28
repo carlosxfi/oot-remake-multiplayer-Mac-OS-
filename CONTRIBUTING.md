@@ -2,6 +2,8 @@
 
 Using an AI coding agent? It reads [AGENTS.md](AGENTS.md): the same rules, written as steps for the agent.
 
+The docs are indexed in [docs/README.md](docs/README.md): one line per page, what it answers and when to read it. Game addresses the code names are in [docs/addresses.md](docs/addresses.md).
+
 Anyone can contribute: code, testing, desync reports, docs. Fork the repository, make your change on a branch, and open a pull request. Questions and ideas are welcome in [Discussions](https://github.com/daurosk/oot-remake-multiplayer/discussions) or on [Discord](https://discord.gg/GwtRKAqng5).
 
 ## The one hard rule

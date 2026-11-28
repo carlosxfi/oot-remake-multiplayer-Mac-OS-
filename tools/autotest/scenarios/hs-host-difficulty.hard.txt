@@ -1,0 +1,18 @@
+# hs-host-difficulty (see hs-host-difficulty.steps.txt), A on the title's Host page: up to the top row (Who can join;
+# DUP does not wrap), down two to Difficulty, right three: Automatic -> Easy -> Normal -> Hard.
+press DUP
+wait 30
+press DUP
+wait 30
+press DUP
+wait 30
+press DDOWN
+wait 30
+press DDOWN
+wait 30
+press DRIGHT
+wait 30
+press DRIGHT
+wait 30
+press DRIGHT
+wait 90

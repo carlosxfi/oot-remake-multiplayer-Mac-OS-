@@ -1,0 +1,28 @@
+# hs-host-difficulty (Hookshot only; difficulty-lobby, C #114 plan B): the title's Host page before hosting has the
+# Difficulty row (the lobby's, picked as it is made) and Custom's three sliders fit on the page. Game A starts co-op
+# idle (`start A idle`: no server, as a player who has not hosted or joined), Host on the title (hs-title-menu.down /
+# .press), then Difficulty Automatic -> Hard -> Custom with the pad (the change is kept for the next lobby).
+# Shots (s<step>-<name>-A.png), judged by eye (no refs yet):
+#   page      the Host page: Who can join, Players, Difficulty Automatic, Start hosting
+#   hard      the Difficulty row says Hard
+#   custom    the Difficulty row says Custom, its three sliders below it, Start hosting still on screen
+#   closed    the title again
+# Run: tools\autotest\run.ps1 -Runtime hookshot -Scenario hs-host-difficulty
+#! switches LICHII_COOP_PUPPET=1
+#! timeout 300
+start A idle
+sleep 30
+lines rows-A A min=1 coop: title: the title's own rows Host, Join, Co-op Settings \(buttons 4 to 6\)$
+lines idle-A A max=0 coop: welcomed as player
+play A hs-title-menu.down.txt
+play A hs-title-menu.press.txt
+shot page
+play A hs-host-difficulty.hard.txt
+shot hard
+lines kept-A A min=3 coop: multiplayer tab: difficulty kept for the next lobby
+play A hs-host-difficulty.custom.txt
+shot custom
+lines kept-custom-A A min=4 coop: multiplayer tab: difficulty kept for the next lobby
+lines refused-A A max=0 coop: multiplayer tab: difficulty refused
+play A hs-title-menu.close.txt
+shot closed

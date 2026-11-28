@@ -105,6 +105,14 @@ def check_headers(method, path, content_type, content_length, install, report_id
     return install, report_id
 
 
+def is_health_check(content_length, install, report_id):
+    """An empty POST with neither id header: the coordinator watchdog's 5-hourly check that the bot answers through
+    the public address (it expects 411 or 415), never a kit's upload (a kit always sends both ids and a zip). The bot
+    logs it as a check, so it is not read as a player's refused report."""
+    empty = content_length is None or content_length.strip() in ("", "0")
+    return empty and not (install or "").strip() and not (report_id or "").strip()
+
+
 def _clean_text(data):
     """A file's bytes as text: UTF-8 (a BOM allowed), no NUL or other control characters but tab and newlines."""
     try:

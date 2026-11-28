@@ -169,3 +169,13 @@ TEST_CASE("lobby: the host's answer and its lines") {
     CHECK(NoKnockLine("deny", "Saria") == "deny: nobody called Saria is asking to join");
     CHECK(WaitingLine(60) == "the host is asked to let you in: waiting up to 60 s");
 }
+
+TEST_CASE("lobby: who hosts, in the chat and on the title") {
+    CHECK(HostChangedLine(1, 3, "Emily", false) == "Emily is now the host: their save is the one played");
+    CHECK(HostChangedLine(1, 2, "Zach", true).empty());   // (this game: the host_changed event's own line, translated)
+    CHECK(HostChangedLine(0, 1, "Zach", false).empty());   // (the first host: joining, not a change)
+    CHECK(HostChangedLine(2, 2, "Zach", false).empty());
+    CHECK(TitleHostLine(false, true, "Zach").empty());
+    CHECK(TitleHostLine(true, true, "Zach") == "Co-op: you host. Continue loads your save.");
+    CHECK(TitleHostLine(true, false, "Emily") == "Co-op: Emily hosts. Continue loads their save.");
+}

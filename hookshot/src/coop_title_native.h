@@ -11,9 +11,14 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <string>
 
 #include "coop_pause_menu.h"
+
+namespace CoopPauseTab {
+class HelpPager;
+}
 
 namespace CoopTitleNative {
 
@@ -23,9 +28,15 @@ inline constexpr int kButtons = 4, kRowButtons = 3;   // the game's own four (th
 inline constexpr int kMaxButtons = 14;
 inline constexpr std::size_t kTextBytes = CoopPauseMenu::kTitleRowBytes;   // (a button's width; its placeholder holds 63)
 inline constexpr std::size_t kHintBytes = 159;         // (the hint line's placeholder, Coop_Live_Hint, holds 159)
+// The hint line's width: one centred line under the buttons, with nothing to wrap it. 159 letters ran past both edges
+// of the screen (some 87 letters take 730 of 1280 pixels); 100 keep it well inside, the rest on the next page.
+inline constexpr std::size_t kHintLetters = 100;
 
 // A row's words on a title button: "Your name: Link", "Players when you host: < 4 >", "Voice: On", a note's line.
 std::string RowText(const CoopPauseMenu::Row& r);
+// `name` then `tail` (": value") within `n` letters of width and bytes (coop_text_fit.h): too long, the name is cut
+// ("Kakariko-cr...: 3/16  Public"), never the value; a tail with no room left for a name: the whole cut at its end.
+std::string FitRow(const std::string& name, const std::string& tail, std::size_t n);
 
 struct Look {
     std::array<std::string, kMaxButtons> texts{};
@@ -54,7 +65,10 @@ struct Look {
 // the rows a page at a time (`buttons` - 1 of them) with Back right under the page's last, on the page that holds the
 // selected row (`top`: the last look's, kept while nothing is selected). Headings are left out; notes show (the menu
 // never selects them). The hint: "ZL Page 2/3 ZR" (the game's button letters) with more than one page, else the selected row's help.
-Look LookFor(const CoopPauseMenu::View& v, int top, int buttons = kButtons);
+// A help longer than the line (kHintLetters, kHintBytes with the page in front) shows a part at a time, turned by
+// `pager` at `now_ms` (CoopPauseTab::HelpPager); no pager: its first part.
+Look LookFor(const CoopPauseMenu::View& v, int top, int buttons = kButtons, CoopPauseTab::HelpPager* pager = nullptr,
+             std::uint64_t now_ms = 0);
 // The most buttons a page uses by default (the rows and Back): a rejoin row, eight games, Enter a code or address and
 // Back. With the hint line under them the column still fits the title's screen once raised (ColumnRaise).
 inline constexpr int kListButtons = 11;
@@ -64,6 +78,11 @@ inline constexpr int kListButtons = 11;
 // game's own place) nor so high that `highest` (the first button's upper edge) leaves the screen's top.
 float ColumnRaise(float lowest, float highest, float raised, float scale);
 inline constexpr float kScreenFoot = -1030.0f, kScreenTop = 1030.0f;   // (a margin inside the 3840x2160 layout's +-1080)
+// The raise that puts the column's middle on the screen's (y 0), for a co-op page, which shows no logo: every page
+// opened from Multiplayer looks the same (the audit's item 16: the logo was on the pages of four buttons and gone on
+// the longer ones, so it came and went between Host a game, Join a game and the code page). The same arguments as
+// ColumnRaise; never below the game's place, the foot and the top kept on the screen.
+float ColumnCentre(float lowest, float highest, float raised, float scale);
 // ZL (-1) or ZR (+1) on a look: the view's row to select, the first of the page before or after, round at both ends
 // (ZR on the last page: the first; CoopListPages::Step); -1 with one page.
 int PageJump(const CoopPauseMenu::View& v, const Look& l, int dir);
@@ -78,6 +97,15 @@ inline constexpr int kFirstKey = static_cast<int>(Key::kLetter), kLastKey = stat
 const std::string& Letters();
 // The key `key` moved by `dy` (-1 up, +1 down), round the three keys.
 int MoveKey(int key, int dy);
+// The title pages' cursor, on the shared cursor model (coop_menu_nav.h, CoopMenuNav::Step): `repeat` a held
+// direction's repeat (CoopMenuNav::Repeat), which never goes round an end; a fresh press does where the list goes round.
+// - RowStep: Up (-1) or Down (+1) from the view's row `from`, over the rows the menu can select (not headings or notes,
+//   as Menu::Move steps): the row it lands on, `from` when it stays (a repeat at an end, nothing else to pick).
+// - KeyStep: the typing keys (Letter, Delete, OK), round as MoveKey on a fresh press.
+// - LetterStep: Letter's letter `at` moved by `dx` among Letters(), round on a fresh press.
+int RowStep(const CoopPauseMenu::View& v, int from, int dir, bool repeat);
+int KeyStep(int key, int dy, bool repeat);
+std::size_t LetterStep(std::size_t at, int dx, bool repeat);
 // The buttons while the menu's selected row is typed into, `key` focused.
 Look TypingLook(const CoopPauseMenu::View& v, char letter, int key);
 

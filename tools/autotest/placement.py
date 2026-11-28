@@ -6,14 +6,20 @@ opens over what someone is working on.
 
 The monitor is a device name, for example \\\\.\\DISPLAY2 (Settings > System > Display shows the number; "DISPLAY2" alone
 works too). Pick it, strongest first:
-  1. --display (hookshot.py run, live.py start, placement.py) or -Display (run.ps1, live_start.ps1);
-  2. the environment variable OOT_TEST_DISPLAY;
-  3. the default, \\\\.\\DISPLAY2.
+  1. --display (hookshot.py run, live.py start, placement.py) or -Display (run.ps1, live_start.ps1), if connected;
+  2. the environment variable OOT_TEST_DISPLAY, if connected;
+  3. the default, \\\\.\\DISPLAY2, if connected;
+  4. the primary monitor.
+"primary" names the primary monitor, whatever its number (this module only: coord's offline/lib/test-display.ps1 has no
+such word and skips it as a screen that is not connected, so an offline script gives a device name, never "primary";
+its offline/lib/test-display.pin.ps1 feeds both the same tables and checks they agree on everything else).
+A name no connected monitor has (DISPLAY2 unplugged or renumbered, a stale OOT_TEST_DISPLAY, a mistyped --display) is
+skipped and the next one in that order is tried; when none is connected the games go to the primary monitor (owner
+2026-11-26: test games may open on ANY connected monitor; the same order as coord's offline/lib/test-display.ps1). The
+run says so: the returned monitor has a "note" naming each skipped name, the monitor used and the monitors that exist. One rule for every caller (run.ps1, hookshot.py,
+hs_steps.py, live.py, the kit's play-test start and the offline scripts). With no monitor at all it is an error.
 The name is resolved to the monitor's work area (the screen minus the taskbar) when the games start, never as a
-fixed 0,0, so a display added later, or the same display after the layout moved, only needs the setting changed. A name
-that no monitor has is an error that lists the monitors found (the run does not fall back to another screen: that is
-where the windows would pop up over someone's work).
-
+fixed 0,0, so a display added later, or the same display after the layout moved, only needs the setting changed.
 Windows are placed side by side from the work area's top left, 960x600 each (smaller when the work area is too small,
 so every window is fully on that monitor). Placing never activates a window (SWP_NOACTIVATE) and never restores a
 minimized one with a call that activates it.
@@ -76,12 +82,21 @@ def normalize(name):
     return n
 
 
-def find_monitor(monitors, name):
-    """The monitor dict (name, work=(l, t, r, b), primary) called name, or a PlacementError that lists those found."""
+PRIMARY = "primary"
+
+
+def find_monitor(monitors, name, primary_if_gone=False):
+    """The monitor dict (name, work=(l, t, r, b), primary) called name ("primary": the primary monitor), or a
+    PlacementError that lists those found. primary_if_gone: a name no monitor has is the primary monitor (the
+    chosen monitor was unplugged or renumbered; check_display always asks for it)."""
     want = normalize(name)
     for m in monitors:
-        if normalize(m["name"]) == want:
+        if normalize(m["name"]) == want or (want == PRIMARY.upper() and m.get("primary")):
             return m
+    if primary_if_gone:
+        for m in monitors:
+            if m.get("primary"):
+                return m
     found = ", ".join("%s (%dx%d at %d,%d%s)" % (m["name"], m["work"][2] - m["work"][0], m["work"][3] - m["work"][1],
                                                   m["work"][0], m["work"][1], ", primary" if m.get("primary") else "")
                       for m in monitors) or "none"
@@ -193,9 +208,35 @@ def place_window(hwnd, rect, topmost=False):
         raise PlacementError("SetWindowPos failed for window 0x%x" % hwnd)
 
 
+def choose_monitor(mons, arg=None, env=None):
+    """The monitor (dict) for arg, else $OOT_TEST_DISPLAY, else the default DISPLAY2, the first of them that is connected,
+    else the primary monitor; a name not connected is skipped and named in mon["note"]. PlacementError with no monitor."""
+    env = os.environ if env is None else env
+    if not mons:
+        raise PlacementError("no monitor is connected (none found)")
+    skipped, fallback = [], False
+    for v in (arg, env.get(ENV), DEFAULT_DISPLAY):
+        if not (v and v.strip()):
+            continue
+        try:
+            mon = find_monitor(mons, v.strip())
+            break
+        except PlacementError:
+            if normalize(v) not in [normalize(s) for s in skipped]:
+                skipped.append(v.strip())
+    else:
+        mon, fallback = find_monitor(mons, PRIMARY, primary_if_gone=True), True
+    if skipped:
+        mon = dict(mon, note="no monitor called %s: the windows go to %s%s (monitors found: %s)"
+                   % (", ".join(skipped), "the primary monitor " if fallback else "", mon["name"],
+                      ", ".join(m["name"] for m in mons)))
+    return mon
+
+
 def check_display(arg=None):
-    """The chosen monitor (dict), or a PlacementError; call it before starting games so a wrong name fails first."""
-    return find_monitor(monitors(), display_name(arg))
+    """The chosen monitor (dict), or a PlacementError when the PC has no monitor; call it before starting games. The
+    order and the fallback are choose_monitor's; mon["note"] says when a name was skipped (callers print it)."""
+    return choose_monitor(monitors(), arg)
 
 
 def place_pids(pids, display=None, topmost=False, wait=0.0, step=0.25, slots=None, count=None):
@@ -242,7 +283,10 @@ def main(argv=None):
             print(json.dumps(monitors(), indent=1))
         elif a.cmd == "rects":
             mon = check_display(a.display)
-            print(json.dumps({"display": mon["name"], "rects": layout(mon["work"], a.count)}))
+            out = {"display": mon["name"], "rects": layout(mon["work"], a.count)}
+            if mon.get("note"):
+                out["note"] = mon["note"]
+            print(json.dumps(out))
         elif a.cmd == "launch":
             cmd = [c for i, c in enumerate(a.cmd_line) if not (i == 0 and c == "--")]
             if not cmd:

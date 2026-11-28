@@ -651,6 +651,54 @@ class MenuGuardTest(unittest.TestCase):
         self.put(os.path.join(self.pack, "coop_puppet.json"), b"{")
         self.assertFalse(mt.charsel_native_parked(self.pack))
 
+    def test_in_the_game_menus_kept_aside_stay_aside_and_are_still_taken_out(self):
+        """--in-game (player report 288: the game runs the merge itself at a start the kit did not make): the game was
+        built without the code that goes with menu files kept aside, so they stay there; taking them out still works."""
+        old = PACK + ".old-b26"
+        self.put_table(old, {self.crc(MALS): self.mals, 7: 70})
+        self.assertEqual(mt.guard_menus(self.mods, self.romfs, self.lines.append, put_back=False), 0)
+        self.assertTrue(self.kept(MALS) and self.kept(TITLE))            # (taken out: the game cannot load them)
+        self.assertFalse(self.in_play(MALS) or self.in_play(TITLE))
+        shutil.rmtree(os.path.join(self.mods, *old.split("/")))
+        self.lines = []
+        self.assertEqual(mt.guard_menus(self.mods, self.romfs, self.lines.append, put_back=False), 0)
+        self.assertTrue(self.kept(MALS) and self.kept(TITLE))            # (they stay aside)
+        self.assertFalse(self.in_play(MALS) or self.in_play(TITLE))
+        self.assertIn("Start Squadala", " ".join(self.lines))
+        self.assertEqual(self.guard(), 0)                                 # (the kit's start puts them back)
+        self.assertTrue(self.in_play(MALS) and self.in_play(TITLE))
+        self.lines = []
+        self.assertEqual(mt.guard_menus(self.mods, self.romfs, self.lines.append, put_back=False), 0)
+        self.assertEqual(self.lines, [])                                  # (nothing aside: nothing to say)
+        self.assertTrue(self.in_play(MALS) and self.in_play(TITLE))
+
+    def test_one_merge_at_a_time_on_a_mods_folder(self):
+        """merge_lock (player report 288): two games of one folder started together do not both write the merged
+        files; another folder is not held up; a merge that ended holds nothing."""
+        first = mt.merge_lock(self.mods)
+        self.assertTrue(first)
+        try:
+            self.assertIsNone(mt.merge_lock(self.mods, wait=0.3))        # (held: the second start waits, then gives up)
+            wait, mt.LOCK_WAIT = mt.LOCK_WAIT, 0.3
+            try:
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(mt.main(["--mods", self.mods, "--romfs", self.romfs, "--in-game"]), 1)
+            finally:
+                mt.LOCK_WAIT = wait
+            self.assertIn("Size tables: not merged (another start", out.getvalue())
+            self.assertTrue(self.in_play(MALS) and self.in_play(TITLE))   # (nothing moved by the start that waited)
+            other = os.path.join(self.dir, "mods2")
+            os.makedirs(other)
+            second = mt.merge_lock(other, wait=0.3)
+            self.assertTrue(second)
+            second.close()
+        finally:
+            first.close()
+        again = mt.merge_lock(self.mods, wait=0.3)
+        self.assertTrue(again)
+        again.close()
+        self.assertEqual(os.listdir(self.mods), ["contents"])             # (nothing of the lock in the mods folder)
+
     def test_the_pack_reading_its_own_table_keeps_its_menus(self):
         self.assertEqual(self.guard(), 0)
         self.assertTrue(self.in_play(MALS) and self.in_play(TITLE))
@@ -1816,10 +1864,74 @@ class SnailCustomizeTest(MergeMembersTest):
         self.merge()                                               # the next start: nothing new
         self.assertIn("already", self.lines[0])
 
+    def test_his_picker_names_are_made_readable(self):
+        # (menu-customize-01113: his model ids, "Gerudo_GEN_002", were the labels under his icons; charsel_names.py)
+        from puppet_pack import charsel_names, msbt
+        from test_ui_pack import make_msbt
+        his = make_msbt([("T_Slot_000", "Link"), ("T_CellName_000", "Link"), ("T_Slot_001", "Goron_GON_001"),
+                         ("T_CellName_001", "Goron_GON_001")])
+        self.mod_raw = self.archive(dict(self.game, **{"Hdr.msbt": b"mod header", charsel_names.PICKER_MSG: his}))
+        self.put(os.path.join(self.mod, "romfs", *MALS.split("/")), self.mod_raw)
+        failed, _ = self.merge()
+        self.assertEqual(failed, 0)
+        got = msbt.read(self.served()[charsel_names.PICKER_MSG])
+        self.assertEqual((got.text("T_Slot_001"), got.text("T_CellName_001")), (["Goron"], ["Goron"]))
+        self.assertEqual(got.text("T_Slot_000"), ["Link"])
+        self.merge()                                               # the next start: nothing new
+        self.assertIn("already", self.lines[0])
+
     def test_without_his_customize_screen_nothing_is_added(self):
         failed, _ = self.merge()
         self.assertEqual(failed, 0)
         self.assertNotIn(mt.SNAIL_MSG, self.served())
+
+
+class SnailKeysTest(unittest.TestCase):
+    """menu-customize-01113: his Customize screen's Y and A as the game's guide keys (two hidden PaGuideKey_00 parts on
+    the footer's line, their words and button letters in his message file); the title then drops its worded hints."""
+
+    # (his layout's shape: RootPane > N_All_00 > N_Custom_00 > N_Mark_00 > Pa_MarkL_00, then his overlay after it)
+    TREE = [("RootPane", -1), ("N_All_00", 0), ("N_Custom_00", 1), ("T_Head_00", 2), ("N_Mark_00", 2),
+            ("Pa_MarkL_00", 4), ("P_Overlay_00", 0)]
+
+    def entries(self):
+        from test_ui_pack import make_layout, make_msbt
+        return [(mt.SNAIL_LAYOUT, make_layout(self.TREE, {"Pa_MarkL_00": ("PaCharacterKey_00", [])})),
+                (mt.SNAIL_MSG, make_msbt([("T_Head_00", "Customize")])), ("Other.buil", b"other")]
+
+    def test_two_hidden_guide_keys_on_the_footer_line_with_their_messages(self):
+        from puppet_pack import msbt
+        out, changed = mt.add_snail_keys(self.entries())
+        self.assertTrue(changed)
+        got = dict(out)
+        d = got[mt.SNAIL_LAYOUT]
+        panes, _ = ui_pack.read_layout(d)
+        names = [p.name for p in panes]
+        self.assertEqual(names[-2:], ["Pa_CoopKeyY_00", "Pa_CoopKeyA_00"])
+        self.assertEqual(ui_pack.part_layouts(d)[-2:], [("Pa_CoopKeyY_00", "PaGuideKey_00"),
+                                                         ("Pa_CoopKeyA_00", "PaGuideKey_00")])
+        root = names.index("RootPane")
+        for p in panes[-2:]:
+            self.assertEqual(struct.unpack_from("<I", d, p.record + 0x28)[0], root)
+            self.assertEqual(struct.unpack_from("<I", d, p.record + 0x38)[0] & 1, 0)   # (stored hidden)
+        xs = [struct.unpack_from("<ff", d, p.record + 0x1c) for p in panes[-2:]]
+        self.assertEqual(xs, [(1510.0, -1018.0), (1050.0, -1018.0)])
+        m = msbt.read(got[mt.SNAIL_MSG])
+        self.assertEqual(m.text("Pa_CoopKeyY_00-T_Icon_00"), ["\ue043"])
+        self.assertEqual(m.text("Pa_CoopKeyY_00-T_Guide_00"), ["Next page"])
+        self.assertEqual(m.text("Pa_CoopKeyA_00-T_Icon_00"), ["\ue040"])
+        self.assertEqual(m.text("Pa_CoopKeyA_00-T_Guide_00"), ["Fine-tune"])
+        self.assertEqual(m.text("T_Head_00"), ["Customize"])   # (his own kept)
+        self.assertEqual(got["Other.buil"], b"other")
+        again, changed = mt.add_snail_keys(out)                      # (the next start: nothing new)
+        self.assertFalse(changed)
+        self.assertEqual(again, out)
+
+    def test_a_layout_without_his_key_part_is_left_alone(self):
+        from test_ui_pack import make_layout
+        d = make_layout([("RootPane", -1), ("N_All_00", 0)], {})
+        out, changed = mt.add_snail_keys([(mt.SNAIL_LAYOUT, d)])
+        self.assertEqual((out, changed), ([(mt.SNAIL_LAYOUT, d)], False))
 
 
 class MessageLabelsTest(unittest.TestCase):

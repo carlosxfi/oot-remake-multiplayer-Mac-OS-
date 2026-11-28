@@ -18,6 +18,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import hs  # noqa: E402  (run_quiet: a console child with no window)
+
 ROUNDS = 1000
 
 HOS_H = r'''
@@ -159,7 +162,7 @@ def build_and_run(name, sdl_c, src, cc, work):
         f.write(FAKE_SDL + stubs)
     with open(os.path.join(d, "harness.c"), "w", newline="\n") as f:
         f.write(HARNESS.replace("%ROUNDS%", str(ROUNDS)))
-    run = lambda args: subprocess.run(args, cwd=d, capture_output=True, text=True)
+    run = lambda args: hs.run_quiet(args, cwd=d, capture_output=True, text=True)
     r = run([cc, "-shared", "-O1", "-w", "-o", "SDL3.dll", "fake_sdl.c"])
     if r.returncode:
         raise SystemExit("sdl_audio_once_test: the stand-in SDL3.dll did not build:\n" + r.stderr[-3000:])
@@ -213,7 +216,7 @@ def main():
         os.makedirs(os.path.join(old_tree, "host"))
         shutil.copy(os.path.join(src, "host", "hos_sdl.c"), os.path.join(old_tree, "host", "hos_sdl.c"))
         p = os.path.join(patches, "0033-coop-sdl-audio-once.patch")
-        r = subprocess.run(["git", "apply", "-R", "--unidiff-zero", p], cwd=old_tree, capture_output=True, text=True)
+        r = hs.run_quiet(["git", "apply", "-R", "--unidiff-zero", p], cwd=old_tree, capture_output=True, text=True)
         if r.returncode:
             raise SystemExit("sdl_audio_once_test: patch 0033 did not reverse:\n" + r.stderr)
         with open(os.path.join(old_tree, "host", "hos_sdl.c"), encoding="utf-8", newline="") as f:

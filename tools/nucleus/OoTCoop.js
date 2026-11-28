@@ -49,7 +49,7 @@ Game.KeepSymLinkOnExit = true;   // instance folders stay: the next start makes 
 // (the game makes it at its start), else every game writes the same longshot_log.txt and co-op logs.
 Game.DirExclusions = ["user", "nucleus-players", "logs"];
 // Written by Game.Play for each game.
-Game.FileSymlinkExclusions = ["coop.ini", "coop-options.ini", "coop-kit.txt", "player-key.txt", "longshot_log.txt",
+Game.FileSymlinkExclusions = ["coop.ini", "coop-options.ini", "coop-player.ini", "coop-kit.txt", "player-key.txt", "longshot_log.txt",
     "longshot_log.1.txt", "hookshot_log.txt", "longshot_load_start.txt", "longshot_damaged_files.txt"];
 // Small files a game writes in place: a copy each. (The big caches stay links: the game saves one through a .tmp
 // moved over it, which puts the game's own file in its instance folder and leaves the original as it is.)
@@ -79,6 +79,7 @@ Game.KillProcessesOnClose = ["coop_server"];   // the session's server (and any 
 // The session's settings (also in nucleus-players\session.txt, for a start that runs the script anew per player).
 var COOP_KIT_PORT = 27510;   // the kit's coop.ini port, else this one (Host.bat's)
 var coopSession = null;
+var coopHostBlocked = false;  // host mode: player 1 found a server already running, no game of this session starts
 var coopJoinFailed = false;   // join mode: player 1 found no usable host code, the later players start nothing either
 
 function coopPath(a, b) {
@@ -438,6 +439,13 @@ function coopOwnWritten(text) {
     return coopTrim(t.substring(COOP_WRITTEN.length).replace(/^\r?\n/, ""));
 }
 
+// coop-player.ini (a game's own lines over the kit's coop-options.ini; the module's CoopTitleMenu::PlayerKey).
+var COOP_PLAYER_HEAD = "# This player's own co-op settings (controller, keyboard, look) on a PC where several games share one kit.\r\n" +
+    "# Everything else is in the kit's coop-options.ini. Written by the game.\r\n";
+function coopPlayerKey(k) {   // (k lower case, as coopKeepKeys passes it)
+    return k === "lichii_coop_pad" || k === "lichii_coop_keyboard" || k === "color" || k.indexOf("look_") === 0;
+}
+
 // `text` with key=value set (the line replaced, else added).
 function coopSetKey(text, key, value) {
     var t = coopDropKeys(text, [key]);
@@ -501,52 +509,107 @@ function coopTell(text) {
 }
 
 // Nucleus links the game's files into an instance folder only when it makes the folder, and the folders are kept
-// (Game.KeepSymLinkOnExit). What a later build adds is missing there. Named, not "whatever is new": the solo game
-// also writes per-player files beside its exe (coop-saves.ini, coop-name-checked.txt, ...), which must stay each
-// instance's own. So at every start: the ngx folder (NVIDIA DLSS's runtime, built in by "NVIDIA DLSS.bat"; the game
-// looks for it beside its exe, so in the instance) is linked in as a junction (always the game's current one), and each
-// build DLL the instance lacks is copied in. A DLL the handler copied is copied again at every start (a rebuild
-// replaces the file, and a copy would keep the old bytes); those are listed in the instance's coop-linked.txt.
-var COOP_LINK_DIRS = ["ngx"];
+// (Game.KeepSymLinkOnExit). What a later build adds or replaces would be missing or old there. So at every start the
+// instance takes the game folder as it is now:
+// - a folder the instance lacks is linked in as a junction (always the game's current one): ngx, texts, prompts, ...;
+// - a file the instance lacks, or holds as its own copy with other bytes, is copied in (Nucleus's own links already
+//   show the current file);
+// - a file the handler copied that the game folder no longer has is removed (listed in coop-linked.txt).
+// Each player's own files and folders are never touched: what the game writes beside its exe (settings, the player
+// key, the co-op options and saves list, caches, logs) and the folders Game.DirExclusions names.
+// One rule for "a game writes it", with Nucleus's own lists above (Game.DirExclusions, Game.FileSymlinkExclusions,
+// Game.FileSymlinkCopyInstead) and the kit's local co-op (local-coop.ps1): the logs, and every cache .bin a game
+// writes (in place, or through a .tmp moved over Nucleus's link: the instance's own file then). Only image.bin and the
+// shipped pipeline states are the build's own .bin files (as tools/autotest/lanes.py SHARED_FILE).
+var COOP_OWN_DIRS = /^(user|nucleus-players|logs|cache|modcache|gold-race|bug-reports|local-players|playtest)$/i;
+var COOP_OWN_FILES = /^(.*\.ini|player-key\.txt|language\.txt|coop-linked\.txt|coop-(?!built-from\.txt$).*\.txt|(longshot|hookshot)_log.*\.txt|control\.json|.*\.warming|.*\.tmp|(?!image\.bin$)(?!.*_shipped\.bin$).*\.bin)$/i;
+function coopListed(list, name) {
+    var n = String(name).toLowerCase(), i;
+    for (i = 0; list && i < list.length; i++) {
+        if (String(list[i]).toLowerCase() === n) {
+            return true;
+        }
+    }
+    return false;
+}
+function coopOwnDir(name) {
+    return COOP_OWN_DIRS.test(name) || coopListed(Game.DirExclusions, name);
+}
+function coopOwnFile(name) {
+    return COOP_OWN_FILES.test(name) || coopListed(Game.FileSymlinkExclusions, name) ||
+           coopListed(Game.FileSymlinkCopyInstead, name);
+}
+function coopSameFile(a, b) {
+    try {
+        var fa = new System.IO.FileInfo(a), fb = new System.IO.FileInfo(b);
+        return Number(fa.Length) === Number(fb.Length) &&
+               String(fa.LastWriteTimeUtc) === String(fb.LastWriteTimeUtc);
+    } catch (e) {
+        return false;
+    }
+}
+function coopFileIsLink(p) {
+    try {
+        var a = new System.IO.FileInfo(p).Attributes, n = Number(a);
+        if (!isNaN(n)) {
+            return (n & 1024) !== 0;
+        }
+        return String(a.ToString ? a.ToString() : a).indexOf("ReparsePoint") >= 0;
+    } catch (e) {
+        return false;
+    }
+}
 function coopLinkMissing(game, inst) {
-    var i, name, from, to;
-    for (i = 0; i < COOP_LINK_DIRS.length; i++) {
-        name = COOP_LINK_DIRS[i];
-        from = coopPath(game, name);
+    var i, n, name, from, to;
+    var dirs = System.IO.Directory.GetDirectories(game);
+    n = dirs.Length !== undefined ? dirs.Length : dirs.length;
+    for (i = 0; i < n; i++) {
+        from = String(dirs[i]);
+        name = String(System.IO.Path.GetFileName(from));
         to = coopPath(inst, name);
-        if (System.IO.Directory.Exists(from) && !System.IO.Directory.Exists(to)) {
+        if (!coopOwnDir(name) && !System.IO.Directory.Exists(to) && !System.IO.File.Exists(to)) {
             coopLinkFolder(to, from);
             Context.Log("OoT Co-op: linked the game's " + name + " folder into " + inst);
         }
     }
     var files = System.IO.Directory.GetFiles(game);
-    var nf = files.Length !== undefined ? files.Length : files.length;
-    var markFile = coopPath(inst, "coop-linked.txt"), marked = "\n" + coopRead(markFile).replace(/\r/g, "") + "\n";
-    var added = "";
-    for (i = 0; i < nf; i++) {
+    n = files.Length !== undefined ? files.Length : files.length;
+    var markFile = coopPath(inst, "coop-linked.txt");
+    var marked = coopRead(markFile).replace(/\r/g, "").split("\n"), now = {}, list = "";
+    for (i = 0; i < n; i++) {
         from = String(files[i]);
         name = String(System.IO.Path.GetFileName(from));
         to = coopPath(inst, name);
-        if (!/\.dll$/i.test(name)) {
+        if (coopOwnFile(name)) {
             continue;
         }
-        var mine = marked.indexOf("\n" + name + "\n") >= 0;
-        if (System.IO.File.Exists(to) && !mine) {
-            continue;   // Nucleus's own link or copy
+        now[name.toLowerCase()] = true;
+        if (System.IO.File.Exists(to) && (coopFileIsLink(to) || coopSameFile(from, to))) {
+            continue;   // Nucleus's link (the current file), or a copy that is current
         }
         try {
             System.IO.File.Copy(from, to, true);
-            if (!mine) {
-                added += name + "\r\n";
-                Context.Log("OoT Co-op: copied the game's " + name + " into " + inst);
-            }
+            Context.Log("OoT Co-op: copied the game's " + name + " into " + inst);
+            list += name + "\r\n";
         } catch (e) {
             Context.Log("OoT Co-op: could not copy " + name + " into " + inst + " (in use?): " + e);
         }
     }
-    if (added !== "") {
-        coopWrite(markFile, coopRead(markFile) + added);
+    for (i = 0; i < marked.length; i++) {
+        name = coopTrim(marked[i]);
+        if (name === "" || coopOwnFile(name)) {
+            continue;
+        }
+        if (now[name.toLowerCase()]) {
+            if (list.indexOf(name + "\r\n") < 0) {
+                list += name + "\r\n";
+            }
+        } else if (System.IO.File.Exists(coopPath(inst, name)) && !coopFileIsLink(coopPath(inst, name))) {
+            System.IO.File.Delete(coopPath(inst, name));
+            Context.Log("OoT Co-op: removed " + name + " from " + inst + " (no longer in the game folder)");
+        }
     }
+    coopWrite(markFile, list);
 }
 
 // Notes this player's instance folder in nucleus-players\instances.txt beside the game ("<player>=<folder>", one line
@@ -619,16 +682,21 @@ Game.Play = function () {
             }
             Context.Log("OoT Co-op: join a game on this network (join_lan = " + coopSession.lan + "): no server started");
         }
+    } else if (!join && !remote && player !== 1 && coopHostBlocked) {
+        throw new Error("Host on this PC: a co-op server was already running (see player 1's message)");
     } else if (player === 1) {
         var running = kit !== "" ? coopServersRunning() : 0;
+        coopHostBlocked = false;
         if (running > 0) {
-            // Another server (Host.bat, start-server.cmd, an earlier session not ended) holds the port or has
-            // another join password: this session's games could not join. Nothing is started; it is not closed here
-            // (a friend may be playing on it).
-            coopSession = { password: coopNewKey(), server: "127.0.0.1", port: COOP_KIT_PORT, pads: 0 };
-            coopTell("A co-op server (coop_server.exe) is already running on this PC, so this session starts none " +
-                     "and its games cannot join. Close that server's window, end this " +
-                     "session in Nucleus and press Play again.");
+            // Another server (Host.bat, start-server.cmd, an earlier session not ended) is running. Its session may
+            // have another player as host (the one left when this PC's player 1 went): a game of this session
+            // joining it would be a guest there and load that host's save, not player 1's. So no game starts. The
+            // server is not closed here (a friend may be playing on it).
+            coopHostBlocked = true;
+            coopTell("A co-op server (coop_server.exe) is already running on this PC, so nothing is started: " +
+                     "this PC's games would join that session as guests, not host it. Close that server's " +
+                     "window (Squadala server), end this session in Nucleus and press Play again.");
+            throw new Error("Host on this PC: a co-op server is already running on this PC");
         } else if (kit !== "" && System.IO.File.Exists(coopPath(kit, "start-server.cmd"))) {
             coopSession = coopStartOnline(kit);
             Context.Log("OoT Co-op: the server window shows the relay's join code or room, and the invite code (one copied)");
@@ -687,12 +755,41 @@ Game.Play = function () {
                     "password = " + coopSession.password + "\r\n") +
               (ownLook !== "" ? ownLook + "\r\n" : ""));
 
-    // coop-options.ini: this game's own from last time (the settings and look the game saved there), else the kit's
-    // (else the game's) switches; with this game's controller and keyboard. The game reads it beside longshot.exe, as no
-    // kit is above the instance folder (CoopTitle::ApplyKitOptions). Removed, the next start takes the kit's again.
-    var ownOptions = coopOwnWritten(coopRead(coopPath(inst, "coop-options.ini")));
-    var options = ownOptions !== "" ? coopDropKeys(ownOptions, ["LICHII_COOP_PAD", "LICHII_COOP_KEYBOARD"])
-        : coopDropKeys(kitOptions, ["LICHII_COOP_PAD", "LICHII_COOP_KEYBOARD"].concat(player === 1 ? [] : ["color"]));
+    // The settings. With a kit: the kit's own coop-options.ini, read by every game (coop-kit.txt names the kit), and this
+    // game's coop-player.ini with only the player's own lines (the controller, the keyboard, the look: the module's
+    // CoopTitleMenu::PlayerKey; it reads the kit's file with these over it and saves each line back where it belongs). So
+    // a setting changed in the kit, or a new one a newer kit brings, reaches every split-screen game. Before (0.11.8 to
+    // 0.11.12) each instance had a full copy of its own that went stale: its player lines are taken over once, then the
+    // copy goes. No kit: the game's switches copied beside longshot.exe, as before.
+    var oldCopy = coopPath(inst, "coop-options.ini"), playerFile = coopPath(inst, "coop-player.ini");
+    var options;
+    if (kit !== "") {
+        var own = coopRead(playerFile);
+        if (own === "") {
+            var was = coopOwnWritten(coopRead(oldCopy));
+            own = COOP_PLAYER_HEAD + coopKeepKeys(was !== "" ? was : (player === 1 ? kitOptions : ""), coopPlayerKey);
+        }
+        if (System.IO.File.Exists(oldCopy) && coopOwnWritten(coopRead(oldCopy)) !== "") {
+            System.IO.File.Delete(oldCopy);   // (the handler's own old copy only)
+        }
+        options = own;
+        coopWrite(coopPath(inst, "coop-kit.txt"), kit + "\r\n");
+    } else {
+        var ownOptions = coopOwnWritten(coopRead(oldCopy));
+        options = ownOptions !== "" ? ownOptions : coopDropKeys(kitOptions, player === 1 ? [] : ["color"]);
+        if (System.IO.File.Exists(playerFile)) {
+            // (a kit start made it; with no kit the game reads the copy beside it alone, so its look goes in there)
+            var lines = coopKeepKeys(coopRead(playerFile), coopPlayerKey).split(/\r?\n/);
+            for (var li = 0; li < lines.length; li++) {
+                var eq = lines[li].indexOf("=");
+                if (eq > 0 && coopGetKey(options, coopTrim(lines[li].substring(0, eq))) === "") {
+                    options = coopTrim(options) + "\r\n" + lines[li];
+                }
+            }
+            System.IO.File.Delete(playerFile);
+        }
+    }
+    options = coopTrim(coopDropKeys(options, ["LICHII_COOP_PAD", "LICHII_COOP_KEYBOARD"]));
     if (Context.IsKeyboardPlayer) {
         options = coopSetKey(options, "LICHII_COOP_PAD", "none");
         options = coopSetKey(options, "LICHII_COOP_KEYBOARD", "focus");
@@ -703,16 +800,28 @@ Game.Play = function () {
         options = coopSetKey(options, "LICHII_COOP_PAD", String(pad));
         options = coopSetKey(options, "LICHII_COOP_KEYBOARD", "off");
     }
-    coopWrite(coopPath(inst, "coop-options.ini"), COOP_WRITTEN + "\r\n" + options + "\r\n");
+    if (kit !== "") {
+        coopWrite(playerFile, options + "\r\n");
+    } else {
+        coopWrite(oldCopy, COOP_WRITTEN + "\r\n" + options + "\r\n");
+    }
 
     // Longshot's own options: in a window (Nucleus places it), no Discord status from every copy. A controller
     // player's camera is its pad's: Mouse camera "As the stick" (0), not Native (1), whose last mouse angles would be
     // put back over the right stick each frame (patch 0015 keeps a game with no mouse out of it as well). A keyboard
-    // player keeps its own choice.
+    // player keeps its own choice. The frame cap: the player's own (uncapped, as up to 0.11.12) unless coop-options.ini
+    // local_fps = 30 or 60 gives every split-screen game the same steady one, as the kit's own local co-op
+    // (scripts\local-coop.ps1): on a weak PC two to four games want more than it gives, and Windows hands the window in
+    // front the bigger share, so the others get uneven leftovers and look choppy (row 83 / #245). Longshot's own cap
+    // row, frame_rate_cap: -1 its 30 FPS cap, 0 the console's 60.
     var lsOptions = coopPath(inst, "longshot_options.ini");
     if (System.IO.File.Exists(lsOptions)) {
         var o = coopSetKey(coopRead(lsOptions), "fullscreen", "0");
         o = coopSetKey(o, "discord_status", "0");
+        var localFps = coopGetKey(kitOptions, "local_fps");
+        if (localFps === "30" || localFps === "60") {
+            o = coopSetKey(o, "frame_rate_cap", localFps === "60" ? "0" : "-1");
+        }
         if (!Context.IsKeyboardPlayer) {
             o = coopSetKey(o, "mouse_camera", "0");
         }

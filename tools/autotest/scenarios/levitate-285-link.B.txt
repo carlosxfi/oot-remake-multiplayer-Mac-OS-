@@ -1,0 +1,41 @@
+# levitate-285-link (row 285), B: plays Link (the comparison, no character) and opens the Deku Tree map chest (as chest-other.B.txt).
+# Its get scene is an event: B's own game shows its own character, A's game B's puppet playing the same clips.
+# Shots: "stand", then "open1" .. "open4" while the chest is opened. Feet at the floor, as at "stand".
+#! noload
+#! start coop: test warp done
+#! timeout 420
+mark start
+warp InsideTheDekuTree Entrance
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+setflag CharacterMenu_SelectedCharacter 0
+wait 900
+place 5.45 108.9 6.15
+wait 240
+toward 6.51 7.25 10       # face the chest
+mark stand
+press A
+wait 60
+mark open1
+wait 60
+mark open2
+wait 120
+mark open3
+wait 240
+mark open4
+wait 240
+press A
+wait 120
+press A
+wait 120
+press B
+wait 600
+mark after

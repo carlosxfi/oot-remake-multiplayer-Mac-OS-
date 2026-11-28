@@ -4,7 +4,10 @@
 
 #include "coop_browse.h"
 #include "coop_i18n.h"
+#include "coop_chat_history.h"
 #include "coop_list_pages.h"
+#include "coop_mods_tab.h"
+#include "coop_native_ui.h"
 #include "coop_text_fit.h"
 
 #include "hos_coop_host.h"
@@ -226,12 +229,7 @@ void Page::MinusEnterList() {
 }
 
 void Page::MinusLineStep(int dir) {
-    for (int k = minus_line_ + dir; k >= 0 && k < 32; k += dir) {   // (no wrap, as the rows)
-        if ((minus_lines_ & (1u << k)) != 0) {
-            minus_line_ = k;
-            return;
-        }
-    }
+    minus_line_ = CoopMenuNav::StepMask(minus_lines_, minus_line_, dir);   // (no wrap, as the rows)
 }
 
 void Page::MinusTabMoved() {
@@ -254,7 +252,7 @@ std::uint64_t Page::MinusPad(std::uint64_t buttons, std::uint64_t down) {
             minus_tab_ = 0, minus_slide_ = 1;
             MinusTabMoved();
             if (minus_native_) return buttons & ~swallow_;   // (the game's: the Map sequence opens CoopMenu_00)
-            strip_sound_ = "mc_TabToRight";
+            strip_sound_ = CoopMenuNav::kSoundTabRight;
             swallow_ |= buttons & ~kPadPassed;
             return buttons & kPadPassed & ~swallow_;
         }
@@ -275,7 +273,7 @@ std::uint64_t Page::MinusPad(std::uint64_t buttons, std::uint64_t down) {
     if ((down & kPadR) != 0) {
         if (minus_tab_ < kMinusTabs - 1) {
             ++minus_tab_, minus_slide_ = 1;
-            strip_sound_ = "mc_TabToRight";
+            strip_sound_ = CoopMenuNav::kSoundTabRight;
             MinusTabMoved();
         }
         swallow_ |= kPadR;
@@ -283,7 +281,7 @@ std::uint64_t Page::MinusPad(std::uint64_t buttons, std::uint64_t down) {
         // (a list's page: the games list's 6 at a time, as the game's own long lists page)
         // (swallowed on every tab and view, but it clicks only when the list really pages: review-01110-c)
         minus_page_step_ = (down & kPadZR) != 0 ? 1 : -1;
-        if (minus_pageable_) strip_sound_ = "button_on";
+        if (minus_pageable_) strip_sound_ = CoopMenuNav::kSoundMove;
         swallow_ |= kPadZL | kPadZR;
     } else if ((down & kPadL) != 0) {
         --minus_tab_, minus_slide_ = -1;   // (off the first: Map again)
@@ -292,49 +290,53 @@ std::uint64_t Page::MinusPad(std::uint64_t buttons, std::uint64_t down) {
             swallow_ |= buttons & ~(kPadL | kPadB | kPadPlus | kPadMinus);
             return buttons & (kPadL | kPadB | kPadPlus | kPadMinus) & ~swallow_;
         }
-        strip_sound_ = "mc_TabToLeft";
+        strip_sound_ = CoopMenuNav::kSoundTabLeft;
         swallow_ |= kPadL;
     } else if (minus_list_ && minus_raw_) {   // (co-op's menu's own page: the moves are its events)
         if ((down & kPadB) != 0 && (minus_rows_ != 0 || minus_raw_back_)) {
             if (minus_rows_ != 0) minus_list_ = false;   // (back to the rows; a tab with none keeps the list)
             minus_list_back_ = true;
-            strip_sound_ = "button_cancel";
+            strip_sound_ = CoopMenuNav::kSoundBack;
             swallow_ |= kPadB;
         } else if ((down & kPadB) == 0) {
-            const std::uint32_t moves = (up ? kMinusMoveUp : 0u) | (dn ? kMinusMoveDown : 0u) |
+            // (a held Up or Down: only while the menu's selection can go that way without going round)
+            const bool rep_up = (minus_repeated_ & (kPadUp | kPadStickUp)) != 0;
+            const bool rep_dn = (minus_repeated_ & (kPadDown | kPadStickDown)) != 0;
+            const bool go_up = up && (!rep_up || minus_raw_up_), go_dn = dn && (!rep_dn || minus_raw_down_);
+            const std::uint32_t moves = (go_up ? kMinusMoveUp : 0u) | (go_dn ? kMinusMoveDown : 0u) |
                                         (left ? kMinusMoveLeft : 0u) | (right ? kMinusMoveRight : 0u) |
                                         ((down & kPadA) != 0 ? kMinusMoveA : 0u);
             minus_moves_ |= moves;
-            if ((moves & kMinusMoveA) != 0) strip_sound_ = "button_decide";
-            else if (moves != 0) strip_sound_ = "button_on";
+            if ((moves & kMinusMoveA) != 0) strip_sound_ = CoopMenuNav::kSoundDecide;
+            else if (moves != 0) strip_sound_ = CoopMenuNav::kSoundMove;
         }
     } else if (minus_list_) {
         if (((down & kPadB) != 0 || left) && minus_rows_ != 0) {
             minus_list_ = false;
-            strip_sound_ = "button_cancel";
+            strip_sound_ = CoopMenuNav::kSoundBack;
             if ((down & kPadB) != 0) swallow_ |= kPadB;
         } else if (up || dn) {
             const int was = minus_line_;
             MinusLineStep(up ? -1 : 1);
-            if (minus_line_ != was) strip_sound_ = "button_on";
+            if (minus_line_ != was) strip_sound_ = CoopMenuNav::kSoundMove;
         } else if ((down & kPadA) != 0 && minus_line_ >= 0) {
             minus_line_decide_ = minus_line_;
-            strip_sound_ = "button_decide";
+            strip_sound_ = CoopMenuNav::kSoundDecide;
         }
     } else if (right && minus_lines_ != 0) {   // (into the list on the right)
         minus_list_ = true;
         if (!minus_raw_) SetMinusLines(minus_lines_, false);   // (a line picked)
-        strip_sound_ = "button_on";
+        strip_sound_ = CoopMenuNav::kSoundMove;
     } else if ((up || dn) && minus_rows_ != 0) {
         const int was = minus_row_;
         MinusStep(up ? -1 : 1);
-        if (minus_row_ != was) strip_sound_ = "button_on";
+        if (minus_row_ != was) strip_sound_ = CoopMenuNav::kSoundMove;
     } else if ((down & kPadA) != 0 && (minus_rows_ & (1u << minus_row_)) != 0) {
         minus_decide_ = minus_row_;
-        strip_sound_ = "button_decide";
+        strip_sound_ = CoopMenuNav::kSoundDecide;
     } else if ((down & kPadB) != 0 && minus_in_view_) {   // (a view: back a view, not out of the menu)
         minus_back_ = true;
-        strip_sound_ = "button_cancel";
+        strip_sound_ = CoopMenuNav::kSoundBack;
         swallow_ |= kPadB;
     }
     // (ours shows: its page has the pad; B (on the tab's own rows), + and - stay the game's, which close or change
@@ -464,17 +466,24 @@ std::uint64_t Page::OnPad(std::uint64_t buttons, std::uint64_t now_ms) {
     pad_ms_ = now_ms;
     const std::uint64_t down = buttons & ~pad_last_;
     pad_last_ = buttons;
+    // (the - page's rows and list: a held Up or Down steps again, as the game's own lists; never round, since
+    // MinusStep and MinusLineStep stop at the ends. Typing has its own repeat: TypingPad)
+    const std::uint64_t vertical = kPadUp | kPadDown | kPadStickUp | kPadStickDown;
+    const std::uint64_t repeated = minus_repeat_.Presses(buttons, now_ms, vertical) & ~down;
+    minus_repeated_ = repeated;
     swallow_ &= buttons;   // (let go: the game gets it again)
     if (shown_ && !CanStay(now_ms)) {
         Hide("the menu's state changed", pages_.state == 3 || pages_.state == 0 || strip_.state == 3 || strip_.state == 0);
     }
-    if (!shown_ && CanMinus(now_ms)) return MinusPad(buttons, down);   // (the - menu: its tabs of ours)
+    if (!shown_ && CanMinus(now_ms)) {   // (the - menu: its tabs of ours)
+        return MinusPad(buttons, minus_tab_ >= 0 && typing_ < 0 ? down | repeated : down);
+    }
     if (!shown_) {
         if ((down & kPadA) != 0 && system_button_ == 1 && settings_ok_ && longshot_menu_ && CanShow(now_ms)) {
             // (player report 261: Longshot Settings is Longshot's own menu, opened over the pause menu by the module;
             // never our copy of its rows. The A is ours: the game does not know the button)
             open_longshot_ = true;
-            pages_sound_ = "button_decide";
+            pages_sound_ = CoopMenuNav::kSoundDecide;
             swallow_ |= kPadA;
             return buttons & ~swallow_;
         }
@@ -487,7 +496,7 @@ std::uint64_t Page::OnPad(std::uint64_t buttons, std::uint64_t now_ms) {
             customize_open_ = system_button_ == 2;
             slide_ = 0;
             opened_ = true;
-            pages_sound_ = "button_decide";
+            pages_sound_ = CoopMenuNav::kSoundDecide;
             swallow_ |= buttons & ~kPadPassed;
             return buttons & kPadPassed & ~swallow_;
         }
@@ -520,7 +529,7 @@ std::uint64_t Page::OnPad(std::uint64_t buttons, std::uint64_t now_ms) {
     }
     if ((down & kPadA) != 0) {
         decide_ = true;
-        pages_sound_ = "button_decide";
+        pages_sound_ = CoopMenuNav::kSoundDecide;
     }
     if (sub_ && (down & kPadB) != 0) {   // (a view: B goes back to the five rows, kept until let go)
         back_ = true;
@@ -541,7 +550,7 @@ void Page::StartTyping(int which) {
     typing_was_ = Field(typing_).text();
     key_ = 0;
     letter_ = 0;
-    repeat_since_ = repeat_last_ = 0;
+    typing_repeat_.Forget(pad_last_);   // (the direction held as typing starts is not a press of the keys)
     swallow_ |= pad_last_;   // (the A that started it is not the first key's press)
     typing_from_ms_ = pad_ms_;   // (nor the same A coming again: a click's A, in two pulses, typed the first key)
 }
@@ -551,7 +560,7 @@ void Page::EndTyping(bool ok) {
     if (!ok) Field(typing_).Set(typing_was_);
     typed_ = ok ? typing_ : -1;
     typing_ = -1;
-    pages_sound_ = "button_decide";
+    pages_sound_ = CoopMenuNav::kSoundDecide;
 }
 
 char Page::TypingLetter() const {
@@ -570,7 +579,7 @@ void Page::PressKey(int key) {
     case TypeKey::kCancel: EndTyping(false); return;
     case TypeKey::kOk: EndTyping(true); return;
     }
-    pages_sound_ = "button_decide";
+    pages_sound_ = CoopMenuNav::kSoundDecide;
 }
 
 const char* TypingTitle(int which) {
@@ -616,32 +625,23 @@ void Page::TypingPad(std::uint64_t down, std::uint64_t held, std::uint64_t now_m
     }
     if ((down & kPadY) != 0) {
         f.Backspace();
-        pages_sound_ = "button_on";
+        pages_sound_ = CoopMenuNav::kSoundMove;
     }
     if ((down & (kPadL | kPadZL)) != 0) f.Move(-1);
     if ((down & (kPadR | kPadZR)) != 0) f.Move(+1);
     const std::uint64_t up = kPadUp | kPadStickUp, dn = kPadDown | kPadStickDown;
     const std::uint64_t left = kPadLeft | kPadStickLeft, right = kPadRight | kPadStickRight;
     const std::uint64_t dirs = up | dn | left | right;
-    const auto step = [&](std::uint64_t bits) {
-        // (up and down: the key, round the four; Left and Right: Letter's letter, round the field's letters)
-        const int dy = (bits & dn) != 0 ? 1 : (bits & up) != 0 ? -1 : 0;
-        key_ = (key_ + dy + kTypeKeys) % kTypeKeys;
-        const int dx = (bits & right) != 0 ? 1 : (bits & left) != 0 ? -1 : 0;
-        if (dx != 0 && key_ == static_cast<int>(TypeKey::kLetter)) {
-            const std::size_t n = f.Letters().size();
-            letter_ = (letter_ % n + n + static_cast<std::size_t>(dx + static_cast<int>(n))) % n;
-        }
-    };
-    if ((down & dirs) != 0) {
-        step(down & dirs);
-        repeat_since_ = repeat_last_ = now_ms;
-        pages_sound_ = "button_on";
-    } else if ((held & dirs) != 0 && repeat_since_ != 0 && now_ms - repeat_since_ > 400 && now_ms - repeat_last_ > 90) {
-        step(held & dirs);   // (held: again and again, as the game's own lists scroll)
-        repeat_last_ = now_ms;
+    // (one cursor model, coop_menu_nav.h: up and down the key, round on a fresh press only; Left and Right Letter's
+    // letter, round held too; a held direction again and again, as the game's own lists)
+    std::uint64_t held_again = 0;
+    const std::uint64_t moves = typing_repeat_.Presses(held, now_ms, dirs, &held_again);
+    const int dy = (moves & dn) != 0 ? 1 : (moves & up) != 0 ? -1 : 0;
+    const int dx = (moves & right) != 0 ? 1 : (moves & left) != 0 ? -1 : 0;
+    if (CoopMenuNav::TypingKeysStep(dy, dx, (held_again & (up | dn)) != 0, kTypeKeys, static_cast<int>(TypeKey::kLetter),
+                                    f.Letters().size(), &key_, &letter_)) {
+        pages_sound_ = CoopMenuNav::kSoundMove;
     }
-    if ((held & dirs) == 0) repeat_since_ = 0;
 }
 
 bool Page::Key(std::uint32_t vk, bool repeat) {
@@ -849,6 +849,32 @@ HopStep CharactersHopNext(CharactersHop& h, bool ours, bool minus_open, int lit,
     return HopStep::kTapL;
 }
 
+std::uint64_t CharactersHoldPad(CharactersHold& h, bool minus_open, bool ours, int category, std::uint64_t buttons,
+                                std::uint64_t now_ms, bool* held) {
+    constexpr std::uint64_t left = kPadL | kPadZL, right = kPadR | kPadZR;
+    const std::uint64_t now_keys = buttons & (left | right);
+    const std::uint64_t down = now_keys & ~h.last;
+    h.last = now_keys;
+    h.kept &= now_keys;   // (let go: decided again at its next press)
+    if (held != nullptr) *held = false;
+    if (!minus_open || ours) return buttons & ~h.kept;
+    std::uint64_t tap = 0;
+    if (down != 0) {
+        const bool l = (down & left) != 0, r = (down & right) != 0;
+        const bool settled = h.passed_ms == 0 || now_ms < h.passed_ms || now_ms - h.passed_ms >= kHoldSettleMs;
+        // (L from Map or Threads of Time, R from Key Items or Threads of Time: never onto the page, either way round)
+        const bool l_ok = !l || category == 1 || category == 2, r_ok = !r || category == 6 || category == 1;
+        if (settled && l_ok && r_ok) {
+            h.passed_ms = now_ms;
+            tap = down;
+        } else if (held != nullptr) {
+            *held = l && category == 6;
+        }
+    }
+    h.kept |= now_keys;   // (a tap goes through at this read only; a key held from before not at all)
+    return buttons & ~(h.kept & ~tap);
+}
+
 SnailEdge SnailEdgeFrom(bool open, std::uint64_t edge_ms, int strip_state, std::uint64_t strip_seen_ms, std::uint64_t now_ms) {
     const bool up = MenuUpFrom(strip_state, strip_seen_ms, now_ms);
     if (open) {
@@ -1028,6 +1054,24 @@ RowAction ActionFor(int row, const Session& s) {
     default:
         return RowAction::kNone;
     }
+}
+
+const char* ViewWord(View view) {
+    switch (view) {
+    case View::kMain: return "main";
+    case View::kPlayers: return "players";
+    case View::kLetIn: return "let_in";
+    case View::kJoin: return "join";
+    case View::kSession: return "session";
+    case View::kPlayer: return "player";
+    case View::kPlayerHost: return "player_host";
+    case View::kLan: return "lan";
+    case View::kLanGame: return "lan_game";
+    case View::kPassword: return "password";
+    case View::kMenu: return "menu";
+    case View::kHost: return "host";
+    }
+    return "unknown";
 }
 
 View BackOf(View view) {
@@ -1224,7 +1268,7 @@ std::vector<std::string> RowTexts(MinusPage page, const SessionView& v) {
         if (v.s.hosting) {
             rows[kMinusSessionRow] = main[kRowHost];   // ("Your game", "Your game: Saria asks")
         } else if (v.s.in_one || v.s.by_launcher) {
-            rows[kMinusSessionRow] = main[kRowJoin];   // ("Your session", "Turned away", "Copy answer code")
+            rows[kMinusSessionRow] = main[kRowJoin];   // ("Your game", "Turned away", "Copy answer code")
         }
         break;
     case MinusPage::kMods: break;
@@ -1279,15 +1323,15 @@ std::vector<std::string> RowTexts(const SessionView& v) {
     } else if (v.connecting && !v.s.hosting) {
         rows[kRowJoin] = "Connecting...";
     } else if (v.s.by_launcher) {
-        rows[kRowJoin] = "Your session";
+        rows[kRowJoin] = "Your game";
     } else if (v.s.in_one && !v.s.hosting) {
-        rows[kRowJoin] = "Your session";
+        rows[kRowJoin] = "Your game";
     } else {
         rows[kRowJoin] = "Join a game";
     }
     rows[kRowPlayers] = v.players <= 0 ? "Players"
-                        : v.players == 1 ? "Players: just you"
-                                         : "Players: " + std::to_string(v.players);
+                        : v.players == 1 ? "Players (just you)"
+                                         : "Players (" + std::to_string(v.players) + ")";
     rows[kRowSettings] = "Co-op settings";
     // (the rows in the player's language before the cut: the composed ones are the
     // table's shapes, a player's own name comes back as it is)
@@ -1448,7 +1492,7 @@ std::vector<std::string> RowTexts(View view, const SessionView& v) {
                                                  : "Stop hosting";
         } else if (v.s.in_one || v.s.by_launcher) {
             rows[0] = v.s.by_launcher ? "Co-op is on" : "In a friend's game";
-            rows[1] = "Leave it first: Join";
+            rows[1] = "Leave your game first";
         } else {
             rows[0] = "Start hosting";
             rows[1] = "Host settings";
@@ -1488,8 +1532,8 @@ std::vector<std::string> RowTexts(View view, const SessionView& v) {
             }
             if (!v.room.empty()) around(1, "Copy room: ", v.room);
             else rows[1] = v.s.code ? "Copy invite code" : "Room: coming...";
-            rows[2] = "Copy same-network line";
-            rows[3] = "Copy VPN line";
+            rows[2] = "Copy network address";
+            rows[3] = "Copy VPN address";
             break;
         }
         if (v.s.failed && !v.s.in_one) {
@@ -1539,8 +1583,8 @@ const char* RowHelp(RowAction a) {
     case RowAction::kJoinPaste: return "Joins with the code you copied. You play on the host's save; yours are not touched.";
     case RowAction::kRejoin: return "Joins the last game you played in again.";
     case RowAction::kViewSession: return "Your game now: what co-op is doing, the lines to give your friends, and why it stopped.";
-    case RowAction::kCopyLan: return "Copies the line friends on your network use to join you.";
-    case RowAction::kCopyVpn: return "Copies the line friends on your VPN use to join you.";
+    case RowAction::kCopyLan: return "Copies your address on this network. Friends paste it in Join a game's Room row.";
+    case RowAction::kCopyVpn: return "Copies your address on your VPN. Friends paste it in Join a game's Room row.";
     case RowAction::kResync: return "Loads the host's save again, so your game matches theirs.";
     case RowAction::kViewPlayer: return "This player: go to them, or mute their voice or chat for you.";
     case RowAction::kMorePlayers: return "The next page of players.";
@@ -1552,7 +1596,7 @@ const char* RowHelp(RowAction a) {
     case RowAction::kHostChat: return "Mutes this player's chat for everyone, or unmutes it.";
     case RowAction::kKick: return "Sends this player out of your game. Press A again to confirm.";
     case RowAction::kBan: return "Keeps this player out until you stop hosting. Press A again to confirm.";
-    case RowAction::kTypeRoom: return "Type the room name your friend gave you.";
+    case RowAction::kTypeRoom: return "Type the room name your friend gave you, or their address (192.168.1.5:27510).";
     case RowAction::kTypePassword: return "Type the game's join password, if it has one.";
     case RowAction::kJoinRoom: return "Joins that room with the password typed.";
     case RowAction::kViewLan: return "Games on your network that you can join.";
@@ -1569,6 +1613,7 @@ const char* RowHelp(RowAction a) {
     case RowAction::kBrowseLan: return "Lists the games on your network.";
     case RowAction::kBrowseOnline: return "Lists the public rooms online.";
     case RowAction::kBrowsePage: return "The next page of games.";
+    case RowAction::kChatPage: return "Older chat lines (ZL and ZR turn the pages).";
     case RowAction::kBrowseRefresh: return "Looks for games again.";
     case RowAction::kListRoom: return "When on, your game's room is listed online while you host, so anyone can find it.";
     case RowAction::kBrowseList: return "Switches between the public rooms online and the games on your network.";
@@ -1608,45 +1653,36 @@ std::string MinusHelp(const HelpAt& at, const Session& s) {
 }
 
 namespace {
-// The letter at `i` of `t`: its bytes and how wide it shows (a CJK letter or a full-width mark two, others one).
-std::pair<std::size_t, std::size_t> Letter(const std::string& t, std::size_t i) {
-    const unsigned char c = static_cast<unsigned char>(t[i]);
-    const std::size_t n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xe ? 3 : (c >> 3) == 0x1e ? 4 : 1;
-    if (i + n > t.size()) return {t.size() - i, 1};
-    std::uint32_t cp = n == 1 ? c : c & (0xffu >> (n + 1));
-    for (std::size_t k = 1; k < n; ++k) cp = (cp << 6) | (static_cast<unsigned char>(t[i + k]) & 0x3fu);
-    const bool wide = (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) ||
-                      (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60) ||
-                      (cp >= 0xffe0 && cp <= 0xffe6);
-    return {n, wide ? 2 : 1};
-}
-
-std::size_t WidthOf(const std::string& t) {
-    std::size_t w = 0;
-    for (std::size_t i = 0; i < t.size();) {
-        const auto [n, v] = Letter(t, i);
-        w += v, i += n;
-    }
-    return w;
+// The letter at `i` of `t`: its bytes, how wide it shows (CoopNativeUi::Width: the game's font) and whether a line may
+// break before or after it (a Chinese letter or a full-width mark).
+struct HelpLetter {
+    std::size_t bytes, width;
+    bool wide;
+};
+HelpLetter Letter(const std::string& t, std::size_t i) {
+    std::size_t n = 1;
+    CoopTextFit::Decode(t, i, &n);
+    const std::string_view letter = std::string_view(t).substr(i, n);
+    return {n, CoopNativeUi::Width(letter), CoopNativeUi::Columns(letter) == 2};
 }
 }  // namespace
 
-std::string HelpText(const std::string& utf8, std::size_t columns, std::size_t lines) {
-    // Letters in order onto lines; a line that would grow past `columns` ends at its last space (the word goes on to
+std::string HelpText(const std::string& utf8, std::size_t width_max, std::size_t lines) {
+    // Letters in order onto lines; a line that would grow past `width_max` ends at its last space (the word goes on to
     // the next) or, with no space in it (Chinese), before the letter.
     std::vector<std::string> out{std::string()};
     std::size_t width = 0;
     bool cut = false;
     for (std::size_t i = 0; i < utf8.size() && !cut;) {
-        const auto [n, w] = Letter(utf8, i);
+        const auto [n, w, wide] = Letter(utf8, i);
         const std::string letter = utf8.substr(i, n);
         i += n;
         std::string& line = out.back();
         const bool newline = letter == "\n";
-        if (newline || width + w > columns) {
+        if (newline || width + w > width_max) {
             std::string rest;
             if (!newline && letter != " ") {
-                if (const std::size_t sp = line.rfind(' '); sp != std::string::npos && w == 1) {
+                if (const std::size_t sp = line.rfind(' '); sp != std::string::npos && !wide) {
                     rest = line.substr(sp + 1);
                     line.resize(sp);
                 }
@@ -1657,7 +1693,7 @@ std::string HelpText(const std::string& utf8, std::size_t columns, std::size_t l
                 break;
             }
             out.push_back(rest);
-            width = WidthOf(out.back());
+            width = CoopNativeUi::Width(out.back());
             continue;
         }
         if (letter == " " && line.empty()) continue;   // (no line starts with a space)
@@ -1667,7 +1703,7 @@ std::string HelpText(const std::string& utf8, std::size_t columns, std::size_t l
     while (!out.empty() && out.back().empty()) out.pop_back();
     if (cut && !out.empty()) {   // (longer than its lines: the last ends with "...")
         std::string& last = out.back();
-        while (!last.empty() && WidthOf(last) + 3 > columns) {
+        while (!last.empty() && CoopNativeUi::Width(last) + CoopNativeUi::Width("...") > width_max) {
             std::size_t k = last.size() - 1;
             while (k > 0 && (static_cast<unsigned char>(last[k]) & 0xc0) == 0x80) --k;   // (a whole letter off)
             last.resize(k);
@@ -1678,6 +1714,49 @@ std::string HelpText(const std::string& utf8, std::size_t columns, std::size_t l
     std::string text;
     for (std::size_t k = 0; k < out.size(); ++k) text += (k ? "\n" : "") + out[k];
     return text;
+}
+
+std::vector<std::string> LinePages(const std::string& utf8, std::size_t letters, std::size_t bytes) {
+    std::vector<std::string> out;
+    const auto blank = [&](std::size_t i) { return utf8[i] == ' ' || utf8[i] == '\n'; };
+    std::size_t at = 0;
+    while (at < utf8.size()) {
+        if (blank(at)) {
+            ++at;
+            continue;
+        }
+        std::size_t end = at + CoopTextFit::PrefixEnd(std::string_view(utf8).substr(at), bytes, 2 * letters);
+        if (end < utf8.size() && !blank(end)) {   // (a word left whole when a space is in the page's second half)
+            const std::size_t space = utf8.find_last_of(" \n", end);
+            if (space != std::string::npos && space > at && (space - at) * 2 >= end - at) end = space;
+        }
+        if (end == at) {   // (no letter fits: one, so the loop moves on)
+            std::size_t n = 1;
+            CoopTextFit::Decode(utf8, at, &n);
+            end = at + n;
+        }
+        std::string page = utf8.substr(at, end - at);
+        std::replace(page.begin(), page.end(), '\n', ' ');
+        while (!page.empty() && page.back() == ' ') page.pop_back();
+        out.push_back(std::move(page));
+        at = end;
+    }
+    return out;
+}
+
+std::string HelpPager::Shown(const std::string& utf8, std::uint64_t now_ms, std::size_t line_letters,
+                             std::size_t line_bytes) {
+    if (utf8 != text_ || line_letters != letters_ || line_bytes != bytes_) {
+        text_ = utf8, letters_ = line_letters, bytes_ = line_bytes;
+        pages_ = utf8.empty()        ? std::vector<std::string>{}
+                 : line_letters == 0 ? CoopModsTab::HelpPages(utf8)
+                                     : LinePages(utf8, line_letters, line_bytes);
+        since_ms_ = now_ms;
+    }
+    if (pages_.empty()) return {};
+    const std::uint64_t turns = now_ms >= since_ms_ ? (now_ms - since_ms_) / kHelpPageMs : 0;
+    const std::string& page = pages_[static_cast<std::size_t>(turns % pages_.size())];
+    return line_letters == 0 ? HelpText(page) : page;
 }
 
 const char* ActionWords(RowAction a) {
@@ -1731,6 +1810,7 @@ const char* ActionWords(RowAction a) {
     case RowAction::kBrowseLan: return "the browser lists the games on this network";
     case RowAction::kBrowseOnline: return "the browser lists the relay's public rooms";
     case RowAction::kBrowsePage: return "the browser's next page of games";
+    case RowAction::kChatPage: return "the chat list's page of older lines";
     case RowAction::kBrowseRefresh: return "the browser's list asked again";
     case RowAction::kListRoom: return "this game's room listed online when it hosts, on or off (saved)";
     case RowAction::kTypePassword: return "the join password typed on its row";
@@ -1882,13 +1962,31 @@ std::vector<ListLine> SettingLines(const std::vector<SettingRow>& rows, int page
                                                      : title),
                               kListLineChars),
                         ""};
+    // (its "  < 1 of 3 >" kept whole by the module's width fit: what follows the category's own word, when it does)
+    if (const std::string word = CoopI18n::Tr(title);
+        pages > 1 && lines[0].name.size() > word.size() && lines[0].name.compare(0, word.size(), word) == 0) {
+        lines[0].name_tail = lines[0].name.substr(word.size());
+    }
     for (int i = 0; i < per_page; ++i) {
         const std::size_t at = static_cast<std::size_t>(at_page * per_page + i);
         if (at >= rows.size()) break;
         const SettingRow& r = rows[at];
-        lines[static_cast<std::size_t>(i) + 1] =
-            ListLine{FitTo(r.restart ? CoopI18n::Tr(r.name) + " *" : CoopI18n::Tr(r.name), kListNameChars),
-                     FitTo(CoopI18n::Tr(r.text), kListValueChars)};
+        // (a setting that applies at the next start says so on its row, in words: a bare "*" read as nothing.
+        // menu-restart-c41: the tag is not taken from the name's letters (that cut "Intel shader compiles", 21, at 20
+        // where 0.11.12 showed it whole): the name keeps 0.11.12's room beside its " *" (kListNameChars - 2), the tag
+        // comes on top, and the pane's own width decides (the module's FitPut: the name cut before the tag, or " *" in
+        // the tag's place when the two are wider than the pane). The bytes stay within the live text's 63.)
+        ListLine& line = lines[static_cast<std::size_t>(i) + 1];
+        line = ListLine{FitTo(CoopI18n::Tr(r.name), kListNameChars), FitTo(CoopI18n::Tr(r.text), kListValueChars)};
+        if (r.restart) {
+            const std::string tag = " (" + CoopI18n::Tr("restart") + ")", brief = " *";
+            const std::string head = FitTo(CoopI18n::Tr(r.name), kListNameChars - brief.size());
+            if (head.size() + tag.size() < kListTextBytes) {
+                line.name = head + tag, line.name_tail = tag, line.name_brief = brief;
+            } else {
+                line.name = head + brief, line.name_tail = brief;   // (a tag too long for the text: 0.11.12's)
+            }
+        }
     }
     return lines;
 }
@@ -1936,6 +2034,7 @@ std::vector<ListLine> ListLines(const SessionView& v) {
     lines[0] = ListLine{CoopListPages::Heading(head, CoopListPages::Line(v.s.cell_page, pages), kListNameChars),
                         FitTo(CoopI18n::Tr("Refresh"), kListValueChars), RowAction::kBrowseRefresh};
     lines[0].paged = pages > 1;
+    lines[0].name_tail = CoopListPages::Tail(CoopListPages::Line(v.s.cell_page, pages));   // (kept whole by the width fit)
     const std::vector<ListLine>& list = v.s.online ? v.online_list : v.lan_list;
     if (list.empty()) {
         lines[1].name = FitTo(v.browse_all_out ? CoopI18n::Tr("None match the search or Show")
@@ -1973,13 +2072,64 @@ bool RoomMatches(const std::string& room, const std::string& host, const std::st
     return lower(room).find(want) != std::string::npos || lower(host).find(want) != std::string::npos;
 }
 
+std::vector<ListLine> ChatHistoryLines(const SessionView& v) {
+    std::vector<ListLine> lines(kListRows);
+    if (!v.s.in_one) return lines;
+    const std::vector<std::string> rows = CoopChatHistory::Rows(v.chat, kListLineChars);
+    const int pages = CoopChatHistory::Pages(static_cast<int>(rows.size()));
+    const int shown = CoopChatHistory::Shown(v.s.chat_page, pages);
+    lines[0] = ListLine{CoopListPages::Heading(CoopI18n::Tr("Chat"), CoopListPages::Line(shown, pages), kListLineChars), ""};
+    lines[0].paged = pages > 1;
+    lines[0].name_tail = CoopListPages::Tail(CoopListPages::Line(shown, pages));   // (the width fit keeps it whole)
+    if (pages > 1) lines[0].act = RowAction::kChatPage;
+    if (rows.empty()) {
+        lines[1].name = FitTo(CoopI18n::Tr("No chat yet"), kListLineChars);
+    } else {
+        const std::vector<std::string> page = CoopChatHistory::PageRows(rows, v.s.chat_page);
+        for (std::size_t i = 0; i < page.size() && i + 1 < lines.size(); ++i) lines[i + 1].name = page[i];
+    }
+    MarkShown(&lines);   // (said as typed, notices already in the player's language: never looked up again)
+    return lines;
+}
+
+DetailPaging DetailPages(View view, const SessionView& v) {
+    if (view != View::kMain && view != View::kSession) return {};
+    DetailPaging p;
+    p.pages = v.tally_ok ? 2 : 1;
+    p.page = CoopListPages::Wrap(v.detail_page, p.pages);
+    return p;
+}
+
 std::vector<ListLine> DetailLines(View view, const SessionView& v) {
     std::vector<ListLine> lines(kListRows);
     // (menu-parity-0119, a lane shot: co-op that came with the game's start left the Lobby's Host and Join views with
     // one row and an empty right half: they say there why nothing starts or stops here)
     const bool launcher_view = v.s.by_launcher && (view == View::kHost || view == View::kJoin);
+    if (view == View::kPlayers) return ChatHistoryLines(v);
     if (view != View::kMain && view != View::kSession && view != View::kPassword && !launcher_view) return lines;
     std::size_t at = 1;
+    // Row 223: the details list's pages (ZL / ZR), on the Main and Session views only: page 1 is the session's lines
+    // below, page 2 the key items the game holds, "Songs  8 of 13" (a list of ours, English keys through Tr; only
+    // with a game loaded, else the list has the one page).
+    const DetailPaging paging = DetailPages(view, v);
+    const int detail_pages = paging.pages > 0 ? paging.pages : 1;
+    const int detail_page = paging.page;
+    if (detail_page == 1) {
+        using coop::host::TallyGroup;
+        lines[0] = ListLine{CoopListPages::Heading(CoopI18n::Tr("Key items"), CoopListPages::Line(1, 2), kListNameChars),
+                            "", RowAction::kNone};
+        lines[0].paged = true;
+        lines[0].name_tail = CoopListPages::Tail(CoopListPages::Line(1, 2));   // (kept whole by the width fit)
+        for (const TallyGroup g : {TallyGroup::songs, TallyGroup::medallions, TallyGroup::stones, TallyGroup::dungeon_items}) {
+            const auto& n = v.tally.at(g);
+            if (at < lines.size())
+                lines[at++] = ListLine{FitTo(CoopI18n::Tr(std::string(coop::host::tally_group_label(g))), kListNameChars),
+                                       FitTo(std::to_string(n.owned) + CoopI18n::Tr(" of ") + std::to_string(n.total),
+                                             kListValueChars)};
+        }
+        MarkShown(&lines);
+        return lines;
+    }
     // (each line in the player's language before the cut: the names and the short values are
     // the table's words, a room's own name comes back as it is)
     // (`own`: the value is a room's, a host's or a password: shown as it is, never looked up)
@@ -2008,7 +2158,7 @@ std::vector<ListLine> DetailLines(View view, const SessionView& v) {
     } else if (v.s.in_one) {
         header = "In a session";
     } else {
-        header = v.s.by_launcher ? "Co-op came with the game" : "Not in a session";
+        header = v.s.by_launcher ? "Started with the game" : "Not in a session";
         if (v.s.by_launcher && why.empty()) why = CoopI18n::Tr("Restart the game to change it");
     }
     // (the header's value: hosting, who can reach this game. The header had none: the game's cursor frame, which
@@ -2111,6 +2261,12 @@ std::vector<ListLine> DetailLines(View view, const SessionView& v) {
         for (const std::string& l : Wrap(why, all ? left : left - 1, kListLineChars)) lines[at++] = ListLine{l, ""};
     }
     if (!release.empty()) add("Release", release);
+    // (page 1 of two: the heading says so, with the game's ZL / ZR icons beside it)
+    if (detail_pages > 1) {
+        lines[0].name = CoopListPages::Heading(CoopI18n::Tr(header), CoopListPages::Line(0, 2), kListNameChars);
+        lines[0].paged = true;
+        lines[0].name_tail = CoopListPages::Tail(CoopListPages::Line(0, 2));   // (kept whole by the width fit)
+    }
     MarkShown(&lines);
     return lines;
 }
@@ -2231,5 +2387,45 @@ int SystemButtonOf(const std::vector<SystemButtonSeen>& seen, std::optional<std:
     }
     return coming != nullptr ? coming->ours : -1;
 }
+
+
+PageCursor CursorAt(int row, std::uint32_t rows_shown, bool list, int line) {
+    PageCursor c;
+    c.list = list;
+    if (list) {
+        if (line >= 0 && line < kCursorLines) c.frame_line = line;
+        return c;
+    }
+    if (row >= 0 && row < kRows && ((rows_shown >> row) & 1u) != 0) c.frame_row = row;
+    return c;
+}
+
+float MinusRowAlpha(const PageCursor& c, int r) {
+    if (c.list) return 0.45f;
+    return r == c.frame_row ? 1.0f : 0.8f;
+}
+
+float MinusLineAlpha(int i, std::uint32_t pickable, int picked, bool list) {
+    const bool pick = i >= 0 && i < 32 && ((pickable >> i) & 1u) != 0;
+    if (i == 0 && !pick) return 0.7f;               // (a header, as a table's)
+    if (!pick && picked != i) return 0.55f;         // (a line of text, a heading)
+    return !list || picked == i ? 1.0f : 0.45f;
+}
+
+
+GameFrame GameFrameOf(std::string_view focused) {
+    GameFrame g;
+    const auto number = [&](std::string_view prefix) {
+        if (focused.size() != prefix.size() + 2 || focused.substr(0, prefix.size()) != prefix) return -1;
+        const char a = focused[prefix.size()], b = focused[prefix.size() + 1];
+        if (a < '0' || a > '9' || b < '0' || b > '9') return -1;
+        return (a - '0') * 10 + (b - '0');
+    };
+    if (const int r = number("Pa_Button_"); r >= 0 && r < kRows) g.row = r;
+    if (const int l = number("Pa_List_"); l >= 0 && l < kCursorLines) g.line = l;
+    return g;
+}
+
+bool GivenBackShown(bool all_own, int index, int game_focus) { return all_own || (index >= 0 && index == game_focus); }
 
 }  // namespace CoopPauseTab

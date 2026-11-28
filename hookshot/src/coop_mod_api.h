@@ -25,13 +25,16 @@
      (screens, buttons, the save list), never as addresses: the runtime finds the game's functions itself.
    - Version 3: inside on_screen, start one of the game's own menu sounds (play_sound); and the screen says whether its
      focused button takes a choice now (CoopModScreen's focused_ready). A mod that uses either says "api": 3, so an
-     older co-op refuses it cleanly instead of it reading past that co-op's table. */
+     older co-op refuses it cleanly instead of it reading past that co-op's table.
+   - Version 4: the data channel (docs/mods.md "Talking to the other players"): small values of the mod's own, by key,
+     that every player's game in the session gets (data_set, data_get, on_data and the text helpers), and who is in the
+     session (players, my_number). A mod that uses them says "api": 4. */
 #ifndef COOP_MOD_API_H
 #define COOP_MOD_API_H
 #include <stddef.h>
 #include <stdint.h>
 
-#define COOP_MOD_API_VERSION 3u
+#define COOP_MOD_API_VERSION 4u
 
 #ifdef _WIN32
 #define COOP_MOD_EXPORT __declspec(dllexport)
@@ -93,6 +96,21 @@ typedef struct CoopModScreen {
    (the HUD is one too, as OTHER), one at a time across all mods. choose_focused, reload_save_list and hold_input work
    only inside this call. */
 typedef void (*coop_mod_screen_fn)(void *user, const CoopModScreen *screen);
+
+/* (version 4) The data channel's limits: a value is 0 to 64 bytes (0 clears the key), a key 1 to 32 of a-z 0-9 _, at
+   most 8 keys per mod per player. A game sends a changed value at most every quarter second (the newest one wins). */
+#define COOP_MOD_DATA_MAX_BYTES 64u
+#define COOP_MOD_DATA_MAX_KEYS 8u
+/* (version 4) Another player's value of this mod changed: that player's number (1 to 16), the key, the value and its
+   length (0: cleared, also when the player left the session or this game did). Only values of this mod's own id come.
+   The game's calc thread, once per frame, before the frame callbacks. */
+typedef void (*coop_mod_data_fn)(void *user, uint8_t player, const char *key, const void *value, size_t len);
+/* (version 4) One player in the session, as players() hands them over. */
+typedef struct CoopModPlayer {
+    uint8_t number;   /* 1 to 16 */
+    uint8_t self;     /* 1 for this game's own player */
+    char name[64];    /* the player's name, UTF-8, 0 at the end */
+} CoopModPlayer;
 
 typedef struct CoopModApi {
     uint32_t size;      /* sizeof this table as the loader knows it */
@@ -167,6 +185,28 @@ typedef struct CoopModApi {
        title's Continue, "mc_TabToRight" the pause menu's tabs), letters, digits and _ only, at most 63. Only inside
        on_screen, as the version 2 calls; 1 when the game found the sound and started it. */
     int (*play_sound)(const struct CoopModApi *self, const char *name);
+
+    /* ---- Version 4: read `version` >= 4 (or `size`) before using these. Any thread unless said. ---- */
+
+    /* Sets this player's value of `key` for this mod (len 0 clears it); every other player's game gets it, also one
+       who joins later, until it is changed or this player leaves. Kept alone too (sent when a session starts). 1 when
+       kept, 0 when refused (a bad key, more than 64 bytes, a 9th key: one line in the log says why). Values are for
+       state (who wears what, a mode, a score), not a stream: only the newest value of each key is sent. */
+    int (*data_set)(const struct CoopModApi *self, const char *key, const void *value, size_t len);
+    /* A player's value of `key` for this mod (player 0: this game's own): its length, -1 when it has none. Copies at
+       most `cap` bytes into `out` (out may be NULL to ask the length). */
+    int (*data_get)(const struct CoopModApi *self, uint8_t player, const char *key, void *out, size_t cap);
+    /* Registers a coop_mod_data_fn (only inside coop_mod_start). */
+    int (*on_data)(const struct CoopModApi *self, coop_mod_data_fn fn, void *user);
+    /* The players in the session now, this game's own too, by number: how many there are (0 when not in a session);
+       fills at most `cap` of `out`. */
+    int (*players)(const struct CoopModApi *self, CoopModPlayer *out, int cap);
+    /* This game's player number (1 to 16), 0 when not in a session. */
+    int (*my_number)(const struct CoopModApi *self);
+    /* Text helpers: data_set with a string (without its 0; at most 64 bytes, else refused), and data_get into a
+       string (0 at the end, cut to cap - 1): its full length, -1 when none. */
+    int (*data_set_text)(const struct CoopModApi *self, const char *key, const char *text);
+    int (*data_get_text)(const struct CoopModApi *self, uint8_t player, const char *key, char *out, size_t cap);
 } CoopModApi;
 
 /* The mod's exports. coop_mod_start: once, when the co-op module starts, before any callback; return 1 to stay on,

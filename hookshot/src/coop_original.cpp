@@ -16,6 +16,8 @@ namespace fs = std::filesystem;
 namespace CoopOriginal {
 namespace {
 
+constexpr std::string_view kOursMark = "# Original game";   // OffList's second line starts so
+
 bool Hidden(const std::string& name) {
     return name.empty() || name.front() == '_' || name.front() == '-';
 }
@@ -47,6 +49,12 @@ bool Write(const fs::path& p, const std::string& text) {
         return false;
     }
     return true;
+}
+
+// A list OffList wrote (by its comment line, older kits' too, which had no "default off" line).
+bool OursIn(const std::string& text) {
+    const auto nl = text.find('\n');
+    return nl != std::string::npos && text.compare(nl + 1, kOursMark.size(), kOursMark) == 0;
 }
 
 }  // namespace
@@ -91,7 +99,8 @@ std::vector<std::string> ModNames(const fs::path& mods) {
 
 std::string OffList(const std::vector<std::string>& mods) {
     std::string out = "coop-mods " + std::to_string(HOS_COOP_MODS_VERSION) + "\n";
-    out += "# Original game (co-op's Co-op settings): every mod left out. The list before is in ";
+    out += kOursMark;
+    out += " (co-op's Co-op settings): every mod left out. The list before is in ";
     out += kBackupFile;
     out += "; it comes back when the switch is turned off.\n";
     // (a mod put into the folder after this list was written stays out too: the list never names it, report 266)
@@ -107,8 +116,9 @@ bool ApplyMods(const fs::path& mods, bool on, std::string& why) {
     if (on) {
         if (!fs::exists(kept, ec)) {
             std::string before;
-            // (no list: an empty file marks it, so the way back removes ours instead of keeping it)
-            if (!Read(list, before)) before.clear();
+            // (no list: an empty file marks it, so the way back removes ours instead of keeping it; the same for a list
+            // of ours whose kept file is gone, so the way back never keeps every mod off)
+            if (!Read(list, before) || OursIn(before)) before.clear();
             if (!Write(kept, before)) {
                 why = "could not keep " + Utf8(list) + " as " + kBackupFile;
                 return false;
@@ -120,7 +130,13 @@ bool ApplyMods(const fs::path& mods, bool on, std::string& why) {
         }
         return true;
     }
-    if (!fs::exists(kept, ec)) return true;   // (never original here: nothing to put back)
+    if (!fs::exists(kept, ec)) {
+        // (no kept file: nothing to put back. A list of ours left behind (the kept file lost, or an older kit's) would
+        // leave every mod off with the switch off: it goes, as no list was there before ours, report 266 review)
+        std::string now;
+        if (Read(list, now) && OursIn(now)) fs::remove(list, ec);
+        return true;
+    }
     std::string before;
     if (!Read(kept, before)) {
         why = "could not read " + Utf8(kept);
@@ -134,6 +150,22 @@ bool ApplyMods(const fs::path& mods, bool on, std::string& why) {
     }
     fs::remove(kept, ec);
     return true;
+}
+
+bool Sync(const fs::path& mods, bool on, bool& changed, std::string& why) {
+    changed = false;
+    std::error_code ec;
+    const fs::path list = mods / HOS_COOP_MODS_LIST_FILE, kept = mods / kBackupFile;
+    if (!on) {
+        std::string now;
+        if (!fs::exists(kept, ec) && !(Read(list, now) && OursIn(now))) return true;
+        changed = true;
+        return ApplyMods(mods, false, why);
+    }
+    std::string now;
+    if (fs::exists(kept, ec) && Read(list, now) && now == OffList(ModNames(mods))) return true;
+    changed = true;
+    return ApplyMods(mods, true, why);
 }
 
 void Tab::Open(fs::path options, fs::path mods) {

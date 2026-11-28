@@ -927,7 +927,7 @@ void ClearStarting(const fs::path& mods_root) {
     fs::remove(mods_root / kStartingFile, ec);
 }
 
-std::optional<Hashes> HashMod(const Mod& mod, const std::function<bool()>* stop) {
+std::optional<Hashes> HashMod(const Mod& mod, const std::function<bool()>* stop, const StandIn* stand_in) {
     Hashes h;
     std::error_code ec;
     const fs::path romfs = mod.folder / "romfs";
@@ -941,7 +941,15 @@ std::optional<Hashes> HashMod(const Mod& mod, const std::function<bool()>* stop)
             }
             std::string key = ToUtf8(it->path().lexically_relative(romfs));
             std::transform(key.begin(), key.end(), key.begin(), Fold);
-            files.emplace_back(std::move(key), it->path());
+            fs::path from = it->path();
+            if (stand_in != nullptr && *stand_in) {
+                std::optional<fs::path> picked = (*stand_in)(from, key);
+                if (!picked) {
+                    continue;
+                }
+                from = std::move(*picked);
+            }
+            files.emplace_back(std::move(key), std::move(from));
         }
         if (ec) {
             return std::nullopt;

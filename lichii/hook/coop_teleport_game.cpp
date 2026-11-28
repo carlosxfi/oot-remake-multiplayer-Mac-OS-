@@ -64,6 +64,15 @@ bool EventByEnv() {
 }
 constexpr const char* kBancChangeEvent = "Dm_SY_BancChangeGo";
 
+// The arrival event's starter of a start with no entrance actor (a boss stage) is emptied after the game's event
+// reserved it (ArrivalStarter, issue 289). LICHII_COOP_ARRIVAL_STARTER=keep leaves the game's reservation as it is:
+// only for a proof run that shows the black arrival again.
+bool StarterByEnv() {
+    const char* v = std::getenv("LICHII_COOP_ARRIVAL_STARTER");
+    return v == nullptr || std::string_view(v) != "keep";
+}
+const std::uint32_t kReservedStarter = coop::host::flag_hash("Sequence_ReservedEventStarterName");
+
 // The map change event's arguments for `scene` at its start point `start`.
 std::vector<CoopLiveEvents::Requester::Arg> BancChangeArgs(std::string_view scene, std::string_view start) {
     using Arg = CoopLiveEvents::Requester::Arg;
@@ -166,6 +175,9 @@ struct Glue {
     // the entrance asked, and how the move went (taken by TakeRespawnMove).
     bool want_beside = false;
     bool want_entrance = false;
+    // MapChange (the play-test bridge's warp): the scene and start point to ask the map change event for.
+    std::optional<std::pair<std::string, std::string>> want_map;
+    int map_frames_left = 0;   // frames a map change that could not start (an event or a load) is kept for
     std::optional<bool> respawn_moved;
     // Any thread -> the hook's chat box.
     std::vector<std::string> lines;
@@ -180,6 +192,9 @@ struct Glue {
     std::optional<std::string> saved_start;
     bool saved_read = false;
     Grounded grounded;
+    // The arrival's starter of the map change event asked last (present thread only).
+    bool fix_starter = StarterByEnv();
+    ArrivalStarter starter;
 
     // The map change event (Dm_SY_BancChangeGo): asked on the present thread,
     // started from the svc cave on the game's calc thread.
@@ -308,6 +323,26 @@ bool ToEntrance() {
     return true;
 }
 
+bool MapChange(std::string scene, std::string start) {
+    Glue& g = TheGlue();
+    std::lock_guard lock(g.mutex);
+    if (!g.on || !g.by_event) {
+        LOG_INFO(Core, "coop: teleport: map change to {}: off (needs the map change event)", scene);
+        return false;
+    }
+    if (start.empty()) {
+        const auto first = DefaultStart(scene);
+        if (!first) {
+            LOG_INFO(Core, "coop: teleport: map change to {}: no start point known", scene);
+            return false;
+        }
+        start = *first;
+    }
+    g.want_map = std::make_pair(std::move(scene), std::move(start));
+    g.map_frames_left = 300;   // about 5 s: an event or a load at this frame lets the next free frame start it
+    return true;
+}
+
 std::optional<bool> TakeRespawnMove() {
     Glue& g = TheGlue();
     std::lock_guard lock(g.mutex);
@@ -385,13 +420,34 @@ void Frame(Core::System& system, std::uint64_t main_base, const std::optional<co
         local.loading_banc = flags.get_bool(RequestFlags().loading).value_or(false);
     }
     g.grounded.Add(local, now);
+    if (g.starter.active() && main_base != 0) {
+        // Also during the load (no reading then): the game reads the starter right after it. A plain write into the
+        // flag's own text, nothing queued (#197).
+        CoopHook::EmulatorMemory memory(system.ApplicationMemory(), main_base);
+        coop::host::GameFlags flags(memory);
+        const bool write = g.starter.Tick(flags.get_string64(RequestFlags().banc), flags.get_string64(kReservedStarter),
+                                          flags.get_bool(RequestFlags().loading).value_or(false), now);
+        if (write) {
+            const bool ok = coop::host::GameFlags::set_string64_now(memory, kReservedStarter, "");
+            if (g.starter.writes() == 1 || !ok) {
+                LOG_INFO(Core, "coop: teleport: {} has no entrance actor named {}: the arrival event's starter {} "
+                         "(as the game's own entries to a boss stage reserve it)",
+                         g.starter.scene(), g.starter.start(), ok ? "emptied" : "NOT emptied");
+            }
+        } else if (!g.starter.active()) {
+            LOG_INFO(Core, "coop: teleport: the arrival at {} of {} is over: its starter was emptied {} time(s)",
+                     g.starter.start(), g.starter.scene(), g.starter.writes());
+        }
+    }
 
     std::optional<std::pair<std::uint8_t, std::string>> want;
     std::vector<Answered> answers;
     bool want_beside = false;
     bool want_entrance = false;
+    std::optional<std::pair<std::string, std::string>> want_map;
     {
         std::lock_guard lock(g.mutex);
+        want_map = g.want_map;   // kept until it starts or its frames run out (below)
         g.answer = AnswerFor(local, g.grounded);
         want = std::exchange(g.want, std::nullopt);
         answers = std::exchange(g.answers, {});
@@ -426,6 +482,30 @@ void Frame(Core::System& system, std::uint64_t main_base, const std::optional<co
             g.entrance_until_us = now + Glue::kEntranceOpenUs;
             respawn_moved = true;
             LOG_INFO(Core, "coop: teleport: respawn at the entrance {} of {}", *start, *local.scene);
+        }
+    }
+    if (want_map) {
+        // The bridge's warp: the same map change event as the respawn's entrance, with the scene and start asked for.
+        if (main_base == 0 || local.loading_banc || local.event) {
+            std::lock_guard lock(g.mutex);
+            if (--g.map_frames_left <= 0) {
+                g.want_map.reset();
+                LOG_INFO(Core, "coop: teleport: map change to {} at {}: dropped, no free frame for 5 s ({})",
+                         want_map->first, want_map->second,
+                         main_base == 0 ? "no game" : local.loading_banc ? "a load runs" : "an event runs");
+            }
+        } else {
+            {
+                std::lock_guard lock(g.mutex);
+                g.want_map.reset();
+            }
+            Trip::Actions map;
+            map.scene = want_map->first;
+            map.start = want_map->second;
+            map.start_event = true;
+            all.push_back(std::move(map));
+            g.entrance_until_us = now + Glue::kEntranceOpenUs;
+            LOG_INFO(Core, "coop: teleport: map change to {} at {} (play-test warp)", want_map->first, want_map->second);
         }
     }
     for (const auto& a : answers) {
@@ -526,6 +606,12 @@ void Frame(Core::System& system, std::uint64_t main_base, const std::optional<co
                 }
                 std::lock_guard lock(g.event_mutex);
                 g.events.WantWith(kBancChangeEvent, BancChangeArgs(g.event_scene, g.event_start), link);
+                if (g.fix_starter) {
+                    g.starter.Begin(g.event_scene, g.event_start, now);
+                } else if (!ArrivalHasStarter(g.event_scene, g.event_start)) {
+                    LOG_INFO(Core, "coop: teleport: {} has no entrance actor named {}: the starter is kept "
+                             "(LICHII_COOP_ARRIVAL_STARTER=keep)", g.event_scene, g.event_start);
+                }
             }
         }
         if (g.beside_to != 0 && act.scene) {

@@ -5,6 +5,7 @@
 #include "coop_rando.h"
 #include "coop_i18n.h"
 #include "coop_text_fit.h"
+#include "coop_pause_tab.h"
 
 #include <algorithm>
 #include <cmath>
@@ -256,6 +257,65 @@ std::vector<std::string> NoteLines(const std::string& text) {
     return out;
 }
 
+namespace {
+// Does the text fit the help box whole (no cut, no "...")? A fifth line would show as a cut.
+bool FitsHelp(const std::string& text) {
+    const std::string shown = CoopPauseTab::HelpText(text, CoopPauseTab::kHelpWidth, CoopPauseTab::kHelpLines + 1);
+    return std::count(shown.begin(), shown.end(), '\n') + 1 <= static_cast<std::ptrdiff_t>(CoopPauseTab::kHelpLines);
+}
+
+// The mod's about text: the note first (what to do: build it, rename the folder), then the description, each put in
+// the player's language by itself for the kit's own mod (the pair is no line of the table); a mod's own words as they are.
+std::string AboutText(const CoopMods::Row& m, bool kit) {
+    const auto say = [&](const std::string& t) { return kit ? CoopI18n::Tr(t) : t; };
+    std::string out;
+    if (!m.note.empty()) out = say(m.note);
+    if (!m.description.empty()) out += (out.empty() ? "" : "\n") + say(m.description);
+    return out;
+}
+}  // namespace
+
+std::vector<std::string> HelpPages(const std::string& text) {
+    std::vector<std::string> pages;
+    const std::vector<Piece> pieces = Pieces(text);
+    std::size_t i = 0;
+    while (i < pieces.size()) {
+        if (pieces[i].space) {
+            ++i;
+            continue;
+        }
+        std::string cur;
+        std::size_t took = 0, brk = 0;
+        for (std::size_t k = i; k < pieces.size(); ++k) {
+            if (!FitsHelp(cur + pieces[k].bytes)) break;
+            cur += pieces[k].bytes;
+            ++took;
+            if (pieces[k].space || pieces[k].stops || pieces[k].bytes == "\n") brk = took;
+        }
+        if (i + took < pieces.size() && brk > 0 && brk * 2 >= took) {   // (a page ends where a sentence or word does)
+            cur.clear();
+            for (std::size_t k = 0; k < brk; ++k) cur += pieces[i + k].bytes;
+            took = brk;
+        }
+        if (took == 0) {
+            took = 1;
+            cur = pieces[i].bytes;
+        }
+        while (!cur.empty() && (cur.back() == ' ' || cur.back() == '\n')) cur.pop_back();
+        if (!cur.empty()) pages.push_back(std::move(cur));
+        i += took;
+    }
+    return pages;
+}
+
+const std::vector<std::string>& Tab::AboutPages(const std::string& text) const {
+    if (text != pages_for_) {
+        pages_ = HelpPages(text);
+        pages_for_ = text;
+    }
+    return pages_;
+}
+
 Tab::Tab(Sources sources) : src_(std::move(sources)) {}
 
 void Tab::Say(std::string line) {
@@ -320,9 +380,10 @@ std::vector<Tab::Line> Tab::Lines() const {
             }
             l.act = Act::kMod;
             l.name = m.name;
-            l.help = m.description;
-            if (!m.note.empty()) l.help += (l.help.empty() ? "" : "\n") + m.note;
-            l.own_help = !kit;
+            // (what to do first, then what the mod is; the first page of it: the whole is the About row on its page)
+            const std::vector<std::string>& about = AboutPages(AboutText(m, kit));
+            l.help = about.empty() ? std::string() : about.front();
+            l.own_help = true;   // (already in the player's language where it is the table's)
             out.push_back(std::move(l));
         }
         return out;
@@ -340,9 +401,6 @@ std::vector<Tab::Line> Tab::Lines() const {
     head.row = Make(m.title, "", RowKind::kHeading);
     head.row.own_name = !kit;
     out.push_back(head);
-    if (!m.description.empty()) {
-        for (const std::string& line : NoteLines(m.description)) note(line, !kit);
-    }
     if (!m.author.empty()) {
         // The table's words around the author and the version, and the author's own
         // text through it too (the kit's randomizer writes a sentence there, which
@@ -353,19 +411,29 @@ std::vector<Tab::Line> Tab::Lines() const {
         }
         note(std::move(by), true);   // (the words around the author are in the player's language, the author's are its own)
     }
-    if (!m.note.empty()) {
-        for (const std::string& line : NoteLines(m.note)) note(line, !kit);
-    }
     if (m.id == CoopRando::kId && src_.rando) {
         if (std::string r = src_.rando(); !r.empty()) note("Randomizer: " + r);
+    }
+    {   // About: the note, then the description, a page of the help box at a time (A or Left / Right turns the page)
+        const std::vector<std::string>& pages = AboutPages(AboutText(m, kit));
+        if (!pages.empty()) {
+            const std::size_t at = std::min(about_page_, pages.size() - 1);
+            Line a;
+            a.row = Make("About", pages.size() > 1 ? std::to_string(at + 1) + "/" + std::to_string(pages.size()) : "",
+                         RowKind::kAction);
+            a.act = Act::kAbout;
+            a.help = pages[at];
+            a.own_help = true;   // (a mod's own words, or already in the player's language)
+            a.pages = pages.size();
+            out.push_back(std::move(a));
+        }
     }
     Line on;
     on.row = Make("On", "", RowKind::kToggle);
     on.row.on = m.on;
     on.row.fixed = !m.can_switch;
     on.act = Act::kOn;
-    on.help = m.can_switch ? "Off: the game leaves this mod out from its next start." : m.note;
-    on.own_help = !m.can_switch && !kit;   // (a mod's note)
+    on.help = m.can_switch ? "Off: the game leaves this mod out from its next start." : std::string();
     out.push_back(on);
     for (const auto& [act, name, help] :
          {std::tuple{Act::kUp, "Move up", "Up: it wins a file it shares with the mods under it."},
@@ -485,6 +553,9 @@ void Tab::Change(const Line& l, int step) {
         }
         break;
     }
+    case Act::kAbout:
+        if (l.pages > 1) about_page_ = (about_page_ + l.pages + static_cast<std::size_t>(step > 0 ? 1 : l.pages - 1)) % l.pages;
+        break;
     case Act::kSetting: {
         for (const CoopMods::SettingRow& s : loader.Settings(mod_)) {
             if (s.setting.key != l.name) continue;
@@ -525,11 +596,15 @@ void Tab::Decide(const Line& l) {
     case Act::kMod:
         list_selected_ = selected_;
         mod_ = l.name;
+        about_page_ = 0;
         selected_ = 0;
         Clamp();
         return;
     case Act::kOn:
         Change(l, l.row.on ? -1 : 1);
+        return;
+    case Act::kAbout:
+        Change(l, 1);
         return;
     case Act::kUp:
     case Act::kDown:
@@ -591,6 +666,7 @@ bool Tab::Press(Input input) {
     case Input::kBack:
         if (mod_.empty()) return false;
         mod_.clear();
+        about_page_ = 0;
         selected_ = list_selected_;
         break;
     case Input::kErase: break;

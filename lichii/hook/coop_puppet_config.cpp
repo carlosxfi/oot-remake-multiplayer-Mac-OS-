@@ -349,6 +349,15 @@ void Configure(bool perceived_safe) {
                 settings.character_apply_head = colours->second;
             }
         }
+        for (const auto& text : PackManifests()) {
+            for (auto& [actor, list] : CoopPuppet::PackSoundLists(text)) {
+                settings.sound_lists.emplace(actor, std::move(list));
+            }
+        }
+        if (!settings.sound_lists.empty()) {
+            lines.push_back("coop: the puppet pack gives " + std::to_string(settings.sound_lists.size()) +
+                            " puppets their own sound lists: each character speaks with its own voice");
+        }
         if (!settings.character_actors.empty()) {
             lines.push_back("coop: the puppet pack has " + std::to_string(settings.character_actors.size()) +
                             " puppets for the Character Select mod's characters: a player who picked one is shown "

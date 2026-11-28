@@ -13,7 +13,7 @@ int main(int argc, char **argv) {
     static const char *const exports[] = {
         "hos_coop_start", "hos_coop_frame", "hos_coop_hold", "hos_coop_stop", "hos_coop_key", "hos_coop_char",
         "hos_coop_keys_taken", "hos_coop_mouse", "hos_coop_pad", "hos_coop_title", "hos_coop_draw_wanted",
-        "hos_coop_draw", "hos_coop_draw2", "hos_coop_camera_wanted", "hos_coop_camera", "hos_coop_world",
+        "hos_coop_draw", "hos_coop_draw2", "hos_coop_draw3", "hos_coop_camera_wanted", "hos_coop_camera", "hos_coop_world",
         "hos_coop_wrap", "hos_coop_voice_attach", "hos_coop_voice_render", "hos_coop_menu_wanted", "hos_coop_menu_tabs",
         "hos_coop_menu_tab_name", "hos_coop_menu_page", "hos_coop_menu_input",
     };

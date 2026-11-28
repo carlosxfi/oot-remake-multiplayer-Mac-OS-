@@ -18,6 +18,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -48,6 +49,28 @@ struct Game {
     std::function<bool()> reload_save_list;
     std::function<bool(void* ctx, std::uint64_t screen, const std::string& name)> play_sound;
     std::function<std::uint64_t()> now_ms;  // a steady clock (the input hold's end)
+    // (API v4) The data channel (lichii/hook/coop_mod_data.h): sets this game's value (empty: clear; "" when kept,
+    // else why not in plain English), reads a value (player 0: ours), who is in the session, our number, and the
+    // others' changes since the last call. Unset: the calls answer as alone (data_set keeps nothing: refused).
+    std::function<std::string(const std::string& mod_id, const std::string& key, const std::vector<std::uint8_t>&)>
+        data_set;
+    std::function<std::optional<std::vector<std::uint8_t>>(std::uint8_t player, const std::string& mod_id,
+                                                           const std::string& key)>
+        data_get;
+    struct PlayerInfo {
+        std::uint8_t number = 0;
+        bool self = false;
+        std::string name;
+    };
+    std::function<std::vector<PlayerInfo>()> players;
+    std::function<std::uint8_t()> my_number;
+    struct DataChange {
+        std::uint8_t player = 0;
+        std::string mod_id;
+        std::string key;
+        std::vector<std::uint8_t> value;
+    };
+    std::function<std::vector<DataChange>()> take_data;
 };
 
 // (API v2) One menu screen's update, as the runtime read it.

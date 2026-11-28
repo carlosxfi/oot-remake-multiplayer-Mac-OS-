@@ -140,7 +140,7 @@ The network build has not yet been checked inside the Mac game.
 The Windows game and this branch must use the same co-op protocol and game
 build. The bridge uses the shared protocol constant, not an independently
 chosen version. The shared protocol, codec, network client and local test
-relay now follow protocol 16, including the host-approval handshake, platform
+relay now follow protocol 18, including the host-approval handshake, platform
 updates and hit-record message layouts. This first cross-platform check sends player samples,
 status and equipment, and receives player samples into presence. It does not
 apply incoming progress, warp the player, create puppets, or draw name tags.
@@ -311,7 +311,7 @@ its local save during this test.
 ### Windows v0.11.12 playtest
 
 Use Squadala v0.11.12 on the Windows host. The Mac shared module
-uses protocol 16. Start with disposable saves and
+uses protocol 18. Start with disposable saves and
 check that both players can see each other move. Then test a chest, key and
 rupee pickup, an enemy defeat, and a loading zone together. Check player
 lists on each platform and record any missing pages or other differences.

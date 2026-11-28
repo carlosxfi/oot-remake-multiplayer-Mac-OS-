@@ -1,0 +1,20 @@
+# hs-map-drop-269 (row 269, worker rows-269-271-3): the host's System > Load in play with a dungeon map in its save.
+# The run script stages DungeonInfo.InsideTheDekuTree.IsGetMap (bool 0x89787395) = 1 in both lane saves first and puts
+# the saves back after. PASS: A logs a map-drop INFO line ending "the game's own clear of its flags, no drop in play",
+# no "no save load and no title followed" warning in either game; shots of both games before and after the load.
+#! timeout 600
+start A
+start B
+sleep 40
+load A
+load B
+sleep 20
+shot in-play
+lines no-drop-in-play A max=0 coop: map-drop:
+play A hs-map-drop-269.A.txt
+sleep 20
+shot sys-loaded
+lines own-clear A min=1 coop: map-drop: .*the game's own clear of its flags, no drop in play
+lines no-warn-A A max=0 no save load and no title followed in 3 s
+lines no-warn-B B max=0 no save load and no title followed in 3 s
+lines map-kept-B B max=0 coop: map-drop: .* in play,

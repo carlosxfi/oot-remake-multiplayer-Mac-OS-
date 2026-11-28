@@ -1,0 +1,33 @@
+# f1-event, A (see f1-event.steps.txt): A warps into the Deku Tree (the title, then four A presses: as f1-free.A.txt),
+# puts the slingshot room's chest back CLOSED, and walks up to it; f1-event-open.A.txt then presses A to open it (the
+# item get, an event whose text waits for A). The lines are cutscene-snap.A.txt's (place -51.8 112.6 12.2 on the chest
+# ledge, goto -53.3 12.2 0.4 300 "in front of the chest", toward -54.4 12.2 8; deku-ladder.A.txt: chest Obj_TBox at
+# -54.4 112.0 12.2).
+# The chest's state (f1-event-c124; run f1-event-aebd16089 VOID: it was already open in lane1-A's save): its opened
+# flag is key64 0x0b66198d17d6584e (that run's A log: "coop: objects: + Obj_TBox_A_02 ... at -54.39 111.96 12.21 hash
+# 0xb66198d17d6584e"; deku-ladder.A.txt:12 "key64 0x0b66198d17d6584e ... 0 -> 1" when it opens). Set to 0 after the
+# save is loaded (the load puts the save's value back), then a same-map warp reloads the scene, since every chest of
+# the Deku Tree spawns at the scene load (that run: the + line came before "mark after"), as deku-block-late.A.txt:33.
+# The steps prove it closed with `flag A key64:0x0b66198d17d6584e 0` before the press (SETUP-FAIL else).
+mark start
+warp InsideTheDekuTree Entrance
+wait 1200
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A
+wait 2400
+mark after
+setflag key64:0x0b66198d17d6584e 0   # the slingshot room's chest: not opened (coop_testinput.cpp SetFlag, key64 form)
+warp InsideTheDekuTree Entrance      # same-map warp = reload: the chest spawns again, closed
+wait 900
+mark reloaded
+place -51.8 112.6 12.2
+wait 240
+mark placed
+goto -53.3 12.2 0.4 300
+toward -54.4 12.2 8

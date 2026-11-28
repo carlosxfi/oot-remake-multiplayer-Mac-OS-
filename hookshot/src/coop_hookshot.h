@@ -17,6 +17,8 @@
 #define COOP_HOOKSHOT_EXPORT __attribute__((visibility("default")))
 #endif
 
+#include "coop/host/key_item_tally.hpp"
+
 namespace CoopHookshot {
 
 // hos_coop_start: checks the table and the game build, reads the settings and
@@ -42,6 +44,12 @@ constexpr WorldLevel HelloLevel(std::uint64_t a, std::uint64_t b) {
 WorldLevel WorldHooks();
 // True when Hookshot's hooks have this wrap (hos_coop_world.h's ids).
 bool HasWrap(std::uint32_t id);
+
+// Row 223: the key items the game holds now, counted by group (coop/host/key_item_tally.hpp). Read only: plain
+// guest-memory reads of the flag tables through GameFlags::get_bool (no game call, no write, no patch), so any thread
+// may ask. The result is kept for half a second under a lock of its own, so a menu frame costs one copy. False
+// before a game is loaded (no flag manager yet): nothing then.
+bool KeyItemTallyNow(coop::host::KeyItemTally& out);
 // A wrapped game function (hos_coop_world.h): phase 0 before it (1: do not run it), 1 after; x = its registers.
 int Wrap(std::uint32_t id, int phase, std::uint64_t* x, void* ctx);
 // hos_coop_stop: CoopHook::Shutdown.
@@ -134,6 +142,9 @@ bool Mouse(float fx, float fy, int event);
 bool TypeKey(std::uint32_t vk, bool repeat);
 bool TypeChar(std::uint32_t byte);
 bool KeysTaken();
+// The play-test bridge's `key` (docs/playtest.md): hos_coop_key's steps (vk, no repeat), as the window's WM_KEYDOWN
+// gives it (ls32-src/host/display.c), without its SDL-thread mark (the bridge's thread is not the window's). True: co-op took it (F1: its route logged as "coop: F1: ..."); false: the key is Longshot's.
+bool BridgeKey(std::uint32_t vk);
 // The chat box or the cheats panel is open (it has the keyboard).
 bool ChatOpen();
 // The key that opens the chat box from now on (the Multiplayer tab's Settings
@@ -185,3 +196,9 @@ inline bool RefuseUnarmed(const std::string& actor, bool armed, const std::strin
 }
 
 }  // namespace CoopHookshot
+
+// Row 229 (coop_voice_hookshot.cpp): Longshot's Insert-menu microphone for the voice's Default (CoopVoice::SetGameMic),
+// read on the game frame with no lock of ours held, at most every 3 s while voice is on.
+namespace CoopVoiceGameMic {
+void Poll();
+}  // namespace CoopVoiceGameMic

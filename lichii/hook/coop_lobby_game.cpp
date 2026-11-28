@@ -48,6 +48,7 @@ struct Glue {
     // The room from the client, with what we keep of each player (under mutex).
     void Copy(const coop::net::Client& client) {
         const bool on = client.state() == coop::net::State::connected;
+        const std::uint8_t host_before = seen.connected ? seen.host : 0;
         seen.connected = on;
         seen.self = on ? client.player_number() : 0;
         seen.host = on ? client.host_number() : 0;
@@ -64,6 +65,13 @@ struct Glue {
             s.color = p.equipment && p.equipment->color ? *p.equipment->color : proto::slot_color(p.number);
             s.status = p.status.value_or(0);
             seen.players.push_back(std::move(s));
+        }
+        if (host_before != 0 && seen.host != 0 && host_before != seen.host) {
+            LOG_INFO(Core, "coop: lobby: the host is now player {} (was {})", seen.host, host_before);
+        }
+        if (auto line = HostChangedLine(host_before, seen.host, NameOf(seen.host), seen.host == seen.self);
+            !line.empty()) {
+            Line(std::move(line));
         }
         Refresh();
     }

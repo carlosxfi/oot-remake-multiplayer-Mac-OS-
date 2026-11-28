@@ -19,8 +19,10 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <tuple>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "common/fs/path_util.h"
 #include "common/logging.h"
@@ -184,6 +186,13 @@ std::optional<std::uint32_t> CapOf(const CoopLook::Look& look) {
     return g_tunic_cap ? look[Part::cap_trim] : std::nullopt;
 }
 
+// vest-link: the Vest colour a painting of `look` takes (part 27; nothing: as the tunic, 0.11.12). The vest textures
+// are tunic textures (green.bin), so no file of its own: a pack without them paints nothing there.
+std::optional<std::uint32_t> VestOf(const CoopLook::Look& look) {
+    const auto v = look[Part::link_vest];
+    return v ? std::optional<std::uint32_t>(*v & 0xFFFFFFu) : std::nullopt;
+}
+
 std::optional<std::vector<std::uint8_t>> TunicFile(const std::string& name) {
     const auto paint = CoopLookParts::TunicPaintOf(name);
     if (!paint) {
@@ -332,7 +341,8 @@ void PaintPuppets(std::uint64_t now_ms) {
 // gear wardrobe paints. Nothing of the game is written.
 std::unique_ptr<CoopLookTunic::Wardrobe> g_boots;
 std::mutex g_boots_mutex;
-std::map<std::string, CoopLookParts::Wearers> g_boots_named;   // guarded: the newest painting's name
+// guarded: the newest painting's name -> each colour's boots, and its hair (hair-link)
+std::map<std::string, std::pair<CoopLookParts::Wearers, CoopLookParts::HairWearers>> g_boots_named;
 std::string g_boots_worn;                                        // the worker's: the name worn
 
 std::optional<std::vector<std::uint8_t>> BootsFile(const std::string& name) {
@@ -341,15 +351,16 @@ std::optional<std::vector<std::uint8_t>> BootsFile(const std::string& name) {
         return std::nullopt;
     }
     CoopLookParts::Wearers wearers;
+    CoopLookParts::HairWearers hair;
     if (name != CoopLookParts::kBootsBase) {
         std::lock_guard lock(g_boots_mutex);
         const auto it = g_boots_named.find(name);
         if (it == g_boots_named.end()) {
             return std::nullopt;
         }
-        wearers = it->second;
+        std::tie(wearers, hair) = it->second;
     }
-    return CoopLookTunic::Pack(CoopLookParts::BootsTexels(*gear, wearers));
+    return CoopLookTunic::Pack(CoopLookParts::BootsTexels(*gear, wearers, hair));
 }
 
 // 0.11.9, exact puppet tunics: each coloured tunic copy (coop_look/puppet-<colour>.bin) repainted for the player it
@@ -430,6 +441,7 @@ std::map<std::uint8_t, CoopColors::TunicCopy> FollowTunics() {
         if (const auto parts = CoopLookShare::Of(number)) {   // (0.11.9: their Cap trim too, part 17)
             for (const auto& p : *parts) {
                 if (p.part == static_cast<std::uint8_t>(Part::cap_trim)) paint.cap = p.colour & 0xFFFFFFu;
+                if (p.part == static_cast<std::uint8_t>(Part::link_vest)) paint.vest = p.colour & 0xFFFFFFu;   // (vest-link)
             }
         }
         paints[colour] = paint;
@@ -473,6 +485,7 @@ std::atomic<std::uint8_t> g_number{0};
 std::mutex g_chosen_mutex;
 std::optional<std::uint32_t> g_chosen;   // guarded by g_chosen_mutex
 std::optional<std::uint32_t> g_chosen_cap;   // guarded by g_chosen_mutex: the Cap trim worn (CapOf)
+std::optional<std::uint32_t> g_chosen_vest;  // guarded by g_chosen_mutex: the Vest worn (VestOf)
 
 // The worker's round: who wears which colour now, and the boots they chose.
 void FollowBoots(const std::map<std::uint8_t, CoopColors::TunicCopy>& copies) {
@@ -493,13 +506,19 @@ void FollowBoots(const std::map<std::uint8_t, CoopColors::TunicCopy>& copies) {
             for (const auto& p : *parts) {
                 if (p.part == static_cast<std::uint8_t>(Part::boots)) {
                     w.boots = p.colour;
+                } else if (p.part == static_cast<std::uint8_t>(Part::hair)) {
+                    w.hair = p.colour;   // (hair-link: the hair copies of his colour's model)
+                }
+                if (p.part == static_cast<std::uint8_t>(Part::link_leather)) {
+                    w.leather = p.colour;   // (leather-link)
                 }
             }
         }
         others.push_back(w);
     }
     const CoopLookParts::Wearers wearers = CoopLookParts::Assign({}, others);
-    const std::string name = CoopLookParts::BootsPaintingName(wearers);
+    const CoopLookParts::HairWearers hair = CoopLookParts::AssignHair({}, others);
+    const std::string name = CoopLookParts::BootsPaintingName(wearers, hair);
     if (name == g_boots_worn) {
         return;
     }
@@ -507,7 +526,7 @@ void FollowBoots(const std::map<std::uint8_t, CoopColors::TunicCopy>& copies) {
     {
         std::lock_guard lock(g_boots_mutex);
         g_boots_named.clear();   // only the newest painting is asked for
-        g_boots_named[name] = wearers;
+        g_boots_named[name] = {wearers, hair};
     }
     LOG_INFO(Core, "coop: look: the puppets' boots are {} now", name);
     g_boots->Wear(name);
@@ -530,11 +549,12 @@ void FollowNumber() {
     if (number == g_number.exchange(number)) {
         return;
     }
-    std::optional<std::uint32_t> chosen, cap;
+    std::optional<std::uint32_t> chosen, cap, vest;
     {
         std::lock_guard lock(g_chosen_mutex);
         chosen = g_chosen;
         cap = g_chosen_cap;
+        vest = g_chosen_vest;
     }
     if (chosen) {
         return;   // a chosen colour wins
@@ -542,7 +562,7 @@ void FollowNumber() {
     const auto tunic = OwnTunic(chosen, number);
     LOG_INFO(Core, "coop: look: player number {}: your own Link wears {}", static_cast<int>(number),
              tunic ? "the slot colour " + ColourText(tunic) : std::string("the game's own colour"));
-    g_wardrobe->Wear(CoopLookParts::TunicPainting(tunic, cap));
+    g_wardrobe->Wear(CoopLookParts::TunicPainting(tunic, cap, vest));
     g_wardrobe->Kick();
 }
 
@@ -688,13 +708,15 @@ void PaintOwnLink(const Look& look) {
         return;   // (before StartModule or after StopModule)
     }
     const auto cap = CapOf(look);
+    const auto vest = VestOf(look);
     {
         std::lock_guard lock(g_chosen_mutex);
         g_chosen = look[Part::tunic];
         g_chosen_cap = cap;
+        g_chosen_vest = vest;
     }
-    // The tunic in its exact colour (the puppets of you: the pack's nearest, TunicName), the Cap trim over it.
-    Wear(CoopLookParts::TunicPainting(OwnTunic(look[Part::tunic], g_number.load()), cap), look);
+    // The tunic in its exact colour (the puppets of you: the pack's nearest, TunicName), the Vest and the Cap trim over it.
+    Wear(CoopLookParts::TunicPainting(OwnTunic(look[Part::tunic], g_number.load()), cap, vest), look);
 }
 
 void AgreeStartTunic() {
@@ -765,7 +787,13 @@ void StartModule() {
     // read from a kit's coop-options.ini only, a game with its coop-options.ini beside longshot.exe (the owner's
     // test pair, Nucleus instances) saved the look there and started without it: the chosen colours never came back.
     std::vector<std::string> part_errors;
-    Look worn = ReadParts(CoopFiles::ReadText(CoopTitle::LookFile()), &part_errors);
+    // (LICHII_COOP_LOOK: an in-game test's parts instead of the settings', so a lane file's leftovers never count)
+    const char* env_look = std::getenv("LICHII_COOP_LOOK");
+    Look worn = ReadParts(env_look != nullptr ? EnvParts(env_look, &part_errors) : CoopTitle::LookText(), &part_errors);
+    if (env_look != nullptr) {
+        LOG_INFO(Core, "coop: look: the parts are LICHII_COOP_LOOK's ({}), not the settings': {} part(s) set", env_look,
+                 Wire(worn).size());
+    }
     worn[Part::tunic] = CoopHook::LoadSettings(ini, errors).color;
 
     g_textures = std::make_unique<GameTextures>();
@@ -802,6 +830,7 @@ void StartModule() {
     puppets.file = CopiesFile;
     puppets.base = CoopLookParts::kCopiesBase;
     puppets.start.clear();
+    puppets.target_in_memory = false;   // (row 198: the copies' memory holds the pack's; ptunics and boots too)
     puppets.what = "puppets' gear";
     // (0.11.9: the puppets' tunic copies, a Host of their own taken here, before `puppets` is moved below: the
     // lane crash of a178e8bd was a copy taken after that move, with no file and no log)
@@ -853,6 +882,20 @@ void StartModule() {
         LOG_INFO(Core, "coop: look: the puppet pack has no coop_look/metal.bin: painted metal parts stay metal "
                        "(make it again)");
     }
+    // The parts' regions (row 185): without region.bin (an older pack) parts are painted by tones only.
+    if (const auto region_file = ReadFile(LookDir() / "region.bin")) {
+        std::string why;
+        if (auto region = CoopLookParts::ParseRegion(*region_file, &why)) {
+            LOG_INFO(Core, "coop: look: {} part region block lists (a painted part takes its whole region)",
+                     region->size());
+            CoopLookParts::UseRegion(std::make_shared<const CoopLookParts::Region>(std::move(*region)));
+        } else {
+            LOG_WARNING(Core, "coop: look: coop_look/region.bin: {}; parts painted by tones only", why);
+        }
+    } else if (gear_file) {
+        LOG_INFO(Core, "coop: look: the puppet pack has no coop_look/region.bin: parts painted by tones only "
+                       "(make it again)");
+    }
     // The Cap trim's blocks: without cap.bin (an older pack) the Cap trim row changes nothing.
     if (const auto cap_file = ReadFile(LookDir() / "cap.bin")) {
         std::string why;
@@ -861,9 +904,17 @@ void StartModule() {
             for (const auto& b : *cap) {
                 blocks += b.offsets.size();
             }
-            LOG_INFO(Core, "coop: look: the Cap trim paints {} blocks of {} tunic textures", blocks, cap->size());
+            const std::size_t gear_textures = CoopLookParts::GearCapTextures(*cap);
+            LOG_INFO(Core, "coop: look: the Cap trim paints {} blocks of {} tunic textures ({} of the Goron and Zora "
+                           "tunics)", blocks, cap->size(), gear_textures);
+            if (gear_textures == 0) {   // (row 278: a pack made before it lists the Kokiri tunic's only)
+                LOG_INFO(Core, "coop: look: coop_look/cap.bin has no Goron or Zora tunic trims: those tunics' hood "
+                               "trims follow the tunic (make the puppet pack again)");
+            }
+            auto shared = std::make_shared<const CoopLookParts::Cap>(std::move(*cap));
+            CoopLookParts::UseCap(shared);   // the gear's: the Goron and Zora hood trims, own Link and puppets
             std::lock_guard lock(g_tunic_mutex);
-            g_tunic_cap = std::make_shared<const CoopLookParts::Cap>(std::move(*cap));
+            g_tunic_cap = std::move(shared);
         } else {
             LOG_WARNING(Core, "coop: look: coop_look/cap.bin: {}; the Cap trim changes nothing", why);
         }
@@ -881,11 +932,13 @@ void StartModule() {
     // With another colour's files (LICHII_COOP_SELF_TUNIC) the wardrobe looks
     // for that colour's texels too.
     const auto cap = CapOf(worn);
-    g_wardrobe->Wear(CoopLookParts::TunicPainting(worn[Part::tunic], cap));
+    const auto vest = VestOf(worn);
+    g_wardrobe->Wear(CoopLookParts::TunicPainting(worn[Part::tunic], cap, vest));
     {
         std::lock_guard lock(g_chosen_mutex);
         g_chosen = worn[Part::tunic];
         g_chosen_cap = cap;
+        g_chosen_vest = vest;
     }
     g_number = 0;   // the worker's first round puts on the slot colour once the number is known
     // The gear starts in the game's own colours: the settings' look is painted.
@@ -949,6 +1002,7 @@ void StopModule() {
         g_tunic_kept.clear();
         g_tunic_cap.reset();
     }
+    CoopLookParts::UseCap(nullptr);   // (the gear's too: the next start reads cap.bin again)
     CoopLookShare::EnableSlots(false);
     g_number = 0;
     g_textures.reset();
@@ -965,6 +1019,7 @@ namespace {
 std::mutex g_mutex;
 Orbit g_orbit;   // guarded
 Watch g_watch;   // guarded
+Steer g_steer;   // guarded (patch 0040: the game's camera turned with the orbit)
 std::mutex g_keep_mutex;   // (its own: OwnLink runs outside g_mutex)
 Keep g_keep;               // guarded by g_keep_mutex
 
@@ -1016,12 +1071,19 @@ double GameFov() {
 
 }  // namespace
 
-bool LinkShown() {
+bool LinkShown(bool* clear) {
     Showing showing = Showing::flat_no_link;
     const bool shown = OwnLink(&showing).has_value();
     std::optional<std::string> line;
     {
         std::lock_guard lock(g_mutex);
+        const bool hidden = shown && g_steer.Hidden();
+        if (hidden) {
+            showing = Showing::flat_blocked;
+        }
+        if (clear) {
+            *clear = !hidden;
+        }
         line = g_watch.Drawn(showing, NowMs());
     }
     if (line) {
@@ -1044,21 +1106,71 @@ bool Camera(double eye[3], double target[3]) {
         std::lock_guard lock(g_mutex);
         if (!g_orbit.Asked(now)) {
             g_orbit.Camera({}, {}, std::nullopt, now);   // (ends a turn)
+            g_steer.Want(std::nullopt);
             return false;
         }
     }
     const auto link = OwnLink();   // (outside the lock: the hook's own lock)
     const double fov = GameFov();
-    std::lock_guard lock(g_mutex);
-    const auto shot = g_orbit.Camera({eye[0], eye[1], eye[2]}, {target[0], target[1], target[2]}, link, now, fov);
-    if (!shot) {
+    std::unique_lock lock(g_mutex);
+    g_steer.Viewed();   // (the log: no camera hook call while the page is asked)
+    const Vec3 game_eye{eye[0], eye[1], eye[2]};
+    const Vec3 game_target{target[0], target[1], target[2]};
+    const auto aim = g_orbit.Camera(game_eye, game_target, link, now, fov);
+    if (!aim || !link) {
+        g_steer.Want(std::nullopt);
         return false;
     }
-    g_watch.Framed(now);
-    for (int i = 0; i < 3; ++i) {
-        eye[i] = shot->eye[i];
-        target[i] = shot->target[i];
+    // The game's camera turned with the orbit (patch 0040): its own eye, placed by its collision, kept and aimed at
+    // Link; a blocked eye holds the last clear view, or none yet (the flat picture: LinkShown). Otherwise (no patch
+    // 0040, the probe, a camera that does not follow): Aim's shot (Steer::Picture).
+    g_steer.Observe(game_eye, game_target);
+    const auto shot = g_steer.Picture(game_eye, game_target, *aim, *link, g_orbit.window(), fov);
+    g_steer.Want(DirectionOf(game_target, aim->eye),
+                 std::hypot(aim->eye[0] - game_target[0], aim->eye[1] - game_target[1], aim->eye[2] - game_target[2]));
+    std::vector<std::string> notes;
+    while (auto note = g_steer.TakeNote()) {
+        notes.push_back(std::move(*note));   // (a blocked eye: once per change)
     }
+    if (shot) {
+        g_watch.Framed(now);
+        for (int i = 0; i < 3; ++i) {
+            eye[i] = shot->eye[i];
+            target[i] = shot->target[i];
+        }
+    }
+    lock.unlock();
+    for (const auto& note : notes) {
+        LOG_INFO(Core, "{}", note);
+    }
+    return shot.has_value();   // (none: hidden behind the flat picture, the game's own view)
+}
+
+bool Turn(float* yaw, float* pitch, int state, bool coop_on) {
+    if (yaw == nullptr && pitch == nullptr && state == -1) {   // (the host's wake: a question only)
+        std::lock_guard lock(g_mutex);
+        return g_steer.WantsCamera(coop_on && g_orbit.Asked(NowMs()));
+    }
+    if (yaw == nullptr || pitch == nullptr) {
+        return false;
+    }
+    std::optional<Angles> angles;
+    std::vector<std::string> notes;
+    {
+        std::lock_guard lock(g_mutex);
+        angles = g_steer.Command({*yaw, *pitch}, state, coop_on && g_orbit.Asked(NowMs()));
+        while (auto n = g_steer.TakeNote()) {
+            notes.push_back(std::move(*n));
+        }
+    }
+    for (const auto& note : notes) {
+        LOG_INFO(Core, "{}", note);
+    }
+    if (!angles) {
+        return false;
+    }
+    *yaw = angles->yaw;
+    *pitch = angles->pitch;
     return true;
 }
 

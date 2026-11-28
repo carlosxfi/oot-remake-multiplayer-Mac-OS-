@@ -56,9 +56,9 @@ TEST_CASE("look menu: every part on the list, by item, under its heading") {
                                           [](const CoopLook::PartInfo& i) { return !CoopLook::IsCharacterPart(i.part); });
     CHECK(parts == static_cast<int>(link_parts));
     CHECK(link_parts == static_cast<std::ptrdiff_t>(CoopLook::kParts) - 6);
-    CHECK(headings == 11);   // Tunic, 3 shields, 3 swords, Boots, Gauntlets, Eyes, Hair (0.11.9)
+    CHECK(headings == 12);   // Tunic, 3 shields, 3 swords, Boots, Gauntlets, Eyes, Hair (0.11.9), Link (look-link-cs)
     CHECK(v.rows[static_cast<std::size_t>(v.selected)].kind == 1);   // a part, not a heading
-    CHECK(v.rows[static_cast<std::size_t>(RowOf(page, "Hylian Shield", "Frame"))].value == "Game's own");
+    CHECK(v.rows[static_cast<std::size_t>(RowOf(page, "Hylian Shield", "Frame"))].value == "Default");
     CHECK(v.back == "Back");
     CHECK_FALSE(v.picture.empty());
 }
@@ -124,7 +124,7 @@ TEST_CASE("look menu (0.11.9): Confirm picks any colour by hue, saturation and b
     CHECK_FALSE(page.Press(Input::kBack));         // the list: the tab's own Back
 }
 
-TEST_CASE("look menu: a part with no colour mixes from the game's own, Game's own colour and Done") {
+TEST_CASE("look menu: a part with no colour mixes from the game's own, Default colour and Done") {
     Page page;
     page.Open(Look{});
     page.Select(static_cast<std::size_t>(RowOf(page, "Boots", "Leather")));
@@ -137,13 +137,19 @@ TEST_CASE("look menu: a part with no colour mixes from the game's own, Game's ow
     auto v = page.view();
     int own = -1, done = -1;
     for (std::size_t i = 0; i < v.rows.size(); ++i) {
-        if (v.rows[i].name == "Game's own colour") own = static_cast<int>(i);
+        if (v.rows[i].name == "Default colour") own = static_cast<int>(i);
         if (v.rows[i].name == "Done") done = static_cast<int>(i);
     }
     REQUIRE(own > 0);
-    page.Click(static_cast<std::size_t>(own), 0);
+    REQUIRE(done > own);
+    page.Click(static_cast<std::size_t>(done), 0);   // Done: back to the parts, the colour kept
+    CHECK_FALSE(page.editing());
+    CHECK(page.look()[Part::boots]);
+    page.Select(static_cast<std::size_t>(RowOf(page, "Boots", "Leather")));
+    page.Press(Input::kDecide);
+    REQUIRE(page.editing());
+    page.Click(static_cast<std::size_t>(own), 0);   // Game's own colour: the game's colour, and back to the parts
     CHECK_FALSE(page.look()[Part::boots]);
-    page.Click(static_cast<std::size_t>(done), 0);
     CHECK_FALSE(page.editing());
 }
 
@@ -181,7 +187,7 @@ TEST_CASE("look menu: the Cap trim, under the Tunic heading after the tunics, fo
     REQUIRE(cap > 0);
     CHECK(cap == zora + 1);
     auto v = page.view();
-    CHECK(v.rows[static_cast<std::size_t>(cap)].value == "As the tunic");
+    CHECK(v.rows[static_cast<std::size_t>(cap)].value == "Same as tunic");
     CHECK(CoopLookMenu::Shown(start, Part::cap_trim) == 0x3070FFu);   // the picture's band: the tunic's colour
     page.Select(static_cast<std::size_t>(cap));
     v = page.view();
@@ -196,7 +202,7 @@ TEST_CASE("look menu: the Cap trim, under the Tunic heading after the tunics, fo
     CHECK((*change)[Part::tunic] == 0x3070FFu);
     CHECK(page.view().rows[static_cast<std::size_t>(cap)].value == "red");
     CHECK(PictureHas(page.view(), *CoopColors::Parse("red")));
-    // Mixing an unset trim starts from the tunic's colour; Game's own colour sets it back to follow the tunic.
+    // Mixing an unset trim starts from the tunic's colour; Default colour sets it back to follow the tunic.
     page.Press(Input::kLeft);   // back to unset
     CHECK_FALSE(page.look()[Part::cap_trim]);
     page.Press(Input::kDecide);
@@ -205,7 +211,7 @@ TEST_CASE("look menu: the Cap trim, under the Tunic heading after the tunics, fo
     CHECK(v.rows[static_cast<std::size_t>(v.selected)].name == "Hue");
     const CoopLookMenu::Hsv tunic = CoopLookMenu::ToHsv(0x3070FFu);   // the sliders start at the tunic's colour
     CHECK(v.rows[1].value == std::to_string(tunic.h) + " degrees");
-    CHECK(v.rows[4].value == "As the tunic");   // the Preset row
+    CHECK(v.rows[4].value == "Same as tunic");   // the Preset row
     page.Press(Input::kRight);
     CHECK(page.look()[Part::cap_trim] == CoopLookMenu::ToRgb({(tunic.h + 10) % 360, tunic.s, tunic.v}));
     CHECK(page.look()[Part::tunic] == 0x3070FFu);
@@ -238,42 +244,47 @@ TEST_CASE("look menu (0.11.9): the Character page: three pages of six, ZL and ZR
     start[Part::master_hilt] = *CoopColors::Parse("red");   // (a preset: its name shows)
     page.Open(start);
     auto v = page.view();
-    REQUIRE(v.rows.size() == 6);                    // the heading and five parts: one screen
+    REQUIRE(v.rows.size() == 7);                    // the heading and six parts: one screen (as the Shields page)
     CHECK(v.rows[0].kind == 3);
-    CHECK(v.rows[0].name == "Link (page 1 of 4)");
+    CHECK(v.rows[0].name == "Link (page 1 of 5)");
     CHECK(v.rows[1].name == "Eye Colour");
     CHECK(v.rows[2].name == "Kokiri Tunic");
     CHECK(v.rows[3].name == "Cap Trim");
-    CHECK(v.rows[5].name == "Zora Tunic");
+    CHECK(v.rows[4].name == "Cap Trim on Hoods");   // (C4-4: off, as 0.11.12, until asked)
+    CHECK(v.rows[4].value == "Off");
+    CHECK(v.rows[6].name == "Zora Tunic");
     CHECK(v.selected == 1);
     page.Press(Input::kPageNext);
     v = page.view();
-    CHECK(v.rows[0].name == "Shields (page 2 of 4)");
+    CHECK(v.rows[0].name == "Hair and clothes (page 2 of 5)");   // (look-link-cs, every Link)
+    page.Press(Input::kPageNext);
+    v = page.view();
+    CHECK(v.rows[0].name == "Shields (page 3 of 5)");
     CHECK(v.rows[1].name == "Hylian Shield Frame");
     CHECK(v.rows[6].name == "Deku Shield");
     page.Press(Input::kPageNext);
     v = page.view();
-    CHECK(v.rows[0].name == "Swords (page 3 of 4)");
+    CHECK(v.rows[0].name == "Swords (page 4 of 5)");
     CHECK(v.rows[4].name == "Master Sword Hilt");
     CHECK(v.rows[4].value == "red");
     CHECK(v.rows[6].name == "Biggoron's Sword Hilt");
     page.Press(Input::kPageNext);
     v = page.view();
-    CHECK(v.rows[0].name == "Boots and gauntlets (page 4 of 4)");
+    CHECK(v.rows[0].name == "Boots and gauntlets (page 5 of 5)");
     REQUIRE(v.rows.size() == 3);
     CHECK(v.rows[1].name == "Boots");
     CHECK(v.rows[2].name == "Gauntlets");
     page.Press(Input::kPageNext);                   // round to the first
-    CHECK(page.view().rows[0].name == "Link (page 1 of 4)");
+    CHECK(page.view().rows[0].name == "Link (page 1 of 5)");
     page.Press(Input::kPagePrev);
     page.Press(Input::kPagePrev);
-    CHECK(page.GroupShown() == 2u);
-    // Every part is on exactly one page, but the hair: no row (0.11.9 lane, its tint too weak; on the wire still).
+    CHECK(page.GroupShown() == 2u);   // (Swords)
+    // Every part is on exactly one page (look-link-cs: the hair on the Link page of Character Select's options).
     std::vector<Part> seen;
     for (const auto& g : CoopLookMenu::Groups()) seen.insert(seen.end(), g.parts.begin(), g.parts.end());
-    CHECK(seen.size() == CoopLook::kParts - 1);
+    CHECK(seen.size() == CoopLook::kParts);
     for (const auto& info : CoopLook::Parts()) {
-        CHECK(std::count(seen.begin(), seen.end(), info.part) == (info.part == Part::hair ? 0 : 1));
+        CHECK(std::count(seen.begin(), seen.end(), info.part) == 1);
     }
     // A on a part: the colour mixer, which a page turn leaves alone; X resets every part.
     page.Press(Input::kDown);
@@ -288,6 +299,53 @@ TEST_CASE("look menu (0.11.9): the Character page: three pages of six, ZL and ZR
     CHECK(page.look() == Look{});
 }
 
+TEST_CASE("look menu (look-link-cs, report 293): Character Select's options on every Link, with or without the mod") {
+    using CoopLookMenu::Input;
+    using CoopLookMenu::Page;
+    Page page;
+    page.SetPaged(true);
+    page.Open(Look{});
+    page.SetCharacter(0, false);
+    CHECK(page.GroupsOffered() == 5u);              // (no model rows asked: C #132, co-op's own paint and flag)
+    page.Press(Input::kPageNext);
+    auto v = page.view();
+    CHECK(v.rows[0].name == "Hair and clothes (page 2 of 5)");
+    REQUIRE(v.rows.size() == 5);
+    CHECK(v.rows[1].name == "Hair Colour");
+    CHECK(v.rows[2].name == "Vest Colour");
+    CHECK(v.rows[3].name == "Leather and Boots Colour");
+    CHECK(v.rows[4].name == "Equipment");
+    CHECK(v.rows[4].value == "Shown");
+    CHECK(v.rows[2].value == "Same as tunic");   // (vest-link: unset, the vest is painted in the tunic's colour)
+    // The vest and the leather take any colour (the presets, and the mixer on A) as Link's other parts.
+    page.Select(2);
+    page.Press(Input::kRight);
+    CHECK(page.look()[Part::link_vest].has_value());
+    page.Press(Input::kDecide);
+    CHECK(page.editing());
+    page.Press(Input::kBack);
+    page.Select(3);
+    page.Press(Input::kRight);
+    CHECK(page.look()[Part::link_leather].has_value());
+    page.Select(4);
+    page.Press(Input::kRight);
+    CHECK(page.look()[Part::link_gear] == CoopLook::kGearHidden);
+    CHECK(page.view().rows[4].value == "Hidden");
+    // The hair takes any colour (the mixer).
+    page.Select(1);
+    page.Press(Input::kDecide);
+    CHECK(page.editing());
+    page.Press(Input::kBack);
+    // Rows told by a model (a Link without the mod's hair palette) change nothing on Link's page.
+    page.SetRows(2 | 32 | 0x80);
+    CHECK(page.GroupsOffered() == 5u);
+    CHECK(page.view().rows.size() == 5);
+    // X on Link resets his parts, the mod's among them.
+    page.Press(Input::kResetAll);
+    CHECK_FALSE(page.look()[Part::link_vest]);
+    CHECK_FALSE(page.look()[Part::link_gear]);
+}
+
 TEST_CASE("look menu (npc-customize): a character other than Link: its own parts, only the rows its model has") {
     Page page;
     page.SetPaged(true);
@@ -297,7 +355,7 @@ TEST_CASE("look menu (npc-customize): a character other than Link: its own parts
     page.SetCharacter(9, false);
     auto v = page.view();
     REQUIRE(v.rows.size() == 7);                    // (rows not known yet: every row)
-    CHECK(v.rows[0].name == "Character (page 1 of 1)");
+    CHECK(v.rows[0].name == "Character");
     CHECK(v.rows[1].name == "Hair Colour");
     CHECK(v.rows[6].name == "Equipment");
     CHECK(v.rows[6].value == "Shown");
@@ -345,5 +403,30 @@ TEST_CASE("look menu (npc-customize): a character other than Link: its own parts
     page.Press(Input::kPageNext);
     CHECK(page.view().rows[0].name == "Swords (page 3 of 3)");
     page.SetCharacter(0, true);                     // Link again: every page
-    CHECK(page.view().rows[0].name == "Link (page 1 of 4)");
+    CHECK(page.view().rows[0].name == "Link (page 1 of 5)");
+}
+
+TEST_CASE("look menu (C4-4): Cap Trim on Hoods is a switch, off as 0.11.12, no mixer") {
+    Page page;
+    page.SetPaged(true);
+    page.Open(Look{});
+    page.Select(4);
+    auto v = page.view();
+    REQUIRE(v.rows[4].name == "Cap Trim on Hoods");
+    CHECK(v.rows[4].value == "Off");
+    CHECK_FALSE(page.look()[Part::cap_trim_hoods]);
+    page.Press(Input::kRight);                      // On
+    CHECK(page.look()[Part::cap_trim_hoods] == CoopLook::kOn);
+    CHECK(page.view().rows[4].value == "On");
+    page.Press(Input::kDecide);                     // (no mixer: A steps on) Off again
+    CHECK_FALSE(page.editing());
+    CHECK_FALSE(page.look()[Part::cap_trim_hoods]);
+    page.Press(Input::kLeft);
+    CHECK(page.look()[Part::cap_trim_hoods] == CoopLook::kOn);
+    // The list (not paged) has the row under the Tunic heading, its help a switch's.
+    Page list;
+    list.Open(Look{});
+    const int row = RowOf(list, "Tunic", "Cap trim on hoods");
+    REQUIRE(row >= 0);
+    CHECK(list.view().rows[static_cast<std::size_t>(row)].value == "Off");
 }

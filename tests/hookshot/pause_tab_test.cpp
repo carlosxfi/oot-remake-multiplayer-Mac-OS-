@@ -560,18 +560,18 @@ TEST_CASE("pause tab (0.11.9): the five entries' words, in at most a row's width
     host.s.hosting = host.s.in_one = true;
     host.players = 1;
     CHECK(RowTexts(host) ==
-          std::vector<std::string>{"Find a game", "Your game", "Join a game", "Players: just you", "Co-op settings"});
+          std::vector<std::string>{"Find a game", "Your game", "Join a game", "Players (just you)", "Co-op settings"});
     host.players = 3;
     host.asking = {"Saria"};
     CHECK(RowTexts(host)[kRowHost] == "Your game: Saria asks");
-    CHECK(RowTexts(host)[kRowPlayers] == "Players: 3");
+    CHECK(RowTexts(host)[kRowPlayers] == "Players (3)");
     host.asking = {"Saria", "Mido"};
     CHECK(RowTexts(host)[kRowHost] == "Your game: 2 ask");
     SessionView guest;
     guest.s.in_one = true;
     guest.players = 2;
     CHECK(RowTexts(guest) ==
-          std::vector<std::string>{"Find a game", "Host a game", "Your session", "Players: 2", "Co-op settings"});
+          std::vector<std::string>{"Find a game", "Host a game", "Your game", "Players (2)", "Co-op settings"});
     SessionView joining;
     joining.connecting = true;
     joining.s.in_one = true;
@@ -683,7 +683,7 @@ TEST_CASE("pause tab: co-op that came with the game's start, and a failed Host, 
     CHECK(ActionFor(View::kJoin, kJoinRowLeave, launcher) == RowAction::kConfirmLeave);
     SessionView lv;
     lv.s = launcher;
-    CHECK(RowTexts(lv)[kRowJoin] == "Your session");
+    CHECK(RowTexts(lv)[kRowJoin] == "Your game");
     CHECK(RowTexts(View::kJoin, lv)[kJoinRowLeave] == "Leave the game");
     lv.confirm_leave = true;
     CHECK(RowTexts(View::kJoin, lv)[kJoinRowLeave] == "A again: leave");
@@ -847,7 +847,7 @@ TEST_CASE("pause tab: the Session view: the host's lines to copy, a guest's host
     hv.s = host;
     hv.players = 3;
     CHECK(RowTexts(View::kSession, hv) == std::vector<std::string>{"Hosting: 3 players", "Room: coming...",
-                                                                    "Copy same-network line", "Copy VPN line", "Back"});
+                                                                    "Copy network address", "Copy VPN address", "Back"});
     hv.s.code = true;
     hv.room = "forest-gang";
     hv.note = "Copied the room name";   // (what the last copy did, on the row the player looks at)
@@ -2250,8 +2250,36 @@ TEST_CASE("pause tab: the Settings page's list: a category's settings, its pages
     lines = SettingLines(graphics, 1, "Graphics");
     CHECK(lines[0].name == "Graphics  < 2 of 2 >");
     CHECK(lines[1].name == "Graphics 6");
-    CHECK(lines[4].name == "Aspect ratio *");   // (a restart one)
+    CHECK(lines[4].name == "Aspect ratio (restart)");   // (a restart one: says so in words)
     CHECK(lines[5].name.empty());
+    CHECK(lines[4].name_tail == " (restart)");   // (kept whole by the module's width fit)
+    CHECK(lines[4].name_brief == " *");
+    CHECK(lines[1].name_tail.empty());           // (not a restart one: no tag)
+    {   // a long name keeps 0.11.12's room beside the tag (28), the tag on top, within the live text's bytes
+        SettingRow longer = res;
+        longer.key = "long", longer.name = "A very long setting name that cannot fit its box", longer.tab = "Audio";
+        const auto row = SettingLines(SettingsOf(std::vector<SettingRow>{longer}, 1), 0, "Audio");
+        CHECK(row[1].name == CoopTextFit::Fit(longer.name, kListNameChars - 2) + " (restart)");
+        CHECK(row[1].name.size() < kListTextBytes);
+    }
+    // menu-restart-c41 (regression C4-1): every restart row of Longshot 3.2 (gpu/vk/menu/*.cpp, ".restart = true")
+    // that 0.11.12 showed whole ("name *" fitted to kListNameChars) shows its whole name in 0.11.13: with " (restart)"
+    // when the pane holds both, else 0.11.12's own text (the brief tag), the cut only past what 0.11.12 showed.
+    for (const char* n : {"Speaker layout", "Button prompts", "Skip title screen", "GPU device", "Robust buffers",
+                          "ASTC as RGBA8", "Intel shader compiles", "Game language", "Aspect ratio", "Output resolution",
+                          "Profile", "Threaded rendering", "Present queue"}) {
+        SettingRow r = res;
+        r.key = n, r.name = n, r.tab = "Audio";
+        const ListLine l = SettingLines(SettingsOf(std::vector<SettingRow>{r}, 1), 0, "Audio")[1];
+        CHECK_MESSAGE(l.name == std::string(n) + " (restart)", n);
+        CHECK_MESSAGE(CoopTextFit::FitShown(l.name, l.name_tail, l.name_brief, true, 0) ==
+                          CoopTextFit::Fit(std::string(n) + " *", kListNameChars), n);   // (0.11.12's row, exactly)
+        CHECK(l.name.size() < kListTextBytes);
+    }
+    {   // the header's page arrows are its tail, kept whole as well
+        CHECK(SettingLines(graphics, 0, "Graphics")[0].name_tail == "  < 1 of 2 >");
+        CHECK(SettingLines(SettingsOf(all, 1), 0, "Audio")[0].name_tail.empty());
+    }
     CHECK(SettingLines(SettingsOf(all, 1), 0, "Audio")[0].name == "Audio");   // (one page: no page shown)
 
     CHECK(SettingNext(vol, 1) == 85);
@@ -2365,7 +2393,7 @@ TEST_CASE("pause tab: Settings and look shows co-op's own menu's pages on the li
     CoopPauseMenu::View m;
     m.rows.push_back(Row{"Tunic", "", RowKind::kHeading});
     for (int i = 0; i < 12; ++i) {
-        Row r{"Part " + std::to_string(i), "Game's own", RowKind::kChoice};
+        Row r{"Part " + std::to_string(i), "Default", RowKind::kChoice};
         r.right = true;
         m.rows.push_back(r);
     }
@@ -2379,7 +2407,7 @@ TEST_CASE("pause tab: Settings and look shows co-op's own menu's pages on the li
     CHECK(ml.rows[1] == 0);
     CHECK_FALSE(ml.selectable[1]);   // (a heading)
     CHECK(ml.lines[2].name == "Part 0");
-    CHECK(ml.lines[2].value == "Game's own >");
+    CHECK(ml.lines[2].value == "Default >");
     CHECK(ml.selectable[2]);
     CHECK(ml.picked == -1);   // (the rows have the pad: nothing picked)
     // The list has the pad: the selected row is picked, and the list scrolls to keep it in view.
@@ -2665,6 +2693,91 @@ TEST_CASE("pause tab (cs-customize-0119, lane gc198-l5b): a stall keeps Characte
     CHECK(SnailPadFrom(2000, 1000) == SnailPadState::kDrive);   // (a clock that went back)
 }
 
+TEST_CASE("pause tab (row 288): no tab key of the game's lands on the Characters page while its layouts are missing") {
+    using namespace CoopPauseTab;
+    const std::uint64_t other = kPadA | kPadUp;
+    {
+        CharactersHold h;
+        bool held = false;
+        // Key Items (6): L and ZL kept, the rest goes through; said at the press only.
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadL | other, 1000, &held) == other);
+        CHECK(held);
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadL | other, 1016, &held) == other);
+        CHECK_FALSE(held);
+        // Still kept when the category reads another tab: a held L is never a late press.
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 5000, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, 0, 5016, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadZL, 5032, &held) == 0);
+        CHECK(held);
+    }
+    {
+        CharactersHold h;
+        bool held = false;
+        // Map (2): L is the game's, as a tap: the read it is pressed at, never while held (a step that repeated on a
+        // held L would walk Map, Threads of Time, Key Items, the page).
+        CHECK(CharactersHoldPad(h, true, false, 2, kPadL, 1000, &held) == kPadL);
+        CHECK_FALSE(held);
+        CHECK(CharactersHoldPad(h, true, false, 2, kPadL, 1016, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 2500, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadL, 4000, &held) == 0);
+        CHECK_FALSE(held);   // (no press there: nothing asked for)
+        CHECK(CharactersHoldPad(h, true, false, 6, 0, 4016, &held) == 0);
+        // Threads of Time (1), a tap through; a second L before the slide ended is kept (the category is written at
+        // the slide's end: it may still read 1 on Key Items); kHoldSettleMs after the tap the reading counts again.
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 6000, &held) == kPadL);
+        CHECK(CharactersHoldPad(h, true, false, 1, 0, 6100, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 6200, &held) == 0);
+        CHECK_FALSE(held);   // (kept for the slide, not for the page: nothing said)
+        CHECK(CharactersHoldPad(h, true, false, 1, 0, 6300, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL, 6000 + kHoldSettleMs, &held) == kPadL);
+    }
+    {
+        CharactersHold h;
+        bool held = false;
+        // R: from Key Items and Threads of Time a tap; on Map (the game's last tab: a strip that went round would
+        // land on the page) and where the category is not known, kept. Our own tab taking R on Map is `ours`.
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadR, 1000, &held) == kPadR);
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadR, 1016, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, 0, 1032, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadZR, 1000 + kHoldSettleMs, &held) == kPadZR);
+        CHECK(CharactersHoldPad(h, true, false, 1, 0, 2100, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 2, kPadR, 5000, &held) == 0);
+        CHECK_FALSE(held);
+        CHECK(CharactersHoldPad(h, true, false, 2, 0, 5016, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, true, 2, kPadR, 6000, &held) == kPadR);
+        CHECK(CharactersHoldPad(h, true, true, 2, kPadR, 6016, &held) == kPadR);   // (on our tabs: Page's own pad)
+        CHECK(CharactersHoldPad(h, true, true, 2, 0, 6032, &held) == 0);
+        // L and R at once: only where both are safe (Threads of Time).
+        CHECK(CharactersHoldPad(h, true, false, 2, kPadL | kPadR, 8000, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 2, 0, 8016, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 1, kPadL | kPadR, 9000, &held) == (kPadL | kPadR));
+    }
+    {
+        CharactersHold h;
+        bool held = false;
+        // A category not readable or not known: kept, nothing said (not known to be the step onto the page).
+        CHECK(CharactersHoldPad(h, true, false, -1, kPadL, 1000, &held) == 0);
+        CHECK_FALSE(held);
+        CHECK(CharactersHoldPad(h, true, false, -1, 0, 1016) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 9, kPadL, 1032, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 9, 0, 1048) == 0);
+        // Our own tabs, the + menu, no menu: never touched, held or not.
+        CHECK(CharactersHoldPad(h, true, true, 6, kPadL, 2000, &held) == kPadL);
+        CHECK_FALSE(held);
+        // ... but that L still down once a game tab shows (our first tab's L back to Map) is no press of the
+        // game's any more.
+        CHECK(CharactersHoldPad(h, true, false, 2, kPadL, 2016, &held) == 0);
+        CHECK(CharactersHoldPad(h, true, false, 2, 0, 2032) == 0);
+        CHECK(CharactersHoldPad(h, false, false, 6, kPadL | kPadZL, 3000, &held) == (kPadL | kPadZL));
+        CHECK(CharactersHoldPad(h, false, false, 6, kPadL | kPadZL, 3016, &held) == (kPadL | kPadZL));
+        CHECK_FALSE(held);
+        // Down before the - menu came and still down on Key Items: kept until let go.
+        CHECK(CharactersHoldPad(h, true, false, 6, kPadL | kPadZL, 3032, &held) == 0);
+        CHECK_FALSE(held);
+        CHECK(CharactersHoldPad(h, true, false, 6, 0, 3048) == 0);
+    }
+}
+
 TEST_CASE("pause tab (#322): the hop to the Characters tab taps L until the strip reads it, or the left edge") {
     using namespace CoopPauseTab;
     CharactersHop h;
@@ -2882,7 +2995,7 @@ TEST_CASE("pause tab (0.11.9): a view on the - page: B steps back a view, on the
     CHECK(p.OnPad(kPadB, now + 14) == 0);
     CHECK(p.TakeMinusBack());
     CHECK_FALSE(p.TakeMinusBack());
-    CHECK(std::string(p.TakeStripSound()) == "button_cancel");
+    CHECK(std::string(p.TakeStripSound()) == std::string(CoopMenuNav::kSoundBack));
     CHECK(p.OnPad(kPadB, now + 16) == 0);   // (held: still ours)
     p.OnPad(0, now + 18);
     // The view's rows take A as the tab's did (the module acts on the view's row).
@@ -3059,7 +3172,7 @@ TEST_CASE("pause tab (0.11.9): the - menu's Lobby and Multiplayer pages: every r
     CHECK(ActionFor(MinusPage::kMultiplayer, session_row, host.s) == RowAction::kViewHost);
     SessionView guest;
     guest.s.in_one = true;
-    CHECK(RowTexts(MinusPage::kMultiplayer, guest)[session_row] == "Your session");
+    CHECK(RowTexts(MinusPage::kMultiplayer, guest)[session_row] == "Your game");
     CHECK(ActionFor(MinusPage::kMultiplayer, session_row, guest.s) == RowAction::kViewJoin);
     // Every row with words opens something; every row without opens nothing.
     for (const SessionView& v : {idle, host, guest}) {
@@ -3075,19 +3188,19 @@ TEST_CASE("pause tab (0.11.9): the - menu's Lobby and Multiplayer pages: every r
 }
 
 TEST_CASE("pause tab: co-op that came with the game: short rows, and the Lobby's Host and Join views say why") {
-    // (menu-parity-0119, a lane shot: "Co-op came with the game" ran past both edges of its button; the right half
+    // (menu-parity-0119, a lane shot: "Started with the game" ran past both edges of its button; the right half
     // of the Host and Join views was empty)
     SessionView v;
     v.s.by_launcher = true;
     for (const View view : {View::kHost, View::kJoin, View::kSession, View::kPassword, View::kLan}) {
         for (const std::string& row : RowTexts(view, v)) {
-            CHECK(row != "Co-op came with the game");
+            CHECK(row != "Started with the game");
             CHECK(row.size() <= kRowChars);
         }
     }
     for (const View view : {View::kHost, View::kJoin}) {
         const auto d = DetailLines(view, v);
-        CHECK(d[0].name == "Co-op came with the game");
+        CHECK(d[0].name == "Started with the game");
         CHECK(d[1].name == "Restart the game to change it");
     }
     CHECK(DetailLines(View::kHost, SessionView{})[0].name.empty());   // (not by the launcher: the rows say it all)
@@ -3244,4 +3357,170 @@ TEST_CASE("pause tab: an A on Title Screen just after the cursor left Longshot S
     CHECK_FALSE(CoopPauseTab::CursorOnState(0));
     CHECK_FALSE(CoopPauseTab::CursorOnState(4));
     CHECK_FALSE(CoopPauseTab::CursorOnState(5));
+}
+
+TEST_CASE("pause tab: one cursor a page, the frame on the one row or line lit or on none (player report 276)") {
+    const std::uint32_t all = (1u << kRows) - 1;
+    // The rows have the pad: the frame on the row the cursor is on, the rows not dimmed, no line framed.
+    PageCursor c = CursorAt(2, all, false, 3);
+    CHECK(c.frame_row == 2);
+    CHECK(c.frame_line == -1);
+    CHECK_FALSE(c.list);
+    CHECK(MinusRowAlpha(c, 2) == 1.0f);
+    CHECK(MinusRowAlpha(c, 0) == 0.8f);
+    // A row with no words (not shown): no frame on it, so never an outline on a row that does not show.
+    CHECK(CursorAt(4, all & ~(1u << 4), false, -1).frame_row == -1);
+    CHECK(CursorAt(-1, all, false, -1).frame_row == -1);
+    CHECK(CursorAt(kRows, all, false, -1).frame_row == -1);
+    // The list has the pad: the frame on the line picked, none on the rows (the outline stayed on the row's button
+    // while a line of the list was the one lit), every row dimmed.
+    c = CursorAt(2, all, true, 3);
+    CHECK(c.frame_row == -1);
+    CHECK(c.frame_line == 3);
+    CHECK(c.list);
+    for (int r = 0; r < kRows; ++r) CHECK(MinusRowAlpha(c, r) == 0.45f);
+    // Nothing picked in the list (or past its panes): no frame anywhere rather than one on what is not lit.
+    CHECK(CursorAt(2, all, true, -1) == PageCursor{-1, -1, true});
+    CHECK(CursorAt(2, all, true, kCursorLines).frame_line == -1);
+    CHECK(CursorAt(2, all, true, kCursorLines - 1).frame_line == kCursorLines - 1);
+    // The same inputs, the same cursor: the frames and the alphas set from it agree at every update.
+    CHECK(CursorAt(1, all, false, -1) == CursorAt(1, all, false, 5));
+}
+
+TEST_CASE("pause tab: the - page's list's alphas come from the same pick as its frame (player report 276)") {
+    const std::uint32_t pickable = (1u << 1) | (1u << 2) | (1u << 3);   // three games; the heading (0) and a note (4) not
+    // The rows have the pad: the heading a little dim, a line of text dim, the lines that can be picked bright.
+    CHECK(MinusLineAlpha(0, pickable, -1, false) == 0.7f);
+    CHECK(MinusLineAlpha(4, pickable, -1, false) == 0.55f);
+    CHECK(MinusLineAlpha(2, pickable, -1, false) == 1.0f);
+    // The list has the pad on line 2: it bright, the other games dimmed; the framed line is that same one.
+    CHECK(MinusLineAlpha(2, pickable, 2, true) == 1.0f);
+    CHECK(MinusLineAlpha(1, pickable, 2, true) == 0.45f);
+    CHECK(MinusLineAlpha(3, pickable, 2, true) == 0.45f);
+    CHECK(CursorAt(0, 1u, true, 2).frame_line == 2);
+    // A field's keys (nothing in `pickable`): the key picked bright, as its frame.
+    CHECK(MinusLineAlpha(5, 0, 5, true) == 1.0f);
+    CHECK(MinusLineAlpha(6, 0, 5, true) == 0.55f);
+    // A heading that can be picked (co-op's menu's): as any line.
+    CHECK(MinusLineAlpha(0, 1u, 0, true) == 1.0f);
+    CHECK(MinusLineAlpha(0, 1u, 1, true) == 0.45f);
+}
+
+TEST_CASE("pause tab: the frames given back to the game after the list show only where its cursor is now (review-01112-h)") {
+    // The game's focused button's name: a row, a line of the list, or none.
+    CHECK(GameFrameOf("Pa_Button_03") == GameFrame{3, -1});
+    CHECK(GameFrameOf("Pa_List_02") == GameFrame{-1, 2});
+    CHECK(GameFrameOf("Pa_List_07") == GameFrame{-1, kCursorLines - 1});
+    CHECK(GameFrameOf("") == GameFrame{});
+    CHECK(GameFrameOf("Pa_Button_05") == GameFrame{});   // (System's own buttons: not one of our rows)
+    CHECK(GameFrameOf("Pa_List_08") == GameFrame{});
+    CHECK(GameFrameOf("Pa_Button_3") == GameFrame{});
+    CHECK(GameFrameOf("Pa_Button_0x") == GameFrame{});
+    CHECK(GameFrameOf("W_Pa_Button_01") == GameFrame{});
+    // The rows' cursor on row 1 at the opening, moved to row 3, Right into the list, B: back to the game, the frame on
+    // row 3 alone (as the opening had them, row 1 kept its frame beside row 3's: two outlines).
+    const GameFrame now = GameFrameOf("Pa_Button_03");
+    int shown = 0;
+    for (int r = 0; r < kRows; ++r) shown += GivenBackShown(false, r, now.row) ? 1 : 0;
+    CHECK(shown == 1);
+    CHECK(GivenBackShown(false, 3, now.row));
+    CHECK_FALSE(GivenBackShown(false, 1, now.row));
+    // No button focused for a moment: no frame of ours left shown (the game's next Select shows its own).
+    for (int r = 0; r < kRows; ++r) CHECK_FALSE(GivenBackShown(false, r, -1));
+    // A layout that showed every frame at the opening (the Select animation, not the pane, is what the focus moves):
+    // all shown again, as it had them.
+    for (int r = 0; r < kRows; ++r) CHECK(GivenBackShown(true, r, now.row));
+}
+
+TEST_CASE("pause tab: the Players view's list is the session's chat, paged with ZL and ZR (row 282)") {
+    SessionView out;   // (not in a session: nothing on the list)
+    out.chat = {"Saria: hi"};
+    for (const ListLine& l : DetailLines(View::kPlayers, out)) CHECK(l.name.empty());
+    SessionView pv;
+    pv.s.in_one = true;
+    std::vector<ListLine> d = DetailLines(View::kPlayers, pv);
+    REQUIRE(d.size() == static_cast<std::size_t>(kListRows));
+    CHECK(d[0].name == "Chat");
+    CHECK_FALSE(d[0].paged);
+    CHECK(d[0].act == RowAction::kNone);
+    CHECK(d[1].name == "No chat yet");
+    // One page: the heading alone, the lines as said (never looked up: a player called "Back" stays "Back").
+    pv.chat = {"Saria: hello", "Mido joined", "Back: Back"};
+    d = DetailLines(View::kPlayers, pv);
+    CHECK(d[0].name == "Chat");
+    CHECK(d[1].name == "Saria: hello");
+    CHECK(d[2].name == "Mido joined");
+    CHECK(d[3].name == "Back: Back");
+    CHECK(d[4].name.empty());
+    CHECK(d[1].own_name);
+    CHECK(d[1].value.empty());   // (no value box: the line has the whole row)
+    // Fifteen lines: three pages, on the newest; its heading pages (the game's ZL and ZR beside it) and its A goes older.
+    pv.chat.clear();
+    for (int i = 0; i < 15; ++i) pv.chat.push_back("P" + std::to_string(i) + ": line " + std::to_string(i));
+    d = DetailLines(View::kPlayers, pv);
+    CHECK(d[0].name == "Chat  Page 3/3");
+    CHECK(d[0].paged);
+    CHECK(d[0].act == RowAction::kChatPage);
+    CHECK(d[1].name == "P12: line 12");
+    CHECK(d[3].name == "P14: line 14");
+    CHECK(d[4].name.empty());
+    pv.s.chat_page = 0;
+    d = DetailLines(View::kPlayers, pv);
+    CHECK(d[0].name == "Chat  Page 1/3");
+    CHECK(d[1].name == "P0: line 0");
+    CHECK(d[6].name == "P5: line 5");
+    // A long line: on over the next rows, each within the row.
+    pv.s.chat_page = -1;
+    pv.chat = {"Saria: " + std::string(30, 'a') + " " + std::string(30, 'b') + " " + std::string(30, 'c')};
+    d = DetailLines(View::kPlayers, pv);
+    CHECK(d[1].name == "Saria: " + std::string(30, 'a'));
+    CHECK(d[2].name == "  " + std::string(30, 'b'));
+    CHECK(d[3].name == "  " + std::string(30, 'c'));
+    for (const ListLine& l : d) CHECK(l.name.size() <= kListLineChars);
+    CHECK(std::string(RowHelp(RowAction::kChatPage)).size() > 3);
+    CHECK(std::string(ActionWords(RowAction::kChatPage)).size() > 3);
+}
+
+TEST_CASE("row 223: the details list's second page is the key items, only with a game loaded") {
+    SessionView v;
+    // no game: the one page, no page line, no key items
+    CHECK(DetailLines(View::kMain, v)[0].name == "Not in a session");
+    CHECK_FALSE(DetailLines(View::kMain, v)[0].paged);
+    v.tally_ok = true;
+    v.tally.groups[static_cast<std::size_t>(coop::host::TallyGroup::songs)] = {8, 13};
+    v.tally.groups[static_cast<std::size_t>(coop::host::TallyGroup::medallions)] = {0, 6};
+    // page 1: the session's lines, the heading says there are two pages
+    auto d = DetailLines(View::kMain, v);
+    CHECK(d[0].name.ends_with("Page 1/2"));
+    CHECK(d[0].paged);
+    // page 2: the tally, 4 lines that fit the list
+    v.detail_page = 1;
+    d = DetailLines(View::kMain, v);
+    CHECK(d[0].name == "Key items  Page 2/2");
+    CHECK(d[0].paged);
+    CHECK(d[1].name == "Songs");
+    CHECK(d[1].value == "8 of 13");
+    CHECK(d[2].value == "0 of 6");
+    CHECK(d[4].name == "Dungeon items");
+    CHECK(d.size() == static_cast<std::size_t>(kListRows));
+    // the page wraps (ZR from the last is the first)
+    v.detail_page = 2;
+    CHECK(DetailLines(View::kMain, v)[0].name.ends_with("Page 1/2"));
+    // other views have no key items page
+    v.detail_page = 1;
+    CHECK_FALSE(DetailLines(View::kLan, v)[0].paged);
+}
+
+TEST_CASE("row 223: DetailPages is the details list's page rule (DetailLines and the play-test state)") {
+    SessionView v;
+    v.detail_page = 1;
+    CHECK(DetailPages(View::kMain, v).pages == 1);   // (no game: one page, shown as page 0)
+    CHECK(DetailPages(View::kMain, v).page == 0);
+    v.tally_ok = true;
+    CHECK(DetailPages(View::kSession, v).pages == 2);
+    CHECK(DetailPages(View::kSession, v).page == 1);
+    v.detail_page = 2;   // (wraps round)
+    CHECK(DetailPages(View::kMain, v).page == 0);
+    CHECK(DetailPages(View::kLan, v).pages == 0);
+    CHECK(DetailPages(View::kPassword, v).pages == 0);
 }

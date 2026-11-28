@@ -8,6 +8,8 @@ run.ps1 -Runtime hookshot calls `run` when the scenario is a steps file. The ver
   start A [B]           boot the games named (again: a running one is ended first), with the save baseline put back
                         and a fresh longshot_log.txt (the old one kept as hookshot_log-<x>-<n>.txt); wait until each
                         logs "coop: welcomed as player"
+  start A [B] idle      the same with no server for them (no LICHII_COOP_SERVER, co-op idle at the title, as a player
+                        who has not hosted or joined yet: the Host page before hosting); waits for the renderer only
   load A [B]            title to the save in each (hookshot.py to_play); the `#! start` regex checked after it
   play A f [B f]        play scenarios/<f> in A (and B), both at once, and wait for both
   close B / kill B      B quits through its control bridge (it leaves the server) / B ends at once (a crash)
@@ -26,21 +28,39 @@ run.ps1 -Runtime hookshot calls `run` when the scenario is a steps file. The ver
   see CHECK [CHECK...]  grade screenshot checks on the shots taken so far (after a `shot`)
   shot NAME             a screenshot of every running game
   lines NAME B max=N|min=N REGEX   game B's log has at most / at least N lines matching REGEX
+  key A F1              a key press posted to game A's window (WM_KEYDOWN, WM_KEYUP: Longshot's wndproc, patch 0001,
+                        hands it to hos_coop_key); proven landed by the module's line for it (KEYS_POSTED) within
+                        10 s, else SETUP-FAIL and the run stops (Windows only)
+  state A event|free|title|load [S]   game A's last "coop: free play: ..." line (the module's, at each change)
+                        says that state within S s (default 60), else SETUP-FAIL and the run stops: a run that
+                        relies on a state proves it before it acts on it
+  flag A key64:0xKEY|bool:0xHASH 0|1 [S]   the expect-state gate: a new read of that flag in game A's log (the
+                        module's watch line, FLAG_WATCH; the header must switch the watch on for A) says the value
+                        within S s (default 30), else SETUP-FAIL: a scenario that relies on save state proves it
+  wshot NAME            a WINDOW shot of every running game (s<step>-NAME-A/-B.png) through the helper in
+                        OOT_WINDOW_SHOT: Longshot's overlays (its menu) included, which `shot` never has; no helper,
+                        a covered or failed shot = SETUP-FAIL
 Results go to counts.txt (PASS/FAIL/UNPROVEN lines as run.ps1 writes them); a step that cannot run is a FAIL there too.
 Owner rule (2026-11-18), no PASS from log lines alone: puppets and fairies are visible, so an expect step whose
 counts match is PASS only when its see= checks are all OK (FAIL when a shot shows the wrong result), else UNPROVEN.
 Log-only steps by nature: `try` (a join's outcome: a connection result) and `lines` (counts log lines); a run made of
 them alone still needs its group line's see= or logonly= (groups.py).
 The server's join password comes from the environment variable OOT_COOP_TEST_PASSWORD (run.ps1 -ServerPassword).
+Unset, `run` makes a random one for the run (ensure_server_password) and gives it to the server and to every game: every
+session has a join password (coop_server does not start without one; a game without the server's is refused).
 """
 import argparse
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 import threading
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lanes  # noqa: E402  (brings hs.py: run_quiet and popen_quiet start a console child with no window)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WINDOWS = os.name == "nt"
@@ -56,16 +76,140 @@ ONCE_PER_PROCESS = (("objects list head (row 267)", re.compile(r"(?m)^.*coop: ob
 PROCESS_START = re.compile(r"(?m)^.*coop: build ")
 
 
+# The keys `key` can post, each with its Windows virtual-key and scan code and the module line that proves it landed:
+# F1, hookshot/src/coop_hookshot.cpp hos_coop_key (vk == 0x70), which logs "coop: F1: <its route>" for each press
+# (f1-event-c31). Scan code 0x3B: F1's set-1 make code. Only keys hos_coop_key logs belong here (F6 is read by
+# GetAsyncKeyState in the module, so a posted message never reaches it).
+KEYS_POSTED = {"F1": (0x70, 0x3B, r"coop: F1: ")}
+KEY_LAND_WAIT = 10.0
+# `state`: the game's play state as the module logs each change of it (hookshot/src/coop_hookshot.cpp, the free play
+# block of the frame: "coop: free play: yes|no (event)|no (title)|no (load, no Link)"), the last such line counted.
+STATE_LINE = re.compile(r"(?m)^.*coop: free play: (.+?)\s*$")
+STATES = {"free": "yes", "event": "no (event)", "title": "no (title)", "load": "no (load, no Link)"}
+STATE_WAIT = 60.0
+
+
+# `flag` (f1-event-c124, the shared expect-state gate): a scenario that relies on save state (a chest still closed,
+# an event not played yet) proves it before it acts, instead of trusting the lane's save (run f1-event-aebd16089
+# VOID: the slingshot chest was already open there). The value is the module's own read of the game's flag store:
+# lichii/hook/coop_flags.cpp FlagDebug::Frame logs "coop: flags debug: get_key64(0x...) = 0|1|none" (switch
+# LICHII_COOP_DEBUG_KEY64=0xKEY) or "get_bool(0x........) = ..." (LICHII_COOP_DEBUG_BOOL=0xHASH) at each change and
+# every 5 s. One key and one bool per game: the header's switch for that game must name it (flag_watch_problems).
+FLAG_WATCH = {"key64": ("LICHII_COOP_DEBUG_KEY64", "get_key64"), "bool": ("LICHII_COOP_DEBUG_BOOL", "get_bool")}
+FLAG_WAIT = 30.0
+WINDOW_SHOT_ENV = "OOT_WINDOW_SHOT"   # `wshot`: the ONE window-shot helper (coord-multiplayer offline/lib/screen-shot.ps1)
+
+
+def _ps_quote(text):
+    return "'" + str(text).replace("'", "''") + "'"
+
+
+def window_shot_command(helper, pid, path, log):
+    """powershell dot-sources the shared helper and calls its Save-WindowShot (raise + 9-point own-pid cover check).
+    Exit 0 saved; 3 covered (saved as <name>-COVERED.png); 4 no window / failed; 2 no such process."""
+    script = ("$ErrorActionPreference = 'Stop'; . %s; $p = Get-Process -Id %d -ErrorAction SilentlyContinue; "
+              "if (-not $p) { 'no process %d'; exit 2 }; $s = Save-WindowShot -Process $p -Path %s -Log %s; "
+              "if ($null -eq $s) { 'no window handle, or under 100 px'; exit 4 }; "
+              "if ($s.Failed) { 'FAILED ' + $s.Path + ': ' + $s.Why; exit 4 }; "
+              "if ($s.Covered) { 'COVERED ' + $s.Path + ': ' + $s.Why; exit 3 }; 'saved ' + $s.Path; exit 0"
+              % (_ps_quote(helper), pid, pid, _ps_quote(path), _ps_quote(log)))
+    return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
+
+
+WINDOW_SHOT_WAIT = 90
+
+
+def run_window_shot(cmd, run=subprocess.run, wait=WINDOW_SHOT_WAIT):
+    """(exit code, output on one line). A helper that hangs past `wait` s (subprocess.run kills it) or cannot start is
+    a SETUP-FAIL with its reason, never an exception out of the steps run (review-c124 on 8614cb1cc)."""
+    try:
+        r = run(cmd, capture_output=True, text=True, timeout=wait)
+    except subprocess.TimeoutExpired:
+        raise SetupFail("the window-shot helper did not end within %d s (ended)" % wait)
+    except OSError as e:
+        raise SetupFail("the window-shot helper did not start: %s" % e)
+    return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip().replace("\n", " | ")
+
+
+def flag_watch(name):
+    """'key64:0xKEY' / 'bool:0xHASH' -> (kind, number), else None (a bool hash fits 32 bits, neither is 0)."""
+    m = re.match(r"^(key64|bool):0[xX]([0-9a-fA-F]{1,16})$", name or "")
+    if not m:
+        return None
+    value = int(m.group(2), 16)
+    if value == 0 or (m.group(1) == "bool" and value > 0xFFFFFFFF):
+        return None
+    return m.group(1), value
+
+
+def flag_reads(text, kind, number):
+    """The values ('0', '1', 'none') the module logged for that watched flag, in log order."""
+    fn = FLAG_WATCH[kind][1]
+    out = []
+    for m in re.finditer(r"coop: flags debug: %s\((0x[0-9a-fA-F]+)\) = (\w+)" % fn, text or ""):
+        if int(m.group(1), 16) == number:
+            out.append(m.group(2))
+    return out
+
+
+def flag_watch_problems(steps, head):
+    """Each `flag` step whose game's switches (the `#! switches` header, 'NAME=V' or 'A:NAME=V') do not watch that
+    flag: the module would never log it, so the gate could only time out. Checked by `check` and before a run."""
+    given = {}
+    for sw in head.get("switches", []):
+        who, _, kv = sw.rpartition(":") if re.match(r"^[AB]:", sw) else ("", "", sw)
+        k, _, v = kv.partition("=")
+        given.setdefault(who, {})[k.strip()] = v.strip()
+    bad = []
+    for s in steps:
+        if s.verb != "flag":
+            continue
+        x, name = s.args[0], s.args[1]
+        kind, number = flag_watch(name)
+        env = FLAG_WATCH[kind][0]
+        v = given.get(x, {}).get(env, given.get("", {}).get(env))
+        try:
+            ok = v is not None and int(v, 16) == number
+        except ValueError:
+            ok = False
+        if not ok:
+            bad.append("line %d: flag %s %s needs '#! switches %s:%s=%s' (the module logs only the watched one)"
+                       % (s.n, x, name, x, env, name.split(":", 1)[1]))
+    return bad
+
+
+def last_state(text):
+    """The last play state the module logged ("yes", "no (event)", ...), or None."""
+    found = STATE_LINE.findall(text or "")
+    return found[-1] if found else None
+
+
+class SetupFail(Exception):
+    """A setup check failed: the run stops (SETUP-FAIL in counts.txt), nothing after it is graded."""
+
+
 class StepsError(Exception):
     pass
 
 
 class Step:
-    def __init__(self, n, verb, args, line, pattern=None):
+    def __init__(self, n, verb, args, line, pattern=None, idle=False):
         self.n, self.verb, self.args, self.line, self.pattern = n, verb, args, line, pattern
+        self.idle = idle   # start ... idle: no server for these games
 
     def __repr__(self):
         return "Step(%d, %r, %r)" % (self.n, self.verb, self.args)
+
+
+def ensure_server_password(environ):
+    """The run's join password in environ["OOT_COOP_TEST_PASSWORD"]: kept when set (run.ps1 -ServerPassword, a
+    wrapper's own), else a random one made here, so the server (--password-env) and the games (Runner's default
+    password, LICHII_COOP_PASSWORD) always get the same one. A wrapper that called `run` without it started a server
+    with no password, which coop_server refuses (rejoin-host-273's harness gaps). True when one was made."""
+    if environ.get("OOT_COOP_TEST_PASSWORD"):
+        return False
+    environ["OOT_COOP_TEST_PASSWORD"] = "autotest-" + secrets.token_hex(8)
+    return True
 
 
 def _game(n, x):
@@ -83,10 +227,13 @@ def parse_steps(text):
             continue
         w = line.split()
         verb, rest = w[0], w[1:]
-        if verb in ("start", "load"):
+        if verb in ("start", "launch", "load"):
+            idle = verb == "start" and rest[-1:] == ["idle"]
+            if idle:
+                rest = rest[:-1]
             if not rest:
-                raise StepsError("line %d: %s A [B]" % (n, verb))
-            steps.append(Step(n, verb, [_game(n, x) for x in rest], line))
+                raise StepsError("line %d: %s A [B]%s" % (n, verb, " [idle]" if verb == "start" else ""))
+            steps.append(Step(n, verb, [_game(n, x) for x in rest], line, idle=idle))
         elif verb == "play":
             if not rest or len(rest) % 2:
                 raise StepsError("line %d: play A file [B file]" % n)
@@ -139,6 +286,31 @@ def parse_steps(text):
             if len(rest) != 1:
                 raise StepsError("line %d: shot NAME" % n)
             steps.append(Step(n, verb, rest, line))
+        elif verb == "state":
+            try:
+                secs = float(rest[2]) if len(rest) == 3 else STATE_WAIT
+            except ValueError:
+                secs = None
+            if len(rest) not in (2, 3) or rest[1] not in STATES or secs is None or secs <= 0:
+                raise StepsError("line %d: state A %s [SECONDS]" % (n, "|".join(sorted(STATES))))
+            steps.append(Step(n, verb, [_game(n, rest[0]), rest[1], secs], line))
+        elif verb == "key":
+            if len(rest) != 2 or rest[1] not in KEYS_POSTED:
+                raise StepsError("line %d: key A %s" % (n, "|".join(sorted(KEYS_POSTED))))
+            steps.append(Step(n, verb, [_game(n, rest[0]), rest[1]], line))
+        elif verb == "flag":
+            try:
+                secs = float(rest[3]) if len(rest) == 4 else FLAG_WAIT
+            except ValueError:
+                secs = None
+            watch = flag_watch(rest[1]) if len(rest) in (3, 4) else None
+            if watch is None or rest[2] not in ("0", "1") or secs is None or secs <= 0:
+                raise StepsError("line %d: flag A key64:0xKEY|bool:0xHASH 0|1 [SECONDS]" % n)
+            steps.append(Step(n, verb, [_game(n, rest[0]), rest[1], rest[2], secs], line))
+        elif verb == "wshot":
+            if len(rest) != 1 or not re.match(r"^[A-Za-z0-9_.-]+$", rest[0]):
+                raise StepsError("line %d: wshot NAME" % n)
+            steps.append(Step(n, verb, rest, line))
         elif verb == "lines":
             m = re.match(r"^lines\s+(\S+)\s+([AB])\s+(max|min)=(\d+)\s+(.+)$", line)
             if not m:
@@ -181,7 +353,7 @@ def count_lines(text, pattern):
     script = ("$t = [Console]::In.ReadToEnd(); "
               "[regex]::Matches($t, '(?m)^.*' + $env:HS_STEPS_PATTERN).Count")
     try:
-        r = subprocess.run(["powershell", "-NoProfile", "-Command", script], input=text, capture_output=True,
+        r = lanes.hs.run_quiet(["powershell", "-NoProfile", "-Command", script], input=text, capture_output=True,
                            text=True, encoding="utf-8", env=dict(os.environ, HS_STEPS_PATTERN=pattern), timeout=120)
         return int(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip().isdigit() else None
     except (OSError, subprocess.SubprocessError, ValueError):
@@ -263,6 +435,9 @@ class Runner:
             self.say("step %d: %s" % (s.n, s.line))
             try:
                 getattr(self, "do_" + s.verb)(s)
+            except SetupFail as e:
+                self.result(False, "SETUP-FAIL step %d (%s): %s" % (s.n, s.line, e))
+                break
             except Exception as e:  # a step that cannot run: a FAIL line, the test goes on as run.ps1's does
                 self.result(False, "step %d (%s): %s" % (s.n, s.line, e))
             ended = self.g.ended_by_itself()
@@ -284,9 +459,16 @@ class Runner:
 
     def do_start(self, s):
         for x in s.args:
+            self.g.start(x, self.password(x), wait=False, idle=s.idle)
+        for x in s.args:
+            (self.g.wait_ready if s.idle else self.g.wait_joined)(x)
+
+    def do_launch(self, s):
+        # like start, but only until each game draws: for a game that starts before the server (no welcome yet)
+        for x in s.args:
             self.g.start(x, self.password(x), wait=False)
         for x in s.args:
-            self.g.wait_joined(x)
+            self.g.wait_ready(x)
 
     def do_load(self, s):
         for x, ok, why in self.g.load(s.args):
@@ -371,6 +553,58 @@ class Runner:
     def do_shot(self, s):
         self.g.shot("s%d-%s" % (s.n, s.args[0]))
 
+    def do_state(self, s):
+        x, name, secs = s.args
+        want = STATES[name]
+        deadline = self.clock() + secs
+        while True:
+            got = last_state(self.g.log(x))
+            if got == want:
+                self.say("  %s: play state %s ('coop: free play: %s')" % (x, name, got))
+                return
+            if self.clock() >= deadline:
+                raise SetupFail("%s is not in %s after %d s: its last 'coop: free play:' line says %s" % (
+                    x, name, secs, repr(got) if got else "nothing"))
+            self.sleep(0.5)
+
+    def do_flag(self, s):
+        """The expect-state gate: a NEW read of the watched flag (logged after this step began, so never a value
+        from before the scenario set it) says the value, within S s; else SETUP-FAIL."""
+        x, name, want, secs = s.args
+        kind, number = flag_watch(name)
+        before = len(flag_reads(self.g.log(x), kind, number))
+        deadline = self.clock() + secs
+        while True:
+            reads = flag_reads(self.g.log(x), kind, number)
+            new = reads[before:]
+            if new and new[-1] == want:
+                self.say("  %s: %s = %s (the module's read, %d new)" % (x, name, want, len(new)))
+                return
+            if self.clock() >= deadline:
+                raise SetupFail("%s's %s is not %s after %d s: the module's last read says %s%s" % (
+                    x, name, want, secs, repr(reads[-1]) if reads else "nothing",
+                    "" if new else " (no read since this step began: is the watch switch set?)"))
+            self.sleep(0.5)
+
+    def do_wshot(self, s):
+        self.g.wshot("s%d-%s" % (s.n, s.args[0]))
+
+    def do_key(self, s):
+        x, key = s.args
+        vk, scan, proof = KEYS_POSTED[key]
+        before = count_lines(self.g.log(x), proof) or 0
+        self.g.key(x, vk, scan)
+        deadline = self.clock() + KEY_LAND_WAIT
+        while True:
+            got = count_lines(self.g.log(x), proof) or 0
+            if got > before:
+                self.say("  %s landed in %s ('%s' lines %d -> %d)" % (key, x, proof, before, got))
+                return
+            if self.clock() >= deadline:
+                raise SetupFail("%s posted to %s's window but no new '%s' line within %d s" % (
+                    key, x, proof, KEY_LAND_WAIT))
+            self.sleep(0.5)
+
     def do_lines(self, s):
         name, x, kind, bound = s.args
         got = count_lines(self.g.log(x), s.pattern)
@@ -388,8 +622,12 @@ class DryGames:
     def __init__(self, say=print):
         self.say = say
 
-    def start(self, x, password, wait=True):
-        self.say("  would start %s (save baseline back, fresh log%s)" % (x, ", join password set" if password else ""))
+    def start(self, x, password, wait=True, idle=False):
+        self.say("  would start %s (save baseline back, fresh log%s)" % (
+            x, ", no server: co-op idle" if idle else ", join password set" if password else ""))
+
+    def wait_ready(self, x):
+        self.say("  would wait for %s's renderer" % x)
 
     def wait_joined(self, x):
         self.say("  would wait for %s: '%s'" % (x, JOINED))
@@ -409,6 +647,9 @@ class DryGames:
 
     def freeze(self, x):
         self.say("  would suspend %s's process" % x)
+
+    def key(self, x, vk, scan):
+        self.say("  would post key 0x%02x to %s's window" % (vk, x))
 
     def thaw(self, x):
         self.say("  would let %s's process go on" % x)
@@ -430,6 +671,10 @@ class DryGames:
 
     def shot(self, name):
         self.say("  would shoot %s" % name)
+
+    def wshot(self, name):
+        self.say("  would window-shoot %s through %s (else SETUP-FAIL)" % (
+            name, os.environ.get(WINDOW_SHOT_ENV) or "NO %s SET" % WINDOW_SHOT_ENV))
 
     def ended_by_itself(self):
         return []
@@ -536,7 +781,7 @@ class HookshotGames:
                 pass
             del self.bridges[x]
 
-    def start(self, x, password, wait=True):
+    def start(self, x, password, wait=True, idle=False):
         hk, g = self.hk, self.games[x]
         self._end(x, "kill")
         self.expected_exit.discard(x)
@@ -553,6 +798,9 @@ class HookshotGames:
         env = dict(os.environ, HOS_CONTROL=sock, HOS_CONTROL_MEM="ro", LICHII_COOP_TEST_COMMANDS=self.commands[x],
                    LICHII_COOP_SERVER="127.0.0.1:%d" % self.port, LICHII_COOP_NAME=x)   # "A", "B": /teleport B
         env.pop("LICHII_COOP_PASSWORD", None)
+        if idle:   # (co-op idle: no server from the run nor from the environment; it hosts or joins only when told)
+            env.pop("LICHII_COOP_SERVER", None)
+            password = ""
         # Its own save, no crash ask on the title (TEST_GAME_DEFAULTS, as hookshot.py's): a switch can undo it.
         for k, v in TEST_GAME_DEFAULTS:
             env.setdefault(k, v)
@@ -579,9 +827,9 @@ class HookshotGames:
             hk.place_games({x: self.procs[x].pid}, self.display, self.say, wait=30.0)
         self.bridges[x] = (sock, hk.Bridge.connect(sock, timeout=120))
         if wait:
-            self.wait_joined(x)
+            (self.wait_ready if idle else self.wait_joined)(x)
 
-    def wait_joined(self, x):
+    def wait_ready(self, x):
         # Drawing first: a game whose shaders still compile reads no controller and joins only after (a cold driver
         # cache: minutes, its length not fixed), so this wait follows the compile's progress (hookshot.wait_renderer)
         # and the join's own timeout counts from there.
@@ -590,6 +838,9 @@ class HookshotGames:
         self.say("%s: renderer ready (%.0f s waited)" % (x, waited))
         if getattr(self.hk, "place_games", None):   # (the game can move its window when its renderer comes up)
             self.hk.place_games({x: self.procs[x].pid}, self.display, self.say)
+
+    def wait_joined(self, x):
+        self.wait_ready(x)
         t0 = time.monotonic()
         while JOINED not in self.log(x):
             if not self.alive(x):
@@ -667,6 +918,28 @@ class HookshotGames:
             self.shot("%s-%s-%s" % (name, x, mark) if mark else name)
         return shot
 
+    def key(self, x, vk, scan):
+        """A key's press and release posted to game x's visible windows (Windows; no focus needed: the window's
+        thread runs Longshot's wndproc, which hands WM_KEYDOWN to hos_coop_key first)."""
+        if not WINDOWS:
+            raise SetupFail("key: Windows only")
+        p = self.procs.get(x)
+        if p is None or p.poll() is not None:
+            raise SetupFail("key: game %s is not running" % x)
+        import ctypes
+        from ctypes import wintypes
+        import bridge_proof
+        hwnds = bridge_proof.windows_of(p.pid)
+        if not hwnds:
+            raise SetupFail("key: game %s (pid %d) has no visible window" % (x, p.pid))
+        user32 = ctypes.windll.user32
+        down = 1 | (scan << 16)
+        up = down | (1 << 30) | (1 << 31)
+        for h in hwnds:
+            user32.PostMessageW(wintypes.HWND(h), 0x0100, vk, down)  # WM_KEYDOWN
+            user32.PostMessageW(wintypes.HWND(h), 0x0101, vk, up)    # WM_KEYUP
+        self.say("  %s: key 0x%02x posted to %d window(s)" % (x, vk, len(hwnds)))
+
     def shot(self, name):
         for y, (_, b) in list(self.bridges.items()):
             if not self.alive(y):
@@ -676,6 +949,26 @@ class HookshotGames:
                 b.request("shot", reply_timeout=30.0, path=path, timeout=20)
             except Exception as e:
                 self.say("%s shot %s: %s" % (y, os.path.basename(path), e))
+
+    def wshot(self, name):
+        """A WINDOW shot of every running game: the screen's copy of its window, Longshot's ImGui overlays (its menu,
+        co-op's tabs) included, which a bridge `shot` never has (Longshot takes those before its overlays:
+        vk_replay.cpp shot_ask_record; run f1-event-aebd16089's s30-f1-title). Through the helper named by
+        OOT_WINDOW_SHOT (offline/lib/screen-shot.ps1, its Save-WindowShot: window_shot_command; worker rule, the
+        game raised and its window checked for cover). No helper, a covered or a failed shot: SETUP-FAIL."""
+        helper = os.environ.get(WINDOW_SHOT_ENV)
+        if not helper or not os.path.isfile(helper):
+            raise SetupFail("wshot: %s names no helper file (%r)" % (WINDOW_SHOT_ENV, helper))
+        for y in sorted(self.procs):
+            if not self.alive(y):
+                continue
+            path = os.path.join(self.out, "%s-%s.png" % (name, y))
+            code, text = run_window_shot(window_shot_command(helper, self.procs[y].pid, path,
+                                                             os.path.join(self.out, "window-shots.txt")))
+            self.say("  %s window shot %s: exit %s %s" % (y, os.path.basename(path), code, text))
+            if code != 0:
+                raise SetupFail("wshot %s: %s's window shot not taken (exit %s: %s)" % (name, y, code,
+                                                                                         text or "no output"))
 
     def close(self, x):
         self._end(x, "quit")
@@ -690,16 +983,16 @@ class HookshotGames:
             return
         self.server_runs += 1
         sfx = "-%d" % self.server_runs if self.server_runs > 1 else ""
-        args = [self.server_exe, "--port", str(self.port)]
-        if os.environ.get("OOT_COOP_TEST_PASSWORD"):
-            args += ["--password-env", "OOT_COOP_TEST_PASSWORD"]
+        # (always set by main: ensure_server_password; the games send the same one)
+        args = [self.server_exe, "--port", str(self.port), "--password-env", "OOT_COOP_TEST_PASSWORD"]
         args += self.head.get("server", [])   # the steps file's `#! server` arguments
+        args = lanes.hs.server_bind(args)      # (127.0.0.1 unless they name their own --bind)
         env = None
         if self.server_delay:
             args += self.server_delay
             env = dict(os.environ, OOT_COOP_TEST="1")
         with open(os.path.join(self.out, "server-out%s.txt" % sfx), "w") as so:
-            self.server = subprocess.Popen(args, stdout=so, stderr=subprocess.STDOUT, env=env)
+            self.server = lanes.hs.popen_quiet(args, stdout=so, stderr=subprocess.STDOUT, env=env)
         time.sleep(1)
 
     def server_stop(self):
@@ -774,6 +1067,11 @@ def main(argv=None):
                 bad += 1
                 continue
             head = parse_header(text)
+            problems = flag_watch_problems(steps, head)
+            if problems:
+                print("%s: %s" % (path, "; ".join(problems)))
+                bad += 1
+                continue
             plays = sorted({f for s in steps if s.verb == "play" for _, f in s.args})
             print("%s: %d steps (%s)%s%s" % (path, len(steps), " ".join(sorted({s.verb for s in steps})),
                                              ", plays " + " ".join(plays) if plays else "",
@@ -790,13 +1088,20 @@ def main(argv=None):
         print("hs_steps.py: %s: %s" % (a.steps, e))
         return 1
     head = parse_header(text)
-    if a.dry_run:
-        print("steps %s: %d steps; games %s / %s; server %s port %d%s; pipes %s-A/-B; out %s" % (
+    problems = flag_watch_problems(steps, head)
+    if problems:
+        print("hs_steps.py: %s: %s" % (a.steps, "; ".join(problems)))
+        return 1
+    if a.dry_run:   # (nothing set: a dry run starts nothing)
+        print("steps %s: %d steps; games %s / %s; server %s port %d, %s; pipes %s-A/-B; out %s" % (
             a.steps, len(steps), a.game_a, a.game_b, a.server, a.port,
-            ", join password from OOT_COOP_TEST_PASSWORD" if os.environ.get("OOT_COOP_TEST_PASSWORD") else "",
-            a.pipe, a.out))
+            "join password from OOT_COOP_TEST_PASSWORD" if os.environ.get("OOT_COOP_TEST_PASSWORD")
+            else "a random join password would be made for the run (OOT_COOP_TEST_PASSWORD is unset)", a.pipe, a.out))
         _dry(steps)
         return 0
+    made = ensure_server_password(os.environ)   # (before the server and the Runner read it)
+    password_note = ("a random join password made for this run (OOT_COOP_TEST_PASSWORD was unset)" if made
+                     else "join password from OOT_COOP_TEST_PASSWORD")
     os.makedirs(a.out, exist_ok=True)
     sys.path.insert(0, HERE)
     import hookshot as hk  # noqa: E402 (tools/autotest/hookshot.py: the bridge, the player, the load)
@@ -810,7 +1115,10 @@ def main(argv=None):
         say("window placement: %s" % e)
         return 2
     if mon:
+        if mon.get("note"):
+            say("window placement: %s" % mon["note"])
         say("windows go to %s (work area %s)" % (mon["name"], mon["work"]))
+    say("server and games: %s" % password_note)
     games.server_delay = hk.test_delay_args(a.test_delay_ms, a.test_jitter_ms)
     games.renderer = (a.renderer_wait or games.timeout, a.renderer_stall or hk.RENDERER_STALL,
                       a.renderer_limit or hk.RENDERER_LIMIT)
@@ -832,9 +1140,9 @@ def _dry(steps):
     games = DryGames(say)
     for s in steps:
         say("step %d: %s" % (s.n, s.line))
-        if s.verb == "start":
+        if s.verb in ("start", "launch"):
             for x in s.args:
-                games.start(x, "")
+                games.start(x, "", idle=s.idle)
         elif s.verb == "load":
             games.load(s.args)
         elif s.verb == "play":
@@ -851,6 +1159,18 @@ def _dry(steps):
                 " ".join(s.args[2]) if s.args[2] else "no see= check (UNPROVEN)"))
         elif s.verb == "see":
             say("  would grade %s on the shots so far" % " ".join(s.args))
+        elif s.verb == "state":
+            say("  would wait %d s for %s's 'coop: free play: %s' (else SETUP-FAIL)" % (
+                s.args[2], s.args[0], STATES[s.args[1]]))
+        elif s.verb == "key":
+            games.key(s.args[0], *KEYS_POSTED[s.args[1]][:2])
+            say("  then would wait %d s for '%s' in %s's log (else SETUP-FAIL)" % (
+                KEY_LAND_WAIT, KEYS_POSTED[s.args[1]][2], s.args[0]))
+        elif s.verb == "flag":
+            say("  would wait %d s for a new read of %s's %s = %s (else SETUP-FAIL)" % (
+                s.args[3], s.args[0], s.args[1], s.args[2]))
+        elif s.verb == "wshot":
+            games.wshot("s%d-%s" % (s.n, s.args[0]))
         elif s.verb == "lines":
             say("  would count %s's log lines matching '%s' (%s=%d)" % (s.args[1], s.pattern, s.args[2], s.args[3]))
         elif s.verb == "password":

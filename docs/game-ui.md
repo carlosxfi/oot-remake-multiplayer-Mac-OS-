@@ -403,6 +403,17 @@ records, and how new parts go after the string pool so nothing moves).
 - Inferred: the two colours are the top and the bottom of the text's gradient, so set both for one colour; the values
   are floats from 0 to 1. A run must check both.
 - Still open: one run of our own string and of the colour setters.
+- Who calls the set-string `f_80459680` (read from main 1.1.1, 2026-11-23; checked by disassembly, not yet seen in a
+  run): `f_80459520` (main+0x439520, the set-message call that patch 0041 wraps; reached from `f_8045b970` and
+  `f_83408970`), and three that skip it. Each takes the pane as x0 and its text box as `*(f_8045b6b0(pane)+8)`:
+  `f_8078a460` (main+0x76a460; x1 the text, w2 the length, 16 bits), called only from `f_8078a390`, a
+  `LetterAnimControl`'s vtable slot 7 (vtable `0x84c41470`), which then resets the control's letter counters;
+  `f_8379a990` (main+0x377a990; x1 the same reference as `f_80459520`'s), called from `f_83795920`, which walks a
+  layout's text panes and sets each one whose `@` alias matches; `f_8379aa60` (main+0x377aa60; x1 the text, w3 the
+  length), from `f_83408970`. `f_81514740` jumps to the set-string with no pane (not followed). The message window's
+  set-up `f_834091d0` uses only `f_8045b970`. Patch 0042 wraps the first two for the play-test bridge
+  ([playtest.md](playtest.md#text-boxes)).
+
 
 ## Frames for a text field
 
@@ -442,6 +453,14 @@ keyboard of its own. These layouts of `Common` can frame one (pane names, kind 1
   `SeqOneShotStartSound` (vtable `0x84be15f8`), chosen by `SeqMenuTabChangeDirectionSelector` (`0x84bef960`, slot 39
   `f_83322e90`: ToRight, ToLeft, PlusMinusChange or NoChange). (checked)
 - Still open: a cancel, close or error sound name.
+- Co-op's own lists use one cursor model, `hookshot/src/coop_menu_nav.h` (menu-polish-01113): a press moves at once, a
+  held Up or Down again after 400 ms and then every 90 ms (the typing keys' timing), never round from the last line
+  to the first while held (only a fresh press goes round, on a list that goes round), headings and notes are stepped
+  over, and the move sound plays only when something moved. Its sound names (`kSoundMove` `button_on`,
+  `kSoundDecide` `button_decide`, `kSoundBack` `mc_ReturnFromDetail`) are the ones every page of ours plays. The
+  `button_cancel` our pages played for B until 0.11.12 is in no table of the game's: the sound link file
+  (`SLink2/slink2.Product.111.bslnk.zs`) names `button_on`, `button_decide`, `button_decide_Cancel`, `mc_OpenDetail`,
+  `mc_ReturnFromDetail` and `SE_Sys_Cancel00`, no `button_cancel` (checked 2026-11-24), so B was silent. (checked)
 
 ## The pause menu
 
@@ -603,11 +622,28 @@ keyboard of its own. These layouts of `Common` can frame one (pane names, kind 1
   `Unopened`, string `0x83ce30d7`, when disabled); the tab of the category at `+0x358` is highlighted with
   `f_802ecf60(tab, on, instant)`. In the Minus menu the tabs are [6, 1, 2] and tab 3 is hidden (`f_802edef0`). `+0x350`
   is the mode (Plus or Minus); `+0x308` and `+0x310` the `MinusToPlus` and `PlusToMinus` animations. (checked)
+- **A tab that reads `???` is the game's own masked tab, not lost text.** The third argument of `f_80a8ab50` is whether
+  the page is open to the player; when it is 0 the tab shows `Unopened` (`???` in English; the label is in the stock
+  `MenuOverlay_00`, a mod's merged copy and our pack keep it). In the Minus menu `FillTabs` decides it per tab: Key
+  Items (category 6) is on only while one of the key items of `ItemDatabase::GetList(4)` passes the check
+  `f_801a1160` (inferred: the item is owned); Threads of Time (category 1) is on only while the Bool
+  `UI_IsFinishChallengeMenuOpenEvent` (`0x1450c74f`, read through `f_833a5f50`; [flags.md](flags.md), "Threads of
+  Time") is set, which only the owl at the Hyrule Field entrance does (in a co-op session the flag is a shared story
+  flag, so another player's owl, or a `setflag` on one game, opens the tab on every game). So a fresh save, or a test
+  state set up with flags and warps, shows `Characters, ???, ???, Map, ...` on a build with Character Select's
+  Characters tab, and `???, ???, Map` without it; stock is inferred to be the same (the code read is the lane
+  build's). (checked in the disassembly of `FillTabs`, 2026-11-23, on the lane build; the Key Items check and the
+  stock case are inferred) A test that needs the tabs named sets `setflag UI_IsFinishChallengeMenuOpenEvent 1` and
+  gives key items first (docs/playtest.md, "Rules for a tester": the Zelda's Letter alone did not name the tab in a
+  two-game run; five items together did).
 - `f_802ecf60`: on, it stops `CurrentOut` (`f_802f0fe0`) and plays `CurrentIn` (`f_802eda70(anim, 0, 1.0)`, or
   `f_802f0f00` when instant); off, the reverse; nothing when the animation is already at its end. (checked)
 
 ### The Map page
 
+- An area's map shows only once `IsVisitLocation.<location>` is 1, else "Unavailable right now." (`MapMenu_00`
+  `T_NoMap_00`; the menu state `UnopenMap`). The area's banner sets it ([flags.md](flags.md), "An area's visit", row 228).
+  (romfs: UISystemActor's graph; the code's read of it is inferred)
 - The Map page has no screen of its own: its pictures are kept by the HUD's `UIMapMenuScreen`. Its set-up, slot 93
   `f_833fed60` (checked), keeps 18 map panes from `+0x1470`: `P_ReplaceMap_00` `+0x1470`, `P_ReplaceMapAll_00`
   `+0x1478`, `P_ReplaceField_00` `+0x1490`, `P_ReplaceFieldMini_00` `+0x1498`, `P_ReplaceDungeon_00` `+0x14a8`,

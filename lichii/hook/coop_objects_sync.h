@@ -40,6 +40,7 @@
 #include <vector>
 
 #include "coop/protocol/messages.hpp"
+#include "coop_digest.h"
 #include "coop_npc_anim.h"
 #include "coop_guard.h"
 #include "coop_show_delay.h"
@@ -81,9 +82,16 @@ struct Seen {
     // our game last set them (sent in its samples).
     std::uint64_t bsa_component = 0;
     std::optional<coop::protocol::BossBsa> bsa;
+    std::optional<coop::protocol::BossVariants> variants;  // row 222 part 2: with bsa, its action variations (component 24)
     // Row 222 (coop_boss_orders.h): for one of ours, the battle manager's orders our game gave it (sent in its
     // samples, component 23).
     std::optional<coop::protocol::BossOrders> orders;
+    // Rows 222, 286 (coop_boss_shooter_table.h): for one of ours, the calls its Shooter took on our game (sent in its
+    // samples, component 30).
+    std::optional<coop::protocol::BossShooterCalls> shooter;
+    // Row 149 (coop_brain_state.h): for one of ours, the move state in its AI blackboard (sent in its samples,
+    // component 25).
+    std::optional<coop::protocol::KeyedValues> brain;
     // Boss turns (0.11.8): an enemy's attack as its own game says (CoopBossNative::AttackFlagsAt: its BSA's current
     // action verb attribute Attack). nullopt: not read (no BSA, not an enemy).
     std::optional<bool> attacking;
@@ -146,11 +154,12 @@ struct PlayWish {
     bool alias = false;
     float loop = 0.0f;
     float run = -1.0f;
-    // Row 175: never played over the copy's own death (`keep_own_death`) or a boss copy's own stun
-    // (`keep_own_stun`) in slot 0. We read those from its own animation (PictureDeathHere, LifelessKillHere,
+    // Row 175: never played over the copy's own death (`keep_own_death`) or a copy's own stun
+    // (`keep_own_stun`; ai-stuns: a plain enemy's too, `stun_plain`: only IsPlainStunAnimation) in slot 0. We read those from its own animation (PictureDeathHere, LifelessKillHere,
     // row 169's own stun), and a play put over it at once erased it before any walk saw it (CoversOwnReaction).
     bool keep_own_death = false;
     bool keep_own_stun = false;
+    bool stun_plain = false;
 };
 
 // The frame of an animation `age_us` after it showed `frame` at `rate`
@@ -578,6 +587,14 @@ bool UnderCeilingEnemy(const coop::protocol::Vec3& enemy, const coop::protocol::
 // Paralysis and Freeze, and Ganon's Tail_Chance.
 bool IsStunAnimation(std::string_view name);
 
+// ai-stuns: a plain (not boss) enemy's stun of a hit that takes no life (a Deku Nut, the boomerang, the hookshot):
+// the first word starts with Stun ('Stun_Lp', the Lizalfos' 'StunA_St'), or is ShortStun, Paralysis or Faint.
+// Not 'Down', 'Fall', 'Chance' or 'Freeze': a plain enemy's own moves or a hit's reaction that takes life.
+bool IsPlainStunAnimation(std::string_view name);
+
+// The stun rule for an enemy of this name: IsStunAnimation for a boss or its part, else IsPlainStunAnimation.
+bool IsStunFor(std::string_view actor, std::string_view animation);
+
 // An animation name without its level-of-detail suffix ("Wait_ModelOnlyLOD"
 // is "Wait"), so a far copy's LOD variant is not another animation.
 std::string_view AnimationBase(std::string_view name);
@@ -610,6 +627,11 @@ bool IsBossPart(std::string_view name);
 // A boss or one of its parts named as one (what IsBoss was before row 149): the rules every boss actor shares
 // (its life, its hits, its slots and animations, its own native boss sync entry).
 bool IsBossOrPart(std::string_view name);
+// ai-turns: a plain enemy kind that takes turns between players like a boss (Session::next_turn, listed in its
+// presence with object_presence::takes_turns): the big one-on-one melee fighters whose attacks come one at a time
+// (Moblin, Lizalfos, Dinolfos, Stalfos, Like Like, Iron Knuckle). Exact actor names; never a boss, a part, a pack
+// helper (Haribote decoys), a shot (Moblin club shock wave) or a Wolfos (a pack that circles: known-issues.md).
+bool TurnsAsEnemy(std::string_view name);
 // Pair/pack survey: the family of enemies that fight together by messages between their AIs ("lizalfos" for
 // Lizalfos and Dinolfos, "stalfos", "wolfos"; empty: none). GroupsOf puts one family within kPackReach in one group
 // (root: the lowest id), so the pack has one owner and its teamwork runs in one game; never the boss bit (plain enemies).
@@ -630,6 +652,15 @@ std::vector<std::string_view> RallyMakers(const std::vector<std::string>& actor_
 // flies, so the owner's volley ('Parry_Ready') and the stun of a rally won ran in a game that had just become a copy
 // and the new owner's verbs took them over. Not read stays not read.
 std::optional<bool> AttackWithRally(const Seen& s, const std::vector<std::string_view>& rally_makers);
+// Rows 177/211 (row-177-ball): the bosses in `seen` that made one of `makers` (RallyMakers of the rally balls our
+// own Link sent back in this walk), each once. Every boss ball is a split shot (each game fires its own), so a
+// player who does not own the boss rallies their own ball with their game's copy of him. The game's own answer
+// to a ball sent back is the maker's own AI (its sensor query, its Shooter's RequestChangeStateReflected, the
+// volley 'Parry*', the knockdown 'LightBallDamage_*'), and a copy's own AI changes are skipped for the owner's
+// verbs, so in proof run 20261123-083911 the copy's own 'Parry02_Ready' was played over by the owner's 'Parry'
+// and no return ever stunned him (0 own stuns, 0 hits by our shots). Each such copy then runs its own reaction
+// (CoopBossNative::Table::NoteOwnHit, by shot), as for our seed in Gohma's eye; its stun hands him to us.
+std::vector<std::uint64_t> RallyReturnedTo(const std::vector<Seen>& seen, const std::vector<std::string_view>& makers);
 // Row 149: the root a boss part follows in a walk (PartOf's roots in order, the nearest in reach; on a tie the
 // the first in the walk), as GroupsOf picks it; nothing for no boss part or no root in the walk. `names` and `places`
 // are the walk's, one per actor.
@@ -667,7 +698,6 @@ bool NativeOnlyName(std::string_view name);
 // How WriteLife hands one life change to the game (pure; WriteLife reads the game for it, then acts).
 enum class LifeRoute {
     replay,       // a whole hit for the game's own damage step (Mover::Replay)
-    wait_replay,  // our replayed hit still waits for its damage step: nothing more now
     step,         // `amount` into the game's Life step (patch 0007)
     lost,         // nothing: the actor keeps its game's life (native-only)
     write,        // the old direct write (not native-only: a pot, a crate, an animal)
@@ -691,8 +721,30 @@ struct LifeAsk {
 struct LifeRouted {
     LifeRoute route = LifeRoute::lost;
     std::int32_t amount = 0;  // for step
+    bool tied = false;        // step: the fall our replay was to deal, which its damage step has not taken yet:
+                              // given tied to the replay (LifeTable::Give's tied_to), dropped if the replay lands
 };
 LifeRouted RouteLife(const LifeAsk& a);
+
+// enemy-late-kill (lane NEXT5b): what becomes of a life change given to the game's Life step (patch 0007) that no
+// step took in its wait (CoopObjects' kGivenWaitUs). A Deku Baba runs neither its damage step nor its Life step
+// while it sleeps (no Link near in that game), so its copy took nothing while the other player's Link was away.
+enum class GivenFate {
+    wait,   // not due yet
+    gone,   // the actor is off the walk (removed, freed), or another one is there now: taken back, never written
+    taken,  // nothing waits any more: its step took it (or a newer give took it back)
+    keep,   // an enemy (its life is never written): left for its next Life step, however late (when it wakes)
+    write,  // anything else: taken back and its life written (as before)
+};
+struct GivenAsk {
+    bool due = false;             // its wait is over
+    bool on_walk = false;         // the actor it was given to is still on the walk (its address listed, its stamp
+                                  // the same): off it, the actor was removed and its memory may be another's now
+    bool same_component = false;  // the actor there still has the Life component it was given to
+    std::int32_t pending = 0;     // LifeTable::Pending for it
+    bool native = false;          // NativeOnlyName
+};
+GivenFate StaleGivenFate(const GivenAsk& a);
 
 // Issue 88: the hearts the game draws come from our Link's Life component,
 // not from the shared PlayerStatus.MaxLife flag. The max (quarter hearts) to
@@ -857,6 +909,10 @@ public:
     // Life another game's change takes through the Life step itself (not
     // the game's damage, so no GameHit comes for it): its fall is no hit.
     void Stepped(std::uint64_t address, std::int32_t amount, std::uint64_t now_us);
+    // enemy-late-kill: a fall given to a copy's Life step and kept for its next step (GivenFate::keep: the enemy
+    // sleeps). Called while it waits: the late window and the step's given part stay open for `amount`, so the
+    // fall is no hit of ours when it lands, however late (else it went to the owner as a second hit).
+    void KeepGiven(std::uint64_t address, std::int32_t amount, std::uint64_t now_us);
     static constexpr std::uint64_t kStepWaitUs = 300'000;
     static constexpr std::uint64_t kStepGivenUs = 1'000'000;
     std::size_t LooseDrops() const { return loose_drops_; }
@@ -924,6 +980,9 @@ public:
     // after it is written back up by that much.
     using BlastNear = std::function<bool(const coop::protocol::Vec3&, std::uint64_t)>;
     void SetBlastNear(BlastNear near) { blast_near_ = std::move(near); }
+    // ai-stuns: another player's shot copy hit near here (CoopProjectiles::TheShotHits). A copy stunned there shows
+    // the stun but asks nothing: the thrower's game asks for the enemy.
+    void SetShotHitNear(BlastNear near) { shot_hit_near_ = std::move(near); }
     static constexpr std::uint64_t kBlastCreditUs = 2'000'000;
     std::size_t BlastDrops() const { return blast_drops_; }  // drops kept back so far
 
@@ -1288,6 +1347,13 @@ public:
     std::vector<std::string> TakeNotes() { return std::exchange(notes_, {}); }
     // Row 211: the makers of the rally balls in this walk (RallyMakers), for the next Tick's AttackWithRally.
     void SetRallyMakers(std::vector<std::string_view> makers) { rally_makers_ = std::move(makers); }
+    // Row 63 (Gold Skulltulas Shared): placed Gold Skulltulas whose owner said they died, since the last
+    // call, with where our copy was: the world sync owes this game their tokens (WorldSync::OweToken).
+    struct GoldDeath {
+        std::uint64_t placement = 0;
+        coop::protocol::Vec3 at{};
+    };
+    std::vector<GoldDeath> TakeGoldDeaths() { return std::exchange(gold_deaths_, {}); }
     std::optional<coop::protocol::ObjectId> IdOf(std::uint64_t address) const;
     // Difficulty's night horde (coop_difficulty.h Horde): how many players'
     // Links stand within kRollNearM of `at`, we among them: the others in our
@@ -1298,10 +1364,20 @@ public:
     // Native boss sync: each copy's latest owner's boss verbs, by the
     // copy's address (coop_boss_native.h puts them into the game).
     std::vector<std::pair<std::uint64_t, coop::protocol::BossBsa>> BossVerbsIn() const;
+    // Row 222 part 2: the owner's action variations that came with a copy's BossVerbsIn state (component 24).
+    std::optional<coop::protocol::BossVariants> BossVariantsIn(std::uint64_t address) const;
     // Row 222: the owner's battle manager orders for our copies (by address), as BossVerbsIn.
     std::vector<std::pair<std::uint64_t, coop::protocol::BossOrders>> BossOrdersIn() const;
+    // Rows 222, 286: the owner's Shooter calls for our copies (by address), as BossOrdersIn.
+    std::vector<std::pair<std::uint64_t, coop::protocol::BossShooterCalls>> BossShooterIn() const;
+    // Row 149 (coop_brain_state.h): the last owner's blackboard move state (by address), for our copies and for one
+    // just made ours (until our own values are sent).
+    std::vector<std::pair<std::uint64_t, coop::protocol::KeyedValues>> BrainStateIn() const;
     // The actors of the enemies we own, with their names (for the test drive).
     std::vector<std::pair<std::uint64_t, std::string>> Owned() const;
+    // Sync digest (coop_digest.h): every shared object we hold (owner known), once per id, by id: name, owner,
+    // epoch, life, max, dead; for a copy also local.owner_life, its owner's last life as its samples said.
+    std::vector<CoopDigest::Entry> DigestEntries() const;
     // The player who owns the object at `address` (0: the server, none: not
     // known). For coop_enemy_shots.
     std::optional<std::uint8_t> OwnerOf(std::uint64_t address) const;
@@ -1371,8 +1447,16 @@ private:
         std::optional<bool> attacking;                       // boss turns: its game's Attack attribute (Seen)
         bool rally_held = false;                             // row 211: attacking only for its rally ball (said once)
         std::optional<coop::protocol::BossBsa> bsa_in;      // native boss sync: a copy's, the owner's latest
+        std::optional<coop::protocol::BossVariants> variants;     // row 222 part 2: ours, with bsa
+        std::optional<coop::protocol::BossVariants> variants_in;  // row 222 part 2: a copy's, with bsa_in
         std::optional<coop::protocol::BossOrders> orders;     // row 222: ours, as last read
         std::optional<coop::protocol::BossOrders> orders_in;  // row 222: a copy's, the owner's latest
+        std::optional<coop::protocol::BossShooterCalls> shooter;     // rows 222, 286: ours, as last read
+        std::optional<coop::protocol::BossShooterCalls> shooter_in;  // rows 222, 286: a copy's, the owner's latest
+        std::optional<coop::protocol::KeyedValues> brain;       // row 149: ours, as last read
+        // Row 149: the last owner's blackboard move state, from its samples or the hand-over state. Kept across
+        // the hand-over to us (it is what our game then takes); dropped once our own values are sent.
+        std::optional<coop::protocol::KeyedValues> brain_in;
         bool boss_native = false;  // a bsa came for it once: its AI runs (never held), across owners
         coop::protocol::Vec3 velocity{};
         std::uint64_t seen_at = 0;
@@ -1390,6 +1474,7 @@ private:
         std::string sent_slots;  // issue 150: the slot names last sent
         std::optional<std::uint32_t> sent_bsa_seq;  // native boss sync: the boss verbs' seq last sent
         std::optional<std::uint32_t> sent_orders_seq;  // row 222: the battle orders' seq last sent
+        std::optional<std::uint32_t> sent_shooter_seq;  // rows 222, 286: the Shooter calls' seq last sent
         std::uint32_t sequence = 0;
         // Protocol 14: the newest hit our game took on our own enemy (Seen::hit_record), in its samples until
         // hit_show_until (kHitShowUs; samples may be lost), seq counting from 1 (ObjectHit).
@@ -1728,6 +1813,7 @@ private:
     std::set<coop::protocol::ObjectId> copy_killed_;
     // Gold Skulltula placements taken (GoldTaken), this scene.
     std::set<std::uint64_t> gold_taken_;
+    std::vector<GoldDeath> gold_deaths_;
     void HoldEncounters(std::uint64_t now_us);
     std::map<std::uint64_t, std::uint64_t> bound_;  // actor to director key
     std::uint64_t next_key_ = 1;
@@ -1877,6 +1963,7 @@ private:
     std::size_t part_kills_held_ = 0;     // boss-body-life: rows 257/258 kills waiting for the owner's death
     std::size_t split_kills_ = 0;  // copies dead here, owner alive after the resends
     BlastNear blast_near_;
+    BlastNear shot_hit_near_;
     std::size_t blast_drops_ = 0;
 
     mutable std::mutex inbox_mutex_;

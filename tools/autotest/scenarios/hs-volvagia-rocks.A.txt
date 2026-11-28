@@ -1,0 +1,64 @@
+# hs-volvagia-rocks (row 234): Volvagia's rocks (Obj_FallingRock_*) per player? Both games stand in the boss arena; the
+# arena drops rocks at each game's own Link. READ (the screens and the log lines decide, no auto PASS):
+#  1. Both logs: "coop: objects: rocks: N new falling rocks in our game since the last line (M live)" (needs
+#     LICHII_COOP_DEBUG_OBJECTS=1): lines in BOTH games while the fight goes on = each game makes its own rocks.
+#  2. Shots a-*/b-*: rocks fall at the Link of the screen they are on, not copied from the other game.
+#  PASS = rocks lines in both A and B and the shots agree. FAIL = one game never has a rocks line (rocks only on
+#  the owner's side) or rocks fall where our Link is not.
+#! noload
+#! start coop: test warp done
+#! switches LICHII_COOP_DEBUG_BOSS=1,LICHII_COOP_DEBUG_OBJECTS=1,LICHII_COOP_CHEATS=1
+#! timeout 600
+mark start
+warp VolvagiaStage VolvagiaStage
+wait 1200               # the title screen
+mark title
+press A
+wait 180
+press A
+wait 180
+press A
+wait 300
+press A                 # loads the save, then the warp
+wait 2400
+mark a-in
+# Link must live to see the rocks: ten more heart containers (the cheats window's give; it raises the max only), then life filled
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+give PlayerStatus.MaxLife
+wait 120
+setflag PlayerStatus.Life 56   # the gives raise only the max (coop_cheat_give.cpp Wanted: +4); life filled: 16 + 40 quarters
+wait 1800               # the intro, then the fight
+press ZL 10             # lock on
+mark a-1
+hold ZL+LSTICK_UP 60
+hold ZL+Y 8             # the sword is Y
+wait 12
+hold ZL+Y 8
+wait 1500
+mark a-2
+hold ZL+LSTICK_UP 60
+hold ZL+Y 8
+wait 12
+hold ZL+Y 8
+wait 1500
+mark a-3
+await 10800 objects: rocks:   # row 234: stay in the arena until our game logs falling rocks (at most 3 min; none = FAIL by the count)
+wait 600
+mark end

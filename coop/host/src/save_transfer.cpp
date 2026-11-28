@@ -527,8 +527,8 @@ PendingStep pending_step(bool slot_in, bool title_up, bool in_game) {
   return slot_in && title_up && !in_game ? PendingStep::go : PendingStep::keep;
 }
 
-bool old_coop_first(bool pending, bool slot_in, bool title_up, bool in_game, bool on_pending_dir) {
-  return pending && !slot_in && title_up && !in_game && on_pending_dir;
+bool old_coop_first(bool pending, bool title_up, bool in_game, bool on_pending_dir) {
+  return pending && title_up && !in_game && on_pending_dir;
 }
 
 bool decide_again(bool decided, bool over, bool in_game) {
@@ -544,6 +544,18 @@ FolderChoice folder_choice(std::optional<bool> env, bool can_switch, bool connec
 
 bool rejoined_in_game(bool decided, bool ended, bool connected, bool in_game) {
   return decided && ended && connected && in_game;
+}
+
+bool role_changed(bool decided, bool connected, bool decided_as_host, bool is_host) {
+  return decided && connected && decided_as_host != is_host;
+}
+
+bool home_due(bool on_coop_dir, bool title_menu, bool in_game, bool held) {
+  return on_coop_dir && title_menu && !in_game && !held;
+}
+
+bool keeps_group_save(bool on_coop_dir, bool others_in) {
+  return on_coop_dir && others_in;
 }
 
 std::optional<SaveValueAt> save_value_at(std::span<const std::uint8_t> progress, std::uint32_t hash,

@@ -1,0 +1,17 @@
+# The core build of the co-op game (C2-3, owner 2026-11-26): the files co-op's patches are built into. Only a file of
+# this list that is missing or not the one Longshot's note (.longshot_installed.json) names stops a start. Every other
+# file the note lists (SDL2.dll, SDL3.dll, renhdrum.dll, licenses, libSDL2-2.0.so.0) is Longshot's as it comes: one a
+# player swapped is one warning line and is kept as <file>.yours before the game is written again.
+# One file name per line (the name only, any folder; case does not count). Read by kit-paths.ps1
+# (Get-KitGameBuildCheck), linux-longshot/scripts/build.sh (game_mismatch) and their tests; never copy this list.
+#
+# longshot.exe: Longshot's host/ and nx2/ code with co-op's patches (hookshot/patches, host/*.c, nx2/*.py hunks).
+longshot.exe
+# longshot_vk.dll: the renderer, built from gpu/vk with co-op's patches (hookshot/patches gpu/vk hunks: vk_coop.cpp,
+# hos_coop_menu*.h, menu/*); Longshot nx2/build.py VK_LIB names it. An exe and a renderer of two builds crash.
+longshot_vk.dll
+# image.bin: the game's code as the build patched it (make_game.py, exefs patches).
+image.bin
+# The Linux kit's names of the same files (nx2/make_game.py BESIDE, nx2/build.py VK_LIB).
+longshot
+longshot_vk.so

@@ -79,6 +79,7 @@ std::string PagedName(CoopLook::Part part);
 inline constexpr const char* kNoColourOptions = "This character has no colour options";
 // npc-customize: the index of the Character group (a character's own parts) in Groups().
 inline constexpr std::size_t kCharacterGroup = 4;
+inline constexpr std::size_t kLinkModGroup = 5;   // (look-link-cs: Character Select's options on Link)
 
 // The preset colours, after the game's own (unset): CoopColors' names.
 const std::vector<std::string>& Presets();
@@ -100,6 +101,8 @@ public:
     // The page of groups shown (0..Groups().size()-1) and how many are offered.
     std::size_t GroupShown() const;
     std::size_t GroupsOffered() const;
+    // The page shown among those offered (0 first), as its heading counts it ("page N of M": N - 1).
+    std::size_t PageIndex() const;
     // One press; false for a Back on the list (the tab goes back to its first page).
     bool Press(Input input);
     // The mouse over a row, and a click on its name (0) or the left (-1) or right (1) half of its value.

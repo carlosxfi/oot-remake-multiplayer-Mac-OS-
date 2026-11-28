@@ -1,4 +1,4 @@
-From 2f0fdd803744e52fd0936ccd77e0cfa91417e631 Mon Sep 17 00:00:00 2001
+From b84475c0ca60458f4c260ab1fc9247a2fa028c35 Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Sun, 22 Nov 2026 05:00:00 -0900
 Subject: [PATCH] Co-op boss orders wrap: Twinrova's battle manager orders to
@@ -66,6 +66,3 @@ index 20aca8a9..c1485d9c 100644
  )
  
  
--- 
-2.56.0.windows.4
-

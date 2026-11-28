@@ -248,6 +248,138 @@ TEST_CASE("host sampler: turning, scene and age changes send a sample while stil
   CHECK(next(r) == 0);
 }
 
+TEST_CASE("host sampler: held, the last sample again each keep-alive, standing, with a new sequence") {
+  Sampler s;
+  for (int i = 0; i < 10; ++i) s.frame(at(0.1f * static_cast<float>(i)), kStart + i * kFrameUs);
+  const std::uint64_t moved = kStart + 9 * kFrameUs;
+  REQUIRE(s.last_sample());
+  const auto last = *s.last_sample();
+  CHECK(last.velocity != Vec3{0, 0, 0});
+  // The game is held from here: no frame() comes.
+  CHECK_FALSE(s.hold(moved + 100'000));  // keep-alive time not passed yet
+  const std::uint32_t seq = s.next_sequence();
+  const auto again = s.hold(moved + 200'000);
+  REQUIRE(again);
+  const auto d = decode({*again});
+  REQUIRE(d.samples.size() == 1);
+  CHECK(d.samples[0].position == last.position);
+  CHECK(d.samples[0].rotation == last.rotation);
+  CHECK(d.samples[0].scene == last.scene);
+  CHECK(d.samples[0].velocity == Vec3{0, 0, 0});  // standing, not sliding on
+  CHECK(d.samples[0].time.server_time_us == moved + 200'000);
+  CHECK(d.samples[0].time.sequence == seq);
+  CHECK(s.next_sequence() == seq + 1);  // presence drops a repeated sequence
+  CHECK_FALSE(s.hold(moved + 300'000));
+  CHECK(s.hold(moved + 400'000));
+  // Ten held seconds: never a gap longer than the keep-alive and a step.
+  std::uint64_t at_us = moved + 400'000, sent = at_us;
+  for (int i = 0; i < 1000; ++i) {
+    at_us += 10'000;
+    if (s.hold(at_us)) {
+      CHECK(at_us - sent <= 210'000);
+      sent = at_us;
+    }
+  }
+  // Released: the frames go on with a higher sequence (Link walks on).
+  const auto next = decode(s.frame(at(1.5f), at_us + kFrameUs));
+  REQUIRE(next.samples.size() == 1);
+  CHECK(next.samples[0].time.sequence > seq);
+}
+
+TEST_CASE("host sampler: frames after a hold stamp after the last held sample") {
+  Sampler s;
+  std::uint64_t now = kStart;
+  s.frame(at(1.0f), now);
+  const auto held = s.hold(now + 1'000'000);
+  REQUIRE(held);
+  const std::uint64_t held_at = decode({*held}).samples.at(0).time.server_time_us;
+  // Released: the game frame's time is up to 250 ms older than the held sample (frame_aligned_us).
+  std::uint64_t frame_us = held_at - 200'000;
+  std::uint64_t last = held_at;
+  int sent = 0;
+  for (int i = 0; i < 40; ++i, frame_us += kFrameUs) {
+    for (const auto& p : decode(s.frame(at(1.0f + 0.1f * static_cast<float>(i)), frame_us)).samples) {
+      CHECK(p.time.server_time_us > last);  // presence would drop an older one as too old
+      last = p.time.server_time_us;
+      ++sent;
+    }
+  }
+  CHECK(sent > 0);
+}
+
+TEST_CASE("host sampler: a reconnect while held sends the status, the equipment and the sample") {
+  Sampler s;
+  s.set_color(0x00ff00ffu);
+  s.frame(at(1.0f), kStart);
+  CHECK(s.hold_reconnected(kStart).size() == 3);
+  const auto d = decode(s.hold_reconnected(kStart + 1));
+  CHECK(d.statuses.size() == 1);
+  REQUIRE(d.equips.size() == 1);
+  CHECK(d.equips[0].equipment.color == std::optional<std::uint32_t>(0x00ff00ffu));
+  REQUIRE(d.samples.size() == 1);
+  CHECK(d.samples[0].position == at(1.0f).position);
+  CHECK(d.samples[0].velocity == Vec3{0, 0, 0});
+  // In a load: nothing.
+  s.frame(std::nullopt, kStart + kFrameUs);
+  CHECK(s.hold_reconnected(kStart + 2 * kFrameUs).empty());
+}
+
+TEST_CASE("host sampler: a reconnect while held to a new server uses its clock") {
+  Sampler s;
+  const std::uint64_t old_clock = 3'600'000'000ull;  // the old server ran an hour
+  s.frame(at(1.0f), old_clock);
+  REQUIRE(s.hold(old_clock + 1'000'000));
+  // The new server started a second ago.
+  const std::uint64_t now = 1'000'000;
+  const auto d = decode(s.hold_reconnected(now));
+  REQUIRE(d.samples.size() == 1);
+  CHECK(d.samples[0].time.server_time_us == now);
+  // Still held: the keep-alive goes on.
+  CHECK(s.hold(now + 100'000) == std::nullopt);
+  REQUIRE(s.hold(now + 200'000));
+  // Released, without and with the WELCOME's reset: frames send as Link moves, at their own times.
+  for (const bool reset : {false, true}) {
+    Sampler r = s;
+    if (reset) r.reset();
+    std::uint64_t frame_us = now + 300'000;
+    int sent = 0;
+    for (int i = 0; i < 30; ++i, frame_us += kFrameUs) {
+      for (const auto& p : decode(r.frame(at(2.0f + 0.1f * static_cast<float>(i)), frame_us)).samples) {
+        CHECK(p.time.server_time_us == frame_us);
+        ++sent;
+      }
+    }
+    CHECK(sent >= 5);
+  }
+}
+
+TEST_CASE("host sampler: the floor after a hold covers only a frame's age") {
+  // A held sample in one clock, then frames in a clock far behind it (a new server).
+  for (const bool reset : {false, true}) {
+    Sampler s;
+    s.frame(at(1.0f), 3'600'000'000ull);
+    REQUIRE(s.hold(3'601'000'000ull));
+    if (reset) s.reset();  // the WELCOME's reset
+    std::uint64_t frame_us = 1'000'000;
+    int sent = 0;
+    for (int i = 0; i < 30; ++i, frame_us += kFrameUs) {
+      for (const auto& p : decode(s.frame(at(2.0f + 0.1f * static_cast<float>(i)), frame_us)).samples) {
+        CHECK(p.time.server_time_us == frame_us);
+        ++sent;
+      }
+    }
+    CHECK(sent >= 5);
+  }
+}
+
+TEST_CASE("host sampler: held in a load or before any sample, nothing") {
+  Sampler s;
+  CHECK_FALSE(s.hold(kStart));  // nothing sent yet
+  s.frame(at(1.0f), kStart);
+  s.frame(std::nullopt, kStart + kFrameUs);  // a load: no Link
+  CHECK_FALSE(s.hold(kStart + 2'000'000));
+}
+
 TEST_CASE("host sampler: no reading, no sample, the status loading") {
   Sampler s;
   const auto d = decode(s.frame(std::nullopt, kStart));

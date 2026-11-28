@@ -1,4 +1,4 @@
-From 01ff6bb9953647deb221e3d5d13b882c76201d83 Mon Sep 17 00:00:00 2001
+From 841ad901697244a6a6f86f02d18f0da6c625cbc5 Mon Sep 17 00:00:00 2001
 From: coop-fetch <coop-fetch@localhost>
 Date: Thu, 19 Nov 2026 13:40:11 -0900
 Subject: [PATCH] Co-op voice crash: start SDL's audio once for the microphones
