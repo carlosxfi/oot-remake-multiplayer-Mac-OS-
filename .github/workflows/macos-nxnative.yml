@@ -2,7 +2,7 @@ name: macOS nxnative
 
 on:
   push:
-    branches: [main, macos-squadala-v0118, 'macos-playtest-*']
+    branches: [main, macos-squadala-v0118, 'macos-playtest-*', macos-v0120-playtest]
     paths-ignore:
       - '**/*.md'
   pull_request:

@@ -44,7 +44,7 @@ The installer builds both ARM64 co-op libraries, runs the nxnative checks, and c
 
 **3. Host or join a LAN playtest.**
 
-Open **OOT Co-op** from Finder and choose **Multiplayer → Host or Join** in the macOS menu bar. To join, enter the host address, port, and room password, or paste the complete LAN invite into the address field. To host, choose **Host LAN**, then **Copy invite**. Keep invites private. For cross-play testing, use disposable saves and start with both players in the same scene. [Windows v0.11.12 release](https://github.com/daurosk/oot-remake-multiplayer/releases/tag/v0.11.12)
+Open **OOT Co-op** from Finder and choose **Multiplayer → Host or Join** in the macOS menu bar. To join, enter the host address, port, and room password, or paste the complete LAN invite into the address field. To host, choose **Host LAN**, then **Copy invite**. Keep invites private. For cross-play testing, use disposable saves and start with both players in the same scene. [Windows v0.12.0 release](https://github.com/daurosk/oot-remake-multiplayer/releases/tag/v0.12.0)
 
 The port is in development. The menu, native build, and automated networking checks are in place. A live join launched from Finder can stall at **Connecting**. Use the panel status in your report. Host-save handoff is disabled in this launcher.
 

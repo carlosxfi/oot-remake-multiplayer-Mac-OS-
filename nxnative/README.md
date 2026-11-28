@@ -308,9 +308,9 @@ network connection state and any server refusal. Use **Leave** to end the sessio
 The panel runs the shared co-op host and join functions. The game still uses
 its local save during this test.
 
-### Windows v0.11.12 playtest
+### Windows v0.12.0 playtest
 
-Use Squadala v0.11.12 on the Windows host. The Mac shared module
+Use Squadala v0.12.0 on the Windows host. The Mac shared module
 uses protocol 18. Start with disposable saves and
 check that both players can see each other move. Then test a chest, key and
 rupee pickup, an enemy defeat, and a loading zone together. Check player

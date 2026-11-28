@@ -20,6 +20,8 @@ add_library(nxnative_shared STATIC
   "${repo}/coop/host/src/one_way_keeper.cpp"
   "${repo}/coop/protocol/src/codec.cpp"
   "${repo}/coop/protocol/src/join_password.cpp"
+  "${repo}/coop/protocol/src/mod_world.cpp"
+  "${repo}/coop/protocol/src/race.cpp"
   "${repo}/coop/protocol/src/official_mark.cpp"
   "${repo}/coop/protocol/src/traffic_crypto.cpp"
   "${repo}/coop/net/src/client.cpp"
@@ -65,6 +67,9 @@ if(MSVC)
   target_compile_options(nxnative_network_check PRIVATE /UNDEBUG)
 else()
   target_compile_options(nxnative_shared PRIVATE -Wall -Wextra -Werror)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(nxnative_shared PRIVATE -Wno-error=maybe-uninitialized)
+  endif()
   target_compile_options(nxnative_loopback PRIVATE -Wall -Wextra -Werror)
   target_compile_options(nxnative_network_check PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 endif()
